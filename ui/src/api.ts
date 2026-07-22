@@ -54,6 +54,52 @@ export interface RtmpCatalog {
   streams: StreamSnapshot[]
 }
 
+export interface MonitoringProcess {
+  cpuPercent: number | null
+  residentMemoryBytes: number
+  virtualMemoryBytes: number
+  threadCount: number
+  openFileDescriptors: number
+}
+
+export interface MonitoringHost {
+  loadAverage1m: number
+  loadAverage5m: number
+  loadAverage15m: number
+  totalMemoryBytes: number
+  availableMemoryBytes: number
+}
+
+export interface MonitoringTraffic {
+  acceptedConnections: number
+  activeConnections: number
+  bytesReceived: number
+  bytesSent: number
+}
+
+export interface MonitoringListener extends MonitoringTraffic {
+  name: string
+  protocol: 'http' | 'tcp' | 'rtmp'
+  bind: string
+}
+
+export interface MonitoringRtmp {
+  activeStreams: number
+  publishers: number
+  subscribers: number
+  mediaPayloadBytesReceived: number
+}
+
+export interface MonitoringSnapshot {
+  sampledAtUnixMs: number
+  uptimeMs: number
+  process: MonitoringProcess
+  host: MonitoringHost
+  traffic: MonitoringTraffic
+  listeners: MonitoringListener[]
+  rtmp: MonitoringRtmp
+}
+
 interface ErrorResponse {
   error?: {
     code?: string
@@ -63,6 +109,10 @@ interface ErrorResponse {
 
 export async function fetchRtmpCatalog(signal?: AbortSignal): Promise<RtmpCatalog> {
   return request<RtmpCatalog>('/api/v1/rtmp/streams', { signal })
+}
+
+export async function fetchMonitoring(signal?: AbortSignal): Promise<MonitoringSnapshot> {
+  return request<MonitoringSnapshot>('/api/v1/monitoring', { cache: 'no-store', signal })
 }
 
 export async function setRecording(

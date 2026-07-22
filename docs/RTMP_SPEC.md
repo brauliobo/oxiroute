@@ -355,8 +355,9 @@ effective inheritance lowering, and per-directive fixture completeness remain.
 Status: partial. A pinned `rml_rtmp` 0.8.0 adapter now provides simple/complex handshakes, chunk
 transport, connect/createStream/live-publish command handling, duplicate-publisher rejection,
 media observations, and lifecycle cleanup. The listener caps requested inbound chunks at 1 MiB.
-Play/fanout, configurable assembled-message limits, exhaustive chunk fixtures, and independent
-FFmpeg/OBS acceptance remain before this slice is complete.
+Manual FFmpeg publishing passes against the Pingora listener. Play/fanout, configurable
+assembled-message limits, exhaustive chunk fixtures, checked-in process-level FFmpeg acceptance,
+and OBS acceptance remain before this slice is complete.
 
 - Simple and both Adobe complex handshake schemes.
 - Fragmented I/O, chunk formats 0-3, all CSID header widths, extended timestamps, and interleaving.
