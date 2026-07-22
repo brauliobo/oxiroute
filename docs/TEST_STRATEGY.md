@@ -30,6 +30,8 @@ renewal windows, routing precedence, and bounded table/session behavior.
 
 - Loopback-only upstreams and ephemeral ports; no root or Internet dependency.
 - HTTP methods, bodies, trailers, hop-by-hop fields, upgrades, gRPC, and negotiated versions.
+- HTTP retry target exclusion, budget exhaustion, and no-retry gates after bodies, unsafe methods,
+  upgrades, or established upstream connections.
 - TCP full duplex, half-close, slow readers, backpressure, cancellation, and reload drain.
 - TCP connect/idle/lifetime deadlines and partial traffic accounting across failure paths.
 - UDP request/reply mapping, expiry, duplicate clients, upstream changes, and table pressure.

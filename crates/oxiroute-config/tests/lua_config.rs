@@ -168,6 +168,7 @@ return {
     assert_eq!(route.path_prefix, "/");
     assert!(route.methods.is_empty());
     assert_eq!(config.http_services[0].upstream_io_timeout_ms, 30_000);
+    assert_eq!(config.http_services[0].max_retries, 0);
     assert_eq!(
         config.http_services[0].max_request_body_bytes,
         10 * 1024 * 1024
@@ -175,6 +176,33 @@ return {
     assert_eq!(config.l4_services[0].connect_timeout_ms, 10_000);
     assert_eq!(config.l4_services[0].idle_timeout_ms, 300_000);
     assert_eq!(config.l4_services[0].lifetime_timeout_ms, None);
+}
+
+#[test]
+fn loads_a_bounded_http_retry_budget() {
+    for max_retries in [1, 2] {
+        let source = changed(
+            "      max_request_body_bytes = 2097152,",
+            &format!("      max_request_body_bytes = 2097152,\n      max_retries = {max_retries},"),
+        );
+        let config = load_lua(&source).expect("bounded retry budget");
+
+        assert_eq!(config.http_services[0].max_retries, max_retries);
+    }
+}
+
+#[test]
+fn rejects_an_excessive_http_retry_budget() {
+    let source = changed(
+        "      max_request_body_bytes = 2097152,",
+        "      max_request_body_bytes = 2097152,\n      max_retries = 3,",
+    );
+    let error = error_from(&source);
+
+    assert!(matches!(
+        error,
+        ConfigError::RetryLimitTooLarge { service, limit: 3 } if service == "web"
+    ));
 }
 
 #[test]

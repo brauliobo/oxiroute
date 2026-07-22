@@ -12,7 +12,8 @@ use oxiroute_config::{
     Config, HttpRoute, HttpService, Listener, Protocol, UpstreamAlgorithm, UpstreamPool,
 };
 use oxiroute_server::{
-    HttpReverseProxy, MonitoredHttpApp, RuntimeMetrics, ServiceKind, service_specs,
+    HttpReverseProxy, MAX_HTTP_ATTEMPTS, MonitoredHttpApp, RuntimeMetrics, ServiceKind,
+    service_specs,
 };
 use pingora::{apps::ServerApp, proxy::http_proxy, server::configuration::ServerConf};
 use tokio::{
@@ -309,6 +310,268 @@ async fn enforces_the_connection_cap_in_the_production_http_wrapper() {
     .expect("connection-cap test timed out");
 }
 
+#[tokio::test]
+async fn retries_a_bodyless_get_on_a_distinct_endpoint_after_connect_failure() {
+    timeout(TEST_TIMEOUT, async {
+        let unavailable = unused_address().await;
+        let healthy = Origin::start("retry-success", 1).await;
+        let proxy = ProxyHarness::start_with_retries(
+            vec![pool("retry", &[unavailable, healthy.address])],
+            vec![route(None, "/", &[], "retry")],
+            1,
+            1,
+        )
+        .await;
+
+        let response = proxy
+            .request("GET / HTTP/1.1\r\nHost: retry.test\r\n")
+            .await;
+
+        assert_origin_response(&response, "retry-success");
+        proxy.finish().await;
+        healthy.finish().await;
+    })
+    .await
+    .expect("connect retry test timed out");
+}
+
+#[tokio::test]
+async fn retries_a_bodyless_head_after_connect_failure() {
+    timeout(TEST_TIMEOUT, async {
+        let unavailable = unused_address().await;
+        let healthy = Origin::start("head-success", 1).await;
+        let proxy = ProxyHarness::start_with_retries(
+            vec![pool("retry", &[unavailable, healthy.address])],
+            vec![route(None, "/", &[], "retry")],
+            1,
+            1,
+        )
+        .await;
+
+        let response = proxy
+            .request("HEAD / HTTP/1.1\r\nHost: retry.test\r\n")
+            .await;
+
+        assert_eq!(response.status, 200, "response: {}", response.text());
+        proxy.finish().await;
+        healthy.finish().await;
+    })
+    .await
+    .expect("HEAD retry test timed out");
+}
+
+#[tokio::test]
+async fn an_omitted_retry_budget_fails_after_the_first_endpoint() {
+    timeout(TEST_TIMEOUT, async {
+        let unavailable = unused_address().await;
+        let unused = Origin::start("must-not-receive", 1).await;
+        let proxy = ProxyHarness::start(
+            vec![pool("retry", &[unavailable, unused.address])],
+            vec![route(None, "/", &[], "retry")],
+            1024,
+            1,
+        )
+        .await;
+
+        let response = proxy
+            .request("GET / HTTP/1.1\r\nHost: retry.test\r\n")
+            .await;
+
+        assert_eq!(response.status, 502, "response: {}", response.text());
+        proxy.finish().await;
+        unused.assert_not_contacted().await;
+    })
+    .await
+    .expect("default retry budget test timed out");
+}
+
+#[tokio::test]
+async fn does_not_retry_an_unsafe_method_after_connect_failure() {
+    timeout(TEST_TIMEOUT, async {
+        let unavailable = unused_address().await;
+        let unused = Origin::start("must-not-receive", 1).await;
+        let proxy = ProxyHarness::start_with_retries(
+            vec![pool("retry", &[unavailable, unused.address])],
+            vec![route(None, "/", &[], "retry")],
+            1,
+            1,
+        )
+        .await;
+
+        let response = proxy
+            .request("POST / HTTP/1.1\r\nHost: retry.test\r\nContent-Length: 0\r\n")
+            .await;
+
+        assert_eq!(response.status, 502, "response: {}", response.text());
+        proxy.finish().await;
+        unused.assert_not_contacted().await;
+    })
+    .await
+    .expect("unsafe retry test timed out");
+}
+
+#[tokio::test]
+async fn does_not_retry_a_get_with_a_request_body() {
+    timeout(TEST_TIMEOUT, async {
+        let unavailable = unused_address().await;
+        let unused = Origin::start("must-not-receive", 1).await;
+        let proxy = ProxyHarness::start_with_retries(
+            vec![pool("retry", &[unavailable, unused.address])],
+            vec![route(None, "/", &[], "retry")],
+            1,
+            1,
+        )
+        .await;
+
+        let response = proxy
+            .request_bytes(
+                b"GET / HTTP/1.1\r\nHost: retry.test\r\nContent-Length: 4\r\nConnection: close\r\n\r\nbody",
+            )
+            .await;
+
+        assert_eq!(response.status, 502, "response: {}", response.text());
+        proxy.finish().await;
+        unused.assert_not_contacted().await;
+    })
+    .await
+    .expect("body retry test timed out");
+}
+
+#[tokio::test]
+async fn does_not_retry_after_an_upstream_connection_is_established() {
+    timeout(TEST_TIMEOUT, async {
+        let disconnecting = Origin::start_disconnecting().await;
+        let unused = Origin::start("must-not-receive", 1).await;
+        let proxy = ProxyHarness::start_with_retries(
+            vec![pool("retry", &[disconnecting.address, unused.address])],
+            vec![route(None, "/", &[], "retry")],
+            1,
+            1,
+        )
+        .await;
+
+        let response = proxy
+            .request("GET / HTTP/1.1\r\nHost: retry.test\r\n")
+            .await;
+
+        assert_eq!(response.status, 502, "response: {}", response.text());
+        proxy.finish().await;
+        disconnecting.finish().await;
+        unused.assert_not_contacted().await;
+    })
+    .await
+    .expect("post-connect retry test timed out");
+}
+
+#[tokio::test]
+async fn does_not_retry_an_upgrade_request() {
+    timeout(TEST_TIMEOUT, async {
+        let unavailable = unused_address().await;
+        let unused = Origin::start("must-not-receive", 1).await;
+        let proxy = ProxyHarness::start_with_retries(
+            vec![pool("retry", &[unavailable, unused.address])],
+            vec![route(None, "/", &[], "retry")],
+            1,
+            1,
+        )
+        .await;
+
+        let response = proxy
+            .request_bytes(
+                b"GET / HTTP/1.1\r\nHost: retry.test\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
+            )
+            .await;
+
+        assert_eq!(response.status, 502, "response: {}", response.text());
+        proxy.finish().await;
+        unused.assert_not_contacted().await;
+    })
+    .await
+    .expect("upgrade retry test timed out");
+}
+
+#[tokio::test]
+async fn does_not_retry_an_upstream_error_status() {
+    timeout(TEST_TIMEOUT, async {
+        let unavailable = Origin::start_status(503, "unavailable").await;
+        let unused = Origin::start("must-not-receive", 1).await;
+        let proxy = ProxyHarness::start_with_retries(
+            vec![pool("retry", &[unavailable.address, unused.address])],
+            vec![route(None, "/", &[], "retry")],
+            1,
+            1,
+        )
+        .await;
+
+        let response = proxy
+            .request("GET / HTTP/1.1\r\nHost: retry.test\r\n")
+            .await;
+
+        assert_eq!(response.status, 503, "response: {}", response.text());
+        proxy.finish().await;
+        unavailable.finish().await;
+        unused.assert_not_contacted().await;
+    })
+    .await
+    .expect("status retry test timed out");
+}
+
+#[tokio::test]
+async fn stops_when_the_configured_retry_budget_is_exhausted() {
+    timeout(TEST_TIMEOUT, async {
+        let unavailable = unused_addresses(2).await;
+        let unused = Origin::start("over-budget", 1).await;
+        let proxy = ProxyHarness::start_with_retries(
+            vec![pool(
+                "retry",
+                &[unavailable[0], unavailable[1], unused.address],
+            )],
+            vec![route(None, "/", &[], "retry")],
+            1,
+            1,
+        )
+        .await;
+
+        let response = proxy
+            .request("GET / HTTP/1.1\r\nHost: retry.test\r\n")
+            .await;
+
+        assert_eq!(response.status, 502, "response: {}", response.text());
+        proxy.finish().await;
+        unused.assert_not_contacted().await;
+    })
+    .await
+    .expect("retry budget test timed out");
+}
+
+#[tokio::test]
+async fn permits_two_retries_and_succeeds_on_the_third_endpoint() {
+    timeout(TEST_TIMEOUT, async {
+        let unavailable = unused_addresses(2).await;
+        let healthy = Origin::start("third-attempt", 1).await;
+        let proxy = ProxyHarness::start_with_retries(
+            vec![pool(
+                "retry",
+                &[unavailable[0], unavailable[1], healthy.address],
+            )],
+            vec![route(None, "/", &[], "retry")],
+            2,
+            1,
+        )
+        .await;
+
+        let response = proxy
+            .request("GET / HTTP/1.1\r\nHost: retry.test\r\n")
+            .await;
+
+        assert_origin_response(&response, "third-attempt");
+        proxy.finish().await;
+        healthy.finish().await;
+    })
+    .await
+    .expect("two-retry test timed out");
+}
+
 struct ProxyHarness {
     address: SocketAddr,
     metrics: RuntimeMetrics,
@@ -323,11 +586,12 @@ impl ProxyHarness {
         max_request_body_bytes: u64,
         expected_connections: usize,
     ) -> Self {
-        Self::start_with_limit(
+        Self::start_with_policy(
             upstream_pools,
             routes,
             max_request_body_bytes,
             100,
+            0,
             expected_connections,
         )
         .await
@@ -338,6 +602,42 @@ impl ProxyHarness {
         routes: Vec<HttpRoute>,
         max_request_body_bytes: u64,
         max_connections: u64,
+        expected_connections: usize,
+    ) -> Self {
+        Self::start_with_policy(
+            upstream_pools,
+            routes,
+            max_request_body_bytes,
+            max_connections,
+            0,
+            expected_connections,
+        )
+        .await
+    }
+
+    async fn start_with_retries(
+        upstream_pools: Vec<UpstreamPool>,
+        routes: Vec<HttpRoute>,
+        max_retries: u8,
+        expected_connections: usize,
+    ) -> Self {
+        Self::start_with_policy(
+            upstream_pools,
+            routes,
+            1024,
+            100,
+            max_retries,
+            expected_connections,
+        )
+        .await
+    }
+
+    async fn start_with_policy(
+        upstream_pools: Vec<UpstreamPool>,
+        routes: Vec<HttpRoute>,
+        max_request_body_bytes: u64,
+        max_connections: u64,
+        max_retries: u8,
         expected_connections: usize,
     ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("proxy bind");
@@ -358,6 +658,7 @@ impl ProxyHarness {
                 routes,
                 upstream_io_timeout_ms: 1_000,
                 max_request_body_bytes,
+                max_retries,
             }],
             l4_services: Vec::new(),
         };
@@ -375,7 +676,11 @@ impl ProxyHarness {
         let ServiceKind::Http(service) = spec.kind else {
             panic!("configured listener must compile as HTTP");
         };
-        let configuration = Arc::new(ServerConf::default());
+        let configuration = ServerConf {
+            max_retries: MAX_HTTP_ATTEMPTS,
+            ..ServerConf::default()
+        };
+        let configuration = Arc::new(configuration);
         let proxy = Arc::new(MonitoredHttpApp::new(
             http_proxy(
                 &configuration,
@@ -457,6 +762,25 @@ impl ProxyHarness {
     }
 }
 
+async fn unused_address() -> SocketAddr {
+    unused_addresses(1).await[0]
+}
+
+async fn unused_addresses(count: usize) -> Vec<SocketAddr> {
+    let mut listeners = Vec::with_capacity(count);
+    for _ in 0..count {
+        listeners.push(
+            TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("unused address bind"),
+        );
+    }
+    listeners
+        .iter()
+        .map(|listener| listener.local_addr().expect("unused address"))
+        .collect()
+}
+
 impl Drop for ProxyHarness {
     fn drop(&mut self) {
         if let Some(task) = &self.task {
@@ -503,6 +827,35 @@ impl Origin {
         }
     }
 
+    async fn start_status(status: u16, body: &'static str) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
+        let address = listener.local_addr().expect("origin address");
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let accepted_by_task = Arc::clone(&accepted);
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("origin accept");
+            accepted_by_task.fetch_add(1, Ordering::SeqCst);
+            read_request_head(&mut stream)
+                .await
+                .expect("origin request");
+            let response = format!(
+                "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("origin response");
+            stream.shutdown().await.expect("origin shutdown");
+        });
+
+        Self {
+            address,
+            accepted,
+            task: Some(task),
+        }
+    }
+
     async fn start_silent() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
         let address = listener.local_addr().expect("origin address");
@@ -516,6 +869,26 @@ impl Origin {
                 .read_to_end(&mut request)
                 .await
                 .expect("origin request close");
+        });
+
+        Self {
+            address,
+            accepted,
+            task: Some(task),
+        }
+    }
+
+    async fn start_disconnecting() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
+        let address = listener.local_addr().expect("origin address");
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let accepted_by_task = Arc::clone(&accepted);
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("origin accept");
+            accepted_by_task.fetch_add(1, Ordering::SeqCst);
+            read_request_head(&mut stream)
+                .await
+                .expect("origin request");
         });
 
         Self {

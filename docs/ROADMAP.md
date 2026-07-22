@@ -21,6 +21,7 @@ Status: implemented.
 - Static opaque TCP relay through Pingora.
 - Canonical listener, HTTP/L4 service, route, and static round-robin pool subset.
 - HTTP body and upstream I/O limits plus per-listener connection caps.
+- Bounded connect-failure retries for replay-safe HTTP requests.
 - Red-green acceptance tests for configuration and runtime planning.
 
 This milestone proves the dependency and configuration seams. It is not a release.

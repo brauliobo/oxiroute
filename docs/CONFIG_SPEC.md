@@ -56,6 +56,7 @@ return {
       name = "web",
       upstream_io_timeout_ms = 30000,
       max_request_body_bytes = 10485760,
+      max_retries = 1,
       routes = {
         {
           host = "api.example.com",
@@ -117,6 +118,12 @@ Current constraints:
   not a total request deadline. `max_request_body_bytes` defaults to `10485760`; both values MUST
   be nonzero. Oversized declared bodies return `413` before contacting an origin. A streamed
   overflow aborts forwarding and returns `413` when an origin response has not already committed.
+- `max_retries` is the number of additional connection attempts after the first, defaults to `0`,
+  and MUST be at most `2`. Retries are permitted only for bodyless `GET` and `HEAD` requests that
+  are not protocol upgrades, only after a transient connection-establishment failure, and only
+  when a distinct configured endpoint remains. Established-connection errors, response statuses,
+  body-bearing requests, unsafe methods, and upgrades are never retried. Each attempt has its own
+  `upstream_io_timeout_ms` connect deadline; there is no total request deadline.
 - L4 services reference a pool. Connect and idle timeouts default to `10000` and `300000`
   milliseconds; an optional lifetime timeout has no default. Configured timeout values MUST be
   nonzero.

@@ -30,6 +30,8 @@ pub use tcp_relay::{
     RelayStats, TcpRelayCore, relay_streams,
 };
 
+pub const MAX_HTTP_ATTEMPTS: usize = 3;
+
 pub struct HttpReverseProxy {
     metrics: ListenerMetrics,
     service: Arc<HttpServicePlan>,
@@ -87,7 +89,9 @@ pub struct HttpRequestContext {
     observed_received: u64,
     observed_sent: u64,
     authority: Option<Authority>,
-    upstream: Option<SocketAddr>,
+    attempted_upstreams: Vec<SocketAddr>,
+    pool: Option<Arc<RoundRobinPool>>,
+    retryable: bool,
 }
 
 impl HttpRequestContext {
@@ -117,7 +121,9 @@ impl ProxyHttp for HttpReverseProxy {
             observed_received: 0,
             observed_sent: 0,
             authority: None,
-            upstream: None,
+            attempted_upstreams: Vec::new(),
+            pool: None,
+            retryable: false,
         }
     }
 
@@ -162,14 +168,18 @@ impl ProxyHttp for HttpReverseProxy {
             return Ok(true);
         }
 
-        let Some(upstream) = self.service.select(authority.as_ref(), &uri, &method) else {
+        let Some(pool) = self.service.select_pool(authority.as_ref(), &uri, &method) else {
             session
                 .respond_error_with_body(404, Bytes::from_static(b"route not found\n"))
                 .await?;
             return Ok(true);
         };
+        ctx.retryable = self.service.max_retries() > 0
+            && matches!(method, Method::GET | Method::HEAD)
+            && session.is_body_empty()
+            && !session.is_upgrade_req();
         ctx.authority = authority;
-        ctx.upstream = Some(upstream);
+        ctx.pool = Some(pool);
         Ok(false)
     }
 
@@ -178,9 +188,13 @@ impl ProxyHttp for HttpReverseProxy {
         _session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<Box<HttpPeer>> {
-        let Some(upstream) = ctx.upstream else {
+        let Some(pool) = &ctx.pool else {
             return Err(Error::new_in(ErrorType::InternalError));
         };
+        let Some(upstream) = pool.select_excluding(&ctx.attempted_upstreams) else {
+            return Err(Error::new_in(ErrorType::InternalError));
+        };
+        ctx.attempted_upstreams.push(upstream);
         let mut peer = HttpPeer::new(upstream, false, String::new());
         let timeout = self.service.upstream_io_timeout();
         peer.options.connection_timeout = Some(timeout);
@@ -188,6 +202,38 @@ impl ProxyHttp for HttpReverseProxy {
         peer.options.read_timeout = Some(timeout);
         peer.options.write_timeout = Some(timeout);
         Ok(Box::new(peer))
+    }
+
+    fn fail_to_connect(
+        &self,
+        _session: &mut Session,
+        _peer: &HttpPeer,
+        ctx: &mut Self::CTX,
+        mut error: Box<Error>,
+    ) -> Box<Error> {
+        let transient = matches!(
+            error.etype(),
+            ErrorType::ConnectTimedout | ErrorType::ConnectRefused | ErrorType::ConnectNoRoute
+        );
+        let has_budget = ctx.attempted_upstreams.len() <= usize::from(self.service.max_retries());
+        let has_alternative = ctx
+            .pool
+            .as_ref()
+            .is_some_and(|pool| pool.has_unattempted(&ctx.attempted_upstreams));
+        error.set_retry(ctx.retryable && transient && has_budget && has_alternative);
+        error
+    }
+
+    fn error_while_proxy(
+        &self,
+        _peer: &HttpPeer,
+        _session: &mut Session,
+        mut error: Box<Error>,
+        _ctx: &mut Self::CTX,
+        _client_reused: bool,
+    ) -> Box<Error> {
+        error.set_retry(false);
+        error
     }
 
     async fn request_body_filter(
@@ -326,12 +372,23 @@ impl ServiceKind {
 #[derive(Debug)]
 pub struct HttpServicePlan {
     max_request_body_bytes: u64,
+    max_retries: u8,
     pools: Arc<HashMap<String, Arc<RoundRobinPool>>>,
     upstream_io_timeout: Duration,
     routes: RouteTable,
 }
 
 impl HttpServicePlan {
+    fn select_pool(
+        &self,
+        authority: Option<&Authority>,
+        uri: &Uri,
+        method: &Method,
+    ) -> Option<Arc<RoundRobinPool>> {
+        let route = self.routes.select(authority, uri, method)?;
+        self.pools.get(route.pool_id()).cloned()
+    }
+
     #[must_use]
     pub fn select(
         &self,
@@ -339,8 +396,8 @@ impl HttpServicePlan {
         uri: &Uri,
         method: &Method,
     ) -> Option<SocketAddr> {
-        let route = self.routes.select(authority, uri, method)?;
-        self.pools.get(route.pool_id()).map(|pool| pool.select())
+        self.select_pool(authority, uri, method)
+            .map(|pool| pool.select())
     }
 
     #[must_use]
@@ -351,6 +408,11 @@ impl HttpServicePlan {
     #[must_use]
     pub const fn max_request_body_bytes(&self) -> u64 {
         self.max_request_body_bytes
+    }
+
+    #[must_use]
+    pub const fn max_retries(&self) -> u8 {
+        self.max_retries
     }
 }
 
@@ -497,6 +559,7 @@ fn compile_http_services(
             service.name.clone(),
             Arc::new(HttpServicePlan {
                 max_request_body_bytes: service.max_request_body_bytes,
+                max_retries: service.max_retries,
                 pools: Arc::clone(pools),
                 upstream_io_timeout: Duration::from_millis(service.upstream_io_timeout_ms),
                 routes: RouteTable::new(routes),

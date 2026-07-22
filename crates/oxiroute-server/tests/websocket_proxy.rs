@@ -63,6 +63,7 @@ async fn websocket_upgrade_proxies_frames_in_both_directions() {
                 }],
                 upstream_io_timeout_ms: 5_000,
                 max_request_body_bytes: 8,
+                max_retries: 0,
             }],
             l4_services: Vec::new(),
         };

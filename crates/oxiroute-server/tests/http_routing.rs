@@ -253,6 +253,20 @@ fn round_robin_selection_wraps_in_definition_order() {
 }
 
 #[test]
+fn round_robin_can_exclude_endpoints_already_attempted_by_a_request() {
+    let endpoints = [address(3001), address(3002), address(3003)];
+    let pool = RoundRobinPool::new(endpoints).expect("nonempty pool");
+
+    let first = pool.select_excluding(&[]).expect("first endpoint");
+    let second = pool
+        .select_excluding(&[first])
+        .expect("distinct retry endpoint");
+
+    assert_ne!(first, second);
+    assert_eq!(pool.select_excluding(&endpoints), None);
+}
+
+#[test]
 fn concurrent_round_robin_selection_distributes_every_atomic_turn() {
     const THREADS: usize = 8;
     const SELECTIONS_PER_THREAD: usize = 1_000;
@@ -288,6 +302,33 @@ fn concurrent_round_robin_selection_distributes_every_atomic_turn() {
         );
     }
     assert_eq!(pool.select(), endpoints[0]);
+}
+
+#[test]
+fn concurrent_exclusion_never_falsely_exhausts_the_pool() {
+    const THREADS: usize = 8;
+    const SELECTIONS_PER_THREAD: usize = 1_000;
+
+    let excluded = address(5001);
+    let available = address(5002);
+    let pool = Arc::new(RoundRobinPool::new([excluded, available]).expect("nonempty pool"));
+    let barrier = Arc::new(Barrier::new(THREADS));
+    let handles = (0..THREADS)
+        .map(|_| {
+            let pool = Arc::clone(&pool);
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..SELECTIONS_PER_THREAD {
+                    assert_eq!(pool.select_excluding(&[excluded]), Some(available));
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for handle in handles {
+        handle.join().expect("selection thread");
+    }
 }
 
 fn route(
