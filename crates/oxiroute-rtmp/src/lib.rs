@@ -2,8 +2,10 @@ pub const RTMP_VERSION: u8 = 3;
 pub const HANDSHAKE_BLOCK_SIZE: usize = 1536;
 
 mod directives;
+mod nginx;
 
 pub use directives::{directive_specs, validate_directive};
+pub use nginx::{parse_nginx_config, NginxDirective, NginxParseError};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum DirectiveContext {

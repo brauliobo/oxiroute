@@ -334,6 +334,9 @@ the reference assumption. Multi-message-stream support is a later explicit exten
 
 ### Slice 0: directive registry
 
+Status: parser, registry, and contextual value validation implemented; include resolution,
+effective inheritance lowering, and per-directive fixture completeness remain.
+
 - Exactly 117 unique active keys.
 - Context, arity, value grammar, defaults, scope quirks, and status for every key.
 - Enum/bitmask/options validation and lossless raw tokens.
