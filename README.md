@@ -1,0 +1,55 @@
+# OxiRoute
+
+OxiRoute is a pre-alpha Rust proxy and traffic-routing project built on
+[Cloudflare Pingora](https://github.com/cloudflare/pingora). The long-term goal is one
+auditable control plane for HTTP proxying, layer-4 relays, load balancing, configuration
+imports, and operational visibility.
+
+The current code is intentionally much smaller than that goal. It provides:
+
+- A restricted Lua configuration loader with strict typed validation.
+- Pingora-backed HTTP reverse proxy listeners.
+- Pingora-backed opaque TCP relays.
+- Acceptance tests for configuration isolation and runtime planning.
+
+It does not yet provide forward proxying, `CONNECT`, TLS, HTTP/2 listener configuration,
+HTTP/3, UDP, caching, load balancing, hot reload, configuration imports, or the web UI.
+It is not a firewall, NAT implementation, or drop-in replacement for Squid, nginx,
+HAProxy, or Apache httpd.
+
+## Run
+
+Start an upstream HTTP server on `127.0.0.1:3000`, then run:
+
+```sh
+cargo run -p oxiroute-server -- oxiroute.example.lua
+```
+
+The example exposes the HTTP upstream on `127.0.0.1:8080` and also defines a TCP relay
+from `127.0.0.1:15432` to `127.0.0.1:5432`.
+
+Use `RUST_LOG=info` to enable runtime logs. Configuration files are local administrator
+input, but they still run in a fresh Lua state with no standard libraries and bounded
+source, memory, and instruction use.
+
+## Develop
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+Development follows red-green-refactor. The initial configuration and runtime-planning
+acceptance tests were run and observed failing before their implementations were added.
+
+## Design
+
+- [`docs/UPSTREAM_ANALYSIS.md`](docs/UPSTREAM_ANALYSIS.md) records the upstream findings.
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) defines the narrow release sequence.
+- [`docs/NAMING.md`](docs/NAMING.md) lists candidate final names.
+
+## License
+
+Apache License 2.0. Upstream projects retain their own licenses; no upstream source is
+vendored in this repository.
