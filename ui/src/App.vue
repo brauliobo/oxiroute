@@ -170,6 +170,32 @@ main.console-shell(:aria-busy="monitoring === null && refreshing")
               span.label Sent
               strong {{ formatBytes(listener.bytesSent) }}
 
+    section.pool-section(aria-labelledby="pool-heading")
+      .listener-heading
+        div
+          p.eyebrow Origin readiness
+          h3#pool-heading Upstream pools
+        span.listener-count {{ monitoring.upstreamPools.length }} {{ monitoring.upstreamPools.length === 1 ? 'pool' : 'pools' }}
+      p.listener-empty(v-if="monitoring.upstreamPools.length === 0") No upstream pools are configured.
+      .pool-grid(v-else)
+        article.pool-card(v-for="pool in monitoring.upstreamPools" :key="pool.name")
+          header.pool-heading
+            div
+              h4 {{ pool.name }}
+              span.pool-algorithm Routing: {{ poolAlgorithmLabels[pool.algorithm] }}
+            .pool-summary
+              strong {{ poolAvailabilityLabel(pool) }}
+              span {{ pool.availableEndpoints }} / {{ pool.totalEndpoints }} endpoints available
+              span {{ formatCount(pool.unavailableSelections) }} unavailable selections
+          ul.endpoint-list(:aria-label="`${pool.name} endpoints`")
+            li.endpoint-row(v-for="endpoint in pool.endpoints" :key="endpoint.address")
+              code {{ endpoint.address }}
+              span.health-state(:class="`health-${endpoint.state}`") {{ endpointHealthLabels[endpoint.state] }}
+              span.endpoint-observation {{ endpoint.lastCheckedAtUnixMs === null ? 'No checks completed' : `Last checked ${formatSampleAge(endpoint.lastCheckedAtUnixMs)}` }}
+              span.endpoint-checks Total checks: {{ formatCount(endpoint.successfulChecks) }} passed / {{ formatCount(endpoint.failedChecks) }} failed
+              span.endpoint-streak Consecutive checks: {{ formatCount(endpoint.consecutiveSuccesses) }} passed / {{ formatCount(endpoint.consecutiveFailures) }} failed
+              span.endpoint-failure(v-if="endpoint.lastFailure") Last failure: {{ healthFailureLabels[endpoint.lastFailure] }}
+
   section.stream-section(aria-labelledby="stream-heading")
     .section-heading
       div
@@ -250,6 +276,9 @@ import {
   fetchMonitoring,
   fetchRtmpCatalog,
   setRecording,
+  type EndpointHealthState,
+  type HealthFailure,
+  type MonitoringPool,
   type MonitoringSnapshot,
   type RecorderSnapshot,
   type RtmpCatalog,
@@ -260,6 +289,21 @@ import {
 const REFRESH_INTERVAL_MS = 5_000
 const STALE_AFTER_MS = REFRESH_INTERVAL_MS * 3
 const numberFormatter = new Intl.NumberFormat()
+const endpointHealthLabels: Record<EndpointHealthState, string> = {
+  unchecked: 'Not monitored',
+  unknown: 'Pending checks',
+  healthy: 'Healthy',
+  unhealthy: 'Unhealthy',
+}
+const healthFailureLabels: Record<HealthFailure, string> = {
+  timeout: 'Probe timed out',
+  connect_failed: 'Connection failed',
+  unexpected_status: 'Unexpected status',
+  protocol_error: 'Protocol error',
+}
+const poolAlgorithmLabels: Record<MonitoringPool['algorithm'], string> = {
+  round_robin: 'Round robin',
+}
 
 const monitoring = ref<MonitoringSnapshot | null>(null)
 const catalog = ref<RtmpCatalog | null>(null)
@@ -403,8 +447,14 @@ function formatBytes(value: number | string): string {
   return `${amount >= 10 || exponent === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[exponent]}`
 }
 
-function formatCount(value: number): string {
-  return numberFormatter.format(value)
+function formatCount(value: number | string): string {
+  return numberFormatter.format(typeof value === 'string' ? BigInt(value) : value)
+}
+
+function poolAvailabilityLabel(pool: MonitoringPool): string {
+  if (pool.availableEndpoints === 0) return 'Unavailable'
+  if (pool.availableEndpoints === pool.totalEndpoints) return 'Fully available'
+  return 'Degraded'
 }
 
 function formatDecimal(value: number): string {
@@ -974,10 +1024,117 @@ button:disabled {
   border-left: 0;
 }
 
-.listener-section {
+.listener-section,
+.pool-section {
   margin-top: 14px;
   border: 1px solid #3a4034;
   background: rgb(16 19 14 / 76%);
+}
+
+.pool-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+  gap: 1px;
+  background: #34392f;
+}
+
+.pool-card {
+  min-width: 0;
+  padding: 20px clamp(18px, 2.2vw, 28px);
+  background: #10130e;
+}
+
+.pool-heading,
+.endpoint-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.pool-heading h4 {
+  margin: 0 0 5px;
+}
+
+.pool-heading strong,
+.pool-algorithm,
+.endpoint-observation,
+.endpoint-checks,
+.endpoint-streak,
+.endpoint-failure {
+  color: #939b8c;
+  font-size: 0.72rem;
+}
+
+.pool-summary {
+  display: grid;
+  gap: 4px;
+  text-align: right;
+}
+
+.pool-summary span {
+  color: #939b8c;
+  font-size: 0.68rem;
+}
+
+.endpoint-list {
+  margin: 17px 0 0;
+  padding: 0;
+  border-top: 1px solid #34392f;
+  list-style: none;
+}
+
+.endpoint-row {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) auto auto;
+  padding: 12px 0;
+}
+
+.endpoint-row + .endpoint-row {
+  border-top: 1px solid #292e26;
+}
+
+.endpoint-row code {
+  overflow-wrap: anywhere;
+}
+
+.health-state {
+  min-width: 78px;
+  padding: 4px 7px;
+  border: 1px solid #5f6a56;
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.62rem;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.health-healthy {
+  border-color: #607d4c;
+  color: #b6ff51;
+}
+
+.health-unchecked {
+  color: #c5d1b8;
+}
+
+.health-unknown {
+  border-color: #806f47;
+  color: #ffcf70;
+}
+
+.health-unhealthy {
+  border-color: #81483f;
+  color: #ff8b78;
+}
+
+.endpoint-failure {
+  grid-column: 1 / -1;
+  color: #ff8b78;
+}
+
+.endpoint-checks,
+.endpoint-streak {
+  grid-column: 1 / -1;
 }
 
 .listener-heading {
@@ -1386,6 +1543,26 @@ h2 {
     margin-top: 12px;
     padding-top: 12px;
     border-top: 1px solid #34392f;
+  }
+
+  .pool-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .pool-summary {
+    text-align: left;
+  }
+
+  .endpoint-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .endpoint-observation,
+  .endpoint-checks,
+  .endpoint-streak,
+  .endpoint-failure {
+    grid-column: 1 / -1;
   }
 
   .fact + .fact {

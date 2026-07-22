@@ -45,6 +45,15 @@ return {
       name = "web",
       endpoints = { "127.0.0.1:3000", "127.0.0.1:3001" },
       algorithm = "round_robin",
+      health_check = {
+        type = "http",
+        host = "api.example.com",
+        path = "/healthz",
+        interval_ms = 5000,
+        timeout_ms = 1000,
+        healthy_threshold = 1,
+        unhealthy_threshold = 3,
+      },
     },
     {
       name = "postgres",
@@ -95,9 +104,10 @@ Current constraints:
 - `max_connections` defaults to `10000`, MUST be nonzero, and MUST be no greater than
   `9007199254740991` so the monitoring API and UI preserve it exactly. Excess accepted connections
   are closed before entering the protocol handler.
-- Pools MUST contain at least one unique IP socket endpoint with a nonzero port. The only current
-  algorithm is `round_robin`, which is also the default. A pool cannot target the loopback
-  management endpoint because that would bypass its exposure boundary.
+- Pools MUST contain between 1 and 256 unique IP socket endpoints with nonzero ports, and one
+  configuration MUST contain at most 1024 pool endpoints in total. The only current algorithm is
+  `round_robin`, which is also the default. A pool cannot target the loopback management endpoint
+  because that would bypass its exposure boundary.
 - HTTP services MUST contain at least one route. Route pool references MUST resolve.
 - A missing route `host` matches any authority. A host may be an exact DNS name/IP literal or a
   single-label wildcard such as `*.example.com`; names are normalized to lowercase.
@@ -130,6 +140,37 @@ Current constraints:
 - Unknown fields and unknown protocol values are errors.
 - Source is limited to 1 MiB, extra Lua memory to 4 MiB, and execution to one million instructions.
 - No Lua standard libraries are loaded and binary chunks are rejected.
+
+### Active pool health checks
+
+`health_check` is optional on every upstream pool. Omitting it leaves the pool's endpoints in the
+selectable `unchecked` state. When present, it has this strict schema:
+
+| Field | Required | Default | Constraint |
+| --- | --- | --- | --- |
+| `type` | yes | none | `tcp` or `http` |
+| `interval_ms` | no | `10000` | `1000` through `86400000` inclusive |
+| `timeout_ms` | no | `1000` | `1` through `30000` inclusive and less than `interval_ms` |
+| `healthy_threshold` | no | `1` | `1` through `100` inclusive |
+| `unhealthy_threshold` | no | `3` | `1` through `100` inclusive |
+| `host` | HTTP only | none | Required HTTP authority, at most 255 bytes, without userinfo; any port MUST be numeric |
+| `path` | HTTP only | none | Required query-free absolute path, at most 2048 bytes, accepted by the request-path ambiguity policy |
+
+TCP checks accept neither `host` nor `path` and succeed when a connection to the endpoint is
+established. HTTP checks send a plaintext HTTP/1.1 `GET` to the endpoint using the configured path
+and exact `Host` header; only status `200` succeeds. `timeout_ms` bounds the complete probe.
+
+Health-enabled endpoints start `unknown` and are not selectable. The healthy threshold must be met
+by consecutive successes before an unknown or unhealthy endpoint becomes `healthy`; the unhealthy
+threshold must be met by consecutive failures before an unknown or healthy endpoint becomes
+`unhealthy`.
+Success resets the failure streak and failure detail, while failure resets the success streak.
+Round robin skips unknown and unhealthy endpoints, and a matched HTTP route whose pool has no
+selectable endpoint returns `503`.
+
+Each endpoint runs its first probe immediately, then waits its pool's `interval_ms` after that probe
+completes. A slow endpoint does not shift another endpoint's schedule, even within the same pool.
+All pools share a limit of 32 concurrent probes, and an endpoint never has overlapping probes.
 
 This schema is pre-release and may change without compatibility code until a public release
 persists it.
@@ -183,7 +224,7 @@ schema.
 ### Upstream pool
 
 - Protocol and endpoint list.
-- Endpoint weight, additional algorithms, health policy, TLS, SNI, and verification.
+- Endpoint weight, additional algorithms, passive health policy, TLS, SNI, and verification.
 - HTTP minimum and maximum versions.
 - Retry and circuit-breaker limits.
 

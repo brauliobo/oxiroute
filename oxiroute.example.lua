@@ -27,6 +27,15 @@ return {
     {
       name = "web",
       endpoints = { "127.0.0.1:3000" },
+      health_check = {
+        type = "http",
+        interval_ms = 5000,
+        timeout_ms = 1000,
+        healthy_threshold = 1,
+        unhealthy_threshold = 3,
+        host = "127.0.0.1:3000",
+        path = "/healthz",
+      },
     },
     {
       name = "postgres",

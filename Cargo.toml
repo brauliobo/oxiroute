@@ -21,13 +21,13 @@ futures-util = "0.3"
 http = "1"
 log = "0.4"
 mlua = { version = "0.11", features = ["lua54", "serialize", "vendored"] }
-pingora = { version = "0.8.0", features = ["proxy"] }
+pingora = { version = "0.8.0", features = ["lb", "proxy"] }
 rml_rtmp = "=0.8.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
 thiserror = "2"
-tokio = { version = "1", features = ["io-util", "macros", "sync"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "sync", "time"] }
 tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect"] }
 uuid = { version = "1", features = ["v4"] }
 

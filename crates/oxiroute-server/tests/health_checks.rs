@@ -1,0 +1,440 @@
+use std::{net::SocketAddr, time::Duration};
+
+use oxiroute_config::{
+    Config, ConfigError, HealthCheck, HealthCheckType, UpstreamAlgorithm, UpstreamPool,
+};
+use oxiroute_server::{
+    EndpointHealthState, HealthBuildError, HealthFailure, RuntimeMetrics, ServicePlanError,
+    runtime_plan,
+};
+use pingora::services::{ServiceReadyNotifier, background::BackgroundService};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+    sync::watch,
+    time::{sleep, timeout},
+};
+
+const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[tokio::test]
+async fn tcp_probe_establishes_healthy_and_unhealthy_states() {
+    timeout(TEST_TIMEOUT, async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("health bind");
+        let healthy_address = listener.local_addr().expect("health address");
+        let accept = tokio::spawn(async move {
+            let _ = listener.accept().await.expect("health accept");
+        });
+        let healthy_plan = runtime_plan(&config(healthy_address, tcp_policy(1_000, 200, 1, 1)))
+            .expect("healthy runtime plan");
+        let healthy_pool = &healthy_plan.pools[0];
+        assert_eq!(healthy_pool.select(), None);
+
+        healthy_plan
+            .health_supervisor
+            .expect("health supervisor")
+            .probe_once()
+            .await;
+        accept.await.expect("accept task");
+        assert_eq!(healthy_pool.select(), Some(healthy_address));
+        assert_eq!(
+            healthy_pool.health_snapshot().endpoints[0].state,
+            EndpointHealthState::Healthy
+        );
+
+        let unavailable_address = unused_address().await;
+        let unhealthy_plan =
+            runtime_plan(&config(unavailable_address, tcp_policy(1_000, 200, 1, 1)))
+                .expect("unhealthy runtime plan");
+        let unhealthy_pool = &unhealthy_plan.pools[0];
+        unhealthy_plan
+            .health_supervisor
+            .expect("health supervisor")
+            .probe_once()
+            .await;
+        assert_eq!(unhealthy_pool.select(), None);
+        let snapshot = unhealthy_pool.health_snapshot();
+        assert_eq!(snapshot.unavailable_selections, 1);
+        assert_eq!(snapshot.endpoints[0].state, EndpointHealthState::Unhealthy);
+        assert_eq!(
+            snapshot.endpoints[0].last_failure,
+            Some(HealthFailure::ConnectFailed)
+        );
+
+        let metrics = RuntimeMetrics::new();
+        metrics
+            .register_upstream_pools(unhealthy_plan.pools.clone())
+            .expect("pool metrics");
+        let json = serde_json::to_value(metrics.snapshot().expect("runtime snapshot"))
+            .expect("snapshot JSON");
+        assert_eq!(json["upstreamPools"][0]["name"], "checked");
+        assert_eq!(json["upstreamPools"][0]["availableEndpoints"], 0);
+        assert_eq!(json["upstreamPools"][0]["unavailableSelections"], "1");
+        assert_eq!(
+            json["upstreamPools"][0]["endpoints"][0]["state"],
+            "unhealthy"
+        );
+        assert_eq!(
+            json["upstreamPools"][0]["endpoints"][0]["failedChecks"],
+            "1"
+        );
+    })
+    .await
+    .expect("TCP health test timed out");
+}
+
+#[tokio::test]
+async fn http_probe_sends_the_configured_host_and_path() {
+    timeout(TEST_TIMEOUT, async {
+        let (address, server) = http_origin(200, false).await;
+        let plan = runtime_plan(&config(address, http_policy(1_000, 300)))
+            .expect("HTTP health runtime plan");
+
+        plan.health_supervisor
+            .expect("health supervisor")
+            .probe_once()
+            .await;
+        let request = server.await.expect("health origin");
+
+        assert!(
+            request.starts_with("GET /healthz HTTP/1.1\r\n"),
+            "{request}"
+        );
+        assert!(
+            request.contains("\r\nHost: backend.internal\r\n"),
+            "{request}"
+        );
+        assert_eq!(
+            plan.pools[0].health_snapshot().endpoints[0].state,
+            EndpointHealthState::Healthy
+        );
+    })
+    .await
+    .expect("HTTP health test timed out");
+}
+
+#[tokio::test]
+async fn http_probe_reports_status_failure_and_total_timeout() {
+    timeout(TEST_TIMEOUT, async {
+        let (failed_address, failed_server) = http_origin(503, false).await;
+        let failed_plan = runtime_plan(&config(failed_address, http_policy(1_000, 300)))
+            .expect("failed HTTP health plan");
+        failed_plan
+            .health_supervisor
+            .expect("health supervisor")
+            .probe_once()
+            .await;
+        failed_server.await.expect("failed health origin");
+        assert_eq!(
+            failed_plan.pools[0].health_snapshot().endpoints[0].last_failure,
+            Some(HealthFailure::UnexpectedStatus)
+        );
+
+        let (slow_address, slow_server) = http_origin(200, true).await;
+        let slow_plan = runtime_plan(&config(slow_address, http_policy(1_000, 100)))
+            .expect("slow HTTP health plan");
+        slow_plan
+            .health_supervisor
+            .expect("health supervisor")
+            .probe_once()
+            .await;
+        slow_server.abort();
+        assert_eq!(
+            slow_plan.pools[0].health_snapshot().endpoints[0].last_failure,
+            Some(HealthFailure::Timeout)
+        );
+    })
+    .await
+    .expect("HTTP health failure test timed out");
+}
+
+#[tokio::test]
+async fn supervisor_signals_readiness_immediately_and_stops_while_sleeping() {
+    timeout(TEST_TIMEOUT, async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("health bind");
+        let address = listener.local_addr().expect("health address");
+        let accept = tokio::spawn(async move {
+            let _ = listener.accept().await.expect("health accept");
+        });
+        let plan = runtime_plan(&config(address, tcp_policy(60_000, 500, 1, 1)))
+            .expect("health runtime plan");
+        let supervisor = plan.health_supervisor.expect("health supervisor");
+        let (shutdown_tx, shutdown) = watch::channel(false);
+        let (ready_tx, mut ready) = watch::channel(false);
+        let supervisor_task = tokio::spawn(async move {
+            supervisor
+                .start_with_ready_notifier(shutdown, ServiceReadyNotifier::new(ready_tx))
+                .await;
+        });
+
+        ready.changed().await.expect("readiness change");
+        assert!(*ready.borrow());
+        accept.await.expect("accept task");
+        shutdown_tx.send(true).expect("shutdown signal");
+        timeout(Duration::from_millis(200), supervisor_task)
+            .await
+            .expect("sleeping supervisor must stop promptly")
+            .expect("supervisor task");
+    })
+    .await
+    .expect("health lifecycle test timed out");
+}
+
+#[tokio::test]
+async fn health_groups_schedule_independently() {
+    timeout(TEST_TIMEOUT, async {
+        let fast_listener = TcpListener::bind("127.0.0.1:0").await.expect("fast bind");
+        let fast_address = fast_listener.local_addr().expect("fast address");
+        let fast_accepts = tokio::spawn(async move {
+            for _ in 0..2 {
+                let _ = fast_listener.accept().await.expect("fast accept");
+            }
+        });
+        let (slow_address, slow_server) = http_origin(200, true).await;
+        let plan = runtime_plan(&Config {
+            version: 1,
+            management: None,
+            listeners: Vec::new(),
+            upstream_pools: vec![
+                pool("fast", fast_address, tcp_policy(1_000, 200, 1, 1)),
+                pool("slow", slow_address, http_policy(2_000, 1_500)),
+            ],
+            http_services: Vec::new(),
+            l4_services: Vec::new(),
+        })
+        .expect("independent health plan");
+        let supervisor = plan.health_supervisor.expect("health supervisor");
+        let (shutdown_tx, shutdown) = watch::channel(false);
+        let (ready_tx, _ready) = watch::channel(false);
+        let supervisor_task = tokio::spawn(async move {
+            supervisor
+                .start_with_ready_notifier(shutdown, ServiceReadyNotifier::new(ready_tx))
+                .await;
+        });
+
+        timeout(Duration::from_millis(1_400), fast_accepts)
+            .await
+            .expect("slow group must not delay the fast group's next probe")
+            .expect("fast accepts");
+        shutdown_tx.send(true).expect("shutdown signal");
+        supervisor_task.await.expect("supervisor task");
+        slow_server.abort();
+    })
+    .await
+    .expect("independent scheduling test timed out");
+}
+
+#[tokio::test]
+async fn endpoints_in_one_pool_schedule_from_their_own_completion() {
+    timeout(TEST_TIMEOUT, async {
+        let fast_listener = TcpListener::bind("127.0.0.1:0").await.expect("fast bind");
+        let fast_address = fast_listener.local_addr().expect("fast address");
+        let fast_accepts = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = fast_listener.accept().await.expect("fast accept");
+                read_request_head(&mut stream).await;
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await
+                    .expect("fast response");
+            }
+        });
+        let (slow_address, slow_server) = http_origin(200, true).await;
+        let plan = runtime_plan(&Config {
+            version: 1,
+            management: None,
+            listeners: Vec::new(),
+            upstream_pools: vec![UpstreamPool {
+                name: "mixed".into(),
+                endpoints: vec![fast_address, slow_address],
+                algorithm: UpstreamAlgorithm::RoundRobin,
+                health_check: Some(http_policy(1_000, 900)),
+            }],
+            http_services: Vec::new(),
+            l4_services: Vec::new(),
+        })
+        .expect("mixed health plan");
+        let supervisor = plan.health_supervisor.expect("health supervisor");
+        let (shutdown_tx, shutdown) = watch::channel(false);
+        let (ready_tx, _ready) = watch::channel(false);
+        let supervisor_task = tokio::spawn(async move {
+            supervisor
+                .start_with_ready_notifier(shutdown, ServiceReadyNotifier::new(ready_tx))
+                .await;
+        });
+
+        timeout(Duration::from_millis(1_400), fast_accepts)
+            .await
+            .expect("a slow peer must not delay the fast peer's next probe")
+            .expect("fast accepts");
+        shutdown_tx.send(true).expect("shutdown signal");
+        supervisor_task.await.expect("supervisor task");
+        slow_server.abort();
+    })
+    .await
+    .expect("same-pool scheduling test timed out");
+}
+
+#[tokio::test]
+async fn supervisor_honors_shutdown_already_requested_at_startup() {
+    let address = unused_address().await;
+    let plan =
+        runtime_plan(&config(address, tcp_policy(60_000, 500, 1, 1))).expect("health runtime plan");
+    let supervisor = plan.health_supervisor.expect("health supervisor");
+    let (_shutdown_tx, shutdown) = watch::channel(true);
+    let (ready_tx, _ready) = watch::channel(false);
+
+    timeout(
+        Duration::from_millis(200),
+        supervisor.start_with_ready_notifier(shutdown, ServiceReadyNotifier::new(ready_tx)),
+    )
+    .await
+    .expect("pre-signaled shutdown must stop the supervisor");
+}
+
+#[tokio::test]
+async fn runtime_plan_validates_programmatic_health_policies() {
+    let address = unused_address().await;
+    let result = runtime_plan(&config(address, tcp_policy(999, 200, 1, 1)));
+
+    assert!(matches!(
+        result,
+        Err(ServicePlanError::Health {
+            source,
+            ..
+        }) if matches!(
+            source.as_ref(),
+            HealthBuildError::InvalidConfig(ConfigError::InvalidHealthCheck { .. })
+        )
+    ));
+}
+
+#[tokio::test]
+async fn runtime_plan_enforces_programmatic_endpoint_cardinality() {
+    let endpoints = (10_000..10_257)
+        .map(|port| SocketAddr::from(([127, 0, 0, 1], port)))
+        .collect();
+    let result = runtime_plan(&Config {
+        version: 1,
+        management: None,
+        listeners: Vec::new(),
+        upstream_pools: vec![UpstreamPool {
+            name: "oversized".into(),
+            endpoints,
+            algorithm: UpstreamAlgorithm::RoundRobin,
+            health_check: Some(tcp_policy(1_000, 200, 1, 1)),
+        }],
+        http_services: Vec::new(),
+        l4_services: Vec::new(),
+    });
+
+    assert!(matches!(
+        result,
+        Err(ServicePlanError::InvalidConfig(source))
+            if matches!(
+                source.as_ref(),
+                ConfigError::TooManyUpstreamEndpoints { pool } if pool == "oversized"
+            )
+    ));
+}
+
+fn config(endpoint: SocketAddr, health_check: HealthCheck) -> Config {
+    Config {
+        version: 1,
+        management: None,
+        listeners: Vec::new(),
+        upstream_pools: vec![pool("checked", endpoint, health_check)],
+        http_services: Vec::new(),
+        l4_services: Vec::new(),
+    }
+}
+
+fn pool(name: &str, endpoint: SocketAddr, health_check: HealthCheck) -> UpstreamPool {
+    UpstreamPool {
+        name: name.into(),
+        endpoints: vec![endpoint],
+        algorithm: UpstreamAlgorithm::RoundRobin,
+        health_check: Some(health_check),
+    }
+}
+
+fn tcp_policy(
+    interval_ms: u64,
+    timeout_ms: u64,
+    healthy_threshold: u16,
+    unhealthy_threshold: u16,
+) -> HealthCheck {
+    HealthCheck {
+        kind: HealthCheckType::Tcp,
+        interval_ms,
+        timeout_ms,
+        healthy_threshold,
+        unhealthy_threshold,
+        host: None,
+        path: None,
+    }
+}
+
+fn http_policy(interval_ms: u64, timeout_ms: u64) -> HealthCheck {
+    HealthCheck {
+        kind: HealthCheckType::Http,
+        interval_ms,
+        timeout_ms,
+        healthy_threshold: 1,
+        unhealthy_threshold: 1,
+        host: Some("backend.internal".into()),
+        path: Some("/healthz".into()),
+    }
+}
+
+async fn unused_address() -> SocketAddr {
+    TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("unused bind")
+        .local_addr()
+        .expect("unused address")
+}
+
+async fn http_origin(
+    status: u16,
+    stream_body_forever: bool,
+) -> (SocketAddr, tokio::task::JoinHandle<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("HTTP bind");
+    let address = listener.local_addr().expect("HTTP address");
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("HTTP accept");
+        let request = read_request_head(&mut stream).await;
+        if stream_body_forever {
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nx\r\n")
+                .await
+                .expect("streaming response");
+            loop {
+                sleep(Duration::from_millis(25)).await;
+                if stream.write_all(b"1\r\nx\r\n").await.is_err() {
+                    break;
+                }
+            }
+        } else {
+            let response =
+                format!("HTTP/1.1 {status} Test\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("HTTP response");
+        }
+        request
+    });
+    (address, server)
+}
+
+async fn read_request_head(stream: &mut TcpStream) -> String {
+    let mut request = Vec::new();
+    let mut buffer = [0; 1024];
+    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+        let read = stream.read(&mut buffer).await.expect("request read");
+        assert_ne!(read, 0, "request ended before headers");
+        request.extend_from_slice(&buffer[..read]);
+    }
+    String::from_utf8(request).expect("ASCII request")
+}

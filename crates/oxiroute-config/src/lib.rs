@@ -23,6 +23,18 @@ const DEFAULT_UPSTREAM_IO_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_MAX_REQUEST_BODY_BYTES: u64 = 10 * 1024 * 1024;
 const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 10_000;
 const DEFAULT_IDLE_TIMEOUT_MS: u64 = 300_000;
+const DEFAULT_HEALTH_INTERVAL_MS: u64 = 10_000;
+const DEFAULT_HEALTH_TIMEOUT_MS: u64 = 1_000;
+const DEFAULT_HEALTHY_THRESHOLD: u16 = 1;
+const DEFAULT_UNHEALTHY_THRESHOLD: u16 = 3;
+const MIN_HEALTH_INTERVAL_MS: u64 = 1_000;
+const MAX_HEALTH_INTERVAL_MS: u64 = 86_400_000;
+const MAX_HEALTH_TIMEOUT_MS: u64 = 30_000;
+const MAX_HEALTH_THRESHOLD: u16 = 100;
+const MAX_HEALTH_HOST_BYTES: usize = 255;
+const MAX_HEALTH_PATH_BYTES: usize = 2_048;
+const MAX_ENDPOINTS_PER_POOL: usize = 256;
+const MAX_TOTAL_ENDPOINTS: usize = 1_024;
 const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 const MAX_HTTP_RETRIES: u8 = 2;
 
@@ -76,6 +88,8 @@ pub struct UpstreamPool {
     pub endpoints: Vec<SocketAddr>,
     #[serde(default)]
     pub algorithm: UpstreamAlgorithm,
+    #[serde(default)]
+    pub health_check: Option<HealthCheck>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -83,6 +97,32 @@ pub struct UpstreamPool {
 pub enum UpstreamAlgorithm {
     #[default]
     RoundRobin,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HealthCheck {
+    #[serde(rename = "type")]
+    pub kind: HealthCheckType,
+    #[serde(default = "default_health_interval_ms")]
+    pub interval_ms: u64,
+    #[serde(default = "default_health_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_healthy_threshold")]
+    pub healthy_threshold: u16,
+    #[serde(default = "default_unhealthy_threshold")]
+    pub unhealthy_threshold: u16,
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum HealthCheckType {
+    Http,
+    Tcp,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -187,10 +227,16 @@ pub enum ConfigError {
     UnexpectedRtmpService { listener: String, service: String },
     #[error("upstream pool `{pool}` must contain at least one endpoint")]
     EmptyUpstreamEndpoints { pool: String },
+    #[error("upstream pool `{pool}` exceeds the {MAX_ENDPOINTS_PER_POOL}-endpoint limit")]
+    TooManyUpstreamEndpoints { pool: String },
+    #[error("configuration exceeds the {MAX_TOTAL_ENDPOINTS}-upstream-endpoint limit")]
+    TooManyTotalUpstreamEndpoints,
     #[error("upstream pool `{pool}` contains duplicate endpoint `{endpoint}`")]
     DuplicateUpstreamEndpoint { pool: String, endpoint: SocketAddr },
     #[error("upstream pool `{pool}` exposes the loopback management endpoint `{endpoint}`")]
     ManagementUpstreamEndpoint { pool: String, endpoint: SocketAddr },
+    #[error("upstream pool `{pool}` has an invalid health check: {detail}")]
+    InvalidHealthCheck { pool: String, detail: &'static str },
     #[error("HTTP service `{service}` must contain at least one route")]
     EmptyHttpRoutes { service: String },
     #[error(
@@ -468,10 +514,43 @@ fn validate_listeners(
     Ok(())
 }
 
-fn validate_upstream_pools(
+/// Validates upstream-pool identities, resources, endpoints, and health policies.
+///
+/// # Errors
+///
+/// Returns an error when pool names, cardinality, endpoints, management isolation, or health
+/// policies are invalid.
+pub fn validate_upstream_pools(
     upstream_pools: &[UpstreamPool],
     management_bind: Option<SocketAddr>,
 ) -> Result<(), ConfigError> {
+    validate_upstream_pool_definitions(upstream_pools, management_bind)?;
+    for pool in upstream_pools {
+        if let Some(health_check) = &pool.health_check {
+            validate_health_check_config(&pool.name, health_check)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Validates upstream-pool identities, resources, endpoints, and management isolation.
+///
+/// This excludes health-policy validation so runtime health construction can retain its more
+/// specific error context.
+///
+/// # Errors
+///
+/// Returns an error when pool names, cardinality, endpoints, or management isolation are invalid.
+pub fn validate_upstream_pool_definitions(
+    upstream_pools: &[UpstreamPool],
+    management_bind: Option<SocketAddr>,
+) -> Result<(), ConfigError> {
+    validate_names(
+        "upstream pool",
+        upstream_pools.iter().map(|pool| pool.name.as_str()),
+    )?;
+    validate_upstream_pool_cardinality(upstream_pools)?;
     for pool in upstream_pools {
         if pool.endpoints.is_empty() {
             return Err(ConfigError::EmptyUpstreamEndpoints {
@@ -506,6 +585,114 @@ fn validate_upstream_pools(
     }
 
     Ok(())
+}
+
+fn validate_upstream_pool_cardinality(upstream_pools: &[UpstreamPool]) -> Result<(), ConfigError> {
+    let total_endpoints = upstream_pools.iter().try_fold(0_usize, |total, pool| {
+        total.checked_add(pool.endpoints.len())
+    });
+    if total_endpoints.is_none_or(|total| total > MAX_TOTAL_ENDPOINTS) {
+        return Err(ConfigError::TooManyTotalUpstreamEndpoints);
+    }
+    for pool in upstream_pools {
+        if pool.endpoints.len() > MAX_ENDPOINTS_PER_POOL {
+            return Err(ConfigError::TooManyUpstreamEndpoints {
+                pool: pool.name.clone(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// Validates a pool health policy independently of Lua decoding.
+///
+/// # Errors
+///
+/// Returns an error when timing, thresholds, or probe-specific fields are invalid.
+pub fn validate_health_check_config(
+    pool: &str,
+    health_check: &HealthCheck,
+) -> Result<(), ConfigError> {
+    let invalid = |detail| ConfigError::InvalidHealthCheck {
+        pool: pool.into(),
+        detail,
+    };
+    if !(MIN_HEALTH_INTERVAL_MS..=MAX_HEALTH_INTERVAL_MS).contains(&health_check.interval_ms) {
+        return Err(invalid("interval_ms must be between 1000 and 86400000"));
+    }
+    if health_check.timeout_ms == 0
+        || health_check.timeout_ms > MAX_HEALTH_TIMEOUT_MS
+        || health_check.timeout_ms >= health_check.interval_ms
+    {
+        return Err(invalid(
+            "timeout_ms must be between 1 and 30000 and less than interval_ms",
+        ));
+    }
+    if health_check.healthy_threshold == 0
+        || health_check.unhealthy_threshold == 0
+        || health_check.healthy_threshold > MAX_HEALTH_THRESHOLD
+        || health_check.unhealthy_threshold > MAX_HEALTH_THRESHOLD
+    {
+        return Err(invalid("thresholds must be between 1 and 100"));
+    }
+
+    match health_check.kind {
+        HealthCheckType::Tcp if health_check.host.is_some() || health_check.path.is_some() => {
+            Err(invalid("TCP checks do not accept host or path"))
+        }
+        HealthCheckType::Tcp => Ok(()),
+        HealthCheckType::Http => {
+            let host = health_check
+                .host
+                .as_deref()
+                .ok_or_else(|| invalid("HTTP checks require host"))?;
+            if host.len() > MAX_HEALTH_HOST_BYTES {
+                return Err(invalid("HTTP check host exceeds 255 bytes"));
+            }
+            let authority = host
+                .parse::<http::uri::Authority>()
+                .map_err(|_| invalid("HTTP check host must be a valid authority"))?;
+            if authority.as_str().contains('@') {
+                return Err(invalid("HTTP check host must not contain userinfo"));
+            }
+            if authority.host().is_empty() || authority_has_invalid_port(&authority) {
+                return Err(invalid(
+                    "HTTP check host must contain a valid host and numeric port",
+                ));
+            }
+            let path = health_check
+                .path
+                .as_deref()
+                .ok_or_else(|| invalid("HTTP checks require path"))?;
+            if path.len() > MAX_HEALTH_PATH_BYTES {
+                return Err(invalid("HTTP check path exceeds 2048 bytes"));
+            }
+            let valid_path = path.starts_with('/')
+                && path
+                    .parse::<PathAndQuery>()
+                    .is_ok_and(|parsed| parsed.query().is_none() && parsed.path() == path)
+                && is_unambiguous_http_path(path);
+            if !valid_path {
+                return Err(invalid(
+                    "HTTP check path must be an unambiguous absolute path",
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn authority_has_invalid_port(authority: &http::uri::Authority) -> bool {
+    let value = authority.as_str();
+    if let Some(remainder) = value
+        .strip_prefix('[')
+        .and_then(|value| value.split_once(']').map(|(_, remainder)| remainder))
+    {
+        !remainder.is_empty() && (!remainder.starts_with(':') || authority.port().is_none())
+    } else {
+        value.contains(':') && authority.port().is_none()
+    }
 }
 
 fn validate_http_services(
@@ -820,6 +1007,22 @@ const fn default_connect_timeout_ms() -> u64 {
 
 const fn default_idle_timeout_ms() -> u64 {
     DEFAULT_IDLE_TIMEOUT_MS
+}
+
+const fn default_health_interval_ms() -> u64 {
+    DEFAULT_HEALTH_INTERVAL_MS
+}
+
+const fn default_health_timeout_ms() -> u64 {
+    DEFAULT_HEALTH_TIMEOUT_MS
+}
+
+const fn default_healthy_threshold() -> u16 {
+    DEFAULT_HEALTHY_THRESHOLD
+}
+
+const fn default_unhealthy_threshold() -> u16 {
+    DEFAULT_UNHEALTHY_THRESHOLD
 }
 
 fn default_path_prefix() -> String {

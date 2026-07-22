@@ -14,6 +14,8 @@ use std::fs;
 
 use serde::Serialize;
 
+use crate::{PoolHealthSnapshot, RoundRobinPool};
+
 #[derive(Debug)]
 pub enum MetricsError {
     DuplicateListener(String),
@@ -100,6 +102,7 @@ pub struct RuntimeMetrics {
 struct RuntimeMetricsInner {
     started_at: Instant,
     listeners: RwLock<HashMap<String, Arc<ListenerState>>>,
+    upstream_pools: RwLock<Vec<Arc<RoundRobinPool>>>,
     previous_cpu_sample: Mutex<Option<CpuSample>>,
 }
 
@@ -110,9 +113,28 @@ impl RuntimeMetrics {
             inner: Arc::new(RuntimeMetricsInner {
                 started_at: Instant::now(),
                 listeners: RwLock::new(HashMap::new()),
+                upstream_pools: RwLock::new(Vec::new()),
                 previous_cpu_sample: Mutex::new(None),
             }),
         }
+    }
+
+    /// Registers the immutable upstream pools in canonical definition order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the pool registry is poisoned.
+    pub fn register_upstream_pools(
+        &self,
+        pools: impl IntoIterator<Item = Arc<RoundRobinPool>>,
+    ) -> Result<(), MetricsError> {
+        let mut registered = self
+            .inner
+            .upstream_pools
+            .write()
+            .map_err(|_| MetricsError::StatePoisoned("upstream pools"))?;
+        *registered = pools.into_iter().collect();
+        Ok(())
     }
 
     /// Registers a listener and returns its accounting handle.
@@ -195,6 +217,14 @@ impl RuntimeMetrics {
     /// be read or parsed truthfully.
     pub fn snapshot(&self) -> Result<RuntimeSnapshot, MetricsError> {
         let (traffic, listeners) = self.counter_snapshots()?;
+        let upstream_pools = self
+            .inner
+            .upstream_pools
+            .read()
+            .map_err(|_| MetricsError::StatePoisoned("upstream pools"))?
+            .iter()
+            .map(|pool| pool.health_snapshot())
+            .collect();
         let mut previous_cpu_sample = self
             .inner
             .previous_cpu_sample
@@ -227,6 +257,7 @@ impl RuntimeMetrics {
             host,
             traffic,
             listeners,
+            upstream_pools,
         };
         *previous_cpu_sample = Some(cpu);
         Ok(snapshot)
@@ -437,6 +468,7 @@ pub struct RuntimeSnapshot {
     pub host: HostSnapshot,
     pub traffic: TrafficSnapshot,
     pub listeners: Vec<ListenerSnapshot>,
+    pub upstream_pools: Vec<PoolHealthSnapshot>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]

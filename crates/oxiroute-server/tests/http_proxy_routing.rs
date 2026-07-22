@@ -9,11 +9,12 @@ use std::{
 };
 
 use oxiroute_config::{
-    Config, HttpRoute, HttpService, Listener, Protocol, UpstreamAlgorithm, UpstreamPool,
+    Config, HealthCheck, HealthCheckType, HttpRoute, HttpService, Listener, Protocol,
+    UpstreamAlgorithm, UpstreamPool,
 };
 use oxiroute_server::{
-    HttpReverseProxy, MAX_HTTP_ATTEMPTS, MonitoredHttpApp, RuntimeMetrics, ServiceKind,
-    service_specs,
+    HttpReverseProxy, MAX_HTTP_ATTEMPTS, MonitoredHttpApp, RoundRobinPool, RuntimeMetrics,
+    ServiceKind, runtime_plan,
 };
 use pingora::{apps::ServerApp, proxy::http_proxy, server::configuration::ServerConf};
 use tokio::{
@@ -139,6 +140,42 @@ async fn returns_404_without_contacting_an_origin_when_no_route_matches() {
     })
     .await
     .expect("no-route test timed out");
+}
+
+#[tokio::test]
+async fn returns_503_when_a_matched_pool_has_no_healthy_endpoint() {
+    timeout(TEST_TIMEOUT, async {
+        let mut origin = Origin::start("unhealthy", 1).await;
+        let mut checked_pool = pool("api", &[origin.address]);
+        checked_pool.health_check = Some(HealthCheck {
+            kind: HealthCheckType::Tcp,
+            interval_ms: 1_000,
+            timeout_ms: 100,
+            healthy_threshold: 1,
+            unhealthy_threshold: 1,
+            host: None,
+            path: None,
+        });
+        let origin_task = origin.task.take().expect("stop origin before probe");
+        origin_task.abort();
+        let _ = origin_task.await;
+        let proxy = ProxyHarness::start_with_health(
+            vec![checked_pool],
+            vec![route(None, "/", &[], "api")],
+            1,
+        )
+        .await;
+
+        let response = proxy
+            .request("GET / HTTP/1.1\r\nHost: unavailable.test\r\n")
+            .await;
+
+        assert_eq!(response.status, 503, "response: {}", response.text());
+        assert_eq!(proxy.pools[0].health_snapshot().unavailable_selections, 1);
+        proxy.finish().await;
+    })
+    .await
+    .expect("unhealthy pool test timed out");
 }
 
 #[tokio::test]
@@ -575,6 +612,7 @@ async fn permits_two_retries_and_succeeds_on_the_third_endpoint() {
 struct ProxyHarness {
     address: SocketAddr,
     metrics: RuntimeMetrics,
+    pools: Vec<Arc<RoundRobinPool>>,
     _shutdown_tx: watch::Sender<bool>,
     task: Option<JoinHandle<()>>,
 }
@@ -592,6 +630,7 @@ impl ProxyHarness {
             max_request_body_bytes,
             100,
             0,
+            false,
             expected_connections,
         )
         .await
@@ -610,6 +649,7 @@ impl ProxyHarness {
             max_request_body_bytes,
             max_connections,
             0,
+            false,
             expected_connections,
         )
         .await
@@ -627,6 +667,24 @@ impl ProxyHarness {
             1024,
             100,
             max_retries,
+            false,
+            expected_connections,
+        )
+        .await
+    }
+
+    async fn start_with_health(
+        upstream_pools: Vec<UpstreamPool>,
+        routes: Vec<HttpRoute>,
+        expected_connections: usize,
+    ) -> Self {
+        Self::start_with_policy(
+            upstream_pools,
+            routes,
+            1024,
+            100,
+            0,
+            true,
             expected_connections,
         )
         .await
@@ -638,6 +696,7 @@ impl ProxyHarness {
         max_request_body_bytes: u64,
         max_connections: u64,
         max_retries: u8,
+        run_health_checks: bool,
         expected_connections: usize,
     ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("proxy bind");
@@ -662,7 +721,16 @@ impl ProxyHarness {
             }],
             l4_services: Vec::new(),
         };
-        let mut specs = service_specs(&config).expect("canonical HTTP service plan");
+        let plan = runtime_plan(&config).expect("canonical HTTP service plan");
+        let pools = plan.pools.clone();
+        if run_health_checks {
+            plan.health_supervisor
+                .as_ref()
+                .expect("health supervisor")
+                .probe_once()
+                .await;
+        }
+        let mut specs = plan.services;
         let spec = specs.remove(0);
         let metrics = RuntimeMetrics::new();
         let listener_metrics = metrics
@@ -709,6 +777,7 @@ impl ProxyHarness {
         Self {
             address,
             metrics,
+            pools,
             _shutdown_tx: shutdown_tx,
             task: Some(task),
         }
@@ -969,6 +1038,7 @@ fn pool(name: &str, endpoints: &[SocketAddr]) -> UpstreamPool {
         name: name.into(),
         endpoints: endpoints.to_vec(),
         algorithm: UpstreamAlgorithm::RoundRobin,
+        health_check: None,
     }
 }
 

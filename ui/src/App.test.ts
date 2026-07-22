@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App.vue'
 import type { MonitoringSnapshot, RtmpCatalog } from './api'
 
+const exactHealthCounter = '18446744073709551615'
+
 const catalog: RtmpCatalog = {
   revision: '4',
   as_of_unix_ms: 1_750_000_000_000,
@@ -101,6 +103,39 @@ function monitoringSample(): MonitoringSnapshot {
         bytesSent: 2_146_959_360,
       },
     ],
+    upstreamPools: [
+      {
+        name: 'web-backends',
+        algorithm: 'round_robin',
+        availableEndpoints: 1,
+        totalEndpoints: 2,
+        unavailableSelections: exactHealthCounter,
+        endpoints: [
+          {
+            address: '127.0.0.1:3000',
+            state: 'healthy',
+            lastCheckedAtUnixMs: Date.now(),
+            lastTransitionAtUnixMs: Date.now(),
+            successfulChecks: exactHealthCounter,
+            failedChecks: '1',
+            consecutiveSuccesses: '4',
+            consecutiveFailures: '0',
+            lastFailure: null,
+          },
+          {
+            address: '127.0.0.1:3001',
+            state: 'unhealthy',
+            lastCheckedAtUnixMs: Date.now(),
+            lastTransitionAtUnixMs: Date.now(),
+            successfulChecks: '10',
+            failedChecks: '5',
+            consecutiveSuccesses: '0',
+            consecutiveFailures: '3',
+            lastFailure: 'connect_failed',
+          },
+        ],
+      },
+    ],
     rtmp: {
       activeStreams: 3,
       publishers: 2,
@@ -174,6 +209,17 @@ describe('monitoring dashboard', () => {
     expect(wrapper.get('.listener-section').text()).toContain(
       `14 / ${new Intl.NumberFormat().format(1_000)}`,
     )
+    expect(wrapper.get('.pool-section').text()).toContain('web-backends')
+    expect(wrapper.get('.pool-section').text()).toContain('Degraded')
+    expect(wrapper.get('.pool-section').text()).toContain('1 / 2 endpoints available')
+    expect(wrapper.get('.pool-summary').text()).toContain(
+      `${new Intl.NumberFormat().format(BigInt(exactHealthCounter))} unavailable selections`,
+    )
+    expect(wrapper.get('.endpoint-checks').text()).toContain(
+      `${new Intl.NumberFormat().format(BigInt(exactHealthCounter))} passed / 1 failed`,
+    )
+    expect(wrapper.get('.endpoint-streak').text()).toContain('4 passed / 0 failed')
+    expect(wrapper.get('.endpoint-failure').text()).toContain('Last failure: Connection failed')
 
     expect(wrapper.text()).toContain('live / camera')
     expect(wrapper.text()).toContain('12 viewers')
@@ -236,6 +282,25 @@ describe('monitoring dashboard', () => {
     wrapper.unmount()
   })
 
+  it('renders an explicit empty state when no upstream pools are configured', async () => {
+    const sample = monitoringSample()
+    sample.upstreamPools = []
+    const fetch = vi.fn((input: RequestInfo | URL) =>
+      Promise.resolve(
+        String(input) === '/api/v1/monitoring'
+          ? jsonResponse(sample)
+          : jsonResponse(catalog),
+      ),
+    )
+    vi.stubGlobal('fetch', fetch)
+
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(wrapper.get('.pool-section').text()).toContain('No upstream pools are configured.')
+    wrapper.unmount()
+  })
+
   it('keeps the last valid sample and skips periodic refreshes while one is in flight', async () => {
     vi.useFakeTimers()
     const pendingMonitoring = deferred<Response>()
@@ -267,6 +332,7 @@ describe('monitoring dashboard', () => {
     expect(wrapper.get('.stale-notice').text()).toContain('Retaining the last valid sample')
     expect(wrapper.get('.stale-notice').text()).toContain('gateway timeout')
     expect(wrapper.get('.system-state').text()).toContain('Telemetry stale')
+    expect(wrapper.get('.pool-section').text()).toContain('web-backends')
     wrapper.unmount()
   })
 })

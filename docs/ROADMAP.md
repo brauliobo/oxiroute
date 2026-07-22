@@ -33,7 +33,7 @@ Target one Linux daemon and one canonical config file.
 - HTTP/1 reverse proxy with TLS termination and upstream TLS.
 - HTTP/2 downstream and upstream where Pingora supports it.
 - Raw TCP relay with correct half-close, timeout, cancellation, and backpressure tests.
-- Static round-robin upstream pools and active TCP/HTTP health checks.
+- Static round-robin upstream pools and active TCP/HTTP health checks (implemented).
 - Request/connection limits, structured access logs, and Prometheus metrics.
 - Prepare-then-activate configuration reload; invalid candidates leave the prior generation active.
 - Parent-directory file watcher with content-hash revisions.
@@ -50,6 +50,7 @@ Release gates:
 
 - Full-duplex and half-close TCP integration tests.
 - HTTP request/body, WebSocket, timeout, retry, and graceful-drain tests.
+- Active health-check transition, scheduling, concurrency-bound, and unavailable-pool tests.
 - Invalid reload and listener-bind failure tests.
 - API revision-conflict and external-file-change tests.
 - ACME staging-directory issuance, renewal, failed-challenge, and rollback tests.
