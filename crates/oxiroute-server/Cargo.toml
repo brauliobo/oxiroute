@@ -1,0 +1,19 @@
+[package]
+name = "oxiroute-server"
+description = "Pingora-based HTTP and TCP proxy runtime for OxiRoute"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+env_logger.workspace = true
+log.workspace = true
+oxiroute-config = { path = "../oxiroute-config" }
+pingora.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,27 @@
+[workspace]
+members = ["crates/oxiroute-config", "crates/oxiroute-server"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/oxiroute/oxiroute"
+rust-version = "1.84"
+version = "0.1.0"
+
+[workspace.dependencies]
+async-trait = "0.1"
+env_logger = "0.11"
+log = "0.4"
+mlua = { version = "0.11", features = ["lua54", "serialize", "vendored"] }
+pingora = { version = "0.8.0", features = ["proxy"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tokio = { version = "1", features = ["io-util"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
