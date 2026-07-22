@@ -10,7 +10,10 @@ use oxiroute_rtmp::{
     RtmpCatalogSnapshot, RtmpRegistry, StreamId, StreamSnapshot, TrackSnapshot,
 };
 use pingora::{apps::http_app::ServeHttp, protocols::http::ServerSession};
+use serde::Serialize;
 use serde_json::{json, Value};
+
+use crate::{RuntimeMetrics, RuntimeSnapshot};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApiResponse {
@@ -101,14 +104,19 @@ impl UiAssets {
 }
 
 pub struct RtmpManagementApi {
+    metrics: RuntimeMetrics,
     registry: Arc<RtmpRegistry>,
     ui: Option<UiAssets>,
 }
 
 impl RtmpManagementApi {
     #[must_use]
-    pub fn new(registry: Arc<RtmpRegistry>) -> Self {
-        Self { registry, ui: None }
+    pub fn new(registry: Arc<RtmpRegistry>, metrics: RuntimeMetrics) -> Self {
+        Self {
+            metrics,
+            registry,
+            ui: None,
+        }
     }
 
     /// Loads a prebuilt Vue application into the management service.
@@ -118,9 +126,11 @@ impl RtmpManagementApi {
     /// Returns an I/O error when `index.html` or an asset cannot be read at startup.
     pub fn with_ui_dir(
         registry: Arc<RtmpRegistry>,
+        metrics: RuntimeMetrics,
         directory: impl AsRef<Path>,
     ) -> io::Result<Self> {
         Ok(Self {
+            metrics,
             registry,
             ui: Some(UiAssets::load(directory.as_ref())?),
         })
@@ -143,6 +153,12 @@ impl RtmpManagementApi {
             .collect();
 
         match segments.as_slice() {
+            ["api", "v1", "monitoring"] => {
+                if method != "GET" {
+                    return ApiResponse::method_not_allowed("GET");
+                }
+                self.monitoring_response()
+            }
             ["api", "v1", "rtmp", "streams"] => {
                 if method != "GET" {
                     return ApiResponse::method_not_allowed("GET");
@@ -170,6 +186,34 @@ impl RtmpManagementApi {
                 self.handle_recording(method, stream_id, recorder_id, action, now_unix_ms)
             }
             _ => ApiResponse::error(404, "route_not_found", "route does not exist"),
+        }
+    }
+
+    fn monitoring_response(&self) -> ApiResponse {
+        let runtime = match self.metrics.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return ApiResponse::error(
+                    503,
+                    "monitoring_unavailable",
+                    format!("could not sample runtime monitoring: {error}"),
+                );
+            }
+        };
+        let Some(rtmp) = rtmp_monitoring(&self.registry.snapshot()) else {
+            return ApiResponse::error(
+                500,
+                "monitoring_overflow",
+                "RTMP monitoring totals exceed the supported range",
+            );
+        };
+        match serde_json::to_value(MonitoringResponse { runtime, rtmp }) {
+            Ok(value) => ApiResponse::json(200, &value),
+            Err(error) => ApiResponse::error(
+                500,
+                "monitoring_serialization_failed",
+                format!("could not serialize runtime monitoring: {error}"),
+            ),
         }
     }
 
@@ -214,6 +258,44 @@ impl RtmpManagementApi {
             Err(error) => catalog_error(&error),
         }
     }
+}
+
+#[derive(Serialize)]
+struct MonitoringResponse {
+    #[serde(flatten)]
+    runtime: RuntimeSnapshot,
+    rtmp: RtmpMonitoring,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RtmpMonitoring {
+    active_streams: u64,
+    publishers: u64,
+    subscribers: u64,
+    media_payload_bytes_received: u64,
+}
+
+fn rtmp_monitoring(snapshot: &RtmpCatalogSnapshot) -> Option<RtmpMonitoring> {
+    let active_streams = u64::try_from(snapshot.streams.len()).ok()?;
+    let mut publishers = 0_u64;
+    let mut subscribers = 0_u64;
+    let mut media_payload_bytes_received = 0_u64;
+    for stream in &snapshot.streams {
+        if stream.publisher.is_some() {
+            publishers = publishers.checked_add(1)?;
+        }
+        subscribers = subscribers.checked_add(u64::try_from(stream.subscriber_count).ok()?)?;
+        media_payload_bytes_received = media_payload_bytes_received
+            .checked_add(stream.media.audio.payload_bytes_received)?
+            .checked_add(stream.media.video.payload_bytes_received)?;
+    }
+    Some(RtmpMonitoring {
+        active_streams,
+        publishers,
+        subscribers,
+        media_payload_bytes_received,
+    })
 }
 
 #[async_trait]

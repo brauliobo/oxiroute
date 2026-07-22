@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
-use oxiroute_server::HttpReverseProxy;
+use oxiroute_server::{HttpReverseProxy, RuntimeMetrics};
 use pingora::{apps::ServerApp, proxy::http_proxy, server::configuration::ServerConf};
 use tokio::{net::TcpListener, sync::watch, time::timeout};
 use tokio_tungstenite::{accept_async, connect_async, tungstenite::Message};
@@ -31,10 +31,14 @@ async fn websocket_upgrade_proxies_frames_in_both_directions() {
 
         let proxy_listener = TcpListener::bind("127.0.0.1:0").await.expect("proxy bind");
         let proxy_address = proxy_listener.local_addr().expect("proxy address");
+        let runtime_metrics = RuntimeMetrics::new();
+        let metrics = runtime_metrics
+            .register_listener("websocket", "http", proxy_address.to_string())
+            .expect("listener metrics");
         let configuration = Arc::new(ServerConf::default());
         let proxy = Arc::new(http_proxy(
             &configuration,
-            HttpReverseProxy::new(origin_address),
+            HttpReverseProxy::new(origin_address, metrics),
         ));
         let (_shutdown_tx, shutdown) = watch::channel(false);
         let proxy_task = tokio::spawn(async move {
@@ -64,6 +68,9 @@ async fn websocket_upgrade_proxies_frames_in_both_directions() {
 
         origin.await.expect("origin task");
         proxy_task.await.expect("proxy task");
+        let snapshot = runtime_metrics.snapshot().expect("traffic snapshot");
+        assert!(snapshot.traffic.bytes_received > 0);
+        assert!(snapshot.traffic.bytes_sent > 0);
     })
     .await
     .expect("websocket exchange timed out");
