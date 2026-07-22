@@ -28,12 +28,16 @@ HAProxy, or Apache httpd.
 Start an upstream HTTP server on `127.0.0.1:3000`, then run:
 
 ```sh
+pnpm --dir ui install
+pnpm --dir ui build
 cargo run -p oxiroute-server -- oxiroute.example.lua
 ```
 
 The example exposes the HTTP upstream on `127.0.0.1:8080` and also defines a TCP relay
 from `127.0.0.1:15432` to `127.0.0.1:5432`. RTMP runtime status is available at
 `http://127.0.0.1:9080/api/v1/rtmp/streams`.
+The Vue/Pug broadcast desk is served at `http://127.0.0.1:9080/` from the prebuilt
+`ui/dist` directory.
 
 Use `RUST_LOG=info` to enable runtime logs. Configuration files are local administrator
 input, but they still run in a fresh Lua state with no standard libraries and bounded
@@ -45,6 +49,8 @@ source, memory, and instruction use.
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+pnpm --dir ui test
+pnpm --dir ui build
 ```
 
 Development follows red-green-refactor. The initial configuration and runtime-planning

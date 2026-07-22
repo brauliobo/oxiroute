@@ -18,6 +18,7 @@ return {
   version = 1,
   management = {
     bind = "127.0.0.1:9080",
+    ui_dir = "./ui/dist",
   },
   listeners = {
     {
@@ -34,6 +35,7 @@ Current constraints:
 
 - `version` MUST be `1`.
 - `management` is optional and MUST use a loopback IP with a nonzero port until remote authentication exists.
+- `management.ui_dir` optionally points to a prebuilt Vue distribution loaded into memory at daemon startup.
 - Listener names and bind addresses MUST be unique.
 - Names MUST contain non-whitespace text.
 - Bind and upstream addresses MUST be IP socket literals with nonzero ports.

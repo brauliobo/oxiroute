@@ -1,4 +1,4 @@
-use std::{str::FromStr, sync::Arc, time::SystemTime};
+use std::{collections::HashMap, fs, io, path::Path, str::FromStr, sync::Arc, time::SystemTime};
 
 use async_trait::async_trait;
 use http::{
@@ -17,6 +17,7 @@ pub struct ApiResponse {
     pub status: u16,
     pub body: Vec<u8>,
     pub allow: Option<&'static str>,
+    pub content_type: &'static str,
 }
 
 impl ApiResponse {
@@ -25,6 +26,7 @@ impl ApiResponse {
             status,
             body: value.to_string().into_bytes(),
             allow: None,
+            content_type: "application/json",
         }
     }
 
@@ -45,18 +47,95 @@ impl ApiResponse {
     }
 }
 
+struct StaticAsset {
+    body: Vec<u8>,
+    content_type: &'static str,
+}
+
+struct UiAssets {
+    index: StaticAsset,
+    assets: HashMap<String, StaticAsset>,
+}
+
+impl UiAssets {
+    fn load(directory: &Path) -> io::Result<Self> {
+        let index = StaticAsset {
+            body: fs::read(directory.join("index.html"))?,
+            content_type: "text/html; charset=utf-8",
+        };
+        let mut assets = HashMap::new();
+        let assets_directory = directory.join("assets");
+        if assets_directory.is_dir() {
+            for entry in fs::read_dir(assets_directory)? {
+                let entry = entry?;
+                if !entry.file_type()?.is_file() {
+                    continue;
+                }
+                let Some(file_name) = entry.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                assets.insert(
+                    format!("/assets/{file_name}"),
+                    StaticAsset {
+                        body: fs::read(entry.path())?,
+                        content_type: asset_content_type(&file_name),
+                    },
+                );
+            }
+        }
+        Ok(Self { index, assets })
+    }
+
+    fn response(&self, path: &str) -> Option<ApiResponse> {
+        let asset = match path {
+            "/" | "/index.html" => Some(&self.index),
+            _ => self.assets.get(path),
+        }?;
+        Some(ApiResponse {
+            status: 200,
+            body: asset.body.clone(),
+            allow: None,
+            content_type: asset.content_type,
+        })
+    }
+}
+
 pub struct RtmpManagementApi {
     registry: Arc<RtmpRegistry>,
+    ui: Option<UiAssets>,
 }
 
 impl RtmpManagementApi {
     #[must_use]
     pub fn new(registry: Arc<RtmpRegistry>) -> Self {
-        Self { registry }
+        Self { registry, ui: None }
+    }
+
+    /// Loads a prebuilt Vue application into the management service.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when `index.html` or an asset cannot be read at startup.
+    pub fn with_ui_dir(
+        registry: Arc<RtmpRegistry>,
+        directory: impl AsRef<Path>,
+    ) -> io::Result<Self> {
+        Ok(Self {
+            registry,
+            ui: Some(UiAssets::load(directory.as_ref())?),
+        })
     }
 
     #[must_use]
     pub fn handle(&self, method: &str, path: &str, now_unix_ms: u64) -> ApiResponse {
+        if let Some(response) = self.ui.as_ref().and_then(|ui| ui.response(path)) {
+            return if method == "GET" {
+                response
+            } else {
+                ApiResponse::method_not_allowed("GET")
+            };
+        }
+
         let segments: Vec<_> = path
             .trim_matches('/')
             .split('/')
@@ -167,9 +246,10 @@ fn to_http_response(response: ApiResponse) -> Response<Vec<u8>> {
     let mut result = Response::new(response.body);
     *result.status_mut() =
         StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    result
-        .headers_mut()
-        .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    result.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static(response.content_type),
+    );
     let content_length = HeaderValue::from_str(&result.body().len().to_string())
         .expect("decimal content length is a valid header");
     result.headers_mut().insert(CONTENT_LENGTH, content_length);
@@ -179,6 +259,21 @@ fn to_http_response(response: ApiResponse) -> Response<Vec<u8>> {
             .insert(ALLOW, HeaderValue::from_static(allow));
     }
     result
+}
+
+fn asset_content_type(file_name: &str) -> &'static str {
+    match Path::new(file_name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+    {
+        Some("css") => "text/css; charset=utf-8",
+        Some("js") => "text/javascript; charset=utf-8",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("ico") => "image/x-icon",
+        Some("woff2") => "font/woff2",
+        _ => "application/octet-stream",
+    }
 }
 
 fn catalog_json(snapshot: &RtmpCatalogSnapshot) -> Value {

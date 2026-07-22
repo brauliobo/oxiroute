@@ -42,7 +42,7 @@ not protocol support.
 | Retry budgets and passive ejection | planned M1 |
 | Config file watcher and generation reload | planned M1 |
 | Structured access logs and Prometheus metrics | planned M1 |
-| Vue 3 and build-time Pug UI | planned M1 |
+| Vue 3 and build-time Pug UI | partial: responsive RTMP broadcast desk and static serving implemented; broader config/certificate/import views pending |
 | Management API | partial: loopback RTMP snapshot/detail and recorder-control routes implemented; config writes/auth/events pending |
 | Revisioned API and SSE events | planned M1 |
 
@@ -56,6 +56,7 @@ not protocol support.
 | AMF0 connect/createStream/publish/play | planned RTMP slice 1 |
 | Active stream snapshot catalog | partial: immutable publisher/subscriber/media/recorder snapshots implemented; live session attachment pending |
 | Active stream management API | implemented for snapshot/detail JSON; production remains empty until live sessions attach |
+| Active stream and recording UI | implemented against the management API; recording controls remain disabled while the backend capability is absent |
 | Live publisher/subscriber fanout | planned RTMP slice 1 |
 | ACL allow/deny | planned RTMP slice 2 |
 | Push/pull relay and reconnect | planned RTMP slice 2 |

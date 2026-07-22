@@ -1,3 +1,4 @@
+use std::fs;
 use std::sync::Arc;
 
 use oxiroute_rtmp::{
@@ -109,4 +110,35 @@ fn recording_routes_are_capability_gated_and_use_exact_ids() {
             .status,
         400
     );
+}
+
+#[test]
+fn serves_prebuilt_ui_assets_without_request_time_filesystem_paths() {
+    let directory = tempfile::tempdir().expect("temporary UI directory");
+    fs::create_dir(directory.path().join("assets")).expect("asset directory");
+    fs::write(
+        directory.path().join("index.html"),
+        "<main>Broadcast desk</main>",
+    )
+    .expect("index asset");
+    fs::write(directory.path().join("assets/app.css"), "body{color:white}").expect("CSS asset");
+    let api =
+        RtmpManagementApi::with_ui_dir(empty_registry(), directory.path()).expect("UI asset load");
+
+    let index = api.handle("GET", "/", 100);
+    assert_eq!(index.status, 200);
+    assert_eq!(index.content_type, "text/html; charset=utf-8");
+    assert_eq!(index.body, b"<main>Broadcast desk</main>");
+
+    let css = api.handle("GET", "/assets/app.css", 100);
+    assert_eq!(css.status, 200);
+    assert_eq!(css.content_type, "text/css; charset=utf-8");
+    assert_eq!(api.handle("GET", "/assets/../index.html", 100).status, 404);
+}
+
+fn empty_registry() -> Arc<RtmpRegistry> {
+    Arc::new(RtmpRegistry::new(RtmpCapabilities {
+        live_ingest: false,
+        manual_recording: false,
+    }))
 }
