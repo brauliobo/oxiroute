@@ -1,9 +1,16 @@
 pub const RTMP_VERSION: u8 = 3;
 pub const HANDSHAKE_BLOCK_SIZE: usize = 1536;
 
+mod catalog;
 mod directives;
 mod nginx;
 
+pub use catalog::{
+    CatalogError, MediaSnapshot, OperationId, PublisherSnapshot, RecorderCompletion,
+    RecorderDefinition, RecorderErrorCode, RecorderId, RecorderPhase, RecorderSnapshot,
+    RecordingAction, RtmpCapabilities, RtmpCatalogSnapshot, RtmpRegistry, SessionId, StreamId,
+    StreamKey, StreamSnapshot, TrackSnapshot,
+};
 pub use directives::{directive_specs, validate_directive};
 pub use nginx::{parse_nginx_config, NginxDirective, NginxParseError};
 
