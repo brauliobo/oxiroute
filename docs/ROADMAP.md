@@ -34,6 +34,8 @@ Target one Linux daemon and one canonical config file.
 - Request/connection limits, structured access logs, and Prometheus metrics.
 - Prepare-then-activate configuration reload; invalid candidates leave the prior generation active.
 - Parent-directory file watcher with content-hash revisions.
+- ACME HTTP-01 certificate issuance, renewal scheduling, and zero-downtime activation.
+- Imported PEM and generated self-signed certificates for development and bootstrap use.
 - Loopback-only management API by default.
 - Minimal Vue 3 SPA using build-time Pug SFC templates.
 - UI for listeners, upstreams, validation diagnostics, active revision, and basic metrics.
@@ -47,6 +49,7 @@ Release gates:
 - HTTP request/body, WebSocket, timeout, retry, and graceful-drain tests.
 - Invalid reload and listener-bind failure tests.
 - API revision-conflict and external-file-change tests.
+- ACME staging-directory issuance, renewal, failed-challenge, and rollback tests.
 - No root requirement and no outbound destination inferred from request input.
 
 ## Milestone 2: import and layer-4 breadth
@@ -59,6 +62,7 @@ Release gates:
 - UDP relay with bounded pseudo-sessions, per-client reply mapping, and expiry.
 - PROXY protocol v1/v2 for explicit client-address propagation.
 - Least-connections and weighted round-robin policies.
+- ACME DNS-01 through isolated provider plugins and wildcard certificate support.
 
 Imports are not successful when behavior is ignored. Unsupported routing, TLS, ACL, or
 listener semantics must block the affected service.

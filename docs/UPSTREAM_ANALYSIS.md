@@ -14,6 +14,7 @@ The reference repositories were cloned shallowly into `/home/braulio/Projects` o
 | Lua | `84938a7` | Suitable as an embedded data DSL only when the host controls libraries, environment, chunk mode, resources, and result types. |
 | Vue | `b5f8518` | Vue 3 SFC tooling supports Pug through a build-time template preprocessor. Filesystem synchronization belongs in the backend, not Vue watchers. |
 | Pug | `c323ed3` | Must be precompiled. Runtime compilation or user-supplied templates execute JavaScript and can resolve includes. Use a supported 3.x package rather than the checkout's stale manifest version. |
+| Certbot | `289a382` | Mature ACME lifecycle with persistent accounts, renewable lineages, authenticator/installer plugins, locking, recovery, and renewal scheduling. OxiRoute needs a much narrower integrated authenticator/activator model. |
 
 ## Architectural conclusions
 
@@ -72,9 +73,22 @@ control plane needs `GET /api/config`, revision-checked `PUT /api/config`, and a
 stream. External file replacement must update a clean editor or mark a dirty draft stale;
 it must never silently overwrite either side.
 
+### Certificate automation should reuse concepts, not complexity
+
+Certbot separates challenge authenticators from certificate installers, persists complete
+account and renewal metadata, serializes state mutations, and maintains versioned lineages.
+OxiRoute should retain those boundaries while limiting the first release to its built-in
+HTTP-01 authenticator and Pingora TLS activator. It does not need Certbot's general server
+installer discovery, checkpoint/rollback framework, or arbitrary deploy hooks.
+
+Managed certificate revisions should switch through one atomic relative `current` symlink,
+not Certbot's four independently updated live links. Existing Certbot lineages are external
+read-only sources whose transient mixed-link states must be handled during import.
+
 ## Licensing boundary
 
-Pingora and Apache httpd use Apache-2.0; nginx uses a permissive BSD-style license; Lua,
-Vue, and Pug use MIT-style licenses. Squid, HAProxy, and iptables are GPL projects.
+Pingora, Apache httpd, Certbot, and Certbot's ACME library use Apache-2.0; nginx uses a
+permissive BSD-style license; Lua, Vue, and Pug use MIT-style licenses. Squid, HAProxy, and iptables are GPL projects.
 OxiRoute can independently implement compatible behavior, but GPL implementation code
-must not be copied into this Apache-2.0 project.
+must not be copied into this Apache-2.0 project. Any permitted upstream source reuse still
+requires its notices and a provenance review.
