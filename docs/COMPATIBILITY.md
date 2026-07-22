@@ -19,7 +19,7 @@ not protocol support.
 | HTTP/2 downstream | planned M1 | Requires TLS/ALPN listener configuration and conformance tests. |
 | HTTP/2 upstream | planned M1 | Requires explicit peer version policy and negotiation tests. |
 | HTTP/3 downstream/upstream | planned M4 | Pingora has no current H3 stack; requires a tested QUIC/H3 integration. |
-| WebSocket reverse proxy | planned M1 | Pingora primitive exists; independent interoperability tests required. |
+| WebSocket reverse proxy | implemented | Pingora HTTP/1.1 upgrade path passes independent bidirectional framed interoperability coverage. |
 | gRPC reverse proxy | planned M1 | Requires working HTTP/2 modes and trailer tests. |
 | HTTP/1 explicit forward proxy | planned M3 | Includes absolute-form requests and a dedicated CONNECT tunnel. |
 | HTTP/2 forward proxy/CONNECT | planned M3 | Only after stream takeover and policy conformance. |

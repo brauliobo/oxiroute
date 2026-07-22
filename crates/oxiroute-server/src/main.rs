@@ -3,36 +3,17 @@ use std::{error::Error, fs, sync::Arc};
 use async_trait::async_trait;
 use log::{info, warn};
 use oxiroute_config::load_lua;
-use oxiroute_server::{service_specs, ServiceKind};
+use oxiroute_server::{service_specs, HttpReverseProxy, ServiceKind};
 use pingora::{
     apps::ServerApp,
     connectors::TransportConnector,
     protocols::Stream,
-    proxy::{http_proxy_service_with_name, ProxyHttp, Session},
+    proxy::http_proxy_service_with_name,
     server::{Server, ShutdownWatch},
     services::listening::Service,
-    upstreams::peer::{BasicPeer, HttpPeer},
+    upstreams::peer::BasicPeer,
 };
 use tokio::io::copy_bidirectional;
-
-struct HttpReverseProxy {
-    upstream: std::net::SocketAddr,
-}
-
-#[async_trait]
-impl ProxyHttp for HttpReverseProxy {
-    type CTX = ();
-
-    fn new_ctx(&self) -> Self::CTX {}
-
-    async fn upstream_peer(
-        &self,
-        _session: &mut Session,
-        _ctx: &mut Self::CTX,
-    ) -> pingora::Result<Box<HttpPeer>> {
-        Ok(Box::new(HttpPeer::new(self.upstream, false, String::new())))
-    }
-}
 
 struct TcpRelay {
     connector: TransportConnector,
@@ -86,9 +67,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         match spec.kind {
             ServiceKind::Http => {
-                let proxy = HttpReverseProxy {
-                    upstream: spec.upstream,
-                };
+                let proxy = HttpReverseProxy::new(spec.upstream);
                 let mut service =
                     http_proxy_service_with_name(&server.configuration, proxy, &service_name);
                 service.add_tcp(&bind);

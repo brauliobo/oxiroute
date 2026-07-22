@@ -9,6 +9,7 @@ The current code is intentionally much smaller than that goal. It provides:
 
 - A restricted Lua configuration loader with strict typed validation.
 - Pingora-backed HTTP reverse proxy listeners.
+- HTTP/1.1 WebSocket upgrade proxying with bidirectional frame integration coverage.
 - Pingora-backed opaque TCP relays.
 - An nginx syntax parser and exact nginx-rtmp registry for all 117 active directive keys with context, arity, value, default, and runtime-status metadata.
 - RTMP v3 simple-handshake response generation.
