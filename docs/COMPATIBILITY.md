@@ -45,6 +45,30 @@ not protocol support.
 | Vue 3 and build-time Pug UI | planned M1 |
 | Revisioned API and SSE events | planned M1 |
 
+## RTMP
+
+| Capability | Status |
+| --- | --- |
+| All 117 nginx-rtmp directive keys/value grammars | planned RTMP slice 0 |
+| RTMP simple/complex handshake | planned RTMP slice 1 |
+| Chunk formats 0-3 and extended timestamps | planned RTMP slice 1 |
+| AMF0 connect/createStream/publish/play | planned RTMP slice 1 |
+| Live publisher/subscriber fanout | planned RTMP slice 1 |
+| ACL allow/deny | planned RTMP slice 2 |
+| Push/pull relay and reconnect | planned RTMP slice 2 |
+| FLV recording and recorder controls | planned RTMP slice 2 |
+| FLV/MP4 local/HTTP VOD | planned RTMP slice 2 |
+| HTTP notify callbacks | planned RTMP slice 2 |
+| RTMP statistics/control API equivalents | planned RTMP slice 2 |
+| HLS H.264/AAC transmuxing and AES keys | planned RTMP slice 3 |
+| MPEG-DASH fragmented MP4 output | planned RTMP slice 3 |
+| Isolated exec/transcode process integration | planned RTMP slice 3 |
+| Multi-worker auto-push equivalent | planned RTMP slice 3 |
+
+The directive registry reports each key as enforced, parsed-not-enforced, source-no-op,
+source-bug, deprecated, or platform-limited. “All keys parsed” is not advertised as full
+nginx-rtmp semantic compatibility.
+
 ## Certificates
 
 | Capability | Status |
