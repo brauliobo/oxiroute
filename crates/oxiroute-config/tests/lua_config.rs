@@ -29,8 +29,72 @@ fn loads_a_minimal_lua_configuration() {
     assert_eq!(config.listeners[0].name, "web");
     assert_eq!(config.listeners[0].protocol, Protocol::Http);
     assert_eq!(config.listeners[0].bind.to_string(), "127.0.0.1:8080");
-    assert_eq!(config.listeners[0].upstream.to_string(), "127.0.0.1:3000");
+    assert_eq!(
+        config.listeners[0]
+            .upstream
+            .expect("HTTP upstream")
+            .to_string(),
+        "127.0.0.1:3000"
+    );
     assert_eq!(config.listeners[1].protocol, Protocol::Tcp);
+}
+
+#[test]
+fn loads_an_rtmp_listener_without_an_upstream() {
+    let source = r#"
+return {
+  version = 1,
+  listeners = {
+    {
+      name = "live",
+      bind = "127.0.0.1:1935",
+      protocol = "rtmp",
+    },
+  },
+}
+"#;
+
+    let config = load_lua(source).expect("RTMP listener configuration");
+
+    assert_eq!(config.listeners[0].protocol, Protocol::Rtmp);
+    assert_eq!(config.listeners[0].upstream, None);
+}
+
+#[test]
+fn rejects_a_proxy_listener_without_an_upstream() {
+    let source = r#"
+return {
+  version = 1,
+  listeners = {
+    { name = "web", bind = "127.0.0.1:8080", protocol = "http" },
+  },
+}
+"#;
+
+    let error = load_lua(source).expect_err("HTTP listeners require an upstream");
+
+    assert!(error.to_string().contains("requires an upstream"));
+}
+
+#[test]
+fn rejects_an_upstream_on_an_rtmp_listener() {
+    let source = r#"
+return {
+  version = 1,
+  listeners = {
+    {
+      name = "live",
+      bind = "127.0.0.1:1935",
+      protocol = "rtmp",
+      upstream = "127.0.0.1:2935",
+    },
+  },
+}
+"#;
+
+    let error = load_lua(source).expect_err("RTMP listeners terminate the protocol locally");
+
+    assert!(error.to_string().contains("must not declare an upstream"));
 }
 
 #[test]

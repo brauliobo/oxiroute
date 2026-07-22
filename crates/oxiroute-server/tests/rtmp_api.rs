@@ -9,7 +9,7 @@ use oxiroute_server::RtmpManagementApi;
 use serde_json::Value;
 
 #[test]
-fn reports_truthful_empty_capabilities_before_rtmp_ingest_lands() {
+fn reports_truthful_empty_capabilities_when_ingest_is_disabled() {
     let api = RtmpManagementApi::new(Arc::new(RtmpRegistry::new(RtmpCapabilities {
         live_ingest: false,
         manual_recording: false,

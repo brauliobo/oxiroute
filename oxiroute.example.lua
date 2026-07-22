@@ -17,5 +17,10 @@ return {
       protocol = "tcp",
       upstream = "127.0.0.1:5432",
     },
+    {
+      name = "live",
+      bind = "127.0.0.1:1935",
+      protocol = "rtmp",
+    },
   },
 }
