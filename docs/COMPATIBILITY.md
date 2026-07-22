@@ -53,10 +53,11 @@ not protocol support.
 | RTMP simple/complex handshake | partial: simple `S0+S1+S2` response implemented; complex handshake pending |
 | Chunk formats 0-3 and extended timestamps | planned RTMP slice 1 |
 | AMF0 connect/createStream/publish/play | planned RTMP slice 1 |
+| Active stream snapshot catalog | partial: immutable publisher/subscriber/media/recorder snapshots implemented; live session attachment pending |
 | Live publisher/subscriber fanout | planned RTMP slice 1 |
 | ACL allow/deny | planned RTMP slice 2 |
 | Push/pull relay and reconnect | planned RTMP slice 2 |
-| FLV recording and recorder controls | planned RTMP slice 2 |
+| FLV recording and recorder controls | partial: manual recorder transition model implemented; FLV backend and RTMP command dispatch pending |
 | FLV/MP4 local/HTTP VOD | planned RTMP slice 2 |
 | HTTP notify callbacks | planned RTMP slice 2 |
 | RTMP statistics/control API equivalents | planned RTMP slice 2 |

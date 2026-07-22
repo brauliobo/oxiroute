@@ -330,6 +330,11 @@ The Rust module is layered:
 The first compatibility mode uses one RTMP message stream per connection, ID 1, matching
 the reference assumption. Multi-message-stream support is a later explicit extension.
 
+The runtime-neutral catalog already publishes immutable active-stream snapshots with
+restart-safe stream/session/recorder identities, publisher/subscriber counts, absolute media
+samples, and capability-gated recorder transitions. It remains empty in production until
+publish/play command middleware attaches real sessions; no handshake creates a stream.
+
 ## Implementation slices and acceptance
 
 ### Slice 0: directive registry

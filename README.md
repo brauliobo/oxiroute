@@ -13,6 +13,7 @@ The current code is intentionally much smaller than that goal. It provides:
 - Pingora-backed opaque TCP relays.
 - An nginx syntax parser and exact nginx-rtmp registry for all 117 active directive keys with context, arity, value, default, and runtime-status metadata.
 - RTMP v3 simple-handshake response generation.
+- Immutable RTMP active-stream snapshots and a capability-gated manual recording state machine, ready for future publish/play session attachment.
 - Acceptance tests for configuration isolation and runtime planning.
 
 It does not yet provide forward proxying, `CONNECT`, TLS, HTTP/2 listener configuration,
