@@ -14,16 +14,21 @@ use pingora::{
     upstreams::peer::HttpPeer,
 };
 
+mod health;
 mod monitoring;
 mod routing;
 mod rtmp_api;
 mod tcp_relay;
 
+pub use health::{HealthBuildError, HealthSupervisor};
 pub use monitoring::{
     ConnectionGuard, HostSnapshot, ListenerMetrics, ListenerSnapshot, MetricsError,
     ProcessSnapshot, RuntimeMetrics, RuntimeSnapshot, TrafficSnapshot,
 };
-pub use routing::{PoolError, RoundRobinPool, Route, RouteError, RouteTable};
+pub use routing::{
+    EndpointHealthSnapshot, EndpointHealthState, HealthFailure, PoolError, PoolHealthSnapshot,
+    RoundRobinPool, Route, RouteError, RouteTable,
+};
 pub use rtmp_api::{ApiResponse, RtmpManagementApi};
 pub use tcp_relay::{
     RELAY_BUFFER_SIZE, RelayDirection, RelayFailure, RelayFailureKind, RelayOperation, RelayPolicy,
@@ -174,6 +179,11 @@ impl ProxyHttp for HttpReverseProxy {
                 .await?;
             return Ok(true);
         };
+        if !pool.has_available() {
+            pool.note_unavailable_selection();
+            session.respond_error(503).await?;
+            return Ok(true);
+        }
         ctx.retryable = self.service.max_retries() > 0
             && matches!(method, Method::GET | Method::HEAD)
             && session.is_body_empty()
@@ -192,7 +202,7 @@ impl ProxyHttp for HttpReverseProxy {
             return Err(Error::new_in(ErrorType::InternalError));
         };
         let Some(upstream) = pool.select_excluding(&ctx.attempted_upstreams) else {
-            return Err(Error::new_in(ErrorType::InternalError));
+            return Err(Error::new_up(ErrorType::HTTPStatus(503)));
         };
         ctx.attempted_upstreams.push(upstream);
         let mut peer = HttpPeer::new(upstream, false, String::new());
@@ -397,7 +407,7 @@ impl HttpServicePlan {
         method: &Method,
     ) -> Option<SocketAddr> {
         self.select_pool(authority, uri, method)
-            .map(|pool| pool.select())
+            .and_then(|pool| pool.select())
     }
 
     #[must_use]
@@ -429,15 +439,24 @@ impl L4ServicePlan {
     }
 
     #[must_use]
-    pub fn select(&self) -> SocketAddr {
+    pub fn select(&self) -> Option<SocketAddr> {
         self.pool.select()
     }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServicePlanError {
+    #[error("runtime configuration is invalid: {0}")]
+    InvalidConfig(#[source] Box<oxiroute_config::ConfigError>),
     #[error("upstream pool `{pool}` cannot be compiled: {source}")]
     Pool { pool: String, source: PoolError },
+    #[error("upstream pool `{pool}` health check cannot be compiled: {source}")]
+    Health {
+        pool: String,
+        source: Box<HealthBuildError>,
+    },
+    #[error("health-enabled configurations require `runtime_plan` so probes remain active")]
+    HealthSupervisorRequired,
     #[error("HTTP service `{service}` route {route} has invalid method `{method}`")]
     InvalidMethod {
         service: String,
@@ -475,34 +494,94 @@ pub enum ServicePlanError {
 /// Returns an error when a programmatically constructed configuration contains invalid routes,
 /// pools, service references, or listener/service protocol relationships.
 pub fn service_specs(config: &Config) -> Result<Vec<ServiceSpec>, ServicePlanError> {
-    let pools = compile_pools(config)?;
-    let http_services = compile_http_services(config, &pools)?;
-    let l4_services = compile_l4_services(config, &pools)?;
+    if config
+        .upstream_pools
+        .iter()
+        .any(|pool| pool.health_check.is_some())
+    {
+        return Err(ServicePlanError::HealthSupervisorRequired);
+    }
+    Ok(runtime_plan(config)?.services)
+}
 
-    config
+pub struct RuntimePlan {
+    pub services: Vec<ServiceSpec>,
+    pub health_supervisor: Option<HealthSupervisor>,
+    pub pools: Vec<Arc<RoundRobinPool>>,
+}
+
+/// Compiles one immutable runtime generation including traffic and health services.
+///
+/// # Errors
+///
+/// Returns an error when a pool, route, reference, or health probe cannot be compiled.
+pub fn runtime_plan(config: &Config) -> Result<RuntimePlan, ServicePlanError> {
+    oxiroute_config::validate_upstream_pool_definitions(
+        &config.upstream_pools,
+        config.management.as_ref().map(|management| management.bind),
+    )
+    .map_err(|source| ServicePlanError::InvalidConfig(Box::new(source)))?;
+    let pools = compile_pools(config)?;
+    let http_services = compile_http_services(config, &pools.by_name)?;
+    let l4_services = compile_l4_services(config, &pools.by_name)?;
+
+    let services = config
         .listeners
         .iter()
         .map(|listener| compile_listener(listener, &http_services, &l4_services))
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    let health_supervisor =
+        (!pools.health_groups.is_empty()).then(|| HealthSupervisor::new(pools.health_groups));
+    Ok(RuntimePlan {
+        services,
+        health_supervisor,
+        pools: pools.ordered,
+    })
 }
 
-fn compile_pools(
-    config: &Config,
-) -> Result<Arc<HashMap<String, Arc<RoundRobinPool>>>, ServicePlanError> {
+struct CompiledPools {
+    by_name: Arc<HashMap<String, Arc<RoundRobinPool>>>,
+    health_groups: Vec<health::HealthGroup>,
+    ordered: Vec<Arc<RoundRobinPool>>,
+}
+
+fn compile_pools(config: &Config) -> Result<CompiledPools, ServicePlanError> {
     let mut pools = HashMap::with_capacity(config.upstream_pools.len());
+    let mut health_groups = Vec::new();
+    let mut ordered = Vec::with_capacity(config.upstream_pools.len());
     for pool in &config.upstream_pools {
         match pool.algorithm {
             UpstreamAlgorithm::RoundRobin => {}
         }
-        let compiled = RoundRobinPool::new(pool.endpoints.iter().copied()).map_err(|source| {
-            ServicePlanError::Pool {
+        let compiled = Arc::new(
+            RoundRobinPool::new_named(
+                pool.name.clone(),
+                pool.endpoints.iter().copied(),
+                pool.health_check.is_some(),
+            )
+            .map_err(|source| ServicePlanError::Pool {
                 pool: pool.name.clone(),
                 source,
-            }
-        })?;
-        pools.insert(pool.name.clone(), Arc::new(compiled));
+            })?,
+        );
+        if let Some(health_check) = &pool.health_check {
+            health_groups.push(
+                health::compile_health_group(&pool.name, &compiled, health_check).map_err(
+                    |source| ServicePlanError::Health {
+                        pool: pool.name.clone(),
+                        source: Box::new(source),
+                    },
+                )?,
+            );
+        }
+        pools.insert(pool.name.clone(), Arc::clone(&compiled));
+        ordered.push(compiled);
     }
-    Ok(Arc::new(pools))
+    Ok(CompiledPools {
+        by_name: Arc::new(pools),
+        health_groups,
+        ordered,
+    })
 }
 
 fn compile_http_services(

@@ -6,7 +6,7 @@ use oxiroute_config::load_lua;
 use oxiroute_rtmp::{RtmpCapabilities, RtmpPublishSession, RtmpRegistry};
 use oxiroute_server::{
     HttpReverseProxy, ListenerMetrics, MAX_HTTP_ATTEMPTS, MonitoredHttpApp, RtmpManagementApi,
-    RuntimeMetrics, ServiceKind, TcpRelayCore, service_specs,
+    RuntimeMetrics, RuntimePlan, ServiceKind, TcpRelayCore, runtime_plan,
 };
 use pingora::{
     apps::ServerApp,
@@ -14,7 +14,7 @@ use pingora::{
     protocols::Stream,
     proxy::http_proxy,
     server::{Server, ShutdownWatch, configuration::ServerConf},
-    services::listening::Service,
+    services::{background::background_service, listening::Service},
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -45,7 +45,11 @@ impl ServerApp for TcpRelay {
                 return None;
             }
         };
-        let relay = TcpRelayCore::new(self.service.select(), self.service.policy());
+        let Some(upstream) = self.service.select() else {
+            warn!("TCP pool has no healthy upstream");
+            return None;
+        };
+        let relay = TcpRelayCore::new(upstream, self.service.policy());
         if let Err(error) = relay.relay(downstream, &connection, shutdown.clone()).await {
             warn!("TCP relay failed: {error}");
         }
@@ -178,8 +182,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut server = Server::new_with_opt_and_conf(None, server_config);
     server.bootstrap();
 
+    let RuntimePlan {
+        services,
+        health_supervisor,
+        pools,
+    } = runtime_plan(&config)?;
+    if let Some(supervisor) = health_supervisor {
+        server.add_service(background_service("upstream health", supervisor));
+    }
     let runtime_metrics = RuntimeMetrics::new();
-    let services = service_specs(&config)?
+    runtime_metrics.register_upstream_pools(pools)?;
+    let services = services
         .into_iter()
         .map(|spec| {
             let metrics = runtime_metrics.register_listener(
@@ -254,4 +267,87 @@ fn unix_time_ms() -> Option<u64> {
         .duration_since(SystemTime::UNIX_EPOCH)
         .ok()?;
     u64::try_from(duration.as_millis()).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use oxiroute_config::{
+        Config, HealthCheck, HealthCheckType, L4Service, Listener, Protocol, UpstreamAlgorithm,
+        UpstreamPool,
+    };
+    use tokio::{net::TcpListener, sync::watch};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn tcp_handler_closes_connections_when_its_pool_is_unavailable() {
+        let ingress = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("ingress bind");
+        let ingress_address = ingress.local_addr().expect("ingress address");
+        let config = Config {
+            version: 1,
+            management: None,
+            listeners: vec![Listener {
+                name: "database".into(),
+                bind: ingress_address,
+                protocol: Protocol::Tcp,
+                service: Some("database".into()),
+                max_connections: 10,
+            }],
+            upstream_pools: vec![UpstreamPool {
+                name: "database".into(),
+                endpoints: vec!["127.0.0.1:5432".parse().expect("upstream address")],
+                algorithm: UpstreamAlgorithm::RoundRobin,
+                health_check: Some(HealthCheck {
+                    kind: HealthCheckType::Tcp,
+                    interval_ms: 1_000,
+                    timeout_ms: 100,
+                    healthy_threshold: 1,
+                    unhealthy_threshold: 1,
+                    host: None,
+                    path: None,
+                }),
+            }],
+            http_services: Vec::new(),
+            l4_services: vec![L4Service {
+                name: "database".into(),
+                upstream_pool: "database".into(),
+                connect_timeout_ms: 100,
+                idle_timeout_ms: 1_000,
+                lifetime_timeout_ms: None,
+            }],
+        };
+        let mut plan = runtime_plan(&config).expect("TCP runtime plan");
+        let pool = Arc::clone(&plan.pools[0]);
+        let spec = plan.services.remove(0);
+        let metrics = RuntimeMetrics::new();
+        let listener_metrics = metrics
+            .register_listener(
+                &spec.name,
+                spec.kind.protocol(),
+                spec.bind.to_string(),
+                spec.max_connections,
+            )
+            .expect("listener metrics");
+        let ServiceKind::Tcp(service) = spec.kind else {
+            panic!("listener must compile as TCP");
+        };
+        let app = Arc::new(TcpRelay::new(service, listener_metrics));
+        let mut client = tokio::net::TcpStream::connect(ingress_address)
+            .await
+            .expect("client connect");
+        let (downstream, _) = ingress.accept().await.expect("ingress accept");
+        let downstream: Stream = Box::new(pingora::protocols::l4::stream::Stream::from(downstream));
+        let (_shutdown_tx, shutdown) = watch::channel(false);
+
+        assert!(app.process_new(downstream, &shutdown).await.is_none());
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.expect("client EOF");
+        assert!(response.is_empty());
+        assert_eq!(pool.health_snapshot().unavailable_selections, 1);
+        let snapshot = metrics.snapshot().expect("runtime snapshot");
+        assert_eq!(snapshot.traffic.accepted_connections, 1);
+        assert_eq!(snapshot.traffic.active_connections, 0);
+    }
 }

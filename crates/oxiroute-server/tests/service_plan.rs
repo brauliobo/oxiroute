@@ -2,7 +2,8 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use http::{Method, Uri, uri::Authority};
 use oxiroute_config::{
-    Config, HttpRoute, HttpService, L4Service, Listener, Protocol, UpstreamAlgorithm, UpstreamPool,
+    Config, ConfigError, HealthCheck, HealthCheckType, HttpRoute, HttpService, L4Service, Listener,
+    Protocol, UpstreamAlgorithm, UpstreamPool,
 };
 use oxiroute_server::{ServiceKind, ServicePlanError, service_specs};
 
@@ -41,7 +42,7 @@ fn compiles_shared_http_and_l4_service_plans() {
     let ServiceKind::Tcp(l4) = &services[2].kind else {
         panic!("third service must be TCP");
     };
-    assert_eq!(l4.select(), address(5432));
+    assert_eq!(l4.select(), Some(address(5432)));
     assert_eq!(l4.policy().connect, Duration::from_secs(5));
     assert_eq!(l4.policy().idle, Some(Duration::from_secs(120)));
     assert_eq!(l4.policy().lifetime, Some(Duration::from_secs(600)));
@@ -68,6 +69,59 @@ fn rejects_an_invalid_programmatic_route_pool_reference() {
         service_specs(&config),
         Err(ServicePlanError::UnknownHttpPool { service, route: 0, pool })
             if service == "api" && pool == "missing"
+    ));
+}
+
+#[test]
+fn refuses_to_discard_a_required_health_supervisor() {
+    let mut config = canonical_config();
+    config.upstream_pools[0].health_check = Some(HealthCheck {
+        kind: HealthCheckType::Tcp,
+        interval_ms: 1_000,
+        timeout_ms: 100,
+        healthy_threshold: 1,
+        unhealthy_threshold: 1,
+        host: None,
+        path: None,
+    });
+
+    assert!(matches!(
+        service_specs(&config),
+        Err(ServicePlanError::HealthSupervisorRequired)
+    ));
+}
+
+#[test]
+fn rejects_invalid_programmatic_pool_definitions() {
+    let mut duplicate_name = canonical_config();
+    duplicate_name.upstream_pools[1].name = "api".into();
+    assert!(matches!(
+        service_specs(&duplicate_name),
+        Err(ServicePlanError::InvalidConfig(source))
+            if matches!(
+                source.as_ref(),
+                ConfigError::DuplicateName { namespace: "upstream pool", name } if name == "api"
+            )
+    ));
+
+    let mut duplicate_endpoint = canonical_config();
+    duplicate_endpoint.upstream_pools[0].endpoints[1] = address(3000);
+    assert!(matches!(
+        service_specs(&duplicate_endpoint),
+        Err(ServicePlanError::InvalidConfig(source))
+            if matches!(source.as_ref(), ConfigError::DuplicateUpstreamEndpoint { pool, .. } if pool == "api")
+    ));
+
+    let mut zero_port = canonical_config();
+    zero_port.upstream_pools[0].endpoints[0].set_port(0);
+    assert!(matches!(
+        service_specs(&zero_port),
+        Err(ServicePlanError::InvalidConfig(source))
+            if matches!(
+                source.as_ref(),
+                ConfigError::ZeroPort { kind: "upstream pool", name, field: "endpoints" }
+                    if name == "api"
+            )
     ));
 }
 
@@ -110,11 +164,13 @@ fn canonical_config() -> Config {
                 name: "api".into(),
                 endpoints: vec![address(3000), address(3001)],
                 algorithm: UpstreamAlgorithm::RoundRobin,
+                health_check: None,
             },
             UpstreamPool {
                 name: "database".into(),
                 endpoints: vec![address(5432)],
                 algorithm: UpstreamAlgorithm::RoundRobin,
+                health_check: None,
             },
         ],
         http_services: vec![HttpService {

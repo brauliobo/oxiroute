@@ -9,27 +9,29 @@ The current code is intentionally much smaller than that goal. It provides:
 
 - A restricted Lua configuration loader with strict typed validation.
 - Pingora-backed HTTP reverse proxy listeners with deterministic host/path/method routing,
-  static round-robin pools, bounded safe connect-failure retries, upstream I/O timeouts, body
-  limits, and connection caps.
+  health-aware static round-robin pools, active TCP/HTTP checks, bounded safe connect-failure
+  retries, upstream I/O timeouts, body limits, and connection caps.
 - HTTP/1.1 WebSocket upgrade proxying with bidirectional frame integration coverage.
-- Pingora-backed opaque TCP relays with round-robin pools, connection caps, and configurable
-  connect, idle, and lifetime timeouts.
+- Pingora-backed opaque TCP relays with health-aware round-robin pools, connection caps, and
+  configurable connect, idle, and lifetime timeouts.
 - An nginx syntax parser and exact nginx-rtmp registry for all 117 active directive keys with context, arity, value, default, and runtime-status metadata.
 - RTMP live publishing with simple/complex handshakes, AMF connect/createStream/publish handling, duplicate-publisher rejection, media observations, and FFmpeg interoperability.
 - Immutable RTMP active-stream snapshots and a capability-gated manual recording state machine.
-- A loopback-only Pingora management API for runtime monitoring, RTMP stream visibility, and exact-ID recording controls.
-- A responsive Vue/Pug runtime observatory for host/process load, listener traffic, and live RTMP state.
+- A loopback-only Pingora management API for runtime and pool-health monitoring, RTMP stream
+  visibility, and exact-ID recording controls.
+- A responsive Vue/Pug runtime observatory for host/process load, listener traffic, upstream
+  health, and live RTMP state.
 - Acceptance tests for configuration isolation and runtime planning.
 
 It does not yet provide forward proxying, `CONNECT`, TLS, HTTP/2 listener configuration,
-HTTP/3, UDP, caching, health-aware or weighted load balancing, hot reload, full configuration
-imports, RTMP playback, media fanout, or recording.
+HTTP/3, UDP, caching, weighted load balancing, passive failure ejection, hot reload, full
+configuration imports, RTMP playback, media fanout, or recording.
 It is not a firewall, NAT implementation, or drop-in replacement for Squid, nginx,
 HAProxy, or Apache httpd.
 
 ## Run
 
-Start an upstream HTTP server on `127.0.0.1:3000`, then run:
+Start an upstream HTTP server on `127.0.0.1:3000` that returns `200` for `GET /healthz`, then run:
 
 ```sh
 pnpm --dir ui install
@@ -39,7 +41,8 @@ cargo run -p oxiroute-server -- oxiroute.example.lua
 
 The example exposes the HTTP upstream on `127.0.0.1:8080`, defines a TCP relay from
 `127.0.0.1:15432` to `127.0.0.1:5432`, and accepts RTMP publishers on
-`rtmp://127.0.0.1:1935/<application>/<stream>`. Runtime monitoring and RTMP status are available at
+`rtmp://127.0.0.1:1935/<application>/<stream>`. The HTTP pool actively checks `/healthz`; requests
+fail with `503` until its first successful probe. Runtime monitoring and RTMP status are available at
 `http://127.0.0.1:9080/api/v1/monitoring` and `http://127.0.0.1:9080/api/v1/rtmp/streams`.
 The Vue/Pug runtime observatory is served at `http://127.0.0.1:9080/` from the prebuilt `ui/dist`
 directory.

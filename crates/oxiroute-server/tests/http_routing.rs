@@ -241,13 +241,13 @@ fn round_robin_selection_wraps_in_definition_order() {
     assert_eq!(
         selected,
         vec![
-            endpoints[0],
-            endpoints[1],
-            endpoints[2],
-            endpoints[0],
-            endpoints[1],
-            endpoints[2],
-            endpoints[0],
+            Some(endpoints[0]),
+            Some(endpoints[1]),
+            Some(endpoints[2]),
+            Some(endpoints[0]),
+            Some(endpoints[1]),
+            Some(endpoints[2]),
+            Some(endpoints[0]),
         ]
     );
 }
@@ -296,12 +296,12 @@ fn concurrent_round_robin_selection_distributes_every_atomic_turn() {
         assert_eq!(
             selected
                 .iter()
-                .filter(|selected| **selected == endpoint)
+                .filter(|selected| **selected == Some(endpoint))
                 .count(),
             THREADS * SELECTIONS_PER_THREAD / endpoints.len()
         );
     }
-    assert_eq!(pool.select(), endpoints[0]);
+    assert_eq!(pool.select(), Some(endpoints[0]));
 }
 
 #[test]

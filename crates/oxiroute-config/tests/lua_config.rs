@@ -1,4 +1,4 @@
-use oxiroute_config::{ConfigError, Protocol, UpstreamAlgorithm, load_lua};
+use oxiroute_config::{ConfigError, HealthCheckType, Protocol, UpstreamAlgorithm, load_lua};
 
 const VALID_CONFIG: &str = r#"
 return {
@@ -203,6 +203,123 @@ fn rejects_an_excessive_http_retry_budget() {
         error,
         ConfigError::RetryLimitTooLarge { service, limit: 3 } if service == "web"
     ));
+}
+
+#[test]
+fn loads_tcp_and_http_health_check_policies() {
+    let tcp_source = changed(
+        "      endpoints = { \"127.0.0.1:3000\", \"127.0.0.1:3001\" },\n      algorithm = \"round_robin\",",
+        "      endpoints = { \"127.0.0.1:3000\", \"127.0.0.1:3001\" },\n      algorithm = \"round_robin\",\n      health_check = { type = \"tcp\" },",
+    );
+    let tcp = load_lua(&tcp_source).expect("TCP health check");
+    let tcp_check = tcp.upstream_pools[0]
+        .health_check
+        .as_ref()
+        .expect("TCP policy");
+    assert_eq!(tcp_check.kind, HealthCheckType::Tcp);
+    assert_eq!(tcp_check.interval_ms, 10_000);
+    assert_eq!(tcp_check.timeout_ms, 1_000);
+    assert_eq!(tcp_check.healthy_threshold, 1);
+    assert_eq!(tcp_check.unhealthy_threshold, 3);
+
+    let http_source = changed(
+        "      endpoints = { \"127.0.0.1:3000\", \"127.0.0.1:3001\" },\n      algorithm = \"round_robin\",",
+        r#"      endpoints = { "127.0.0.1:3000", "127.0.0.1:3001" },
+      algorithm = "round_robin",
+      health_check = {
+        type = "http",
+        interval_ms = 5000,
+        timeout_ms = 500,
+        healthy_threshold = 2,
+        unhealthy_threshold = 4,
+        host = "backend.internal:3000",
+        path = "/healthz",
+      },"#,
+    );
+    let http = load_lua(&http_source).expect("HTTP health check");
+    let http_check = http.upstream_pools[0]
+        .health_check
+        .as_ref()
+        .expect("HTTP policy");
+    assert_eq!(http_check.kind, HealthCheckType::Http);
+    assert_eq!(http_check.interval_ms, 5_000);
+    assert_eq!(http_check.timeout_ms, 500);
+    assert_eq!(http_check.healthy_threshold, 2);
+    assert_eq!(http_check.unhealthy_threshold, 4);
+    assert_eq!(http_check.host.as_deref(), Some("backend.internal:3000"));
+    assert_eq!(http_check.path.as_deref(), Some("/healthz"));
+}
+
+#[test]
+fn rejects_invalid_health_check_timing_and_thresholds() {
+    for policy in [
+        r#"{ type = "tcp", interval_ms = 999 }"#,
+        r#"{ type = "tcp", interval_ms = 86400001 }"#,
+        r#"{ type = "tcp", interval_ms = 1000, timeout_ms = 1000 }"#,
+        r#"{ type = "tcp", interval_ms = 40000, timeout_ms = 30001 }"#,
+        r#"{ type = "tcp", healthy_threshold = 0 }"#,
+        r#"{ type = "tcp", healthy_threshold = 101 }"#,
+        r#"{ type = "tcp", unhealthy_threshold = 0 }"#,
+        r#"{ type = "tcp", unhealthy_threshold = 101 }"#,
+    ] {
+        let source = changed(
+            "      endpoints = { \"127.0.0.1:3000\", \"127.0.0.1:3001\" },\n      algorithm = \"round_robin\",",
+            &format!(
+                "      endpoints = {{ \"127.0.0.1:3000\", \"127.0.0.1:3001\" }},\n      algorithm = \"round_robin\",\n      health_check = {policy},"
+            ),
+        );
+        assert!(matches!(
+            error_from(&source),
+            ConfigError::InvalidHealthCheck { pool, .. } if pool == "web-backends"
+        ));
+    }
+}
+
+#[test]
+fn rejects_health_check_fields_that_do_not_match_the_probe_type() {
+    for policy in [
+        r#"{ type = "http", path = "/healthz" }"#,
+        r#"{ type = "http", host = "backend.internal" }"#,
+        r#"{ type = "http", host = "user@backend.internal", path = "/healthz" }"#,
+        r#"{ type = "http", host = "backend.internal:not-a-port", path = "/healthz" }"#,
+        r#"{ type = "http", host = "backend.internal", path = "healthz" }"#,
+        r#"{ type = "http", host = "backend.internal", path = "/healthz?full=true" }"#,
+        r#"{ type = "tcp", host = "backend.internal" }"#,
+        r#"{ type = "tcp", path = "/healthz" }"#,
+    ] {
+        let source = changed(
+            "      endpoints = { \"127.0.0.1:3000\", \"127.0.0.1:3001\" },\n      algorithm = \"round_robin\",",
+            &format!(
+                "      endpoints = {{ \"127.0.0.1:3000\", \"127.0.0.1:3001\" }},\n      algorithm = \"round_robin\",\n      health_check = {policy},"
+            ),
+        );
+        assert!(matches!(
+            error_from(&source),
+            ConfigError::InvalidHealthCheck { pool, .. } if pool == "web-backends"
+        ));
+    }
+
+    for policy in [
+        format!(
+            r#"{{ type = "http", host = "{}", path = "/healthz" }}"#,
+            "a".repeat(256)
+        ),
+        format!(
+            r#"{{ type = "http", host = "backend.internal", path = "/{}" }}"#,
+            "a".repeat(2_048)
+        ),
+    ] {
+        let source = changed(
+            "      endpoints = { \"127.0.0.1:3000\", \"127.0.0.1:3001\" },\n      algorithm = \"round_robin\",",
+            &format!(
+                "      endpoints = {{ \"127.0.0.1:3000\", \"127.0.0.1:3001\" }},\n      algorithm = \"round_robin\",\n      health_check = {policy},"
+            ),
+        );
+        assert!(matches!(
+            error_from(&source),
+            ConfigError::InvalidHealthCheck { pool, .. } if pool == "web-backends"
+        ));
+    }
 }
 
 #[test]
@@ -574,6 +691,54 @@ fn rejects_empty_duplicate_and_zero_port_pool_endpoints() {
             name,
             field: "endpoints"
         } if name == "database-backends"
+    ));
+}
+
+#[test]
+fn rejects_excessive_upstream_endpoint_cardinality() {
+    let endpoints = (10_000..10_257)
+        .map(|port| format!(r#""127.0.0.1:{port}""#))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source = format!(
+        r#"return {{
+  version = 1,
+  listeners = {{}},
+  upstream_pools = {{
+    {{ name = "oversized", endpoints = {{ {endpoints} }} }},
+  }},
+}}"#
+    );
+    assert!(matches!(
+        error_from(&source),
+        ConfigError::TooManyUpstreamEndpoints { pool } if pool == "oversized"
+    ));
+
+    let pools = (0..5)
+        .map(|pool| {
+            let endpoints = (0..205)
+                .map(|offset| {
+                    let port = 20_000 + pool * 205 + offset;
+                    format!(r#""127.0.0.1:{port}""#)
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(r#"{{ name = "pool-{pool}", endpoints = {{ {endpoints} }} }}"#)
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let source = format!(
+        r"return {{
+  version = 1,
+  listeners = {{}},
+  upstream_pools = {{
+    {pools}
+  }},
+}}"
+    );
+    assert!(matches!(
+        error_from(&source),
+        ConfigError::TooManyTotalUpstreamEndpoints
     ));
 }
 

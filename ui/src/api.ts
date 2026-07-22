@@ -91,6 +91,30 @@ export interface MonitoringRtmp {
   mediaPayloadBytesReceived: number
 }
 
+export type EndpointHealthState = 'unchecked' | 'unknown' | 'healthy' | 'unhealthy'
+export type HealthFailure = 'timeout' | 'connect_failed' | 'unexpected_status' | 'protocol_error'
+
+export interface MonitoringPoolEndpoint {
+  address: string
+  state: EndpointHealthState
+  lastCheckedAtUnixMs: number | null
+  lastTransitionAtUnixMs: number | null
+  successfulChecks: string
+  failedChecks: string
+  consecutiveSuccesses: string
+  consecutiveFailures: string
+  lastFailure: HealthFailure | null
+}
+
+export interface MonitoringPool {
+  name: string
+  algorithm: 'round_robin'
+  availableEndpoints: number
+  totalEndpoints: number
+  unavailableSelections: string
+  endpoints: MonitoringPoolEndpoint[]
+}
+
 export interface MonitoringSnapshot {
   sampledAtUnixMs: number
   uptimeMs: number
@@ -98,6 +122,7 @@ export interface MonitoringSnapshot {
   host: MonitoringHost
   traffic: MonitoringTraffic
   listeners: MonitoringListener[]
+  upstreamPools: MonitoringPool[]
   rtmp: MonitoringRtmp
 }
 

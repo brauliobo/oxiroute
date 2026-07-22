@@ -18,7 +18,10 @@ The initial repository followed this sequence:
 ### Unit and property tests
 
 - Config type decoding, validation, canonical rendering, revisions, and diagnostics.
-- Route precedence, URI transforms, ACL decisions, pool selection, retries, and limits.
+- Health-check defaults/type-specific fields, timing/threshold bounds, and per-pool/total endpoint
+  caps.
+- Route precedence, URI transforms, ACL decisions, health-state thresholds, health-aware pool
+  selection, retries, and limits.
 - ACME order/renewal state machines using fake HTTP, DNS, clock, random, and storage seams.
 - UDP pseudo-session keying/expiry and TCP timeout/half-close state.
 - Import parser tokens, include graphs, inheritance, and semantic conversion.
@@ -32,6 +35,11 @@ renewal windows, routing precedence, and bounded table/session behavior.
 - HTTP methods, bodies, trailers, hop-by-hop fields, upgrades, gRPC, and negotiated versions.
 - HTTP retry target exclusion, budget exhaustion, and no-retry gates after bodies, unsafe methods,
   upgrades, or established upstream connections.
+- Active TCP connection probes and HTTP request host/path/status/timeout behavior using loopback
+  origins; startup unknown state, transition thresholds, probe shutdown, independent
+  completion-based endpoint schedules, and the shared concurrency bound.
+- Health-aware HTTP routing returns `503` for a matched pool with no selectable endpoint; monitoring
+  tests cover pool/endpoint state, timestamps, failure reasons, and exact decimal-string counters.
 - TCP full duplex, half-close, slow readers, backpressure, cancellation, and reload drain.
 - TCP connect/idle/lifetime deadlines and partial traffic accounting across failure paths.
 - UDP request/reply mapping, expiry, duplicate clients, upstream changes, and table pressure.
@@ -71,6 +79,8 @@ UDP pseudo-session input. Fuzzers have allocation and execution bounds.
 ### UI end-to-end
 
 - Vue component tests cover validation, clean refresh, dirty draft, and redaction.
+- Monitoring component tests cover pool availability, endpoint state/check totals, exact counters,
+  failure labels, empty-pool rendering, and retention after transient failures.
 - Browser tests save config, observe canonical file changes, process external replacement,
   handle conflicts, and follow certificate jobs.
 - Desktop and mobile viewport tests cover core workflows and keyboard navigation.

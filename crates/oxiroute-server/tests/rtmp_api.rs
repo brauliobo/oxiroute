@@ -195,6 +195,7 @@ fn exposes_runtime_listener_and_rtmp_monitoring() {
     assert_eq!(body["traffic"]["bytesReceived"], 4_096);
     assert_eq!(body["traffic"]["bytesSent"], 3_073);
     assert_eq!(body["listeners"][0]["protocol"], "rtmp");
+    assert_eq!(body["upstreamPools"].as_array().map(Vec::len), Some(0));
     assert_eq!(body["rtmp"]["activeStreams"], 1);
     assert_eq!(body["rtmp"]["publishers"], 1);
     assert_eq!(body["rtmp"]["subscribers"], 0);

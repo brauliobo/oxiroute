@@ -52,6 +52,7 @@ async fn websocket_upgrade_proxies_frames_in_both_directions() {
                 name: "origin".into(),
                 endpoints: vec![origin_address],
                 algorithm: UpstreamAlgorithm::RoundRobin,
+                health_check: None,
             }],
             http_services: vec![HttpService {
                 name: "websocket".into(),
