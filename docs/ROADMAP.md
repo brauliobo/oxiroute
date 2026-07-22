@@ -13,7 +13,7 @@ limits. Feature count comes after those invariants.
 
 Status: implemented.
 
-- Rust workspace with a six-month-compatible Pingora MSRV baseline.
+- Rust 1.87 workspace using Edition 2024 language semantics and resolver v3.
 - Restricted, text-only Lua configuration with no standard libraries.
 - Source, memory, and instruction limits.
 - Strict config decoding and validation.
