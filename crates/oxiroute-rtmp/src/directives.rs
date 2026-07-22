@@ -1,0 +1,1236 @@
+use std::net::IpAddr;
+
+use crate::{
+    DirectiveContext, DirectiveError, DirectiveSpec, RelayKind, RuntimeSupport, ValueKind,
+};
+
+use DirectiveContext::{Http, NginxMain, RtmpApplication, RtmpMain, RtmpRecorder, RtmpServer};
+use RuntimeSupport::{Deprecated, ParsedNotEnforced, PlatformLimited, SourceBug, SourceNoOp};
+
+const N: &[DirectiveContext] = &[NginxMain];
+const R: &[DirectiveContext] = &[RtmpMain];
+const S: &[DirectiveContext] = &[RtmpServer];
+const A: &[DirectiveContext] = &[RtmpApplication];
+const RS: &[DirectiveContext] = &[RtmpMain, RtmpServer];
+const RSA: &[DirectiveContext] = &[RtmpMain, RtmpServer, RtmpApplication];
+const RSAC: &[DirectiveContext] = &[RtmpMain, RtmpServer, RtmpApplication, RtmpRecorder];
+const H: &[DirectiveContext] = &[Http];
+
+const META: &[&str] = &["off", "on", "copy"];
+const NOTIFY_METHODS: &[&str] = &["get", "post"];
+const RECORD_PARTS: &[&str] = &["off", "all", "audio", "video", "keyframes", "manual"];
+const HLS_NAMING: &[&str] = &["sequential", "timestamp", "system"];
+const HLS_SLICING: &[&str] = &["plain", "aligned"];
+const HLS_TYPES: &[&str] = &["live", "event"];
+const STAT_PARTS: &[&str] = &["all", "global", "live", "clients"];
+const CONTROL_PARTS: &[&str] = &["all", "record", "drop", "redirect"];
+
+macro_rules! directive {
+    ($name:literal, $contexts:expr, $min:literal, $max:expr, $kind:expr, $default:expr, $repeatable:literal) => {
+        DirectiveSpec {
+            name: $name,
+            contexts: $contexts,
+            min_args: $min,
+            max_args: $max,
+            value_kind: $kind,
+            default: $default,
+            repeatable: $repeatable,
+            runtime_support: ParsedNotEnforced,
+        }
+    };
+    ($name:literal, $contexts:expr, $min:literal, $max:expr, $kind:expr, $default:expr, $repeatable:literal, $support:expr) => {
+        DirectiveSpec {
+            name: $name,
+            contexts: $contexts,
+            min_args: $min,
+            max_args: $max,
+            value_kind: $kind,
+            default: $default,
+            repeatable: $repeatable,
+            runtime_support: $support,
+        }
+    };
+}
+
+static DIRECTIVES: [DirectiveSpec; 117] = [
+    // Entry and core: 18
+    directive!("rtmp", N, 0, Some(0), ValueKind::Block, None, false),
+    directive!("server", R, 0, Some(0), ValueKind::Block, None, true),
+    directive!("listen", S, 1, Some(2), ValueKind::Listen, None, true),
+    directive!(
+        "application",
+        S,
+        1,
+        Some(1),
+        ValueKind::NamedBlock,
+        None,
+        true
+    ),
+    directive!(
+        "so_keepalive",
+        RS,
+        1,
+        Some(1),
+        ValueKind::Flag,
+        Some("off"),
+        false,
+        Deprecated
+    ),
+    directive!(
+        "timeout",
+        RS,
+        1,
+        Some(1),
+        ValueKind::Duration,
+        Some("60s"),
+        false
+    ),
+    directive!(
+        "ping",
+        RS,
+        1,
+        Some(1),
+        ValueKind::Duration,
+        Some("60s"),
+        false
+    ),
+    directive!(
+        "ping_timeout",
+        RS,
+        1,
+        Some(1),
+        ValueKind::Duration,
+        Some("30s"),
+        false
+    ),
+    directive!(
+        "max_streams",
+        RS,
+        1,
+        Some(1),
+        ValueKind::Integer,
+        Some("32"),
+        false
+    ),
+    directive!(
+        "ack_window",
+        RS,
+        1,
+        Some(1),
+        ValueKind::Integer,
+        Some("5000000"),
+        false
+    ),
+    directive!(
+        "chunk_size",
+        RS,
+        1,
+        Some(1),
+        ValueKind::Integer,
+        Some("4096"),
+        false
+    ),
+    directive!(
+        "max_message",
+        RS,
+        1,
+        Some(1),
+        ValueKind::Size,
+        Some("1M"),
+        false
+    ),
+    directive!(
+        "out_queue",
+        RS,
+        1,
+        Some(1),
+        ValueKind::Size,
+        Some("256"),
+        false
+    ),
+    directive!(
+        "out_cork",
+        RS,
+        1,
+        Some(1),
+        ValueKind::Size,
+        Some("out_queue / 8"),
+        false
+    ),
+    directive!("busy", RS, 1, Some(1), ValueKind::Flag, Some("off"), false),
+    directive!(
+        "play_time_fix",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Flag,
+        Some("on"),
+        false
+    ),
+    directive!(
+        "publish_time_fix",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Flag,
+        Some("on"),
+        false
+    ),
+    directive!(
+        "buflen",
+        RS,
+        1,
+        Some(1),
+        ValueKind::Duration,
+        Some("1s"),
+        false
+    ),
+    // Access and codec: 3
+    directive!(
+        "allow",
+        RSA,
+        1,
+        Some(2),
+        ValueKind::AccessRule,
+        Some("implicit allow"),
+        true
+    ),
+    directive!(
+        "deny",
+        RSA,
+        1,
+        Some(2),
+        ValueKind::AccessRule,
+        Some("implicit allow"),
+        true
+    ),
+    directive!(
+        "meta",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Enum(META),
+        Some("on"),
+        false
+    ),
+    // Live: 11
+    directive!("live", RSA, 1, Some(1), ValueKind::Flag, Some("off"), false),
+    directive!(
+        "stream_buckets",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Integer,
+        Some("1024"),
+        false,
+        SourceBug
+    ),
+    directive!(
+        "buffer",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Duration,
+        Some("0"),
+        false
+    ),
+    directive!(
+        "sync",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::DurationOrOff,
+        Some("300ms"),
+        false
+    ),
+    directive!(
+        "interleave",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Flag,
+        Some("off"),
+        false
+    ),
+    directive!(
+        "wait_key",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Flag,
+        Some("on"),
+        false
+    ),
+    directive!(
+        "wait_video",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Flag,
+        Some("off"),
+        false
+    ),
+    directive!(
+        "publish_notify",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Flag,
+        Some("off"),
+        false
+    ),
+    directive!(
+        "play_restart",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Flag,
+        Some("off"),
+        false
+    ),
+    directive!(
+        "idle_streams",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Flag,
+        Some("on"),
+        false
+    ),
+    directive!(
+        "drop_idle_publisher",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::DurationOrOff,
+        Some("off"),
+        false
+    ),
+    // Relay: 6
+    directive!(
+        "push",
+        A,
+        1,
+        None,
+        ValueKind::RelayTarget(RelayKind::Push),
+        None,
+        true
+    ),
+    directive!(
+        "pull",
+        A,
+        1,
+        None,
+        ValueKind::RelayTarget(RelayKind::Pull),
+        None,
+        true
+    ),
+    directive!(
+        "relay_buffer",
+        RS,
+        1,
+        Some(1),
+        ValueKind::Duration,
+        Some("5s"),
+        false
+    ),
+    directive!(
+        "push_reconnect",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Duration,
+        Some("3s"),
+        false
+    ),
+    directive!(
+        "pull_reconnect",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Duration,
+        Some("3s"),
+        false
+    ),
+    directive!(
+        "session_relay",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Flag,
+        Some("off"),
+        false
+    ),
+    // External execution: 13
+    directive!("exec", RSA, 1, None, ValueKind::Command, None, true),
+    directive!("exec_push", RSA, 1, None, ValueKind::Command, None, true),
+    directive!("exec_pull", RSA, 1, None, ValueKind::Command, None, true),
+    directive!("exec_publish", RSA, 1, None, ValueKind::Command, None, true),
+    directive!(
+        "exec_publish_done",
+        RSA,
+        1,
+        None,
+        ValueKind::Command,
+        None,
+        true
+    ),
+    directive!("exec_play", RSA, 1, None, ValueKind::Command, None, true),
+    directive!(
+        "exec_play_done",
+        RSA,
+        1,
+        None,
+        ValueKind::Command,
+        None,
+        true
+    ),
+    directive!(
+        "exec_record_done",
+        RSAC,
+        1,
+        None,
+        ValueKind::Command,
+        None,
+        true
+    ),
+    directive!(
+        "exec_static",
+        RSA,
+        1,
+        None,
+        ValueKind::Command,
+        None,
+        true,
+        PlatformLimited
+    ),
+    directive!(
+        "respawn",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Flag,
+        Some("on"),
+        false
+    ),
+    directive!(
+        "respawn_timeout",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Duration,
+        Some("5s"),
+        false
+    ),
+    directive!(
+        "exec_kill_signal",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Signal,
+        Some("KILL"),
+        false
+    ),
+    directive!(
+        "exec_options",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Flag,
+        Some("off"),
+        false
+    ),
+    // Recording: 11
+    directive!(
+        "record",
+        RSAC,
+        1,
+        None,
+        ValueKind::Bitmask(RECORD_PARTS),
+        Some("off"),
+        false
+    ),
+    directive!(
+        "record_path",
+        RSAC,
+        1,
+        Some(1),
+        ValueKind::Path,
+        Some(""),
+        false
+    ),
+    directive!(
+        "record_suffix",
+        RSAC,
+        1,
+        Some(1),
+        ValueKind::Strings,
+        Some(".flv"),
+        false
+    ),
+    directive!(
+        "record_unique",
+        RSAC,
+        1,
+        Some(1),
+        ValueKind::Flag,
+        Some("off"),
+        false
+    ),
+    directive!(
+        "record_append",
+        RSAC,
+        1,
+        Some(1),
+        ValueKind::Flag,
+        Some("off"),
+        false
+    ),
+    directive!(
+        "record_lock",
+        RSAC,
+        1,
+        Some(1),
+        ValueKind::Flag,
+        Some("off"),
+        false,
+        PlatformLimited
+    ),
+    directive!(
+        "record_max_size",
+        RSAC,
+        1,
+        Some(1),
+        ValueKind::Size,
+        Some("0"),
+        false
+    ),
+    directive!(
+        "record_max_frames",
+        RSAC,
+        1,
+        Some(1),
+        ValueKind::Size,
+        Some("0"),
+        false
+    ),
+    directive!(
+        "record_interval",
+        RSAC,
+        1,
+        Some(1),
+        ValueKind::Duration,
+        None,
+        false
+    ),
+    directive!(
+        "record_notify",
+        RSAC,
+        1,
+        Some(1),
+        ValueKind::Flag,
+        Some("off"),
+        false
+    ),
+    directive!("recorder", A, 1, Some(1), ValueKind::NamedBlock, None, true),
+    // VOD and netcall: 5
+    directive!("play", RSA, 1, None, ValueKind::Strings, None, true),
+    directive!(
+        "play_temp_path",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Path,
+        Some("/tmp"),
+        false
+    ),
+    directive!(
+        "play_local_path",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Path,
+        Some(""),
+        false
+    ),
+    directive!(
+        "netcall_timeout",
+        RS,
+        1,
+        Some(1),
+        ValueKind::Duration,
+        Some("10s"),
+        false
+    ),
+    directive!(
+        "netcall_buffer",
+        RS,
+        1,
+        Some(1),
+        ValueKind::Size,
+        Some("1024"),
+        false
+    ),
+    // HTTP notifications: 13
+    directive!("on_connect", RS, 1, Some(1), ValueKind::Url, None, false),
+    directive!("on_disconnect", RS, 1, Some(1), ValueKind::Url, None, false),
+    directive!("on_publish", RSA, 1, Some(1), ValueKind::Url, None, false),
+    directive!("on_play", RSA, 1, Some(1), ValueKind::Url, None, false),
+    directive!(
+        "on_publish_done",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Url,
+        None,
+        false
+    ),
+    directive!("on_play_done", RSA, 1, Some(1), ValueKind::Url, None, false),
+    directive!("on_done", RSA, 1, Some(1), ValueKind::Url, None, false),
+    directive!(
+        "on_record_done",
+        RSAC,
+        1,
+        Some(1),
+        ValueKind::Url,
+        None,
+        false
+    ),
+    directive!("on_update", RSA, 1, Some(1), ValueKind::Url, None, false),
+    directive!(
+        "notify_method",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Enum(NOTIFY_METHODS),
+        Some("post"),
+        false
+    ),
+    directive!(
+        "notify_update_timeout",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Duration,
+        Some("30s"),
+        false
+    ),
+    directive!(
+        "notify_update_strict",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Flag,
+        Some("off"),
+        false
+    ),
+    directive!(
+        "notify_relay_redirect",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Flag,
+        Some("off"),
+        false
+    ),
+    // Logging, limits, and auto-push: 6
+    directive!(
+        "access_log",
+        RSA,
+        1,
+        Some(2),
+        ValueKind::AccessLog,
+        Some("combined"),
+        true
+    ),
+    directive!(
+        "log_format",
+        RSA,
+        2,
+        None,
+        ValueKind::LogFormat,
+        Some("combined"),
+        true
+    ),
+    directive!(
+        "max_connections",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Integer,
+        None,
+        false
+    ),
+    directive!(
+        "rtmp_auto_push",
+        N,
+        1,
+        Some(1),
+        ValueKind::Flag,
+        Some("off"),
+        false,
+        PlatformLimited
+    ),
+    directive!(
+        "rtmp_auto_push_reconnect",
+        N,
+        1,
+        Some(1),
+        ValueKind::Duration,
+        Some("100ms"),
+        false,
+        PlatformLimited
+    ),
+    directive!(
+        "rtmp_socket_dir",
+        N,
+        1,
+        Some(1),
+        ValueKind::Path,
+        Some("/tmp"),
+        false,
+        PlatformLimited
+    ),
+    // HLS: 22
+    directive!("hls", RSA, 1, Some(1), ValueKind::Flag, Some("off"), false),
+    directive!(
+        "hls_fragment",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Duration,
+        Some("5s"),
+        false
+    ),
+    directive!(
+        "hls_max_fragment",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Duration,
+        Some("10 * hls_fragment"),
+        false
+    ),
+    directive!(
+        "hls_path",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Path,
+        Some(""),
+        false
+    ),
+    directive!(
+        "hls_playlist_length",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Duration,
+        Some("30s"),
+        false
+    ),
+    directive!(
+        "hls_muxdelay",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Duration,
+        Some("700ms"),
+        false,
+        SourceNoOp
+    ),
+    directive!(
+        "hls_sync",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Duration,
+        Some("2ms"),
+        false
+    ),
+    directive!(
+        "hls_continuous",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Flag,
+        Some("on"),
+        false
+    ),
+    directive!(
+        "hls_nested",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Flag,
+        Some("off"),
+        false
+    ),
+    directive!(
+        "hls_fragment_naming",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Enum(HLS_NAMING),
+        Some("sequential"),
+        false
+    ),
+    directive!(
+        "hls_fragment_slicing",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Enum(HLS_SLICING),
+        Some("plain"),
+        false
+    ),
+    directive!(
+        "hls_type",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Enum(HLS_TYPES),
+        Some("live"),
+        false
+    ),
+    directive!(
+        "hls_max_audio_delay",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Duration,
+        Some("300ms"),
+        false
+    ),
+    directive!(
+        "hls_audio_buffer_size",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Size,
+        Some("1M"),
+        false
+    ),
+    directive!(
+        "hls_cleanup",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Flag,
+        Some("on"),
+        false
+    ),
+    directive!(
+        "hls_variant",
+        RSA,
+        1,
+        None,
+        ValueKind::HlsVariant,
+        None,
+        true
+    ),
+    directive!(
+        "hls_base_url",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Strings,
+        Some(""),
+        false
+    ),
+    directive!(
+        "hls_fragment_naming_granularity",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Integer,
+        Some("0"),
+        false
+    ),
+    directive!(
+        "hls_keys",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Flag,
+        Some("off"),
+        false
+    ),
+    directive!(
+        "hls_key_path",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Path,
+        Some("hls_path"),
+        false
+    ),
+    directive!(
+        "hls_key_url",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Strings,
+        Some(""),
+        false
+    ),
+    directive!(
+        "hls_fragments_per_key",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Integer,
+        Some("0"),
+        false
+    ),
+    // DASH: 6
+    directive!("dash", RSA, 1, Some(1), ValueKind::Flag, Some("off"), false),
+    directive!(
+        "dash_fragment",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Duration,
+        Some("5s"),
+        false
+    ),
+    directive!(
+        "dash_path",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Path,
+        Some(""),
+        false
+    ),
+    directive!(
+        "dash_playlist_length",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Duration,
+        Some("30s"),
+        false
+    ),
+    directive!(
+        "dash_cleanup",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Flag,
+        Some("on"),
+        false
+    ),
+    directive!(
+        "dash_nested",
+        RSA,
+        1,
+        Some(1),
+        ValueKind::Flag,
+        Some("off"),
+        false
+    ),
+    // HTTP statistics and control: 3
+    directive!(
+        "rtmp_stat",
+        H,
+        1,
+        None,
+        ValueKind::Bitmask(STAT_PARTS),
+        Some("0"),
+        false
+    ),
+    directive!(
+        "rtmp_stat_stylesheet",
+        H,
+        1,
+        Some(1),
+        ValueKind::Strings,
+        Some(""),
+        false
+    ),
+    directive!(
+        "rtmp_control",
+        H,
+        1,
+        None,
+        ValueKind::Bitmask(CONTROL_PARTS),
+        Some("0"),
+        false
+    ),
+];
+
+#[must_use]
+pub fn directive_specs() -> &'static [DirectiveSpec] {
+    &DIRECTIVES
+}
+
+/// Validates one directive after nginx tokenization.
+///
+/// # Errors
+///
+/// Returns an error for unknown keys, invalid contexts, arity, or values.
+pub fn validate_directive(
+    name: &str,
+    context: DirectiveContext,
+    args: &[&str],
+) -> Result<&'static DirectiveSpec, DirectiveError> {
+    let spec = DIRECTIVES
+        .iter()
+        .find(|spec| spec.name == name)
+        .ok_or_else(|| DirectiveError::UnknownDirective(name.to_owned()))?;
+
+    if !spec.contexts.contains(&context) {
+        return Err(DirectiveError::InvalidContext {
+            name: spec.name,
+            context,
+        });
+    }
+    if args.len() < usize::from(spec.min_args)
+        || spec
+            .max_args
+            .is_some_and(|max| args.len() > usize::from(max))
+    {
+        return Err(DirectiveError::InvalidArity {
+            name: spec.name,
+            expected: expected_arity(spec),
+            actual: args.len(),
+        });
+    }
+
+    validate_value(spec, args)?;
+    Ok(spec)
+}
+
+fn expected_arity(spec: &DirectiveSpec) -> String {
+    match spec.max_args {
+        Some(max) if max == spec.min_args => spec.min_args.to_string(),
+        Some(max) => format!("{}..={max}", spec.min_args),
+        None => format!("at least {}", spec.min_args),
+    }
+}
+
+fn validate_value(spec: &DirectiveSpec, args: &[&str]) -> Result<(), DirectiveError> {
+    let valid = match spec.value_kind {
+        ValueKind::AccessLog => args[0] != "off" || args.len() == 1,
+        ValueKind::AccessRule => valid_access_rule(args),
+        ValueKind::Bitmask(values) => args.iter().all(|arg| values.contains(arg)),
+        ValueKind::Block => true,
+        ValueKind::Command | ValueKind::HlsVariant | ValueKind::NamedBlock => !args[0].is_empty(),
+        ValueKind::Duration => valid_duration(args[0]),
+        ValueKind::DurationOrOff => args[0] == "off" || valid_duration(args[0]),
+        ValueKind::Enum(values) => values.contains(&args[0]),
+        ValueKind::Flag => matches!(args[0], "on" | "off"),
+        ValueKind::Integer => args[0].parse::<u64>().is_ok(),
+        ValueKind::Listen => valid_listen(args),
+        ValueKind::LogFormat | ValueKind::Path | ValueKind::Strings => {
+            args.iter().all(|arg| !arg.is_empty())
+        }
+        ValueKind::RelayTarget(kind) => valid_relay_target(kind, args),
+        ValueKind::Signal => valid_signal(args[0]),
+        ValueKind::Size => valid_size(args[0]),
+        ValueKind::Url => args[0].starts_with("http://") && args[0].len() > "http://".len(),
+    };
+
+    if valid {
+        Ok(())
+    } else {
+        Err(DirectiveError::InvalidValue {
+            name: spec.name,
+            detail: args.join(" "),
+        })
+    }
+}
+
+fn valid_access_rule(args: &[&str]) -> bool {
+    match args {
+        [target] => valid_access_target(target),
+        [operation, target] => {
+            matches!(*operation, "publish" | "play") && valid_access_target(target)
+        }
+        _ => false,
+    }
+}
+
+fn valid_access_target(target: &str) -> bool {
+    if target == "all" {
+        return true;
+    }
+    let Some((address, prefix)) = target.split_once('/') else {
+        return target.parse::<IpAddr>().is_ok();
+    };
+    let Ok(address) = address.parse::<IpAddr>() else {
+        return false;
+    };
+    let Ok(prefix) = prefix.parse::<u8>() else {
+        return false;
+    };
+    prefix <= if address.is_ipv4() { 32 } else { 128 }
+}
+
+fn valid_listen(args: &[&str]) -> bool {
+    if args[0].is_empty() {
+        return false;
+    }
+    let Some(option) = args.get(1) else {
+        return true;
+    };
+
+    if matches!(
+        *option,
+        "bind"
+            | "ipv6only=on"
+            | "ipv6only=off"
+            | "so_keepalive=on"
+            | "so_keepalive=off"
+            | "proxy_protocol"
+    ) {
+        return true;
+    }
+
+    option.strip_prefix("so_keepalive=").is_some_and(|value| {
+        let parts: Vec<_> = value.split(':').collect();
+        parts.len() == 3 && parts.iter().all(|part| valid_seconds_duration(part))
+    })
+}
+
+fn valid_relay_target(kind: RelayKind, args: &[&str]) -> bool {
+    if args[0].is_empty() {
+        return false;
+    }
+
+    let mut has_name = false;
+    let mut is_static = false;
+    for option in &args[1..] {
+        let (key, value) = option
+            .split_once('=')
+            .map_or((*option, None), |(key, value)| (key, Some(value)));
+
+        let valid = match key {
+            "app" | "tcUrl" | "pageUrl" | "swfUrl" | "flashVer" | "playPath" => value.is_some(),
+            "name" => {
+                has_name = value.is_some_and(|value| !value.is_empty());
+                has_name
+            }
+            "live" | "start" | "stop" => {
+                value.is_none() || value.is_some_and(|value| value.parse::<u64>().is_ok())
+            }
+            "static" => {
+                is_static = true;
+                value.is_none() || value.is_some_and(|value| value.parse::<u64>().is_ok())
+            }
+            _ => false,
+        };
+        if !valid {
+            return false;
+        }
+    }
+
+    match kind {
+        RelayKind::Push => !is_static,
+        RelayKind::Pull => !is_static || has_name,
+    }
+}
+
+fn valid_signal(value: &str) -> bool {
+    const SIGNALS: &[&str] = &[
+        "HUP", "INT", "QUIT", "ILL", "ABRT", "FPE", "KILL", "SEGV", "PIPE", "ALRM", "TERM", "USR1",
+        "USR2", "CHLD", "CONT", "STOP", "TSTP", "TTIN", "TTOU",
+    ];
+
+    value.parse::<u32>().is_ok() || SIGNALS.contains(&value)
+}
+
+fn valid_size(value: &str) -> bool {
+    let (number, suffix) = value
+        .char_indices()
+        .last()
+        .filter(|(_, last)| last.is_ascii_alphabetic())
+        .map_or((value, None), |(index, last)| {
+            (&value[..index], Some(last.to_ascii_lowercase()))
+        });
+
+    !number.is_empty()
+        && number.bytes().all(|byte| byte.is_ascii_digit())
+        && suffix.is_none_or(|suffix| matches!(suffix, 'k' | 'm' | 'g'))
+}
+
+fn valid_duration(value: &str) -> bool {
+    valid_nginx_time(value, false)
+}
+
+fn valid_seconds_duration(value: &str) -> bool {
+    valid_nginx_time(value, true)
+}
+
+fn valid_nginx_time(value: &str, seconds_resolution: bool) -> bool {
+    if value.is_empty() || !value.is_ascii() {
+        return false;
+    }
+
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    let mut previous_unit = if seconds_resolution { 0 } else { 2 };
+    while index < bytes.len() {
+        let number_start = index;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        if number_start == index {
+            return false;
+        }
+        if index == bytes.len() {
+            return true;
+        }
+
+        let unit = if bytes[index..].starts_with(b"ms") {
+            if seconds_resolution {
+                return false;
+            }
+            index += 2;
+            8
+        } else {
+            let unit = match bytes[index] {
+                b'y' => 1,
+                b'M' => 2,
+                b'w' => 3,
+                b'd' => 4,
+                b'h' => 5,
+                b'm' => 6,
+                b's' => 7,
+                _ => return false,
+            };
+            index += 1;
+            unit
+        };
+        if unit <= previous_unit {
+            return false;
+        }
+        previous_unit = unit;
+    }
+
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{valid_duration, valid_seconds_duration, valid_size};
+
+    #[test]
+    fn validates_nginx_size_and_time_literals() {
+        assert!(valid_size("0"));
+        assert!(valid_size("1K"));
+        assert!(valid_size("4m"));
+        assert!(!valid_size("1T"));
+
+        assert!(valid_duration("0"));
+        assert!(valid_duration("250ms"));
+        assert!(valid_duration("1h30m"));
+        assert!(!valid_duration("1m2h"));
+        assert!(!valid_duration("1ms2s"));
+        assert!(!valid_duration("1M"));
+        assert!(valid_seconds_duration("1M2w"));
+        assert!(!valid_seconds_duration("1ms"));
+        assert!(!valid_duration("soon"));
+    }
+}

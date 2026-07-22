@@ -49,8 +49,8 @@ not protocol support.
 
 | Capability | Status |
 | --- | --- |
-| All 117 nginx-rtmp directive keys/value grammars | planned RTMP slice 0 |
-| RTMP simple/complex handshake | planned RTMP slice 1 |
+| All 117 nginx-rtmp directive keys/value grammars | partial: complete registry and post-tokenization validator; nginx tokenizer/inheritance pending |
+| RTMP simple/complex handshake | partial: simple `S0+S1+S2` response implemented; complex handshake pending |
 | Chunk formats 0-3 and extended timestamps | planned RTMP slice 1 |
 | AMF0 connect/createStream/publish/play | planned RTMP slice 1 |
 | Live publisher/subscriber fanout | planned RTMP slice 1 |

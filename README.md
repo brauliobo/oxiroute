@@ -10,10 +10,13 @@ The current code is intentionally much smaller than that goal. It provides:
 - A restricted Lua configuration loader with strict typed validation.
 - Pingora-backed HTTP reverse proxy listeners.
 - Pingora-backed opaque TCP relays.
+- An exact nginx-rtmp registry for all 117 active directive keys with context, arity, value, default, and runtime-status metadata.
+- RTMP v3 simple-handshake response generation.
 - Acceptance tests for configuration isolation and runtime planning.
 
 It does not yet provide forward proxying, `CONNECT`, TLS, HTTP/2 listener configuration,
-HTTP/3, UDP, caching, load balancing, hot reload, configuration imports, or the web UI.
+HTTP/3, UDP, caching, load balancing, hot reload, full configuration imports, RTMP
+publish/play/media transport, or the web UI.
 It is not a firewall, NAT implementation, or drop-in replacement for Squid, nginx,
 HAProxy, or Apache httpd.
 

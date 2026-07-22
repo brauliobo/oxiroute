@@ -1,5 +1,9 @@
 [workspace]
-members = ["crates/oxiroute-config", "crates/oxiroute-server"]
+members = [
+    "crates/oxiroute-config",
+    "crates/oxiroute-rtmp",
+    "crates/oxiroute-server",
+]
 resolver = "2"
 
 [workspace.package]
