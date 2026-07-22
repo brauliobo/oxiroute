@@ -1,6 +1,7 @@
 use std::{
     collections::HashSet,
     net::SocketAddr,
+    path::PathBuf,
     sync::{
         atomic::{AtomicU32, Ordering},
         Arc,
@@ -28,6 +29,8 @@ pub struct Config {
 #[serde(deny_unknown_fields)]
 pub struct Management {
     pub bind: SocketAddr,
+    #[serde(default)]
+    pub ui_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]

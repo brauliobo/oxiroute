@@ -68,7 +68,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         manual_recording: false,
     }));
     if let Some(management) = &config.management {
-        let app = HttpServer::new_app(RtmpManagementApi::new(Arc::clone(&rtmp_registry)));
+        let management_api = if let Some(ui_dir) = &management.ui_dir {
+            RtmpManagementApi::with_ui_dir(Arc::clone(&rtmp_registry), ui_dir)?
+        } else {
+            RtmpManagementApi::new(Arc::clone(&rtmp_registry))
+        };
+        let app = HttpServer::new_app(management_api);
         let mut service = Service::new("OxiRoute management".into(), app);
         service.add_tcp(&management.bind.to_string());
         server.add_service(service);

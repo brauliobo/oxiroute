@@ -65,18 +65,13 @@ return { version = 1, listeners = {} }
 fn loads_a_loopback_management_listener() {
     let source = VALID_CONFIG.replace(
         "listeners = {",
-        "management = { bind = \"127.0.0.1:9080\" },\n  listeners = {",
+        "management = { bind = \"127.0.0.1:9080\", ui_dir = \"./ui/dist\" },\n  listeners = {",
     );
     let config = load_lua(&source).expect("management config");
+    let management = config.management.expect("management listener");
 
-    assert_eq!(
-        config
-            .management
-            .expect("management listener")
-            .bind
-            .to_string(),
-        "127.0.0.1:9080"
-    );
+    assert_eq!(management.bind.to_string(), "127.0.0.1:9080");
+    assert_eq!(management.ui_dir.unwrap().to_string_lossy(), "./ui/dist");
 }
 
 #[test]

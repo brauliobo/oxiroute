@@ -2,6 +2,7 @@ return {
   version = 1,
   management = {
     bind = "127.0.0.1:9080",
+    ui_dir = "./ui/dist",
   },
   listeners = {
     {

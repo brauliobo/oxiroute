@@ -84,6 +84,8 @@ Every merge/release runs:
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+pnpm --dir ui test
+pnpm --dir ui build
 ```
 
 As components land, gates add frontend typecheck/unit/build, browser tests, importer fixture

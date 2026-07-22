@@ -69,6 +69,11 @@ Initial views:
 - Imports: source tree, support summary, diagnostics, and conversion preview.
 - Events/logs: bounded recent operational events, not raw unbounded log streaming.
 
+Current implementation status: the responsive RTMP broadcast desk is implemented with
+active-stream, codec/media, viewer, and recorder visibility. Manual controls call exact-ID
+routes and remain disabled when the API reports no recording backend. The broader overview,
+configuration, certificate, import, and event views remain planned.
+
 ## File-change behavior
 
 - Backend watches parent directories and hashes complete file content after debouncing.
