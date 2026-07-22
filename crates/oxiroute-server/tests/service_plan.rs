@@ -7,6 +7,7 @@ use oxiroute_server::{service_specs, ServiceKind};
 fn plans_one_runtime_service_for_each_configured_listener() {
     let config = Config {
         version: 1,
+        management: None,
         listeners: vec![
             Listener {
                 name: "web".into(),

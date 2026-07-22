@@ -3,8 +3,10 @@ use std::{error::Error, fs, sync::Arc};
 use async_trait::async_trait;
 use log::{info, warn};
 use oxiroute_config::load_lua;
-use oxiroute_server::{service_specs, HttpReverseProxy, ServiceKind};
+use oxiroute_rtmp::{RtmpCapabilities, RtmpRegistry};
+use oxiroute_server::{service_specs, HttpReverseProxy, RtmpManagementApi, ServiceKind};
 use pingora::{
+    apps::http_app::HttpServer,
     apps::ServerApp,
     connectors::TransportConnector,
     protocols::Stream,
@@ -60,6 +62,18 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut server = Server::new(None)?;
     server.bootstrap();
+
+    let rtmp_registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
+        live_ingest: false,
+        manual_recording: false,
+    }));
+    if let Some(management) = &config.management {
+        let app = HttpServer::new_app(RtmpManagementApi::new(Arc::clone(&rtmp_registry)));
+        let mut service = Service::new("OxiRoute management".into(), app);
+        service.add_tcp(&management.bind.to_string());
+        server.add_service(service);
+        info!("configured management API on {}", management.bind);
+    }
 
     for spec in service_specs(&config) {
         let bind = spec.bind.to_string();
