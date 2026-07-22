@@ -9,12 +9,14 @@ version.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+bytes.workspace = true
 env_logger.workspace = true
 http.workspace = true
 log.workspace = true
 oxiroute-config = { path = "../oxiroute-config" }
 oxiroute-rtmp = { path = "../oxiroute-rtmp" }
 pingora.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 
