@@ -51,6 +51,7 @@ acceptance tests were run and observed failing before their implementations were
 - [`docs/IMPORT_SPEC.md`](docs/IMPORT_SPEC.md) defines native configuration compatibility.
 - [`docs/API_UI_SPEC.md`](docs/API_UI_SPEC.md) defines control-plane and UI behavior.
 - [`docs/ACME_SPEC.md`](docs/ACME_SPEC.md) defines certificate issuance and auto-renewal.
+- [`docs/RTMP_SPEC.md`](docs/RTMP_SPEC.md) defines RTMP runtime and nginx-rtmp compatibility.
 - [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) distinguishes implemented, planned, and excluded capabilities.
 - [`docs/TEST_STRATEGY.md`](docs/TEST_STRATEGY.md) defines test-first release gates.
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) defines the narrow release sequence.

@@ -29,6 +29,7 @@ firewalling, NAT, routing, or conntrack.
 9. Issue, import, activate, monitor, and automatically renew TLS certificates through a Certbot-like ACME subsystem.
 10. Preserve existing traffic during valid configuration and certificate generation changes.
 11. Remain usable without root for unprivileged listeners and ordinary proxy modes.
+12. Provide RTMP live publish/play, relay, recording, VOD, HLS/DASH output, callbacks, controls, and nginx-rtmp configuration compatibility.
 
 ## Non-goals
 
@@ -103,6 +104,14 @@ complete Squid parity while such entries remain.
 - TCP and UDP MAY carry any application protocol that does not require kernel transparency or unsupported socket semantics.
 - ICMP, arbitrary IP protocols, source spoofing, and transparent transit forwarding are outside the ordinary relay abstraction.
 - PROXY protocol MAY explicitly propagate client addresses when both endpoints support it.
+
+### RTMP media service
+
+- RTMP behavior and nginx-rtmp directive compatibility MUST follow `RTMP_SPEC.md`.
+- The server MUST distinguish imported/validated directives from runtime-enforced directives.
+- Live fanout MUST use bounded per-subscriber queues and deterministic media-drop/resynchronization policy.
+- RTMP callbacks, process execution, file recording, relays, and segment output MUST have independent security and resource policies.
+- HLS and DASH output are media transmuxing features, not generic HTTP proxy behavior.
 
 ### Load balancing
 

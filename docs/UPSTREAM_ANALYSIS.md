@@ -15,6 +15,7 @@ The reference repositories were cloned shallowly into `/home/braulio/Projects` o
 | Vue | `b5f8518` | Vue 3 SFC tooling supports Pug through a build-time template preprocessor. Filesystem synchronization belongs in the backend, not Vue watchers. |
 | Pug | `c323ed3` | Must be precompiled. Runtime compilation or user-supplied templates execute JavaScript and can resolve includes. Use a supported 3.x package rather than the checkout's stale manifest version. |
 | Certbot | `289a382` | Mature ACME lifecycle with persistent accounts, renewable lineages, authenticator/installer plugins, locking, recovery, and renewal scheduling. OxiRoute needs a much narrower integrated authenticator/activator model. |
+| nginx-rtmp-module | `6c7719d` | RTMP 1.1.4 implementation with 117 active directives, live fanout, relay, record, VOD, callbacks, HLS/DASH, exec, control, and stats. Runtime behavior is deeply coupled to nginx events, workers, HTTP, pools, and files. |
 
 ## Architectural conclusions
 
@@ -84,6 +85,17 @@ installer discovery, checkpoint/rollback framework, or arbitrary deploy hooks.
 Managed certificate revisions should switch through one atomic relative `current` symlink,
 not Certbot's four independently updated live links. Existing Certbot lineages are external
 read-only sources whose transient mixed-link states must be handled during import.
+
+### RTMP needs a protocol engine, not an L4 switch
+
+nginx-rtmp implements simple and complex handshakes, RTMP chunks, AMF commands, session
+middleware, bounded output queues, and media-aware fanout. Opaque TCP forwarding cannot
+provide publish/play routing, keyframe gating, recording, callbacks, or HLS/DASH.
+
+The 117-directive parser and runtime are separate compatibility layers. Every directive can
+be recognized early while runtime status remains explicit. Observable legacy behavior may
+be supported deliberately, but source defects such as the `stream_buckets` type mismatch
+must never be reproduced as memory corruption in Rust.
 
 ## Licensing boundary
 

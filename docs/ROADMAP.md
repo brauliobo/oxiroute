@@ -95,3 +95,15 @@ If transparent traffic handling becomes necessary, build a separate privileged L
 helper with a narrow API and explicit nftables/policy-routing ownership. Keep it optional
 and out of the proxy process. Do not generate or reconcile arbitrary firewall rules from
 the main daemon.
+
+## RTMP workstream
+
+RTMP proceeds in independently releasable slices rather than waiting for HTTP/Squid parity:
+
+1. Register and validate all 117 active nginx-rtmp directives with lossless raw values and runtime-support status.
+2. Implement handshake, chunk transport, AMF0 connect/createStream, live publish/play, metadata/codec headers, keyframe gating, and bounded fanout.
+3. Add access, callbacks, push/pull relay, FLV recording, VOD, statistics, control, and logging.
+4. Add HLS, MPEG-DASH, isolated exec workers, limits, and multi-worker equivalents.
+
+Every slice begins with protocol/configuration failures and differential fixtures against
+the cloned nginx-rtmp module. Directive parsing does not count as runtime feature parity.

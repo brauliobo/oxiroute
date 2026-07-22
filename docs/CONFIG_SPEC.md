@@ -55,6 +55,7 @@ Config
   policies[]
   tls_profiles[]
   certificates[]
+  rtmp_services[]
   imports[]
   management
   observability
@@ -124,6 +125,13 @@ tls_profiles = {
 
 Secrets SHOULD be references to protected files, environment-independent secret stores,
 or plugin credentials. Canonical output MUST NOT inline private keys or DNS API tokens.
+
+### RTMP service
+
+RTMP services contain listeners, applications, live/relay/record/VOD/segment policies,
+callbacks, controls, and limits. The canonical model uses typed fields; the nginx-rtmp
+importer additionally retains every raw directive token and its effective scope as defined
+in `RTMP_SPEC.md`.
 
 ## Deterministic rendering
 
