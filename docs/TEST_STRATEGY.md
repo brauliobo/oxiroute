@@ -35,6 +35,8 @@ renewal windows, routing precedence, and bounded table/session behavior.
 - TLS SNI/ALPN, client auth, upstream verification, certificate rotation, and expiry.
 - Atomic config writes, parent-directory watches, stale revisions, and failed preparation.
 - Management API response shapes, conflicts, redaction, authentication, and event reconnect.
+- Monitoring counter lifecycle, Linux process/host parser fixtures, response shape, stale refresh,
+  and non-overlapping polling.
 
 ### Import conformance
 

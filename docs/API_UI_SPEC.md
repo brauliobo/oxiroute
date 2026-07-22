@@ -27,7 +27,25 @@ Initial endpoints:
 | `GET` | `/api/v1/certificates` | Redacted certificate inventory and expiry state. |
 | `POST` | `/api/v1/certificates/{name}/renew` | Queue an operator-requested renewal. |
 | `POST` | `/api/v1/imports/validate` | Parse native sources and return a report without activation. |
+| `GET` | `/api/v1/monitoring` | Runtime process, host load, listener traffic, and RTMP activity snapshot. |
 | `GET` | `/metrics` | Prometheus exposition on a separately configurable listener. |
+
+The implemented monitoring snapshot contains daemon uptime, process CPU/RSS/virtual memory,
+threads, open file descriptors, host load averages and memory, aggregate/listener connection and
+byte counters, and RTMP stream/publisher/subscriber/media totals. Process and host sampling
+currently reads Linux `/proc`; a sampling or parsing failure returns `503` instead of fabricated
+zeroes. CPU utilization is `null` until two successful samples establish a delta.
+
+RTMP stream, publisher, subscriber, and media totals are derived from the active catalog and return
+to zero after publishers and subscribers detach. Listener connection and byte counters are
+daemon-lifetime totals.
+
+Listener byte counters describe bytes visible at the owning runtime layer, not IP/TCP wire bytes.
+RTMP counts protocol bytes, TCP relay totals are published after a clean relay completes, and HTTP
+uses Pingora's application counters. Pingora's HTTP/1 sent counter includes serialized response
+headers, while its received counter covers request bodies; callers MUST NOT interpret these values
+as protocol-independent billable octets. Prometheus exposition, latency/error series, history, and
+cross-platform host samplers remain separate work.
 
 `PUT /config` outcomes:
 
@@ -69,10 +87,12 @@ Initial views:
 - Imports: source tree, support summary, diagnostics, and conversion preview.
 - Events/logs: bounded recent operational events, not raw unbounded log streaming.
 
-Current implementation status: the responsive RTMP broadcast desk is implemented with
-active-stream, codec/media, viewer, and recorder visibility. Manual controls call exact-ID
-routes and remain disabled when the API reports no recording backend. The broader overview,
-configuration, certificate, import, and event views remain planned.
+Current implementation status: the responsive runtime observatory and RTMP broadcast desk are
+implemented with host/process load, listener traffic, active-stream, codec/media, viewer, and
+recorder visibility. Refreshes do not overlap, retain the last valid sample after transient
+failures, and expose loading/stale/error states. Manual controls call exact-ID routes and remain
+disabled when the API reports no recording backend. Configuration, certificate, import, and event
+views remain planned.
 
 ## File-change behavior
 

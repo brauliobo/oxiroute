@@ -41,9 +41,10 @@ not protocol support.
 | Weighted round robin and least connections | planned M2 |
 | Retry budgets and passive ejection | planned M1 |
 | Config file watcher and generation reload | planned M1 |
+| Runtime monitoring snapshot | partial: Linux process/host load, listener connections/traffic, and RTMP activity API implemented; latency/errors/history/cross-platform sampling pending |
 | Structured access logs and Prometheus metrics | planned M1 |
-| Vue 3 and build-time Pug UI | partial: responsive RTMP broadcast desk and static serving implemented; broader config/certificate/import views pending |
-| Management API | partial: loopback RTMP snapshot/detail and recorder-control routes implemented; config writes/auth/events pending |
+| Vue 3 and build-time Pug UI | partial: responsive monitoring observatory, RTMP broadcast desk, stale/error handling, and static serving implemented; config/certificate/import views pending |
+| Management API | partial: loopback monitoring, RTMP snapshot/detail, and recorder-control routes implemented; config writes/auth/events pending |
 | Revisioned API and SSE events | planned M1 |
 
 ## RTMP
