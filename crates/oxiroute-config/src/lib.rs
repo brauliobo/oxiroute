@@ -39,13 +39,15 @@ pub struct Listener {
     pub name: String,
     pub bind: SocketAddr,
     pub protocol: Protocol,
-    pub upstream: SocketAddr,
+    #[serde(default)]
+    pub upstream: Option<SocketAddr>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Protocol {
     Http,
+    Rtmp,
     Tcp,
 }
 
@@ -68,6 +70,13 @@ pub enum ConfigError {
         listener: String,
         field: &'static str,
     },
+    #[error("{protocol:?} listener `{listener}` requires an upstream")]
+    MissingUpstream {
+        listener: String,
+        protocol: Protocol,
+    },
+    #[error("RTMP listener `{0}` must not declare an upstream")]
+    UnexpectedRtmpUpstream(String),
     #[error("management listener must use loopback, got `{0}`")]
     ManagementMustUseLoopback(SocketAddr),
 }
@@ -146,7 +155,22 @@ fn validate(config: &Config) -> Result<(), ConfigError> {
                 field: "bind",
             });
         }
-        if listener.upstream.port() == 0 {
+        match (listener.protocol, listener.upstream) {
+            (Protocol::Http | Protocol::Tcp, None) => {
+                return Err(ConfigError::MissingUpstream {
+                    listener: listener.name.clone(),
+                    protocol: listener.protocol,
+                });
+            }
+            (Protocol::Rtmp, Some(_)) => {
+                return Err(ConfigError::UnexpectedRtmpUpstream(listener.name.clone()));
+            }
+            _ => {}
+        }
+        if listener
+            .upstream
+            .is_some_and(|upstream| upstream.port() == 0)
+        {
             return Err(ConfigError::ZeroPort {
                 listener: listener.name.clone(),
                 field: "upstream",

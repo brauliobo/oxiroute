@@ -51,11 +51,11 @@ not protocol support.
 | Capability | Status |
 | --- | --- |
 | All 117 nginx-rtmp directive keys/value grammars | partial: tokenizer, structural parser, registry, and contextual value validation implemented; include resolution/inheritance lowering pending |
-| RTMP simple/complex handshake | partial: simple `S0+S1+S2` response implemented; complex handshake pending |
-| Chunk formats 0-3 and extended timestamps | planned RTMP slice 1 |
-| AMF0 connect/createStream/publish/play | planned RTMP slice 1 |
-| Active stream snapshot catalog | partial: immutable publisher/subscriber/media/recorder snapshots implemented; live session attachment pending |
-| Active stream management API | implemented for snapshot/detail JSON; production remains empty until live sessions attach |
+| RTMP simple/complex handshake | implemented on the live listener through the pinned `rml_rtmp` state machine; the standalone simple-response primitive remains covered independently |
+| Chunk formats 0-3 and extended timestamps | partial: `rml_rtmp` transport is active with a 1 MiB inbound chunk limit; configurable assembled-message limits and exhaustive fragmentation/interleaving tests remain |
+| AMF0 connect/createStream/publish/play | partial: connect, createStream, live publish, stop, and delete are active; play is explicitly rejected until fanout exists |
+| Active stream snapshot catalog | implemented for live publisher identity, codec/timestamp/byte observations, duplicate rejection, and disconnect cleanup; subscribers remain inactive |
+| Active stream management API | implemented for snapshot/detail JSON backed by live publisher sessions |
 | Active stream and recording UI | implemented against the management API; recording controls remain disabled while the backend capability is absent |
 | Live publisher/subscriber fanout | planned RTMP slice 1 |
 | ACL allow/deny | planned RTMP slice 2 |
@@ -68,6 +68,10 @@ not protocol support.
 | MPEG-DASH fragmented MP4 output | planned RTMP slice 3 |
 | Isolated exec/transcode process integration | planned RTMP slice 3 |
 | Multi-worker auto-push equivalent | planned RTMP slice 3 |
+
+The live listener pins `rml_rtmp` 0.8.0 behind OxiRoute's session adapter. The adapter enforces
+the inbound chunk-size ceiling, but the dependency does not expose an assembled-message allocation
+limit; live ingest is functional but does not yet satisfy the complete RTMP resource-limit target.
 
 The directive registry reports each key as enforced, parsed-not-enforced, source-no-op,
 source-bug, deprecated, or platform-limited. “All keys parsed” is not advertised as full

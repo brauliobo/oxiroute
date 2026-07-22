@@ -24,8 +24,13 @@ return {
     {
       name = "web",
       bind = "127.0.0.1:8080",
-      protocol = "http", -- http | tcp
+      protocol = "http", -- http | rtmp | tcp
       upstream = "127.0.0.1:3000",
+    },
+    {
+      name = "live",
+      bind = "127.0.0.1:1935",
+      protocol = "rtmp",
     },
   },
 }
@@ -38,7 +43,9 @@ Current constraints:
 - `management.ui_dir` optionally points to a prebuilt Vue distribution loaded into memory at daemon startup.
 - Listener names and bind addresses MUST be unique.
 - Names MUST contain non-whitespace text.
-- Bind and upstream addresses MUST be IP socket literals with nonzero ports.
+- Bind addresses MUST be IP socket literals with nonzero ports.
+- HTTP and TCP listeners MUST declare an upstream IP socket literal with a nonzero port.
+- RTMP listeners terminate the protocol locally and MUST NOT declare an upstream.
 - Unknown fields and unknown protocol values are errors.
 - Source is limited to 1 MiB, extra Lua memory to 4 MiB, and execution to one million instructions.
 - No Lua standard libraries are loaded and binary chunks are rejected.

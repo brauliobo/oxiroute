@@ -332,8 +332,11 @@ the reference assumption. Multi-message-stream support is a later explicit exten
 
 The runtime-neutral catalog already publishes immutable active-stream snapshots with
 restart-safe stream/session/recorder identities, publisher/subscriber counts, absolute media
-samples, and capability-gated recorder transitions. It remains empty in production until
-publish/play command middleware attaches real sessions; no handshake creates a stream.
+samples, and capability-gated recorder transitions. The Pingora RTMP listener now attaches a
+publisher only after accepting a live `publish` request, rejects duplicate publishers, observes
+media statistics, and detaches on stop, disconnect, shutdown, or protocol failure. Handshakes and
+connections alone never create catalog streams. Playback remains rejected until bounded fanout is
+implemented.
 
 ## Implementation slices and acceptance
 
@@ -348,6 +351,12 @@ effective inheritance lowering, and per-directive fixture completeness remain.
 - `exec_block` recognized only as inactive/unsupported.
 
 ### Slice 1: live interoperability
+
+Status: partial. A pinned `rml_rtmp` 0.8.0 adapter now provides simple/complex handshakes, chunk
+transport, connect/createStream/live-publish command handling, duplicate-publisher rejection,
+media observations, and lifecycle cleanup. The listener caps requested inbound chunks at 1 MiB.
+Play/fanout, configurable assembled-message limits, exhaustive chunk fixtures, and independent
+FFmpeg/OBS acceptance remain before this slice is complete.
 
 - Simple and both Adobe complex handshake schemes.
 - Fragmented I/O, chunk formats 0-3, all CSID header widths, extended timestamps, and interleaving.

@@ -4,6 +4,7 @@ pub const HANDSHAKE_BLOCK_SIZE: usize = 1536;
 mod catalog;
 mod directives;
 mod nginx;
+mod session;
 
 pub use catalog::{
     CatalogError, MediaSnapshot, OperationId, PublisherSnapshot, RecorderCompletion,
@@ -13,6 +14,7 @@ pub use catalog::{
 };
 pub use directives::{directive_specs, validate_directive};
 pub use nginx::{parse_nginx_config, NginxDirective, NginxParseError};
+pub use session::{PublishSessionError, RtmpPublishSession, MAX_INBOUND_CHUNK_SIZE};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum DirectiveContext {

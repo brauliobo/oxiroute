@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use async_trait::async_trait;
-use oxiroute_config::{Config, Protocol};
+use oxiroute_config::{Config, ConfigError, Protocol};
 use pingora::{
     proxy::{ProxyHttp, Session},
     upstreams::peer::HttpPeer,
@@ -41,29 +41,46 @@ impl ProxyHttp for HttpReverseProxy {
 pub struct ServiceSpec {
     pub name: String,
     pub bind: SocketAddr,
-    pub upstream: SocketAddr,
     pub kind: ServiceKind,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ServiceKind {
-    Http,
-    Tcp,
+    Http(SocketAddr),
+    Rtmp,
+    Tcp(SocketAddr),
 }
 
-#[must_use]
-pub fn service_specs(config: &Config) -> Vec<ServiceSpec> {
+/// Compiles validated listener definitions into runtime service specifications.
+///
+/// # Errors
+///
+/// Returns an error when a programmatically constructed configuration has an upstream that does
+/// not match its listener protocol.
+pub fn service_specs(config: &Config) -> Result<Vec<ServiceSpec>, ConfigError> {
     config
         .listeners
         .iter()
-        .map(|listener| ServiceSpec {
-            name: listener.name.clone(),
-            bind: listener.bind,
-            upstream: listener.upstream,
-            kind: match listener.protocol {
-                Protocol::Http => ServiceKind::Http,
-                Protocol::Tcp => ServiceKind::Tcp,
-            },
+        .map(|listener| {
+            let kind = match (listener.protocol, listener.upstream) {
+                (Protocol::Http, Some(upstream)) => ServiceKind::Http(upstream),
+                (Protocol::Tcp, Some(upstream)) => ServiceKind::Tcp(upstream),
+                (Protocol::Rtmp, None) => ServiceKind::Rtmp,
+                (Protocol::Http | Protocol::Tcp, None) => {
+                    return Err(ConfigError::MissingUpstream {
+                        listener: listener.name.clone(),
+                        protocol: listener.protocol,
+                    });
+                }
+                (Protocol::Rtmp, Some(_)) => {
+                    return Err(ConfigError::UnexpectedRtmpUpstream(listener.name.clone()));
+                }
+            };
+            Ok(ServiceSpec {
+                name: listener.name.clone(),
+                bind: listener.bind,
+                kind,
+            })
         })
         .collect()
 }
