@@ -14,6 +14,7 @@ The current code is intentionally much smaller than that goal. It provides:
 - An nginx syntax parser and exact nginx-rtmp registry for all 117 active directive keys with context, arity, value, default, and runtime-status metadata.
 - RTMP v3 simple-handshake response generation.
 - Immutable RTMP active-stream snapshots and a capability-gated manual recording state machine, ready for future publish/play session attachment.
+- A loopback-only Pingora management API for RTMP stream visibility and exact-ID recording controls.
 - Acceptance tests for configuration isolation and runtime planning.
 
 It does not yet provide forward proxying, `CONNECT`, TLS, HTTP/2 listener configuration,
@@ -31,7 +32,8 @@ cargo run -p oxiroute-server -- oxiroute.example.lua
 ```
 
 The example exposes the HTTP upstream on `127.0.0.1:8080` and also defines a TCP relay
-from `127.0.0.1:15432` to `127.0.0.1:5432`.
+from `127.0.0.1:15432` to `127.0.0.1:5432`. RTMP runtime status is available at
+`http://127.0.0.1:9080/api/v1/rtmp/streams`.
 
 Use `RUST_LOG=info` to enable runtime logs. Configuration files are local administrator
 input, but they still run in a fresh Lua state with no standard libraries and bounded

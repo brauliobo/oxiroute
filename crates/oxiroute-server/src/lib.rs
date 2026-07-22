@@ -7,6 +7,10 @@ use pingora::{
     upstreams::peer::HttpPeer,
 };
 
+mod rtmp_api;
+
+pub use rtmp_api::{ApiResponse, RtmpManagementApi};
+
 pub struct HttpReverseProxy {
     upstream: SocketAddr,
 }

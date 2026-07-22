@@ -16,6 +16,9 @@ The executable skeleton currently accepts:
 ```lua
 return {
   version = 1,
+  management = {
+    bind = "127.0.0.1:9080",
+  },
   listeners = {
     {
       name = "web",
@@ -30,6 +33,7 @@ return {
 Current constraints:
 
 - `version` MUST be `1`.
+- `management` is optional and MUST use a loopback IP with a nonzero port until remote authentication exists.
 - Listener names and bind addresses MUST be unique.
 - Names MUST contain non-whitespace text.
 - Bind and upstream addresses MUST be IP socket literals with nonzero ports.

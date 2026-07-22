@@ -60,3 +60,34 @@ return { version = 1, listeners = {} }
     assert!(error.to_string().contains("os"));
     assert!(!std::path::Path::new("/tmp/oxiroute-lua-escaped").exists());
 }
+
+#[test]
+fn loads_a_loopback_management_listener() {
+    let source = VALID_CONFIG.replace(
+        "listeners = {",
+        "management = { bind = \"127.0.0.1:9080\" },\n  listeners = {",
+    );
+    let config = load_lua(&source).expect("management config");
+
+    assert_eq!(
+        config
+            .management
+            .expect("management listener")
+            .bind
+            .to_string(),
+        "127.0.0.1:9080"
+    );
+}
+
+#[test]
+fn rejects_a_non_loopback_management_listener() {
+    let source = VALID_CONFIG.replace(
+        "listeners = {",
+        "management = { bind = \"0.0.0.0:9080\" },\n  listeners = {",
+    );
+    let error = load_lua(&source).expect_err("remote management requires future authentication");
+
+    assert!(error
+        .to_string()
+        .contains("management listener must use loopback"));
+}

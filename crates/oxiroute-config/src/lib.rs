@@ -19,7 +19,15 @@ const INSTRUCTION_HOOK_INTERVAL: u32 = 10_000;
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub version: u32,
+    #[serde(default)]
+    pub management: Option<Management>,
     pub listeners: Vec<Listener>,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Management {
+    pub bind: SocketAddr,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -57,6 +65,8 @@ pub enum ConfigError {
         listener: String,
         field: &'static str,
     },
+    #[error("management listener must use loopback, got `{0}`")]
+    ManagementMustUseLoopback(SocketAddr),
 }
 
 /// Loads a complete immutable configuration snapshot from restricted Lua.
@@ -100,6 +110,18 @@ pub fn load_lua(source: &str) -> Result<Config, ConfigError> {
 fn validate(config: &Config) -> Result<(), ConfigError> {
     if config.version != 1 {
         return Err(ConfigError::UnsupportedVersion(config.version));
+    }
+
+    if let Some(management) = &config.management {
+        if !management.bind.ip().is_loopback() {
+            return Err(ConfigError::ManagementMustUseLoopback(management.bind));
+        }
+        if management.bind.port() == 0 {
+            return Err(ConfigError::ZeroPort {
+                listener: "management".into(),
+                field: "bind",
+            });
+        }
     }
 
     let mut names = HashSet::with_capacity(config.listeners.len());
