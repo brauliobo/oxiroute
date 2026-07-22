@@ -9,7 +9,8 @@ The current code is intentionally much smaller than that goal. It provides:
 
 - A restricted Lua configuration loader with strict typed validation.
 - Pingora-backed HTTP reverse proxy listeners with deterministic host/path/method routing,
-  static round-robin pools, upstream I/O timeouts, body limits, and connection caps.
+  static round-robin pools, bounded safe connect-failure retries, upstream I/O timeouts, body
+  limits, and connection caps.
 - HTTP/1.1 WebSocket upgrade proxying with bidirectional frame integration coverage.
 - Pingora-backed opaque TCP relays with round-robin pools, connection caps, and configurable
   connect, idle, and lifetime timeouts.

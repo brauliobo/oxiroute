@@ -15,7 +15,7 @@ not protocol support.
 
 | Capability | Status | Notes |
 | --- | --- | --- |
-| HTTP/1 reverse proxy | partial | Deterministic host/path/method routing, static round-robin pools, upstream connect/read/write inactivity timeouts, body limits, listener connection caps, WebSocket upgrades, authority/path ambiguity rejection, and no-match `404` behavior are implemented; TLS, retries, health checks, total request deadlines, graceful drain, and broader conformance remain M1. |
+| HTTP/1 reverse proxy | partial | Deterministic host/path/method routing, static round-robin pools, bounded bodyless GET/HEAD connect-failure retries, upstream connect/read/write inactivity timeouts, body limits, listener connection caps, WebSocket upgrades, authority/path ambiguity rejection, and no-match `404` behavior are implemented; TLS, broader retry policy, health checks, total request deadlines, graceful drain, and broader conformance remain M1. |
 | HTTP/2 downstream | planned M1 | Requires TLS/ALPN listener configuration and conformance tests. |
 | HTTP/2 upstream | planned M1 | Requires explicit peer version policy and negotiation tests. |
 | HTTP/3 downstream/upstream | planned M4 | Pingora has no current H3 stack; requires a tested QUIC/H3 integration. |
@@ -40,7 +40,8 @@ not protocol support.
 | Static round robin | implemented |
 | Active TCP/HTTP health checks | planned M1 |
 | Weighted round robin and least connections | planned M2 |
-| Retry budgets and passive ejection | planned M1 |
+| Bounded connect-failure retries | implemented for bodyless `GET`/`HEAD`, distinct static endpoints, and at most two additional attempts |
+| Response retries and passive ejection | planned M1 |
 | Config file watcher and generation reload | planned M1 |
 | Runtime monitoring snapshot | partial: Linux process/host load, listener connections/traffic, and RTMP activity API implemented; latency/errors/history/cross-platform sampling pending |
 | Structured access logs and Prometheus metrics | planned M1 |
@@ -97,7 +98,7 @@ nginx-rtmp semantic compatibility.
 
 | Source | Status | First subset |
 | --- | --- | --- |
-| OxiRoute Lua | partial | Strict listeners, HTTP/L4 services, host/path/method routes, static round-robin pools, request limits, and transport timeouts are implemented; TLS, health, retry, reload, and provenance models remain. |
+| OxiRoute Lua | partial | Strict listeners, HTTP/L4 services, host/path/method routes, static round-robin pools, bounded connect-failure retries, request limits, and transport timeouts are implemented; TLS, health, broader retry, reload, and provenance models remain. |
 | nginx | planned M2 | Static HTTP virtual hosts/upstreams plus stream TCP/UDP. |
 | HAProxy | planned M2 | Static HTTP/TCP frontends, backends, simple ACL switching. |
 | Apache httpd | planned M2 | Static virtual hosts, TLS paths, and HTTP ProxyPass/balancers. |

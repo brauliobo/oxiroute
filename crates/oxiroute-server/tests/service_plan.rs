@@ -26,6 +26,7 @@ fn compiles_shared_http_and_l4_service_plans() {
     assert!(Arc::ptr_eq(first_http, second_http));
     assert_eq!(first_http.upstream_io_timeout(), Duration::from_secs(15));
     assert_eq!(first_http.max_request_body_bytes(), 2 * 1024 * 1024);
+    assert_eq!(first_http.max_retries(), 1);
     let authority = "api.example.com".parse::<Authority>().expect("authority");
     let uri = "/v1/items".parse::<Uri>().expect("URI");
     assert_eq!(
@@ -126,6 +127,7 @@ fn canonical_config() -> Config {
             }],
             upstream_io_timeout_ms: 15_000,
             max_request_body_bytes: 2 * 1024 * 1024,
+            max_retries: 1,
         }],
         l4_services: vec![L4Service {
             name: "database".into(),

@@ -24,6 +24,7 @@ const DEFAULT_MAX_REQUEST_BODY_BYTES: u64 = 10 * 1024 * 1024;
 const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 10_000;
 const DEFAULT_IDLE_TIMEOUT_MS: u64 = 300_000;
 const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
+const MAX_HTTP_RETRIES: u8 = 2;
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -93,6 +94,8 @@ pub struct HttpService {
     pub upstream_io_timeout_ms: u64,
     #[serde(default = "default_max_request_body_bytes")]
     pub max_request_body_bytes: u64,
+    #[serde(default)]
+    pub max_retries: u8,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -190,6 +193,10 @@ pub enum ConfigError {
     ManagementUpstreamEndpoint { pool: String, endpoint: SocketAddr },
     #[error("HTTP service `{service}` must contain at least one route")]
     EmptyHttpRoutes { service: String },
+    #[error(
+        "HTTP service `{service}` retry limit {limit} exceeds the maximum of {MAX_HTTP_RETRIES}"
+    )]
+    RetryLimitTooLarge { service: String, limit: u8 },
     #[error("HTTP service `{service}` route {route} has invalid host `{host}`")]
     InvalidRouteHost {
         service: String,
@@ -523,6 +530,12 @@ fn validate_http_services(
                 kind: "HTTP service",
                 name: service.name.clone(),
                 field: "max_request_body_bytes",
+            });
+        }
+        if service.max_retries > MAX_HTTP_RETRIES {
+            return Err(ConfigError::RetryLimitTooLarge {
+                service: service.name.clone(),
+                limit: service.max_retries,
             });
         }
 

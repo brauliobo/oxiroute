@@ -298,6 +298,31 @@ impl RoundRobinPool {
 
     #[must_use]
     pub fn select(&self) -> SocketAddr {
+        self.endpoints[self.next_index()]
+    }
+
+    /// Selects the next endpoint not present in a request's attempted-endpoint set.
+    #[must_use]
+    pub fn select_excluding(&self, excluded: &[SocketAddr]) -> Option<SocketAddr> {
+        let start = self.next_index();
+        for offset in 0..self.endpoints.len() {
+            let index = (start + offset) % self.endpoints.len();
+            let endpoint = self.endpoints[index];
+            if !excluded.contains(&endpoint) {
+                return Some(endpoint);
+            }
+        }
+        None
+    }
+
+    #[must_use]
+    pub fn has_unattempted(&self, attempted: &[SocketAddr]) -> bool {
+        self.endpoints
+            .iter()
+            .any(|endpoint| !attempted.contains(endpoint))
+    }
+
+    fn next_index(&self) -> usize {
         let endpoint_count = self.endpoints.len();
         let selected = self
             .next
@@ -308,11 +333,9 @@ impl RoundRobinPool {
                     current + 1
                 })
             });
-        let index = match selected {
+        match selected {
             Ok(index) | Err(index) => index,
-        };
-
-        self.endpoints[index]
+        }
     }
 }
 

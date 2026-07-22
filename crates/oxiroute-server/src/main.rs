@@ -5,15 +5,15 @@ use log::{info, warn};
 use oxiroute_config::load_lua;
 use oxiroute_rtmp::{RtmpCapabilities, RtmpPublishSession, RtmpRegistry};
 use oxiroute_server::{
-    HttpReverseProxy, ListenerMetrics, MonitoredHttpApp, RtmpManagementApi, RuntimeMetrics,
-    ServiceKind, TcpRelayCore, service_specs,
+    HttpReverseProxy, ListenerMetrics, MAX_HTTP_ATTEMPTS, MonitoredHttpApp, RtmpManagementApi,
+    RuntimeMetrics, ServiceKind, TcpRelayCore, service_specs,
 };
 use pingora::{
     apps::ServerApp,
     apps::http_app::HttpServer,
     protocols::Stream,
     proxy::http_proxy,
-    server::{Server, ShutdownWatch},
+    server::{Server, ShutdownWatch, configuration::ServerConf},
     services::listening::Service,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -171,7 +171,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let source = fs::read_to_string(&config_path)?;
     let config = load_lua(&source)?;
 
-    let mut server = Server::new(None)?;
+    let server_config = ServerConf {
+        max_retries: MAX_HTTP_ATTEMPTS,
+        ..ServerConf::default()
+    };
+    let mut server = Server::new_with_opt_and_conf(None, server_config);
     server.bootstrap();
 
     let runtime_metrics = RuntimeMetrics::new();
