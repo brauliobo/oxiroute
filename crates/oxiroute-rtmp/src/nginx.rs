@@ -1,7 +1,7 @@
 use std::iter::Peekable;
 
 use crate::{
-    directive_specs, validate_directive, DirectiveContext, DirectiveError, DirectiveSpec, ValueKind,
+    DirectiveContext, DirectiveError, DirectiveSpec, ValueKind, directive_specs, validate_directive,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]

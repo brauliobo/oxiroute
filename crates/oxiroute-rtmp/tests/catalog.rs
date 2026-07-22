@@ -94,12 +94,16 @@ fn publishes_absolute_media_samples_and_ignores_stale_sequences() {
         fanout_payload_bytes_queued: 2_048,
     };
 
-    assert!(registry
-        .update_media_sample(stream_id, publisher, 2, sample, 200)
-        .expect("new sample"));
-    assert!(!registry
-        .update_media_sample(stream_id, publisher, 1, MediaSnapshot::default(), 300)
-        .expect("stale sample"));
+    assert!(
+        registry
+            .update_media_sample(stream_id, publisher, 2, sample, 200)
+            .expect("new sample")
+    );
+    assert!(
+        !registry
+            .update_media_sample(stream_id, publisher, 1, MediaSnapshot::default(), 300)
+            .expect("stale sample")
+    );
 
     let visible = registry.snapshot();
     assert_eq!(visible.streams[0].media, sample);

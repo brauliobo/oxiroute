@@ -1,4 +1,4 @@
-use oxiroute_rtmp::{parse_nginx_config, DirectiveError, NginxParseError};
+use oxiroute_rtmp::{DirectiveError, NginxParseError, parse_nginx_config};
 
 #[test]
 fn parses_nested_rtmp_and_http_configuration() {

@@ -581,7 +581,7 @@ impl RtmpRegistry {
                 }
                 (RecordingAction::Start, RecorderPhase::Stopping { .. })
                 | (RecordingAction::Stop, RecorderPhase::Starting { .. }) => {
-                    return Err(CatalogError::TransitionInProgress(recorder_id))
+                    return Err(CatalogError::TransitionInProgress(recorder_id));
                 }
             };
             if changed {

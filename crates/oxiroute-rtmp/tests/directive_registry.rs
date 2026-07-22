@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use oxiroute_rtmp::{
-    directive_specs, validate_directive, DirectiveContext, DirectiveError, RelayKind,
-    RuntimeSupport, ValueKind,
+    DirectiveContext, DirectiveError, RelayKind, RuntimeSupport, ValueKind, directive_specs,
+    validate_directive,
 };
 
 const EXPECTED_DIRECTIVES: [&str; 117] = [
@@ -152,34 +152,42 @@ fn records_reference_quirks_without_claiming_runtime_enforcement() {
 #[test]
 fn validates_contexts_arities_and_closed_value_sets() {
     assert!(validate_directive("meta", DirectiveContext::RtmpApplication, &["copy"]).is_ok());
-    assert!(validate_directive(
-        "record",
-        DirectiveContext::RtmpRecorder,
-        &["audio", "video"]
-    )
-    .is_ok());
-    assert!(validate_directive(
-        "hls_fragment_naming",
-        DirectiveContext::RtmpApplication,
-        &["timestamp"]
-    )
-    .is_ok());
+    assert!(
+        validate_directive(
+            "record",
+            DirectiveContext::RtmpRecorder,
+            &["audio", "video"]
+        )
+        .is_ok()
+    );
+    assert!(
+        validate_directive(
+            "hls_fragment_naming",
+            DirectiveContext::RtmpApplication,
+            &["timestamp"]
+        )
+        .is_ok()
+    );
     assert!(
         validate_directive("rtmp_control", DirectiveContext::Http, &["record", "drop"]).is_ok()
     );
     assert!(validate_directive("exec_kill_signal", DirectiveContext::RtmpMain, &["TERM"]).is_ok());
-    assert!(validate_directive(
-        "listen",
-        DirectiveContext::RtmpServer,
-        &["1935", "proxy_protocol"]
-    )
-    .is_ok());
-    assert!(validate_directive(
-        "pull",
-        DirectiveContext::RtmpApplication,
-        &["rtmp://origin/live", "name=cam", "static"]
-    )
-    .is_ok());
+    assert!(
+        validate_directive(
+            "listen",
+            DirectiveContext::RtmpServer,
+            &["1935", "proxy_protocol"]
+        )
+        .is_ok()
+    );
+    assert!(
+        validate_directive(
+            "pull",
+            DirectiveContext::RtmpApplication,
+            &["rtmp://origin/live", "name=cam", "static"]
+        )
+        .is_ok()
+    );
 
     assert!(matches!(
         validate_directive("hls", DirectiveContext::NginxMain, &["on"]),
