@@ -158,8 +158,8 @@ main.console-shell(:aria-busy="monitoring === null && refreshing")
               code {{ listener.bind }}
           .listener-metrics
             .listener-metric
-              span.label Active
-              strong {{ formatCount(listener.activeConnections) }}
+              span.label Active / limit
+              strong {{ formatCount(listener.activeConnections) }} / {{ formatCount(listener.maxConnections) }}
             .listener-metric
               span.label Accepted
               strong {{ formatCount(listener.acceptedConnections) }}

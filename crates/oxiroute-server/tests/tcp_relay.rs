@@ -2,19 +2,19 @@ use std::{
     io,
     pin::Pin,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     },
     task::{Context, Poll},
     time::Duration,
 };
 
 use oxiroute_server::{
-    relay_streams, ConnectionGuard, RelayDirection, RelayFailureKind, RelayOperation, RelayPolicy,
-    RuntimeMetrics, TcpRelayCore,
+    ConnectionGuard, RelayDirection, RelayFailureKind, RelayOperation, RelayPolicy, RuntimeMetrics,
+    TcpRelayCore, relay_streams,
 };
 use tokio::{
-    io::{duplex, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf, duplex},
     net::{TcpListener, TcpStream},
     sync::{oneshot, watch},
     time::{sleep, timeout},
@@ -338,7 +338,7 @@ async fn accounts_for_partial_downstream_writes_before_an_error() {
 fn connection_metrics() -> (RuntimeMetrics, ConnectionGuard) {
     let runtime_metrics = RuntimeMetrics::new();
     let listener = runtime_metrics
-        .register_listener("tcp-relay", "tcp", "127.0.0.1:0")
+        .register_listener("tcp-relay", "tcp", "127.0.0.1:0", 100)
         .expect("listener metrics");
     let connection = listener.begin_connection().expect("connection metrics");
     (runtime_metrics, connection)

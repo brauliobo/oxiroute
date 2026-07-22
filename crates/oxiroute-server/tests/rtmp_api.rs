@@ -144,7 +144,7 @@ fn serves_prebuilt_ui_assets_without_request_time_filesystem_paths() {
 fn exposes_runtime_listener_and_rtmp_monitoring() {
     let metrics = RuntimeMetrics::new();
     let listener = metrics
-        .register_listener("live", "rtmp", "127.0.0.1:1935")
+        .register_listener("live", "rtmp", "127.0.0.1:1935", 100)
         .expect("listener metrics");
     let connection = listener.begin_connection().expect("active connection");
     connection

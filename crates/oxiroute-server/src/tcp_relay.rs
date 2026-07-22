@@ -1,12 +1,12 @@
 use std::{error::Error, fmt, future::pending, io, net::SocketAddr, time::Duration};
 
 use pingora::{
-    connectors::TransportConnector, protocols::Stream, server::ShutdownWatch,
-    upstreams::peer::BasicPeer, BError,
+    BError, connectors::TransportConnector, protocols::Stream, server::ShutdownWatch,
+    upstreams::peer::BasicPeer,
 };
 use tokio::{
-    io::{split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    time::{sleep_until, timeout, Instant},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, split},
+    time::{Instant, sleep_until, timeout},
 };
 
 use crate::{ConnectionGuard, MetricsError};

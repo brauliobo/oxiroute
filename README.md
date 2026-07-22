@@ -8,9 +8,11 @@ imports, and operational visibility.
 The current code is intentionally much smaller than that goal. It provides:
 
 - A restricted Lua configuration loader with strict typed validation.
-- Pingora-backed HTTP reverse proxy listeners.
+- Pingora-backed HTTP reverse proxy listeners with deterministic host/path/method routing,
+  static round-robin pools, upstream I/O timeouts, body limits, and connection caps.
 - HTTP/1.1 WebSocket upgrade proxying with bidirectional frame integration coverage.
-- Pingora-backed opaque TCP relays.
+- Pingora-backed opaque TCP relays with round-robin pools, connection caps, and configurable
+  connect, idle, and lifetime timeouts.
 - An nginx syntax parser and exact nginx-rtmp registry for all 117 active directive keys with context, arity, value, default, and runtime-status metadata.
 - RTMP live publishing with simple/complex handshakes, AMF connect/createStream/publish handling, duplicate-publisher rejection, media observations, and FFmpeg interoperability.
 - Immutable RTMP active-stream snapshots and a capability-gated manual recording state machine.
@@ -19,8 +21,8 @@ The current code is intentionally much smaller than that goal. It provides:
 - Acceptance tests for configuration isolation and runtime planning.
 
 It does not yet provide forward proxying, `CONNECT`, TLS, HTTP/2 listener configuration,
-HTTP/3, UDP, caching, load balancing, hot reload, full configuration imports, RTMP playback,
-media fanout, or recording.
+HTTP/3, UDP, caching, health-aware or weighted load balancing, hot reload, full configuration
+imports, RTMP playback, media fanout, or recording.
 It is not a firewall, NAT implementation, or drop-in replacement for Squid, nginx,
 HAProxy, or Apache httpd.
 

@@ -5,12 +5,12 @@ use log::{info, warn};
 use oxiroute_config::load_lua;
 use oxiroute_rtmp::{RtmpCapabilities, RtmpPublishSession, RtmpRegistry};
 use oxiroute_server::{
-    service_specs, HttpReverseProxy, ListenerMetrics, RelayPolicy, RtmpManagementApi,
-    RuntimeMetrics, ServiceKind, TcpRelayCore,
+    HttpReverseProxy, ListenerMetrics, MonitoredHttpApp, RtmpManagementApi, RuntimeMetrics,
+    ServiceKind, TcpRelayCore, service_specs,
 };
 use pingora::{
-    apps::http_app::HttpServer,
     apps::ServerApp,
+    apps::http_app::HttpServer,
     protocols::Stream,
     proxy::http_proxy,
     server::{Server, ShutdownWatch},
@@ -21,23 +21,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 const RTMP_READ_BUFFER_SIZE: usize = 16 * 1024;
 
 struct TcpRelay {
-    core: TcpRelayCore,
+    service: Arc<oxiroute_server::L4ServicePlan>,
     metrics: ListenerMetrics,
 }
 
 impl TcpRelay {
-    fn new(upstream: std::net::SocketAddr, metrics: ListenerMetrics) -> Self {
-        Self {
-            core: TcpRelayCore::new(
-                upstream,
-                RelayPolicy {
-                    connect: std::time::Duration::from_secs(10),
-                    idle: Some(std::time::Duration::from_secs(60)),
-                    lifetime: None,
-                },
-            ),
-            metrics,
-        }
+    fn new(service: Arc<oxiroute_server::L4ServicePlan>, metrics: ListenerMetrics) -> Self {
+        Self { service, metrics }
     }
 }
 
@@ -55,11 +45,8 @@ impl ServerApp for TcpRelay {
                 return None;
             }
         };
-        if let Err(error) = self
-            .core
-            .relay(downstream, &connection, shutdown.clone())
-            .await
-        {
+        let relay = TcpRelayCore::new(self.service.select(), self.service.policy());
+        if let Err(error) = relay.relay(downstream, &connection, shutdown.clone()).await {
             warn!("TCP relay failed: {error}");
         }
 
@@ -175,41 +162,6 @@ impl ServerApp for RtmpIngest {
     }
 }
 
-struct MonitoredHttp<A> {
-    inner: Arc<A>,
-    metrics: ListenerMetrics,
-}
-
-impl<A> MonitoredHttp<A> {
-    fn new(inner: A, metrics: ListenerMetrics) -> Self {
-        Self {
-            inner: Arc::new(inner),
-            metrics,
-        }
-    }
-}
-
-#[async_trait]
-impl<A> ServerApp for MonitoredHttp<A>
-where
-    A: ServerApp + Send + Sync + 'static,
-{
-    async fn process_new(
-        self: &Arc<Self>,
-        downstream: Stream,
-        shutdown: &ShutdownWatch,
-    ) -> Option<Stream> {
-        let _connection = match self.metrics.begin_connection() {
-            Ok(connection) => connection,
-            Err(error) => {
-                warn!("could not account for HTTP connection: {error}");
-                return None;
-            }
-        };
-        self.inner.process_new(downstream, shutdown).await
-    }
-}
-
 fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
 
@@ -230,6 +182,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 &spec.name,
                 spec.kind.protocol(),
                 spec.bind.to_string(),
+                spec.max_connections,
             )?;
             Ok::<_, oxiroute_server::MetricsError>((spec, metrics))
         })
@@ -237,7 +190,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let rtmp_registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
         live_ingest: services
             .iter()
-            .any(|(spec, _)| spec.kind == ServiceKind::Rtmp),
+            .any(|(spec, _)| matches!(&spec.kind, ServiceKind::Rtmp)),
         manual_recording: false,
     }));
     if let Some(management) = &config.management {
@@ -262,12 +215,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         let service_name = format!("OxiRoute {}", spec.name);
 
         match spec.kind {
-            ServiceKind::Http(upstream) => {
+            ServiceKind::Http(http_service) => {
                 let proxy = http_proxy(
                     &server.configuration,
-                    HttpReverseProxy::new(upstream, metrics.clone()),
+                    HttpReverseProxy::new(http_service, metrics.clone()),
                 );
-                let mut service = Service::new(service_name, MonitoredHttp::new(proxy, metrics));
+                let mut service = Service::new(service_name, MonitoredHttpApp::new(proxy, metrics));
                 service.add_tcp(&bind);
                 server.add_service(service);
             }
@@ -279,8 +232,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 service.add_tcp(&bind);
                 server.add_service(service);
             }
-            ServiceKind::Tcp(upstream) => {
-                let mut service = Service::new(service_name, TcpRelay::new(upstream, metrics));
+            ServiceKind::Tcp(l4_service) => {
+                let mut service = Service::new(service_name, TcpRelay::new(l4_service, metrics));
                 service.add_tcp(&bind);
                 server.add_service(service);
             }

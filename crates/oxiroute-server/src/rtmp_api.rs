@@ -2,8 +2,8 @@ use std::{collections::HashMap, fs, io, path::Path, str::FromStr, sync::Arc, tim
 
 use async_trait::async_trait;
 use http::{
-    header::{ALLOW, CONTENT_LENGTH, CONTENT_TYPE},
     HeaderValue, Response, StatusCode,
+    header::{ALLOW, CONTENT_LENGTH, CONTENT_TYPE},
 };
 use oxiroute_rtmp::{
     CatalogError, RecorderId, RecorderPhase, RecorderSnapshot, RecordingAction,
@@ -11,7 +11,7 @@ use oxiroute_rtmp::{
 };
 use pingora::{apps::http_app::ServeHttp, protocols::http::ServerSession};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{RuntimeMetrics, RuntimeSnapshot};
 
@@ -182,9 +182,16 @@ impl RtmpManagementApi {
                         |stream| ApiResponse::json(200, &stream_json(stream)),
                     )
             }
-            ["api", "v1", "rtmp", "streams", stream_id, "recorders", recorder_id, action] => {
-                self.handle_recording(method, stream_id, recorder_id, action, now_unix_ms)
-            }
+            [
+                "api",
+                "v1",
+                "rtmp",
+                "streams",
+                stream_id,
+                "recorders",
+                recorder_id,
+                action,
+            ] => self.handle_recording(method, stream_id, recorder_id, action, now_unix_ms),
             _ => ApiResponse::error(404, "route_not_found", "route does not exist"),
         }
     }
