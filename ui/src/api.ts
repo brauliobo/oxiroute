@@ -81,6 +81,7 @@ export interface MonitoringListener extends MonitoringTraffic {
   name: string
   protocol: 'http' | 'tcp' | 'rtmp'
   bind: string
+  maxConnections: number
 }
 
 export interface MonitoringRtmp {

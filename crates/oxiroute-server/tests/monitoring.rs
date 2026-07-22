@@ -6,7 +6,7 @@ use oxiroute_server::{MetricsError, RuntimeMetrics};
 fn connection_guard_accounts_for_traffic_and_decrements_active_count() {
     let metrics = RuntimeMetrics::new();
     let listener = metrics
-        .register_listener("public-http", "http", "0.0.0.0:8080")
+        .register_listener("public-http", "http", "0.0.0.0:8080", 100)
         .expect("listener registration");
 
     let connection = listener.begin_connection().expect("accepted connection");
@@ -35,14 +35,14 @@ fn connection_guard_accounts_for_traffic_and_decrements_active_count() {
 fn registration_is_named_unique_and_listener_lookup_is_explicit() {
     let metrics = RuntimeMetrics::new();
     let listener = metrics
-        .register_listener("ingest", "rtmp", "127.0.0.1:1935")
+        .register_listener("ingest", "rtmp", "127.0.0.1:1935", 100)
         .expect("listener registration");
 
     assert_eq!(listener.name(), "ingest");
     assert_eq!(listener.protocol(), "rtmp");
     assert_eq!(listener.bind(), "127.0.0.1:1935");
     assert!(matches!(
-        metrics.register_listener("ingest", "tcp", "127.0.0.1:9000"),
+        metrics.register_listener("ingest", "tcp", "127.0.0.1:9000", 100),
         Err(MetricsError::DuplicateListener(name)) if name == "ingest"
     ));
     assert!(matches!(
@@ -52,10 +52,39 @@ fn registration_is_named_unique_and_listener_lookup_is_explicit() {
 }
 
 #[test]
+fn connection_limits_reject_excess_sessions_without_hiding_accepts() {
+    let metrics = RuntimeMetrics::new();
+    let listener = metrics
+        .register_listener("limited", "tcp", "127.0.0.1:7001", 1)
+        .expect("listener registration");
+    let connection = listener.begin_connection().expect("first connection");
+
+    assert!(matches!(
+        listener.begin_connection(),
+        Err(MetricsError::ConnectionLimitReached { listener, limit: 1 })
+            if listener == "limited"
+    ));
+    let limited = metrics.snapshot().expect("limited snapshot");
+    assert_eq!(limited.traffic.accepted_connections, 2);
+    assert_eq!(limited.traffic.active_connections, 1);
+    assert_eq!(limited.listeners[0].max_connections, 1);
+
+    drop(connection);
+    assert_eq!(
+        metrics
+            .snapshot()
+            .expect("released snapshot")
+            .traffic
+            .active_connections,
+        0
+    );
+}
+
+#[test]
 fn counters_are_shared_safely_across_threads() {
     let metrics = RuntimeMetrics::new();
     let listener = metrics
-        .register_listener("tcp", "tcp", "127.0.0.1:7000")
+        .register_listener("tcp", "tcp", "127.0.0.1:7000", 1_000)
         .expect("listener registration");
     let workers: Vec<_> = (0..4)
         .map(|_| {
@@ -84,7 +113,7 @@ fn counters_are_shared_safely_across_threads() {
 fn snapshot_serializes_to_the_monitoring_contract() {
     let metrics = RuntimeMetrics::new();
     metrics
-        .register_listener("http", "http", "[::]:8080")
+        .register_listener("http", "http", "[::]:8080", 100)
         .expect("listener registration");
 
     let snapshot = metrics.snapshot().expect("Linux process snapshot");
@@ -110,4 +139,5 @@ fn snapshot_serializes_to_the_monitoring_contract() {
     assert_eq!(json["listeners"][0]["name"], "http");
     assert_eq!(json["listeners"][0]["protocol"], "http");
     assert_eq!(json["listeners"][0]["bind"], "[::]:8080");
+    assert_eq!(json["listeners"][0]["maxConnections"], 100);
 }

@@ -15,7 +15,7 @@ not protocol support.
 
 | Capability | Status | Notes |
 | --- | --- | --- |
-| HTTP/1 reverse proxy | partial | Static one-upstream Pingora path exists; TLS, routing, limits, and conformance remain M1. |
+| HTTP/1 reverse proxy | partial | Deterministic host/path/method routing, static round-robin pools, upstream connect/read/write inactivity timeouts, body limits, listener connection caps, WebSocket upgrades, authority/path ambiguity rejection, and no-match `404` behavior are implemented; TLS, retries, health checks, total request deadlines, graceful drain, and broader conformance remain M1. |
 | HTTP/2 downstream | planned M1 | Requires TLS/ALPN listener configuration and conformance tests. |
 | HTTP/2 upstream | planned M1 | Requires explicit peer version policy and negotiation tests. |
 | HTTP/3 downstream/upstream | planned M4 | Pingora has no current H3 stack; requires a tested QUIC/H3 integration. |
@@ -24,7 +24,7 @@ not protocol support.
 | HTTP/1 explicit forward proxy | planned M3 | Includes absolute-form requests and a dedicated CONNECT tunnel. |
 | HTTP/2 forward proxy/CONNECT | planned M3 | Only after stream takeover and policy conformance. |
 | HTTP/3 forward proxy | planned M4 | Requires explicit H3 proxy/tunnel standards support. |
-| Opaque TCP relay | partial | Bounded bidirectional relay, independent half-close, connect/idle/lifetime timeouts, shutdown cancellation, partial traffic accounting, and loopback tests implemented; configurable policy, reload, and graceful process drain remain. |
+| Opaque TCP relay | partial | Bounded bidirectional relay, independent half-close, configured connect/idle/lifetime timeouts, static round-robin pools, listener connection caps, shutdown cancellation, partial traffic accounting, and loopback tests are implemented; reload and graceful process drain remain. |
 | TLS pass-through | planned M1 | Uses opaque TCP; bounded SNI inspection is separate. |
 | UDP relay | planned M2 | Requires bounded pseudo-session and reply-routing design. |
 | PROXY protocol | planned M2 | Explicit propagation only. |
@@ -36,8 +36,9 @@ not protocol support.
 
 | Capability | Status |
 | --- | --- |
-| One static upstream | implemented |
-| Round robin and active health checks | planned M1 |
+| Single-endpoint pools | implemented |
+| Static round robin | implemented |
+| Active TCP/HTTP health checks | planned M1 |
 | Weighted round robin and least connections | planned M2 |
 | Retry budgets and passive ejection | planned M1 |
 | Config file watcher and generation reload | planned M1 |
@@ -96,7 +97,7 @@ nginx-rtmp semantic compatibility.
 
 | Source | Status | First subset |
 | --- | --- | --- |
-| OxiRoute Lua | partial | Strict static HTTP/TCP listener schema exists. |
+| OxiRoute Lua | partial | Strict listeners, HTTP/L4 services, host/path/method routes, static round-robin pools, request limits, and transport timeouts are implemented; TLS, health, retry, reload, and provenance models remain. |
 | nginx | planned M2 | Static HTTP virtual hosts/upstreams plus stream TCP/UDP. |
 | HAProxy | planned M2 | Static HTTP/TCP frontends, backends, simple ACL switching. |
 | Apache httpd | planned M2 | Static virtual hosts, TLS paths, and HTTP ProxyPass/balancers. |

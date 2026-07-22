@@ -9,18 +9,42 @@ return {
       name = "web",
       bind = "127.0.0.1:8080",
       protocol = "http",
-      upstream = "127.0.0.1:3000",
+      service = "web",
     },
     {
       name = "postgres",
       bind = "127.0.0.1:15432",
       protocol = "tcp",
-      upstream = "127.0.0.1:5432",
+      service = "postgres",
     },
     {
       name = "live",
       bind = "127.0.0.1:1935",
       protocol = "rtmp",
+    },
+  },
+  upstream_pools = {
+    {
+      name = "web",
+      endpoints = { "127.0.0.1:3000" },
+    },
+    {
+      name = "postgres",
+      endpoints = { "127.0.0.1:5432" },
+    },
+  },
+  http_services = {
+    {
+      name = "web",
+      routes = {
+        { path_prefix = "/", upstream_pool = "web" },
+      },
+    },
+  },
+  l4_services = {
+    {
+      name = "postgres",
+      upstream_pool = "postgres",
     },
   },
 }

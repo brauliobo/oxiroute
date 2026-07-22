@@ -11,7 +11,7 @@ receive an immutable compiled snapshot.
 
 ## Current schema
 
-The executable skeleton currently accepts:
+The daemon currently accepts the following canonical object families:
 
 ```lua
 return {
@@ -24,13 +24,56 @@ return {
     {
       name = "web",
       bind = "127.0.0.1:8080",
-      protocol = "http", -- http | rtmp | tcp
-      upstream = "127.0.0.1:3000",
+      protocol = "http", -- http | tcp | rtmp
+      service = "web",
+      max_connections = 10000,
+    },
+    {
+      name = "postgres",
+      bind = "127.0.0.1:15432",
+      protocol = "tcp",
+      service = "postgres",
     },
     {
       name = "live",
       bind = "127.0.0.1:1935",
       protocol = "rtmp",
+    },
+  },
+  upstream_pools = {
+    {
+      name = "web",
+      endpoints = { "127.0.0.1:3000", "127.0.0.1:3001" },
+      algorithm = "round_robin",
+    },
+    {
+      name = "postgres",
+      endpoints = { "127.0.0.1:5432" },
+    },
+  },
+  http_services = {
+    {
+      name = "web",
+      upstream_io_timeout_ms = 30000,
+      max_request_body_bytes = 10485760,
+      routes = {
+        {
+          host = "api.example.com",
+          path_prefix = "/v1",
+          methods = { "GET", "POST" },
+          upstream_pool = "web",
+        },
+        { path_prefix = "/", upstream_pool = "web" },
+      },
+    },
+  },
+  l4_services = {
+    {
+      name = "postgres",
+      upstream_pool = "postgres",
+      connect_timeout_ms = 10000,
+      idle_timeout_ms = 300000,
+      lifetime_timeout_ms = 3600000,
     },
   },
 }
@@ -41,11 +84,42 @@ Current constraints:
 - `version` MUST be `1`.
 - `management` is optional and MUST use a loopback IP with a nonzero port until remote authentication exists.
 - `management.ui_dir` optionally points to a prebuilt Vue distribution loaded into memory at daemon startup.
-- Listener names and bind addresses MUST be unique.
-- Names MUST contain non-whitespace text.
-- Bind addresses MUST be IP socket literals with nonzero ports.
-- HTTP and TCP listeners MUST declare an upstream IP socket literal with a nonzero port.
-- RTMP listeners terminate the protocol locally and MUST NOT declare an upstream.
+- Names MUST be unique within their listener, pool, HTTP-service, or L4-service namespace.
+- Listener bind addresses MUST be unique.
+- Names MUST contain non-whitespace text without surrounding whitespace or control characters.
+- Bind addresses MUST be IP socket literals with nonzero ports. Exact duplicates and wildcard binds
+  that overlap another listener or management bind are rejected.
+- HTTP and TCP listeners MUST reference an existing same-kind service. RTMP listeners terminate
+  locally and MUST NOT reference a service.
+- `max_connections` defaults to `10000`, MUST be nonzero, and MUST be no greater than
+  `9007199254740991` so the monitoring API and UI preserve it exactly. Excess accepted connections
+  are closed before entering the protocol handler.
+- Pools MUST contain at least one unique IP socket endpoint with a nonzero port. The only current
+  algorithm is `round_robin`, which is also the default. A pool cannot target the loopback
+  management endpoint because that would bypass its exposure boundary.
+- HTTP services MUST contain at least one route. Route pool references MUST resolve.
+- A missing route `host` matches any authority. A host may be an exact DNS name/IP literal or a
+  single-label wildcard such as `*.example.com`; names are normalized to lowercase.
+- `path_prefix` defaults to `/`, matches only complete path segments, and has trailing slashes
+  normalized away except for `/`. A missing or empty `methods` list matches every method;
+  configured methods MUST be uppercase HTTP tokens.
+- Route precedence is exact host, wildcard host, then host catch-all; within a host class the
+  longest path prefix wins, and source order resolves any remaining tie. No match returns `404`.
+- Routes with identical normalized host, path, and method matchers are rejected. Source order only
+  resolves ties between distinct overlapping matchers.
+- Requests with duplicate/conflicting authorities, userinfo authorities, dot path segments,
+  repeated separators, backslashes, malformed escapes, encoded unreserved characters, or encoded
+  path separators are rejected with `400` before upstream selection. Route prefixes use the same
+  path policy so configured routes remain reachable. Accepted percent-triplet hex digits are
+  canonicalized to uppercase for matching.
+- `upstream_io_timeout_ms` defaults to `30000` and applies independently to upstream connect,
+  read-inactivity, and write-inactivity operations; progress resets the I/O deadline, so this is
+  not a total request deadline. `max_request_body_bytes` defaults to `10485760`; both values MUST
+  be nonzero. Oversized declared bodies return `413` before contacting an origin. A streamed
+  overflow aborts forwarding and returns `413` when an origin response has not already committed.
+- L4 services reference a pool. Connect and idle timeouts default to `10000` and `300000`
+  milliseconds; an optional lifetime timeout has no default. Configured timeout values MUST be
+  nonzero.
 - Unknown fields and unknown protocol values are errors.
 - Source is limited to 1 MiB, extra Lua memory to 4 MiB, and execution to one million instructions.
 - No Lua standard libraries are loaded and binary chunks are rejected.
@@ -53,7 +127,7 @@ Current constraints:
 This schema is pre-release and may change without compatibility code until a public release
 persists it.
 
-## Target canonical model
+## Future canonical model
 
 The model will grow only as a milestone needs each field:
 
@@ -78,6 +152,10 @@ Required identities are stable names, not array indexes. References are resolved
 validation. Every compiled object records canonical source location and optional imported
 source provenance.
 
+The current schema above is the implemented subset. It will grow only as a milestone needs each
+additional field; the items below are targets, not accepted fields unless listed in the current
+schema.
+
 ### Listener
 
 - Name and one or more bind addresses.
@@ -88,8 +166,8 @@ source provenance.
 
 ### HTTP service and route
 
-- Exact, wildcard, or regex host matchers where supported.
-- Exact, prefix, or regex path matchers.
+- Exact, wildcard, or future regex host matchers where supported.
+- Prefix and future exact or regex path matchers.
 - Methods and policy references.
 - Explicit precedence and source order.
 - Proxy, redirect, static response, or reject action.
@@ -98,7 +176,7 @@ source provenance.
 ### Upstream pool
 
 - Protocol and endpoint list.
-- Weight, algorithm, timeouts, health policy, TLS, SNI, and verification.
+- Endpoint weight, additional algorithms, health policy, TLS, SNI, and verification.
 - HTTP minimum and maximum versions.
 - Retry and circuit-breaker limits.
 

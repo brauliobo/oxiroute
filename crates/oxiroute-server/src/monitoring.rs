@@ -1,10 +1,10 @@
 use std::{
-    collections::{hash_map::Entry, HashMap},
+    collections::{HashMap, hash_map::Entry},
     error::Error,
     fmt, io,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc, Mutex, RwLock,
+        atomic::{AtomicU64, Ordering},
     },
     time::{Instant, SystemTime},
 };
@@ -19,6 +19,10 @@ pub enum MetricsError {
     DuplicateListener(String),
     ListenerNotFound(String),
     InvalidListenerField(&'static str),
+    ConnectionLimitReached {
+        listener: String,
+        limit: u64,
+    },
     CounterOverflow(&'static str),
     StatePoisoned(&'static str),
     UnsupportedPlatform(&'static str),
@@ -45,6 +49,12 @@ impl fmt::Display for MetricsError {
             }
             Self::InvalidListenerField(field) => {
                 write!(formatter, "listener {field} must not be empty")
+            }
+            Self::ConnectionLimitReached { listener, limit } => {
+                write!(
+                    formatter,
+                    "listener `{listener}` reached its {limit}-connection limit"
+                )
             }
             Self::CounterOverflow(counter) => {
                 write!(formatter, "metrics counter `{counter}` overflowed")
@@ -116,6 +126,7 @@ impl RuntimeMetrics {
         name: impl Into<String>,
         protocol: impl Into<String>,
         bind: impl Into<String>,
+        max_connections: u64,
     ) -> Result<ListenerMetrics, MetricsError> {
         let name = name.into();
         let protocol = protocol.into();
@@ -123,6 +134,9 @@ impl RuntimeMetrics {
         validate_listener_field("name", &name)?;
         validate_listener_field("protocol", &protocol)?;
         validate_listener_field("bind", &bind)?;
+        if max_connections == 0 {
+            return Err(MetricsError::InvalidListenerField("max_connections"));
+        }
 
         let mut listeners = self
             .inner
@@ -131,7 +145,7 @@ impl RuntimeMetrics {
             .map_err(|_| MetricsError::StatePoisoned("listeners"))?;
         match listeners.entry(name.clone()) {
             Entry::Vacant(entry) => {
-                let state = Arc::new(ListenerState::new(name, protocol, bind));
+                let state = Arc::new(ListenerState::new(name, protocol, bind, max_connections));
                 entry.insert(Arc::clone(&state));
                 Ok(ListenerMetrics { state })
             }
@@ -299,14 +313,23 @@ impl ListenerMetrics {
             1,
             "listener.acceptedConnections",
         )?;
-        if let Err(error) = checked_atomic_add(
-            &self.state.active_connections,
-            1,
-            "listener.activeConnections",
-        ) {
-            decrement_counter(&self.state.accepted_connections);
-            return Err(error);
-        }
+        self.state
+            .active_connections
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                (current < self.state.max_connections)
+                    .then(|| current.checked_add(1))
+                    .flatten()
+            })
+            .map_err(|current| {
+                if current >= self.state.max_connections {
+                    MetricsError::ConnectionLimitReached {
+                        listener: self.state.name.clone(),
+                        limit: self.state.max_connections,
+                    }
+                } else {
+                    MetricsError::CounterOverflow("listener.activeConnections")
+                }
+            })?;
         Ok(ConnectionGuard {
             state: Arc::clone(&self.state),
         })
@@ -370,6 +393,7 @@ struct ListenerState {
     name: String,
     protocol: String,
     bind: String,
+    max_connections: u64,
     accepted_connections: AtomicU64,
     active_connections: AtomicU64,
     bytes_received: AtomicU64,
@@ -377,11 +401,12 @@ struct ListenerState {
 }
 
 impl ListenerState {
-    fn new(name: String, protocol: String, bind: String) -> Self {
+    fn new(name: String, protocol: String, bind: String, max_connections: u64) -> Self {
         Self {
             name,
             protocol,
             bind,
+            max_connections,
             accepted_connections: AtomicU64::new(0),
             active_connections: AtomicU64::new(0),
             bytes_received: AtomicU64::new(0),
@@ -394,6 +419,7 @@ impl ListenerState {
             name: self.name.clone(),
             protocol: self.protocol.clone(),
             bind: self.bind.clone(),
+            max_connections: self.max_connections,
             accepted_connections: self.accepted_connections.load(Ordering::Relaxed),
             active_connections: self.active_connections.load(Ordering::Relaxed),
             bytes_received: self.bytes_received.load(Ordering::Relaxed),
@@ -448,6 +474,7 @@ pub struct ListenerSnapshot {
     pub name: String,
     pub protocol: String,
     pub bind: String,
+    pub max_connections: u64,
     pub accepted_connections: u64,
     pub active_connections: u64,
     pub bytes_received: u64,

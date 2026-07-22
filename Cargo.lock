@@ -1254,6 +1254,7 @@ dependencies = [
 name = "oxiroute-config"
 version = "0.1.0"
 dependencies = [
+ "http",
  "mlua",
  "serde",
  "thiserror 2.0.19",

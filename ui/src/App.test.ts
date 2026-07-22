@@ -84,6 +84,7 @@ function monitoringSample(): MonitoringSnapshot {
         name: 'HTTP ingress',
         protocol: 'http',
         bind: '127.0.0.1:8080',
+        maxConnections: 1_000,
         acceptedConnections: 8_000,
         activeConnections: 14,
         bytesReceived: 1_048_576,
@@ -93,6 +94,7 @@ function monitoringSample(): MonitoringSnapshot {
         name: 'Live edge',
         protocol: 'rtmp',
         bind: '0.0.0.0:1935',
+        maxConnections: 100,
         acceptedConnections: 4_345,
         activeConnections: 28,
         bytesReceived: 524_288,
@@ -169,6 +171,9 @@ describe('monitoring dashboard', () => {
     expect(wrapper.get('.rtmp-panel').text()).toContain('768 MB')
     expect(wrapper.get('.listener-section').text()).toContain('HTTP ingress')
     expect(wrapper.get('.listener-section').text()).toContain('127.0.0.1:8080')
+    expect(wrapper.get('.listener-section').text()).toContain(
+      `14 / ${new Intl.NumberFormat().format(1_000)}`,
+    )
 
     expect(wrapper.text()).toContain('live / camera')
     expect(wrapper.text()).toContain('12 viewers')

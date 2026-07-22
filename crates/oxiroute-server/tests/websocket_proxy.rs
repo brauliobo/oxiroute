@@ -1,7 +1,10 @@
 use std::{sync::Arc, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
-use oxiroute_server::{HttpReverseProxy, RuntimeMetrics};
+use oxiroute_config::{
+    Config, HttpRoute, HttpService, Listener, Protocol, UpstreamAlgorithm, UpstreamPool,
+};
+use oxiroute_server::{HttpReverseProxy, RuntimeMetrics, ServiceKind, service_specs};
 use pingora::{apps::ServerApp, proxy::http_proxy, server::configuration::ServerConf};
 use tokio::{net::TcpListener, sync::watch, time::timeout};
 use tokio_tungstenite::{accept_async, connect_async, tungstenite::Message};
@@ -33,12 +36,44 @@ async fn websocket_upgrade_proxies_frames_in_both_directions() {
         let proxy_address = proxy_listener.local_addr().expect("proxy address");
         let runtime_metrics = RuntimeMetrics::new();
         let metrics = runtime_metrics
-            .register_listener("websocket", "http", proxy_address.to_string())
+            .register_listener("websocket", "http", proxy_address.to_string(), 100)
             .expect("listener metrics");
+        let config = Config {
+            version: 1,
+            management: None,
+            listeners: vec![Listener {
+                name: "websocket".into(),
+                bind: proxy_address,
+                protocol: Protocol::Http,
+                service: Some("websocket".into()),
+                max_connections: 100,
+            }],
+            upstream_pools: vec![UpstreamPool {
+                name: "origin".into(),
+                endpoints: vec![origin_address],
+                algorithm: UpstreamAlgorithm::RoundRobin,
+            }],
+            http_services: vec![HttpService {
+                name: "websocket".into(),
+                routes: vec![HttpRoute {
+                    host: None,
+                    path_prefix: "/".into(),
+                    methods: Vec::new(),
+                    upstream_pool: "origin".into(),
+                }],
+                upstream_io_timeout_ms: 5_000,
+                max_request_body_bytes: 8,
+            }],
+            l4_services: Vec::new(),
+        };
+        let mut services = service_specs(&config).expect("service plan");
+        let ServiceKind::Http(http_service) = services.remove(0).kind else {
+            panic!("websocket listener must compile as HTTP");
+        };
         let configuration = Arc::new(ServerConf::default());
         let proxy = Arc::new(http_proxy(
             &configuration,
-            HttpReverseProxy::new(origin_address, metrics),
+            HttpReverseProxy::new(http_service, metrics),
         ));
         let (_shutdown_tx, shutdown) = watch::channel(false);
         let proxy_task = tokio::spawn(async move {

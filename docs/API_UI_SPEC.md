@@ -32,17 +32,19 @@ Initial endpoints:
 
 The implemented monitoring snapshot contains daemon uptime, process CPU/RSS/virtual memory,
 threads, open file descriptors, host load averages and memory, aggregate/listener connection and
-byte counters, and RTMP stream/publisher/subscriber/media totals. Process and host sampling
+byte counters, configured per-listener connection capacities, and RTMP stream/publisher/subscriber/
+media totals. Process and host sampling
 currently reads Linux `/proc`; a sampling or parsing failure returns `503` instead of fabricated
 zeroes. CPU utilization is `null` until two successful samples establish a delta.
 
 RTMP stream, publisher, subscriber, and media totals are derived from the active catalog and return
-to zero after publishers and subscribers detach. Listener connection and byte counters are
-daemon-lifetime totals.
+to zero after publishers and subscribers detach. Listener accepted-connection and byte counters
+are daemon-lifetime cumulative totals; active connections are a current gauge.
 
 Listener byte counters describe bytes visible at the owning runtime layer, not IP/TCP wire bytes.
-RTMP counts protocol bytes, TCP relay totals are published after a clean relay completes, and HTTP
-uses Pingora's application counters. Pingora's HTTP/1 sent counter includes serialized response
+RTMP counts protocol bytes, TCP relay totals retain every completed transfer including partial
+traffic before a failure, and HTTP uses Pingora's application counters. Pingora's HTTP/1 sent
+counter includes serialized response
 headers, while its received counter covers request bodies; callers MUST NOT interpret these values
 as protocol-independent billable octets. Prometheus exposition, latency/error series, history, and
 cross-platform host samplers remain separate work.
