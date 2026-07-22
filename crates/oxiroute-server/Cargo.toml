@@ -15,5 +15,10 @@ oxiroute-config = { path = "../oxiroute-config" }
 pingora.workspace = true
 tokio.workspace = true
 
+[dev-dependencies]
+futures-util.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
+tokio-tungstenite.workspace = true
+
 [lints]
 workspace = true
