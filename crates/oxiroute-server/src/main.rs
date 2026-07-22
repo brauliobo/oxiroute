@@ -5,35 +5,38 @@ use log::{info, warn};
 use oxiroute_config::load_lua;
 use oxiroute_rtmp::{RtmpCapabilities, RtmpPublishSession, RtmpRegistry};
 use oxiroute_server::{
-    service_specs, HttpReverseProxy, ListenerMetrics, RtmpManagementApi, RuntimeMetrics,
-    ServiceKind,
+    service_specs, HttpReverseProxy, ListenerMetrics, RelayPolicy, RtmpManagementApi,
+    RuntimeMetrics, ServiceKind, TcpRelayCore,
 };
 use pingora::{
     apps::http_app::HttpServer,
     apps::ServerApp,
-    connectors::TransportConnector,
     protocols::Stream,
     proxy::http_proxy,
     server::{Server, ShutdownWatch},
     services::listening::Service,
-    upstreams::peer::BasicPeer,
 };
-use tokio::io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const RTMP_READ_BUFFER_SIZE: usize = 16 * 1024;
 
 struct TcpRelay {
-    connector: TransportConnector,
+    core: TcpRelayCore,
     metrics: ListenerMetrics,
-    peer: BasicPeer,
 }
 
 impl TcpRelay {
     fn new(upstream: std::net::SocketAddr, metrics: ListenerMetrics) -> Self {
         Self {
-            connector: TransportConnector::new(None),
+            core: TcpRelayCore::new(
+                upstream,
+                RelayPolicy {
+                    connect: std::time::Duration::from_secs(10),
+                    idle: Some(std::time::Duration::from_secs(60)),
+                    lifetime: None,
+                },
+            ),
             metrics,
-            peer: BasicPeer::new(&upstream.to_string()),
         }
     }
 }
@@ -42,8 +45,8 @@ impl TcpRelay {
 impl ServerApp for TcpRelay {
     async fn process_new(
         self: &Arc<Self>,
-        mut downstream: Stream,
-        _shutdown: &ShutdownWatch,
+        downstream: Stream,
+        shutdown: &ShutdownWatch,
     ) -> Option<Stream> {
         let connection = match self.metrics.begin_connection() {
             Ok(connection) => connection,
@@ -52,19 +55,12 @@ impl ServerApp for TcpRelay {
                 return None;
             }
         };
-        match self.connector.new_stream(&self.peer).await {
-            Ok(mut upstream) => match copy_bidirectional(&mut downstream, &mut upstream).await {
-                Ok((received, sent)) => {
-                    if let Err(error) = connection.record_bytes_received(received) {
-                        warn!("could not account for TCP ingress: {error}");
-                    }
-                    if let Err(error) = connection.record_bytes_sent(sent) {
-                        warn!("could not account for TCP egress: {error}");
-                    }
-                }
-                Err(error) => warn!("TCP relay to {} failed: {error}", self.peer),
-            },
-            Err(error) => warn!("could not connect TCP upstream {}: {error}", self.peer),
+        if let Err(error) = self
+            .core
+            .relay(downstream, &connection, shutdown.clone())
+            .await
+        {
+            warn!("TCP relay failed: {error}");
         }
 
         None

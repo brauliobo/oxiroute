@@ -24,7 +24,7 @@ not protocol support.
 | HTTP/1 explicit forward proxy | planned M3 | Includes absolute-form requests and a dedicated CONNECT tunnel. |
 | HTTP/2 forward proxy/CONNECT | planned M3 | Only after stream takeover and policy conformance. |
 | HTTP/3 forward proxy | planned M4 | Requires explicit H3 proxy/tunnel standards support. |
-| Opaque TCP relay | partial | Static Pingora connector path exists; timeout, half-close, reload, and integration gates remain M1. |
+| Opaque TCP relay | partial | Bounded bidirectional relay, independent half-close, connect/idle/lifetime timeouts, shutdown cancellation, partial traffic accounting, and loopback tests implemented; configurable policy, reload, and graceful process drain remain. |
 | TLS pass-through | planned M1 | Uses opaque TCP; bounded SNI inspection is separate. |
 | UDP relay | planned M2 | Requires bounded pseudo-session and reply-routing design. |
 | PROXY protocol | planned M2 | Explicit propagation only. |
