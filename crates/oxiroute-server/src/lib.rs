@@ -11,12 +11,17 @@ use pingora::{
 
 mod monitoring;
 mod rtmp_api;
+mod tcp_relay;
 
 pub use monitoring::{
     ConnectionGuard, HostSnapshot, ListenerMetrics, ListenerSnapshot, MetricsError,
     ProcessSnapshot, RuntimeMetrics, RuntimeSnapshot, TrafficSnapshot,
 };
 pub use rtmp_api::{ApiResponse, RtmpManagementApi};
+pub use tcp_relay::{
+    relay_streams, RelayDirection, RelayFailure, RelayFailureKind, RelayOperation, RelayPolicy,
+    RelayStats, TcpRelayCore, RELAY_BUFFER_SIZE,
+};
 
 pub struct HttpReverseProxy {
     upstream: SocketAddr,
