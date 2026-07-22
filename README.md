@@ -46,6 +46,13 @@ acceptance tests were run and observed failing before their implementations were
 ## Design
 
 - [`docs/UPSTREAM_ANALYSIS.md`](docs/UPSTREAM_ANALYSIS.md) records the upstream findings.
+- [`docs/PRODUCT_SPEC.md`](docs/PRODUCT_SPEC.md) defines goals and functional requirements.
+- [`docs/CONFIG_SPEC.md`](docs/CONFIG_SPEC.md) defines the Lua and canonical config contracts.
+- [`docs/IMPORT_SPEC.md`](docs/IMPORT_SPEC.md) defines native configuration compatibility.
+- [`docs/API_UI_SPEC.md`](docs/API_UI_SPEC.md) defines control-plane and UI behavior.
+- [`docs/ACME_SPEC.md`](docs/ACME_SPEC.md) defines certificate issuance and auto-renewal.
+- [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) distinguishes implemented, planned, and excluded capabilities.
+- [`docs/TEST_STRATEGY.md`](docs/TEST_STRATEGY.md) defines test-first release gates.
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) defines the narrow release sequence.
 - [`docs/NAMING.md`](docs/NAMING.md) lists candidate final names.
 
