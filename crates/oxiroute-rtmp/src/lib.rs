@@ -13,8 +13,8 @@ pub use catalog::{
     StreamKey, StreamSnapshot, TrackSnapshot,
 };
 pub use directives::{directive_specs, validate_directive};
-pub use nginx::{parse_nginx_config, NginxDirective, NginxParseError};
-pub use session::{PublishSessionError, RtmpPublishSession, MAX_INBOUND_CHUNK_SIZE};
+pub use nginx::{NginxDirective, NginxParseError, parse_nginx_config};
+pub use session::{MAX_INBOUND_CHUNK_SIZE, PublishSessionError, RtmpPublishSession};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum DirectiveContext {

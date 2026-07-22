@@ -1,5 +1,5 @@
 use oxiroute_rtmp::{
-    simple_handshake_response, HandshakeError, HANDSHAKE_BLOCK_SIZE, RTMP_VERSION,
+    HANDSHAKE_BLOCK_SIZE, HandshakeError, RTMP_VERSION, simple_handshake_response,
 };
 
 #[test]

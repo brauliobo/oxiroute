@@ -22,9 +22,11 @@ fn publishes_media_into_the_catalog_and_detaches_on_stop() {
         .expect("publish request");
     let events = exchange(&mut client, &mut server, vec![publish], 1_100);
 
-    assert!(events
-        .iter()
-        .any(|event| matches!(event, ClientSessionEvent::PublishRequestAccepted)));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, ClientSessionEvent::PublishRequestAccepted))
+    );
     let snapshot = registry.snapshot();
     assert_eq!(snapshot.streams.len(), 1);
     assert_eq!(
@@ -77,12 +79,16 @@ fn rejects_a_second_publisher_for_the_same_stream() {
     let first_events = request_publish(&mut first_client, &mut first_server, 2_100);
     let second_events = request_publish(&mut second_client, &mut second_server, 2_200);
 
-    assert!(first_events
-        .iter()
-        .any(|event| matches!(event, ClientSessionEvent::PublishRequestAccepted)));
-    assert!(!second_events
-        .iter()
-        .any(|event| matches!(event, ClientSessionEvent::PublishRequestAccepted)));
+    assert!(
+        first_events
+            .iter()
+            .any(|event| matches!(event, ClientSessionEvent::PublishRequestAccepted))
+    );
+    assert!(
+        !second_events
+            .iter()
+            .any(|event| matches!(event, ClientSessionEvent::PublishRequestAccepted))
+    );
     let snapshot = registry.snapshot();
     assert_eq!(snapshot.streams.len(), 1);
     assert_eq!(
@@ -129,17 +135,21 @@ fn connect(server: &mut RtmpPublishSession, application: &str) -> ClientSession 
     let (mut client, initial_results) =
         ClientSession::new(ClientSessionConfig::new()).expect("client session");
     assert!(initial_results.is_empty());
-    assert!(feed_server_packets(&mut client, server_startup)
-        .0
-        .is_empty());
+    assert!(
+        feed_server_packets(&mut client, server_startup)
+            .0
+            .is_empty()
+    );
 
     let request = client
         .request_connection(application.into())
         .expect("connection request");
     let events = exchange(&mut client, server, vec![request], 1_000);
-    assert!(events
-        .iter()
-        .any(|event| matches!(event, ClientSessionEvent::ConnectionRequestAccepted)));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, ClientSessionEvent::ConnectionRequestAccepted))
+    );
     client
 }
 
