@@ -87,6 +87,7 @@ Every merge/release runs:
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo +1.84 test --workspace --locked
 pnpm --dir ui test
 pnpm --dir ui build
 ```
