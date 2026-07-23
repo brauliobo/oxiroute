@@ -22,6 +22,12 @@ require_positive_integer() {
   [[ $value =~ ^[1-9][0-9]*$ ]] || die "$name must be a positive integer"
 }
 
+require_nonnegative_integer() {
+  local name=$1
+  local value=$2
+  [[ $value =~ ^[0-9]+$ ]] || die "$name must be a nonnegative integer"
+}
+
 process_fields() {
   local pid=$1
   local stat rest

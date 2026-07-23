@@ -16,7 +16,8 @@ parses its requests-per-second result; it does not upload profiles or results.
 - One OxiRoute/Pingora service thread, one nginx worker, and one HAProxy thread.
 - ApacheBench warm-up followed by a measured run. Raw output, parsed JSON, logs, rendered configuration,
   preflight data, and environment data are retained together.
-- No CPU pinning, kernel tuning, TLS, h2c, cache warming, remote clients, or uploads.
+- Origin, proxy, and load generator are pinned to distinct configured CPUs. The harness performs no
+  governor/kernel tuning and does not cover TLS, h2c, cache warming, remote clients, or uploads.
 
 `lanes.json` is the machine-readable lane contract. Cache, forward-proxy, H2, and H3 lanes are
 explicit skips. OxiRoute's current configuration schema describes cache and forward-proxy objects,
@@ -69,6 +70,9 @@ The following environment variables tune a run without changing checked-in confi
 | `BENCH_WARMUP_SECONDS` | `10` | Warm-up duration |
 | `BENCH_DURATION_SECONDS` | `30` | Measured duration |
 | `BENCH_STOP_TIMEOUT_SECONDS` | `10` | Graceful child-stop deadline |
+| `BENCH_PROXY_CPU` | `2` | CPU assigned to the proxy process |
+| `BENCH_ORIGIN_CPU` | `3` | CPU assigned to the origin process |
+| `BENCH_LOAD_CPU` | `4` | CPU assigned to ApacheBench |
 
 Every invocation creates an ignored directory under `benchmarks/generated/runs/`. A successful
 implementation has `summary-<implementation>.json` and `ab-<implementation>.txt`. `skips.json`

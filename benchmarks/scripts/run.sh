@@ -35,6 +35,9 @@ connections=${BENCH_CONNECTIONS:-128}
 warmup_seconds=${BENCH_WARMUP_SECONDS:-10}
 duration_seconds=${BENCH_DURATION_SECONDS:-30}
 BENCH_STOP_TIMEOUT_SECONDS=${BENCH_STOP_TIMEOUT_SECONDS:-10}
+proxy_cpu=${BENCH_PROXY_CPU:-2}
+origin_cpu=${BENCH_ORIGIN_CPU:-3}
+load_cpu=${BENCH_LOAD_CPU:-4}
 oxiroute_bin=${OXIROUTE_BIN:-"$REPOSITORY_ROOT/target/release/oxiroute-server"}
 export BENCH_STOP_TIMEOUT_SECONDS
 
@@ -47,6 +50,14 @@ for pair in \
   "BENCH_STOP_TIMEOUT_SECONDS:$BENCH_STOP_TIMEOUT_SECONDS"; do
   require_positive_integer "${pair%%:*}" "${pair#*:}"
 done
+for pair in \
+  "BENCH_PROXY_CPU:$proxy_cpu" \
+  "BENCH_ORIGIN_CPU:$origin_cpu" \
+  "BENCH_LOAD_CPU:$load_cpu"; do
+  require_nonnegative_integer "${pair%%:*}" "${pair#*:}"
+done
+[[ $proxy_cpu != "$origin_cpu" && $proxy_cpu != "$load_cpu" && $origin_cpu != "$load_cpu" ]] || \
+  die "proxy, origin, and load-generator CPUs must be distinct"
 [[ $origin_port != "$proxy_port" ]] || die "origin and proxy ports must differ"
 
 if [[ -z $output ]]; then
@@ -68,7 +79,8 @@ python3 "$BENCHMARK_ROOT/scripts/tool.py" skipped-lanes \
   "$BENCHMARK_ROOT/lanes.json" "$output/skips.json"
 python3 "$BENCHMARK_ROOT/scripts/tool.py" run-metadata \
   "$output/run.json" "$implementation" "$origin_port" "$proxy_port" \
-  "$connections" "$warmup_seconds" "$duration_seconds"
+  "$connections" "$warmup_seconds" "$duration_seconds" \
+  "$proxy_cpu" "$origin_cpu" "$load_cpu"
 "$BENCHMARK_ROOT/scripts/preflight.sh" "$output/preflight.json" "$implementation"
 "$BENCHMARK_ROOT/scripts/environment.sh" "$output/environment.json"
 
@@ -85,7 +97,7 @@ render_config "$BENCHMARK_ROOT/config/haproxy-reverse-h1.cfg.in" \
 
 install_cleanup_traps
 start_process origin "$log_root/origin-stdout.log" "$log_root/origin-stderr.log" \
-  nginx -p "$runtime_root/" -c "$config_root/nginx-origin.conf"
+  taskset -c "$origin_cpu" nginx -p "$runtime_root/" -c "$config_root/nginx-origin.conf"
 wait_for_http "http://127.0.0.1:$origin_port/healthz" origin
 check_http_payload "http://127.0.0.1:$origin_port/payload" 1024 origin
 
@@ -97,25 +109,25 @@ run_implementation() {
   case $current in
     oxiroute)
       start_process proxy "$log_root/oxiroute-stdout.log" "$log_root/oxiroute-stderr.log" \
-        env RUST_LOG=warn "$oxiroute_bin" "$config_root/oxiroute.lua"
+        taskset -c "$proxy_cpu" env RUST_LOG=warn "$oxiroute_bin" "$config_root/oxiroute.lua"
       ;;
     nginx)
       start_process proxy "$log_root/nginx-stdout.log" "$log_root/nginx-stderr.log" \
-        nginx -p "$runtime_root/" -c "$config_root/nginx-proxy.conf"
+        taskset -c "$proxy_cpu" nginx -p "$runtime_root/" -c "$config_root/nginx-proxy.conf"
       ;;
     haproxy)
       start_process proxy "$log_root/haproxy-stdout.log" "$log_root/haproxy-stderr.log" \
-        haproxy -db -f "$config_root/haproxy.cfg"
+        taskset -c "$proxy_cpu" haproxy -db -f "$config_root/haproxy.cfg"
       ;;
   esac
 
   wait_for_http "http://127.0.0.1:$proxy_port/healthz" "$current"
   check_http_payload "http://127.0.0.1:$proxy_port/payload" 1024 "$current"
-  ab -q -k -c "$connections" -t "$warmup_seconds" -n 100000000 -s 10 \
+  taskset -c "$load_cpu" ab -q -k -c "$connections" -t "$warmup_seconds" -n 100000000 -s 10 \
     "http://127.0.0.1:$proxy_port/payload" >"$raw_root/warmup-$current.txt" 2>&1
   python3 "$BENCHMARK_ROOT/scripts/tool.py" summarize-ab \
     "$current" "$raw_root/warmup-$current.txt" "$output/warmup-$current.json"
-  ab -q -k -c "$connections" -t "$duration_seconds" -n 100000000 -s 10 \
+  taskset -c "$load_cpu" ab -q -k -c "$connections" -t "$duration_seconds" -n 100000000 -s 10 \
     "http://127.0.0.1:$proxy_port/payload" >"$raw" 2>&1
   python3 "$BENCHMARK_ROOT/scripts/tool.py" summarize-ab "$current" "$raw" "$summary"
   stop_named_process proxy

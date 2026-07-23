@@ -85,6 +85,7 @@ def preflight(args):
         "haproxy": command_version("haproxy", ["-v"]),
         "nginx": command_version("nginx", ["-v"]),
         "python3": command_version("python3", ["--version"]),
+        "taskset": command_version("taskset", ["--version"]),
     }
     oxiroute = pathlib.Path(args.oxiroute_bin)
     tools["oxiroute"] = {
@@ -92,8 +93,14 @@ def preflight(args):
         "path": str(oxiroute),
         "version": None,
     }
-    required = {"ab", "bash", "nginx", "python3", *args.implementations}
+    required = {"ab", "bash", "nginx", "python3", "taskset", *args.implementations}
     ok = all(tools[name]["available"] for name in required)
+    selected_cpus = [args.proxy_cpu, args.origin_cpu, args.load_cpu]
+    online_cpus = sorted(os.sched_getaffinity(0))
+    cpu_affinity_ok = len(set(selected_cpus)) == 3 and all(
+        cpu in online_cpus for cpu in selected_cpus
+    )
+    ok = ok and cpu_affinity_ok
     ports = {
         str(args.origin_port): port_available(args.origin_port),
         str(args.proxy_port): port_available(args.proxy_port),
@@ -106,6 +113,15 @@ def preflight(args):
         "linux": sys.platform.startswith("linux"),
         "proc_available": pathlib.Path("/proc").is_dir(),
         "ports_available": ports,
+        "cpu_affinity": {
+            "ok": cpu_affinity_ok,
+            "online": online_cpus,
+            "selected": {
+                "proxy": args.proxy_cpu,
+                "origin": args.origin_cpu,
+                "load_generator": args.load_cpu,
+            },
+        },
         "tools": tools,
     }
     write_json(args.output, report)
@@ -150,6 +166,7 @@ def environment(args):
         "nginx": command_version("nginx", ["-v"]),
         "phoronix-test-suite": command_version("phoronix-test-suite", ["version"]),
         "python3": command_version("python3", ["--version"]),
+        "taskset": command_version("taskset", ["--version"]),
     }
     report = {
         "schema": "oxiroute.local-v1.environment.v1",
@@ -182,6 +199,11 @@ def run_metadata(args):
             "connections": args.connections,
             "warmup_seconds": args.warmup_seconds,
             "duration_seconds": args.duration_seconds,
+            "cpu_affinity": {
+                "proxy": args.proxy_cpu,
+                "origin": args.origin_cpu,
+                "load_generator": args.load_cpu,
+            },
         },
     )
 
@@ -245,6 +267,9 @@ def build_parser():
     command.add_argument("oxiroute_bin")
     command.add_argument("origin_port", type=int)
     command.add_argument("proxy_port", type=int)
+    command.add_argument("proxy_cpu", type=int)
+    command.add_argument("origin_cpu", type=int)
+    command.add_argument("load_cpu", type=int)
     command.add_argument("implementations", nargs="+")
     command.set_defaults(function=preflight)
 
@@ -262,6 +287,9 @@ def build_parser():
     command.add_argument("connections", type=int)
     command.add_argument("warmup_seconds", type=int)
     command.add_argument("duration_seconds", type=int)
+    command.add_argument("proxy_cpu", type=int)
+    command.add_argument("origin_cpu", type=int)
+    command.add_argument("load_cpu", type=int)
     command.set_defaults(function=run_metadata)
 
     command = commands.add_parser("summarize-ab")
