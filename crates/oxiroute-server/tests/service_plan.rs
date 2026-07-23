@@ -45,6 +45,69 @@ fn distributed_example_compiles_into_an_active_runtime_plan() {
 }
 
 #[test]
+fn rejects_an_active_cache_policy_instead_of_silently_ignoring_it() {
+    let config = load_lua(
+        r#"
+return {
+  version = 1,
+  listeners = {
+    {
+      name = "web",
+      bind = { type = "socket", address = "127.0.0.1:8080" },
+      protocol = "http",
+      service = "web",
+    },
+  },
+  cache_stores = {
+    {
+      name = "memory",
+      type = "memory",
+      max_bytes = 1048576,
+      max_entries = 128,
+      max_object_bytes = 65536,
+    },
+  },
+  upstream_pools = {
+    {
+      name = "origin",
+      endpoints = { { type = "socket", address = "127.0.0.1:3000" } },
+    },
+  },
+  http_services = {
+    {
+      name = "web",
+      routes = {
+        {
+          path = { kind = "segment_prefix", value = "/" },
+          action = {
+            type = "proxy",
+            upstream_pool = "origin",
+            policy = { cache = { store = "memory" } },
+          },
+        },
+      },
+    },
+  },
+}
+"#,
+    )
+    .expect("canonical cache configuration");
+
+    let error = match runtime_plan(&config) {
+        Ok(_) => panic!("inactive cache runtime must fail closed"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        ServicePlanError::CacheRuntimeUnavailable {
+            service,
+            route: 0
+        } if service == "web"
+    ));
+}
+
+#[test]
 fn compiles_shared_http_and_l4_service_plans() {
     let config = canonical_config();
 
