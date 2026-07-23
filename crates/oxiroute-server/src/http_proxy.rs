@@ -14,6 +14,7 @@ use oxiroute_config::{
 use pingora::{
     Error, ErrorType,
     apps::{ConnectionAdmission, ServerApp},
+    modules::http::HttpModules,
     protocols::{ALPN, Digest, Stream},
     proxy::{ProxyHttp, Session},
     server::ShutdownWatch,
@@ -167,6 +168,8 @@ impl HttpRequestContext {
 #[async_trait]
 impl ProxyHttp for HttpReverseProxy {
     type CTX = HttpRequestContext;
+
+    fn init_downstream_modules(&self, _modules: &mut HttpModules) {}
 
     fn new_ctx(&self) -> Self::CTX {
         HttpRequestContext {
@@ -885,6 +888,31 @@ mod tests {
         app.cleanup().await;
 
         assert!(cleaned.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn reverse_proxy_does_not_install_disabled_compression() {
+        let runtime = RuntimeMetrics::new();
+        let metrics = runtime
+            .register_listener("http", "http", "127.0.0.1:8080", 100)
+            .expect("listener metrics");
+        let service = Arc::new(HttpServicePlan::new(
+            Some(1024),
+            HashMap::new(),
+            Duration::from_secs(1),
+            RouteTable::default(),
+        ));
+        let proxy = HttpReverseProxy::new(service, metrics);
+        let mut modules = HttpModules::new();
+
+        proxy.init_downstream_modules(&mut modules);
+
+        assert!(
+            modules
+                .build_ctx()
+                .get::<pingora::modules::http::compression::ResponseCompression>()
+                .is_none()
+        );
     }
 
     #[tokio::test]
