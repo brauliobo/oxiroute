@@ -1,0 +1,25 @@
+[package]
+name = "oxiroute-cache"
+description = "Bounded RFC-aware HTTP cache core for OxiRoute"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+bytes.workspace = true
+crc32fast = "1"
+http.workspace = true
+httpdate.workspace = true
+rustix.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }
+
+[lints]
+workspace = true
