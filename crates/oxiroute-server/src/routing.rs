@@ -671,7 +671,7 @@ pub type RoundRobinPool = EndpointPool;
 pub struct EndpointLease {
     active_leases: Arc<AtomicU64>,
     endpoint: RuntimeEndpoint,
-    selection: Arc<Mutex<SelectionState>>,
+    selection: Option<Arc<Mutex<SelectionState>>>,
 }
 
 impl EndpointLease {
@@ -683,10 +683,11 @@ impl EndpointLease {
 
 impl Drop for EndpointLease {
     fn drop(&mut self) {
-        let _selection = self
-            .selection
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _selection = self.selection.as_ref().map(|selection| {
+            selection
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        });
         let released =
             self.active_leases
                 .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |active| {
@@ -804,7 +805,8 @@ impl EndpointPool {
         Some(EndpointLease {
             active_leases: Arc::clone(&endpoint.active_leases),
             endpoint: endpoint.endpoint.clone(),
-            selection: Arc::clone(&self.selection),
+            selection: (self.algorithm == UpstreamAlgorithm::LeastConnections)
+                .then(|| Arc::clone(&self.selection)),
         })
     }
 
