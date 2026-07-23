@@ -93,7 +93,8 @@ def preflight(args):
         "path": str(oxiroute),
         "version": None,
     }
-    required = {"ab", "bash", "nginx", "python3", "taskset", *args.implementations}
+    required = {"ab", "bash", "nginx", "python3", "taskset"}
+    required.update(implementation for implementation in args.implementations if implementation != "origin")
     ok = all(tools[name]["available"] for name in required)
     selected_cpus = [args.proxy_cpu, args.origin_cpu, args.load_cpu]
     online_cpus = sorted(os.sched_getaffinity(0))

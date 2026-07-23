@@ -23,7 +23,7 @@ require_nonnegative_integer BENCH_LOAD_CPU "$load_cpu"
 
 case $implementation in
   all) implementations=(oxiroute nginx haproxy) ;;
-  oxiroute | nginx | haproxy) implementations=("$implementation") ;;
+  origin | oxiroute | nginx | haproxy) implementations=("$implementation") ;;
   *) die "unknown implementation: $implementation" ;;
 esac
 

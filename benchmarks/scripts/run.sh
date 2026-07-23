@@ -25,7 +25,7 @@ done
 
 case $implementation in
   all) implementations=(oxiroute nginx haproxy) ;;
-  oxiroute | nginx | haproxy) implementations=("$implementation") ;;
+  origin | oxiroute | nginx | haproxy) implementations=("$implementation") ;;
   *) die "unknown implementation: $implementation" ;;
 esac
 
@@ -105,8 +105,12 @@ run_implementation() {
   local current=$1
   local raw="$raw_root/ab-$current.txt"
   local summary="$output/summary-$current.json"
+  local target_port=$proxy_port
 
   case $current in
+    origin)
+      target_port=$origin_port
+      ;;
     oxiroute)
       start_process proxy "$log_root/oxiroute-stdout.log" "$log_root/oxiroute-stderr.log" \
         taskset -c "$proxy_cpu" env RUST_LOG=warn "$oxiroute_bin" "$config_root/oxiroute.lua"
@@ -121,16 +125,18 @@ run_implementation() {
       ;;
   esac
 
-  wait_for_http "http://127.0.0.1:$proxy_port/healthz" "$current"
-  check_http_payload "http://127.0.0.1:$proxy_port/payload" 1024 "$current"
+  wait_for_http "http://127.0.0.1:$target_port/healthz" "$current"
+  check_http_payload "http://127.0.0.1:$target_port/payload" 1024 "$current"
   taskset -c "$load_cpu" ab -q -k -c "$connections" -t "$warmup_seconds" -n 100000000 -s 10 \
-    "http://127.0.0.1:$proxy_port/payload" >"$raw_root/warmup-$current.txt" 2>&1
+    "http://127.0.0.1:$target_port/payload" >"$raw_root/warmup-$current.txt" 2>&1
   python3 "$BENCHMARK_ROOT/scripts/tool.py" summarize-ab \
     "$current" "$raw_root/warmup-$current.txt" "$output/warmup-$current.json"
   taskset -c "$load_cpu" ab -q -k -c "$connections" -t "$duration_seconds" -n 100000000 -s 10 \
-    "http://127.0.0.1:$proxy_port/payload" >"$raw" 2>&1
+    "http://127.0.0.1:$target_port/payload" >"$raw" 2>&1
   python3 "$BENCHMARK_ROOT/scripts/tool.py" summarize-ab "$current" "$raw" "$summary"
-  stop_named_process proxy
+  if [[ $current != origin ]]; then
+    stop_named_process proxy
+  fi
   printf '%s result: %s\n' "$current" "$summary"
 }
 

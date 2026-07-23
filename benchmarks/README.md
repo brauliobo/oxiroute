@@ -54,6 +54,7 @@ benchmarks/scripts/run.sh
 Run one implementation, useful for controlled repetition:
 
 ```sh
+benchmarks/scripts/run.sh --implementation origin
 benchmarks/scripts/run.sh --implementation oxiroute
 benchmarks/scripts/run.sh --implementation nginx
 benchmarks/scripts/run.sh --implementation haproxy
