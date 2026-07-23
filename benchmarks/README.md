@@ -14,6 +14,8 @@ Measured reports:
   comparison as invalidated HTTP/1.0 diagnostic data. It is not an HTTP/1.1 baseline.
 - [`reports/2026-07-23-local-v2.md`](reports/2026-07-23-local-v2.md) records the corrected HTTP/1.1
   baseline. OxiRoute was stable, but system drift prevents strong cross-product conclusions.
+- [`reports/2026-07-23-optimization-v1.md`](reports/2026-07-23-optimization-v1.md) records three
+  interleaved optimization checks and the exact-binary cumulative comparison.
 
 ## Scope
 

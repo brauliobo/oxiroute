@@ -1,0 +1,163 @@
+{
+  "schema": "oxiroute.local-v1.optimization-report.v1",
+  "date": "2026-07-23",
+  "status": "complete",
+  "scenario": {
+    "transport": "loopback plaintext HTTP/1.1 keep-alive",
+    "request_line": "GET /payload HTTP/1.1",
+    "response_bytes": 1024,
+    "connections": 128,
+    "warmup_seconds": 10,
+    "measurement_seconds": 30,
+    "repetitions_per_binary": 3,
+    "origin_port": 39080,
+    "proxy_port": 39081,
+    "cpu_affinity": {
+      "proxy": 2,
+      "origin": 3,
+      "load_generator": 4
+    }
+  },
+  "binaries": {
+    "original": {
+      "source_commit": "983e872cb56181f5195121cb417bc8fa9ba0e34c",
+      "sha256": "5f8b7f378ec9ccd71d4cb987a5f4261315a5957e5ea5c1be181211ff10d2604b"
+    },
+    "iteration_1": {
+      "source_commit": "26ca1ed900ea6f12fe96dfe83b23385e3c48f14b",
+      "sha256": "1146e79dc767985bb34e8617640afeab64f090b95224bf37af97e9b353b4631e"
+    },
+    "iteration_2": {
+      "source_commit": "703a3e0b45a19c20ce4627bcb8569d2956722c7b",
+      "sha256": "c3923685b0426cfac928219f4537942e4eda5e4aeaade72e3f9e4a18bae109d6"
+    },
+    "iteration_3": {
+      "source_commit": "1042e00018c619209286e3f710400b82d4d63ae6",
+      "sha256": "b6d66fff911d81677e9a52bbf885463eb3e71bf8b832b2ec03c7731c07f9fbcf"
+    }
+  },
+  "iterations": [
+    {
+      "iteration": 1,
+      "change": "derive dynamic request values lazily",
+      "baseline_binary": "original",
+      "candidate_binary": "iteration_1",
+      "baseline": {
+        "run_ids": [
+          "20260723T232622Z-1029159",
+          "20260723T232900Z-1035434",
+          "20260723T232953Z-1037405"
+        ],
+        "requests_per_second": [97998.749, 96954.131, 98613.682],
+        "median_requests_per_second": 97998.749,
+        "mean_requests_per_second": 97855.521,
+        "population_cv_percent": 0.70
+      },
+      "candidate": {
+        "run_ids": [
+          "20260723T232715Z-1031311",
+          "20260723T232808Z-1033526",
+          "20260723T233045Z-1029158"
+        ],
+        "requests_per_second": [96694.332, 98174.779, 99211.951],
+        "median_requests_per_second": 98174.779,
+        "mean_requests_per_second": 98027.021,
+        "population_cv_percent": 1.05
+      },
+      "median_delta_percent": 0.18,
+      "mean_delta_percent": 0.18,
+      "failed_requests": 0
+    },
+    {
+      "iteration": 2,
+      "change": "skip round-robin lease release locking",
+      "baseline_binary": "iteration_1",
+      "candidate_binary": "iteration_2",
+      "baseline": {
+        "run_ids": [
+          "20260723T233500Z-1066610",
+          "20260723T233738Z-1071385",
+          "20260723T233831Z-1072859"
+        ],
+        "requests_per_second": [90892.055, 99267.566, 99809.935],
+        "median_requests_per_second": 99267.566,
+        "mean_requests_per_second": 96656.519,
+        "population_cv_percent": 4.22
+      },
+      "candidate": {
+        "run_ids": [
+          "20260723T233553Z-1068329",
+          "20260723T233645Z-1069860",
+          "20260723T233923Z-1066609"
+        ],
+        "requests_per_second": [98906.169, 99152.103, 100690.069],
+        "median_requests_per_second": 99152.103,
+        "mean_requests_per_second": 99582.780,
+        "population_cv_percent": 0.79
+      },
+      "median_delta_percent": -0.12,
+      "mean_delta_percent": 3.03,
+      "failed_requests": 0
+    },
+    {
+      "iteration": 3,
+      "change": "omit disabled downstream compression module",
+      "baseline_binary": "iteration_2",
+      "candidate_binary": "iteration_3",
+      "baseline": {
+        "run_ids": [
+          "20260723T234352Z-1099182",
+          "20260723T234630Z-1110021",
+          "20260723T234723Z-1112021"
+        ],
+        "requests_per_second": [96838.396, 93465.657, 93839.166],
+        "median_requests_per_second": 93839.166,
+        "mean_requests_per_second": 94714.406,
+        "population_cv_percent": 1.59
+      },
+      "candidate": {
+        "run_ids": [
+          "20260723T234445Z-1102571",
+          "20260723T234538Z-1106183",
+          "20260723T234816Z-1099181"
+        ],
+        "requests_per_second": [97834.886, 95498.601, 98985.275],
+        "median_requests_per_second": 97834.886,
+        "mean_requests_per_second": 97439.587,
+        "population_cv_percent": 1.49
+      },
+      "median_delta_percent": 4.26,
+      "mean_delta_percent": 2.88,
+      "failed_requests": 0
+    }
+  ],
+  "cumulative": {
+    "baseline_binary": "original",
+    "candidate_binary": "iteration_3",
+    "baseline": {
+      "run_ids": [
+        "20260723T235000Z-1119145",
+        "20260723T235238Z-1125685",
+        "20260723T235331Z-1127450"
+      ],
+      "requests_per_second": [93418.318, 95899.074, 97124.771],
+      "median_requests_per_second": 95899.074,
+      "mean_requests_per_second": 95480.721,
+      "population_cv_percent": 1.61
+    },
+    "candidate": {
+      "run_ids": [
+        "20260723T235053Z-1121398",
+        "20260723T235146Z-1123651",
+        "20260723T235424Z-1119144"
+      ],
+      "requests_per_second": [97914.283, 101862.723, 100387.995],
+      "median_requests_per_second": 100387.995,
+      "mean_requests_per_second": 100055.000,
+      "population_cv_percent": 1.63
+    },
+    "median_delta_percent": 4.68,
+    "mean_delta_percent": 4.79,
+    "failed_requests": 0
+  }
+}
