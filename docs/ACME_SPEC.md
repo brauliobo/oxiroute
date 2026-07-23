@@ -2,44 +2,56 @@
 
 ## Objective
 
-Provide a Certbot-like certificate lifecycle inside OxiRoute: account registration,
-certificate requests, challenge completion, secure storage, installation, monitoring, and
-automatic renewal. The implementation is independent and uses the ACME standard; it does
-not copy Certbot or plugin code.
+The future managed-certificate target is a Certbot-like lifecycle inside OxiRoute: account
+registration, certificate requests, challenge completion, secure storage, installation,
+monitoring, and automatic renewal. That implementation will be independent and use the ACME
+standard; it will not copy Certbot or plugin code.
 
-OxiRoute implements lifecycle orchestration, not cryptographic primitives. JWS, key, CSR,
-X.509, and TLS operations MUST use maintained Rust or system cryptography libraries.
+OxiRoute will implement managed lifecycle orchestration, not cryptographic primitives. JWS, key,
+CSR, X.509, and TLS operations MUST use maintained Rust or system cryptography libraries.
+
+Current implementation boundary: strict direct-file startup loading and descriptor-relative Certbot
+lineage snapshots prepare immutable certificate generations. One process-lifetime Certbot watcher
+supervisor combines bounded filesystem-event coalescing with periodic full rescans, validates a
+complete lineage candidate, and atomically publishes each identity independently. A TLS callback
+snapshots the active generation for each new handshake; existing connections retain their selected
+generation and downstream session resumption is disabled. Direct-file watching, configuration
+reload, managed storage, certificate API/UI, the ACME client, and renewal scheduling remain targets.
 
 ## Certificate sources
 
 ### ACME managed
 
-The daemon owns issuance and renewal through an ACME v2 directory.
+The daemon will own issuance and renewal through an ACME v2 directory. No ACME client or managed
+certificate source is implemented yet.
 
 ### Imported files
 
-The daemon reads operator-owned certificate, chain, and private-key paths. It watches their
-parent directories and validates replacements before activation.
+The daemon reads operator-owned certificate, chain, and private-key paths. Continuous replacement
+watching is currently implemented only for configured Certbot lineages.
 
-An optional one-time Certbot lineage configuration import followed by continuous external
-source watching reads `live/<name>/fullchain.pem`, `cert.pem`, `chain.pem`, and
-`privkey.pem` symlinks. A snapshot is accepted only when all links resolve to one common
-numbered archive revision inside that lineage. The importer re-reads metadata before and
-after copying to reject transient mixed-link updates. OxiRoute MUST NOT mutate, chmod, or
-lock Certbot's lineage, renewal, archive, or account directories.
+Certbot lineage startup loading and continuous reconciliation are implemented. They read the configured live
+`fullchain.pem`, `cert.pem`, `chain.pem`, and `privkey.pem` symlinks. A snapshot is accepted only
+when all links resolve to one common numbered archive revision inside the configured archive.
+Archive artifacts are opened relative to a pinned directory descriptor with no-follow semantics,
+read twice within bounds, and checked for exact cert/chain/fullchain shape and a secure private-key
+mode. Parent and canonical lineage directories are watched non-recursively and rebuilt after each
+rescan so directory replacement recovers; a periodic rescan remains the authoritative backstop.
+Invalid or transient mixed candidates retain the previous active generation. OxiRoute MUST NOT
+mutate, chmod, or lock Certbot's lineage, renewal, archive, or account directories.
 
 ### Self-signed
 
-For local development and bootstrap only. The daemon generates a leaf key and certificate
-for explicit names and validity. Browsers will not trust it automatically. This mode MUST
-be visibly labeled and SHOULD default to loopback/private use.
+This planned mode will be for local development and bootstrap only. The daemon will generate a leaf
+key and certificate for explicit names and validity. Browsers will not trust it automatically. The
+future mode MUST be visibly labeled and SHOULD default to loopback/private use.
 
 A future local-CA mode requires separate trust-distribution design and is not implied by
 self-signed support.
 
 ## ACME protocol scope
 
-Initial implementation follows RFC 8555 behavior:
+The planned initial implementation will follow RFC 8555 behavior:
 
 1. Fetch and validate an HTTPS directory.
 2. Create or load an account key.
@@ -65,9 +77,9 @@ Otherwise the local renewal policy applies.
 
 ## Challenge types
 
-### HTTP-01: first release
+### HTTP-01: planned first release
 
-- OxiRoute owns an explicit port-80 HTTP listener or an explicitly delegated challenge route.
+- OxiRoute will own an explicit port-80 HTTP listener or an explicitly delegated challenge route.
 - `/.well-known/acme-challenge/<token>` is matched before redirects and normal routes.
 - Only pending authorizations are challenged; already-valid authorizations are reused.
 - Tokens are exact, short-lived records tied to the account, order, authorization, and challenge.
@@ -76,7 +88,7 @@ Otherwise the local renewal policy applies.
 - If another process owns port 80, validation fails with an actionable diagnostic rather than changing firewall rules.
 - All required challenge material is provisioned before the CA is notified; cleanup always runs after a terminal result or timeout.
 
-### DNS-01: next release
+### DNS-01: planned next release
 
 - Required for wildcard identifiers and environments without reachable HTTP port 80.
 - Provider integrations run behind a narrow plugin protocol in isolated helper processes.
@@ -94,7 +106,7 @@ Otherwise the local renewal policy applies.
 Deferred until dynamic per-name challenge certificate selection is tested across every TLS
 backend used by Pingora. It MUST not disrupt ordinary handshakes.
 
-## Domain and authorization policy
+## Planned domain and authorization policy
 
 - Identifiers MUST be normalized and deduplicated before order creation.
 - IP-address certificates are unsupported until both CA and implementation behavior are explicitly tested.
@@ -105,9 +117,9 @@ backend used by Pingora. It MUST not disrupt ordinary handshakes.
 - Directory redirects and every advertised ACME endpoint remain inside configured outbound-origin policy; private/local endpoints require an explicit development allowlist.
 - When a directory requires external account binding, registration uses an opaque EAB secret reference or fails before creating an account.
 
-## Key management and storage
+## Planned key management and storage
 
-Default state layout:
+Planned default state layout:
 
 ```text
 state/
@@ -137,23 +149,23 @@ state/
 - A process-lifetime OS lock protects the state root; per-certificate jobs also coalesce in process.
 - Shared/network filesystems and multiple daemons writing one state root are unsupported in the first release.
 
-`account.json` persists the exact directory URL, account URL/JWS key ID, status, contacts,
+`account.json` will persist the exact directory URL, account URL/JWS key ID, status, contacts,
 terms record, and public-key fingerprint. `directory-id` is a collision-resistant hash of
 the canonical full URL; staging and production accounts are never shared implicitly.
 
-`renewal.json` persists exact identifiers, directory and account references, authenticator
+`renewal.json` will persist exact identifiers, directory and account references, authenticator
 and non-secret options, opaque credential references, key policy, last result, and
 scheduler/renewal-information state. It is certificate-level state rather than revision
 metadata.
 
-Supported key policies initially:
+Planned initial key policies:
 
 - ECDSA P-256 default where the TLS backend supports it.
 - RSA 2048+ optional for compatibility.
 - New leaf key per renewal by default.
 - Separate ACME account and leaf keys.
 
-## Validation before activation
+## Planned validation before activation
 
 The candidate MUST pass all checks:
 
@@ -168,9 +180,9 @@ The candidate MUST pass all checks:
 
 Failure leaves the previous revision active and records a redacted diagnostic.
 
-## Renewal policy
+## Planned renewal policy
 
-- The scheduler evaluates every managed certificate at startup and at least every 12 hours.
+- The scheduler will evaluate every managed certificate at startup and at least every 12 hours.
 - Use the CA-provided suggested renewal window when available; persist the selected stable random time and server retry guidance.
 - Otherwise renew when remaining lifetime is at most one third of original lifetime, or one half for certificates whose original lifetime is shorter than 10 days.
 - Select and persist a stable random time within the renewal window to avoid synchronized fleets.
@@ -180,12 +192,13 @@ Failure leaves the previous revision active and records a redacted diagnostic.
 - Emit escalating warnings at 30, 14, 7, 3, and 1 day when no valid replacement is active.
 - Expiry MUST NOT silently replace a certificate with self-signed material.
 
-## Zero-downtime installation
+## Planned zero-downtime installation
 
-Challenge authenticators only provision and clean authorization material. The OxiRoute
-activator validates and publishes Pingora TLS generations. The first release has one
-built-in HTTP-01 authenticator and one internal activator; it does not discover general
-web-server installers or maintain server-configuration checkpoints.
+Future challenge authenticators will only provision and clean authorization material. The
+OxiRoute activator will validate and publish Pingora TLS generations. The planned first release
+will have one built-in HTTP-01 authenticator and one internal activator; it will not discover
+general web-server installers or maintain server-configuration checkpoints. The existing Certbot
+watcher already uses the generation-publication seam but is not an ACME authenticator or scheduler.
 
 1. Complete issuance into a private revision directory.
 2. Validate certificate, key, chain, names, and TLS backend loading.
@@ -198,7 +211,7 @@ web-server installers or maintain server-configuration checkpoints.
 If runtime preparation fails after files are stored, disk certificate revision and active
 certificate revision differ visibly; the old active certificate remains.
 
-## Revocation and deletion
+## Planned revocation and deletion
 
 - The API MAY request ACME revocation with explicit confirmation and reason.
 - Revocation is never an automatic consequence of removing a listener.
@@ -206,7 +219,7 @@ certificate revision differ visibly; the old active certificate remains.
 - Account key rollover and account deactivation are administrative operations with audit records.
 - Old private-key revisions use configurable retention and secure deletion where the filesystem can provide meaningful guarantees.
 
-## API and UI behavior
+## Planned API and UI behavior
 
 Inventory fields:
 
@@ -226,7 +239,7 @@ configuration has completed a successful staging or dry validation path.
 
 ## Observability
 
-Metrics include:
+Planned metrics include:
 
 - Certificate seconds until expiry and active revision age.
 - ACME jobs by operation/result/directory class.
@@ -237,7 +250,7 @@ Metrics include:
 Metric labels MUST not include unbounded token, order URL, serial, or full domain-set data.
 Audit events identify the certificate by configured stable name.
 
-## Failure and recovery
+## Planned failure and recovery
 
 - Restart resumes scheduler/account state but abandons in-flight issuance and creates a fresh order on the next attempt.
 - Incomplete temporary revisions are ignored and cleaned after an age threshold.
@@ -247,8 +260,8 @@ Audit events identify the certificate by configured stable name.
 
 ## Hooks and extensions
 
-Arbitrary pre/post/deploy shell hooks are excluded from the first release. Successful
-runtime publication emits `certificate.activated`. A future hook runner requires
+Arbitrary pre/post/deploy shell hooks are excluded from the first release. Successful future
+managed runtime publication will emit `certificate.activated`. A future hook runner requires
 allowlisted no-shell executables, an unprivileged identity, input/output/time limits,
 revision idempotency, at-least-once semantics, and failures that do not roll back a valid
 active certificate.
@@ -274,5 +287,5 @@ license grants use of its trademarks.
 - API and logs never contain private or account key bytes.
 - State-root lock, owner/mode, no-follow, hard-link, unsafe-name, and non-local-filesystem failures.
 
-Implementation begins with failing state-machine and storage tests before any live ACME
-request code.
+Managed ACME implementation will begin with failing state-machine and storage tests before any
+live ACME request code.
