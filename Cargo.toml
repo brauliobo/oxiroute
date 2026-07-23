@@ -2,6 +2,7 @@
 members = [
     "crates/oxiroute-cache",
     "crates/oxiroute-config",
+    "crates/oxiroute-forward-proxy",
     "crates/oxiroute-import",
     "crates/oxiroute-rtmp",
     "crates/oxiroute-server",
@@ -46,6 +47,7 @@ x509-parser = "0.18.1"
 zeroize = "1.9"
 
 [patch.crates-io]
+h3 = { git = "https://github.com/hyperium/h3", rev = "e07e69412876f7e26f026bd75a48b2704d8c8283" }
 pingora-core = { path = "vendor/pingora-core" }
 
 [workspace.lints.rust]

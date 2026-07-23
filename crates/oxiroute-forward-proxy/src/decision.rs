@@ -177,10 +177,13 @@ where
             ParsedRequest::Forward(parse_absolute_form(request.target)?)
         };
 
-        let credentials = request
-            .headers
-            .get(header::PROXY_AUTHORIZATION)
+        let mut credential_values = request.headers.get_all(header::PROXY_AUTHORIZATION).iter();
+        let credentials = credential_values
+            .next()
             .map(|value| ProxyCredentials::new(value.as_bytes()));
+        if credential_values.next().is_some() {
+            return Err(AuthError::Invalid.into());
+        }
         let principal = self
             .authenticator
             .authenticate(AuthRequest {
@@ -261,6 +264,15 @@ mod tests {
         }
     }
 
+    struct PanicAuth;
+
+    #[async_trait]
+    impl ProxyAuthenticator for PanicAuth {
+        async fn authenticate(&self, _request: AuthRequest<'_>) -> Result<Principal, AuthError> {
+            panic!("duplicate credentials must be rejected before authentication")
+        }
+    }
+
     struct PublicResolver;
 
     #[async_trait]
@@ -294,6 +306,37 @@ mod tests {
         assert_eq!(decision.target, "/resource");
         assert!(!decision.headers.contains_key(header::PROXY_AUTHORIZATION));
         assert_eq!(decision.destination.socket_addresses.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn duplicate_proxy_authorization_is_rejected_before_authentication() {
+        let proxy = ForwardProxy::new(PanicAuth, PublicResolver, ForbiddenDestinationPolicy);
+        let mut headers = HeaderMap::new();
+        headers.append(header::PROXY_AUTHORIZATION, "Bearer first".parse().unwrap());
+        headers.append(
+            header::PROXY_AUTHORIZATION,
+            "Bearer second".parse().unwrap(),
+        );
+
+        let error = proxy
+            .decide(IncomingRequest {
+                protocol: Protocol::Http1,
+                client_addr: "127.0.0.1:1234".parse().unwrap(),
+                method: &Method::GET,
+                target: "http://example.com/resource",
+                headers: &headers,
+            })
+            .await
+            .expect_err("duplicate proxy credentials must fail closed");
+
+        assert!(matches!(
+            error,
+            DecisionError::Authentication(AuthError::Invalid)
+        ));
+        assert_eq!(
+            error.rejection().status,
+            StatusCode::PROXY_AUTHENTICATION_REQUIRED
+        );
     }
 
     #[tokio::test]
