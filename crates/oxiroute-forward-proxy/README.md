@@ -1,12 +1,11 @@
 # OxiRoute forward proxy foundation
 
-This standalone crate defines explicit forward-proxy parsing, authorization, destination policy,
-request sanitization, and tunnel primitives. It is intentionally outside the root Cargo workspace
-for now; all commands use its manifest directly.
+This workspace crate defines explicit forward-proxy parsing, authorization, destination policy,
+request sanitization, and tunnel primitives. Its daemon runtime integration remains fail-closed.
 
 ```sh
-cargo test --manifest-path crates/oxiroute-forward-proxy/Cargo.toml
-cargo clippy --manifest-path crates/oxiroute-forward-proxy/Cargo.toml --all-targets -- -D warnings
+cargo test -p oxiroute-forward-proxy --locked
+cargo clippy -p oxiroute-forward-proxy --all-targets --all-features --locked -- -D warnings
 ```
 
 ## Protocol coverage
@@ -18,7 +17,7 @@ cargo clippy --manifest-path crates/oxiroute-forward-proxy/Cargo.toml --all-targ
 | HTTP/3 | Absolute URI reconstructed from QPACK pseudo-fields | Authority-only RFC 9114 classic CONNECT with DATA-frame tunnel relay | Quinn QUIC with TLS, negotiated `h3` ALPN, real QPACK HEADERS, bidirectional DATA, FIN, reset, rejection, and limit tests |
 
 The selected Rust-1.87-compatible H3 stack is `h3 0.0.8`, `h3-quinn 0.0.10`, and Quinn 0.11. The
-standalone manifest patches `h3` to verified upstream commit `e07e6941`, which is the focused
+workspace manifest patches `h3` to verified upstream commit `e07e6941`, which is the focused
 standard-CONNECT encoder fix later merged upstream: classic CONNECT omits `:scheme` and `:path` and
 emits only `:method` and `:authority`. The patched crate declares Rust 1.74. Extended CONNECT is
 explicitly rejected and is not used as a TCP CONNECT substitute.
