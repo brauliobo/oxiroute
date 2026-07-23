@@ -1,0 +1,1190 @@
+use std::{fmt, net::SocketAddr, path::PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use crate::defaults::{
+    MAX_CERTIFICATE_DNS_NAMES, MAX_CERTIFICATES, MAX_ENDPOINTS_PER_POOL,
+    MAX_RTMP_APPLICATIONS_PER_SERVICE, MAX_RTMP_RECORDERS_PER_APPLICATION,
+    MAX_RTMP_RECORDING_ROOTS, MAX_RTMP_SERVICES, MAX_SOURCE_BYTES, MAX_TLS_PROFILES,
+    MAX_TOTAL_ENDPOINTS, MAX_TOTAL_RTMP_RECORDERS, default_alpn, default_cache_grace_ms,
+    default_cache_keep_ms, default_cache_key_components, default_cache_max_bytes,
+    default_cache_max_entries, default_cache_max_followers_per_fill,
+    default_cache_max_header_bytes, default_cache_max_in_flight_fills, default_cache_max_key_bytes,
+    default_cache_max_object_bytes, default_cache_max_tag_bytes, default_cache_max_tags_per_object,
+    default_cache_methods, default_cache_ttl_ms, default_connect_timeout_ms,
+    default_disk_cache_max_bytes, default_disk_cache_max_files, default_forward_connect_ports,
+    default_forward_http_versions, default_forward_lifetime_timeout_ms,
+    default_forward_max_connections, default_forward_max_header_bytes,
+    default_forward_resolver_cache_entries, default_forward_resolver_concurrent_queries,
+    default_forward_resolver_max_addresses, default_forward_resolver_max_ttl_ms,
+    default_forward_resolver_min_ttl_ms, default_forward_resolver_negative_ttl_ms,
+    default_health_interval_ms, default_health_timeout_ms, default_healthy_threshold,
+    default_http_access_header_name, default_http_redirect_status, default_http_retry_triggers,
+    default_http_static_index_files, default_idle_timeout_ms, default_max_request_body_bytes,
+    default_recorder_max_active_recorders, default_recorder_max_queue_bytes,
+    default_recorder_max_queue_messages, default_recorder_max_storage_bytes,
+    default_recorder_max_storage_files, default_recorder_shutdown_timeout_ms,
+    default_recorder_suffix_template, default_true, default_unhealthy_threshold,
+    default_upstream_io_timeout_ms,
+};
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Config {
+    pub version: u32,
+    #[serde(default)]
+    pub management: Option<Management>,
+    #[serde(default)]
+    pub certificates: Vec<Certificate>,
+    #[serde(default)]
+    pub tls_profiles: Vec<TlsProfile>,
+    pub listeners: Vec<Listener>,
+    #[serde(default)]
+    pub cache_stores: Vec<CacheStore>,
+    #[serde(default)]
+    pub upstream_pools: Vec<UpstreamPool>,
+    #[serde(default)]
+    pub http_services: Vec<HttpService>,
+    #[serde(default)]
+    pub forward_proxy_services: Vec<ForwardProxyService>,
+    #[serde(default)]
+    pub rtmp_services: Vec<RtmpService>,
+    #[serde(default)]
+    pub l4_services: Vec<L4Service>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Certificate {
+    pub name: String,
+    pub dns_names: Vec<String>,
+    pub source: CertificateSource,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CertificateSource {
+    Files {
+        certificate_chain_path: PathBuf,
+        private_key_path: PathBuf,
+    },
+    Certbot {
+        live_directory_path: PathBuf,
+        archive_directory_path: PathBuf,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TlsProfile {
+    pub name: String,
+    pub certificates: Vec<String>,
+    pub default_certificate: String,
+    #[serde(default)]
+    pub min_version: TlsVersion,
+    #[serde(default = "default_alpn")]
+    pub alpn: Vec<AlpnProtocol>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub enum TlsVersion {
+    #[default]
+    #[serde(rename = "1.2")]
+    Tls12,
+    #[serde(rename = "1.3")]
+    Tls13,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub enum AlpnProtocol {
+    #[serde(rename = "h3")]
+    H3,
+    #[serde(rename = "h2")]
+    H2,
+    #[serde(rename = "http/1.1")]
+    Http11,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Management {
+    pub bind: SocketAddr,
+    #[serde(default)]
+    pub ui_dir: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Listener {
+    pub name: String,
+    pub bind: ListenerBind,
+    pub protocol: Protocol,
+    #[serde(default)]
+    pub service: Option<String>,
+    #[serde(default)]
+    pub tls_profile: Option<String>,
+    /// Concurrent connection cap. Omitted or explicit null means unbounded.
+    #[serde(default)]
+    pub max_connections: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ListenerBind {
+    Socket { address: SocketAddr },
+    Udp { address: SocketAddr },
+    Unix { path: PathBuf },
+}
+
+impl fmt::Display for ListenerBind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Socket { address } => address.fmt(formatter),
+            Self::Udp { address } => write!(formatter, "udp://{address}"),
+            Self::Unix { path } => path.display().fmt(formatter),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Protocol {
+    Http,
+    Rtmp,
+    Tcp,
+    ForwardHttp1,
+    ForwardHttp2,
+    ForwardHttp3,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CacheStore {
+    Memory {
+        name: String,
+        #[serde(default = "default_cache_max_bytes")]
+        max_bytes: u64,
+        #[serde(default = "default_cache_max_entries")]
+        max_entries: u64,
+        #[serde(default = "default_cache_max_object_bytes")]
+        max_object_bytes: u64,
+        #[serde(default = "default_cache_max_header_bytes")]
+        max_header_bytes: u64,
+        #[serde(default = "default_cache_max_key_bytes")]
+        max_key_bytes: u64,
+        #[serde(default = "default_cache_max_tag_bytes")]
+        max_tag_bytes: u64,
+        #[serde(default = "default_cache_max_tags_per_object")]
+        max_tags_per_object: u64,
+        #[serde(default = "default_cache_max_in_flight_fills")]
+        max_in_flight_fills: u64,
+        #[serde(default = "default_cache_max_followers_per_fill")]
+        max_followers_per_fill: u64,
+    },
+    Disk {
+        name: String,
+        root_directory: PathBuf,
+        #[serde(default = "default_disk_cache_max_bytes")]
+        max_bytes: u64,
+        #[serde(default = "default_disk_cache_max_files")]
+        max_files: u64,
+        #[serde(default = "default_cache_max_object_bytes")]
+        max_object_bytes: u64,
+        #[serde(default = "default_cache_max_header_bytes")]
+        max_header_bytes: u64,
+        #[serde(default = "default_cache_max_key_bytes")]
+        max_key_bytes: u64,
+        #[serde(default = "default_cache_max_tag_bytes")]
+        max_tag_bytes: u64,
+        #[serde(default = "default_cache_max_tags_per_object")]
+        max_tags_per_object: u64,
+        #[serde(default = "default_cache_max_in_flight_fills")]
+        max_in_flight_fills: u64,
+        #[serde(default = "default_cache_max_followers_per_fill")]
+        max_followers_per_fill: u64,
+    },
+}
+
+impl CacheStore {
+    pub(crate) fn name(&self) -> &str {
+        match self {
+            Self::Memory { name, .. } | Self::Disk { name, .. } => name,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct UpstreamPool {
+    pub name: String,
+    pub endpoints: Vec<UpstreamEndpoint>,
+    #[serde(default)]
+    pub algorithm: UpstreamAlgorithm,
+    #[serde(default)]
+    pub health_check: Option<HealthCheck>,
+    #[serde(default)]
+    pub tls: Option<UpstreamTls>,
+    #[serde(default)]
+    pub http_versions: HttpVersionPolicy,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum UpstreamEndpoint {
+    Socket { address: SocketAddr },
+    Dns { host: String, port: u16 },
+    Unix { path: PathBuf },
+}
+
+impl fmt::Display for UpstreamEndpoint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Socket { address } => address.fmt(formatter),
+            Self::Dns { host, port } => write!(formatter, "{host}:{port}"),
+            Self::Unix { path } => path.display().fmt(formatter),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct UpstreamTls {
+    pub server_name: String,
+    #[serde(default)]
+    pub ca_certificate_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HttpVersionPolicy {
+    #[serde(default)]
+    pub min: HttpVersion,
+    #[serde(default)]
+    pub max: HttpVersion,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub enum HttpVersion {
+    #[default]
+    #[serde(rename = "1.1")]
+    Http11,
+    #[serde(rename = "2")]
+    Http2,
+}
+
+impl HttpVersion {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Http11 => "1.1",
+            Self::Http2 => "2",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UpstreamAlgorithm {
+    #[default]
+    RoundRobin,
+    LeastConnections,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HealthCheck {
+    #[serde(rename = "type")]
+    pub kind: HealthCheckType,
+    #[serde(default = "default_health_interval_ms")]
+    pub interval_ms: u64,
+    #[serde(default = "default_health_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_healthy_threshold")]
+    pub healthy_threshold: u16,
+    #[serde(default = "default_unhealthy_threshold")]
+    pub unhealthy_threshold: u16,
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum HealthCheckType {
+    Http,
+    Tcp,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HttpService {
+    pub name: String,
+    pub routes: Vec<HttpRoute>,
+    #[serde(default = "default_upstream_io_timeout_ms")]
+    pub upstream_io_timeout_ms: u64,
+    /// Request body cap. Omitted configs default to 10 MiB; explicit null means unbounded.
+    #[serde(default = "default_max_request_body_bytes")]
+    pub max_request_body_bytes: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HttpRoute {
+    /// Host precedence is exact authority, normalized exact/IP, normalized wildcard, then none.
+    #[serde(default)]
+    pub host: Option<HttpHostSelector>,
+    /// Path precedence is exact, segment prefix, then raw prefix; longer prefixes win within kind.
+    pub path: HttpPathSelector,
+    /// A nonempty method set precedes an any-method route; source order resolves final ties.
+    #[serde(default)]
+    pub methods: Vec<String>,
+    #[serde(default)]
+    pub access_policy: Option<HttpAccessPolicy>,
+    pub action: HttpRouteAction,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HttpHostSelector {
+    NormalizedHost { value: String },
+    ExactAuthority { value: String },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HttpPathSelector {
+    SegmentPrefix { value: String },
+    RawPrefix { value: String },
+    Exact { value: String },
+}
+
+impl HttpPathSelector {
+    pub(crate) fn value_mut(&mut self) -> &mut String {
+        match self {
+            Self::SegmentPrefix { value } | Self::RawPrefix { value } | Self::Exact { value } => {
+                value
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HttpAccessPolicy {
+    BearerTokenFile {
+        token_file_path: PathBuf,
+        #[serde(default = "default_http_access_header_name")]
+        header_name: String,
+        #[serde(default)]
+        realm: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HttpRouteAction {
+    Proxy {
+        upstream_pool: String,
+        policy: HttpProxyPolicy,
+    },
+    FixedResponse {
+        status: u16,
+        #[serde(default)]
+        body: String,
+        #[serde(default)]
+        headers: Vec<HttpLiteralHeader>,
+    },
+    Redirect {
+        #[serde(default = "default_http_redirect_status")]
+        status: u16,
+        location: HttpRedirectLocation,
+    },
+    StaticFiles {
+        root_directory: PathBuf,
+        #[serde(default = "default_http_static_index_files")]
+        index_files: Vec<String>,
+        #[serde(default)]
+        spa_fallback: Option<PathBuf>,
+    },
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HttpProxyPolicy {
+    #[serde(default)]
+    pub upstream_host: HttpUpstreamHost,
+    #[serde(default)]
+    pub request_headers: Vec<HttpRequestHeaderMutation>,
+    #[serde(default)]
+    pub response_headers: Vec<HttpResponseHeaderMutation>,
+    #[serde(default)]
+    pub response_cookie_path_rewrites: Vec<HttpCookiePathRewrite>,
+    #[serde(default)]
+    pub retry: HttpRetryPolicy,
+    #[serde(default)]
+    pub cache: Option<Box<HttpCachePolicy>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HttpCachePolicy {
+    pub store: String,
+    #[serde(default = "default_cache_methods")]
+    pub methods: Vec<String>,
+    #[serde(default = "default_cache_key_components")]
+    pub key_components: Vec<CacheKeyComponent>,
+    #[serde(default = "default_true")]
+    pub use_origin_cache_control: bool,
+    #[serde(default = "default_cache_ttl_ms")]
+    pub default_ttl_ms: u64,
+    #[serde(default)]
+    pub status_ttls: Vec<CacheStatusTtl>,
+    #[serde(default = "default_cache_grace_ms")]
+    pub grace_ms: u64,
+    #[serde(default = "default_cache_keep_ms")]
+    pub keep_ms: u64,
+    #[serde(default = "default_true")]
+    pub revalidate: bool,
+    #[serde(default = "default_true")]
+    pub collapsed_forwarding: bool,
+    #[serde(default)]
+    pub stale_on: Vec<CacheStaleTrigger>,
+    #[serde(default)]
+    pub bypass_request: Vec<CachePredicate>,
+    #[serde(default)]
+    pub no_store_request: Vec<CachePredicate>,
+    #[serde(default)]
+    pub no_store_response: Vec<CachePredicate>,
+    #[serde(default)]
+    pub set_cookie_policy: CacheSetCookiePolicy,
+    #[serde(default)]
+    pub authorization_policy: CacheAuthorizationPolicy,
+    #[serde(default)]
+    pub vary_policy: CacheVaryPolicy,
+    #[serde(default)]
+    pub surrogate_tags: Option<CacheSurrogateTags>,
+    #[serde(default)]
+    pub purge_authorization: Option<CachePurgeAuthorization>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CacheKeyComponent {
+    Scheme,
+    NormalizedHost,
+    PathAndQuery,
+    Header { name: String },
+    Cookie { name: String },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CacheStatusTtl {
+    pub status: u16,
+    pub ttl_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheStaleTrigger {
+    ConnectFailure,
+    ConnectTimeout,
+    #[serde(rename = "origin_500")]
+    Origin500,
+    #[serde(rename = "origin_502")]
+    Origin502,
+    #[serde(rename = "origin_503")]
+    Origin503,
+    #[serde(rename = "origin_504")]
+    Origin504,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CachePredicate {
+    HeaderPresent { name: String },
+    CookiePresent { name: String },
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheSetCookiePolicy {
+    #[default]
+    Bypass,
+    Ignore,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheAuthorizationPolicy {
+    #[default]
+    Bypass,
+    Cache,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheVaryPolicy {
+    #[default]
+    Respect,
+    Ignore,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CacheSurrogateTags {
+    pub response_header: String,
+    #[serde(default = "default_cache_max_tags_per_object")]
+    pub max_tags: u64,
+    #[serde(default = "default_cache_max_tag_bytes")]
+    pub max_tag_bytes: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CachePurgeAuthorization {
+    BearerTokenFile { token_file_path: PathBuf },
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HttpUpstreamHost {
+    #[default]
+    PreserveIncoming,
+    Endpoint {
+        #[serde(default)]
+        unix_fallback: Option<String>,
+    },
+    Literal {
+        value: String,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HttpRequestHeaderMutation {
+    Set {
+        name: String,
+        value: HttpRequestHeaderValue,
+    },
+    Remove {
+        name: String,
+    },
+}
+
+impl HttpRequestHeaderMutation {
+    pub(crate) fn name(&self) -> &str {
+        match self {
+            Self::Set { name, .. } | Self::Remove { name } => name,
+        }
+    }
+
+    pub(crate) fn name_mut(&mut self) -> &mut String {
+        match self {
+            Self::Set { name, .. } | Self::Remove { name } => name,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HttpRequestHeaderValue {
+    Literal { value: String },
+    IncomingAuthority,
+    NormalizedHost,
+    ClientIp,
+    SelectedUpstreamHost,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HttpResponseHeaderMutation {
+    Set { name: String, value: String },
+    Remove { name: String },
+}
+
+impl HttpResponseHeaderMutation {
+    pub(crate) fn name(&self) -> &str {
+        match self {
+            Self::Set { name, .. } | Self::Remove { name } => name,
+        }
+    }
+
+    pub(crate) fn name_mut(&mut self) -> &mut String {
+        match self {
+            Self::Set { name, .. } | Self::Remove { name } => name,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HttpCookiePathRewrite {
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HttpRetryPolicy {
+    #[serde(default)]
+    pub max_retries: u8,
+    #[serde(default = "default_http_retry_triggers")]
+    pub triggers: Vec<HttpRetryTrigger>,
+    #[serde(default)]
+    pub method_safety: HttpRetryMethodSafety,
+    #[serde(default)]
+    pub body_safety: HttpRetryBodySafety,
+}
+
+impl Default for HttpRetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_retries: 0,
+            triggers: default_http_retry_triggers(),
+            method_safety: HttpRetryMethodSafety::default(),
+            body_safety: HttpRetryBodySafety::default(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum HttpRetryTrigger {
+    ConnectFailure,
+    ConnectTimeout,
+    RefusedStream,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HttpRetryMethodSafety {
+    #[default]
+    GetHead,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HttpRetryBodySafety {
+    #[default]
+    Empty,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HttpLiteralHeader {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HttpRedirectLocation {
+    Literal { value: String },
+    RequestTemplate { value: String },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RtmpService {
+    pub name: String,
+    pub applications: Vec<RtmpApplication>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RtmpApplication {
+    pub name: String,
+    #[serde(default)]
+    pub live: bool,
+    #[serde(default = "default_true")]
+    pub idle_streams: bool,
+    #[serde(default)]
+    pub recorders: Vec<RtmpRecorder>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RtmpRecorder {
+    pub name: String,
+    /// Omitted policies start recording continuously.
+    #[serde(default)]
+    pub start: RtmpRecorderStart,
+    pub root_directory: PathBuf,
+    /// Defaults to `.flv` and accepts only the bounded UTC subset used by `RecordingPathPolicy`.
+    #[serde(default = "default_recorder_suffix_template")]
+    pub suffix_template: String,
+    /// Defaults to false.
+    #[serde(default)]
+    pub append_unix_seconds: bool,
+    /// Defaults to null (no rotation).
+    #[serde(default)]
+    pub rotation_interval_ms: Option<u64>,
+    /// Defaults to the recorder worker's 256-message queue bound.
+    #[serde(default = "default_recorder_max_queue_messages")]
+    pub max_queue_messages: u64,
+    /// Defaults to the recorder worker's 8 MiB queue byte bound.
+    #[serde(default = "default_recorder_max_queue_bytes")]
+    pub max_queue_bytes: u64,
+    /// Defaults to the recorder worker's 5-second shutdown timeout.
+    #[serde(default = "default_recorder_shutdown_timeout_ms")]
+    pub shutdown_timeout_ms: u64,
+    /// Defaults to a finite 10 GiB quota shared by normalized root directory.
+    #[serde(default = "default_recorder_max_storage_bytes")]
+    pub max_storage_bytes: u64,
+    /// Defaults to a finite 10,000-file quota shared by normalized root directory.
+    #[serde(default = "default_recorder_max_storage_files")]
+    pub max_storage_files: u64,
+    /// Defaults to 8 active recorders per normalized root directory.
+    #[serde(default = "default_recorder_max_active_recorders")]
+    pub max_active_recorders: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RtmpRecorderStart {
+    #[default]
+    Continuous,
+    Manual,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ForwardProxyService {
+    pub name: String,
+    #[serde(default = "default_forward_http_versions")]
+    pub enabled_versions: Vec<ForwardHttpVersion>,
+    #[serde(default = "default_true")]
+    pub allow_absolute_form: bool,
+    #[serde(default = "default_true")]
+    pub tls_required: bool,
+    #[serde(default)]
+    pub connect: ForwardConnectPolicy,
+    #[serde(default)]
+    pub auth: Option<ForwardProxyAuth>,
+    #[serde(default)]
+    pub destination_policy: ForwardDestinationPolicy,
+    #[serde(default = "default_connect_timeout_ms")]
+    pub connect_timeout_ms: u64,
+    #[serde(default = "default_idle_timeout_ms")]
+    pub idle_timeout_ms: u64,
+    #[serde(default = "default_forward_lifetime_timeout_ms")]
+    pub lifetime_timeout_ms: u64,
+    #[serde(default = "default_max_request_body_bytes")]
+    pub max_request_body_bytes: Option<u64>,
+    #[serde(default = "default_forward_max_header_bytes")]
+    pub max_header_bytes: u64,
+    #[serde(default = "default_forward_max_connections")]
+    pub max_connections: u64,
+    #[serde(default)]
+    pub resolver: ForwardResolverPolicy,
+    #[serde(default)]
+    pub audit_mode: ForwardAuditMode,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum ForwardHttpVersion {
+    H1,
+    H2,
+    H3,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ForwardConnectPolicy {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_forward_connect_ports")]
+    pub allowed_ports: Vec<u16>,
+}
+
+impl Default for ForwardConnectPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            allowed_ports: default_forward_connect_ports(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ForwardProxyAuth {
+    BearerTokenFile { token_file_path: PathBuf },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ForwardDestinationPolicy {
+    #[serde(default)]
+    pub allow_domains: Vec<String>,
+    #[serde(default)]
+    pub deny_domains: Vec<String>,
+    #[serde(default)]
+    pub allow_cidrs: Vec<String>,
+    #[serde(default)]
+    pub deny_cidrs: Vec<String>,
+    #[serde(default = "default_true")]
+    pub deny_private: bool,
+}
+
+impl Default for ForwardDestinationPolicy {
+    fn default() -> Self {
+        Self {
+            allow_domains: Vec::new(),
+            deny_domains: Vec::new(),
+            allow_cidrs: Vec::new(),
+            deny_cidrs: Vec::new(),
+            deny_private: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ForwardResolverPolicy {
+    #[serde(default = "default_forward_resolver_cache_entries")]
+    pub max_cache_entries: u64,
+    #[serde(default = "default_forward_resolver_concurrent_queries")]
+    pub max_concurrent_queries: u64,
+    #[serde(default = "default_forward_resolver_max_addresses")]
+    pub max_addresses_per_name: u64,
+    #[serde(default = "default_forward_resolver_min_ttl_ms")]
+    pub min_ttl_ms: u64,
+    #[serde(default = "default_forward_resolver_max_ttl_ms")]
+    pub max_ttl_ms: u64,
+    #[serde(default = "default_forward_resolver_negative_ttl_ms")]
+    pub negative_ttl_ms: u64,
+    #[serde(default = "default_true")]
+    pub revalidate_on_connect: bool,
+}
+
+impl Default for ForwardResolverPolicy {
+    fn default() -> Self {
+        Self {
+            max_cache_entries: default_forward_resolver_cache_entries(),
+            max_concurrent_queries: default_forward_resolver_concurrent_queries(),
+            max_addresses_per_name: default_forward_resolver_max_addresses(),
+            min_ttl_ms: default_forward_resolver_min_ttl_ms(),
+            max_ttl_ms: default_forward_resolver_max_ttl_ms(),
+            negative_ttl_ms: default_forward_resolver_negative_ttl_ms(),
+            revalidate_on_connect: true,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardAuditMode {
+    Off,
+    #[default]
+    Metadata,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct L4Service {
+    pub name: String,
+    pub upstream_pool: String,
+    #[serde(default = "default_connect_timeout_ms")]
+    pub connect_timeout_ms: u64,
+    #[serde(default = "default_idle_timeout_ms")]
+    pub idle_timeout_ms: u64,
+    #[serde(default)]
+    pub lifetime_timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("Lua configuration failed: {0}")]
+    Lua(#[from] mlua::Error),
+    #[error("configuration exceeds the {MAX_SOURCE_BYTES}-byte source limit")]
+    SourceTooLarge,
+    #[error("unsupported configuration version {0}; expected version 1")]
+    UnsupportedVersion(u32),
+    #[error("{namespace} at index {index} has a blank name")]
+    BlankName {
+        namespace: &'static str,
+        index: usize,
+    },
+    #[error("{namespace} at index {index} has noncanonical name {name:?}")]
+    InvalidName {
+        namespace: &'static str,
+        index: usize,
+        name: String,
+    },
+    #[error("duplicate {namespace} name `{name}`")]
+    DuplicateName {
+        namespace: &'static str,
+        name: String,
+    },
+    #[error("configuration exceeds the {MAX_CERTIFICATES}-certificate limit")]
+    TooManyCertificates,
+    #[error("certificate `{certificate}` must declare at least one DNS name")]
+    EmptyCertificateDnsNames { certificate: String },
+    #[error("certificate `{certificate}` exceeds the {MAX_CERTIFICATE_DNS_NAMES}-DNS-name limit")]
+    TooManyCertificateDnsNames { certificate: String },
+    #[error("certificate `{certificate}` has invalid DNS name `{dns_name}`")]
+    InvalidCertificateDnsName {
+        certificate: String,
+        dns_name: String,
+    },
+    #[error("certificate `{certificate}` contains duplicate DNS name `{dns_name}`")]
+    DuplicateCertificateDnsName {
+        certificate: String,
+        dns_name: String,
+    },
+    #[error("configuration exceeds the {MAX_TLS_PROFILES}-TLS-profile limit")]
+    TooManyTlsProfiles,
+    #[error("{kind} `{name}` has invalid `{field}`: {detail}")]
+    InvalidFilePath {
+        kind: &'static str,
+        name: String,
+        field: &'static str,
+        detail: &'static str,
+    },
+    #[error("certificate `{certificate}` must use different chain and private-key paths")]
+    DuplicateCertificatePaths { certificate: String },
+    #[error("certificate `{certificate}` must use different Certbot live and archive directories")]
+    DuplicateCertbotDirectories { certificate: String },
+    #[error("TLS profile `{profile}` references unknown certificate `{certificate}`")]
+    UnknownTlsProfileCertificate {
+        profile: String,
+        certificate: String,
+    },
+    #[error("TLS profile `{profile}` must reference at least one certificate")]
+    EmptyTlsProfileCertificates { profile: String },
+    #[error("TLS profile `{profile}` references certificate `{certificate}` more than once")]
+    DuplicateTlsProfileCertificate {
+        profile: String,
+        certificate: String,
+    },
+    #[error(
+        "TLS profile `{profile}` default certificate `{certificate}` is not in its certificate list"
+    )]
+    TlsProfileDefaultNotListed {
+        profile: String,
+        certificate: String,
+    },
+    #[error(
+        "TLS profile `{profile}` assigns DNS name `{dns_name}` to both `{first_certificate}` and `{second_certificate}`"
+    )]
+    OverlappingTlsProfileDnsName {
+        profile: String,
+        dns_name: String,
+        first_certificate: String,
+        second_certificate: String,
+    },
+    #[error(
+        "TLS profile `{profile}` has invalid ALPN policy; expected [http/1.1], [h2], [h2, http/1.1], or [h3]"
+    )]
+    InvalidTlsProfileAlpn { profile: String },
+    #[error("binds `{first_name}` ({first_bind}) and `{second_name}` ({second_bind}) overlap")]
+    OverlappingBind {
+        first_name: String,
+        first_bind: Box<ListenerBind>,
+        second_name: String,
+        second_bind: Box<ListenerBind>,
+    },
+    #[error("{kind} `{name}` has an invalid zero port in `{field}`")]
+    ZeroPort {
+        kind: &'static str,
+        name: String,
+        field: &'static str,
+    },
+    #[error("{kind} `{name}` must have a nonzero `{field}`")]
+    ZeroLimit {
+        kind: &'static str,
+        name: String,
+        field: &'static str,
+    },
+    #[error("{kind} `{name}` exceeds the exact JSON integer limit in `{field}`")]
+    LimitTooLarge {
+        kind: &'static str,
+        name: String,
+        field: &'static str,
+    },
+    #[error("{protocol:?} listener `{listener}` requires a service")]
+    MissingListenerService {
+        listener: String,
+        protocol: Protocol,
+    },
+    #[error("{protocol:?} listener `{listener}` references unknown same-kind service `{service}`")]
+    UnknownListenerService {
+        listener: String,
+        protocol: Protocol,
+        service: String,
+    },
+    #[error("listener `{listener}` references unknown TLS profile `{profile}`")]
+    UnknownListenerTlsProfile { listener: String, profile: String },
+    #[error("{protocol:?} listener `{listener}` must not use TLS profile `{profile}`")]
+    UnexpectedListenerTlsProfile {
+        listener: String,
+        protocol: Protocol,
+        profile: String,
+    },
+    #[error("{protocol:?} listener `{listener}` has invalid transport: {detail}")]
+    InvalidListenerTransport {
+        listener: String,
+        protocol: Protocol,
+        detail: &'static str,
+    },
+    #[error("upstream pool `{pool}` must contain at least one endpoint")]
+    EmptyUpstreamEndpoints { pool: String },
+    #[error("upstream pool `{pool}` exceeds the {MAX_ENDPOINTS_PER_POOL}-endpoint limit")]
+    TooManyUpstreamEndpoints { pool: String },
+    #[error("configuration exceeds the {MAX_TOTAL_ENDPOINTS}-upstream-endpoint limit")]
+    TooManyTotalUpstreamEndpoints,
+    #[error("upstream pool `{pool}` contains duplicate endpoint `{endpoint}`")]
+    DuplicateUpstreamEndpoint {
+        pool: String,
+        endpoint: UpstreamEndpoint,
+    },
+    #[error("upstream pool `{pool}` exposes the loopback management endpoint `{endpoint}`")]
+    ManagementUpstreamEndpoint { pool: String, endpoint: SocketAddr },
+    #[error("upstream pool `{pool}` has invalid DNS endpoint `{host}`")]
+    InvalidDnsEndpoint { pool: String, host: String },
+    #[error("{kind} `{name}` has invalid Unix socket `{field}`: {detail}")]
+    InvalidUnixPath {
+        kind: &'static str,
+        name: String,
+        field: &'static str,
+        detail: &'static str,
+    },
+    #[error("upstream pool `{pool}` has an invalid health check: {detail}")]
+    InvalidHealthCheck { pool: String, detail: &'static str },
+    #[error("upstream pool `{pool}` has invalid TLS server name `{server_name}`")]
+    InvalidUpstreamTlsServerName { pool: String, server_name: String },
+    #[error(
+        "upstream pool `{pool}` has invalid HTTP version range {min}/{max}; expected 1.1/1.1, 1.1/2, or 2/2"
+    )]
+    InvalidHttpVersionRange {
+        pool: String,
+        min: &'static str,
+        max: &'static str,
+    },
+    #[error("upstream pool `{pool}` enables HTTP/2 without TLS; plaintext h2c is not supported")]
+    H2RequiresUpstreamTls { pool: String },
+    #[error("upstream pool `{pool}` combines `health_check` with `tls`, which is not supported")]
+    UnsupportedTlsHealthCheck { pool: String },
+    #[error("listener `{listener}` cannot terminate TLS profile `{profile}` on a Unix socket")]
+    UnsupportedUnixListenerTls { listener: String, profile: String },
+    #[error("upstream pool `{pool}` cannot use TLS with a Unix endpoint")]
+    UnsupportedUnixUpstreamTls { pool: String },
+    #[error("upstream pool `{pool}` cannot health-check a Unix endpoint")]
+    UnsupportedUnixHealthCheck { pool: String },
+    #[error("HTTP service `{service}` must contain at least one route")]
+    EmptyHttpRoutes { service: String },
+    #[error("HTTP service `{service}` route {route} has invalid `{field}`: {detail}")]
+    InvalidHttpRoute {
+        service: String,
+        route: usize,
+        field: &'static str,
+        detail: String,
+    },
+    #[error(
+        "HTTP service `{service}` route {route} uses endpoint Host policy with a Unix endpoint but has no `unix_fallback`"
+    )]
+    HttpEndpointHostRequiresUnixFallback { service: String, route: usize },
+    #[error("configuration exceeds the {MAX_RTMP_SERVICES}-RTMP-service limit")]
+    TooManyRtmpServices,
+    #[error("RTMP service `{service}` must contain at least one application")]
+    EmptyRtmpApplications { service: String },
+    #[error(
+        "RTMP service `{service}` exceeds the {MAX_RTMP_APPLICATIONS_PER_SERVICE}-application limit"
+    )]
+    TooManyRtmpApplications { service: String },
+    #[error(
+        "RTMP application `{application}` in service `{service}` exceeds the {MAX_RTMP_RECORDERS_PER_APPLICATION}-recorder limit"
+    )]
+    TooManyRtmpRecorders {
+        service: String,
+        application: String,
+    },
+    #[error("configuration exceeds the {MAX_TOTAL_RTMP_RECORDERS}-RTMP-recorder limit")]
+    TooManyTotalRtmpRecorders,
+    #[error("configuration exceeds the {MAX_RTMP_RECORDING_ROOTS}-recording-root limit")]
+    TooManyRtmpRecordingRoots,
+    #[error(
+        "RTMP recorder `{recorder}` in application `{application}` of service `{service}` requires `live = true`"
+    )]
+    RtmpRecorderRequiresLiveApplication {
+        service: String,
+        application: String,
+        recorder: String,
+    },
+    #[error(
+        "RTMP recorder `{recorder}` in application `{application}` of service `{service}` has invalid `{field}`: {detail}"
+    )]
+    InvalidRtmpRecorderPolicy {
+        service: String,
+        application: String,
+        recorder: String,
+        field: &'static str,
+        detail: &'static str,
+    },
+    #[error(
+        "RTMP recorder `{recorder}` max_queue_bytes must not exceed max_storage_bytes in application `{application}` of service `{service}`"
+    )]
+    RtmpRecorderQueueExceedsStorage {
+        service: String,
+        application: String,
+        recorder: String,
+    },
+    #[error(
+        "RTMP recorders `{first_recorder}` and `{second_recorder}` use shared recording root `{root_directory}` and must use identical storage limits"
+    )]
+    RtmpRecorderStorageLimitsMismatch {
+        root_directory: String,
+        first_recorder: String,
+        second_recorder: String,
+    },
+    #[error(
+        "HTTP service `{service}` routes {first_route} and {duplicate_route} have equivalent matchers"
+    )]
+    DuplicateHttpRoute {
+        service: String,
+        first_route: usize,
+        duplicate_route: usize,
+    },
+    #[error("HTTP service `{service}` route {route} references unknown upstream pool `{pool}`")]
+    UnknownRouteUpstreamPool {
+        service: String,
+        route: usize,
+        pool: String,
+    },
+    #[error("cache store `{store}` has invalid `{field}`: {detail}")]
+    InvalidCacheStore {
+        store: String,
+        field: &'static str,
+        detail: String,
+    },
+    #[error("HTTP service `{service}` route {route} references unknown cache store `{store}`")]
+    UnknownCacheStore {
+        service: String,
+        route: usize,
+        store: String,
+    },
+    #[error("HTTP service `{service}` route {route} has invalid cache `{field}`: {detail}")]
+    InvalidCachePolicy {
+        service: String,
+        route: usize,
+        field: &'static str,
+        detail: String,
+    },
+    #[error("forward proxy service `{service}` has invalid `{field}`: {detail}")]
+    InvalidForwardProxyService {
+        service: String,
+        field: &'static str,
+        detail: String,
+    },
+    #[error("forward proxy listener `{listener}` has invalid configuration: {detail}")]
+    InvalidForwardProxyListener { listener: String, detail: String },
+    #[error("L4 service `{service}` references unknown upstream pool `{pool}`")]
+    UnknownL4UpstreamPool { service: String, pool: String },
+    #[error("L4 service `{service}` references TLS-enabled upstream pool `{pool}`")]
+    TlsUpstreamPoolForL4Service { service: String, pool: String },
+    #[error("management listener must use loopback, got `{0}`")]
+    ManagementMustUseLoopback(SocketAddr),
+}

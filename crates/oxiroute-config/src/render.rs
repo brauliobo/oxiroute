@@ -1,0 +1,1366 @@
+use std::{
+    fmt::{Display, Write as _},
+    path::Path,
+};
+
+use crate::{
+    defaults::MAX_SOURCE_BYTES,
+    model::{
+        AlpnProtocol, CacheAuthorizationPolicy, CacheKeyComponent, CachePredicate,
+        CachePurgeAuthorization, CacheSetCookiePolicy, CacheStaleTrigger, CacheStatusTtl,
+        CacheStore, CacheSurrogateTags, CacheVaryPolicy, Certificate, CertificateSource, Config,
+        ConfigError, ForwardAuditMode, ForwardConnectPolicy, ForwardDestinationPolicy,
+        ForwardHttpVersion, ForwardProxyAuth, ForwardProxyService, ForwardResolverPolicy,
+        HealthCheck, HealthCheckType, HttpAccessPolicy, HttpCachePolicy, HttpCookiePathRewrite,
+        HttpHostSelector, HttpLiteralHeader, HttpPathSelector, HttpProxyPolicy,
+        HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
+        HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryMethodSafety, HttpRetryPolicy,
+        HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpService, HttpUpstreamHost, HttpVersion,
+        HttpVersionPolicy, L4Service, Listener, ListenerBind, Management, Protocol,
+        RtmpApplication, RtmpRecorder, RtmpRecorderStart, RtmpService, TlsProfile, TlsVersion,
+        UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, UpstreamTls,
+    },
+    validation::validate_config,
+};
+
+/// Renders a validated, normalized configuration as deterministic data-only Lua.
+///
+/// Every current field is emitted, including defaults, empty collections, and explicit `nil` or
+/// `null` options. Collection order is preserved.
+///
+/// # Errors
+///
+/// Returns an error when the configuration is invalid, contains a non-UTF-8 path, or renders beyond
+/// the loader's source-size limit.
+pub fn render_lua(config: &Config) -> Result<String, ConfigError> {
+    let mut config = config.clone();
+    validate_config(&mut config)?;
+
+    let mut renderer = Renderer::new();
+    renderer.config(&config)?;
+    let output = renderer.finish();
+    if output.len() > MAX_SOURCE_BYTES {
+        return Err(ConfigError::SourceTooLarge);
+    }
+
+    Ok(output)
+}
+
+struct Renderer {
+    output: String,
+    indent: usize,
+}
+
+impl Renderer {
+    fn new() -> Self {
+        Self {
+            output: String::new(),
+            indent: 0,
+        }
+    }
+
+    fn finish(self) -> String {
+        self.output
+    }
+
+    fn config(&mut self, config: &Config) -> Result<(), ConfigError> {
+        let Config {
+            version,
+            management,
+            certificates,
+            tls_profiles,
+            listeners,
+            cache_stores,
+            upstream_pools,
+            http_services,
+            forward_proxy_services,
+            rtmp_services,
+            l4_services,
+        } = config;
+
+        self.output.push_str("return {\n");
+        self.indent = 1;
+        self.integer_field("version", version);
+        self.fallible_optional_table_field("management", management.as_ref(), Self::management)?;
+        self.fallible_table_list_field("certificates", certificates, Self::certificate)?;
+        self.table_list_field("tls_profiles", tls_profiles, Self::tls_profile);
+        self.fallible_table_list_field("listeners", listeners, Self::listener)?;
+        self.fallible_table_list_field("cache_stores", cache_stores, Self::cache_store)?;
+        self.fallible_table_list_field("upstream_pools", upstream_pools, Self::upstream_pool)?;
+        self.fallible_table_list_field("http_services", http_services, Self::http_service)?;
+        self.fallible_table_list_field(
+            "forward_proxy_services",
+            forward_proxy_services,
+            Self::forward_proxy_service,
+        )?;
+        self.fallible_table_list_field("rtmp_services", rtmp_services, Self::rtmp_service)?;
+        self.table_list_field("l4_services", l4_services, Self::l4_service);
+        self.indent = 0;
+        self.output.push_str("}\n");
+        Ok(())
+    }
+
+    fn management(&mut self, management: &Management) -> Result<(), ConfigError> {
+        let Management { bind, ui_dir } = management;
+
+        self.string_field("bind", &bind.to_string());
+        match ui_dir {
+            Some(path) => {
+                self.string_field(
+                    "ui_dir",
+                    utf8_path(path, "management", "management", "ui_dir")?,
+                );
+            }
+            None => self.nil_field("ui_dir"),
+        }
+        Ok(())
+    }
+
+    fn certificate(&mut self, certificate: &Certificate) -> Result<(), ConfigError> {
+        let Certificate {
+            name,
+            dns_names,
+            source,
+        } = certificate;
+
+        self.string_field("name", name);
+        self.string_list_field("dns_names", dns_names);
+        self.begin_table_field("source");
+        match source {
+            CertificateSource::Files {
+                certificate_chain_path,
+                private_key_path,
+            } => {
+                self.string_field("type", "files");
+                self.string_field(
+                    "certificate_chain_path",
+                    utf8_path(
+                        certificate_chain_path,
+                        "certificate",
+                        name,
+                        "source.certificate_chain_path",
+                    )?,
+                );
+                self.string_field(
+                    "private_key_path",
+                    utf8_path(
+                        private_key_path,
+                        "certificate",
+                        name,
+                        "source.private_key_path",
+                    )?,
+                );
+            }
+            CertificateSource::Certbot {
+                live_directory_path,
+                archive_directory_path,
+            } => {
+                self.string_field("type", "certbot");
+                self.string_field(
+                    "live_directory_path",
+                    utf8_path(
+                        live_directory_path,
+                        "certificate",
+                        name,
+                        "source.live_directory_path",
+                    )?,
+                );
+                self.string_field(
+                    "archive_directory_path",
+                    utf8_path(
+                        archive_directory_path,
+                        "certificate",
+                        name,
+                        "source.archive_directory_path",
+                    )?,
+                );
+            }
+        }
+        self.end_table();
+        Ok(())
+    }
+
+    fn tls_profile(&mut self, profile: &TlsProfile) {
+        let TlsProfile {
+            name,
+            certificates,
+            default_certificate,
+            min_version,
+            alpn,
+        } = profile;
+
+        self.string_field("name", name);
+        self.string_list_field("certificates", certificates);
+        self.string_field("default_certificate", default_certificate);
+        self.string_field(
+            "min_version",
+            match min_version {
+                TlsVersion::Tls12 => "1.2",
+                TlsVersion::Tls13 => "1.3",
+            },
+        );
+        self.string_list_field(
+            "alpn",
+            &alpn
+                .iter()
+                .map(|protocol| match protocol {
+                    AlpnProtocol::H3 => "h3",
+                    AlpnProtocol::H2 => "h2",
+                    AlpnProtocol::Http11 => "http/1.1",
+                })
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    fn listener(&mut self, listener: &Listener) -> Result<(), ConfigError> {
+        let Listener {
+            name,
+            bind,
+            protocol,
+            service,
+            tls_profile,
+            max_connections,
+        } = listener;
+
+        self.string_field("name", name);
+        self.begin_table_field("bind");
+        match bind {
+            ListenerBind::Socket { address } => {
+                self.string_field("type", "socket");
+                self.string_field("address", &address.to_string());
+            }
+            ListenerBind::Udp { address } => {
+                self.string_field("type", "udp");
+                self.string_field("address", &address.to_string());
+            }
+            ListenerBind::Unix { path } => {
+                self.string_field("type", "unix");
+                self.string_field("path", utf8_path(path, "listener", name, "bind.path")?);
+            }
+        }
+        self.end_table();
+        self.string_field(
+            "protocol",
+            match protocol {
+                Protocol::Http => "http",
+                Protocol::Rtmp => "rtmp",
+                Protocol::Tcp => "tcp",
+                Protocol::ForwardHttp1 => "forward_http1",
+                Protocol::ForwardHttp2 => "forward_http2",
+                Protocol::ForwardHttp3 => "forward_http3",
+            },
+        );
+        self.optional_string_field("service", service.as_deref());
+        self.optional_string_field("tls_profile", tls_profile.as_deref());
+        match max_connections {
+            Some(max_connections) => self.integer_field("max_connections", max_connections),
+            None => self.null_field("max_connections"),
+        }
+        Ok(())
+    }
+
+    fn cache_store(&mut self, store: &CacheStore) -> Result<(), ConfigError> {
+        match store {
+            CacheStore::Memory {
+                name,
+                max_bytes,
+                max_entries,
+                max_object_bytes,
+                max_header_bytes,
+                max_key_bytes,
+                max_tag_bytes,
+                max_tags_per_object,
+                max_in_flight_fills,
+                max_followers_per_fill,
+            } => {
+                self.string_field("type", "memory");
+                self.string_field("name", name);
+                self.integer_field("max_bytes", max_bytes);
+                self.integer_field("max_entries", max_entries);
+                self.cache_store_common(
+                    *max_object_bytes,
+                    *max_header_bytes,
+                    *max_key_bytes,
+                    *max_tag_bytes,
+                    *max_tags_per_object,
+                    *max_in_flight_fills,
+                    *max_followers_per_fill,
+                );
+            }
+            CacheStore::Disk {
+                name,
+                root_directory,
+                max_bytes,
+                max_files,
+                max_object_bytes,
+                max_header_bytes,
+                max_key_bytes,
+                max_tag_bytes,
+                max_tags_per_object,
+                max_in_flight_fills,
+                max_followers_per_fill,
+            } => {
+                self.string_field("type", "disk");
+                self.string_field("name", name);
+                let root =
+                    root_directory
+                        .to_str()
+                        .ok_or_else(|| ConfigError::InvalidCacheStore {
+                            store: name.clone(),
+                            field: "root_directory",
+                            detail: "path must be valid UTF-8".into(),
+                        })?;
+                self.string_field("root_directory", root);
+                self.integer_field("max_bytes", max_bytes);
+                self.integer_field("max_files", max_files);
+                self.cache_store_common(
+                    *max_object_bytes,
+                    *max_header_bytes,
+                    *max_key_bytes,
+                    *max_tag_bytes,
+                    *max_tags_per_object,
+                    *max_in_flight_fills,
+                    *max_followers_per_fill,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn cache_store_common(
+        &mut self,
+        max_object_bytes: u64,
+        max_header_bytes: u64,
+        max_key_bytes: u64,
+        max_tag_bytes: u64,
+        max_tags_per_object: u64,
+        max_in_flight_fills: u64,
+        max_followers_per_fill: u64,
+    ) {
+        self.integer_field("max_object_bytes", max_object_bytes);
+        self.integer_field("max_header_bytes", max_header_bytes);
+        self.integer_field("max_key_bytes", max_key_bytes);
+        self.integer_field("max_tag_bytes", max_tag_bytes);
+        self.integer_field("max_tags_per_object", max_tags_per_object);
+        self.integer_field("max_in_flight_fills", max_in_flight_fills);
+        self.integer_field("max_followers_per_fill", max_followers_per_fill);
+    }
+
+    fn rtmp_service(&mut self, service: &RtmpService) -> Result<(), ConfigError> {
+        let RtmpService { name, applications } = service;
+        self.string_field("name", name);
+        self.fallible_table_list_field("applications", applications, |renderer, application| {
+            renderer.rtmp_application(name, application)
+        })?;
+        Ok(())
+    }
+
+    fn rtmp_application(
+        &mut self,
+        service_name: &str,
+        application: &RtmpApplication,
+    ) -> Result<(), ConfigError> {
+        let RtmpApplication {
+            name,
+            live,
+            idle_streams,
+            recorders,
+        } = application;
+        self.string_field("name", name);
+        self.boolean_field("live", *live);
+        self.boolean_field("idle_streams", *idle_streams);
+        self.fallible_table_list_field("recorders", recorders, |renderer, recorder| {
+            renderer.rtmp_recorder(service_name, name, recorder)
+        })?;
+        Ok(())
+    }
+
+    fn rtmp_recorder(
+        &mut self,
+        service_name: &str,
+        application_name: &str,
+        recorder: &RtmpRecorder,
+    ) -> Result<(), ConfigError> {
+        let RtmpRecorder {
+            name,
+            start,
+            root_directory,
+            suffix_template,
+            append_unix_seconds,
+            rotation_interval_ms,
+            max_queue_messages,
+            max_queue_bytes,
+            shutdown_timeout_ms,
+            max_storage_bytes,
+            max_storage_files,
+            max_active_recorders,
+        } = recorder;
+        self.string_field("name", name);
+        self.string_field(
+            "start",
+            match start {
+                RtmpRecorderStart::Continuous => "continuous",
+                RtmpRecorderStart::Manual => "manual",
+            },
+        );
+        self.string_field(
+            "root_directory",
+            utf8_recording_root(root_directory, service_name, application_name, name)?,
+        );
+        self.string_field("suffix_template", suffix_template);
+        self.boolean_field("append_unix_seconds", *append_unix_seconds);
+        match rotation_interval_ms {
+            Some(interval) => self.integer_field("rotation_interval_ms", interval),
+            None => self.null_field("rotation_interval_ms"),
+        }
+        self.integer_field("max_queue_messages", max_queue_messages);
+        self.integer_field("max_queue_bytes", max_queue_bytes);
+        self.integer_field("shutdown_timeout_ms", shutdown_timeout_ms);
+        self.integer_field("max_storage_bytes", max_storage_bytes);
+        self.integer_field("max_storage_files", max_storage_files);
+        self.integer_field("max_active_recorders", max_active_recorders);
+        Ok(())
+    }
+
+    fn upstream_pool(&mut self, pool: &UpstreamPool) -> Result<(), ConfigError> {
+        let UpstreamPool {
+            name,
+            endpoints,
+            algorithm,
+            health_check,
+            tls,
+            http_versions,
+        } = pool;
+
+        self.string_field("name", name);
+        self.fallible_table_list_field("endpoints", endpoints, |renderer, endpoint| {
+            renderer.upstream_endpoint(name, endpoint)
+        })?;
+        self.string_field(
+            "algorithm",
+            match algorithm {
+                UpstreamAlgorithm::RoundRobin => "round_robin",
+                UpstreamAlgorithm::LeastConnections => "least_connections",
+            },
+        );
+        self.optional_table_field("health_check", health_check.as_ref(), Self::health_check);
+        match tls {
+            Some(tls) => {
+                self.begin_table_field("tls");
+                self.upstream_tls(name, tls)?;
+                self.end_table();
+            }
+            None => self.nil_field("tls"),
+        }
+        self.begin_table_field("http_versions");
+        self.http_version_policy(*http_versions);
+        self.end_table();
+        Ok(())
+    }
+
+    fn upstream_endpoint(
+        &mut self,
+        pool_name: &str,
+        endpoint: &UpstreamEndpoint,
+    ) -> Result<(), ConfigError> {
+        match endpoint {
+            UpstreamEndpoint::Socket { address } => {
+                self.string_field("type", "socket");
+                self.string_field("address", &address.to_string());
+            }
+            UpstreamEndpoint::Dns { host, port } => {
+                self.string_field("type", "dns");
+                self.string_field("host", host);
+                self.integer_field("port", port);
+            }
+            UpstreamEndpoint::Unix { path } => {
+                self.string_field("type", "unix");
+                self.string_field(
+                    "path",
+                    utf8_path(path, "upstream pool", pool_name, "endpoints[].path")?,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn health_check(&mut self, health_check: &HealthCheck) {
+        let HealthCheck {
+            kind,
+            interval_ms,
+            timeout_ms,
+            healthy_threshold,
+            unhealthy_threshold,
+            host,
+            path,
+        } = health_check;
+
+        self.string_field(
+            "type",
+            match kind {
+                HealthCheckType::Http => "http",
+                HealthCheckType::Tcp => "tcp",
+            },
+        );
+        self.integer_field("interval_ms", interval_ms);
+        self.integer_field("timeout_ms", timeout_ms);
+        self.integer_field("healthy_threshold", healthy_threshold);
+        self.integer_field("unhealthy_threshold", unhealthy_threshold);
+        self.optional_string_field("host", host.as_deref());
+        self.optional_string_field("path", path.as_deref());
+    }
+
+    fn upstream_tls(&mut self, pool_name: &str, tls: &UpstreamTls) -> Result<(), ConfigError> {
+        let UpstreamTls {
+            server_name,
+            ca_certificate_path,
+        } = tls;
+
+        self.string_field("server_name", server_name);
+        match ca_certificate_path {
+            Some(path) => self.string_field(
+                "ca_certificate_path",
+                utf8_path(path, "upstream pool", pool_name, "tls.ca_certificate_path")?,
+            ),
+            None => self.nil_field("ca_certificate_path"),
+        }
+        Ok(())
+    }
+
+    fn http_version_policy(&mut self, policy: HttpVersionPolicy) {
+        let HttpVersionPolicy { min, max } = policy;
+
+        self.string_field("min", http_version(min));
+        self.string_field("max", http_version(max));
+    }
+
+    fn http_service(&mut self, service: &HttpService) -> Result<(), ConfigError> {
+        let HttpService {
+            name,
+            routes,
+            upstream_io_timeout_ms,
+            max_request_body_bytes,
+        } = service;
+
+        self.string_field("name", name);
+        self.begin_table_field("routes");
+        for (route_index, route) in routes.iter().enumerate() {
+            self.begin_table_item();
+            self.http_route(name, route_index, route)?;
+            self.end_table();
+        }
+        self.end_table();
+        self.integer_field("upstream_io_timeout_ms", upstream_io_timeout_ms);
+        match max_request_body_bytes {
+            Some(max_request_body_bytes) => {
+                self.integer_field("max_request_body_bytes", max_request_body_bytes);
+            }
+            None => self.null_field("max_request_body_bytes"),
+        }
+        Ok(())
+    }
+
+    fn http_route(
+        &mut self,
+        service: &str,
+        route_index: usize,
+        route: &HttpRoute,
+    ) -> Result<(), ConfigError> {
+        let HttpRoute {
+            host,
+            path,
+            methods,
+            access_policy,
+            action,
+        } = route;
+
+        match host {
+            Some(host) => {
+                self.begin_table_field("host");
+                self.http_host_selector(host);
+                self.end_table();
+            }
+            None => self.nil_field("host"),
+        }
+        self.begin_table_field("path");
+        self.http_path_selector(path);
+        self.end_table();
+        self.string_list_field("methods", methods);
+        match access_policy {
+            Some(policy) => {
+                self.begin_table_field("access_policy");
+                self.http_access_policy(service, route_index, policy)?;
+                self.end_table();
+            }
+            None => self.nil_field("access_policy"),
+        }
+        self.begin_table_field("action");
+        self.http_route_action(service, route_index, action)?;
+        self.end_table();
+        Ok(())
+    }
+
+    fn http_host_selector(&mut self, selector: &HttpHostSelector) {
+        match selector {
+            HttpHostSelector::NormalizedHost { value } => {
+                self.string_field("kind", "normalized_host");
+                self.string_field("value", value);
+            }
+            HttpHostSelector::ExactAuthority { value } => {
+                self.string_field("kind", "exact_authority");
+                self.string_field("value", value);
+            }
+        }
+    }
+
+    fn http_path_selector(&mut self, selector: &HttpPathSelector) {
+        let (kind, value) = match selector {
+            HttpPathSelector::SegmentPrefix { value } => ("segment_prefix", value),
+            HttpPathSelector::RawPrefix { value } => ("raw_prefix", value),
+            HttpPathSelector::Exact { value } => ("exact", value),
+        };
+        self.string_field("kind", kind);
+        self.string_field("value", value);
+    }
+
+    fn http_access_policy(
+        &mut self,
+        service: &str,
+        route_index: usize,
+        policy: &HttpAccessPolicy,
+    ) -> Result<(), ConfigError> {
+        match policy {
+            HttpAccessPolicy::BearerTokenFile {
+                token_file_path,
+                header_name,
+                realm,
+            } => {
+                self.string_field("type", "bearer_token_file");
+                self.string_field(
+                    "token_file_path",
+                    utf8_http_route_path(
+                        token_file_path,
+                        service,
+                        route_index,
+                        "access_policy.token_file_path",
+                    )?,
+                );
+                self.string_field("header_name", header_name);
+                self.optional_string_field("realm", realm.as_deref());
+            }
+        }
+        Ok(())
+    }
+
+    fn http_route_action(
+        &mut self,
+        service: &str,
+        route_index: usize,
+        action: &HttpRouteAction,
+    ) -> Result<(), ConfigError> {
+        match action {
+            HttpRouteAction::Proxy {
+                upstream_pool,
+                policy,
+            } => {
+                self.string_field("type", "proxy");
+                self.string_field("upstream_pool", upstream_pool);
+                self.begin_table_field("policy");
+                self.http_proxy_policy(service, route_index, policy)?;
+                self.end_table();
+            }
+            HttpRouteAction::FixedResponse {
+                status,
+                body,
+                headers,
+            } => {
+                self.string_field("type", "fixed_response");
+                self.integer_field("status", status);
+                self.string_field("body", body);
+                self.table_list_or_nil_field("headers", headers, Self::http_literal_header);
+            }
+            HttpRouteAction::Redirect { status, location } => {
+                self.string_field("type", "redirect");
+                self.integer_field("status", status);
+                self.begin_table_field("location");
+                self.http_redirect_location(location);
+                self.end_table();
+            }
+            HttpRouteAction::StaticFiles {
+                root_directory,
+                index_files,
+                spa_fallback,
+            } => {
+                self.string_field("type", "static_files");
+                self.string_field(
+                    "root_directory",
+                    utf8_http_route_path(
+                        root_directory,
+                        service,
+                        route_index,
+                        "action.static_files.root_directory",
+                    )?,
+                );
+                self.string_list_field("index_files", index_files);
+                match spa_fallback {
+                    Some(path) => self.string_field(
+                        "spa_fallback",
+                        utf8_http_route_path(
+                            path,
+                            service,
+                            route_index,
+                            "action.static_files.spa_fallback",
+                        )?,
+                    ),
+                    None => self.nil_field("spa_fallback"),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn http_proxy_policy(
+        &mut self,
+        service: &str,
+        route_index: usize,
+        policy: &HttpProxyPolicy,
+    ) -> Result<(), ConfigError> {
+        let HttpProxyPolicy {
+            upstream_host,
+            request_headers,
+            response_headers,
+            response_cookie_path_rewrites,
+            retry,
+            cache,
+        } = policy;
+        self.begin_table_field("upstream_host");
+        self.http_upstream_host(upstream_host);
+        self.end_table();
+        self.table_list_or_nil_field(
+            "request_headers",
+            request_headers,
+            Self::http_request_header_mutation,
+        );
+        self.table_list_or_nil_field(
+            "response_headers",
+            response_headers,
+            Self::http_response_header_mutation,
+        );
+        self.table_list_or_nil_field(
+            "response_cookie_path_rewrites",
+            response_cookie_path_rewrites,
+            Self::http_cookie_path_rewrite,
+        );
+        self.begin_table_field("retry");
+        self.http_retry_policy(retry);
+        self.end_table();
+        match cache {
+            Some(cache) => {
+                self.begin_table_field("cache");
+                self.http_cache_policy(service, route_index, cache)?;
+                self.end_table();
+            }
+            None => self.nil_field("cache"),
+        }
+        Ok(())
+    }
+
+    fn http_cache_policy(
+        &mut self,
+        service: &str,
+        route_index: usize,
+        cache: &HttpCachePolicy,
+    ) -> Result<(), ConfigError> {
+        self.string_field("store", &cache.store);
+        self.string_list_field("methods", &cache.methods);
+        self.table_list_field(
+            "key_components",
+            &cache.key_components,
+            Self::cache_key_component,
+        );
+        self.boolean_field("use_origin_cache_control", cache.use_origin_cache_control);
+        self.integer_field("default_ttl_ms", cache.default_ttl_ms);
+        self.table_list_field("status_ttls", &cache.status_ttls, Self::cache_status_ttl);
+        self.integer_field("grace_ms", cache.grace_ms);
+        self.integer_field("keep_ms", cache.keep_ms);
+        self.boolean_field("revalidate", cache.revalidate);
+        self.boolean_field("collapsed_forwarding", cache.collapsed_forwarding);
+        self.string_list_field(
+            "stale_on",
+            &cache
+                .stale_on
+                .iter()
+                .map(|trigger| match trigger {
+                    CacheStaleTrigger::ConnectFailure => "connect_failure",
+                    CacheStaleTrigger::ConnectTimeout => "connect_timeout",
+                    CacheStaleTrigger::Origin500 => "origin_500",
+                    CacheStaleTrigger::Origin502 => "origin_502",
+                    CacheStaleTrigger::Origin503 => "origin_503",
+                    CacheStaleTrigger::Origin504 => "origin_504",
+                })
+                .collect::<Vec<_>>(),
+        );
+        self.table_list_field(
+            "bypass_request",
+            &cache.bypass_request,
+            Self::cache_predicate,
+        );
+        self.table_list_field(
+            "no_store_request",
+            &cache.no_store_request,
+            Self::cache_predicate,
+        );
+        self.table_list_field(
+            "no_store_response",
+            &cache.no_store_response,
+            Self::cache_predicate,
+        );
+        self.string_field(
+            "set_cookie_policy",
+            match cache.set_cookie_policy {
+                CacheSetCookiePolicy::Bypass => "bypass",
+                CacheSetCookiePolicy::Ignore => "ignore",
+            },
+        );
+        self.string_field(
+            "authorization_policy",
+            match cache.authorization_policy {
+                CacheAuthorizationPolicy::Bypass => "bypass",
+                CacheAuthorizationPolicy::Cache => "cache",
+            },
+        );
+        self.string_field(
+            "vary_policy",
+            match cache.vary_policy {
+                CacheVaryPolicy::Respect => "respect",
+                CacheVaryPolicy::Ignore => "ignore",
+            },
+        );
+        self.optional_table_field(
+            "surrogate_tags",
+            cache.surrogate_tags.as_ref(),
+            Self::cache_surrogate_tags,
+        );
+        match &cache.purge_authorization {
+            Some(CachePurgeAuthorization::BearerTokenFile { token_file_path }) => {
+                self.begin_table_field("purge_authorization");
+                self.string_field("type", "bearer_token_file");
+                self.string_field(
+                    "token_file_path",
+                    utf8_http_route_path(
+                        token_file_path,
+                        service,
+                        route_index,
+                        "action.policy.cache.purge_authorization.token_file_path",
+                    )?,
+                );
+                self.end_table();
+            }
+            None => self.nil_field("purge_authorization"),
+        }
+        Ok(())
+    }
+
+    fn cache_key_component(&mut self, component: &CacheKeyComponent) {
+        match component {
+            CacheKeyComponent::Scheme => self.string_field("type", "scheme"),
+            CacheKeyComponent::NormalizedHost => self.string_field("type", "normalized_host"),
+            CacheKeyComponent::PathAndQuery => self.string_field("type", "path_and_query"),
+            CacheKeyComponent::Header { name } => {
+                self.string_field("type", "header");
+                self.string_field("name", name);
+            }
+            CacheKeyComponent::Cookie { name } => {
+                self.string_field("type", "cookie");
+                self.string_field("name", name);
+            }
+        }
+    }
+
+    fn cache_status_ttl(&mut self, status_ttl: &CacheStatusTtl) {
+        self.integer_field("status", status_ttl.status);
+        self.integer_field("ttl_ms", status_ttl.ttl_ms);
+    }
+
+    fn cache_predicate(&mut self, predicate: &CachePredicate) {
+        match predicate {
+            CachePredicate::HeaderPresent { name } => {
+                self.string_field("type", "header_present");
+                self.string_field("name", name);
+            }
+            CachePredicate::CookiePresent { name } => {
+                self.string_field("type", "cookie_present");
+                self.string_field("name", name);
+            }
+        }
+    }
+
+    fn cache_surrogate_tags(&mut self, tags: &CacheSurrogateTags) {
+        self.string_field("response_header", &tags.response_header);
+        self.integer_field("max_tags", tags.max_tags);
+        self.integer_field("max_tag_bytes", tags.max_tag_bytes);
+    }
+
+    fn http_upstream_host(&mut self, policy: &HttpUpstreamHost) {
+        match policy {
+            HttpUpstreamHost::PreserveIncoming => {
+                self.string_field("type", "preserve_incoming");
+            }
+            HttpUpstreamHost::Endpoint { unix_fallback } => {
+                self.string_field("type", "endpoint");
+                self.optional_string_field("unix_fallback", unix_fallback.as_deref());
+            }
+            HttpUpstreamHost::Literal { value } => {
+                self.string_field("type", "literal");
+                self.string_field("value", value);
+            }
+        }
+    }
+
+    fn http_request_header_mutation(&mut self, mutation: &HttpRequestHeaderMutation) {
+        match mutation {
+            HttpRequestHeaderMutation::Set { name, value } => {
+                self.string_field("operation", "set");
+                self.string_field("name", name);
+                self.begin_table_field("value");
+                self.http_request_header_value(value);
+                self.end_table();
+            }
+            HttpRequestHeaderMutation::Remove { name } => {
+                self.string_field("operation", "remove");
+                self.string_field("name", name);
+            }
+        }
+    }
+
+    fn http_request_header_value(&mut self, value: &HttpRequestHeaderValue) {
+        match value {
+            HttpRequestHeaderValue::Literal { value } => {
+                self.string_field("type", "literal");
+                self.string_field("value", value);
+            }
+            HttpRequestHeaderValue::IncomingAuthority => {
+                self.string_field("type", "incoming_authority");
+            }
+            HttpRequestHeaderValue::NormalizedHost => {
+                self.string_field("type", "normalized_host");
+            }
+            HttpRequestHeaderValue::ClientIp => self.string_field("type", "client_ip"),
+            HttpRequestHeaderValue::SelectedUpstreamHost => {
+                self.string_field("type", "selected_upstream_host");
+            }
+        }
+    }
+
+    fn http_response_header_mutation(&mut self, mutation: &HttpResponseHeaderMutation) {
+        match mutation {
+            HttpResponseHeaderMutation::Set { name, value } => {
+                self.string_field("operation", "set");
+                self.string_field("name", name);
+                self.string_field("value", value);
+            }
+            HttpResponseHeaderMutation::Remove { name } => {
+                self.string_field("operation", "remove");
+                self.string_field("name", name);
+            }
+        }
+    }
+
+    fn http_cookie_path_rewrite(&mut self, rewrite: &HttpCookiePathRewrite) {
+        self.string_field("from", &rewrite.from);
+        self.string_field("to", &rewrite.to);
+    }
+
+    fn http_retry_policy(&mut self, retry: &HttpRetryPolicy) {
+        self.integer_field("max_retries", retry.max_retries);
+        self.string_list_field(
+            "triggers",
+            &retry
+                .triggers
+                .iter()
+                .map(|trigger| match trigger {
+                    HttpRetryTrigger::ConnectFailure => "connect_failure",
+                    HttpRetryTrigger::ConnectTimeout => "connect_timeout",
+                    HttpRetryTrigger::RefusedStream => "refused_stream",
+                })
+                .collect::<Vec<_>>(),
+        );
+        self.string_field(
+            "method_safety",
+            match retry.method_safety {
+                HttpRetryMethodSafety::GetHead => "get_head",
+            },
+        );
+        self.string_field(
+            "body_safety",
+            match retry.body_safety {
+                HttpRetryBodySafety::Empty => "empty",
+            },
+        );
+    }
+
+    fn http_literal_header(&mut self, header: &HttpLiteralHeader) {
+        self.string_field("name", &header.name);
+        self.string_field("value", &header.value);
+    }
+
+    fn http_redirect_location(&mut self, location: &HttpRedirectLocation) {
+        match location {
+            HttpRedirectLocation::Literal { value } => {
+                self.string_field("kind", "literal");
+                self.string_field("value", value);
+            }
+            HttpRedirectLocation::RequestTemplate { value } => {
+                self.string_field("kind", "request_template");
+                self.string_field("value", value);
+            }
+        }
+    }
+
+    fn forward_proxy_service(&mut self, service: &ForwardProxyService) -> Result<(), ConfigError> {
+        self.string_field("name", &service.name);
+        self.string_list_field(
+            "enabled_versions",
+            &service
+                .enabled_versions
+                .iter()
+                .map(|version| match version {
+                    ForwardHttpVersion::H1 => "h1",
+                    ForwardHttpVersion::H2 => "h2",
+                    ForwardHttpVersion::H3 => "h3",
+                })
+                .collect::<Vec<_>>(),
+        );
+        self.boolean_field("allow_absolute_form", service.allow_absolute_form);
+        self.boolean_field("tls_required", service.tls_required);
+        self.begin_table_field("connect");
+        self.forward_connect_policy(&service.connect);
+        self.end_table();
+        match &service.auth {
+            Some(ForwardProxyAuth::BearerTokenFile { token_file_path }) => {
+                self.begin_table_field("auth");
+                self.string_field("type", "bearer_token_file");
+                self.string_field(
+                    "token_file_path",
+                    utf8_path(
+                        token_file_path,
+                        "forward proxy service",
+                        &service.name,
+                        "auth.token_file_path",
+                    )?,
+                );
+                self.end_table();
+            }
+            None => self.nil_field("auth"),
+        }
+        self.begin_table_field("destination_policy");
+        self.forward_destination_policy(&service.destination_policy);
+        self.end_table();
+        self.integer_field("connect_timeout_ms", service.connect_timeout_ms);
+        self.integer_field("idle_timeout_ms", service.idle_timeout_ms);
+        self.integer_field("lifetime_timeout_ms", service.lifetime_timeout_ms);
+        match service.max_request_body_bytes {
+            Some(value) => self.integer_field("max_request_body_bytes", value),
+            None => self.null_field("max_request_body_bytes"),
+        }
+        self.integer_field("max_header_bytes", service.max_header_bytes);
+        self.integer_field("max_connections", service.max_connections);
+        self.begin_table_field("resolver");
+        self.forward_resolver_policy(&service.resolver);
+        self.end_table();
+        self.string_field(
+            "audit_mode",
+            match service.audit_mode {
+                ForwardAuditMode::Off => "off",
+                ForwardAuditMode::Metadata => "metadata",
+            },
+        );
+        Ok(())
+    }
+
+    fn forward_connect_policy(&mut self, policy: &ForwardConnectPolicy) {
+        self.boolean_field("enabled", policy.enabled);
+        self.integer_list_field("allowed_ports", &policy.allowed_ports);
+    }
+
+    fn forward_destination_policy(&mut self, policy: &ForwardDestinationPolicy) {
+        self.string_list_field("allow_domains", &policy.allow_domains);
+        self.string_list_field("deny_domains", &policy.deny_domains);
+        self.string_list_field("allow_cidrs", &policy.allow_cidrs);
+        self.string_list_field("deny_cidrs", &policy.deny_cidrs);
+        self.boolean_field("deny_private", policy.deny_private);
+    }
+
+    fn forward_resolver_policy(&mut self, policy: &ForwardResolverPolicy) {
+        self.integer_field("max_cache_entries", policy.max_cache_entries);
+        self.integer_field("max_concurrent_queries", policy.max_concurrent_queries);
+        self.integer_field("max_addresses_per_name", policy.max_addresses_per_name);
+        self.integer_field("min_ttl_ms", policy.min_ttl_ms);
+        self.integer_field("max_ttl_ms", policy.max_ttl_ms);
+        self.integer_field("negative_ttl_ms", policy.negative_ttl_ms);
+        self.boolean_field("revalidate_on_connect", policy.revalidate_on_connect);
+    }
+
+    fn l4_service(&mut self, service: &L4Service) {
+        let L4Service {
+            name,
+            upstream_pool,
+            connect_timeout_ms,
+            idle_timeout_ms,
+            lifetime_timeout_ms,
+        } = service;
+
+        self.string_field("name", name);
+        self.string_field("upstream_pool", upstream_pool);
+        self.integer_field("connect_timeout_ms", connect_timeout_ms);
+        self.integer_field("idle_timeout_ms", idle_timeout_ms);
+        match lifetime_timeout_ms {
+            Some(timeout) => self.integer_field("lifetime_timeout_ms", timeout),
+            None => self.nil_field("lifetime_timeout_ms"),
+        }
+    }
+
+    fn table_list_field<T>(&mut self, name: &str, values: &[T], render: fn(&mut Self, &T)) {
+        self.begin_table_field(name);
+        for value in values {
+            self.begin_table_item();
+            render(self, value);
+            self.end_table();
+        }
+        self.end_table();
+    }
+
+    fn table_list_or_nil_field<T>(&mut self, name: &str, values: &[T], render: fn(&mut Self, &T)) {
+        if values.is_empty() {
+            self.nil_field(name);
+        } else {
+            self.table_list_field(name, values, render);
+        }
+    }
+
+    fn fallible_table_list_field<T, F>(
+        &mut self,
+        name: &str,
+        values: &[T],
+        mut render: F,
+    ) -> Result<(), ConfigError>
+    where
+        F: FnMut(&mut Self, &T) -> Result<(), ConfigError>,
+    {
+        self.begin_table_field(name);
+        for value in values {
+            self.begin_table_item();
+            render(self, value)?;
+            self.end_table();
+        }
+        self.end_table();
+        Ok(())
+    }
+
+    fn optional_table_field<T>(
+        &mut self,
+        name: &str,
+        value: Option<&T>,
+        render: fn(&mut Self, &T),
+    ) {
+        match value {
+            Some(value) => {
+                self.begin_table_field(name);
+                render(self, value);
+                self.end_table();
+            }
+            None => self.nil_field(name),
+        }
+    }
+
+    fn fallible_optional_table_field<T>(
+        &mut self,
+        name: &str,
+        value: Option<&T>,
+        render: fn(&mut Self, &T) -> Result<(), ConfigError>,
+    ) -> Result<(), ConfigError> {
+        match value {
+            Some(value) => {
+                self.begin_table_field(name);
+                render(self, value)?;
+                self.end_table();
+            }
+            None => self.nil_field(name),
+        }
+        Ok(())
+    }
+
+    fn begin_table_field(&mut self, name: &str) {
+        self.indent();
+        self.output.push_str(name);
+        self.output.push_str(" = {\n");
+        self.indent += 1;
+    }
+
+    fn begin_table_item(&mut self) {
+        self.indent();
+        self.output.push_str("{\n");
+        self.indent += 1;
+    }
+
+    fn end_table(&mut self) {
+        self.indent -= 1;
+        self.indent();
+        self.output.push_str("},\n");
+    }
+
+    fn string_field(&mut self, name: &str, value: &str) {
+        self.field_name(name);
+        push_lua_string(&mut self.output, value);
+        self.output.push_str(",\n");
+    }
+
+    fn optional_string_field(&mut self, name: &str, value: Option<&str>) {
+        match value {
+            Some(value) => self.string_field(name, value),
+            None => self.nil_field(name),
+        }
+    }
+
+    fn string_list_field<S>(&mut self, name: &str, values: &[S])
+    where
+        S: AsRef<str>,
+    {
+        self.field_name(name);
+        self.output.push('{');
+        for (index, value) in values.iter().enumerate() {
+            if index == 0 {
+                self.output.push(' ');
+            } else {
+                self.output.push_str(", ");
+            }
+            push_lua_string(&mut self.output, value.as_ref());
+        }
+        if !values.is_empty() {
+            self.output.push(' ');
+        }
+        self.output.push_str("},\n");
+    }
+
+    fn integer_list_field<T: Display>(&mut self, name: &str, values: &[T]) {
+        self.field_name(name);
+        self.output.push('{');
+        for (index, value) in values.iter().enumerate() {
+            if index == 0 {
+                self.output.push(' ');
+            } else {
+                self.output.push_str(", ");
+            }
+            write!(self.output, "{value}").expect("writing to String cannot fail");
+        }
+        if !values.is_empty() {
+            self.output.push(' ');
+        }
+        self.output.push_str("},\n");
+    }
+
+    fn integer_field(&mut self, name: &str, value: impl Display) {
+        self.field_name(name);
+        write!(self.output, "{value}").expect("writing to String cannot fail");
+        self.output.push_str(",\n");
+    }
+
+    fn boolean_field(&mut self, name: &str, value: bool) {
+        self.field_name(name);
+        self.output.push_str(if value { "true" } else { "false" });
+        self.output.push_str(",\n");
+    }
+
+    fn nil_field(&mut self, name: &str) {
+        self.field_name(name);
+        self.output.push_str("nil,\n");
+    }
+
+    fn null_field(&mut self, name: &str) {
+        self.field_name(name);
+        self.output.push_str("null,\n");
+    }
+
+    fn field_name(&mut self, name: &str) {
+        self.indent();
+        self.output.push_str(name);
+        self.output.push_str(" = ");
+    }
+
+    fn indent(&mut self) {
+        for _ in 0..self.indent {
+            self.output.push_str("  ");
+        }
+    }
+}
+
+fn utf8_path<'a>(
+    path: &'a Path,
+    kind: &'static str,
+    name: &str,
+    field: &'static str,
+) -> Result<&'a str, ConfigError> {
+    path.to_str().ok_or_else(|| ConfigError::InvalidFilePath {
+        kind,
+        name: name.into(),
+        field,
+        detail: "path must be valid UTF-8",
+    })
+}
+
+fn utf8_recording_root<'a>(
+    path: &'a Path,
+    service: &str,
+    application: &str,
+    recorder: &str,
+) -> Result<&'a str, ConfigError> {
+    path.to_str()
+        .ok_or_else(|| ConfigError::InvalidRtmpRecorderPolicy {
+            service: service.into(),
+            application: application.into(),
+            recorder: recorder.into(),
+            field: "root_directory",
+            detail: "path must be valid UTF-8",
+        })
+}
+
+fn utf8_http_route_path<'a>(
+    path: &'a Path,
+    service: &str,
+    route: usize,
+    field: &'static str,
+) -> Result<&'a str, ConfigError> {
+    path.to_str().ok_or_else(|| ConfigError::InvalidHttpRoute {
+        service: service.into(),
+        route,
+        field,
+        detail: "path must be valid UTF-8".into(),
+    })
+}
+
+fn http_version(version: HttpVersion) -> &'static str {
+    match version {
+        HttpVersion::Http11 => "1.1",
+        HttpVersion::Http2 => "2",
+    }
+}
+
+fn push_lua_string(output: &mut String, value: &str) {
+    output.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            character if character.is_control() => {
+                write!(output, "\\u{{{:x}}}", u32::from(character))
+                    .expect("writing to String cannot fail");
+            }
+            character => output.push(character),
+        }
+    }
+    output.push('"');
+}

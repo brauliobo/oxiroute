@@ -1,4 +1,7 @@
-use oxiroute_config::{ConfigError, HealthCheckType, Protocol, UpstreamAlgorithm, load_lua};
+use oxiroute_config::{
+    AlpnProtocol, CertificateSource, ConfigError, HealthCheckType, HttpVersion, ListenerBind,
+    Protocol, TlsVersion, UpstreamAlgorithm, UpstreamEndpoint, load_lua,
+};
 
 const VALID_CONFIG: &str = r#"
 return {
@@ -7,37 +10,62 @@ return {
     bind = "127.0.0.1:9080",
     ui_dir = "./ui/dist",
   },
+  certificates = {
+    {
+      name = "web-certificate",
+      dns_names = { "WWW.EXAMPLE.TEST", "*.EXAMPLE.TEST" },
+      source = {
+        type = "files",
+        certificate_chain_path = "/etc/oxiroute/web-chain.pem",
+        private_key_path = "/etc/oxiroute/web-key.pem",
+      },
+    },
+  },
+  tls_profiles = {
+    {
+      name = "web-tls",
+      certificates = { "web-certificate" },
+      default_certificate = "web-certificate",
+      min_version = "1.3",
+      alpn = { "h2", "http/1.1" },
+    },
+  },
   listeners = {
     {
       name = "web",
-      bind = "127.0.0.1:8080",
+      bind = { type = "socket", address = "127.0.0.1:8080" },
       protocol = "http",
       service = "web",
+      tls_profile = "web-tls",
       max_connections = 5000,
     },
     {
       name = "database",
-      bind = "127.0.0.1:15432",
+      bind = { type = "socket", address = "127.0.0.1:15432" },
       protocol = "tcp",
       service = "database",
       max_connections = 1000,
     },
     {
       name = "live",
-      bind = "127.0.0.1:1935",
+      bind = { type = "socket", address = "127.0.0.1:1935" },
       protocol = "rtmp",
+      service = "live",
       max_connections = 500,
     },
   },
   upstream_pools = {
     {
       name = "web-backends",
-      endpoints = { "127.0.0.1:3000", "127.0.0.1:3001" },
+      endpoints = {
+        { type = "socket", address = "127.0.0.1:3000" },
+        { type = "socket", address = "127.0.0.1:3001" },
+      },
       algorithm = "round_robin",
     },
     {
       name = "database-backends",
-      endpoints = { "10.0.0.12:5432" },
+      endpoints = { { type = "socket", address = "10.0.0.12:5432" } },
       algorithm = "round_robin",
     },
   },
@@ -46,14 +74,26 @@ return {
       name = "web",
       routes = {
         {
-          host = "example.com",
-          path_prefix = "/api",
+          host = { kind = "normalized_host", value = "example.com" },
+          path = { kind = "segment_prefix", value = "/api" },
           methods = { "GET", "POST" },
-          upstream_pool = "web-backends",
+          action = {
+            type = "proxy",
+            upstream_pool = "web-backends",
+            policy = {},
+          },
         },
       },
       upstream_io_timeout_ms = 15000,
       max_request_body_bytes = 2097152,
+    },
+  },
+  rtmp_services = {
+    {
+      name = "live",
+      applications = {
+        { name = "live", live = true, idle_streams = true },
+      },
     },
   },
   l4_services = {
@@ -68,6 +108,19 @@ return {
 }
 "#;
 
+const WEB_ROUTES: &str = r#"      routes = {
+        {
+          host = { kind = "normalized_host", value = "example.com" },
+          path = { kind = "segment_prefix", value = "/api" },
+          methods = { "GET", "POST" },
+          action = {
+            type = "proxy",
+            upstream_pool = "web-backends",
+            policy = {},
+          },
+        },
+      },"#;
+
 fn changed(from: &str, to: &str) -> String {
     assert_eq!(
         VALID_CONFIG.matches(from).count(),
@@ -81,28 +134,111 @@ fn error_from(source: &str) -> ConfigError {
     load_lua(source).expect_err("configuration must be rejected")
 }
 
+fn with_web_pool_fields(fields: &str) -> String {
+    let pool = r#"      endpoints = {
+        { type = "socket", address = "127.0.0.1:3000" },
+        { type = "socket", address = "127.0.0.1:3001" },
+      },
+      algorithm = "round_robin","#;
+    changed(pool, &format!("{pool}\n{fields}"))
+}
+
+fn upstream_tls(server_name: &str) -> String {
+    format!(
+        r#"      tls = {{ server_name = "{server_name}", ca_certificate_path = "/etc/oxiroute/upstream-ca.pem" }},"#
+    )
+}
+
+fn with_certbot_source(live_directory_path: &str, archive_directory_path: &str) -> String {
+    changed(
+        r#"      source = {
+        type = "files",
+        certificate_chain_path = "/etc/oxiroute/web-chain.pem",
+        private_key_path = "/etc/oxiroute/web-key.pem",
+      },"#,
+        &format!(
+            r#"      source = {{
+        type = "certbot",
+        live_directory_path = "{live_directory_path}",
+        archive_directory_path = "{archive_directory_path}",
+      }},"#
+        ),
+    )
+}
+
 #[test]
 fn loads_the_canonical_configuration() {
     let config = load_lua(VALID_CONFIG).expect("valid canonical configuration");
 
     assert_eq!(config.version, 1);
-    assert_eq!(config.management.expect("management").bind.port(), 9080);
+    assert_eq!(
+        config.management.as_ref().expect("management").bind.port(),
+        9080
+    );
+    assert_eq!(config.certificates.len(), 1);
+    assert_eq!(
+        config.certificates[0].dns_names,
+        ["www.example.test", "*.example.test"]
+    );
+    assert!(matches!(
+        config.certificates[0].source,
+        CertificateSource::Files { .. }
+    ));
+    assert_eq!(config.tls_profiles.len(), 1);
+    assert_eq!(config.tls_profiles[0].certificates, ["web-certificate"]);
+    assert_eq!(
+        config.tls_profiles[0].default_certificate,
+        "web-certificate"
+    );
+    assert_eq!(config.tls_profiles[0].min_version, TlsVersion::Tls13);
+    assert_eq!(
+        config.tls_profiles[0].alpn,
+        [AlpnProtocol::H2, AlpnProtocol::Http11]
+    );
     assert_eq!(config.listeners.len(), 3);
+    assert!(config.cache_stores.is_empty());
+    assert_eq!(
+        config.listeners[0].bind,
+        ListenerBind::Socket {
+            address: "127.0.0.1:8080".parse().expect("socket address")
+        }
+    );
     assert_eq!(config.listeners[0].protocol, Protocol::Http);
     assert_eq!(config.listeners[0].service.as_deref(), Some("web"));
+    assert_eq!(config.listeners[0].tls_profile.as_deref(), Some("web-tls"));
     assert_eq!(config.listeners[1].protocol, Protocol::Tcp);
     assert_eq!(config.listeners[2].protocol, Protocol::Rtmp);
-    assert_eq!(config.listeners[2].service, None);
+    assert_eq!(config.listeners[2].service.as_deref(), Some("live"));
     assert_eq!(config.upstream_pools.len(), 2);
+    assert_eq!(
+        config.upstream_pools[0].endpoints[0],
+        UpstreamEndpoint::Socket {
+            address: "127.0.0.1:3000".parse().expect("socket address")
+        }
+    );
     assert_eq!(
         config.upstream_pools[0].algorithm,
         UpstreamAlgorithm::RoundRobin
     );
+    assert_eq!(config.upstream_pools[0].tls, None);
     assert_eq!(
-        config.http_services[0].routes[0].host.as_deref(),
-        Some("example.com")
+        config.upstream_pools[0].http_versions.min,
+        HttpVersion::Http11
+    );
+    assert_eq!(
+        config.upstream_pools[0].http_versions.max,
+        HttpVersion::Http11
+    );
+    assert_eq!(
+        serde_json::to_value(&config.http_services[0].routes[0]).expect("serialized route")["host"]
+            ["value"],
+        "example.com"
     );
     assert_eq!(config.l4_services[0].lifetime_timeout_ms, Some(600_000));
+    assert_eq!(config.rtmp_services[0].applications[0].name, "live");
+    assert!(config.rtmp_services[0].applications[0].live);
+    assert!(config.rtmp_services[0].applications[0].idle_streams);
+    assert!(config.rtmp_services[0].applications[0].recorders.is_empty());
 }
 
 #[test]
@@ -110,9 +246,16 @@ fn loads_the_distributed_example_configuration() {
     let config = load_lua(include_str!("../../../oxiroute.example.lua"))
         .expect("distributed example must remain valid");
 
-    assert_eq!(config.listeners.len(), 3);
+    assert_eq!(config.listeners.len(), 6);
+    assert_eq!(config.cache_stores.len(), 1);
     assert_eq!(config.upstream_pools.len(), 2);
     assert_eq!(config.http_services.len(), 1);
+    assert_eq!(config.forward_proxy_services.len(), 1);
+    assert_eq!(config.rtmp_services.len(), 1);
+    assert_eq!(
+        config.rtmp_services[0].applications[0].recorders[0].name,
+        "archive"
+    );
     assert_eq!(config.l4_services.len(), 1);
 }
 
@@ -123,7 +266,20 @@ fn applies_all_collection_and_field_defaults() {
 return {
   version = 1,
   listeners = {
-    { name = "live", bind = "127.0.0.1:1935", protocol = "rtmp" },
+    {
+      name = "live",
+      bind = { type = "socket", address = "127.0.0.1:1935" },
+      protocol = "rtmp",
+      service = "live",
+    },
+  },
+  rtmp_services = {
+    {
+      name = "live",
+      applications = {
+        { name = "live", live = true },
+      },
+    },
   },
 }
 "#,
@@ -131,9 +287,18 @@ return {
     .expect("minimal configuration");
 
     assert_eq!(minimal.management, None);
-    assert_eq!(minimal.listeners[0].max_connections, 10_000);
+    assert!(minimal.certificates.is_empty());
+    assert!(minimal.tls_profiles.is_empty());
+    assert_eq!(minimal.listeners[0].max_connections, None);
+    assert_eq!(minimal.listeners[0].tls_profile, None);
     assert!(minimal.upstream_pools.is_empty());
     assert!(minimal.http_services.is_empty());
+    assert!(minimal.rtmp_services[0].applications[0].idle_streams);
+    assert!(
+        minimal.rtmp_services[0].applications[0]
+            .recorders
+            .is_empty()
+    );
     assert!(minimal.l4_services.is_empty());
 
     let source = VALID_CONFIG
@@ -141,14 +306,19 @@ return {
         .replace("      max_connections = 1000,\n", "")
         .replace("      max_connections = 500,\n", "")
         .replace("      algorithm = \"round_robin\",\n", "")
-        .replace("          host = \"example.com\",\n", "")
-        .replace("          path_prefix = \"/api\",\n", "")
+        .replace(
+            "          host = { kind = \"normalized_host\", value = \"example.com\" },\n",
+            "",
+        )
         .replace("          methods = { \"GET\", \"POST\" },\n", "")
         .replace("      upstream_io_timeout_ms = 15000,\n", "")
         .replace("      max_request_body_bytes = 2097152,\n", "")
         .replace("      connect_timeout_ms = 5000,\n", "")
         .replace("      idle_timeout_ms = 120000,\n", "")
         .replace("      lifetime_timeout_ms = 600000,\n", "");
+    let source = source
+        .replace("      min_version = \"1.3\",\n", "")
+        .replace("      alpn = { \"h2\", \"http/1.1\" },\n", "");
     let config = load_lua(&source).expect("configuration using field defaults");
     let route = &config.http_services[0].routes[0];
 
@@ -156,7 +326,7 @@ return {
         config
             .listeners
             .iter()
-            .all(|listener| listener.max_connections == 10_000)
+            .all(|listener| listener.max_connections.is_none())
     );
     assert!(
         config
@@ -165,52 +335,1049 @@ return {
             .all(|pool| pool.algorithm == UpstreamAlgorithm::RoundRobin)
     );
     assert_eq!(route.host, None);
-    assert_eq!(route.path_prefix, "/");
+    assert_eq!(
+        serde_json::to_value(route).expect("serialized route")["path"]["value"],
+        "/api"
+    );
     assert!(route.methods.is_empty());
     assert_eq!(config.http_services[0].upstream_io_timeout_ms, 30_000);
-    assert_eq!(config.http_services[0].max_retries, 0);
+    assert_eq!(
+        serde_json::to_value(route).expect("serialized route")["action"]["policy"]["retry"]["max_retries"],
+        0
+    );
     assert_eq!(
         config.http_services[0].max_request_body_bytes,
-        10 * 1024 * 1024
+        Some(10 * 1024 * 1024)
     );
     assert_eq!(config.l4_services[0].connect_timeout_ms, 10_000);
     assert_eq!(config.l4_services[0].idle_timeout_ms, 300_000);
     assert_eq!(config.l4_services[0].lifetime_timeout_ms, None);
+    assert_eq!(config.tls_profiles[0].min_version, TlsVersion::Tls12);
+    assert_eq!(config.tls_profiles[0].alpn, [AlpnProtocol::Http11]);
+    assert!(config.upstream_pools.iter().all(|pool| {
+        pool.tls.is_none()
+            && pool.http_versions.min == HttpVersion::Http11
+            && pool.http_versions.max == HttpVersion::Http11
+    }));
+}
+
+#[test]
+fn applies_optional_admission_defaults_without_fabricating_limits() {
+    let listener_omitted = load_lua(
+        r#"
+return {
+  version = 1,
+  listeners = {
+    {
+      name = "live",
+      bind = { type = "socket", address = "127.0.0.1:1935" },
+      protocol = "rtmp",
+      service = "live",
+    },
+  },
+  rtmp_services = {
+    { name = "live", applications = { { name = "live" } } },
+  },
+}
+"#,
+    )
+    .expect("omitted listener limit");
+    assert_eq!(listener_omitted.listeners[0].max_connections, None);
+
+    let listener_null = changed(
+        "      max_connections = 5000,",
+        "      max_connections = null,",
+    );
+    assert_eq!(
+        load_lua(&listener_null)
+            .expect("null listener limit")
+            .listeners[0]
+            .max_connections,
+        None
+    );
+    assert_eq!(
+        load_lua(VALID_CONFIG)
+            .expect("numeric listener limit")
+            .listeners[0]
+            .max_connections,
+        Some(5_000)
+    );
+
+    let body_omitted = changed("      max_request_body_bytes = 2097152,\n", "");
+    assert_eq!(
+        load_lua(&body_omitted)
+            .expect("omitted body limit")
+            .http_services[0]
+            .max_request_body_bytes,
+        Some(10 * 1024 * 1024)
+    );
+    let body_null = changed(
+        "      max_request_body_bytes = 2097152,",
+        "      max_request_body_bytes = null,",
+    );
+    assert_eq!(
+        load_lua(&body_null).expect("null body limit").http_services[0].max_request_body_bytes,
+        None
+    );
+    let body_nil = changed(
+        "      max_request_body_bytes = 2097152,",
+        "      max_request_body_bytes = nil,",
+    );
+    assert_eq!(
+        load_lua(&body_nil)
+            .expect("nil is an omitted Lua field")
+            .http_services[0]
+            .max_request_body_bytes,
+        Some(10 * 1024 * 1024)
+    );
+    assert_eq!(
+        load_lua(VALID_CONFIG)
+            .expect("numeric body limit")
+            .http_services[0]
+            .max_request_body_bytes,
+        Some(2_097_152)
+    );
+}
+
+#[test]
+fn applies_the_same_optional_admission_contract_to_json() {
+    let base = serde_json::json!({
+        "version": 1,
+        "listeners": [{
+            "name": "live",
+            "bind": { "type": "socket", "address": "127.0.0.1:1935" },
+            "protocol": "rtmp"
+        }],
+        "http_services": [{ "name": "web", "routes": [] }]
+    });
+
+    let omitted: oxiroute_config::Config =
+        serde_json::from_value(base.clone()).expect("omitted JSON limits");
+    assert_eq!(omitted.listeners[0].max_connections, None);
+    assert_eq!(
+        omitted.http_services[0].max_request_body_bytes,
+        Some(10 * 1024 * 1024)
+    );
+
+    let mut explicit_null = base.clone();
+    explicit_null["listeners"][0]["max_connections"] = serde_json::Value::Null;
+    explicit_null["http_services"][0]["max_request_body_bytes"] = serde_json::Value::Null;
+    let explicit_null: oxiroute_config::Config =
+        serde_json::from_value(explicit_null).expect("null JSON limits");
+    assert_eq!(explicit_null.listeners[0].max_connections, None);
+    assert_eq!(explicit_null.http_services[0].max_request_body_bytes, None);
+
+    let mut numeric = base;
+    numeric["listeners"][0]["max_connections"] = 321.into();
+    numeric["http_services"][0]["max_request_body_bytes"] = 654.into();
+    let numeric: oxiroute_config::Config =
+        serde_json::from_value(numeric).expect("numeric JSON limits");
+    assert_eq!(numeric.listeners[0].max_connections, Some(321));
+    assert_eq!(numeric.http_services[0].max_request_body_bytes, Some(654));
+}
+
+#[test]
+fn requires_explicit_tagged_listener_and_upstream_objects() {
+    let old_listener = changed(
+        r#"      bind = { type = "socket", address = "127.0.0.1:8080" },"#,
+        r#"      bind = "127.0.0.1:8080","#,
+    );
+    assert!(matches!(error_from(&old_listener), ConfigError::Lua(_)));
+
+    let old_endpoint = changed(
+        r#"        { type = "socket", address = "127.0.0.1:3000" },"#,
+        r#"        "127.0.0.1:3000","#,
+    );
+    assert!(matches!(error_from(&old_endpoint), ConfigError::Lua(_)));
+
+    for source in [
+        changed(
+            r#"      bind = { type = "socket", address = "127.0.0.1:8080" },"#,
+            r#"      bind = { type = "socket", address = "127.0.0.1:8080", path = "/run/web.sock" },"#,
+        ),
+        changed(
+            r#"        { type = "socket", address = "127.0.0.1:3000" },"#,
+            r#"        { type = "socket", address = "127.0.0.1:3000", host = "backend.test" },"#,
+        ),
+    ] {
+        let error = error_from(&source);
+        assert!(matches!(error, ConfigError::Lua(_)));
+        assert!(error.to_string().contains("unknown field"));
+    }
+}
+
+#[test]
+fn loads_and_normalizes_every_bind_and_endpoint_variant() {
+    let source = r#"
+return {
+  version = 1,
+  listeners = {
+    {
+      name = "local",
+      bind = { type = "unix", path = "/run//oxiroute///local.sock" },
+      protocol = "rtmp",
+      service = "live",
+      max_connections = null,
+    },
+  },
+  upstream_pools = {
+    {
+      name = "all-endpoints",
+      endpoints = {
+        { type = "socket", address = "[::ffff:127.0.0.1]:3000" },
+        { type = "dns", host = "BACKEND-1.EXAMPLE.TEST", port = 3001 },
+        { type = "unix", path = "/run//oxiroute///backend.sock" },
+      },
+      algorithm = "least_connections",
+    },
+  },
+  rtmp_services = {
+    { name = "live", applications = { { name = "live" } } },
+  },
+}
+"#;
+    let config = load_lua(source).expect("all bind and endpoint variants");
+
+    assert_eq!(
+        config.listeners[0].bind,
+        ListenerBind::Unix {
+            path: "/run/oxiroute/local.sock".into()
+        }
+    );
+    assert_eq!(config.listeners[0].max_connections, None);
+    assert_eq!(
+        config.upstream_pools[0].endpoints,
+        [
+            UpstreamEndpoint::Socket {
+                address: "127.0.0.1:3000".parse().expect("socket address")
+            },
+            UpstreamEndpoint::Dns {
+                host: "backend-1.example.test".into(),
+                port: 3001
+            },
+            UpstreamEndpoint::Unix {
+                path: "/run/oxiroute/backend.sock".into()
+            },
+        ]
+    );
+    assert_eq!(
+        config.upstream_pools[0].algorithm,
+        UpstreamAlgorithm::LeastConnections
+    );
+}
+
+#[test]
+fn validates_and_normalizes_dns_endpoints_without_resolution_or_expansion() {
+    let boundary = format!(
+        "{}.{}.{}.{}",
+        "a".repeat(63),
+        "b".repeat(63),
+        "c".repeat(63),
+        "d".repeat(61)
+    );
+    let source = format!(
+        r#"return {{
+  version = 1,
+  listeners = {{}},
+  upstream_pools = {{
+    {{ name = "dns", endpoints = {{ {{ type = "dns", host = "{boundary}", port = 443 }} }} }},
+  }},
+}}"#
+    );
+    let config = load_lua(&source).expect("253-byte DNS endpoint");
+    assert!(matches!(
+        &config.upstream_pools[0].endpoints[0],
+        UpstreamEndpoint::Dns { host, port: 443 } if host == &boundary
+    ));
+
+    let too_long = format!(
+        "{}.{}.{}.{}",
+        "a".repeat(63),
+        "b".repeat(63),
+        "c".repeat(63),
+        "d".repeat(62)
+    );
+    for host in [
+        String::new(),
+        "127.0.0.1".into(),
+        "::1".into(),
+        "example.test.".into(),
+        "-api.example.test".into(),
+        "api-.example.test".into(),
+        "api..example.test".into(),
+        "api_example.test".into(),
+        "caf\u{e9}.example.test".into(),
+        "${BACKEND_HOST}".into(),
+        format!("{}.example.test", "a".repeat(64)),
+        too_long,
+    ] {
+        let source = format!(
+            r#"return {{ version = 1, listeners = {{}}, upstream_pools = {{
+  {{ name = "dns", endpoints = {{ {{ type = "dns", host = "{host}", port = 443 }} }} }},
+}} }}"#
+        );
+        assert!(matches!(
+            error_from(&source),
+            ConfigError::InvalidDnsEndpoint { pool, .. } if pool == "dns"
+        ));
+    }
+
+    let zero_port = r#"return { version = 1, listeners = {}, upstream_pools = {
+  { name = "dns", endpoints = { { type = "dns", host = "backend.test", port = 0 } } },
+} }"#;
+    assert!(matches!(
+        error_from(zero_port),
+        ConfigError::ZeroPort { kind: "upstream pool", name, field: "endpoints" }
+            if name == "dns"
+    ));
+}
+
+#[test]
+fn validates_normalizes_and_deduplicates_unix_paths() {
+    let boundary = format!("/{}", "a".repeat(106));
+    let source = format!(
+        r#"return {{ version = 1, listeners = {{}}, upstream_pools = {{
+  {{ name = "unix", endpoints = {{ {{ type = "unix", path = "{boundary}" }} }} }},
+}} }}"#
+    );
+    load_lua(&source).expect("107-byte Unix path");
+
+    for path in [
+        "run/backend.sock".to_owned(),
+        "/".to_owned(),
+        "/run/backend.sock/".to_owned(),
+        "/run/./backend.sock".to_owned(),
+        "/run/../backend.sock".to_owned(),
+        r"/run/\0backend.sock".to_owned(),
+        format!("/{}", "a".repeat(107)),
+    ] {
+        let source = format!(
+            r#"return {{ version = 1, listeners = {{}}, upstream_pools = {{
+  {{ name = "unix", endpoints = {{ {{ type = "unix", path = "{path}" }} }} }},
+}} }}"#
+        );
+        assert!(matches!(
+            error_from(&source),
+            ConfigError::InvalidUnixPath { kind: "upstream pool", name, .. }
+                if name == "unix"
+        ));
+    }
+
+    let duplicates = r#"return { version = 1, listeners = {}, upstream_pools = {
+  { name = "unix", endpoints = {
+    { type = "unix", path = "/run/oxiroute/backend.sock" },
+    { type = "unix", path = "/run//oxiroute///backend.sock" },
+  } },
+} }"#;
+    assert!(matches!(
+        error_from(duplicates),
+        ConfigError::DuplicateUpstreamEndpoint { pool, .. } if pool == "unix"
+    ));
+}
+
+#[test]
+fn rejects_duplicate_normalized_socket_and_dns_endpoints() {
+    for endpoints in [
+        r#"{ type = "socket", address = "127.0.0.1:3000" },
+    { type = "socket", address = "[::ffff:127.0.0.1]:3000" }"#,
+        r#"{ type = "dns", host = "BACKEND.EXAMPLE.TEST", port = 3000 },
+    { type = "dns", host = "backend.example.test", port = 3000 }"#,
+    ] {
+        let source = format!(
+            r#"return {{ version = 1, listeners = {{}}, upstream_pools = {{
+  {{ name = "duplicates", endpoints = {{ {endpoints} }} }},
+}} }}"#
+        );
+        assert!(matches!(
+            error_from(&source),
+            ConfigError::DuplicateUpstreamEndpoint { pool, .. } if pool == "duplicates"
+        ));
+    }
+}
+
+#[test]
+fn rejects_duplicate_normalized_unix_listener_binds() {
+    let source = r#"
+return {
+  version = 1,
+  listeners = {
+    { name = "first", bind = { type = "unix", path = "/run/oxiroute/live.sock" }, protocol = "rtmp", service = "live" },
+    { name = "second", bind = { type = "unix", path = "/run//oxiroute///live.sock" }, protocol = "rtmp", service = "live" },
+  },
+  rtmp_services = { { name = "live", applications = { { name = "live" } } } },
+}
+"#;
+    assert!(matches!(
+        error_from(source),
+        ConfigError::OverlappingBind { first_name, second_name, .. }
+            if first_name == "first" && second_name == "second"
+    ));
+}
+
+#[test]
+fn limits_tls_and_health_checks_to_supported_endpoint_transports() {
+    let unix_listener = changed(
+        r#"      bind = { type = "socket", address = "127.0.0.1:8080" },"#,
+        r#"      bind = { type = "unix", path = "/run/oxiroute/web.sock" },"#,
+    );
+    assert!(matches!(
+        error_from(&unix_listener),
+        ConfigError::UnsupportedUnixListenerTls { listener, profile }
+            if listener == "web" && profile == "web-tls"
+    ));
+
+    let unix_pool = |extra: &str| {
+        format!(
+            r#"return {{ version = 1, listeners = {{}}, upstream_pools = {{
+  {{
+    name = "unix",
+    endpoints = {{ {{ type = "unix", path = "/run/oxiroute/backend.sock" }} }},
+    {extra}
+  }},
+}} }}"#
+        )
+    };
+    assert!(matches!(
+        error_from(&unix_pool(r#"tls = { server_name = "backend.example.test" },"#)),
+        ConfigError::UnsupportedUnixUpstreamTls { pool } if pool == "unix"
+    ));
+    for health_check in [
+        r#"health_check = { type = "tcp" },"#,
+        r#"health_check = { type = "http", host = "backend", path = "/healthz" },"#,
+    ] {
+        assert!(matches!(
+            error_from(&unix_pool(health_check)),
+            ConfigError::UnsupportedUnixHealthCheck { pool } if pool == "unix"
+        ));
+    }
+
+    for endpoint in [
+        r#"{ type = "socket", address = "127.0.0.1:3000" }"#,
+        r#"{ type = "dns", host = "backend.example.test", port = 3000 }"#,
+    ] {
+        for health_check in [
+            r#"{ type = "tcp" }"#,
+            r#"{ type = "http", host = "backend.example.test", path = "/healthz" }"#,
+        ] {
+            let source = format!(
+                r#"return {{ version = 1, listeners = {{}}, upstream_pools = {{
+  {{ name = "supported", endpoints = {{ {endpoint} }}, health_check = {health_check} }},
+}} }}"#
+            );
+            load_lua(&source).expect("socket and DNS health checks are supported");
+        }
+    }
+}
+
+#[test]
+fn management_exposure_checks_only_socket_upstreams() {
+    let source = r#"
+return {
+  version = 1,
+  management = { bind = "127.0.0.1:9080" },
+  listeners = {},
+  upstream_pools = {
+    {
+      name = "non-socket",
+      endpoints = {
+        { type = "dns", host = "localhost", port = 9080 },
+        { type = "unix", path = "/run/oxiroute/management.sock" },
+      },
+    },
+  },
+}
+"#;
+    load_lua(source).expect("DNS is not resolved and Unix has a distinct identity");
+}
+
+#[test]
+fn accepts_certificate_and_tls_profile_cardinality_boundaries() {
+    let certificates = (0..256)
+        .map(|index| {
+            format!(
+                r#"{{
+      name = "certificate-{index}",
+      dns_names = {{ "certificate-{index}.example.test" }},
+      source = {{
+        type = "files",
+        certificate_chain_path = "/etc/oxiroute/chain-{index}.pem",
+        private_key_path = "/etc/oxiroute/key-{index}.pem",
+      }},
+    }}"#
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let source =
+        format!("return {{ version = 1, listeners = {{}}, certificates = {{ {certificates} }} }}");
+    let config = load_lua(&source).expect("256 certificates");
+    assert_eq!(config.certificates.len(), 256);
+
+    let profiles = (0..256)
+        .map(|index| {
+            format!(
+                r#"{{ name = "profile-{index}", certificates = {{ "shared" }}, default_certificate = "shared" }}"#
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let source = format!(
+        r#"return {{
+  version = 1,
+  listeners = {{}},
+  certificates = {{
+    {{
+      name = "shared",
+      dns_names = {{ "shared.example.test" }},
+      source = {{
+        type = "files",
+        certificate_chain_path = "/etc/oxiroute/shared-chain.pem",
+        private_key_path = "/etc/oxiroute/shared-key.pem",
+      }},
+    }},
+  }},
+  tls_profiles = {{ {profiles} }},
+}}"#
+    );
+    let config = load_lua(&source).expect("256 TLS profiles");
+    assert_eq!(config.tls_profiles.len(), 256);
+}
+
+#[test]
+fn rejects_excessive_certificate_and_tls_profile_cardinality() {
+    let certificates = (0..257)
+        .map(|index| {
+            format!(
+                r#"{{
+      name = "certificate-{index}",
+      dns_names = {{ "certificate-{index}.example.test" }},
+      source = {{
+        type = "files",
+        certificate_chain_path = "/etc/oxiroute/chain-{index}.pem",
+        private_key_path = "/etc/oxiroute/key-{index}.pem",
+      }},
+    }}"#
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let source =
+        format!("return {{ version = 1, listeners = {{}}, certificates = {{ {certificates} }} }}");
+    assert!(matches!(
+        error_from(&source),
+        ConfigError::TooManyCertificates
+    ));
+
+    let profiles = (0..257)
+        .map(|index| {
+            format!(
+                r#"{{ name = "profile-{index}", certificates = {{ "shared" }}, default_certificate = "shared" }}"#
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let source = format!(
+        r#"return {{
+  version = 1,
+  listeners = {{}},
+  certificates = {{
+    {{
+      name = "shared",
+      dns_names = {{ "shared.example.test" }},
+      source = {{
+        type = "files",
+        certificate_chain_path = "/etc/oxiroute/shared-chain.pem",
+        private_key_path = "/etc/oxiroute/shared-key.pem",
+      }},
+    }},
+  }},
+  tls_profiles = {{ {profiles} }},
+}}"#
+    );
+    assert!(matches!(
+        error_from(&source),
+        ConfigError::TooManyTlsProfiles
+    ));
+}
+
+#[test]
+fn validates_and_normalizes_certificate_dns_names() {
+    let source = changed(
+        "      dns_names = { \"WWW.EXAMPLE.TEST\", \"*.EXAMPLE.TEST\" },\n",
+        "",
+    );
+    let error = error_from(&source);
+    assert!(matches!(error, ConfigError::Lua(_)));
+    assert!(error.to_string().contains("missing field `dns_names`"));
+
+    let names = (0..100)
+        .map(|index| format!(r#""HOST-{index}.EXAMPLE.TEST""#))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source = changed(
+        "      dns_names = { \"WWW.EXAMPLE.TEST\", \"*.EXAMPLE.TEST\" },",
+        &format!("      dns_names = {{ {names} }},"),
+    );
+    let config = load_lua(&source).expect("100 unique certificate DNS names");
+    assert_eq!(config.certificates[0].dns_names.len(), 100);
+    assert_eq!(config.certificates[0].dns_names[0], "host-0.example.test");
+
+    let too_many = (0..101)
+        .map(|index| format!(r#""host-{index}.example.test""#))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source = changed(
+        "      dns_names = { \"WWW.EXAMPLE.TEST\", \"*.EXAMPLE.TEST\" },",
+        &format!("      dns_names = {{ {too_many} }},"),
+    );
+    assert!(matches!(
+        error_from(&source),
+        ConfigError::TooManyCertificateDnsNames { certificate }
+            if certificate == "web-certificate"
+    ));
+
+    let source = changed(
+        "      dns_names = { \"WWW.EXAMPLE.TEST\", \"*.EXAMPLE.TEST\" },",
+        "      dns_names = {},",
+    );
+    assert!(matches!(
+        error_from(&source),
+        ConfigError::EmptyCertificateDnsNames { certificate }
+            if certificate == "web-certificate"
+    ));
+
+    let source = changed(
+        "      dns_names = { \"WWW.EXAMPLE.TEST\", \"*.EXAMPLE.TEST\" },",
+        "      dns_names = { \"WWW.EXAMPLE.TEST\", \"www.example.test\" },",
+    );
+    assert!(matches!(
+        error_from(&source),
+        ConfigError::DuplicateCertificateDnsName {
+            certificate,
+            dns_name
+        } if certificate == "web-certificate" && dns_name == "www.example.test"
+    ));
+
+    for dns_name in [
+        "",
+        "127.0.0.1",
+        "::1",
+        "example.test.",
+        "caf\u{e9}.example.test",
+        "-api.example.test",
+        "api-.example.test",
+        "api..example.test",
+        "api_example.test",
+        "*",
+        "api.*.example.test",
+        "www*.example.test",
+        "*.127.0.0.1",
+    ] {
+        let source = changed(
+            "      dns_names = { \"WWW.EXAMPLE.TEST\", \"*.EXAMPLE.TEST\" },",
+            &format!("      dns_names = {{ \"{dns_name}\" }},"),
+        );
+        assert!(matches!(
+            error_from(&source),
+            ConfigError::InvalidCertificateDnsName { certificate, .. }
+                if certificate == "web-certificate"
+        ));
+    }
+}
+
+#[test]
+fn validates_certificate_file_paths_lexically() {
+    let path = format!("/{}", "a".repeat(4_095));
+    let source = changed(
+        "        certificate_chain_path = \"/etc/oxiroute/web-chain.pem\",",
+        &format!("        certificate_chain_path = \"{path}\","),
+    );
+    load_lua(&source).expect("4096-byte path");
+
+    let too_long = format!("/{}", "a".repeat(4_096));
+    let source = changed(
+        "        certificate_chain_path = \"/etc/oxiroute/web-chain.pem\",",
+        &format!("        certificate_chain_path = \"{too_long}\","),
+    );
+    assert!(matches!(
+        error_from(&source),
+        ConfigError::InvalidFilePath {
+            kind: "certificate",
+            field: "source.certificate_chain_path",
+            ..
+        }
+    ));
+
+    for path in [
+        "etc/oxiroute/cert.pem",
+        "/",
+        "/etc//cert.pem",
+        "/etc/certs/",
+        "/etc/./cert.pem",
+        "/etc/../cert.pem",
+        r"/etc/\0cert.pem",
+    ] {
+        let source = changed(
+            "        certificate_chain_path = \"/etc/oxiroute/web-chain.pem\",",
+            &format!("        certificate_chain_path = \"{path}\","),
+        );
+        assert!(matches!(
+            error_from(&source),
+            ConfigError::InvalidFilePath {
+                kind: "certificate",
+                field: "source.certificate_chain_path",
+                ..
+            }
+        ));
+    }
+
+    let source = changed(
+        "        private_key_path = \"/etc/oxiroute/web-key.pem\",",
+        "        private_key_path = \"/etc/oxiroute/web-chain.pem\",",
+    );
+    assert!(matches!(
+        error_from(&source),
+        ConfigError::DuplicateCertificatePaths { certificate }
+            if certificate == "web-certificate"
+    ));
+}
+
+#[test]
+fn loads_the_canonical_certbot_certificate_source() {
+    let source = with_certbot_source(
+        "/etc/letsencrypt/live/www.example.test",
+        "/etc/letsencrypt/archive/www.example.test",
+    );
+    let config = load_lua(&source).expect("canonical Certbot certificate source");
+
+    assert_eq!(
+        config.certificates[0].source,
+        CertificateSource::Certbot {
+            live_directory_path: "/etc/letsencrypt/live/www.example.test".into(),
+            archive_directory_path: "/etc/letsencrypt/archive/www.example.test".into(),
+        }
+    );
+}
+
+#[test]
+fn validates_certbot_directory_paths_lexically() {
+    let boundary = format!("/{}", "a".repeat(4_095));
+    load_lua(&with_certbot_source(
+        &boundary,
+        "/etc/letsencrypt/archive/www.example.test",
+    ))
+    .expect("4096-byte Certbot live directory path");
+    load_lua(&with_certbot_source(
+        "/etc/letsencrypt/live/www.example.test",
+        &boundary,
+    ))
+    .expect("4096-byte Certbot archive directory path");
+
+    for (field, path) in [
+        (
+            "source.live_directory_path",
+            "etc/letsencrypt/live/name".into(),
+        ),
+        ("source.live_directory_path", "/".into()),
+        ("source.live_directory_path", "/etc//live/name".into()),
+        ("source.live_directory_path", "/etc/live/name/".into()),
+        ("source.live_directory_path", "/etc/./live/name".into()),
+        ("source.live_directory_path", "/etc/../live/name".into()),
+        ("source.live_directory_path", r"/etc/live/\0name".into()),
+        (
+            "source.live_directory_path",
+            format!("/{}", "a".repeat(4_096)),
+        ),
+        (
+            "source.archive_directory_path",
+            "etc/letsencrypt/archive/name".into(),
+        ),
+        ("source.archive_directory_path", "/".into()),
+        ("source.archive_directory_path", "/etc//archive/name".into()),
+        ("source.archive_directory_path", "/etc/archive/name/".into()),
+        (
+            "source.archive_directory_path",
+            "/etc/./archive/name".into(),
+        ),
+        (
+            "source.archive_directory_path",
+            "/etc/../archive/name".into(),
+        ),
+        (
+            "source.archive_directory_path",
+            r"/etc/archive/\0name".into(),
+        ),
+        (
+            "source.archive_directory_path",
+            format!("/{}", "a".repeat(4_096)),
+        ),
+    ] {
+        let (live, archive) = if field == "source.live_directory_path" {
+            (path.as_str(), "/etc/letsencrypt/archive/name")
+        } else {
+            ("/etc/letsencrypt/live/name", path.as_str())
+        };
+        assert!(matches!(
+            error_from(&with_certbot_source(live, archive)),
+            ConfigError::InvalidFilePath {
+                kind: "certificate",
+                field: actual_field,
+                ..
+            } if actual_field == field
+        ));
+    }
+
+    assert!(matches!(
+        error_from(&with_certbot_source(
+            "/etc/letsencrypt/lineage/name",
+            "/etc/letsencrypt/lineage/name",
+        )),
+        ConfigError::DuplicateCertbotDirectories { certificate }
+            if certificate == "web-certificate"
+    ));
+}
+
+#[test]
+fn rejects_incomplete_or_noncanonical_certbot_source_objects() {
+    for source in [
+        with_certbot_source(
+            "/etc/letsencrypt/live/name",
+            "/etc/letsencrypt/archive/name",
+        )
+        .replace(
+            "        live_directory_path = \"/etc/letsencrypt/live/name\",\n",
+            "",
+        ),
+        with_certbot_source(
+            "/etc/letsencrypt/live/name",
+            "/etc/letsencrypt/archive/name",
+        )
+        .replace(
+            "        archive_directory_path = \"/etc/letsencrypt/archive/name\",\n",
+            "",
+        ),
+        with_certbot_source(
+            "/etc/letsencrypt/live/name",
+            "/etc/letsencrypt/archive/name",
+        )
+        .replace(
+            "        archive_directory_path = \"/etc/letsencrypt/archive/name\",",
+            "        archive_directory_path = \"/etc/letsencrypt/archive/name\",\n        unexpected = true,",
+        ),
+        with_certbot_source(
+            "/etc/letsencrypt/live/name",
+            "/etc/letsencrypt/archive/name",
+        )
+        .replace(
+            "        live_directory_path = \"/etc/letsencrypt/live/name\",",
+            "        live_directory_path = \"/etc/letsencrypt/live/name\",\n        certificate_chain_path = \"/etc/oxiroute/chain.pem\",",
+        ),
+    ] {
+        assert!(matches!(error_from(&source), ConfigError::Lua(_)));
+    }
+}
+
+#[test]
+fn accepts_only_the_supported_alpn_policies() {
+    for (policy, expected) in [
+        (r#"{ "http/1.1" }"#, vec![AlpnProtocol::Http11]),
+        (r#"{ "h2" }"#, vec![AlpnProtocol::H2]),
+        (
+            r#"{ "h2", "http/1.1" }"#,
+            vec![AlpnProtocol::H2, AlpnProtocol::Http11],
+        ),
+    ] {
+        let source = changed(
+            "      alpn = { \"h2\", \"http/1.1\" },",
+            &format!("      alpn = {policy},"),
+        );
+        let config = load_lua(&source).expect("supported ALPN policy");
+        assert_eq!(config.tls_profiles[0].alpn, expected);
+    }
+
+    for policy in [
+        r"{}",
+        r#"{ "h2", "h2" }"#,
+        r#"{ "http/1.1", "http/1.1" }"#,
+        r#"{ "http/1.1", "h2" }"#,
+        r#"{ "h2", "http/1.1", "h2" }"#,
+    ] {
+        let source = changed(
+            "      alpn = { \"h2\", \"http/1.1\" },",
+            &format!("      alpn = {policy},"),
+        );
+        assert!(matches!(
+            error_from(&source),
+            ConfigError::InvalidTlsProfileAlpn { profile } if profile == "web-tls"
+        ));
+    }
+}
+
+#[test]
+fn validates_tls_profile_and_listener_references() {
+    let source = changed(
+        "      certificates = { \"web-certificate\" },",
+        "      certificates = { \"missing\" },",
+    );
+    assert!(matches!(
+        error_from(&source),
+        ConfigError::UnknownTlsProfileCertificate {
+            profile,
+            certificate
+        } if profile == "web-tls" && certificate == "missing"
+    ));
+
+    let source = changed(
+        "      certificates = { \"web-certificate\" },",
+        "      certificates = {},",
+    );
+    assert!(matches!(
+        error_from(&source),
+        ConfigError::EmptyTlsProfileCertificates { profile } if profile == "web-tls"
+    ));
+
+    let source = changed(
+        "      certificates = { \"web-certificate\" },",
+        "      certificates = { \"web-certificate\", \"web-certificate\" },",
+    );
+    assert!(matches!(
+        error_from(&source),
+        ConfigError::DuplicateTlsProfileCertificate {
+            profile,
+            certificate
+        } if profile == "web-tls" && certificate == "web-certificate"
+    ));
+
+    let source = changed(
+        "      default_certificate = \"web-certificate\",",
+        "      default_certificate = \"missing\",",
+    );
+    assert!(matches!(
+        error_from(&source),
+        ConfigError::TlsProfileDefaultNotListed {
+            profile,
+            certificate
+        } if profile == "web-tls" && certificate == "missing"
+    ));
+
+    let source = changed(
+        "      tls_profile = \"web-tls\",",
+        "      tls_profile = \"missing\",",
+    );
+    assert!(matches!(
+        error_from(&source),
+        ConfigError::UnknownListenerTlsProfile { listener, profile }
+            if listener == "web" && profile == "missing"
+    ));
+
+    for (fragment, listener, protocol) in [
+        (
+            "      service = \"database\",\n      max_connections = 1000,",
+            "database",
+            Protocol::Tcp,
+        ),
+        (
+            "      protocol = \"rtmp\",\n      service = \"live\",\n      max_connections = 500,",
+            "live",
+            Protocol::Rtmp,
+        ),
+    ] {
+        let replacement = fragment.replace(
+            "      max_connections",
+            "      tls_profile = \"web-tls\",\n      max_connections",
+        );
+        let source = changed(fragment, &replacement);
+        assert!(matches!(
+            error_from(&source),
+            ConfigError::UnexpectedListenerTlsProfile {
+                listener: actual_listener,
+                protocol: actual_protocol,
+                profile,
+            } if actual_listener == listener
+                && actual_protocol == protocol
+                && profile == "web-tls"
+        ));
+    }
+}
+
+#[test]
+fn rejects_dns_name_ownership_overlap_within_a_tls_profile() {
+    for dns_name in ["www.example.test", "*.example.test"] {
+        let source = changed(
+            "    },\n  },\n  tls_profiles = {",
+            &format!(
+                r#"    }},
+    {{
+      name = "overlapping-certificate",
+      dns_names = {{ "{dns_name}" }},
+      source = {{
+        type = "files",
+        certificate_chain_path = "/etc/oxiroute/overlapping-chain.pem",
+        private_key_path = "/etc/oxiroute/overlapping-key.pem",
+      }},
+    }},
+  }},
+  tls_profiles = {{"#
+            ),
+        );
+        let source = source.replace(
+            "      certificates = { \"web-certificate\" },",
+            "      certificates = { \"web-certificate\", \"overlapping-certificate\" },",
+        );
+        assert!(matches!(
+            error_from(&source),
+            ConfigError::OverlappingTlsProfileDnsName {
+                profile,
+                dns_name: actual_dns_name,
+                first_certificate,
+                second_certificate,
+            } if profile == "web-tls"
+                && actual_dns_name == dns_name
+                && first_certificate == "web-certificate"
+                && second_certificate == "overlapping-certificate"
+        ));
+    }
 }
 
 #[test]
 fn loads_a_bounded_http_retry_budget() {
     for max_retries in [1, 2] {
         let source = changed(
-            "      max_request_body_bytes = 2097152,",
-            &format!("      max_request_body_bytes = 2097152,\n      max_retries = {max_retries},"),
+            "            policy = {},",
+            &format!("            policy = {{ retry = {{ max_retries = {max_retries} }} }},"),
         );
         let config = load_lua(&source).expect("bounded retry budget");
 
-        assert_eq!(config.http_services[0].max_retries, max_retries);
+        assert_eq!(
+            serde_json::to_value(&config.http_services[0].routes[0]).expect("serialized route")["action"]
+                ["policy"]["retry"]["max_retries"],
+            max_retries
+        );
     }
 }
 
 #[test]
 fn rejects_an_excessive_http_retry_budget() {
     let source = changed(
-        "      max_request_body_bytes = 2097152,",
-        "      max_request_body_bytes = 2097152,\n      max_retries = 3,",
+        "            policy = {},",
+        "            policy = { retry = { max_retries = 3 } },",
     );
     let error = error_from(&source);
 
     assert!(matches!(
         error,
-        ConfigError::RetryLimitTooLarge { service, limit: 3 } if service == "web"
+        ConfigError::InvalidHttpRoute {
+            service,
+            route: 0,
+            field: "action.policy.retry.max_retries",
+            ..
+        } if service == "web"
     ));
 }
 
 #[test]
 fn loads_tcp_and_http_health_check_policies() {
-    let tcp_source = changed(
-        "      endpoints = { \"127.0.0.1:3000\", \"127.0.0.1:3001\" },\n      algorithm = \"round_robin\",",
-        "      endpoints = { \"127.0.0.1:3000\", \"127.0.0.1:3001\" },\n      algorithm = \"round_robin\",\n      health_check = { type = \"tcp\" },",
-    );
+    let tcp_source = with_web_pool_fields("      health_check = { type = \"tcp\" },");
     let tcp = load_lua(&tcp_source).expect("TCP health check");
     let tcp_check = tcp.upstream_pools[0]
         .health_check
@@ -222,11 +1389,8 @@ fn loads_tcp_and_http_health_check_policies() {
     assert_eq!(tcp_check.healthy_threshold, 1);
     assert_eq!(tcp_check.unhealthy_threshold, 3);
 
-    let http_source = changed(
-        "      endpoints = { \"127.0.0.1:3000\", \"127.0.0.1:3001\" },\n      algorithm = \"round_robin\",",
-        r#"      endpoints = { "127.0.0.1:3000", "127.0.0.1:3001" },
-      algorithm = "round_robin",
-      health_check = {
+    let http_source = with_web_pool_fields(
+        r#"      health_check = {
         type = "http",
         interval_ms = 5000,
         timeout_ms = 500,
@@ -251,6 +1415,216 @@ fn loads_tcp_and_http_health_check_policies() {
 }
 
 #[test]
+fn loads_upstream_tls_and_all_supported_http_version_ranges() {
+    for (min, max) in [("1.1", "1.1"), ("1.1", "2"), ("2", "2")] {
+        let fields = format!(
+            "{}\n      http_versions = {{ min = \"{min}\", max = \"{max}\" }},",
+            upstream_tls("BACKEND.EXAMPLE.COM")
+        );
+        let source = with_web_pool_fields(&fields);
+        let config = load_lua(&source).expect("supported upstream HTTP version range");
+        let pool = &config.upstream_pools[0];
+        let tls = pool.tls.as_ref().expect("upstream TLS");
+
+        assert_eq!(tls.server_name, "backend.example.com");
+        assert_eq!(
+            tls.ca_certificate_path.as_deref(),
+            Some(std::path::Path::new("/etc/oxiroute/upstream-ca.pem"))
+        );
+        assert_eq!(
+            pool.http_versions.min,
+            if min == "1.1" {
+                HttpVersion::Http11
+            } else {
+                HttpVersion::Http2
+            }
+        );
+        assert_eq!(
+            pool.http_versions.max,
+            if max == "1.1" {
+                HttpVersion::Http11
+            } else {
+                HttpVersion::Http2
+            }
+        );
+    }
+}
+
+#[test]
+fn validates_upstream_ca_paths_lexically() {
+    let path = format!("/{}", "a".repeat(4_095));
+    let fields = format!(
+        r#"      tls = {{ server_name = "backend.example.com", ca_certificate_path = "{path}" }},"#
+    );
+    load_lua(&with_web_pool_fields(&fields)).expect("4096-byte upstream CA path");
+
+    for path in [
+        format!("/{}", "a".repeat(4_096)),
+        "etc/oxiroute/ca.pem".into(),
+        "/etc//ca.pem".into(),
+        "/etc/ca/".into(),
+        "/etc/./ca.pem".into(),
+        "/etc/../ca.pem".into(),
+        r"/etc/\0ca.pem".into(),
+    ] {
+        let fields = format!(
+            r#"      tls = {{ server_name = "backend.example.com", ca_certificate_path = "{path}" }},"#
+        );
+        assert!(matches!(
+            error_from(&with_web_pool_fields(&fields)),
+            ConfigError::InvalidFilePath {
+                kind: "upstream pool",
+                field: "tls.ca_certificate_path",
+                ..
+            }
+        ));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_non_utf8_file_paths() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf};
+
+    use oxiroute_config::{
+        HttpVersionPolicy, UpstreamPool, UpstreamTls, validate_upstream_pool_definitions,
+    };
+
+    let pool = UpstreamPool {
+        name: "secure".into(),
+        endpoints: vec![UpstreamEndpoint::Socket {
+            address: "127.0.0.1:443".parse().expect("endpoint"),
+        }],
+        algorithm: UpstreamAlgorithm::RoundRobin,
+        health_check: None,
+        tls: Some(UpstreamTls {
+            server_name: "backend.example.com".into(),
+            ca_certificate_path: Some(PathBuf::from(OsString::from_vec(
+                b"/etc/oxiroute/ca-\xff.pem".to_vec(),
+            ))),
+        }),
+        http_versions: HttpVersionPolicy::default(),
+    };
+
+    assert!(matches!(
+        validate_upstream_pool_definitions(&[pool], None),
+        Err(ConfigError::InvalidFilePath {
+            kind: "upstream pool",
+            field: "tls.ca_certificate_path",
+            detail: "path must be valid UTF-8",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn validates_upstream_tls_server_names() {
+    let boundary_name = format!(
+        "{}.{}.{}.{}",
+        "a".repeat(63),
+        "b".repeat(63),
+        "c".repeat(63),
+        "d".repeat(61)
+    );
+    let config = load_lua(&with_web_pool_fields(&upstream_tls(&boundary_name)))
+        .expect("253-byte DNS server name");
+    assert_eq!(
+        config.upstream_pools[0]
+            .tls
+            .as_ref()
+            .expect("upstream TLS")
+            .server_name,
+        boundary_name
+    );
+
+    let too_long = format!(
+        "{}.{}.{}.{}",
+        "a".repeat(63),
+        "b".repeat(63),
+        "c".repeat(63),
+        "d".repeat(62)
+    );
+    for server_name in [
+        String::new(),
+        "*.example.com".into(),
+        "127.0.0.1".into(),
+        "::1".into(),
+        "example.com.".into(),
+        "-api.example.com".into(),
+        "api-.example.com".into(),
+        "api..example.com".into(),
+        "caf\u{e9}.example.com".into(),
+        format!("{}.example.com", "a".repeat(64)),
+        too_long,
+    ] {
+        assert!(matches!(
+            error_from(&with_web_pool_fields(&upstream_tls(&server_name))),
+            ConfigError::InvalidUpstreamTlsServerName { pool, .. }
+                if pool == "web-backends"
+        ));
+    }
+}
+
+#[test]
+fn rejects_invalid_or_plaintext_http2_upstream_ranges() {
+    let fields = format!(
+        "{}\n      http_versions = {{ min = \"2\", max = \"1.1\" }},",
+        upstream_tls("backend.example.com")
+    );
+    assert!(matches!(
+        error_from(&with_web_pool_fields(&fields)),
+        ConfigError::InvalidHttpVersionRange {
+            pool,
+            min: "2",
+            max: "1.1"
+        } if pool == "web-backends"
+    ));
+
+    for min in ["1.1", "2"] {
+        let fields = format!("      http_versions = {{ min = \"{min}\", max = \"2\" }},");
+        assert!(matches!(
+            error_from(&with_web_pool_fields(&fields)),
+            ConfigError::H2RequiresUpstreamTls { pool } if pool == "web-backends"
+        ));
+    }
+}
+
+#[test]
+fn rejects_health_checks_combined_with_upstream_tls() {
+    let fields = format!(
+        "{}\n      health_check = {{ type = \"tcp\" }},",
+        upstream_tls("backend.example.com")
+    );
+    let error = error_from(&with_web_pool_fields(&fields));
+
+    assert!(matches!(
+        &error,
+        ConfigError::UnsupportedTlsHealthCheck { pool } if pool == "web-backends"
+    ));
+    assert!(
+        error
+            .to_string()
+            .contains("combines `health_check` with `tls`, which is not supported")
+    );
+}
+
+#[test]
+fn rejects_l4_references_to_tls_enabled_upstream_pools() {
+    let pool = r#"      endpoints = { { type = "socket", address = "10.0.0.12:5432" } },
+      algorithm = "round_robin","#;
+    let source = changed(
+        pool,
+        &format!("{pool}\n      tls = {{ server_name = \"database.example.com\" }},"),
+    );
+
+    assert!(matches!(
+        error_from(&source),
+        ConfigError::TlsUpstreamPoolForL4Service { service, pool }
+            if service == "database" && pool == "database-backends"
+    ));
+}
+
+#[test]
 fn rejects_invalid_health_check_timing_and_thresholds() {
     for policy in [
         r#"{ type = "tcp", interval_ms = 999 }"#,
@@ -262,12 +1636,7 @@ fn rejects_invalid_health_check_timing_and_thresholds() {
         r#"{ type = "tcp", unhealthy_threshold = 0 }"#,
         r#"{ type = "tcp", unhealthy_threshold = 101 }"#,
     ] {
-        let source = changed(
-            "      endpoints = { \"127.0.0.1:3000\", \"127.0.0.1:3001\" },\n      algorithm = \"round_robin\",",
-            &format!(
-                "      endpoints = {{ \"127.0.0.1:3000\", \"127.0.0.1:3001\" }},\n      algorithm = \"round_robin\",\n      health_check = {policy},"
-            ),
-        );
+        let source = with_web_pool_fields(&format!("      health_check = {policy},"));
         assert!(matches!(
             error_from(&source),
             ConfigError::InvalidHealthCheck { pool, .. } if pool == "web-backends"
@@ -287,12 +1656,7 @@ fn rejects_health_check_fields_that_do_not_match_the_probe_type() {
         r#"{ type = "tcp", host = "backend.internal" }"#,
         r#"{ type = "tcp", path = "/healthz" }"#,
     ] {
-        let source = changed(
-            "      endpoints = { \"127.0.0.1:3000\", \"127.0.0.1:3001\" },\n      algorithm = \"round_robin\",",
-            &format!(
-                "      endpoints = {{ \"127.0.0.1:3000\", \"127.0.0.1:3001\" }},\n      algorithm = \"round_robin\",\n      health_check = {policy},"
-            ),
-        );
+        let source = with_web_pool_fields(&format!("      health_check = {policy},"));
         assert!(matches!(
             error_from(&source),
             ConfigError::InvalidHealthCheck { pool, .. } if pool == "web-backends"
@@ -309,12 +1673,7 @@ fn rejects_health_check_fields_that_do_not_match_the_probe_type() {
             "a".repeat(2_048)
         ),
     ] {
-        let source = changed(
-            "      endpoints = { \"127.0.0.1:3000\", \"127.0.0.1:3001\" },\n      algorithm = \"round_robin\",",
-            &format!(
-                "      endpoints = {{ \"127.0.0.1:3000\", \"127.0.0.1:3001\" }},\n      algorithm = \"round_robin\",\n      health_check = {policy},"
-            ),
-        );
+        let source = with_web_pool_fields(&format!("      health_check = {policy},"));
         assert!(matches!(
             error_from(&source),
             ConfigError::InvalidHealthCheck { pool, .. } if pool == "web-backends"
@@ -325,64 +1684,80 @@ fn rejects_health_check_fields_that_do_not_match_the_probe_type() {
 #[test]
 fn normalizes_exact_wildcard_and_ip_hosts() {
     let source = changed(
+        WEB_ROUTES,
         r#"      routes = {
         {
-          host = "example.com",
-          path_prefix = "/api",
-          methods = { "GET", "POST" },
-          upstream_pool = "web-backends",
+          host = { kind = "normalized_host", value = "EXAMPLE.COM" },
+          path = { kind = "segment_prefix", value = "/" },
+          action = { type = "proxy", upstream_pool = "web-backends", policy = {} },
         },
-      },"#,
-        r#"      routes = {
-        { host = "EXAMPLE.COM", upstream_pool = "web-backends" },
-        { host = "*.API.EXAMPLE.COM", upstream_pool = "web-backends" },
-        { host = "2001:0DB8:0:0:0:0:0:1", upstream_pool = "web-backends" },
+        {
+          host = { kind = "normalized_host", value = "*.API.EXAMPLE.COM" },
+          path = { kind = "segment_prefix", value = "/" },
+          action = { type = "proxy", upstream_pool = "web-backends", policy = {} },
+        },
+        {
+          host = { kind = "normalized_host", value = "2001:0DB8:0:0:0:0:0:1" },
+          path = { kind = "segment_prefix", value = "/" },
+          action = { type = "proxy", upstream_pool = "web-backends", policy = {} },
+        },
       },"#,
     );
     let config = load_lua(&source).expect("valid host matchers");
     let routes = &config.http_services[0].routes;
 
-    assert_eq!(routes[0].host.as_deref(), Some("example.com"));
-    assert_eq!(routes[1].host.as_deref(), Some("*.api.example.com"));
-    assert_eq!(routes[2].host.as_deref(), Some("2001:db8::1"));
+    let routes = serde_json::to_value(routes).expect("serialized routes");
+    assert_eq!(routes[0]["host"]["value"], "example.com");
+    assert_eq!(routes[1]["host"]["value"], "*.api.example.com");
+    assert_eq!(routes[2]["host"]["value"], "2001:db8::1");
 }
 
 #[test]
-fn normalizes_route_path_prefixes_before_duplicate_detection() {
+fn preserves_path_selector_semantics_before_duplicate_detection() {
     let source = changed(
-        "          path_prefix = \"/api\",",
-        "          path_prefix = \"/api///\",",
+        "          path = { kind = \"segment_prefix\", value = \"/api\" },",
+        "          path = { kind = \"segment_prefix\", value = \"/api/\" },",
     );
     let config = load_lua(&source).expect("normalized path prefix");
 
-    assert_eq!(config.http_services[0].routes[0].path_prefix, "/api");
+    assert_eq!(
+        serde_json::to_value(&config.http_services[0].routes[0]).expect("serialized route")["path"]
+            ["value"],
+        "/api/"
+    );
 
     let duplicate = changed(
-        "          upstream_pool = \"web-backends\",\n        },",
-        r#"          upstream_pool = "web-backends",
-        },
+        "        },\n      },\n      upstream_io_timeout_ms",
+        r#"        },
         {
-          host = "example.com",
-          path_prefix = "/api/",
+          host = { kind = "normalized_host", value = "example.com" },
+          path = { kind = "segment_prefix", value = "/api/" },
           methods = { "POST", "GET" },
-          upstream_pool = "database-backends",
-        },"#,
+          action = {
+            type = "proxy",
+            upstream_pool = "database-backends",
+            policy = {},
+          },
+        },
+      },
+      upstream_io_timeout_ms"#,
     );
-    assert!(matches!(
-        error_from(&duplicate),
-        ConfigError::DuplicateHttpRoute { .. }
-    ));
+    load_lua(&duplicate).expect("trailing slash retains distinct segment-prefix semantics");
 }
 
 #[test]
 fn canonicalizes_percent_triplet_case_in_route_prefixes() {
     let source = changed(
-        "          path_prefix = \"/api\",",
-        "          path_prefix = \"/api%3azone\",",
+        "          path = { kind = \"segment_prefix\", value = \"/api\" },",
+        "          path = { kind = \"segment_prefix\", value = \"/api%3azone\" },",
     );
     let config = load_lua(&source).expect("canonical percent triplet");
 
-    assert_eq!(config.http_services[0].routes[0].path_prefix, "/api%3Azone");
+    assert_eq!(
+        serde_json::to_value(&config.http_services[0].routes[0]).expect("serialized route")["path"]
+            ["value"],
+        "/api%3Azone"
+    );
 }
 
 #[test]
@@ -411,6 +1786,16 @@ fn rejects_non_loopback_and_zero_port_management_binds() {
 #[test]
 fn rejects_blank_names_in_every_namespace() {
     let cases = [
+        (
+            "      name = \"web-certificate\",\n      dns_names",
+            "      name = \"  \",\n      dns_names",
+            "certificate",
+        ),
+        (
+            "      name = \"web-tls\",\n      certificate",
+            "      name = \"  \",\n      certificate",
+            "TLS profile",
+        ),
         (
             "      name = \"web\",\n      bind",
             "      name = \"  \",\n      bind",
@@ -463,6 +1848,43 @@ fn rejects_names_with_surrounding_whitespace_or_control_characters() {
 
 #[test]
 fn rejects_duplicate_names_in_every_namespace() {
+    let source = changed(
+        "  },\n  tls_profiles = {",
+        r#"    {
+      name = "web-certificate",
+      dns_names = { "duplicate.example.test" },
+      source = {
+        type = "files",
+        certificate_chain_path = "/etc/oxiroute/duplicate-chain.pem",
+        private_key_path = "/etc/oxiroute/duplicate-key.pem",
+      },
+    },
+  },
+  tls_profiles = {"#,
+    );
+    let error = error_from(&source);
+    assert!(matches!(
+        error,
+        ConfigError::DuplicateName { namespace: "certificate", name }
+            if name == "web-certificate"
+    ));
+
+    let source = changed(
+        "  },\n  listeners = {",
+        r#"    {
+      name = "web-tls",
+      certificates = { "web-certificate" },
+      default_certificate = "web-certificate",
+    },
+  },
+  listeners = {"#,
+    );
+    let error = error_from(&source);
+    assert!(matches!(
+        error,
+        ConfigError::DuplicateName { namespace: "TLS profile", name } if name == "web-tls"
+    ));
+
     let error = error_from(&changed(
         "      name = \"database\",\n      bind",
         "      name = \"web\",\n      bind",
@@ -483,15 +1905,20 @@ fn rejects_duplicate_names_in_every_namespace() {
     ));
 
     let source = changed(
-        "      max_request_body_bytes = 2097152,\n    },\n  },\n  l4_services = {",
+        "      max_request_body_bytes = 2097152,\n    },\n  },\n  rtmp_services = {",
         r#"      max_request_body_bytes = 2097152,
     },
     {
       name = "web",
-      routes = { { upstream_pool = "web-backends" } },
+      routes = {
+        {
+          path = { kind = "exact", value = "/duplicate" },
+          action = { type = "fixed_response", status = 200 },
+        },
+      },
     },
   },
-  l4_services = {"#,
+  rtmp_services = {"#,
     );
     let error = error_from(&source);
     assert!(matches!(
@@ -601,10 +2028,11 @@ fn rejects_listener_limits_that_json_cannot_represent_exactly() {
 }
 
 #[test]
-fn requires_http_and_tcp_listener_services() {
+fn requires_every_listener_to_reference_a_same_kind_service() {
     let cases = [
         ("      service = \"web\",\n", Protocol::Http, "web"),
         ("      service = \"database\",\n", Protocol::Tcp, "database"),
+        ("      service = \"live\",\n", Protocol::Rtmp, "live"),
     ];
 
     for (field, protocol, listener) in cases {
@@ -620,7 +2048,7 @@ fn requires_http_and_tcp_listener_services() {
 }
 
 #[test]
-fn requires_http_and_tcp_listeners_to_reference_same_kind_services() {
+fn requires_listeners_to_reference_same_kind_services() {
     let cases = [
         (
             "      service = \"web\",",
@@ -633,6 +2061,12 @@ fn requires_http_and_tcp_listeners_to_reference_same_kind_services() {
             "      service = \"web\",",
             Protocol::Tcp,
             "database",
+        ),
+        (
+            "      service = \"live\",",
+            "      service = \"web\",",
+            Protocol::Rtmp,
+            "live",
         ),
     ];
 
@@ -650,23 +2084,9 @@ fn requires_http_and_tcp_listeners_to_reference_same_kind_services() {
 }
 
 #[test]
-fn rejects_a_service_reference_on_an_rtmp_listener() {
-    let error = error_from(&changed(
-        "      protocol = \"rtmp\",\n      max_connections",
-        "      protocol = \"rtmp\",\n      service = \"web\",\n      max_connections",
-    ));
-
-    assert!(matches!(
-        error,
-        ConfigError::UnexpectedRtmpService { listener, service }
-            if listener == "live" && service == "web"
-    ));
-}
-
-#[test]
 fn rejects_empty_duplicate_and_zero_port_pool_endpoints() {
     let error = error_from(&changed(
-        "      endpoints = { \"10.0.0.12:5432\" },",
+        "      endpoints = { { type = \"socket\", address = \"10.0.0.12:5432\" } },",
         "      endpoints = {},",
     ));
     assert!(matches!(
@@ -675,8 +2095,8 @@ fn rejects_empty_duplicate_and_zero_port_pool_endpoints() {
     ));
 
     let error = error_from(&changed(
-        "      endpoints = { \"10.0.0.12:5432\" },",
-        "      endpoints = { \"10.0.0.12:5432\", \"10.0.0.12:5432\" },",
+        "      endpoints = { { type = \"socket\", address = \"10.0.0.12:5432\" } },",
+        "      endpoints = { { type = \"socket\", address = \"10.0.0.12:5432\" }, { type = \"socket\", address = \"10.0.0.12:5432\" } },",
     ));
     assert!(matches!(
         error,
@@ -697,7 +2117,7 @@ fn rejects_empty_duplicate_and_zero_port_pool_endpoints() {
 #[test]
 fn rejects_excessive_upstream_endpoint_cardinality() {
     let endpoints = (10_000..10_257)
-        .map(|port| format!(r#""127.0.0.1:{port}""#))
+        .map(|port| format!(r#"{{ type = "socket", address = "127.0.0.1:{port}" }}"#))
         .collect::<Vec<_>>()
         .join(", ");
     let source = format!(
@@ -719,7 +2139,7 @@ fn rejects_excessive_upstream_endpoint_cardinality() {
             let endpoints = (0..205)
                 .map(|offset| {
                     let port = 20_000 + pool * 205 + offset;
-                    format!(r#""127.0.0.1:{port}""#)
+                    format!(r#"{{ type = "socket", address = "127.0.0.1:{port}" }}"#)
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -762,17 +2182,7 @@ fn rejects_a_pool_that_exposes_the_management_endpoint() {
 
 #[test]
 fn rejects_empty_http_routes() {
-    let source = changed(
-        r#"      routes = {
-        {
-          host = "example.com",
-          path_prefix = "/api",
-          methods = { "GET", "POST" },
-          upstream_pool = "web-backends",
-        },
-      },"#,
-        "      routes = {},",
-    );
+    let source = changed(WEB_ROUTES, "      routes = {},");
     let error = error_from(&source);
 
     assert!(matches!(error, ConfigError::EmptyHttpRoutes { service } if service == "web"));
@@ -788,12 +2198,17 @@ fn rejects_invalid_route_hosts() {
         "api..example.com",
     ] {
         let error = error_from(&changed(
-            "          host = \"example.com\",",
-            &format!("          host = \"{host}\","),
+            "          host = { kind = \"normalized_host\", value = \"example.com\" },",
+            &format!("          host = {{ kind = \"normalized_host\", value = \"{host}\" }},"),
         ));
         assert!(matches!(
             error,
-            ConfigError::InvalidRouteHost { service, route: 0, .. } if service == "web"
+            ConfigError::InvalidHttpRoute {
+                service,
+                route: 0,
+                field: "host",
+                ..
+            } if service == "web"
         ));
     }
 }
@@ -814,12 +2229,14 @@ fn rejects_invalid_route_path_prefixes() {
         "/%61pi",
     ] {
         let error = error_from(&changed(
-            "          path_prefix = \"/api\",",
-            &format!("          path_prefix = \"{path_prefix}\","),
+            "          path = { kind = \"segment_prefix\", value = \"/api\" },",
+            &format!(
+                "          path = {{ kind = \"segment_prefix\", value = \"{path_prefix}\" }},"
+            ),
         ));
         assert!(matches!(
             error,
-            ConfigError::InvalidRoutePathPrefix { service, route: 0, .. }
+            ConfigError::InvalidHttpRoute { service, route: 0, field: "path", .. }
                 if service == "web"
         ));
     }
@@ -827,43 +2244,50 @@ fn rejects_invalid_route_path_prefixes() {
 
 #[test]
 fn rejects_invalid_and_duplicate_route_methods() {
-    for method in ["get", "GE T", "G\u{c9}T", ""] {
+    for method in ["GE T", "G\u{c9}T", ""] {
         let error = error_from(&changed(
             "          methods = { \"GET\", \"POST\" },",
             &format!("          methods = {{ \"{method}\" }},"),
         ));
         assert!(matches!(
             error,
-            ConfigError::InvalidRouteMethod { service, route: 0, .. } if service == "web"
+            ConfigError::InvalidHttpRoute {
+                service,
+                route: 0,
+                field: "methods",
+                ..
+            } if service == "web"
         ));
     }
 
     let error = error_from(&changed(
         "          methods = { \"GET\", \"POST\" },",
-        "          methods = { \"GET\", \"GET\" },",
+        "          methods = { \"GET\", \"get\" },",
     ));
     assert!(matches!(
         error,
-        ConfigError::DuplicateRouteMethod {
+        ConfigError::InvalidHttpRoute {
             service,
             route: 0,
-            method
-        } if service == "web" && method == "GET"
+            field: "methods",
+            ..
+        } if service == "web"
     ));
 }
 
 #[test]
 fn rejects_duplicate_equivalent_routes_after_normalization() {
     let source = changed(
-        "          upstream_pool = \"web-backends\",\n        },",
-        r#"          upstream_pool = "web-backends",
-        },
+        "        },\n      },\n      upstream_io_timeout_ms",
+        r#"        },
         {
-          host = "EXAMPLE.COM",
-          path_prefix = "/api",
+          host = { kind = "normalized_host", value = "EXAMPLE.COM" },
+          path = { kind = "segment_prefix", value = "/api" },
           methods = { "POST", "GET" },
-          upstream_pool = "database-backends",
-        },"#,
+          action = { type = "fixed_response", status = 200 },
+        },
+      },
+      upstream_io_timeout_ms"#,
     );
     let error = error_from(&source);
 
@@ -977,6 +2401,57 @@ fn rejects_unknown_fields_including_the_old_direct_upstream() {
 }
 
 #[test]
+fn rejects_unknown_fields_in_tls_and_http_version_objects() {
+    let cases = [
+        changed(
+            "      name = \"web-certificate\",",
+            "      name = \"web-certificate\",\n      unexpected = true,",
+        ),
+        changed(
+            "        type = \"files\",",
+            "        type = \"files\",\n        unexpected = true,",
+        ),
+        changed(
+            "      name = \"web-tls\",",
+            "      name = \"web-tls\",\n      unexpected = true,",
+        ),
+        with_web_pool_fields(
+            r#"      tls = { server_name = "backend.example.com", unexpected = true },"#,
+        ),
+        with_web_pool_fields(
+            r#"      http_versions = { min = "1.1", max = "1.1", unexpected = true },"#,
+        ),
+    ];
+
+    for source in cases {
+        let error = error_from(&source);
+        assert!(matches!(error, ConfigError::Lua(_)));
+        assert!(error.to_string().contains("unknown field `unexpected`"));
+    }
+}
+
+#[test]
+fn rejects_unknown_tls_and_http_version_values() {
+    let cases = [
+        changed("        type = \"files\",", "        type = \"pkcs12\","),
+        changed(
+            "      min_version = \"1.3\",",
+            "      min_version = \"1.1\",",
+        ),
+        changed(
+            "      alpn = { \"h2\", \"http/1.1\" },",
+            "      alpn = { \"http/2\" },",
+        ),
+        with_web_pool_fields(r#"      http_versions = { min = "1", max = "1.1" },"#),
+        with_web_pool_fields(r#"      http_versions = { min = "1.1", max = "3" },"#),
+    ];
+
+    for source in cases {
+        assert!(matches!(error_from(&source), ConfigError::Lua(_)));
+    }
+}
+
+#[test]
 fn rejects_unknown_protocols_and_algorithms() {
     let protocol_error = error_from(&changed(
         "      protocol = \"http\",",
@@ -985,8 +2460,16 @@ fn rejects_unknown_protocols_and_algorithms() {
     assert!(matches!(protocol_error, ConfigError::Lua(_)));
 
     let algorithm_error = error_from(&changed(
-        "      endpoints = { \"127.0.0.1:3000\", \"127.0.0.1:3001\" },\n      algorithm = \"round_robin\",",
-        "      endpoints = { \"127.0.0.1:3000\", \"127.0.0.1:3001\" },\n      algorithm = \"least_connections\",",
+        r#"      endpoints = {
+        { type = "socket", address = "127.0.0.1:3000" },
+        { type = "socket", address = "127.0.0.1:3001" },
+      },
+      algorithm = "round_robin","#,
+        r#"      endpoints = {
+        { type = "socket", address = "127.0.0.1:3000" },
+        { type = "socket", address = "127.0.0.1:3001" },
+      },
+      algorithm = "unknown","#,
     ));
     assert!(matches!(algorithm_error, ConfigError::Lua(_)));
 }
