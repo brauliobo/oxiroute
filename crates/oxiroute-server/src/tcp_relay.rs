@@ -1,15 +1,16 @@
-use std::{error::Error, fmt, future::pending, io, net::SocketAddr, time::Duration};
+use std::{error::Error, fmt, future::pending, io, time::Duration};
 
-use pingora::{
-    BError, connectors::TransportConnector, protocols::Stream, server::ShutdownWatch,
-    upstreams::peer::BasicPeer,
-};
+use pingora::{protocols::Stream, server::ShutdownWatch};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, split},
+    net::TcpStream,
     time::{Instant, sleep_until, timeout},
 };
 
-use crate::{ConnectionGuard, MetricsError};
+#[cfg(unix)]
+use tokio::net::UnixStream;
+
+use crate::{ConnectionGuard, EndpointLease, MetricsError, RuntimeEndpoint};
 
 /// Memory used for each direction of a relayed connection.
 pub const RELAY_BUFFER_SIZE: usize = 16 * 1024;
@@ -80,7 +81,7 @@ impl fmt::Display for RelayOperation {
 /// Reason a relay stopped before both directions reached EOF.
 #[derive(Debug)]
 pub enum RelayFailureKind {
-    Connect(BError),
+    Connect(io::Error),
     ConnectTimeout(Duration),
     IdleTimeout(Duration),
     LifetimeTimeout(Duration),
@@ -140,8 +141,7 @@ impl fmt::Display for RelayFailure {
 impl Error for RelayFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match &self.kind {
-            RelayFailureKind::Connect(source) => Some(source.as_ref()),
-            RelayFailureKind::Io { source, .. } => Some(source),
+            RelayFailureKind::Connect(source) | RelayFailureKind::Io { source, .. } => Some(source),
             RelayFailureKind::Accounting(source) => Some(source),
             RelayFailureKind::ConnectTimeout(_)
             | RelayFailureKind::IdleTimeout(_)
@@ -151,21 +151,16 @@ impl Error for RelayFailure {
     }
 }
 
-/// Pingora upstream connector and policy for raw TCP relays.
+/// Selected upstream lease and policy for a raw TCP relay.
 pub struct TcpRelayCore {
-    connector: TransportConnector,
-    peer: BasicPeer,
+    upstream: EndpointLease,
     policy: RelayPolicy,
 }
 
 impl TcpRelayCore {
     #[must_use]
-    pub fn new(upstream: SocketAddr, policy: RelayPolicy) -> Self {
-        Self {
-            connector: TransportConnector::new(None),
-            peer: BasicPeer::new(&upstream.to_string()),
-            policy,
-        }
+    pub const fn new(upstream: EndpointLease, policy: RelayPolicy) -> Self {
+        Self { upstream, policy }
     }
 
     /// Connects to the configured upstream and relays the Pingora stream.
@@ -175,7 +170,7 @@ impl TcpRelayCore {
     /// Returns a failure when connection establishment, transport I/O, accounting, a configured
     /// timeout, or shutdown prevents both directions from completing normally.
     pub async fn relay(
-        &self,
+        self,
         downstream: Stream,
         connection: &ConnectionGuard,
         mut shutdown: ShutdownWatch,
@@ -187,7 +182,7 @@ impl TcpRelayCore {
             }
             result = timeout(
                 self.policy.connect,
-                self.connector.new_stream(&self.peer),
+                connect_upstream(self.upstream.endpoint()),
             ) => {
                 match result {
                     Ok(Ok(upstream)) => upstream,
@@ -208,6 +203,36 @@ impl TcpRelayCore {
         };
 
         relay_streams(downstream, upstream, connection, shutdown, self.policy).await
+    }
+}
+
+async fn connect_upstream(endpoint: &RuntimeEndpoint) -> io::Result<Stream> {
+    match endpoint {
+        RuntimeEndpoint::Socket { address } => {
+            let stream = TcpStream::connect(address).await?;
+            Ok(Box::new(pingora::protocols::l4::stream::Stream::from(
+                stream,
+            )))
+        }
+        RuntimeEndpoint::Dns { .. } => {
+            let addresses = endpoint.resolve().await?;
+            let stream = TcpStream::connect(addresses.as_slice()).await?;
+            Ok(Box::new(pingora::protocols::l4::stream::Stream::from(
+                stream,
+            )))
+        }
+        #[cfg(unix)]
+        RuntimeEndpoint::Unix { path } => {
+            let stream = UnixStream::connect(path).await?;
+            Ok(Box::new(pingora::protocols::l4::stream::Stream::from(
+                stream,
+            )))
+        }
+        #[cfg(not(unix))]
+        RuntimeEndpoint::Unix { path } => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("Unix endpoint `{}` is unsupported", path.display()),
+        )),
     }
 }
 

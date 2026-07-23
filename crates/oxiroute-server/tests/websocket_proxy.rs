@@ -1,13 +1,19 @@
-use std::{sync::Arc, time::Duration};
+#[path = "support/config.rs"]
+mod config_support;
+
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
 use oxiroute_config::{
-    Config, HttpRoute, HttpService, Listener, Protocol, UpstreamAlgorithm, UpstreamPool,
+    Config, HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction, HttpService,
+    HttpVersionPolicy, Listener, Protocol, UpstreamAlgorithm, UpstreamPool,
 };
 use oxiroute_server::{HttpReverseProxy, RuntimeMetrics, ServiceKind, service_specs};
 use pingora::{apps::ServerApp, proxy::http_proxy, server::configuration::ServerConf};
 use tokio::{net::TcpListener, sync::watch, time::timeout};
 use tokio_tungstenite::{accept_async, connect_async, tungstenite::Message};
+
+use config_support::{empty_config, socket_bind, socket_endpoint};
 
 #[tokio::test]
 async fn websocket_upgrade_proxies_frames_in_both_directions() {
@@ -38,36 +44,7 @@ async fn websocket_upgrade_proxies_frames_in_both_directions() {
         let metrics = runtime_metrics
             .register_listener("websocket", "http", proxy_address.to_string(), 100)
             .expect("listener metrics");
-        let config = Config {
-            version: 1,
-            management: None,
-            listeners: vec![Listener {
-                name: "websocket".into(),
-                bind: proxy_address,
-                protocol: Protocol::Http,
-                service: Some("websocket".into()),
-                max_connections: 100,
-            }],
-            upstream_pools: vec![UpstreamPool {
-                name: "origin".into(),
-                endpoints: vec![origin_address],
-                algorithm: UpstreamAlgorithm::RoundRobin,
-                health_check: None,
-            }],
-            http_services: vec![HttpService {
-                name: "websocket".into(),
-                routes: vec![HttpRoute {
-                    host: None,
-                    path_prefix: "/".into(),
-                    methods: Vec::new(),
-                    upstream_pool: "origin".into(),
-                }],
-                upstream_io_timeout_ms: 5_000,
-                max_request_body_bytes: 8,
-                max_retries: 0,
-            }],
-            l4_services: Vec::new(),
-        };
+        let config = websocket_config(proxy_address, origin_address);
         let mut services = service_specs(&config).expect("service plan");
         let ServiceKind::Http(http_service) = services.remove(0).kind else {
             panic!("websocket listener must compile as HTTP");
@@ -111,4 +88,41 @@ async fn websocket_upgrade_proxies_frames_in_both_directions() {
     })
     .await
     .expect("websocket exchange timed out");
+}
+
+fn websocket_config(proxy_address: SocketAddr, origin_address: SocketAddr) -> Config {
+    Config {
+        listeners: vec![Listener {
+            name: "websocket".into(),
+            bind: socket_bind(proxy_address),
+            protocol: Protocol::Http,
+            service: Some("websocket".into()),
+            tls_profile: None,
+            max_connections: Some(100),
+        }],
+        upstream_pools: vec![UpstreamPool {
+            name: "origin".into(),
+            endpoints: vec![socket_endpoint(origin_address)],
+            algorithm: UpstreamAlgorithm::RoundRobin,
+            health_check: None,
+            tls: None,
+            http_versions: HttpVersionPolicy::default(),
+        }],
+        http_services: vec![HttpService {
+            name: "websocket".into(),
+            routes: vec![HttpRoute {
+                host: None,
+                path: HttpPathSelector::SegmentPrefix { value: "/".into() },
+                methods: Vec::new(),
+                access_policy: None,
+                action: HttpRouteAction::Proxy {
+                    upstream_pool: "origin".into(),
+                    policy: HttpProxyPolicy::default(),
+                },
+            }],
+            upstream_io_timeout_ms: 5_000,
+            max_request_body_bytes: Some(8),
+        }],
+        ..empty_config()
+    }
 }

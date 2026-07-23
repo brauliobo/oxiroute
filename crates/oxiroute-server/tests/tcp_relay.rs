@@ -9,9 +9,10 @@ use std::{
     time::Duration,
 };
 
+use oxiroute_config::UpstreamAlgorithm;
 use oxiroute_server::{
-    ConnectionGuard, RelayDirection, RelayFailureKind, RelayOperation, RelayPolicy, RuntimeMetrics,
-    TcpRelayCore, relay_streams,
+    ConnectionGuard, RelayDirection, RelayFailureKind, RelayOperation, RelayPolicy, RoundRobinPool,
+    RuntimeEndpoint, RuntimeMetrics, TcpRelayCore, relay_streams,
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf, duplex},
@@ -58,7 +59,7 @@ async fn relays_bidirectional_traffic_and_accounts_for_it() {
             .await
             .expect("downstream accept");
         let (runtime_metrics, connection) = connection_metrics();
-        let relay = TcpRelayCore::new(upstream_address, policy(None, None));
+        let (_pool, relay) = relay_core(upstream_address.into(), policy(None, None));
         let (shutdown_tx, shutdown) = watch::channel(false);
         let relay_task = tokio::spawn(async move {
             relay
@@ -137,7 +138,7 @@ async fn client_half_close_preserves_the_reverse_response_path() {
             .await
             .expect("downstream accept");
         let (_runtime_metrics, connection) = connection_metrics();
-        let relay = TcpRelayCore::new(upstream_address, policy(None, None));
+        let (_pool, relay) = relay_core(upstream_address.into(), policy(None, None));
         let (shutdown_tx, shutdown) = watch::channel(false);
         let relay_task = tokio::spawn(async move {
             relay
@@ -185,7 +186,7 @@ async fn stops_an_idle_connection_at_the_idle_deadline() {
         let (client, downstream) = downstream_pair().await;
         let (_runtime_metrics, connection) = connection_metrics();
         let idle_timeout = Duration::from_millis(50);
-        let relay = TcpRelayCore::new(upstream_address, policy(Some(idle_timeout), None));
+        let (_pool, relay) = relay_core(upstream_address.into(), policy(Some(idle_timeout), None));
         let (shutdown_tx, shutdown) = watch::channel(false);
 
         let failure = relay
@@ -227,8 +228,8 @@ async fn lifetime_timeout_stops_an_active_connection() {
         let (runtime_metrics, connection) = connection_metrics();
         let idle_timeout = Duration::from_millis(40);
         let lifetime_timeout = Duration::from_millis(150);
-        let relay = TcpRelayCore::new(
-            upstream_address,
+        let (_pool, relay) = relay_core(
+            upstream_address.into(),
             policy(Some(idle_timeout), Some(lifetime_timeout)),
         );
         let (shutdown_tx, shutdown) = watch::channel(false);
@@ -269,7 +270,11 @@ async fn shutdown_signal_cancels_an_established_relay() {
         });
         let (client, downstream) = downstream_pair().await;
         let (_runtime_metrics, connection) = connection_metrics();
-        let relay = TcpRelayCore::new(upstream_address, policy(None, None));
+        let (pool, relay) = relay_core_with_algorithm(
+            upstream_address.into(),
+            policy(None, None),
+            UpstreamAlgorithm::LeastConnections,
+        );
         let (shutdown_tx, shutdown) = watch::channel(false);
         let cancellation = tokio::spawn(async move {
             accepted_rx.await.expect("upstream acceptance");
@@ -281,6 +286,7 @@ async fn shutdown_signal_cancels_an_established_relay() {
             .await
             .expect_err("shutdown must cancel relay");
         assert!(matches!(failure.kind, RelayFailureKind::Cancelled));
+        assert_eq!(pool.health_snapshot().endpoints[0].active_leases, 0);
 
         drop(client);
         cancellation.await.expect("cancellation task");
@@ -288,6 +294,150 @@ async fn shutdown_signal_cancels_an_established_relay() {
     })
     .await
     .expect("shutdown-cancellation test timed out");
+}
+
+#[tokio::test]
+async fn resolves_dns_when_connecting_and_releases_the_lease() {
+    timeout(TEST_TIMEOUT, async {
+        let upstream_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("DNS upstream bind");
+        let port = upstream_listener
+            .local_addr()
+            .expect("DNS upstream address")
+            .port();
+        let upstream = tokio::spawn(async move {
+            let (mut stream, _) = upstream_listener.accept().await.expect("DNS accept");
+            let mut request = [0; 3];
+            stream.read_exact(&mut request).await.expect("DNS request");
+            assert_eq!(&request, b"dns");
+            stream.write_all(b"ok").await.expect("DNS response");
+            stream.shutdown().await.expect("DNS shutdown");
+        });
+        let (mut client, downstream) = downstream_pair().await;
+        let (_runtime_metrics, connection) = connection_metrics();
+        let endpoint = RuntimeEndpoint::Dns {
+            host: "localhost".into(),
+            port,
+        };
+        let (pool, relay) = relay_core(endpoint, policy(None, None));
+        let (_shutdown_tx, shutdown) = watch::channel(false);
+        let relay_task = tokio::spawn(async move {
+            relay
+                .relay(pingora_stream(downstream), &connection, shutdown)
+                .await
+        });
+
+        client.write_all(b"dns").await.expect("DNS client write");
+        client.shutdown().await.expect("DNS client half-close");
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("DNS client response");
+        assert_eq!(response, b"ok");
+        upstream.await.expect("DNS upstream task");
+        relay_task
+            .await
+            .expect("DNS relay task")
+            .expect("DNS relay");
+        assert_eq!(pool.health_snapshot().endpoints[0].active_leases, 0);
+    })
+    .await
+    .expect("DNS relay timed out");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn relays_over_a_unix_upstream_with_half_close_and_accounting() {
+    use tokio::net::UnixListener;
+
+    timeout(TEST_TIMEOUT, async {
+        let directory = tempfile::tempdir().expect("Unix relay directory");
+        let path = directory.path().join("upstream.sock");
+        let listener = UnixListener::bind(&path).expect("Unix upstream bind");
+        let upstream = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("Unix accept");
+            let mut request = Vec::new();
+            stream
+                .read_to_end(&mut request)
+                .await
+                .expect("Unix request");
+            assert_eq!(request, b"unix-request");
+            stream
+                .write_all(b"unix-response")
+                .await
+                .expect("Unix response");
+            stream.shutdown().await.expect("Unix shutdown");
+        });
+        let (mut client, downstream) = downstream_pair().await;
+        let (runtime_metrics, connection) = connection_metrics();
+        let (pool, relay) = relay_core(
+            RuntimeEndpoint::Unix { path: path.clone() },
+            policy(None, None),
+        );
+        let (_shutdown_tx, shutdown) = watch::channel(false);
+        let relay_task = tokio::spawn(async move {
+            relay
+                .relay(pingora_stream(downstream), &connection, shutdown)
+                .await
+        });
+
+        client
+            .write_all(b"unix-request")
+            .await
+            .expect("Unix client request");
+        client.shutdown().await.expect("Unix client half-close");
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("Unix client response");
+        assert_eq!(response, b"unix-response");
+
+        upstream.await.expect("Unix upstream task");
+        let stats = relay_task
+            .await
+            .expect("Unix relay task")
+            .expect("Unix relay");
+        assert_eq!(stats.bytes_received, 12);
+        assert_eq!(stats.bytes_sent, 13);
+        assert_eq!(
+            runtime_metrics
+                .snapshot()
+                .expect("Unix traffic snapshot")
+                .traffic
+                .bytes_sent,
+            13
+        );
+        assert_eq!(pool.health_snapshot().endpoints[0].active_leases, 0);
+    })
+    .await
+    .expect("Unix relay timed out");
+}
+
+#[tokio::test]
+async fn connect_failure_releases_the_selected_lease() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("reserve unavailable address");
+    let unavailable = listener.local_addr().expect("unavailable address");
+    drop(listener);
+    let (_client, downstream) = downstream_pair().await;
+    let (_runtime_metrics, connection) = connection_metrics();
+    let (pool, relay) = relay_core_with_algorithm(
+        unavailable.into(),
+        policy(None, None),
+        UpstreamAlgorithm::LeastConnections,
+    );
+    let (_shutdown_tx, shutdown) = watch::channel(false);
+
+    let failure = relay
+        .relay(pingora_stream(downstream), &connection, shutdown)
+        .await
+        .expect_err("unavailable upstream must fail");
+    assert!(matches!(failure.kind, RelayFailureKind::Connect(_)));
+    assert_eq!(pool.health_snapshot().endpoints[0].active_leases, 0);
 }
 
 #[tokio::test]
@@ -364,6 +514,24 @@ fn policy(idle_timeout: Option<Duration>, lifetime_timeout: Option<Duration>) ->
         lifetime: lifetime_timeout,
         ..RelayPolicy::new(Duration::from_secs(1))
     }
+}
+
+fn relay_core(
+    endpoint: RuntimeEndpoint,
+    policy: RelayPolicy,
+) -> (Arc<RoundRobinPool>, TcpRelayCore) {
+    relay_core_with_algorithm(endpoint, policy, UpstreamAlgorithm::RoundRobin)
+}
+
+fn relay_core_with_algorithm(
+    endpoint: RuntimeEndpoint,
+    policy: RelayPolicy,
+    algorithm: UpstreamAlgorithm,
+) -> (Arc<RoundRobinPool>, TcpRelayCore) {
+    let pool = Arc::new(RoundRobinPool::from_endpoints([endpoint], algorithm).expect("relay pool"));
+    let lease = pool.select().expect("relay endpoint");
+    let relay = TcpRelayCore::new(lease, policy);
+    (pool, relay)
 }
 
 struct PartialWriteStream {

@@ -4,7 +4,7 @@ use std::{
     fmt, io,
     sync::{
         Arc, Mutex, RwLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
     time::{Instant, SystemTime},
 };
@@ -14,13 +14,19 @@ use std::fs;
 
 use serde::Serialize;
 
-use crate::{PoolHealthSnapshot, RoundRobinPool};
+use oxiroute_config::ListenerBind;
+
+use crate::{CertbotReconciler, CertbotWatcherMonitor, PoolHealthSnapshot, RoundRobinPool};
 
 #[derive(Debug)]
 pub enum MetricsError {
     DuplicateListener(String),
     ListenerNotFound(String),
     InvalidListenerField(&'static str),
+    InvalidListenerBind {
+        listener: String,
+        detail: &'static str,
+    },
     ConnectionLimitReached {
         listener: String,
         limit: u64,
@@ -51,6 +57,12 @@ impl fmt::Display for MetricsError {
             }
             Self::InvalidListenerField(field) => {
                 write!(formatter, "listener {field} must not be empty")
+            }
+            Self::InvalidListenerBind { listener, detail } => {
+                write!(
+                    formatter,
+                    "listener `{listener}` has an invalid bind: {detail}"
+                )
             }
             Self::ConnectionLimitReached { listener, limit } => {
                 write!(
@@ -101,9 +113,17 @@ pub struct RuntimeMetrics {
 
 struct RuntimeMetricsInner {
     started_at: Instant,
-    listeners: RwLock<HashMap<String, Arc<ListenerState>>>,
+    listeners: RwLock<HashMap<String, Arc<ListenerMetricsState>>>,
     upstream_pools: RwLock<Vec<Arc<RoundRobinPool>>>,
+    certbot: RwLock<CertbotMonitoring>,
     previous_cpu_sample: Mutex<Option<CpuSample>>,
+    rtmp_recording_supported: AtomicBool,
+}
+
+#[derive(Default)]
+struct CertbotMonitoring {
+    reconcilers: Vec<Arc<CertbotReconciler>>,
+    watcher: Option<CertbotWatcherMonitor>,
 }
 
 impl RuntimeMetrics {
@@ -114,7 +134,9 @@ impl RuntimeMetrics {
                 started_at: Instant::now(),
                 listeners: RwLock::new(HashMap::new()),
                 upstream_pools: RwLock::new(Vec::new()),
+                certbot: RwLock::new(CertbotMonitoring::default()),
                 previous_cpu_sample: Mutex::new(None),
+                rtmp_recording_supported: AtomicBool::new(false),
             }),
         }
     }
@@ -137,6 +159,26 @@ impl RuntimeMetrics {
         Ok(())
     }
 
+    /// Registers the process-lifetime Certbot reconcilers and watcher monitor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the Certbot monitoring registry is poisoned.
+    pub fn register_certbot_monitoring(
+        &self,
+        reconcilers: impl IntoIterator<Item = Arc<CertbotReconciler>>,
+        watcher: Option<CertbotWatcherMonitor>,
+    ) -> Result<(), MetricsError> {
+        let mut certbot = self
+            .inner
+            .certbot
+            .write()
+            .map_err(|_| MetricsError::StatePoisoned("Certbot monitoring"))?;
+        certbot.reconcilers = reconcilers.into_iter().collect();
+        certbot.watcher = watcher;
+        Ok(())
+    }
+
     /// Registers a listener and returns its accounting handle.
     ///
     /// # Errors
@@ -148,15 +190,16 @@ impl RuntimeMetrics {
         name: impl Into<String>,
         protocol: impl Into<String>,
         bind: impl Into<String>,
-        max_connections: u64,
+        max_connections: impl Into<Option<u64>>,
     ) -> Result<ListenerMetrics, MetricsError> {
         let name = name.into();
         let protocol = protocol.into();
         let bind = bind.into();
+        let max_connections = max_connections.into();
         validate_listener_field("name", &name)?;
         validate_listener_field("protocol", &protocol)?;
         validate_listener_field("bind", &bind)?;
-        if max_connections == 0 {
+        if max_connections == Some(0) {
             return Err(MetricsError::InvalidListenerField("max_connections"));
         }
 
@@ -167,12 +210,47 @@ impl RuntimeMetrics {
             .map_err(|_| MetricsError::StatePoisoned("listeners"))?;
         match listeners.entry(name.clone()) {
             Entry::Vacant(entry) => {
-                let state = Arc::new(ListenerState::new(name, protocol, bind, max_connections));
+                let state = Arc::new(ListenerMetricsState::new(
+                    name,
+                    protocol,
+                    bind,
+                    max_connections,
+                ));
                 entry.insert(Arc::clone(&state));
                 Ok(ListenerMetrics { state })
             }
             Entry::Occupied(_) => Err(MetricsError::DuplicateListener(name)),
         }
+    }
+
+    /// Registers a canonical listener with a stable, transport-qualified bind identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the Unix socket path cannot be represented without loss, a field is
+    /// invalid, the listener name is already registered, or the listener registry is poisoned.
+    pub fn register_configured_listener(
+        &self,
+        name: impl Into<String>,
+        protocol: impl Into<String>,
+        bind: &ListenerBind,
+        max_connections: Option<u64>,
+    ) -> Result<ListenerMetrics, MetricsError> {
+        let name = name.into();
+        let bind = match bind {
+            ListenerBind::Socket { address } => format!("socket:{address}"),
+            ListenerBind::Udp { address } => format!("udp:{address}"),
+            ListenerBind::Unix { path } => {
+                let path = path
+                    .to_str()
+                    .ok_or_else(|| MetricsError::InvalidListenerBind {
+                        listener: name.clone(),
+                        detail: "Unix socket path is not valid UTF-8",
+                    })?;
+                format!("unix:{path}")
+            }
+        };
+        self.register_listener(name, protocol, bind, max_connections)
     }
 
     /// Returns the accounting handle for a registered listener.
@@ -197,12 +275,24 @@ impl RuntimeMetrics {
     ///
     /// # Errors
     ///
-    /// Returns an error when the listener is unknown, the registry is poisoned, or a counter would
-    /// overflow.
+    /// Returns an error when the listener is unknown, the registry is poisoned, a configured
+    /// connection cap is reached, or a counter would overflow.
     pub fn begin_connection(&self, listener_name: &str) -> Result<ConnectionGuard, MetricsError> {
         self.listener(listener_name)?
             .ok_or_else(|| MetricsError::ListenerNotFound(listener_name.to_owned()))?
             .begin_connection()
+    }
+
+    /// Records whether successfully activated RTMP services own any recorder runtime.
+    pub fn set_rtmp_recording_supported(&self, supported: bool) {
+        self.inner
+            .rtmp_recording_supported
+            .store(supported, Ordering::Release);
+    }
+
+    #[must_use]
+    pub(crate) fn rtmp_recording_supported(&self) -> bool {
+        self.inner.rtmp_recording_supported.load(Ordering::Acquire)
     }
 
     /// Samples process, host, traffic, and listener metrics.
@@ -217,14 +307,9 @@ impl RuntimeMetrics {
     /// be read or parsed truthfully.
     pub fn snapshot(&self) -> Result<RuntimeSnapshot, MetricsError> {
         let (traffic, listeners) = self.counter_snapshots()?;
-        let upstream_pools = self
-            .inner
-            .upstream_pools
-            .read()
-            .map_err(|_| MetricsError::StatePoisoned("upstream pools"))?
-            .iter()
-            .map(|pool| pool.health_snapshot())
-            .collect();
+        let upstream_pools = self.upstream_pool_snapshots()?;
+        let (mut certbot_certificates, certbot_watcher) = self.certbot_snapshots()?;
+        certbot_certificates.sort_unstable_by(|left, right| left.name.cmp(&right.name));
         let mut previous_cpu_sample = self
             .inner
             .previous_cpu_sample
@@ -258,9 +343,84 @@ impl RuntimeMetrics {
             traffic,
             listeners,
             upstream_pools,
+            certbot_certificates,
+            certbot_watcher,
         };
         *previous_cpu_sample = Some(cpu);
         Ok(snapshot)
+    }
+
+    pub(crate) fn topology_health_snapshot(&self) -> Result<RuntimeHealthSnapshot, MetricsError> {
+        let (_, listeners) = self.counter_snapshots()?;
+        Ok(RuntimeHealthSnapshot {
+            sampled_at_unix_ms: unix_time_ms()?,
+            listeners,
+            upstream_pools: self.upstream_pool_snapshots()?,
+        })
+    }
+
+    fn upstream_pool_snapshots(&self) -> Result<Vec<PoolHealthSnapshot>, MetricsError> {
+        Ok(self
+            .inner
+            .upstream_pools
+            .read()
+            .map_err(|_| MetricsError::StatePoisoned("upstream pools"))?
+            .iter()
+            .map(|pool| pool.health_snapshot())
+            .collect())
+    }
+
+    fn certbot_snapshots(
+        &self,
+    ) -> Result<
+        (
+            Vec<CertbotCertificateSnapshot>,
+            Option<CertbotWatcherSnapshot>,
+        ),
+        MetricsError,
+    > {
+        let certbot = self
+            .inner
+            .certbot
+            .read()
+            .map_err(|_| MetricsError::StatePoisoned("Certbot monitoring"))?;
+        let certificates = certbot
+            .reconcilers
+            .iter()
+            .map(|reconciler| {
+                let status = reconciler.status();
+                CertbotCertificateSnapshot {
+                    name: status.certificate,
+                    active_archive_revision: status.active_archive_revision,
+                    active_content_revision: status.active_content_revision,
+                    expires_at: status.not_after,
+                    last_outcome: status.last_outcome.map(str::to_owned),
+                    last_error_code: status.last_error_code.map(str::to_owned),
+                }
+            })
+            .collect();
+        let watcher = certbot.watcher.as_ref().map(|watcher| {
+            let status = watcher.status();
+            let health = if !status.running {
+                CertbotWatcherHealth::Stopped
+            } else if status.degraded {
+                CertbotWatcherHealth::Degraded
+            } else {
+                CertbotWatcherHealth::Healthy
+            };
+            CertbotWatcherSnapshot {
+                health,
+                coalesced_events: status.coalesced_events,
+                ignored_access_events: status.ignored_access_events,
+                backend_errors: status.backend_errors,
+                watch_recoveries: status.watch_recoveries,
+                watch_refreshes: status.watch_refreshes,
+                rescans: status.rescans,
+                periodic_rescans: status.periodic_rescans,
+                reconciliation_failures: status.reconciliation_failures,
+            }
+        });
+        Ok((certificates, watcher))
     }
 
     fn counter_snapshots(&self) -> Result<(TrafficSnapshot, Vec<ListenerSnapshot>), MetricsError> {
@@ -283,6 +443,11 @@ impl RuntimeMetrics {
                 "traffic.acceptedConnections",
             )?;
             add_total(
+                &mut traffic.rejected_connections,
+                snapshot.rejected_connections,
+                "traffic.rejectedConnections",
+            )?;
+            add_total(
                 &mut traffic.active_connections,
                 snapshot.active_connections,
                 "traffic.activeConnections",
@@ -303,6 +468,12 @@ impl RuntimeMetrics {
     }
 }
 
+pub(crate) struct RuntimeHealthSnapshot {
+    pub sampled_at_unix_ms: u64,
+    pub listeners: Vec<ListenerSnapshot>,
+    pub upstream_pools: Vec<PoolHealthSnapshot>,
+}
+
 impl Default for RuntimeMetrics {
     fn default() -> Self {
         Self::new()
@@ -311,7 +482,7 @@ impl Default for RuntimeMetrics {
 
 #[derive(Clone)]
 pub struct ListenerMetrics {
-    state: Arc<ListenerState>,
+    state: Arc<ListenerMetricsState>,
 }
 
 impl ListenerMetrics {
@@ -330,6 +501,27 @@ impl ListenerMetrics {
         &self.state.bind
     }
 
+    /// Marks the listener socket as bound and available to the runtime.
+    pub fn mark_listening(&self) {
+        self.state
+            .runtime_state
+            .store(ListenerRuntimeState::Listening as u8, Ordering::Release);
+    }
+
+    /// Marks a listener that completed an orderly runtime shutdown.
+    pub fn mark_stopped(&self) {
+        self.state
+            .runtime_state
+            .store(ListenerRuntimeState::Stopped as u8, Ordering::Release);
+    }
+
+    /// Marks a listener whose runtime terminated unexpectedly.
+    pub fn mark_failed(&self) {
+        self.state
+            .runtime_state
+            .store(ListenerRuntimeState::Failed as u8, Ordering::Release);
+    }
+
     /// Accounts for a newly accepted connection.
     ///
     /// The returned guard decrements the active connection count when dropped, including during
@@ -337,33 +529,61 @@ impl ListenerMetrics {
     ///
     /// # Errors
     ///
-    /// Returns an error if the accepted or active connection counter would overflow.
+    /// Returns an error if a configured connection cap is reached or the accepted or active
+    /// connection counter would overflow.
     pub fn begin_connection(&self) -> Result<ConnectionGuard, MetricsError> {
         checked_atomic_add(
             &self.state.accepted_connections,
             1,
             "listener.acceptedConnections",
         )?;
-        self.state
-            .active_connections
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                (current < self.state.max_connections)
-                    .then(|| current.checked_add(1))
-                    .flatten()
-            })
-            .map_err(|current| {
-                if current >= self.state.max_connections {
+        let admission = self.state.active_connections.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| {
+                if self
+                    .state
+                    .max_connections
+                    .is_some_and(|limit| current >= limit)
+                {
+                    return None;
+                }
+                current.checked_add(1)
+            },
+        );
+        if let Err(current) = admission {
+            checked_atomic_add(
+                &self.state.rejected_connections,
+                1,
+                "listener.rejectedConnections",
+            )?;
+            return Err(
+                if let Some(limit) = self.state.max_connections.filter(|limit| current >= *limit) {
                     MetricsError::ConnectionLimitReached {
                         listener: self.state.name.clone(),
-                        limit: self.state.max_connections,
+                        limit,
                     }
                 } else {
                     MetricsError::CounterOverflow("listener.activeConnections")
-                }
-            })?;
+                },
+            );
+        }
         Ok(ConnectionGuard {
             state: Arc::clone(&self.state),
+            releases_active_connection: true,
         })
+    }
+
+    /// Returns a traffic-only handle for a connection admitted by the server runtime.
+    ///
+    /// This handle does not acquire or release connection capacity. The runtime-owned admission
+    /// guard remains responsible for the active connection lifetime.
+    #[must_use]
+    pub fn traffic_accounting(&self) -> ConnectionGuard {
+        ConnectionGuard {
+            state: Arc::clone(&self.state),
+            releases_active_connection: false,
+        }
     }
 
     /// Adds bytes read across this listener to its traffic total.
@@ -386,7 +606,8 @@ impl ListenerMetrics {
 }
 
 pub struct ConnectionGuard {
-    state: Arc<ListenerState>,
+    state: Arc<ListenerMetricsState>,
+    releases_active_connection: bool,
 }
 
 impl ConnectionGuard {
@@ -416,29 +637,35 @@ impl ConnectionGuard {
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
-        decrement_counter(&self.state.active_connections);
+        if self.releases_active_connection {
+            decrement_counter(&self.state.active_connections);
+        }
     }
 }
 
-struct ListenerState {
+struct ListenerMetricsState {
     name: String,
     protocol: String,
     bind: String,
-    max_connections: u64,
+    max_connections: Option<u64>,
+    runtime_state: AtomicU8,
     accepted_connections: AtomicU64,
+    rejected_connections: AtomicU64,
     active_connections: AtomicU64,
     bytes_received: AtomicU64,
     bytes_sent: AtomicU64,
 }
 
-impl ListenerState {
-    fn new(name: String, protocol: String, bind: String, max_connections: u64) -> Self {
+impl ListenerMetricsState {
+    fn new(name: String, protocol: String, bind: String, max_connections: Option<u64>) -> Self {
         Self {
             name,
             protocol,
             bind,
             max_connections,
+            runtime_state: AtomicU8::new(ListenerRuntimeState::Configured as u8),
             accepted_connections: AtomicU64::new(0),
+            rejected_connections: AtomicU64::new(0),
             active_connections: AtomicU64::new(0),
             bytes_received: AtomicU64::new(0),
             bytes_sent: AtomicU64::new(0),
@@ -451,10 +678,33 @@ impl ListenerState {
             protocol: self.protocol.clone(),
             bind: self.bind.clone(),
             max_connections: self.max_connections,
+            state: ListenerRuntimeState::from_u8(self.runtime_state.load(Ordering::Acquire)),
             accepted_connections: self.accepted_connections.load(Ordering::Relaxed),
+            rejected_connections: self.rejected_connections.load(Ordering::Relaxed),
             active_connections: self.active_connections.load(Ordering::Relaxed),
             bytes_received: self.bytes_received.load(Ordering::Relaxed),
             bytes_sent: self.bytes_sent.load(Ordering::Relaxed),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[repr(u8)]
+pub enum ListenerRuntimeState {
+    Configured,
+    Listening,
+    Stopped,
+    Failed,
+}
+
+impl ListenerRuntimeState {
+    const fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Listening,
+            2 => Self::Stopped,
+            3 => Self::Failed,
+            _ => Self::Configured,
         }
     }
 }
@@ -469,6 +719,41 @@ pub struct RuntimeSnapshot {
     pub traffic: TrafficSnapshot,
     pub listeners: Vec<ListenerSnapshot>,
     pub upstream_pools: Vec<PoolHealthSnapshot>,
+    pub certbot_certificates: Vec<CertbotCertificateSnapshot>,
+    pub certbot_watcher: Option<CertbotWatcherSnapshot>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CertbotCertificateSnapshot {
+    pub name: String,
+    pub active_archive_revision: u64,
+    pub active_content_revision: String,
+    pub expires_at: String,
+    pub last_outcome: Option<String>,
+    pub last_error_code: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CertbotWatcherHealth {
+    Healthy,
+    Degraded,
+    Stopped,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CertbotWatcherSnapshot {
+    pub health: CertbotWatcherHealth,
+    pub coalesced_events: u64,
+    pub ignored_access_events: u64,
+    pub backend_errors: u64,
+    pub watch_recoveries: u64,
+    pub watch_refreshes: u64,
+    pub rescans: u64,
+    pub periodic_rescans: u64,
+    pub reconciliation_failures: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -495,6 +780,7 @@ pub struct HostSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct TrafficSnapshot {
     pub accepted_connections: u64,
+    pub rejected_connections: u64,
     pub active_connections: u64,
     pub bytes_received: u64,
     pub bytes_sent: u64,
@@ -506,8 +792,10 @@ pub struct ListenerSnapshot {
     pub name: String,
     pub protocol: String,
     pub bind: String,
-    pub max_connections: u64,
+    pub max_connections: Option<u64>,
+    pub state: ListenerRuntimeState,
     pub accepted_connections: u64,
+    pub rejected_connections: u64,
     pub active_connections: u64,
     pub bytes_received: u64,
     pub bytes_sent: u64,

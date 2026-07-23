@@ -24,14 +24,14 @@ use tokio::{
     time::{sleep, timeout},
 };
 
-use crate::{HealthFailure, RoundRobinPool};
+use crate::{HealthFailure, RoundRobinPool, RuntimeEndpoint};
 
 const MAX_CONCURRENT_PROBES: usize = 32;
 
 #[derive(Clone)]
 struct HealthTarget {
-    backend: Backend,
     check: Arc<dyn HealthCheck + Send + Sync>,
+    endpoint: RuntimeEndpoint,
     endpoint_index: usize,
     healthy_threshold: u16,
     pool: Arc<RoundRobinPool>,
@@ -47,24 +47,11 @@ impl HealthTarget {
         let Ok(_permit) = semaphore.acquire_owned().await else {
             return;
         };
-        let result = timeout(self.timeout, self.check.check(&self.backend)).await;
+        let result = timeout(self.timeout, self.run_probe()).await;
         let (healthy, failure) = match result {
             Ok(Ok(())) => (true, None),
             Err(_) => (false, Some(HealthFailure::Timeout)),
-            Ok(Err(error)) => {
-                let failure = match error.etype() {
-                    ErrorType::ConnectTimedout
-                    | ErrorType::TLSHandshakeTimedout
-                    | ErrorType::ReadTimedout
-                    | ErrorType::WriteTimedout => HealthFailure::Timeout,
-                    ErrorType::ConnectRefused
-                    | ErrorType::ConnectNoRoute
-                    | ErrorType::ConnectError => HealthFailure::ConnectFailed,
-                    ErrorType::CustomCode("non 200 code", _) => HealthFailure::UnexpectedStatus,
-                    _ => HealthFailure::ProtocolError,
-                };
-                (false, Some(failure))
-            }
+            Ok(Err(failure)) => (false, Some(failure)),
         };
         let transition = self.pool.record_health(
             self.endpoint_index,
@@ -77,9 +64,41 @@ impl HealthTarget {
         if let Some((previous, next)) = transition {
             info!(
                 "upstream pool `{}` endpoint {} health changed from {:?} to {:?}",
-                self.pool_name, self.backend.addr, previous, next
+                self.pool_name, self.endpoint, previous, next
             );
         }
+    }
+
+    async fn run_probe(&self) -> Result<(), HealthFailure> {
+        let addresses = self
+            .endpoint
+            .resolve()
+            .await
+            .map_err(|_| HealthFailure::ConnectFailed)?;
+        let mut last_failure = HealthFailure::ConnectFailed;
+        for address in addresses {
+            let backend =
+                Backend::new(&address.to_string()).map_err(|_| HealthFailure::ProtocolError)?;
+            match self.check.check(&backend).await {
+                Ok(()) => return Ok(()),
+                Err(error) => last_failure = classify_probe_error(&error),
+            }
+        }
+        Err(last_failure)
+    }
+}
+
+fn classify_probe_error(error: &pingora::Error) -> HealthFailure {
+    match error.etype() {
+        ErrorType::ConnectTimedout
+        | ErrorType::TLSHandshakeTimedout
+        | ErrorType::ReadTimedout
+        | ErrorType::WriteTimedout => HealthFailure::Timeout,
+        ErrorType::ConnectRefused | ErrorType::ConnectNoRoute | ErrorType::ConnectError => {
+            HealthFailure::ConnectFailed
+        }
+        ErrorType::CustomCode("non 200 code", _) => HealthFailure::UnexpectedStatus,
+        _ => HealthFailure::ProtocolError,
     }
 }
 
@@ -215,20 +234,18 @@ pub(crate) fn compile_health_group(
     };
     let targets = pool
         .endpoints()
-        .map(|(endpoint_index, address)| {
-            Ok(HealthTarget {
-                backend: Backend::new(&address.to_string())?,
-                check: Arc::clone(&check),
-                endpoint_index,
-                healthy_threshold: config.healthy_threshold,
-                pool: Arc::clone(pool),
-                pool_name: name.to_owned(),
-                probe_lock: Arc::new(Mutex::new(())),
-                timeout,
-                unhealthy_threshold: config.unhealthy_threshold,
-            })
+        .map(|(endpoint_index, endpoint)| HealthTarget {
+            check: Arc::clone(&check),
+            endpoint,
+            endpoint_index,
+            healthy_threshold: config.healthy_threshold,
+            pool: Arc::clone(pool),
+            pool_name: name.to_owned(),
+            probe_lock: Arc::new(Mutex::new(())),
+            timeout,
+            unhealthy_threshold: config.unhealthy_threshold,
         })
-        .collect::<Result<Vec<_>, HealthBuildError>>()?;
+        .collect();
 
     Ok(HealthGroup {
         interval: Duration::from_millis(config.interval_ms),
@@ -290,12 +307,17 @@ mod tests {
 
     #[tokio::test]
     async fn probes_share_a_global_concurrency_bound() {
-        let addresses = (10_000..10_033)
+        let addresses: Vec<std::net::SocketAddr> = (10_000..10_033)
             .map(|port| ([127, 0, 0, 1], port).into())
             .collect::<Vec<_>>();
         let pool = Arc::new(
-            RoundRobinPool::new_named("bounded".into(), addresses.iter().copied(), true)
-                .expect("health pool"),
+            RoundRobinPool::new_named(
+                "bounded".into(),
+                addresses.iter().copied().map(RuntimeEndpoint::from),
+                oxiroute_config::UpstreamAlgorithm::RoundRobin,
+                true,
+            )
+            .expect("health pool"),
         );
         let check = Arc::new(BlockingCheck {
             active: AtomicUsize::new(0),
@@ -307,8 +329,8 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(endpoint_index, address)| HealthTarget {
-                backend: Backend::new(&address.to_string()).expect("health backend"),
                 check: Arc::<BlockingCheck>::clone(&check),
+                endpoint: RuntimeEndpoint::from(address),
                 endpoint_index,
                 healthy_threshold: 1,
                 pool: Arc::clone(&pool),

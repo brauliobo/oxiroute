@@ -1,5 +1,6 @@
 use std::thread;
 
+use oxiroute_config::ListenerBind;
 use oxiroute_server::{MetricsError, RuntimeMetrics};
 
 #[test]
@@ -55,9 +56,11 @@ fn registration_is_named_unique_and_listener_lookup_is_explicit() {
 fn connection_limits_reject_excess_sessions_without_hiding_accepts() {
     let metrics = RuntimeMetrics::new();
     let listener = metrics
-        .register_listener("limited", "tcp", "127.0.0.1:7001", 1)
+        .register_listener("limited", "tcp", "127.0.0.1:7001", Some(1))
         .expect("listener registration");
     let connection = listener.begin_connection().expect("first connection");
+    let traffic = listener.traffic_accounting();
+    drop(traffic);
 
     assert!(matches!(
         listener.begin_connection(),
@@ -66,10 +69,41 @@ fn connection_limits_reject_excess_sessions_without_hiding_accepts() {
     ));
     let limited = metrics.snapshot().expect("limited snapshot");
     assert_eq!(limited.traffic.accepted_connections, 2);
+    assert_eq!(limited.traffic.rejected_connections, 1);
     assert_eq!(limited.traffic.active_connections, 1);
-    assert_eq!(limited.listeners[0].max_connections, 1);
+    assert_eq!(limited.listeners[0].max_connections, Some(1));
 
     drop(connection);
+    assert_eq!(
+        metrics
+            .snapshot()
+            .expect("released snapshot")
+            .traffic
+            .active_connections,
+        0
+    );
+}
+
+#[test]
+fn unbounded_connection_guards_never_apply_a_connection_cap() {
+    let metrics = RuntimeMetrics::new();
+    let listener = metrics
+        .register_listener("unbounded", "tcp", "127.0.0.1:7002", None)
+        .expect("listener registration");
+
+    let first = listener.begin_connection().expect("first connection");
+    let second = listener.begin_connection().expect("second connection");
+    second.record_bytes_received(11).expect("received bytes");
+    first.record_bytes_sent(7).expect("sent bytes");
+
+    let active = metrics.snapshot().expect("active snapshot");
+    assert_eq!(active.traffic.accepted_connections, 2);
+    assert_eq!(active.traffic.active_connections, 2);
+    assert_eq!(active.traffic.bytes_received, 11);
+    assert_eq!(active.traffic.bytes_sent, 7);
+    assert_eq!(active.listeners[0].max_connections, None);
+
+    drop((first, second));
     assert_eq!(
         metrics
             .snapshot()
@@ -113,7 +147,14 @@ fn counters_are_shared_safely_across_threads() {
 fn snapshot_serializes_to_the_monitoring_contract() {
     let metrics = RuntimeMetrics::new();
     metrics
-        .register_listener("http", "http", "[::]:8080", 100)
+        .register_configured_listener(
+            "http",
+            "http",
+            &ListenerBind::Socket {
+                address: "[::]:8080".parse().expect("socket address"),
+            },
+            Some(100),
+        )
         .expect("listener registration");
 
     let snapshot = metrics.snapshot().expect("Linux process snapshot");
@@ -133,11 +174,51 @@ fn snapshot_serializes_to_the_monitoring_contract() {
     assert!(json["host"]["totalMemoryBytes"].as_u64().is_some());
     assert!(json["host"]["availableMemoryBytes"].as_u64().is_some());
     assert_eq!(json["traffic"]["acceptedConnections"], 0);
+    assert_eq!(json["traffic"]["rejectedConnections"], 0);
     assert_eq!(json["traffic"]["activeConnections"], 0);
     assert_eq!(json["traffic"]["bytesReceived"], 0);
     assert_eq!(json["traffic"]["bytesSent"], 0);
     assert_eq!(json["listeners"][0]["name"], "http");
     assert_eq!(json["listeners"][0]["protocol"], "http");
-    assert_eq!(json["listeners"][0]["bind"], "[::]:8080");
+    assert_eq!(json["listeners"][0]["bind"], "socket:[::]:8080");
     assert_eq!(json["listeners"][0]["maxConnections"], 100);
+    assert_eq!(json["listeners"][0]["state"], "configured");
+    assert_eq!(json["listeners"][0]["rejectedConnections"], 0);
+    assert_eq!(json["certbotCertificates"], serde_json::json!([]));
+    assert!(json["certbotWatcher"].is_null());
+}
+
+#[test]
+fn configured_bind_identities_distinguish_socket_and_unix_without_redaction() {
+    let metrics = RuntimeMetrics::new();
+    metrics
+        .register_configured_listener(
+            "socket",
+            "http",
+            &ListenerBind::Socket {
+                address: "127.0.0.1:8080".parse().expect("socket address"),
+            },
+            Some(10),
+        )
+        .expect("socket listener registration");
+    metrics
+        .register_configured_listener(
+            "unix",
+            "http",
+            &ListenerBind::Unix {
+                path: "/run/oxiroute/private-api.sock".into(),
+            },
+            None,
+        )
+        .expect("Unix listener registration");
+
+    let snapshot = metrics.snapshot().expect("listener snapshot");
+
+    assert_eq!(snapshot.listeners[0].bind, "socket:127.0.0.1:8080");
+    assert_eq!(
+        snapshot.listeners[1].bind,
+        "unix:/run/oxiroute/private-api.sock"
+    );
+    let json = serde_json::to_value(snapshot).expect("serialized snapshot");
+    assert!(json["listeners"][1]["maxConnections"].is_null());
 }
