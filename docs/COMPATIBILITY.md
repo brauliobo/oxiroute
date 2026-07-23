@@ -128,8 +128,8 @@ Until that registry and behavior suite exist, no complete parity claim is valid.
 | Basic proxy authentication | planned M3 | Secure static/mTLS identities first. |
 | Digest/Negotiate/NTLM and helpers | research | Helper protocol and connection-affinity semantics. |
 | External ACL and URL rewrite helpers | research | Isolated helper lifecycle and concurrency. |
-| Memory cache | planned M4 | Production bounds, freshness, vary, locking, purge. |
-| Persistent disk cache | planned M4 | Index, recovery, eviction, storage coordination. |
+| Memory cache | planned M4 | A bounded RFC-aware core exists, but active route policies fail startup until exact server integration lands; production freshness, vary, locking, and purge remain. |
+| Persistent disk cache | planned M4 | A descriptor-safe persistent core exists, but active route policies fail startup; async request-path integration, recovery, eviction, and storage coordination remain. |
 | Revalidation/range/collapsed forwarding | planned M4 | HTTP cache conformance. |
 | Delay pools | research | Hierarchical bandwidth accounting and compatibility tests. |
 | ICAP/eCAP adaptation | research | Separate adaptation protocol/plugin architecture. |

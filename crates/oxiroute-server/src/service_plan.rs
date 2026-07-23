@@ -17,7 +17,8 @@ use crate::{
 };
 use http::{Method, Uri, uri::Authority};
 use oxiroute_config::{
-    Config, HttpRouteAction, ListenerBind, Protocol, RtmpRecorderStart as ConfigRecorderStart,
+    Config, HttpProxyPolicy, HttpRouteAction, ListenerBind, Protocol,
+    RtmpRecorderStart as ConfigRecorderStart,
 };
 use oxiroute_rtmp::{
     LiveHub, LiveHubLimits, RecorderWorkerConfig, RecordingPathPolicy, RecordingStore,
@@ -275,6 +276,10 @@ pub enum ServicePlanError {
         route: usize,
         pool: String,
     },
+    #[error(
+        "HTTP service `{service}` route {route} configures cache, but cache runtime is unavailable"
+    )]
+    CacheRuntimeUnavailable { service: String, route: usize },
     #[error("listener `{listener}` requires a configured service")]
     MissingListenerService { listener: String },
     #[error("HTTP listener `{listener}` references unknown service `{service}`")]
@@ -513,17 +518,7 @@ fn compile_http_services(
                     upstream_pool,
                     policy,
                 } => {
-                    let pool = pools.get(upstream_pool).ok_or_else(|| {
-                        ServicePlanError::UnknownHttpPool {
-                            service: service.name.clone(),
-                            route: route_index,
-                            pool: upstream_pool.clone(),
-                        }
-                    })?;
-                    HttpActionPlan::Proxy(ProxyActionPlan {
-                        pool: Arc::clone(pool),
-                        policy: ProxyPolicyPlan::compile(policy),
-                    })
+                    compile_proxy_action(&service.name, route_index, upstream_pool, policy, pools)?
                 }
                 HttpRouteAction::FixedResponse {
                     status,
@@ -575,6 +570,32 @@ fn compile_http_services(
         );
     }
     Ok(http_services)
+}
+
+fn compile_proxy_action(
+    service: &str,
+    route: usize,
+    upstream_pool: &str,
+    policy: &HttpProxyPolicy,
+    pools: &HashMap<String, Arc<UpstreamPlan>>,
+) -> Result<HttpActionPlan, ServicePlanError> {
+    if policy.cache.is_some() {
+        return Err(ServicePlanError::CacheRuntimeUnavailable {
+            service: service.into(),
+            route,
+        });
+    }
+    let pool = pools
+        .get(upstream_pool)
+        .ok_or_else(|| ServicePlanError::UnknownHttpPool {
+            service: service.into(),
+            route,
+            pool: upstream_pool.into(),
+        })?;
+    Ok(HttpActionPlan::Proxy(ProxyActionPlan {
+        pool: Arc::clone(pool),
+        policy: ProxyPolicyPlan::compile(policy),
+    }))
 }
 
 fn compile_l4_services(
