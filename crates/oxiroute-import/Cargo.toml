@@ -1,0 +1,26 @@
+[package]
+name = "oxiroute-import"
+description = "Product-neutral native configuration import primitives and parsers"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+openssl.workspace = true
+oxiroute-config = { path = "../oxiroute-config" }
+oxiroute-rtmp = { path = "../oxiroute-rtmp" }
+rustix.workspace = true
+rustls-pemfile.workspace = true
+x509-parser.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true
+syn = { version = "2", features = ["full"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true
