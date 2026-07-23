@@ -1,0 +1,77 @@
+import { mount } from '@vue/test-utils'
+import { describe, expect, it } from 'vitest'
+
+import type { L4ServiceConfig, UpstreamPoolConfig } from '../config'
+import NullableLimitField from './NullableLimitField.vue'
+import UpstreamEndpointField from './UpstreamEndpointField.vue'
+import UpstreamPoolEditor from './UpstreamPoolEditor.vue'
+
+describe('configuration editor fields', () => {
+  it('keeps invalid bounded limits unchanged and represents unbounded as null', async () => {
+    const wrapper = mount(NullableLimitField, {
+      props: {
+        modelValue: 10_000,
+        defaultValue: 10_000,
+        fieldPath: 'listeners[].max_connections',
+        legend: 'Concurrent connection limit',
+        inputLabel: 'Maximum active connections',
+      },
+    })
+
+    await wrapper.get('input').setValue(0)
+    expect((wrapper.get('input').element as HTMLInputElement).value).toBe('10000')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+
+    await wrapper.get('select').setValue('unbounded')
+    expect(wrapper.emitted('update:modelValue')).toEqual([[null]])
+
+    await wrapper.setProps({ modelValue: null })
+    await wrapper.get('select').setValue('bounded')
+    expect(wrapper.emitted('update:modelValue')?.at(-1)).toEqual([10_000])
+  })
+
+  it('replaces tagged endpoint variants instead of retaining fields from another type', async () => {
+    const wrapper = mount(UpstreamEndpointField, {
+      props: {
+        endpoint: { type: 'socket', address: '127.0.0.1:3000' },
+        index: 0,
+      },
+    })
+
+    await wrapper.get('[data-field="upstream_pools[].endpoints[].type"] select').setValue('dns')
+
+    expect(wrapper.emitted('update:endpoint')).toEqual([
+      [{ type: 'dns', host: '', port: 80 }],
+    ])
+  })
+
+  it('enforces endpoint and TLS restrictions inside the upstream editor', async () => {
+    const pool: UpstreamPoolConfig = {
+      name: 'origins',
+      endpoints: [{ type: 'socket', address: '127.0.0.1:3000' }],
+      algorithm: 'round_robin',
+      health_check: null,
+      tls: null,
+      http_versions: { min: '1.1', max: '1.1' },
+    }
+    const l4Services: L4ServiceConfig[] = [{
+      name: 'database',
+      upstream_pool: 'origins',
+      connect_timeout_ms: 10_000,
+      idle_timeout_ms: 300_000,
+      lifetime_timeout_ms: null,
+    }]
+    const wrapper = mount(UpstreamPoolEditor, { props: { pool, l4Services } })
+
+    await wrapper.get('[data-field="upstream_pools[].tls"] input').setValue(true)
+    expect(pool.tls).toEqual({ server_name: '', ca_certificate_path: null })
+    expect(l4Services[0]?.upstream_pool).toBe('')
+
+    await wrapper.get('[data-field="upstream_pools[].endpoints[].type"] select').setValue('unix')
+    expect(pool.endpoints).toEqual([{ type: 'unix', path: '' }])
+    expect(pool.tls).toBeNull()
+    expect(pool.http_versions).toEqual({ min: '1.1', max: '1.1' })
+    expect(wrapper.get('[data-field="upstream_pools[].health_check"] input').attributes()).toHaveProperty('disabled')
+    expect(wrapper.get('[data-field="upstream_pools[].tls"] input').attributes()).toHaveProperty('disabled')
+  })
+})

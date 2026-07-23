@@ -1,0 +1,548 @@
+import type { MonitoringSnapshot, RtmpCatalog, TopologySnapshot } from '../api'
+import type { ConfigSnapshot } from '../config'
+
+export const STREAM_ID = '2a130dea-5db7-43e0-afb8-f07c4bcb1814'
+export const RECORDER_ID = 'c76ad8c2-e575-4989-8fae-1a95566ff598'
+
+export function contractCatalog(): RtmpCatalog {
+  return {
+    revision: '4',
+    as_of_unix_ms: 1_750_000_000_000,
+    capabilities: { live_ingest: true, manual_recording: true },
+    streams: [{
+      id: STREAM_ID,
+      revision: '3',
+      server_id: 'edge',
+      application: 'live',
+      name: 'camera',
+      created_at_unix_ms: 1_750_000_000_000,
+      publisher: {
+        session_id: '750a865d-1b72-4a5f-a54b-a1d8510d055c',
+        attached_at_unix_ms: 1_750_000_000_000,
+      },
+      subscriber_count: 12,
+      media: {
+        audio: {
+          codec_id: 10,
+          codec_fourcc: null,
+          codec_name: 'aac',
+          recording_supported: true,
+          payload_bytes: '1024',
+          last_rtmp_timestamp_ms: 120,
+          last_observed_at_unix_ms: 1_750_000_000_200,
+        },
+        video: {
+          codec_id: 7,
+          codec_fourcc: null,
+          codec_name: 'avc',
+          recording_supported: true,
+          payload_bytes: '4096',
+          last_rtmp_timestamp_ms: 123,
+          last_observed_at_unix_ms: 1_750_000_000_200,
+        },
+        fanout_payload_bytes: '8192',
+      },
+      recording_supported: true,
+      manual_recording: true,
+      recorders: [{
+        id: RECORDER_ID,
+        name: 'archive',
+        manual: true,
+        phase: { state: 'idle' },
+        changed_at_unix_ms: 1_750_000_000_000,
+        bytes_written: '0',
+        current_relative_name: null,
+        published_but_not_durable_relative_name: null,
+        segments_started: '0',
+        segments_completed: '0',
+        discontinuities: '0',
+        last_completed_relative_name: null,
+        recoverable_partial_name: null,
+      }, {
+        id: '62228380-2dc6-446c-b67e-b31170b8de22',
+        name: 'continuous',
+        manual: false,
+        phase: {
+          state: 'recording',
+          operation_id: 'operation-continuous',
+          started_at_unix_ms: 1_750_000_000_000,
+        },
+        changed_at_unix_ms: 1_750_000_000_000,
+        bytes_written: '1048576',
+        current_relative_name: 'live/.camera-current.partial',
+        published_but_not_durable_relative_name: null,
+        segments_started: '3',
+        segments_completed: '2',
+        discontinuities: '1',
+        last_completed_relative_name: 'live/camera-001.flv',
+        recoverable_partial_name: 'live/.camera-002.partial',
+      }],
+    }],
+  }
+}
+
+export function contractMonitoring(): MonitoringSnapshot {
+  return {
+    sampledAtUnixMs: Date.now(),
+    uptimeMs: 90_610_000,
+    process: {
+      cpuPercent: 12.5,
+      residentMemoryBytes: 268_435_456,
+      virtualMemoryBytes: 1_073_741_824,
+      threadCount: 8,
+      openFileDescriptors: 42,
+    },
+    host: {
+      loadAverage1m: 0.42,
+      loadAverage5m: 0.31,
+      loadAverage15m: 0.25,
+      totalMemoryBytes: 17_179_869_184,
+      availableMemoryBytes: 4_294_967_296,
+    },
+    traffic: {
+      acceptedConnections: 12_345,
+      activeConnections: 42,
+      bytesReceived: 1_572_864,
+      bytesSent: 2_147_483_648,
+    },
+    listeners: [{
+      name: 'HTTP ingress',
+      protocol: 'http',
+      bind: 'socket:127.0.0.1:8080',
+      maxConnections: 1_000,
+      acceptedConnections: 8_000,
+      activeConnections: 14,
+      bytesReceived: 1_048_576,
+      bytesSent: 524_288,
+    }, {
+      name: 'Live edge',
+      protocol: 'rtmp',
+      bind: 'socket:0.0.0.0:1935',
+      maxConnections: null,
+      acceptedConnections: 4_345,
+      activeConnections: 28,
+      bytesReceived: 524_288,
+      bytesSent: 2_146_959_360,
+    }, {
+      name: 'Forward H3',
+      protocol: 'forward_http3',
+      bind: 'udp:0.0.0.0:8443',
+      maxConnections: 1_000,
+      acceptedConnections: 0,
+      activeConnections: 0,
+      bytesReceived: 0,
+      bytesSent: 0,
+    }],
+    upstreamPools: [{
+      name: 'web-backends',
+      algorithm: 'least_connections',
+      availableEndpoints: 1,
+      totalEndpoints: 2,
+      unavailableSelections: '18446744073709551615',
+      endpoints: [{
+        address: '127.0.0.1:3000',
+        activeLeases: 3,
+        state: 'healthy',
+        lastCheckedAtUnixMs: Date.now(),
+        lastTransitionAtUnixMs: Date.now(),
+        successfulChecks: '18446744073709551615',
+        failedChecks: '1',
+        consecutiveSuccesses: '4',
+        consecutiveFailures: '0',
+        lastFailure: null,
+      }, {
+        address: '127.0.0.1:3001',
+        activeLeases: 0,
+        state: 'unhealthy',
+        lastCheckedAtUnixMs: Date.now(),
+        lastTransitionAtUnixMs: Date.now(),
+        successfulChecks: '10',
+        failedChecks: '5',
+        consecutiveSuccesses: '0',
+        consecutiveFailures: '3',
+        lastFailure: 'connect_failed',
+      }],
+    }],
+    certbotCertificates: [],
+    certbotWatcher: null,
+    rtmp: {
+      activeStreams: 3,
+      publishers: 2,
+      subscribers: 24,
+      mediaPayloadBytesReceived: 805_306_368,
+      recordingSupported: true,
+      manualRecording: true,
+      recorderBytesWritten: 1_048_576,
+      recorderSegmentsStarted: 3,
+      recorderSegmentsCompleted: 2,
+      recorderDiscontinuities: 1,
+      recorders: [{
+        streamId: STREAM_ID,
+        recorderId: RECORDER_ID,
+        name: 'archive',
+        manual: true,
+        phase: 'recording',
+        bytesWritten: '1048576',
+        segmentsStarted: '3',
+        segmentsCompleted: '2',
+        discontinuities: '1',
+        currentRelativeName: 'live/.camera-current.partial',
+        lastCompletedRelativeName: 'live/camera-001.flv',
+        recoverablePartialName: null,
+        publishedButNotDurableRelativeName: null,
+      }],
+    },
+  }
+}
+
+export function contractTopology(): TopologySnapshot {
+  return {
+    schemaVersion: 1,
+    state: { config: 'active', runtime: 'active', sampledAtUnixMs: 1_750_000_000_000 },
+    nodes: [{
+      id: 'listener:4:edge',
+      kind: 'listener',
+      name: 'edge',
+      configPath: '/listeners/0',
+      attributes: {
+        bind: { type: 'socket', address: '127.0.0.1:8080' },
+        protocol: 'http',
+        service: 'web',
+        tlsProfile: null,
+        maxConnections: 1_000,
+      },
+    }, {
+      id: 'forward_proxy_listener:10:forward-h3',
+      kind: 'forward_proxy_listener',
+      name: 'forward-h3',
+      configPath: '/listeners/1',
+      attributes: {
+        bind: { type: 'udp', address: '0.0.0.0:8443' },
+        protocol: 'forward_http3',
+        service: 'egress',
+        tlsProfile: 'forward-h3',
+        maxConnections: 1_000,
+      },
+    }, {
+      id: 'http_service:3:web',
+      kind: 'http_service',
+      name: 'web',
+      configPath: '/http_services/0',
+      attributes: { upstreamIoTimeoutMs: 30_000, maxRequestBodyBytes: null },
+    }, {
+      id: 'http_route:3:web:0::1:/:0:',
+      kind: 'http_route',
+      name: '* /',
+      configPath: '/http_services/0/routes/0',
+      attributes: {
+        host: null,
+        path: { kind: 'segment_prefix', value: '/' },
+        methods: [],
+        access: null,
+        action: {
+          type: 'proxy',
+          upstreamPool: 'web',
+          upstreamHost: 'preserve_incoming',
+          requestHeaderMutationCount: 0,
+          responseHeaderMutationCount: 0,
+          cookiePathRewriteCount: 0,
+          retry: { maxRetries: 0, triggers: ['connect_failure', 'connect_timeout', 'refused_stream'] },
+        },
+      },
+    }, {
+      id: 'upstream_pool:3:web',
+      kind: 'upstream_pool',
+      name: 'web',
+      configPath: '/upstream_pools/0',
+      attributes: {
+        algorithm: 'round_robin',
+        healthCheck: null,
+        tls: null,
+        httpVersions: { min: '1.1', max: '1.1' },
+      },
+    }, {
+      id: 'endpoint:3:web:14:127.0.0.1:3000',
+      kind: 'endpoint',
+      name: '127.0.0.1:3000',
+      configPath: '/upstream_pools/0/endpoints/0',
+      attributes: { type: 'socket', address: '127.0.0.1:3000' },
+    }],
+    edges: [{
+      id: 'edge-dispatch',
+      kind: 'dispatch_service',
+      source: 'listener:4:edge',
+      target: 'http_service:3:web',
+      configPath: '/listeners/0/service',
+    }, {
+      id: 'edge-route',
+      kind: 'service_route',
+      source: 'http_service:3:web',
+      target: 'http_route:3:web:0::1:/:0:',
+      configPath: '/http_services/0/routes/0',
+    }, {
+      id: 'edge-pool',
+      kind: 'route_pool',
+      source: 'http_route:3:web:0::1:/:0:',
+      target: 'upstream_pool:3:web',
+      configPath: '/http_services/0/routes/0/action/upstream_pool',
+    }, {
+      id: 'edge-endpoint',
+      kind: 'pool_endpoint',
+      source: 'upstream_pool:3:web',
+      target: 'endpoint:3:web:14:127.0.0.1:3000',
+      configPath: '/upstream_pools/0/endpoints/0',
+    }],
+    overlays: [{
+      nodeId: 'listener:4:edge',
+      state: 'active',
+      metrics: {
+        activeConnections: 14,
+        acceptedConnections: 100,
+        bytesReceived: 1024,
+        bytesSent: 2048,
+      },
+    }, {
+      nodeId: 'upstream_pool:3:web',
+      state: 'available',
+      metrics: { availableEndpoints: 1, totalEndpoints: 1, unavailableSelections: '0' },
+    }, {
+      nodeId: 'endpoint:3:web:14:127.0.0.1:3000',
+      state: 'healthy',
+      metrics: {
+        activeLeases: '3',
+        lastCheckedAtUnixMs: 1_750_000_000_000,
+        lastTransitionAtUnixMs: 1_750_000_000_000,
+        successfulChecks: '42',
+        failedChecks: '0',
+        consecutiveSuccesses: '4',
+        consecutiveFailures: '0',
+        lastFailure: null,
+      },
+    }],
+  }
+}
+
+export function emptyConfigSnapshot(): ConfigSnapshot {
+  return {
+    schemaVersion: 1,
+    diskRevision: 'disk',
+    activeRevision: 'disk',
+    config: {
+      version: 1,
+      management: null,
+      certificates: [],
+      tls_profiles: [],
+      listeners: [],
+      cache_stores: [],
+      upstream_pools: [],
+      http_services: [],
+      forward_proxy_services: [],
+      rtmp_services: [],
+      l4_services: [],
+    },
+    diagnostics: [],
+  }
+}
+
+export function contractConfigSnapshot(): ConfigSnapshot {
+  const snapshot = emptyConfigSnapshot()
+  snapshot.config.certificates = [{
+    name: 'forward',
+    dns_names: ['proxy.example.test'],
+    source: {
+      type: 'files',
+      certificate_chain_path: '/etc/oxiroute/forward.pem',
+      private_key_path: '/etc/oxiroute/forward-key.pem',
+    },
+  }]
+  snapshot.config.tls_profiles = [{
+    name: 'forward-h3',
+    certificates: ['forward'],
+    default_certificate: 'forward',
+    min_version: '1.3',
+    alpn: ['h3'],
+  }]
+  snapshot.config.listeners = [{
+    name: 'forward-h3',
+    bind: { type: 'udp', address: '0.0.0.0:8443' },
+    protocol: 'forward_http3',
+    service: 'egress',
+    tls_profile: 'forward-h3',
+    max_connections: 1_000,
+  }]
+  snapshot.config.cache_stores = [{
+    type: 'memory',
+    name: 'memory-responses',
+    max_bytes: 268_435_456,
+    max_entries: 100_000,
+    max_object_bytes: 16_777_216,
+    max_header_bytes: 65_536,
+    max_key_bytes: 4_096,
+    max_tag_bytes: 256,
+    max_tags_per_object: 64,
+    max_in_flight_fills: 1_024,
+    max_followers_per_fill: 128,
+  }, {
+    type: 'disk',
+    name: 'responses',
+    root_directory: '/var/cache/oxiroute',
+    max_bytes: 107_374_182_400,
+    max_files: 1_000_000,
+    max_object_bytes: 16_777_216,
+    max_header_bytes: 65_536,
+    max_key_bytes: 4_096,
+    max_tag_bytes: 256,
+    max_tags_per_object: 64,
+    max_in_flight_fills: 1_024,
+    max_followers_per_fill: 128,
+  }]
+  snapshot.config.upstream_pools = [{
+    name: 'origins',
+    endpoints: [{ type: 'socket', address: '127.0.0.1:3000' }],
+    algorithm: 'round_robin',
+    health_check: null,
+    tls: null,
+    http_versions: { min: '1.1', max: '1.1' },
+  }]
+  snapshot.config.http_services = [{
+    name: 'web',
+    upstream_io_timeout_ms: 30_000,
+    max_request_body_bytes: 10_485_760,
+    routes: [{
+      host: { kind: 'normalized_host', value: 'api.example.test' },
+      path: { kind: 'segment_prefix', value: '/api' },
+      methods: ['GET', 'HEAD'],
+      access_policy: {
+        type: 'bearer_token_file',
+        token_file_path: '/run/oxiroute/api.token',
+        header_name: 'authorization',
+        realm: 'api',
+      },
+      action: {
+        type: 'proxy',
+        upstream_pool: 'origins',
+        policy: {
+          upstream_host: { type: 'endpoint', unix_fallback: 'localhost' },
+          request_headers: [{
+            operation: 'set',
+            name: 'x-forwarded-for',
+            value: { type: 'client_ip' },
+          }],
+          response_headers: [{ operation: 'remove', name: 'server' }],
+          response_cookie_path_rewrites: [{ from: '/', to: '/api' }],
+          retry: {
+            max_retries: 2,
+            triggers: ['connect_failure', 'connect_timeout', 'refused_stream'],
+            method_safety: 'get_head',
+            body_safety: 'empty',
+          },
+          cache: {
+            store: 'responses',
+            methods: ['GET', 'HEAD'],
+            key_components: [
+              { type: 'scheme' },
+              { type: 'normalized_host' },
+              { type: 'path_and_query' },
+              { type: 'header', name: 'accept' },
+              { type: 'cookie', name: 'tenant' },
+            ],
+            use_origin_cache_control: true,
+            default_ttl_ms: 60_000,
+            status_ttls: [{ status: 404, ttl_ms: 5_000 }],
+            grace_ms: 30_000,
+            keep_ms: 300_000,
+            revalidate: true,
+            collapsed_forwarding: true,
+            stale_on: ['connect_timeout', 'origin_503'],
+            bypass_request: [{ type: 'header_present', name: 'x-cache-bypass' }],
+            no_store_request: [{ type: 'cookie_present', name: 'session' }],
+            no_store_response: [{ type: 'header_present', name: 'x-no-store' }],
+            set_cookie_policy: 'bypass',
+            authorization_policy: 'bypass',
+            vary_policy: 'respect',
+            surrogate_tags: {
+              response_header: 'surrogate-key',
+              max_tags: 32,
+              max_tag_bytes: 128,
+            },
+            purge_authorization: {
+              type: 'bearer_token_file',
+              token_file_path: '/run/oxiroute/cache-purge.token',
+            },
+          },
+        },
+      },
+    }, {
+      host: null,
+      path: { kind: 'exact', value: '/healthz' },
+      methods: ['GET'],
+      access_policy: null,
+      action: {
+        type: 'fixed_response',
+        status: 200,
+        body: 'ok',
+        headers: [{ name: 'content-type', value: 'text/plain' }],
+      },
+    }, {
+      host: null,
+      path: { kind: 'exact', value: '/old' },
+      methods: [],
+      access_policy: null,
+      action: {
+        type: 'redirect',
+        status: 308,
+        location: { kind: 'request_template', value: 'https://$host$request_uri' },
+      },
+    }, {
+      host: { kind: 'exact_authority', value: 'static.example.test' },
+      path: { kind: 'raw_prefix', value: '/' },
+      methods: ['GET'],
+      access_policy: null,
+      action: {
+        type: 'static_files',
+        root_directory: '/srv/www',
+        index_files: ['index.html'],
+        spa_fallback: 'app.html',
+      },
+    }],
+  }]
+  snapshot.config.forward_proxy_services = [{
+    name: 'egress',
+    enabled_versions: ['h1', 'h2', 'h3'],
+    allow_absolute_form: true,
+    tls_required: true,
+    connect: { enabled: true, allowed_ports: [443, 8443] },
+    auth: { type: 'bearer_token_file', token_file_path: '/run/oxiroute/forward.token' },
+    destination_policy: {
+      allow_domains: ['example.com'],
+      deny_domains: ['blocked.example.com'],
+      allow_cidrs: ['203.0.113.0/24'],
+      deny_cidrs: ['203.0.113.128/25'],
+      deny_private: true,
+    },
+    connect_timeout_ms: 10_000,
+    idle_timeout_ms: 300_000,
+    lifetime_timeout_ms: 3_600_000,
+    max_request_body_bytes: 10_485_760,
+    max_header_bytes: 65_536,
+    max_connections: 10_000,
+    resolver: {
+      max_cache_entries: 4_096,
+      max_concurrent_queries: 256,
+      max_addresses_per_name: 16,
+      min_ttl_ms: 1_000,
+      max_ttl_ms: 300_000,
+      negative_ttl_ms: 30_000,
+      revalidate_on_connect: true,
+    },
+    audit_mode: 'metadata',
+  }]
+  return snapshot
+}
+
+export function jsonResponse(payload: unknown, status = 200): Response {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
