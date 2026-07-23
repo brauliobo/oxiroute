@@ -8,6 +8,11 @@ coverage.
 The direct harness is authoritative. The checked-in Phoronix profile invokes that harness and only
 parses its requests-per-second result; it does not upload profiles or results.
 
+Measured reports:
+
+- [`reports/2026-07-23-local-v1.md`](reports/2026-07-23-local-v1.md) records the first CPU-pinned
+  reverse-H1 comparison and its machine-readable sample set.
+
 ## Scope
 
 - One Linux host, loopback TCP, HTTP/1.1 keep-alive, and a fixed 1 KiB origin response.
