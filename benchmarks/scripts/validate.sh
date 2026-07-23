@@ -35,4 +35,5 @@ python3 -c 'import pathlib, sys, xml.etree.ElementTree as ET; [ET.parse(path) fo
   "$BENCHMARK_ROOT/phoronix/local/oxiroute-local-v1/results-definition.xml"
 python3 -c 'import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text())' \
   "$BENCHMARK_ROOT/scripts/tool.py"
+cargo +1.87.0 test --manifest-path "$BENCHMARK_ROOT/loadgen/Cargo.toml" --locked
 printf 'validation passed: %s\n' "$validation_root"

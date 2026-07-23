@@ -14,6 +14,8 @@ http {
 
   server {
     listen 127.0.0.1:@ORIGIN_PORT@;
+    keepalive_timeout 1h;
+    keepalive_requests 100000000;
 
     location = /healthz {
       default_type text/plain;

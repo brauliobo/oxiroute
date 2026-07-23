@@ -80,9 +80,9 @@ def port_available(port):
 
 def preflight(args):
     tools = {
-        "ab": command_version("ab", ["-V"]),
         "bash": command_version("bash", ["--version"]),
         "haproxy": command_version("haproxy", ["-v"]),
+        "loadgen": command_version(args.loadgen_bin, ["--version"]),
         "nginx": command_version("nginx", ["-v"]),
         "python3": command_version("python3", ["--version"]),
         "taskset": command_version("taskset", ["--version"]),
@@ -93,7 +93,7 @@ def preflight(args):
         "path": str(oxiroute),
         "version": None,
     }
-    required = {"ab", "bash", "nginx", "python3", "taskset"}
+    required = {"bash", "loadgen", "nginx", "python3", "taskset"}
     required.update(implementation for implementation in args.implementations if implementation != "origin")
     ok = all(tools[name]["available"] for name in required)
     selected_cpus = [args.proxy_cpu, args.origin_cpu, args.load_cpu]
@@ -162,8 +162,8 @@ def environment(args):
     git_status = read_text_command(["git", "-C", str(repository), "status", "--porcelain"])
     oxiroute = pathlib.Path(args.oxiroute_bin)
     tools = {
-        "ab": command_version("ab", ["-V"]),
         "haproxy": command_version("haproxy", ["-v"]),
+        "loadgen": command_version(args.loadgen_bin, ["--version"]),
         "nginx": command_version("nginx", ["-v"]),
         "phoronix-test-suite": command_version("phoronix-test-suite", ["version"]),
         "python3": command_version("python3", ["--version"]),
@@ -177,6 +177,12 @@ def environment(args):
         "oxiroute_binary": {
             "path": str(oxiroute),
             "sha256": sha256_file(oxiroute) if oxiroute.is_file() else None,
+        },
+        "loadgen_binary": {
+            "path": args.loadgen_bin,
+            "sha256": sha256_file(args.loadgen_bin)
+            if pathlib.Path(args.loadgen_bin).is_file()
+            else None,
         },
         "platform": {
             "machine": platform.machine(),
@@ -196,7 +202,7 @@ def run_metadata(args):
             "implementation": args.implementation,
             "origin_port": args.origin_port,
             "proxy_port": args.proxy_port,
-            "load_generator": "ab",
+            "load_generator": "oxiroute-loadgen",
             "connections": args.connections,
             "warmup_seconds": args.warmup_seconds,
             "duration_seconds": args.duration_seconds,
@@ -209,31 +215,32 @@ def run_metadata(args):
     )
 
 
-def summarize_ab(args):
-    text = pathlib.Path(args.input).read_text(encoding="utf-8", errors="replace")
-    requests_per_second = re.search(
-        r"^Requests per second:\s+([0-9]+(?:\.[0-9]+)?)\s+\[#/sec\]", text, re.MULTILINE
-    )
-    completed = re.search(r"^Complete requests:\s+([0-9]+)\s*$", text, re.MULTILINE)
-    failed = re.search(r"^Failed requests:\s+([0-9]+)\s*$", text, re.MULTILINE)
-    elapsed = re.search(r"^Time taken for tests:\s+([0-9]+(?:\.[0-9]+)?) seconds\s*$", text, re.MULTILINE)
-    transfer = re.search(r"^Transfer rate:\s+(.+?)\s*$", text, re.MULTILINE)
-    non_success = re.search(r"^Non-2xx responses:\s+([0-9]+)\s*$", text, re.MULTILINE)
-    if requests_per_second is None or completed is None or failed is None or elapsed is None:
-        raise SystemExit("ApacheBench output did not contain a complete result")
-    report = {
-        "schema": "oxiroute.local-v1.result.v1",
-        "implementation": args.implementation,
-        "requests_per_second": float(requests_per_second.group(1)),
-        "requests": int(completed.group(1)),
-        "elapsed_seconds": float(elapsed.group(1)),
-        "transfer_per_second": transfer.group(1) if transfer else None,
-        "non_2xx_or_3xx": int(non_success.group(1)) if non_success else 0,
-        "failed_requests": int(failed.group(1)),
+def summarize_loadgen(args):
+    report = json.loads(pathlib.Path(args.input).read_text(encoding="utf-8"))
+    required = {
+        "schema",
+        "implementation",
+        "load_generator",
+        "protocol",
+        "request_line",
+        "connection_reuse",
+        "connections",
+        "requests_per_second",
+        "requests",
+        "elapsed_seconds",
+        "transfer_bytes_per_second",
+        "non_2xx_or_3xx",
+        "failed_requests",
     }
+    if required - report.keys():
+        raise SystemExit("load generator output did not contain a complete result")
+    if report["protocol"] != "HTTP/1.1" or not report["request_line"].endswith(" HTTP/1.1"):
+        raise SystemExit("load generator did not report an HTTP/1.1 request")
+    if report["connection_reuse"] != "keep-alive":
+        raise SystemExit("load generator did not report keep-alive connection reuse")
     write_json(args.output, report)
     if report["non_2xx_or_3xx"] or report["failed_requests"]:
-        raise SystemExit("ApacheBench reported HTTP or request failures")
+        raise SystemExit("load generator reported HTTP or request failures")
 
 
 def skipped_lanes(args):
@@ -266,6 +273,7 @@ def build_parser():
     command = commands.add_parser("preflight")
     command.add_argument("output")
     command.add_argument("oxiroute_bin")
+    command.add_argument("loadgen_bin")
     command.add_argument("origin_port", type=int)
     command.add_argument("proxy_port", type=int)
     command.add_argument("proxy_cpu", type=int)
@@ -278,6 +286,7 @@ def build_parser():
     command.add_argument("output")
     command.add_argument("repository")
     command.add_argument("oxiroute_bin")
+    command.add_argument("loadgen_bin")
     command.set_defaults(function=environment)
 
     command = commands.add_parser("run-metadata")
@@ -293,11 +302,10 @@ def build_parser():
     command.add_argument("load_cpu", type=int)
     command.set_defaults(function=run_metadata)
 
-    command = commands.add_parser("summarize-ab")
-    command.add_argument("implementation")
+    command = commands.add_parser("summarize-loadgen")
     command.add_argument("input")
     command.add_argument("output")
-    command.set_defaults(function=summarize_ab)
+    command.set_defaults(function=summarize_loadgen)
 
     command = commands.add_parser("skipped-lanes")
     command.add_argument("input")

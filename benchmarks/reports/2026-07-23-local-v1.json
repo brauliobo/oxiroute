@@ -1,18 +1,18 @@
 {
   "schema": "oxiroute.local-v1.report.v1",
   "date": "2026-07-23",
-  "status": "preliminary",
+  "status": "invalidated_protocol_mismatch",
   "source_commit": "827f726162fe36ef2bdebef78ff18bd47ec5c58a",
   "oxiroute_binary_sha256": "5f8b7f378ec9ccd71d4cb987a5f4261315a5957e5ea5c1be181211ff10d2604b",
   "scenario": {
     "lane": "reverse-h1",
-    "transport": "loopback plaintext HTTP/1.1",
+    "transport": "loopback plaintext HTTP/1.0 keep-alive",
     "response_bytes": 1024,
     "connections": 128,
     "warmup_seconds": 10,
     "measurement_seconds": 30,
     "repetitions": 3,
-    "load_generator": "ApacheBench 2.3",
+    "load_generator": "ApacheBench 2.3 (emitted HTTP/1.0)",
     "cpu_affinity": {
       "proxy": 2,
       "origin": 3,

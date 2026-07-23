@@ -39,6 +39,7 @@ proxy_cpu=${BENCH_PROXY_CPU:-2}
 origin_cpu=${BENCH_ORIGIN_CPU:-3}
 load_cpu=${BENCH_LOAD_CPU:-4}
 oxiroute_bin=${OXIROUTE_BIN:-"$REPOSITORY_ROOT/target/release/oxiroute-server"}
+loadgen_bin=${BENCH_LOADGEN_BIN:-"$BENCHMARK_ROOT/loadgen/target/release/oxiroute-loadgen"}
 export BENCH_STOP_TIMEOUT_SECONDS
 
 for pair in \
@@ -103,7 +104,7 @@ check_http_payload "http://127.0.0.1:$origin_port/payload" 1024 origin
 
 run_implementation() {
   local current=$1
-  local raw="$raw_root/ab-$current.txt"
+  local raw="$raw_root/loadgen-$current.json"
   local summary="$output/summary-$current.json"
   local target_port=$proxy_port
 
@@ -127,13 +128,17 @@ run_implementation() {
 
   wait_for_http "http://127.0.0.1:$target_port/healthz" "$current"
   check_http_payload "http://127.0.0.1:$target_port/payload" 1024 "$current"
-  taskset -c "$load_cpu" ab -q -k -c "$connections" -t "$warmup_seconds" -n 100000000 -s 10 \
-    "http://127.0.0.1:$target_port/payload" >"$raw_root/warmup-$current.txt" 2>&1
-  python3 "$BENCHMARK_ROOT/scripts/tool.py" summarize-ab \
-    "$current" "$raw_root/warmup-$current.txt" "$output/warmup-$current.json"
-  taskset -c "$load_cpu" ab -q -k -c "$connections" -t "$duration_seconds" -n 100000000 -s 10 \
-    "http://127.0.0.1:$target_port/payload" >"$raw" 2>&1
-  python3 "$BENCHMARK_ROOT/scripts/tool.py" summarize-ab "$current" "$raw" "$summary"
+  taskset -c "$load_cpu" "$loadgen_bin" \
+    --implementation "$current" --host 127.0.0.1 --port "$target_port" --path /payload \
+    --connections "$connections" --duration-seconds "$warmup_seconds" --expected-bytes 1024 \
+    >"$raw_root/warmup-$current.json" 2>"$log_root/loadgen-warmup-$current.log"
+  python3 "$BENCHMARK_ROOT/scripts/tool.py" summarize-loadgen \
+    "$raw_root/warmup-$current.json" "$output/warmup-$current.json"
+  taskset -c "$load_cpu" "$loadgen_bin" \
+    --implementation "$current" --host 127.0.0.1 --port "$target_port" --path /payload \
+    --connections "$connections" --duration-seconds "$duration_seconds" --expected-bytes 1024 \
+    >"$raw" 2>"$log_root/loadgen-$current.log"
+  python3 "$BENCHMARK_ROOT/scripts/tool.py" summarize-loadgen "$raw" "$summary"
   if [[ $current != origin ]]; then
     stop_named_process proxy
   fi
