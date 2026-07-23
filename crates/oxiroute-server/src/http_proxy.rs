@@ -135,8 +135,6 @@ pub struct HttpRequestContext {
     observed_received: u64,
     observed_sent: u64,
     authority: Option<Authority>,
-    client_ip: Option<String>,
-    normalized_host: Option<String>,
     attempted_upstreams: Vec<RuntimeEndpoint>,
     lease: Option<EndpointLease>,
     pool: Option<Arc<UpstreamPlan>>,
@@ -176,8 +174,6 @@ impl ProxyHttp for HttpReverseProxy {
             observed_received: 0,
             observed_sent: 0,
             authority: None,
-            client_ip: None,
-            normalized_host: None,
             attempted_upstreams: Vec::new(),
             lease: None,
             pool: None,
@@ -241,11 +237,6 @@ impl ProxyHttp for HttpReverseProxy {
         }
 
         ctx.authority = authority;
-        ctx.normalized_host = ctx.authority.as_ref().and_then(normalized_host);
-        ctx.client_ip = session
-            .client_addr()
-            .and_then(|address| address.as_inet())
-            .map(|address| address.ip().to_string());
         execute_route_action(session, ctx, route, &method, &uri).await
     }
 
@@ -343,7 +334,7 @@ impl ProxyHttp for HttpReverseProxy {
 
     async fn upstream_request_filter(
         &self,
-        _session: &mut Session,
+        session: &mut Session,
         upstream_request: &mut pingora::http::RequestHeader,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<()> {
@@ -360,7 +351,7 @@ impl ProxyHttp for HttpReverseProxy {
         } else {
             upstream_request.remove_header(&HOST);
         }
-        apply_request_header_mutations(upstream_request, ctx)?;
+        apply_request_header_mutations(session, upstream_request, ctx)?;
         Ok(())
     }
 
@@ -439,12 +430,10 @@ async fn execute_route_action(
             Ok(true)
         }
         HttpActionPlan::Redirect(redirect) => {
-            let Some(location) = redirect_location(
-                &redirect.location,
-                session,
-                ctx.normalized_host.as_deref(),
-                uri,
-            ) else {
+            let normalized_host = ctx.authority.as_ref().and_then(normalized_host);
+            let Some(location) =
+                redirect_location(&redirect.location, session, normalized_host.as_deref(), uri)
+            else {
                 session.respond_error(400).await?;
                 return Ok(true);
             };
@@ -651,6 +640,7 @@ fn selected_upstream_host(
 }
 
 fn apply_request_header_mutations(
+    session: &Session,
     request: &mut pingora::http::RequestHeader,
     ctx: &HttpRequestContext,
 ) -> pingora::Result<()> {
@@ -669,12 +659,22 @@ fn apply_request_header_mutations(
                             .unwrap_or_default(),
                     )?,
                     RequestHeaderValuePlan::NormalizedHost => {
-                        dynamic_header_value(ctx.normalized_host.as_deref().unwrap_or_default())?
+                        let host = ctx
+                            .authority
+                            .as_ref()
+                            .and_then(normalized_host)
+                            .unwrap_or_default();
+                        dynamic_header_value(&host)?
                     }
                     RequestHeaderValuePlan::ClientIp => {
-                        dynamic_header_value(ctx.client_ip.as_deref().ok_or_else(|| {
-                            Error::new_in(ErrorType::Custom("ClientIpUnavailable"))
-                        })?)?
+                        let client_ip = session
+                            .client_addr()
+                            .and_then(|address| address.as_inet())
+                            .map(|address| address.ip().to_string())
+                            .ok_or_else(|| {
+                                Error::new_in(ErrorType::Custom("ClientIpUnavailable"))
+                            })?;
+                        dynamic_header_value(&client_ip)?
                     }
                     RequestHeaderValuePlan::SelectedUpstreamHost => ctx
                         .selected_upstream_host
