@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<!--Phoronix Test Suite v10.8.4-->
+<PhoronixTestSuite>
+  <TestInformation>
+    <Title>OxiRoute Local Reverse HTTP/1.1</Title>
+    <Description>Wraps the repository local-v1 direct reverse HTTP/1.1 harness without uploads.</Description>
+    <ResultScale>Requests Per Second</ResultScale>
+    <Proportion>HIB</Proportion>
+    <TimesToRun>3</TimesToRun>
+  </TestInformation>
+  <TestProfile>
+    <Version>1.0.0</Version>
+    <SupportedPlatforms>Linux</SupportedPlatforms>
+    <SoftwareType>Benchmark</SoftwareType>
+    <TestType>System</TestType>
+    <License>Free</License>
+    <Status>Experimental</Status>
+  </TestProfile>
+  <TestSettings>
+    <Option>
+      <DisplayName>Implementation</DisplayName>
+      <Identifier>implementation</Identifier>
+      <Menu>
+        <Entry>
+          <Name>OxiRoute</Name>
+          <Value>oxiroute</Value>
+        </Entry>
+        <Entry>
+          <Name>nginx</Name>
+          <Value>nginx</Value>
+        </Entry>
+        <Entry>
+          <Name>HAProxy</Name>
+          <Value>haproxy</Value>
+        </Entry>
+      </Menu>
+    </Option>
+  </TestSettings>
+</PhoronixTestSuite>

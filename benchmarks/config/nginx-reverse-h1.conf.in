@@ -1,0 +1,30 @@
+worker_processes 1;
+master_process off;
+daemon off;
+pid @RUNTIME_DIR@/nginx-proxy.pid;
+error_log @LOG_DIR@/nginx-proxy-error.log notice;
+
+events {
+  worker_connections 4096;
+}
+
+http {
+  access_log off;
+  server_tokens off;
+
+  upstream benchmark_origin {
+    server 127.0.0.1:@ORIGIN_PORT@;
+    keepalive 128;
+  }
+
+  server {
+    listen 127.0.0.1:@PROXY_PORT@;
+
+    location / {
+      proxy_http_version 1.1;
+      proxy_set_header Connection "";
+      proxy_set_header Host $http_host;
+      proxy_pass http://benchmark_origin;
+    }
+  }
+}
