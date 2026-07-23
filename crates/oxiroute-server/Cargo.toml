@@ -8,24 +8,39 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+arc-swap.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 env_logger.workspace = true
 futures-util.workspace = true
+h2.workspace = true
 http.workspace = true
 log.workspace = true
+notify.workspace = true
+openssl.workspace = true
 oxiroute-config = { path = "../oxiroute-config" }
 oxiroute-rtmp = { path = "../oxiroute-rtmp" }
 pingora.workspace = true
+rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+x509-parser.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
+rml_rtmp.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
+tokio-rustls.workspace = true
 tokio-tungstenite.workspace = true
+
+[[test]]
+name = "tls"
+path = "src/tls/tests.rs"
 
 [lints]
 workspace = true

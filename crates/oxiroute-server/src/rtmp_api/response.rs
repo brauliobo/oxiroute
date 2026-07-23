@@ -1,0 +1,105 @@
+use std::time::SystemTime;
+
+use http::{
+    HeaderValue, Response, StatusCode,
+    header::{ALLOW, CONTENT_LENGTH, CONTENT_TYPE, WWW_AUTHENTICATE},
+};
+use serde_json::{Value, json};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApiResponse {
+    pub status: u16,
+    pub body: Vec<u8>,
+    pub allow: Option<&'static str>,
+    pub content_type: &'static str,
+    pub www_authenticate: Option<&'static str>,
+}
+
+impl ApiResponse {
+    pub(super) fn bytes(status: u16, body: Vec<u8>, content_type: &'static str) -> Self {
+        Self {
+            status,
+            body,
+            allow: None,
+            content_type,
+            www_authenticate: None,
+        }
+    }
+
+    pub(super) fn json(status: u16, value: &Value) -> Self {
+        Self::bytes(status, value.to_string().into_bytes(), "application/json")
+    }
+
+    pub(super) fn error(status: u16, code: &'static str, message: impl Into<String>) -> Self {
+        let value = json!({
+            "error": {
+                "code": code,
+                "message": message.into(),
+            }
+        });
+        Self::json(status, &value)
+    }
+
+    pub(super) fn route_not_found() -> Self {
+        Self::error(404, "route_not_found", "route does not exist")
+    }
+
+    pub(super) fn method_not_allowed(allow: &'static str) -> Self {
+        let mut response = Self::error(405, "method_not_allowed", "method is not allowed");
+        response.allow = Some(allow);
+        response
+    }
+
+    pub(super) fn unauthorized() -> Self {
+        let mut response = Self::error(
+            401,
+            "unauthorized",
+            "a valid Bearer management token is required",
+        );
+        response.www_authenticate = Some("Bearer");
+        response
+    }
+}
+
+pub(super) fn system_time_ms() -> Result<u64, ApiResponse> {
+    let duration = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_err(|_| {
+            ApiResponse::error(
+                500,
+                "system_clock_invalid",
+                "system clock predates the Unix epoch",
+            )
+        })?;
+    u64::try_from(duration.as_millis()).map_err(|_| {
+        ApiResponse::error(
+            500,
+            "system_clock_invalid",
+            "system clock is outside the supported range",
+        )
+    })
+}
+
+pub(super) fn to_http_response(response: ApiResponse) -> Response<Vec<u8>> {
+    let mut result = Response::new(response.body);
+    *result.status_mut() =
+        StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    result.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static(response.content_type),
+    );
+    let content_length = HeaderValue::from_str(&result.body().len().to_string())
+        .expect("decimal content length is a valid header");
+    result.headers_mut().insert(CONTENT_LENGTH, content_length);
+    if let Some(allow) = response.allow {
+        result
+            .headers_mut()
+            .insert(ALLOW, HeaderValue::from_static(allow));
+    }
+    if let Some(challenge) = response.www_authenticate {
+        result
+            .headers_mut()
+            .insert(WWW_AUTHENTICATE, HeaderValue::from_static(challenge));
+    }
+    result
+}

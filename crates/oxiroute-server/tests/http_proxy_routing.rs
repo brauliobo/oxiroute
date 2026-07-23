@@ -1,6 +1,14 @@
+#[path = "support/config.rs"]
+mod config_support;
+#[path = "support/fixtures.rs"]
+mod fixture_support;
+#[path = "support/http.rs"]
+mod http_support;
+
 use std::{
-    io,
+    fs, io,
     net::SocketAddr,
+    os::unix::fs::symlink,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -9,8 +17,11 @@ use std::{
 };
 
 use oxiroute_config::{
-    Config, HealthCheck, HealthCheckType, HttpRoute, HttpService, Listener, Protocol,
-    UpstreamAlgorithm, UpstreamPool,
+    Config, HealthCheck, HealthCheckType, HttpAccessPolicy, HttpCookiePathRewrite,
+    HttpLiteralHeader, HttpPathSelector, HttpProxyPolicy, HttpRedirectLocation,
+    HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpResponseHeaderMutation,
+    HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpService, HttpUpstreamHost, HttpVersionPolicy,
+    Listener, Protocol, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool,
 };
 use oxiroute_server::{
     HttpReverseProxy, MAX_HTTP_ATTEMPTS, MonitoredHttpApp, RoundRobinPool, RuntimeMetrics,
@@ -18,11 +29,17 @@ use oxiroute_server::{
 };
 use pingora::{apps::ServerApp, proxy::http_proxy, server::configuration::ServerConf};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::watch,
+    sync::{oneshot, watch},
     task::JoinHandle,
     time::{sleep, timeout},
+};
+
+use config_support::{empty_config, socket_bind, socket_endpoint};
+use fixture_support::{create_secure_root, write_secure_token};
+use http_support::{
+    HttpResponse as RawResponse, raw_http_request, read_request_head as read_request_head_bytes,
 };
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -115,6 +132,150 @@ async fn round_robins_two_origins_across_independent_requests() {
     })
     .await
     .expect("round-robin test timed out");
+}
+
+#[tokio::test]
+async fn least_connections_sends_a_concurrent_request_to_the_idle_origin() {
+    timeout(TEST_TIMEOUT, async {
+        let held_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("held origin bind");
+        let held_address = held_listener.local_addr().expect("held origin address");
+        let (accepted_tx, accepted_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let held_task = tokio::spawn(async move {
+            let (mut stream, _) = held_listener.accept().await.expect("held origin accept");
+            read_request_head(&mut stream)
+                .await
+                .expect("held origin request");
+            accepted_tx.send(()).expect("held origin accepted signal");
+            release_rx.await.expect("held origin release");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nheld")
+                .await
+                .expect("held origin response");
+        });
+        let idle = Origin::start("idle", 1).await;
+        let mut balanced = pool("balanced", &[held_address, idle.address]);
+        balanced.algorithm = UpstreamAlgorithm::LeastConnections;
+        let proxy = ProxyHarness::start(
+            vec![balanced],
+            vec![route(None, "/", &[], "balanced")],
+            1024,
+            2,
+        )
+        .await;
+
+        let mut held_client = TcpStream::connect(proxy.address)
+            .await
+            .expect("held client connect");
+        held_client
+            .write_all(b"GET / HTTP/1.1\r\nHost: least.test\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("held client request");
+        accepted_rx
+            .await
+            .expect("first request reached held origin");
+        assert_eq!(
+            proxy.pools[0].health_snapshot().endpoints[0].active_leases,
+            1
+        );
+
+        let idle_response = proxy
+            .request("GET / HTTP/1.1\r\nHost: least.test\r\n")
+            .await;
+        assert_origin_response(&idle_response, "idle");
+
+        release_tx.send(()).expect("release held origin");
+        let mut held_response = Vec::new();
+        held_client
+            .read_to_end(&mut held_response)
+            .await
+            .expect("held client response");
+        assert_origin_response(&RawResponse::parse(held_response), "held");
+        held_task.await.expect("held origin task");
+        proxy.wait_for_no_active_leases().await;
+        proxy.finish().await;
+        idle.finish().await;
+    })
+    .await
+    .expect("least-connections test timed out");
+}
+
+#[tokio::test]
+async fn connects_to_a_dns_http_endpoint_and_keeps_its_identity() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = Origin::start("dns", 1).await;
+        let proxy = ProxyHarness::start(
+            vec![endpoint_pool(
+                "dns",
+                vec![UpstreamEndpoint::Dns {
+                    host: "localhost".into(),
+                    port: origin.address.port(),
+                }],
+                UpstreamAlgorithm::RoundRobin,
+            )],
+            vec![route(None, "/", &[], "dns")],
+            1024,
+            1,
+        )
+        .await;
+
+        let response = proxy.request("GET / HTTP/1.1\r\nHost: dns.test\r\n").await;
+        assert_origin_response(&response, "dns");
+        assert_eq!(
+            proxy.pools[0].health_snapshot().endpoints[0]
+                .address
+                .to_string(),
+            format!("localhost:{}", origin.address.port())
+        );
+
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("DNS HTTP test timed out");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn connects_to_a_unix_http_endpoint() {
+    use tokio::net::UnixListener;
+
+    timeout(TEST_TIMEOUT, async {
+        let directory = tempfile::tempdir().expect("Unix HTTP directory");
+        let path = directory.path().join("origin.sock");
+        let listener = UnixListener::bind(&path).expect("Unix HTTP bind");
+        let origin = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("Unix HTTP accept");
+            read_request_head_from(&mut stream)
+                .await
+                .expect("Unix HTTP request");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nunix")
+                .await
+                .expect("Unix HTTP response");
+        });
+        let proxy = ProxyHarness::start(
+            vec![endpoint_pool(
+                "unix",
+                vec![UpstreamEndpoint::Unix { path: path.clone() }],
+                UpstreamAlgorithm::RoundRobin,
+            )],
+            vec![route(None, "/", &[], "unix")],
+            1024,
+            1,
+        )
+        .await;
+
+        let response = proxy.request("GET / HTTP/1.1\r\nHost: unix.test\r\n").await;
+        assert_origin_response(&response, "unix");
+
+        proxy.finish().await;
+        origin.await.expect("Unix HTTP origin task");
+    })
+    .await
+    .expect("Unix HTTP test timed out");
 }
 
 #[tokio::test]
@@ -236,6 +397,34 @@ async fn rejects_a_chunked_body_when_streaming_crosses_the_limit() {
 }
 
 #[tokio::test]
+async fn an_unbounded_body_limit_streams_without_size_rejection() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = Origin::start("unbounded", 1).await;
+        let proxy = ProxyHarness::start_unbounded(
+            vec![pool("upload", &[origin.address])],
+            vec![route(None, "/upload", &["POST"], "upload")],
+            1,
+        )
+        .await;
+        let body = vec![b'x'; 32 * 1024];
+        let mut request = format!(
+            "POST /upload HTTP/1.1\r\nHost: upload.test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        request.extend_from_slice(&body);
+
+        let response = proxy.request_bytes(&request).await;
+        assert_origin_response(&response, "unbounded");
+
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("unbounded body test timed out");
+}
+
+#[tokio::test]
 async fn rejects_ambiguous_authorities_without_contacting_an_origin() {
     timeout(TEST_TIMEOUT, async {
         let origin = Origin::start("authority", 1).await;
@@ -337,6 +526,7 @@ async fn enforces_the_connection_cap_in_the_production_http_wrapper() {
 
         let snapshot = proxy.metrics.snapshot().expect("connection-cap snapshot");
         assert_eq!(snapshot.traffic.accepted_connections, 2);
+        assert_eq!(snapshot.traffic.rejected_connections, 1);
         assert_eq!(snapshot.traffic.active_connections, 1);
 
         drop(first);
@@ -365,6 +555,7 @@ async fn retries_a_bodyless_get_on_a_distinct_endpoint_after_connect_failure() {
             .await;
 
         assert_origin_response(&response, "retry-success");
+        proxy.wait_for_no_active_leases().await;
         proxy.finish().await;
         healthy.finish().await;
     })
@@ -609,6 +800,433 @@ async fn permits_two_retries_and_succeeds_on_the_third_endpoint() {
     .expect("two-retry test timed out");
 }
 
+#[tokio::test]
+async fn serves_fixed_and_redirect_actions_with_exact_get_and_head_semantics() {
+    timeout(TEST_TIMEOUT, async {
+        let proxy = ProxyHarness::start(
+            Vec::new(),
+            vec![
+                HttpRoute {
+                    host: None,
+                    path: HttpPathSelector::Exact {
+                        value: "/fixed".into(),
+                    },
+                    methods: vec!["GET".into(), "HEAD".into()],
+                    access_policy: None,
+                    action: HttpRouteAction::FixedResponse {
+                        status: 200,
+                        body: "fixed body".into(),
+                        headers: vec![HttpLiteralHeader {
+                            name: "x-fixed".into(),
+                            value: "yes".into(),
+                        }],
+                    },
+                },
+                HttpRoute {
+                    host: None,
+                    path: HttpPathSelector::Exact {
+                        value: "/empty".into(),
+                    },
+                    methods: Vec::new(),
+                    access_policy: None,
+                    action: HttpRouteAction::FixedResponse {
+                        status: 204,
+                        body: String::new(),
+                        headers: Vec::new(),
+                    },
+                },
+                HttpRoute {
+                    host: None,
+                    path: HttpPathSelector::Exact {
+                        value: "/redirect".into(),
+                    },
+                    methods: Vec::new(),
+                    access_policy: None,
+                    action: HttpRouteAction::Redirect {
+                        status: 308,
+                        location: HttpRedirectLocation::RequestTemplate {
+                            value: "$scheme://$host$request_uri".into(),
+                        },
+                    },
+                },
+            ],
+            1024,
+            4,
+        )
+        .await;
+
+        let get = proxy
+            .request("GET /fixed HTTP/1.1\r\nHost: Actions.Example:8080\r\n")
+            .await;
+        assert_eq!(get.status, 200);
+        assert_eq!(get.header("x-fixed"), Some("yes"));
+        assert_eq!(get.header("content-length"), Some("10"));
+        assert_eq!(get.body(), b"fixed body");
+
+        let head = proxy
+            .request("HEAD /fixed HTTP/1.1\r\nHost: actions.example:8080\r\n")
+            .await;
+        assert_eq!(head.status, 200);
+        assert_eq!(head.header("content-length"), Some("10"));
+        assert!(head.body().is_empty());
+
+        let empty = proxy
+            .request("GET /empty HTTP/1.1\r\nHost: actions.example\r\n")
+            .await;
+        assert_eq!(empty.status, 204);
+        assert_eq!(empty.header("content-length"), None);
+        assert!(empty.body().is_empty());
+
+        let redirect = proxy
+            .request("GET /redirect?next=1 HTTP/1.1\r\nHost: Actions.Example:8080\r\n")
+            .await;
+        assert_eq!(redirect.status, 308);
+        assert_eq!(
+            redirect.header("location"),
+            Some("http://actions.example/redirect?next=1")
+        );
+
+        proxy.finish().await;
+    })
+    .await
+    .expect("local action test timed out");
+}
+
+#[tokio::test]
+async fn bearer_access_uses_the_configured_header_without_exposing_the_token() {
+    timeout(TEST_TIMEOUT, async {
+        let directory = tempfile::tempdir().expect("access token directory");
+        let token = "route-token-0123456789abcdef0123456789abcdef";
+        let token_path = write_secure_token(directory.path(), "route-token", token);
+        let route = HttpRoute {
+            host: None,
+            path: HttpPathSelector::SegmentPrefix { value: "/".into() },
+            methods: Vec::new(),
+            access_policy: Some(HttpAccessPolicy::BearerTokenFile {
+                token_file_path: token_path.clone(),
+                header_name: "x-route-token".into(),
+                realm: Some("private".into()),
+            }),
+            action: HttpRouteAction::FixedResponse {
+                status: 200,
+                body: "authorized".into(),
+                headers: Vec::new(),
+            },
+        };
+        let proxy = ProxyHarness::start(Vec::new(), vec![route], 1024, 3).await;
+
+        let missing = proxy
+            .request("GET / HTTP/1.1\r\nHost: access.test\r\n")
+            .await;
+        assert_eq!(missing.status, 401);
+        assert_eq!(
+            missing.header("www-authenticate"),
+            Some("Bearer realm=\"private\"")
+        );
+        let wrong = proxy
+            .request("GET / HTTP/1.1\r\nHost: access.test\r\nX-Route-Token: Bearer wrong\r\n")
+            .await;
+        assert_eq!(wrong.status, 401);
+        let accepted = proxy
+            .request(&format!(
+                "GET / HTTP/1.1\r\nHost: access.test\r\nX-Route-Token: Bearer {token}\r\n"
+            ))
+            .await;
+        assert_eq!(accepted.status, 200);
+        assert_eq!(accepted.body(), b"authorized");
+        assert!(!accepted.text().contains(token));
+        assert!(!accepted.text().contains(&token_path.display().to_string()));
+
+        proxy.finish().await;
+    })
+    .await
+    .expect("route access test timed out");
+}
+
+#[tokio::test]
+async fn static_files_pin_the_root_and_reject_symlinks_while_supporting_indexes_and_spa() {
+    timeout(TEST_TIMEOUT, async {
+        let directory = tempfile::tempdir().expect("static fixture directory");
+        let root = create_secure_root(directory.path(), "public");
+        fs::write(root.join("index.html"), b"index").expect("write index");
+        fs::write(root.join("app.js"), b"javascript").expect("write asset");
+        fs::write(root.join("spa.html"), b"fallback").expect("write fallback");
+        symlink("/etc/passwd", root.join("escape.txt")).expect("write escape symlink");
+        rustix::fs::mkfifoat(
+            rustix::fs::CWD,
+            root.join("special"),
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+        )
+        .expect("write special-file fixture");
+        let oversized = fs::File::create(root.join("oversized.bin")).expect("oversized fixture");
+        oversized
+            .set_len(16 * 1024 * 1024 + 1)
+            .expect("oversized fixture length");
+        let route = HttpRoute {
+            host: None,
+            path: HttpPathSelector::SegmentPrefix { value: "/".into() },
+            methods: Vec::new(),
+            access_policy: None,
+            action: HttpRouteAction::StaticFiles {
+                root_directory: root.clone(),
+                index_files: vec!["index.html".into()],
+                spa_fallback: Some("spa.html".into()),
+            },
+        };
+        let proxy = ProxyHarness::start(Vec::new(), vec![route], 1024, 8).await;
+
+        let moved = directory.path().join("pinned-public");
+        fs::rename(&root, &moved).expect("move pinned root");
+        fs::create_dir(&root).expect("replace configured root path");
+        fs::write(root.join("index.html"), b"replacement").expect("write replacement root");
+
+        let index = proxy
+            .request("GET / HTTP/1.1\r\nHost: static.test\r\n")
+            .await;
+        assert_eq!(index.status, 200);
+        assert_eq!(index.body(), b"index");
+        assert_eq!(
+            index.header("content-type"),
+            Some("text/html; charset=utf-8")
+        );
+
+        let head = proxy
+            .request("HEAD /app.js HTTP/1.1\r\nHost: static.test\r\n")
+            .await;
+        assert_eq!(head.status, 200);
+        assert_eq!(head.header("content-length"), Some("10"));
+        assert_eq!(
+            head.header("content-type"),
+            Some("text/javascript; charset=utf-8")
+        );
+        assert!(head.body().is_empty());
+
+        let fallback = proxy
+            .request("GET /client/route HTTP/1.1\r\nHost: static.test\r\n")
+            .await;
+        assert_eq!(fallback.status, 200);
+        assert_eq!(fallback.body(), b"fallback");
+
+        let symlink_response = proxy
+            .request("GET /escape.txt HTTP/1.1\r\nHost: static.test\r\n")
+            .await;
+        assert_eq!(symlink_response.status, 403);
+        assert!(!symlink_response.text().contains("root:"));
+
+        let special = proxy
+            .request("GET /special HTTP/1.1\r\nHost: static.test\r\n")
+            .await;
+        assert_eq!(special.status, 403);
+
+        let oversized = proxy
+            .request("GET /oversized.bin HTTP/1.1\r\nHost: static.test\r\n")
+            .await;
+        assert_eq!(oversized.status, 500);
+
+        let method = proxy
+            .request("POST /app.js HTTP/1.1\r\nHost: static.test\r\nContent-Length: 0\r\n")
+            .await;
+        assert_eq!(method.status, 405);
+        assert_eq!(method.header("allow"), Some("GET, HEAD"));
+
+        let traversal = proxy
+            .request("GET /../etc/passwd HTTP/1.1\r\nHost: static.test\r\n")
+            .await;
+        assert_eq!(traversal.status, 400);
+
+        proxy.finish().await;
+    })
+    .await
+    .expect("static action test timed out");
+}
+
+#[tokio::test]
+async fn applies_host_header_cookie_and_request_response_header_policies() {
+    timeout(TEST_TIMEOUT, async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("policy origin bind");
+        let origin_address = listener.local_addr().expect("policy origin address");
+        let origin = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("policy origin accept");
+            let request = read_request_head_bytes(&mut stream)
+                .await
+                .expect("policy origin request");
+            let request = String::from_utf8(request).expect("policy request UTF-8");
+            assert!(request.contains("\r\nHost: selected.example:9443\r\n"));
+            assert!(request.contains("\r\nx-incoming: Client.Example:8080\r\n"));
+            assert!(request.contains("\r\nx-normalized: client.example\r\n"));
+            assert!(request.contains("\r\nx-selected: selected.example:9443\r\n"));
+            assert!(!request.contains("x-remove:"));
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Remove: old\r\nSet-Cookie: sid=1; Path=/internal; HttpOnly\r\nConnection: close\r\n\r\nok",
+                )
+                .await
+                .expect("policy origin response");
+        });
+        let mut policy = HttpProxyPolicy {
+            upstream_host: HttpUpstreamHost::Literal {
+                value: "selected.example:9443".into(),
+            },
+            request_headers: vec![
+                HttpRequestHeaderMutation::Set {
+                    name: "x-incoming".into(),
+                    value: HttpRequestHeaderValue::IncomingAuthority,
+                },
+                HttpRequestHeaderMutation::Set {
+                    name: "x-normalized".into(),
+                    value: HttpRequestHeaderValue::NormalizedHost,
+                },
+                HttpRequestHeaderMutation::Set {
+                    name: "x-selected".into(),
+                    value: HttpRequestHeaderValue::SelectedUpstreamHost,
+                },
+                HttpRequestHeaderMutation::Remove {
+                    name: "x-remove".into(),
+                },
+            ],
+            response_headers: vec![
+                HttpResponseHeaderMutation::Set {
+                    name: "x-added".into(),
+                    value: "new".into(),
+                },
+                HttpResponseHeaderMutation::Remove {
+                    name: "x-remove".into(),
+                },
+            ],
+            response_cookie_path_rewrites: vec![HttpCookiePathRewrite {
+                from: "/internal".into(),
+                to: "/".into(),
+            }],
+            ..HttpProxyPolicy::default()
+        };
+        policy.retry.max_retries = 0;
+        let mut proxy_route = route(None, "/", &[], "origin");
+        let HttpRouteAction::Proxy {
+            policy: route_policy,
+            ..
+        } = &mut proxy_route.action
+        else {
+            unreachable!();
+        };
+        *route_policy = policy;
+        let proxy = ProxyHarness::start(
+            vec![pool("origin", &[origin_address])],
+            vec![proxy_route],
+            1024,
+            1,
+        )
+        .await;
+
+        let response = proxy
+            .request(
+                "GET / HTTP/1.1\r\nHost: Client.Example:8080\r\nX-Remove: client\r\n",
+            )
+            .await;
+        assert_eq!(response.status, 200, "response: {}", response.text());
+        assert_eq!(response.header("x-added"), Some("new"));
+        assert_eq!(response.header("x-remove"), None);
+        assert_eq!(
+            response.header("set-cookie"),
+            Some("sid=1; Path=/; HttpOnly")
+        );
+
+        proxy.finish().await;
+        origin.await.expect("policy origin task");
+    })
+    .await
+    .expect("proxy policy test timed out");
+}
+
+#[tokio::test]
+async fn retries_only_for_a_configured_trigger() {
+    timeout(TEST_TIMEOUT, async {
+        let unavailable = unused_address().await;
+        let unused = Origin::start("must-not-receive", 1).await;
+        let mut proxy_route = route(None, "/", &[], "retry");
+        let HttpRouteAction::Proxy { policy, .. } = &mut proxy_route.action else {
+            unreachable!();
+        };
+        policy.retry.triggers = vec![HttpRetryTrigger::ConnectTimeout];
+        let proxy = ProxyHarness::start_with_retries(
+            vec![pool("retry", &[unavailable, unused.address])],
+            vec![proxy_route],
+            1,
+            1,
+        )
+        .await;
+
+        let response = proxy
+            .request("GET / HTTP/1.1\r\nHost: retry.test\r\n")
+            .await;
+        assert_eq!(response.status, 502, "response: {}", response.text());
+
+        proxy.finish().await;
+        unused.assert_not_contacted().await;
+    })
+    .await
+    .expect("retry trigger test timed out");
+}
+
+#[tokio::test]
+async fn preserve_and_endpoint_host_policies_set_the_expected_upstream_authority() {
+    timeout(TEST_TIMEOUT, async {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Host-policy origin bind");
+        let origin_address = listener.local_addr().expect("Host-policy origin address");
+        let origin = tokio::spawn(async move {
+            for expected in [
+                "host: incoming.example:8080".to_owned(),
+                format!("host: {origin_address}"),
+            ] {
+                let (mut stream, _) = listener.accept().await.expect("Host-policy origin accept");
+                let request = read_request_head_bytes(&mut stream)
+                    .await
+                    .expect("Host-policy request");
+                let request = String::from_utf8(request)
+                    .expect("Host-policy request UTF-8")
+                    .to_ascii_lowercase();
+                assert!(request.contains(&expected), "request: {request}");
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                    )
+                    .await
+                    .expect("Host-policy response");
+            }
+        });
+        let preserve = route(None, "/preserve", &[], "origin");
+        let mut endpoint = route(None, "/endpoint", &[], "origin");
+        let HttpRouteAction::Proxy { policy, .. } = &mut endpoint.action else {
+            unreachable!();
+        };
+        policy.upstream_host = HttpUpstreamHost::Endpoint {
+            unix_fallback: None,
+        };
+        let proxy = ProxyHarness::start(
+            vec![pool("origin", &[origin_address])],
+            vec![preserve, endpoint],
+            1024,
+            2,
+        )
+        .await;
+
+        for path in ["/preserve", "/endpoint"] {
+            let response = proxy
+                .request(&format!(
+                    "GET {path} HTTP/1.1\r\nHost: Incoming.Example:8080\r\n"
+                ))
+                .await;
+            assert_eq!(response.status, 200, "response: {}", response.text());
+        }
+
+        proxy.finish().await;
+        origin.await.expect("Host-policy origin task");
+    })
+    .await
+    .expect("Host-policy test timed out");
+}
+
 struct ProxyHarness {
     address: SocketAddr,
     metrics: RuntimeMetrics,
@@ -627,7 +1245,7 @@ impl ProxyHarness {
         Self::start_with_policy(
             upstream_pools,
             routes,
-            max_request_body_bytes,
+            Some(max_request_body_bytes),
             100,
             0,
             false,
@@ -646,8 +1264,25 @@ impl ProxyHarness {
         Self::start_with_policy(
             upstream_pools,
             routes,
-            max_request_body_bytes,
+            Some(max_request_body_bytes),
             max_connections,
+            0,
+            false,
+            expected_connections,
+        )
+        .await
+    }
+
+    async fn start_unbounded(
+        upstream_pools: Vec<UpstreamPool>,
+        routes: Vec<HttpRoute>,
+        expected_connections: usize,
+    ) -> Self {
+        Self::start_with_policy(
+            upstream_pools,
+            routes,
+            None,
+            100,
             0,
             false,
             expected_connections,
@@ -664,7 +1299,7 @@ impl ProxyHarness {
         Self::start_with_policy(
             upstream_pools,
             routes,
-            1024,
+            Some(1024),
             100,
             max_retries,
             false,
@@ -681,7 +1316,7 @@ impl ProxyHarness {
         Self::start_with_policy(
             upstream_pools,
             routes,
-            1024,
+            Some(1024),
             100,
             0,
             true,
@@ -692,24 +1327,28 @@ impl ProxyHarness {
 
     async fn start_with_policy(
         upstream_pools: Vec<UpstreamPool>,
-        routes: Vec<HttpRoute>,
-        max_request_body_bytes: u64,
+        mut routes: Vec<HttpRoute>,
+        max_request_body_bytes: Option<u64>,
         max_connections: u64,
         max_retries: u8,
         run_health_checks: bool,
         expected_connections: usize,
     ) -> Self {
+        for route in &mut routes {
+            if let HttpRouteAction::Proxy { policy, .. } = &mut route.action {
+                policy.retry.max_retries = max_retries;
+            }
+        }
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("proxy bind");
         let address = listener.local_addr().expect("proxy address");
         let config = Config {
-            version: 1,
-            management: None,
             listeners: vec![Listener {
                 name: "http-loopback".into(),
-                bind: address,
+                bind: socket_bind(address),
                 protocol: Protocol::Http,
                 service: Some("routing".into()),
-                max_connections,
+                tls_profile: None,
+                max_connections: Some(max_connections),
             }],
             upstream_pools,
             http_services: vec![HttpService {
@@ -717,9 +1356,8 @@ impl ProxyHarness {
                 routes,
                 upstream_io_timeout_ms: 1_000,
                 max_request_body_bytes,
-                max_retries,
             }],
-            l4_services: Vec::new(),
+            ..empty_config()
         };
         let plan = runtime_plan(&config).expect("canonical HTTP service plan");
         let pools = plan.pools.clone();
@@ -738,7 +1376,7 @@ impl ProxyHarness {
                 &spec.name,
                 spec.kind.protocol(),
                 spec.bind.to_string(),
-                spec.max_connections,
+                spec.max_connections.unwrap_or(u64::MAX),
             )
             .expect("proxy listener metrics");
         let ServiceKind::Http(service) = spec.kind else {
@@ -761,11 +1399,15 @@ impl ProxyHarness {
             let mut connections = Vec::with_capacity(expected_connections);
             for _ in 0..expected_connections {
                 let (stream, _) = listener.accept().await.expect("proxy accept");
+                let Some(admission) = proxy.admit_connection() else {
+                    continue;
+                };
                 let stream: pingora::protocols::Stream =
                     Box::new(pingora::protocols::l4::stream::Stream::from(stream));
                 let proxy = Arc::clone(&proxy);
                 let shutdown = shutdown.clone();
                 connections.push(tokio::spawn(async move {
+                    let _admission = admission;
                     proxy.process_new(stream, &shutdown).await;
                 }));
             }
@@ -789,20 +1431,7 @@ impl ProxyHarness {
     }
 
     async fn request_bytes(&self, request: &[u8]) -> RawResponse {
-        let mut stream = TcpStream::connect(self.address)
-            .await
-            .expect("client connect");
-        stream
-            .write_all(request)
-            .await
-            .expect("client request write");
-
-        let mut response = Vec::new();
-        stream
-            .read_to_end(&mut response)
-            .await
-            .expect("client response read");
-        RawResponse::parse(response)
+        raw_http_request(self.address, request).await
     }
 
     async fn finish(mut self) {
@@ -828,6 +1457,24 @@ impl ProxyHarness {
         })
         .await
         .expect("active connection count did not converge");
+    }
+
+    async fn wait_for_no_active_leases(&self) {
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if self.pools.iter().all(|pool| {
+                    pool.health_snapshot()
+                        .endpoints
+                        .iter()
+                        .all(|endpoint| endpoint.active_leases == 0)
+                }) {
+                    break;
+                }
+                sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("active upstream leases did not drain");
     }
 }
 
@@ -993,61 +1640,52 @@ impl Drop for Origin {
     }
 }
 
-struct RawResponse {
-    status: u16,
-    bytes: Vec<u8>,
-}
-
-impl RawResponse {
-    fn parse(bytes: Vec<u8>) -> Self {
-        let status = bytes
-            .split(|byte| *byte == b'\n')
-            .next()
-            .and_then(|line| std::str::from_utf8(line).ok())
-            .and_then(|line| line.split_ascii_whitespace().nth(1))
-            .and_then(|status| status.parse().ok())
-            .unwrap_or_else(|| {
-                panic!("invalid HTTP response: {}", String::from_utf8_lossy(&bytes))
-            });
-        Self { status, bytes }
-    }
-
-    fn text(&self) -> String {
-        String::from_utf8_lossy(&self.bytes).into_owned()
-    }
-}
-
 async fn read_request_head(stream: &mut TcpStream) -> io::Result<()> {
-    let mut request = Vec::new();
-    let mut buffer = [0; 1024];
-    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
-        let read = stream.read(&mut buffer).await?;
-        if read == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "origin request ended before its headers",
-            ));
-        }
-        request.extend_from_slice(&buffer[..read]);
-    }
-    Ok(())
+    read_request_head_from(stream).await
+}
+
+async fn read_request_head_from<S>(stream: &mut S) -> io::Result<()>
+where
+    S: AsyncRead + Unpin,
+{
+    read_request_head_bytes(stream).await.map(|_| ())
 }
 
 fn pool(name: &str, endpoints: &[SocketAddr]) -> UpstreamPool {
+    endpoint_pool(
+        name,
+        endpoints.iter().copied().map(socket_endpoint).collect(),
+        UpstreamAlgorithm::RoundRobin,
+    )
+}
+
+fn endpoint_pool(
+    name: &str,
+    endpoints: Vec<UpstreamEndpoint>,
+    algorithm: UpstreamAlgorithm,
+) -> UpstreamPool {
     UpstreamPool {
         name: name.into(),
-        endpoints: endpoints.to_vec(),
-        algorithm: UpstreamAlgorithm::RoundRobin,
+        endpoints,
+        algorithm,
         health_check: None,
+        tls: None,
+        http_versions: HttpVersionPolicy::default(),
     }
 }
 
 fn route(host: Option<&str>, path: &str, methods: &[&str], pool: &str) -> HttpRoute {
     HttpRoute {
-        host: host.map(str::to_owned),
-        path_prefix: path.into(),
+        host: host.map(|value| oxiroute_config::HttpHostSelector::NormalizedHost {
+            value: value.into(),
+        }),
+        path: HttpPathSelector::SegmentPrefix { value: path.into() },
         methods: methods.iter().map(ToString::to_string).collect(),
-        upstream_pool: pool.into(),
+        access_policy: None,
+        action: HttpRouteAction::Proxy {
+            upstream_pool: pool.into(),
+            policy: HttpProxyPolicy::default(),
+        },
     }
 }
 

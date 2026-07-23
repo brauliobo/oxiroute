@@ -1,11 +1,11 @@
 use std::{
-    borrow::Cow,
     error::Error,
-    fmt,
+    fmt, io,
     net::{IpAddr, SocketAddr},
+    path::{Path, PathBuf},
     sync::{
-        Mutex,
-        atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering, fence},
+        Arc, Mutex,
+        atomic::{AtomicU8, AtomicU64, Ordering, fence},
     },
 };
 
@@ -13,26 +13,66 @@ use http::{
     Method, Uri,
     uri::{Authority, PathAndQuery},
 };
-use oxiroute_config::canonicalize_http_path;
+use oxiroute_config::{
+    HttpHostSelector, HttpPathSelector, UpstreamAlgorithm, UpstreamEndpoint, canonicalize_http_path,
+};
 use serde::{Serialize, Serializer};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum HostMatcher {
     Any,
-    Exact(String),
+    ExactAuthority(String),
+    NormalizedExact(String),
     Wildcard(String),
 }
 
 impl HostMatcher {
-    fn rank_if_matches(&self, host: Option<&str>) -> Option<u8> {
+    fn rank_if_matches(&self, authority: Option<&Authority>) -> Option<u8> {
         match self {
             Self::Any => Some(0),
-            Self::Exact(expected) => host
-                .is_some_and(|host| exact_host_matches(host, expected))
+            Self::ExactAuthority(expected) => authority
+                .is_some_and(|authority| authority.as_str() == expected)
+                .then_some(3),
+            Self::NormalizedExact(expected) => authority
+                .and_then(normalized_authority_host)
+                .is_some_and(|host| host == *expected)
                 .then_some(2),
-            Self::Wildcard(suffix) => host
-                .is_some_and(|host| wildcard_matches(host, suffix))
+            Self::Wildcard(suffix) => authority
+                .and_then(normalized_authority_host)
+                .is_some_and(|host| wildcard_matches(&host, suffix))
                 .then_some(1),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum PathMatcher {
+    RawPrefix(String),
+    SegmentPrefix(String),
+    Exact(String),
+}
+
+impl PathMatcher {
+    fn rank_if_matches(&self, path: &str) -> Option<(u8, usize)> {
+        let (rank, value, matches) = match self {
+            Self::RawPrefix(value) => (0, value, path.starts_with(value)),
+            Self::SegmentPrefix(value) => (
+                1,
+                value,
+                value == "/"
+                    || path == value
+                    || path
+                        .strip_prefix(value)
+                        .is_some_and(|remainder| remainder.starts_with('/')),
+            ),
+            Self::Exact(value) => (2, value, path == value),
+        };
+        matches.then_some((rank, value.len()))
+    }
+
+    fn value(&self) -> &str {
+        match self {
+            Self::RawPrefix(value) | Self::SegmentPrefix(value) | Self::Exact(value) => value,
         }
     }
 }
@@ -41,69 +81,58 @@ impl HostMatcher {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Route {
     host: HostMatcher,
-    path_prefix: String,
+    path: PathMatcher,
     methods: Option<Box<[Method]>>,
-    pool_id: String,
+    identity: String,
 }
 
 impl Route {
-    /// Creates a route from a host pattern, path prefix, optional method set, and pool identity.
-    ///
-    /// A host of `None` matches every host. Wildcards must have the form `*.example.com` and
-    /// match exactly one label. Trailing slashes are removed from path prefixes other than `/`.
+    /// Creates a route from canonical host/path selectors, an optional method set, and an identity.
     ///
     /// # Errors
     ///
     /// Returns [`RouteError`] when the host pattern or path prefix is invalid, the method set is
-    /// empty, or the pool identity is empty.
+    /// empty, or the route identity is empty.
     pub fn new(
-        host: Option<&str>,
-        path_prefix: &str,
+        host: Option<HttpHostSelector>,
+        path: HttpPathSelector,
         methods: Option<Vec<Method>>,
-        pool_id: impl Into<String>,
+        route_id: impl Into<String>,
     ) -> Result<Self, RouteError> {
         let host = normalize_host(host)?;
-        let path_prefix = normalize_path_prefix(path_prefix)?;
+        let path = normalize_path(path)?;
         let methods = match methods {
             Some(methods) if methods.is_empty() => return Err(RouteError::EmptyMethodSet),
             Some(methods) => Some(methods.into_boxed_slice()),
             None => None,
         };
-        let pool_id = pool_id.into();
-        if pool_id.is_empty() {
-            return Err(RouteError::EmptyPoolIdentity);
+        let identity = route_id.into();
+        if identity.is_empty() {
+            return Err(RouteError::EmptyRouteIdentity);
         }
 
         Ok(Self {
             host,
-            path_prefix,
+            path,
             methods,
-            pool_id,
+            identity,
         })
     }
 
     #[must_use]
-    pub fn path_prefix(&self) -> &str {
-        &self.path_prefix
+    pub fn path_value(&self) -> &str {
+        self.path.value()
     }
 
     #[must_use]
-    pub fn pool_id(&self) -> &str {
-        &self.pool_id
+    pub fn route_id(&self) -> &str {
+        &self.identity
     }
 
     fn matches_method(&self, method: &Method) -> bool {
         self.methods
             .as_ref()
             .is_none_or(|methods| methods.contains(method))
-    }
-
-    fn matches_path(&self, path: &str) -> bool {
-        self.path_prefix == "/"
-            || path == self.path_prefix
-            || path
-                .strip_prefix(&self.path_prefix)
-                .is_some_and(|remainder| remainder.starts_with('/'))
     }
 }
 
@@ -113,7 +142,7 @@ pub enum RouteError {
     InvalidHost(String),
     InvalidPathPrefix(String),
     EmptyMethodSet,
-    EmptyPoolIdentity,
+    EmptyRouteIdentity,
 }
 
 impl fmt::Display for RouteError {
@@ -124,7 +153,7 @@ impl fmt::Display for RouteError {
                 write!(formatter, "invalid route path prefix `{path}`")
             }
             Self::EmptyMethodSet => formatter.write_str("route method set cannot be empty"),
-            Self::EmptyPoolIdentity => formatter.write_str("route pool identity cannot be empty"),
+            Self::EmptyRouteIdentity => formatter.write_str("route identity cannot be empty"),
         }
     }
 }
@@ -147,9 +176,9 @@ impl RouteTable {
 
     /// Selects the highest-priority route for the request.
     ///
-    /// Host precedence is exact, wildcard, then catch-all. Within a host class, the longest path
-    /// prefix wins, and source order resolves remaining ties. The explicit authority is preferred;
-    /// when absent, an authority from an absolute URI is used.
+    /// Host precedence is exact authority, normalized exact/IP, wildcard, then catch-all. Path
+    /// precedence is exact, segment prefix, then raw prefix, with longer prefixes winning within a
+    /// kind. A method-specific route precedes an any-method route and source order resolves ties.
     #[must_use]
     pub fn select(
         &self,
@@ -157,18 +186,22 @@ impl RouteTable {
         uri: &Uri,
         method: &Method,
     ) -> Option<&Route> {
-        let host = authority.or_else(|| uri.authority()).map(Authority::host);
+        let authority = authority.or_else(|| uri.authority());
         let path = canonicalize_http_path(uri.path())?;
         let mut best = None;
 
         for route in &self.routes {
-            if !route.matches_method(method) || !route.matches_path(path.as_ref()) {
+            if !route.matches_method(method) {
                 continue;
             }
-            let Some(host_rank) = route.host.rank_if_matches(host) else {
+            let Some(host_rank) = route.host.rank_if_matches(authority) else {
                 continue;
             };
-            let score = (host_rank, route.path_prefix.len());
+            let Some((path_rank, path_length)) = route.path.rank_if_matches(path.as_ref()) else {
+                continue;
+            };
+            let method_rank = u8::from(route.methods.is_some());
+            let score = (host_rank, path_rank, path_length, method_rank);
 
             match best {
                 Some((_, best_score)) if best_score >= score => {}
@@ -180,29 +213,39 @@ impl RouteTable {
     }
 }
 
-fn normalize_host(host: Option<&str>) -> Result<HostMatcher, RouteError> {
+fn normalize_host(host: Option<HttpHostSelector>) -> Result<HostMatcher, RouteError> {
     let Some(host) = host else {
         return Ok(HostMatcher::Any);
     };
-    if host.len() > 253 {
-        return Err(RouteError::InvalidHost(host.to_owned()));
-    }
-
-    if let Some(suffix) = host.strip_prefix("*.") {
-        if suffix.parse::<IpAddr>().is_ok() || !is_dns_name(suffix) {
-            return Err(RouteError::InvalidHost(host.to_owned()));
+    match host {
+        HttpHostSelector::ExactAuthority { value } => {
+            let valid = value.len() <= 255
+                && !value.contains(['*', '@'])
+                && value
+                    .parse::<Authority>()
+                    .is_ok_and(|authority| !authority.host().is_empty());
+            if !valid {
+                return Err(RouteError::InvalidHost(value));
+            }
+            Ok(HostMatcher::ExactAuthority(value))
         }
-        return Ok(HostMatcher::Wildcard(suffix.to_ascii_lowercase()));
+        HttpHostSelector::NormalizedHost { mut value } => {
+            value.make_ascii_lowercase();
+            if let Some(suffix) = value.strip_prefix("*.") {
+                if suffix.parse::<IpAddr>().is_ok() || !is_dns_name(suffix) {
+                    return Err(RouteError::InvalidHost(value));
+                }
+                return Ok(HostMatcher::Wildcard(suffix.into()));
+            }
+            if let Some(ip) = parse_host_ip(&value) {
+                return Ok(HostMatcher::NormalizedExact(ip.to_string()));
+            }
+            if value.len() > 253 || !is_dns_name(&value) {
+                return Err(RouteError::InvalidHost(value));
+            }
+            Ok(HostMatcher::NormalizedExact(value))
+        }
     }
-
-    if let Some(ip) = parse_host_ip(host) {
-        return Ok(HostMatcher::Exact(ip.to_string()));
-    }
-    if !is_dns_name(host) {
-        return Err(RouteError::InvalidHost(host.to_owned()));
-    }
-
-    Ok(HostMatcher::Exact(host.to_ascii_lowercase()))
 }
 
 fn parse_host_ip(host: &str) -> Option<IpAddr> {
@@ -233,24 +276,30 @@ fn is_dns_name(host: &str) -> bool {
         })
 }
 
-fn normalize_path_prefix(path_prefix: &str) -> Result<String, RouteError> {
-    let valid_path = path_prefix.starts_with('/')
-        && path_prefix
-            .parse::<PathAndQuery>()
-            .is_ok_and(|path| path.query().is_none() && path.path() == path_prefix);
-    if !valid_path {
-        return Err(RouteError::InvalidPathPrefix(path_prefix.to_owned()));
-    }
-
-    let normalized = path_prefix.trim_end_matches('/');
-    let normalized = if normalized.is_empty() {
-        "/".to_owned()
-    } else {
-        normalized.to_owned()
+fn normalize_path(path: HttpPathSelector) -> Result<PathMatcher, RouteError> {
+    let value = match &path {
+        HttpPathSelector::SegmentPrefix { value }
+        | HttpPathSelector::RawPrefix { value }
+        | HttpPathSelector::Exact { value } => value,
     };
-    canonicalize_http_path(&normalized)
-        .map(Cow::into_owned)
-        .ok_or_else(|| RouteError::InvalidPathPrefix(path_prefix.to_owned()))
+    let valid_path = value.starts_with('/')
+        && value
+            .parse::<PathAndQuery>()
+            .is_ok_and(|path| path.query().is_none() && path.path() == value);
+    if !valid_path {
+        return Err(RouteError::InvalidPathPrefix(value.clone()));
+    }
+    let Some(canonical) = canonicalize_http_path(value) else {
+        return Err(RouteError::InvalidPathPrefix(value.clone()));
+    };
+    if canonical.as_ref() != value {
+        return Err(RouteError::InvalidPathPrefix(value.clone()));
+    }
+    Ok(match path {
+        HttpPathSelector::SegmentPrefix { value } => PathMatcher::SegmentPrefix(value),
+        HttpPathSelector::RawPrefix { value } => PathMatcher::RawPrefix(value),
+        HttpPathSelector::Exact { value } => PathMatcher::Exact(value),
+    })
 }
 
 fn wildcard_matches(host: &str, suffix: &str) -> bool {
@@ -267,12 +316,129 @@ fn wildcard_matches(host: &str, suffix: &str) -> bool {
         && !host[..dot_index].contains('.')
 }
 
-fn exact_host_matches(host: &str, expected: &str) -> bool {
-    host.eq_ignore_ascii_case(expected)
-        || host
-            .strip_prefix('[')
-            .and_then(|host| host.strip_suffix(']'))
-            .is_some_and(|host| host.eq_ignore_ascii_case(expected))
+fn normalized_authority_host(authority: &Authority) -> Option<String> {
+    let host = authority.host();
+    if let Some(ip) = parse_host_ip(host) {
+        Some(ip.to_string())
+    } else if is_dns_name(host) {
+        Some(host.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
+/// A validated upstream endpoint retained in its canonical, typed form at runtime.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum RuntimeEndpoint {
+    Socket { address: SocketAddr },
+    Dns { host: String, port: u16 },
+    Unix { path: PathBuf },
+}
+
+impl RuntimeEndpoint {
+    fn preflight(&self) -> Result<(), PoolError> {
+        match self {
+            Self::Socket { address } if address.port() == 0 => {
+                Err(PoolError::InvalidSocketEndpoint(*address))
+            }
+            Self::Dns { host, port }
+                if *port == 0 || host.parse::<IpAddr>().is_ok() || !is_dns_name(host) =>
+            {
+                Err(PoolError::InvalidDnsEndpoint {
+                    host: host.clone(),
+                    port: *port,
+                })
+            }
+            Self::Unix { path } if !valid_unix_endpoint(path) => {
+                Err(PoolError::InvalidUnixEndpoint(path.clone()))
+            }
+            Self::Socket { .. } | Self::Dns { .. } | Self::Unix { .. } => Ok(()),
+        }
+    }
+
+    pub(crate) async fn resolve(&self) -> io::Result<Vec<SocketAddr>> {
+        match self {
+            Self::Socket { address } => Ok(vec![*address]),
+            Self::Dns { host, port } => {
+                let mut addresses = tokio::net::lookup_host((host.as_str(), *port))
+                    .await?
+                    .collect::<Vec<_>>();
+                addresses.sort_unstable();
+                addresses.dedup();
+                if addresses.is_empty() {
+                    Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("DNS endpoint `{host}:{port}` returned no addresses"),
+                    ))
+                } else {
+                    Ok(addresses)
+                }
+            }
+            Self::Unix { path } => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "Unix endpoint `{}` does not resolve through DNS",
+                    path.display()
+                ),
+            )),
+        }
+    }
+}
+
+impl From<SocketAddr> for RuntimeEndpoint {
+    fn from(address: SocketAddr) -> Self {
+        Self::Socket { address }
+    }
+}
+
+impl TryFrom<&UpstreamEndpoint> for RuntimeEndpoint {
+    type Error = PoolError;
+
+    fn try_from(endpoint: &UpstreamEndpoint) -> Result<Self, Self::Error> {
+        let endpoint = match endpoint {
+            UpstreamEndpoint::Socket { address } => Self::Socket { address: *address },
+            UpstreamEndpoint::Dns { host, port } => Self::Dns {
+                host: host.clone(),
+                port: *port,
+            },
+            UpstreamEndpoint::Unix { path } => Self::Unix { path: path.clone() },
+        };
+        endpoint.preflight()?;
+        Ok(endpoint)
+    }
+}
+
+impl fmt::Display for RuntimeEndpoint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Socket { address } => address.fmt(formatter),
+            Self::Dns { host, port } => write!(formatter, "{host}:{port}"),
+            Self::Unix { path } => path.display().fmt(formatter),
+        }
+    }
+}
+
+impl Serialize for RuntimeEndpoint {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+fn valid_unix_endpoint(path: &Path) -> bool {
+    if path.to_str().is_none() || !path.is_absolute() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::net::SocketAddr::from_pathname(path).is_ok()
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -324,7 +490,8 @@ impl HealthFailure {
 
 #[derive(Debug)]
 struct PoolEndpoint {
-    address: SocketAddr,
+    active_leases: Arc<AtomicU64>,
+    endpoint: RuntimeEndpoint,
     state: AtomicU8,
     last_checked_at_unix_ms: AtomicU64,
     last_transition_at_unix_ms: AtomicU64,
@@ -336,9 +503,10 @@ struct PoolEndpoint {
 }
 
 impl PoolEndpoint {
-    fn new(address: SocketAddr, checked: bool) -> Self {
+    fn new(endpoint: RuntimeEndpoint, checked: bool) -> Self {
         Self {
-            address,
+            active_leases: Arc::new(AtomicU64::new(0)),
+            endpoint,
             state: AtomicU8::new(u8::from(checked)),
             last_checked_at_unix_ms: AtomicU64::new(0),
             last_transition_at_unix_ms: AtomicU64::new(0),
@@ -419,7 +587,8 @@ impl PoolEndpoint {
 
     fn snapshot(&self) -> EndpointHealthSnapshot {
         EndpointHealthSnapshot {
-            address: self.address,
+            active_leases: self.active_leases.load(Ordering::Relaxed),
+            address: self.endpoint.clone(),
             state: self.state(),
             last_checked_at_unix_ms: nonzero(self.last_checked_at_unix_ms.load(Ordering::Relaxed)),
             last_transition_at_unix_ms: nonzero(
@@ -441,7 +610,9 @@ const fn nonzero(value: u64) -> Option<u64> {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EndpointHealthSnapshot {
-    pub address: SocketAddr,
+    #[serde(serialize_with = "serialize_u64_string")]
+    pub active_leases: u64,
+    pub address: RuntimeEndpoint,
     pub state: EndpointHealthState,
     pub last_checked_at_unix_ms: Option<u64>,
     pub last_transition_at_unix_ms: Option<u64>,
@@ -476,95 +647,177 @@ where
     serializer.serialize_str(&value.to_string())
 }
 
-/// An optimistic health-aware round-robin selector over a fixed, nonempty endpoint list.
+/// A health-aware selector over a fixed, nonempty endpoint list.
 #[derive(Debug)]
-pub struct RoundRobinPool {
+pub struct EndpointPool {
+    algorithm: UpstreamAlgorithm,
     name: String,
     endpoints: Box<[PoolEndpoint]>,
     health_version: AtomicU64,
     health_writer: Mutex<()>,
-    next: AtomicUsize,
+    selection: Arc<Mutex<SelectionState>>,
     unavailable_selections: AtomicU64,
 }
 
-impl RoundRobinPool {
+#[derive(Debug, Default)]
+struct SelectionState {
+    next: usize,
+}
+
+/// Compatibility name retained for monitoring and topology consumers during the pool transition.
+pub type RoundRobinPool = EndpointPool;
+
+#[derive(Debug)]
+pub struct EndpointLease {
+    active_leases: Arc<AtomicU64>,
+    endpoint: RuntimeEndpoint,
+    selection: Arc<Mutex<SelectionState>>,
+}
+
+impl EndpointLease {
+    #[must_use]
+    pub const fn endpoint(&self) -> &RuntimeEndpoint {
+        &self.endpoint
+    }
+}
+
+impl Drop for EndpointLease {
+    fn drop(&mut self) {
+        let _selection = self
+            .selection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let released =
+            self.active_leases
+                .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |active| {
+                    active.checked_sub(1)
+                });
+        debug_assert!(released.is_ok(), "endpoint lease counter underflow");
+    }
+}
+
+impl EndpointPool {
     /// Creates a pool whose first selection returns the first endpoint.
     ///
     /// # Errors
     ///
     /// Returns [`PoolError::Empty`] when no endpoints are provided.
     pub fn new(endpoints: impl IntoIterator<Item = SocketAddr>) -> Result<Self, PoolError> {
-        Self::new_named(String::new(), endpoints, false)
+        Self::from_endpoints(
+            endpoints.into_iter().map(RuntimeEndpoint::from),
+            UpstreamAlgorithm::RoundRobin,
+        )
+    }
+
+    /// Creates a pool with the configured balancing algorithm.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when the endpoint list is empty or an endpoint cannot be represented
+    /// by the runtime without connecting to it.
+    pub fn from_endpoints(
+        endpoints: impl IntoIterator<Item = RuntimeEndpoint>,
+        algorithm: UpstreamAlgorithm,
+    ) -> Result<Self, PoolError> {
+        Self::new_named(String::new(), endpoints, algorithm, false)
     }
 
     pub(crate) fn new_named(
         name: String,
-        endpoints: impl IntoIterator<Item = SocketAddr>,
+        endpoints: impl IntoIterator<Item = RuntimeEndpoint>,
+        algorithm: UpstreamAlgorithm,
         checked: bool,
     ) -> Result<Self, PoolError> {
         let endpoints = endpoints
             .into_iter()
-            .map(|endpoint| PoolEndpoint::new(endpoint, checked))
-            .collect::<Vec<_>>()
+            .map(|endpoint| {
+                endpoint.preflight()?;
+                Ok(PoolEndpoint::new(endpoint, checked))
+            })
+            .collect::<Result<Vec<_>, PoolError>>()?
             .into_boxed_slice();
         if endpoints.is_empty() {
             return Err(PoolError::Empty);
         }
 
         Ok(Self {
+            algorithm,
             name,
             endpoints,
             health_version: AtomicU64::new(0),
             health_writer: Mutex::new(()),
-            next: AtomicUsize::new(0),
+            selection: Arc::new(Mutex::new(SelectionState::default())),
             unavailable_selections: AtomicU64::new(0),
         })
     }
 
     #[must_use]
-    pub fn select(&self) -> Option<SocketAddr> {
+    pub fn select(&self) -> Option<EndpointLease> {
         self.select_excluding(&[])
     }
 
     /// Selects the next endpoint not present in a request's attempted-endpoint set.
     #[must_use]
-    pub fn select_excluding(&self, excluded: &[SocketAddr]) -> Option<SocketAddr> {
-        loop {
-            let start = self.next.load(Ordering::Relaxed);
-            let (selected, pool_available) = self.read_health(|endpoints| {
-                let mut pool_available = false;
-                let selected = (0..endpoints.len()).find_map(|offset| {
-                    let index = (start + offset) % endpoints.len();
-                    let endpoint = &endpoints[index];
-                    let selectable = endpoint.state().selectable();
-                    pool_available |= selectable;
-                    (selectable && !excluded.contains(&endpoint.address))
-                        .then_some((index, endpoint.address))
-                });
-                (selected, pool_available)
+    pub fn select_excluding(&self, excluded: &[RuntimeEndpoint]) -> Option<EndpointLease> {
+        let mut selection = self
+            .selection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let start = selection.next;
+        let (selected, pool_available) = self.read_health(|endpoints| {
+            let pool_available = endpoints
+                .iter()
+                .any(|endpoint| endpoint.state().selectable());
+            let candidates = (0..endpoints.len()).filter_map(|offset| {
+                let index = (start + offset) % endpoints.len();
+                let endpoint = &endpoints[index];
+                (endpoint.state().selectable()
+                    && !excluded.contains(&endpoint.endpoint)
+                    && endpoint.active_leases.load(Ordering::Relaxed) < u64::MAX)
+                    .then_some((index, endpoint.active_leases.load(Ordering::Relaxed)))
             });
-            let Some((index, address)) = selected else {
-                if !pool_available {
-                    self.note_unavailable_selection();
-                }
-                return None;
+            let selected = match self.algorithm {
+                UpstreamAlgorithm::RoundRobin => candidates.map(|(index, _)| index).next(),
+                UpstreamAlgorithm::LeastConnections => candidates
+                    .fold(None, |best, candidate| match best {
+                        Some((_, best_active)) if best_active <= candidate.1 => best,
+                        _ => Some(candidate),
+                    })
+                    .map(|(index, _)| index),
             };
-            let next = (index + 1) % self.endpoints.len();
-            if self
-                .next
-                .compare_exchange_weak(start, next, Ordering::Relaxed, Ordering::Relaxed)
-                .is_ok()
-            {
-                return Some(address);
+            (selected, pool_available)
+        });
+        let Some(index) = selected else {
+            if !pool_available {
+                self.note_unavailable_selection();
             }
-        }
+            return None;
+        };
+        let endpoint = &self.endpoints[index];
+        endpoint
+            .active_leases
+            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |active| {
+                active.checked_add(1)
+            })
+            .ok()?;
+        selection.next = (index + 1) % self.endpoints.len();
+        Some(EndpointLease {
+            active_leases: Arc::clone(&endpoint.active_leases),
+            endpoint: endpoint.endpoint.clone(),
+            selection: Arc::clone(&self.selection),
+        })
     }
 
     #[must_use]
-    pub fn has_unattempted(&self, attempted: &[SocketAddr]) -> bool {
+    pub fn algorithm(&self) -> UpstreamAlgorithm {
+        self.algorithm
+    }
+
+    #[must_use]
+    pub fn has_unattempted(&self, attempted: &[RuntimeEndpoint]) -> bool {
         self.read_health(|endpoints| {
             endpoints.iter().any(|endpoint| {
-                endpoint.state().selectable() && !attempted.contains(&endpoint.address)
+                endpoint.state().selectable() && !attempted.contains(&endpoint.endpoint)
             })
         })
     }
@@ -582,11 +835,11 @@ impl RoundRobinPool {
         self.unavailable_selections.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn endpoints(&self) -> impl Iterator<Item = (usize, SocketAddr)> + '_ {
+    pub(crate) fn endpoints(&self) -> impl Iterator<Item = (usize, RuntimeEndpoint)> + '_ {
         self.endpoints
             .iter()
             .enumerate()
-            .map(|(index, endpoint)| (index, endpoint.address))
+            .map(|(index, endpoint)| (index, endpoint.endpoint.clone()))
     }
 
     pub(crate) fn record_health(
@@ -626,7 +879,7 @@ impl RoundRobinPool {
         });
         PoolHealthSnapshot {
             name: self.name.clone(),
-            algorithm: "round_robin",
+            algorithm: algorithm_name(self.algorithm),
             available_endpoints: endpoints
                 .iter()
                 .filter(|endpoint| endpoint.state.selectable())
@@ -658,16 +911,35 @@ impl RoundRobinPool {
     }
 }
 
+const fn algorithm_name(algorithm: UpstreamAlgorithm) -> &'static str {
+    match algorithm {
+        UpstreamAlgorithm::RoundRobin => "round_robin",
+        UpstreamAlgorithm::LeastConnections => "least_connections",
+    }
+}
+
 /// Errors produced while constructing an endpoint pool.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PoolError {
     Empty,
+    InvalidSocketEndpoint(SocketAddr),
+    InvalidDnsEndpoint { host: String, port: u16 },
+    InvalidUnixEndpoint(PathBuf),
 }
 
 impl fmt::Display for PoolError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Empty => formatter.write_str("round-robin pool cannot be empty"),
+            Self::Empty => formatter.write_str("upstream endpoint pool cannot be empty"),
+            Self::InvalidSocketEndpoint(address) => {
+                write!(formatter, "invalid socket endpoint `{address}`")
+            }
+            Self::InvalidDnsEndpoint { host, port } => {
+                write!(formatter, "invalid DNS endpoint `{host}:{port}`")
+            }
+            Self::InvalidUnixEndpoint(path) => {
+                write!(formatter, "invalid Unix endpoint `{}`", path.display())
+            }
         }
     }
 }
@@ -688,12 +960,16 @@ mod tests {
     fn checked_endpoints_transition_through_thresholds() {
         let pool = RoundRobinPool::new_named(
             "checked".into(),
-            [SocketAddr::from(([127, 0, 0, 1], 3000))],
+            [RuntimeEndpoint::from(SocketAddr::from((
+                [127, 0, 0, 1],
+                3000,
+            )))],
+            UpstreamAlgorithm::RoundRobin,
             true,
         )
         .expect("checked pool");
 
-        assert_eq!(pool.select(), None);
+        assert!(pool.select().is_none());
         assert_eq!(
             pool.health_snapshot().endpoints[0].state,
             EndpointHealthState::Unknown
@@ -754,7 +1030,10 @@ mod tests {
         let endpoint = SocketAddr::from(([127, 0, 0, 1], 3000));
         let pool = RoundRobinPool::new([endpoint]).expect("unchecked pool");
 
-        assert_eq!(pool.select(), Some(endpoint));
+        assert_eq!(
+            pool.select().map(|lease| lease.endpoint().clone()),
+            Some(RuntimeEndpoint::from(endpoint))
+        );
         assert_eq!(
             pool.health_snapshot().endpoints[0].state,
             EndpointHealthState::Unchecked
@@ -768,8 +1047,9 @@ mod tests {
             SocketAddr::from(([127, 0, 0, 1], 3001)),
         ];
         let pool = RoundRobinPool::new(endpoints).expect("unchecked pool");
+        let endpoints = endpoints.map(RuntimeEndpoint::from);
 
-        assert_eq!(pool.select_excluding(&endpoints), None);
+        assert!(pool.select_excluding(&endpoints).is_none());
         assert_eq!(pool.health_snapshot().unavailable_selections, 0);
     }
 
@@ -780,7 +1060,13 @@ mod tests {
             SocketAddr::from(([127, 0, 0, 1], 3001)),
         ];
         let pool = Arc::new(
-            RoundRobinPool::new_named("checked".into(), endpoints, true).expect("checked pool"),
+            RoundRobinPool::new_named(
+                "checked".into(),
+                endpoints.map(RuntimeEndpoint::from),
+                UpstreamAlgorithm::RoundRobin,
+                true,
+            )
+            .expect("checked pool"),
         );
         pool.endpoints[0]
             .state
@@ -797,7 +1083,11 @@ mod tests {
         let selection_task = thread::spawn(move || {
             selection_barrier.wait();
             selection_tx
-                .send(selection_pool.select())
+                .send(
+                    selection_pool
+                        .select()
+                        .map(|lease| lease.endpoint().clone()),
+                )
                 .expect("selection receiver");
         });
         barrier.wait();
@@ -820,7 +1110,7 @@ mod tests {
             selection_rx
                 .recv_timeout(Duration::from_secs(1))
                 .expect("stable selection"),
-            Some(endpoints[0])
+            Some(RuntimeEndpoint::from(endpoints[0]))
         );
         selection_task.join().expect("selection task");
         assert_eq!(pool.health_snapshot().unavailable_selections, 0);
@@ -833,8 +1123,13 @@ mod tests {
             SocketAddr::from(([127, 0, 0, 1], 3001)),
             SocketAddr::from(([127, 0, 0, 1], 3002)),
         ];
-        let pool =
-            RoundRobinPool::new_named("checked".into(), endpoints, true).expect("checked pool");
+        let pool = RoundRobinPool::new_named(
+            "checked".into(),
+            endpoints.map(RuntimeEndpoint::from),
+            UpstreamAlgorithm::RoundRobin,
+            true,
+        )
+        .expect("checked pool");
         pool.record_health(
             0,
             false,
@@ -846,16 +1141,19 @@ mod tests {
         pool.record_health(1, true, None, Some(100), 1, 1);
         pool.record_health(2, true, None, Some(100), 1, 1);
 
-        let selected = (0..6).map(|_| pool.select()).collect::<Vec<_>>();
+        let selected = (0..6)
+            .map(|_| pool.select().map(|lease| lease.endpoint().clone()))
+            .collect::<Vec<_>>();
+        let endpoints = endpoints.map(RuntimeEndpoint::from);
         assert_eq!(
             selected,
             vec![
-                Some(endpoints[1]),
-                Some(endpoints[2]),
-                Some(endpoints[1]),
-                Some(endpoints[2]),
-                Some(endpoints[1]),
-                Some(endpoints[2]),
+                Some(endpoints[1].clone()),
+                Some(endpoints[2].clone()),
+                Some(endpoints[1].clone()),
+                Some(endpoints[2].clone()),
+                Some(endpoints[1].clone()),
+                Some(endpoints[2].clone()),
             ]
         );
     }
@@ -871,7 +1169,13 @@ mod tests {
             SocketAddr::from(([127, 0, 0, 1], 3002)),
         ];
         let pool = Arc::new(
-            RoundRobinPool::new_named("checked".into(), endpoints, true).expect("checked pool"),
+            RoundRobinPool::new_named(
+                "checked".into(),
+                endpoints.map(RuntimeEndpoint::from),
+                UpstreamAlgorithm::RoundRobin,
+                true,
+            )
+            .expect("checked pool"),
         );
         pool.record_health(
             0,
@@ -889,7 +1193,12 @@ mod tests {
                 let pool = Arc::clone(&pool);
                 thread::spawn(move || {
                     (0..SELECTIONS_PER_THREAD)
-                        .map(|_| pool.select().expect("available endpoint"))
+                        .map(|_| {
+                            pool.select()
+                                .expect("available endpoint")
+                                .endpoint()
+                                .clone()
+                        })
                         .collect::<Vec<_>>()
                 })
             })
@@ -898,6 +1207,7 @@ mod tests {
             .flat_map(|task| task.join().expect("selection thread"))
             .collect::<Vec<_>>();
 
+        let endpoints = endpoints.map(RuntimeEndpoint::from);
         assert!(!selected.contains(&endpoints[0]));
         for endpoint in &endpoints[1..] {
             assert_eq!(
@@ -914,11 +1224,18 @@ mod tests {
     fn health_counters_serialize_without_losing_u64_precision() {
         let pool = RoundRobinPool::new_named(
             "checked".into(),
-            [SocketAddr::from(([127, 0, 0, 1], 3000))],
+            [RuntimeEndpoint::from(SocketAddr::from((
+                [127, 0, 0, 1],
+                3000,
+            )))],
+            UpstreamAlgorithm::RoundRobin,
             true,
         )
         .expect("checked pool");
         pool.unavailable_selections
+            .store(u64::MAX, Ordering::Relaxed);
+        pool.endpoints[0]
+            .active_leases
             .store(u64::MAX, Ordering::Relaxed);
         pool.endpoints[0]
             .successful_checks
@@ -936,6 +1253,7 @@ mod tests {
         let json = serde_json::to_value(pool.health_snapshot()).expect("health snapshot JSON");
         let exact = u64::MAX.to_string();
         assert_eq!(json["unavailableSelections"], exact);
+        assert_eq!(json["endpoints"][0]["activeLeases"], exact);
         assert_eq!(json["endpoints"][0]["successfulChecks"], exact);
         assert_eq!(json["endpoints"][0]["failedChecks"], exact);
         assert_eq!(json["endpoints"][0]["consecutiveSuccesses"], exact);
@@ -947,7 +1265,11 @@ mod tests {
         let pool = Arc::new(
             RoundRobinPool::new_named(
                 "checked".into(),
-                [SocketAddr::from(([127, 0, 0, 1], 3000))],
+                [RuntimeEndpoint::from(SocketAddr::from((
+                    [127, 0, 0, 1],
+                    3000,
+                )))],
+                UpstreamAlgorithm::RoundRobin,
                 true,
             )
             .expect("checked pool"),

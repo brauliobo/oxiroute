@@ -5,20 +5,31 @@ use std::{
 };
 
 use http::{Method, Uri, uri::Authority};
-use oxiroute_server::{PoolError, RoundRobinPool, Route, RouteError, RouteTable};
+use oxiroute_config::{HttpHostSelector, HttpPathSelector, UpstreamAlgorithm};
+use oxiroute_server::{PoolError, RoundRobinPool, Route, RouteError, RouteTable, RuntimeEndpoint};
 
 #[test]
-fn host_precedence_is_exact_then_wildcard_then_catch_all() {
+fn host_precedence_is_exact_authority_then_normalized_exact_wildcard_and_catch_all() {
     let table = RouteTable::new(vec![
         route(None, "/api/v1", None, "catch-all"),
         route(Some("*.example.com"), "/api", None, "wildcard"),
         route(Some("api.example.com"), "/", None, "exact"),
+        exact_authority_route("api.example.com:8443", "/", None, "authority"),
     ]);
 
     assert_eq!(
         selected_pool(
             &table,
-            Some("api.example.com"),
+            Some("api.example.com:8443"),
+            "/api/v1/users",
+            &Method::GET,
+        ),
+        Some("authority")
+    );
+    assert_eq!(
+        selected_pool(
+            &table,
+            Some("API.EXAMPLE.COM:443"),
             "/api/v1/users",
             &Method::GET,
         ),
@@ -60,6 +71,49 @@ fn longest_path_prefix_wins_within_a_host_class() {
             &Method::GET,
         ),
         Some("v1")
+    );
+}
+
+#[test]
+fn path_precedence_is_exact_then_segment_prefix_then_raw_prefix() {
+    let table = RouteTable::new(vec![
+        route_with_path(
+            None,
+            HttpPathSelector::RawPrefix {
+                value: "/api".into(),
+            },
+            None,
+            "raw",
+        ),
+        route_with_path(
+            None,
+            HttpPathSelector::SegmentPrefix {
+                value: "/api".into(),
+            },
+            None,
+            "segment",
+        ),
+        route_with_path(
+            None,
+            HttpPathSelector::Exact {
+                value: "/api".into(),
+            },
+            None,
+            "exact",
+        ),
+    ]);
+
+    assert_eq!(
+        selected_pool(&table, None, "/api", &Method::GET),
+        Some("exact")
+    );
+    assert_eq!(
+        selected_pool(&table, None, "/api/users", &Method::GET),
+        Some("segment")
+    );
+    assert_eq!(
+        selected_pool(&table, None, "/apix", &Method::GET),
+        Some("raw")
     );
 }
 
@@ -108,7 +162,7 @@ fn host_matching_ignores_ascii_case_and_legal_ports() {
     assert_eq!(
         table
             .select(None, &absolute_uri, &Method::GET)
-            .map(Route::pool_id),
+            .map(Route::route_id),
         Some("wildcard")
     );
     assert_eq!(
@@ -119,8 +173,8 @@ fn host_matching_ignores_ascii_case_and_legal_ports() {
 
 #[test]
 fn path_prefixes_are_normalized_and_respect_segment_boundaries() {
-    let api = route(None, "/api///", None, "api");
-    assert_eq!(api.path_prefix(), "/api");
+    let api = route(None, "/api", None, "api");
+    assert_eq!(api.path_value(), "/api");
     let table = RouteTable::new(vec![api, route(None, "/", None, "root")]);
 
     assert_eq!(
@@ -139,8 +193,8 @@ fn path_prefixes_are_normalized_and_respect_segment_boundaries() {
 
 #[test]
 fn percent_triplet_case_is_canonical_for_matching() {
-    let encoded = route(None, "/private%3azone", None, "private");
-    assert_eq!(encoded.path_prefix(), "/private%3Azone");
+    let encoded = route(None, "/private%3Azone", None, "private");
+    assert_eq!(encoded.path_value(), "/private%3Azone");
     let table = RouteTable::new(vec![encoded]);
 
     assert_eq!(
@@ -156,8 +210,8 @@ fn percent_triplet_case_is_canonical_for_matching() {
 #[test]
 fn method_sets_filter_routes_before_precedence_is_applied() {
     let table = RouteTable::new(vec![
-        route(None, "/items", Some(vec![Method::POST]), "writer"),
         route(None, "/items", None, "reader"),
+        route(None, "/items", Some(vec![Method::POST]), "writer"),
     ]);
 
     assert_eq!(
@@ -186,40 +240,99 @@ fn source_order_resolves_complete_ties() {
 #[test]
 fn invalid_route_definitions_return_typed_errors() {
     assert!(matches!(
-        Route::new(Some("*example.com"), "/", None, "pool"),
+        Route::new(
+            Some(HttpHostSelector::NormalizedHost {
+                value: "*example.com".into(),
+            }),
+            HttpPathSelector::SegmentPrefix { value: "/".into() },
+            None,
+            "route",
+        ),
         Err(RouteError::InvalidHost(_))
     ));
     assert!(matches!(
-        Route::new(Some("example.com:443"), "/", None, "pool"),
+        Route::new(
+            Some(HttpHostSelector::NormalizedHost {
+                value: "example.com:443".into(),
+            }),
+            HttpPathSelector::SegmentPrefix { value: "/".into() },
+            None,
+            "route",
+        ),
         Err(RouteError::InvalidHost(_))
     ));
     assert!(matches!(
-        Route::new(Some("*.127.0.0.1"), "/", None, "pool"),
+        Route::new(
+            Some(HttpHostSelector::NormalizedHost {
+                value: "*.127.0.0.1".into(),
+            }),
+            HttpPathSelector::SegmentPrefix { value: "/".into() },
+            None,
+            "route",
+        ),
         Err(RouteError::InvalidHost(_))
     ));
     assert!(matches!(
-        Route::new(None, "api", None, "pool"),
+        Route::new(
+            None,
+            HttpPathSelector::SegmentPrefix {
+                value: "api".into()
+            },
+            None,
+            "route",
+        ),
         Err(RouteError::InvalidPathPrefix(_))
     ));
     assert!(matches!(
-        Route::new(None, "/api?version=1", None, "pool"),
+        Route::new(
+            None,
+            HttpPathSelector::SegmentPrefix {
+                value: "/api?version=1".into(),
+            },
+            None,
+            "route",
+        ),
         Err(RouteError::InvalidPathPrefix(_))
     ));
     assert!(matches!(
-        Route::new(None, "/api/../internal", None, "pool"),
+        Route::new(
+            None,
+            HttpPathSelector::SegmentPrefix {
+                value: "/api/../internal".into(),
+            },
+            None,
+            "route",
+        ),
         Err(RouteError::InvalidPathPrefix(_))
     ));
     assert!(matches!(
-        Route::new(None, "/%61pi", None, "pool"),
+        Route::new(
+            None,
+            HttpPathSelector::SegmentPrefix {
+                value: "/%61pi".into(),
+            },
+            None,
+            "route",
+        ),
         Err(RouteError::InvalidPathPrefix(_))
     ));
     assert!(matches!(
-        Route::new(None, "/", Some(Vec::new()), "pool"),
+        Route::new(
+            None,
+            HttpPathSelector::SegmentPrefix { value: "/".into() },
+            Some(Vec::new()),
+            "route",
+        ),
         Err(RouteError::EmptyMethodSet)
     ));
     assert!(matches!(
-        Route::new(None, "/", None, ""),
-        Err(RouteError::EmptyPoolIdentity)
+        Route::new(
+            None,
+            HttpPathSelector::SegmentPrefix { value: "/".into() },
+            None,
+            "",
+        ),
+        Err(RouteError::EmptyRouteIdentity)
     ));
 }
 
@@ -237,17 +350,22 @@ fn round_robin_selection_wraps_in_definition_order() {
     let pool = RoundRobinPool::new(endpoints).expect("nonempty pool");
 
     let selected = (0..7).map(|_| pool.select()).collect::<Vec<_>>();
+    let selected = selected
+        .into_iter()
+        .map(|lease| lease.map(|lease| lease.endpoint().clone()))
+        .collect::<Vec<_>>();
+    let endpoints = endpoints.map(RuntimeEndpoint::from);
 
     assert_eq!(
         selected,
         vec![
-            Some(endpoints[0]),
-            Some(endpoints[1]),
-            Some(endpoints[2]),
-            Some(endpoints[0]),
-            Some(endpoints[1]),
-            Some(endpoints[2]),
-            Some(endpoints[0]),
+            Some(endpoints[0].clone()),
+            Some(endpoints[1].clone()),
+            Some(endpoints[2].clone()),
+            Some(endpoints[0].clone()),
+            Some(endpoints[1].clone()),
+            Some(endpoints[2].clone()),
+            Some(endpoints[0].clone()),
         ]
     );
 }
@@ -258,12 +376,14 @@ fn round_robin_can_exclude_endpoints_already_attempted_by_a_request() {
     let pool = RoundRobinPool::new(endpoints).expect("nonempty pool");
 
     let first = pool.select_excluding(&[]).expect("first endpoint");
+    let first_endpoint = first.endpoint().clone();
     let second = pool
-        .select_excluding(&[first])
+        .select_excluding(std::slice::from_ref(&first_endpoint))
         .expect("distinct retry endpoint");
 
-    assert_ne!(first, second);
-    assert_eq!(pool.select_excluding(&endpoints), None);
+    assert_ne!(first.endpoint(), second.endpoint());
+    let endpoints = endpoints.map(RuntimeEndpoint::from);
+    assert!(pool.select_excluding(&endpoints).is_none());
 }
 
 #[test]
@@ -281,7 +401,7 @@ fn concurrent_round_robin_selection_distributes_every_atomic_turn() {
             thread::spawn(move || {
                 barrier.wait();
                 (0..SELECTIONS_PER_THREAD)
-                    .map(|_| pool.select())
+                    .map(|_| pool.select().map(|lease| lease.endpoint().clone()))
                     .collect::<Vec<_>>()
             })
         })
@@ -292,16 +412,19 @@ fn concurrent_round_robin_selection_distributes_every_atomic_turn() {
         .flat_map(|handle| handle.join().expect("selection thread"))
         .collect::<Vec<_>>();
 
-    for endpoint in endpoints {
+    for endpoint in endpoints.map(RuntimeEndpoint::from) {
         assert_eq!(
             selected
                 .iter()
-                .filter(|selected| **selected == Some(endpoint))
+                .filter(|selected| selected.as_ref() == Some(&endpoint))
                 .count(),
             THREADS * SELECTIONS_PER_THREAD / endpoints.len()
         );
     }
-    assert_eq!(pool.select(), Some(endpoints[0]));
+    assert_eq!(
+        pool.select().map(|lease| lease.endpoint().clone()),
+        Some(RuntimeEndpoint::from(endpoints[0]))
+    );
 }
 
 #[test]
@@ -312,15 +435,23 @@ fn concurrent_exclusion_never_falsely_exhausts_the_pool() {
     let excluded = address(5001);
     let available = address(5002);
     let pool = Arc::new(RoundRobinPool::new([excluded, available]).expect("nonempty pool"));
+    let excluded = RuntimeEndpoint::from(excluded);
+    let available = RuntimeEndpoint::from(available);
     let barrier = Arc::new(Barrier::new(THREADS));
     let handles = (0..THREADS)
         .map(|_| {
             let pool = Arc::clone(&pool);
             let barrier = Arc::clone(&barrier);
+            let excluded = excluded.clone();
+            let available = available.clone();
             thread::spawn(move || {
                 barrier.wait();
                 for _ in 0..SELECTIONS_PER_THREAD {
-                    assert_eq!(pool.select_excluding(&[excluded]), Some(available));
+                    assert_eq!(
+                        pool.select_excluding(std::slice::from_ref(&excluded))
+                            .map(|lease| lease.endpoint().clone()),
+                        Some(available.clone())
+                    );
                 }
             })
         })
@@ -331,13 +462,105 @@ fn concurrent_exclusion_never_falsely_exhausts_the_pool() {
     }
 }
 
+#[test]
+fn least_connections_prefers_the_smallest_lease_count_and_rotates_ties() {
+    let endpoints = [address(6001), address(6002), address(6003)].map(RuntimeEndpoint::from);
+    let pool =
+        RoundRobinPool::from_endpoints(endpoints.clone(), UpstreamAlgorithm::LeastConnections)
+            .expect("least-connections pool");
+
+    let first = pool.select().expect("first lease");
+    assert_eq!(first.endpoint(), &endpoints[0]);
+    let second = pool.select().expect("second lease");
+    assert_eq!(second.endpoint(), &endpoints[1]);
+    drop(first);
+    let third = pool.select().expect("third lease");
+    assert_eq!(third.endpoint(), &endpoints[2]);
+    drop(second);
+    drop(third);
+
+    let snapshot = pool.health_snapshot();
+    assert_eq!(snapshot.algorithm, "least_connections");
+    assert!(
+        snapshot
+            .endpoints
+            .iter()
+            .all(|endpoint| endpoint.active_leases == 0)
+    );
+}
+
+#[test]
+fn least_connections_excludes_attempted_endpoints_before_leasing() {
+    let endpoints = [address(7001), address(7002)].map(RuntimeEndpoint::from);
+    let pool =
+        RoundRobinPool::from_endpoints(endpoints.clone(), UpstreamAlgorithm::LeastConnections)
+            .expect("least-connections pool");
+
+    let held = pool.select().expect("held lease");
+    let retry = pool
+        .select_excluding(std::slice::from_ref(held.endpoint()))
+        .expect("retry lease");
+    assert_eq!(retry.endpoint(), &endpoints[1]);
+    assert_eq!(pool.health_snapshot().endpoints[0].active_leases, 1);
+
+    drop(held);
+    drop(retry);
+    assert!(
+        pool.health_snapshot()
+            .endpoints
+            .iter()
+            .all(|endpoint| endpoint.active_leases == 0)
+    );
+}
+
 fn route(
     host: Option<&str>,
     path_prefix: &str,
     methods: Option<Vec<Method>>,
     pool_id: &str,
 ) -> Route {
-    Route::new(host, path_prefix, methods, pool_id).expect("valid route")
+    route_with_path(
+        host,
+        HttpPathSelector::SegmentPrefix {
+            value: path_prefix.into(),
+        },
+        methods,
+        pool_id,
+    )
+}
+
+fn route_with_path(
+    host: Option<&str>,
+    path: HttpPathSelector,
+    methods: Option<Vec<Method>>,
+    route_id: &str,
+) -> Route {
+    Route::new(
+        host.map(|value| HttpHostSelector::NormalizedHost {
+            value: value.into(),
+        }),
+        path,
+        methods,
+        route_id,
+    )
+    .expect("valid route")
+}
+
+fn exact_authority_route(
+    authority: &str,
+    path: &str,
+    methods: Option<Vec<Method>>,
+    route_id: &str,
+) -> Route {
+    Route::new(
+        Some(HttpHostSelector::ExactAuthority {
+            value: authority.into(),
+        }),
+        HttpPathSelector::SegmentPrefix { value: path.into() },
+        methods,
+        route_id,
+    )
+    .expect("valid exact-authority route")
 }
 
 fn selected_pool<'a>(
@@ -355,7 +578,7 @@ fn selected_pool<'a>(
 
     table
         .select(authority.as_ref(), &uri, method)
-        .map(Route::pool_id)
+        .map(Route::route_id)
 }
 
 fn address(port: u16) -> SocketAddr {
