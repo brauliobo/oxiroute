@@ -1,0 +1,262 @@
+.editor-form .form-heading,
+.editor-form .route-heading,
+.editor-form .route-card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.editor-form .eyebrow,
+.editor-form .object-path {
+  margin: 0;
+  color: #929a88;
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.editor-form h3 {
+  margin: 4px 0 0;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(1.45rem, 3vw, 2.2rem);
+  font-weight: 400;
+  letter-spacing: -0.035em;
+}
+
+.editor-form .form-heading {
+  align-items: flex-start;
+  margin-bottom: 28px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid #34392f;
+}
+
+.editor-form .field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  margin-bottom: 22px;
+}
+
+.editor-form .field {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 8px;
+  color: #b8bfb0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.editor-form .field small {
+  color: #747c6e;
+  font-size: 0.68rem;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.45;
+  text-transform: none;
+}
+
+.editor-form .field .field-warning {
+  color: #ff9b88;
+}
+
+.editor-form .field input,
+.editor-form .field select,
+.editor-form .field textarea,
+.editor-form .field output {
+  width: 100%;
+  min-width: 0;
+  min-height: 41px;
+  padding: 9px 11px;
+  border: 1px solid #42493c;
+  border-radius: 0;
+  color: #eef2e7;
+  background: #0d100c;
+  font: 0.78rem "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  text-transform: none;
+}
+
+.editor-form .field textarea {
+  min-height: 120px;
+  resize: vertical;
+}
+
+.editor-form .field output {
+  display: block;
+}
+
+.editor-form .field-wide {
+  grid-column: 1 / -1;
+}
+
+.editor-form .action-editor {
+  min-width: 0;
+  margin-top: 18px;
+}
+
+.editor-form .route-summary {
+  display: block;
+  margin-top: 4px;
+  color: #7f8778;
+  font-size: 0.68rem;
+  font-weight: 400;
+}
+
+.editor-form .retry-triggers {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid #34392f;
+}
+
+.editor-form .retry-triggers legend {
+  padding: 0 7px;
+  color: #b8bfb0;
+  font-size: 0.72rem;
+}
+
+.editor-form .retry-triggers .enable-row {
+  margin: 0;
+}
+
+.editor-form .field input:focus-visible,
+.editor-form .field select:focus-visible,
+.editor-form .field textarea:focus-visible,
+.editor-form button:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+.editor-form .object-block,
+.editor-form .route-list {
+  min-width: 0;
+  margin: 28px 0 0;
+  padding: 20px;
+  border: 1px solid #34392f;
+  background: rgb(12 15 11 / 54%);
+}
+
+.editor-form .object-block > legend,
+.editor-form .route-list legend {
+  padding: 0 8px;
+  color: #b6ff51;
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.editor-form .enable-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+  color: #cbd2c4;
+  cursor: pointer;
+  font-size: 0.82rem;
+}
+
+.editor-form .enable-row input {
+  width: 18px;
+  height: 18px;
+  accent-color: #b6ff51;
+}
+
+.editor-form .compact-enable {
+  min-height: 41px;
+  margin: 0;
+  padding: 9px 0;
+}
+
+.editor-form .route-list {
+  padding-top: 8px;
+}
+
+.editor-form .route-heading {
+  margin-bottom: 14px;
+}
+
+.editor-form .route-card {
+  padding: 18px;
+  border: 1px solid #34392f;
+  background: #11140f;
+}
+
+.editor-form .route-card + .route-card {
+  margin-top: 12px;
+}
+
+.editor-form .route-card-heading {
+  margin-bottom: 16px;
+}
+
+.editor-form .route-card-heading strong {
+  font-size: 0.8rem;
+}
+
+.editor-form .empty-list {
+  color: #81897a;
+  font-size: 0.78rem;
+}
+
+.editor-form .danger-button,
+.editor-form .add-row,
+.editor-form .danger-link {
+  min-height: 41px;
+  padding: 10px 14px;
+  border: 1px solid #56604f;
+  color: #c8cfc0;
+  background: transparent;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.editor-form .danger-button,
+.editor-form .danger-link {
+  border-color: #75483f;
+  color: #ff9b88;
+}
+
+.editor-form .danger-link {
+  padding: 6px;
+  border: 0;
+}
+
+.editor-form button:disabled {
+  border-color: #454b40;
+  color: #777e71;
+  background: #242820;
+  cursor: not-allowed;
+}
+
+@media (max-width: 900px) {
+  .editor-form .field-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 700px) {
+  .editor-form .form-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .editor-form .danger-button,
+  .editor-form .add-row,
+  .editor-form .danger-link {
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 440px) {
+  .editor-form .object-block,
+  .editor-form .route-card {
+    padding-inline: 15px;
+  }
+}

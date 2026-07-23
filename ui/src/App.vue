@@ -1,15 +1,30 @@
 <template lang="pug">
-main.console-shell(:aria-busy="monitoring === null && refreshing")
+main.console-shell(:aria-busy="activeView === 'overview' && monitoring === null && refreshing")
   header.masthead
     .brand-block
       p.eyebrow Network control / telemetry
       h1 OxiRoute
-      p.deck Runtime observatory
-    .system-state(:class="{ alert: monitoringError && !monitoring, stale: isStale }" role="status" aria-live="polite")
+      p.deck {{ activeView === 'overview' ? 'Runtime observatory' : 'Canonical configuration' }}
+    .system-state(v-if="activeView === 'overview'" :class="{ alert: monitoringError && !monitoring, stale: isStale }" role="status" aria-live="polite")
       span.state-light(aria-hidden="true")
       span {{ monitoringStatus }}
+    .system-state.configuration-state(v-else role="status")
+      span.state-light(aria-hidden="true")
+      span Revision-aware editor
 
-  section.readout-bar(aria-label="Live monitoring summary")
+  nav.app-navigation(aria-label="Primary navigation")
+    a(
+      href="#/overview"
+      :aria-current="activeView === 'overview' ? 'page' : undefined"
+      @click="activateView('overview')"
+    ) Overview
+    a(
+      href="#/configuration"
+      :aria-current="activeView === 'configuration' ? 'page' : undefined"
+      @click="activateView('configuration')"
+    ) Configuration
+
+  section.readout-bar(v-show="activeView === 'overview'" aria-label="Live monitoring summary")
     .readout
       span.label Active connections
       strong {{ monitoring ? formatCount(monitoring.traffic.activeConnections) : '--' }}
@@ -25,26 +40,40 @@ main.console-shell(:aria-busy="monitoring === null && refreshing")
     button.refresh-button(type="button" @click="refresh" :disabled="refreshing")
       | {{ refreshing ? 'Refreshing...' : 'Refresh now' }}
 
-  section.loading-state(v-if="!monitoring && refreshing" role="status" aria-live="polite")
+  section.loading-state(v-if="activeView === 'overview' && !monitoring && refreshing" role="status" aria-live="polite")
     span.loading-mark(aria-hidden="true")
     div
       strong Establishing telemetry
       p Waiting for the first monitoring sample from the control plane.
 
-  p.notice.error-notice(v-if="monitoringError && !monitoring" role="alert")
+  p.notice.error-notice(v-if="activeView === 'overview' && monitoringError && !monitoring" role="alert")
     strong Monitoring unavailable.
     |  {{ monitoringError }}
-  p.notice.stale-notice(v-else-if="monitoring && isStale" role="status" aria-live="polite")
+  p.notice.stale-notice(v-else-if="activeView === 'overview' && monitoring && isStale" role="status" aria-live="polite")
     strong Retaining the last valid sample.
     |  {{ staleMessage }}
-  p.notice.error-notice(v-if="catalogError" role="alert")
-    strong Stream inventory unavailable.
-    |  {{ catalogError }}
-  p.notice.capability-notice(v-if="catalog && !catalog.capabilities.live_ingest")
+  p.notice.error-notice(v-if="activeView === 'overview' && catalogError" role="alert")
+    strong {{ catalog ? 'Stream inventory refresh failed.' : 'Stream inventory unavailable.' }}
+    |  {{ catalogError }}{{ catalog ? ' The last valid inventory remains visible.' : '' }}
+  p.notice.loading-notice(v-else-if="activeView === 'overview' && !catalog && refreshing" role="status")
+    strong Loading stream inventory.
+    |  Waiting for the RTMP catalog.
+  p.notice.error-notice(v-if="activeView === 'overview' && topologyError" role="alert")
+    strong {{ topology ? 'Topology refresh failed.' : 'Topology unavailable.' }}
+    |  {{ topologyError }}{{ topology ? ' The last valid topology remains visible.' : '' }}
+  p.notice.loading-notice(v-else-if="activeView === 'overview' && !topology && refreshing" role="status")
+    strong Loading topology.
+    |  Waiting for the active runtime graph.
+  p.notice.capability-notice(v-if="activeView === 'overview' && catalog && !catalog.capabilities.live_ingest")
     strong RTMP ingestion is not connected.
     |  Configure an RTMP listener to accept publishers; handshakes never create synthetic streams.
+  p.notice.capability-notice(v-if="activeView === 'overview' && catalog && !catalog.capabilities.manual_recording")
+    strong Manual recording controls are unavailable.
+    |  Continuous recorder state remains visible, but this runtime does not accept start or stop commands.
 
-  section.monitoring-overview(v-if="monitoring" aria-labelledby="monitoring-heading")
+  TopologyView(v-if="activeView === 'overview' && topology" :topology="topology")
+
+  section.monitoring-overview(v-if="activeView === 'overview' && monitoring" aria-labelledby="monitoring-heading")
     .section-heading.monitoring-heading
       div
         p.eyebrow Live infrastructure
@@ -152,14 +181,14 @@ main.console-shell(:aria-busy="monitoring === null && refreshing")
       .listener-list(v-else)
         article.listener-row(v-for="listener in monitoring.listeners" :key="`${listener.protocol}:${listener.name}:${listener.bind}`")
           header.listener-identity
-            span.protocol-badge(:class="`protocol-${listener.protocol}`") {{ listener.protocol }}
+            span.protocol-badge(:class="`protocol-${listener.protocol}`") {{ listenerProtocolLabels[listener.protocol] }}
             div
               h4 {{ listener.name }}
               code {{ listener.bind }}
           .listener-metrics
             .listener-metric
               span.label Active / limit
-              strong {{ formatCount(listener.activeConnections) }} / {{ formatCount(listener.maxConnections) }}
+              strong {{ formatCount(listener.activeConnections) }} / {{ formatLimit(listener.maxConnections) }}
             .listener-metric
               span.label Accepted
               strong {{ formatCount(listener.acceptedConnections) }}
@@ -191,12 +220,13 @@ main.console-shell(:aria-busy="monitoring === null && refreshing")
             li.endpoint-row(v-for="endpoint in pool.endpoints" :key="endpoint.address")
               code {{ endpoint.address }}
               span.health-state(:class="`health-${endpoint.state}`") {{ endpointHealthLabels[endpoint.state] }}
+              span.endpoint-leases Active leases: {{ formatCount(endpoint.activeLeases) }}
               span.endpoint-observation {{ endpoint.lastCheckedAtUnixMs === null ? 'No checks completed' : `Last checked ${formatSampleAge(endpoint.lastCheckedAtUnixMs)}` }}
               span.endpoint-checks Total checks: {{ formatCount(endpoint.successfulChecks) }} passed / {{ formatCount(endpoint.failedChecks) }} failed
               span.endpoint-streak Consecutive checks: {{ formatCount(endpoint.consecutiveSuccesses) }} passed / {{ formatCount(endpoint.consecutiveFailures) }} failed
               span.endpoint-failure(v-if="endpoint.lastFailure") Last failure: {{ healthFailureLabels[endpoint.lastFailure] }}
 
-  section.stream-section(aria-labelledby="stream-heading")
+  section.stream-section(v-show="activeView === 'overview'" aria-labelledby="stream-heading")
     .section-heading
       div
         p.eyebrow Runtime inventory
@@ -244,25 +274,15 @@ main.console-shell(:aria-busy="monitoring === null && refreshing")
             span.track-bytes {{ formatBytes(stream.media.video.payload_bytes) }} received
             span.track-time RTMP {{ timestampLabel(stream.media.video.last_rtmp_timestamp_ms) }}
 
-        section.recorder-panel(aria-label="Recording controls")
-          .recorder-heading
-            h4 Recorders
-            span {{ stream.recorders.length }} configured
-          p.no-recorders(v-if="stream.recorders.length === 0") No recorder is attached to this publisher.
-          .recorder-row(v-for="recorder in stream.recorders" :key="recorder.id")
-            .recorder-identity
-              span.recorder-name {{ recorder.name ?? 'default recorder' }}
-              span.recorder-phase(:class="`phase-${recorder.phase.state}`") {{ recorder.phase.state }}
-              span.recorder-bytes {{ formatBytes(recorder.bytes_written) }} written
-            button.record-button(
-              v-if="recorder.manual"
-              type="button"
-              data-recorder-action
-              :class="{ stop: recorder.phase.state === 'recording' }"
-              :disabled="!canControlRecorder(recorder) || busyRecorder === recorder.id"
-              @click="controlRecorder(stream, recorder)"
-            ) {{ recorderActionLabel(recorder) }}
-            span.automatic-badge(v-else) Automatic
+        RtmpRecorderPanel(
+          :stream="stream"
+          :manual-recording="catalog.capabilities.manual_recording"
+          :busy-recorder-id="busyRecorder"
+          @control="controlRecorder(stream, $event)"
+        )
+
+  KeepAlive
+    ConfigurationWorkspace(v-if="activeView === 'configuration'")
 
   footer.page-footer
     span OxiRoute pre-alpha
@@ -272,9 +292,16 @@ main.console-shell(:aria-busy="monitoring === null && refreshing")
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 
+import ConfigurationWorkspace from './ConfigurationWorkspace.vue'
+import { formatBytes, formatCount } from './formatters'
+import RtmpRecorderPanel from './RtmpRecorderPanel.vue'
+import { recorderControlAction } from './recording'
+import TopologyView from './TopologyView.vue'
 import {
+  ApiError,
   fetchMonitoring,
   fetchRtmpCatalog,
+  fetchTopology,
   setRecording,
   type EndpointHealthState,
   type HealthFailure,
@@ -283,12 +310,13 @@ import {
   type RecorderSnapshot,
   type RtmpCatalog,
   type StreamSnapshot,
+  type TopologySnapshot,
   type TrackSnapshot,
 } from './api'
+import type { ListenerProtocol } from './config'
 
 const REFRESH_INTERVAL_MS = 5_000
 const STALE_AFTER_MS = REFRESH_INTERVAL_MS * 3
-const numberFormatter = new Intl.NumberFormat()
 const endpointHealthLabels: Record<EndpointHealthState, string> = {
   unchecked: 'Not monitored',
   unknown: 'Pending checks',
@@ -302,19 +330,34 @@ const healthFailureLabels: Record<HealthFailure, string> = {
   protocol_error: 'Protocol error',
 }
 const poolAlgorithmLabels: Record<MonitoringPool['algorithm'], string> = {
-  round_robin: 'Round robin',
+  round_robin:       'Round robin',
+  least_connections: 'Least connections',
+}
+const listenerProtocolLabels: Record<ListenerProtocol, string> = {
+  http:          'HTTP',
+  tcp:           'TCP',
+  rtmp:          'RTMP',
+  forward_http1: 'Forward H1',
+  forward_http2: 'Forward H2',
+  forward_http3: 'Forward H3',
 }
 
+type AppView = 'overview' | 'configuration'
+
+const activeView = ref<AppView>(viewFromHash())
 const monitoring = ref<MonitoringSnapshot | null>(null)
 const catalog = ref<RtmpCatalog | null>(null)
+const topology = ref<TopologySnapshot | null>(null)
 const monitoringError = ref<string | null>(null)
 const catalogError = ref<string | null>(null)
+const topologyError = ref<string | null>(null)
 const refreshing = ref(true)
 const busyRecorder = ref<string | null>(null)
 const currentUnixMs = ref(Date.now())
 let refreshTimer: number | undefined
 let activeController: AbortController | undefined
 let activeRefresh: Promise<void> | null = null
+let monitoringStarted = false
 
 const totalTrafficBytes = computed(
   () => (monitoring.value?.traffic.bytesReceived ?? 0) + (monitoring.value?.traffic.bytesSent ?? 0),
@@ -358,34 +401,91 @@ function refresh(): Promise<void> {
   activeController = controller
   refreshing.value = true
 
-  activeRefresh = refreshData(controller).finally(() => {
-    if (activeController === controller) activeController = undefined
+  const refreshPromise = refreshData(controller).finally(() => {
+    if (activeController !== controller) return
+    activeController = undefined
     currentUnixMs.value = Date.now()
     refreshing.value = false
-    activeRefresh = null
+    if (activeRefresh === refreshPromise) activeRefresh = null
   })
+  activeRefresh = refreshPromise
   return activeRefresh
 }
 
-async function refreshData(controller: AbortController): Promise<void> {
-  const [monitoringResult, catalogResult] = await Promise.allSettled([
-    fetchMonitoring(controller.signal),
-    fetchRtmpCatalog(controller.signal),
-  ])
-  if (controller.signal.aborted) return
+function viewFromHash(): AppView {
+  return window.location.hash === '#/configuration' ? 'configuration' : 'overview'
+}
 
-  if (monitoringResult.status === 'fulfilled') {
-    monitoring.value = monitoringResult.value
-    monitoringError.value = null
-  } else {
-    monitoringError.value = errorMessage(monitoringResult.reason, 'Unable to load monitoring telemetry')
+function activateView(view: AppView): void {
+  activeView.value = view
+  if (view === 'overview') {
+    startMonitoring()
+  } else if (monitoringStarted) {
+    stopMonitoring()
   }
+}
 
-  if (catalogResult.status === 'fulfilled') {
-    catalog.value = catalogResult.value
+function syncViewFromHash(): void {
+  activateView(viewFromHash())
+}
+
+function startMonitoring(): void {
+  if (monitoringStarted) return
+  monitoringStarted = true
+  void refresh()
+  refreshTimer = window.setInterval(() => void refresh(), REFRESH_INTERVAL_MS)
+}
+
+function stopMonitoring(): void {
+  if (refreshTimer !== undefined) window.clearInterval(refreshTimer)
+  refreshTimer = undefined
+  monitoringStarted = false
+  activeController?.abort()
+  activeController = undefined
+  activeRefresh = null
+  refreshing.value = false
+}
+
+async function refreshData(controller: AbortController): Promise<void> {
+  await Promise.all([
+    refreshMonitoring(controller),
+    refreshCatalog(controller),
+    refreshTopology(controller),
+  ])
+}
+
+async function refreshMonitoring(controller: AbortController): Promise<void> {
+  try {
+    const result = await fetchMonitoring(controller.signal)
+    if (activeController !== controller) return
+    monitoring.value = result
+    monitoringError.value = null
+  } catch (error) {
+    if (activeController === controller) {
+      monitoringError.value = errorMessage(error, 'Unable to load monitoring telemetry')
+    }
+  }
+}
+
+async function refreshCatalog(controller: AbortController): Promise<void> {
+  try {
+    const result = await fetchRtmpCatalog(controller.signal)
+    if (activeController !== controller) return
+    catalog.value = result
     catalogError.value = null
-  } else {
-    catalogError.value = errorMessage(catalogResult.reason, 'Unable to load RTMP state')
+  } catch (error) {
+    if (activeController === controller) catalogError.value = errorMessage(error, 'Unable to load RTMP state')
+  }
+}
+
+async function refreshTopology(controller: AbortController): Promise<void> {
+  try {
+    const result = await fetchTopology(controller.signal)
+    if (activeController !== controller) return
+    topology.value = result
+    topologyError.value = null
+  } catch (error) {
+    if (activeController === controller) topologyError.value = errorMessage(error, 'Unable to load active topology')
   }
 }
 
@@ -397,40 +497,85 @@ async function controlRecorder(
   stream: StreamSnapshot,
   recorder: RecorderSnapshot,
 ): Promise<void> {
-  const action = recorder.phase.state === 'recording' ? 'stop' : 'start'
+  const action = recorderControlAction(
+    catalog.value?.capabilities.manual_recording ?? false,
+    stream,
+    recorder,
+  )
+  if (!action) {
+    catalogError.value = 'Recorder state changed before the command could be sent. Refreshing the active stream state.'
+    await refreshAfterRecorderCommand()
+    return
+  }
   busyRecorder.value = recorder.id
+  catalogError.value = null
   try {
-    await setRecording(stream.id, recorder.id, action)
-    await refresh()
+    const result = await setRecording(stream.id, recorder.id, action)
+    if (result.id !== recorder.id) {
+      throw new Error('Recorder command returned a mismatched recorder identity.')
+    }
+    if (!catalog.value?.streams.some(({ id }) => id === stream.id)) {
+      await refreshAfterRecorderCommand()
+      catalogError.value = staleRecorderMessage(stream)
+      return
+    }
+    await refreshAfterRecorderCommand()
+    if (!catalog.value?.streams.some(({ id }) => id === stream.id)) {
+      catalogError.value = staleRecorderMessage(stream)
+    } else if (!catalog.value.streams
+      .find(({ id }) => id === stream.id)
+      ?.recorders.some(({ id }) => id === recorder.id)
+    ) {
+      catalogError.value = 'The recorder no longer exists on the active stream. No command success was assumed.'
+    }
   } catch (requestError) {
-    catalogError.value = errorMessage(requestError, 'Recorder command failed')
+    const controlError = recorderControlError(requestError)
+    if (requestError instanceof ApiError && [404, 409].includes(requestError.status)) {
+      await refreshAfterRecorderCommand()
+    }
+    catalogError.value = controlError
   } finally {
-    busyRecorder.value = null
+    if (busyRecorder.value === recorder.id) busyRecorder.value = null
   }
 }
 
-function canControlRecorder(recorder: RecorderSnapshot): boolean {
-  if (!catalog.value?.capabilities.manual_recording) return false
-  return !['starting', 'stopping'].includes(recorder.phase.state)
+async function refreshAfterRecorderCommand(): Promise<void> {
+  if (activeRefresh) await activeRefresh
+  await refresh()
 }
 
-function recorderActionLabel(recorder: RecorderSnapshot): string {
-  if (!catalog.value?.capabilities.manual_recording) return 'Backend unavailable'
-  if (busyRecorder.value === recorder.id) return 'Sending...'
-  switch (recorder.phase.state) {
-    case 'recording':
-      return 'Stop recording'
-    case 'starting':
-      return 'Starting...'
-    case 'stopping':
-      return 'Stopping...'
+function staleRecorderMessage(stream: StreamSnapshot): string {
+  const replacement = catalog.value?.streams.some((candidate) =>
+    candidate.server_id === stream.server_id &&
+    candidate.application === stream.application &&
+    candidate.name === stream.name,
+  )
+  return replacement
+    ? 'The publisher stream was replaced while the recorder command was in flight. The replacement state is shown; no command success was assumed.'
+    : 'The publisher stream ended while the recorder command was in flight. No command success was assumed.'
+}
+
+function recorderControlError(error: unknown): string {
+  if (!(error instanceof ApiError)) return errorMessage(error, 'Recorder command failed')
+  switch (error.code) {
+    case 'rtmp_recording_unavailable':
+      return 'Manual recording is unavailable in the active runtime.'
+    case 'rtmp_recorder_start_failed':
+      return 'Recorder command failed. The recorder could not be started.'
+    case 'rtmp_recorder_stop_failed':
+      return 'Recorder command failed. The recorder could not be stopped.'
+    case 'rtmp_resource_not_found':
+      return 'The target stream or recorder no longer exists. Active stream state was refreshed.'
+    case 'rtmp_state_conflict':
+      return `The recorder state changed before the command completed. ${error.message}`
     default:
-      return 'Start recording'
+      return `Recorder command failed. ${error.message}`
   }
 }
 
 function codecLabel(track: TrackSnapshot): string {
   if (track.codec_name) return track.codec_name.toUpperCase()
+  if (track.codec_fourcc) return track.codec_fourcc.toUpperCase()
   return track.codec_id === null ? 'No signal' : `Codec ${track.codec_id}`
 }
 
@@ -438,17 +583,8 @@ function timestampLabel(timestamp: number | null): string {
   return timestamp === null ? '--' : `${timestamp} ms`
 }
 
-function formatBytes(value: number | string): string {
-  const bytes = Number(value)
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
-  const amount = bytes / 1024 ** exponent
-  return `${amount >= 10 || exponent === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[exponent]}`
-}
-
-function formatCount(value: number | string): string {
-  return numberFormatter.format(typeof value === 'string' ? BigInt(value) : value)
+function formatLimit(value: number | null): string {
+  return value === null ? 'Unbounded' : formatCount(value)
 }
 
 function poolAvailabilityLabel(pool: MonitoringPool): string {
@@ -510,13 +646,13 @@ function formatAge(startedAt: number): string {
 }
 
 onMounted(() => {
-  void refresh()
-  refreshTimer = window.setInterval(() => void refresh(), REFRESH_INTERVAL_MS)
+  window.addEventListener('hashchange', syncViewFromHash)
+  if (activeView.value === 'overview') startMonitoring()
 })
 
 onUnmounted(() => {
-  activeController?.abort()
-  if (refreshTimer !== undefined) window.clearInterval(refreshTimer)
+  window.removeEventListener('hashchange', syncViewFromHash)
+  stopMonitoring()
 })
 </script>
 
@@ -551,7 +687,6 @@ onUnmounted(() => {
 .section-heading,
 .stream-header,
 .track-heading,
-.recorder-row,
 .page-footer {
   display: flex;
   align-items: center;
@@ -562,6 +697,52 @@ onUnmounted(() => {
 .masthead {
   padding-bottom: 26px;
   border-bottom: 1px solid #34392f;
+}
+
+.app-navigation {
+  display: flex;
+  gap: 4px;
+  padding: 10px 0;
+  border-bottom: 1px solid #34392f;
+}
+
+.app-navigation a {
+  position: relative;
+  display: grid;
+  min-height: 44px;
+  place-items: center;
+  padding: 10px 14px;
+  color: #8f9788;
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-decoration: none;
+  text-transform: uppercase;
+}
+
+.app-navigation a::after {
+  position: absolute;
+  right: 14px;
+  bottom: 3px;
+  left: 14px;
+  height: 2px;
+  background: transparent;
+  content: "";
+}
+
+.app-navigation a:hover,
+.app-navigation a[aria-current="page"] {
+  color: #eef2e7;
+}
+
+.app-navigation a[aria-current="page"]::after {
+  background: #b6ff51;
+}
+
+.app-navigation a:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 1px;
 }
 
 .eyebrow,
@@ -628,6 +809,11 @@ h1 {
   box-shadow: 0 0 14px rgb(255 191 75 / 58%);
 }
 
+.configuration-state .state-light {
+  background: #b8a6ff;
+  box-shadow: 0 0 14px rgb(184 166 255 / 58%);
+}
+
 .readout-bar {
   align-items: stretch;
   border-bottom: 1px solid #34392f;
@@ -651,8 +837,7 @@ h1 {
   font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace !important;
 }
 
-.refresh-button,
-.record-button {
+.refresh-button {
   border: 1px solid #b6ff51;
   color: #10140b;
   background: #b6ff51;
@@ -667,8 +852,7 @@ h1 {
   padding: 10px 15px;
 }
 
-.refresh-button:hover:not(:disabled),
-.record-button:hover:not(:disabled) {
+.refresh-button:hover:not(:disabled) {
   transform: translateY(-1px);
   background: #d2ff92;
 }
@@ -1058,6 +1242,7 @@ button:disabled {
 
 .pool-heading strong,
 .pool-algorithm,
+.endpoint-leases,
 .endpoint-observation,
 .endpoint-checks,
 .endpoint-streak,
@@ -1132,6 +1317,8 @@ button:disabled {
   color: #ff8b78;
 }
 
+.endpoint-leases,
+.endpoint-observation,
 .endpoint-checks,
 .endpoint-streak {
   grid-column: 1 / -1;
@@ -1333,89 +1520,10 @@ h2 {
 }
 
 .track-bytes,
-.track-time,
-.recorder-bytes {
+.track-time {
   color: #878f7e;
   font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
   font-size: 0.7rem;
-}
-
-.recorder-panel {
-  margin-top: 18px;
-}
-
-.recorder-heading {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-
-.recorder-heading h4 {
-  margin: 0;
-  font-size: 0.8rem;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-
-.recorder-heading span,
-.no-recorders {
-  color: #7f8777;
-  font-size: 0.75rem;
-}
-
-.recorder-row {
-  padding: 12px 0;
-  border-top: 1px solid #34392f;
-}
-
-.recorder-identity {
-  display: grid;
-  grid-template-columns: auto auto;
-  gap: 4px 9px;
-}
-
-.recorder-name {
-  font-weight: 650;
-}
-
-.recorder-phase,
-.automatic-badge {
-  width: fit-content;
-  color: #b7bdaf;
-  font-size: 0.68rem;
-  font-weight: 750;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.phase-recording {
-  color: #ff745c;
-}
-
-.phase-starting,
-.phase-stopping {
-  color: #ffbf4b;
-}
-
-.phase-failed {
-  color: #ff745c;
-}
-
-.recorder-bytes {
-  grid-column: 1 / -1;
-}
-
-.record-button {
-  min-width: 125px;
-  padding: 9px 12px;
-  font-size: 0.75rem;
-}
-
-.record-button.stop {
-  border-color: #ff745c;
-  color: #ffe6e1;
-  background: #4b211b;
 }
 
 .empty-state {
@@ -1485,7 +1593,6 @@ h2 {
 
   .masthead,
   .section-heading,
-  .recorder-row,
   .page-footer {
     align-items: flex-start;
     flex-direction: column;
@@ -1493,6 +1600,15 @@ h2 {
 
   .system-state {
     align-self: flex-start;
+  }
+
+  .app-navigation {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .app-navigation a {
+    text-align: center;
   }
 
   .readout-bar {
@@ -1571,9 +1687,6 @@ h2 {
     border-left: 0;
   }
 
-  .record-button {
-    width: 100%;
-  }
 }
 
 @media (max-width: 420px) {

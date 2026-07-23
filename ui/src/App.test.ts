@@ -2,151 +2,19 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import App from './App.vue'
-import type { MonitoringSnapshot, RtmpCatalog } from './api'
+import {
+  contractCatalog,
+  contractMonitoring,
+  contractTopology,
+  jsonResponse,
+} from './test/contractFixtures'
 
 const exactHealthCounter = '18446744073709551615'
+const catalog = contractCatalog()
+const topology = contractTopology()
 
-const catalog: RtmpCatalog = {
-  revision: '4',
-  as_of_unix_ms: 1_750_000_000_000,
-  capabilities: {
-    live_ingest: true,
-    manual_recording: true,
-  },
-  streams: [
-    {
-      id: '2a130dea-5db7-43e0-afb8-f07c4bcb1814',
-      revision: '3',
-      server_id: 'edge',
-      application: 'live',
-      name: 'camera',
-      created_at_unix_ms: 1_750_000_000_000,
-      publisher: {
-        session_id: '750a865d-1b72-4a5f-a54b-a1d8510d055c',
-        attached_at_unix_ms: 1_750_000_000_000,
-      },
-      subscriber_count: 12,
-      media: {
-        audio: {
-          codec_id: 10,
-          codec_name: 'aac',
-          payload_bytes: '1024',
-          last_rtmp_timestamp_ms: 120,
-          last_observed_at_unix_ms: 1_750_000_000_200,
-        },
-        video: {
-          codec_id: 7,
-          codec_name: 'avc',
-          payload_bytes: '4096',
-          last_rtmp_timestamp_ms: 123,
-          last_observed_at_unix_ms: 1_750_000_000_200,
-        },
-        fanout_payload_bytes: '8192',
-      },
-      recorders: [
-        {
-          id: 'c76ad8c2-e575-4989-8fae-1a95566ff598',
-          name: 'archive',
-          manual: true,
-          phase: { state: 'idle' },
-          changed_at_unix_ms: 1_750_000_000_000,
-          bytes_written: '0',
-        },
-      ],
-    },
-  ],
-}
-
-function monitoringSample(): MonitoringSnapshot {
-  return {
-    sampledAtUnixMs: Date.now(),
-    uptimeMs: 90_610_000,
-    process: {
-      cpuPercent: 12.5,
-      residentMemoryBytes: 268_435_456,
-      virtualMemoryBytes: 1_073_741_824,
-      threadCount: 8,
-      openFileDescriptors: 42,
-    },
-    host: {
-      loadAverage1m: 0.42,
-      loadAverage5m: 0.31,
-      loadAverage15m: 0.25,
-      totalMemoryBytes: 17_179_869_184,
-      availableMemoryBytes: 4_294_967_296,
-    },
-    traffic: {
-      acceptedConnections: 12_345,
-      activeConnections: 42,
-      bytesReceived: 1_572_864,
-      bytesSent: 2_147_483_648,
-    },
-    listeners: [
-      {
-        name: 'HTTP ingress',
-        protocol: 'http',
-        bind: '127.0.0.1:8080',
-        maxConnections: 1_000,
-        acceptedConnections: 8_000,
-        activeConnections: 14,
-        bytesReceived: 1_048_576,
-        bytesSent: 524_288,
-      },
-      {
-        name: 'Live edge',
-        protocol: 'rtmp',
-        bind: '0.0.0.0:1935',
-        maxConnections: 100,
-        acceptedConnections: 4_345,
-        activeConnections: 28,
-        bytesReceived: 524_288,
-        bytesSent: 2_146_959_360,
-      },
-    ],
-    upstreamPools: [
-      {
-        name: 'web-backends',
-        algorithm: 'round_robin',
-        availableEndpoints: 1,
-        totalEndpoints: 2,
-        unavailableSelections: exactHealthCounter,
-        endpoints: [
-          {
-            address: '127.0.0.1:3000',
-            state: 'healthy',
-            lastCheckedAtUnixMs: Date.now(),
-            lastTransitionAtUnixMs: Date.now(),
-            successfulChecks: exactHealthCounter,
-            failedChecks: '1',
-            consecutiveSuccesses: '4',
-            consecutiveFailures: '0',
-            lastFailure: null,
-          },
-          {
-            address: '127.0.0.1:3001',
-            state: 'unhealthy',
-            lastCheckedAtUnixMs: Date.now(),
-            lastTransitionAtUnixMs: Date.now(),
-            successfulChecks: '10',
-            failedChecks: '5',
-            consecutiveSuccesses: '0',
-            consecutiveFailures: '3',
-            lastFailure: 'connect_failed',
-          },
-        ],
-      },
-    ],
-    rtmp: {
-      activeStreams: 3,
-      publishers: 2,
-      subscribers: 24,
-      mediaPayloadBytesReceived: 805_306_368,
-    },
-  }
-}
-
-function jsonResponse(payload: unknown, status = 200): Response {
-  return new Response(JSON.stringify(payload), { status })
+function monitoringSample() {
+  return contractMonitoring()
 }
 
 function deferred<T>(): {
@@ -171,10 +39,12 @@ afterEach(() => {
 
 describe('monitoring dashboard', () => {
   it('renders formatted monitoring data and preserves stream controls', async () => {
+    const runtimeCatalog = structuredClone(catalog)
     const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url === '/api/v1/monitoring') return Promise.resolve(jsonResponse(monitoringSample()))
-      if (url === '/api/v1/rtmp/streams') return Promise.resolve(jsonResponse(catalog))
+      if (url === '/api/v1/rtmp/streams') return Promise.resolve(jsonResponse(runtimeCatalog))
+      if (url === '/api/v1/topology') return Promise.resolve(jsonResponse(topology))
       if (url.endsWith('/start')) {
         return Promise.resolve(
           jsonResponse(
@@ -197,6 +67,12 @@ describe('monitoring dashboard', () => {
       '/api/v1/monitoring',
       expect.objectContaining({ cache: 'no-store', signal: expect.any(AbortSignal) }),
     )
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/v1/topology',
+      expect.objectContaining({ cache: 'no-store', signal: expect.any(AbortSignal) }),
+    )
+    expect(wrapper.get('.topology-section').text()).toContain('Network topology')
+    expect(wrapper.get('.topology-section').text()).toContain('127.0.0.1:3000')
     expect(wrapper.get('.traffic-panel').text()).toContain('42')
     expect(wrapper.get('.traffic-panel').text()).toContain(new Intl.NumberFormat().format(12_345))
     expect(wrapper.get('.host-panel').text()).toContain('0.42')
@@ -209,7 +85,10 @@ describe('monitoring dashboard', () => {
     expect(wrapper.get('.listener-section').text()).toContain(
       `14 / ${new Intl.NumberFormat().format(1_000)}`,
     )
+    expect(wrapper.get('.listener-section').text()).toContain('28 / Unbounded')
     expect(wrapper.get('.pool-section').text()).toContain('web-backends')
+    expect(wrapper.get('.pool-section').text()).toContain('Least connections')
+    expect(wrapper.get('.pool-section').text()).toContain('Active leases: 3')
     expect(wrapper.get('.pool-section').text()).toContain('Degraded')
     expect(wrapper.get('.pool-section').text()).toContain('1 / 2 endpoints available')
     expect(wrapper.get('.pool-summary').text()).toContain(
@@ -225,6 +104,14 @@ describe('monitoring dashboard', () => {
     expect(wrapper.text()).toContain('12 viewers')
     expect(wrapper.text()).toContain('AAC')
     expect(wrapper.text()).toContain('AVC')
+    expect(wrapper.get('.recorder-panel').text()).toContain('Recording supported')
+    expect(wrapper.get('.recorder-panel').text()).toContain('Manual')
+    expect(wrapper.get('.recorder-panel').text()).toContain('Continuous')
+    expect(wrapper.get('.recorder-panel').text()).toContain('1.0 MB written')
+    expect(wrapper.get('.recorder-panel').text()).toContain('2 segments')
+    expect(wrapper.get('.recorder-panel').text()).toContain('1 discontinuity')
+    expect(wrapper.get('.recorder-panel').text()).toContain('live/camera-001.flv')
+    expect(wrapper.get('.recorder-panel').text()).toContain('live/.camera-002.partial')
     await wrapper.get('[data-recorder-action]').trigger('click')
     await flushPromises()
 
@@ -238,11 +125,13 @@ describe('monitoring dashboard', () => {
   it('announces the first load without presenting placeholder data as telemetry', async () => {
     const pendingMonitoring = deferred<Response>()
     const pendingCatalog = deferred<Response>()
-    const fetch = vi.fn((input: RequestInfo | URL) =>
-      String(input) === '/api/v1/monitoring'
-        ? pendingMonitoring.promise
-        : pendingCatalog.promise,
-    )
+    const pendingTopology = deferred<Response>()
+    const fetch = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/v1/monitoring') return pendingMonitoring.promise
+      if (url === '/api/v1/rtmp/streams') return pendingCatalog.promise
+      return pendingTopology.promise
+    })
     vi.stubGlobal('fetch', fetch)
 
     const wrapper = mount(App)
@@ -255,6 +144,7 @@ describe('monitoring dashboard', () => {
 
     pendingMonitoring.resolve(jsonResponse(monitoringSample()))
     pendingCatalog.resolve(jsonResponse(catalog))
+    pendingTopology.resolve(jsonResponse(topology))
     await flushPromises()
 
     expect(wrapper.attributes('aria-busy')).toBe('false')
@@ -262,14 +152,162 @@ describe('monitoring dashboard', () => {
     wrapper.unmount()
   })
 
-  it('announces an initial monitoring failure as an error', async () => {
-    const fetch = vi.fn((input: RequestInfo | URL) =>
-      Promise.resolve(
-        String(input) === '/api/v1/monitoring'
-          ? jsonResponse({ error: { message: 'metrics offline' } }, 503)
-          : jsonResponse(catalog),
-      ),
+  it('renders settled telemetry while another overview resource is still loading', async () => {
+    const pendingCatalog = deferred<Response>()
+    const fetch = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/v1/monitoring') return Promise.resolve(jsonResponse(monitoringSample()))
+      if (url === '/api/v1/topology') return Promise.resolve(jsonResponse(topology))
+      return pendingCatalog.promise
+    })
+    vi.stubGlobal('fetch', fetch)
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(wrapper.get('.traffic-panel').text()).toContain('42')
+    expect(wrapper.get('.topology-section').text()).toContain('Network topology')
+    expect(wrapper.get('.loading-notice').text()).toContain('Loading stream inventory')
+    wrapper.unmount()
+  })
+
+  it('cancels an in-flight overview refresh and starts a fresh round when returning', async () => {
+    const pending = deferred<Response>()
+    const firstSignals: AbortSignal[] = []
+    const requestCounts = new Map<string, number>()
+    const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      const count = (requestCounts.get(url) ?? 0) + 1
+      requestCounts.set(url, count)
+      if (count === 1) {
+        firstSignals.push(init?.signal as AbortSignal)
+        return pending.promise
+      }
+      if (url === '/api/v1/monitoring') return Promise.resolve(jsonResponse(monitoringSample()))
+      if (url === '/api/v1/rtmp/streams') return Promise.resolve(jsonResponse(catalog))
+      return Promise.resolve(jsonResponse(topology))
+    })
+    vi.stubGlobal('fetch', fetch)
+    const wrapper = mount(App)
+    await wrapper.vm.$nextTick()
+
+    await wrapper.get('a[href="#/configuration"]').trigger('click')
+    expect(firstSignals).toHaveLength(3)
+    expect(firstSignals.every((signal) => signal.aborted)).toBe(true)
+
+    await wrapper.get('a[href="#/overview"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.traffic-panel').text()).toContain('42')
+    expect(requestCounts.get('/api/v1/monitoring')).toBe(2)
+    wrapper.unmount()
+  })
+
+  it('sends an exact stop for a manual recorder already recording', async () => {
+    const recordingCatalog = structuredClone(catalog)
+    recordingCatalog.streams[0]!.recorders[0]!.phase = {
+      state: 'recording',
+      operation_id: 'operation-recording',
+      started_at_unix_ms: 1_750_000_000_000,
+    }
+    const fetch = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/v1/monitoring') return Promise.resolve(jsonResponse(monitoringSample()))
+      if (url === '/api/v1/rtmp/streams') return Promise.resolve(jsonResponse(recordingCatalog))
+      if (url === '/api/v1/topology') return Promise.resolve(jsonResponse(topology))
+      if (url.endsWith('/stop')) {
+        return Promise.resolve(jsonResponse({
+          ...recordingCatalog.streams[0]!.recorders[0]!,
+          phase: { state: 'stopping', operation_id: 'operation-stop' },
+        }, 202))
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetch)
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(wrapper.get('[data-recorder-action]').text()).toBe('Stop recording')
+    await wrapper.get('[data-recorder-action]').trigger('click')
+    await flushPromises()
+
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/v1/rtmp/streams/2a130dea-5db7-43e0-afb8-f07c4bcb1814/recorders/c76ad8c2-e575-4989-8fae-1a95566ff598/stop',
+      expect.objectContaining({ method: 'POST' }),
     )
+    wrapper.unmount()
+  })
+
+  it.each([
+    [501, 'rtmp_recording_unavailable', 'manual recording is unavailable in the active runtime', 'Manual recording is unavailable'],
+    [404, 'rtmp_resource_not_found', 'recorder does not exist', 'target stream or recorder no longer exists'],
+    [409, 'rtmp_state_conflict', 'opposite transition in progress', 'state changed before the command completed'],
+    [503, 'rtmp_recorder_start_failed', 'the recorder could not be started', 'Recorder command failed. The recorder could not be started'],
+  ])('handles stable recorder error %s without claiming success', async (status, code, message, expected) => {
+    const fetch = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/v1/monitoring') return Promise.resolve(jsonResponse(monitoringSample()))
+      if (url === '/api/v1/rtmp/streams') return Promise.resolve(jsonResponse(catalog))
+      if (url === '/api/v1/topology') return Promise.resolve(jsonResponse(topology))
+      if (url.endsWith('/start')) {
+        return Promise.resolve(jsonResponse({ error: { code, message } }, status))
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetch)
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await wrapper.get('[data-recorder-action]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.error-notice').text()).toContain(expected)
+    expect(wrapper.get('.error-notice').text().toLowerCase()).not.toContain('success')
+    wrapper.unmount()
+  })
+
+  it('detects a replacement stream while a recorder command is in flight', async () => {
+    const pendingCommand = deferred<Response>()
+    const replacement = structuredClone(catalog)
+    replacement.streams[0]!.id = 'replacement-stream-id'
+    replacement.streams[0]!.revision = '1'
+    let catalogRequests = 0
+    const fetch = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/v1/monitoring') return Promise.resolve(jsonResponse(monitoringSample()))
+      if (url === '/api/v1/topology') return Promise.resolve(jsonResponse(topology))
+      if (url === '/api/v1/rtmp/streams') {
+        catalogRequests += 1
+        return Promise.resolve(jsonResponse(catalogRequests === 1 ? catalog : replacement))
+      }
+      if (url.endsWith('/start')) return pendingCommand.promise
+      throw new Error(`Unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetch)
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await wrapper.get('[data-recorder-action]').trigger('click')
+    await wrapper.get('.refresh-button').trigger('click')
+    await flushPromises()
+    pendingCommand.resolve(jsonResponse({
+      ...catalog.streams[0]!.recorders[0]!,
+      phase: { state: 'starting', operation_id: 'stale-operation' },
+    }, 202))
+    await flushPromises()
+
+    expect(wrapper.get('.error-notice').text()).toContain('publisher stream was replaced')
+    expect(wrapper.get('.error-notice').text()).toContain('no command success was assumed')
+    expect(wrapper.text()).toContain('live / camera')
+    wrapper.unmount()
+  })
+
+  it('announces an initial monitoring failure as an error', async () => {
+    const fetch = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/v1/monitoring') {
+        return Promise.resolve(jsonResponse({ error: { message: 'metrics offline' } }, 503))
+      }
+      return Promise.resolve(jsonResponse(url === '/api/v1/topology' ? topology : catalog))
+    })
     vi.stubGlobal('fetch', fetch)
 
     const wrapper = mount(App)
@@ -285,13 +323,11 @@ describe('monitoring dashboard', () => {
   it('renders an explicit empty state when no upstream pools are configured', async () => {
     const sample = monitoringSample()
     sample.upstreamPools = []
-    const fetch = vi.fn((input: RequestInfo | URL) =>
-      Promise.resolve(
-        String(input) === '/api/v1/monitoring'
-          ? jsonResponse(sample)
-          : jsonResponse(catalog),
-      ),
-    )
+    const fetch = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/v1/monitoring') return Promise.resolve(jsonResponse(sample))
+      return Promise.resolve(jsonResponse(url === '/api/v1/topology' ? topology : catalog))
+    })
     vi.stubGlobal('fetch', fetch)
 
     const wrapper = mount(App)
@@ -313,6 +349,7 @@ describe('monitoring dashboard', () => {
           ? Promise.resolve(jsonResponse(monitoringSample()))
           : pendingMonitoring.promise
       }
+      if (url === '/api/v1/topology') return Promise.resolve(jsonResponse(topology))
       return Promise.resolve(jsonResponse(catalog))
     })
     vi.stubGlobal('fetch', fetch)
