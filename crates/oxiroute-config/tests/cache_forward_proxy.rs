@@ -160,6 +160,9 @@ fn validates_cache_keys_retention_predicates_and_purge_secrets() {
         r#"{ store = "memory", key_components = { { type = "scheme" }, { type = "scheme" } } }"#,
         r#"{ store = "memory", grace_ms = 2000, keep_ms = 1000 }"#,
         r#"{ store = "memory", status_ttls = { { status = 200, ttl_ms = 1 }, { status = 200, ttl_ms = 2 } } }"#,
+        r#"{ store = "memory", status_ttls = { { status = 199, ttl_ms = 1 } } }"#,
+        r#"{ store = "memory", status_ttls = { { status = 206, ttl_ms = 1 } } }"#,
+        r#"{ store = "memory", status_ttls = { { status = 304, ttl_ms = 1 } } }"#,
         r#"{ store = "memory", stale_on = { "connect_timeout", "connect_timeout" } }"#,
         r#"{ store = "memory", purge_authorization = { type = "bearer_token_file", token_file_path = "/run/token", token = "inline" } }"#,
     ] {

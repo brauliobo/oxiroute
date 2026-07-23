@@ -25,11 +25,11 @@ use crate::{
     ResponseTiming, StoreOutcome, SystemClock, Validators,
     cache::{object_charge, validate_tag},
     key::VaryValue,
-    policy::ResponsePolicy,
+    policy::{ResponsePolicy, RetentionPolicy},
 };
 
 const MAGIC: &[u8; 8] = b"OXICACHE";
-const RECORD_VERSION: u16 = 1;
+const RECORD_VERSION: u16 = 2;
 const HEADER_BYTES: usize = 8 + 2 + 8 + 4;
 const ROOT_MODE: u32 = 0o700;
 const FILE_MODE: u32 = 0o600;
@@ -1121,6 +1121,8 @@ fn encode_record(
     payload.duration(entry.policy.freshness_lifetime);
     payload.duration(entry.policy.stale_while_revalidate);
     payload.duration(entry.policy.stale_if_error);
+    payload.optional_duration(entry.policy.retention.keep());
+    payload.boolean(entry.policy.retention.request_stale_allowed());
     payload.boolean(entry.policy.always_revalidate);
     payload.boolean(entry.policy.must_revalidate_stale);
     payload.boolean(entry.policy.allows_authorized_reuse);
@@ -1157,7 +1159,7 @@ fn decode_record(
     let version = u16::from_le_bytes(record[8..10].try_into().map_err(|_| invalid_record())?);
     let payload_len = u64::from_le_bytes(record[10..18].try_into().map_err(|_| invalid_record())?);
     let checksum = u32::from_le_bytes(record[18..22].try_into().map_err(|_| invalid_record())?);
-    if version != RECORD_VERSION
+    if !matches!(version, 1 | RECORD_VERSION)
         || usize::try_from(payload_len).ok() != Some(record.len().saturating_sub(HEADER_BYTES))
         || crc32fast::hash(&record[HEADER_BYTES..]) != checksum
     {
@@ -1258,11 +1260,25 @@ fn decode_record(
         }
         tags.push(tag);
     }
+    let freshness_lifetime = input.duration()?;
+    let stale_while_revalidate = input.duration()?;
+    let stale_if_error = input.duration()?;
+    let (retention_after_freshness, request_stale_allowed) = if version >= 2 {
+        (input.optional_duration()?, input.boolean()?)
+    } else {
+        (None, true)
+    };
+    let retention = match (retention_after_freshness, request_stale_allowed) {
+        (None, true) => RetentionPolicy::Rfc,
+        (Some(keep), false) => RetentionPolicy::Canonical { keep },
+        _ => return Err(invalid_record()),
+    };
     let policy = ResponsePolicy {
-        freshness_lifetime: input.duration()?,
+        freshness_lifetime,
         corrected_initial_age,
-        stale_while_revalidate: input.duration()?,
-        stale_if_error: input.duration()?,
+        stale_while_revalidate,
+        stale_if_error,
+        retention,
         always_revalidate: input.boolean()?,
         must_revalidate_stale: input.boolean()?,
         allows_authorized_reuse: input.boolean()?,
@@ -1330,6 +1346,13 @@ impl Encoder {
     fn duration(&mut self, value: Duration) {
         self.u64(value.as_secs());
         self.u32(value.subsec_nanos());
+    }
+
+    fn optional_duration(&mut self, value: Option<Duration>) {
+        self.boolean(value.is_some());
+        if let Some(value) = value {
+            self.duration(value);
+        }
     }
 
     fn u32_len(&mut self, value: usize) -> Result<(), DiskCacheError> {
@@ -1409,6 +1432,10 @@ impl<'a> Decoder<'a> {
             return Err(invalid_record());
         }
         Ok(Duration::new(seconds, nanos))
+    }
+
+    fn optional_duration(&mut self) -> Result<Option<Duration>, DiskCacheError> {
+        self.boolean()?.then(|| self.duration()).transpose()
     }
 
     fn count(&mut self, maximum: usize) -> Result<usize, DiskCacheError> {

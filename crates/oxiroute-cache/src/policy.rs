@@ -4,6 +4,75 @@ use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 
 use crate::{MonoTime, key::Vary};
 
+/// Canonical freshness and retention windows applied by the server runtime.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CacheTimeline {
+    use_origin_cache_control: bool,
+    default_ttl: Duration,
+    status_ttls: Vec<(StatusCode, Duration)>,
+    grace: Duration,
+    keep: Duration,
+}
+
+impl CacheTimeline {
+    /// Creates a deterministic canonical timeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when grace exceeds keep, a status is duplicated, or an informational,
+    /// partial, or not-modified response is assigned a TTL.
+    pub fn new(
+        use_origin_cache_control: bool,
+        default_ttl: Duration,
+        status_ttls: impl IntoIterator<Item = (StatusCode, Duration)>,
+        grace: Duration,
+        keep: Duration,
+    ) -> Result<Self, CacheTimelineError> {
+        if grace > keep {
+            return Err(CacheTimelineError::GraceExceedsKeep);
+        }
+        let mut status_ttls = status_ttls.into_iter().collect::<Vec<_>>();
+        status_ttls.sort_unstable_by_key(|(status, _)| status.as_u16());
+        for pair in status_ttls.windows(2) {
+            if pair[0].0 == pair[1].0 {
+                return Err(CacheTimelineError::DuplicateStatus);
+            }
+        }
+        if status_ttls.iter().any(|(status, _)| {
+            status.is_informational()
+                || *status == StatusCode::PARTIAL_CONTENT
+                || *status == StatusCode::NOT_MODIFIED
+        }) {
+            return Err(CacheTimelineError::UnsupportedStatus);
+        }
+        Ok(Self {
+            use_origin_cache_control,
+            default_ttl,
+            status_ttls,
+            grace,
+            keep,
+        })
+    }
+
+    fn status_ttl(&self, status: StatusCode) -> Option<Duration> {
+        self.status_ttls
+            .binary_search_by_key(&status.as_u16(), |(candidate, _)| candidate.as_u16())
+            .ok()
+            .map(|index| self.status_ttls[index].1)
+    }
+}
+
+/// Invalid canonical cache timeline.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum CacheTimelineError {
+    #[error("cache grace must not exceed keep")]
+    GraceExceedsKeep,
+    #[error("cache status TTLs must be unique")]
+    DuplicateStatus,
+    #[error("cache status TTL cannot target informational, partial, or not-modified responses")]
+    UnsupportedStatus,
+}
+
 /// Strictly parsed Cache-Control directives used by a shared cache.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -216,26 +285,62 @@ impl Validators {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RetentionPolicy {
+    Rfc,
+    Canonical { keep: Duration },
+}
+
+impl RetentionPolicy {
+    pub(crate) const fn request_stale_allowed(self) -> bool {
+        matches!(self, Self::Rfc)
+    }
+
+    pub(crate) const fn keep(self) -> Option<Duration> {
+        match self {
+            Self::Rfc => None,
+            Self::Canonical { keep } => Some(keep),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ResponsePolicy {
     pub freshness_lifetime: Duration,
     pub corrected_initial_age: Duration,
     pub stale_while_revalidate: Duration,
     pub stale_if_error: Duration,
+    pub retention: RetentionPolicy,
     pub always_revalidate: bool,
     pub must_revalidate_stale: bool,
     pub allows_authorized_reuse: bool,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct ResponsePolicyInput<'a> {
+    pub request_headers: &'a HeaderMap,
+    pub status: StatusCode,
+    pub headers: &'a HeaderMap,
+    pub timing: ResponseTiming,
+    pub max_heuristic_freshness: Duration,
+    pub max_vary_fields: usize,
+    pub max_vary_bytes: usize,
+    pub timeline: Option<&'a CacheTimeline>,
+}
+
 impl ResponsePolicy {
     pub fn evaluate(
-        request_headers: &HeaderMap,
-        status: StatusCode,
-        headers: &HeaderMap,
-        timing: ResponseTiming,
-        max_heuristic_freshness: Duration,
-        max_vary_fields: usize,
-        max_vary_bytes: usize,
+        input: ResponsePolicyInput<'_>,
     ) -> Result<(Self, Vary, Validators), ResponseRejection> {
+        let ResponsePolicyInput {
+            request_headers,
+            status,
+            headers,
+            timing,
+            max_heuristic_freshness,
+            max_vary_fields,
+            max_vary_bytes,
+            timeline,
+        } = input;
         let control = CacheControl::parse(headers).map_err(ResponseRejection::InvalidMetadata)?;
         if status == StatusCode::PARTIAL_CONTENT || status == StatusCode::NOT_MODIFIED {
             return Err(ResponseRejection::Status);
@@ -263,52 +368,26 @@ impl ResponsePolicy {
             return Err(ResponseRejection::VaryAny);
         }
 
-        let date = optional_date(headers, http::header::DATE)?;
-        let expires = optional_date(headers, http::header::EXPIRES)?;
-        let last_modified = optional_date(headers, http::header::LAST_MODIFIED)?;
-        let age = optional_delta_header(headers, http::header::AGE)?.unwrap_or_default();
-        let explicit = control.shared_max_age.or(control.max_age).or_else(|| {
-            expires.map(|expires| {
-                expires
-                    .duration_since(date.unwrap_or(timing.response_received_wall))
-                    .unwrap_or_default()
-            })
-        });
-        if explicit.is_none() && !default_cacheable(status) && !control.public {
-            return Err(ResponseRejection::Status);
-        }
-        let heuristic = last_modified.map_or(Duration::ZERO, |modified| {
-            date.unwrap_or(timing.response_received_wall)
-                .duration_since(modified)
-                .unwrap_or_default()
-                .div_f32(10.0)
-                .min(max_heuristic_freshness)
-        });
-        let freshness_lifetime = explicit.unwrap_or(heuristic);
-        let corrected_initial_age = current_age(date, age, timing, timing.response_received);
+        let freshness = response_freshness(
+            status,
+            headers,
+            timing,
+            max_heuristic_freshness,
+            timeline,
+            &control,
+        )?;
         let must_revalidate_stale = control.no_cache
             || control.must_revalidate
             || control.proxy_revalidate
             || control.shared_max_age.is_some();
-        let etag = single_header(headers, http::header::ETAG)
-            .map_err(ResponseRejection::InvalidMetadata)?;
-        if etag.is_some_and(|value| !valid_etag(value.as_bytes())) {
-            return Err(ResponseRejection::InvalidMetadata(
-                ParseError::InvalidValidator,
-            ));
-        }
-        let validators = Validators {
-            etag: etag.cloned(),
-            last_modified: single_header(headers, http::header::LAST_MODIFIED)
-                .map_err(ResponseRejection::InvalidMetadata)?
-                .cloned(),
-        };
+        let validators = response_validators(headers)?;
         Ok((
             Self {
-                freshness_lifetime,
-                corrected_initial_age,
-                stale_while_revalidate: control.stale_while_revalidate.unwrap_or_default(),
-                stale_if_error: control.stale_if_error.unwrap_or_default(),
+                freshness_lifetime: freshness.lifetime,
+                corrected_initial_age: freshness.corrected_initial_age,
+                stale_while_revalidate: freshness.stale_while_revalidate,
+                stale_if_error: freshness.stale_if_error,
+                retention: freshness.retention,
                 always_revalidate: control.no_cache,
                 must_revalidate_stale,
                 allows_authorized_reuse,
@@ -317,6 +396,95 @@ impl ResponsePolicy {
             validators,
         ))
     }
+}
+
+struct ResponseFreshness {
+    lifetime: Duration,
+    corrected_initial_age: Duration,
+    stale_while_revalidate: Duration,
+    stale_if_error: Duration,
+    retention: RetentionPolicy,
+}
+
+fn response_freshness(
+    status: StatusCode,
+    headers: &HeaderMap,
+    timing: ResponseTiming,
+    max_heuristic_freshness: Duration,
+    timeline: Option<&CacheTimeline>,
+    control: &CacheControl,
+) -> Result<ResponseFreshness, ResponseRejection> {
+    let date = optional_date(headers, http::header::DATE)?;
+    let expires = optional_date(headers, http::header::EXPIRES)?;
+    let last_modified = optional_date(headers, http::header::LAST_MODIFIED)?;
+    let age = optional_delta_header(headers, http::header::AGE)?.unwrap_or_default();
+    let explicit = control.shared_max_age.or(control.max_age).or_else(|| {
+        expires.map(|expires| {
+            expires
+                .duration_since(date.unwrap_or(timing.response_received_wall))
+                .unwrap_or_default()
+        })
+    });
+    let configured_status_ttl = timeline.and_then(|timeline| timeline.status_ttl(status));
+    if configured_status_ttl.is_none()
+        && explicit.is_none()
+        && !default_cacheable(status)
+        && !control.public
+    {
+        return Err(ResponseRejection::Status);
+    }
+    let heuristic = last_modified.map_or(Duration::ZERO, |modified| {
+        date.unwrap_or(timing.response_received_wall)
+            .duration_since(modified)
+            .unwrap_or_default()
+            .div_f32(10.0)
+            .min(max_heuristic_freshness)
+    });
+    let lifetime = timeline.map_or_else(
+        || explicit.unwrap_or(heuristic),
+        |timeline| {
+            configured_status_ttl
+                .or(if timeline.use_origin_cache_control {
+                    explicit
+                } else {
+                    None
+                })
+                .unwrap_or(timeline.default_ttl)
+        },
+    );
+    Ok(ResponseFreshness {
+        lifetime,
+        corrected_initial_age: current_age(date, age, timing, timing.response_received),
+        stale_while_revalidate: timeline.map_or_else(
+            || control.stale_while_revalidate.unwrap_or_default(),
+            |_| Duration::ZERO,
+        ),
+        stale_if_error: timeline.map_or_else(
+            || control.stale_if_error.unwrap_or_default(),
+            |timeline| timeline.grace,
+        ),
+        retention: timeline.map_or(RetentionPolicy::Rfc, |timeline| {
+            RetentionPolicy::Canonical {
+                keep: timeline.keep,
+            }
+        }),
+    })
+}
+
+fn response_validators(headers: &HeaderMap) -> Result<Validators, ResponseRejection> {
+    let etag =
+        single_header(headers, http::header::ETAG).map_err(ResponseRejection::InvalidMetadata)?;
+    if etag.is_some_and(|value| !valid_etag(value.as_bytes())) {
+        return Err(ResponseRejection::InvalidMetadata(
+            ParseError::InvalidValidator,
+        ));
+    }
+    Ok(Validators {
+        etag: etag.cloned(),
+        last_modified: single_header(headers, http::header::LAST_MODIFIED)
+            .map_err(ResponseRejection::InvalidMetadata)?
+            .cloned(),
+    })
 }
 
 /// Safe failures that prevent a response from entering the shared cache.
