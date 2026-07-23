@@ -2,9 +2,10 @@
 
 ## Deployment boundary
 
-The control plane shares the daemon initially but remains logically separate from traffic
-listeners. It binds to loopback by default. Remote access requires explicit TLS and
-authentication configuration; permissive CORS is never a default.
+The control plane shares the daemon but remains logically separate from traffic listeners. The
+current schema requires a loopback bind. Configuration routes require a bearer token loaded at
+startup; monitoring, topology, RTMP visibility, and capability-gated recorder routes are currently
+loopback-only but unauthenticated. There is no remote management mode or permissive CORS default.
 
 ## API conventions
 
@@ -14,27 +15,119 @@ authentication configuration; permissive CORS is never a default.
   fields explicitly suffixed `UnixMs` or `_unix_ms` use Unix-millisecond numbers.
 - Stable machine-readable error codes plus human-readable details.
 - Secret values are write-only references or redacted placeholders.
-- Configuration writes use `If-Match` with the current disk revision.
+- Configuration writes use one raw `If-Config-Revision` header containing the current 64-hex disk
+  revision. `If-Match` is not accepted as an alias.
 
-Initial endpoints:
+Implemented endpoints:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/v1/config` | Typed config, disk revision, active revision, and diagnostics. |
 | `POST` | `/api/v1/config/validate` | Validate a typed draft without writing or activating it. |
-| `PUT` | `/api/v1/config` | Revision-checked canonical save and activation attempt. |
-| `GET` | `/api/v1/status` | Daemon, generation, listener, pool, and certificate summary. |
-| `GET` | `/api/v1/events` | Server-sent events for revision, runtime, import, health, and certificate changes. |
-| `GET` | `/api/v1/certificates` | Redacted certificate inventory and expiry state. |
-| `POST` | `/api/v1/certificates/{name}/renew` | Queue an operator-requested renewal. |
-| `POST` | `/api/v1/imports/validate` | Parse native sources and return a report without activation. |
+| `PUT` | `/api/v1/config` | Preflight and revision-checked durable canonical save; changed generations require restart. |
+| `GET` | `/api/v1/topology` | Active redacted configuration graph with runtime health overlays. |
 | `GET` | `/api/v1/monitoring` | Runtime process, host load, listener traffic, pool/endpoint health, and RTMP activity snapshot. |
-| `GET` | `/metrics` | Prometheus exposition on a separately configurable listener. |
+| `GET` | `/api/v1/rtmp/streams` | Active RTMP catalog and runtime capabilities. |
+| `GET` | `/api/v1/rtmp/streams/{streamId}` | One exact-ID active stream snapshot. |
+| `POST` | `/api/v1/rtmp/streams/{streamId}/recorders/{recorderId}/start` | Request one exact-ID manual recorder start. |
+| `POST` | `/api/v1/rtmp/streams/{streamId}/recorders/{recorderId}/stop` | Request one exact-ID manual recorder stop. |
+
+`/api/v1/status`, `/api/v1/events`, certificate routes, import routes, and `/metrics` are not
+implemented. Recorder routes control configured `start = "manual"` workers in the active publisher
+incarnation. `capabilities.manual_recording` is true when the active config contains at least one
+manual recorder; continuous-only recording does not set that capability.
+
+Manual recorder responses are exact:
+
+- `200` with the recorder snapshot when the requested state is already settled.
+- `202` with the recorder snapshot whenever the returned phase is `starting` or `stopping`.
+- `400 invalid_stream_id` or `400 invalid_recorder_id` for malformed UUIDs.
+- `404` for an unknown action path or `404 rtmp_resource_not_found` for an absent stream/recorder.
+- `405` with `Allow: POST` for another method.
+- `409 rtmp_state_conflict` for no active publisher, a continuous recorder, or an opposite
+  transition in progress.
+- `501 rtmp_recording_unavailable` when no manual recorder capability exists in the active runtime.
+- `503 rtmp_recorder_start_failed` or `503 rtmp_recorder_stop_failed` when the active recorder
+  backend cannot execute the requested transition.
+
+### Configuration authentication
+
+Whenever `management` is configured, startup requires `OXIROUTE_MANAGEMENT_TOKEN_FILE`. The file is
+opened without following symlinks, MUST be a regular file with mode `0400` or `0600`, and is bounded
+to 514 bytes so a maximum-size token may include one line ending. One trailing LF or CRLF is removed;
+the remaining token MUST be 32 through 512 visible ASCII bytes (`0x21` through `0x7e`). Other
+whitespace is part of the token or makes it invalid.
+
+Each configuration request requires exactly one `Authorization: Bearer <token>` header. Missing,
+duplicate, malformed, or incorrect authorization returns `401` with `WWW-Authenticate: Bearer`.
+The token is hashed after startup loading and compared in constant time. Non-configuration routes do
+not currently apply this authentication check.
+
+### Configuration routes
+
+`GET /api/v1/config` returns `200` with `schemaVersion`, `diskRevision`, `activeRevision`, normalized
+`config`, and `diagnostics`. If the persisted canonical file cannot be read and decoded, it returns
+`503 canonical_config_unavailable`, the known disk revision or `null`, the unchanged active
+revision, and redacted diagnostics.
+
+`POST /api/v1/config/validate` accepts exactly `{ "config": <canonical object> }`. A `200` response
+contains `candidateRevision`, `normalizedConfig`, deterministic `luaPreview`, diagnostics, and a
+candidate topology explicitly marked `not_active`. Validation compiles the complete runtime plan,
+loads configured UI assets, starts then shuts down a candidate Certbot watcher, and performs a
+read-only recording-root ownership/quota preflight. Recorder preflight does not create an ownership
+lock, probe, partial, or recording file. Actual daemon activation separately opens and pins each
+store and can still fail if a root changes after validation.
+
+`PUT /api/v1/config` requires the same body plus `If-Config-Revision`. It performs the same complete
+preflight before opening the write transaction, so a `422` preflight failure cannot mutate the
+canonical file. The save then re-reads and compares the authoritative disk bytes, writes mode
+`0600`, synchronizes, atomically replaces, and synchronizes the parent directory.
+
+Successful writes return `200` with both revisions, diagnostics, and one of two exact outcomes:
+
+- `saved_restart_required`: disk changed, `activationState` is `restart_required`, and
+  `restartRequired` is `true`.
+- `unchanged_active`: disk equals the startup generation, `activationState` is `active`, and
+  `restartRequired` is `false`.
+
+There is no `202` asynchronous activation path. The daemon does not activate a changed saved
+generation or watch the canonical file; `activeRevision` remains the startup generation until a
+process restart.
+
+Configuration request failures use these statuses:
+
+- `400` for malformed JSON, malformed/duplicate revision or content-length headers, or an unreadable
+  request body.
+- `401` for missing or invalid bearer authorization.
+- `404` for a non-exact or unavailable route.
+- `405` for a wrong method on an exact route, with `Allow` set.
+- `409` for a stale revision; no write occurs and the response includes the latest loadable
+  authoritative configuration.
+- `413` when the declared or streamed body exceeds 1 MiB.
+- `415` unless one `Content-Type` header has media type `application/json`.
+- `422` for a body outside the canonical schema, canonical validation failure, or runtime/UI/Certbot
+  preflight failure; no write occurs.
+- `428` when `If-Config-Revision` is absent on `PUT`.
+- `500` when a durable write fails and the candidate is not already the authoritative disk bytes,
+  or when the system clock cannot provide a supported Unix-millisecond timestamp.
+- `503` when the persisted canonical file, or authoritative state needed to report a conflict,
+  cannot be loaded.
+
+Exact paths are required; trailing slashes and repeated separators return `404`.
+
+The certificate inventory/renewal endpoints and certificate UI are planned, not implemented by
+the current TLS slice. Lua-configured direct-file identities are prepared at startup and configured
+Certbot identities are watched and atomically reconciled. The management API cannot add, replace,
+or renew them directly.
 
 The implemented monitoring snapshot contains daemon uptime, process CPU/RSS/virtual memory,
 threads, open file descriptors, host load averages and memory, aggregate/listener connection and
-byte counters, configured per-listener connection capacities, pool/endpoint health, and RTMP
-stream/publisher/subscriber/media totals. Process and host sampling
+byte counters, nullable per-listener connection capacities, pool algorithm and endpoint lease
+state, pool/endpoint health, and RTMP
+stream/publisher/subscriber/media totals. It also includes redacted `certbotCertificates` entries
+with identity name, active archive/content revision, expiry, and last outcome/error code, plus
+`certbotWatcher` health and bounded counters. Source paths, SAN labels, PEM, and private material
+are excluded. Process and host sampling
 currently reads Linux `/proc`; a sampling or parsing failure returns `503` instead of fabricated
 zeroes. CPU utilization is `null` until two successful samples establish a delta.
 
@@ -52,6 +145,7 @@ zeroes. CPU utilization is `null` until two successful samples establish a delta
       "endpoints": [
         {
           "address": "127.0.0.1:3000",
+          "activeLeases": "2",
           "state": "healthy",
           "lastCheckedAtUnixMs": 1784736000000,
           "lastTransitionAtUnixMs": 1784735995000,
@@ -72,14 +166,33 @@ policy report selectable `unchecked` endpoints; health-enabled pools begin with 
 `unknown` endpoints. `lastCheckedAtUnixMs` and `lastTransitionAtUnixMs` are Unix-millisecond
 numbers or `null` before the corresponding event. `lastFailure` is `timeout`, `connect_failed`,
 `unexpected_status`, `protocol_error`, or `null`. To preserve every `u64` exactly in JavaScript,
-`unavailableSelections`, `successfulChecks`, `failedChecks`, `consecutiveSuccesses`, and
-`consecutiveFailures` are base-10 integer strings. Availability and total endpoint counts remain
-JSON numbers because configuration bounds them. `unavailableSelections` counts selection attempts
-made while the pool had no selectable endpoint.
+`activeLeases`, `unavailableSelections`, `successfulChecks`, `failedChecks`,
+`consecutiveSuccesses`, and `consecutiveFailures` are base-10 integer strings. Availability and
+total endpoint counts remain JSON numbers because configuration bounds them. `activeLeases` counts
+currently held HTTP-request or L4-relay leases; `unavailableSelections` counts selection attempts
+made while the pool had no selectable endpoint. Endpoint `address` is the normalized canonical
+display identity: `IP:port`, `host:port`, or an absolute Unix path.
+
+Listener `bind` is a stable transport-qualified string, either `socket:<address>` or
+`unix:<path>`. `maxConnections` is a positive JSON number for a bounded listener or `null` for
+unbounded admission.
+
+RTMP stream snapshots expose configured recorder `id`, `name`, `manual`, structured phase,
+`changed_at_unix_ms`, decimal-string byte/segment/discontinuity counters, and only relative
+`current`, `last_completed`, recoverable-partial, or published-not-durable names. Phases are `idle`,
+`starting`, `recording`, `stopping`, or `failed`; transition phases carry an operation ID,
+`recording` carries its start time, and `failed` carries a stable categorical code. The monitoring
+snapshot aggregates recorder bytes, segments, and discontinuities and repeats redacted per-recorder
+relative names. Neither response contains a configured recording root or stream query arguments.
+Failure codes are `open_failed`, `write_failed`, `close_failed`, `backend_unavailable`,
+`file_sync_failed`, `publish_failed`, `directory_sync_failed`, `queue_discontinuity`,
+`unsupported_codec`, `shutdown_timed_out`, `worker_panicked`, and `stale_publisher`.
 
 RTMP stream, publisher, subscriber, and media totals are derived from the active catalog and return
 to zero after publishers and subscribers detach. Listener accepted-connection and byte counters
-are daemon-lifetime cumulative totals; active connections are a current gauge.
+are daemon-lifetime cumulative totals; active connections are a current gauge. HTTP listener
+admission occurs after TCP accept and before TLS, so failed or rejected handshakes count as accepted
+connections while only admitted transport lifetimes contribute to the active gauge.
 
 Listener byte counters describe bytes visible at the owning runtime layer, not IP/TCP wire bytes.
 RTMP counts protocol bytes, TCP relay totals retain every completed transfer including partial
@@ -89,20 +202,29 @@ headers, while its received counter covers request bodies; callers MUST NOT inte
 as protocol-independent billable octets. Prometheus exposition, latency/error series, history, and
 cross-platform host samplers remain separate work.
 
-`PUT /config` outcomes:
+`GET /api/v1/topology` returns schema version `1` and the active validated runtime generation as
+immutable `nodes` and typed reference `edges`. Stable IDs are derived from canonical entity identity,
+while each node and edge also carries a source `configPath`. Node kinds cover listeners, RTMP
+listeners, TLS profiles, certificates, HTTP and L4 services, HTTP routes, upstream pools, and
+endpoints. Listener node attributes carry the canonical tagged `bind` object and nullable
+`maxConnections`; HTTP-service nodes carry nullable `maxRequestBodyBytes`; pool nodes carry
+`algorithm`; and endpoint node attributes are the tagged identity itself (`type` plus `address`,
+`host`/`port`, or `path`). Runtime `overlays` join listener metrics by listener name and
+pool/endpoint health by pool name and canonical endpoint identity. Endpoint overlay
+`activeLeases` values are base-10 strings. Certificate private-key paths are replaced by
+`<redacted>` and never enter the response. The topology endpoint itself is read-only. Candidate
+topology is returned separately by config validation, and revision-aware editing uses the config
+routes above.
 
-- `200`: disk and active revisions both moved to the submitted generation.
-- `202`: disk write succeeded, but an explicitly asynchronous preparation job remains.
-- `409`: expected revision was stale; no write occurred.
-- `422`: candidate validation failed; no write occurred.
-- `503`: runtime preparation failed; disk revision may differ, prior active revision remains.
+RTMP listener topology attributes include application name/live/idle policy and a recording summary
+containing only `supported`, `recorderCount`, `manualRecorderCount`, and
+`continuousRecorderCount`. Recorder roots, suffix templates, quotas, relative output names, and
+stream query arguments are not included in active or candidate topology.
 
-The response always includes both revisions and diagnostics so the UI cannot imply that a
-disk write automatically changed live traffic.
+## Planned event stream
 
-## Event stream
-
-Events have an increasing daemon-local ID and include current revisions. Types include:
+No SSE route or event history is implemented. A future event stream will have an increasing
+daemon-local ID and include current revisions. Planned types include:
 
 - `config.disk_changed`, `config.activated`, `config.rejected`
 - `runtime.listener_changed`, `runtime.pool_health_changed`
@@ -110,8 +232,8 @@ Events have an increasing daemon-local ID and include current revisions. Types i
 - `certificate.expiring`, `certificate.renewed`, `certificate.failed`
 - `acme.challenge_started`, `acme.challenge_completed`
 
-Clients reconnect with `Last-Event-ID`. If history is unavailable, the server emits a
-`resync_required` event and the client reloads status/config.
+Future clients will reconnect with `Last-Event-ID`. If history is unavailable, the server will emit
+a `resync_required` event and the client will reload status/config.
 
 ## Vue and Pug frontend
 
@@ -119,9 +241,9 @@ Clients reconnect with `Last-Event-ID`. If history is unavailable, the server em
 - Pug 3.x used only through `<template lang="pug">` in precompiled Vue SFCs.
 - No runtime template compiler, server-supplied templates, or user-editable Pug.
 - No global state library until component scope proves it necessary.
-- Typed API client generated from or checked against the API schema.
+- Manually typed API client with component and exact canonical-field-registry tests.
 
-Initial views:
+Planned product views:
 
 - Overview: active/disk revisions, listeners, traffic, errors, and expiring certificates.
 - Services: listener, route, upstream, health, and timeout editor.
@@ -129,21 +251,27 @@ Initial views:
 - Imports: source tree, support summary, diagnostics, and conversion preview.
 - Events/logs: bounded recent operational events, not raw unbounded log streaming.
 
-Current implementation status: the responsive runtime observatory and RTMP broadcast desk are
-implemented with host/process load, listener traffic, pool/endpoint health, active-stream,
-codec/media, viewer, and recorder visibility. Pool cards show the algorithm, available/total
-endpoints, exact unavailable-selection count, and each endpoint's address, state, last-check age,
-total and consecutive passed/failed checks, and latest failure. Transition timestamps are available
-through the API but are not currently rendered. Refreshes do not overlap, retain the last valid
-sample after transient failures, and expose loading/stale/error states. Manual controls call
-exact-ID routes and remain disabled when the API reports no recording backend. Configuration,
-certificate, import, and event views remain planned.
+Current implementation status: the responsive runtime observatory, high-level topology schematic,
+RTMP broadcast desk, and canonical configuration workspace are implemented. The observatory covers
+host/process load, listener traffic, pool/endpoint health, active-stream, codec/media, viewer, and
+recorder visibility. Refreshes do not overlap, retain the last valid sample after transient
+failures, and expose loading/stale/error states. Manual controls call exact-ID routes and are
+available for configured manual recorder definitions on active publishers. The topology inspector
+exposes stable config paths and exact redacted attributes without recording roots.
+
+The configuration workspace keeps its bearer token only in page memory, exposes every current
+canonical field, validates through the server, renders the backend Lua and candidate topology for
+review, and saves with `If-Config-Revision`. It preserves dirty drafts across refresh failures and
+`409` conflicts, distinguishes disk and active revisions, and reports changed saves as requiring a
+restart. Certificate lifecycle management, imports, and event views remain planned.
 
 ## File-change behavior
 
-- Backend watches parent directories and hashes complete file content after debouncing.
-- A clean UI draft automatically reloads an externally changed valid file.
-- A dirty draft is marked stale and offers discard/reload or explicit reconciliation.
+- The backend does not watch the canonical file.
+- The UI checks disk state on explicit load, unlock, or **Check disk revision**; it does not poll or
+  receive file-change events.
+- A clean explicit refresh loads an externally changed valid file.
+- A dirty explicit refresh is marked stale and offers discard/reload.
 - Save against a stale revision returns `409`; the server never performs last-writer-wins.
 - An invalid external file remains visible with diagnostics while the last active runtime
   is clearly labeled as older.
@@ -151,10 +279,17 @@ certificate, import, and event views remain planned.
 ## Security
 
 - Management and traffic listener configuration are separate.
-- State-changing endpoints require same-origin credentials and CSRF protection when cookie authentication is used.
-- Remote mode requires authenticated users, short sessions, audit records, and TLS.
-- Private keys, ACME account keys, DNS credentials, raw authorization headers, and secret values never enter frontend state.
-- UI status is read-only for unsupported imported constructs; it cannot save a lossy conversion without explicit ownership change.
+- Configuration routes require the file-backed bearer token described above. The current UI does
+  not use cookies or persist the token.
+- Recorder-control routes remain loopback-only and unauthenticated; unlike config routes, they do
+  not consume the bearer token. They MUST gain authentication and audit records before any future
+  remote management mode exposes them.
+- A future remote mode will require authenticated users, short sessions, audit records, TLS, and
+  CSRF protection if cookie authentication is introduced.
+- Certificate private-key bytes, ACME account keys, and DNS credentials never enter frontend state.
+  The management bearer token is the explicit exception and is retained only in page memory.
+- A future import UI will keep unsupported constructs read-only and will not save a lossy conversion
+  without explicit ownership change.
 
 ## Accessibility and responsiveness
 

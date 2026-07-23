@@ -153,7 +153,7 @@ allowlists and resource limits. It does not reproduce reference pointer/filter d
 | --- | --- | --- | --- |
 | `record` | R,S,A,C | bitmask: `off all audio video keyframes manual` | empty/off |
 | `record_path` | R,S,A,C | path | empty |
-| `record_suffix` | R,S,A,C | string, `%` enables `strftime` | `.flv` |
+| `record_suffix` | R,S,A,C | string; strict lowering accepts bounded literals and `%%` only | `.flv` |
 | `record_unique` | R,S,A,C | flag | off |
 | `record_append` | R,S,A,C | flag | off |
 | `record_lock` | R,S,A,C | flag | off |
@@ -164,8 +164,49 @@ allowlists and resource limits. It does not reproduce reference pointer/filter d
 | `recorder` | A | named block | repeatable |
 
 `all` means audio and video. `off` wins if combined. `keyframes` records video keyframes;
-`manual` requires control API start. FLV append, locking, interval split, and codec-header
-rules require byte-level compatibility tests.
+`manual` requires control API start. The strict lowerer maps only `record all`, `record all manual`,
+`record manual all`, and `record off`; narrower bitmasks and bare `record manual` block finalization.
+FLV append, locking, size/frame bounds, notify, named recorder blocks, and other recorder forms remain
+unsupported.
+
+The native `record_unique` form appends open Unix seconds and is not collision-free when multiple
+opens occur in one second. OxiRoute preserves that suffix and then uses exclusive partial creation
+and atomic no-replace publication with bounded collision suffixes. Canonical configuration supports
+the bounded UTC `%Y %m %d %H %M %S %%` subset. Strict nginx lowering accepts only literal suffix
+bytes and `%%`, because nginx calendar formatting uses local time and is not exactly equivalent to
+canonical UTC formatting.
+
+Canonical recording percent-escapes one relative stream-name component, drops query arguments,
+limits the rendered name to 255 bytes, and rotates on audio boundaries or video keyframes. These
+policies are wired into configured publisher sessions and exact-ID manual controls.
+
+### Strict nginx-RTMP lowering
+
+`oxiroute-import` has a separate nginx-RTMP entry point that loads deterministic includes, resolves
+inheritance across `rtmp`, `server`, and `application` scopes, records one terminal disposition per
+expanded occurrence, retains provenance, and conditionally finalizes a canonical RTMP config. It
+does not inspect or mutate `record_path`; canonical runtime preflight remains a separate step.
+
+The finalizable subset is intentionally narrow:
+
+- One effective `rtmp` block with non-overlapping IP socket `listen` values and no listen options.
+- `server` and uniquely named `application` blocks.
+- Inheritable `live` and `idle_streams` flags.
+- `record off`, `record all`, or `record all manual`/`record manual all` on a live application.
+- A required secure absolute `record_path` when recording is enabled.
+- Default `.flv` or a separator-free suffix of at most 128 bytes containing only literals and `%%`.
+- `record_unique on|off` and, for continuous recording only, `record_interval` from 1 through
+  2147483647 milliseconds.
+- Canonical finite queue, shutdown, storage, file, and active-recorder defaults for imported
+  recorders.
+
+Any applicable unsupported directive blocks its server; any blocking error prevents a finalized
+config, although other safe servers may remain visible in the draft. Blockers include global RTMP
+policy, listen options, overlapping listeners, duplicate scalar/application identities, non-live
+recording, missing/insecure paths, local-time suffix formats, manual intervals, partial recording
+bitmasks, push/pull, access, notify, exec, VOD, HLS/DASH, logging/stat/control behavior, append/lock,
+size/frame limits, and named `recorder {}` blocks. The importer remains a Rust library with no daemon
+CLI, management API, UI, watcher, or activation integration.
 
 ### VOD and netcall: 5
 
@@ -316,7 +357,8 @@ Group count check: `1 + 17 + 2 + 1 + 11 + 6 + 13 + 11 + 3 + 2 + 13 + 2 + 1 + 3 +
 
 ## Runtime architecture
 
-The Rust module is layered:
+The target Rust module is layered as follows; the live path and canonical recording pipeline
+described below are implemented, not evidence that every listed component exists:
 
 1. Listener and optional PROXY protocol.
 2. RTMP version-3 simple/complex handshake state machine.
@@ -330,20 +372,62 @@ The Rust module is layered:
 The first compatibility mode uses one RTMP message stream per connection, ID 1, matching
 the reference assumption. Multi-message-stream support is a later explicit extension.
 
-The runtime-neutral catalog already publishes immutable active-stream snapshots with
+The runtime catalog publishes immutable active-stream snapshots with
 restart-safe stream/session/recorder identities, publisher/subscriber counts, absolute media
-samples, and capability-gated recorder transitions. The Pingora RTMP listener now attaches a
-publisher only after accepting a live `publish` request, rejects duplicate publishers, observes
-media statistics, and detaches on stop, disconnect, shutdown, or protocol failure. Handshakes and
-connections alone never create catalog streams. Playback remains rejected until bounded fanout is
-implemented.
+samples, and configured recorder transitions. The Pingora RTMP listener accepts one live
+publisher or viewer role per connection for explicitly configured applications. A bounded fanout
+hub caches metadata/AAC/AVC headers, gates viewers on future keyframes, resynchronizes saturated
+viewers independently, resets on publisher restart, and detaches both roles on stop, disconnect,
+shutdown, or protocol failure. Playback serialization happens after queue extraction, outside hub
+locks, in bounded drain turns with transport write deadlines.
+
+Each publisher incarnation receives the configured recorder definitions. Continuous recorders enter
+`starting` during publisher registration and open output on the first recordable media. Manual
+recorders remain `idle` until an exact stream/recorder start request. Stop, publisher disconnect,
+shutdown, or protocol failure stops admission, drains or cancels the worker, finalizes durable
+segments when possible, and removes that publisher's recorder identities.
+
+A manual start moves `idle` or `failed` to `starting`; start is idempotent while already `starting`
+or `recording`. A manual stop moves `recording` to `stopping`; stop is idempotent in `idle`,
+`failed`, or `stopping`. Start during `stopping` and stop during `starting` are conflicts. Worker
+status advances `starting` to `recording` after output opens, and successful asynchronous stop
+returns to `idle`. Continuous recorders are not manually controllable; after a failure they require
+a new publisher incarnation.
+
+The store uses no-follow directory traversal, daemon-owned roots without group/other write bits,
+exclusive hidden partials, atomic no-replace publication, startup cleanup under an ownership lock,
+and byte/file/active-recorder limits. Runtime-plan and config-API candidate validation use a
+read-only preflight; actual RTMP service activation opens and descriptor-pins the root and creates or
+validates the ownership lock. Existing files count toward quota. Equal limits for one normalized
+root share counters within one daemon process only; the lock protocol is cross-process, but quota
+accounting is not.
+
+Publisher threads use `try_enqueue` and never wait for queue capacity or disk I/O. If adding one
+event would exceed the message or byte bound, the worker drops the queued events and triggering
+event, records one discontinuity, stops accepting, preserves the active partial, and transitions to
+`failed/queue_discontinuity`; it does not silently resume a corrupt FLV. Rotation waits for a video
+keyframe when video has appeared, or an audio boundary for audio-only output.
+
+Recorder open, quota, write, discontinuity, and codec failures are isolated to that recorder. They
+remain observable but do not fail live ingest, fanout, or sibling recorders.
+
+Stop and disconnect submit workers to a bounded-capacity reaper rather than joining on the RTMP or
+API path. Each worker stops accepting events and has its configured 1-60000 ms shutdown deadline;
+the reaper requests cancellation after that deadline, retains ownership, and joins instead of
+detaching. Reaper shutdown cancels outstanding tasks and waits for their completion.
+
+FLV recording supports legacy AVC video and AAC audio. Enhanced RTMP AVC (`avc1`), HEVC (`hvc1`),
+and AV1 (`av01`) can be observed and fanned out by the live path but are explicitly
+`recording_supported: false`; a configured recorder that encounters those video events fails with
+`unsupported_codec` rather than emitting misleading FLV output.
 
 ## Implementation slices and acceptance
 
 ### Slice 0: directive registry
 
-Status: parser, registry, and contextual value validation implemented; include resolution,
-effective inheritance lowering, and per-directive fixture completeness remain.
+Status: parser, registry, and contextual value validation are implemented. Deterministic include
+resolution, effective inheritance, occurrence accounting, provenance, and strict lowering are
+implemented for the subset above; per-directive lowering and fixture completeness remain.
 
 - Exactly 117 unique active keys.
 - Context, arity, value grammar, defaults, scope quirks, and status for every key.
@@ -353,11 +437,11 @@ effective inheritance lowering, and per-directive fixture completeness remain.
 ### Slice 1: live interoperability
 
 Status: partial. A pinned `rml_rtmp` 0.8.0 adapter now provides simple/complex handshakes, chunk
-transport, connect/createStream/live-publish command handling, duplicate-publisher rejection,
-media observations, and lifecycle cleanup. The listener caps requested inbound chunks at 1 MiB.
-Manual FFmpeg publishing passes against the Pingora listener. Play/fanout, configurable
-assembled-message limits, exhaustive chunk fixtures, checked-in process-level FFmpeg acceptance,
-and OBS acceptance remain before this slice is complete.
+transport, connect/createStream/live-publish/play command handling, duplicate-publisher rejection,
+bounded media fanout, media observations, and lifecycle cleanup. The listener caps requested inbound
+chunks at 1 MiB. Manual FFmpeg publishing and native publish/play wire tests pass. Configurable
+assembled-message limits, checked-in process-level FFmpeg consume acceptance, exhaustive chunk
+fixtures, and OBS acceptance remain before this slice is complete.
 
 - Simple and both Adobe complex handshake schemes.
 - Fragmented I/O, chunk formats 0-3, all CSID header widths, extended timestamps, and interleaving.
@@ -369,8 +453,10 @@ and OBS acceptance remain before this slice is complete.
 
 ### Slice 2: operational parity
 
-Access, notify, push/pull, recording, VOD, stats, controls, and logs become enforced only
-after their failure and security paths pass differential tests.
+Status: partial. Canonical continuous/manual recording, live-session dispatch, catalog completion,
+storage, rotation, observability, and exact-ID controls are integrated for legacy AVC/AAC FLV.
+Access, notify, push/pull, VOD, stats-page parity, authenticated remote controls, logs, enhanced
+codec recording, and broad nginx-RTMP lowering remain.
 
 ### Slice 3: media/process parity
 
@@ -382,15 +468,17 @@ media, crash, and resource-exhaustion tests.
 - Handshake, chunk, AMF, metadata, and URL/token parsers are size/depth/time bounded.
 - RTMP names cannot escape recording, VOD, HLS, DASH, or key roots.
 - Callbacks and relay targets obey outbound-origin and resolved-address policy.
-- Control operations use management authentication; no nginx-compatible unauthenticated default.
+- Recorder control routes remain loopback-only and unauthenticated; they do not use the bearer token
+  that protects config routes. A future remote mode MUST authenticate and audit them before exposure.
 - Exec is disabled until an isolated allowlisted worker exists.
 - Per-listener, application, publisher, subscriber, message, queue, and segment limits are explicit.
 - Malformed publisher input cannot produce unbounded subscriber memory or unsafe media files.
 
 ## Test strategy
 
-Tests begin red and include unit state machines, loopback integration, captured golden
-traces, differential behavior against the reference, fuzzing, fake clocks/filesystems, and
-independent FFmpeg/OBS clients. Every directive has positive context/value fixtures and
-negative context/arity/value fixtures before the runtime matrix can claim full config
-compatibility.
+Current tests cover unit state machines, loopback integration, byte-exact media output, bounded
+fanout, native publish/play wire behavior, recording path/store/worker failure cases, and directive
+context/value validation. Captured differential traces, checked-in fuzz targets, process-level
+FFmpeg/OBS consume acceptance, and broader fake-clock/filesystem matrices remain planned. Every
+directive needs positive context/value fixtures and negative context/arity/value fixtures before
+the runtime matrix can claim full config compatibility.
