@@ -19,8 +19,8 @@ pub use decision::{
 };
 pub use headers::{HeaderSanitizationError, sanitize_request_headers};
 pub use policy::{
-    ApprovedDestination, DestinationPolicy, ForbiddenDestinationPolicy, PolicyContext, PolicyError,
-    ResolveError, Resolver,
+    ApprovedDestination, DestinationPolicy, DestinationRules, ForbiddenDestinationPolicy,
+    PolicyContext, PolicyError, ResolveError, Resolver, RuleError,
 };
 pub use target::{
     Destination, ForwardScheme, ForwardTarget, Host, TargetError, parse_absolute_form,
