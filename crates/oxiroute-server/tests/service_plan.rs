@@ -17,7 +17,7 @@ use oxiroute_config::{
     HealthCheckType, HttpHostSelector, HttpPathSelector, HttpProxyPolicy, HttpRoute,
     HttpRouteAction, HttpService, HttpVersionPolicy, L4Service, Listener, ListenerBind, Protocol,
     RtmpApplication, RtmpRecorderStart, RtmpService, TlsProfile, TlsVersion, UpstreamAlgorithm,
-    UpstreamEndpoint, UpstreamPool, UpstreamTls,
+    UpstreamEndpoint, UpstreamPool, UpstreamTls, load_lua,
 };
 use oxiroute_rtmp::{RtmpCapabilities, RtmpRegistry, StreamKey};
 use oxiroute_server::{
@@ -32,6 +32,17 @@ use config_support::{
     loopback_endpoint as socket_endpoint, rtmp_recorder as recorder,
 };
 use fixture_support::{create_secure_root, write_file_with_mode, write_test_identity};
+
+#[test]
+fn distributed_example_compiles_into_an_active_runtime_plan() {
+    let config = load_lua(include_str!("../../../oxiroute.example.lua"))
+        .expect("distributed example configuration");
+
+    let plan = runtime_plan(&config).expect("distributed example runtime plan");
+
+    assert_eq!(plan.services.len(), 3);
+    assert!(plan.health_supervisor.is_some());
+}
 
 #[test]
 fn compiles_shared_http_and_l4_service_plans() {
