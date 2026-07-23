@@ -33,6 +33,9 @@ explicitly rejected and is not used as a TCP CONNECT substitute.
 - `ForbiddenDestinationPolicy` rejects localhost names, mixed public/private answers, and common
   non-public, special-use, mapped, NAT64, multicast, documentation, benchmark, and reserved IP
   ranges. Deployments can provide a stricter `DestinationPolicy`, including port or tenant rules.
+- `DestinationRules` implements the canonical public-by-default contract: empty allow lists admit
+  public destinations, denies override, and nonempty domain/CIDR lists independently constrain the
+  requested DNS name and every address in the complete resolution result.
 - `ProxyAuthenticator` receives a borrowed credential wrapper that has no `Debug` or `Display`.
   Decisions retain only `Principal`; proxy authorization headers are removed before forwarding.
   Secret storage and credential comparison belong to the injected implementation.

@@ -99,6 +99,217 @@ impl DestinationPolicy for ForbiddenDestinationPolicy {
     }
 }
 
+/// Canonical domain and CIDR rules for an explicit forward proxy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DestinationRules {
+    allow_domains: Vec<DomainRule>,
+    deny_domains: Vec<DomainRule>,
+    allow_networks: Vec<IpNetwork>,
+    deny_networks: Vec<IpNetwork>,
+    deny_private: bool,
+}
+
+impl DestinationRules {
+    /// Parses normalized domain and CIDR rule lists.
+    ///
+    /// Empty allow lists permit destinations not rejected by deny rules or `deny_private`.
+    /// Nonempty domain and CIDR allow lists are independent constraints; when both exist, both the
+    /// requested DNS name and every resolved address must match their respective allow list.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed domains, CIDRs, duplicate rules, and host-bit CIDRs.
+    pub fn new(
+        allow_domains: impl IntoIterator<Item = String>,
+        deny_domains: impl IntoIterator<Item = String>,
+        allow_cidrs: impl IntoIterator<Item = String>,
+        deny_cidrs: impl IntoIterator<Item = String>,
+        deny_private: bool,
+    ) -> Result<Self, RuleError> {
+        Ok(Self {
+            allow_domains: parse_unique(allow_domains, DomainRule::parse)?,
+            deny_domains: parse_unique(deny_domains, DomainRule::parse)?,
+            allow_networks: parse_unique(allow_cidrs, IpNetwork::parse)?,
+            deny_networks: parse_unique(deny_cidrs, IpNetwork::parse)?,
+            deny_private,
+        })
+    }
+}
+
+impl DestinationPolicy for DestinationRules {
+    fn authorize(
+        &self,
+        context: &PolicyContext,
+        destination: &Destination,
+        addresses: &[IpAddr],
+    ) -> Result<(), PolicyError> {
+        if self.deny_private {
+            ForbiddenDestinationPolicy.authorize(context, destination, addresses)?;
+        }
+        if matches!(&destination.host, Host::Dns(name) if self.deny_domains.iter().any(|rule| rule.matches(name)))
+        {
+            return Err(PolicyError::Rejected);
+        }
+        if !self.allow_domains.is_empty()
+            && !matches!(&destination.host, Host::Dns(name) if self.allow_domains.iter().any(|rule| rule.matches(name)))
+        {
+            return Err(PolicyError::Rejected);
+        }
+        if addresses.iter().any(|address| {
+            self.deny_networks
+                .iter()
+                .any(|network| network.contains(*address))
+        }) {
+            return Err(PolicyError::ForbiddenAddress);
+        }
+        if !self.allow_networks.is_empty()
+            && addresses.iter().any(|address| {
+                !self
+                    .allow_networks
+                    .iter()
+                    .any(|network| network.contains(*address))
+            })
+        {
+            return Err(PolicyError::Rejected);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum RuleError {
+    #[error("destination rule is malformed")]
+    Malformed,
+    #[error("destination rule is duplicated")]
+    Duplicate,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DomainRule {
+    Exact(String),
+    OneLabelWildcard(String),
+}
+
+impl DomainRule {
+    fn parse(value: &str) -> Result<Self, RuleError> {
+        let value = value.to_ascii_lowercase();
+        if let Some(suffix) = value.strip_prefix("*.") {
+            valid_dns_name(suffix)
+                .then(|| Self::OneLabelWildcard(suffix.into()))
+                .ok_or(RuleError::Malformed)
+        } else {
+            valid_dns_name(&value)
+                .then_some(Self::Exact(value))
+                .ok_or(RuleError::Malformed)
+        }
+    }
+
+    fn matches(&self, name: &str) -> bool {
+        match self {
+            Self::Exact(expected) => name == expected,
+            Self::OneLabelWildcard(suffix) => name
+                .strip_suffix(suffix)
+                .and_then(|prefix| prefix.strip_suffix('.'))
+                .is_some_and(|label| !label.is_empty() && !label.contains('.')),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IpNetwork {
+    V4 { network: u32, prefix: u8 },
+    V6 { network: u128, prefix: u8 },
+}
+
+impl IpNetwork {
+    fn parse(value: &str) -> Result<Self, RuleError> {
+        let (address, prefix) = value.split_once('/').ok_or(RuleError::Malformed)?;
+        let address = address
+            .parse::<IpAddr>()
+            .map_err(|_| RuleError::Malformed)?;
+        let prefix = prefix.parse::<u8>().map_err(|_| RuleError::Malformed)?;
+        match address {
+            IpAddr::V4(address) if prefix <= 32 => {
+                let network = u32::from(address);
+                (network & v4_mask(prefix) == network)
+                    .then_some(Self::V4 { network, prefix })
+                    .ok_or(RuleError::Malformed)
+            }
+            IpAddr::V6(address) if prefix <= 128 => {
+                let network = u128::from(address);
+                (network & v6_mask(prefix) == network)
+                    .then_some(Self::V6 { network, prefix })
+                    .ok_or(RuleError::Malformed)
+            }
+            IpAddr::V4(_) | IpAddr::V6(_) => Err(RuleError::Malformed),
+        }
+    }
+
+    fn contains(self, address: IpAddr) -> bool {
+        match (self, address) {
+            (Self::V4 { network, prefix }, IpAddr::V4(address)) => {
+                u32::from(address) & v4_mask(prefix) == network
+            }
+            (Self::V6 { network, prefix }, IpAddr::V6(address)) => {
+                u128::from(address) & v6_mask(prefix) == network
+            }
+            (Self::V4 { .. }, IpAddr::V6(_)) | (Self::V6 { .. }, IpAddr::V4(_)) => false,
+        }
+    }
+}
+
+fn parse_unique<T: Eq>(
+    values: impl IntoIterator<Item = String>,
+    parse: impl Fn(&str) -> Result<T, RuleError>,
+) -> Result<Vec<T>, RuleError> {
+    let mut parsed = Vec::new();
+    for value in values {
+        let value = parse(&value)?;
+        if parsed.contains(&value) {
+            return Err(RuleError::Duplicate);
+        }
+        parsed.push(value);
+    }
+    Ok(parsed)
+}
+
+fn valid_dns_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 253
+        && !name.ends_with('.')
+        && name.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                && label
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && label
+                    .as_bytes()
+                    .last()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+        })
+}
+
+const fn v4_mask(prefix: u8) -> u32 {
+    if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    }
+}
+
+const fn v6_mask(prefix: u8) -> u128 {
+    if prefix == 0 {
+        0
+    } else {
+        u128::MAX << (128 - prefix)
+    }
+}
+
 fn is_forbidden_address(address: IpAddr) -> bool {
     match address {
         IpAddr::V4(address) => is_forbidden_v4(address),
@@ -202,6 +413,153 @@ mod tests {
                     &["2606:4700:4700::1111".parse().unwrap()]
                 )
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn empty_allow_lists_permit_anonymous_public_destinations() {
+        let policy = DestinationRules::new([], [], [], [], true).expect("public policy");
+        let destination = Destination {
+            host: Host::Dns("example.com".into()),
+            port: 80,
+        };
+
+        assert!(
+            policy
+                .authorize(
+                    &context(),
+                    &destination,
+                    &["93.184.216.34".parse().unwrap()]
+                )
+                .is_ok()
+        );
+        assert_eq!(
+            policy.authorize(
+                &context(),
+                &destination,
+                &[
+                    "93.184.216.34".parse().unwrap(),
+                    "10.0.0.1".parse().unwrap()
+                ]
+            ),
+            Err(PolicyError::ForbiddenAddress)
+        );
+    }
+
+    #[test]
+    fn deny_rules_override_and_allow_rules_constrain_the_complete_answer() {
+        let policy = DestinationRules::new(
+            ["*.example.com".into()],
+            ["blocked.example.com".into()],
+            ["93.184.216.0/24".into()],
+            ["93.184.216.128/25".into()],
+            false,
+        )
+        .expect("bounded policy");
+        let destination = |name: &str| Destination {
+            host: Host::Dns(name.into()),
+            port: 443,
+        };
+
+        assert!(
+            policy
+                .authorize(
+                    &context(),
+                    &destination("www.example.com"),
+                    &["93.184.216.34".parse().unwrap()]
+                )
+                .is_ok()
+        );
+        assert_eq!(
+            policy.authorize(
+                &context(),
+                &destination("blocked.example.com"),
+                &["93.184.216.34".parse().unwrap()]
+            ),
+            Err(PolicyError::Rejected)
+        );
+        assert_eq!(
+            policy.authorize(
+                &context(),
+                &destination("deep.www.example.com"),
+                &["93.184.216.34".parse().unwrap()]
+            ),
+            Err(PolicyError::Rejected)
+        );
+        assert_eq!(
+            policy.authorize(
+                &context(),
+                &destination("www.example.com"),
+                &[
+                    "93.184.216.34".parse().unwrap(),
+                    "93.184.217.1".parse().unwrap()
+                ]
+            ),
+            Err(PolicyError::Rejected)
+        );
+        assert_eq!(
+            policy.authorize(
+                &context(),
+                &destination("www.example.com"),
+                &["93.184.216.200".parse().unwrap()]
+            ),
+            Err(PolicyError::ForbiddenAddress)
+        );
+    }
+
+    #[test]
+    fn domain_allow_rules_reject_ip_literals_and_cidr_rules_are_family_exact() {
+        let policy = DestinationRules::new(
+            ["example.com".into()],
+            [],
+            ["2001:db9::/32".into()],
+            [],
+            false,
+        )
+        .expect("dual constraint policy");
+        assert_eq!(
+            policy.authorize(
+                &context(),
+                &Destination {
+                    host: Host::Ip("2001:db9::1".parse().unwrap()),
+                    port: 443,
+                },
+                &["2001:db9::1".parse().unwrap()]
+            ),
+            Err(PolicyError::Rejected)
+        );
+        assert_eq!(
+            policy.authorize(
+                &context(),
+                &Destination {
+                    host: Host::Dns("example.com".into()),
+                    port: 443,
+                },
+                &["93.184.216.34".parse().unwrap()]
+            ),
+            Err(PolicyError::Rejected)
+        );
+    }
+
+    #[test]
+    fn malformed_duplicate_and_host_bit_rules_are_rejected() {
+        assert_eq!(
+            DestinationRules::new(["bad..name".into()], [], [], [], true),
+            Err(RuleError::Malformed)
+        );
+        assert_eq!(
+            DestinationRules::new(
+                ["EXAMPLE.COM".into(), "example.com".into()],
+                [],
+                [],
+                [],
+                true
+            ),
+            Err(RuleError::Duplicate)
+        );
+        assert_eq!(
+            DestinationRules::new([], [], ["192.0.2.1/24".into()], [], true),
+            Err(RuleError::Malformed)
         );
     }
 }

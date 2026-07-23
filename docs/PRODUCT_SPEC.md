@@ -71,7 +71,9 @@ firewalling, NAT, routing, or conntrack.
 - HTTP/1 absolute-form requests and CONNECT MUST use a dedicated parser/tunnel path.
 - CONNECT parsing MUST preserve bytes received after the header terminator.
 - HTTP/2 and HTTP/3 proxy modes MUST be implemented only against their stream and tunnel standards; they MUST NOT be HTTP/1 tunnels hidden behind version labels.
-- Access MUST be default-deny until an operator deliberately enables clients and destinations.
+- Non-public and special-use destinations MUST be denied by default. An omitted authentication
+  policy and empty allow lists MAY permit public destinations; configured domain/CIDR allow lists
+  constrain the complete target and DNS answer, and deny rules always override allows.
 - Destination policy MUST be checked against resolved addresses to prevent DNS-based policy bypass and SSRF.
 - Proxy credentials and hop-by-hop proxy headers MUST NOT reach origin servers.
 
