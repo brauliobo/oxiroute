@@ -109,6 +109,8 @@ acceptance tests were run and observed failing before their implementations were
 - [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) distinguishes implemented, planned, and excluded capabilities.
 - [`docs/TEST_STRATEGY.md`](docs/TEST_STRATEGY.md) defines test-first release gates.
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) defines the narrow release sequence.
+- [`benchmarks/README.md`](benchmarks/README.md) defines the reproducible local benchmark harness
+  and records unsupported benchmark lanes as explicit skips.
 - [`docs/NAMING.md`](docs/NAMING.md) lists candidate final names.
 
 ## License

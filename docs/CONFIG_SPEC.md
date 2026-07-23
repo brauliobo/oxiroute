@@ -104,16 +104,35 @@ return {
       name = "web",
       upstream_io_timeout_ms = 30000,
       max_request_body_bytes = 10485760,
-      max_retries = 1,
       routes = {
         {
-          host = "api.example.com",
-          path_prefix = "/v1",
+          host = { kind = "normalized_host", value = "api.example.com" },
+          path = { kind = "segment_prefix", value = "/v1" },
           methods = { "GET", "POST" },
-          upstream_pool = "web",
+          action = {
+            type = "proxy",
+            upstream_pool = "web",
+            policy = {},
+          },
         },
-        { path_prefix = "/secure", upstream_pool = "secure-api" },
-        { path_prefix = "/", upstream_pool = "web" },
+        {
+          path = { kind = "segment_prefix", value = "/secure" },
+          methods = {},
+          action = {
+            type = "proxy",
+            upstream_pool = "secure-api",
+            policy = {},
+          },
+        },
+        {
+          path = { kind = "segment_prefix", value = "/" },
+          methods = {},
+          action = {
+            type = "proxy",
+            upstream_pool = "web",
+            policy = {},
+          },
+        },
       },
     },
   },

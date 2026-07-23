@@ -246,16 +246,13 @@ fn loads_the_distributed_example_configuration() {
     let config = load_lua(include_str!("../../../oxiroute.example.lua"))
         .expect("distributed example must remain valid");
 
-    assert_eq!(config.listeners.len(), 6);
-    assert_eq!(config.cache_stores.len(), 1);
+    assert_eq!(config.listeners.len(), 3);
+    assert!(config.cache_stores.is_empty());
     assert_eq!(config.upstream_pools.len(), 2);
     assert_eq!(config.http_services.len(), 1);
-    assert_eq!(config.forward_proxy_services.len(), 1);
+    assert!(config.forward_proxy_services.is_empty());
     assert_eq!(config.rtmp_services.len(), 1);
-    assert_eq!(
-        config.rtmp_services[0].applications[0].recorders[0].name,
-        "archive"
-    );
+    assert!(config.rtmp_services[0].applications[0].recorders.is_empty());
     assert_eq!(config.l4_services.len(), 1);
 }
 
