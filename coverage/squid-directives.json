@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "product": "squid",
+  "reference": {
+    "kind": "git_checkout",
+    "value": "6f4c814",
+    "documentation": "docs/UPSTREAM_ANALYSIS.md"
+  },
+  "evidence": ["evidence.squid.hostrouter"],
+  "audit": {
+    "fixture": "crates/oxiroute-import/tests/fixtures/squid/hostrouter-sanitized.conf",
+    "expanded_directives": 35,
+    "access_rules": 9,
+    "canonical_claim": false,
+    "runtime_claim": false
+  },
+  "entries": [
+    { "id": "directive.squid.http-port", "key": "http_port", "form": "explicit forward-proxy listener endpoint", "contexts": ["global"], "disposition": "classified", "target": "squid.semantic_ir", "required_tests": ["parse", "resolve", "failure"] },
+    { "id": "directive.squid.access-log", "key": "access_log", "form": "disabled or explicit logging destination", "contexts": ["global"], "disposition": "classified", "target": "squid.semantic_ir", "required_tests": ["parse", "resolve", "failure"] },
+    { "id": "directive.squid.dns-nameservers", "key": "dns_nameservers", "form": "ordered resolver address list", "contexts": ["global"], "disposition": "classified", "target": "squid.semantic_ir", "required_tests": ["parse", "resolve", "failure"] },
+    { "id": "directive.squid.acl", "key": "acl", "form": "ordered named ACL definition", "contexts": ["global"], "disposition": "classified", "target": "squid.semantic_ir", "required_tests": ["parse", "resolve", "failure", "security"] },
+    { "id": "directive.squid.http-access", "key": "http_access", "form": "ordered allow or deny rule over named ACLs", "contexts": ["global"], "disposition": "classified", "target": "squid.semantic_ir", "required_tests": ["parse", "resolve", "failure", "security"] },
+    { "id": "directive.squid.auth-param", "key": "auth_param", "form": "typed and redacted authentication setting", "contexts": ["global"], "disposition": "classified", "target": "squid.semantic_ir", "required_tests": ["parse", "resolve", "failure", "security"] },
+    { "id": "directive.squid.coredump-dir", "key": "coredump_dir", "form": "process-owned state directory", "contexts": ["global"], "disposition": "classified", "target": "squid.semantic_ir", "required_tests": ["parse", "resolve", "failure"] },
+    { "id": "directive.squid.forwarded-for", "key": "forwarded_for", "form": "forwarded-address privacy policy", "contexts": ["global"], "disposition": "classified", "target": "squid.semantic_ir", "required_tests": ["parse", "resolve", "failure", "security"] },
+    { "id": "directive.squid.via", "key": "via", "form": "Via header privacy policy", "contexts": ["global"], "disposition": "classified", "target": "squid.semantic_ir", "required_tests": ["parse", "resolve", "failure", "security"] },
+    { "id": "directive.squid.refresh-pattern", "key": "refresh_pattern", "form": "ordered freshness rule", "contexts": ["global"], "disposition": "classified", "target": "squid.semantic_ir", "required_tests": ["parse", "resolve", "failure"] }
+  ]
+}

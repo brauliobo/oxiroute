@@ -1,0 +1,435 @@
+#![cfg(unix)]
+
+use std::{fs, path::Path};
+
+use oxiroute_config::{Protocol, RtmpRecorderStart};
+use oxiroute_import::{
+    DiagnosticStage, E_DUPLICATE_IDENTITY, E_SEMANTICS_NOT_REPRESENTABLE, E_UNSUPPORTED_FEATURE,
+    nginx::{OccurrenceDisposition, import_rtmp, load, resolve_rtmp},
+};
+use tempfile::TempDir;
+
+#[test]
+fn lowers_inherited_exact_rtmp_and_recorder_policy_without_accessing_the_root() {
+    let report = import_source(
+        br"
+        events {}
+        rtmp {
+          live on;
+          idle_streams off;
+          record all;
+          record_path /definitely/not/an/import-time/root;
+          record_suffix -%%.flv;
+          record_unique on;
+          record_interval 1s500ms;
+          server {
+            listen 127.0.0.1:1935;
+            application phoenix {}
+          }
+        }
+        ",
+        &[],
+    );
+
+    let config = report.config.as_ref().expect("exact RTMP configuration");
+    assert!(report.blocked_services.is_empty());
+    assert_eq!(config.listeners.len(), 1);
+    assert_eq!(config.listeners[0].protocol, Protocol::Rtmp);
+    assert_eq!(config.listeners[0].bind.to_string(), "127.0.0.1:1935");
+    let application = &config.rtmp_services[0].applications[0];
+    assert_eq!(application.name, "phoenix");
+    assert!(application.live);
+    assert!(!application.idle_streams);
+    let recorder = &application.recorders[0];
+    assert_eq!(recorder.start, RtmpRecorderStart::Continuous);
+    assert_eq!(
+        recorder.root_directory,
+        Path::new("/definitely/not/an/import-time/root")
+    );
+    assert_eq!(recorder.suffix_template, "-%%.flv");
+    assert!(recorder.append_unix_seconds);
+    assert_eq!(recorder.rotation_interval_ms, Some(1_500));
+    assert_eq!(
+        report.occurrence_ledger.len(),
+        report.source_graph.expanded_occurrences.len()
+    );
+    assert!(report.occurrence_ledger.iter().all(|decision| {
+        matches!(
+            decision.disposition,
+            OccurrenceDisposition::Resolved | OccurrenceDisposition::Structural
+        )
+    }));
+    assert!(report.provenance.iter().any(|entry| {
+        entry.path == "/rtmp_services/0/applications/0/live"
+            && entry.origins[0].provenance.include_stack.is_empty()
+    }));
+}
+
+#[test]
+fn applies_native_application_and_recorder_defaults_explicitly() {
+    let report = import_source(
+        br"
+        rtmp {
+          server {
+            listen 1935;
+            application dormant {}
+            application recorded {
+              live on;
+              record all;
+              record_path /var/lib/recordings;
+            }
+          }
+        }
+        ",
+        &[],
+    );
+    let config = report.config.expect("defaulted RTMP configuration");
+    let dormant = &config.rtmp_services[0].applications[0];
+    assert!(!dormant.live);
+    assert!(dormant.idle_streams);
+    assert!(dormant.recorders.is_empty());
+    let recorder = &config.rtmp_services[0].applications[1].recorders[0];
+    assert_eq!(recorder.start, RtmpRecorderStart::Continuous);
+    assert_eq!(recorder.suffix_template, ".flv");
+    assert!(!recorder.append_unix_seconds);
+    assert_eq!(recorder.rotation_interval_ms, None);
+}
+
+#[test]
+fn includes_are_transparent_and_parent_policy_after_the_include_is_inherited() {
+    let report = import_source(
+        br"
+        rtmp {
+          server {
+            include applications.conf;
+            listen 127.0.0.1:1935;
+            live on;
+            idle_streams off;
+          }
+        }
+        ",
+        &[(
+            "applications.conf",
+            br"application included { record all; record_path /var/lib/included; }",
+        )],
+    );
+
+    let config = report.config.expect("included RTMP application");
+    let application = &config.rtmp_services[0].applications[0];
+    assert!(application.live);
+    assert!(!application.idle_streams);
+    let include = report
+        .occurrence_ledger
+        .iter()
+        .find(|decision| decision.name.value == b"include")
+        .expect("include decision");
+    assert_eq!(include.disposition, OccurrenceDisposition::Structural);
+    let application_decision = report
+        .occurrence_ledger
+        .iter()
+        .find(|decision| decision.name.value == b"application")
+        .expect("included application decision");
+    assert_eq!(application_decision.provenance.include_stack.len(), 1);
+}
+
+#[test]
+fn maps_only_nginx_manual_recording_that_also_selects_all_media() {
+    let exact = import_source(
+        br"rtmp { server { listen 1935; application app { live on; record all manual; record_path /var/lib/manual; } } }",
+        &[],
+    );
+    assert_eq!(
+        exact.config.expect("exact manual recorder").rtmp_services[0].applications[0].recorders[0]
+            .start,
+        RtmpRecorderStart::Manual
+    );
+
+    let bare = import_source(
+        br"rtmp { server { listen 1935; application app { live on; record manual; record_path /var/lib/manual; } } }",
+        &[],
+    );
+    assert!(bare.config.is_none());
+    assert!(bare.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code() == E_SEMANTICS_NOT_REPRESENTABLE
+            && diagnostic.message().contains("no nginx audio/video bits")
+    }));
+}
+
+#[test]
+fn enforces_exact_path_suffix_interval_and_listener_bounds() {
+    let boundary_suffix = "x".repeat(128);
+    let boundary_source = format!(
+        "rtmp {{ server {{ listen [::1]:1935; application app {{ live on; record all; record_path /var//lib/recordings; record_suffix {boundary_suffix}; record_interval 2147483647; }} }} }}"
+    );
+    let maximum = import_source(boundary_source.as_bytes(), &[]);
+    let recorder = &maximum
+        .config
+        .expect("maximum exact recorder values")
+        .rtmp_services[0]
+        .applications[0]
+        .recorders[0];
+    assert_eq!(recorder.root_directory, Path::new("/var/lib/recordings"));
+    assert_eq!(recorder.suffix_template.len(), 128);
+    assert_eq!(recorder.rotation_interval_ms, Some(2_147_483_647));
+
+    for directive in [
+        "record_path relative/path;",
+        "record_path /var/../recordings;",
+        "record_path /var/lib/recordings/;",
+        "record_suffix bad/path.flv;",
+        "record_suffix -%Q.flv;",
+        "record_interval 0;",
+        "record_interval 2147483648;",
+    ] {
+        let record_path = if directive.starts_with("record_path ") {
+            ""
+        } else {
+            "record_path /var/lib/recordings;"
+        };
+        let source = format!(
+            "rtmp {{ server {{ listen 1935; application app {{ live on; record all; {record_path} {directive} }} }} }}"
+        );
+        let report = import_source(source.as_bytes(), &[]);
+        assert!(report.config.is_none(), "{directive}");
+    }
+
+    let oversized_suffix = "x".repeat(129);
+    let source = format!(
+        "rtmp {{ server {{ listen 1935; application app {{ live on; record all; record_path /var/lib/recordings; record_suffix {oversized_suffix}; }} }} }}"
+    );
+    assert!(import_source(source.as_bytes(), &[]).config.is_none());
+
+    let listen_option = import_source(
+        br"rtmp { server { listen 1935 bind; application app {} } }",
+        &[],
+    );
+    assert!(listen_option.config.is_none());
+    assert!(listen_option.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code() == E_UNSUPPORTED_FEATURE
+            && diagnostic.message().contains("listen options")
+    }));
+}
+
+#[test]
+fn separate_entry_ignores_http_semantics_but_blocks_global_rtmp_policy() {
+    let separate = import_source(
+        br"http { server { listen 80; location / { proxy_pass http://backend; } } } rtmp { server { listen 1935; application app {} } }",
+        &[],
+    );
+    assert!(separate.config.is_some());
+    assert!(separate.occurrence_ledger.iter().any(|decision| {
+        decision.name.value == b"proxy_pass"
+            && decision.disposition == OccurrenceDisposition::Structural
+    }));
+
+    let global = import_source(
+        br"rtmp_auto_push on; rtmp { server { listen 1935; application app {} } }",
+        &[],
+    );
+    assert!(global.config.is_none());
+    assert_eq!(global.blocked_services.len(), 1);
+    assert!(global.draft.rtmp_services.is_empty());
+}
+
+#[test]
+fn duplicates_and_overlapping_listens_are_terminal_blockers() {
+    for source in [
+        br"rtmp { server { listen 1935; application app { live on; live off; } } }".as_slice(),
+        br"rtmp { server { listen 0.0.0.0:1935; application one {} } server { listen 127.0.0.1:1935; application two {} } }".as_slice(),
+        br"rtmp { server { listen 1935; application same {} application same {} } }".as_slice(),
+    ] {
+        let report = import_source(source, &[]);
+        assert!(report.config.is_none());
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code() == E_DUPLICATE_IDENTITY
+                && diagnostic.stage() == DiagnosticStage::Resolve
+        }));
+    }
+}
+
+#[test]
+fn blocks_every_unrepresented_recorder_form_and_non_exact_suffix() {
+    for directive in [
+        "record audio;",
+        "record video;",
+        "record keyframes;",
+        "record_append on;",
+        "record_lock on;",
+        "record_notify on;",
+        "record_max_size 1m;",
+        "record_max_frames 100;",
+        "record_suffix -%Y.flv;",
+    ] {
+        let inherited_record = if directive.starts_with("record ") {
+            ""
+        } else {
+            "record all;"
+        };
+        let source = format!(
+            "rtmp {{ server {{ listen 1935; application app {{ live on; {inherited_record} record_path /var/lib/recordings; {directive} }} }} }}"
+        );
+        let report = import_source(source.as_bytes(), &[]);
+        assert!(report.config.is_none(), "{directive}");
+        assert!(!report.blocked_services.is_empty(), "{directive}");
+        assert!(
+            report.diagnostics.iter().any(|diagnostic| {
+                matches!(
+                    diagnostic.code(),
+                    E_UNSUPPORTED_FEATURE | E_SEMANTICS_NOT_REPRESENTABLE
+                )
+            }),
+            "{directive}: {:?}",
+            report.diagnostics
+        );
+    }
+}
+
+#[test]
+fn lowers_named_recorders_and_explicit_disabled_file_policies() {
+    let report = import_source(
+        br"
+        rtmp {
+          server {
+            listen 1935;
+            application app {
+              live on;
+              record off;
+              recorder archive {
+                record all;
+                record_path /var/lib/archive;
+                record_append off;
+                record_lock off;
+                record_max_size 0;
+                record_max_frames 0;
+                record_notify off;
+              }
+              recorder manual {
+                record all manual;
+                record_path /var/lib/manual;
+              }
+            }
+          }
+        }
+        ",
+        &[],
+    );
+
+    let config = report
+        .config
+        .as_ref()
+        .expect("named recorder configuration");
+    let recorders = &config.rtmp_services[0].applications[0].recorders;
+    assert_eq!(recorders.len(), 2);
+    assert_eq!(recorders[0].name, "archive");
+    assert_eq!(recorders[0].start, RtmpRecorderStart::Continuous);
+    assert_eq!(recorders[1].name, "manual");
+    assert_eq!(recorders[1].start, RtmpRecorderStart::Manual);
+    for path in [
+        "/rtmp_services/0/applications/0/recorders/0/name",
+        "/rtmp_services/0/applications/0/recorders/1/name",
+    ] {
+        assert!(report.provenance.iter().any(|entry| entry.path == path));
+    }
+}
+
+#[test]
+fn duplicate_named_recorders_are_blocking_even_when_recording_is_off() {
+    let report = import_source(
+        br"rtmp { server { listen 1935; application app { recorder archive { record off; } recorder archive { record off; } } } }",
+        &[],
+    );
+
+    assert!(report.config.is_none());
+    assert!(report.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code() == E_DUPLICATE_IDENTITY && diagnostic.message().contains("recorder name")
+    }));
+}
+
+#[test]
+fn source_noop_hls_muxdelay_does_not_block_an_exact_application() {
+    let report = import_source(
+        br"rtmp { server { listen 1935; application app { hls_muxdelay 700ms; } } }",
+        &[],
+    );
+
+    assert!(report.config.is_some());
+    let decision = report
+        .occurrence_ledger
+        .iter()
+        .find(|decision| decision.name.value == b"hls_muxdelay")
+        .expect("hls_muxdelay decision");
+    assert_eq!(decision.disposition, OccurrenceDisposition::Resolved);
+}
+
+#[test]
+fn keeps_supported_servers_in_the_draft_without_placeholder_for_a_blocked_server() {
+    let directory = fixture("phoenix-audited-partial.conf");
+    let report = import_rtmp(Path::new("nginx.conf"), directory.path());
+
+    assert!(report.config.is_none());
+    assert_eq!(report.blocked_services.len(), 1);
+    assert_eq!(report.draft.rtmp_services.len(), 1);
+    assert_eq!(report.draft.listeners.len(), 1);
+    assert_eq!(report.draft.rtmp_services[0].applications[0].name, "safe");
+    assert!(
+        report
+            .draft
+            .rtmp_services
+            .iter()
+            .flat_map(|service| &service.applications)
+            .all(|application| application.name != "phoenix")
+    );
+    assert_eq!(
+        report.occurrence_ledger.len(),
+        report.source_graph.expanded_occurrences.len()
+    );
+}
+
+#[test]
+fn resolve_entry_point_preserves_every_terminal_occurrence_decision() {
+    let directory = TempDir::new().expect("RTMP semantic directory");
+    fs::write(
+        directory.path().join("nginx.conf"),
+        b"http { server { listen 80; } } rtmp { server { listen 1935; application app { mystery on; } } }",
+    )
+    .expect("write semantic source");
+    let graph = load(Path::new("nginx.conf"), directory.path());
+    let occurrence_count = graph.value().expanded_occurrences.len();
+    let resolved = resolve_rtmp(graph);
+
+    assert_eq!(resolved.value().decisions.len(), occurrence_count);
+    assert!(
+        resolved
+            .value()
+            .decisions
+            .iter()
+            .enumerate()
+            .all(|(index, decision)| { decision.occurrence.get() == index })
+    );
+    assert!(resolved.value().decisions.iter().any(|decision| {
+        decision.name.value == b"mystery"
+            && decision.disposition == OccurrenceDisposition::Blocking(E_UNSUPPORTED_FEATURE)
+    }));
+}
+
+fn import_source(
+    root: &[u8],
+    includes: &[(&str, &[u8])],
+) -> oxiroute_import::nginx::RtmpImportReport {
+    let directory = TempDir::new().expect("RTMP source directory");
+    fs::write(directory.path().join("nginx.conf"), root).expect("write RTMP root");
+    for (name, contents) in includes {
+        fs::write(directory.path().join(name), contents).expect("write RTMP include");
+    }
+    import_rtmp(Path::new("nginx.conf"), directory.path())
+}
+
+fn fixture(name: &str) -> TempDir {
+    let directory = TempDir::new().expect("RTMP fixture directory");
+    fs::copy(
+        Path::new("tests/fixtures/nginx").join(name),
+        directory.path().join("nginx.conf"),
+    )
+    .expect("copy RTMP fixture");
+    directory
+}

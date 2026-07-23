@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "audit_date": "2026-07-22",
+  "host": "hostrouter.lan",
+  "services": [
+    {
+      "product": "squid",
+      "status": "present",
+      "version": "7.6",
+      "sanitized_fixture": "crates/oxiroute-import/tests/fixtures/squid/hostrouter-sanitized.conf",
+      "expanded_directives": 35,
+      "access_rules": 9
+    },
+    {
+      "product": "varnish",
+      "status": "absent",
+      "version": null,
+      "sanitized_fixture": null,
+      "expanded_directives": 0,
+      "access_rules": 0
+    }
+  ]
+}

@@ -1,0 +1,752 @@
+#![cfg(unix)]
+
+use std::{ffi::OsString, fs, net::IpAddr, path::PathBuf, time::Duration};
+
+use oxiroute_import::{
+    DiagnosticStage, E_INCLUDE_CYCLE, E_SEMANTICS_NOT_REPRESENTABLE, E_UNSUPPORTED_FEATURE,
+    SourceFile, SourceId,
+    squid::{
+        AccessAction, AccessEvaluation, AclReferenceResolution, AclType, Activation,
+        AuthenticationValue, BuiltinAcl, DecisionOutcome, DirectiveFamily, DirectiveResolution,
+        DirectiveSemantics, E_UNCONSUMED_DIRECTIVE, E_UNKNOWN_DIRECTIVE, E_UNSUPPORTED_FORM,
+        ForwardedForMode, LogDestination, PeerOption, PortEndpoint, PrivacyDirective,
+        RootSelectionSource, SecretKind, SemanticBlockerKind, SquidLoadLimits,
+        SquidLoweringAdapter, discover_root, import, import_selected, lex, load, load_with_limits,
+        parse,
+    },
+};
+use tempfile::tempdir;
+
+fn fixture(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/squid")
+        .join(name)
+}
+
+#[test]
+fn hostrouter_sanitized_shape_classifies_every_reachable_directive() {
+    let report = import(&fixture("hostrouter-sanitized.conf"));
+
+    assert_eq!(report.source_graph.sources.len(), 1);
+    assert!(report.source_graph.includes.is_empty());
+    assert!(report.source_graph.snapshot_stable);
+    assert_eq!(report.source_graph.expanded_directives.len(), 35);
+    assert_eq!(report.decision_ledger.decisions.len(), 35);
+    let matrix = hostrouter_behavior_matrix();
+    assert_eq!(matrix.len(), 35);
+    for (ordinal, (decision, expected)) in report
+        .decision_ledger
+        .decisions
+        .iter()
+        .zip(&matrix)
+        .enumerate()
+    {
+        assert_eq!(decision.origin.occurrence.get(), ordinal);
+        let DecisionOutcome::Classified {
+            family,
+            semantics,
+            resolution,
+            activation,
+        } = decision.outcome;
+        assert_eq!(semantics, expected.0, "ordinal {ordinal}");
+        assert_eq!(resolution, expected.1, "ordinal {ordinal}");
+        assert_eq!(activation, expected.2, "ordinal {ordinal}");
+        assert_ne!(family, DirectiveFamily::Unknown);
+        let expanded = &report.source_graph.expanded_directives[ordinal];
+        assert_eq!(decision.origin.directive_span, expanded.directive.span);
+        assert_eq!(decision.origin.name_span, expanded.directive.name.span);
+        assert_eq!(
+            decision.origin.argument_spans,
+            expanded
+                .directive
+                .arguments
+                .iter()
+                .map(|word| word.span)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(decision.origin.provenance, expanded.provenance);
+    }
+}
+
+#[test]
+fn hostrouter_typed_ir_resolves_acl_auth_port_refresh_and_process_semantics() {
+    let report = import(&fixture("hostrouter-sanitized.conf"));
+    assert_hostrouter_acls_and_access(&report);
+    assert_hostrouter_service_settings(&report);
+    assert_hostrouter_authentication(&report);
+}
+
+fn assert_hostrouter_acls_and_access(report: &oxiroute_import::squid::ImportReport) {
+    assert_eq!(report.effective.acl_definitions.len(), 14);
+    assert_eq!(report.effective.acls.len(), 4);
+    assert_eq!(report.effective.acls[0].acl_type, AclType::Source);
+    assert_eq!(report.effective.acls[0].definitions.len(), 2);
+    assert_eq!(report.effective.acls[0].matchers.len(), 2);
+    assert_eq!(report.effective.acls[2].acl_type, AclType::Port);
+    assert_eq!(report.effective.acls[2].definitions.len(), 10);
+    assert_eq!(report.effective.access_rules.len(), 9);
+    let policy = &report.effective.access_policies[0];
+    assert_eq!(policy.rules.len(), 9);
+    assert_eq!(policy.default_action, AccessAction::Allow);
+    assert!(
+        policy
+            .rules
+            .iter()
+            .flat_map(|rule| &rule.terms)
+            .all(|term| !matches!(term.resolution, AclReferenceResolution::Unresolved))
+    );
+    assert_eq!(
+        policy.rules[1].terms[0].resolution,
+        AclReferenceResolution::Builtin(BuiltinAcl::Connect)
+    );
+}
+
+fn assert_hostrouter_service_settings(report: &oxiroute_import::squid::ImportReport) {
+    assert_eq!(
+        report.effective.ports[0].endpoint,
+        PortEndpoint::Wildcard { port: 31280 }
+    );
+    assert!(report.effective.ports[0].options.is_empty());
+    assert_eq!(report.effective.refresh_policy.patterns.len(), 3);
+    assert_eq!(
+        report.effective.refresh_policy.patterns[0].minimum,
+        Duration::from_secs(60 * 60)
+    );
+    assert_eq!(report.effective.refresh_policy.patterns[0].percent, 20);
+    assert_eq!(
+        report.effective.logging[0].destination,
+        LogDestination::Disabled
+    );
+    assert_eq!(
+        report.effective.dns_nameservers[0].addresses,
+        [
+            "192.0.2.20".parse::<IpAddr>().expect("synthetic IP"),
+            "192.0.2.21".parse::<IpAddr>().expect("synthetic IP")
+        ]
+    );
+    assert!(matches!(
+        report.effective.privacy[0],
+        PrivacyDirective::ForwardedFor {
+            mode: ForwardedForMode::Delete,
+            ..
+        }
+    ));
+    assert!(matches!(
+        report.effective.privacy[1],
+        PrivacyDirective::Via { enabled: false, .. }
+    ));
+}
+
+fn assert_hostrouter_authentication(report: &oxiroute_import::squid::ImportReport) {
+    assert_eq!(report.effective.authentication.len(), 3);
+    assert_eq!(report.effective.authentication_schemes.len(), 1);
+    assert_eq!(
+        report.effective.authentication_schemes[0].credential_ttl,
+        Some(Duration::from_secs(2 * 60 * 60))
+    );
+    assert!(matches!(
+        report.effective.authentication[0].value,
+        AuthenticationValue::Helper(secret) if secret.kind == SecretKind::AuthenticationHelper
+    ));
+    assert!(matches!(
+        report.effective.authentication[1].value,
+        AuthenticationValue::Realm(secret) if secret.kind == SecretKind::AuthenticationRealm
+    ));
+    let typed_facts = format!(
+        "{:?}{:?}",
+        report.effective.authentication[0], report.effective.authentication[1]
+    );
+    assert!(!typed_facts.contains("basic_ncsa_auth"));
+    assert!(!typed_facts.contains("Synthetic proxy"));
+}
+
+#[test]
+fn hostrouter_report_uses_precise_missing_capabilities_without_placeholders() {
+    let report = import(&fixture("hostrouter-sanitized.conf"));
+    assert!(report.config.is_none());
+    assert!(report.draft.listeners.is_empty());
+    assert!(report.canonical_provenance.is_empty());
+    assert_eq!(hostrouter_blockers(&report), hostrouter_expected_blockers());
+    assert!(report.diagnostics.iter().all(|diagnostic| {
+        diagnostic.code() == E_SEMANTICS_NOT_REPRESENTABLE
+            && diagnostic.stage() == DiagnosticStage::Lower
+    }));
+    assert!(!report.diagnostics.iter().any(|diagnostic| {
+        matches!(
+            diagnostic.code(),
+            E_UNKNOWN_DIRECTIVE | E_UNCONSUMED_DIRECTIVE | E_UNSUPPORTED_FORM
+        )
+    }));
+}
+
+fn hostrouter_blockers(
+    report: &oxiroute_import::squid::ImportReport,
+) -> Vec<(SemanticBlockerKind, usize)> {
+    report
+        .blocked_capabilities
+        .iter()
+        .map(|blocker| (blocker.kind, blocker.occurrences.len()))
+        .collect()
+}
+
+fn hostrouter_expected_blockers() -> Vec<(SemanticBlockerKind, usize)> {
+    vec![
+        (SemanticBlockerKind::ForwardProxyListener, 1),
+        (SemanticBlockerKind::SourceAddressAcl, 2),
+        (SemanticBlockerKind::DestinationPortAcl, 11),
+        (SemanticBlockerKind::ProxyAuthenticationAcl, 1),
+        (SemanticBlockerKind::OrderedHttpAccess, 9),
+        (SemanticBlockerKind::RefreshPolicy, 3),
+        (SemanticBlockerKind::ProxyAuthentication, 3),
+        (SemanticBlockerKind::AccessLoggingPolicy, 1),
+        (SemanticBlockerKind::ResolverPolicy, 1),
+        (SemanticBlockerKind::ForwardedForPolicy, 1),
+        (SemanticBlockerKind::ViaPolicy, 1),
+    ]
+}
+
+fn hostrouter_behavior_matrix() -> Vec<(DirectiveSemantics, DirectiveResolution, Activation)> {
+    let blocked = Activation::Blocked;
+    let mut matrix = vec![
+        (
+            DirectiveSemantics::HttpPort,
+            DirectiveResolution::Append,
+            blocked(SemanticBlockerKind::ForwardProxyListener),
+        ),
+        (
+            DirectiveSemantics::AccessLogging,
+            DirectiveResolution::Append,
+            blocked(SemanticBlockerKind::AccessLoggingPolicy),
+        ),
+        (
+            DirectiveSemantics::DnsNameservers,
+            DirectiveResolution::Append,
+            blocked(SemanticBlockerKind::ResolverPolicy),
+        ),
+    ];
+    matrix.extend((0..2).map(|_| {
+        (
+            DirectiveSemantics::AclSource,
+            DirectiveResolution::MergeSameName,
+            blocked(SemanticBlockerKind::SourceAddressAcl),
+        )
+    }));
+    matrix.extend((0..11).map(|_| {
+        (
+            DirectiveSemantics::AclPort,
+            DirectiveResolution::MergeSameName,
+            blocked(SemanticBlockerKind::DestinationPortAcl),
+        )
+    }));
+    matrix.extend((0..7).map(|_| {
+        (
+            DirectiveSemantics::HttpAccess,
+            DirectiveResolution::OrderedFirstMatch,
+            blocked(SemanticBlockerKind::OrderedHttpAccess),
+        )
+    }));
+    matrix.extend([
+        (
+            DirectiveSemantics::AuthenticationHelper,
+            DirectiveResolution::LastWins,
+            blocked(SemanticBlockerKind::ProxyAuthentication),
+        ),
+        (
+            DirectiveSemantics::AuthenticationRealm,
+            DirectiveResolution::LastWins,
+            blocked(SemanticBlockerKind::ProxyAuthentication),
+        ),
+        (
+            DirectiveSemantics::AuthenticationCredentialTtl,
+            DirectiveResolution::LastWins,
+            blocked(SemanticBlockerKind::ProxyAuthentication),
+        ),
+        (
+            DirectiveSemantics::AclProxyAuth,
+            DirectiveResolution::MergeSameName,
+            blocked(SemanticBlockerKind::ProxyAuthenticationAcl),
+        ),
+    ]);
+    matrix.extend((0..2).map(|_| {
+        (
+            DirectiveSemantics::HttpAccess,
+            DirectiveResolution::OrderedFirstMatch,
+            blocked(SemanticBlockerKind::OrderedHttpAccess),
+        )
+    }));
+    matrix.extend([
+        (
+            DirectiveSemantics::CoreDumpDirectory,
+            DirectiveResolution::Externalized,
+            Activation::Externalized,
+        ),
+        (
+            DirectiveSemantics::ForwardedFor,
+            DirectiveResolution::LastWins,
+            blocked(SemanticBlockerKind::ForwardedForPolicy),
+        ),
+        (
+            DirectiveSemantics::Via,
+            DirectiveResolution::LastWins,
+            blocked(SemanticBlockerKind::ViaPolicy),
+        ),
+    ]);
+    matrix.extend((0..3).map(|_| {
+        (
+            DirectiveSemantics::RefreshPattern,
+            DirectiveResolution::OrderedFirstMatch,
+            blocked(SemanticBlockerKind::RefreshPolicy),
+        )
+    }));
+    matrix
+}
+
+#[test]
+fn hostrouter_http_access_uses_ordered_first_match_and_native_default() {
+    let report = import(&fixture("hostrouter-sanitized.conf"));
+    let policy = &report.effective.access_policies[0];
+
+    let authenticated = policy.evaluate(|term| match term.name.value.as_slice() {
+        b"acl_2" | b"acl_8" | b"all" => Some(true),
+        b"CONNECT" | b"localhost" | b"manager" | b"to_localhost" | b"to_linklocal" => Some(false),
+        _ => None,
+    });
+    assert_eq!(
+        authenticated,
+        AccessEvaluation::Decided {
+            action: AccessAction::Allow,
+            matched_rule: Some(report.effective.access_rules[7].origin.occurrence),
+        }
+    );
+
+    let unauthenticated = policy.evaluate(|term| match term.name.value.as_slice() {
+        b"acl_2" | b"all" => Some(true),
+        b"acl_8" | b"CONNECT" | b"localhost" | b"manager" | b"to_localhost" | b"to_linklocal" => {
+            Some(false)
+        }
+        _ => None,
+    });
+    assert_eq!(
+        unauthenticated,
+        AccessEvaluation::Decided {
+            action: AccessAction::Deny,
+            matched_rule: Some(report.effective.access_rules[8].origin.occurrence),
+        }
+    );
+}
+
+#[test]
+fn include_graph_expands_globs_in_byte_sorted_parse_order_with_provenance() {
+    let directory = tempdir().expect("temp directory");
+    let includes = directory.path().join("conf.d");
+    fs::create_dir(&includes).expect("include directory");
+    fs::write(
+        includes.join("20-second.conf"),
+        b"acl second src 192.0.2.2\n",
+    )
+    .expect("second include");
+    fs::write(includes.join("10-first.conf"), b"acl first src 192.0.2.1\n").expect("first include");
+    fs::write(includes.join(".hidden.conf"), b"unknown hidden\n").expect("hidden include");
+    let root = directory.path().join("squid.conf");
+    fs::write(
+        &root,
+        b"acl root src 192.0.2.10\ninclude conf.d/10-*.conf conf.d/20-*.conf\nhttp_access allow root\n",
+    )
+    .expect("root source");
+
+    let report = load(&root);
+    assert!(report.diagnostics().is_empty());
+    let graph = report.value();
+    assert_eq!(graph.sources.len(), 3);
+    assert_eq!(graph.includes.len(), 1);
+    assert_eq!(graph.includes[0].targets.len(), 2);
+    assert_eq!(graph.expanded_directives.len(), 5);
+    let names = graph
+        .expanded_directives
+        .iter()
+        .map(|expanded| expanded.directive.name.value.as_slice())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        [
+            b"acl".as_slice(),
+            b"include".as_slice(),
+            b"acl".as_slice(),
+            b"acl".as_slice(),
+            b"http_access".as_slice(),
+        ]
+    );
+    let acl_names = graph
+        .expanded_directives
+        .iter()
+        .filter(|expanded| expanded.directive.name.value == b"acl")
+        .map(|expanded| expanded.directive.arguments[0].value.as_slice())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        acl_names,
+        [
+            b"root".as_slice(),
+            b"first".as_slice(),
+            b"second".as_slice()
+        ]
+    );
+    assert!(graph.expanded_directives[2].provenance.include_stack.len() == 1);
+    assert!(graph.expanded_directives[3].provenance.include_stack.len() == 1);
+    let analyzed = oxiroute_import::squid::analyze(graph);
+    assert!(analyzed.diagnostics().is_empty());
+    assert_eq!(
+        analyzed.value().acl_definitions[1]
+            .origin
+            .provenance
+            .include_stack
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn pipe_backed_includes_are_retained_but_never_executed() {
+    let directory = tempdir().expect("temp directory");
+    let root = directory.path().join("squid.conf");
+    fs::write(&root, b"include |synthetic-generator\n").expect("root source");
+
+    let report = load(&root);
+    assert_eq!(report.value().expanded_directives.len(), 1);
+    assert_eq!(report.value().includes.len(), 1);
+    assert_eq!(report.value().includes[0].targets.len(), 1);
+    assert!(
+        report
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.code() == E_UNSUPPORTED_FEATURE)
+    );
+    let imported = import(&root);
+    assert!(matches!(
+        imported.decision_ledger.decisions[0].outcome,
+        DecisionOutcome::Classified {
+            resolution: DirectiveResolution::Blocked,
+            activation: Activation::Blocked(SemanticBlockerKind::IncludeExpansion),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn include_cycle_is_retained_without_recursive_expansion() {
+    let directory = tempdir().expect("temp directory");
+    let root = directory.path().join("squid.conf");
+    fs::write(&root, b"include squid.conf\n").expect("root source");
+
+    let report = load(&root);
+    assert_eq!(report.value().expanded_directives.len(), 1);
+    assert_eq!(report.value().includes.len(), 1);
+    assert!(report.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code() == E_INCLUDE_CYCLE && diagnostic.stage() == DiagnosticStage::Source
+    }));
+}
+
+#[test]
+fn lexer_preserves_bytes_while_parser_decodes_quotes_comments_and_continuations() {
+    let bytes = b"acl local src 192.0.2.0/24 \\\r\n  198.51.100.0/24 # synthetic\r\ninclude \"conf.d/with space.conf\"\n";
+    let source = SourceFile::new(SourceId::new(7), "squid.conf", bytes.as_slice());
+
+    let lexed = lex(&source);
+    assert!(lexed.diagnostics().is_empty());
+    assert_eq!(lexed.value().len(), 2);
+    assert_eq!(lexed.value()[0].words.len(), 5);
+    assert_eq!(lexed.value()[0].comments.len(), 1);
+    assert_eq!(source.bytes(), bytes);
+
+    let parsed = parse(&source);
+    assert!(parsed.diagnostics().is_empty());
+    assert_eq!(parsed.value().directives.len(), 2);
+    assert_eq!(
+        parsed.value().directives[1].arguments[0].value,
+        b"conf.d/with space.conf"
+    );
+}
+
+#[test]
+fn cache_peer_credentials_become_typed_secret_facts() {
+    let directory = tempdir().expect("temp directory");
+    let root = directory.path().join("squid.conf");
+    fs::write(
+        &root,
+        b"cache_peer peer.example.test parent 3128 0 login=synthetic-user:synthetic-password token=synthetic-token no-query\n",
+    )
+    .expect("root source");
+
+    let report = import(&root);
+    let peer = &report.effective.cache_peers[0];
+    assert!(matches!(
+        peer.options[0],
+        PeerOption::Secret(secret) if secret.kind == SecretKind::PeerCredentials
+    ));
+    assert!(matches!(
+        peer.options[1],
+        PeerOption::Secret(secret) if secret.kind == SecretKind::BearerToken
+    ));
+    assert!(matches!(peer.options[2], PeerOption::NoQuery));
+    let typed_peer = format!("{peer:?}");
+    assert!(!typed_peer.contains("synthetic-password"));
+    assert!(!typed_peer.contains("synthetic-token"));
+    assert_eq!(
+        report.blocked_capabilities[0].kind,
+        SemanticBlockerKind::CachePeerHierarchy
+    );
+}
+
+#[test]
+fn source_loading_stops_before_retaining_an_oversized_file() {
+    let directory = tempdir().expect("temp directory");
+    let root = directory.path().join("squid.conf");
+    fs::write(&root, b"http_port 31280\n").expect("root source");
+    let limits = SquidLoadLimits {
+        max_source_bytes: 8,
+        ..SquidLoadLimits::default()
+    };
+
+    let report = load_with_limits(&root, limits);
+    assert!(report.value().root.is_none());
+    assert!(report.value().sources.is_empty());
+    assert!(report.value().expanded_directives.is_empty());
+    assert!(
+        report
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.code() == oxiroute_import::E_SOURCE_LIMIT)
+    );
+}
+
+#[test]
+fn cache_policy_and_storage_are_classified_without_placeholders() {
+    let directory = tempdir().expect("temp directory");
+    let root = directory.path().join("squid.conf");
+    fs::write(
+        &root,
+        b"cache_mem 16 MB\ncache_dir ufs /tmp/squid-synthetic-cache 16 16 256\n",
+    )
+    .expect("root source");
+
+    let report = import(&root);
+    assert_eq!(report.effective.cache_policy.len(), 1);
+    assert_eq!(report.effective.storage.len(), 1);
+    assert!(report.draft.listeners.is_empty());
+    assert!(report.config.is_none());
+    assert_eq!(
+        report
+            .blocked_capabilities
+            .iter()
+            .map(|blocker| blocker.kind)
+            .collect::<Vec<_>>(),
+        [
+            SemanticBlockerKind::CachePolicy,
+            SemanticBlockerKind::StoragePolicy
+        ]
+    );
+}
+
+#[test]
+fn native_cli_root_discovery_uses_the_last_f_argument() {
+    let arguments = [
+        OsString::from("--foreground"),
+        OsString::from("-f"),
+        OsString::from("/tmp/synthetic-first.conf"),
+        OsString::from("-f/tmp/synthetic-active.conf"),
+        OsString::from("-sYC"),
+    ];
+    let report = discover_root(&arguments, std::path::Path::new("/etc/squid/squid.conf"));
+    assert!(report.diagnostics().is_empty());
+    assert_eq!(report.value().command_line_roots.len(), 2);
+    assert_eq!(
+        report.value().active_root,
+        std::path::Path::new("/tmp/synthetic-active.conf")
+    );
+    assert_eq!(
+        report.value().source,
+        RootSelectionSource::CommandLine { argument_index: 3 }
+    );
+
+    let default = discover_root(
+        &[OsString::from("--foreground"), OsString::from("-sYC")],
+        std::path::Path::new("/etc/squid/squid.conf"),
+    );
+    assert_eq!(default.value().source, RootSelectionSource::CompiledDefault);
+}
+
+#[test]
+fn native_cli_import_preserves_selected_root_and_semantic_report() {
+    let directory = tempdir().expect("temp directory");
+    let first = directory.path().join("first.conf");
+    let active = directory.path().join("active.conf");
+    fs::write(&first, b"via on\n").expect("first source");
+    fs::write(&active, b"via off\n").expect("active source");
+    let arguments = [
+        OsString::from("-f"),
+        first.into_os_string(),
+        OsString::from("-f"),
+        active.clone().into_os_string(),
+    ];
+
+    let report = import_selected(&arguments, std::path::Path::new("/synthetic/default.conf"));
+    assert_eq!(report.selection.active_root, active);
+    assert_eq!(report.import.decision_ledger.decisions.len(), 1);
+    assert!(matches!(
+        report.import.effective.privacy[0],
+        PrivacyDirective::Via { enabled: false, .. }
+    ));
+}
+
+#[test]
+fn lowering_adapter_receives_typed_ir_without_a_duplicate_schema() {
+    struct CountAdapter;
+
+    impl SquidLoweringAdapter for CountAdapter {
+        type Output = (usize, usize, usize);
+        type Error = std::convert::Infallible;
+
+        fn lower(
+            &self,
+            source: oxiroute_import::squid::LoweringView<'_>,
+        ) -> Result<Self::Output, Self::Error> {
+            Ok((
+                source.effective.ports.len(),
+                source.decision_ledger.decisions.len(),
+                source.blocked_capabilities.len(),
+            ))
+        }
+    }
+
+    let report = import(&fixture("hostrouter-sanitized.conf"));
+    assert_eq!(report.lower_with(&CountAdapter), Ok((1, 35, 11)));
+}
+
+#[test]
+fn header_privacy_dns_logging_and_port_options_have_typed_semantics() {
+    let directory = tempdir().expect("temp directory");
+    let root = directory.path().join("squid.conf");
+    fs::write(
+        &root,
+        b"acl clients src 192.0.2.0/24\n\
+          http_port 192.0.2.10:3128 intercept name=synthetic\n\
+          request_header_access X-Synthetic deny clients\n\
+          request_header_replace X-Synthetic synthetic-value\n\
+          dns_nameservers 192.0.2.53\n\
+          access_log stdio:/tmp/synthetic-access.log squid\n\
+          forwarded_for truncate\n\
+          via on\n",
+    )
+    .expect("synthetic source");
+
+    let report = import(&root);
+    assert_eq!(report.effective.ports.len(), 1);
+    assert_eq!(report.effective.ports[0].options.len(), 2);
+    assert_eq!(report.effective.access_policies.len(), 1);
+    assert_eq!(
+        report.effective.access_policies[0].rules[0]
+            .selector
+            .as_ref()
+            .expect("header selector")
+            .value,
+        b"X-Synthetic"
+    );
+    assert!(matches!(
+        report.effective.privacy[0],
+        PrivacyDirective::HeaderReplace { request: true, .. }
+    ));
+    assert!(matches!(
+        report.effective.logging[0].destination,
+        LogDestination::Stdio(_)
+    ));
+    assert_eq!(report.effective.dns_nameservers[0].addresses.len(), 1);
+    assert!(report.decision_ledger.decisions.iter().all(|decision| {
+        !matches!(
+            decision.outcome,
+            DecisionOutcome::Classified {
+                semantics: DirectiveSemantics::Unknown,
+                ..
+            }
+        )
+    }));
+}
+
+#[test]
+fn duplicate_acl_and_authentication_resolution_rules_are_explicit() {
+    let directory = tempdir().expect("temp directory");
+    let root = directory.path().join("squid.conf");
+    fs::write(
+        &root,
+        b"acl mixed src 192.0.2.0/24\n\
+          acl mixed port 3128\n\
+          auth_param basic realm First synthetic realm\n\
+          auth_param basic realm Last synthetic realm\n\
+          http_access deny mixed\n",
+    )
+    .expect("synthetic source");
+
+    let report = import(&root);
+    assert_eq!(report.effective.acls.len(), 1);
+    assert_eq!(report.effective.acls[0].acl_type, AclType::Source);
+    let second = &report.decision_ledger.decisions[1];
+    assert!(matches!(
+        second.outcome,
+        DecisionOutcome::Classified {
+            resolution: DirectiveResolution::MergeSameName,
+            activation: Activation::Blocked(SemanticBlockerKind::ConflictingAclType),
+            ..
+        }
+    ));
+    let scheme = &report.effective.authentication_schemes[0];
+    assert_eq!(scheme.parameters.len(), 2);
+    assert_eq!(
+        scheme.realm.expect("last realm fact").span,
+        match report.effective.authentication[1].value {
+            AuthenticationValue::Realm(secret) => secret.span,
+            _ => panic!("expected redacted realm"),
+        }
+    );
+}
+
+#[test]
+fn includes_are_transparent_to_native_last_wins_settings() {
+    let directory = tempdir().expect("temp directory");
+    let included = directory.path().join("included.conf");
+    fs::write(
+        &included,
+        b"auth_param basic realm Included synthetic realm\n",
+    )
+    .expect("included source");
+    let root = directory.path().join("squid.conf");
+    fs::write(
+        &root,
+        b"auth_param basic realm Before synthetic realm\n\
+          include included.conf\n\
+          auth_param basic realm After synthetic realm\n",
+    )
+    .expect("root source");
+
+    let report = import(&root);
+    let scheme = &report.effective.authentication_schemes[0];
+    assert_eq!(scheme.parameters.len(), 3);
+    let final_parameter = report
+        .effective
+        .authentication
+        .last()
+        .expect("final parameter");
+    assert_eq!(
+        scheme.realm.expect("effective realm").span,
+        match final_parameter.value {
+            AuthenticationValue::Realm(secret) => secret.span,
+            _ => panic!("expected redacted realm"),
+        }
+    );
+    assert!(final_parameter.origin.provenance.include_stack.is_empty());
+    assert_eq!(
+        report.effective.authentication[1]
+            .origin
+            .provenance
+            .include_stack
+            .len(),
+        1
+    );
+}
