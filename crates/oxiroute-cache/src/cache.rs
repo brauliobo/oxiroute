@@ -9,9 +9,12 @@ use http::{HeaderMap, HeaderValue, Method, StatusCode};
 use tokio::sync::watch;
 
 use crate::{
-    BaseKey, CacheKey, Clock, KeyError, MonoTime, RequestKeyInput, ResponseRejection,
-    ResponseTiming, SystemClock, Validators,
-    policy::{ParseError, RequestMode, RequestPolicy, ResponsePolicy, merge_not_modified_headers},
+    BaseKey, CacheKey, CacheTimeline, Clock, KeyError, MonoTime, RequestKeyInput,
+    ResponseRejection, ResponseTiming, SystemClock, Validators,
+    policy::{
+        ParseError, RequestMode, RequestPolicy, ResponsePolicy, ResponsePolicyInput,
+        merge_not_modified_headers,
+    },
 };
 
 const ENTRY_ACCOUNTING_OVERHEAD: usize = 128;
@@ -101,6 +104,15 @@ pub struct PreparedEntry {
     pub(crate) validators: Validators,
     pub(crate) response_received: MonoTime,
     pub(crate) charge: usize,
+}
+
+/// Complete bounded response input used for canonical timeline preparation.
+pub struct CacheResponse<'a> {
+    pub status: StatusCode,
+    pub headers: &'a HeaderMap,
+    pub body: Bytes,
+    pub timing: ResponseTiming,
+    pub tags: &'a [&'a [u8]],
 }
 
 impl PreparedEntry {
@@ -316,7 +328,36 @@ impl Cache {
         timing: ResponseTiming,
         tags: &[&[u8]],
     ) -> Result<PreparedEntry, CacheError> {
-        let result = self.prepare_inner(request, status, headers, body, timing, tags);
+        let result = self.prepare_inner(
+            request,
+            CacheResponse {
+                status,
+                headers,
+                body,
+                timing,
+                tags,
+            },
+            None,
+        );
+        if result.is_err() {
+            let mut state = self.shared.lock();
+            state.stats.rejected = state.stats.rejected.saturating_add(1);
+        }
+        result
+    }
+
+    /// Validates a response using one canonical TTL/grace/keep timeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when request/response policy is unsafe or any configured bound is exceeded.
+    pub fn prepare_with_timeline(
+        &self,
+        request: RequestKeyInput<'_>,
+        response: CacheResponse<'_>,
+        timeline: &CacheTimeline,
+    ) -> Result<PreparedEntry, CacheError> {
+        let result = self.prepare_inner(request, response, Some(timeline));
         if result.is_err() {
             let mut state = self.shared.lock();
             state.stats.rejected = state.stats.rejected.saturating_add(1);
@@ -327,12 +368,16 @@ impl Cache {
     fn prepare_inner(
         &self,
         request: RequestKeyInput<'_>,
-        status: StatusCode,
-        headers: &HeaderMap,
-        body: Bytes,
-        timing: ResponseTiming,
-        tags: &[&[u8]],
+        response: CacheResponse<'_>,
+        timeline: Option<&CacheTimeline>,
     ) -> Result<PreparedEntry, CacheError> {
+        let CacheResponse {
+            status,
+            headers,
+            body,
+            timing,
+            tags,
+        } = response;
         if *request.method != Method::GET {
             return Err(CacheError::HeadOrUnsupportedMethod);
         }
@@ -344,15 +389,16 @@ impl Cache {
         if body.len() > self.shared.config.max_body_bytes {
             return Err(CacheError::BodyTooLarge);
         }
-        let (policy, vary, validators) = ResponsePolicy::evaluate(
-            request.headers,
+        let (policy, vary, validators) = ResponsePolicy::evaluate(ResponsePolicyInput {
+            request_headers: request.headers,
             status,
             headers,
             timing,
-            self.shared.config.max_heuristic_freshness,
-            self.shared.config.max_vary_fields,
-            self.shared.config.max_header_bytes,
-        )?;
+            max_heuristic_freshness: self.shared.config.max_heuristic_freshness,
+            max_vary_fields: self.shared.config.max_vary_fields,
+            max_vary_bytes: self.shared.config.max_header_bytes,
+            timeline,
+        })?;
         let base = BaseKey::new(request, self.shared.config.max_key_bytes)?;
         let key = CacheKey::new(
             base,
@@ -404,11 +450,53 @@ impl Cache {
         let tag_refs = existing.tags.iter().map(Bytes::as_ref).collect::<Vec<_>>();
         let prepared = self.prepare_inner(
             request,
-            existing.status,
-            &merged,
-            existing.body,
-            timing,
-            &tag_refs,
+            CacheResponse {
+                status: existing.status,
+                headers: &merged,
+                body: existing.body,
+                timing,
+                tags: &tag_refs,
+            },
+            None,
+        )?;
+        if prepared.key != *key {
+            return Err(CacheError::VaryChanged);
+        }
+        Ok(prepared)
+    }
+
+    /// Builds a canonical-timeline replacement by merging a 304 response into a stored object.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing key, prohibited 304 fields, changed Vary key, or invalid
+    /// resulting cache metadata.
+    pub fn prepare_not_modified_with_timeline(
+        &self,
+        request: RequestKeyInput<'_>,
+        key: &CacheKey,
+        not_modified: &HeaderMap,
+        timing: ResponseTiming,
+        timeline: &CacheTimeline,
+    ) -> Result<PreparedEntry, CacheError> {
+        let existing = {
+            let state = self.shared.lock();
+            state.entries.get(key).map(|stored| stored.entry.clone())
+        }
+        .ok_or(CacheError::InvalidNotModified)?;
+        let merged = merge_not_modified_headers(&existing.headers, not_modified)
+            .map_err(|_| CacheError::InvalidNotModified)?;
+        let tag_refs = existing.tags.iter().map(Bytes::as_ref).collect::<Vec<_>>();
+        let prepared = self.prepare_inner(
+            request,
+            CacheResponse {
+                status: existing.status,
+                headers: &merged,
+                body: existing.body,
+                timing,
+                tags: &tag_refs,
+            },
+            Some(timeline),
         )?;
         if prepared.key != *key {
             return Err(CacheError::VaryChanged);
@@ -442,25 +530,19 @@ impl Cache {
         let authorized = request.headers.contains_key(http::header::AUTHORIZATION);
         let now = self.shared.clock.now();
         let mut state = self.shared.lock();
-        let found = state
-            .entries
-            .keys()
-            .filter(|key| {
-                key.matches_request(&base, request.headers, self.shared.config.max_key_bytes)
-                    && state.entries.get(*key).is_some_and(|stored| {
-                        !authorized || stored.entry.policy.allows_authorized_reuse
-                    })
-            })
-            .max_by_key(|key| state.entries.get(*key).map_or(0, |entry| entry.last_access))
-            .cloned();
+        let found = matching_key(
+            &state,
+            &base,
+            request.headers,
+            self.shared.config.max_key_bytes,
+            authorized,
+        );
         let Some(key) = found else {
-            state.stats.misses = state.stats.misses.saturating_add(1);
-            return Ok(Lookup::Miss {
-                status: LookupStatus::Miss,
-                only_if_cached: policy.only_if_cached,
-                base,
-            });
+            return Ok(cache_miss(&mut state, &policy, base));
         };
+        if remove_expired_entry(&mut state, &key, now) {
+            return Ok(cache_miss(&mut state, &policy, base));
+        }
         let access = state.next_sequence();
         let stored = state
             .entries
@@ -488,7 +570,8 @@ impl Cache {
             });
         }
         let staleness = age.saturating_sub(stored.entry.policy.freshness_lifetime);
-        let request_allows_stale = !forced
+        let request_allows_stale = stored.entry.policy.retention.request_stale_allowed()
+            && !forced
             && !stored.entry.policy.must_revalidate_stale
             && policy
                 .max_stale
@@ -815,6 +898,55 @@ impl State {
         self.sequence += 1;
         self.sequence
     }
+}
+
+fn remove_expired_entry(state: &mut State, key: &CacheKey, now: MonoTime) -> bool {
+    let expired =
+        state.entries.get(key).is_some_and(|stored| {
+            let age = stored
+                .entry
+                .policy
+                .corrected_initial_age
+                .saturating_add(now.saturating_duration_since(stored.entry.response_received));
+            stored.entry.policy.retention.keep().is_some_and(|keep| {
+                age > stored.entry.policy.freshness_lifetime.saturating_add(keep)
+            })
+        });
+    if expired {
+        if let Some(stored) = state.entries.remove(key) {
+            state.bytes_used = state.bytes_used.saturating_sub(stored.entry.charge);
+        }
+    }
+    expired
+}
+
+fn cache_miss(state: &mut State, policy: &RequestPolicy, base: BaseKey) -> Lookup {
+    state.stats.misses = state.stats.misses.saturating_add(1);
+    Lookup::Miss {
+        status: LookupStatus::Miss,
+        only_if_cached: policy.only_if_cached,
+        base,
+    }
+}
+
+fn matching_key(
+    state: &State,
+    base: &BaseKey,
+    headers: &HeaderMap,
+    max_key_bytes: usize,
+    authorized: bool,
+) -> Option<CacheKey> {
+    state
+        .entries
+        .keys()
+        .filter(|key| {
+            key.matches_request(base, headers, max_key_bytes)
+                && state.entries.get(*key).is_some_and(|stored| {
+                    !authorized || stored.entry.policy.allows_authorized_reuse
+                })
+        })
+        .max_by_key(|key| state.entries.get(*key).map_or(0, |entry| entry.last_access))
+        .cloned()
 }
 
 fn insert_entry(config: &CacheConfig, state: &mut State, entry: PreparedEntry) -> usize {

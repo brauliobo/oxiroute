@@ -8,8 +8,8 @@ mod key;
 mod policy;
 
 pub use cache::{
-    Cache, CacheConfig, CacheError, CacheStats, CachedResponse, FillGuard, FillJoin, FillOutcome,
-    FillWaiter, Lookup, LookupStatus, PreparedEntry, PurgeResult, StoreOutcome,
+    Cache, CacheConfig, CacheError, CacheResponse, CacheStats, CachedResponse, FillGuard, FillJoin,
+    FillOutcome, FillWaiter, Lookup, LookupStatus, PreparedEntry, PurgeResult, StoreOutcome,
 };
 pub use clock::{Clock, MonoTime, SystemClock};
 pub use disk::{
@@ -18,6 +18,7 @@ pub use disk::{
 };
 pub use key::{BaseKey, CacheKey, KeyError, RequestKeyInput, Vary};
 pub use policy::{
-    CacheControl, ParseError, RequestMode, RequestPolicy, ResponseRejection, ResponseTiming,
-    RevalidationError, Validators, current_age, merge_not_modified_headers,
+    CacheControl, CacheTimeline, CacheTimelineError, ParseError, RequestMode, RequestPolicy,
+    ResponseRejection, ResponseTiming, RevalidationError, Validators, current_age,
+    merge_not_modified_headers,
 };

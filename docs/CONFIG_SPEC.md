@@ -436,6 +436,25 @@ Each endpoint runs its first probe immediately, then waits its pool's `interval_
 completes. A slow endpoint does not shift another endpoint's schedule, even within the same pool.
 All pools share a limit of 32 concurrent probes, and an endpoint never has overlapping probes.
 
+### Cache policy timeline
+
+Canonical cache stores and per-route cache policies are accepted for configuration editing, but an
+active cache policy currently fails runtime planning instead of being ignored. The cache core uses
+the following contract for future server integration:
+
+- A matching `status_ttls` entry overrides both origin freshness and `default_ttl_ms`.
+- Otherwise, explicit origin freshness is used when `use_origin_cache_control` is true; absent or
+  ignored origin freshness falls back to `default_ttl_ms`.
+- `grace_ms` permits stale serving only after a configured failure in `stale_on`; it does not enable
+  ordinary stale hits or background stale-while-revalidate behavior.
+- `keep_ms` retains a stale representation only for conditional revalidation. Once TTL plus keep
+  expires, lookup becomes a miss and removes the resident entry.
+- `grace_ms` cannot exceed `keep_ms`. Status TTLs can target final statuses from 200 through 599,
+  except partial `206` and not-modified `304` responses.
+
+Persistent cache record version 2 stores this retention mode. Version 1 records remain readable as
+RFC-policy records without a finite canonical keep window.
+
 This schema is pre-release and may change without compatibility code until a public release
 persists it.
 

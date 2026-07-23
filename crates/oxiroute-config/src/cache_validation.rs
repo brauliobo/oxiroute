@@ -325,10 +325,10 @@ fn validate_cache_retention(
     }
     let mut statuses = HashSet::with_capacity(policy.status_ttls.len());
     for status_ttl in &policy.status_ttls {
-        if !(100..=599).contains(&status_ttl.status) {
+        if !(200..=599).contains(&status_ttl.status) || matches!(status_ttl.status, 206 | 304) {
             return Err(invalid(
                 "status_ttls",
-                "status must be between 100 and 599".into(),
+                "status must be between 200 and 599 and cannot be 206 or 304".into(),
             ));
         }
         validate_retention("status_ttls", status_ttl.ttl_ms, invalid)?;
