@@ -61,7 +61,7 @@ fn cache_forward_and_varnish_foundations_are_not_integrated_runtime_claims() {
     assert!(workspace_path("crates/oxiroute-forward-proxy/Cargo.toml").is_file());
     let root_workspace = read_source("Cargo.toml");
     assert!(root_workspace.contains("crates/oxiroute-cache"));
-    assert!(!root_workspace.contains("\"crates/oxiroute-forward-proxy\""));
+    assert!(root_workspace.contains("crates/oxiroute-forward-proxy"));
     let server = read_source("crates/oxiroute-server/Cargo.toml");
     assert!(!server.contains("oxiroute-cache"));
     assert!(!server.contains("oxiroute-forward-proxy"));
