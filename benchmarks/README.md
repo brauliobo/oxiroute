@@ -12,6 +12,8 @@ Measured reports:
 
 - [`reports/2026-07-23-local-v1.md`](reports/2026-07-23-local-v1.md) preserves the first CPU-pinned
   comparison as invalidated HTTP/1.0 diagnostic data. It is not an HTTP/1.1 baseline.
+- [`reports/2026-07-23-local-v2.md`](reports/2026-07-23-local-v2.md) records the corrected HTTP/1.1
+  baseline. OxiRoute was stable, but system drift prevents strong cross-product conclusions.
 
 ## Scope
 

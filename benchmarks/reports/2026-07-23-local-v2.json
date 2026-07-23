@@ -1,0 +1,103 @@
+{
+  "schema": "oxiroute.local-v1.report.v1",
+  "date": "2026-07-23",
+  "status": "valid_with_host_drift",
+  "source_commit": "983e872cb56181f5195121cb417bc8fa9ba0e34c",
+  "oxiroute_binary_sha256": "5f8b7f378ec9ccd71d4cb987a5f4261315a5957e5ea5c1be181211ff10d2604b",
+  "loadgen_binary_sha256": "f1ee441510eec34260a165ebf501811f0e3b04b500e9f2cdfcd2d05dc1312cfc",
+  "scenario": {
+    "lane": "reverse-h1",
+    "transport": "loopback plaintext HTTP/1.1 keep-alive",
+    "request_line": "GET /payload HTTP/1.1",
+    "response_bytes": 1024,
+    "connections": 128,
+    "warmup_seconds": 10,
+    "measurement_seconds": 30,
+    "repetitions": 3,
+    "load_generator": "oxiroute-loadgen 0.1.0",
+    "ports": {
+      "origin": 39080,
+      "proxy": 39081
+    },
+    "cpu_affinity": {
+      "proxy": 2,
+      "origin": 3,
+      "load_generator": 4
+    }
+  },
+  "environment": {
+    "cpu": "AMD Ryzen 7 9700X 8-Core Processor",
+    "logical_cpus": 16,
+    "kernel": "Linux 7.1.3-2-cachyos x86_64",
+    "governor": "powersave",
+    "boost": true,
+    "smt": true,
+    "nginx": "1.30.4",
+    "haproxy": "3.4.2"
+  },
+  "results": {
+    "origin": {
+      "run_ids": [
+        "20260723T231226Z-494916",
+        "20260723T231651Z-641388",
+        "20260723T232045Z-494915"
+      ],
+      "requests_per_second": [483812.785, 391837.269, 375899.724],
+      "median_requests_per_second": 391837.269,
+      "mean_requests_per_second": 417183.259,
+      "population_cv_percent": 11.40,
+      "failed_requests": 0
+    },
+    "oxiroute": {
+      "run_ids": [
+        "20260723T231308Z-499366",
+        "20260723T231734Z-711327",
+        "20260723T231909Z-871668"
+      ],
+      "requests_per_second": [93110.707, 92605.292, 92146.313],
+      "median_requests_per_second": 92605.292,
+      "mean_requests_per_second": 92620.771,
+      "population_cv_percent": 0.43,
+      "failed_requests": 0
+    },
+    "nginx": {
+      "run_ids": [
+        "20260723T231401Z-504621",
+        "20260723T231526Z-526147",
+        "20260723T232002Z-888157"
+      ],
+      "requests_per_second": [204152.498, 144387.130, 132559.426],
+      "median_requests_per_second": 144387.130,
+      "mean_requests_per_second": 160366.351,
+      "population_cv_percent": 19.54,
+      "failed_requests": 0
+    },
+    "haproxy": {
+      "run_ids": [
+        "20260723T231444Z-506772",
+        "20260723T231609Z-577070",
+        "20260723T231827Z-802014"
+      ],
+      "requests_per_second": [167060.561, 148048.065, 147659.923],
+      "median_requests_per_second": 148048.065,
+      "mean_requests_per_second": 154256.183,
+      "population_cv_percent": 5.87,
+      "failed_requests": 0
+    }
+  },
+  "descriptive_median_comparisons": {
+    "oxiroute_percent_of_nginx": 64.14,
+    "oxiroute_percent_of_haproxy": 62.55,
+    "nginx_over_oxiroute": 1.56,
+    "haproxy_over_oxiroute": 1.60,
+    "origin_over_fastest_proxy": 2.65
+  },
+  "skipped_lanes": [
+    "cache-h1",
+    "forward-h1",
+    "reverse-h2",
+    "forward-h2",
+    "reverse-h3",
+    "forward-h3"
+  ]
+}
