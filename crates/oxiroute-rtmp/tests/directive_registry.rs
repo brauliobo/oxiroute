@@ -150,6 +150,43 @@ fn records_reference_quirks_without_claiming_runtime_enforcement() {
 }
 
 #[test]
+fn unsupported_runtime_families_remain_explicitly_parsed_not_enforced() {
+    for name in [
+        "allow",
+        "deny",
+        "push",
+        "pull",
+        "play",
+        "hls",
+        "dash",
+        "exec",
+        "record_max_size",
+        "record_max_frames",
+        "record_notify",
+    ] {
+        assert_eq!(
+            spec(name).runtime_support,
+            RuntimeSupport::ParsedNotEnforced,
+            "{name} must not claim disconnected runtime behavior"
+        );
+    }
+
+    for name in [
+        "live",
+        "idle_streams",
+        "record",
+        "record_path",
+        "record_suffix",
+    ] {
+        assert_eq!(
+            spec(name).runtime_support,
+            RuntimeSupport::ParsedNotEnforced,
+            "native runtime equivalents do not imply nginx directive lowering"
+        );
+    }
+}
+
+#[test]
 fn validates_contexts_arities_and_closed_value_sets() {
     assert!(validate_directive("meta", DirectiveContext::RtmpApplication, &["copy"]).is_ok());
     assert!(

@@ -3,18 +3,52 @@ pub const HANDSHAKE_BLOCK_SIZE: usize = 1536;
 
 mod catalog;
 mod directives;
+mod flv;
+mod live;
 mod nginx;
+mod recording_path;
+mod recording_runtime;
+mod recording_store;
+mod recording_worker;
 mod session;
 
 pub use catalog::{
-    CatalogError, MediaSnapshot, OperationId, PublisherSnapshot, RecorderCompletion,
-    RecorderDefinition, RecorderErrorCode, RecorderId, RecorderPhase, RecorderSnapshot,
-    RecordingAction, RtmpCapabilities, RtmpCatalogSnapshot, RtmpRegistry, SessionId, StreamId,
-    StreamKey, StreamSnapshot, TrackSnapshot,
+    CatalogError, MAX_RTMP_APPLICATION_BYTES, MAX_RTMP_QUERY_BYTES, MAX_RTMP_STREAM_NAME_BYTES,
+    MediaSnapshot, OperationId, PublisherRegistration, PublisherSnapshot, RecorderDefinition,
+    RecorderErrorCode, RecorderId, RecorderPhase, RecorderSnapshot, RecordingAction,
+    RtmpCapabilities, RtmpCatalogSnapshot, RtmpRegistry, RtmpRegistryWorkStats, RtmpStreamPath,
+    RtmpStreamPathError, SessionId, StreamId, StreamKey, StreamSnapshot, SubscriberRegistration,
+    TrackSnapshot,
 };
 pub use directives::{directive_specs, validate_directive};
+pub use flv::{
+    FlvMuxer, FlvMuxerError, FlvTagType, MAX_CACHED_CODEC_HEADER_SIZE, MAX_FLV_TAG_DATA_SIZE,
+};
+pub use live::{
+    LiveHub, LiveHubError, LiveHubLimits, LiveHubStats, MediaEvent, MediaEventError,
+    MediaEventKind, PlaybackSubscription, PublishReport, PublisherIncarnation, PublisherLease,
+    VideoCodec, VideoCodecIdentifier,
+};
 pub use nginx::{NginxDirective, NginxParseError, parse_nginx_config};
-pub use session::{MAX_INBOUND_CHUNK_SIZE, PublishSessionError, RtmpPublishSession};
+pub use recording_path::{
+    MAX_RECORDING_FILENAME_BYTES, MAX_RECORDING_SUFFIX_TEMPLATE_BYTES, RecordingDateTime,
+    RecordingPathError, RecordingPathPolicy,
+};
+pub use recording_runtime::{RtmpRecorderPolicy, RtmpRecorderStart};
+pub use recording_store::{
+    RecordingCommit, RecordingFile, RecordingQuotaScope, RecordingStore, RecordingStoreError,
+    RecordingStoreLimits, RecordingStoreStats,
+};
+pub use recording_worker::{
+    RecorderEnqueueResult, RecorderFailure, RecorderShutdown, RecorderVideoCodec, RecorderWorker,
+    RecorderWorkerConfig, RecorderWorkerPhase, RecorderWorkerStartError, RecorderWorkerStatus,
+    RecorderWorkerSupervisor,
+};
+pub use rml_rtmp::sessions::StreamMetadata;
+pub use session::{
+    MAX_INBOUND_CHUNK_SIZE, MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN, RtmpApplication,
+    RtmpServiceRuntime, RtmpSession, RtmpSessionError, RtmpSessionPolicy,
+};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum DirectiveContext {

@@ -7,6 +7,19 @@ use std::{
 
 use uuid::Uuid;
 
+use crate::{
+    RecorderEnqueueResult, RecorderWorkerPhase, RecorderWorkerStatus,
+    live::VideoCodecIdentifier,
+    recording_runtime::{
+        RecorderCommandContext, RecorderController, RecorderReaper, RecorderReaperHandle,
+        RecorderReaperOwner, RecorderRuntimeStatus, recorder_error_code,
+    },
+};
+
+pub const MAX_RTMP_APPLICATION_BYTES: usize = 128;
+pub const MAX_RTMP_STREAM_NAME_BYTES: usize = 512;
+pub const MAX_RTMP_QUERY_BYTES: usize = 1024;
+
 macro_rules! id_type {
     ($name:ident) => {
         #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -74,6 +87,149 @@ impl StreamKey {
     }
 }
 
+/// Parsed RTMP URL path with authentication/query data kept separate from stream identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RtmpStreamPath {
+    application: String,
+    stream_name: String,
+    query: Option<String>,
+}
+
+impl RtmpStreamPath {
+    /// Parses the application and stream components supplied by the RTMP protocol.
+    ///
+    /// Applications and stream names are single path components. A nonempty stream query is
+    /// retained as protocol data but deliberately omitted from [`Self::stream_key`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for empty, nested, fragmented, control-character, or ambiguous paths.
+    pub fn parse(application: &str, protocol_name: &str) -> Result<Self, RtmpStreamPathError> {
+        let (application, stream_name, query) = validated_rtmp_path(application, protocol_name)?;
+
+        Ok(Self {
+            application: application.to_owned(),
+            stream_name: stream_name.to_owned(),
+            query: query.map(str::to_owned),
+        })
+    }
+
+    #[must_use]
+    pub fn application(&self) -> &str {
+        &self.application
+    }
+
+    #[must_use]
+    pub fn stream_name(&self) -> &str {
+        &self.stream_name
+    }
+
+    #[must_use]
+    pub fn query(&self) -> Option<&str> {
+        self.query.as_deref()
+    }
+
+    #[must_use]
+    pub fn stream_key(&self, service_id: impl Into<String>) -> StreamKey {
+        StreamKey::new(service_id, &self.application, &self.stream_name)
+    }
+
+    #[must_use]
+    pub fn into_stream_key(self, service_id: impl Into<String>) -> StreamKey {
+        StreamKey::new(service_id, self.application, self.stream_name)
+    }
+
+    /// Validates an RTMP connection application before any application-owned clone is made.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable component or byte-limit error.
+    pub fn validate_application(application: &str) -> Result<(), RtmpStreamPathError> {
+        validate_application(application)
+    }
+
+    pub(crate) fn matches_key(key: &StreamKey, application: &str, protocol_name: &str) -> bool {
+        validated_rtmp_path(application, protocol_name).is_ok_and(
+            |(application, stream_name, _)| {
+                key.application == application && key.name == stream_name
+            },
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, thiserror::Error, Eq, PartialEq)]
+pub enum RtmpStreamPathError {
+    #[error("RTMP application must be one nonempty path component")]
+    Application,
+    #[error("RTMP stream name must be one nonempty path component")]
+    StreamName,
+    #[error("RTMP stream query must be nonempty and contain no fragment or control characters")]
+    Query,
+    #[error("RTMP application is {size} bytes; maximum is {maximum} bytes")]
+    ApplicationTooLong { size: usize, maximum: usize },
+    #[error("RTMP stream name is {size} bytes; maximum is {maximum} bytes")]
+    StreamNameTooLong { size: usize, maximum: usize },
+    #[error("RTMP stream query is {size} bytes; maximum is {maximum} bytes")]
+    QueryTooLong { size: usize, maximum: usize },
+}
+
+fn validated_rtmp_path<'a>(
+    application: &'a str,
+    protocol_name: &'a str,
+) -> Result<(&'a str, &'a str, Option<&'a str>), RtmpStreamPathError> {
+    validate_application(application)?;
+    let (stream_name, query) = match protocol_name.split_once('?') {
+        Some((_, "")) => return Err(RtmpStreamPathError::Query),
+        Some((stream_name, query)) => (stream_name, Some(query)),
+        None => (protocol_name, None),
+    };
+    if stream_name.len() > MAX_RTMP_STREAM_NAME_BYTES {
+        return Err(RtmpStreamPathError::StreamNameTooLong {
+            size: stream_name.len(),
+            maximum: MAX_RTMP_STREAM_NAME_BYTES,
+        });
+    }
+    validate_path_component(stream_name).map_err(|()| RtmpStreamPathError::StreamName)?;
+    if let Some(query) = query {
+        if query.len() > MAX_RTMP_QUERY_BYTES {
+            return Err(RtmpStreamPathError::QueryTooLong {
+                size: query.len(),
+                maximum: MAX_RTMP_QUERY_BYTES,
+            });
+        }
+        if query.contains('#') || query.chars().any(char::is_control) {
+            return Err(RtmpStreamPathError::Query);
+        }
+    }
+    Ok((application, stream_name, query))
+}
+
+fn validate_application(application: &str) -> Result<(), RtmpStreamPathError> {
+    if application.len() > MAX_RTMP_APPLICATION_BYTES {
+        return Err(RtmpStreamPathError::ApplicationTooLong {
+            size: application.len(),
+            maximum: MAX_RTMP_APPLICATION_BYTES,
+        });
+    }
+    validate_path_component(application).map_err(|()| RtmpStreamPathError::Application)?;
+    if application.contains('?') {
+        return Err(RtmpStreamPathError::Application);
+    }
+    Ok(())
+}
+
+fn validate_path_component(component: &str) -> Result<(), ()> {
+    if component.is_empty()
+        || component == "."
+        || component == ".."
+        || component.contains(['/', '#'])
+        || component.chars().any(char::is_control)
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PublisherSnapshot {
     pub session_id: SessionId,
@@ -83,6 +239,7 @@ pub struct PublisherSnapshot {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TrackSnapshot {
     pub flv_codec_id: Option<u8>,
+    pub video_codec: Option<VideoCodecIdentifier>,
     pub payload_bytes_received: u64,
     pub last_rtmp_timestamp_ms: Option<u32>,
     pub last_observed_at_unix_ms: Option<u64>,
@@ -101,6 +258,14 @@ pub enum RecorderErrorCode {
     WriteFailed,
     CloseFailed,
     BackendUnavailable,
+    FileSyncFailed,
+    PublishFailed,
+    DirectorySyncFailed,
+    QueueDiscontinuity,
+    UnsupportedCodec,
+    ShutdownTimedOut,
+    WorkerPanicked,
+    StalePublisher,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -130,6 +295,18 @@ pub struct RecorderSnapshot {
     pub phase: RecorderPhase,
     pub changed_at_unix_ms: u64,
     pub bytes_written: u64,
+    pub current_relative_name: Option<String>,
+    pub last_completed_relative_name: Option<String>,
+    pub recoverable_partial_name: Option<String>,
+    pub published_but_not_durable_relative_name: Option<String>,
+    pub queue_messages: usize,
+    pub queue_bytes: usize,
+    pub events_enqueued: u64,
+    pub events_processed: u64,
+    pub events_dropped: u64,
+    pub segments_started: u64,
+    pub segments_completed: u64,
+    pub discontinuities: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -159,13 +336,6 @@ pub enum RecordingAction {
     Stop,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RecorderCompletion {
-    Started,
-    Stopped,
-    Failed(RecorderErrorCode),
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamSnapshot {
     pub id: StreamId,
@@ -184,6 +354,13 @@ pub struct RtmpCatalogSnapshot {
     pub as_of_unix_ms: u64,
     pub capabilities: RtmpCapabilities,
     pub streams: Vec<StreamSnapshot>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RtmpRegistryWorkStats {
+    pub media_updates: u64,
+    pub snapshot_rebuilds: u64,
+    pub snapshot_streams_visited: u64,
 }
 
 #[derive(Debug, thiserror::Error, Eq, PartialEq)]
@@ -210,7 +387,7 @@ pub enum CatalogError {
         stream_id: StreamId,
         recorder_id: RecorderId,
     },
-    #[error("manual RTMP recording is not implemented by the active runtime")]
+    #[error("RTMP recording is unavailable in the active runtime")]
     RecordingUnavailable,
     #[error("recorder {0} is not manual")]
     RecorderNotManual(RecorderId),
@@ -222,6 +399,11 @@ pub enum CatalogError {
     StaleOperation,
     #[error("recorder completion does not match the active transition")]
     InvalidCompletion,
+    #[error("recorder {recorder_id} failed with {code:?}")]
+    RecorderFailed {
+        recorder_id: RecorderId,
+        code: RecorderErrorCode,
+    },
 }
 
 struct MutableRecorder {
@@ -231,6 +413,35 @@ struct MutableRecorder {
     phase: RecorderPhase,
     changed_at_unix_ms: u64,
     bytes_written: u64,
+    current_relative_name: Option<String>,
+    last_completed_relative_name: Option<String>,
+    recoverable_partial_name: Option<String>,
+    published_but_not_durable_relative_name: Option<String>,
+    queue_messages: usize,
+    queue_bytes: usize,
+    events_enqueued: u64,
+    events_processed: u64,
+    events_dropped: u64,
+    segments_started: u64,
+    segments_completed: u64,
+    discontinuities: u64,
+    control: Option<Arc<RecorderController>>,
+}
+
+trait IntoRecorderControl {
+    fn into_recorder_control(self) -> Option<Arc<RecorderController>>;
+}
+
+impl IntoRecorderControl for Option<Arc<RecorderController>> {
+    fn into_recorder_control(self) -> Option<Arc<RecorderController>> {
+        self
+    }
+}
+
+impl IntoRecorderControl for Arc<RecorderController> {
+    fn into_recorder_control(self) -> Option<Arc<RecorderController>> {
+        Some(self)
+    }
 }
 
 impl MutableRecorder {
@@ -242,6 +453,20 @@ impl MutableRecorder {
             phase: self.phase,
             changed_at_unix_ms: self.changed_at_unix_ms,
             bytes_written: self.bytes_written,
+            current_relative_name: self.current_relative_name.clone(),
+            last_completed_relative_name: self.last_completed_relative_name.clone(),
+            recoverable_partial_name: self.recoverable_partial_name.clone(),
+            published_but_not_durable_relative_name: self
+                .published_but_not_durable_relative_name
+                .clone(),
+            queue_messages: self.queue_messages,
+            queue_bytes: self.queue_bytes,
+            events_enqueued: self.events_enqueued,
+            events_processed: self.events_processed,
+            events_dropped: self.events_dropped,
+            segments_started: self.segments_started,
+            segments_completed: self.segments_completed,
+            discontinuities: self.discontinuities,
         }
     }
 }
@@ -256,6 +481,7 @@ struct MutableStream {
     media: MediaSnapshot,
     media_sample_sequence: u64,
     recorders: HashMap<RecorderId, MutableRecorder>,
+    recorder_order: Vec<RecorderId>,
 }
 
 impl MutableStream {
@@ -270,6 +496,7 @@ impl MutableStream {
             media: MediaSnapshot::default(),
             media_sample_sequence: 0,
             recorders: HashMap::new(),
+            recorder_order: Vec::new(),
         }
     }
 
@@ -296,9 +523,12 @@ impl MutableStream {
 
 struct RegistryInner {
     revision: u64,
+    as_of_unix_ms: u64,
     streams: HashMap<StreamId, MutableStream>,
     streams_by_key: HashMap<StreamKey, StreamId>,
     current: Arc<RtmpCatalogSnapshot>,
+    snapshot_dirty: bool,
+    work_stats: RtmpRegistryWorkStats,
 }
 
 pub struct RtmpRegistry {
@@ -313,6 +543,7 @@ impl RtmpRegistry {
             capabilities,
             inner: Mutex::new(RegistryInner {
                 revision: 0,
+                as_of_unix_ms: 0,
                 streams: HashMap::new(),
                 streams_by_key: HashMap::new(),
                 current: Arc::new(RtmpCatalogSnapshot {
@@ -321,13 +552,92 @@ impl RtmpRegistry {
                     capabilities,
                     streams: Vec::new(),
                 }),
+                snapshot_dirty: false,
+                work_stats: RtmpRegistryWorkStats::default(),
             }),
         }
     }
 
     #[must_use]
     pub fn snapshot(&self) -> Arc<RtmpCatalogSnapshot> {
-        Arc::clone(&self.lock().current)
+        let mut inner = self.lock();
+        refresh_recorder_statuses(&mut inner);
+        publish_snapshot_if_dirty(&mut inner, self.capabilities);
+        Arc::clone(&inner.current)
+    }
+
+    #[must_use]
+    pub fn work_stats(&self) -> RtmpRegistryWorkStats {
+        self.lock().work_stats
+    }
+
+    pub(crate) fn create_recorder_reaper(
+        self: &Arc<Self>,
+        capacity: usize,
+    ) -> (Arc<RecorderReaperOwner>, RecorderReaperHandle) {
+        RecorderReaper::start(capacity, Arc::downgrade(self))
+    }
+
+    /// Registers a publisher whose catalog entry is removed when the returned owner is dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when another publisher already owns the stream.
+    pub fn register_publisher(
+        self: &Arc<Self>,
+        key: StreamKey,
+        session_id: SessionId,
+        recorder_definitions: Vec<RecorderDefinition>,
+        at_unix_ms: u64,
+    ) -> Result<PublisherRegistration, CatalogError> {
+        let stream_id = self.attach_publisher(key, session_id, recorder_definitions, at_unix_ms)?;
+        Ok(PublisherRegistration {
+            registry: Arc::clone(self),
+            stream_id,
+            session_id,
+            recorder_ids: self.recorder_ids(stream_id, session_id)?,
+            last_observed_at_unix_ms: at_unix_ms,
+            active: true,
+        })
+    }
+
+    pub(crate) fn register_managed_publisher(
+        self: &Arc<Self>,
+        key: StreamKey,
+        session_id: SessionId,
+        recorders: Vec<(RecorderDefinition, Arc<RecorderController>)>,
+        at_unix_ms: u64,
+    ) -> Result<PublisherRegistration, CatalogError> {
+        let stream_id = self.attach_publisher_inner(key, session_id, recorders, at_unix_ms)?;
+        Ok(PublisherRegistration {
+            registry: Arc::clone(self),
+            stream_id,
+            session_id,
+            recorder_ids: self.recorder_ids(stream_id, session_id)?,
+            last_observed_at_unix_ms: at_unix_ms,
+            active: true,
+        })
+    }
+
+    /// Registers a subscriber whose catalog entry is removed when the returned owner is dropped.
+    ///
+    /// # Errors
+    ///
+    /// This operation currently has no expected error state.
+    pub fn register_subscriber(
+        self: &Arc<Self>,
+        key: StreamKey,
+        session_id: SessionId,
+        at_unix_ms: u64,
+    ) -> Result<SubscriberRegistration, CatalogError> {
+        let stream_id = self.attach_subscriber(key, session_id, at_unix_ms)?;
+        Ok(SubscriberRegistration {
+            registry: Arc::clone(self),
+            stream_id,
+            session_id,
+            last_observed_at_unix_ms: at_unix_ms,
+            active: true,
+        })
     }
 
     /// Attaches a publisher to a logical stream.
@@ -342,6 +652,30 @@ impl RtmpRegistry {
         recorder_definitions: Vec<RecorderDefinition>,
         at_unix_ms: u64,
     ) -> Result<StreamId, CatalogError> {
+        if !recorder_definitions.is_empty() {
+            return Err(CatalogError::RecordingUnavailable);
+        }
+        self.attach_publisher_inner(
+            key,
+            session_id,
+            recorder_definitions
+                .into_iter()
+                .map(|definition| (definition, None))
+                .collect(),
+            at_unix_ms,
+        )
+    }
+
+    fn attach_publisher_inner<C>(
+        &self,
+        key: StreamKey,
+        session_id: SessionId,
+        recorder_definitions: Vec<(RecorderDefinition, C)>,
+        at_unix_ms: u64,
+    ) -> Result<StreamId, CatalogError>
+    where
+        C: IntoRecorderControl,
+    {
         let mut inner = self.lock();
         let stream_id = ensure_stream(&mut inner, key, at_unix_ms);
         let stream = inner
@@ -365,10 +699,12 @@ impl RtmpRegistry {
         });
         stream.media = MediaSnapshot::default();
         stream.media_sample_sequence = 0;
+        let mut recorder_order = Vec::with_capacity(recorder_definitions.len());
         stream.recorders = recorder_definitions
             .into_iter()
-            .map(|definition| {
+            .map(|(definition, control)| {
                 let id = RecorderId::new();
+                recorder_order.push(id);
                 (
                     id,
                     MutableRecorder {
@@ -378,12 +714,27 @@ impl RtmpRegistry {
                         phase: RecorderPhase::Idle,
                         changed_at_unix_ms: at_unix_ms,
                         bytes_written: 0,
+                        current_relative_name: None,
+                        last_completed_relative_name: None,
+                        recoverable_partial_name: None,
+                        published_but_not_durable_relative_name: None,
+                        queue_messages: 0,
+                        queue_bytes: 0,
+                        events_enqueued: 0,
+                        events_processed: 0,
+                        events_dropped: 0,
+                        segments_started: 0,
+                        segments_completed: 0,
+                        discontinuities: 0,
+                        control: control.into_recorder_control(),
                     },
                 )
             })
             .collect();
-        stream.revision += 1;
-        rebuild_snapshot(&mut inner, self.capabilities, at_unix_ms);
+        stream.recorder_order = recorder_order;
+        stream.revision = stream.revision.saturating_add(1);
+        mark_mutation(&mut inner, at_unix_ms);
+        publish_snapshot_if_dirty(&mut inner, self.capabilities);
         Ok(stream_id)
     }
 
@@ -419,8 +770,9 @@ impl RtmpRegistry {
 
         stream.media_sample_sequence = sequence;
         stream.media = media;
-        stream.revision += 1;
-        rebuild_snapshot(&mut inner, self.capabilities, at_unix_ms);
+        stream.revision = stream.revision.saturating_add(1);
+        inner.work_stats.media_updates = inner.work_stats.media_updates.saturating_add(1);
+        mark_mutation(&mut inner, at_unix_ms);
         Ok(true)
     }
 
@@ -441,9 +793,11 @@ impl RtmpRegistry {
             .streams
             .get_mut(&stream_id)
             .ok_or(CatalogError::StreamNotFound(stream_id))?;
-        if stream.subscribers.insert(session_id) {
-            stream.revision += 1;
-            rebuild_snapshot(&mut inner, self.capabilities, at_unix_ms);
+        let changed = stream.subscribers.insert(session_id);
+        if changed {
+            stream.revision = stream.revision.saturating_add(1);
+            mark_mutation(&mut inner, at_unix_ms);
+            publish_snapshot_if_dirty(&mut inner, self.capabilities);
         }
         Ok(stream_id)
     }
@@ -474,14 +828,21 @@ impl RtmpRegistry {
             stream.publisher = None;
             stream.media = MediaSnapshot::default();
             stream.media_sample_sequence = 0;
+            for recorder in stream.recorders.values() {
+                if let Some(control) = &recorder.control {
+                    control.deactivate(at_unix_ms);
+                }
+            }
             stream.recorders.clear();
-            stream.revision += 1;
+            stream.recorder_order.clear();
+            stream.revision = stream.revision.saturating_add(1);
             stream.subscribers.is_empty()
         };
         if remove {
             remove_stream(&mut inner, stream_id);
         }
-        rebuild_snapshot(&mut inner, self.capabilities, at_unix_ms);
+        mark_mutation(&mut inner, at_unix_ms);
+        publish_snapshot_if_dirty(&mut inner, self.capabilities);
         Ok(())
     }
 
@@ -508,13 +869,14 @@ impl RtmpRegistry {
                     session_id,
                 });
             }
-            stream.revision += 1;
+            stream.revision = stream.revision.saturating_add(1);
             stream.publisher.is_none() && stream.subscribers.is_empty()
         };
         if remove {
             remove_stream(&mut inner, stream_id);
         }
-        rebuild_snapshot(&mut inner, self.capabilities, at_unix_ms);
+        mark_mutation(&mut inner, at_unix_ms);
+        publish_snapshot_if_dirty(&mut inner, self.capabilities);
         Ok(())
     }
 
@@ -524,7 +886,7 @@ impl RtmpRegistry {
     ///
     /// Returns an error when recording is unavailable, the target is stale, or an opposite
     /// transition is still in progress.
-    pub fn request_recording(
+    fn request_recording_transition(
         &self,
         stream_id: StreamId,
         recorder_id: RecorderId,
@@ -536,6 +898,7 @@ impl RtmpRegistry {
         }
 
         let mut inner = self.lock();
+        refresh_recorder_statuses(&mut inner);
         let (snapshot, changed) = {
             let stream = inner
                 .streams
@@ -554,6 +917,9 @@ impl RtmpRegistry {
                     })?;
             if !recorder.manual {
                 return Err(CatalogError::RecorderNotManual(recorder_id));
+            }
+            if recorder.control.is_none() {
+                return Err(CatalogError::RecordingUnavailable);
             }
 
             let changed = match (action, recorder.phase) {
@@ -586,89 +952,544 @@ impl RtmpRegistry {
             };
             if changed {
                 recorder.changed_at_unix_ms = at_unix_ms;
-                stream.revision += 1;
+                stream.revision = stream.revision.saturating_add(1);
             }
             (recorder.snapshot(), changed)
         };
         if changed {
-            rebuild_snapshot(&mut inner, self.capabilities, at_unix_ms);
+            mark_mutation(&mut inner, at_unix_ms);
+            publish_snapshot_if_dirty(&mut inner, self.capabilities);
         }
         Ok(snapshot)
     }
 
-    /// Applies a publisher-side recorder completion carrying all incarnation tokens.
+    /// Starts one exact manual recorder owned by the current publisher incarnation.
     ///
     /// # Errors
     ///
-    /// Returns an error for stale identities or a completion that does not match the active
-    /// transition.
-    pub fn complete_recording(
+    /// Returns stable capability, not-found, conflict, stale-publisher, or recorder-failure errors.
+    pub fn start_recording(
+        &self,
+        stream_id: StreamId,
+        recorder_id: RecorderId,
+        at_unix_ms: u64,
+    ) -> Result<RecorderSnapshot, CatalogError> {
+        let snapshot = self.request_recording_transition(
+            stream_id,
+            recorder_id,
+            RecordingAction::Start,
+            at_unix_ms,
+        )?;
+        if !matches!(snapshot.phase, RecorderPhase::Starting { .. }) {
+            return Ok(snapshot);
+        }
+        self.execute_start(stream_id, recorder_id, at_unix_ms)
+    }
+
+    /// Stops one exact manual recorder owned by the current publisher incarnation.
+    ///
+    /// # Errors
+    ///
+    /// Returns stable capability, not-found, conflict, stale-publisher, or recorder-failure errors.
+    pub fn stop_recording(
+        &self,
+        stream_id: StreamId,
+        recorder_id: RecorderId,
+        at_unix_ms: u64,
+    ) -> Result<RecorderSnapshot, CatalogError> {
+        let snapshot = self.request_recording_transition(
+            stream_id,
+            recorder_id,
+            RecordingAction::Stop,
+            at_unix_ms,
+        )?;
+        if !matches!(snapshot.phase, RecorderPhase::Stopping { .. }) {
+            return Ok(snapshot);
+        }
+        let (control, context) = self.command_context(stream_id, recorder_id, at_unix_ms)?;
+        if control.stop(context) {
+            return self.recorder_snapshot(stream_id, recorder_id);
+        }
+        self.fail_recorder(context, RecorderErrorCode::BackendUnavailable);
+        Err(CatalogError::RecorderFailed {
+            recorder_id,
+            code: RecorderErrorCode::BackendUnavailable,
+        })
+    }
+
+    pub(crate) fn start_continuous_recording(
         &self,
         stream_id: StreamId,
         publisher_session_id: SessionId,
         recorder_id: RecorderId,
-        operation_id: OperationId,
-        completion: RecorderCompletion,
         at_unix_ms: u64,
-    ) -> Result<RecorderSnapshot, CatalogError> {
-        let mut inner = self.lock();
-        let snapshot = {
-            let stream = inner
-                .streams
-                .get_mut(&stream_id)
-                .ok_or(CatalogError::StreamNotFound(stream_id))?;
+    ) {
+        let operation_id = OperationId::new();
+        {
+            let mut inner = self.lock();
+            let Some(stream) = inner.streams.get_mut(&stream_id) else {
+                return;
+            };
             if stream.publisher.map(|publisher| publisher.session_id) != Some(publisher_session_id)
             {
-                return Err(CatalogError::PublisherMismatch {
-                    stream_id,
-                    session_id: publisher_session_id,
-                });
+                return;
             }
-            let recorder =
-                stream
-                    .recorders
-                    .get_mut(&recorder_id)
-                    .ok_or(CatalogError::RecorderNotFound {
-                        stream_id,
-                        recorder_id,
-                    })?;
-            let active_operation = match recorder.phase {
-                RecorderPhase::Starting { operation_id }
-                | RecorderPhase::Recording { operation_id, .. }
-                | RecorderPhase::Stopping { operation_id }
-                | RecorderPhase::Failed { operation_id, .. } => Some(operation_id),
-                RecorderPhase::Idle => None,
+            let Some(recorder) = stream.recorders.get_mut(&recorder_id) else {
+                return;
             };
-            if active_operation != Some(operation_id) {
-                return Err(CatalogError::StaleOperation);
+            if recorder.manual {
+                return;
             }
+            recorder.phase = RecorderPhase::Starting { operation_id };
+            recorder.changed_at_unix_ms = recorder.changed_at_unix_ms.max(at_unix_ms);
+            stream.revision = stream.revision.saturating_add(1);
+            mark_mutation(&mut inner, at_unix_ms);
+        }
+        let _ = self.execute_start(stream_id, recorder_id, at_unix_ms);
+    }
 
-            recorder.phase = match (recorder.phase, completion) {
-                (RecorderPhase::Starting { .. }, RecorderCompletion::Started) => {
-                    RecorderPhase::Recording {
-                        operation_id,
-                        started_at_unix_ms: at_unix_ms,
-                    }
-                }
-                (RecorderPhase::Stopping { .. }, RecorderCompletion::Stopped) => {
-                    RecorderPhase::Idle
-                }
-                (
-                    RecorderPhase::Starting { .. } | RecorderPhase::Stopping { .. },
-                    RecorderCompletion::Failed(code),
-                ) => RecorderPhase::Failed { operation_id, code },
-                _ => return Err(CatalogError::InvalidCompletion),
-            };
-            recorder.changed_at_unix_ms = at_unix_ms;
-            stream.revision += 1;
-            recorder.snapshot()
+    pub(crate) fn update_recorder_runtime(
+        &self,
+        stream_id: StreamId,
+        publisher_session_id: SessionId,
+        recorder_id: RecorderId,
+        enqueue_result: RecorderEnqueueResult,
+        at_unix_ms: u64,
+    ) {
+        let mut inner = self.lock();
+        let Some(stream) = inner.streams.get_mut(&stream_id) else {
+            return;
         };
-        rebuild_snapshot(&mut inner, self.capabilities, at_unix_ms);
-        Ok(snapshot)
+        if stream.publisher.map(|publisher| publisher.session_id) != Some(publisher_session_id) {
+            return;
+        }
+        let Some(recorder) = stream.recorders.get_mut(&recorder_id) else {
+            return;
+        };
+        let mut changed = recorder
+            .control
+            .clone()
+            .is_some_and(|control| apply_runtime_status(recorder, control.status()));
+        if enqueue_result == RecorderEnqueueResult::DroppedDiscontinuity {
+            if let Some(operation_id) = active_operation(recorder.phase) {
+                let phase = RecorderPhase::Failed {
+                    operation_id,
+                    code: RecorderErrorCode::QueueDiscontinuity,
+                };
+                if recorder.phase != phase {
+                    recorder.phase = phase;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            recorder.changed_at_unix_ms = recorder.changed_at_unix_ms.max(at_unix_ms);
+            stream.revision = stream.revision.saturating_add(1);
+            mark_mutation(&mut inner, at_unix_ms);
+        }
+    }
+
+    pub(crate) fn complete_worker_stop(
+        &self,
+        context: RecorderCommandContext,
+        status: &RecorderWorkerStatus,
+    ) {
+        let mut inner = self.lock();
+        let Some(stream) = inner.streams.get_mut(&context.stream_id) else {
+            return;
+        };
+        if stream.publisher.map(|publisher| publisher.session_id)
+            != Some(context.publisher_session_id)
+        {
+            return;
+        }
+        let Some(recorder) = stream.recorders.get_mut(&context.recorder_id) else {
+            return;
+        };
+        if !matches!(
+            recorder.phase,
+            RecorderPhase::Stopping { operation_id } if operation_id == context.operation_id
+        ) {
+            return;
+        }
+        apply_worker_details(recorder, status);
+        recorder.phase = match status.phase {
+            RecorderWorkerPhase::Failed(failure) => RecorderPhase::Failed {
+                operation_id: context.operation_id,
+                code: recorder_error_code(failure),
+            },
+            RecorderWorkerPhase::Stopped => RecorderPhase::Idle,
+            RecorderWorkerPhase::Starting | RecorderWorkerPhase::Recording => {
+                RecorderPhase::Failed {
+                    operation_id: context.operation_id,
+                    code: RecorderErrorCode::BackendUnavailable,
+                }
+            }
+        };
+        recorder.changed_at_unix_ms = recorder.changed_at_unix_ms.max(context.at_unix_ms);
+        stream.revision = stream.revision.saturating_add(1);
+        mark_mutation(&mut inner, context.at_unix_ms);
     }
 
     fn lock(&self) -> MutexGuard<'_, RegistryInner> {
         self.inner.lock().expect("RTMP registry mutex poisoned")
+    }
+
+    fn recorder_ids(
+        &self,
+        stream_id: StreamId,
+        publisher_session_id: SessionId,
+    ) -> Result<Vec<RecorderId>, CatalogError> {
+        let inner = self.lock();
+        let stream = inner
+            .streams
+            .get(&stream_id)
+            .ok_or(CatalogError::StreamNotFound(stream_id))?;
+        if stream.publisher.map(|publisher| publisher.session_id) != Some(publisher_session_id) {
+            return Err(CatalogError::PublisherMismatch {
+                stream_id,
+                session_id: publisher_session_id,
+            });
+        }
+        Ok(stream.recorder_order.clone())
+    }
+
+    fn command_context(
+        &self,
+        stream_id: StreamId,
+        recorder_id: RecorderId,
+        at_unix_ms: u64,
+    ) -> Result<(Arc<RecorderController>, RecorderCommandContext), CatalogError> {
+        let inner = self.lock();
+        let stream = inner
+            .streams
+            .get(&stream_id)
+            .ok_or(CatalogError::StreamNotFound(stream_id))?;
+        let publisher_session_id = stream
+            .publisher
+            .map(|publisher| publisher.session_id)
+            .ok_or(CatalogError::NoPublisher(stream_id))?;
+        let recorder =
+            stream
+                .recorders
+                .get(&recorder_id)
+                .ok_or(CatalogError::RecorderNotFound {
+                    stream_id,
+                    recorder_id,
+                })?;
+        let operation_id =
+            active_operation(recorder.phase).ok_or(CatalogError::InvalidCompletion)?;
+        let control = recorder
+            .control
+            .clone()
+            .ok_or(CatalogError::RecordingUnavailable)?;
+        Ok((
+            control,
+            RecorderCommandContext {
+                stream_id,
+                publisher_session_id,
+                recorder_id,
+                operation_id,
+                at_unix_ms,
+            },
+        ))
+    }
+
+    fn execute_start(
+        &self,
+        stream_id: StreamId,
+        recorder_id: RecorderId,
+        at_unix_ms: u64,
+    ) -> Result<RecorderSnapshot, CatalogError> {
+        let (control, context) = self.command_context(stream_id, recorder_id, at_unix_ms)?;
+        if let Err(code) = control.start(context) {
+            self.fail_recorder(context, code);
+            return Err(CatalogError::RecorderFailed { recorder_id, code });
+        }
+        self.mark_recorder_started(context);
+        self.recorder_snapshot(stream_id, recorder_id)
+    }
+
+    fn mark_recorder_started(&self, context: RecorderCommandContext) {
+        let mut inner = self.lock();
+        let Some(stream) = inner.streams.get_mut(&context.stream_id) else {
+            return;
+        };
+        if stream.publisher.map(|publisher| publisher.session_id)
+            != Some(context.publisher_session_id)
+        {
+            return;
+        }
+        let Some(recorder) = stream.recorders.get_mut(&context.recorder_id) else {
+            return;
+        };
+        if !matches!(
+            recorder.phase,
+            RecorderPhase::Starting { operation_id } if operation_id == context.operation_id
+        ) {
+            return;
+        }
+        recorder.phase = RecorderPhase::Recording {
+            operation_id: context.operation_id,
+            started_at_unix_ms: context.at_unix_ms,
+        };
+        recorder.changed_at_unix_ms = recorder.changed_at_unix_ms.max(context.at_unix_ms);
+        stream.revision = stream.revision.saturating_add(1);
+        mark_mutation(&mut inner, context.at_unix_ms);
+    }
+
+    fn fail_recorder(&self, context: RecorderCommandContext, code: RecorderErrorCode) {
+        let mut inner = self.lock();
+        let Some(stream) = inner.streams.get_mut(&context.stream_id) else {
+            return;
+        };
+        if stream.publisher.map(|publisher| publisher.session_id)
+            != Some(context.publisher_session_id)
+        {
+            return;
+        }
+        let Some(recorder) = stream.recorders.get_mut(&context.recorder_id) else {
+            return;
+        };
+        if active_operation(recorder.phase) != Some(context.operation_id) {
+            return;
+        }
+        recorder.phase = RecorderPhase::Failed {
+            operation_id: context.operation_id,
+            code,
+        };
+        recorder.changed_at_unix_ms = recorder.changed_at_unix_ms.max(context.at_unix_ms);
+        stream.revision = stream.revision.saturating_add(1);
+        mark_mutation(&mut inner, context.at_unix_ms);
+    }
+
+    fn recorder_snapshot(
+        &self,
+        stream_id: StreamId,
+        recorder_id: RecorderId,
+    ) -> Result<RecorderSnapshot, CatalogError> {
+        let mut inner = self.lock();
+        refresh_recorder_statuses(&mut inner);
+        inner
+            .streams
+            .get(&stream_id)
+            .ok_or(CatalogError::StreamNotFound(stream_id))?
+            .recorders
+            .get(&recorder_id)
+            .map(MutableRecorder::snapshot)
+            .ok_or(CatalogError::RecorderNotFound {
+                stream_id,
+                recorder_id,
+            })
+    }
+
+    pub(crate) fn has_publisher(&self, key: &StreamKey) -> bool {
+        let inner = self.lock();
+        inner
+            .streams_by_key
+            .get(key)
+            .and_then(|stream_id| inner.streams.get(stream_id))
+            .is_some_and(|stream| stream.publisher.is_some())
+    }
+}
+
+fn active_operation(phase: RecorderPhase) -> Option<OperationId> {
+    match phase {
+        RecorderPhase::Starting { operation_id }
+        | RecorderPhase::Recording { operation_id, .. }
+        | RecorderPhase::Stopping { operation_id }
+        | RecorderPhase::Failed { operation_id, .. } => Some(operation_id),
+        RecorderPhase::Idle => None,
+    }
+}
+
+fn refresh_recorder_statuses(inner: &mut RegistryInner) {
+    let mut changed = false;
+    let mut observed_at_unix_ms = inner.as_of_unix_ms;
+    for stream in inner.streams.values_mut() {
+        let mut stream_changed = false;
+        for recorder in stream.recorders.values_mut() {
+            let Some(control) = recorder.control.clone() else {
+                continue;
+            };
+            let runtime = control.status();
+            observed_at_unix_ms = observed_at_unix_ms.max(runtime.observed_at_unix_ms);
+            let recorder_observed_at_unix_ms = runtime.observed_at_unix_ms;
+            if apply_runtime_status(recorder, runtime) {
+                recorder.changed_at_unix_ms = recorder
+                    .changed_at_unix_ms
+                    .max(recorder_observed_at_unix_ms);
+                stream_changed = true;
+            }
+        }
+        if stream_changed {
+            stream.revision = stream.revision.saturating_add(1);
+            changed = true;
+        }
+    }
+    if changed {
+        mark_mutation(inner, observed_at_unix_ms);
+    }
+}
+
+fn apply_runtime_status(recorder: &mut MutableRecorder, runtime: RecorderRuntimeStatus) -> bool {
+    let before = recorder.snapshot();
+    let Some(status) = runtime.status else {
+        return false;
+    };
+    apply_worker_details(recorder, &status);
+    if !runtime.stopping {
+        let operation_id = active_operation(recorder.phase);
+        recorder.phase = match (status.phase, operation_id, recorder.phase) {
+            (
+                RecorderWorkerPhase::Recording,
+                Some(operation_id),
+                RecorderPhase::Starting { .. },
+            ) => RecorderPhase::Recording {
+                operation_id,
+                started_at_unix_ms: runtime.observed_at_unix_ms,
+            },
+            (RecorderWorkerPhase::Failed(failure), Some(operation_id), _) => {
+                RecorderPhase::Failed {
+                    operation_id,
+                    code: recorder_error_code(failure),
+                }
+            }
+            (RecorderWorkerPhase::Stopped, Some(_), RecorderPhase::Stopping { .. }) => {
+                RecorderPhase::Idle
+            }
+            (
+                RecorderWorkerPhase::Starting | RecorderWorkerPhase::Recording,
+                _,
+                phase @ RecorderPhase::Failed { .. },
+            ) => phase,
+            _ => recorder.phase,
+        };
+    }
+    recorder.snapshot() != before
+}
+
+fn apply_worker_details(recorder: &mut MutableRecorder, status: &RecorderWorkerStatus) {
+    recorder.bytes_written = status.bytes_written;
+    recorder
+        .current_relative_name
+        .clone_from(&status.current_relative_name);
+    recorder
+        .last_completed_relative_name
+        .clone_from(&status.last_completed_relative_name);
+    recorder
+        .recoverable_partial_name
+        .clone_from(&status.recoverable_partial_name);
+    recorder
+        .published_but_not_durable_relative_name
+        .clone_from(&status.published_but_not_durable_relative_name);
+    recorder.queue_messages = status.queue_messages;
+    recorder.queue_bytes = status.queue_bytes;
+    recorder.events_enqueued = status.events_enqueued;
+    recorder.events_processed = status.events_processed;
+    recorder.events_dropped = status.events_dropped;
+    recorder.segments_started = status.segments_started;
+    recorder.segments_completed = status.segments_completed;
+    recorder.discontinuities = status.discontinuities;
+}
+
+/// RAII ownership of one publisher entry in an [`RtmpRegistry`].
+pub struct PublisherRegistration {
+    registry: Arc<RtmpRegistry>,
+    stream_id: StreamId,
+    session_id: SessionId,
+    recorder_ids: Vec<RecorderId>,
+    last_observed_at_unix_ms: u64,
+    active: bool,
+}
+
+impl PublisherRegistration {
+    #[must_use]
+    pub const fn stream_id(&self) -> StreamId {
+        self.stream_id
+    }
+
+    #[must_use]
+    pub fn recorder_ids(&self) -> &[RecorderId] {
+        &self.recorder_ids
+    }
+
+    pub fn observe_at(&mut self, at_unix_ms: u64) {
+        self.last_observed_at_unix_ms = self.last_observed_at_unix_ms.max(at_unix_ms);
+    }
+
+    /// Explicitly releases the registration at the supplied catalog timestamp.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if this registration is no longer the catalog publisher.
+    pub fn release(&mut self, at_unix_ms: u64) -> Result<(), CatalogError> {
+        if !self.active {
+            return Ok(());
+        }
+        self.registry
+            .detach_publisher(self.stream_id, self.session_id, at_unix_ms)?;
+        self.active = false;
+        Ok(())
+    }
+}
+
+impl Drop for PublisherRegistration {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = self.registry.detach_publisher(
+                self.stream_id,
+                self.session_id,
+                self.last_observed_at_unix_ms,
+            );
+        }
+    }
+}
+
+/// RAII ownership of one subscriber entry in an [`RtmpRegistry`].
+pub struct SubscriberRegistration {
+    registry: Arc<RtmpRegistry>,
+    stream_id: StreamId,
+    session_id: SessionId,
+    last_observed_at_unix_ms: u64,
+    active: bool,
+}
+
+impl SubscriberRegistration {
+    #[must_use]
+    pub const fn stream_id(&self) -> StreamId {
+        self.stream_id
+    }
+
+    pub fn observe_at(&mut self, at_unix_ms: u64) {
+        self.last_observed_at_unix_ms = self.last_observed_at_unix_ms.max(at_unix_ms);
+    }
+
+    /// Explicitly releases the registration at the supplied catalog timestamp.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if this registration is no longer present in the catalog.
+    pub fn release(&mut self, at_unix_ms: u64) -> Result<(), CatalogError> {
+        if !self.active {
+            return Ok(());
+        }
+        self.registry
+            .detach_subscriber(self.stream_id, self.session_id, at_unix_ms)?;
+        self.active = false;
+        Ok(())
+    }
+}
+
+impl Drop for SubscriberRegistration {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = self.registry.detach_subscriber(
+                self.stream_id,
+                self.session_id,
+                self.last_observed_at_unix_ms,
+            );
+        }
     }
 }
 
@@ -690,18 +1511,32 @@ fn remove_stream(inner: &mut RegistryInner, stream_id: StreamId) {
     }
 }
 
-fn rebuild_snapshot(inner: &mut RegistryInner, capabilities: RtmpCapabilities, at_unix_ms: u64) {
-    inner.revision += 1;
+fn mark_mutation(inner: &mut RegistryInner, at_unix_ms: u64) {
+    inner.revision = inner.revision.saturating_add(1);
+    inner.as_of_unix_ms = inner.as_of_unix_ms.max(at_unix_ms);
+    inner.snapshot_dirty = true;
+}
+
+fn publish_snapshot_if_dirty(inner: &mut RegistryInner, capabilities: RtmpCapabilities) {
+    if !inner.snapshot_dirty {
+        return;
+    }
     let mut streams: Vec<_> = inner
         .streams
         .values()
         .map(MutableStream::snapshot)
         .collect();
     streams.sort_by(|left, right| left.key.cmp(&right.key).then(left.id.cmp(&right.id)));
+    inner.work_stats.snapshot_rebuilds = inner.work_stats.snapshot_rebuilds.saturating_add(1);
+    inner.work_stats.snapshot_streams_visited = inner
+        .work_stats
+        .snapshot_streams_visited
+        .saturating_add(streams.len() as u64);
     inner.current = Arc::new(RtmpCatalogSnapshot {
         revision: inner.revision,
-        as_of_unix_ms: at_unix_ms,
+        as_of_unix_ms: inner.as_of_unix_ms,
         capabilities,
         streams,
     });
+    inner.snapshot_dirty = false;
 }
