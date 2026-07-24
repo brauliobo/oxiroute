@@ -38,6 +38,26 @@ afterEach(() => {
 })
 
 describe('monitoring dashboard', () => {
+  it('visibly distinguishes listening, failed, and stopped listeners', async () => {
+    const fetch = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/v1/monitoring') return Promise.resolve(jsonResponse(monitoringSample()))
+      if (url === '/api/v1/topology') return Promise.resolve(jsonResponse(topology))
+      return Promise.resolve(jsonResponse(catalog))
+    })
+    vi.stubGlobal('fetch', fetch)
+
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(wrapper.get('.listener-list').text()).toContain('Listening')
+    expect(wrapper.get('.listener-failed').text()).toContain('Live edge')
+    expect(wrapper.get('.listener-failed .listener-state').text()).toBe('Failed')
+    expect(wrapper.get('.listener-stopped').text()).toContain('Forward H3')
+    expect(wrapper.get('.listener-stopped .listener-state').text()).toBe('Stopped')
+    wrapper.unmount()
+  })
+
   it('renders formatted monitoring data and preserves stream controls', async () => {
     const runtimeCatalog = structuredClone(catalog)
     const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {

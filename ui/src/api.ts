@@ -105,30 +105,34 @@ export interface MonitoringHost {
 }
 
 export interface MonitoringTraffic {
-  acceptedConnections: number
+  acceptedConnections: string
+  rejectedConnections: string
   activeConnections: number
-  bytesReceived: number
-  bytesSent: number
+  bytesReceived: string
+  bytesSent: string
 }
+
+export type ListenerRuntimeState = 'configured' | 'listening' | 'stopped' | 'failed'
 
 export interface MonitoringListener extends MonitoringTraffic {
   name: string
   protocol: ListenerProtocol
   bind: string
   maxConnections: number | null
+  state: ListenerRuntimeState
 }
 
 export interface MonitoringRtmp {
   activeStreams: number
   publishers: number
   subscribers: number
-  mediaPayloadBytesReceived: number
+  mediaPayloadBytesReceived: string
   recordingSupported: boolean
   manualRecording: boolean
-  recorderBytesWritten: number
-  recorderSegmentsStarted: number
-  recorderSegmentsCompleted: number
-  recorderDiscontinuities: number
+  recorderBytesWritten: string
+  recorderSegmentsStarted: string
+  recorderSegmentsCompleted: string
+  recorderDiscontinuities: string
   recorders: MonitoringRecorder[]
 }
 
@@ -159,14 +163,14 @@ export interface CertbotCertificateSnapshot {
 
 export interface CertbotWatcherSnapshot {
   health: 'healthy' | 'degraded' | 'stopped'
-  coalescedEvents: number
-  ignoredAccessEvents: number
-  backendErrors: number
-  watchRecoveries: number
-  watchRefreshes: number
-  rescans: number
-  periodicRescans: number
-  reconciliationFailures: number
+  coalescedEvents: string
+  ignoredAccessEvents: string
+  backendErrors: string
+  watchRecoveries: string
+  watchRefreshes: string
+  rescans: string
+  periodicRescans: string
+  reconciliationFailures: string
 }
 
 export type EndpointHealthState = 'unchecked' | 'unknown' | 'healthy' | 'unhealthy'
@@ -174,7 +178,7 @@ export type HealthFailure = 'timeout' | 'connect_failed' | 'unexpected_status' |
 
 export interface MonitoringPoolEndpoint {
   address: string
-  activeLeases: number
+  activeLeases: string
   state: EndpointHealthState
   lastCheckedAtUnixMs: number | null
   lastTransitionAtUnixMs: number | null
@@ -294,12 +298,10 @@ export interface TopologyEdge {
   configPath: string
 }
 
-export type TopologyRuntimeState =
-  | 'active'
-  | 'available'
-  | 'degraded'
-  | 'unavailable'
-  | EndpointHealthState
+export type TopologyRuntimeStatus = 'active' | 'starting' | 'degraded'
+export type TopologyListenerState = ListenerRuntimeState
+export type TopologyPoolState = 'available' | 'degraded' | 'unavailable'
+export type TopologyRuntimeState = TopologyListenerState | TopologyPoolState | EndpointHealthState
 
 export interface TopologyRuntimeOverlay {
   nodeId: string
@@ -309,9 +311,10 @@ export interface TopologyRuntimeOverlay {
 
 export interface TopologyRuntimeMetrics extends Record<string, unknown> {
   activeConnections?: number
-  acceptedConnections?: number
-  bytesReceived?: number
-  bytesSent?: number
+  acceptedConnections?: string
+  rejectedConnections?: string
+  bytesReceived?: string
+  bytesSent?: string
   availableEndpoints?: number
   totalEndpoints?: number
   unavailableSelections?: string
@@ -329,7 +332,7 @@ export interface TopologySnapshot {
   schemaVersion: 1
   state: {
     config: 'active'
-    runtime: 'active'
+    runtime: TopologyRuntimeStatus
     sampledAtUnixMs: number
   }
   nodes: TopologyNode[]
@@ -476,10 +479,10 @@ function parseMonitoring(value: unknown): MonitoringSnapshot {
     !Array.isArray(value.certbotCertificates) || !value.certbotCertificates.every(certbotCertificate) ||
     !(value.certbotWatcher === null || certbotWatcher(value.certbotWatcher)) || !isRecord(value.rtmp) ||
     !safeInteger(value.rtmp.activeStreams) || !safeInteger(value.rtmp.publishers) ||
-    !safeInteger(value.rtmp.subscribers) || !safeInteger(value.rtmp.mediaPayloadBytesReceived) ||
+    !safeInteger(value.rtmp.subscribers) || !decimalString(value.rtmp.mediaPayloadBytesReceived) ||
     typeof value.rtmp.recordingSupported !== 'boolean' || typeof value.rtmp.manualRecording !== 'boolean' ||
-    !safeInteger(value.rtmp.recorderBytesWritten) || !safeInteger(value.rtmp.recorderSegmentsStarted) ||
-    !safeInteger(value.rtmp.recorderSegmentsCompleted) || !safeInteger(value.rtmp.recorderDiscontinuities) ||
+    !decimalString(value.rtmp.recorderBytesWritten) || !decimalString(value.rtmp.recorderSegmentsStarted) ||
+    !decimalString(value.rtmp.recorderSegmentsCompleted) || !decimalString(value.rtmp.recorderDiscontinuities) ||
     !Array.isArray(value.rtmp.recorders) || !value.rtmp.recorders.every(monitoringRecorder)
   ) return invalidPayload('monitoring')
   return value as unknown as MonitoringSnapshot
@@ -516,7 +519,7 @@ function parseSave(value: unknown): ConfigSaveResponse {
 
 function parseTopology(value: unknown): TopologySnapshot {
   if (!isRecord(value) || value.schemaVersion !== 1 || !isRecord(value.state) ||
-    value.state.config !== 'active' || value.state.runtime !== 'active' ||
+    value.state.config !== 'active' || !['active', 'starting', 'degraded'].includes(String(value.state.runtime)) ||
     !safeInteger(value.state.sampledAtUnixMs) || !Array.isArray(value.nodes) ||
     !value.nodes.every(topologyNode) || !Array.isArray(value.edges) ||
     !value.edges.every(topologyEdge) || !Array.isArray(value.overlays) ||
@@ -586,15 +589,17 @@ function monitoringHost(value: unknown): boolean {
 }
 
 function monitoringTraffic(value: unknown): boolean {
-  return isRecord(value) && safeInteger(value.acceptedConnections) && safeInteger(value.activeConnections) &&
-    safeInteger(value.bytesReceived) && safeInteger(value.bytesSent)
+  return isRecord(value) && decimalString(value.acceptedConnections) &&
+    decimalString(value.rejectedConnections) && safeInteger(value.activeConnections) &&
+    decimalString(value.bytesReceived) && decimalString(value.bytesSent)
 }
 
 function monitoringListener(value: unknown): boolean {
   return monitoringTraffic(value) && isRecord(value) && typeof value.name === 'string' &&
     ['http', 'tcp', 'rtmp', 'forward_http1', 'forward_http2', 'forward_http3']
       .includes(String(value.protocol)) && typeof value.bind === 'string' &&
-    (value.maxConnections === null || safeInteger(value.maxConnections))
+    (value.maxConnections === null || safeInteger(value.maxConnections)) &&
+    ['configured', 'listening', 'stopped', 'failed'].includes(String(value.state))
 }
 
 function monitoringPool(value: unknown): boolean {
@@ -603,7 +608,7 @@ function monitoringPool(value: unknown): boolean {
     safeInteger(value.availableEndpoints) && safeInteger(value.totalEndpoints) &&
     decimalString(value.unavailableSelections) && Array.isArray(value.endpoints) &&
     value.endpoints.every((endpoint) => isRecord(endpoint) && typeof endpoint.address === 'string' &&
-      safeInteger(endpoint.activeLeases) && ['unchecked', 'unknown', 'healthy', 'unhealthy'].includes(String(endpoint.state)) &&
+      decimalString(endpoint.activeLeases) && ['unchecked', 'unknown', 'healthy', 'unhealthy'].includes(String(endpoint.state)) &&
       nullableSafeInteger(endpoint.lastCheckedAtUnixMs) && nullableSafeInteger(endpoint.lastTransitionAtUnixMs) &&
       decimalString(endpoint.successfulChecks) && decimalString(endpoint.failedChecks) &&
       decimalString(endpoint.consecutiveSuccesses) && decimalString(endpoint.consecutiveFailures) &&
@@ -620,7 +625,7 @@ function certbotCertificate(value: unknown): boolean {
 function certbotWatcher(value: unknown): boolean {
   return isRecord(value) && ['healthy', 'degraded', 'stopped'].includes(String(value.health)) &&
     ['coalescedEvents', 'ignoredAccessEvents', 'backendErrors', 'watchRecoveries', 'watchRefreshes',
-      'rescans', 'periodicRescans', 'reconciliationFailures'].every((key) => safeInteger(value[key]))
+      'rescans', 'periodicRescans', 'reconciliationFailures'].every((key) => decimalString(value[key]))
 }
 
 function monitoringRecorder(value: unknown): boolean {
@@ -649,9 +654,26 @@ function topologyEdge(value: unknown): boolean {
 }
 
 function topologyOverlay(value: unknown): boolean {
-  return isRecord(value) && typeof value.nodeId === 'string' && isRecord(value.metrics) &&
-    ['active', 'available', 'degraded', 'unavailable', 'unchecked', 'unknown', 'healthy', 'unhealthy']
+  return isRecord(value) && typeof value.nodeId === 'string' && topologyMetrics(value.metrics) &&
+    ['configured', 'listening', 'stopped', 'failed', 'available', 'degraded', 'unavailable',
+      'unchecked', 'unknown', 'healthy', 'unhealthy']
       .includes(String(value.state))
+}
+
+function topologyMetrics(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  const decimalKeys = [
+    'acceptedConnections', 'rejectedConnections', 'bytesReceived', 'bytesSent',
+    'unavailableSelections', 'activeLeases', 'successfulChecks', 'failedChecks',
+    'consecutiveSuccesses', 'consecutiveFailures',
+  ]
+  const numberKeys = ['activeConnections', 'availableEndpoints', 'totalEndpoints']
+  return decimalKeys.every((key) => value[key] === undefined || decimalString(value[key])) &&
+    numberKeys.every((key) => value[key] === undefined || safeInteger(value[key])) &&
+    ['lastCheckedAtUnixMs', 'lastTransitionAtUnixMs']
+      .every((key) => value[key] === undefined || nullableSafeInteger(value[key])) &&
+    (value.lastFailure === undefined || value.lastFailure === null ||
+      ['timeout', 'connect_failed', 'unexpected_status', 'protocol_error'].includes(String(value.lastFailure)))
 }
 
 function candidateTopology(value: unknown): value is CandidateTopologySnapshot {

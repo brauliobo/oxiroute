@@ -27,13 +27,15 @@ const serverBinary = join(targetDirectory, 'debug', 'oxiroute-server')
 
 let child: ChildProcessWithoutNullStreams | undefined
 let directory = ''
+let listenerPath = ''
 let origin = ''
 let stderr = ''
 
 beforeAll(async () => {
-  const build = spawnSync('cargo', ['build', '-p', 'oxiroute-server', '--bin', 'oxiroute-server'], {
+  const build = spawnSync('cargo', ['+1.87.0', 'build', '-p', 'oxiroute-server', '--bin', 'oxiroute-server'], {
     cwd: workspaceRoot,
     encoding: 'utf8',
+    env: { ...process.env, CARGO_INCREMENTAL: '0' },
   })
   if (build.status !== 0) {
     throw new Error(`server build failed:\n${build.stdout}\n${build.stderr}`)
@@ -43,7 +45,8 @@ beforeAll(async () => {
   directory = await mkdtemp(join(tmpdir(), 'oxiroute-ui-process-'))
   const configPath = join(directory, 'oxiroute.lua')
   const tokenPath = join(directory, 'management.token')
-  await writeFile(configPath, emptyManagementConfig(port), 'utf8')
+  listenerPath = join(directory, 'live.sock')
+  await writeFile(configPath, managementConfig(port, listenerPath), 'utf8')
   await writeFile(tokenPath, `${token}\n`, 'utf8')
   await chmod(tokenPath, 0o600)
 
@@ -94,7 +97,18 @@ describe('production API client against the built management process', () => {
       fetchConfig(token),
     ])
 
-    expect(monitoring.listeners).toEqual([])
+    expect(monitoring.listeners).toEqual([{
+      name: 'process-live',
+      protocol: 'rtmp',
+      bind: `unix:${listenerPath}`,
+      maxConnections: 8,
+      state: 'listening',
+      acceptedConnections: '0',
+      rejectedConnections: '0',
+      activeConnections: 0,
+      bytesReceived: '0',
+      bytesSent: '0',
+    }])
     expect(monitoring.upstreamPools).toEqual([])
     expect(monitoring.certbotCertificates).toEqual([])
     expect(monitoring.certbotWatcher).toBeNull()
@@ -102,19 +116,19 @@ describe('production API client against the built management process', () => {
       activeStreams: 0,
       publishers: 0,
       subscribers: 0,
-      mediaPayloadBytesReceived: 0,
+      mediaPayloadBytesReceived: '0',
       recordingSupported: false,
       manualRecording: false,
-      recorderBytesWritten: 0,
-      recorderSegmentsStarted: 0,
-      recorderSegmentsCompleted: 0,
-      recorderDiscontinuities: 0,
+      recorderBytesWritten: '0',
+      recorderSegmentsStarted: '0',
+      recorderSegmentsCompleted: '0',
+      recorderDiscontinuities: '0',
       recorders: [],
     })
     expect(catalog).toEqual({
       revision: '0',
       as_of_unix_ms: expect.any(Number),
-      capabilities: { live_ingest: false, manual_recording: false },
+      capabilities: { live_ingest: true, manual_recording: false },
       streams: [],
     })
     expect(topology).toEqual({
@@ -124,9 +138,19 @@ describe('production API client against the built management process', () => {
         runtime: 'active',
         sampledAtUnixMs: expect.any(Number),
       },
-      nodes: [],
+      nodes: [processTopologyNode(listenerPath)],
       edges: [],
-      overlays: [],
+      overlays: [{
+        nodeId: 'rtmp_listener:12:process-live',
+        state: 'listening',
+        metrics: {
+          activeConnections: 0,
+          acceptedConnections: '0',
+          rejectedConnections: '0',
+          bytesReceived: '0',
+          bytesSent: '0',
+        },
+      }],
     })
     expect(snapshot).toEqual({
       schemaVersion: 1,
@@ -137,12 +161,27 @@ describe('production API client against the built management process', () => {
         management: { bind: origin.slice('http://'.length), ui_dir: null },
         certificates: [],
         tls_profiles: [],
-        listeners: [],
+        listeners: [{
+          name: 'process-live',
+          bind: { type: 'unix', path: listenerPath },
+          protocol: 'rtmp',
+          service: 'live',
+          tls_profile: null,
+          max_connections: 8,
+        }],
         cache_stores: [],
         upstream_pools: [],
         http_services: [],
         forward_proxy_services: [],
-        rtmp_services: [],
+        rtmp_services: [{
+          name: 'live',
+          applications: [{
+            name: 'broadcast',
+            live: true,
+            idle_streams: false,
+            recorders: [],
+          }],
+        }],
         l4_services: [],
       },
       diagnostics: [],
@@ -158,7 +197,7 @@ describe('production API client against the built management process', () => {
         runtime: 'not_active',
         sampledAtUnixMs: expect.any(Number),
       },
-      nodes: [],
+      nodes: [processTopologyNode(listenerPath)],
       edges: [],
       overlays: [],
     })
@@ -225,7 +264,7 @@ async function waitForServer(url: string): Promise<void> {
   throw new Error(`server did not bind the management socket:\n${stderr}`)
 }
 
-function emptyManagementConfig(port: number): string {
+function managementConfig(port: number, listenerPath: string): string {
   return `return {
   version = 1,
   management = {
@@ -234,12 +273,54 @@ function emptyManagementConfig(port: number): string {
   },
   certificates = {},
   tls_profiles = {},
-  listeners = {},
+  listeners = {
+    {
+      name = "process-live",
+      bind = { type = "unix", path = "${listenerPath}" },
+      protocol = "rtmp",
+      service = "live",
+      max_connections = 8,
+    },
+  },
   cache_stores = {},
   upstream_pools = {},
   http_services = {},
   forward_proxy_services = {},
-  rtmp_services = {},
+  rtmp_services = {
+    {
+      name = "live",
+      applications = {
+        { name = "broadcast", live = true, idle_streams = false, recorders = {} },
+      },
+    },
+  },
   l4_services = {},
 }\n`
+}
+
+function processTopologyNode(path: string) {
+  return {
+    id: 'rtmp_listener:12:process-live',
+    kind: 'rtmp_listener',
+    name: 'process-live',
+    configPath: '/listeners/0',
+    attributes: {
+      bind: { type: 'unix', path },
+      protocol: 'rtmp',
+      service: 'live',
+      tlsProfile: null,
+      maxConnections: 8,
+      applications: [{
+        name: 'broadcast',
+        live: true,
+        idleStreams: false,
+        recording: {
+          supported: false,
+          recorderCount: 0,
+          manualRecorderCount: 0,
+          continuousRecorderCount: 0,
+        },
+      }],
+    },
+  }
 }

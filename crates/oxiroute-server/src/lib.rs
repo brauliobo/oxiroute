@@ -11,6 +11,7 @@ mod tcp_relay;
 pub mod tls;
 mod topology;
 mod upstream_peer;
+mod wire;
 
 pub use health::{HealthBuildError, HealthSupervisor};
 pub use http_proxy::{HttpListenerApp, HttpRequestContext, HttpReverseProxy, MonitoredHttpApp};
@@ -45,4 +46,4 @@ pub use topology::{
     TopologySnapshot,
 };
 
-pub const MAX_HTTP_ATTEMPTS: usize = 3;
+pub const MAX_HTTP_ATTEMPTS: usize = routing::MAX_RESOLVED_ENDPOINT_ADDRESSES * 3;

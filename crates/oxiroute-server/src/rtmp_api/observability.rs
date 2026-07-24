@@ -62,12 +62,17 @@ struct RtmpMonitoring {
     active_streams: u64,
     publishers: u64,
     subscribers: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     media_payload_bytes_received: u64,
     recording_supported: bool,
     manual_recording: bool,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     recorder_bytes_written: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     recorder_segments_started: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     recorder_segments_completed: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     recorder_discontinuities: u64,
     recorders: Vec<Value>,
 }

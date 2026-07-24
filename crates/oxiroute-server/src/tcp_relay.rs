@@ -215,8 +215,8 @@ async fn connect_upstream(endpoint: &RuntimeEndpoint) -> io::Result<Stream> {
             )))
         }
         RuntimeEndpoint::Dns { .. } => {
-            let addresses = endpoint.resolve().await?;
-            let stream = TcpStream::connect(addresses.as_slice()).await?;
+            let addresses = endpoint.resolve_addresses().await?;
+            let stream = connect_addresses(&addresses).await?;
             Ok(Box::new(pingora::protocols::l4::stream::Stream::from(
                 stream,
             )))
@@ -234,6 +234,17 @@ async fn connect_upstream(endpoint: &RuntimeEndpoint) -> io::Result<Stream> {
             format!("Unix endpoint `{}` is unsupported", path.display()),
         )),
     }
+}
+
+async fn connect_addresses(addresses: &[std::net::SocketAddr]) -> io::Result<TcpStream> {
+    let mut last_error = None;
+    for address in addresses {
+        match TcpStream::connect(address).await {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.expect("resolved endpoint address sets are nonempty"))
 }
 
 /// Relays two established asynchronous streams until both directions reach EOF.
@@ -353,6 +364,32 @@ const fn bytes_to_u64(bytes: usize) -> u64 {
 
 fn failure(kind: RelayFailureKind, stats: RelayStats) -> RelayFailure {
     RelayFailure { kind, stats }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn tcp_connection_falls_back_to_the_second_resolved_address() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.2:0")
+            .await
+            .expect("second address listener");
+        let second = listener.local_addr().expect("second address");
+        let first = std::net::SocketAddr::from(([127, 0, 0, 1], second.port()));
+        drop(
+            tokio::net::TcpListener::bind(first)
+                .await
+                .expect("first address must be unused"),
+        );
+
+        let connection = connect_addresses(&[first, second])
+            .await
+            .expect("second address connection");
+        let (_accepted, _) = listener.accept().await.expect("second address accept");
+
+        assert_eq!(connection.peer_addr().expect("connected peer"), second);
+    }
 }
 
 async fn wait_for_shutdown(shutdown: &mut ShutdownWatch) {

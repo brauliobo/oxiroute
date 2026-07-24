@@ -746,13 +746,21 @@ pub enum CertbotWatcherHealth {
 #[serde(rename_all = "camelCase")]
 pub struct CertbotWatcherSnapshot {
     pub health: CertbotWatcherHealth,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub coalesced_events: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub ignored_access_events: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub backend_errors: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub watch_recoveries: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub watch_refreshes: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub rescans: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub periodic_rescans: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub reconciliation_failures: u64,
 }
 
@@ -779,10 +787,14 @@ pub struct HostSnapshot {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrafficSnapshot {
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub accepted_connections: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub rejected_connections: u64,
     pub active_connections: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub bytes_received: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub bytes_sent: u64,
 }
 
@@ -794,10 +806,14 @@ pub struct ListenerSnapshot {
     pub bind: String,
     pub max_connections: Option<u64>,
     pub state: ListenerRuntimeState,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub accepted_connections: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub rejected_connections: u64,
     pub active_connections: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub bytes_received: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub bytes_sent: u64,
 }
 

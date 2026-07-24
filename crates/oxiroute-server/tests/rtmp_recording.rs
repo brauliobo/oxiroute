@@ -76,6 +76,14 @@ fn continuous_recording_finalizes_on_disconnect_and_is_fully_observable() {
     let monitoring_json: Value = serde_json::from_slice(&monitoring.body).expect("monitoring JSON");
     assert_eq!(monitoring_json["rtmp"]["recordingSupported"], true);
     assert_eq!(monitoring_json["rtmp"]["manualRecording"], false);
+    assert!(
+        monitoring_json["rtmp"]["recorderBytesWritten"]
+            .as_str()
+            .is_some_and(|bytes| bytes != "0")
+    );
+    assert_eq!(monitoring_json["rtmp"]["recorderSegmentsStarted"], "1");
+    assert_eq!(monitoring_json["rtmp"]["recorderSegmentsCompleted"], "0");
+    assert_eq!(monitoring_json["rtmp"]["recorderDiscontinuities"], "0");
     assert_eq!(
         monitoring_json["rtmp"]["recorders"][0]["phase"],
         "recording"

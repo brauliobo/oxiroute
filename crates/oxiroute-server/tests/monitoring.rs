@@ -1,7 +1,7 @@
 use std::thread;
 
 use oxiroute_config::ListenerBind;
-use oxiroute_server::{MetricsError, RuntimeMetrics};
+use oxiroute_server::{CertbotWatcherHealth, CertbotWatcherSnapshot, MetricsError, RuntimeMetrics};
 
 #[test]
 fn connection_guard_accounts_for_traffic_and_decrements_active_count() {
@@ -146,7 +146,7 @@ fn counters_are_shared_safely_across_threads() {
 #[test]
 fn snapshot_serializes_to_the_monitoring_contract() {
     let metrics = RuntimeMetrics::new();
-    metrics
+    let listener = metrics
         .register_configured_listener(
             "http",
             "http",
@@ -156,6 +156,9 @@ fn snapshot_serializes_to_the_monitoring_contract() {
             Some(100),
         )
         .expect("listener registration");
+    listener
+        .record_bytes_received(u64::MAX)
+        .expect("maximum exact byte count");
 
     let snapshot = metrics.snapshot().expect("Linux process snapshot");
     let json = serde_json::to_value(snapshot).expect("serialized snapshot");
@@ -173,19 +176,52 @@ fn snapshot_serializes_to_the_monitoring_contract() {
     assert!(json["host"]["loadAverage15m"].as_f64().is_some());
     assert!(json["host"]["totalMemoryBytes"].as_u64().is_some());
     assert!(json["host"]["availableMemoryBytes"].as_u64().is_some());
-    assert_eq!(json["traffic"]["acceptedConnections"], 0);
-    assert_eq!(json["traffic"]["rejectedConnections"], 0);
+    assert_eq!(json["traffic"]["acceptedConnections"], "0");
+    assert_eq!(json["traffic"]["rejectedConnections"], "0");
     assert_eq!(json["traffic"]["activeConnections"], 0);
-    assert_eq!(json["traffic"]["bytesReceived"], 0);
-    assert_eq!(json["traffic"]["bytesSent"], 0);
+    assert_eq!(json["traffic"]["bytesReceived"], u64::MAX.to_string());
+    assert_eq!(json["traffic"]["bytesSent"], "0");
     assert_eq!(json["listeners"][0]["name"], "http");
     assert_eq!(json["listeners"][0]["protocol"], "http");
     assert_eq!(json["listeners"][0]["bind"], "socket:[::]:8080");
     assert_eq!(json["listeners"][0]["maxConnections"], 100);
     assert_eq!(json["listeners"][0]["state"], "configured");
-    assert_eq!(json["listeners"][0]["rejectedConnections"], 0);
+    assert_eq!(json["listeners"][0]["acceptedConnections"], "0");
+    assert_eq!(json["listeners"][0]["rejectedConnections"], "0");
+    assert_eq!(json["listeners"][0]["bytesReceived"], u64::MAX.to_string());
+    assert_eq!(json["listeners"][0]["bytesSent"], "0");
     assert_eq!(json["certbotCertificates"], serde_json::json!([]));
     assert!(json["certbotWatcher"].is_null());
+}
+
+#[test]
+fn certbot_watcher_counters_serialize_as_exact_decimal_strings() {
+    let snapshot = CertbotWatcherSnapshot {
+        health: CertbotWatcherHealth::Degraded,
+        coalesced_events: u64::MAX,
+        ignored_access_events: u64::MAX,
+        backend_errors: u64::MAX,
+        watch_recoveries: u64::MAX,
+        watch_refreshes: u64::MAX,
+        rescans: u64::MAX,
+        periodic_rescans: u64::MAX,
+        reconciliation_failures: u64::MAX,
+    };
+
+    let json = serde_json::to_value(snapshot).expect("Certbot watcher snapshot JSON");
+    let exact = u64::MAX.to_string();
+    for key in [
+        "coalescedEvents",
+        "ignoredAccessEvents",
+        "backendErrors",
+        "watchRecoveries",
+        "watchRefreshes",
+        "rescans",
+        "periodicRescans",
+        "reconciliationFailures",
+    ] {
+        assert_eq!(json[key], exact);
+    }
 }
 
 #[test]

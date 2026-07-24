@@ -335,6 +335,8 @@ pub enum RuntimeEndpoint {
     Unix { path: PathBuf },
 }
 
+pub(crate) const MAX_RESOLVED_ENDPOINT_ADDRESSES: usize = 16;
+
 impl RuntimeEndpoint {
     fn preflight(&self) -> Result<(), PoolError> {
         match self {
@@ -356,23 +358,12 @@ impl RuntimeEndpoint {
         }
     }
 
-    pub(crate) async fn resolve(&self) -> io::Result<Vec<SocketAddr>> {
+    pub(crate) async fn resolve_addresses(&self) -> io::Result<Vec<SocketAddr>> {
         match self {
             Self::Socket { address } => Ok(vec![*address]),
             Self::Dns { host, port } => {
-                let mut addresses = tokio::net::lookup_host((host.as_str(), *port))
-                    .await?
-                    .collect::<Vec<_>>();
-                addresses.sort_unstable();
-                addresses.dedup();
-                if addresses.is_empty() {
-                    Err(io::Error::new(
-                        io::ErrorKind::NotFound,
-                        format!("DNS endpoint `{host}:{port}` returned no addresses"),
-                    ))
-                } else {
-                    Ok(addresses)
-                }
+                let addresses = tokio::net::lookup_host((host.as_str(), *port)).await?;
+                self.order_addresses(addresses)
             }
             Self::Unix { path } => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -381,6 +372,37 @@ impl RuntimeEndpoint {
                     path.display()
                 ),
             )),
+        }
+    }
+
+    fn order_addresses(
+        &self,
+        addresses: impl IntoIterator<Item = SocketAddr>,
+    ) -> io::Result<Vec<SocketAddr>> {
+        let mut normalized = Vec::with_capacity(MAX_RESOLVED_ENDPOINT_ADDRESSES);
+        for address in addresses {
+            if normalized.contains(&address) {
+                continue;
+            }
+            if normalized.len() == MAX_RESOLVED_ENDPOINT_ADDRESSES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "DNS endpoint `{self}` returned more than {MAX_RESOLVED_ENDPOINT_ADDRESSES} addresses"
+                    ),
+                ));
+            }
+            normalized.push(address);
+        }
+        let mut addresses = normalized;
+        addresses.sort_unstable();
+        if addresses.is_empty() {
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("DNS endpoint `{self}` returned no addresses"),
+            ))
+        } else {
+            Ok(addresses)
         }
     }
 }
@@ -610,19 +632,19 @@ const fn nonzero(value: u64) -> Option<u64> {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EndpointHealthSnapshot {
-    #[serde(serialize_with = "serialize_u64_string")]
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub active_leases: u64,
     pub address: RuntimeEndpoint,
     pub state: EndpointHealthState,
     pub last_checked_at_unix_ms: Option<u64>,
     pub last_transition_at_unix_ms: Option<u64>,
-    #[serde(serialize_with = "serialize_u64_string")]
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub successful_checks: u64,
-    #[serde(serialize_with = "serialize_u64_string")]
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub failed_checks: u64,
-    #[serde(serialize_with = "serialize_u64_string")]
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub consecutive_successes: u64,
-    #[serde(serialize_with = "serialize_u64_string")]
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub consecutive_failures: u64,
     pub last_failure: Option<HealthFailure>,
 }
@@ -634,17 +656,9 @@ pub struct PoolHealthSnapshot {
     pub algorithm: &'static str,
     pub available_endpoints: usize,
     pub total_endpoints: usize,
-    #[serde(serialize_with = "serialize_u64_string")]
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub unavailable_selections: u64,
     pub endpoints: Vec<EndpointHealthSnapshot>,
-}
-
-#[allow(clippy::trivially_copy_pass_by_ref)] // serde's `serialize_with` callback receives `&T`.
-fn serialize_u64_string<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    serializer.serialize_str(&value.to_string())
 }
 
 /// A health-aware selector over a fixed, nonempty endpoint list.
@@ -957,6 +971,91 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn dns_addresses_are_ordered_deterministically_for_every_consumer() {
+        let endpoint = RuntimeEndpoint::Dns {
+            host: "origin.example.test".into(),
+            port: 443,
+        };
+        let first = SocketAddr::from(([192, 0, 2, 1], 443));
+        let second = SocketAddr::from(([192, 0, 2, 2], 443));
+
+        let traffic_addresses = endpoint
+            .order_addresses([second, first, second])
+            .expect("traffic addresses");
+        let health_addresses = endpoint
+            .order_addresses([first, second])
+            .expect("health addresses");
+
+        assert_eq!(traffic_addresses, vec![first, second]);
+        assert_eq!(health_addresses, traffic_addresses);
+    }
+
+    #[test]
+    fn dns_resolution_rejects_an_empty_address_set() {
+        let endpoint = RuntimeEndpoint::Dns {
+            host: "origin.example.test".into(),
+            port: 443,
+        };
+
+        let error = endpoint
+            .order_addresses([])
+            .expect_err("empty DNS resolution must fail");
+
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(error.to_string().contains("origin.example.test:443"));
+    }
+
+    #[test]
+    fn dns_resolution_accepts_the_normalized_address_limit() {
+        let endpoint = RuntimeEndpoint::Dns {
+            host: "origin.example.test".into(),
+            port: 443,
+        };
+        let expected = resolved_addresses(MAX_RESOLVED_ENDPOINT_ADDRESSES);
+        let input = expected
+            .iter()
+            .rev()
+            .copied()
+            .chain(expected.iter().copied());
+
+        let addresses = endpoint
+            .order_addresses(input)
+            .expect("address limit is accepted");
+
+        assert_eq!(addresses, expected);
+    }
+
+    #[test]
+    fn dns_resolution_rejects_normalized_address_overflow() {
+        let endpoint = RuntimeEndpoint::Dns {
+            host: "origin.example.test".into(),
+            port: 443,
+        };
+
+        let error = endpoint
+            .order_addresses(resolved_addresses(MAX_RESOLVED_ENDPOINT_ADDRESSES + 1))
+            .expect_err("address overflow must fail");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            error
+                .to_string()
+                .contains("returned more than 16 addresses")
+        );
+    }
+
+    fn resolved_addresses(count: usize) -> Vec<SocketAddr> {
+        (1..=count)
+            .map(|index| {
+                SocketAddr::from((
+                    [192, 0, 2, u8::try_from(index).expect("test address octet")],
+                    443,
+                ))
+            })
+            .collect()
+    }
 
     #[test]
     fn checked_endpoints_transition_through_thresholds() {

@@ -22,13 +22,15 @@ use pingora::{
 };
 
 use crate::{
-    EndpointLease, HttpServicePlan, ListenerMetrics, RuntimeEndpoint, TlsProfilePlan,
+    HttpServicePlan, ListenerMetrics, RuntimeEndpoint, TlsProfilePlan,
     http_action::{
         FixedResponsePlan, HttpActionPlan, HttpRoutePlan, ProxyPolicyPlan,
         RequestHeaderMutationPlan, RequestHeaderValuePlan, ResponseHeaderMutationPlan,
         StaticServeError,
     },
-    upstream_peer::{UpstreamPlan, enforce_http_version, validate_tls_connection},
+    upstream_peer::{
+        SelectedEndpoint, UpstreamPlan, enforce_http_version, validate_tls_connection,
+    },
 };
 
 pub struct HttpReverseProxy {
@@ -137,9 +139,9 @@ pub struct HttpRequestContext {
     observed_sent: u64,
     authority: Option<Authority>,
     attempted_upstreams: Vec<RuntimeEndpoint>,
-    lease: Option<EndpointLease>,
     pool: Option<Arc<UpstreamPlan>>,
     route: Option<Arc<HttpRoutePlan>>,
+    selected: Option<SelectedEndpoint>,
     selected_upstream_host: Option<HeaderValue>,
     retryable: bool,
 }
@@ -161,7 +163,7 @@ impl HttpRequestContext {
     }
 
     fn release_lease(&mut self) {
-        self.lease.take();
+        self.selected.take();
     }
 }
 
@@ -178,9 +180,9 @@ impl ProxyHttp for HttpReverseProxy {
             observed_sent: 0,
             authority: None,
             attempted_upstreams: Vec::new(),
-            lease: None,
             pool: None,
             route: None,
+            selected: None,
             selected_upstream_host: None,
             retryable: false,
         }
@@ -251,17 +253,22 @@ impl ProxyHttp for HttpReverseProxy {
         let Some(pool) = &ctx.pool else {
             return Err(Error::new_in(ErrorType::InternalError));
         };
-        let selected = pool.select_endpoint(&ctx.attempted_upstreams)?;
-        ctx.attempted_upstreams.push(selected.endpoint().clone());
-        ctx.selected_upstream_host = selected_upstream_host(
-            selected.endpoint(),
-            proxy_policy(ctx).upstream_host.clone(),
-            ctx.authority.as_ref(),
-        )?;
-        let (peer, lease) = selected
+        if ctx.selected.is_none() {
+            let selected = pool.select_endpoint(&ctx.attempted_upstreams)?;
+            ctx.selected_upstream_host = selected_upstream_host(
+                selected.endpoint(),
+                proxy_policy(ctx).upstream_host.clone(),
+                ctx.authority.as_ref(),
+            )?;
+            ctx.attempted_upstreams.push(selected.endpoint().clone());
+            ctx.selected = Some(selected);
+        }
+        let peer = ctx
+            .selected
+            .as_mut()
+            .expect("selected endpoint initialized")
             .prepare_peer(pool, self.service.upstream_io_timeout())
             .await?;
-        ctx.lease = Some(lease);
         Ok(Box::new(peer))
     }
 
@@ -272,7 +279,13 @@ impl ProxyHttp for HttpReverseProxy {
         ctx: &mut Self::CTX,
         mut error: Box<Error>,
     ) -> Box<Error> {
-        ctx.release_lease();
+        let has_address_fallback = ctx
+            .selected
+            .as_ref()
+            .is_some_and(SelectedEndpoint::has_address_fallback);
+        if !has_address_fallback {
+            ctx.release_lease();
+        }
         let policy = proxy_policy(ctx);
         let has_budget = ctx.attempted_upstreams.len() <= usize::from(policy.max_retries);
         let has_alternative = ctx
@@ -280,12 +293,13 @@ impl ProxyHttp for HttpReverseProxy {
             .as_ref()
             .is_some_and(|pool| pool.has_unattempted(&ctx.attempted_upstreams));
         let trigger = connect_retry_trigger(&error);
-        error.set_retry(
+        error.set_retry(should_retry_connection(
+            has_address_fallback,
             ctx.retryable
                 && trigger.is_some_and(|trigger| policy.retries_on(trigger))
                 && has_budget
                 && has_alternative,
-        );
+        ));
         error
     }
 
@@ -772,6 +786,10 @@ fn connect_retry_trigger(error: &Error) -> Option<HttpRetryTrigger> {
     }
 }
 
+const fn should_retry_connection(has_address_fallback: bool, route_retry_allowed: bool) -> bool {
+    has_address_fallback || route_retry_allowed
+}
+
 fn is_refused_stream(error: &Error) -> bool {
     error
         .root_cause()
@@ -839,6 +857,7 @@ fn observe_counter(listener: &ListenerMetrics, current: usize, observed: &mut u6
 mod tests {
     use std::{
         collections::HashMap,
+        net::SocketAddr,
         sync::{
             Arc,
             atomic::{AtomicBool, Ordering},
@@ -846,11 +865,113 @@ mod tests {
         time::Duration,
     };
 
-    use pingora::{apps::ServerApp, protocols::Stream, proxy::Session, server::ShutdownWatch};
+    use oxiroute_config::{HttpProxyPolicy, UpstreamAlgorithm};
+    use pingora::{
+        apps::ServerApp, protocols::Stream, proxy::Session, server::ShutdownWatch,
+        upstreams::peer::Peer,
+    };
     use tokio::net::{TcpListener, TcpStream};
 
     use super::*;
-    use crate::{RouteTable, RuntimeMetrics};
+    use crate::{RoundRobinPool, RouteTable, RuntimeMetrics};
+
+    #[tokio::test]
+    async fn http_falls_back_to_the_second_address_without_route_retry_budget() {
+        let listener = TcpListener::bind("127.0.0.2:0")
+            .await
+            .expect("second address listener");
+        let second = listener.local_addr().expect("second address");
+        let first = SocketAddr::from(([127, 0, 0, 1], second.port()));
+        drop(
+            TcpListener::bind(first)
+                .await
+                .expect("first address must be unused"),
+        );
+        let endpoint = RuntimeEndpoint::Dns {
+            host: "origin.example.test".into(),
+            port: second.port(),
+        };
+        let selector = Arc::new(
+            RoundRobinPool::new_named(
+                "fallback".into(),
+                [endpoint.clone()],
+                UpstreamAlgorithm::RoundRobin,
+                false,
+            )
+            .expect("fallback selector"),
+        );
+        let plan = Arc::new(UpstreamPlan::new(Arc::clone(&selector), None));
+        let policy = ProxyPolicyPlan::compile(&HttpProxyPolicy::default());
+        assert_eq!(policy.max_retries, 0);
+        let route = Arc::new(HttpRoutePlan {
+            access: None,
+            action: HttpActionPlan::Proxy(crate::http_action::ProxyActionPlan {
+                pool: Arc::clone(&plan),
+                policy,
+            }),
+        });
+        let runtime = RuntimeMetrics::new();
+        let metrics = runtime
+            .register_listener("http", "http", "127.0.0.1:8080", 100)
+            .expect("listener metrics");
+        let service = Arc::new(HttpServicePlan::new(
+            Some(1024),
+            HashMap::new(),
+            Duration::from_secs(1),
+            RouteTable::default(),
+        ));
+        let proxy = HttpReverseProxy::new(service, metrics);
+        let downstream_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("downstream listener");
+        let client = TcpStream::connect(
+            downstream_listener
+                .local_addr()
+                .expect("downstream address"),
+        );
+        let accept = downstream_listener.accept();
+        let (client, downstream) = tokio::join!(client, accept);
+        let _client = client.expect("downstream client");
+        let (downstream, _) = downstream.expect("downstream connection");
+        let mut session = Session::new_h1(Box::new(pingora::protocols::l4::stream::Stream::from(
+            downstream,
+        )));
+        let mut context = proxy.new_ctx();
+        context.attempted_upstreams.push(endpoint);
+        context.pool = Some(Arc::clone(&plan));
+        context.route = Some(route);
+        context.selected = Some(SelectedEndpoint::with_addresses(
+            selector.select().expect("fallback lease"),
+            vec![first, second],
+        ));
+
+        let first_peer = proxy
+            .upstream_peer(&mut session, &mut context)
+            .await
+            .expect("first peer");
+        assert_eq!(first_peer.address().as_inet(), Some(&first));
+        assert!(TcpStream::connect(first).await.is_err());
+        let retry = proxy.fail_to_connect(
+            &mut session,
+            &first_peer,
+            &mut context,
+            Error::new_up(ErrorType::ConnectRefused),
+        );
+        assert!(retry.retry());
+        assert_eq!(context.attempted_upstreams.len(), 1);
+
+        let second_peer = proxy
+            .upstream_peer(&mut session, &mut context)
+            .await
+            .expect("second peer");
+        assert_eq!(second_peer.address().as_inet(), Some(&second));
+        let connection = TcpStream::connect(second)
+            .await
+            .expect("second address connection");
+        let (_accepted, _) = listener.accept().await.expect("second address accept");
+        drop(connection);
+        assert_eq!(context.attempted_upstreams.len(), 1);
+    }
 
     struct CleanupApp {
         cleaned: Arc<AtomicBool>,

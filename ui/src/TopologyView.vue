@@ -5,9 +5,13 @@ section.topology-section(aria-labelledby="topology-heading" @keydown.esc="closeI
       p.eyebrow Active configuration
       h2#topology-heading Network topology
       p.topology-deck Listener-to-origin dispatch from the validated runtime generation.
-    .topology-state(role="status")
-      span.state-light(aria-hidden="true")
-      span Active / schema {{ topology.schemaVersion }}
+    .topology-state(
+      role="status"
+      :class="`state-${topology.state.runtime}`"
+      :aria-label="`Runtime status: ${topologyRuntimeStatusLabels[topology.state.runtime]}; topology schema ${topology.schemaVersion}`"
+    )
+      span.state-light(:class="`state-light-${topology.state.runtime}`" aria-hidden="true")
+      span {{ topologyRuntimeStatusLabels[topology.state.runtime] }} / schema {{ topology.schemaVersion }}
 
   .topology-workspace
     .schematic-viewport(aria-label="Active network topology")
@@ -127,6 +131,7 @@ section.topology-section(aria-labelledby="topology-heading" @keydown.esc="closeI
 import { computed, nextTick, ref } from 'vue'
 
 import { formatCount } from './formatters'
+import { listenerStateLabels, topologyRuntimeStatusLabels } from './runtimeStates'
 import type {
   TopologyEdgeKind,
   TopologyEdge,
@@ -170,7 +175,7 @@ const kindLabels: Record<TopologyNodeKind, string> = {
   endpoint: 'Endpoint',
 }
 const stateLabels: Record<TopologyRuntimeState, string> = {
-  active: 'Active',
+  ...listenerStateLabels,
   available: 'Available',
   degraded: 'Degraded',
   unavailable: 'Unavailable',
@@ -450,8 +455,21 @@ h2 {
   width: 8px;
   height: 8px;
   border-radius: 50%;
+}
+
+.state-light-active {
   background: #b6ff51;
   box-shadow: 0 0 14px rgb(182 255 81 / 68%);
+}
+
+.state-light-starting {
+  background: #ffcf70;
+  box-shadow: 0 0 14px rgb(255 207 112 / 62%);
+}
+
+.state-light-degraded {
+  background: #ff8b78;
+  box-shadow: 0 0 14px rgb(255 139 120 / 62%);
 }
 
 .topology-workspace {
