@@ -45,7 +45,7 @@
       "id": "IMP-02",
       "status": "partial",
       "gates": { "canonical": false, "runtime": false, "failure": true, "tests": true, "native_lowering": false },
-      "evidence": ["crates/oxiroute-import/src/nginx/semantic.rs", "crates/oxiroute-import/tests/nginx_semantic.rs"]
+      "evidence": ["crates/oxiroute-import/src/nginx/semantic.rs", "crates/oxiroute-import/tests/nginx_semantic.rs", "crates/oxiroute-import/tests/nginx_lower.rs#fully_explicit_proxy_fixture_finalizes_with_canonical_routes"]
     },
     {
       "id": "IMP-03",
@@ -152,33 +152,33 @@
     },
     {
       "id": "HN-14",
-      "status": "missing",
-      "gates": { "canonical": false, "runtime": false, "failure": false, "tests": false, "native_lowering": false },
-      "evidence": ["docs/HOST_CONFIG_COVERAGE.md#HN-14"]
+      "status": "partial",
+      "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": false },
+      "evidence": ["crates/oxiroute-config/tests/http_routes.rs#renders_every_proxy_policy_variant_and_field", "crates/oxiroute-import/tests/nginx_lower.rs#explicit_proxy_headers_cookie_rewrite_and_safe_retry_subset_finalize", "crates/oxiroute-server/tests/http_proxy_routing.rs#applies_host_header_cookie_and_request_response_header_policies"]
     },
     {
       "id": "HN-15",
-      "status": "missing",
-      "gates": { "canonical": false, "runtime": false, "failure": false, "tests": false, "native_lowering": false },
-      "evidence": ["docs/HOST_CONFIG_COVERAGE.md#HN-15"]
+      "status": "partial",
+      "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": false },
+      "evidence": ["crates/oxiroute-config/tests/http_routes.rs#applies_fixed_redirect_and_static_action_defaults", "crates/oxiroute-import/tests/nginx_lower.rs#exact_location_fixed_and_redirect_actions_finalize_without_placeholders", "crates/oxiroute-server/tests/http_proxy_routing.rs#serves_fixed_and_redirect_actions_with_exact_get_and_head_semantics"]
     },
     {
       "id": "HN-16",
-      "status": "missing",
-      "gates": { "canonical": false, "runtime": false, "failure": false, "tests": false, "native_lowering": false },
-      "evidence": ["docs/HOST_CONFIG_COVERAGE.md#HN-16"]
+      "status": "partial",
+      "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": false },
+      "evidence": ["crates/oxiroute-config/tests/http_routes.rs#validates_static_file_roots_indexes_and_spa_fallbacks_lexically", "crates/oxiroute-import/tests/nginx_lower.rs#blocks_static_index_behavior_that_would_skip_nginx_location_reselection", "crates/oxiroute-server/tests/http_proxy_routing.rs#static_files_pin_the_root_and_reject_symlinks_while_supporting_indexes_and_spa"]
     },
     {
       "id": "HN-17",
-      "status": "missing",
-      "gates": { "canonical": false, "runtime": false, "failure": false, "tests": false, "native_lowering": false },
-      "evidence": ["docs/HOST_CONFIG_COVERAGE.md#HN-17"]
+      "status": "partial",
+      "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": false },
+      "evidence": ["crates/oxiroute-config/tests/http_routes.rs#validates_secret_backed_bearer_access_without_inline_tokens", "crates/oxiroute-server/tests/http_proxy_routing.rs#bearer_access_uses_the_configured_header_without_exposing_the_token", "coverage/nginx-directives.json"]
     },
     {
       "id": "HN-18",
-      "status": "missing",
-      "gates": { "canonical": false, "runtime": false, "failure": false, "tests": false, "native_lowering": false },
-      "evidence": ["docs/HOST_CONFIG_COVERAGE.md#HN-18"]
+      "status": "partial",
+      "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": false },
+      "evidence": ["crates/oxiroute-config/tests/http_routes.rs#renders_every_proxy_policy_variant_and_field", "crates/oxiroute-import/tests/nginx_lower.rs#explicit_proxy_headers_cookie_rewrite_and_safe_retry_subset_finalize", "crates/oxiroute-server/tests/http_proxy_routing.rs#applies_host_header_cookie_and_request_response_header_policies"]
     },
     {
       "id": "HN-19",
@@ -286,9 +286,9 @@
 
     {
       "id": "PN-01",
-      "status": "missing",
-      "gates": { "canonical": false, "runtime": false, "failure": false, "tests": false, "native_lowering": false },
-      "evidence": ["docs/HOST_CONFIG_COVERAGE.md#PN-01"]
+      "status": "partial",
+      "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": false },
+      "evidence": ["crates/oxiroute-config/tests/http_routes.rs#validates_static_file_roots_indexes_and_spa_fallbacks_lexically", "crates/oxiroute-import/tests/nginx_lower.rs#blocks_static_index_behavior_that_would_skip_nginx_location_reselection", "crates/oxiroute-server/tests/http_proxy_routing.rs#static_files_pin_the_root_and_reject_symlinks_while_supporting_indexes_and_spa"]
     },
     {
       "id": "PN-02",
@@ -348,7 +348,7 @@
       "id": "SQ-01",
       "status": "partial",
       "gates": { "canonical": false, "runtime": false, "failure": true, "tests": true, "native_lowering": false },
-      "evidence": ["coverage/host-inventory.json#hostrouter.squid.present", "crates/oxiroute-import/tests/squid.rs#hostrouter_sanitized_shape_classifies_every_reachable_directive"]
+      "evidence": ["coverage/host-inventory.json#hostrouter.squid.present", "crates/oxiroute-import/src/squid/loader.rs", "crates/oxiroute-import/tests/squid.rs#hostrouter_sanitized_shape_classifies_every_reachable_directive"]
     },
     {
       "id": "HV-01",

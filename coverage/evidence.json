@@ -72,8 +72,12 @@
         "crates/oxiroute-import/tests/nginx_semantic.rs#every_expanded_occurrence_has_one_ordered_terminal_decision",
         "crates/oxiroute-import/tests/nginx_lower.rs#blocks_unrepresented_proxy_defaults_and_listener_admission",
         "crates/oxiroute-import/tests/nginx_lower.rs#blocks_unsafe_or_mismatched_private_keys_without_exposing_details",
-        "crates/oxiroute-import/tests/nginx_lower.rs#exact_location_fixed_redirect_and_static_actions_finalize_without_placeholders",
-        "crates/oxiroute-import/tests/nginx_lower.rs#explicit_proxy_headers_cookie_rewrite_and_safe_retry_subset_finalize"
+        "crates/oxiroute-import/tests/nginx_lower.rs#exact_location_fixed_and_redirect_actions_finalize_without_placeholders",
+        "crates/oxiroute-import/tests/nginx_lower.rs#blocks_static_index_behavior_that_would_skip_nginx_location_reselection",
+        "crates/oxiroute-import/tests/nginx_lower.rs#explicit_proxy_headers_cookie_rewrite_and_safe_retry_subset_finalize",
+        "crates/oxiroute-import/tests/nginx_lower.rs#blocks_unrepresented_x_accel_response_controls",
+        "crates/oxiroute-import/tests/nginx_lower.rs#one_named_upstream_is_shared_by_routes_and_listeners",
+        "crates/oxiroute-import/tests/nginx_lower.rs#complete_nginx_configs_are_rejected_by_the_http_fragment_api"
       ]
     },
     {
@@ -120,6 +124,7 @@
       "id": "evidence.squid.hostrouter",
       "tests": [
         "crates/oxiroute-import/tests/squid.rs#hostrouter_sanitized_shape_classifies_every_reachable_directive",
+        "crates/oxiroute-import/tests/squid.rs#include_graph_expands_globs_in_byte_sorted_parse_order_with_provenance",
         "crates/oxiroute-import/tests/squid.rs#cache_peer_credentials_become_typed_secret_facts",
         "crates/oxiroute-import/tests/squid.rs#cache_policy_and_storage_are_classified_without_placeholders"
       ]
@@ -131,7 +136,9 @@
         "crates/oxiroute-cache/tests/cache_core.rs#unsafe_responses_fail_closed",
         "crates/oxiroute-cache/tests/cache_core.rs#freshness_stale_windows_and_head_get_semantics_are_enforced",
         "crates/oxiroute-cache/tests/cache_core.rs#vary_variants_and_bounded_surrogate_purge_are_exact",
-        "crates/oxiroute-cache/tests/cache_core.rs#collapsed_forwarding_wakes_all_followers_after_lock_free_fill"
+        "crates/oxiroute-cache/tests/cache_core.rs#collapsed_forwarding_wakes_all_followers_after_lock_free_fill",
+        "crates/oxiroute-cache/tests/cache_core.rs#prepared_entries_are_bound_to_shared_cache_identity_before_memory_admission",
+        "crates/oxiroute-cache/tests/disk_cache.rs#prepared_entries_are_bound_to_shared_cache_identity_before_disk_admission"
       ]
     },
     {

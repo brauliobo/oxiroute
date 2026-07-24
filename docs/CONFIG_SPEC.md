@@ -215,6 +215,10 @@ Current constraints:
   and labels with non-alphanumeric edge characters are rejected. Validation does not resolve or
   expand a DNS endpoint. Its normalized host and port remain the stable selection, retry,
   monitoring, and topology identity; lookup occurs while establishing each connection or probe.
+  A nonempty result is sorted and deduplicated into at most 16 addresses. Health probes, HTTP, and
+  L4 traffic try that same deterministic address order until one connects; overflow and empty
+  answers fail closed. One configured connect timeout bounds DNS resolution plus all address
+  attempts for the logical endpoint.
 - Endpoints MUST be unique after socket, DNS-name, and Unix-path normalization. A socket endpoint
   cannot directly target the loopback management endpoint because that would bypass its exposure
   boundary. Pools containing any Unix endpoint cannot enable upstream TLS or active health checks.
@@ -248,8 +252,9 @@ Current constraints:
 - `max_retries` is the number of additional connection attempts after the first, defaults to `0`,
   and MUST be at most `2`. Retries are permitted only for bodyless `GET` and `HEAD` requests that
   are not protocol upgrades, only after a transient connection-establishment failure, and only
-  when a distinct canonical endpoint identity remains. DNS address expansion does not create extra
-  retry identities. Established-connection errors, response statuses,
+  when a distinct canonical endpoint identity remains. Trying alternate addresses for one DNS
+  endpoint is transport fallback and does not consume `max_retries`; route retry begins only after
+  that bounded address set is exhausted. Established-connection errors, response statuses,
   body-bearing requests, unsafe methods, and upgrades are never retried. Each attempt has its own
   `upstream_io_timeout_ms` connect deadline; there is no total request deadline.
 - L4 services reference a pool. Connect and idle timeouts default to `10000` and `300000`
@@ -454,6 +459,11 @@ the following contract for future server integration:
 
 Persistent cache record version 2 stores this retention mode. Version 1 records remain readable as
 RFC-policy records without a finite canonical keep window.
+
+A prepared cache entry is bound to the shared cache identity that validated it. Memory and disk fill
+guards reject an entry prepared by another cache before eviction, quota, or disk publication; cache
+clones share the identity, and recovered disk entries are rebound only to the cache that recovered
+them. This is a standalone component invariant, not server request-path integration.
 
 This schema is pre-release and may change without compatibility code until a public release
 persists it.

@@ -83,8 +83,9 @@ runtime, failure-path, test, and native-lowering coverage all land.
 
 - Canonical listener, HTTP service, route, upstream pool, TLS profile, certificate, and L4 service
   model (implemented for the current strict subset; importer provenance and broader policy remain).
-- nginx importer for a static HTTP and stream subset (bounded source/include and HTTP semantic
-  reports exist, but HTTP remains draft-only and stream lowering is absent).
+- nginx importer for a static HTTP and stream subset (the explicit HTTP-fragment API conditionally
+  finalizes a strict proxy/fixed/redirect subset, but complete nginx files, static index semantics,
+  stream lowering, audited candidates, and daemon integration remain blocked).
 - HAProxy importer for static HTTP/TCP frontends and backends (ordered roots, semantic resolution,
   and strict static TCP finalization for socket/Unix binds, socket/DNS/Unix servers, and
   `roundrobin`/`leastconn` exist; HTTP and audited host candidates remain blocked).
@@ -105,7 +106,9 @@ listener semantics must block the affected service.
 - Default-deny ACL engine for identity, source, destination, method, port, and time.
 - DNS and resolved-IP egress policy to prevent open-proxy and SSRF behavior.
 - Static or mTLS proxy authentication first.
-- Squid importer for the independently implemented supported subset.
+- Squid importer for the independently implemented supported subset (a bounded source/parser/typed
+  semantic foundation exists, including root/include identity and glob-set rechecks; canonical
+  lowering and daemon runtime integration remain).
 - HTTP/2 CONNECT only after stream takeover semantics have dedicated conformance tests.
 
 Defer TLS interception, transparent proxying, ICAP/eCAP, NTLM/Negotiate helpers, cache
@@ -113,7 +116,9 @@ peer protocols, and broad Squid helper compatibility.
 
 ## Milestone 4: cache and HTTP/3
 
-- Production cache storage designed as a separate component with recovery and eviction tests.
+- Production cache storage designed as a separate component with recovery, eviction, and
+  cache-bound prepared-entry admission tests (the standalone foundation exists; request-path
+  integration remains).
 - Cache freshness, revalidation, locking, range, purge, and observability behavior.
 - QUIC/H3 frontend selected through a proof of compatibility with Pingora's service model.
 - HTTP/3 conformance, migration, timeout, 0-RTT policy, and UDP resource-exhaustion tests.

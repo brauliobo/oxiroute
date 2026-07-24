@@ -20,7 +20,7 @@ Status values are `covered`, `partial`, `missing`, `external`, and `inactive`.
 | ID | Source behavior | Status | Required iteration |
 | --- | --- | --- | --- |
 | IMP-01 | nginx source files, deterministic includes, spans, and diagnostics | partial | Frontend implemented; canonical/runtime/native-lowering gates remain. |
-| IMP-02 | nginx HTTP inheritance and virtual-server lowering | partial | Semantic resolution exists; all current HTTP candidates remain draft-only. |
+| IMP-02 | nginx HTTP inheritance and virtual-server lowering | partial | The explicit HTTP-fragment API can finalize a strict subset; complete files, broader semantics, audited candidates, and daemon integration remain blocked. |
 | IMP-03 | nginx-RTMP include resolution, inheritance, and plan lowering | partial | A strict listener/application/recording subset can finalize; broad directive lowering and audited gates remain. |
 | IMP-04 | HAProxy ordered `-f` roots and directory expansion | partial | Frontend implemented; full audited lowering remains. |
 | IMP-05 | HAProxy defaults/frontend/backend/listen resolution | partial | Resolver implemented; audited host candidates remain blocked. |
@@ -31,23 +31,23 @@ Status values are `covered`, `partial`, `missing`, `external`, and `inactive`.
 | ID | Effective behavior | Status | Notes |
 | --- | --- | --- | --- |
 | HN-01 | 33 HTTP virtual servers sharing IPv4/IPv6 ports 80 and 443 | partial | Host routing exists; per-vhost policy lowering does not. |
-| HN-02 | Multiple exact hosts and default-server fallback | partial | Runtime exact/catch-all routes exist; native lowering does not. |
+| HN-02 | Multiple exact hosts and default-server fallback | partial | Runtime and strict fragment lowering exist; the complete audited candidate remains blocked. |
 | HN-03 | Leading-dot and leading-wildcard nginx names | partial | Canonical wildcard matches exactly one label. |
-| HN-04 | Nine file-backed certificate lineages selected by SNI on port 443 | partial | Canonical/runtime exact and wildcard SNI selection is wire-tested; native nginx lowering is absent. |
-| HN-05 | Certbot lineage renewal and zero-downtime activation | partial | Strict lineage watching, reconciliation, monitoring, and zero-downtime activation are implemented; native nginx lowering is absent. |
-| HN-06 | Listener-wide TLS 1.2/1.3 and mixed H1/H2 ALPN | partial | Runtime support exists; nginx lowering does not. |
+| HN-04 | Nine file-backed certificate lineages selected by SNI on port 443 | partial | Canonical/runtime SNI selection and strict TLS lowering exist; the audited multi-lineage candidate remains blocked. |
+| HN-05 | Certbot lineage renewal and zero-downtime activation | partial | Watching and activation are implemented; Certbot lineage semantics and the audited candidate are not lowered. |
+| HN-06 | Listener-wide TLS 1.2/1.3 and mixed H1/H2 ALPN | partial | Runtime and a strict nginx TLS subset exist; the audited candidate remains blocked. |
 | HN-07 | Certbot cipher, DH, session-cache, and ticket policy | partial | OxiRoute uses a fixed secure policy and disables resumption. |
-| HN-08 | Fixed-IP HTTP proxy destinations | partial | Runtime support exists; nginx lowering does not. |
-| HN-09 | DNS-named `.lan` proxy destinations | partial | Canonical/runtime DNS endpoints exist; nginx native lowering and the authoritative audited gates remain incomplete. |
-| HN-10 | Unix-socket upstream to HAProxy | partial | Canonical/runtime Unix endpoints exist on Unix; nginx native lowering and the authoritative audited gates remain incomplete. |
+| HN-08 | Fixed-IP HTTP proxy destinations | partial | Runtime and strict fragment lowering exist; the audited service remains blocked. |
+| HN-09 | DNS-named `.lan` proxy destinations | partial | Canonical/runtime and strict fragment lowering exist; authoritative audited gates remain incomplete. |
+| HN-10 | Unix-socket upstream to HAProxy | partial | Canonical/runtime and strict fragment lowering exist on Unix; authoritative audited gates remain incomplete. |
 | HN-11 | HTTPS origins with nginx verification/SNI defaults | missing | OxiRoute intentionally requires verified DNS SNI. |
 | HN-12 | Variable destination using `$scheme` | missing | Request-derived destinations remain blocked. |
 | HN-13 | WebSocket and HMR upgrades | partial | Runtime transport is covered; header lowering is absent. |
-| HN-14 | `proxy_set_header` literals and bounded nginx variables | missing | Only Host preservation is implemented. |
-| HN-15 | Redirects and explicit status responses | missing | Routes currently require an upstream pool. |
-| HN-16 | Public static document root and index handling | missing | Management assets are not a public static server. |
-| HN-17 | Header-based bearer authorization | missing | Secret-backed request policy is absent. |
-| HN-18 | Cookie path/attribute rewriting | missing | No response-cookie policy exists. |
+| HN-14 | `proxy_set_header` literals and bounded nginx variables | partial | Canonical/runtime mutations and a strict lowering subset exist; audited forms remain unverified. |
+| HN-15 | Redirects and explicit status responses | partial | Canonical/runtime actions and strict lowering exist; audited routes remain unverified. |
+| HN-16 | Public static document root and index handling | partial | Canonical static serving exists, but nginx index reselection differs and native lowering fails closed. |
+| HN-17 | Header-based bearer authorization | partial | Secret-file bearer policy is integrated; the audited inline nginx form is intentionally not lowered. |
+| HN-18 | Cookie path/attribute rewriting | partial | Canonical/runtime path rewriting and strict `proxy_cookie_path` lowering exist; attribute rewriting and audited coverage remain absent. |
 | HN-19 | Per-vhost body limits and separate connect/read/write timeouts | partial | One body limit and one I/O timeout exist per HTTP service. |
 | HN-20 | Mixed buffered and unbuffered proxy paths | partial | Runtime streams; bounded nginx-style buffering is absent. |
 | HN-21 | Gzip type/level policy | missing | Compression policy is absent. |
@@ -75,14 +75,14 @@ Status values are `covered`, `partial`, `missing`, `external`, and `inactive`.
 
 | ID | Effective behavior | Status | Notes |
 | --- | --- | --- | --- |
-| PN-01 | Port-80 static root, index files, and custom 50x page | missing | General static-file actions are absent. |
+| PN-01 | Port-80 static root, index files, and custom 50x page | partial | Canonical static serving exists, but nginx index reselection and custom error-page semantics remain blocking. |
 | PN-02 | nginx worker/sendfile/keepalive controls | external | Some limits have non-equivalent runtime knobs. |
 | PR-01 | RTMP listener on port 1935 | partial | Canonical/runtime and strict native lowering exist; the authoritative audited native-lowering gate remains incomplete. |
 | PR-02 | Outbound RTMP chunk size 4096 | partial | Current dependency default matches but is not compiled from config. |
 | PR-03 | Configured `live` application boundary and live publishing | partial | Canonical/runtime and strict native lowering exist; the authoritative audited native-lowering gate remains incomplete. |
 | PR-04 | Live playback, late join, and bounded fanout | missing | Listener playback/fanout exists, but the authoritative audited-case gates remain incomplete. |
-| PR-05 | Automatic FLV recording of all tracks | missing | Canonical continuous legacy AVC/AAC recording and strict lowering exist, but authoritative audited-case gates remain incomplete and enhanced codecs are rejected. |
-| PR-06 | Safe recording path, unique naming, interval rotation, suffix formatting | missing | Canonical/runtime path, storage, rotation, and strict lowering exist, but authoritative audited-case gates remain incomplete. |
+| PR-05 | Automatic FLV recording of all tracks | partial | Canonical continuous legacy AVC/AAC recording and strict lowering exist, but authoritative audited-case gates remain incomplete and enhanced codecs are rejected. |
+| PR-06 | Safe recording path, unique naming, interval rotation, suffix formatting | partial | Canonical/runtime path, storage, rotation, and strict lowering exist, but authoritative audited-case gates remain incomplete. |
 | PR-07 | RTMP push relay to loopback port 1936 | missing | Relay worker is absent. |
 | PR-08 | RTMP access-log suppression | partial | No RTMP access logger currently runs. |
 

@@ -411,10 +411,12 @@ keyframe when video has appeared, or an audio boundary for audio-only output.
 Recorder open, quota, write, discontinuity, and codec failures are isolated to that recorder. They
 remain observable but do not fail live ingest, fanout, or sibling recorders.
 
-Stop and disconnect submit workers to a bounded-capacity reaper rather than joining on the RTMP or
-API path. Each worker stops accepting events and has its configured 1-60000 ms shutdown deadline;
-the reaper requests cancellation after that deadline, retains ownership, and joins instead of
-detaching. Reaper shutdown cancels outstanding tasks and waits for their completion.
+Stop and disconnect transfer workers to a reaper with a bounded pending-task count. Submission
+backpressures when that bound is full, but waits outside registry and recorder-controller locks, so
+catalog snapshots and controller observation remain available. Each worker stops accepting events
+and has its configured 1-60000 ms shutdown deadline; the reaper requests cancellation after that
+deadline, retains ownership, and joins instead of detaching. Reaper shutdown cancels outstanding
+tasks and waits for their completion.
 
 FLV recording supports legacy AVC video and AAC audio. Enhanced RTMP AVC (`avc1`), HEVC (`hvc1`),
 and AV1 (`av01`) can be observed and fanned out by the live path but are explicitly
