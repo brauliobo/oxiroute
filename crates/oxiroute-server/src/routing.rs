@@ -774,28 +774,6 @@ impl EndpointPool {
     /// Selects the next endpoint not present in a request's attempted-endpoint set.
     #[must_use]
     pub fn select_excluding(&self, excluded: &[RuntimeEndpoint]) -> Option<EndpointLease> {
-        if self.endpoints.len() == 1 {
-            let endpoint = &self.endpoints[0];
-            if !self.read_health(|endpoints| endpoints[0].state().selectable()) {
-                self.note_unavailable_selection();
-                return None;
-            }
-            if excluded.contains(&endpoint.endpoint) {
-                return None;
-            }
-            endpoint
-                .active_leases
-                .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |active| {
-                    active.checked_add(1)
-                })
-                .ok()?;
-            return Some(EndpointLease {
-                active_leases: Arc::clone(&endpoint.active_leases),
-                endpoint: endpoint.endpoint.clone(),
-                selection: None,
-            });
-        }
-
         let mut selection = self
             .selection
             .lock()
@@ -1153,11 +1131,10 @@ mod tests {
         let endpoint = SocketAddr::from(([127, 0, 0, 1], 3000));
         let pool = RoundRobinPool::new([endpoint]).expect("unchecked pool");
 
-        let lease = pool.select().expect("singleton lease");
-        assert_eq!(lease.endpoint(), &RuntimeEndpoint::from(endpoint));
-        assert_eq!(pool.health_snapshot().endpoints[0].active_leases, 1);
-        drop(lease);
-        assert_eq!(pool.health_snapshot().endpoints[0].active_leases, 0);
+        assert_eq!(
+            pool.select().map(|lease| lease.endpoint().clone()),
+            Some(RuntimeEndpoint::from(endpoint))
+        );
         assert_eq!(
             pool.health_snapshot().endpoints[0].state,
             EndpointHealthState::Unchecked
