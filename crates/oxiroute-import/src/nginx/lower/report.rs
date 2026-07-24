@@ -40,9 +40,9 @@ impl ImportReport {
     }
 }
 
-/// Loads, resolves, and audits one nginx HTTP source graph.
+/// Loads, resolves, and audits an nginx fragment whose expanded root contains only `http`.
 #[must_use]
-pub fn import_http(root: &Path, root_prefix: &Path) -> ImportReport {
+pub fn import_http_fragment(root: &Path, root_prefix: &Path) -> ImportReport {
     lower_http(load(root, root_prefix))
 }
 
@@ -181,28 +181,18 @@ impl Lowerer {
                 self.record(format!("{path}{suffix}"), candidate.origins.clone());
             }
         }
-        for (pool, origins) in candidate.pools.into_iter().zip(candidate.pool_origins) {
+        for pool in candidate.pools {
+            if self
+                .draft
+                .upstream_pools
+                .iter()
+                .any(|existing| existing.name == pool.pool.name)
+            {
+                continue;
+            }
             let index = self.draft.upstream_pools.len();
-            self.draft.upstream_pools.push(pool);
-            let path = format!("/upstream_pools/{index}");
-            for suffix in ["", "/name", "/endpoints", "/algorithm", "/http_versions"] {
-                self.record(format!("{path}{suffix}"), origins.clone());
-            }
-            let endpoint_count = self.draft.upstream_pools[index].endpoints.len();
-            for endpoint_index in 0..endpoint_count {
-                let endpoint_path = format!("{path}/endpoints/{endpoint_index}");
-                let endpoint = self.draft.upstream_pools[index].endpoints[endpoint_index].clone();
-                let suffixes: &[&str] = match endpoint {
-                    oxiroute_config::UpstreamEndpoint::Socket { .. } => &["", "/type", "/address"],
-                    oxiroute_config::UpstreamEndpoint::Dns { .. } => {
-                        &["", "/type", "/host", "/port"]
-                    }
-                    oxiroute_config::UpstreamEndpoint::Unix { .. } => &["", "/type", "/path"],
-                };
-                for suffix in suffixes {
-                    self.record(format!("{endpoint_path}{suffix}"), origins.clone());
-                }
-            }
+            self.draft.upstream_pools.push(pool.pool);
+            self.record_pool_provenance(index, &pool.origin, pool.endpoint_origins);
         }
         let service_index = self.draft.http_services.len();
         self.draft.http_services.push(candidate.service);
@@ -283,6 +273,33 @@ impl Lowerer {
                 format!("{listener_path}{suffix}"),
                 candidate.origins.clone(),
             );
+        }
+    }
+
+    fn record_pool_provenance(
+        &mut self,
+        index: usize,
+        origin: &crate::nginx::DirectiveOrigin,
+        endpoint_origins: Vec<crate::nginx::DirectiveOrigin>,
+    ) {
+        let path = format!("/upstream_pools/{index}");
+        for suffix in ["", "/name", "/algorithm", "/http_versions"] {
+            self.record(format!("{path}{suffix}"), vec![origin.clone()]);
+        }
+        self.record(format!("{path}/endpoints"), endpoint_origins.clone());
+        let endpoints = self.draft.upstream_pools[index].endpoints.clone();
+        for (endpoint_index, (endpoint, origin)) in
+            endpoints.into_iter().zip(endpoint_origins).enumerate()
+        {
+            let endpoint_path = format!("{path}/endpoints/{endpoint_index}");
+            let suffixes: &[&str] = match endpoint {
+                oxiroute_config::UpstreamEndpoint::Socket { .. } => &["", "/type", "/address"],
+                oxiroute_config::UpstreamEndpoint::Dns { .. } => &["", "/type", "/host", "/port"],
+                oxiroute_config::UpstreamEndpoint::Unix { .. } => &["", "/type", "/path"],
+            };
+            for suffix in suffixes {
+                self.record(format!("{endpoint_path}{suffix}"), vec![origin.clone()]);
+            }
         }
     }
 

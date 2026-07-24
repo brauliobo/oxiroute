@@ -20,13 +20,30 @@ use crate::nginx::{
 };
 
 use super::{
-    BindBlock, BindCandidate, LowerIssue, Lowerer,
+    BindBlock, BindCandidate, LowerIssue, Lowerer, PoolCandidate,
     provenance::{PolicyValue, collect_result, issue, utf8},
     upstream::canonical_endpoint,
 };
 
 const NGINX_DEFAULT_BODY_BYTES: u64 = 1024 * 1024;
 const NGINX_DEFAULT_PROXY_TIMEOUT_MS: u64 = 60_000;
+const NGINX_DEFAULT_HIDDEN_RESPONSE_HEADERS: [&str; 8] = [
+    "Date",
+    "Server",
+    "X-Pad",
+    "X-Accel-Expires",
+    "X-Accel-Redirect",
+    "X-Accel-Limit-Rate",
+    "X-Accel-Buffering",
+    "X-Accel-Charset",
+];
+const NGINX_RESPONSE_CONTROL_HEADERS: [&[u8]; 5] = [
+    b"X-Accel-Redirect",
+    b"X-Accel-Expires",
+    b"X-Accel-Limit-Rate",
+    b"X-Accel-Buffering",
+    b"X-Accel-Charset",
+];
 
 fn socket_addr(endpoint: &ListenEndpoint) -> Option<SocketAddr> {
     let ListenEndpoint::Socket { address, port } = endpoint else {
@@ -216,8 +233,8 @@ impl Lowerer {
     ) -> Option<BindCandidate> {
         let mut routes = Vec::new();
         let mut pools = Vec::new();
+        let mut pool_names = HashSet::new();
         let mut route_origins = Vec::new();
-        let mut pool_origins = Vec::new();
         let mut body_policy = None;
         let mut timeout_policy = None;
         let mut all_origins = Vec::new();
@@ -237,9 +254,16 @@ impl Lowerer {
                         .path
                         .as_ref()
                         .is_some_and(|path| path.value == b"/");
-                match self.lower_location(http, location, &hosts, &service_name, routes.len()) {
+                has_local_catch_all |= top_level_catch_all;
+                match self.lower_location(
+                    http,
+                    location,
+                    &hosts,
+                    &service_name,
+                    http_index,
+                    routes.len(),
+                ) {
                     Ok(lowered) => {
-                        has_local_catch_all |= top_level_catch_all;
                         if body_policy.is_some_and(|policy| policy != lowered.body_bytes) {
                             issues.push(issue(
                                 &location.origin,
@@ -268,8 +292,9 @@ impl Lowerer {
                             route_origins.push(route.origins.clone());
                             all_origins.extend(route.origins.clone());
                             if let Some(pool) = route.pool {
-                                pool_origins.push(route.origins.clone());
-                                pools.push(pool);
+                                if pool_names.insert(pool.pool.name.clone()) {
+                                    pools.push(pool);
+                                }
                             }
                             routes.push(route.route);
                         }
@@ -334,7 +359,6 @@ impl Lowerer {
             tls_profile,
             origins: all_origins,
             route_origins,
-            pool_origins,
         })
     }
 
@@ -448,6 +472,7 @@ impl Lowerer {
         location: &EffectiveLocation,
         hosts: &[Option<HttpHostSelector>],
         service_name: &str,
+        http_index: usize,
         route_ordinal: usize,
     ) -> Result<LoweredLocation, Vec<LowerIssue>> {
         let mut issues = Vec::new();
@@ -509,12 +534,13 @@ impl Lowerer {
                 location,
                 proxy,
                 service_name,
+                http_index,
                 route_ordinal,
                 &mut issues,
             ) {
                 Some(proxy) => (
                     HttpRouteAction::Proxy {
-                        upstream_pool: proxy.pool.name.clone(),
+                        upstream_pool: proxy.pool.pool.name.clone(),
                         policy: proxy.policy,
                     },
                     Some(proxy.pool),
@@ -533,7 +559,7 @@ impl Lowerer {
                 ),
             }
         } else {
-            let action = self.lower_static(location, &mut issues);
+            self.block_static(location, &mut issues);
             let mut static_origins = Vec::new();
             for name in [b"root".as_slice(), b"index".as_slice()] {
                 for policy in self.effective_list_policy_chain(location.origin.occurrence, name) {
@@ -541,11 +567,11 @@ impl Lowerer {
                 }
             }
             (
-                action.unwrap_or(HttpRouteAction::FixedResponse {
+                HttpRouteAction::FixedResponse {
                     status: 500,
                     body: String::new(),
                     headers: Vec::new(),
-                }),
+                },
                 None,
                 None,
                 static_origins,
@@ -707,52 +733,42 @@ impl Lowerer {
         })
     }
 
-    fn lower_static(
-        &self,
-        location: &EffectiveLocation,
-        issues: &mut Vec<LowerIssue>,
-    ) -> Option<HttpRouteAction> {
+    fn block_static(&self, location: &EffectiveLocation, issues: &mut Vec<LowerIssue>) {
         let Some(root) = self.effective_policy(location.origin.occurrence, b"root") else {
             issues.push(issue(
                 &location.origin,
                 E_SEMANTICS_NOT_REPRESENTABLE,
                 "nginx location has no proxy, return, or static root action",
             ));
-            return None;
+            return;
         };
         let root_origin = root.origins.last().unwrap_or(&location.origin);
-        let Some(root_directory) = root
+        if root
             .arguments
             .first()
             .and_then(|value| canonical_directory(value))
-        else {
+            .is_none()
+        {
             issues.push(issue(
                 root_origin,
                 E_INVALID_VALUE,
                 "nginx root is not a canonical absolute directory",
             ));
-            return None;
-        };
+            return;
+        }
         let indexes = self.effective_list_policy_chain(location.origin.occurrence, b"index");
-        let index_files = if indexes.is_empty() {
-            vec!["index.html".into()]
-        } else {
+        issues.push(issue(
             indexes
                 .last()
-                .expect("nonempty index policies")
-                .arguments
-                .iter()
-                .filter_map(|value| utf8(value).map(str::to_owned))
-                .collect()
-        };
-        Some(HttpRouteAction::StaticFiles {
-            root_directory,
-            index_files,
-            spa_fallback: None,
-        })
+                .and_then(|value| value.origins.last())
+                .unwrap_or(&location.origin),
+            E_SEMANTICS_NOT_REPRESENTABLE,
+            "nginx static index handling internally redirects and reruns location selection, but canonical static files open indexes directly",
+        ));
     }
 
     #[expect(
+        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "proxy admission, policy, pool, and provenance form one atomic route action"
     )]
@@ -762,6 +778,7 @@ impl Lowerer {
         location: &EffectiveLocation,
         proxy: &crate::nginx::EffectiveProxyPass,
         service_name: &str,
+        http_index: usize,
         route_ordinal: usize,
         issues: &mut Vec<LowerIssue>,
     ) -> Option<LoweredProxy> {
@@ -803,16 +820,17 @@ impl Lowerer {
                 ));
             }
         }
-        let pool = Self::proxy_pool(http, proxy, service_name, route_ordinal, issues)?;
+        let pool = Self::proxy_pool(http, proxy, service_name, http_index, route_ordinal, issues)?;
         let upstream_host = self.lower_proxy_headers(location, proxy, issues);
         let request_headers = upstream_host
             .as_ref()
             .map_or_else(Vec::new, |(_, headers)| headers.clone());
         let upstream_host =
             upstream_host.map_or(HttpUpstreamHost::PreserveIncoming, |(host, _)| host);
+        self.validate_response_controls(location, proxy, issues);
         let response_headers = self.lower_response_headers(location, issues);
         let response_cookie_path_rewrites = self.lower_cookie_rewrites(location, issues);
-        let retry = self.lower_proxy_retry(location, pool.endpoints.len(), issues);
+        let retry = self.lower_proxy_retry(location, pool.pool.endpoints.len(), issues);
         if issues.len() > issue_count_before_explicit_proxy_policy {
             issues.push(issue(
                 &proxy.origin,
@@ -836,6 +854,8 @@ impl Lowerer {
             b"proxy_request_buffering".as_slice(),
             b"proxy_set_header".as_slice(),
             b"proxy_hide_header".as_slice(),
+            b"proxy_pass_header".as_slice(),
+            b"proxy_ignore_headers".as_slice(),
             b"proxy_cookie_path".as_slice(),
             b"proxy_next_upstream".as_slice(),
             b"proxy_next_upstream_tries".as_slice(),
@@ -878,26 +898,43 @@ impl Lowerer {
         http: &EffectiveHttp,
         proxy: &crate::nginx::EffectiveProxyPass,
         service_name: &str,
+        http_index: usize,
         route_ordinal: usize,
         issues: &mut Vec<LowerIssue>,
-    ) -> Option<UpstreamPool> {
-        let endpoints = match proxy.upstream {
-            crate::nginx::UpstreamReference::Direct => proxy
-                .direct_endpoint
-                .as_ref()
-                .map(canonical_endpoint)
-                .into_iter()
-                .collect(),
-            crate::nginx::UpstreamReference::Resolved(occurrence) => http
-                .upstreams
-                .iter()
-                .find(|upstream| upstream.origin.occurrence == occurrence)
-                .into_iter()
-                .flat_map(|upstream| upstream.servers.iter())
-                .filter_map(|server| server.endpoint.as_ref().map(canonical_endpoint))
-                .collect(),
+    ) -> Option<PoolCandidate> {
+        let (endpoints, origin, endpoint_origins) = match proxy.upstream {
+            crate::nginx::UpstreamReference::Direct => (
+                proxy
+                    .direct_endpoint
+                    .as_ref()
+                    .map(canonical_endpoint)
+                    .into_iter()
+                    .collect(),
+                proxy.origin.clone(),
+                vec![proxy.origin.clone()],
+            ),
+            crate::nginx::UpstreamReference::Resolved(occurrence) => {
+                let upstream = http
+                    .upstreams
+                    .iter()
+                    .find(|upstream| upstream.origin.occurrence == occurrence)
+                    .expect("resolved upstream occurrence is retained");
+                let (endpoints, endpoint_origins) = upstream
+                    .servers
+                    .iter()
+                    .filter_map(|server| {
+                        server
+                            .endpoint
+                            .as_ref()
+                            .map(|endpoint| (canonical_endpoint(endpoint), server.origin.clone()))
+                    })
+                    .unzip();
+                (endpoints, upstream.origin.clone(), endpoint_origins)
+            }
             crate::nginx::UpstreamReference::Unresolved
-            | crate::nginx::UpstreamReference::Variable => Vec::new(),
+            | crate::nginx::UpstreamReference::Variable => {
+                (Vec::new(), proxy.origin.clone(), Vec::new())
+            }
         };
         if endpoints.is_empty() {
             issues.push(issue(
@@ -907,13 +944,32 @@ impl Lowerer {
             ));
             return None;
         }
-        Some(UpstreamPool {
-            name: format!("{service_name}-pool-{route_ordinal}"),
-            endpoints,
-            algorithm: oxiroute_config::UpstreamAlgorithm::RoundRobin,
-            health_check: None,
-            tls: None,
-            http_versions: HttpVersionPolicy::default(),
+        let name = match proxy.upstream {
+            crate::nginx::UpstreamReference::Resolved(occurrence) => {
+                let upstream_index = http
+                    .upstreams
+                    .iter()
+                    .position(|upstream| upstream.origin.occurrence == occurrence)
+                    .expect("resolved upstream occurrence is retained");
+                format!("nginx-http-upstream-{http_index}-{upstream_index}")
+            }
+            crate::nginx::UpstreamReference::Direct
+            | crate::nginx::UpstreamReference::Unresolved
+            | crate::nginx::UpstreamReference::Variable => {
+                format!("{service_name}-pool-{route_ordinal}")
+            }
+        };
+        Some(PoolCandidate {
+            pool: UpstreamPool {
+                name,
+                endpoints,
+                algorithm: oxiroute_config::UpstreamAlgorithm::RoundRobin,
+                health_check: None,
+                tls: None,
+                http_versions: HttpVersionPolicy::default(),
+            },
+            origin,
+            endpoint_origins,
         })
     }
 
@@ -1034,20 +1090,82 @@ impl Lowerer {
         location: &EffectiveLocation,
         issues: &mut Vec<LowerIssue>,
     ) -> Vec<HttpResponseHeaderMutation> {
-        self.effective_list_policy_chain(location.origin.occurrence, b"proxy_hide_header")
+        let mut hidden = NGINX_DEFAULT_HIDDEN_RESPONSE_HEADERS
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        for policy in
+            self.effective_list_policy_chain(location.origin.occurrence, b"proxy_hide_header")
+        {
+            let Some(name) = policy.arguments.first().and_then(|value| utf8(value)) else {
+                issues.push(issue(
+                    policy.origins.last().unwrap_or(&location.origin),
+                    E_INVALID_VALUE,
+                    "proxy_hide_header name is not UTF-8",
+                ));
+                continue;
+            };
+            if !hidden
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(name))
+            {
+                hidden.push(name.to_owned());
+            }
+        }
+        for policy in
+            self.effective_list_policy_chain(location.origin.occurrence, b"proxy_pass_header")
+        {
+            let Some(name) = policy.arguments.first().and_then(|value| utf8(value)) else {
+                issues.push(issue(
+                    policy.origins.last().unwrap_or(&location.origin),
+                    E_INVALID_VALUE,
+                    "proxy_pass_header name is not UTF-8",
+                ));
+                continue;
+            };
+            if name.eq_ignore_ascii_case("date") {
+                issues.push(issue(
+                    policy.origins.last().unwrap_or(&location.origin),
+                    E_SEMANTICS_NOT_REPRESENTABLE,
+                    "proxy_pass_header Date cannot be represented because Pingora replaces every downstream Date header",
+                ));
+                continue;
+            }
+            hidden.retain(|candidate| !candidate.eq_ignore_ascii_case(name));
+        }
+        hidden
             .into_iter()
-            .filter_map(|policy| {
-                let name = policy.arguments.first().and_then(|value| utf8(value));
-                if name.is_none() {
-                    issues.push(issue(
-                        policy.origins.last().unwrap_or(&location.origin),
-                        E_INVALID_VALUE,
-                        "proxy_hide_header name is not UTF-8",
-                    ));
-                }
-                name.map(|name| HttpResponseHeaderMutation::Remove { name: name.into() })
-            })
+            .map(|name| HttpResponseHeaderMutation::Remove { name })
             .collect()
+    }
+
+    fn validate_response_controls(
+        &self,
+        location: &EffectiveLocation,
+        proxy: &crate::nginx::EffectiveProxyPass,
+        issues: &mut Vec<LowerIssue>,
+    ) {
+        let policies =
+            self.effective_list_policy_chain(location.origin.occurrence, b"proxy_ignore_headers");
+        let ignored = policies
+            .iter()
+            .flat_map(|policy| &policy.arguments)
+            .collect::<Vec<_>>();
+        if NGINX_RESPONSE_CONTROL_HEADERS.iter().all(|required| {
+            ignored
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(required))
+        }) {
+            return;
+        }
+        issues.push(issue(
+            policies
+                .last()
+                .and_then(|policy| policy.origins.last())
+                .unwrap_or(&proxy.origin),
+            E_SEMANTICS_NOT_REPRESENTABLE,
+            "nginx X-Accel response controls must all be disabled with proxy_ignore_headers before canonical proxy lowering",
+        ));
     }
 
     fn lower_cookie_rewrites(
@@ -1191,7 +1309,7 @@ impl Lowerer {
 #[derive(Clone)]
 struct LoweredRoute {
     route: HttpRoute,
-    pool: Option<UpstreamPool>,
+    pool: Option<PoolCandidate>,
     origins: Vec<DirectiveOrigin>,
 }
 
@@ -1202,7 +1320,7 @@ struct LoweredLocation {
 }
 
 struct LoweredProxy {
-    pool: UpstreamPool,
+    pool: PoolCandidate,
     policy: HttpProxyPolicy,
     timeout_ms: u64,
     origins: Vec<DirectiveOrigin>,
