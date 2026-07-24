@@ -1,9 +1,9 @@
 use std::{
     fmt,
     sync::{
-        Arc, Mutex, MutexGuard, Weak,
+        Arc, Condvar, Mutex, MutexGuard, Weak,
         atomic::{AtomicU64, Ordering},
-        mpsc::{self, Receiver, SyncSender, TryRecvError},
+        mpsc::{self, Receiver, Sender, TryRecvError},
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -146,54 +146,56 @@ impl RecorderController {
         context: RecorderCommandContext,
     ) -> Result<(), RecorderErrorCode> {
         self.observe_at(context.at_unix_ms);
-        let mut state = self.lock();
-        if !state.active {
-            return Err(RecorderErrorCode::StalePublisher);
-        }
-        if let Some(worker) = state.worker.as_ref() {
-            let status = worker.status();
-            if !matches!(
-                status.phase,
-                RecorderWorkerPhase::Failed(_) | RecorderWorkerPhase::Stopped
-            ) {
-                state.last_status = Some(status);
-                return Ok(());
+        loop {
+            let mut state = self.lock();
+            if !state.active {
+                return Err(RecorderErrorCode::StalePublisher);
             }
-        }
-        if let Some(worker) = state.worker.take() {
+            if let Some(worker) = state.worker.as_ref() {
+                let status = worker.status();
+                if !matches!(
+                    status.phase,
+                    RecorderWorkerPhase::Failed(_) | RecorderWorkerPhase::Stopped
+                ) {
+                    state.last_status = Some(status);
+                    return Ok(());
+                }
+            }
+            let Some(worker) = state.worker.take() else {
+                let opened_at_unix_seconds = context.at_unix_ms / 1_000;
+                let opened_at_utc = RecordingDateTime::from_unix_seconds(opened_at_unix_seconds)
+                    .map_err(|_| RecorderErrorCode::OpenFailed)?;
+                let worker = RecorderWorker::start(
+                    self.policy.store.clone(),
+                    &self.policy.path,
+                    &self.stream_name,
+                    opened_at_unix_seconds,
+                    opened_at_utc,
+                    self.policy.worker,
+                )
+                .map_err(|error| match error {
+                    crate::RecorderWorkerStartError::UnsupportedVideoCodec(_) => {
+                        RecorderErrorCode::UnsupportedCodec
+                    }
+                    crate::RecorderWorkerStartError::ThreadSpawn(_) => {
+                        RecorderErrorCode::BackendUnavailable
+                    }
+                    crate::RecorderWorkerStartError::Path(_)
+                    | crate::RecorderWorkerStartError::InvalidQueueLimits
+                    | crate::RecorderWorkerStartError::InvalidRotationInterval
+                    | crate::RecorderWorkerStartError::InvalidShutdownTimeout => {
+                        RecorderErrorCode::OpenFailed
+                    }
+                })?;
+                state.last_status = Some(worker.status());
+                state.stopping = false;
+                state.worker = Some(worker);
+                return Ok(());
+            };
+            drop(state);
             self.reaper
                 .submit(worker, Arc::downgrade(self), None, context.at_unix_ms);
         }
-
-        let opened_at_unix_seconds = context.at_unix_ms / 1_000;
-        let opened_at_utc = RecordingDateTime::from_unix_seconds(opened_at_unix_seconds)
-            .map_err(|_| RecorderErrorCode::OpenFailed)?;
-        let worker = RecorderWorker::start(
-            self.policy.store.clone(),
-            &self.policy.path,
-            &self.stream_name,
-            opened_at_unix_seconds,
-            opened_at_utc,
-            self.policy.worker,
-        )
-        .map_err(|error| match error {
-            crate::RecorderWorkerStartError::UnsupportedVideoCodec(_) => {
-                RecorderErrorCode::UnsupportedCodec
-            }
-            crate::RecorderWorkerStartError::ThreadSpawn(_) => {
-                RecorderErrorCode::BackendUnavailable
-            }
-            crate::RecorderWorkerStartError::Path(_)
-            | crate::RecorderWorkerStartError::InvalidQueueLimits
-            | crate::RecorderWorkerStartError::InvalidRotationInterval
-            | crate::RecorderWorkerStartError::InvalidShutdownTimeout => {
-                RecorderErrorCode::OpenFailed
-            }
-        })?;
-        state.last_status = Some(worker.status());
-        state.stopping = false;
-        state.worker = Some(worker);
-        Ok(())
     }
 
     pub(crate) fn stop(self: &Arc<Self>, context: RecorderCommandContext) -> bool {
@@ -277,12 +279,12 @@ impl RecorderController {
 
 #[derive(Clone)]
 pub(crate) struct RecorderReaperHandle {
-    sender: SyncSender<ReaperCommand>,
+    queue: Arc<ReaperQueue>,
     registry: Weak<RtmpRegistry>,
 }
 
 pub(crate) struct RecorderReaper {
-    sender: SyncSender<ReaperCommand>,
+    queue: Arc<ReaperQueue>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -293,6 +295,13 @@ pub(crate) struct RecorderReaperOwner {
 struct ReapCompletion {
     registry: Weak<RtmpRegistry>,
     context: RecorderCommandContext,
+}
+
+struct ReaperQueue {
+    sender: Sender<ReaperCommand>,
+    capacity: usize,
+    pending: Mutex<usize>,
+    available: Condvar,
 }
 
 enum ReaperCommand {
@@ -314,24 +323,31 @@ impl RecorderReaper {
         capacity: usize,
         registry: Weak<RtmpRegistry>,
     ) -> (Arc<RecorderReaperOwner>, RecorderReaperHandle) {
-        let (sender, receiver) = mpsc::sync_channel(capacity.max(1));
+        let (sender, receiver) = mpsc::channel();
+        let queue = Arc::new(ReaperQueue {
+            sender,
+            capacity: capacity.max(1),
+            pending: Mutex::new(0),
+            available: Condvar::new(),
+        });
+        let worker_queue = Arc::clone(&queue);
         let thread = thread::Builder::new()
             .name("rtmp-recorder-reaper".to_owned())
-            .spawn(move || run_reaper(&receiver))
+            .spawn(move || run_reaper(&receiver, &worker_queue))
             .expect("recorder reaper thread must start");
         (
             Arc::new(RecorderReaperOwner {
                 reaper: Mutex::new(Some(Self {
-                    sender: sender.clone(),
+                    queue: Arc::clone(&queue),
                     thread: Some(thread),
                 })),
             }),
-            RecorderReaperHandle { sender, registry },
+            RecorderReaperHandle { queue, registry },
         )
     }
 
     pub(crate) fn shutdown(mut self) {
-        let _ = self.sender.send(ReaperCommand::Shutdown);
+        let _ = self.queue.sender.send(ReaperCommand::Shutdown);
         if self
             .thread
             .take()
@@ -365,20 +381,50 @@ impl RecorderReaperHandle {
     ) {
         let supervisor = worker.into_supervisor();
         let deadline = Instant::now() + supervisor.shutdown_timeout();
-        self.sender
-            .try_send(ReaperCommand::Reap(ReapTask {
-                supervisor: Some(supervisor),
-                controller,
-                completion,
-                deadline,
-                completion_at_unix_ms,
-                cancelled: false,
-            }))
-            .expect("recorder reaper capacity derives from the maximum active recorder count");
+        self.queue.submit(ReapTask {
+            supervisor: Some(supervisor),
+            controller,
+            completion,
+            deadline,
+            completion_at_unix_ms,
+            cancelled: false,
+        });
     }
 }
 
-fn run_reaper(receiver: &Receiver<ReaperCommand>) {
+impl ReaperQueue {
+    fn submit(&self, task: ReapTask) {
+        let mut pending = self
+            .pending
+            .lock()
+            .expect("recorder reaper pending mutex poisoned");
+        pending = self
+            .available
+            .wait_while(pending, |pending| *pending >= self.capacity)
+            .expect("recorder reaper pending mutex poisoned");
+        *pending += 1;
+        drop(pending);
+
+        if self.sender.send(ReaperCommand::Reap(task)).is_err() {
+            self.complete();
+            panic!("recorder reaper thread disconnected");
+        }
+    }
+
+    fn complete(&self) {
+        let mut pending = self
+            .pending
+            .lock()
+            .expect("recorder reaper pending mutex poisoned");
+        *pending = pending
+            .checked_sub(1)
+            .expect("recorder reaper completed an untracked task");
+        drop(pending);
+        self.available.notify_one();
+    }
+}
+
+fn run_reaper(receiver: &Receiver<ReaperCommand>, queue: &ReaperQueue) {
     let mut tasks = Vec::new();
     let mut shutting_down = false;
     loop {
@@ -435,6 +481,7 @@ fn run_reaper(receiver: &Receiver<ReaperCommand>) {
                     registry.complete_worker_stop(completion.context, &status);
                 }
             }
+            queue.complete();
         }
         if shutting_down && tasks.is_empty() {
             return;
