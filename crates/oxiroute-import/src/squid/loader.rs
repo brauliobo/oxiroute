@@ -144,6 +144,13 @@ pub fn load(root: &Path) -> Report<SourceGraph> {
 
 #[must_use]
 pub fn load_with_limits(root: &Path, limits: SquidLoadLimits) -> Report<SourceGraph> {
+    load_inner(root, limits, || {})
+}
+
+fn load_inner<F>(root: &Path, limits: SquidLoadLimits, before_recheck: F) -> Report<SourceGraph>
+where
+    F: FnOnce(),
+{
     let canonical = match fs::canonicalize(root) {
         Ok(path) => path,
         Err(error) => {
@@ -158,12 +165,13 @@ pub fn load_with_limits(root: &Path, limits: SquidLoadLimits) -> Report<SourceGr
             );
         }
     };
-    let mut loader = Loader::new(limits);
+    let mut loader = Loader::new(limits, root.to_path_buf(), canonical.clone());
     if let Ok(root_id) = loader.ensure_source(&canonical, None, &[]) {
         loader.root = Some(root_id);
         let mut active = vec![root_id];
         loader.expand_source(root_id, &[], &mut active);
     }
+    before_recheck();
     loader.final_recheck();
     loader.finish()
 }
@@ -179,11 +187,14 @@ struct Loader {
     aggregate_source_bytes: usize,
     expanded_count: usize,
     glob_work: usize,
+    glob_observations: Vec<GlobObservation>,
+    path_observations: Vec<PathObservation>,
+    root_observation: PathObservation,
     snapshot_stable: bool,
 }
 
 impl Loader {
-    fn new(limits: SquidLoadLimits) -> Self {
+    fn new(limits: SquidLoadLimits, requested_root: PathBuf, canonical_root: PathBuf) -> Self {
         Self {
             limits,
             root: None,
@@ -195,6 +206,12 @@ impl Loader {
             aggregate_source_bytes: 0,
             expanded_count: 0,
             glob_work: 0,
+            glob_observations: Vec::new(),
+            path_observations: Vec::new(),
+            root_observation: PathObservation {
+                requested: requested_root,
+                canonical: canonical_root,
+            },
             snapshot_stable: true,
         }
     }
@@ -471,7 +488,7 @@ impl Loader {
                 );
                 None
             }
-            Err(GlobFailure::Limit) => {
+            Err(GlobFailure::WorkLimit | GlobFailure::MatchLimit) => {
                 self.includes[edge_index].truncated = true;
                 self.includes[edge_index].failure = Some(E_SOURCE_LIMIT);
                 self.source_limit(
@@ -523,6 +540,10 @@ impl Loader {
                 return;
             }
         };
+        self.path_observations.push(PathObservation {
+            requested: path.clone(),
+            canonical: canonical.clone(),
+        });
         let target = match self.ensure_source(
             &canonical,
             Some(context.argument_span),
@@ -585,66 +606,40 @@ impl Loader {
                 Err(error) => Err(GlobFailure::Io(error)),
             };
         }
-        let mut paths = vec![PathBuf::from("/")];
-        for component in pattern.components() {
-            match component {
-                Component::RootDir | Component::CurDir => {}
-                Component::ParentDir => {
-                    for path in &mut paths {
-                        path.pop();
-                    }
-                }
-                Component::Normal(segment) if has_glob(segment.as_bytes()) => {
-                    let mut matches = Vec::new();
-                    for parent in &paths {
-                        let mut entries = fs::read_dir(parent)
-                            .map_err(GlobFailure::Io)?
-                            .collect::<Result<Vec<_>, _>>()
-                            .map_err(GlobFailure::Io)?;
-                        entries.sort_by(|left, right| {
-                            left.file_name()
-                                .as_bytes()
-                                .cmp(right.file_name().as_bytes())
-                        });
-                        for entry in entries {
-                            self.glob_work =
-                                self.glob_work.checked_add(1).ok_or(GlobFailure::Limit)?;
-                            if self.glob_work > self.limits.max_glob_work {
-                                return Err(GlobFailure::Limit);
-                            }
-                            let name = entry.file_name();
-                            if glob_matches(segment.as_bytes(), name.as_bytes()) {
-                                matches.push(entry.path());
-                                if matches.len() > self.limits.max_glob_matches {
-                                    return Err(GlobFailure::Limit);
-                                }
-                            }
-                        }
-                    }
-                    paths = matches;
-                }
-                Component::Normal(segment) => {
-                    for path in &mut paths {
-                        path.push(segment);
-                    }
-                }
-                Component::Prefix(_) => unreachable!("Unix paths have no prefix component"),
-            }
-        }
-        paths.retain(|path| fs::metadata(path).is_ok_and(|metadata| metadata.is_file()));
-        paths.sort_by(|left, right| {
-            left.as_os_str()
-                .as_bytes()
-                .cmp(right.as_os_str().as_bytes())
+        let paths = expand_glob(
+            pattern,
+            &mut self.glob_work,
+            self.limits.max_glob_work,
+            self.limits.max_glob_matches,
+        )?;
+        self.glob_observations.push(GlobObservation {
+            pattern: pattern.to_path_buf(),
+            matches: paths.clone(),
         });
-        paths.dedup();
-        if paths.len() > self.limits.max_glob_matches {
-            return Err(GlobFailure::Limit);
-        }
         Ok(paths)
     }
 
     fn final_recheck(&mut self) {
+        if path_identity_changed(&self.root_observation) {
+            self.snapshot_stable = false;
+            self.diagnostics.push(Diagnostic::new(
+                E_SOURCE_CHANGED,
+                Severity::Error,
+                DiagnosticStage::Source,
+                "Squid root path identity changed while the include graph was being loaded",
+            ));
+        }
+        for observation in &self.path_observations {
+            if path_identity_changed(observation) {
+                self.snapshot_stable = false;
+                self.diagnostics.push(Diagnostic::new(
+                    E_SOURCE_CHANGED,
+                    Severity::Error,
+                    DiagnosticStage::Source,
+                    "Squid include path identity changed while the include graph was being loaded",
+                ));
+            }
+        }
         for record in &self.sources {
             let changed = stable_read(&record.parsed.canonical_path, self.limits.max_source_bytes)
                 .map_or(true, |(bytes, fingerprint)| {
@@ -662,6 +657,31 @@ impl Loader {
                     .with_primary_span(record.parsed.source.full_span())
                     .with_include_stack(record.first_include_stack.iter().copied()),
                 );
+            }
+        }
+        let mut glob_work = 0;
+        for observation in &self.glob_observations {
+            let (changed, work_exhausted) = match expand_glob(
+                &observation.pattern,
+                &mut glob_work,
+                self.limits.max_glob_work,
+                self.limits.max_glob_matches,
+            ) {
+                Ok(paths) => (paths != observation.matches, false),
+                Err(GlobFailure::WorkLimit) => (true, true),
+                Err(GlobFailure::MatchLimit | GlobFailure::Io(_)) => (true, false),
+            };
+            if changed {
+                self.snapshot_stable = false;
+                self.diagnostics.push(Diagnostic::new(
+                    E_SOURCE_CHANGED,
+                    Severity::Error,
+                    DiagnosticStage::Source,
+                    "Squid include glob result changed while the include graph was being loaded",
+                ));
+            }
+            if work_exhausted {
+                break;
             }
         }
     }
@@ -730,6 +750,16 @@ struct SourceRecord {
     first_include_stack: Vec<Span>,
 }
 
+struct GlobObservation {
+    pattern: PathBuf,
+    matches: Vec<PathBuf>,
+}
+
+struct PathObservation {
+    requested: PathBuf,
+    canonical: PathBuf,
+}
+
 struct IncludeTargetContext<'a> {
     source: SourceId,
     directive: &'a Directive,
@@ -770,8 +800,75 @@ impl SourceLoadFailure {
 }
 
 enum GlobFailure {
-    Limit,
+    WorkLimit,
+    MatchLimit,
     Io(io::Error),
+}
+
+fn path_identity_changed(observation: &PathObservation) -> bool {
+    !fs::canonicalize(&observation.requested)
+        .is_ok_and(|canonical| canonical == observation.canonical)
+}
+
+fn expand_glob(
+    pattern: &Path,
+    work: &mut usize,
+    work_limit: usize,
+    match_limit: usize,
+) -> Result<Vec<PathBuf>, GlobFailure> {
+    let mut paths = vec![PathBuf::from("/")];
+    for component in pattern.components() {
+        match component {
+            Component::RootDir | Component::CurDir => {}
+            Component::ParentDir => {
+                for path in &mut paths {
+                    path.pop();
+                }
+            }
+            Component::Normal(segment) if has_glob(segment.as_bytes()) => {
+                let mut matches = Vec::new();
+                for parent in &paths {
+                    for entry in fs::read_dir(parent).map_err(GlobFailure::Io)? {
+                        let entry = entry.map_err(GlobFailure::Io)?;
+                        if *work >= work_limit {
+                            return Err(GlobFailure::WorkLimit);
+                        }
+                        *work = work.checked_add(1).ok_or(GlobFailure::WorkLimit)?;
+                        let name = entry.file_name();
+                        if glob_matches(segment.as_bytes(), name.as_bytes()) {
+                            if matches.len() >= match_limit {
+                                return Err(GlobFailure::MatchLimit);
+                            }
+                            matches.push(entry.path());
+                        }
+                    }
+                }
+                matches.sort_by(|left, right| {
+                    left.as_os_str()
+                        .as_bytes()
+                        .cmp(right.as_os_str().as_bytes())
+                });
+                paths = matches;
+            }
+            Component::Normal(segment) => {
+                for path in &mut paths {
+                    path.push(segment);
+                }
+            }
+            Component::Prefix(_) => unreachable!("Unix paths have no prefix component"),
+        }
+    }
+    paths.retain(|path| fs::metadata(path).is_ok_and(|metadata| metadata.is_file()));
+    paths.sort_by(|left, right| {
+        left.as_os_str()
+            .as_bytes()
+            .cmp(right.as_os_str().as_bytes())
+    });
+    paths.dedup();
+    if paths.len() > match_limit {
+        return Err(GlobFailure::MatchLimit);
+    }
+    Ok(paths)
 }
 
 fn path_has_glob(path: &Path) -> bool {
@@ -834,7 +931,13 @@ fn class_match(pattern: &[u8], value: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::glob_matches;
+    use std::{fs, os::unix::fs::symlink};
+
+    use tempfile::tempdir;
+
+    use crate::E_SOURCE_CHANGED;
+
+    use super::{SquidLoadLimits, glob_matches, load_inner};
 
     #[test]
     fn byte_glob_supports_squid_include_shapes() {
@@ -842,5 +945,176 @@ mod tests {
         assert!(glob_matches(b"[0-9]?.conf", b"10.conf"));
         assert!(!glob_matches(b"*.conf", b".private.conf"));
         assert!(!glob_matches(b"[!0-9]*", b"1.conf"));
+    }
+
+    #[test]
+    fn final_recheck_detects_root_symlink_retarget() {
+        let directory = tempdir().expect("tempdir");
+        let original = directory.path().join("original.conf");
+        let replacement = directory.path().join("replacement.conf");
+        let root = directory.path().join("squid.conf");
+        fs::write(&original, b"via off\n").expect("original root");
+        fs::write(&replacement, b"via off\n").expect("replacement root");
+        symlink(&original, &root).expect("root symlink");
+
+        let report = load_inner(&root, SquidLoadLimits::default(), || {
+            fs::remove_file(&root).expect("remove root symlink");
+            symlink(&replacement, &root).expect("retarget root symlink");
+        });
+
+        assert_changed(
+            &report,
+            "Squid root path identity changed while the include graph was being loaded",
+        );
+    }
+
+    #[test]
+    fn final_recheck_detects_include_symlink_retarget() {
+        let directory = tempdir().expect("tempdir");
+        let original = directory.path().join("original.conf");
+        let replacement = directory.path().join("replacement.conf");
+        let included = directory.path().join("included.conf");
+        let root = directory.path().join("squid.conf");
+        fs::write(&original, b"via off\n").expect("original include");
+        fs::write(&replacement, b"via off\n").expect("replacement include");
+        symlink(&original, &included).expect("include symlink");
+        fs::write(&root, b"include included.conf\n").expect("root source");
+
+        let report = load_inner(&root, SquidLoadLimits::default(), || {
+            fs::remove_file(&included).expect("remove include symlink");
+            symlink(&replacement, &included).expect("retarget include symlink");
+        });
+
+        assert_changed(
+            &report,
+            "Squid include path identity changed while the include graph was being loaded",
+        );
+    }
+
+    #[test]
+    fn final_recheck_detects_glob_addition() {
+        let directory = tempdir().expect("tempdir");
+        let includes = directory.path().join("conf.d");
+        let root = directory.path().join("squid.conf");
+        fs::create_dir(&includes).expect("include directory");
+        fs::write(includes.join("10-base.conf"), b"via off\n").expect("base include");
+        fs::write(&root, b"include conf.d/*.conf\n").expect("root source");
+
+        let report = load_inner(&root, SquidLoadLimits::default(), || {
+            fs::write(includes.join("20-added.conf"), b"via off\n").expect("added include");
+        });
+
+        assert_changed(
+            &report,
+            "Squid include glob result changed while the include graph was being loaded",
+        );
+    }
+
+    #[test]
+    fn final_recheck_stops_at_configured_work_limit_after_glob_growth() {
+        let directory = tempdir().expect("tempdir");
+        let include_dir = directory.path().join("conf.d");
+        let root = directory.path().join("squid.conf");
+        fs::create_dir(&include_dir).expect("include directory");
+        fs::write(include_dir.join("10-base.conf"), b"via off\n").expect("base include");
+        fs::write(&root, b"include conf.d/*.conf\n").expect("root source");
+        let limits = SquidLoadLimits {
+            max_glob_work: 1,
+            ..SquidLoadLimits::default()
+        };
+
+        let report = load_inner(&root, limits, || {
+            for ordinal in 0..64 {
+                fs::write(
+                    include_dir.join(format!("20-added-{ordinal:02}.conf")),
+                    b"via off\n",
+                )
+                .expect("added include");
+            }
+        });
+
+        assert_single_glob_change(&report);
+    }
+
+    #[test]
+    fn final_recheck_stops_at_configured_match_limit_after_glob_growth() {
+        let directory = tempdir().expect("tempdir");
+        let include_dir = directory.path().join("conf.d");
+        let root = directory.path().join("squid.conf");
+        fs::create_dir(&include_dir).expect("include directory");
+        fs::write(include_dir.join("10-base.conf"), b"via off\n").expect("base include");
+        fs::write(&root, b"include conf.d/*.conf\n").expect("root source");
+        let limits = SquidLoadLimits {
+            max_glob_matches: 1,
+            ..SquidLoadLimits::default()
+        };
+
+        let report = load_inner(&root, limits, || {
+            fs::write(include_dir.join("20-added.conf"), b"via off\n").expect("added include");
+        });
+
+        assert_single_glob_change(&report);
+    }
+
+    #[test]
+    fn final_recheck_detects_glob_removal() {
+        let directory = tempdir().expect("tempdir");
+        let includes = directory.path().join("conf.d");
+        let root = directory.path().join("squid.conf");
+        fs::create_dir(&includes).expect("include directory");
+        fs::write(includes.join("10-base.conf"), b"via off\n").expect("base include");
+        let removed = includes.join("20-removed.conf");
+        fs::write(&removed, b"via off\n").expect("removable include");
+        fs::write(&root, b"include conf.d/*.conf\n").expect("root source");
+
+        let report = load_inner(&root, SquidLoadLimits::default(), || {
+            fs::remove_file(&removed).expect("remove include");
+        });
+
+        assert_changed(
+            &report,
+            "Squid include glob result changed while the include graph was being loaded",
+        );
+    }
+
+    #[test]
+    fn final_recheck_accepts_an_unchanged_source_graph() {
+        let directory = tempdir().expect("tempdir");
+        let includes = directory.path().join("conf.d");
+        let root_target = directory.path().join("root-target.conf");
+        let root = directory.path().join("squid.conf");
+        let include_target = directory.path().join("include-target.conf");
+        let include_link = directory.path().join("included.conf");
+        fs::create_dir(&includes).expect("include directory");
+        fs::write(&include_target, b"via off\n").expect("include target");
+        symlink(&include_target, &include_link).expect("include symlink");
+        fs::write(includes.join("10-base.conf"), b"via off\n").expect("glob include");
+        fs::write(&root_target, b"include included.conf conf.d/*.conf\n").expect("root target");
+        symlink(&root_target, &root).expect("root symlink");
+
+        let report = load_inner(&root, SquidLoadLimits::default(), || {});
+
+        assert!(report.value().snapshot_stable);
+        assert!(report.diagnostics().is_empty());
+    }
+
+    fn assert_changed(report: &crate::Report<super::SourceGraph>, message: &str) {
+        assert!(!report.value().snapshot_stable);
+        assert!(report.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code() == E_SOURCE_CHANGED && diagnostic.message() == message
+        }));
+    }
+
+    fn assert_single_glob_change(report: &crate::Report<super::SourceGraph>) {
+        let message = "Squid include glob result changed while the include graph was being loaded";
+        assert_changed(report, message);
+        assert_eq!(
+            report
+                .diagnostics()
+                .iter()
+                .filter(|diagnostic| diagnostic.message() == message)
+                .count(),
+            1
+        );
     }
 }
