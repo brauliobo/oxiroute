@@ -8,7 +8,7 @@ use oxiroute_import::{
     nginx::{
         DefaultServerSelection, HttpDeclaration, HttpResolution, LocationKind,
         OccurrenceDisposition, ProxyPassScheme, ServerNameKind, SourceGraph, StaticEndpoint,
-        UpstreamReference, load, resolve_http,
+        UpstreamReference, load, resolve_http_fragment,
     },
 };
 use tempfile::TempDir;
@@ -421,7 +421,7 @@ fn failed_reachable_includes_have_blocking_decisions_with_source_spans() {
     fs::create_dir(directory.path().join("unreadable.conf")).expect("create unreadable include");
     let loaded = load(Path::new("nginx.conf"), directory.path());
     let graph = loaded.value().clone();
-    let resolved = resolve_http(loaded);
+    let resolved = resolve_http_fragment(loaded);
 
     assert!(
         resolved
@@ -473,7 +473,7 @@ fn every_expanded_occurrence_has_one_ordered_terminal_decision() {
     "#;
     let loaded = load_source(root, &[("site.conf", included)]);
     let graph = loaded.value().clone();
-    let resolved = resolve_http(loaded);
+    let resolved = resolve_http_fragment(loaded);
     let decisions = &resolved.value().decisions;
 
     assert_eq!(decisions.len(), graph.expanded_occurrences.len());
@@ -585,7 +585,7 @@ fn resolve_source(
     root: &[u8],
     includes: &[(&str, &[u8])],
 ) -> oxiroute_import::Report<HttpResolution> {
-    resolve_http(load_source(root, includes))
+    resolve_http_fragment(load_source(root, includes))
 }
 
 fn write(path: &Path, contents: &[u8]) {

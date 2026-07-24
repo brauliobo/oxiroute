@@ -12,7 +12,7 @@ use crate::{CanonicalDraft, CanonicalProvenance, Diagnostic, DiagnosticCode};
 
 use super::{DirectiveOrigin, HttpResolution, SourceGraph};
 
-pub use report::{BlockedService, ImportReport, import_http};
+pub use report::{BlockedService, ImportReport, import_http_fragment};
 
 struct Lowerer {
     graph: SourceGraph,
@@ -47,12 +47,18 @@ struct BindBlock {
 struct BindCandidate {
     listener: Listener,
     service: HttpService,
-    pools: Vec<UpstreamPool>,
+    pools: Vec<PoolCandidate>,
     certificates: Vec<Certificate>,
     tls_profile: Option<TlsProfile>,
     origins: Vec<DirectiveOrigin>,
     route_origins: Vec<Vec<DirectiveOrigin>>,
-    pool_origins: Vec<Vec<DirectiveOrigin>>,
+}
+
+#[derive(Clone)]
+struct PoolCandidate {
+    pool: UpstreamPool,
+    origin: DirectiveOrigin,
+    endpoint_origins: Vec<DirectiveOrigin>,
 }
 
 struct LowerIssue {

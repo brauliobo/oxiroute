@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, fs, path::Path};
 
 use oxiroute_import::{
     DiagnosticStage,
-    nginx::{ImportReport as NginxImportReport, OccurrenceDisposition, import_http},
+    nginx::{ImportReport as NginxImportReport, OccurrenceDisposition, import_http_fragment},
 };
 use tempfile::TempDir;
 
@@ -116,7 +116,7 @@ fn nginx_manifest_contexts_and_cross_directive_requirements_are_executable() {
         "include site-*.conf;\n",
     )
     .expect("write nginx glob include root");
-    let glob_include = import_http(Path::new("nginx.conf"), include_directory.path());
+    let glob_include = import_http_fragment(Path::new("nginx.conf"), include_directory.path());
     assert_nginx_probe(include, &glob_include, "glob include");
 
     let defaults = import_nginx_plaintext_supported_fixture();
@@ -141,7 +141,7 @@ fn nginx_manifest_contexts_and_cross_directive_requirements_are_executable() {
     )
     .expect("write nginx glob grammar probe");
     fs::create_dir(directory.path().join("matches")).expect("create nginx glob probe directory");
-    let invalid_glob = import_http(Path::new("nginx.conf"), directory.path());
+    let invalid_glob = import_http_fragment(Path::new("nginx.conf"), directory.path());
     assert_diagnostic_message(&invalid_glob.diagnostics, "glob grammar");
 }
 
@@ -152,6 +152,8 @@ fn nginx_exposes_only_the_report_preserving_canonical_import_entry_point() {
 
     assert!(!module.contains("lower_http"));
     assert!(!lower.contains("pub fn lower_http"));
+    assert!(module.contains("import_http_fragment"));
+    assert!(!module.contains("import_http,"));
 }
 
 fn assert_nginx_probe(entry: &DirectiveForm, report: &NginxImportReport, label: &str) {
@@ -222,27 +224,27 @@ fn import_nginx_registration_fixture() -> NginxImportReport {
         }),
     )
     .expect("write nginx registration include");
-    import_http(Path::new("nginx.conf"), directory.path())
+    import_http_fragment(Path::new("nginx.conf"), directory.path())
 }
 
 fn import_nginx_probe(entry: &DirectiveForm) -> NginxImportReport {
     let directory = TempDir::new().expect("create nginx directive probe directory");
     let source = nginx_probe_source(entry.id.as_str(), directory.path());
     fs::write(directory.path().join("nginx.conf"), source).expect("write nginx directive probe");
-    import_http(Path::new("nginx.conf"), directory.path())
+    import_http_fragment(Path::new("nginx.conf"), directory.path())
 }
 
 fn import_nginx_context_probe(entry: &DirectiveForm, context: &str) -> NginxImportReport {
     let directory = TempDir::new().expect("create nginx context probe directory");
     let source = nginx_context_probe_source(entry, context, directory.path());
     fs::write(directory.path().join("nginx.conf"), source).expect("write nginx context probe");
-    import_http(Path::new("nginx.conf"), directory.path())
+    import_http_fragment(Path::new("nginx.conf"), directory.path())
 }
 
 fn import_nginx_source(source: String) -> NginxImportReport {
     let directory = TempDir::new().expect("create nginx source probe directory");
     fs::write(directory.path().join("nginx.conf"), source).expect("write nginx source probe");
-    import_http(Path::new("nginx.conf"), directory.path())
+    import_http_fragment(Path::new("nginx.conf"), directory.path())
 }
 
 fn nginx_context_probe_source(entry: &DirectiveForm, context: &str, directory: &Path) -> String {
@@ -331,6 +333,8 @@ fn nginx_probe_source(id: &str, directory: &Path) -> String {
         id if id.starts_with("directive.nginx.server-name.") => nginx_server_name_probe(id),
         id if id.starts_with("directive.nginx.location.") => nginx_location_probe(id),
         id if id.starts_with("directive.nginx.proxy-pass.") => nginx_proxy_pass_probe(id),
+        "directive.nginx.proxy-pass-header.date" => render_nginx_fixture(standard_nginx_fixture())
+            .replace("proxy_pass_header Server;", "proxy_pass_header Date;"),
         id if id.starts_with("directive.nginx.proxy-http-version.") => {
             nginx_proxy_http_version_probe(id)
         }
@@ -358,6 +362,7 @@ fn nginx_probe_source(id: &str, directory: &Path) -> String {
         | "directive.nginx.proxy-set-header.exact"
         | "directive.nginx.proxy-hide-header.exact"
         | "directive.nginx.proxy-pass-header.classified"
+        | "directive.nginx.proxy-ignore-headers.controls"
         | "directive.nginx.proxy-cookie-path.literal"
         | "directive.nginx.ssl-certificate"
         | "directive.nginx.ssl-certificate-key"
@@ -520,7 +525,7 @@ fn render_nginx_fixture(spec: NginxFixtureSpec<'_>) -> String {
     ))
     .expect("canonical private-key fixture path");
     format!(
-        "http {{\n  client_max_body_size 2m;\n  proxy_connect_timeout 15s;\n  proxy_read_timeout 15s;\n  proxy_send_timeout 15s;\n  proxy_http_version {};\n  proxy_buffering off;\n  proxy_request_buffering off;\n  proxy_next_upstream off;\n  proxy_next_upstream_tries 1;\n  proxy_set_header Host $http_host;\n  proxy_hide_header X-Powered-By;\n  proxy_pass_header X-Accel-Redirect;\n  proxy_cookie_path / /application;\n  auth_basic off;\n  {}\n  upstream app {{ server {}; }}\n  server {{\n    listen {};\n    server_name {};\n    ssl_certificate {};\n    ssl_certificate_key {};\n    ssl_protocols TLSv1.2 TLSv1.3;\n    {}\n    {} {{ proxy_pass {}; }}\n  }}\n}}\n",
+        "http {{\n  client_max_body_size 2m;\n  proxy_connect_timeout 15s;\n  proxy_read_timeout 15s;\n  proxy_send_timeout 15s;\n  proxy_http_version {};\n  proxy_buffering off;\n  proxy_request_buffering off;\n  proxy_next_upstream off;\n  proxy_next_upstream_tries 1;\n  proxy_set_header Host $http_host;\n  proxy_hide_header X-Powered-By;\n  proxy_pass_header Server;\n  proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;\n  proxy_cookie_path / /application;\n  auth_basic off;\n  {}\n  upstream app {{ server {}; }}\n  server {{\n    listen {};\n    server_name {};\n    ssl_certificate {};\n    ssl_certificate_key {};\n    ssl_protocols TLSv1.2 TLSv1.3;\n    {}\n    {} {{ proxy_pass {}; }}\n  }}\n}}\n",
         spec.proxy_http_version,
         spec.extra_http,
         spec.upstream_server,

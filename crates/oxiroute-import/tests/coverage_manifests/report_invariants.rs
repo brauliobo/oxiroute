@@ -12,8 +12,8 @@ use oxiroute_import::{
         resolve_parsed,
     },
     nginx::{
-        ImportReport as NginxImportReport, OccurrenceDisposition, RtmpImportReport, import_http,
-        import_rtmp,
+        ImportReport as NginxImportReport, OccurrenceDisposition, RtmpImportReport,
+        import_http_fragment, import_rtmp,
     },
 };
 use tempfile::TempDir;
@@ -99,14 +99,14 @@ pub(crate) fn import_nginx_fixture(name: &str) -> NginxImportReport {
         .unwrap_or_else(|error| panic!("read nginx fixture {}: {error}", source_path.display()));
     let directory = TempDir::new().expect("create nginx fixture directory");
     fs::write(directory.path().join("nginx.conf"), source).expect("write nginx fixture root");
-    import_http(Path::new("nginx.conf"), directory.path())
+    import_http_fragment(Path::new("nginx.conf"), directory.path())
 }
 
 pub(crate) fn import_nginx_plaintext_supported_fixture() -> NginxImportReport {
     let directory = TempDir::new().expect("create nginx plaintext fixture directory");
     let source = "http {\n  client_max_body_size 2m;\n  proxy_connect_timeout 15s;\n  proxy_read_timeout 15s;\n  proxy_send_timeout 15s;\n  proxy_http_version 1.1;\n  upstream app { server 127.0.0.1:3000; }\n  server {\n    listen 127.0.0.1:18080 default_server;\n    server_name app.example;\n    location / { proxy_pass http://app; }\n  }\n}\n";
     fs::write(directory.path().join("nginx.conf"), source).expect("write nginx plaintext fixture");
-    import_http(Path::new("nginx.conf"), directory.path())
+    import_http_fragment(Path::new("nginx.conf"), directory.path())
 }
 
 pub(crate) fn import_rtmp_fixture(name: &str) -> RtmpImportReport {

@@ -23,7 +23,7 @@ pub use loader::{
     load_with_limits,
 };
 #[cfg(unix)]
-pub use lower::{BlockedService, ImportReport, import_http};
+pub use lower::{BlockedService, ImportReport, import_http_fragment};
 pub use parser::{Directive, Document, Word, parse};
 #[cfg(unix)]
 pub use rtmp_lower::{BlockedRtmpService, RtmpImportReport, import_rtmp};
@@ -38,7 +38,7 @@ pub use semantic::{
     EffectiveListen, EffectiveLocation, EffectiveProxyPass, EffectiveServer, EffectiveServerName,
     EffectiveUpstream, EffectiveUpstreamServer, HttpDeclaration, HttpResolution, ListenEndpoint,
     LocationKind, NginxValue, OccurrenceDecision, OccurrenceDisposition, ProxyPassScheme,
-    ServerDeclaration, ServerNameKind, StaticEndpoint, UpstreamReference, resolve_http,
+    ServerDeclaration, ServerNameKind, StaticEndpoint, UpstreamReference, resolve_http_fragment,
 };
 
 /// Syntax errors produced while reading nginx source.

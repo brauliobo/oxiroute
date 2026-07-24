@@ -216,8 +216,9 @@ pub enum UpstreamReference {
     Variable,
 }
 
+/// Resolves an expanded nginx fragment whose root contains only an `http` block.
 #[must_use]
-pub fn resolve_http(loaded: Report<SourceGraph>) -> Report<HttpResolution> {
+pub fn resolve_http_fragment(loaded: Report<SourceGraph>) -> Report<HttpResolution> {
     let (graph, mut diagnostics) = loaded.into_parts();
     let (resolution, resolve_diagnostics) = resolve_http_graph(&graph).into_parts();
     diagnostics.extend(resolve_diagnostics);
@@ -262,10 +263,12 @@ impl<'a> Resolver<'a> {
                 }
                 http_blocks.push(self.resolve_http_block(directive));
             } else {
-                self.block_subtree(
-                    directive,
-                    "directive is outside the supported nginx HTTP root",
-                );
+                let message = if directive.directive.name.value == b"events" {
+                    "complete nginx configuration is not an HTTP fragment; expected only an http block"
+                } else {
+                    "directive is outside the nginx HTTP fragment root"
+                };
+                self.block_subtree(directive, message);
             }
         }
 
@@ -1490,6 +1493,7 @@ fn is_location_policy(name: &[u8]) -> bool {
             | b"proxy_set_header"
             | b"proxy_hide_header"
             | b"proxy_pass_header"
+            | b"proxy_ignore_headers"
             | b"proxy_cookie_path"
             | b"root"
             | b"index"
@@ -1522,7 +1526,7 @@ fn is_scalar_policy(name: &[u8]) -> bool {
 
 fn policy_argument_count_valid(name: &[u8], count: usize) -> bool {
     match name {
-        b"ssl_protocols" | b"index" | b"proxy_next_upstream" => count > 0,
+        b"ssl_protocols" | b"index" | b"proxy_next_upstream" | b"proxy_ignore_headers" => count > 0,
         b"proxy_set_header" | b"proxy_cookie_path" => count == 2,
         b"return" => matches!(count, 1 | 2),
         _ => count == 1,
