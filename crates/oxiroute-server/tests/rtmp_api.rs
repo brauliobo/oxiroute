@@ -190,10 +190,10 @@ fn exposes_runtime_listener_and_rtmp_monitoring() {
 
     assert_eq!(response.status, 200);
     assert!(body["sampledAtUnixMs"].as_u64().is_some());
-    assert_eq!(body["traffic"]["acceptedConnections"], 1);
+    assert_eq!(body["traffic"]["acceptedConnections"], "1");
     assert_eq!(body["traffic"]["activeConnections"], 1);
-    assert_eq!(body["traffic"]["bytesReceived"], 4_096);
-    assert_eq!(body["traffic"]["bytesSent"], 3_073);
+    assert_eq!(body["traffic"]["bytesReceived"], "4096");
+    assert_eq!(body["traffic"]["bytesSent"], "3073");
     assert_eq!(body["listeners"][0]["protocol"], "rtmp");
     assert_eq!(body["upstreamPools"].as_array().map(Vec::len), Some(0));
     assert_eq!(body["certbotCertificates"], serde_json::json!([]));
@@ -201,8 +201,54 @@ fn exposes_runtime_listener_and_rtmp_monitoring() {
     assert_eq!(body["rtmp"]["activeStreams"], 1);
     assert_eq!(body["rtmp"]["publishers"], 1);
     assert_eq!(body["rtmp"]["subscribers"], 0);
-    assert_eq!(body["rtmp"]["mediaPayloadBytesReceived"], 9_216);
+    assert_eq!(body["rtmp"]["mediaPayloadBytesReceived"], "9216");
+    assert_eq!(body["rtmp"]["recorderBytesWritten"], "0");
+    assert_eq!(body["rtmp"]["recorderSegmentsStarted"], "0");
+    assert_eq!(body["rtmp"]["recorderSegmentsCompleted"], "0");
+    assert_eq!(body["rtmp"]["recorderDiscontinuities"], "0");
     assert_eq!(api.handle("POST", "/api/v1/monitoring", 300).status, 405);
+}
+
+#[test]
+fn monitoring_response_preserves_large_rtmp_cumulative_totals() {
+    let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
+        live_ingest: true,
+        manual_recording: false,
+    }));
+    let publisher = SessionId::new();
+    let stream_id = registry
+        .attach_publisher(
+            StreamKey::new("live", "broadcast", "large-counter"),
+            publisher,
+            Vec::new(),
+            100,
+        )
+        .expect("publisher");
+    registry
+        .update_media_sample(
+            stream_id,
+            publisher,
+            1,
+            MediaSnapshot {
+                audio: TrackSnapshot {
+                    payload_bytes_received: u64::MAX,
+                    ..TrackSnapshot::default()
+                },
+                ..MediaSnapshot::default()
+            },
+            200,
+        )
+        .expect("media sample");
+    let api = management_api(registry, RuntimeMetrics::new());
+
+    let response = api.handle("GET", "/api/v1/monitoring", 300);
+    let body: Value = serde_json::from_slice(&response.body).expect("JSON response");
+
+    assert_eq!(response.status, 200);
+    assert_eq!(
+        body["rtmp"]["mediaPayloadBytesReceived"],
+        u64::MAX.to_string()
+    );
 }
 
 #[tokio::test]

@@ -72,9 +72,16 @@ impl HealthTarget {
     async fn run_probe(&self) -> Result<(), HealthFailure> {
         let addresses = self
             .endpoint
-            .resolve()
+            .resolve_addresses()
             .await
             .map_err(|_| HealthFailure::ConnectFailed)?;
+        self.run_probe_addresses(&addresses).await
+    }
+
+    async fn run_probe_addresses(
+        &self,
+        addresses: &[std::net::SocketAddr],
+    ) -> Result<(), HealthFailure> {
         let mut last_failure = HealthFailure::ConnectFailed;
         for address in addresses {
             let backend =
@@ -274,7 +281,10 @@ fn unix_time_ms() -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{
+        Mutex as StdMutex,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     use super::*;
 
@@ -283,6 +293,72 @@ mod tests {
         maximum_active: AtomicUsize,
         release: Semaphore,
         started: AtomicUsize,
+    }
+
+    struct AddressFallbackCheck {
+        attempts: StdMutex<Vec<std::net::SocketAddr>>,
+        healthy: std::net::SocketAddr,
+    }
+
+    #[async_trait]
+    impl HealthCheck for AddressFallbackCheck {
+        async fn check(&self, target: &Backend) -> pingora::Result<()> {
+            let address = *target.addr.as_inet().expect("inet health target");
+            self.attempts.lock().expect("health attempts").push(address);
+            if address == self.healthy {
+                Ok(())
+            } else {
+                Err(pingora::Error::new_in(ErrorType::ConnectRefused))
+            }
+        }
+
+        fn health_threshold(&self, _success: bool) -> usize {
+            1
+        }
+    }
+
+    #[tokio::test]
+    async fn health_falls_back_to_the_second_resolved_address() {
+        let first = std::net::SocketAddr::from(([192, 0, 2, 1], 443));
+        let second = std::net::SocketAddr::from(([192, 0, 2, 2], 443));
+        let endpoint = RuntimeEndpoint::Dns {
+            host: "origin.example.test".into(),
+            port: 443,
+        };
+        let pool = Arc::new(
+            RoundRobinPool::new_named(
+                "fallback".into(),
+                [endpoint.clone()],
+                oxiroute_config::UpstreamAlgorithm::RoundRobin,
+                true,
+            )
+            .expect("health pool"),
+        );
+        let check = Arc::new(AddressFallbackCheck {
+            attempts: StdMutex::new(Vec::new()),
+            healthy: second,
+        });
+        let target = HealthTarget {
+            check: Arc::<AddressFallbackCheck>::clone(&check),
+            endpoint,
+            endpoint_index: 0,
+            healthy_threshold: 1,
+            pool,
+            pool_name: "fallback".into(),
+            probe_lock: Arc::new(Mutex::new(())),
+            timeout: Duration::from_secs(1),
+            unhealthy_threshold: 1,
+        };
+
+        target
+            .run_probe_addresses(&[first, second])
+            .await
+            .expect("second address is healthy");
+
+        assert_eq!(
+            *check.attempts.lock().expect("health attempts"),
+            vec![first, second]
+        );
     }
 
     #[async_trait]

@@ -82,13 +82,13 @@ async fn built_management_ui_and_authenticated_config_lifecycle_run_over_real_tc
             "activeStreams": 0,
             "publishers": 0,
             "subscribers": 0,
-            "mediaPayloadBytesReceived": 0,
+            "mediaPayloadBytesReceived": "0",
             "recordingSupported": false,
             "manualRecording": false,
-            "recorderBytesWritten": 0,
-            "recorderSegmentsStarted": 0,
-            "recorderSegmentsCompleted": 0,
-            "recorderDiscontinuities": 0,
+            "recorderBytesWritten": "0",
+            "recorderSegmentsStarted": "0",
+            "recorderSegmentsCompleted": "0",
+            "recorderDiscontinuities": "0",
             "recorders": [],
         })
     );

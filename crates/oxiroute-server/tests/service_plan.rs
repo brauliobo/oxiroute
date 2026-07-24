@@ -479,7 +479,11 @@ fn prepares_certbot_reconcilers_with_the_profile_active_generation() {
     );
     assert!(body["certbotCertificates"][0]["lastErrorCode"].is_null());
     assert_eq!(body["certbotWatcher"]["health"], "healthy");
-    assert!(body["certbotWatcher"]["rescans"].as_u64().is_some());
+    assert!(
+        body["certbotWatcher"]["rescans"]
+            .as_str()
+            .is_some_and(|value| value.parse::<u64>().is_ok())
+    );
     assert!(!serialized.contains("proxy.example.test"));
     assert!(!serialized.contains(&temp.path().display().to_string()));
     assert!(!serialized.contains("BEGIN CERTIFICATE"));

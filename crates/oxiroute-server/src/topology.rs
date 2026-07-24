@@ -99,10 +99,10 @@ impl TopologySnapshot {
                 state: listener_state(listener.state),
                 metrics: json!({
                     "activeConnections": listener.active_connections,
-                    "acceptedConnections": listener.accepted_connections,
-                    "rejectedConnections": listener.rejected_connections,
-                    "bytesReceived": listener.bytes_received,
-                    "bytesSent": listener.bytes_sent,
+                    "acceptedConnections": listener.accepted_connections.to_string(),
+                    "rejectedConnections": listener.rejected_connections.to_string(),
+                    "bytesReceived": listener.bytes_received.to_string(),
+                    "bytesSent": listener.bytes_sent.to_string(),
                 }),
             });
         }

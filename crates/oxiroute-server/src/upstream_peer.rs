@@ -1,8 +1,9 @@
-use std::{sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use http::Version;
 use oxiroute_config::HttpVersion;
 use pingora::{Error, ErrorType, protocols::Digest, upstreams::peer::HttpPeer};
+use tokio::time::Instant;
 
 use crate::{EndpointLease, RoundRobinPool, RuntimeEndpoint, UpstreamTlsPlan};
 
@@ -51,48 +52,68 @@ impl UpstreamPlan {
         self.selector.has_unattempted(attempted)
     }
 
-    async fn peer(
+    fn peer(
+        &self,
+        address: SocketAddr,
+        connection_timeout: Duration,
+        io_timeout: Duration,
+    ) -> HttpPeer {
+        let mut peer = HttpPeer::new(address, false, String::new());
+        self.configure_peer(&mut peer, connection_timeout, io_timeout);
+        peer
+    }
+
+    fn unix_peer(
         &self,
         endpoint: &RuntimeEndpoint,
-        timeout: Duration,
+        connection_timeout: Duration,
+        io_timeout: Duration,
     ) -> pingora::Result<HttpPeer> {
-        let mut peer = match endpoint {
-            RuntimeEndpoint::Socket { address } => HttpPeer::new(*address, false, String::new()),
-            RuntimeEndpoint::Dns { .. } => {
-                let addresses = tokio::time::timeout(timeout, endpoint.resolve())
-                    .await
-                    .map_err(|_| dns_timeout(endpoint, timeout))?
-                    .map_err(|source| dns_failure(endpoint, source))?;
-                HttpPeer::new(addresses[0], false, String::new())
-            }
-            RuntimeEndpoint::Unix { path } => HttpPeer::new_uds(
-                path.to_str()
-                    .expect("runtime Unix endpoints passed UTF-8 preflight"),
-                false,
-                String::new(),
-            )?,
+        let RuntimeEndpoint::Unix { path } = endpoint else {
+            return Err(Error::new_in(ErrorType::InternalError));
         };
-        if let Some(tls) = &self.tls {
-            tls.apply_to_peer(&mut peer);
-        }
-        peer.options.connection_timeout = Some(timeout);
-        peer.options.total_connection_timeout = Some(timeout);
-        peer.options.read_timeout = Some(timeout);
-        peer.options.write_timeout = Some(timeout);
+        let mut peer = HttpPeer::new_uds(
+            path.to_str()
+                .expect("runtime Unix endpoints passed UTF-8 preflight"),
+            false,
+            String::new(),
+        )?;
+        self.configure_peer(&mut peer, connection_timeout, io_timeout);
         Ok(peer)
+    }
+
+    fn configure_peer(
+        &self,
+        peer: &mut HttpPeer,
+        connection_timeout: Duration,
+        io_timeout: Duration,
+    ) {
+        if let Some(tls) = &self.tls {
+            tls.apply_to_peer(peer);
+        }
+        peer.options.connection_timeout = Some(connection_timeout);
+        peer.options.total_connection_timeout = Some(connection_timeout);
+        peer.options.read_timeout = Some(io_timeout);
+        peer.options.write_timeout = Some(io_timeout);
     }
 }
 
 pub(crate) struct SelectedEndpoint {
+    addresses: Option<std::vec::IntoIter<SocketAddr>>,
+    deadline: Option<Instant>,
     endpoint: RuntimeEndpoint,
-    lease: EndpointLease,
+    _lease: EndpointLease,
+    unix_pending: bool,
 }
 
 impl SelectedEndpoint {
     fn new(lease: EndpointLease) -> Self {
         Self {
+            addresses: None,
+            deadline: None,
             endpoint: lease.endpoint().clone(),
-            lease,
+            _lease: lease,
+            unix_pending: true,
         }
     }
 
@@ -100,13 +121,65 @@ impl SelectedEndpoint {
         &self.endpoint
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_addresses(lease: EndpointLease, addresses: Vec<SocketAddr>) -> Self {
+        Self {
+            addresses: Some(addresses.into_iter()),
+            deadline: None,
+            endpoint: lease.endpoint().clone(),
+            _lease: lease,
+            unix_pending: true,
+        }
+    }
+
     pub(crate) async fn prepare_peer(
-        self,
+        &mut self,
         plan: &UpstreamPlan,
         timeout: Duration,
-    ) -> pingora::Result<(HttpPeer, EndpointLease)> {
-        let peer = plan.peer(&self.endpoint, timeout).await?;
-        Ok((peer, self.lease))
+    ) -> pingora::Result<HttpPeer> {
+        let remaining = self.remaining_timeout(timeout)?;
+        if matches!(self.endpoint, RuntimeEndpoint::Unix { .. }) {
+            if !self.unix_pending {
+                return Err(Error::new_in(ErrorType::InternalError));
+            }
+            self.unix_pending = false;
+            return plan.unix_peer(&self.endpoint, remaining, timeout);
+        }
+        if self.addresses.is_none() {
+            let addresses = tokio::time::timeout(remaining, self.endpoint.resolve_addresses())
+                .await
+                .map_err(|_| endpoint_timeout(&self.endpoint, timeout))?
+                .map_err(|source| dns_failure(&self.endpoint, source))?;
+            self.addresses = Some(addresses.into_iter());
+        }
+        let remaining = self.remaining_timeout(timeout)?;
+        let address = self
+            .addresses
+            .as_mut()
+            .and_then(Iterator::next)
+            .ok_or_else(|| Error::new_in(ErrorType::InternalError))?;
+        Ok(plan.peer(address, remaining, timeout))
+    }
+
+    pub(crate) fn has_address_fallback(&self) -> bool {
+        self.deadline
+            .is_none_or(|deadline| Instant::now() < deadline)
+            && self
+                .addresses
+                .as_ref()
+                .is_some_and(|addresses| !addresses.as_slice().is_empty())
+    }
+
+    fn remaining_timeout(&mut self, timeout: Duration) -> pingora::Result<Duration> {
+        let deadline = *self
+            .deadline
+            .get_or_insert_with(|| Instant::now() + timeout);
+        let now = Instant::now();
+        if now >= deadline {
+            Err(endpoint_timeout(&self.endpoint, timeout).into())
+        } else {
+            Ok(deadline - now)
+        }
     }
 }
 
@@ -156,12 +229,13 @@ pub(crate) fn validate_tls_connection(
     Ok(())
 }
 
-fn dns_timeout(endpoint: &RuntimeEndpoint, timeout: Duration) -> Error {
+fn endpoint_timeout(endpoint: &RuntimeEndpoint, timeout: Duration) -> Error {
     let mut error = *Error::explain(
         ErrorType::ConnectTimedout,
-        format!("DNS resolution for `{endpoint}` timed out after {timeout:?}"),
+        format!("connection attempts for `{endpoint}` timed out after {timeout:?}"),
     );
     error.as_up();
+    error.set_retry(false);
     error
 }
 
@@ -200,10 +274,58 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn endpoint_deadline_stops_address_fallback_with_a_non_retryable_timeout() {
+        let first = SocketAddr::from(([192, 0, 2, 1], 443));
+        let second = SocketAddr::from(([192, 0, 2, 2], 443));
+        let endpoint = RuntimeEndpoint::Dns {
+            host: "origin.example.test".into(),
+            port: 443,
+        };
+        let selector = Arc::new(
+            RoundRobinPool::new_named(
+                "deadline".into(),
+                [endpoint],
+                UpstreamAlgorithm::RoundRobin,
+                false,
+            )
+            .expect("deadline selector"),
+        );
+        let mut selected = SelectedEndpoint::with_addresses(
+            selector.select().expect("deadline lease"),
+            vec![first, second],
+        );
+        let plan = UpstreamPlan::new(selector, None);
+        let timeout = Duration::from_secs(1);
+
+        let first_peer = selected
+            .prepare_peer(&plan, timeout)
+            .await
+            .expect("first peer");
+        assert_eq!(first_peer.address().as_inet(), Some(&first));
+        selected.deadline = Some(Instant::now());
+
+        assert!(!selected.has_address_fallback());
+        let error = selected
+            .prepare_peer(&plan, timeout)
+            .await
+            .expect_err("expired deadline must stop fallback");
+        assert_eq!(error.etype(), &ErrorType::ConnectTimedout);
+        assert_eq!(error.esource(), &ErrorSource::Upstream);
+        assert!(!error.retry());
+        assert_eq!(
+            selected
+                .addresses
+                .as_ref()
+                .expect("resolved addresses")
+                .as_slice(),
+            &[second]
+        );
+    }
+
+    #[tokio::test]
     async fn compiled_upstream_peer_retains_tls_policy_timeouts_and_reuse_isolation() {
         let timeout = Duration::from_secs(7);
         let address = SocketAddr::from(([127, 0, 0, 1], 443));
-        let endpoint = RuntimeEndpoint::from(address);
         let tls = upstream_tls_plan(
             "origin.example.test",
             HttpVersion::Http11,
@@ -214,7 +336,7 @@ mod tests {
             Some(Arc::clone(&tls)),
         );
 
-        let peer = plan.peer(&endpoint, timeout).await.expect("TLS peer");
+        let peer = plan.peer(address, timeout, timeout);
         assert!(peer.is_tls());
         assert_eq!(peer.sni, "origin.example.test");
         assert!(peer.options.verify_cert);
@@ -227,10 +349,7 @@ mod tests {
         assert_eq!(peer.options.write_timeout, Some(timeout));
         assert_eq!(
             peer.reuse_hash(),
-            plan.peer(&endpoint, timeout)
-                .await
-                .expect("equivalent TLS peer")
-                .reuse_hash()
+            plan.peer(address, timeout, timeout).reuse_hash()
         );
 
         let isolated_tls = upstream_tls_plan(
@@ -239,15 +358,11 @@ mod tests {
             HttpVersion::Http2,
         );
         let isolated = UpstreamPlan::new(Arc::clone(plan.selector()), Some(isolated_tls))
-            .peer(&endpoint, timeout)
-            .await
-            .expect("isolated TLS peer");
+            .peer(address, timeout, timeout);
         assert_ne!(peer.reuse_hash(), isolated.reuse_hash());
 
-        let plaintext = UpstreamPlan::new(Arc::clone(plan.selector()), None)
-            .peer(&endpoint, timeout)
-            .await
-            .expect("plaintext peer");
+        let plaintext =
+            UpstreamPlan::new(Arc::clone(plan.selector()), None).peer(address, timeout, timeout);
         assert!(!plaintext.is_tls());
         assert!(plaintext.sni.is_empty());
         assert_eq!(plaintext.group_key, 0);

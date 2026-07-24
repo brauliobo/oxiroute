@@ -88,11 +88,11 @@ const topology: TopologySnapshot = {
     ),
   ],
   overlays: [
-    { nodeId: 'listener:4:edge', state: 'active', metrics: { activeConnections: 7 } },
+    { nodeId: 'listener:4:edge', state: 'listening', metrics: { activeConnections: 7 } },
     {
       nodeId: 'rtmp_listener:4:live',
-      state: 'active',
-      metrics: { activeConnections: 1, acceptedConnections: 1, bytesReceived: 1024, bytesSent: 0 },
+      state: 'configured',
+      metrics: { activeConnections: 1, acceptedConnections: '1', bytesReceived: '1024', bytesSent: '0' },
     },
     {
       nodeId: 'upstream_pool:3:web',
@@ -108,6 +108,22 @@ const topology: TopologySnapshot = {
 }
 
 describe('TopologyView', () => {
+  it.each([
+    ['starting', 'Starting'],
+    ['degraded', 'Degraded'],
+  ] as const)('renders the %s runtime status and light truthfully', (runtime, label) => {
+    const snapshot = structuredClone(topology)
+    snapshot.state.runtime = runtime
+
+    const wrapper = mount(TopologyView, { props: { topology: snapshot } })
+    const status = wrapper.get('.topology-state')
+
+    expect(status.classes()).toContain(`state-${runtime}`)
+    expect(status.text()).toBe(`${label} / schema 1`)
+    expect(status.attributes('aria-label')).toBe(`Runtime status: ${label}; topology schema 1`)
+    expect(status.get('.state-light').classes()).toContain(`state-light-${runtime}`)
+  })
+
   it('renders real nodes, typed connectors, distinct symbols, and runtime labels', () => {
     const wrapper = mount(TopologyView, { props: { topology } })
 

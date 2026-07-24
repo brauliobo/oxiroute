@@ -256,6 +256,10 @@ fn serves_active_topology_with_name_joined_runtime_overlays() {
         .expect("web runtime overlay");
     assert_eq!(web_overlay["state"], "listening");
     assert_eq!(web_overlay["metrics"]["activeConnections"], 1);
+    assert_eq!(web_overlay["metrics"]["acceptedConnections"], "1");
+    assert_eq!(web_overlay["metrics"]["rejectedConnections"], "0");
+    assert_eq!(web_overlay["metrics"]["bytesReceived"], "0");
+    assert_eq!(web_overlay["metrics"]["bytesSent"], "0");
     let api_pool = overlays
         .iter()
         .find(|overlay| overlay["nodeId"] == "upstream_pool:3:api")

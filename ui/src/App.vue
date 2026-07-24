@@ -179,12 +179,17 @@ main.console-shell(:aria-busy="activeView === 'overview' && monitoring === null 
         span.listener-count {{ monitoring.listeners.length }} {{ monitoring.listeners.length === 1 ? 'endpoint' : 'endpoints' }}
       p.listener-empty(v-if="monitoring.listeners.length === 0") No listeners are currently bound.
       .listener-list(v-else)
-        article.listener-row(v-for="listener in monitoring.listeners" :key="`${listener.protocol}:${listener.name}:${listener.bind}`")
+        article.listener-row(
+          v-for="listener in monitoring.listeners"
+          :key="`${listener.protocol}:${listener.name}:${listener.bind}`"
+          :class="`listener-${listener.state}`"
+        )
           header.listener-identity
             span.protocol-badge(:class="`protocol-${listener.protocol}`") {{ listenerProtocolLabels[listener.protocol] }}
             div
               h4 {{ listener.name }}
               code {{ listener.bind }}
+            span.listener-state(:class="`listener-state-${listener.state}`") {{ listenerStateLabels[listener.state] }}
           .listener-metrics
             .listener-metric
               span.label Active / limit
@@ -296,6 +301,7 @@ import ConfigurationWorkspace from './ConfigurationWorkspace.vue'
 import { formatBytes, formatCount } from './formatters'
 import RtmpRecorderPanel from './RtmpRecorderPanel.vue'
 import { recorderControlAction } from './recording'
+import { listenerStateLabels } from './runtimeStates'
 import TopologyView from './TopologyView.vue'
 import {
   ApiError,
@@ -360,7 +366,9 @@ let activeRefresh: Promise<void> | null = null
 let monitoringStarted = false
 
 const totalTrafficBytes = computed(
-  () => (monitoring.value?.traffic.bytesReceived ?? 0) + (monitoring.value?.traffic.bytesSent ?? 0),
+  () => monitoring.value === null
+    ? '0'
+    : (BigInt(monitoring.value.traffic.bytesReceived) + BigInt(monitoring.value.traffic.bytesSent)).toString(),
 )
 const usedMemoryBytes = computed(() => {
   if (!monitoring.value) return 0
@@ -1352,6 +1360,11 @@ button:disabled {
   border-top: 1px solid #34392f;
 }
 
+.listener-stopped,
+.listener-failed {
+  background: rgb(78 24 20 / 18%);
+}
+
 .listener-identity {
   justify-content: flex-start;
 }
@@ -1375,6 +1388,27 @@ button:disabled {
   font-weight: 700;
   text-align: center;
   text-transform: uppercase;
+}
+
+.listener-state {
+  margin-left: auto;
+  padding: 4px 7px;
+  border: 1px solid #5f6a56;
+  color: #c5d1b8;
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+}
+
+.listener-state-listening {
+  border-color: #607d4c;
+  color: #b6ff51;
+}
+
+.listener-state-stopped,
+.listener-state-failed {
+  border-color: #81483f;
+  color: #ff8b78;
 }
 
 .protocol-http {
