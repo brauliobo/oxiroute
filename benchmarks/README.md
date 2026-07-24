@@ -44,7 +44,7 @@ Those results must not be inferred from reverse H1.
 Build OxiRoute outside the harness so compilation is never mixed with measurement:
 
 ```sh
-cargo build --release -p oxiroute-server
+cargo +1.87.0 build --release --locked -p oxiroute-server
 cargo +1.87.0 build --release --locked --manifest-path benchmarks/loadgen/Cargo.toml
 ```
 
@@ -94,7 +94,39 @@ The following environment variables tune a run without changing checked-in confi
 Every invocation creates an ignored directory under `benchmarks/generated/runs/`. A successful
 implementation has `summary-<implementation>.json` and `raw/loadgen-<implementation>.json`. `skips.json`
 contains the unavailable lane records copied from `lanes.json`, and `run.json` records the effective
-ports, durations, threads, and connections. A failed run remains on disk for diagnosis.
+ports, durations, threads, and connections. `environment.json` is the run's provenance record: it
+contains exact `rustc -Vv` and `cargo -Vv` output, resolved executable paths and SHA-256 hashes,
+the source commit, porcelain worktree state, tracked-diff fingerprint, and untracked-file hashes. The
+recorded Rust commands use the same pinned `1.87.0` toolchain as both build commands. A failed run
+remains on disk for diagnosis.
+
+## Publishing evidence
+
+Working runs remain ignored. After writing a JSON report whose nested `run_ids` identify the runs it
+uses, publish the exact retained evidence with:
+
+```sh
+benchmarks/scripts/publish-evidence.sh \
+  benchmarks/reports/REPORT.json benchmarks/generated/runs/RUN_ID...
+```
+
+The publisher accepts only a report directly under `benchmarks/reports/` with nonempty `run_ids` and
+matching direct children of `benchmarks/generated/runs/`. Every run must record a clean source
+worktree and contain its measured `summary-<implementation>.json`,
+`raw/loadgen-<implementation>.json`, rendered configs, and expected logs. Dirty-source runs are not
+publishable; commit the exact source before measuring instead of relying on incomplete deltas.
+
+Publication copies each run's root JSON, raw JSON, rendered configuration, and logs to the trackable
+`reports/evidence/REPORT/` directory. Runtime/PID state is excluded. A deterministic
+`manifest.json` binds the report contents excluding its `evidence` reference, and `SHA256SUMS`
+covers the manifest and archived files. The evidence directory is staged and atomically renamed;
+the report update is an atomic replacement. Commit both together.
+
+`scripts/validate.sh` checks report-content binding, run IDs, complete archived artifacts,
+clean-source provenance, manifests, checksums, and orphaned evidence. Reports may not omit evidence.
+Only the three pre-contract reports carry the explicit `historical_unavailable` marker; this states
+that their evidence cannot be recovered without inventing artifacts and is not accepted for new
+report filenames.
 
 ## Configuration validation
 
@@ -105,6 +137,7 @@ ports, durations, threads, and connections. A failed run remains on disk for dia
 - `nginx -t` for the origin and reverse-proxy configurations;
 - `haproxy -c` for the HAProxy configuration;
 - XML parsing for the Phoronix profile.
+- report evidence manifests and checksums, including a deterministic publisher self-test.
 
 OxiRoute currently has no validate-only CLI. Its benchmark template follows the checked-in v1 Rust
 schema, but full runtime preparation is first exercised when `run.sh` starts the daemon.

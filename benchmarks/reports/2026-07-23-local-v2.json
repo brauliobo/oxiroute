@@ -2,6 +2,11 @@
   "schema": "oxiroute.local-v1.report.v1",
   "date": "2026-07-23",
   "status": "valid_with_host_drift",
+  "evidence": {
+    "schema": "oxiroute.benchmark-evidence-unavailable.v1",
+    "status": "historical_unavailable",
+    "reason": "Complete raw runs, rendered configs, logs, environment metadata, and measured-build provenance were not retained as repository evidence."
+  },
   "source_commit": "983e872cb56181f5195121cb417bc8fa9ba0e34c",
   "oxiroute_binary_sha256": "5f8b7f378ec9ccd71d4cb987a5f4261315a5957e5ea5c1be181211ff10d2604b",
   "loadgen_binary_sha256": "f1ee441510eec34260a165ebf501811f0e3b04b500e9f2cdfcd2d05dc1312cfc",

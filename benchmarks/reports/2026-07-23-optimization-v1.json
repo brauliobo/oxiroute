@@ -2,6 +2,18 @@
   "schema": "oxiroute.local-v1.optimization-report.v1",
   "date": "2026-07-23",
   "status": "complete",
+  "evidence": {
+    "schema": "oxiroute.benchmark-evidence-unavailable.v1",
+    "status": "historical_unavailable",
+    "reason": "Complete raw runs, rendered configs, logs, environment metadata, and measured-build provenance were not retained as repository evidence."
+  },
+  "provenance": {
+    "raw_run_directories_retained": false,
+    "rendered_configs_logs_environment_retained": false,
+    "measured_build_compiler_provenance_retained": false,
+    "binary_hashes_independently_reconstructable": false,
+    "note": "The binary hashes were recorded contemporaneously, but raw runs and measured-build rustc -Vv, cargo -Vv, and executable paths were not retained. Exact hashes cannot be independently reconstructed from the source commits and this report."
+  },
   "scenario": {
     "transport": "loopback plaintext HTTP/1.1 keep-alive",
     "request_line": "GET /payload HTTP/1.1",

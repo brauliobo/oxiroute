@@ -66,6 +66,10 @@ passed sequentially with `CARGO_INCREMENTAL=0`; this was a compiler ICE, not a f
 - The workstation was not isolated and used the `powersave` governor with boost and SMT enabled.
 - Per-iteration results are intentionally based on adjacent exact binaries. Deltas must not be
   compounded; the separate original-versus-final comparison is the cumulative result.
+- The raw run directories, rendered configurations, logs, and environment captures were not
+  retained. The measured-build `rustc -Vv`/`cargo -Vv` output and executable paths are therefore
+  unavailable. The contemporaneously recorded binary hashes identify what was measured, but those
+  exact hashes cannot be independently reconstructed from the source commits and this report.
 - No TLS, HTTP/2, HTTP/3, multi-core, remote-network, cache, or forward-proxy result is represented.
 
 Machine-readable measurements are in
