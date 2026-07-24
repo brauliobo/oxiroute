@@ -26,7 +26,6 @@ futures-util = "0.3"
 h2 = "0.4.15"
 http = "1"
 httpdate = "1"
-jemallocator = "0.5"
 log = "0.4"
 mlua = { version = "0.11", features = ["lua54", "serialize", "vendored"] }
 notify = "8.2"
