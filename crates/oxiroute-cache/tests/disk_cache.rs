@@ -10,8 +10,8 @@ use std::{
 use bytes::Bytes;
 use http::{HeaderMap, HeaderValue, Method, StatusCode};
 use oxiroute_cache::{
-    BaseKey, DiskCache, DiskCacheConfig, DiskCacheError, DiskFillJoin, DiskQuotaScope, Lookup,
-    RequestKeyInput, ResponseTiming, StoreOutcome,
+    BaseKey, CacheError, DiskCache, DiskCacheConfig, DiskCacheError, DiskFillJoin, DiskQuotaScope,
+    Lookup, RequestKeyInput, ResponseTiming, StoreOutcome,
 };
 
 fn config() -> DiskCacheConfig {
@@ -201,6 +201,90 @@ fn byte_quota_admits_only_exact_committed_record_size() {
         cache.lookup(request("/b", &headers)),
         Ok(Lookup::Hit { .. })
     ));
+}
+
+#[test]
+fn prepared_entries_are_bound_to_shared_cache_identity_before_disk_admission() {
+    let temp_a = tempfile::tempdir().expect("tempdir a");
+    let temp_b = tempfile::tempdir().expect("tempdir b");
+    let root_a = cache_root(&temp_a);
+    let root_b = cache_root(&temp_b);
+    let mut limits = config();
+    limits.memory.max_entries = 1;
+    limits.max_disk_files = 1;
+    let cache_a = DiskCache::open(&root_a, limits.clone()).expect("cache a");
+    let cache_b = DiskCache::open(&root_b, limits).expect("cache b");
+    store(&cache_a, "/resident", b"resident", &[]);
+    let before = cache_a.stats();
+    let mut records_before = record_paths(&root_a);
+    records_before.sort();
+
+    let request_headers = HeaderMap::new();
+    let foreign = cache_b
+        .prepare(
+            request("/foreign", &request_headers),
+            StatusCode::OK,
+            &response(),
+            Bytes::from_static(b"foreign"),
+            timing(&cache_b),
+            &[],
+        )
+        .expect("foreign entry");
+    let leader = match cache_a
+        .begin_fill(foreign.key().base().clone())
+        .expect("foreign fill")
+    {
+        DiskFillJoin::Leader(leader) => leader,
+        DiskFillJoin::Follower(_) | DiskFillJoin::AtCapacity => panic!("foreign leader"),
+    };
+    assert!(matches!(
+        leader.store(foreign),
+        Err(DiskCacheError::Cache(
+            CacheError::PreparedEntryOwnerMismatch
+        ))
+    ));
+
+    let after = cache_a.stats();
+    assert_eq!(after.disk_entries, before.disk_entries);
+    assert_eq!(after.disk_bytes, before.disk_bytes);
+    assert_eq!(after.memory.entries, before.memory.entries);
+    assert_eq!(after.memory.bytes_used, before.memory.bytes_used);
+    assert_eq!(after.memory.stores, before.memory.stores);
+    assert_eq!(after.memory.evictions, before.memory.evictions);
+    assert_eq!(after.memory.in_flight, 0);
+    let mut records_after = record_paths(&root_a);
+    records_after.sort();
+    assert_eq!(records_after, records_before);
+    assert!(matches!(
+        cache_a.lookup(request("/resident", &request_headers)),
+        Ok(Lookup::Hit { response, .. }) if response.body == Bytes::from_static(b"resident")
+    ));
+    assert!(matches!(
+        cache_a.lookup(request("/foreign", &request_headers)),
+        Ok(Lookup::Miss { .. })
+    ));
+
+    let clone = cache_a.clone();
+    let compatible = clone
+        .prepare(
+            request("/clone", &request_headers),
+            StatusCode::OK,
+            &response(),
+            Bytes::from_static(b"clone"),
+            timing(&clone),
+            &[],
+        )
+        .expect("clone entry");
+    match cache_a
+        .begin_fill(compatible.key().base().clone())
+        .expect("clone fill")
+    {
+        DiskFillJoin::Leader(leader) => assert!(matches!(
+            leader.store(compatible),
+            Ok(StoreOutcome::Stored { .. })
+        )),
+        DiskFillJoin::Follower(_) | DiskFillJoin::AtCapacity => panic!("clone leader"),
+    }
 }
 
 #[test]

@@ -23,7 +23,7 @@ use crate::{
     BaseKey, Cache, CacheConfig, CacheError, CacheKey, CacheStats, CachedResponse, Clock,
     FillGuard, FillJoin, FillWaiter, Lookup, MonoTime, PreparedEntry, PurgeResult, RequestKeyInput,
     ResponseTiming, StoreOutcome, SystemClock, Validators,
-    cache::{object_charge, validate_tag},
+    cache::{RecoveredEntry, object_charge, validate_tag},
     key::VaryValue,
     policy::{ResponsePolicy, RetentionPolicy},
 };
@@ -157,7 +157,7 @@ struct RecordInfo {
 }
 
 struct DecodedRecord {
-    entry: PreparedEntry,
+    entry: RecoveredEntry,
     access: u64,
     sequence: u64,
 }
@@ -442,7 +442,8 @@ impl DiskFillGuard {
     ///
     /// # Errors
     ///
-    /// Returns an error for a mismatched generation, quota failure, shutdown, or storage failure.
+    /// Returns an error for a foreign entry, mismatched generation, quota failure, shutdown, or
+    /// storage failure.
     pub fn store(mut self, entry: PreparedEntry) -> Result<StoreOutcome, DiskCacheError> {
         if self.shared.closed.load(Ordering::Acquire) {
             return Err(DiskCacheError::Closed);
@@ -450,9 +451,7 @@ impl DiskFillGuard {
         let Some(inner) = self.inner.take() else {
             return Ok(StoreOutcome::GenerationLost);
         };
-        if entry.key.base() != inner.base() {
-            return inner.store(entry).map_err(Into::into);
-        }
+        let entry = inner.claim(entry)?;
         if !inner.is_current() {
             return Ok(StoreOutcome::GenerationLost);
         }
@@ -467,7 +466,7 @@ impl DiskFillGuard {
         let sequence = state.next_sequence();
         let access = sequence;
         let encoded = encode_record(
-            &entry,
+            entry.prepared(),
             sequence,
             access,
             self.shared.cache.now(),
@@ -478,7 +477,8 @@ impl DiskFillGuard {
         }
         let encoded_size =
             u64::try_from(encoded.len()).map_err(|_| DiskCacheError::RecordTooLarge)?;
-        let victims = admission_victims(&state, &entry, encoded_size, &self.shared.config)?;
+        let victims =
+            admission_victims(&state, entry.prepared(), encoded_size, &self.shared.config)?;
         for key in &victims {
             if let Some(record) = state.records.get(key).cloned() {
                 self.shared.remove_record(&record)?;
@@ -492,10 +492,10 @@ impl DiskFillGuard {
 
         let record = self
             .shared
-            .publish(&encoded, sequence, access, &entry.tags)?;
-        let stored_key = entry.key.clone();
+            .publish(&encoded, sequence, access, &entry.prepared().tags)?;
+        let stored_key = entry.prepared().key.clone();
         state.insert(stored_key.clone(), record);
-        let memory_outcome = inner.store(entry)?;
+        let memory_outcome = inner.store_claimed(entry);
         if memory_outcome == StoreOutcome::GenerationLost {
             if let Some(record) = state.records.get(&stored_key).cloned() {
                 self.shared.remove_record(&record)?;
@@ -1010,8 +1010,9 @@ fn scan_root(
     };
     for (decoded, info) in ordered {
         state.sequence = state.sequence.max(decoded.sequence).max(decoded.access);
-        cache.restore(decoded.entry.clone());
-        state.insert(decoded.entry.key, info);
+        let key = decoded.entry.key.clone();
+        cache.restore(decoded.entry);
+        state.insert(key, info);
     }
     Ok(state)
 }
@@ -1307,7 +1308,7 @@ fn decode_record(
         return Err(invalid_record());
     }
     Ok(DecodedRecord {
-        entry: PreparedEntry {
+        entry: RecoveredEntry {
             key,
             status,
             headers,
@@ -1670,6 +1671,52 @@ mod tests {
                 Lookup::Miss { .. } => {}
                 other => panic!("unexpected recovered state: {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn recovered_entries_receive_the_current_cache_identity() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("cache");
+        let cache = DiskCache::open(&root, test_config()).expect("cache");
+        let request_headers = HeaderMap::new();
+        let mut response_headers = HeaderMap::new();
+        response_headers.insert(
+            http::header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=60"),
+        );
+        let now = cache.now();
+        let entry = cache
+            .prepare(
+                request(&request_headers),
+                StatusCode::OK,
+                &response_headers,
+                Bytes::from_static(b"recovered"),
+                ResponseTiming {
+                    request_started: now,
+                    response_received: now,
+                    response_received_wall: SystemTime::now(),
+                },
+                &[],
+            )
+            .expect("entry");
+        let key = entry.key().clone();
+        match cache.begin_fill(key.base().clone()).expect("fill") {
+            DiskFillJoin::Leader(leader) => {
+                leader.store(entry).expect("initial store");
+            }
+            DiskFillJoin::Follower(_) | DiskFillJoin::AtCapacity => panic!("leader"),
+        }
+        drop(cache);
+
+        let recovered = DiskCache::open(&root, test_config()).expect("recovery");
+        let entry = recovered.shared.cache.entry(&key).expect("recovered entry");
+        match recovered.begin_fill(key.base().clone()).expect("fill") {
+            DiskFillJoin::Leader(leader) => assert!(matches!(
+                leader.store(entry),
+                Ok(StoreOutcome::Stored { .. })
+            )),
+            DiskFillJoin::Follower(_) | DiskFillJoin::AtCapacity => panic!("leader"),
         }
     }
 }
