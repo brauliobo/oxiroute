@@ -1,0 +1,53 @@
+return {
+  version = 1,
+  listeners = {
+    {
+      name = "benchmark-reverse-h1",
+      bind = { type = "socket", address = "127.0.0.1:49081" },
+      protocol = "http",
+      service = "benchmark-reverse-h1",
+      max_connections = null,
+    },
+  },
+  cache_stores = {},
+  upstream_pools = {
+    {
+      name = "benchmark-origin",
+      endpoints = {
+        { type = "socket", address = "127.0.0.1:49080" },
+      },
+      algorithm = "round_robin",
+      http_versions = { min = "1.1", max = "1.1" },
+    },
+  },
+  http_services = {
+    {
+      name = "benchmark-reverse-h1",
+      routes = {
+        {
+          path = { kind = "segment_prefix", value = "/" },
+          methods = { "GET", "HEAD" },
+          action = {
+            type = "proxy",
+            upstream_pool = "benchmark-origin",
+            policy = {
+              upstream_host = { type = "preserve_incoming" },
+              retry = {
+                max_retries = 0,
+                triggers = { "connect_failure", "connect_timeout", "refused_stream" },
+                method_safety = "get_head",
+                body_safety = "empty",
+              },
+              cache = nil,
+            },
+          },
+        },
+      },
+      upstream_io_timeout_ms = 30000,
+      max_request_body_bytes = 10485760,
+    },
+  },
+  forward_proxy_services = {},
+  rtmp_services = {},
+  l4_services = {},
+}

@@ -1,0 +1,1942 @@
+{
+  "files": [
+    {
+      "bytes": 292,
+      "path": "runs/publish-cumulative-retained-c/config/haproxy.cfg",
+      "sha256": "c8f60d8a0cb71487c661fcb4ee3302d0abff5bc4b252fd10660551dd20e13aa2"
+    },
+    {
+      "bytes": 1708,
+      "path": "runs/publish-cumulative-retained-c/config/nginx-origin.conf",
+      "sha256": "d8424f74756f7793c0d3d384130b1df9e679cb7cc3607fd3c383ce70ab8099a2"
+    },
+    {
+      "bytes": 750,
+      "path": "runs/publish-cumulative-retained-c/config/nginx-proxy.conf",
+      "sha256": "bfab5c54cc17c8547866093e1416bafa903ce1bc77220dbd852b116eb18b0c2b"
+    },
+    {
+      "bytes": 1373,
+      "path": "runs/publish-cumulative-retained-c/config/oxiroute.lua",
+      "sha256": "b2ac80a3bc0dd3755cc2bbc1103184ffb32f0ba54bbc6ece6899af122c078af9"
+    },
+    {
+      "bytes": 5149,
+      "path": "runs/publish-cumulative-retained-c/environment.json",
+      "sha256": "9ab18a9d5d2bdf728b7d46ae6845a5187e40fa3df449c804233fc760d592928d"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-cumulative-retained-c/logs/loadgen-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-cumulative-retained-c/logs/loadgen-warmup-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 526,
+      "path": "runs/publish-cumulative-retained-c/logs/nginx-origin-error.log",
+      "sha256": "2cc1833152829b55f8aecb7fbebdb921c1470f55273249b8ea4b73cc47be71a6"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-cumulative-retained-c/logs/origin-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-cumulative-retained-c/logs/origin-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-cumulative-retained-c/logs/oxiroute-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-cumulative-retained-c/logs/oxiroute-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 3622,
+      "path": "runs/publish-cumulative-retained-c/preflight.json",
+      "sha256": "fd802df62642348e5e805135fc18f8ef099517de40776a088945d2e886cdafa0"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-cumulative-retained-c/raw/loadgen-oxiroute.json",
+      "sha256": "e36a871077be1fcf7a152a5193257e7803215596a3396ba170b89e9dd051fa3d"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-cumulative-retained-c/raw/warmup-oxiroute.json",
+      "sha256": "35ada57100a48802357db1c72157a9049326c84b1843959a4a2c171e44044524"
+    },
+    {
+      "bytes": 357,
+      "path": "runs/publish-cumulative-retained-c/run.json",
+      "sha256": "b075b93e646f897ef0d4e71ccca23cb8ff8575c490e3ad823972eec7b4de3975"
+    },
+    {
+      "bytes": 1310,
+      "path": "runs/publish-cumulative-retained-c/skips.json",
+      "sha256": "85659ce6f996dd81557625e2b01daaf293500f4b3a22535588b7fadbd03bdaba"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-cumulative-retained-c/summary-oxiroute.json",
+      "sha256": "1231c9f677c2dc41f46997fcd2fdb447b49c8e3a37bb3753b977dd93eec707ac"
+    },
+    {
+      "bytes": 435,
+      "path": "runs/publish-cumulative-retained-c/warmup-oxiroute.json",
+      "sha256": "5ff0c365c51c33bb32d8f1e700adc60773f14dbd8260f366ff98d175cfc8a074"
+    },
+    {
+      "bytes": 292,
+      "path": "runs/publish-cumulative-retained-d/config/haproxy.cfg",
+      "sha256": "c8f60d8a0cb71487c661fcb4ee3302d0abff5bc4b252fd10660551dd20e13aa2"
+    },
+    {
+      "bytes": 1708,
+      "path": "runs/publish-cumulative-retained-d/config/nginx-origin.conf",
+      "sha256": "5b63b6481f1e56efbf5d95961751f0348bc2fa30d2849e5f69473db42ee23a41"
+    },
+    {
+      "bytes": 750,
+      "path": "runs/publish-cumulative-retained-d/config/nginx-proxy.conf",
+      "sha256": "86baeef967151efed1ad2df4470f572eceed2271b25b31bfdf0428c3ac851941"
+    },
+    {
+      "bytes": 1373,
+      "path": "runs/publish-cumulative-retained-d/config/oxiroute.lua",
+      "sha256": "b2ac80a3bc0dd3755cc2bbc1103184ffb32f0ba54bbc6ece6899af122c078af9"
+    },
+    {
+      "bytes": 5149,
+      "path": "runs/publish-cumulative-retained-d/environment.json",
+      "sha256": "1166012d08ae27aaa92b017c28ab23741bac40080989be8bab7991dbc8c4d227"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-cumulative-retained-d/logs/loadgen-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-cumulative-retained-d/logs/loadgen-warmup-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 526,
+      "path": "runs/publish-cumulative-retained-d/logs/nginx-origin-error.log",
+      "sha256": "33c2208e504cdf29427e29d276f06c3c8df342201337ea4f3d6c7bda989a5a08"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-cumulative-retained-d/logs/origin-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-cumulative-retained-d/logs/origin-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-cumulative-retained-d/logs/oxiroute-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-cumulative-retained-d/logs/oxiroute-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 3622,
+      "path": "runs/publish-cumulative-retained-d/preflight.json",
+      "sha256": "fd802df62642348e5e805135fc18f8ef099517de40776a088945d2e886cdafa0"
+    },
+    {
+      "bytes": 434,
+      "path": "runs/publish-cumulative-retained-d/raw/loadgen-oxiroute.json",
+      "sha256": "3dee3df99bb1b610312450a80f6d932676a7749013a25493da40bd068300a47d"
+    },
+    {
+      "bytes": 433,
+      "path": "runs/publish-cumulative-retained-d/raw/warmup-oxiroute.json",
+      "sha256": "279b335acb8f2788045a11f1230d7b4c59de47de6e95e0f5fb834049b9cf5d69"
+    },
+    {
+      "bytes": 357,
+      "path": "runs/publish-cumulative-retained-d/run.json",
+      "sha256": "b075b93e646f897ef0d4e71ccca23cb8ff8575c490e3ad823972eec7b4de3975"
+    },
+    {
+      "bytes": 1310,
+      "path": "runs/publish-cumulative-retained-d/skips.json",
+      "sha256": "85659ce6f996dd81557625e2b01daaf293500f4b3a22535588b7fadbd03bdaba"
+    },
+    {
+      "bytes": 434,
+      "path": "runs/publish-cumulative-retained-d/summary-oxiroute.json",
+      "sha256": "528e065a7a41703bdcec4284f5791b2e254edaa5efa70651e5a79c0cdfc726fa"
+    },
+    {
+      "bytes": 433,
+      "path": "runs/publish-cumulative-retained-d/warmup-oxiroute.json",
+      "sha256": "918b250736b9c13bfa8bde21bde509bdbb292ee146ac27af4635b51a48e8cc44"
+    },
+    {
+      "bytes": 292,
+      "path": "runs/publish-final-baseline-a/config/haproxy.cfg",
+      "sha256": "c8f60d8a0cb71487c661fcb4ee3302d0abff5bc4b252fd10660551dd20e13aa2"
+    },
+    {
+      "bytes": 1698,
+      "path": "runs/publish-final-baseline-a/config/nginx-origin.conf",
+      "sha256": "081a94cef83238b5389a71db6e86c30efe3adc0dc557797b1daf70c4c7a51b57"
+    },
+    {
+      "bytes": 740,
+      "path": "runs/publish-final-baseline-a/config/nginx-proxy.conf",
+      "sha256": "293d779947e9c9041c6e49d9f534e7bd5c21fefc48c53f735481541c00733da8"
+    },
+    {
+      "bytes": 1373,
+      "path": "runs/publish-final-baseline-a/config/oxiroute.lua",
+      "sha256": "b2ac80a3bc0dd3755cc2bbc1103184ffb32f0ba54bbc6ece6899af122c078af9"
+    },
+    {
+      "bytes": 5149,
+      "path": "runs/publish-final-baseline-a/environment.json",
+      "sha256": "090f810f80e4e1d30f6a88ad625300af50398b19d7d703b6c230a5cd7a30ebaf"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-baseline-a/logs/loadgen-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-baseline-a/logs/loadgen-warmup-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 526,
+      "path": "runs/publish-final-baseline-a/logs/nginx-origin-error.log",
+      "sha256": "1cca14000b2f9ea344963e656bd483fdb78ab6f0795a81f5299738e109899014"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-baseline-a/logs/origin-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-baseline-a/logs/origin-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-baseline-a/logs/oxiroute-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-baseline-a/logs/oxiroute-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 3622,
+      "path": "runs/publish-final-baseline-a/preflight.json",
+      "sha256": "77d24207143f52b144fdcd5f782a1054060437bcf574618252ce4ffe8e07d01a"
+    },
+    {
+      "bytes": 434,
+      "path": "runs/publish-final-baseline-a/raw/loadgen-oxiroute.json",
+      "sha256": "d4d616a8eb0d2863c310a9da95e4f921b1e092a41ef78eb6d99c7e99ec1e7aef"
+    },
+    {
+      "bytes": 433,
+      "path": "runs/publish-final-baseline-a/raw/warmup-oxiroute.json",
+      "sha256": "9d8a4c2aef409d0fdac55a980934a6680ea63bc01319899a6e9b218443607700"
+    },
+    {
+      "bytes": 357,
+      "path": "runs/publish-final-baseline-a/run.json",
+      "sha256": "b075b93e646f897ef0d4e71ccca23cb8ff8575c490e3ad823972eec7b4de3975"
+    },
+    {
+      "bytes": 1310,
+      "path": "runs/publish-final-baseline-a/skips.json",
+      "sha256": "85659ce6f996dd81557625e2b01daaf293500f4b3a22535588b7fadbd03bdaba"
+    },
+    {
+      "bytes": 433,
+      "path": "runs/publish-final-baseline-a/summary-oxiroute.json",
+      "sha256": "43361fc40ef8c5a50ec8a4ec6df0f5c5dac6fb156a52ee40248e2c113ccef2b9"
+    },
+    {
+      "bytes": 433,
+      "path": "runs/publish-final-baseline-a/warmup-oxiroute.json",
+      "sha256": "ec87de5e2646a02aa6d19ed4bcb2422fb03327865c6f0385a4312991015c3494"
+    },
+    {
+      "bytes": 292,
+      "path": "runs/publish-final-baseline-b/config/haproxy.cfg",
+      "sha256": "c8f60d8a0cb71487c661fcb4ee3302d0abff5bc4b252fd10660551dd20e13aa2"
+    },
+    {
+      "bytes": 1698,
+      "path": "runs/publish-final-baseline-b/config/nginx-origin.conf",
+      "sha256": "75c3bb44c2ae1273bf2e98c64e95345a4890f8376ed1baf0a2b9a422191adecb"
+    },
+    {
+      "bytes": 740,
+      "path": "runs/publish-final-baseline-b/config/nginx-proxy.conf",
+      "sha256": "3897075a88c5ee2b10ba518beb1be0451da9ab5e6fbbfef7285edb8acd4727da"
+    },
+    {
+      "bytes": 1373,
+      "path": "runs/publish-final-baseline-b/config/oxiroute.lua",
+      "sha256": "b2ac80a3bc0dd3755cc2bbc1103184ffb32f0ba54bbc6ece6899af122c078af9"
+    },
+    {
+      "bytes": 5149,
+      "path": "runs/publish-final-baseline-b/environment.json",
+      "sha256": "3046610f6b4e9973164b3f44d7193e0e71022128093a9aecce6026d4375d39db"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-baseline-b/logs/loadgen-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-baseline-b/logs/loadgen-warmup-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 526,
+      "path": "runs/publish-final-baseline-b/logs/nginx-origin-error.log",
+      "sha256": "bdb48380f4a8a48763ee8068194047bd021d4b71ac017fd3bc6191521683a547"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-baseline-b/logs/origin-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-baseline-b/logs/origin-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-baseline-b/logs/oxiroute-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-baseline-b/logs/oxiroute-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 3622,
+      "path": "runs/publish-final-baseline-b/preflight.json",
+      "sha256": "77d24207143f52b144fdcd5f782a1054060437bcf574618252ce4ffe8e07d01a"
+    },
+    {
+      "bytes": 434,
+      "path": "runs/publish-final-baseline-b/raw/loadgen-oxiroute.json",
+      "sha256": "e7103dec8a585a6c5cd4a9baa28cfcbd1c275bbc5fbbe03e356e88a6541840bf"
+    },
+    {
+      "bytes": 433,
+      "path": "runs/publish-final-baseline-b/raw/warmup-oxiroute.json",
+      "sha256": "49cf38e975dc5458684da0a393b59f6a9c62fcaf06ee3bec608727d0c6a79a3d"
+    },
+    {
+      "bytes": 357,
+      "path": "runs/publish-final-baseline-b/run.json",
+      "sha256": "b075b93e646f897ef0d4e71ccca23cb8ff8575c490e3ad823972eec7b4de3975"
+    },
+    {
+      "bytes": 1310,
+      "path": "runs/publish-final-baseline-b/skips.json",
+      "sha256": "85659ce6f996dd81557625e2b01daaf293500f4b3a22535588b7fadbd03bdaba"
+    },
+    {
+      "bytes": 434,
+      "path": "runs/publish-final-baseline-b/summary-oxiroute.json",
+      "sha256": "54c3dd5a7fe1fcb6e5f5cf9481906a265a36086e5c772957936fef85d4ec1c54"
+    },
+    {
+      "bytes": 433,
+      "path": "runs/publish-final-baseline-b/warmup-oxiroute.json",
+      "sha256": "f8c47fbb171e46eb0824d037b16300b2d6102b55537d940a5afeef413a641d31"
+    },
+    {
+      "bytes": 292,
+      "path": "runs/publish-final-nginx-a/config/haproxy.cfg",
+      "sha256": "c8f60d8a0cb71487c661fcb4ee3302d0abff5bc4b252fd10660551dd20e13aa2"
+    },
+    {
+      "bytes": 1692,
+      "path": "runs/publish-final-nginx-a/config/nginx-origin.conf",
+      "sha256": "201e61925a381530099a883c043b0716af5fa210478b82ad621ac16748446df4"
+    },
+    {
+      "bytes": 734,
+      "path": "runs/publish-final-nginx-a/config/nginx-proxy.conf",
+      "sha256": "ea2fa6392f401fcbdcfd91bdb961acccb4717952d63f4c30b6b9647b4e8dec0e"
+    },
+    {
+      "bytes": 1373,
+      "path": "runs/publish-final-nginx-a/config/oxiroute.lua",
+      "sha256": "b2ac80a3bc0dd3755cc2bbc1103184ffb32f0ba54bbc6ece6899af122c078af9"
+    },
+    {
+      "bytes": 5149,
+      "path": "runs/publish-final-nginx-a/environment.json",
+      "sha256": "854cb86c94d380e2ab59867cc1051319538562f74cb29d131ba794eb29c6126b"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-nginx-a/logs/loadgen-nginx.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-nginx-a/logs/loadgen-warmup-nginx.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 526,
+      "path": "runs/publish-final-nginx-a/logs/nginx-origin-error.log",
+      "sha256": "fbaab301e29159908bdc6fe325453a515bfdf7e9b1acaeec3c5ef6930428ffc9"
+    },
+    {
+      "bytes": 526,
+      "path": "runs/publish-final-nginx-a/logs/nginx-proxy-error.log",
+      "sha256": "0ce774f092d3666b66dd433e4dafb919873831f63cccbfe72d02556d6c34c679"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-nginx-a/logs/nginx-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-nginx-a/logs/nginx-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-nginx-a/logs/origin-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-nginx-a/logs/origin-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 3619,
+      "path": "runs/publish-final-nginx-a/preflight.json",
+      "sha256": "0da96d2df4396ae96d41c3da88a767de8f8620604072a48803ea71fb8a2dc6ac"
+    },
+    {
+      "bytes": 433,
+      "path": "runs/publish-final-nginx-a/raw/loadgen-nginx.json",
+      "sha256": "96740badce7030068f230507a77714d53d45be4f2a5cec247780df375d597c22"
+    },
+    {
+      "bytes": 433,
+      "path": "runs/publish-final-nginx-a/raw/warmup-nginx.json",
+      "sha256": "31137f553ed67eb4850ec3c9ba3ae163b9343b60c730c5d2fb361c1b62ddc164"
+    },
+    {
+      "bytes": 354,
+      "path": "runs/publish-final-nginx-a/run.json",
+      "sha256": "e2276f196c37c0051b6407d74092437dded5ac41f12aab445fbe0d09e57b1a35"
+    },
+    {
+      "bytes": 1310,
+      "path": "runs/publish-final-nginx-a/skips.json",
+      "sha256": "85659ce6f996dd81557625e2b01daaf293500f4b3a22535588b7fadbd03bdaba"
+    },
+    {
+      "bytes": 433,
+      "path": "runs/publish-final-nginx-a/summary-nginx.json",
+      "sha256": "59cb390aeaadbc18fcff8d2247dd6bc62f34f730f37e8166d1f0859ddd91dd4e"
+    },
+    {
+      "bytes": 433,
+      "path": "runs/publish-final-nginx-a/warmup-nginx.json",
+      "sha256": "a608ede52da3cce9c2265f9e555324834d35e6504c25a17bd466144295441ad0"
+    },
+    {
+      "bytes": 292,
+      "path": "runs/publish-final-nginx-b/config/haproxy.cfg",
+      "sha256": "c8f60d8a0cb71487c661fcb4ee3302d0abff5bc4b252fd10660551dd20e13aa2"
+    },
+    {
+      "bytes": 1692,
+      "path": "runs/publish-final-nginx-b/config/nginx-origin.conf",
+      "sha256": "06478ddd165553e5a21f3348a31100f8dcda356c063d52c75705bebeb3aae41f"
+    },
+    {
+      "bytes": 734,
+      "path": "runs/publish-final-nginx-b/config/nginx-proxy.conf",
+      "sha256": "9d551956179b605b0ec1a46da461aa9f1fc8155321db16050d6123c6bf8ef3bf"
+    },
+    {
+      "bytes": 1373,
+      "path": "runs/publish-final-nginx-b/config/oxiroute.lua",
+      "sha256": "b2ac80a3bc0dd3755cc2bbc1103184ffb32f0ba54bbc6ece6899af122c078af9"
+    },
+    {
+      "bytes": 5149,
+      "path": "runs/publish-final-nginx-b/environment.json",
+      "sha256": "c4826b3ab362bcea7be399b4986809794843ebd4df4086bebadb2a151d0f783b"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-nginx-b/logs/loadgen-nginx.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-nginx-b/logs/loadgen-warmup-nginx.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 526,
+      "path": "runs/publish-final-nginx-b/logs/nginx-origin-error.log",
+      "sha256": "e5f2523b4c24541d43b1ad3256e4c22ccada1858c791fc2aa457a5a34d693da2"
+    },
+    {
+      "bytes": 526,
+      "path": "runs/publish-final-nginx-b/logs/nginx-proxy-error.log",
+      "sha256": "dfd61b52457bb2334a3e708ed4addf8e64134832ebf2e10380dbc23020429e7d"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-nginx-b/logs/nginx-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-nginx-b/logs/nginx-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-nginx-b/logs/origin-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-nginx-b/logs/origin-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 3619,
+      "path": "runs/publish-final-nginx-b/preflight.json",
+      "sha256": "0da96d2df4396ae96d41c3da88a767de8f8620604072a48803ea71fb8a2dc6ac"
+    },
+    {
+      "bytes": 433,
+      "path": "runs/publish-final-nginx-b/raw/loadgen-nginx.json",
+      "sha256": "a313caf4dce11fabda4a72bd3a79fc1e1065d810c508370b9e754f8ef3878ce4"
+    },
+    {
+      "bytes": 433,
+      "path": "runs/publish-final-nginx-b/raw/warmup-nginx.json",
+      "sha256": "c2a3405801e355edce9409995084b45718745de5120668671c00d07c10bbf94c"
+    },
+    {
+      "bytes": 354,
+      "path": "runs/publish-final-nginx-b/run.json",
+      "sha256": "e2276f196c37c0051b6407d74092437dded5ac41f12aab445fbe0d09e57b1a35"
+    },
+    {
+      "bytes": 1310,
+      "path": "runs/publish-final-nginx-b/skips.json",
+      "sha256": "85659ce6f996dd81557625e2b01daaf293500f4b3a22535588b7fadbd03bdaba"
+    },
+    {
+      "bytes": 432,
+      "path": "runs/publish-final-nginx-b/summary-nginx.json",
+      "sha256": "aa63c3631ce1d8aaaef3a60afc06831cfc7d9d0b5f4f134fef1b59e0ea905700"
+    },
+    {
+      "bytes": 433,
+      "path": "runs/publish-final-nginx-b/warmup-nginx.json",
+      "sha256": "1962dbd7b7af84d022b2ade860e102f4ab13bc52acedd943ef2de3d675a7b7b0"
+    },
+    {
+      "bytes": 292,
+      "path": "runs/publish-final-oxiroute-a/config/haproxy.cfg",
+      "sha256": "c8f60d8a0cb71487c661fcb4ee3302d0abff5bc4b252fd10660551dd20e13aa2"
+    },
+    {
+      "bytes": 1698,
+      "path": "runs/publish-final-oxiroute-a/config/nginx-origin.conf",
+      "sha256": "63ee3f76366c750eba096330940a77c5529d0c242a2a83d729464bdf520091a3"
+    },
+    {
+      "bytes": 740,
+      "path": "runs/publish-final-oxiroute-a/config/nginx-proxy.conf",
+      "sha256": "db71448253d8519d57c9960bbb42c32e52212a8077bef1c6f792ebc94b38c02c"
+    },
+    {
+      "bytes": 1373,
+      "path": "runs/publish-final-oxiroute-a/config/oxiroute.lua",
+      "sha256": "b2ac80a3bc0dd3755cc2bbc1103184ffb32f0ba54bbc6ece6899af122c078af9"
+    },
+    {
+      "bytes": 5149,
+      "path": "runs/publish-final-oxiroute-a/environment.json",
+      "sha256": "1e714555a6c426008205e2f766d2113e3e169bcd274f0c596a524177576401c5"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-oxiroute-a/logs/loadgen-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-oxiroute-a/logs/loadgen-warmup-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 526,
+      "path": "runs/publish-final-oxiroute-a/logs/nginx-origin-error.log",
+      "sha256": "313d0b9a2e815b7f89bfac7cd7785c9f41de35efb086ead25b7e70270e54f0ea"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-oxiroute-a/logs/origin-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-oxiroute-a/logs/origin-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-oxiroute-a/logs/oxiroute-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-oxiroute-a/logs/oxiroute-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 3622,
+      "path": "runs/publish-final-oxiroute-a/preflight.json",
+      "sha256": "73267cc5028217f0646ce6fab047772c53f2661c15d26c68f6624a789f789e76"
+    },
+    {
+      "bytes": 434,
+      "path": "runs/publish-final-oxiroute-a/raw/loadgen-oxiroute.json",
+      "sha256": "a432768cea174fbb252a1b66c9f208ae8c2c35abf05b023112f211f9d7328626"
+    },
+    {
+      "bytes": 434,
+      "path": "runs/publish-final-oxiroute-a/raw/warmup-oxiroute.json",
+      "sha256": "551e7bff5d0de9cbe31592453db2a2310569924a96df195e988240c2e63f546e"
+    },
+    {
+      "bytes": 357,
+      "path": "runs/publish-final-oxiroute-a/run.json",
+      "sha256": "b075b93e646f897ef0d4e71ccca23cb8ff8575c490e3ad823972eec7b4de3975"
+    },
+    {
+      "bytes": 1310,
+      "path": "runs/publish-final-oxiroute-a/skips.json",
+      "sha256": "85659ce6f996dd81557625e2b01daaf293500f4b3a22535588b7fadbd03bdaba"
+    },
+    {
+      "bytes": 433,
+      "path": "runs/publish-final-oxiroute-a/summary-oxiroute.json",
+      "sha256": "62f6d67726e346704c68888e39d1995077681017d50ec798e7fd90699cc0db7a"
+    },
+    {
+      "bytes": 434,
+      "path": "runs/publish-final-oxiroute-a/warmup-oxiroute.json",
+      "sha256": "2081e53e181d74f05c0c8bc222cd62512529b69578d64031b5f21f6ef9d7acfc"
+    },
+    {
+      "bytes": 292,
+      "path": "runs/publish-final-oxiroute-b/config/haproxy.cfg",
+      "sha256": "c8f60d8a0cb71487c661fcb4ee3302d0abff5bc4b252fd10660551dd20e13aa2"
+    },
+    {
+      "bytes": 1698,
+      "path": "runs/publish-final-oxiroute-b/config/nginx-origin.conf",
+      "sha256": "f15e3c3463b53a554986ba03a5f52ead2a24670ca58597526829a4684b14f5e0"
+    },
+    {
+      "bytes": 740,
+      "path": "runs/publish-final-oxiroute-b/config/nginx-proxy.conf",
+      "sha256": "889c520ecab0698066e38098b1edb63b564544b52f8f38dac564ea777412f7fd"
+    },
+    {
+      "bytes": 1373,
+      "path": "runs/publish-final-oxiroute-b/config/oxiroute.lua",
+      "sha256": "b2ac80a3bc0dd3755cc2bbc1103184ffb32f0ba54bbc6ece6899af122c078af9"
+    },
+    {
+      "bytes": 5149,
+      "path": "runs/publish-final-oxiroute-b/environment.json",
+      "sha256": "c26baf5c0dc3b24b95999fee25624b80e98b345303a7c3c69ff0ec467690caf1"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-oxiroute-b/logs/loadgen-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-oxiroute-b/logs/loadgen-warmup-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 526,
+      "path": "runs/publish-final-oxiroute-b/logs/nginx-origin-error.log",
+      "sha256": "c4733aee974e6552f9fe48c14e2c3d74ac42699cb8cd30c6eeaefbd115a57735"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-oxiroute-b/logs/origin-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-oxiroute-b/logs/origin-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-oxiroute-b/logs/oxiroute-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-oxiroute-b/logs/oxiroute-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 3622,
+      "path": "runs/publish-final-oxiroute-b/preflight.json",
+      "sha256": "73267cc5028217f0646ce6fab047772c53f2661c15d26c68f6624a789f789e76"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-final-oxiroute-b/raw/loadgen-oxiroute.json",
+      "sha256": "d258fc9962846aaef56e9dc912afc349dc3bf04b3d93df63488e8aef5928160b"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-final-oxiroute-b/raw/warmup-oxiroute.json",
+      "sha256": "6a02763ff2f1e327e2c2189780c66825785c05f64742fd45a4c8f5c26e03582d"
+    },
+    {
+      "bytes": 357,
+      "path": "runs/publish-final-oxiroute-b/run.json",
+      "sha256": "b075b93e646f897ef0d4e71ccca23cb8ff8575c490e3ad823972eec7b4de3975"
+    },
+    {
+      "bytes": 1310,
+      "path": "runs/publish-final-oxiroute-b/skips.json",
+      "sha256": "85659ce6f996dd81557625e2b01daaf293500f4b3a22535588b7fadbd03bdaba"
+    },
+    {
+      "bytes": 435,
+      "path": "runs/publish-final-oxiroute-b/summary-oxiroute.json",
+      "sha256": "710d92ef64806171e0a5b7700be30e6f85aaeac5d86115365e9c31b35ad6e668"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-final-oxiroute-b/warmup-oxiroute.json",
+      "sha256": "c4b4617130d1999a6e621326b99e8e82d4dcc3451528e03d1298ecfb636664a2"
+    },
+    {
+      "bytes": 292,
+      "path": "runs/publish-final-retained-a/config/haproxy.cfg",
+      "sha256": "c8f60d8a0cb71487c661fcb4ee3302d0abff5bc4b252fd10660551dd20e13aa2"
+    },
+    {
+      "bytes": 1698,
+      "path": "runs/publish-final-retained-a/config/nginx-origin.conf",
+      "sha256": "9aeab833995c34290e4a075c2562753e47e9cef739b3d15cf1f958dec91a678e"
+    },
+    {
+      "bytes": 740,
+      "path": "runs/publish-final-retained-a/config/nginx-proxy.conf",
+      "sha256": "eb4fffe179d61f09f2290c11ee061d6f99981391aca91a94fc05df15dedb7aba"
+    },
+    {
+      "bytes": 1373,
+      "path": "runs/publish-final-retained-a/config/oxiroute.lua",
+      "sha256": "b2ac80a3bc0dd3755cc2bbc1103184ffb32f0ba54bbc6ece6899af122c078af9"
+    },
+    {
+      "bytes": 5149,
+      "path": "runs/publish-final-retained-a/environment.json",
+      "sha256": "c793e5a8dbb203c8ebc42fe76ddf5efceae0f0b38f68516bc7242a81f6bfeac5"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-retained-a/logs/loadgen-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-retained-a/logs/loadgen-warmup-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 526,
+      "path": "runs/publish-final-retained-a/logs/nginx-origin-error.log",
+      "sha256": "fb7f50b93856c5b072a2b6ff22dea2f92c003467e456a3fb52e9c6c8d8293fb1"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-retained-a/logs/origin-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-retained-a/logs/origin-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-retained-a/logs/oxiroute-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-retained-a/logs/oxiroute-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 3622,
+      "path": "runs/publish-final-retained-a/preflight.json",
+      "sha256": "73267cc5028217f0646ce6fab047772c53f2661c15d26c68f6624a789f789e76"
+    },
+    {
+      "bytes": 435,
+      "path": "runs/publish-final-retained-a/raw/loadgen-oxiroute.json",
+      "sha256": "ed28a88e6db70979bbf77dd3d8495177df672a2d5c489b10af75706211171615"
+    },
+    {
+      "bytes": 434,
+      "path": "runs/publish-final-retained-a/raw/warmup-oxiroute.json",
+      "sha256": "5179988fb46ba60f8e2cc36452db652d49aa28b6f9ab061f52e78ea63c17cc41"
+    },
+    {
+      "bytes": 357,
+      "path": "runs/publish-final-retained-a/run.json",
+      "sha256": "b075b93e646f897ef0d4e71ccca23cb8ff8575c490e3ad823972eec7b4de3975"
+    },
+    {
+      "bytes": 1310,
+      "path": "runs/publish-final-retained-a/skips.json",
+      "sha256": "85659ce6f996dd81557625e2b01daaf293500f4b3a22535588b7fadbd03bdaba"
+    },
+    {
+      "bytes": 434,
+      "path": "runs/publish-final-retained-a/summary-oxiroute.json",
+      "sha256": "6b90e177b69a8fb3963fcd0113ebaa3c7c9dc88f026ac8d3f3906e722ce6fe67"
+    },
+    {
+      "bytes": 434,
+      "path": "runs/publish-final-retained-a/warmup-oxiroute.json",
+      "sha256": "a1f1a1fafbe54aa05e8d92d6482953767b4425f0b2858aed1e858d81423323e6"
+    },
+    {
+      "bytes": 292,
+      "path": "runs/publish-final-retained-b/config/haproxy.cfg",
+      "sha256": "c8f60d8a0cb71487c661fcb4ee3302d0abff5bc4b252fd10660551dd20e13aa2"
+    },
+    {
+      "bytes": 1698,
+      "path": "runs/publish-final-retained-b/config/nginx-origin.conf",
+      "sha256": "f1e2ef891503fc8bfdaf269a727ba758422a0bd893bb7167654607cded5312df"
+    },
+    {
+      "bytes": 740,
+      "path": "runs/publish-final-retained-b/config/nginx-proxy.conf",
+      "sha256": "8783251d40f1ddfe324c37ebd447dd678d5ea1c6c39bab6db2253d68ca069778"
+    },
+    {
+      "bytes": 1373,
+      "path": "runs/publish-final-retained-b/config/oxiroute.lua",
+      "sha256": "b2ac80a3bc0dd3755cc2bbc1103184ffb32f0ba54bbc6ece6899af122c078af9"
+    },
+    {
+      "bytes": 5149,
+      "path": "runs/publish-final-retained-b/environment.json",
+      "sha256": "edaac6a7df035e318f8bc854de3906bb1eb349731635f39327c61bff104b02da"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-retained-b/logs/loadgen-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-retained-b/logs/loadgen-warmup-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 526,
+      "path": "runs/publish-final-retained-b/logs/nginx-origin-error.log",
+      "sha256": "e50d8703ffba1a052721e33ecfc6d472d1537a4f0c152e93cbc683609294c8b3"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-retained-b/logs/origin-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-retained-b/logs/origin-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-retained-b/logs/oxiroute-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-final-retained-b/logs/oxiroute-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 3622,
+      "path": "runs/publish-final-retained-b/preflight.json",
+      "sha256": "73267cc5028217f0646ce6fab047772c53f2661c15d26c68f6624a789f789e76"
+    },
+    {
+      "bytes": 434,
+      "path": "runs/publish-final-retained-b/raw/loadgen-oxiroute.json",
+      "sha256": "5159f7528f4315a7b9959f278ba62424bdd31f41be6c6099ba89d7b748c5e3a9"
+    },
+    {
+      "bytes": 433,
+      "path": "runs/publish-final-retained-b/raw/warmup-oxiroute.json",
+      "sha256": "12d26f7fd67f65e9cb08d5c1405ed078a0c2e3184030a6861d92924e3a24351e"
+    },
+    {
+      "bytes": 357,
+      "path": "runs/publish-final-retained-b/run.json",
+      "sha256": "b075b93e646f897ef0d4e71ccca23cb8ff8575c490e3ad823972eec7b4de3975"
+    },
+    {
+      "bytes": 1310,
+      "path": "runs/publish-final-retained-b/skips.json",
+      "sha256": "85659ce6f996dd81557625e2b01daaf293500f4b3a22535588b7fadbd03bdaba"
+    },
+    {
+      "bytes": 434,
+      "path": "runs/publish-final-retained-b/summary-oxiroute.json",
+      "sha256": "1fd9ee37d62ee47b70f91cd65fff3b36bbda29312d61328eefc721e247546e78"
+    },
+    {
+      "bytes": 432,
+      "path": "runs/publish-final-retained-b/warmup-oxiroute.json",
+      "sha256": "9775639ec6251e3c5a54a13201c689a7ca8ace1b264913ab94b45173a82c52a0"
+    },
+    {
+      "bytes": 292,
+      "path": "runs/publish-lto-baseline-a/config/haproxy.cfg",
+      "sha256": "c8f60d8a0cb71487c661fcb4ee3302d0abff5bc4b252fd10660551dd20e13aa2"
+    },
+    {
+      "bytes": 1694,
+      "path": "runs/publish-lto-baseline-a/config/nginx-origin.conf",
+      "sha256": "f882f53ae30bce3d5970a8012c362b2e911b4a7c28071bdc4973bb249874b1e9"
+    },
+    {
+      "bytes": 736,
+      "path": "runs/publish-lto-baseline-a/config/nginx-proxy.conf",
+      "sha256": "34dad4c8f75c2ba1e2bd28d7d5d11062de6e76323b8cc5a3cddabc0167d672be"
+    },
+    {
+      "bytes": 1373,
+      "path": "runs/publish-lto-baseline-a/config/oxiroute.lua",
+      "sha256": "b2ac80a3bc0dd3755cc2bbc1103184ffb32f0ba54bbc6ece6899af122c078af9"
+    },
+    {
+      "bytes": 5149,
+      "path": "runs/publish-lto-baseline-a/environment.json",
+      "sha256": "14df10d6a6ca0698e8cdd9b5dc265bdcbdae975795f3f9047aba1b19255df701"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-lto-baseline-a/logs/loadgen-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-lto-baseline-a/logs/loadgen-warmup-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 526,
+      "path": "runs/publish-lto-baseline-a/logs/nginx-origin-error.log",
+      "sha256": "19c8317d323e328c9be839843eb97bb1750052dc74bd1eb2aaa3423f982fe967"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-lto-baseline-a/logs/origin-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-lto-baseline-a/logs/origin-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-lto-baseline-a/logs/oxiroute-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-lto-baseline-a/logs/oxiroute-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 3622,
+      "path": "runs/publish-lto-baseline-a/preflight.json",
+      "sha256": "77d24207143f52b144fdcd5f782a1054060437bcf574618252ce4ffe8e07d01a"
+    },
+    {
+      "bytes": 434,
+      "path": "runs/publish-lto-baseline-a/raw/loadgen-oxiroute.json",
+      "sha256": "6d95e33be2b8e508afc819271ff64390fff69c9d726e6fb4f621d0fb078b955a"
+    },
+    {
+      "bytes": 433,
+      "path": "runs/publish-lto-baseline-a/raw/warmup-oxiroute.json",
+      "sha256": "8f91bfc2c09381a04920c9aa5094cb377e616de2e71c97a737bbcef68cf92b32"
+    },
+    {
+      "bytes": 357,
+      "path": "runs/publish-lto-baseline-a/run.json",
+      "sha256": "b075b93e646f897ef0d4e71ccca23cb8ff8575c490e3ad823972eec7b4de3975"
+    },
+    {
+      "bytes": 1310,
+      "path": "runs/publish-lto-baseline-a/skips.json",
+      "sha256": "85659ce6f996dd81557625e2b01daaf293500f4b3a22535588b7fadbd03bdaba"
+    },
+    {
+      "bytes": 434,
+      "path": "runs/publish-lto-baseline-a/summary-oxiroute.json",
+      "sha256": "732123be37034d84faa0ce14a006333356ffcd81ad769ccbeb98a1e5833930d0"
+    },
+    {
+      "bytes": 432,
+      "path": "runs/publish-lto-baseline-a/warmup-oxiroute.json",
+      "sha256": "a255b63adf5919ea4957f1dbd7f72d84cecdfaff1f5d5a1f8936203cfdc44a94"
+    },
+    {
+      "bytes": 292,
+      "path": "runs/publish-lto-baseline-b/config/haproxy.cfg",
+      "sha256": "c8f60d8a0cb71487c661fcb4ee3302d0abff5bc4b252fd10660551dd20e13aa2"
+    },
+    {
+      "bytes": 1694,
+      "path": "runs/publish-lto-baseline-b/config/nginx-origin.conf",
+      "sha256": "ec0e6f184c0abb327dbba174bb6b6b7f01981d17f365d154a341b4bdfc6ddc95"
+    },
+    {
+      "bytes": 736,
+      "path": "runs/publish-lto-baseline-b/config/nginx-proxy.conf",
+      "sha256": "cec56fa9b50b7ff8b9a712e15f7fe4099038384d25a54a8b4b59d028f28ff309"
+    },
+    {
+      "bytes": 1373,
+      "path": "runs/publish-lto-baseline-b/config/oxiroute.lua",
+      "sha256": "b2ac80a3bc0dd3755cc2bbc1103184ffb32f0ba54bbc6ece6899af122c078af9"
+    },
+    {
+      "bytes": 5149,
+      "path": "runs/publish-lto-baseline-b/environment.json",
+      "sha256": "122b9230926a9c19840822e0f20aacd4d1bc1f9f2cc09e16d7fbff950dc5b6b7"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-lto-baseline-b/logs/loadgen-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-lto-baseline-b/logs/loadgen-warmup-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 526,
+      "path": "runs/publish-lto-baseline-b/logs/nginx-origin-error.log",
+      "sha256": "d5fbbf478b6eb13168d73d139bb2fb277969c3b8bccae7fb697bfddeefc0d381"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-lto-baseline-b/logs/origin-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-lto-baseline-b/logs/origin-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-lto-baseline-b/logs/oxiroute-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-lto-baseline-b/logs/oxiroute-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 3622,
+      "path": "runs/publish-lto-baseline-b/preflight.json",
+      "sha256": "77d24207143f52b144fdcd5f782a1054060437bcf574618252ce4ffe8e07d01a"
+    },
+    {
+      "bytes": 434,
+      "path": "runs/publish-lto-baseline-b/raw/loadgen-oxiroute.json",
+      "sha256": "e0ee4170520102ee1c211c32ce309e5ab3111ecfab9ae5af77755557c6dce830"
+    },
+    {
+      "bytes": 433,
+      "path": "runs/publish-lto-baseline-b/raw/warmup-oxiroute.json",
+      "sha256": "1c97351aa795e1878e4ef95ca86cce6744ae7d47486411efbc192cf09abf5b55"
+    },
+    {
+      "bytes": 357,
+      "path": "runs/publish-lto-baseline-b/run.json",
+      "sha256": "b075b93e646f897ef0d4e71ccca23cb8ff8575c490e3ad823972eec7b4de3975"
+    },
+    {
+      "bytes": 1310,
+      "path": "runs/publish-lto-baseline-b/skips.json",
+      "sha256": "85659ce6f996dd81557625e2b01daaf293500f4b3a22535588b7fadbd03bdaba"
+    },
+    {
+      "bytes": 434,
+      "path": "runs/publish-lto-baseline-b/summary-oxiroute.json",
+      "sha256": "5e2d88342b7f8c895ee7660ffbd14ea9ba2904dd6846f467c86939ad5444b545"
+    },
+    {
+      "bytes": 433,
+      "path": "runs/publish-lto-baseline-b/warmup-oxiroute.json",
+      "sha256": "ab5aa728948dfc57c33b5d66b290f0335be8126fd030c30c4d7f6feef4cc7af1"
+    },
+    {
+      "bytes": 292,
+      "path": "runs/publish-lto-fat-a/config/haproxy.cfg",
+      "sha256": "c8f60d8a0cb71487c661fcb4ee3302d0abff5bc4b252fd10660551dd20e13aa2"
+    },
+    {
+      "bytes": 1684,
+      "path": "runs/publish-lto-fat-a/config/nginx-origin.conf",
+      "sha256": "7b05ad21150bfd2537cb1b199ecf28cdf7417eb488052dd5c2d3403b5bdc2345"
+    },
+    {
+      "bytes": 726,
+      "path": "runs/publish-lto-fat-a/config/nginx-proxy.conf",
+      "sha256": "83d8706fb064f440409f53c567a0fa8c1d5e742170fc2820210759f771ec1636"
+    },
+    {
+      "bytes": 1373,
+      "path": "runs/publish-lto-fat-a/config/oxiroute.lua",
+      "sha256": "b2ac80a3bc0dd3755cc2bbc1103184ffb32f0ba54bbc6ece6899af122c078af9"
+    },
+    {
+      "bytes": 5139,
+      "path": "runs/publish-lto-fat-a/environment.json",
+      "sha256": "593e3aabfdb8b22dd80e70e4a4e2989766484ef5e797294ab39b303bb13d660b"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-lto-fat-a/logs/loadgen-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-lto-fat-a/logs/loadgen-warmup-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 526,
+      "path": "runs/publish-lto-fat-a/logs/nginx-origin-error.log",
+      "sha256": "ae0e3f5201dd9528e7fc882a4c6c5d427a5e452a6587d60ebfc5d4d7c108d37f"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-lto-fat-a/logs/origin-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-lto-fat-a/logs/origin-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-lto-fat-a/logs/oxiroute-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-lto-fat-a/logs/oxiroute-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 3612,
+      "path": "runs/publish-lto-fat-a/preflight.json",
+      "sha256": "ee9c16fff88f80b854cdae9c2f1da29a8141240d5260f8eb979abb9b3f6ea8a2"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-lto-fat-a/raw/loadgen-oxiroute.json",
+      "sha256": "6b0e181955e263be6e5e08f8878070f0016636139c70934152d2823fb52bc11c"
+    },
+    {
+      "bytes": 434,
+      "path": "runs/publish-lto-fat-a/raw/warmup-oxiroute.json",
+      "sha256": "908eb0d0f88d3c5a289bb4c01ce6be0232ec5cdb287561eec4ee7c7ec01e9b74"
+    },
+    {
+      "bytes": 357,
+      "path": "runs/publish-lto-fat-a/run.json",
+      "sha256": "b075b93e646f897ef0d4e71ccca23cb8ff8575c490e3ad823972eec7b4de3975"
+    },
+    {
+      "bytes": 1310,
+      "path": "runs/publish-lto-fat-a/skips.json",
+      "sha256": "85659ce6f996dd81557625e2b01daaf293500f4b3a22535588b7fadbd03bdaba"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-lto-fat-a/summary-oxiroute.json",
+      "sha256": "db58a8134f218a3bdc674f40994d290650b51a187449e8b4064f59740e9ef975"
+    },
+    {
+      "bytes": 434,
+      "path": "runs/publish-lto-fat-a/warmup-oxiroute.json",
+      "sha256": "bef60fc4e77a7668367f515b71ddea488ffbc2eb1d02e964588bf08c5fc668a3"
+    },
+    {
+      "bytes": 292,
+      "path": "runs/publish-lto-fat-b/config/haproxy.cfg",
+      "sha256": "c8f60d8a0cb71487c661fcb4ee3302d0abff5bc4b252fd10660551dd20e13aa2"
+    },
+    {
+      "bytes": 1684,
+      "path": "runs/publish-lto-fat-b/config/nginx-origin.conf",
+      "sha256": "acf0f161aa3e2853055fedbec9b8d144a52ec792cce317f912a281e24fcb0565"
+    },
+    {
+      "bytes": 726,
+      "path": "runs/publish-lto-fat-b/config/nginx-proxy.conf",
+      "sha256": "3b3c78127c1ac81fa230cb6c88e2d1df44178cb8df559e0f83dadfba73dbe86f"
+    },
+    {
+      "bytes": 1373,
+      "path": "runs/publish-lto-fat-b/config/oxiroute.lua",
+      "sha256": "b2ac80a3bc0dd3755cc2bbc1103184ffb32f0ba54bbc6ece6899af122c078af9"
+    },
+    {
+      "bytes": 5139,
+      "path": "runs/publish-lto-fat-b/environment.json",
+      "sha256": "deeafab9edc39022424b8250766ca4360e618671465ba4878576d82441e3f462"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-lto-fat-b/logs/loadgen-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-lto-fat-b/logs/loadgen-warmup-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 526,
+      "path": "runs/publish-lto-fat-b/logs/nginx-origin-error.log",
+      "sha256": "76cdfd1077c495a797016f5618d7b325f0c6c1cb72b66b22460e8e8849b17cfd"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-lto-fat-b/logs/origin-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-lto-fat-b/logs/origin-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-lto-fat-b/logs/oxiroute-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-lto-fat-b/logs/oxiroute-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 3612,
+      "path": "runs/publish-lto-fat-b/preflight.json",
+      "sha256": "ee9c16fff88f80b854cdae9c2f1da29a8141240d5260f8eb979abb9b3f6ea8a2"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-lto-fat-b/raw/loadgen-oxiroute.json",
+      "sha256": "fb2fa0df1153b83df4488f8ec136bd04c22242f580def955ed2e380439c8bd70"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-lto-fat-b/raw/warmup-oxiroute.json",
+      "sha256": "2942ed83020e087b964b0dd66fddb02029013c279e9a98b5b391398ecca77c5d"
+    },
+    {
+      "bytes": 357,
+      "path": "runs/publish-lto-fat-b/run.json",
+      "sha256": "b075b93e646f897ef0d4e71ccca23cb8ff8575c490e3ad823972eec7b4de3975"
+    },
+    {
+      "bytes": 1310,
+      "path": "runs/publish-lto-fat-b/skips.json",
+      "sha256": "85659ce6f996dd81557625e2b01daaf293500f4b3a22535588b7fadbd03bdaba"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-lto-fat-b/summary-oxiroute.json",
+      "sha256": "bd320470e327e41b554608c96b39c696045c34b9eb96d1130964b504ab236e7e"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-lto-fat-b/warmup-oxiroute.json",
+      "sha256": "836e96b1ef624fb3f62d2f7dbb6af558cd0d3f429c19f37f3f8c6c35543b4c87"
+    },
+    {
+      "bytes": 292,
+      "path": "runs/publish-pool-jemalloc-a/config/haproxy.cfg",
+      "sha256": "c8f60d8a0cb71487c661fcb4ee3302d0abff5bc4b252fd10660551dd20e13aa2"
+    },
+    {
+      "bytes": 1696,
+      "path": "runs/publish-pool-jemalloc-a/config/nginx-origin.conf",
+      "sha256": "56f36dcdf17efea18464617eb66e7df52b0a2c753330b1ac1d87299027472670"
+    },
+    {
+      "bytes": 738,
+      "path": "runs/publish-pool-jemalloc-a/config/nginx-proxy.conf",
+      "sha256": "184217c102810044b2d1a422c04ff8f9393423ea36bd6abf8be8491fa7044baf"
+    },
+    {
+      "bytes": 1373,
+      "path": "runs/publish-pool-jemalloc-a/config/oxiroute.lua",
+      "sha256": "b2ac80a3bc0dd3755cc2bbc1103184ffb32f0ba54bbc6ece6899af122c078af9"
+    },
+    {
+      "bytes": 5117,
+      "path": "runs/publish-pool-jemalloc-a/environment.json",
+      "sha256": "562e95da8d02619d69bdedfbe14cb25631f5a6fb614804a92c60b2345af13c81"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-pool-jemalloc-a/logs/loadgen-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-pool-jemalloc-a/logs/loadgen-warmup-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 526,
+      "path": "runs/publish-pool-jemalloc-a/logs/nginx-origin-error.log",
+      "sha256": "5c969338ec5bf8e1cd6a53950ab97fa03dc35c13e796fc2417e1aae9777ef892"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-pool-jemalloc-a/logs/origin-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-pool-jemalloc-a/logs/origin-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-pool-jemalloc-a/logs/oxiroute-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-pool-jemalloc-a/logs/oxiroute-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 3590,
+      "path": "runs/publish-pool-jemalloc-a/preflight.json",
+      "sha256": "dee7e47f1603ba1e194ecab38858c39bddc42daec6ec89339b12a7d8da904bcd"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-pool-jemalloc-a/raw/loadgen-oxiroute.json",
+      "sha256": "246ef01d74b7beb4c6eb519a32c7a32a96fdab7e49f6d5f41b3bffeb8d0a18a4"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-pool-jemalloc-a/raw/warmup-oxiroute.json",
+      "sha256": "516e649c4b652c1d6d31d98b8427a3357d12c2a425c45fa56559ba0fd690c340"
+    },
+    {
+      "bytes": 357,
+      "path": "runs/publish-pool-jemalloc-a/run.json",
+      "sha256": "b075b93e646f897ef0d4e71ccca23cb8ff8575c490e3ad823972eec7b4de3975"
+    },
+    {
+      "bytes": 1310,
+      "path": "runs/publish-pool-jemalloc-a/skips.json",
+      "sha256": "85659ce6f996dd81557625e2b01daaf293500f4b3a22535588b7fadbd03bdaba"
+    },
+    {
+      "bytes": 435,
+      "path": "runs/publish-pool-jemalloc-a/summary-oxiroute.json",
+      "sha256": "9ea9ae20cf774e6a4d5ac9baf9a377a0362e444b08076598f098cbbddef6a190"
+    },
+    {
+      "bytes": 435,
+      "path": "runs/publish-pool-jemalloc-a/warmup-oxiroute.json",
+      "sha256": "9fe9fa02035b1d71edc3dc74941412bdbf6db68715d3d059f03ca6e77cd24fa5"
+    },
+    {
+      "bytes": 292,
+      "path": "runs/publish-pool-jemalloc-b/config/haproxy.cfg",
+      "sha256": "c8f60d8a0cb71487c661fcb4ee3302d0abff5bc4b252fd10660551dd20e13aa2"
+    },
+    {
+      "bytes": 1696,
+      "path": "runs/publish-pool-jemalloc-b/config/nginx-origin.conf",
+      "sha256": "706a3c2b32875c2bae97ce23f8a81de16f21663b2d00057af8eaff5bca524b42"
+    },
+    {
+      "bytes": 738,
+      "path": "runs/publish-pool-jemalloc-b/config/nginx-proxy.conf",
+      "sha256": "ac2d40e79c22ef127833e027d80bb5789e5a7f9c8762790bb99367208c09391d"
+    },
+    {
+      "bytes": 1373,
+      "path": "runs/publish-pool-jemalloc-b/config/oxiroute.lua",
+      "sha256": "b2ac80a3bc0dd3755cc2bbc1103184ffb32f0ba54bbc6ece6899af122c078af9"
+    },
+    {
+      "bytes": 5117,
+      "path": "runs/publish-pool-jemalloc-b/environment.json",
+      "sha256": "8223b87ab3f85f4df6952cb2de0ffeef32e59abe0103825813c6c9dd2decc18c"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-pool-jemalloc-b/logs/loadgen-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-pool-jemalloc-b/logs/loadgen-warmup-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 1052,
+      "path": "runs/publish-pool-jemalloc-b/logs/nginx-origin-error.log",
+      "sha256": "69e883beb7ed7afaa952599e7e90fa2fcaf47e40fca89e7d299b889ef68bd03e"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-pool-jemalloc-b/logs/origin-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-pool-jemalloc-b/logs/origin-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-pool-jemalloc-b/logs/oxiroute-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-pool-jemalloc-b/logs/oxiroute-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 3590,
+      "path": "runs/publish-pool-jemalloc-b/preflight.json",
+      "sha256": "dee7e47f1603ba1e194ecab38858c39bddc42daec6ec89339b12a7d8da904bcd"
+    },
+    {
+      "bytes": 434,
+      "path": "runs/publish-pool-jemalloc-b/raw/loadgen-oxiroute.json",
+      "sha256": "6004387b9451e3bf4e863978d1575cec31382b896b6ed68c8237c34574bdee51"
+    },
+    {
+      "bytes": 433,
+      "path": "runs/publish-pool-jemalloc-b/raw/warmup-oxiroute.json",
+      "sha256": "b31325113927f91d14d552369d450aa3c7ec75083f1433f12b70431be54eddc1"
+    },
+    {
+      "bytes": 357,
+      "path": "runs/publish-pool-jemalloc-b/run.json",
+      "sha256": "b075b93e646f897ef0d4e71ccca23cb8ff8575c490e3ad823972eec7b4de3975"
+    },
+    {
+      "bytes": 1310,
+      "path": "runs/publish-pool-jemalloc-b/skips.json",
+      "sha256": "85659ce6f996dd81557625e2b01daaf293500f4b3a22535588b7fadbd03bdaba"
+    },
+    {
+      "bytes": 434,
+      "path": "runs/publish-pool-jemalloc-b/summary-oxiroute.json",
+      "sha256": "9e3282a5e45e91b09d03939168542bd1c28f18be9a7c077d309ed474d6fa6584"
+    },
+    {
+      "bytes": 433,
+      "path": "runs/publish-pool-jemalloc-b/warmup-oxiroute.json",
+      "sha256": "9b64bc221b340ca1b2eab40769c2cc5c2346a0a2b6f610bd75bf3ef265124255"
+    },
+    {
+      "bytes": 292,
+      "path": "runs/publish-stable-pool-after-a/config/haproxy.cfg",
+      "sha256": "c8f60d8a0cb71487c661fcb4ee3302d0abff5bc4b252fd10660551dd20e13aa2"
+    },
+    {
+      "bytes": 1704,
+      "path": "runs/publish-stable-pool-after-a/config/nginx-origin.conf",
+      "sha256": "65ecdbcdde55f88fa16aa703f6b8fe3ed18f59cbc8c7dec530aace172c59f78b"
+    },
+    {
+      "bytes": 746,
+      "path": "runs/publish-stable-pool-after-a/config/nginx-proxy.conf",
+      "sha256": "e88bcc8dc0f9fe563dd446d838ce25f876030d329c32a7926c51f5e01676f962"
+    },
+    {
+      "bytes": 1373,
+      "path": "runs/publish-stable-pool-after-a/config/oxiroute.lua",
+      "sha256": "b2ac80a3bc0dd3755cc2bbc1103184ffb32f0ba54bbc6ece6899af122c078af9"
+    },
+    {
+      "bytes": 5149,
+      "path": "runs/publish-stable-pool-after-a/environment.json",
+      "sha256": "d16b65cd45ed544266629a2a163878fe1e1f8a3f6a465674968be74e3079df06"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-stable-pool-after-a/logs/loadgen-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-stable-pool-after-a/logs/loadgen-warmup-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 526,
+      "path": "runs/publish-stable-pool-after-a/logs/nginx-origin-error.log",
+      "sha256": "a87933db961de1dc2ae9477e4f339a093281f4593d56acba6545401992917920"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-stable-pool-after-a/logs/origin-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-stable-pool-after-a/logs/origin-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-stable-pool-after-a/logs/oxiroute-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-stable-pool-after-a/logs/oxiroute-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 3622,
+      "path": "runs/publish-stable-pool-after-a/preflight.json",
+      "sha256": "f49ddd5de7d36e001208d89070684d36a2ea8021fea0d6db3c232b3983b05ea6"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-stable-pool-after-a/raw/loadgen-oxiroute.json",
+      "sha256": "d573497e11c0e2699662b4c601d4ddea4ffb2382043651b0822f63b5b88832d5"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-stable-pool-after-a/raw/warmup-oxiroute.json",
+      "sha256": "1946da14206eaebc85f2e03db03430b423c0719e550f4379c36181d0f1add033"
+    },
+    {
+      "bytes": 357,
+      "path": "runs/publish-stable-pool-after-a/run.json",
+      "sha256": "b075b93e646f897ef0d4e71ccca23cb8ff8575c490e3ad823972eec7b4de3975"
+    },
+    {
+      "bytes": 1310,
+      "path": "runs/publish-stable-pool-after-a/skips.json",
+      "sha256": "85659ce6f996dd81557625e2b01daaf293500f4b3a22535588b7fadbd03bdaba"
+    },
+    {
+      "bytes": 435,
+      "path": "runs/publish-stable-pool-after-a/summary-oxiroute.json",
+      "sha256": "1800fb8dd70579efb4a81701d28d6be2a6f3d56c64a0840e6c0df994671ba737"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-stable-pool-after-a/warmup-oxiroute.json",
+      "sha256": "d2a0d80963827dbff00caa5aac297654ddd4249e1d15afcc48fb497d69c06b0f"
+    },
+    {
+      "bytes": 292,
+      "path": "runs/publish-stable-pool-after-b/config/haproxy.cfg",
+      "sha256": "c8f60d8a0cb71487c661fcb4ee3302d0abff5bc4b252fd10660551dd20e13aa2"
+    },
+    {
+      "bytes": 1704,
+      "path": "runs/publish-stable-pool-after-b/config/nginx-origin.conf",
+      "sha256": "dfd1bd8023ba24488c4dbce3f55357ef5bc6345da9f51ea6930c2afea52d4880"
+    },
+    {
+      "bytes": 746,
+      "path": "runs/publish-stable-pool-after-b/config/nginx-proxy.conf",
+      "sha256": "a1b673c9d9c2614ef5a0e5de01b0c7849c1ce18701618eb29a0af1185a1e0264"
+    },
+    {
+      "bytes": 1373,
+      "path": "runs/publish-stable-pool-after-b/config/oxiroute.lua",
+      "sha256": "b2ac80a3bc0dd3755cc2bbc1103184ffb32f0ba54bbc6ece6899af122c078af9"
+    },
+    {
+      "bytes": 5149,
+      "path": "runs/publish-stable-pool-after-b/environment.json",
+      "sha256": "d60f588d9a0ea967f9ac2d36aa19bdc4ddccd7746bbbb66eeae17ea023de7cd1"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-stable-pool-after-b/logs/loadgen-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-stable-pool-after-b/logs/loadgen-warmup-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 526,
+      "path": "runs/publish-stable-pool-after-b/logs/nginx-origin-error.log",
+      "sha256": "caddccad542d4cb8d0afeff9de843da252107fc9db3fa965fbff8a7f45d35678"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-stable-pool-after-b/logs/origin-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-stable-pool-after-b/logs/origin-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-stable-pool-after-b/logs/oxiroute-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-stable-pool-after-b/logs/oxiroute-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 3622,
+      "path": "runs/publish-stable-pool-after-b/preflight.json",
+      "sha256": "f49ddd5de7d36e001208d89070684d36a2ea8021fea0d6db3c232b3983b05ea6"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-stable-pool-after-b/raw/loadgen-oxiroute.json",
+      "sha256": "2bc61310d09013f2f766f7ee2799399207ecbd05a123bf76b4e9c468da747a16"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-stable-pool-after-b/raw/warmup-oxiroute.json",
+      "sha256": "cd02a046829c5c4b773b388c12cbbdc6e04916fa58c179b3f082bf99c4445188"
+    },
+    {
+      "bytes": 357,
+      "path": "runs/publish-stable-pool-after-b/run.json",
+      "sha256": "b075b93e646f897ef0d4e71ccca23cb8ff8575c490e3ad823972eec7b4de3975"
+    },
+    {
+      "bytes": 1310,
+      "path": "runs/publish-stable-pool-after-b/skips.json",
+      "sha256": "85659ce6f996dd81557625e2b01daaf293500f4b3a22535588b7fadbd03bdaba"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-stable-pool-after-b/summary-oxiroute.json",
+      "sha256": "b1d8e57bd8b1204ea0536ecd9cd2bbb9fa7e0585d9c1395268197ad236112c99"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-stable-pool-after-b/warmup-oxiroute.json",
+      "sha256": "055c2bb601753e72d1b9ea73f9928058044c0486b2cbeeff86db4411648be765"
+    },
+    {
+      "bytes": 292,
+      "path": "runs/publish-stable-pool-before-a/config/haproxy.cfg",
+      "sha256": "c8f60d8a0cb71487c661fcb4ee3302d0abff5bc4b252fd10660551dd20e13aa2"
+    },
+    {
+      "bytes": 1706,
+      "path": "runs/publish-stable-pool-before-a/config/nginx-origin.conf",
+      "sha256": "cc90734e0ccc6278bcfa57a04c4c9eff792846c90f67f6e3e9b9b93621e4951f"
+    },
+    {
+      "bytes": 748,
+      "path": "runs/publish-stable-pool-before-a/config/nginx-proxy.conf",
+      "sha256": "a133d2638b6849c53cad3df3e46b2c5f06f06d52fbca42d34b52e80e3f65f1e8"
+    },
+    {
+      "bytes": 1373,
+      "path": "runs/publish-stable-pool-before-a/config/oxiroute.lua",
+      "sha256": "b2ac80a3bc0dd3755cc2bbc1103184ffb32f0ba54bbc6ece6899af122c078af9"
+    },
+    {
+      "bytes": 5139,
+      "path": "runs/publish-stable-pool-before-a/environment.json",
+      "sha256": "6cb8c55f8a84a32f26a01b51728d9a3656457d649dd01e3020f8cd11b5a24163"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-stable-pool-before-a/logs/loadgen-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-stable-pool-before-a/logs/loadgen-warmup-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 526,
+      "path": "runs/publish-stable-pool-before-a/logs/nginx-origin-error.log",
+      "sha256": "b2c1ae9f3e761dcb2d9ad205e203cca1b5769daea7b9595bef19597b7a0347fe"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-stable-pool-before-a/logs/origin-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-stable-pool-before-a/logs/origin-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-stable-pool-before-a/logs/oxiroute-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-stable-pool-before-a/logs/oxiroute-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 3612,
+      "path": "runs/publish-stable-pool-before-a/preflight.json",
+      "sha256": "ee9c16fff88f80b854cdae9c2f1da29a8141240d5260f8eb979abb9b3f6ea8a2"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-stable-pool-before-a/raw/loadgen-oxiroute.json",
+      "sha256": "d2dbe2d8dae36dbf7d328df2d5da77339440a82cd765eba354b2069df0ab0cf0"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-stable-pool-before-a/raw/warmup-oxiroute.json",
+      "sha256": "cb025476ef4a7aaec122383b0262d7ad00d6c5280a5495f03eeb7f5bed6043b0"
+    },
+    {
+      "bytes": 357,
+      "path": "runs/publish-stable-pool-before-a/run.json",
+      "sha256": "b075b93e646f897ef0d4e71ccca23cb8ff8575c490e3ad823972eec7b4de3975"
+    },
+    {
+      "bytes": 1310,
+      "path": "runs/publish-stable-pool-before-a/skips.json",
+      "sha256": "85659ce6f996dd81557625e2b01daaf293500f4b3a22535588b7fadbd03bdaba"
+    },
+    {
+      "bytes": 435,
+      "path": "runs/publish-stable-pool-before-a/summary-oxiroute.json",
+      "sha256": "1fb4d1a973c946bd4338381d5f5bf5b8ead21f058184131a115d42a641f27f66"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-stable-pool-before-a/warmup-oxiroute.json",
+      "sha256": "646c90c8fe6d6359d599cd35ad97726d20a70a5023b2cadffb05196127af5ada"
+    },
+    {
+      "bytes": 292,
+      "path": "runs/publish-stable-pool-before-b/config/haproxy.cfg",
+      "sha256": "c8f60d8a0cb71487c661fcb4ee3302d0abff5bc4b252fd10660551dd20e13aa2"
+    },
+    {
+      "bytes": 1706,
+      "path": "runs/publish-stable-pool-before-b/config/nginx-origin.conf",
+      "sha256": "7d4b1a6d059ac182ab50ea6b9d013a1ae417ea2088dd0edca994b950eea3604c"
+    },
+    {
+      "bytes": 748,
+      "path": "runs/publish-stable-pool-before-b/config/nginx-proxy.conf",
+      "sha256": "d1501a4c1db07f08aa9267c274d84566f4ca326a0419d6d08b98b57fda0895cb"
+    },
+    {
+      "bytes": 1373,
+      "path": "runs/publish-stable-pool-before-b/config/oxiroute.lua",
+      "sha256": "b2ac80a3bc0dd3755cc2bbc1103184ffb32f0ba54bbc6ece6899af122c078af9"
+    },
+    {
+      "bytes": 5139,
+      "path": "runs/publish-stable-pool-before-b/environment.json",
+      "sha256": "d712b84802db461b27e8f4151799a3b3d4e092ac684541cc8a058e2aa701ae7e"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-stable-pool-before-b/logs/loadgen-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-stable-pool-before-b/logs/loadgen-warmup-oxiroute.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 526,
+      "path": "runs/publish-stable-pool-before-b/logs/nginx-origin-error.log",
+      "sha256": "2bbf5868e58fc3da5dd2327069ce914ebbad9f5bcc6447f619bf19105be07702"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-stable-pool-before-b/logs/origin-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-stable-pool-before-b/logs/origin-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-stable-pool-before-b/logs/oxiroute-stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "path": "runs/publish-stable-pool-before-b/logs/oxiroute-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 3612,
+      "path": "runs/publish-stable-pool-before-b/preflight.json",
+      "sha256": "ee9c16fff88f80b854cdae9c2f1da29a8141240d5260f8eb979abb9b3f6ea8a2"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-stable-pool-before-b/raw/loadgen-oxiroute.json",
+      "sha256": "6344ab431c3dee3d73e998700bb7613d7bb6e0b95c4288fec5a62efd84a61f8a"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-stable-pool-before-b/raw/warmup-oxiroute.json",
+      "sha256": "f03c74b0598bb9b2cf116b7089afbddcd0d3154958ce491a9361acc6235bb461"
+    },
+    {
+      "bytes": 357,
+      "path": "runs/publish-stable-pool-before-b/run.json",
+      "sha256": "b075b93e646f897ef0d4e71ccca23cb8ff8575c490e3ad823972eec7b4de3975"
+    },
+    {
+      "bytes": 1310,
+      "path": "runs/publish-stable-pool-before-b/skips.json",
+      "sha256": "85659ce6f996dd81557625e2b01daaf293500f4b3a22535588b7fadbd03bdaba"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-stable-pool-before-b/summary-oxiroute.json",
+      "sha256": "e6b208d48d25c9e8d5aeb191eadd416b1daa3d57312006d31cc3d21ea76a561b"
+    },
+    {
+      "bytes": 436,
+      "path": "runs/publish-stable-pool-before-b/warmup-oxiroute.json",
+      "sha256": "5b92469e99e22a6d84e9c7cd9e37e197507155cf7a58be77e3576537aa16b56d"
+    }
+  ],
+  "report": "../../2026-07-24-performance-cause-v1.json",
+  "report_content": {
+    "canonicalization": "json-sort-keys-v1-excluding-evidence",
+    "sha256": "9558545f2d33cc7b7d2d5da11e818af2ea3659f575689b9bbaea496b2be3e901"
+  },
+  "run_ids": [
+    "publish-cumulative-retained-c",
+    "publish-cumulative-retained-d",
+    "publish-final-baseline-a",
+    "publish-final-baseline-b",
+    "publish-final-nginx-a",
+    "publish-final-nginx-b",
+    "publish-final-oxiroute-a",
+    "publish-final-oxiroute-b",
+    "publish-final-retained-a",
+    "publish-final-retained-b",
+    "publish-lto-baseline-a",
+    "publish-lto-baseline-b",
+    "publish-lto-fat-a",
+    "publish-lto-fat-b",
+    "publish-pool-jemalloc-a",
+    "publish-pool-jemalloc-b",
+    "publish-stable-pool-after-a",
+    "publish-stable-pool-after-b",
+    "publish-stable-pool-before-a",
+    "publish-stable-pool-before-b"
+  ],
+  "schema": "oxiroute.benchmark-evidence.v2"
+}

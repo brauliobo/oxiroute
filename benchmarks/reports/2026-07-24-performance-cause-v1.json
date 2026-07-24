@@ -1,0 +1,185 @@
+{
+  "binaries": {
+    "fat_lto_diagnostic_sha256": "36182d6896e5f1a259e516655408a38bcbcd3e613b2cbd9b56787690d1437fa7",
+    "final_sha256": "7d1eaf18f14d638075ea4e3f5ba6807a1ed2e0d1cacd96557eada45a732a018a",
+    "generic_baseline_sha256": "6e7f6113c41048465f48dcdd2b8f75cb27f6de2cb0de66d439c73a6022972a82",
+    "jemalloc_diagnostic_sha256": "d19a79b1d63240c6e165a834b698c5a794b990390555507a29e08baed8cb1b0b",
+    "jemalloc_singleton_diagnostic_sha256": "badc6f74eb19a83810dfef59ad6b2818cc15eeb9ac815cb88f9ed9b7230e9248"
+  },
+  "date": "2026-07-24",
+  "evidence": {
+    "checksums": "evidence/2026-07-24-performance-cause-v1/SHA256SUMS",
+    "manifest": "evidence/2026-07-24-performance-cause-v1/manifest.json",
+    "root": "evidence/2026-07-24-performance-cause-v1",
+    "status": "published"
+  },
+  "final_exact_binary_comparison": {
+    "baseline": {
+      "mean_requests_per_second": 94806.539,
+      "population_cv_percent": 1.18,
+      "requests_per_second": [
+        95926.533,
+        93686.544
+      ],
+      "run_ids": [
+        "publish-final-baseline-a",
+        "publish-final-baseline-b"
+      ]
+    },
+    "failed_requests": 0,
+    "mean_delta_percent": 3.64,
+    "retained": {
+      "mean_requests_per_second": 98253.158,
+      "population_cv_percent": 0.7,
+      "requests_per_second": [
+        98940.833,
+        97565.482
+      ],
+      "run_ids": [
+        "publish-final-retained-a",
+        "publish-final-retained-b"
+      ]
+    }
+  },
+  "final_nginx_comparison": {
+    "failed_requests": 0,
+    "nginx": {
+      "mean_requests_per_second": 207724.887,
+      "population_cv_percent": 1.17,
+      "requests_per_second": [
+        205289.096,
+        210160.677
+      ],
+      "run_ids": [
+        "publish-final-nginx-a",
+        "publish-final-nginx-b"
+      ]
+    },
+    "nginx_to_oxiroute_ratio": 2.1,
+    "oxiroute": {
+      "mean_requests_per_second": 99130.604,
+      "population_cv_percent": 1.6,
+      "requests_per_second": [
+        97543.119,
+        100718.088
+      ],
+      "run_ids": [
+        "publish-final-oxiroute-a",
+        "publish-final-oxiroute-b"
+      ]
+    }
+  },
+  "limitations": [
+    "The host was not isolated and occasional external contention was observed.",
+    "Exact-binary ABBA blocks are authoritative; deltas from separate blocks must not be compounded.",
+    "This loopback plaintext HTTP/1.1 result does not represent production WAN connection reuse, TLS, HTTP/2, HTTP/3, cache, multi-core, or tail latency."
+  ],
+  "profiling": {
+    "status": "diagnostic_not_archived",
+    "summary": "perf sampling attributed the remaining OxiRoute cost primarily to Pingora HTTP header and byte-buffer ownership plus Tokio readiness, task, semaphore, timer, and connection-pool machinery; OxiRoute route and endpoint selection were minor self-time contributors"
+  },
+  "rejected": {
+    "jemalloc": {
+      "jemalloc_only": {
+        "requests_per_second": [
+          101948.16,
+          62843.186
+        ],
+        "run_ids": [
+          "publish-pool-jemalloc-a",
+          "publish-pool-jemalloc-b"
+        ]
+      },
+      "jemalloc_with_singleton_path": {
+        "requests_per_second": [
+          101553.876,
+          63723.597
+        ],
+        "run_ids": [
+          "publish-cumulative-retained-c",
+          "publish-cumulative-retained-d"
+        ]
+      },
+      "reason": "longer runs exposed allocator-linked throughput collapses that the initial short samples missed"
+    },
+    "singleton_pool_fast_path": {
+      "baseline": {
+        "mean_requests_per_second": 101875.242,
+        "requests_per_second": [
+          101568.266,
+          102182.217
+        ],
+        "run_ids": [
+          "publish-stable-pool-before-a",
+          "publish-stable-pool-before-b"
+        ]
+      },
+      "candidate": {
+        "mean_requests_per_second": 101967.553,
+        "requests_per_second": [
+          101883.77,
+          102051.335
+        ],
+        "run_ids": [
+          "publish-stable-pool-after-a",
+          "publish-stable-pool-after-b"
+        ]
+      },
+      "mean_delta_percent": 0.09,
+      "reason": "the longer exact-binary comparison was throughput-neutral"
+    }
+  },
+  "retained": {
+    "release_fat_lto": {
+      "baseline": {
+        "mean_requests_per_second": 93699.201,
+        "population_cv_percent": 2.52,
+        "requests_per_second": [
+          91334.824,
+          96063.578
+        ],
+        "run_ids": [
+          "publish-lto-baseline-a",
+          "publish-lto-baseline-b"
+        ]
+      },
+      "candidate": {
+        "mean_requests_per_second": 101317.806,
+        "population_cv_percent": 0.27,
+        "requests_per_second": [
+          101590.171,
+          101045.441
+        ],
+        "run_ids": [
+          "publish-lto-fat-a",
+          "publish-lto-fat-b"
+        ]
+      },
+      "change": "set release lto to fat and codegen-units to one",
+      "mean_delta_percent": 8.13
+    }
+  },
+  "scenario": {
+    "connections": 128,
+    "cpu_affinity": {
+      "load_generator": 4,
+      "origin": 3,
+      "proxy": 2
+    },
+    "measurement_seconds": 30,
+    "origin_port": 49080,
+    "proxy_port": 49081,
+    "request_line": "GET /payload HTTP/1.1",
+    "response_bytes": 1024,
+    "transport": "loopback plaintext HTTP/1.1 keep-alive",
+    "warmup_seconds": 10
+  },
+  "schema": "oxiroute.local-v1.performance-cause-report.v1",
+  "source_commits": {
+    "allocator_candidate": "c7fdd8a5c53c8bcbf0f9b510e73eb5dc2bab2d15",
+    "allocator_rejected": "aeb3e61cf32b01bf910da285ba0a76d4dad97963",
+    "final": "e1747d8d55571a0012d53fe5d23a2653ec423a72",
+    "generic_baseline": "88e2b4baf2f0b2ae09ac4975f7106c659805d87e"
+  },
+  "status": "complete"
+}

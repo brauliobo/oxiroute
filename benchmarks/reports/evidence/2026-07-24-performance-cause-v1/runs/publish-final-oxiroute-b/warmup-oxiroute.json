@@ -1,0 +1,15 @@
+{
+  "connection_reuse": "keep-alive",
+  "connections": 128,
+  "elapsed_seconds": 10.001435,
+  "failed_requests": 0,
+  "implementation": "oxiroute",
+  "load_generator": "oxiroute-loadgen/0.1.0",
+  "non_2xx_or_3xx": 0,
+  "protocol": "HTTP/1.1",
+  "request_line": "GET /payload HTTP/1.1",
+  "requests": 1007585,
+  "requests_per_second": 100744.042,
+  "schema": "oxiroute.local-v1.result.v1",
+  "transfer_bytes_per_second": 103161899.349
+}

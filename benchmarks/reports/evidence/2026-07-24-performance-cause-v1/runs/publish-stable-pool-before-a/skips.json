@@ -1,0 +1,41 @@
+{
+  "lanes": [
+    {
+      "id": "cache-h1",
+      "reason": "The v1 schema accepts cache policy, but oxiroute-server does not activate cache stores.",
+      "reason_code": "oxiroute_cache_runtime_unavailable",
+      "status": "skipped"
+    },
+    {
+      "id": "forward-h1",
+      "reason": "The runtime planner rejects forward-proxy listeners.",
+      "reason_code": "oxiroute_forward_runtime_unavailable",
+      "status": "skipped"
+    },
+    {
+      "id": "reverse-h2",
+      "reason": "Reverse H2 requires a separate TLS credential, ALPN, and h2load comparison matrix.",
+      "reason_code": "local_v1_tls_h2_lane_not_defined",
+      "status": "skipped"
+    },
+    {
+      "id": "forward-h2",
+      "reason": "The runtime planner rejects forward-proxy listeners.",
+      "reason_code": "oxiroute_forward_runtime_unavailable",
+      "status": "skipped"
+    },
+    {
+      "id": "reverse-h3",
+      "reason": "The current reverse-proxy runtime does not implement HTTP/3.",
+      "reason_code": "oxiroute_reverse_h3_unavailable",
+      "status": "skipped"
+    },
+    {
+      "id": "forward-h3",
+      "reason": "The runtime planner rejects forward-proxy listeners.",
+      "reason_code": "oxiroute_forward_runtime_unavailable",
+      "status": "skipped"
+    }
+  ],
+  "schema": "oxiroute.local-v1.lanes.v1"
+}

@@ -16,6 +16,8 @@ Measured reports:
   baseline. OxiRoute was stable, but system drift prevents strong cross-product conclusions.
 - [`reports/2026-07-23-optimization-v1.md`](reports/2026-07-23-optimization-v1.md) records three
   interleaved optimization checks and the exact-binary cumulative comparison.
+- [`reports/2026-07-24-performance-cause-v1.md`](reports/2026-07-24-performance-cause-v1.md) traces
+  the remaining nginx gap, retains release LTO, and records rejected allocator and routing changes.
 
 ## Scope
 

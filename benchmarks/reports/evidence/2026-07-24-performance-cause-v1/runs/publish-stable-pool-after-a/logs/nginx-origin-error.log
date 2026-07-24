@@ -1,0 +1,7 @@
+2026/07/24 08:37:16 [notice] 3674204#3674204: using the "epoll" event method
+2026/07/24 08:37:16 [notice] 3674204#3674204: nginx/1.30.4
+2026/07/24 08:37:16 [notice] 3674204#3674204: built by gcc 16.1.1 20260625 (GCC) 
+2026/07/24 08:37:16 [notice] 3674204#3674204: OS: Linux 7.1.3-2-cachyos
+2026/07/24 08:37:16 [notice] 3674204#3674204: getrlimit(RLIMIT_NOFILE): 1001001:1001001
+2026/07/24 08:38:06 [notice] 3674204#3674204: signal 15 (SIGTERM) received from 3674014, exiting
+2026/07/24 08:38:06 [notice] 3674204#3674204: exit

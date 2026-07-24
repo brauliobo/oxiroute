@@ -1,0 +1,124 @@
+{
+  "captured_at_utc": "2026-07-24T11:45:35Z",
+  "cpu": {
+    "logical_count": 16,
+    "model": "AMD Ryzen 7 9700X 8-Core Processor"
+  },
+  "git": {
+    "dirty": false,
+    "head": "e1747d8d55571a0012d53fe5d23a2653ec423a72",
+    "status_porcelain_v1": "",
+    "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "untracked_files": []
+  },
+  "loadgen_binary": {
+    "available": true,
+    "path": "/home/braulio/Projects/oxiroute/benchmarks/loadgen/target/release/oxiroute-loadgen",
+    "resolved_path": "/home/braulio/Projects/oxiroute/benchmarks/loadgen/target/release/oxiroute-loadgen",
+    "sha256": "f1ee441510eec34260a165ebf501811f0e3b04b500e9f2cdfcd2d05dc1312cfc"
+  },
+  "oxiroute_binary": {
+    "available": true,
+    "path": "/tmp/opencode/oxiroute-baseline/target/release/oxiroute-server",
+    "resolved_path": "/tmp/opencode/oxiroute-baseline/target/release/oxiroute-server",
+    "sha256": "6e7f6113c41048465f48dcdd2b8f75cb27f6de2cb0de66d439c73a6022972a82"
+  },
+  "platform": {
+    "machine": "x86_64",
+    "release": "7.1.3-2-cachyos",
+    "system": "Linux"
+  },
+  "repository_path": "/home/braulio/Projects/oxiroute",
+  "rust_toolchain": "1.87.0",
+  "schema": "oxiroute.local-v1.environment.v2",
+  "tools": {
+    "cargo": {
+      "available": true,
+      "path": "/home/braulio/.rustup/toolchains/1.87.0-x86_64-unknown-linux-gnu/bin/cargo",
+      "resolved_path": "/home/braulio/.rustup/toolchains/1.87.0-x86_64-unknown-linux-gnu/bin/cargo",
+      "sha256": "a9fb5ef0f95be70b324f3e88a4621a566320e2eb00635dc37f8a98e0a9fb7c9a",
+      "version": "cargo 1.87.0 (99624be96 2025-05-06)\nrelease: 1.87.0\ncommit-hash: 99624be96e9d213b0e9b1e36451271f24e4a41d8\ncommit-date: 2025-05-06\nhost: x86_64-unknown-linux-gnu\nlibgit2: 1.9.0 (sys:0.20.0 vendored)\nlibcurl: 8.12.1-DEV (sys:0.4.80+curl-8.12.1 vendored ssl:OpenSSL/3.4.1)\nssl: OpenSSL 3.4.1 11 Feb 2025\nos: Arch Linux Rolling Release [64-bit]",
+      "version_arguments": [
+        "-Vv"
+      ],
+      "version_exit_status": 0
+    },
+    "haproxy": {
+      "available": true,
+      "path": "/usr/bin/haproxy",
+      "resolved_path": "/usr/bin/haproxy",
+      "sha256": "7c8fca223d9dd226071e057e83acf1141cfcfedd2ca9d4c963838ed059964732",
+      "version": "HAProxy version 3.4.2 2026/07/03 - https://haproxy.org/\nStatus: long-term supported branch - will stop receiving fixes around Q2 2031.\nKnown bugs: http://www.haproxy.org/bugs/bugs-3.4.2.html\nRunning on: Linux 7.1.3-2-cachyos #1 SMP PREEMPT_DYNAMIC Wed, 08 Jul 2026 06:14:22 +0000 x86_64",
+      "version_arguments": [
+        "-v"
+      ],
+      "version_exit_status": 0
+    },
+    "loadgen": {
+      "available": true,
+      "path": "/home/braulio/Projects/oxiroute/benchmarks/loadgen/target/release/oxiroute-loadgen",
+      "resolved_path": "/home/braulio/Projects/oxiroute/benchmarks/loadgen/target/release/oxiroute-loadgen",
+      "sha256": "f1ee441510eec34260a165ebf501811f0e3b04b500e9f2cdfcd2d05dc1312cfc",
+      "version": "oxiroute-loadgen 0.1.0",
+      "version_arguments": [
+        "--version"
+      ],
+      "version_exit_status": 0
+    },
+    "nginx": {
+      "available": true,
+      "path": "/usr/bin/nginx",
+      "resolved_path": "/usr/bin/nginx",
+      "sha256": "fb8051332afb2dcc6ef7072e2ad88f345a5d0e00d8f35d5c6ccc094259f40721",
+      "version": "nginx version: nginx/1.30.4",
+      "version_arguments": [
+        "-v"
+      ],
+      "version_exit_status": 0
+    },
+    "phoronix-test-suite": {
+      "available": true,
+      "path": "/usr/bin/phoronix-test-suite",
+      "resolved_path": "/usr/bin/phoronix-test-suite",
+      "sha256": "346ce7151d7495cd61c695b10786c61c11aabebd22b0c7a4adbe5a27ea3ded56",
+      "version": "Phoronix Test Suite v10.8.4",
+      "version_arguments": [
+        "version"
+      ],
+      "version_exit_status": 0
+    },
+    "python3": {
+      "available": true,
+      "path": "/usr/bin/python3",
+      "resolved_path": "/usr/bin/python3.14",
+      "sha256": "684d10e0f26224cb8b112bd9d49f4c097905ea11aa801a15bf79936ea171d99c",
+      "version": "Python 3.14.6",
+      "version_arguments": [
+        "--version"
+      ],
+      "version_exit_status": 0
+    },
+    "rustc": {
+      "available": true,
+      "path": "/home/braulio/.rustup/toolchains/1.87.0-x86_64-unknown-linux-gnu/bin/rustc",
+      "resolved_path": "/home/braulio/.rustup/toolchains/1.87.0-x86_64-unknown-linux-gnu/bin/rustc",
+      "sha256": "9aac770e110f2b2cf1a38e40c9da8268139bae1fcf88d5d152889d199a514a73",
+      "version": "rustc 1.87.0 (17067e9ac 2025-05-09)\nbinary: rustc\ncommit-hash: 17067e9ac6d7ecb70e50f92c1944e545188d2359\ncommit-date: 2025-05-09\nhost: x86_64-unknown-linux-gnu\nrelease: 1.87.0\nLLVM version: 20.1.1",
+      "version_arguments": [
+        "-Vv"
+      ],
+      "version_exit_status": 0
+    },
+    "taskset": {
+      "available": true,
+      "path": "/usr/bin/taskset",
+      "resolved_path": "/usr/bin/taskset",
+      "sha256": "bcf0c093716a5b21afbc285ab84669c8b9ee931a7c2d26028a66a4d1dd31c4fe",
+      "version": "taskset de util-linux 2.42.2",
+      "version_arguments": [
+        "--version"
+      ],
+      "version_exit_status": 0
+    }
+  }
+}

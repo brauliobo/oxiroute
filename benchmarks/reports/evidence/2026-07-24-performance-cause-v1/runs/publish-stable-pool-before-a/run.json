@@ -1,0 +1,16 @@
+{
+  "connections": 128,
+  "cpu_affinity": {
+    "load_generator": 4,
+    "origin": 3,
+    "proxy": 2
+  },
+  "duration_seconds": 30,
+  "implementation": "oxiroute",
+  "load_generator": "oxiroute-loadgen",
+  "origin_port": 49080,
+  "provenance_file": "environment.json",
+  "proxy_port": 49081,
+  "schema": "oxiroute.local-v1.run.v2",
+  "warmup_seconds": 10
+}
