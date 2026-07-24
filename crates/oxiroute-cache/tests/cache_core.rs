@@ -1026,6 +1026,86 @@ async fn collapsed_forwarding_wakes_all_followers_after_lock_free_fill() {
     assert_eq!(cache.stats().fill_followers, 32);
 }
 
+#[test]
+fn prepared_entries_are_bound_to_shared_cache_identity_before_memory_admission() {
+    let mut limits = config();
+    limits.max_entries = 1;
+    let cache_a =
+        Cache::with_clock(limits.clone(), Arc::new(ManualClock::default())).expect("cache a");
+    let cache_b = Cache::with_clock(limits, Arc::new(ManualClock::default())).expect("cache b");
+    let request_headers = HeaderMap::new();
+    let response_headers = response("max-age=60");
+    store(
+        &cache_a,
+        &request_headers,
+        "/resident",
+        &response_headers,
+        b"resident",
+        0,
+        &[],
+    );
+    let before = cache_a.stats();
+
+    let foreign = cache_b
+        .prepare(
+            request(&Method::GET, "/foreign", &request_headers),
+            StatusCode::OK,
+            &response_headers,
+            Bytes::from_static(b"foreign"),
+            timing(0),
+            &[],
+        )
+        .expect("foreign entry");
+    let leader = match cache_a
+        .begin_fill(foreign.key().base().clone())
+        .expect("foreign fill")
+    {
+        FillJoin::Leader(leader) => leader,
+        FillJoin::Follower(_) | FillJoin::AtCapacity => panic!("foreign leader"),
+    };
+    assert!(matches!(
+        leader.store(foreign),
+        Err(CacheError::PreparedEntryOwnerMismatch)
+    ));
+
+    let after = cache_a.stats();
+    assert_eq!(after.entries, before.entries);
+    assert_eq!(after.bytes_used, before.bytes_used);
+    assert_eq!(after.stores, before.stores);
+    assert_eq!(after.evictions, before.evictions);
+    assert_eq!(after.in_flight, 0);
+    assert!(matches!(
+        cache_a.lookup(request(&Method::GET, "/resident", &request_headers)),
+        Ok(Lookup::Hit { response, .. }) if response.body == Bytes::from_static(b"resident")
+    ));
+    assert!(matches!(
+        cache_a.lookup(request(&Method::GET, "/foreign", &request_headers)),
+        Ok(Lookup::Miss { .. })
+    ));
+
+    let clone = cache_a.clone();
+    let compatible = clone
+        .prepare(
+            request(&Method::GET, "/clone", &request_headers),
+            StatusCode::OK,
+            &response_headers,
+            Bytes::from_static(b"clone"),
+            timing(0),
+            &[],
+        )
+        .expect("clone entry");
+    match cache_a
+        .begin_fill(compatible.key().base().clone())
+        .expect("clone fill")
+    {
+        FillJoin::Leader(leader) => assert!(matches!(
+            leader.store(compatible),
+            Ok(StoreOutcome::Stored { .. })
+        )),
+        FillJoin::Follower(_) | FillJoin::AtCapacity => panic!("clone leader"),
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn purge_and_drop_are_generation_safe_and_wake_followers() {
     let (cache, _) = cache();

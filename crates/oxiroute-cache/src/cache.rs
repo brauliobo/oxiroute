@@ -66,10 +66,14 @@ pub struct Cache {
 }
 
 struct Shared {
+    identity: Arc<CacheIdentity>,
     config: CacheConfig,
     clock: Arc<dyn Clock>,
     state: Mutex<State>,
 }
+
+#[derive(Debug)]
+struct CacheIdentity;
 
 struct State {
     entries: HashMap<CacheKey, StoredEntry>,
@@ -95,6 +99,19 @@ struct FlightGeneration;
 /// Immutable insertion candidate produced only after policy and bound checks.
 #[derive(Clone, Debug)]
 pub struct PreparedEntry {
+    identity: Arc<CacheIdentity>,
+    pub(crate) key: CacheKey,
+    pub(crate) status: StatusCode,
+    pub(crate) headers: HeaderMap,
+    pub(crate) body: Bytes,
+    pub(crate) tags: Vec<Bytes>,
+    pub(crate) policy: ResponsePolicy,
+    pub(crate) validators: Validators,
+    pub(crate) response_received: MonoTime,
+    pub(crate) charge: usize,
+}
+
+pub(crate) struct RecoveredEntry {
     pub(crate) key: CacheKey,
     pub(crate) status: StatusCode,
     pub(crate) headers: HeaderMap,
@@ -204,10 +221,13 @@ pub enum FillJoin {
 /// Generation-bound leader permit. Dropping it cancels the fill and wakes followers.
 pub struct FillGuard {
     shared: Weak<Shared>,
+    identity: Arc<CacheIdentity>,
     base: BaseKey,
     generation: Arc<FlightGeneration>,
     active: bool,
 }
+
+pub(crate) struct ClaimedEntry(PreparedEntry);
 
 /// Follower notification handle. It contains no cache lock and is safe to await across I/O.
 pub struct FillWaiter {
@@ -265,6 +285,8 @@ pub enum CacheError {
     VaryChanged,
     #[error("fill response does not belong to the fill's base key")]
     FillKeyMismatch,
+    #[error("prepared entry belongs to a different cache storage identity")]
+    PreparedEntryOwnerMismatch,
     #[error("fill key is not a bounded GET representation key")]
     InvalidFillKey,
     #[error("304 metadata cannot be merged")]
@@ -290,6 +312,7 @@ impl Cache {
         validate_config(&config)?;
         Ok(Self {
             shared: Arc::new(Shared {
+                identity: Arc::new(CacheIdentity),
                 config,
                 clock,
                 state: Mutex::new(State {
@@ -415,6 +438,7 @@ impl Cache {
             return Err(CacheError::ObjectTooLarge);
         }
         Ok(PreparedEntry {
+            identity: Arc::clone(&self.shared.identity),
             key,
             status,
             headers: headers.clone(),
@@ -662,6 +686,7 @@ impl Cache {
         state.stats.fill_leaders = state.stats.fill_leaders.saturating_add(1);
         Ok(FillJoin::Leader(FillGuard {
             shared: Arc::downgrade(&self.shared),
+            identity: Arc::clone(&self.shared.identity),
             base,
             generation,
             active: true,
@@ -751,7 +776,19 @@ impl Cache {
         self.shared.lock().entries.keys().cloned().collect()
     }
 
-    pub(crate) fn restore(&self, entry: PreparedEntry) {
+    pub(crate) fn restore(&self, entry: RecoveredEntry) {
+        let entry = PreparedEntry {
+            identity: Arc::clone(&self.shared.identity),
+            key: entry.key,
+            status: entry.status,
+            headers: entry.headers,
+            body: entry.body,
+            tags: entry.tags,
+            policy: entry.policy,
+            validators: entry.validators,
+            response_received: entry.response_received,
+            charge: entry.charge,
+        };
         let mut state = self.shared.lock();
         insert_entry(&self.shared.config, &mut state, entry);
     }
@@ -776,10 +813,6 @@ impl Cache {
 }
 
 impl FillGuard {
-    pub(crate) const fn base(&self) -> &BaseKey {
-        &self.base
-    }
-
     pub(crate) fn is_current(&self) -> bool {
         self.shared.upgrade().is_some_and(|shared| {
             let state = shared.lock();
@@ -791,28 +824,40 @@ impl FillGuard {
     ///
     /// # Errors
     ///
-    /// Returns an error if the object belongs to another base key.
-    pub fn store(mut self, entry: PreparedEntry) -> Result<StoreOutcome, CacheError> {
+    /// Returns an error if the object belongs to another cache or base key.
+    pub fn store(self, entry: PreparedEntry) -> Result<StoreOutcome, CacheError> {
+        let entry = self.claim(entry)?;
+        Ok(self.store_claimed(entry))
+    }
+
+    pub(crate) fn claim(&self, entry: PreparedEntry) -> Result<ClaimedEntry, CacheError> {
+        if !Arc::ptr_eq(&entry.identity, &self.identity) {
+            return Err(CacheError::PreparedEntryOwnerMismatch);
+        }
         if entry.key.base() != &self.base {
             return Err(CacheError::FillKeyMismatch);
         }
+        Ok(ClaimedEntry(entry))
+    }
+
+    pub(crate) fn store_claimed(mut self, entry: ClaimedEntry) -> StoreOutcome {
         let Some(shared) = self.shared.upgrade() else {
             self.active = false;
-            return Ok(StoreOutcome::GenerationLost);
+            return StoreOutcome::GenerationLost;
         };
         let mut state = shared.lock();
         if !generation_matches(&state, &self.base, &self.generation) {
             self.active = false;
-            return Ok(StoreOutcome::GenerationLost);
+            return StoreOutcome::GenerationLost;
         }
         let flight = state.flights.remove(&self.base);
-        let evicted = insert_entry(&shared.config, &mut state, entry);
+        let evicted = insert_entry(&shared.config, &mut state, entry.0);
         state.stats.stores = state.stats.stores.saturating_add(1);
         if let Some(flight) = flight {
             flight.signal.send_replace(FillOutcome::Stored);
         }
         self.active = false;
-        Ok(StoreOutcome::Stored { evicted })
+        StoreOutcome::Stored { evicted }
     }
 
     /// Completes a valid generation without storing a response and wakes followers.
@@ -836,6 +881,12 @@ impl FillGuard {
             return true;
         }
         false
+    }
+}
+
+impl ClaimedEntry {
+    pub(crate) const fn prepared(&self) -> &PreparedEntry {
+        &self.0
     }
 }
 
