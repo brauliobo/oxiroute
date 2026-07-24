@@ -813,36 +813,42 @@ impl RtmpRegistry {
         session_id: SessionId,
         at_unix_ms: u64,
     ) -> Result<(), CatalogError> {
-        let mut inner = self.lock();
-        let remove = {
-            let stream = inner
-                .streams
-                .get_mut(&stream_id)
-                .ok_or(CatalogError::StreamNotFound(stream_id))?;
-            if stream.publisher.map(|publisher| publisher.session_id) != Some(session_id) {
-                return Err(CatalogError::PublisherMismatch {
-                    stream_id,
-                    session_id,
-                });
-            }
-            stream.publisher = None;
-            stream.media = MediaSnapshot::default();
-            stream.media_sample_sequence = 0;
-            for recorder in stream.recorders.values() {
-                if let Some(control) = &recorder.control {
-                    control.deactivate(at_unix_ms);
+        let controls = {
+            let mut inner = self.lock();
+            let (remove, controls) = {
+                let stream = inner
+                    .streams
+                    .get_mut(&stream_id)
+                    .ok_or(CatalogError::StreamNotFound(stream_id))?;
+                if stream.publisher.map(|publisher| publisher.session_id) != Some(session_id) {
+                    return Err(CatalogError::PublisherMismatch {
+                        stream_id,
+                        session_id,
+                    });
                 }
+                stream.publisher = None;
+                stream.media = MediaSnapshot::default();
+                stream.media_sample_sequence = 0;
+                let controls = stream
+                    .recorders
+                    .values()
+                    .filter_map(|recorder| recorder.control.clone())
+                    .collect::<Vec<_>>();
+                stream.recorders.clear();
+                stream.recorder_order.clear();
+                stream.revision = stream.revision.saturating_add(1);
+                (stream.subscribers.is_empty(), controls)
+            };
+            if remove {
+                remove_stream(&mut inner, stream_id);
             }
-            stream.recorders.clear();
-            stream.recorder_order.clear();
-            stream.revision = stream.revision.saturating_add(1);
-            stream.subscribers.is_empty()
+            mark_mutation(&mut inner, at_unix_ms);
+            publish_snapshot_if_dirty(&mut inner, self.capabilities);
+            controls
         };
-        if remove {
-            remove_stream(&mut inner, stream_id);
+        for control in controls {
+            control.deactivate(at_unix_ms);
         }
-        mark_mutation(&mut inner, at_unix_ms);
-        publish_snapshot_if_dirty(&mut inner, self.capabilities);
         Ok(())
     }
 
@@ -1539,4 +1545,238 @@ fn publish_snapshot_if_dirty(inner: &mut RegistryInner, capabilities: RtmpCapabi
         streams,
     });
     inner.snapshot_dirty = false;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs::OpenOptions,
+        sync::{Arc, mpsc},
+        thread,
+        time::{Duration, Instant},
+    };
+
+    use rustix::fs::{FlockOperation, flock};
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::{
+        RecorderWorkerConfig, RecordingPathPolicy, RecordingStore, RecordingStoreLimits,
+        RtmpRecorderPolicy, RtmpRecorderStart,
+    };
+
+    #[test]
+    fn reaper_backpressures_generations_while_registry_completion_is_blocked() {
+        let root = tempdir().expect("recording root");
+        let store = RecordingStore::open(
+            root.path(),
+            RecordingStoreLimits {
+                max_bytes: 1024 * 1024,
+                max_files: 8,
+                max_active_recorders: 4,
+            },
+        )
+        .expect("recording store");
+        let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
+            live_ingest: true,
+            manual_recording: true,
+        }));
+        let (reaper_owner, reaper) = registry.create_recorder_reaper(1);
+        let completing =
+            test_controller(&store, &reaper, "completing", 1024, Duration::from_secs(1));
+        let first_pending = test_controller(
+            &store,
+            &reaper,
+            "first-pending",
+            1024,
+            Duration::from_secs(1),
+        );
+        let second_pending = test_controller(
+            &store,
+            &reaper,
+            "second-pending",
+            1024,
+            Duration::from_secs(1),
+        );
+        let completing_context = recorder_context();
+        completing
+            .start(completing_context)
+            .expect("start completing generation");
+        first_pending
+            .start(recorder_context())
+            .expect("start first pending generation");
+        second_pending
+            .start(recorder_context())
+            .expect("start second pending generation");
+
+        let registry_lock = registry.lock();
+        assert!(completing.stop(completing_context));
+        wait_until(Duration::from_secs(2), || !completing.status().stopping);
+
+        let pending = [Arc::clone(&first_pending), Arc::clone(&second_pending)];
+        let (completed_tx, completed_rx) = mpsc::channel();
+        let submitter = thread::spawn(move || {
+            for controller in pending {
+                controller.deactivate(2_000);
+            }
+            completed_tx.send(()).expect("report submitted generations");
+        });
+        assert!(
+            matches!(
+                completed_rx.recv_timeout(Duration::from_millis(50)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "submission must backpressure while the prior generation awaits registry completion"
+        );
+
+        drop(registry_lock);
+        completed_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("pending generations submitted after completion");
+        submitter.join().expect("generation submitter");
+        wait_until(Duration::from_secs(2), || {
+            !first_pending.status().stopping && !second_pending.status().stopping
+        });
+        drop(reaper_owner);
+    }
+
+    #[test]
+    fn restart_releases_controller_lock_while_stale_worker_awaits_reaper_capacity() {
+        let root = tempdir().expect("recording root");
+        let store = RecordingStore::open(
+            root.path(),
+            RecordingStoreLimits {
+                max_bytes: 1024 * 1024,
+                max_files: 8,
+                max_active_recorders: 4,
+            },
+        )
+        .expect("recording store");
+        let ownership = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(root.path().join(".oxiroute-recording.lock"))
+            .expect("ownership lock");
+        let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
+            live_ingest: true,
+            manual_recording: true,
+        }));
+        let (reaper_owner, reaper) = registry.create_recorder_reaper(1);
+        let controller = test_controller(&store, &reaper, "camera", 8, Duration::from_secs(5));
+
+        let first_context = recorder_context();
+        controller
+            .start(first_context)
+            .expect("start first generation");
+        flock(&ownership, FlockOperation::LockExclusive).expect("stall storage admission");
+        assert_eq!(
+            controller.try_enqueue(
+                crate::MediaEvent::audio(0, Arc::<[u8]>::from(&b"audio"[..])).expect("audio event"),
+                1_100,
+            ),
+            RecorderEnqueueResult::Queued
+        );
+        thread::sleep(Duration::from_millis(20));
+        assert!(controller.stop(first_context));
+
+        controller
+            .start(recorder_context())
+            .expect("start second generation");
+        assert_eq!(
+            controller.try_enqueue(
+                crate::MediaEvent::audio(0, Arc::<[u8]>::from(vec![0; 32]))
+                    .expect("oversized audio event"),
+                1_200,
+            ),
+            RecorderEnqueueResult::DroppedDiscontinuity
+        );
+        wait_until(Duration::from_secs(2), || {
+            controller
+                .status()
+                .status
+                .is_some_and(|status| matches!(status.phase, RecorderWorkerPhase::Failed(_)))
+        });
+
+        let restart = Arc::clone(&controller);
+        let restart_context = recorder_context();
+        let (started_tx, started_rx) = mpsc::channel();
+        let restart_thread = thread::spawn(move || {
+            started_tx
+                .send(restart.start(restart_context))
+                .expect("report restart result");
+        });
+        assert!(
+            matches!(
+                started_rx.recv_timeout(Duration::from_millis(50)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "restart must backpressure behind the first generation"
+        );
+
+        let observed = Arc::clone(&controller);
+        let (observed_tx, observed_rx) = mpsc::channel();
+        let observer_thread = thread::spawn(move || {
+            observed.status();
+            let _ = observed_tx.send(());
+        });
+        observed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("restart must not retain the controller lock while backpressured");
+        observer_thread.join().expect("controller observer");
+
+        flock(&ownership, FlockOperation::Unlock).expect("release storage admission");
+        started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("restart completes after reaper capacity is released")
+            .expect("restart third generation");
+        restart_thread.join().expect("restart thread");
+        controller.deactivate(1_300);
+        wait_until(Duration::from_secs(2), || !controller.status().stopping);
+        drop(reaper_owner);
+    }
+
+    fn test_controller(
+        store: &RecordingStore,
+        reaper: &RecorderReaperHandle,
+        name: &'static str,
+        max_queue_bytes: usize,
+        shutdown_timeout: Duration,
+    ) -> Arc<RecorderController> {
+        Arc::new(RecorderController::new(
+            RtmpRecorderPolicy::new(
+                "archive",
+                RtmpRecorderStart::Manual,
+                store.clone(),
+                RecordingPathPolicy::new(".flv", false).expect("recording path policy"),
+                RecorderWorkerConfig {
+                    max_queue_messages: 4,
+                    max_queue_bytes,
+                    rotation_interval: None,
+                    shutdown_timeout,
+                    video_codec: None,
+                },
+            ),
+            Arc::<[u8]>::from(name.as_bytes()),
+            reaper.clone(),
+            1_000,
+        ))
+    }
+
+    fn recorder_context() -> RecorderCommandContext {
+        RecorderCommandContext {
+            stream_id: StreamId::new(),
+            publisher_session_id: SessionId::new(),
+            recorder_id: RecorderId::new(),
+            operation_id: OperationId::new(),
+            at_unix_ms: 1_000,
+        }
+    }
+
+    fn wait_until(timeout: Duration, predicate: impl Fn() -> bool) {
+        let deadline = Instant::now() + timeout;
+        while !predicate() {
+            assert!(Instant::now() < deadline, "condition timeout");
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
 }
