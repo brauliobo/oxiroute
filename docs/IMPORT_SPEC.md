@@ -22,12 +22,15 @@ security, TLS, listener, or upstream semantics cannot be represented.
 Import is currently a Rust library capability in `oxiroute-import`. The daemon has no import CLI,
 management API, UI workflow, watcher, or activation integration.
 
-- nginx has bounded byte-preserving lexing and structural parsing, deterministic include/glob
-  expansion, source and include provenance, HTTP inheritance/semantic resolution, an occurrence
-  decision ledger, blocked-service reports, and conservative canonical-lowering analysis.
-- nginx HTTP reports remain draft-only and never return a finalized canonical config. Current
-  blockers include raw byte-prefix versus segment-prefix routing, exact/default fallback behavior,
-  unrepresented proxy defaults, URI replacement, and process connection-admission semantics.
+- nginx exposes an explicit HTTP-fragment importer: the expanded root may contain only one `http`
+  block. It has bounded byte-preserving parsing, deterministic includes/globs, provenance, HTTP
+  inheritance, an occurrence ledger, blocked-service reports, and conditional canonical lowering.
+  It rejects complete nginx files rather than implying support for `events`, process, or module roots.
+- The strict nginx HTTP subset can finalize exact/default virtual hosts with representable flat
+  routes, fixed responses or redirects, static socket/DNS/Unix origins, explicit proxy defaults,
+  exact response-control suppression, response hide/pass defaults, and shared named upstream pools.
+  URI replacement, incompatible routing/admission policy, and static index behavior remain blocking;
+  a blocked service is retained only in the report draft.
 - nginx-RTMP has an independent 117-directive parser/registry plus deterministic include expansion,
   effective inheritance, a terminal occurrence ledger, provenance, blocked-service reporting, and
   strict conditional canonical finalization for an exact listener/application/recording subset.
@@ -46,7 +49,12 @@ management API, UI workflow, watcher, or activation integration.
   audited active candidate remains blocked by logging/stats/process policy, aggregate admission,
   HTTP `leastconn` accounting, checked-server startup eligibility, retry/redispatch behavior,
   timeout scopes, and forwarded-header policy.
-- Apache httpd and Squid importers are not implemented.
+- Squid has a bounded source/include, parser, and typed semantic-report foundation. Final recheck
+  verifies source bytes, root/include path identities, and include-glob result sets; it emits no
+  canonical candidate and has no runtime integration.
+- Varnish has a bounded VCL source/include, parser, typed semantic-report, decision-ledger, and
+  invocation-model foundation. It has no canonical lowering, runtime, or daemon integration.
+- Apache httpd import is not implemented.
 
 Coverage manifests and importer tests enforce that a candidate cannot finalize while any blocking
 error remains and that no fallback service or route is invented.
@@ -83,7 +91,8 @@ semantics cannot be safely round-tripped.
 
 ## nginx
 
-Target support beyond the current boundary above:
+The public `import_http_fragment` entry point is intentionally not a complete native-config API.
+Target support beyond its current strict subset includes:
 
 - `http`, `server`, `listen`, `server_name`, ordinary prefix/exact `location`, static `proxy_pass`.
 - `upstream` with static `server` entries.
@@ -186,5 +195,5 @@ additional evidence, not proof that translated behavior is equivalent.
 
 The planned complete corpus groups fixtures by product and category: `valid`, `invalid`,
 `unsupported`, and `edge`. Each fixture will record its expected include graph, canonical model,
-diagnostics, and optional native-validator output. Current nginx and HAProxy fixtures live directly
-under `crates/oxiroute-import/tests/fixtures/<product>/`.
+diagnostics, and optional native-validator output. Current nginx, HAProxy, Squid, and Varnish
+fixtures live under `crates/oxiroute-import/tests/fixtures/<product>/`.

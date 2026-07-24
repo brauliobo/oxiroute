@@ -24,10 +24,13 @@ The current code is intentionally much smaller than that goal. It provides:
 - Pingora-backed opaque TCP relays with socket, DNS, or Unix upstreams, health-aware round-robin or
   least-connections pools, nullable connection caps, and configurable connect, idle, and lifetime
   timeouts. Unix listeners and upstreams require a Unix platform.
-- Bounded native-import foundations for nginx and HAProxy with ordered source loading, syntax and
-  semantic reports, stable diagnostics, provenance, and conservative canonical lowering. nginx
-  HTTP remains draft-only; a strict static HAProxy TCP subset, including exact Unix/DNS endpoints
-  and `leastconn`, can finalize. The complete audited host candidates remain blocked.
+- Bounded native-import libraries for nginx and HAProxy with ordered source loading, syntax and
+  semantic reports, stable diagnostics, provenance, and conservative canonical lowering. A strict
+  nginx `http`-fragment subset and a strict static HAProxy TCP subset can finalize; complete nginx
+  files, broader native configurations, the audited host candidates, and daemon integration remain
+  blocked.
+- Standalone cache, explicit-forward-proxy, Squid-import, and Varnish-import foundations with tests.
+  They are not connected to the daemon request path and do not establish integrated runtime support.
 - An exact nginx-rtmp registry for all 117 active directive keys plus a separate strict RTMP
   include/inheritance lowerer that can finalize an error-free listener/application/recording subset
   with provenance and terminal occurrence accounting.
@@ -46,7 +49,7 @@ The current code is intentionally much smaller than that goal. It provides:
 - Acceptance tests for configuration isolation, runtime planning, and independent TLS/H2 wire
   interoperability.
 
-It does not yet provide forward proxying, `CONNECT`, h2c, HTTP/3, UDP, caching, weighted load
+The daemon does not yet provide forward proxying, `CONNECT`, h2c, HTTP/3, UDP, caching, weighted load
 balancing, passive failure ejection, hot reload, direct certificate-file reload/managed ACME
 activation, TLS client authentication, daemon-integrated configuration imports, or complete
 nginx-rtmp compatibility. Recording does not support enhanced AVC, HEVC, or AV1 output, and storage

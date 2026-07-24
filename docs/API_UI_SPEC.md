@@ -165,10 +165,11 @@ Endpoint `state` is `unchecked`, `unknown`, `healthy`, or `unhealthy`. Pools wit
 policy report selectable `unchecked` endpoints; health-enabled pools begin with unavailable
 `unknown` endpoints. `lastCheckedAtUnixMs` and `lastTransitionAtUnixMs` are Unix-millisecond
 numbers or `null` before the corresponding event. `lastFailure` is `timeout`, `connect_failed`,
-`unexpected_status`, `protocol_error`, or `null`. To preserve every `u64` exactly in JavaScript,
-`activeLeases`, `unavailableSelections`, `successfulChecks`, `failedChecks`,
-`consecutiveSuccesses`, and `consecutiveFailures` are base-10 integer strings. Availability and
-total endpoint counts remain JSON numbers because configuration bounds them. `activeLeases` counts
+`unexpected_status`, `protocol_error`, or `null`. To preserve every cumulative `u64` exactly in
+JavaScript, aggregate/listener accepted, rejected, and byte totals; endpoint leases/check totals;
+pool unavailable selections; RTMP media/recorder totals; and Certbot watcher counters are base-10
+integer strings. Current gauges, timestamps, and configuration-bounded counts remain JSON numbers.
+`activeLeases` counts
 currently held HTTP-request or L4-relay leases; `unavailableSelections` counts selection attempts
 made while the pool had no selectable endpoint. Endpoint `address` is the normalized canonical
 display identity: `IP:port`, `host:port`, or an absolute Unix path.
@@ -210,9 +211,11 @@ endpoints. Listener node attributes carry the canonical tagged `bind` object and
 `maxConnections`; HTTP-service nodes carry nullable `maxRequestBodyBytes`; pool nodes carry
 `algorithm`; and endpoint node attributes are the tagged identity itself (`type` plus `address`,
 `host`/`port`, or `path`). Runtime `overlays` join listener metrics by listener name and
-pool/endpoint health by pool name and canonical endpoint identity. Endpoint overlay
-`activeLeases` values are base-10 strings. Certificate private-key paths are replaced by
-`<redacted>` and never enter the response. The topology endpoint itself is read-only. Candidate
+pool/endpoint health by pool name and canonical endpoint identity. Endpoint `activeLeases` and
+listener cumulative traffic overlay values are base-10 strings. Top-level runtime state is
+`active`, `starting`, or `degraded`; listener overlays use `configured`, `listening`, `stopped`, or
+`failed`. Pool and endpoint overlays retain their pool/health state sets. Certificate private-key
+paths are replaced by `<redacted>` and never enter the response. The topology endpoint itself is read-only. Candidate
 topology is returned separately by config validation, and revision-aware editing uses the config
 routes above.
 

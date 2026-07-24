@@ -28,11 +28,16 @@ checked-in fuzz targets, real-browser test runner, or CI workflow.
 - Certificate/TLS-profile decoding, DNS/path/cardinality bounds, references, ALPN policy, upstream
   SNI/custom-CA fields, HTTP version ranges, and TLS/health/L4 incompatibilities.
 - Route precedence, health-state thresholds, health-aware round-robin and least-connections
-  selection, deterministic lease ties/release, retries, and limits.
+  selection, deterministic lease ties/release, bounded ordered DNS address fallback shared by
+  probes and traffic, retries, and limits.
 - TCP timeout/half-close state and RTMP catalog, fanout, FLV, canonical recorder validation/rendering,
-  path/store/worker/controller/reaper state, and continuous/manual publisher integration.
-- nginx and HAProxy parser tokens, ordered source/include graphs, inheritance/resolution,
-  diagnostics, decision accounting, provenance, and conservative semantic conversion.
+  path/store/worker/controller/reaper state, bounded reaper backpressure outside registry/controller
+  locks, and continuous/manual publisher integration.
+- Cache freshness, recovery, quota/eviction, collapsed fills, and rejection of foreign prepared
+  entries before memory or disk admission. The cache remains outside the server request path.
+- nginx, HAProxy, Squid, and Varnish parser tokens, ordered source/include graphs,
+  inheritance/resolution, diagnostics, decision accounting, provenance, and conservative semantic
+  conversion. Squid identity/glob rechecks and Varnish typed-IR/invocation tests are foundation-only.
 
 Current property-style coverage includes deterministic rendering, revision behavior, and bounded
 parser/runtime cases. ACME state machines and renewal windows, UDP pseudo-sessions, and broader
@@ -45,7 +50,9 @@ parser round-trip properties remain planned.
 - HTTP retry target exclusion, budget exhaustion, and no-retry gates after bodies, unsafe methods,
   upgrades, or established upstream connections.
 - DNS endpoints retain canonical identity while resolving at connection time; Unix HTTP and L4
-  upstreams, Unix listeners, and platform failure behavior are covered separately.
+  upstreams, Unix listeners, and platform failure behavior are covered separately. Unit and wire
+  coverage prove health, HTTP, and L4 use the same bounded address order and can reach a healthy
+  secondary address without consuming route retry budget.
 - Active TCP connection probes and HTTP request host/path/status/timeout behavior using loopback
   origins; startup unknown state, transition thresholds, probe shutdown, independent
   completion-based endpoint schedules, and the shared concurrency bound.
@@ -57,7 +64,8 @@ parser round-trip properties remain planned.
   remains a future gate.
 - Atomic config writes, exact revision preconditions, stale conflicts, complete preflight before
   disk mutation, redaction, authentication, and explicit restart-required outcomes.
-- Management API monitoring/topology/RTMP/config response shapes and real HTTP behavior.
+- Management API monitoring/topology/RTMP/config response shapes and real HTTP behavior, including
+  decimal-string cumulative counters and complete top-level/listener topology state parsing.
 - Continuous recording start/media/finalization, manual exact-ID start/stop, read-only candidate
   root preflight versus activation open, redacted relative recorder observability, and topology root
   omission.
@@ -85,6 +93,11 @@ HAProxy lowering tests include an error-free static TCP fixture with a Unix list
 `leastconn` backend, exact per-listener admission, and no import-time DNS resolution, plus a Unix
 server fixture. Separate audited-host fixtures assert that all remaining activation blockers are
 retained and no fallback routes or endpoints are invented.
+
+nginx HTTP conformance uses the explicit fragment API. Tests reject complete nginx files, require
+exact response-control suppression before proxy finalization, preserve nginx hide/pass defaults,
+share named upstream pools across routes/listeners, and block static index behavior that would rerun
+nginx location selection.
 
 nginx-RTMP conformance tests cover deterministic include inheritance, strict listener/application
 lowering, continuous and all-media manual recording, native defaults, no import-time root access,
@@ -151,9 +164,9 @@ bounds.
 
 Canonical storage, certificate publication, and recording storage/worker tests inject failures
 around read-only preflight, activation open, ownership, quota sharing, write, sync,
-replacement/publication, cleanup, worker start, nonblocking queue discontinuity, reaper cancellation,
-and shutdown. Cross-process quota coordination, broader runtime activation, and crash-injection
-matrices remain planned.
+replacement/publication, cleanup, worker start, nonblocking queue discontinuity, bounded reaper
+backpressure/cancellation, and shutdown. Cross-process quota coordination, broader runtime
+activation, and crash-injection matrices remain planned.
 
 ## Release gates
 

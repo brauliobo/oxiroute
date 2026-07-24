@@ -21,9 +21,9 @@ not protocol support.
 | HTTP/3 downstream/upstream | planned M4 | Pingora has no current H3 stack; requires a tested QUIC/H3 integration. |
 | WebSocket reverse proxy | implemented | Pingora HTTP/1.1 upgrade path passes independent bidirectional framed interoperability coverage. |
 | gRPC reverse proxy | partial | The TLS/H2 path wire-tests gRPC response DATA, successful trailers, and trailers-only error metadata end to end; streaming breadth, deadlines, cancellation, and broader conformance remain. |
-| HTTP/1 explicit forward proxy | planned M3 | Includes absolute-form requests and a dedicated CONNECT tunnel. |
-| HTTP/2 forward proxy/CONNECT | planned M3 | Only after stream takeover and policy conformance. |
-| HTTP/3 forward proxy | planned M4 | Requires explicit H3 proxy/tunnel standards support. |
+| HTTP/1 explicit forward proxy | partial | A standalone wire-tested absolute-form/CONNECT foundation exists; canonical policy and daemon integration remain M3. |
+| HTTP/2 forward proxy/CONNECT | partial | A standalone wire-tested stream foundation exists; canonical policy and daemon integration remain M3. |
+| HTTP/3 forward proxy | partial | A standalone QUIC/H3 wire foundation exists; it is not a Pingora listener or daemon runtime and integrated support remains M4. |
 | Opaque TCP relay | partial | Bounded bidirectional relay, independent half-close, configured connect/idle/lifetime timeouts, socket/DNS/Unix upstreams, health-aware round-robin or relay-scoped least-connections pools, active TCP/HTTP checks for non-Unix pools, nullable listener connection caps, shutdown cancellation, partial traffic accounting, and loopback tests are implemented; Unix transports require Unix, and reload and graceful process drain remain. |
 | TLS pass-through | partial | Opaque bytes can traverse the implemented TCP relay without termination; no SNI inspection, TLS-specific policy, or dedicated pass-through conformance suite exists. |
 | UDP relay | planned M2 | Requires bounded pseudo-session and reply-routing design. |
@@ -50,7 +50,7 @@ procedure are documented in `vendor/pingora-core/README.oxiroute.md`.
 | Bounded connect-failure retries | implemented for bodyless `GET`/`HEAD`, distinct canonical endpoint identities, and at most two additional attempts |
 | Response retries and passive ejection | planned M1 |
 | Config file watcher and generation reload | planned M1 |
-| Runtime monitoring snapshot | partial: Linux process/host load, listener connections/traffic, pool/endpoint health, RTMP activity, and redacted Certbot identity/watcher status are implemented; latency/errors/history/cross-platform sampling pending |
+| Runtime monitoring snapshot | partial: Linux process/host load, listener traffic, pool/endpoint health, RTMP activity, and redacted Certbot identity/watcher status are implemented; cumulative `u64` wire fields are exact decimal strings, while latency/errors/history/cross-platform sampling remain pending |
 | Structured access logs and Prometheus metrics | planned M1 |
 | Vue 3 and build-time Pug UI | partial: responsive monitoring/topology observatory, RTMP broadcast desk, and bearer-unlocked canonical configuration workspace with complete current-field editing, validation, Lua/candidate review, conflict handling, and restart-required save reporting are implemented; certificate/import/event views pending |
 | Management API | partial: loopback monitoring/topology, RTMP snapshot/detail, configured exact-ID recorder controls, and authenticated config GET/validate/revision-checked durable PUT are implemented; changed saves require restart, and recorder controls remain loopback-only but unauthenticated |
@@ -71,7 +71,7 @@ procedure are documented in `vendor/pingora-core/README.oxiroute.md`.
 | Live publisher/subscriber fanout | implemented with bounded service/per-stream/per-viewer resources, cached metadata/AAC/AVC headers, keyframe gating, slow-viewer resynchronization, and restart reset |
 | ACL allow/deny | planned RTMP slice 2 |
 | Push/pull relay and reconnect | planned RTMP slice 2 |
-| FLV recording and recorder controls | partial: canonical continuous/manual policies, publisher media dispatch, exact-ID controls, catalog completion, nonblocking bounded queues, redacted observability, safe relative naming, descriptor-pinned storage, atomic publication, process-scoped quotas, bounded reaping, and keyframe-aligned rotation are integrated for legacy AVC/AAC; enhanced AVC/HEVC/AV1 recording, cross-process quota coordination, and authenticated remote control remain absent |
+| FLV recording and recorder controls | partial: canonical continuous/manual policies, publisher media dispatch, exact-ID controls, catalog completion, nonblocking bounded media queues, redacted observability, safe relative naming, descriptor-pinned storage, atomic publication, process-scoped quotas, bounded pending-task reaping with backpressure outside registry/controller locks, and keyframe-aligned rotation are integrated for legacy AVC/AAC; enhanced AVC/HEVC/AV1 recording, cross-process quota coordination, and authenticated remote control remain absent |
 | FLV/MP4 local/HTTP VOD | planned RTMP slice 2 |
 | HTTP notify callbacks | planned RTMP slice 2 |
 | RTMP statistics/control API equivalents | planned RTMP slice 2 |
@@ -108,10 +108,11 @@ nginx-rtmp semantic compatibility.
 | Source | Status | First subset |
 | --- | --- | --- |
 | OxiRoute Lua | partial | Strict file certificates, multi-identity SNI TLS profiles, tagged socket/Unix listener binds, tagged socket/DNS/Unix pool endpoints, round-robin/least-connections algorithms, nullable listener/body limits, same-kind HTTP/RTMP/TCP service references, RTMP application plus continuous/manual recorder policy, verified upstream TLS/SNI/custom CA, HTTP version ranges, active plaintext checks, retries, and timeouts are implemented; passive health, broader retry, reload, and imported provenance remain. |
-| nginx | partial | Bounded byte-preserving parsing, deterministic includes, provenance, occurrence accounting, and blocked-service reports exist. HTTP remains draft-only because proxy/default/path/admission semantics are not exactly representable. A separate strict nginx-RTMP listener/application/recording subset can finalize, but most of the 117 directive behaviors remain blocking and there is no daemon import integration. |
+| nginx | partial | The public HTTP API imports only an expanded `http` fragment, not a complete nginx file. A strict error-free subset can finalize exact/default routes, explicit proxy policy and response controls, static socket/DNS/Unix origins, shared named pools, TLS, fixed responses, and redirects; incompatible routing, admission, URI replacement, and static index semantics fail closed. A separate strict nginx-RTMP subset can finalize. Neither path has daemon integration. |
 | HAProxy | partial | Ordered roots, parsing, defaults/reference resolution, decision accounting, diagnostics, provenance, and conservative lowering exist. A strict static, error-free TCP subset with exact socket/Unix binds, socket/DNS/Unix servers, positive per-listener admission, and `roundrobin`/`leastconn` can finalize. The audited HTTP candidates and their aggregate admission, health-startup, retry, timeout, forwarding, logging/stats, and process policy remain blocked. |
 | Apache httpd | planned M2 | Static virtual hosts, TLS paths, and HTTP ProxyPass/balancers. |
-| Squid | planned M3 | Explicit proxy listener, supported ACL/access subset, direct upstream. |
+| Squid | partial | A bounded library foundation loads deterministic includes, rechecks source/path/glob identity, and classifies the sanitized Squid 7.6 inventory into typed semantic facts. It emits no canonical config and has no runtime or daemon integration; the first integrated subset remains M3. |
+| Varnish VCL | partial | A bounded library foundation provides ordered includes, parsing, a typed semantic IR, decision accounting, and an invocation model. It has no canonical lowering, runtime, or daemon integration. |
 
 ## Squid feature families
 
@@ -128,8 +129,8 @@ Until that registry and behavior suite exist, no complete parity claim is valid.
 | Basic proxy authentication | planned M3 | Secure static/mTLS identities first. |
 | Digest/Negotiate/NTLM and helpers | research | Helper protocol and connection-affinity semantics. |
 | External ACL and URL rewrite helpers | research | Isolated helper lifecycle and concurrency. |
-| Memory cache | planned M4 | A bounded RFC-aware core exists, but active route policies fail startup until exact server integration lands; production freshness, vary, locking, and purge remain. |
-| Persistent disk cache | planned M4 | A descriptor-safe persistent core exists, but active route policies fail startup; async request-path integration, recovery, eviction, and storage coordination remain. |
+| Memory cache | planned M4 | A bounded RFC-aware core exists, including cache-bound prepared-entry ownership, but active route policies fail startup until exact server integration lands. |
+| Persistent disk cache | planned M4 | A descriptor-safe persistent core exists and rejects foreign prepared entries before disk admission, but active route policies fail startup; async request-path integration and storage coordination remain. |
 | Revalidation/range/collapsed forwarding | planned M4 | HTTP cache conformance. |
 | Delay pools | research | Hierarchical bandwidth accounting and compatibility tests. |
 | ICAP/eCAP adaptation | research | Separate adaptation protocol/plugin architecture. |
