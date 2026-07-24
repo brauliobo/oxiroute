@@ -37,6 +37,10 @@ use tokio::{
     time::{MissedTickBehavior, interval, timeout},
 };
 
+#[cfg(unix)]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: jemallocator::Jemalloc = jemallocator::Jemalloc;
+
 const RTMP_READ_BUFFER_SIZE: usize = 16 * 1024;
 const RTMP_PLAYBACK_DRAIN_INTERVAL: Duration = Duration::from_millis(10);
 const RTMP_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
