@@ -10,12 +10,14 @@ use crate::{
     defaults::{
         MAX_CERTIFICATE_DNS_NAMES, MAX_CERTIFICATES, MAX_ENDPOINTS_PER_POOL, MAX_HEALTH_HOST_BYTES,
         MAX_HEALTH_INTERVAL_MS, MAX_HEALTH_PATH_BYTES, MAX_HEALTH_THRESHOLD, MAX_HEALTH_TIMEOUT_MS,
-        MAX_RECORDER_ACTIVE_RECORDERS, MAX_RECORDER_QUEUE_BYTES, MAX_RECORDER_QUEUE_MESSAGES,
-        MAX_RECORDER_ROTATION_INTERVAL_MS, MAX_RECORDER_SHUTDOWN_TIMEOUT_MS,
-        MAX_RECORDER_STORAGE_BYTES, MAX_RECORDER_STORAGE_FILES, MAX_RTMP_APPLICATIONS_PER_SERVICE,
+        MAX_HTTP_TIMEOUT_MS, MAX_RECORDER_ACTIVE_RECORDERS, MAX_RECORDER_QUEUE_BYTES,
+        MAX_RECORDER_QUEUE_MESSAGES, MAX_RECORDER_ROTATION_INTERVAL_MS,
+        MAX_RECORDER_SHUTDOWN_TIMEOUT_MS, MAX_RECORDER_STORAGE_BYTES, MAX_RECORDER_STORAGE_FILES,
+        MAX_RTMP_APPLICATION_BYTES, MAX_RTMP_APPLICATIONS_PER_SERVICE, MAX_RTMP_FANOUT_QUEUE_BYTES,
+        MAX_RTMP_FANOUT_QUEUE_MESSAGES, MAX_RTMP_OUTBOUND_CHUNK_SIZE, MAX_RTMP_PUSH_TARGETS,
         MAX_RTMP_RECORDERS_PER_APPLICATION, MAX_RTMP_RECORDING_ROOTS, MAX_RTMP_SERVICES,
-        MAX_SAFE_JSON_INTEGER, MAX_TLS_PROFILES, MAX_TOTAL_ENDPOINTS, MAX_TOTAL_RTMP_RECORDERS,
-        MIN_HEALTH_INTERVAL_MS,
+        MAX_RTMP_SUBSCRIBERS, MAX_SAFE_JSON_INTEGER, MAX_TLS_PROFILES, MAX_TOTAL_ENDPOINTS,
+        MAX_TOTAL_RTMP_RECORDERS, MIN_HEALTH_INTERVAL_MS,
     },
     lexical::{
         authority_has_invalid_port, canonical_ip, is_unambiguous_http_path,
@@ -25,10 +27,10 @@ use crate::{
         validate_recording_suffix_template,
     },
     model::{
-        AlpnProtocol, Certificate, CertificateSource, Config, ConfigError, ForwardHttpVersion,
-        ForwardProxyService, HealthCheck, HealthCheckType, HttpVersion, L4Service, Listener,
-        ListenerBind, Management, Protocol, RtmpRecorder, RtmpService, TlsProfile, TlsVersion,
-        UpstreamEndpoint, UpstreamPool,
+        AccessLogPolicy, AlpnProtocol, Certificate, CertificateSource, Config, ConfigError,
+        DnsResolutionPolicy, ForwardHttpVersion, ForwardProxyService, HealthCheck, HealthCheckType,
+        HttpVersion, L4Service, Listener, ListenerBind, Management, Protocol, RtmpRecorder,
+        RtmpService, Stats, TlsProfile, TlsVersion, UpstreamEndpoint, UpstreamPool,
     },
 };
 
@@ -41,8 +43,15 @@ pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
     if config.version != 1 {
         return Err(ConfigError::UnsupportedVersion(config.version));
     }
+    validate_optional_safe_limit(
+        "configuration",
+        "root",
+        "max_connections",
+        config.max_connections,
+    )?;
 
     validate_management(config.management.as_ref())?;
+    validate_stats(config.stats.as_ref())?;
     validate_certificates(&mut config.certificates)?;
     validate_tls_profiles(&config.tls_profiles, &config.certificates)?;
     let cache_stores = crate::cache_validation::validate_cache_stores(&mut config.cache_stores)?;
@@ -96,7 +105,11 @@ pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
         &forward_proxy_services,
         &tls_profiles,
     )?;
-    validate_bind_conflicts(config.management.as_ref(), &config.listeners)?;
+    validate_bind_conflicts(
+        config.management.as_ref(),
+        config.stats.as_ref(),
+        &config.listeners,
+    )?;
     normalize_upstream_endpoints(&mut config.upstream_pools)?;
     normalize_upstream_server_names(&mut config.upstream_pools);
     validate_upstream_pools(
@@ -339,11 +352,38 @@ fn validate_management(management: Option<&Management>) -> Result<(), ConfigErro
     Ok(())
 }
 
+fn validate_stats(stats: Option<&Stats>) -> Result<(), ConfigError> {
+    let Some(stats) = stats else {
+        return Ok(());
+    };
+    if stats.binds.is_empty() || stats.binds.len() > 8 {
+        return Err(ConfigError::InvalidStatsBinds);
+    }
+    for bind in &stats.binds {
+        if bind.port() == 0 {
+            return Err(ConfigError::ZeroPort {
+                kind: "statistics listener",
+                name: "stats".into(),
+                field: "binds",
+            });
+        }
+    }
+    if let Some(path) = &stats.admin_token_file {
+        validate_file_path("statistics", "stats", "admin_token_file", path)?;
+    }
+    Ok(())
+}
+
 fn validate_bind_conflicts(
     management: Option<&Management>,
+    stats: Option<&Stats>,
     listeners: &[Listener],
 ) -> Result<(), ConfigError> {
-    let mut binds = Vec::with_capacity(listeners.len() + usize::from(management.is_some()));
+    let mut binds = Vec::with_capacity(
+        listeners.len()
+            + usize::from(management.is_some())
+            + stats.map_or(0, |stats| stats.binds.len()),
+    );
     if let Some(management) = management {
         binds.push((
             "management".to_owned(),
@@ -351,6 +391,22 @@ fn validate_bind_conflicts(
                 address: management.bind,
             },
         ));
+    }
+    if let Some(stats) = stats {
+        for (index, address) in stats.binds.iter().enumerate() {
+            let bind = ListenerBind::Socket { address: *address };
+            for (first_name, first_bind) in &binds {
+                if binds_overlap(first_bind, &bind) {
+                    return Err(ConfigError::OverlappingBind {
+                        first_name: first_name.clone(),
+                        first_bind: Box::new(first_bind.clone()),
+                        second_name: format!("stats-{index}"),
+                        second_bind: Box::new(bind),
+                    });
+                }
+            }
+            binds.push((format!("stats-{index}"), bind));
+        }
     }
 
     for listener in listeners {
@@ -398,7 +454,7 @@ fn binds_overlap(first: &ListenerBind, second: &ListenerBind) -> bool {
                     || first_ip.is_unspecified()
                     || second_ip.is_unspecified())
         }
-        (ListenerBind::Unix { path: first }, ListenerBind::Unix { path: second }) => {
+        (ListenerBind::Unix { path: first, .. }, ListenerBind::Unix { path: second, .. }) => {
             first == second
         }
         _ => false,
@@ -493,21 +549,7 @@ fn validate_listener_basics(
             field: "bind",
         });
     }
-    if listener.max_connections == Some(0) {
-        return Err(ConfigError::ZeroLimit {
-            kind: "listener",
-            name: listener.name.clone(),
-            field: "max_connections",
-        });
-    }
-    if let Some(max_connections) = listener.max_connections {
-        validate_safe_integer(
-            "listener",
-            &listener.name,
-            "max_connections",
-            max_connections,
-        )?;
-    }
+    validate_listener_policies(listener)?;
     if let (ListenerBind::Unix { .. }, Some(profile)) =
         (&listener.bind, listener.tls_profile.as_deref())
     {
@@ -552,6 +594,73 @@ fn validate_listener_basics(
             profile: profile.into(),
         }),
     }
+}
+
+fn validate_listener_policies(listener: &Listener) -> Result<(), ConfigError> {
+    if listener.max_connections == Some(0) {
+        return Err(ConfigError::ZeroLimit {
+            kind: "listener",
+            name: listener.name.clone(),
+            field: "max_connections",
+        });
+    }
+    if let Some(max_connections) = listener.max_connections {
+        validate_safe_integer(
+            "listener",
+            &listener.name,
+            "max_connections",
+            max_connections,
+        )?;
+    }
+    if let ListenerBind::Unix {
+        mode: Some(mode), ..
+    } = listener.bind
+    {
+        if mode == 0 || mode > 0o777 {
+            return Err(ConfigError::InvalidListenerUnixMode {
+                listener: listener.name.clone(),
+                mode,
+            });
+        }
+    }
+    for (field, timeout) in [
+        (
+            "downstream_timeouts.client_timeout_ms",
+            listener.downstream_timeouts.client_timeout_ms,
+        ),
+        (
+            "downstream_timeouts.request_timeout_ms",
+            listener.downstream_timeouts.request_timeout_ms,
+        ),
+        (
+            "downstream_timeouts.keepalive_timeout_ms",
+            listener.downstream_timeouts.keepalive_timeout_ms,
+        ),
+    ] {
+        if timeout.is_some_and(|value| value == 0 || value > MAX_HTTP_TIMEOUT_MS) {
+            return Err(ConfigError::InvalidListenerTransport {
+                listener: listener.name.clone(),
+                protocol: listener.protocol,
+                detail: "downstream timeouts must be between 1 and 86400000 milliseconds",
+            });
+        }
+        if let Some(timeout) = timeout {
+            validate_safe_integer("listener", &listener.name, field, timeout)?;
+        }
+    }
+    if !matches!(
+        listener.protocol,
+        Protocol::Http | Protocol::ForwardHttp1 | Protocol::ForwardHttp2 | Protocol::ForwardHttp3
+    ) && (listener.downstream_timeouts.request_timeout_ms.is_some()
+        || listener.downstream_timeouts.keepalive_timeout_ms.is_some())
+    {
+        return Err(ConfigError::InvalidListenerTransport {
+            listener: listener.name.clone(),
+            protocol: listener.protocol,
+            detail: "request and keepalive timeouts apply only to HTTP listeners",
+        });
+    }
+    Ok(())
 }
 
 fn validate_forward_listener(
@@ -631,6 +740,16 @@ fn validate_rtmp_services(services: &mut [RtmpService]) -> Result<(), ConfigErro
     let mut total_recorders = 0_usize;
     let mut roots = HashMap::<PathBuf, (RtmpRecorderStorageLimits, String)>::new();
     for service in services {
+        if service.outbound_chunk_size == 0
+            || service.outbound_chunk_size > MAX_RTMP_OUTBOUND_CHUNK_SIZE
+        {
+            return Err(ConfigError::InvalidRtmpServicePolicy {
+                service: service.name.clone(),
+                field: "outbound_chunk_size",
+                detail: "must be between 1 and 1048576",
+            });
+        }
+        validate_access_log("RTMP service", &service.name, service.access_log.as_ref())?;
         if service.applications.is_empty() {
             return Err(ConfigError::EmptyRtmpApplications {
                 service: service.name.clone(),
@@ -649,6 +768,7 @@ fn validate_rtmp_services(services: &mut [RtmpService]) -> Result<(), ConfigErro
                 .map(|application| application.name.as_str()),
         )?;
         for application in &mut service.applications {
+            validate_rtmp_application(&service.name, application)?;
             if application.recorders.len() > MAX_RTMP_RECORDERS_PER_APPLICATION {
                 return Err(ConfigError::TooManyRtmpRecorders {
                     service: service.name.clone(),
@@ -706,6 +826,77 @@ fn validate_rtmp_services(services: &mut [RtmpService]) -> Result<(), ConfigErro
     Ok(())
 }
 
+fn validate_rtmp_application(
+    service: &str,
+    application: &mut crate::model::RtmpApplication,
+) -> Result<(), ConfigError> {
+    let invalid = |field, detail| ConfigError::InvalidRtmpApplicationPolicy {
+        service: service.into(),
+        application: application.name.clone(),
+        field,
+        detail,
+    };
+    if application.push_targets.len() > MAX_RTMP_PUSH_TARGETS {
+        return Err(invalid("push_targets", "must contain at most 16 targets"));
+    }
+    if !application.live && !application.push_targets.is_empty() {
+        return Err(invalid("push_targets", "requires live = true"));
+    }
+    let mut targets = HashSet::with_capacity(application.push_targets.len());
+    for target in &mut application.push_targets {
+        target.host.make_ascii_lowercase();
+        if target.port == 0 {
+            return Err(invalid("push_targets[].port", "must be nonzero"));
+        }
+        if !is_valid_dns_name(&target.host) && target.host.parse::<std::net::IpAddr>().is_err() {
+            return Err(invalid(
+                "push_targets[].host",
+                "must be an IP address or canonical DNS name",
+            ));
+        }
+        if target.application.is_empty()
+            || target.application.len() > MAX_RTMP_APPLICATION_BYTES
+            || target.application.contains('$') && target.application != "$name"
+            || target
+                .application
+                .bytes()
+                .any(|byte| byte.is_ascii_control() || matches!(byte, b'/' | b'?' | b'#'))
+        {
+            return Err(invalid(
+                "push_targets[].application",
+                "must be $name or 1..=255 literal bytes without $, separators, query, fragment, or controls",
+            ));
+        }
+        if !targets.insert((&target.host, target.port, &target.application)) {
+            return Err(invalid("push_targets", "must not contain duplicates"));
+        }
+    }
+    let fanout = application.fanout;
+    if fanout.max_subscribers == 0 || fanout.max_subscribers > MAX_RTMP_SUBSCRIBERS {
+        return Err(invalid(
+            "fanout.max_subscribers",
+            "must be between 1 and 1000000",
+        ));
+    }
+    if fanout.max_queue_messages_per_subscriber == 0
+        || fanout.max_queue_messages_per_subscriber > MAX_RTMP_FANOUT_QUEUE_MESSAGES
+    {
+        return Err(invalid(
+            "fanout.max_queue_messages_per_subscriber",
+            "must be between 1 and 65536",
+        ));
+    }
+    if fanout.max_queue_bytes_per_subscriber == 0
+        || fanout.max_queue_bytes_per_subscriber > MAX_RTMP_FANOUT_QUEUE_BYTES
+    {
+        return Err(invalid(
+            "fanout.max_queue_bytes_per_subscriber",
+            "must be between 1 and 1073741824",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_rtmp_recorder(
     service: &str,
     application: &str,
@@ -722,6 +913,15 @@ fn validate_rtmp_recorder(
         .map_err(|detail| invalid("root_directory", detail))?;
     validate_recording_suffix_template(&recorder.suffix_template)
         .map_err(|detail| invalid("suffix_template", detail))?;
+    if let crate::model::RtmpRecorderTimezone::Iana(name) = &recorder.timezone {
+        let parsed = name.parse::<chrono_tz::Tz>();
+        if name.len() > 64 || parsed.is_err() || name.eq_ignore_ascii_case("utc") {
+            return Err(invalid(
+                "timezone",
+                "must be `utc` or an exact IANA timezone name of at most 64 bytes",
+            ));
+        }
+    }
     validate_rtmp_recorder_limit(
         recorder.max_queue_messages,
         MAX_RECORDER_QUEUE_MESSAGES,
@@ -834,70 +1034,128 @@ pub fn validate_upstream_pool_definitions(
     )?;
     validate_upstream_pool_cardinality(upstream_pools)?;
     for pool in upstream_pools {
-        if pool.endpoints.is_empty() {
-            return Err(ConfigError::EmptyUpstreamEndpoints {
-                pool: pool.name.clone(),
-            });
-        }
+        validate_upstream_pool_definition(pool, management_bind)?;
+    }
 
-        let mut endpoints = HashSet::with_capacity(pool.endpoints.len());
-        for endpoint in &pool.endpoints {
-            validate_upstream_endpoint(&pool.name, endpoint, management_bind, &mut endpoints)?;
-        }
+    Ok(())
+}
 
-        let has_unix_endpoint = pool
-            .endpoints
-            .iter()
-            .any(|endpoint| matches!(endpoint, UpstreamEndpoint::Unix { .. }));
-        if has_unix_endpoint && pool.tls.is_some() {
-            return Err(ConfigError::UnsupportedUnixUpstreamTls {
+fn validate_upstream_pool_definition(
+    pool: &UpstreamPool,
+    management_bind: Option<SocketAddr>,
+) -> Result<(), ConfigError> {
+    validate_upstream_servers(pool, management_bind)?;
+    let has_unix_endpoint = pool
+        .servers
+        .iter()
+        .any(|server| matches!(server.endpoint, UpstreamEndpoint::Unix { .. }));
+    if has_unix_endpoint && pool.tls.is_some() {
+        return Err(ConfigError::UnsupportedUnixUpstreamTls {
+            pool: pool.name.clone(),
+        });
+    }
+    if has_unix_endpoint && pool.health_check.is_some() {
+        return Err(ConfigError::UnsupportedUnixHealthCheck {
+            pool: pool.name.clone(),
+        });
+    }
+    if pool.health_check.is_some() && pool.tls.is_some() {
+        return Err(ConfigError::UnsupportedTlsHealthCheck {
+            pool: pool.name.clone(),
+        });
+    }
+    if let Some(tls) = &pool.tls {
+        if !is_valid_dns_name(&tls.server_name) {
+            return Err(ConfigError::InvalidUpstreamTlsServerName {
                 pool: pool.name.clone(),
+                server_name: tls.server_name.clone(),
             });
         }
-        if has_unix_endpoint && pool.health_check.is_some() {
-            return Err(ConfigError::UnsupportedUnixHealthCheck {
-                pool: pool.name.clone(),
-            });
-        }
-        if pool.health_check.is_some() && pool.tls.is_some() {
-            return Err(ConfigError::UnsupportedTlsHealthCheck {
-                pool: pool.name.clone(),
-            });
-        }
-        if let Some(tls) = &pool.tls {
-            if !is_valid_dns_name(&tls.server_name) {
-                return Err(ConfigError::InvalidUpstreamTlsServerName {
-                    pool: pool.name.clone(),
-                    server_name: tls.server_name.clone(),
-                });
-            }
-            if let Some(ca_certificate_path) = &tls.ca_certificate_path {
-                validate_file_path(
-                    "upstream pool",
-                    &pool.name,
-                    "tls.ca_certificate_path",
-                    ca_certificate_path,
-                )?;
-            }
-        }
-
-        if matches!(
-            (pool.http_versions.min, pool.http_versions.max),
-            (HttpVersion::Http2, HttpVersion::Http11)
-        ) {
-            return Err(ConfigError::InvalidHttpVersionRange {
-                pool: pool.name.clone(),
-                min: pool.http_versions.min.as_str(),
-                max: pool.http_versions.max.as_str(),
-            });
-        }
-        if pool.http_versions.max == HttpVersion::Http2 && pool.tls.is_none() {
-            return Err(ConfigError::H2RequiresUpstreamTls {
-                pool: pool.name.clone(),
-            });
+        if let Some(ca_certificate_path) = &tls.ca_certificate_path {
+            validate_file_path(
+                "upstream pool",
+                &pool.name,
+                "tls.ca_certificate_path",
+                ca_certificate_path,
+            )?;
         }
     }
 
+    if matches!(
+        (pool.http_versions.min, pool.http_versions.max),
+        (HttpVersion::Http2, HttpVersion::Http11)
+    ) {
+        return Err(ConfigError::InvalidHttpVersionRange {
+            pool: pool.name.clone(),
+            min: pool.http_versions.min.as_str(),
+            max: pool.http_versions.max.as_str(),
+        });
+    }
+    if pool.http_versions.max == HttpVersion::Http2 && pool.tls.is_none() {
+        return Err(ConfigError::H2RequiresUpstreamTls {
+            pool: pool.name.clone(),
+        });
+    }
+    validate_upstream_pool_timeouts(pool)
+}
+
+fn validate_upstream_servers(
+    pool: &UpstreamPool,
+    management_bind: Option<SocketAddr>,
+) -> Result<(), ConfigError> {
+    if pool.servers.is_empty() {
+        return Err(ConfigError::EmptyUpstreamEndpoints {
+            pool: pool.name.clone(),
+        });
+    }
+    validate_names(
+        "upstream server",
+        pool.servers.iter().map(|server| server.name.as_str()),
+    )?;
+    let mut endpoints = HashSet::with_capacity(pool.servers.len());
+    for server in &pool.servers {
+        validate_upstream_endpoint(
+            &pool.name,
+            &server.endpoint,
+            management_bind,
+            &mut endpoints,
+        )?;
+        validate_optional_safe_limit(
+            "upstream server",
+            &server.name,
+            "max_connections",
+            server.max_connections,
+        )?;
+        if server.dns_resolution == DnsResolutionPolicy::Startup
+            && !matches!(server.endpoint, UpstreamEndpoint::Dns { .. })
+        {
+            return Err(ConfigError::InvalidUpstreamServer {
+                pool: pool.name.clone(),
+                server: server.name.clone(),
+                field: "dns_resolution",
+                detail: "startup resolution applies only to DNS endpoints",
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_upstream_pool_timeouts(pool: &UpstreamPool) -> Result<(), ConfigError> {
+    for (field, timeout) in [
+        ("queue_timeout_ms", pool.queue_timeout_ms),
+        ("connect_timeout_ms", pool.connect_timeout_ms),
+        ("server_timeout_ms", pool.server_timeout_ms),
+    ] {
+        validate_optional_safe_limit("upstream pool", &pool.name, field, timeout)?;
+        if timeout.is_some_and(|value| value > MAX_HTTP_TIMEOUT_MS) {
+            return Err(ConfigError::InvalidUpstreamServer {
+                pool: pool.name.clone(),
+                server: "<pool>".into(),
+                field,
+                detail: "timeout must not exceed 86400000 milliseconds",
+            });
+        }
+    }
     Ok(())
 }
 
@@ -954,14 +1212,14 @@ fn validate_upstream_endpoint(
 }
 
 fn validate_upstream_pool_cardinality(upstream_pools: &[UpstreamPool]) -> Result<(), ConfigError> {
-    let total_endpoints = upstream_pools.iter().try_fold(0_usize, |total, pool| {
-        total.checked_add(pool.endpoints.len())
-    });
+    let total_endpoints = upstream_pools
+        .iter()
+        .try_fold(0_usize, |total, pool| total.checked_add(pool.servers.len()));
     if total_endpoints.is_none_or(|total| total > MAX_TOTAL_ENDPOINTS) {
         return Err(ConfigError::TooManyTotalUpstreamEndpoints);
     }
     for pool in upstream_pools {
-        if pool.endpoints.len() > MAX_ENDPOINTS_PER_POOL {
+        if pool.servers.len() > MAX_ENDPOINTS_PER_POOL {
             return Err(ConfigError::TooManyUpstreamEndpoints {
                 pool: pool.name.clone(),
             });
@@ -995,6 +1253,19 @@ pub fn validate_health_check_config(
             "timeout_ms must be between 1 and 30000 and less than interval_ms",
         ));
     }
+    for (field, interval) in [
+        ("fast_interval_ms", health_check.fast_interval_ms),
+        ("down_interval_ms", health_check.down_interval_ms),
+    ] {
+        if interval.is_some_and(|value| {
+            !(MIN_HEALTH_INTERVAL_MS..=MAX_HEALTH_INTERVAL_MS).contains(&value)
+        }) {
+            return Err(invalid(match field {
+                "fast_interval_ms" => "fast_interval_ms must be between 1000 and 86400000",
+                _ => "down_interval_ms must be between 1000 and 86400000",
+            }));
+        }
+    }
     if health_check.healthy_threshold == 0
         || health_check.unhealthy_threshold == 0
         || health_check.healthy_threshold > MAX_HEALTH_THRESHOLD
@@ -1004,28 +1275,31 @@ pub fn validate_health_check_config(
     }
 
     match health_check.kind {
-        HealthCheckType::Tcp if health_check.host.is_some() || health_check.path.is_some() => {
-            Err(invalid("TCP checks do not accept host or path"))
+        HealthCheckType::Tcp
+            if health_check.host.is_some()
+                || health_check.path.is_some()
+                || health_check.expected_status.is_some()
+                || health_check.http_version.is_some() =>
+        {
+            Err(invalid("TCP checks do not accept HTTP fields"))
         }
         HealthCheckType::Tcp => Ok(()),
         HealthCheckType::Http => {
-            let host = health_check
-                .host
-                .as_deref()
-                .ok_or_else(|| invalid("HTTP checks require host"))?;
-            if host.len() > MAX_HEALTH_HOST_BYTES {
-                return Err(invalid("HTTP check host exceeds 255 bytes"));
-            }
-            let authority = host
-                .parse::<http::uri::Authority>()
-                .map_err(|_| invalid("HTTP check host must be a valid authority"))?;
-            if authority.as_str().contains('@') {
-                return Err(invalid("HTTP check host must not contain userinfo"));
-            }
-            if authority.host().is_empty() || authority_has_invalid_port(&authority) {
-                return Err(invalid(
-                    "HTTP check host must contain a valid host and numeric port",
-                ));
+            if let Some(host) = health_check.host.as_deref() {
+                if host.len() > MAX_HEALTH_HOST_BYTES {
+                    return Err(invalid("HTTP check host exceeds 255 bytes"));
+                }
+                let authority = host
+                    .parse::<http::uri::Authority>()
+                    .map_err(|_| invalid("HTTP check host must be a valid authority"))?;
+                if authority.as_str().contains('@') {
+                    return Err(invalid("HTTP check host must not contain userinfo"));
+                }
+                if authority.host().is_empty() || authority_has_invalid_port(&authority) {
+                    return Err(invalid(
+                        "HTTP check host must contain a valid host and numeric port",
+                    ));
+                }
             }
             let path = health_check
                 .path
@@ -1043,6 +1317,12 @@ pub fn validate_health_check_config(
                 return Err(invalid(
                     "HTTP check path must be an unambiguous absolute path",
                 ));
+            }
+            if health_check
+                .expected_status
+                .is_some_and(|status| !(200..=599).contains(&status))
+            {
+                return Err(invalid("expected_status must be between 200 and 599"));
             }
             Ok(())
         }
@@ -1135,6 +1415,36 @@ fn validate_names<'a>(
                 name: name.into(),
             });
         }
+    }
+    Ok(())
+}
+
+fn validate_optional_safe_limit(
+    kind: &'static str,
+    name: &str,
+    field: &'static str,
+    value: Option<u64>,
+) -> Result<(), ConfigError> {
+    if value == Some(0) {
+        return Err(ConfigError::ZeroLimit {
+            kind,
+            name: name.into(),
+            field,
+        });
+    }
+    if let Some(value) = value {
+        validate_safe_integer(kind, name, field, value)?;
+    }
+    Ok(())
+}
+
+fn validate_access_log(
+    kind: &'static str,
+    name: &str,
+    policy: Option<&AccessLogPolicy>,
+) -> Result<(), ConfigError> {
+    if let Some(AccessLogPolicy::File { path }) = policy {
+        validate_file_path(kind, name, "access_log.path", path)?;
     }
     Ok(())
 }

@@ -38,7 +38,7 @@ describe('configuration editor fields', () => {
       },
     })
 
-    await wrapper.get('[data-field="upstream_pools[].endpoints[].type"] select').setValue('dns')
+    await wrapper.get('[data-field="upstream_pools[].servers[].endpoint.type"] select').setValue('dns')
 
     expect(wrapper.emitted('update:endpoint')).toEqual([
       [{ type: 'dns', host: '', port: 80 }],
@@ -48,11 +48,15 @@ describe('configuration editor fields', () => {
   it('enforces endpoint and TLS restrictions inside the upstream editor', async () => {
     const pool: UpstreamPoolConfig = {
       name: 'origins',
-      endpoints: [{ type: 'socket', address: '127.0.0.1:3000' }],
+      servers: [{ name: 'server-1', endpoint: { type: 'socket', address: '127.0.0.1:3000' }, max_connections: null, dns_resolution: 'on_connect' }],
       algorithm: 'round_robin',
       health_check: null,
       tls: null,
       http_versions: { min: '1.1', max: '1.1' },
+      queue_timeout_ms: null,
+      connect_timeout_ms: null,
+      server_timeout_ms: null,
+      connection_reuse: 'safe',
     }
     const l4Services: L4ServiceConfig[] = [{
       name: 'database',
@@ -67,8 +71,8 @@ describe('configuration editor fields', () => {
     expect(pool.tls).toEqual({ server_name: '', ca_certificate_path: null })
     expect(l4Services[0]?.upstream_pool).toBe('')
 
-    await wrapper.get('[data-field="upstream_pools[].endpoints[].type"] select').setValue('unix')
-    expect(pool.endpoints).toEqual([{ type: 'unix', path: '' }])
+    await wrapper.get('[data-field="upstream_pools[].servers[].endpoint.type"] select').setValue('unix')
+    expect(pool.servers[0]?.endpoint).toEqual({ type: 'unix', path: '' })
     expect(pool.tls).toBeNull()
     expect(pool.http_versions).toEqual({ min: '1.1', max: '1.1' })
     expect(wrapper.get('[data-field="upstream_pools[].health_check"] input').attributes()).toHaveProperty('disabled')

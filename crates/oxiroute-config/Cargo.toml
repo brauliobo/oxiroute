@@ -8,6 +8,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+chrono-tz.workspace = true
 http.workspace = true
 mlua.workspace = true
 serde.workspace = true

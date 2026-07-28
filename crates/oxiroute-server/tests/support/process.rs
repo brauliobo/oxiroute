@@ -106,9 +106,33 @@ impl ServerProcess {
         self.stop();
     }
 
+    pub fn wait_for_exit(mut self) {
+        let deadline = Instant::now() + PROCESS_TIMEOUT;
+        while self
+            .child
+            .try_wait()
+            .expect("inspect server process")
+            .is_none()
+        {
+            assert!(Instant::now() < deadline, "server did not exit");
+            thread::sleep(RETRY_DELAY);
+        }
+        assert!(self.child.wait().expect("server exit").success());
+    }
+
     fn stop(&mut self) {
         if self.child.try_wait().ok().flatten().is_none() {
-            let _ = self.child.kill();
+            let _ = Command::new("kill")
+                .arg("-TERM")
+                .arg(self.child.id().to_string())
+                .status();
+            let deadline = Instant::now() + PROCESS_TIMEOUT;
+            while self.child.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
+                thread::sleep(RETRY_DELAY);
+            }
+            if self.child.try_wait().ok().flatten().is_none() {
+                let _ = self.child.kill();
+            }
         }
         let _ = self.child.wait();
     }
@@ -158,7 +182,7 @@ pub fn run_to_failure(config_path: &Path, token_path: Option<&Path>) -> Output {
 }
 
 fn spawn_server(config_path: &Path, token_path: Option<&Path>) -> Child {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_oxiroute-server"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_oxiroute"));
     command
         .arg(config_path)
         .env_remove("OXIROUTE_MANAGEMENT_TOKEN_FILE")

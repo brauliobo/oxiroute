@@ -139,6 +139,65 @@ fn wildcard_matches_exactly_one_host_label() {
 }
 
 #[test]
+fn nginx_suffix_names_match_base_and_multiple_labels_with_longest_suffix_precedence() {
+    let table = RouteTable::new(vec![
+        route(None, "/", None, "default"),
+        Route::new(
+            Some(HttpHostSelector::NginxLeadingWildcard {
+                value: "example.com".into(),
+            }),
+            HttpPathSelector::SegmentPrefix { value: "/".into() },
+            None,
+            "wildcard",
+        )
+        .expect("nginx wildcard"),
+        Route::new(
+            Some(HttpHostSelector::NginxLeadingDot {
+                value: "deep.example.com".into(),
+            }),
+            HttpPathSelector::SegmentPrefix { value: "/".into() },
+            None,
+            "long-dot",
+        )
+        .expect("nginx leading dot"),
+        Route::new(
+            Some(HttpHostSelector::NginxLeadingDot {
+                value: "base.test".into(),
+            }),
+            HttpPathSelector::SegmentPrefix { value: "/".into() },
+            None,
+            "base-dot",
+        )
+        .expect("base leading dot"),
+    ]);
+
+    assert_eq!(
+        selected_pool(&table, Some("example.com"), "/", &Method::GET),
+        Some("default")
+    );
+    assert_eq!(
+        selected_pool(&table, Some("edge.example.com"), "/", &Method::GET),
+        Some("wildcard")
+    );
+    assert_eq!(
+        selected_pool(&table, Some("many.labels.example.com"), "/", &Method::GET,),
+        Some("wildcard")
+    );
+    assert_eq!(
+        selected_pool(&table, Some("edge.deep.example.com"), "/", &Method::GET,),
+        Some("long-dot")
+    );
+    assert_eq!(
+        selected_pool(&table, Some("base.test"), "/", &Method::GET),
+        Some("base-dot")
+    );
+    assert_eq!(
+        selected_pool(&table, Some("a.b.base.test"), "/", &Method::GET),
+        Some("base-dot")
+    );
+}
+
+#[test]
 fn host_matching_ignores_ascii_case_and_legal_ports() {
     let table = RouteTable::new(vec![
         route(Some("api.example.com"), "/", None, "exact"),
@@ -485,7 +544,7 @@ fn least_connections_prefers_the_smallest_lease_count_and_rotates_ties() {
         snapshot
             .endpoints
             .iter()
-            .all(|endpoint| endpoint.active_leases == 0)
+            .all(|endpoint| endpoint.active_connections == 0)
     );
 }
 
@@ -501,7 +560,7 @@ fn least_connections_excludes_attempted_endpoints_before_leasing() {
         .select_excluding(std::slice::from_ref(held.endpoint()))
         .expect("retry lease");
     assert_eq!(retry.endpoint(), &endpoints[1]);
-    assert_eq!(pool.health_snapshot().endpoints[0].active_leases, 1);
+    assert_eq!(pool.health_snapshot().endpoints[0].active_connections, 1);
 
     drop(held);
     drop(retry);
@@ -509,7 +568,7 @@ fn least_connections_excludes_attempted_endpoints_before_leasing() {
         pool.health_snapshot()
             .endpoints
             .iter()
-            .all(|endpoint| endpoint.active_leases == 0)
+            .all(|endpoint| endpoint.active_connections == 0)
     );
 }
 

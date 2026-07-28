@@ -36,6 +36,21 @@ section.recorder-panel(aria-label="Recording controls")
       @click="emitControl(recorder)"
     ) {{ recorderActionLabel(recorder) }}
     span.automatic-badge(v-else) Automatic
+  .recorder-heading.relay-heading
+    div
+      h4 Push relays
+    span {{ stream.relays.length }} configured
+  p.no-recorders(v-if="stream.relays.length === 0") No push relay is attached to this publisher.
+  article.recorder-row(v-for="relay in stream.relays" :key="relay.id")
+    .recorder-identity
+      .recorder-title
+        span.recorder-name {{ relay.destination.address }} / {{ relay.destination.application }}
+        span.recorder-phase(:class="`phase-${relay.phase}`") {{ relay.phase }}
+      .recorder-metrics
+        span {{ formatBytes(relay.payload_bytes_sent) }} sent
+        span {{ pluralizedCount(relay.reconnects, 'reconnect', 'reconnects') }}
+        span {{ pluralizedCount(relay.events_dropped, 'drop', 'drops') }}
+      small(v-if="relay.last_failure") Last operational failure: {{ relay.last_failure }}
 </template>
 
 <script setup lang="ts">

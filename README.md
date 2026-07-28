@@ -50,10 +50,10 @@ The current code is intentionally much smaller than that goal. It provides:
   interoperability.
 
 The daemon does not yet provide forward proxying, `CONNECT`, h2c, HTTP/3, UDP, caching, weighted load
-balancing, passive failure ejection, hot reload, direct certificate-file reload/managed ACME
-activation, TLS client authentication, daemon-integrated configuration imports, or complete
-nginx-rtmp compatibility. Recording does not support enhanced AVC, HEVC, or AV1 output, and storage
-quotas are not coordinated across daemon processes.
+balancing, passive failure ejection, cross-process inherited-listener upgrades, direct
+certificate-file reload/managed ACME activation, TLS client authentication, daemon-integrated
+configuration imports, or complete nginx-rtmp compatibility. Recording does not support enhanced
+AVC, HEVC, or AV1 output, and storage quotas are not coordinated across daemon processes.
 It is not a firewall, NAT implementation, or drop-in replacement for Squid, nginx,
 HAProxy, or Apache httpd.
 
@@ -67,8 +67,12 @@ pnpm --dir ui build
 umask 077
 openssl rand -hex 32 > /tmp/oxiroute-management.token
 OXIROUTE_MANAGEMENT_TOKEN_FILE=/tmp/oxiroute-management.token \
-  cargo run -p oxiroute-server -- oxiroute.example.lua
+  cargo run -p oxiroute -- serve oxiroute.example.lua
 ```
+
+Operator management uses the separately installed `oxiroute` client. See
+[`docs/MANAGEMENT_CLI.md`](docs/MANAGEMENT_CLI.md) for the complete capability matrix, HAProxy
+Runtime API mappings, authentication, and script-safe output/exit behavior.
 
 The example exposes the HTTP upstream on `127.0.0.1:8080`, defines a TCP relay from
 `127.0.0.1:15432` to `127.0.0.1:5432`, and accepts RTMP publishers on
@@ -86,6 +90,12 @@ upstream configuration.
 Use `RUST_LOG=info` to enable runtime logs. Configuration files are local administrator
 input, but they still run in a fresh Lua state with no standard libraries and bounded
 source, memory, and instruction use.
+
+Operational CLI commands are `serve`, `config check`, `import nginx`, `import haproxy`, and
+`version`; the historical single positional configuration path remains an alias for `serve`.
+Configured statistics binds expose public Prometheus `/metrics` and readiness at `/ready`.
+Read-only `/stats`, revision/listener status at `/api/v1/status`, and POST-only statistics
+administration are restricted to loopback peers and require the configured Bearer token.
 
 ## Develop
 

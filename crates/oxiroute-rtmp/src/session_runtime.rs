@@ -1,18 +1,25 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
-    CatalogError, LiveHub, LiveHubError, RecorderDefinition, RtmpRecorderPolicy, RtmpRecorderStart,
-    RtmpRegistry, SessionId, StreamKey,
+    CatalogError, LiveHub, LiveHubError, RecorderDefinition, RtmpPushTarget, RtmpRecorderPolicy,
+    RtmpRecorderStart, RtmpRegistry, SessionId, StreamKey,
     recording_runtime::{RecorderController, RecorderReaperHandle, RecorderReaperOwner},
+    relay::RtmpRelayController,
 };
 
-use super::{RtmpSession, playback::PlaybackSession, publish::PublishSession};
+use super::{
+    RtmpSession,
+    playback::PlaybackSession,
+    publish::{PublishSession, PublisherOutputs},
+};
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RtmpApplication {
     name: String,
     live: bool,
     idle_streams: bool,
+    hub: Option<LiveHub>,
+    push_targets: Arc<Vec<RtmpPushTarget>>,
     recorders: Arc<Vec<RtmpRecorderPolicy>>,
 }
 
@@ -23,6 +30,8 @@ impl RtmpApplication {
             name: name.into(),
             live,
             idle_streams,
+            hub: None,
+            push_targets: Arc::new(Vec::new()),
             recorders: Arc::new(Vec::new()),
         }
     }
@@ -38,6 +47,27 @@ impl RtmpApplication {
             name: name.into(),
             live,
             idle_streams,
+            hub: None,
+            push_targets: Arc::new(Vec::new()),
+            recorders: Arc::new(recorders.into_iter().collect()),
+        }
+    }
+
+    #[must_use]
+    pub fn with_runtime(
+        name: impl Into<String>,
+        live: bool,
+        idle_streams: bool,
+        hub: LiveHub,
+        push_targets: impl IntoIterator<Item = RtmpPushTarget>,
+        recorders: impl IntoIterator<Item = RtmpRecorderPolicy>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            live,
+            idle_streams,
+            hub: Some(hub),
+            push_targets: Arc::new(push_targets.into_iter().collect()),
             recorders: Arc::new(recorders.into_iter().collect()),
         }
     }
@@ -61,11 +91,21 @@ impl RtmpApplication {
     pub fn recorder_policies(&self) -> &[RtmpRecorderPolicy] {
         &self.recorders
     }
+
+    #[must_use]
+    pub fn push_targets(&self) -> &[RtmpPushTarget] {
+        &self.push_targets
+    }
+
+    fn hub(&self) -> Option<LiveHub> {
+        self.hub.clone()
+    }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone)]
 pub struct RtmpSessionPolicy {
     applications: Arc<BTreeMap<String, RtmpApplication>>,
+    outbound_chunk_size: u32,
 }
 
 impl RtmpSessionPolicy {
@@ -78,11 +118,36 @@ impl RtmpSessionPolicy {
                     .map(|application| (application.name.clone(), application))
                     .collect(),
             ),
+            outbound_chunk_size: 4_096,
         }
+    }
+
+    #[must_use]
+    pub fn with_outbound_chunk_size(
+        applications: impl IntoIterator<Item = RtmpApplication>,
+        outbound_chunk_size: u32,
+    ) -> Self {
+        let mut policy = Self::new(applications);
+        policy.outbound_chunk_size = outbound_chunk_size;
+        policy
     }
 
     fn application(&self, name: &str) -> Option<&RtmpApplication> {
         self.applications.get(name)
+    }
+
+    pub(super) const fn outbound_chunk_size(&self) -> u32 {
+        self.outbound_chunk_size
+    }
+
+    fn first_hub(&self) -> Option<LiveHub> {
+        self.applications.values().find_map(RtmpApplication::hub)
+    }
+}
+
+impl Default for RtmpSessionPolicy {
+    fn default() -> Self {
+        Self::new([])
     }
 }
 
@@ -142,12 +207,16 @@ impl RtmpServiceRuntime {
 
     #[must_use]
     pub fn hub(&self) -> LiveHub {
-        self.hub.clone()
+        self.policy.first_hub().unwrap_or_else(|| self.hub.clone())
     }
 
     #[must_use]
     pub fn session(&self) -> RtmpSession {
         RtmpSession::from_runtime(self.for_session())
+    }
+
+    pub(super) const fn outbound_chunk_size(&self) -> u32 {
+        self.policy.outbound_chunk_size()
     }
 
     pub(super) fn application(&self, name: &str) -> Option<&RtmpApplication> {
@@ -171,9 +240,12 @@ impl RtmpServiceRuntime {
         session_id: SessionId,
         at_unix_ms: u64,
     ) -> Result<PublishSession, PublisherRoleError> {
-        let _transaction = self.hub.lock_roles();
-        let lease = self
-            .hub
+        let hub = self
+            .application(&key.application)
+            .and_then(RtmpApplication::hub)
+            .unwrap_or_else(|| self.hub.clone());
+        let _transaction = hub.lock_roles();
+        let lease = hub
             .attach_publisher(key.clone())
             .map_err(PublisherRoleError::Hub)?;
         let policies = self
@@ -195,6 +267,12 @@ impl RtmpServiceRuntime {
                 ))
             })
             .collect();
+        let relays: Vec<_> = self
+            .application(&key.application)
+            .map_or(&[][..], RtmpApplication::push_targets)
+            .iter()
+            .map(|target| RtmpRelayController::start(target.expand(&key.name), target.config))
+            .collect();
         let definitions = policies
             .iter()
             .zip(&controllers)
@@ -214,6 +292,7 @@ impl RtmpServiceRuntime {
             key.clone(),
             session_id,
             definitions,
+            relays.clone(),
             at_unix_ms,
         ) {
             Ok(registration) => registration,
@@ -241,12 +320,12 @@ impl RtmpServiceRuntime {
         debug_assert!(self.registry.has_publisher(&key));
         Ok(PublishSession::new(
             key,
-            self.hub.clone(),
+            hub.clone(),
             lease,
             registration,
             Arc::clone(&self.registry),
             session_id,
-            recorders,
+            PublisherOutputs { recorders, relays },
         ))
     }
 
@@ -258,14 +337,15 @@ impl RtmpServiceRuntime {
         idle_streams: bool,
         at_unix_ms: u64,
     ) -> Result<PlaybackSession, PlaybackRoleError> {
-        let _transaction = self.hub.lock_roles();
-        if !idle_streams && !self.hub.has_publisher(&key) {
+        let hub = self
+            .application(&key.application)
+            .and_then(RtmpApplication::hub)
+            .unwrap_or_else(|| self.hub.clone());
+        let _transaction = hub.lock_roles();
+        if !idle_streams && !hub.has_publisher(&key) {
             return Err(PlaybackRoleError::NoPublisher);
         }
-        let subscription = self
-            .hub
-            .subscribe(key.clone())
-            .map_err(PlaybackRoleError::Hub)?;
+        let subscription = hub.subscribe(key.clone()).map_err(PlaybackRoleError::Hub)?;
         let registration =
             match self
                 .registry
@@ -279,7 +359,7 @@ impl RtmpServiceRuntime {
             };
         Ok(PlaybackSession::new(
             key,
-            self.hub.clone(),
+            hub.clone(),
             protocol_stream_id,
             subscription,
             registration,

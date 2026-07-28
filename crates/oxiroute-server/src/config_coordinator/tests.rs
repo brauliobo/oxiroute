@@ -32,7 +32,9 @@ fn socket_endpoint(value: &str) -> UpstreamEndpoint {
 fn minimal_config() -> Config {
     Config {
         version: 1,
+        max_connections: None,
         management: None,
+        stats: None,
         certificates: Vec::new(),
         tls_profiles: Vec::new(),
         listeners: Vec::new(),
@@ -54,13 +56,18 @@ fn rtmp_config(name: &str) -> Config {
         service: Some("rtmp-service".into()),
         tls_profile: None,
         max_connections: Some(10_000),
+        downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
     });
     config.rtmp_services.push(RtmpService {
         name: "rtmp-service".into(),
+        outbound_chunk_size: 4_096,
+        access_log: None,
         applications: vec![RtmpApplication {
             name: "live".into(),
             live: true,
             idle_streams: true,
+            push_targets: Vec::new(),
+            fanout: oxiroute_config::RtmpFanoutPolicy::default(),
             recorders: Vec::new(),
         }],
     });
@@ -76,14 +83,20 @@ fn normalizable_config() -> Config {
         service: Some("web-service".into()),
         tls_profile: None,
         max_connections: Some(10_000),
+        downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
     });
     config.upstream_pools.push(UpstreamPool {
         name: "web-pool".into(),
+        servers: Vec::new(),
         endpoints: vec![socket_endpoint("127.0.0.1:3000")],
         algorithm: UpstreamAlgorithm::RoundRobin,
         health_check: None,
         tls: None,
         http_versions: HttpVersionPolicy::default(),
+        queue_timeout_ms: None,
+        connect_timeout_ms: None,
+        server_timeout_ms: None,
+        connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
     });
     config.http_services.push(HttpService {
         name: "web-service".into(),
@@ -96,6 +109,7 @@ fn normalizable_config() -> Config {
             },
             methods: vec!["GET".into()],
             access_policy: None,
+            policy: oxiroute_config::HttpRoutePolicy::default(),
             action: HttpRouteAction::Proxy {
                 upstream_pool: "web-pool".into(),
                 policy: HttpProxyPolicy::default(),
@@ -103,6 +117,8 @@ fn normalizable_config() -> Config {
         }],
         upstream_io_timeout_ms: 30_000,
         max_request_body_bytes: Some(10 * 1024 * 1024),
+        gzip: None,
+        access_log: None,
     });
     config
 }

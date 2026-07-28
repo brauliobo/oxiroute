@@ -128,7 +128,7 @@ function normalizeReferences(): void {
 function changeBind(event: Event): void {
   const type = (event.target as HTMLSelectElement).value
   props.listener.bind = type === 'unix'
-    ? { type, path: '' }
+    ? { type, path: '', mode: null }
     : { type: type as 'socket' | 'udp', address: type === 'udp' ? '0.0.0.0:443' : '0.0.0.0:8080' }
   if (props.listener.bind.type === 'unix') props.listener.tls_profile = null
 }

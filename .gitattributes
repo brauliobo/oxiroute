@@ -1,0 +1,2 @@
+crates/oxiroute-import/tests/fixtures/live/** -whitespace
+vendor/rml_rtmp/** -whitespace

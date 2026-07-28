@@ -6,19 +6,24 @@ use std::{
 use crate::{
     defaults::MAX_SOURCE_BYTES,
     model::{
-        AlpnProtocol, CacheAuthorizationPolicy, CacheKeyComponent, CachePredicate,
+        AccessLogPolicy, AlpnProtocol, CacheAuthorizationPolicy, CacheKeyComponent, CachePredicate,
         CachePurgeAuthorization, CacheSetCookiePolicy, CacheStaleTrigger, CacheStatusTtl,
         CacheStore, CacheSurrogateTags, CacheVaryPolicy, Certificate, CertificateSource, Config,
-        ConfigError, ForwardAuditMode, ForwardConnectPolicy, ForwardDestinationPolicy,
-        ForwardHttpVersion, ForwardProxyAuth, ForwardProxyService, ForwardResolverPolicy,
-        HealthCheck, HealthCheckType, HttpAccessPolicy, HttpCachePolicy, HttpCookiePathRewrite,
-        HttpHostSelector, HttpLiteralHeader, HttpPathSelector, HttpProxyPolicy,
-        HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
-        HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryMethodSafety, HttpRetryPolicy,
-        HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpService, HttpUpstreamHost, HttpVersion,
-        HttpVersionPolicy, L4Service, Listener, ListenerBind, Management, Protocol,
-        RtmpApplication, RtmpRecorder, RtmpRecorderStart, RtmpService, TlsProfile, TlsVersion,
-        UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, UpstreamTls,
+        ConfigError, DnsResolutionPolicy, DownstreamTimeoutPolicy, ForwardAuditMode,
+        ForwardConnectPolicy, ForwardDestinationPolicy, ForwardHttpVersion, ForwardProxyAuth,
+        ForwardProxyService, ForwardResolverPolicy, HealthCheck, HealthCheckType,
+        HealthHttpVersion, HealthStartup, HttpAccessPolicy, HttpCachePolicy,
+        HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpGzipPolicy, HttpHostSelector,
+        HttpLiteralHeader, HttpMimeType, HttpPathSelector, HttpProxyPolicy, HttpRedirectLocation,
+        HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpResponseHeaderMutation,
+        HttpRetryBodySafety, HttpRetryMethodSafety, HttpRetryPolicy, HttpRetryTarget,
+        HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpSameSite, HttpService,
+        HttpStaticErrorResponse, HttpStaticMimePolicy, HttpStaticPathMapping, HttpStaticTryFile,
+        HttpUpstreamHost, HttpVersion, HttpVersionPolicy, L4Service, Listener, ListenerBind,
+        Management, Protocol, RtmpApplication, RtmpFanoutPolicy, RtmpPushTarget, RtmpRecorder,
+        RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis, RtmpRecorderTimezone,
+        RtmpService, Stats, TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamConnectionReuse,
+        UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls,
     },
     validation::validate_config,
 };
@@ -66,7 +71,9 @@ impl Renderer {
     fn config(&mut self, config: &Config) -> Result<(), ConfigError> {
         let Config {
             version,
+            max_connections,
             management,
+            stats,
             certificates,
             tls_profiles,
             listeners,
@@ -81,7 +88,12 @@ impl Renderer {
         self.output.push_str("return {\n");
         self.indent = 1;
         self.integer_field("version", version);
+        match max_connections {
+            Some(limit) => self.integer_field("max_connections", limit),
+            None => self.null_field("max_connections"),
+        }
         self.fallible_optional_table_field("management", management.as_ref(), Self::management)?;
+        self.fallible_optional_table_field("stats", stats.as_ref(), Self::stats)?;
         self.fallible_table_list_field("certificates", certificates, Self::certificate)?;
         self.table_list_field("tls_profiles", tls_profiles, Self::tls_profile);
         self.fallible_table_list_field("listeners", listeners, Self::listener)?;
@@ -112,6 +124,25 @@ impl Renderer {
                 );
             }
             None => self.nil_field("ui_dir"),
+        }
+        Ok(())
+    }
+
+    fn stats(&mut self, stats: &Stats) -> Result<(), ConfigError> {
+        self.string_list_field(
+            "binds",
+            &stats
+                .binds
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+        );
+        match &stats.admin_token_file {
+            Some(path) => self.string_field(
+                "admin_token_file",
+                utf8_path(path, "stats", "stats", "admin_token_file")?,
+            ),
+            None => self.nil_field("admin_token_file"),
         }
         Ok(())
     }
@@ -220,6 +251,7 @@ impl Renderer {
             service,
             tls_profile,
             max_connections,
+            downstream_timeouts,
         } = listener;
 
         self.string_field("name", name);
@@ -233,9 +265,13 @@ impl Renderer {
                 self.string_field("type", "udp");
                 self.string_field("address", &address.to_string());
             }
-            ListenerBind::Unix { path } => {
+            ListenerBind::Unix { path, mode } => {
                 self.string_field("type", "unix");
                 self.string_field("path", utf8_path(path, "listener", name, "bind.path")?);
+                match mode {
+                    Some(mode) => self.integer_field("mode", mode),
+                    None => self.nil_field("mode"),
+                }
             }
         }
         self.end_table();
@@ -256,7 +292,16 @@ impl Renderer {
             Some(max_connections) => self.integer_field("max_connections", max_connections),
             None => self.null_field("max_connections"),
         }
+        self.begin_table_field("downstream_timeouts");
+        self.downstream_timeouts(downstream_timeouts);
+        self.end_table();
         Ok(())
+    }
+
+    fn downstream_timeouts(&mut self, policy: &DownstreamTimeoutPolicy) {
+        self.optional_integer_field("client_timeout_ms", policy.client_timeout_ms);
+        self.optional_integer_field("request_timeout_ms", policy.request_timeout_ms);
+        self.optional_integer_field("keepalive_timeout_ms", policy.keepalive_timeout_ms);
     }
 
     fn cache_store(&mut self, store: &CacheStore) -> Result<(), ConfigError> {
@@ -348,8 +393,15 @@ impl Renderer {
     }
 
     fn rtmp_service(&mut self, service: &RtmpService) -> Result<(), ConfigError> {
-        let RtmpService { name, applications } = service;
+        let RtmpService {
+            name,
+            outbound_chunk_size,
+            access_log,
+            applications,
+        } = service;
         self.string_field("name", name);
+        self.integer_field("outbound_chunk_size", outbound_chunk_size);
+        self.access_log_field("access_log", access_log.as_ref(), "RTMP service", name)?;
         self.fallible_table_list_field("applications", applications, |renderer, application| {
             renderer.rtmp_application(name, application)
         })?;
@@ -365,15 +417,39 @@ impl Renderer {
             name,
             live,
             idle_streams,
+            push_targets,
+            fanout,
             recorders,
         } = application;
         self.string_field("name", name);
         self.boolean_field("live", *live);
         self.boolean_field("idle_streams", *idle_streams);
+        self.table_list_or_nil_field("push_targets", push_targets, Self::rtmp_push_target);
+        self.begin_table_field("fanout");
+        self.rtmp_fanout(fanout);
+        self.end_table();
         self.fallible_table_list_field("recorders", recorders, |renderer, recorder| {
             renderer.rtmp_recorder(service_name, name, recorder)
         })?;
         Ok(())
+    }
+
+    fn rtmp_push_target(&mut self, target: &RtmpPushTarget) {
+        self.string_field("host", &target.host);
+        self.integer_field("port", target.port);
+        self.string_field("application", &target.application);
+    }
+
+    fn rtmp_fanout(&mut self, policy: &RtmpFanoutPolicy) {
+        self.integer_field("max_subscribers", policy.max_subscribers);
+        self.integer_field(
+            "max_queue_messages_per_subscriber",
+            policy.max_queue_messages_per_subscriber,
+        );
+        self.integer_field(
+            "max_queue_bytes_per_subscriber",
+            policy.max_queue_bytes_per_subscriber,
+        );
     }
 
     fn rtmp_recorder(
@@ -388,6 +464,9 @@ impl Renderer {
             root_directory,
             suffix_template,
             append_unix_seconds,
+            timezone,
+            time_basis,
+            segment_naming,
             rotation_interval_ms,
             max_queue_messages,
             max_queue_bytes,
@@ -410,6 +489,27 @@ impl Renderer {
         );
         self.string_field("suffix_template", suffix_template);
         self.boolean_field("append_unix_seconds", *append_unix_seconds);
+        self.string_field(
+            "timezone",
+            match timezone {
+                RtmpRecorderTimezone::Utc => "utc",
+                RtmpRecorderTimezone::Iana(name) => name,
+            },
+        );
+        self.string_field(
+            "time_basis",
+            match time_basis {
+                RtmpRecorderTimeBasis::SegmentStart => "segment_start",
+                RtmpRecorderTimeBasis::SegmentEnd => "segment_end",
+            },
+        );
+        self.string_field(
+            "segment_naming",
+            match segment_naming {
+                RtmpRecorderSegmentNaming::SafeUnique => "safe_unique",
+                RtmpRecorderSegmentNaming::NginxCompatible => "nginx_compatible",
+            },
+        );
         match rotation_interval_ms {
             Some(interval) => self.integer_field("rotation_interval_ms", interval),
             None => self.null_field("rotation_interval_ms"),
@@ -426,22 +526,29 @@ impl Renderer {
     fn upstream_pool(&mut self, pool: &UpstreamPool) -> Result<(), ConfigError> {
         let UpstreamPool {
             name,
+            servers,
             endpoints,
             algorithm,
             health_check,
             tls,
             http_versions,
+            queue_timeout_ms,
+            connect_timeout_ms,
+            server_timeout_ms,
+            connection_reuse,
         } = pool;
 
         self.string_field("name", name);
-        self.fallible_table_list_field("endpoints", endpoints, |renderer, endpoint| {
-            renderer.upstream_endpoint(name, endpoint)
+        debug_assert!(endpoints.is_empty(), "legacy endpoints must be normalized");
+        self.fallible_table_list_field("servers", servers, |renderer, server| {
+            renderer.upstream_server(name, server)
         })?;
         self.string_field(
             "algorithm",
             match algorithm {
                 UpstreamAlgorithm::RoundRobin => "round_robin",
                 UpstreamAlgorithm::LeastConnections => "least_connections",
+                UpstreamAlgorithm::First => "first",
             },
         );
         self.optional_table_field("health_check", health_check.as_ref(), Self::health_check);
@@ -456,6 +563,40 @@ impl Renderer {
         self.begin_table_field("http_versions");
         self.http_version_policy(*http_versions);
         self.end_table();
+        self.optional_integer_field("queue_timeout_ms", *queue_timeout_ms);
+        self.optional_integer_field("connect_timeout_ms", *connect_timeout_ms);
+        self.optional_integer_field("server_timeout_ms", *server_timeout_ms);
+        self.string_field(
+            "connection_reuse",
+            match connection_reuse {
+                UpstreamConnectionReuse::Never => "never",
+                UpstreamConnectionReuse::Safe => "safe",
+                UpstreamConnectionReuse::Always => "always",
+            },
+        );
+        Ok(())
+    }
+
+    fn upstream_server(
+        &mut self,
+        pool_name: &str,
+        server: &UpstreamServer,
+    ) -> Result<(), ConfigError> {
+        self.string_field("name", &server.name);
+        self.begin_table_field("endpoint");
+        self.upstream_endpoint(pool_name, &server.endpoint)?;
+        self.end_table();
+        match server.max_connections {
+            Some(limit) => self.integer_field("max_connections", limit),
+            None => self.null_field("max_connections"),
+        }
+        self.string_field(
+            "dns_resolution",
+            match server.dns_resolution {
+                DnsResolutionPolicy::Startup => "startup",
+                DnsResolutionPolicy::OnConnect => "on_connect",
+            },
+        );
         Ok(())
     }
 
@@ -492,8 +633,13 @@ impl Renderer {
             timeout_ms,
             healthy_threshold,
             unhealthy_threshold,
+            startup,
+            fast_interval_ms,
+            down_interval_ms,
             host,
             path,
+            expected_status,
+            http_version,
         } = health_check;
 
         self.string_field(
@@ -507,8 +653,24 @@ impl Renderer {
         self.integer_field("timeout_ms", timeout_ms);
         self.integer_field("healthy_threshold", healthy_threshold);
         self.integer_field("unhealthy_threshold", unhealthy_threshold);
+        self.string_field(
+            "startup",
+            match startup {
+                HealthStartup::Healthy => "healthy",
+                HealthStartup::Unhealthy => "unhealthy",
+                HealthStartup::Checking => "checking",
+            },
+        );
+        self.optional_integer_field("fast_interval_ms", *fast_interval_ms);
+        self.optional_integer_field("down_interval_ms", *down_interval_ms);
         self.optional_string_field("host", host.as_deref());
         self.optional_string_field("path", path.as_deref());
+        self.optional_integer_field("expected_status", *expected_status);
+        match http_version {
+            Some(HealthHttpVersion::Http10) => self.string_field("http_version", "1.0"),
+            Some(HealthHttpVersion::Http11) => self.string_field("http_version", "1.1"),
+            None => self.nil_field("http_version"),
+        }
     }
 
     fn upstream_tls(&mut self, pool_name: &str, tls: &UpstreamTls) -> Result<(), ConfigError> {
@@ -541,6 +703,8 @@ impl Renderer {
             routes,
             upstream_io_timeout_ms,
             max_request_body_bytes,
+            gzip,
+            access_log,
         } = service;
 
         self.string_field("name", name);
@@ -558,7 +722,21 @@ impl Renderer {
             }
             None => self.null_field("max_request_body_bytes"),
         }
+        match gzip {
+            Some(gzip) => {
+                self.begin_table_field("gzip");
+                self.http_gzip(gzip);
+                self.end_table();
+            }
+            None => self.nil_field("gzip"),
+        }
+        self.access_log_field("access_log", access_log.as_ref(), "HTTP service", name)?;
         Ok(())
+    }
+
+    fn http_gzip(&mut self, gzip: &HttpGzipPolicy) {
+        self.integer_field("level", gzip.level);
+        self.string_list_field("content_types", &gzip.content_types);
     }
 
     fn http_route(
@@ -572,6 +750,7 @@ impl Renderer {
             path,
             methods,
             access_policy,
+            policy,
             action,
         } = route;
 
@@ -595,10 +774,25 @@ impl Renderer {
             }
             None => self.nil_field("access_policy"),
         }
+        self.begin_table_field("policy");
+        self.http_route_policy(policy);
+        self.end_table();
         self.begin_table_field("action");
         self.http_route_action(service, route_index, action)?;
         self.end_table();
         Ok(())
+    }
+
+    fn http_route_policy(&mut self, policy: &HttpRoutePolicy) {
+        match policy.max_request_body_bytes {
+            Some(limit) => self.integer_field("max_request_body_bytes", limit),
+            None => self.null_field("max_request_body_bytes"),
+        }
+        self.integer_field("connect_timeout_ms", policy.connect_timeout_ms);
+        self.integer_field("read_timeout_ms", policy.read_timeout_ms);
+        self.integer_field("write_timeout_ms", policy.write_timeout_ms);
+        self.boolean_field("request_buffering", policy.request_buffering);
+        self.boolean_field("response_buffering", policy.response_buffering);
     }
 
     fn http_host_selector(&mut self, selector: &HttpHostSelector) {
@@ -609,6 +803,14 @@ impl Renderer {
             }
             HttpHostSelector::ExactAuthority { value } => {
                 self.string_field("kind", "exact_authority");
+                self.string_field("value", value);
+            }
+            HttpHostSelector::NginxLeadingWildcard { value } => {
+                self.string_field("kind", "nginx_leading_wildcard");
+                self.string_field("value", value);
+            }
+            HttpHostSelector::NginxLeadingDot { value } => {
+                self.string_field("kind", "nginx_leading_dot");
                 self.string_field("value", value);
             }
         }
@@ -649,6 +851,22 @@ impl Renderer {
                 self.string_field("header_name", header_name);
                 self.optional_string_field("realm", realm.as_deref());
             }
+            HttpAccessPolicy::BasicHtpasswdFile {
+                htpasswd_file_path,
+                realm,
+            } => {
+                self.string_field("type", "basic_htpasswd_file");
+                self.string_field(
+                    "htpasswd_file_path",
+                    utf8_http_route_path(
+                        htpasswd_file_path,
+                        service,
+                        route_index,
+                        "access_policy.htpasswd_file_path",
+                    )?,
+                );
+                self.string_field("realm", realm);
+            }
         }
         Ok(())
     }
@@ -680,43 +898,167 @@ impl Renderer {
                 self.string_field("body", body);
                 self.table_list_or_nil_field("headers", headers, Self::http_literal_header);
             }
-            HttpRouteAction::Redirect { status, location } => {
+            HttpRouteAction::Redirect {
+                status,
+                location,
+                headers,
+            } => {
                 self.string_field("type", "redirect");
                 self.integer_field("status", status);
                 self.begin_table_field("location");
                 self.http_redirect_location(location);
                 self.end_table();
+                self.table_list_or_nil_field("headers", headers, Self::http_literal_header);
             }
-            HttpRouteAction::StaticFiles {
-                root_directory,
-                index_files,
-                spa_fallback,
-            } => {
-                self.string_field("type", "static_files");
-                self.string_field(
-                    "root_directory",
-                    utf8_http_route_path(
-                        root_directory,
-                        service,
-                        route_index,
-                        "action.static_files.root_directory",
-                    )?,
-                );
-                self.string_list_field("index_files", index_files);
-                match spa_fallback {
-                    Some(path) => self.string_field(
-                        "spa_fallback",
-                        utf8_http_route_path(
-                            path,
-                            service,
-                            route_index,
-                            "action.static_files.spa_fallback",
-                        )?,
-                    ),
-                    None => self.nil_field("spa_fallback"),
-                }
+            action @ HttpRouteAction::StaticFiles { .. } => {
+                self.http_static_action(service, route_index, action)?;
             }
         }
+        Ok(())
+    }
+
+    fn http_static_action(
+        &mut self,
+        service: &str,
+        route_index: usize,
+        action: &HttpRouteAction,
+    ) -> Result<(), ConfigError> {
+        let HttpRouteAction::StaticFiles {
+            root_directory,
+            path_mapping,
+            index_files,
+            internal_index_redirects,
+            directory_redirects,
+            spa_fallback,
+            try_files,
+            autoindex,
+            autoindex_exact_size,
+            autoindex_local_time,
+            mime,
+            headers,
+            error_responses,
+        } = action
+        else {
+            unreachable!("static action renderer requires a static action");
+        };
+        self.string_field("type", "static_files");
+        self.string_field(
+            "root_directory",
+            utf8_http_route_path(
+                root_directory,
+                service,
+                route_index,
+                "action.static_files.root_directory",
+            )?,
+        );
+        self.string_field(
+            "path_mapping",
+            match path_mapping {
+                HttpStaticPathMapping::Root => "root",
+                HttpStaticPathMapping::Alias => "alias",
+            },
+        );
+        self.string_list_field("index_files", index_files);
+        self.boolean_field("internal_index_redirects", *internal_index_redirects);
+        self.boolean_field("directory_redirects", *directory_redirects);
+        match spa_fallback {
+            Some(path) => self.string_field(
+                "spa_fallback",
+                utf8_http_route_path(
+                    path,
+                    service,
+                    route_index,
+                    "action.static_files.spa_fallback",
+                )?,
+            ),
+            None => self.nil_field("spa_fallback"),
+        }
+        if try_files.is_empty() {
+            self.nil_field("try_files");
+        } else {
+            self.fallible_table_list_field("try_files", try_files, |renderer, candidate| {
+                renderer.http_static_try_file(service, route_index, candidate)
+            })?;
+        }
+        self.boolean_field("autoindex", *autoindex);
+        self.boolean_field("autoindex_exact_size", *autoindex_exact_size);
+        self.boolean_field("autoindex_local_time", *autoindex_local_time);
+        self.begin_table_field("mime");
+        self.http_static_mime(mime);
+        self.end_table();
+        self.table_list_or_nil_field("headers", headers, Self::http_literal_header);
+        if error_responses.is_empty() {
+            self.nil_field("error_responses");
+        } else {
+            self.fallible_table_list_field(
+                "error_responses",
+                error_responses,
+                |renderer, response| {
+                    renderer.http_static_error_response(service, route_index, response)
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    fn http_static_try_file(
+        &mut self,
+        service: &str,
+        route_index: usize,
+        candidate: &HttpStaticTryFile,
+    ) -> Result<(), ConfigError> {
+        match candidate {
+            HttpStaticTryFile::RequestPath => self.string_field("type", "request_path"),
+            HttpStaticTryFile::RequestPathDirectory => {
+                self.string_field("type", "request_path_directory");
+            }
+            HttpStaticTryFile::Relative { path } => {
+                self.string_field("type", "relative");
+                self.string_field(
+                    "path",
+                    utf8_http_route_path(
+                        path,
+                        service,
+                        route_index,
+                        "action.static_files.try_files[].path",
+                    )?,
+                );
+            }
+            HttpStaticTryFile::Status { status } => {
+                self.string_field("type", "status");
+                self.integer_field("status", status);
+            }
+        }
+        Ok(())
+    }
+
+    fn http_static_mime(&mut self, mime: &HttpStaticMimePolicy) {
+        self.optional_string_field("default_type", mime.default_type.as_deref());
+        self.table_list_or_nil_field("types", &mime.types, Self::http_mime_type);
+    }
+
+    fn http_mime_type(&mut self, mime: &HttpMimeType) {
+        self.string_field("extension", &mime.extension);
+        self.string_field("content_type", &mime.content_type);
+    }
+
+    fn http_static_error_response(
+        &mut self,
+        service: &str,
+        route_index: usize,
+        response: &HttpStaticErrorResponse,
+    ) -> Result<(), ConfigError> {
+        self.integer_list_field("statuses", &response.statuses);
+        self.string_field(
+            "file",
+            utf8_http_route_path(
+                &response.file,
+                service,
+                route_index,
+                "action.static_files.error_responses[].file",
+            )?,
+        );
+        self.optional_string_field("internal_redirect", response.internal_redirect.as_deref());
         Ok(())
     }
 
@@ -731,6 +1073,7 @@ impl Renderer {
             request_headers,
             response_headers,
             response_cookie_path_rewrites,
+            response_cookie_attributes,
             retry,
             cache,
         } = policy;
@@ -741,6 +1084,11 @@ impl Renderer {
             "request_headers",
             request_headers,
             Self::http_request_header_mutation,
+        );
+        self.table_list_or_nil_field(
+            "response_cookie_attributes",
+            response_cookie_attributes,
+            Self::http_cookie_attribute,
         );
         self.table_list_or_nil_field(
             "response_headers",
@@ -764,6 +1112,18 @@ impl Renderer {
             None => self.nil_field("cache"),
         }
         Ok(())
+    }
+
+    fn http_cookie_attribute(&mut self, policy: &HttpCookieAttributePolicy) {
+        self.string_field("name", &policy.name);
+        self.optional_boolean_field("secure", policy.secure);
+        self.optional_boolean_field("http_only", policy.http_only);
+        match policy.same_site {
+            Some(HttpSameSite::Strict) => self.string_field("same_site", "strict"),
+            Some(HttpSameSite::Lax) => self.string_field("same_site", "lax"),
+            Some(HttpSameSite::None) => self.string_field("same_site", "none"),
+            None => self.nil_field("same_site"),
+        }
     }
 
     fn http_cache_policy(
@@ -907,6 +1267,10 @@ impl Renderer {
             HttpUpstreamHost::PreserveIncoming => {
                 self.string_field("type", "preserve_incoming");
             }
+            HttpUpstreamHost::NginxHost { fallback } => {
+                self.string_field("type", "nginx_host");
+                self.string_field("fallback", fallback);
+            }
             HttpUpstreamHost::Endpoint { unix_fallback } => {
                 self.string_field("type", "endpoint");
                 self.optional_string_field("unix_fallback", unix_fallback.as_deref());
@@ -946,7 +1310,29 @@ impl Renderer {
             HttpRequestHeaderValue::NormalizedHost => {
                 self.string_field("type", "normalized_host");
             }
+            HttpRequestHeaderValue::NginxHost { fallback } => {
+                self.string_field("type", "nginx_host");
+                self.string_field("fallback", fallback);
+            }
             HttpRequestHeaderValue::ClientIp => self.string_field("type", "client_ip"),
+            HttpRequestHeaderValue::AppendedXForwardedFor {
+                max_bytes,
+                except_source_cidrs,
+            } => {
+                self.string_field("type", "appended_x_forwarded_for");
+                self.integer_field("max_bytes", max_bytes);
+                if !except_source_cidrs.is_empty() {
+                    self.string_list_field("except_source_cidrs", except_source_cidrs);
+                }
+            }
+            HttpRequestHeaderValue::DownstreamScheme => {
+                self.string_field("type", "downstream_scheme");
+            }
+            HttpRequestHeaderValue::IncomingHeader { name, max_bytes } => {
+                self.string_field("type", "incoming_header");
+                self.string_field("name", name);
+                self.integer_field("max_bytes", max_bytes);
+            }
             HttpRequestHeaderValue::SelectedUpstreamHost => {
                 self.string_field("type", "selected_upstream_host");
             }
@@ -955,10 +1341,25 @@ impl Renderer {
 
     fn http_response_header_mutation(&mut self, mutation: &HttpResponseHeaderMutation) {
         match mutation {
-            HttpResponseHeaderMutation::Set { name, value } => {
+            HttpResponseHeaderMutation::Set {
+                name,
+                value,
+                always,
+            } => {
                 self.string_field("operation", "set");
                 self.string_field("name", name);
                 self.string_field("value", value);
+                self.boolean_field("always", *always);
+            }
+            HttpResponseHeaderMutation::Add {
+                name,
+                value,
+                always,
+            } => {
+                self.string_field("operation", "add");
+                self.string_field("name", name);
+                self.string_field("value", value);
+                self.boolean_field("always", *always);
             }
             HttpResponseHeaderMutation::Remove { name } => {
                 self.string_field("operation", "remove");
@@ -974,6 +1375,14 @@ impl Renderer {
 
     fn http_retry_policy(&mut self, retry: &HttpRetryPolicy) {
         self.integer_field("max_retries", retry.max_retries);
+        self.string_field(
+            "target",
+            match retry.target {
+                HttpRetryTarget::SameServer => "same_server",
+                HttpRetryTarget::NextServer => "next_server",
+            },
+        );
+        self.integer_field("delay_ms", retry.delay_ms);
         self.string_list_field(
             "triggers",
             &retry
@@ -1003,6 +1412,7 @@ impl Renderer {
     fn http_literal_header(&mut self, header: &HttpLiteralHeader) {
         self.string_field("name", &header.name);
         self.string_field("value", &header.value);
+        self.boolean_field("always", header.always);
     }
 
     fn http_redirect_location(&mut self, location: &HttpRedirectLocation) {
@@ -1011,9 +1421,13 @@ impl Renderer {
                 self.string_field("kind", "literal");
                 self.string_field("value", value);
             }
-            HttpRedirectLocation::RequestTemplate { value } => {
+            HttpRedirectLocation::RequestTemplate {
+                value,
+                nginx_host_fallback,
+            } => {
                 self.string_field("kind", "request_template");
                 self.string_field("value", value);
+                self.optional_string_field("nginx_host_fallback", nginx_host_fallback.as_deref());
             }
         }
     }
@@ -1221,6 +1635,44 @@ impl Renderer {
             Some(value) => self.string_field(name, value),
             None => self.nil_field(name),
         }
+    }
+
+    fn optional_integer_field<T: Display>(&mut self, name: &str, value: Option<T>) {
+        match value {
+            Some(value) => self.integer_field(name, value),
+            None => self.nil_field(name),
+        }
+    }
+
+    fn optional_boolean_field(&mut self, name: &str, value: Option<bool>) {
+        match value {
+            Some(value) => self.boolean_field(name, value),
+            None => self.nil_field(name),
+        }
+    }
+
+    fn access_log_field(
+        &mut self,
+        field: &str,
+        policy: Option<&AccessLogPolicy>,
+        kind: &'static str,
+        name: &str,
+    ) -> Result<(), ConfigError> {
+        match policy {
+            Some(AccessLogPolicy::Disabled) => {
+                self.begin_table_field(field);
+                self.string_field("type", "disabled");
+                self.end_table();
+            }
+            Some(AccessLogPolicy::File { path }) => {
+                self.begin_table_field(field);
+                self.string_field("type", "file");
+                self.string_field("path", utf8_path(path, kind, name, "access_log.path")?);
+                self.end_table();
+            }
+            None => self.nil_field(field),
+        }
+        Ok(())
     }
 
     fn string_list_field<S>(&mut self, name: &str, values: &[S])

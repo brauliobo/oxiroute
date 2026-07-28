@@ -42,7 +42,7 @@ use std::os::unix::{net::SocketAddr as UnixSocketAddr, prelude::AsRawFd};
 #[cfg(windows)]
 use std::os::windows::io::AsRawSocket;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::net::TcpSocket;
 
@@ -99,6 +99,10 @@ pub trait Peer: Display + Clone {
     /// The connections to two peers are considered reusable to each other if their reuse hashes are
     /// the same
     fn reuse_hash(&self) -> u64;
+    /// Returns state retained only when the connector establishes a new physical connection.
+    fn connection_lifetime(&self) -> Option<Arc<dyn crate::protocols::ConnectionLifetime>> {
+        None
+    }
     /// Get the proxy setting to connect to the remote server
     fn get_proxy(&self) -> Option<&Proxy> {
         None
@@ -599,6 +603,7 @@ pub struct HttpPeer {
     /// cannot share connections with each other.
     pub group_key: u64,
     pub options: PeerOptions,
+    pub connection_lifetime: Option<Weak<dyn crate::protocols::ConnectionLifetime>>,
 }
 
 impl HttpPeer {
@@ -619,6 +624,7 @@ impl HttpPeer {
             client_cert_key: None,
             group_key: 0,
             options: PeerOptions::new(),
+            connection_lifetime: None,
         }
     }
 
@@ -661,6 +667,7 @@ impl HttpPeer {
             client_cert_key: None,
             group_key: 0,
             options: PeerOptions::new(),
+            connection_lifetime: None,
         }
     }
 
@@ -734,6 +741,10 @@ impl Peer for HttpPeer {
     // TODO: change connection pool to accept u64 instead of String
     fn reuse_hash(&self) -> u64 {
         self.peer_hash()
+    }
+
+    fn connection_lifetime(&self) -> Option<Arc<dyn crate::protocols::ConnectionLifetime>> {
+        self.connection_lifetime.as_ref().and_then(Weak::upgrade)
     }
 
     fn get_peer_options(&self) -> Option<&PeerOptions> {

@@ -9,7 +9,10 @@ use crate::{
         MAX_FILE_PATH_BYTES, MAX_RECORDING_SUFFIX_TEMPLATE_BYTES, MAX_SERVER_NAME_BYTES,
         MAX_UNIX_SOCKET_PATH_BYTES,
     },
-    model::{ConfigError, Listener, ListenerBind, UpstreamEndpoint, UpstreamPool},
+    model::{
+        ConfigError, DnsResolutionPolicy, Listener, ListenerBind, UpstreamEndpoint, UpstreamPool,
+        UpstreamServer,
+    },
 };
 
 pub(crate) fn validate_file_path(
@@ -89,7 +92,7 @@ pub(crate) fn normalize_listener_binds(listeners: &mut [Listener]) -> Result<(),
             ListenerBind::Socket { address } | ListenerBind::Udp { address } => {
                 normalize_socket_address(address);
             }
-            ListenerBind::Unix { path } => {
+            ListenerBind::Unix { path, .. } => {
                 normalize_unix_path("listener", &listener.name, "bind.path", path)?;
             }
         }
@@ -101,8 +104,28 @@ pub(crate) fn normalize_upstream_endpoints(
     upstream_pools: &mut [UpstreamPool],
 ) -> Result<(), ConfigError> {
     for pool in upstream_pools {
-        for endpoint in &mut pool.endpoints {
-            normalize_upstream_endpoint(&pool.name, endpoint)?;
+        if !pool.endpoints.is_empty() {
+            if !pool.servers.is_empty() {
+                return Err(ConfigError::InvalidUpstreamServer {
+                    pool: pool.name.clone(),
+                    server: "<collection>".into(),
+                    field: "servers",
+                    detail: "must not be combined with legacy endpoints",
+                });
+            }
+            pool.servers = std::mem::take(&mut pool.endpoints)
+                .into_iter()
+                .enumerate()
+                .map(|(index, endpoint)| UpstreamServer {
+                    name: format!("endpoint-{}", index + 1),
+                    endpoint,
+                    max_connections: None,
+                    dns_resolution: DnsResolutionPolicy::OnConnect,
+                })
+                .collect();
+        }
+        for server in &mut pool.servers {
+            normalize_upstream_endpoint(&pool.name, &mut server.endpoint)?;
         }
     }
     Ok(())
@@ -288,6 +311,9 @@ pub(crate) fn normalize_upstream_server_names(upstream_pools: &mut [UpstreamPool
 }
 
 pub(crate) fn is_valid_certificate_dns_name(dns_name: &str) -> bool {
+    if dns_name.parse::<IpAddr>().is_ok() {
+        return true;
+    }
     if !dns_name.is_ascii()
         || dns_name.is_empty()
         || dns_name.len() > MAX_SERVER_NAME_BYTES
@@ -302,7 +328,7 @@ pub(crate) fn is_valid_certificate_dns_name(dns_name: &str) -> bool {
         }
         exact_name
     } else {
-        if dns_name.contains('*') || dns_name.parse::<IpAddr>().is_ok() {
+        if dns_name.contains('*') {
             return false;
         }
         dns_name

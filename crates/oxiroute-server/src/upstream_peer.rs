@@ -1,7 +1,14 @@
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
 use http::Version;
-use oxiroute_config::HttpVersion;
+use oxiroute_config::{HttpVersion, UpstreamConnectionReuse};
 use pingora::{Error, ErrorType, protocols::Digest, upstreams::peer::HttpPeer};
 use tokio::time::Instant;
 
@@ -9,16 +16,44 @@ use crate::{EndpointLease, RoundRobinPool, RuntimeEndpoint, UpstreamTlsPlan};
 
 #[derive(Debug)]
 pub(crate) struct UpstreamPlan {
+    connect_timeout: Option<Duration>,
+    connection_reuse: UpstreamConnectionReuse,
     selector: Arc<RoundRobinPool>,
+    server_timeout: Option<Duration>,
     tls: Option<Arc<UpstreamTlsPlan>>,
 }
 
+static NEVER_REUSE_KEY: AtomicU64 = AtomicU64::new(1);
+
 impl UpstreamPlan {
+    #[cfg(test)]
     pub(crate) const fn new(
         selector: Arc<RoundRobinPool>,
         tls: Option<Arc<UpstreamTlsPlan>>,
     ) -> Self {
-        Self { selector, tls }
+        Self {
+            connect_timeout: None,
+            connection_reuse: UpstreamConnectionReuse::Safe,
+            selector,
+            server_timeout: None,
+            tls,
+        }
+    }
+
+    pub(crate) const fn with_policy(
+        selector: Arc<RoundRobinPool>,
+        tls: Option<Arc<UpstreamTlsPlan>>,
+        connect_timeout: Option<Duration>,
+        server_timeout: Option<Duration>,
+        connection_reuse: UpstreamConnectionReuse,
+    ) -> Self {
+        Self {
+            connect_timeout,
+            connection_reuse,
+            selector,
+            server_timeout,
+            tls,
+        }
     }
 
     pub(crate) fn selector(&self) -> &Arc<RoundRobinPool> {
@@ -29,37 +64,55 @@ impl UpstreamPlan {
         self.tls.as_deref()
     }
 
-    pub(crate) fn select_endpoint(
-        &self,
-        excluded: &[RuntimeEndpoint],
-    ) -> pingora::Result<SelectedEndpoint> {
+    pub(crate) fn select_endpoint(&self, excluded: &[String]) -> pingora::Result<SelectedEndpoint> {
         self.selector
-            .select_excluding(excluded)
+            .select_connection_target_excluding(excluded)
             .map(SelectedEndpoint::new)
             .ok_or_else(|| Error::new_up(ErrorType::HTTPStatus(503)))
     }
 
-    pub(crate) fn has_available_endpoint(&self) -> bool {
-        if self.selector.has_available() {
-            true
-        } else {
-            self.selector.note_unavailable_selection();
-            false
-        }
+    pub(crate) fn select_server_endpoint(&self, name: &str) -> pingora::Result<SelectedEndpoint> {
+        self.selector
+            .select_server_connection_target(name)
+            .map(SelectedEndpoint::new)
+            .ok_or_else(|| Error::new_up(ErrorType::HTTPStatus(503)))
     }
 
-    pub(crate) fn has_unattempted(&self, attempted: &[RuntimeEndpoint]) -> bool {
-        self.selector.has_unattempted(attempted)
+    pub(crate) fn has_unattempted(&self, attempted: &[String]) -> bool {
+        self.selector.has_unattempted_servers(attempted)
     }
 
+    pub(crate) const fn connection_reuse(&self) -> UpstreamConnectionReuse {
+        self.connection_reuse
+    }
+
+    pub(crate) fn connect_timeout(&self, fallback: Duration) -> Duration {
+        self.connect_timeout.unwrap_or(fallback)
+    }
+
+    pub(crate) fn server_timeout(&self, fallback: Duration) -> Duration {
+        self.server_timeout.unwrap_or(fallback)
+    }
+
+    #[cfg(test)]
     fn peer(
         &self,
         address: SocketAddr,
         connection_timeout: Duration,
         io_timeout: Duration,
     ) -> HttpPeer {
+        self.peer_with_timeouts(address, connection_timeout, io_timeout, io_timeout)
+    }
+
+    fn peer_with_timeouts(
+        &self,
+        address: SocketAddr,
+        connection_timeout: Duration,
+        read_timeout: Duration,
+        write_timeout: Duration,
+    ) -> HttpPeer {
         let mut peer = HttpPeer::new(address, false, String::new());
-        self.configure_peer(&mut peer, connection_timeout, io_timeout);
+        self.configure_peer(&mut peer, connection_timeout, read_timeout, write_timeout);
         peer
     }
 
@@ -67,7 +120,8 @@ impl UpstreamPlan {
         &self,
         endpoint: &RuntimeEndpoint,
         connection_timeout: Duration,
-        io_timeout: Duration,
+        read_timeout: Duration,
+        write_timeout: Duration,
     ) -> pingora::Result<HttpPeer> {
         let RuntimeEndpoint::Unix { path } = endpoint else {
             return Err(Error::new_in(ErrorType::InternalError));
@@ -78,7 +132,7 @@ impl UpstreamPlan {
             false,
             String::new(),
         )?;
-        self.configure_peer(&mut peer, connection_timeout, io_timeout);
+        self.configure_peer(&mut peer, connection_timeout, read_timeout, write_timeout);
         Ok(peer)
     }
 
@@ -86,15 +140,20 @@ impl UpstreamPlan {
         &self,
         peer: &mut HttpPeer,
         connection_timeout: Duration,
-        io_timeout: Duration,
+        read_timeout: Duration,
+        write_timeout: Duration,
     ) {
         if let Some(tls) = &self.tls {
             tls.apply_to_peer(peer);
         }
+        if self.connection_reuse == UpstreamConnectionReuse::Never {
+            peer.group_key = NEVER_REUSE_KEY.fetch_add(1, Ordering::Relaxed);
+            peer.options.idle_timeout = Some(Duration::ZERO);
+        }
         peer.options.connection_timeout = Some(connection_timeout);
         peer.options.total_connection_timeout = Some(connection_timeout);
-        peer.options.read_timeout = Some(io_timeout);
-        peer.options.write_timeout = Some(io_timeout);
+        peer.options.read_timeout = Some(read_timeout);
+        peer.options.write_timeout = Some(write_timeout);
     }
 }
 
@@ -102,17 +161,20 @@ pub(crate) struct SelectedEndpoint {
     addresses: Option<std::vec::IntoIter<SocketAddr>>,
     deadline: Option<Instant>,
     endpoint: RuntimeEndpoint,
-    _lease: EndpointLease,
+    lease: EndpointLease,
+    server_name: String,
     unix_pending: bool,
 }
 
 impl SelectedEndpoint {
     fn new(lease: EndpointLease) -> Self {
+        let server_name = lease.server_name().to_owned();
         Self {
             addresses: None,
             deadline: None,
             endpoint: lease.endpoint().clone(),
-            _lease: lease,
+            lease,
+            server_name,
             unix_pending: true,
         }
     }
@@ -121,44 +183,68 @@ impl SelectedEndpoint {
         &self.endpoint
     }
 
+    pub(crate) fn server_name(&self) -> &str {
+        &self.server_name
+    }
+
     #[cfg(test)]
     pub(crate) fn with_addresses(lease: EndpointLease, addresses: Vec<SocketAddr>) -> Self {
+        let server_name = lease.server_name().to_owned();
         Self {
             addresses: Some(addresses.into_iter()),
             deadline: None,
             endpoint: lease.endpoint().clone(),
-            _lease: lease,
+            lease,
+            server_name,
             unix_pending: true,
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn prepare_peer(
         &mut self,
         plan: &UpstreamPlan,
-        timeout: Duration,
+        connection_timeout: Duration,
+        io_timeout: Duration,
     ) -> pingora::Result<HttpPeer> {
-        let remaining = self.remaining_timeout(timeout)?;
+        self.prepare_peer_with_timeouts(plan, connection_timeout, io_timeout, io_timeout)
+            .await
+    }
+
+    pub(crate) async fn prepare_peer_with_timeouts(
+        &mut self,
+        plan: &UpstreamPlan,
+        connection_timeout: Duration,
+        read_timeout: Duration,
+        write_timeout: Duration,
+    ) -> pingora::Result<HttpPeer> {
+        let remaining = self.remaining_timeout(connection_timeout)?;
         if matches!(self.endpoint, RuntimeEndpoint::Unix { .. }) {
             if !self.unix_pending {
                 return Err(Error::new_in(ErrorType::InternalError));
             }
             self.unix_pending = false;
-            return plan.unix_peer(&self.endpoint, remaining, timeout);
+            let mut peer =
+                plan.unix_peer(&self.endpoint, remaining, read_timeout, write_timeout)?;
+            peer.connection_lifetime = Some(self.lease.connection_lifetime());
+            return Ok(peer);
         }
         if self.addresses.is_none() {
-            let addresses = tokio::time::timeout(remaining, self.endpoint.resolve_addresses())
+            let addresses = tokio::time::timeout(remaining, self.lease.resolve_addresses())
                 .await
-                .map_err(|_| endpoint_timeout(&self.endpoint, timeout))?
+                .map_err(|_| endpoint_timeout(&self.endpoint, connection_timeout))?
                 .map_err(|source| dns_failure(&self.endpoint, source))?;
             self.addresses = Some(addresses.into_iter());
         }
-        let remaining = self.remaining_timeout(timeout)?;
+        let remaining = self.remaining_timeout(connection_timeout)?;
         let address = self
             .addresses
             .as_mut()
             .and_then(Iterator::next)
             .ok_or_else(|| Error::new_in(ErrorType::InternalError))?;
-        Ok(plan.peer(address, remaining, timeout))
+        let mut peer = plan.peer_with_timeouts(address, remaining, read_timeout, write_timeout);
+        peer.connection_lifetime = Some(self.lease.connection_lifetime());
+        Ok(peer)
     }
 
     pub(crate) fn has_address_fallback(&self) -> bool {
@@ -298,7 +384,7 @@ mod tests {
         let timeout = Duration::from_secs(1);
 
         let first_peer = selected
-            .prepare_peer(&plan, timeout)
+            .prepare_peer(&plan, timeout, timeout)
             .await
             .expect("first peer");
         assert_eq!(first_peer.address().as_inet(), Some(&first));
@@ -306,7 +392,7 @@ mod tests {
 
         assert!(!selected.has_address_fallback());
         let error = selected
-            .prepare_peer(&plan, timeout)
+            .prepare_peer(&plan, timeout, timeout)
             .await
             .expect_err("expired deadline must stop fallback");
         assert_eq!(error.etype(), &ErrorType::ConnectTimedout);
@@ -374,6 +460,58 @@ mod tests {
     }
 
     #[test]
+    fn pool_connect_server_timeouts_and_never_reuse_are_independent() {
+        let address = SocketAddr::from(([127, 0, 0, 1], 8080));
+        let selector = Arc::new(RoundRobinPool::new([address]).expect("selector"));
+        let plan = UpstreamPlan::with_policy(
+            selector,
+            None,
+            Some(Duration::from_secs(2)),
+            Some(Duration::from_secs(11)),
+            UpstreamConnectionReuse::Never,
+        );
+
+        let first = plan.peer(
+            address,
+            plan.connect_timeout(Duration::from_secs(30)),
+            plan.server_timeout(Duration::from_secs(30)),
+        );
+        let second = plan.peer(
+            address,
+            plan.connect_timeout(Duration::from_secs(30)),
+            plan.server_timeout(Duration::from_secs(30)),
+        );
+        assert_eq!(
+            first.options.connection_timeout,
+            Some(Duration::from_secs(2))
+        );
+        assert_eq!(
+            first.options.total_connection_timeout,
+            Some(Duration::from_secs(2))
+        );
+        assert_eq!(first.options.read_timeout, Some(Duration::from_secs(11)));
+        assert_eq!(first.options.write_timeout, Some(Duration::from_secs(11)));
+        assert_eq!(first.options.idle_timeout, Some(Duration::ZERO));
+        assert_ne!(first.reuse_hash(), second.reuse_hash());
+
+        let always = UpstreamPlan::with_policy(
+            Arc::new(RoundRobinPool::new([address]).expect("always selector")),
+            None,
+            None,
+            None,
+            UpstreamConnectionReuse::Always,
+        );
+        assert_eq!(
+            always
+                .peer(address, Duration::from_secs(1), Duration::from_secs(1))
+                .reuse_hash(),
+            always
+                .peer(address, Duration::from_secs(1), Duration::from_secs(1))
+                .reuse_hash()
+        );
+    }
+
+    #[test]
     fn h2_only_policy_rejects_downgrade_before_upstream_write() {
         let tls = upstream_tls_plan(
             "origin.example.test",
@@ -426,6 +564,7 @@ mod tests {
     ) -> Arc<UpstreamTlsPlan> {
         let pool = UpstreamPool {
             name: "origin".into(),
+            servers: Vec::new(),
             endpoints: vec![UpstreamEndpoint::Socket {
                 address: SocketAddr::from(([127, 0, 0, 1], 443)),
             }],
@@ -436,6 +575,10 @@ mod tests {
                 ca_certificate_path: None,
             }),
             http_versions: HttpVersionPolicy { min, max },
+            queue_timeout_ms: None,
+            connect_timeout_ms: None,
+            server_timeout_ms: None,
+            connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
         };
         Arc::new(
             crate::tls::prepare_upstream_tls(&pool)

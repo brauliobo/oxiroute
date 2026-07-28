@@ -127,6 +127,7 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
         select#mobile-object-navigation.mobile-object-nav(v-model="selectedKey" aria-label="Current configuration object")
           option(value="general") General
           option(value="management") Management
+          option(value="stats") Statistics
           option(v-for="option in objectOptions" :key="option.key" :value="option.key") {{ option.group }} / {{ option.label }}
 
         .mobile-add-controls(aria-label="Add configuration object")
@@ -146,6 +147,9 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
           button.object-link(type="button" :aria-current="selectedKey === 'management' ? 'page' : undefined" @click="selectedKey = 'management'")
             span Management
             small {{ draft.management ? 'Configured' : 'Disabled' }}
+          button.object-link(type="button" :aria-current="selectedKey === 'stats' ? 'page' : undefined" @click="selectedKey = 'stats'")
+            span Statistics
+            small {{ draft.stats ? `${draft.stats.binds.length} binds` : 'Disabled' }}
 
           template(v-for="group in navigationGroups" :key="group.collection")
             .nav-group-heading(:data-field="group.collection")
@@ -193,6 +197,25 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
                 span Prebuilt UI directory
                 input(type="text" :value="draft.management.ui_dir ?? ''" placeholder="/opt/oxiroute/ui/dist" @input="setManagementUiDir")
                 small Optional; empty writes null.
+
+          template(v-else-if="selectedKey === 'stats'")
+            header.form-heading
+              div
+                p.eyebrow Optional object
+                h3 Statistics
+              span.object-path Config.stats
+            label.enable-row(data-field="stats")
+              input(type="checkbox" :checked="draft.stats != null" @change="toggleStats")
+              span Enable HAProxy-compatible stats and Prometheus endpoints
+            .field-grid(v-if="draft.stats")
+              label.field(data-field="stats.binds")
+                span Bind addresses
+                input(type="text" :value="draft.stats.binds.join(', ')" placeholder="127.0.0.1:8404, [::1]:8404" @input="setStatsBinds")
+                small Comma-separated IPv4/IPv6 sockets.
+              label.field(data-field="stats.admin_token_file")
+                span Admin token file
+                input(type="text" :value="draft.stats.admin_token_file ?? ''" placeholder="/etc/oxiroute/stats-admin.token" @input="setStatsAdminTokenFile")
+                small Optional; without it, administration remains disabled.
 
           CertificateEditor(
             v-else-if="selectedCertificate"
@@ -563,6 +586,25 @@ function toggleManagement(event: Event): void {
 
 function setManagementUiDir(event: Event): void {
   if (draft.value?.management) draft.value.management.ui_dir = nullableInput(event)
+}
+
+function toggleStats(event: Event): void {
+  if (!draft.value) return
+  draft.value.stats = (event.target as HTMLInputElement).checked
+    ? { binds: ['127.0.0.1:8404'], admin_token_file: null }
+    : null
+}
+
+function setStatsBinds(event: Event): void {
+  if (!draft.value?.stats) return
+  draft.value.stats.binds = (event.target as HTMLInputElement).value
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+}
+
+function setStatsAdminTokenFile(event: Event): void {
+  if (draft.value?.stats) draft.value.stats.admin_token_file = nullableInput(event)
 }
 
 function closeReview(): void {

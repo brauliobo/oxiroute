@@ -1,6 +1,6 @@
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
-use oxiroute_config::{Config, ListenerBind, validate_config};
+use oxiroute_config::{Config, ListenerBind, UpstreamTls, validate_config};
 
 use crate::{
     CanonicalDraft, CanonicalProvenance, Diagnostic, DiagnosticCode, DiagnosticStage,
@@ -29,6 +29,10 @@ pub struct ImportReport {
     pub draft: CanonicalDraft,
     pub provenance: Vec<CanonicalProvenance<crate::nginx::DirectiveOrigin>>,
     pub config: Option<Config>,
+    pub(crate) used_upstream_tls_overlays: std::collections::HashSet<Vec<u8>>,
+    pub(crate) used_bearer_token_overlays: std::collections::HashSet<Vec<u8>>,
+    pub(crate) used_certificate_overlays: std::collections::HashSet<OccurrenceId>,
+    pub(crate) used_htpasswd_overlays: std::collections::HashSet<OccurrenceId>,
 }
 
 impl ImportReport {
@@ -46,12 +50,40 @@ pub fn import_http_fragment(root: &Path, root_prefix: &Path) -> ImportReport {
     lower_http(load(root, root_prefix))
 }
 
-fn lower_http(loaded: Report<SourceGraph>) -> ImportReport {
+pub(super) fn lower_http(loaded: Report<SourceGraph>) -> ImportReport {
+    lower_http_with_mode(loaded, false, HashMap::new(), HashMap::new())
+}
+
+pub(crate) fn lower_http_root_with_overlays(
+    loaded: Report<SourceGraph>,
+    upstream_tls_overlays: HashMap<Vec<u8>, UpstreamTls>,
+    bearer_token_overlays: HashMap<Vec<u8>, std::path::PathBuf>,
+) -> ImportReport {
+    lower_http_with_mode(loaded, true, upstream_tls_overlays, bearer_token_overlays)
+}
+
+fn lower_http_with_mode(
+    loaded: Report<SourceGraph>,
+    complete_root: bool,
+    upstream_tls_overlays: HashMap<Vec<u8>, UpstreamTls>,
+    bearer_token_overlays: HashMap<Vec<u8>, std::path::PathBuf>,
+) -> ImportReport {
     let (graph, mut diagnostics) = loaded.into_parts();
-    let (resolution, resolve_diagnostics) =
-        crate::nginx::semantic::resolve_http_graph(&graph).into_parts();
+    let resolved = if complete_root {
+        crate::nginx::semantic::resolve_http_root_graph(&graph)
+    } else {
+        crate::nginx::semantic::resolve_http_graph(&graph)
+    };
+    let (resolution, resolve_diagnostics) = resolved.into_parts();
     diagnostics.extend(resolve_diagnostics);
-    Lowerer::new(graph, resolution, diagnostics).run()
+    Lowerer::new(
+        graph,
+        resolution,
+        diagnostics,
+        upstream_tls_overlays,
+        bearer_token_overlays,
+    )
+    .run()
 }
 
 impl Lowerer {
@@ -67,6 +99,10 @@ impl Lowerer {
 
         let draft = self.draft.clone();
         let config = self.finalize(&draft);
+        let used_upstream_tls_overlays = self.used_upstream_tls_overlays.into_inner();
+        let used_bearer_token_overlays = self.used_bearer_token_overlays.into_inner();
+        let used_certificate_overlays = self.used_certificate_overlays.into_inner();
+        let used_htpasswd_overlays = self.used_htpasswd_overlays.into_inner();
         let ((), diagnostics) = Report::new((), self.diagnostics).into_parts();
         ImportReport {
             source_graph: self.graph,
@@ -76,6 +112,10 @@ impl Lowerer {
             draft,
             provenance: self.provenance,
             config,
+            used_upstream_tls_overlays,
+            used_bearer_token_overlays,
+            used_certificate_overlays,
+            used_htpasswd_overlays,
         }
     }
 
@@ -143,12 +183,22 @@ impl Lowerer {
     )]
     fn commit_candidate(&mut self, candidate: super::BindCandidate) {
         for certificate in candidate.certificates {
-            if self
+            if let Some(index) = self
                 .draft
                 .certificates
                 .iter()
-                .any(|existing| existing.name == certificate.name)
+                .position(|existing| existing.name == certificate.name)
             {
+                let existing = &mut self.draft.certificates[index];
+                for dns_name in certificate.dns_names {
+                    if !existing.dns_names.contains(&dns_name) {
+                        existing.dns_names.push(dns_name);
+                    }
+                }
+                self.record(
+                    format!("/certificates/{index}/dns_names"),
+                    candidate.origins.clone(),
+                );
                 continue;
             }
             let index = self.draft.certificates.len();
@@ -286,13 +336,16 @@ impl Lowerer {
         for suffix in ["", "/name", "/algorithm", "/http_versions"] {
             self.record(format!("{path}{suffix}"), vec![origin.clone()]);
         }
-        self.record(format!("{path}/endpoints"), endpoint_origins.clone());
-        let endpoints = self.draft.upstream_pools[index].endpoints.clone();
-        for (endpoint_index, (endpoint, origin)) in
-            endpoints.into_iter().zip(endpoint_origins).enumerate()
+        self.record(format!("{path}/servers"), endpoint_origins.clone());
+        let servers = self.draft.upstream_pools[index].servers.clone();
+        for (endpoint_index, (server, origin)) in
+            servers.into_iter().zip(endpoint_origins).enumerate()
         {
-            let endpoint_path = format!("{path}/endpoints/{endpoint_index}");
-            let suffixes: &[&str] = match endpoint {
+            let server_path = format!("{path}/servers/{endpoint_index}");
+            self.record(server_path.clone(), vec![origin.clone()]);
+            self.record(format!("{server_path}/name"), vec![origin.clone()]);
+            let endpoint_path = format!("{server_path}/endpoint");
+            let suffixes: &[&str] = match server.endpoint {
                 oxiroute_config::UpstreamEndpoint::Socket { .. } => &["", "/type", "/address"],
                 oxiroute_config::UpstreamEndpoint::Dns { .. } => &["", "/type", "/host", "/port"],
                 oxiroute_config::UpstreamEndpoint::Unix { .. } => &["", "/type", "/path"],
@@ -351,6 +404,10 @@ impl Lowerer {
         let policy_path = format!("{route_path}/action/policy");
         match &policy.upstream_host {
             oxiroute_config::HttpUpstreamHost::PreserveIncoming => {}
+            oxiroute_config::HttpUpstreamHost::NginxHost { .. } => self.record(
+                format!("{policy_path}/upstream_host/fallback"),
+                origins.to_vec(),
+            ),
             oxiroute_config::HttpUpstreamHost::Endpoint { unix_fallback } => {
                 if unix_fallback.is_some() {
                     self.record(
@@ -388,8 +445,10 @@ impl Lowerer {
             if matches!(
                 mutation,
                 oxiroute_config::HttpResponseHeaderMutation::Set { .. }
+                    | oxiroute_config::HttpResponseHeaderMutation::Add { .. }
             ) {
                 self.record(format!("{path}/value"), origins.to_vec());
+                self.record(format!("{path}/always"), origins.to_vec());
             }
         }
         for index in 0..policy.response_cookie_path_rewrites.len() {

@@ -7,8 +7,8 @@ use std::{
 use crate::canonical::{dns_name, ip_address, unix_socket_path};
 use crate::{
     Diagnostic, DiagnosticCode, DiagnosticStage, E_DUPLICATE_IDENTITY, E_INCLUDE_CYCLE,
-    E_INVALID_VALUE, E_SEMANTICS_NOT_REPRESENTABLE, E_SOURCE_CHANGED, E_SOURCE_IO, E_SOURCE_LIMIT,
-    E_UNRESOLVED_REFERENCE, E_UNSUPPORTED_FEATURE, Report, Severity, Span,
+    E_INVALID_VALUE, E_SOURCE_CHANGED, E_SOURCE_IO, E_SOURCE_LIMIT, E_UNRESOLVED_REFERENCE,
+    E_UNSUPPORTED_FEATURE, Report, Severity, Span,
 };
 
 use super::{
@@ -205,6 +205,7 @@ pub struct EffectiveProxyPass {
 pub enum ProxyPassScheme {
     Http,
     Https,
+    Downstream,
     Unsupported(Vec<u8>),
 }
 
@@ -227,21 +228,27 @@ pub fn resolve_http_fragment(loaded: Report<SourceGraph>) -> Report<HttpResoluti
 
 #[must_use]
 pub(super) fn resolve_http_graph(graph: &SourceGraph) -> Report<HttpResolution> {
-    Resolver::new(graph).run()
+    Resolver::new(graph, false).run()
+}
+
+pub(super) fn resolve_http_root_graph(graph: &SourceGraph) -> Report<HttpResolution> {
+    Resolver::new(graph, true).run()
 }
 
 struct Resolver<'a> {
     graph: &'a SourceGraph,
     dispositions: Vec<Option<OccurrenceDisposition>>,
     diagnostics: Vec<Diagnostic>,
+    complete_root: bool,
 }
 
 impl<'a> Resolver<'a> {
-    fn new(graph: &'a SourceGraph) -> Self {
+    fn new(graph: &'a SourceGraph, complete_root: bool) -> Self {
         Self {
             graph,
             dispositions: vec![None; graph.expanded_occurrences.len()],
             diagnostics: Vec::new(),
+            complete_root,
         }
     }
 
@@ -262,6 +269,8 @@ impl<'a> Resolver<'a> {
                     first_http = Some(directive.occurrence);
                 }
                 http_blocks.push(self.resolve_http_block(directive));
+            } else if self.complete_root {
+                self.structural_subtree(directive);
             } else {
                 let message = if directive.directive.name.value == b"events" {
                     "complete nginx configuration is not an HTTP fragment; expected only an http block"
@@ -344,6 +353,7 @@ impl<'a> Resolver<'a> {
                     declaration_order.push(HttpDeclaration::Server(child.occurrence));
                     servers.push(self.resolve_server(child, &upstream_by_name));
                 }
+                b"types" => self.resolve_types(child),
                 name if is_http_policy(name) => {
                     self.resolve_policy(child);
                     self.reject_duplicate_scalar(child, &mut scalar_policies);
@@ -541,6 +551,12 @@ impl<'a> Resolver<'a> {
                         }
                     }
                     locations.push(location);
+                }
+                b"types" => self.resolve_types(child),
+                b"if" => {
+                    if self.resolve_supported_if(child) {
+                        locations.push(Self::synthetic_if_location(child));
+                    }
                 }
                 name if is_server_policy(name) => {
                     self.resolve_policy(child);
@@ -776,6 +792,10 @@ impl<'a> Resolver<'a> {
                     }
                     nested_locations.push(location);
                 }
+                b"types" => self.resolve_types(child),
+                b"if" => {
+                    self.resolve_supported_if(child);
+                }
                 name if is_location_policy(name) => {
                     self.resolve_policy(child);
                     self.reject_duplicate_scalar(child, &mut scalar_policies);
@@ -849,13 +869,18 @@ impl<'a> Resolver<'a> {
         let (scheme, authority, replacement_uri) =
             parsed.unwrap_or_else(|| (ProxyPassScheme::Unsupported(Vec::new()), Vec::new(), None));
         let variable = has_variable(&value.value);
+        let bounded_downstream_scheme = scheme == ProxyPassScheme::Downstream
+            && !has_variable(&authority)
+            && replacement_uri
+                .as_deref()
+                .is_none_or(|uri| !has_variable(uri));
         let default_port = if scheme == ProxyPassScheme::Https {
             443
         } else {
             80
         };
         let direct_endpoint = parse_static_endpoint(&authority, default_port);
-        let upstream = if variable {
+        let upstream = if variable && !bounded_downstream_scheme {
             UpstreamReference::Variable
         } else if let Some(upstream) = upstreams.get(&ascii_lowercase(&authority)).copied() {
             UpstreamReference::Resolved(upstream)
@@ -871,7 +896,7 @@ impl<'a> Resolver<'a> {
                     E_INVALID_VALUE,
                     "proxy_pass requires one URL and a semicolon",
                 ))
-            } else if variable {
+            } else if variable && !bounded_downstream_scheme {
                 Some((
                     E_UNSUPPORTED_FEATURE,
                     "variables in proxy_pass are unsupported",
@@ -880,11 +905,6 @@ impl<'a> Resolver<'a> {
                 Some((
                     E_INVALID_VALUE,
                     "proxy_pass requires a static http or https URL",
-                ))
-            } else if scheme == ProxyPassScheme::Https {
-                Some((
-                    E_SEMANTICS_NOT_REPRESENTABLE,
-                    "nginx HTTPS upstream defaults do not safely verify the origin",
                 ))
             } else if matches!(scheme, ProxyPassScheme::Unsupported(_)) {
                 Some((
@@ -938,6 +958,93 @@ impl<'a> Resolver<'a> {
         self.finish_occurrence(directive.occurrence, outcome);
     }
 
+    fn resolve_types(&mut self, directive: &ExpandedDirective) {
+        if !directive.directive.arguments.is_empty() || directive.children.is_none() {
+            self.block(
+                directive.occurrence,
+                E_INVALID_VALUE,
+                "types must be an argument-free block",
+            );
+            for child in directive.children.as_deref().unwrap_or_default() {
+                self.structural_subtree(child);
+            }
+            return;
+        }
+        self.resolved(directive.occurrence);
+        for mapping in directive.children.as_deref().unwrap_or_default() {
+            let valid = mapping.directive.children.is_none()
+                && !has_variable(&mapping.directive.name.value)
+                && mapping
+                    .directive
+                    .arguments
+                    .iter()
+                    .all(|extension| !has_variable(&extension.value));
+            if valid {
+                self.resolved(mapping.occurrence);
+            } else {
+                self.block(
+                    mapping.occurrence,
+                    E_INVALID_VALUE,
+                    "nginx MIME mapping requires a static content type and one or more extensions",
+                );
+            }
+        }
+    }
+
+    fn resolve_supported_if(&mut self, directive: &ExpandedDirective) -> bool {
+        let condition = directive
+            .directive
+            .arguments
+            .iter()
+            .flat_map(|argument| argument.value.iter().copied())
+            .collect::<Vec<_>>();
+        let certbot_host_redirect = condition
+            .windows(b"$host".len())
+            .any(|window| window == b"$host")
+            && condition.contains(&b'=');
+        let redacted_authorization = condition
+            .windows(b"$http_authorization".len())
+            .any(|window| window == b"$http_authorization")
+            && condition
+                .windows(b"<redacted>".len())
+                .any(|window| window == b"<redacted>");
+        let children = directive.children.as_deref().unwrap_or_default();
+        let supported = directive.children.is_some()
+            && !directive.directive.arguments.is_empty()
+            && (certbot_host_redirect || redacted_authorization)
+            && children
+                .iter()
+                .all(|child| child.directive.name.value == b"return");
+        if supported {
+            self.resolved(directive.occurrence);
+            for child in children {
+                self.resolve_policy(child);
+            }
+        } else {
+            self.block_subtree(
+                directive,
+                "nginx if condition is outside the bounded host-redirect or redacted-authorization subset",
+            );
+        }
+        supported && certbot_host_redirect
+    }
+
+    fn synthetic_if_location(directive: &ExpandedDirective) -> EffectiveLocation {
+        EffectiveLocation {
+            origin: Self::origin(directive),
+            modifier: None,
+            path: Some(NginxValue {
+                value: b"/".to_vec(),
+                raw: b"/".to_vec(),
+                span: directive.directive.span,
+            }),
+            kind: LocationKind::Prefix,
+            proxy_pass: None,
+            proxy_pass_inherited: false,
+            children: Vec::new(),
+        }
+    }
+
     fn reject_duplicate_scalar(
         &mut self,
         directive: &ExpandedDirective,
@@ -958,6 +1065,10 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "socket identity, overlap, protocol, default, and name resolution are one pass"
+    )]
     fn resolve_binds(&mut self, servers: &[EffectiveServer]) -> Vec<EffectiveBind> {
         let mut binds: Vec<EffectiveBind> = Vec::new();
         let mut endpoint_origins = Vec::new();
@@ -970,10 +1081,21 @@ impl<'a> Resolver<'a> {
                 };
                 if !server_endpoints.insert(endpoint.clone()) {
                     if !listen.implicit {
-                        self.block(
+                        let first = server
+                            .listens
+                            .iter()
+                            .find(|candidate| {
+                                candidate.origin.occurrence != listen.origin.occurrence
+                                    && candidate.endpoint.as_ref() == Some(endpoint)
+                            })
+                            .map_or(server.origin.occurrence, |candidate| {
+                                candidate.origin.occurrence
+                            });
+                        self.warn_related(
                             listen.origin.occurrence,
                             E_DUPLICATE_IDENTITY,
-                            "duplicate listen identity in virtual server",
+                            "paired nginx wildcard listen is represented by one canonical listener",
+                            first,
                         );
                     }
                     continue;
@@ -988,10 +1110,10 @@ impl<'a> Resolver<'a> {
                 let protocols = listen_protocols(listen);
                 if let Some((first_protocols, first)) = endpoint_protocols.get(endpoint).copied() {
                     if first_protocols != protocols {
-                        self.block_related(
+                        self.warn_related(
                             listen.origin.occurrence,
                             E_INVALID_VALUE,
-                            "conflicting listen protocol options on one nginx socket",
+                            "nginx listen protocol options are reconciled across one effective socket",
                             first,
                         );
                     }
@@ -1070,10 +1192,10 @@ impl<'a> Resolver<'a> {
                 if server.server_names.is_empty() {
                     let identity = (ServerNameKind::Exact, Vec::new());
                     if let Some((_, first)) = claimed_names.get(&identity).copied() {
-                        self.block_related(
+                        self.warn_related(
                             *server_id,
                             E_DUPLICATE_IDENTITY,
-                            "duplicate empty server name on nginx listen identity",
+                            "duplicate empty server name is ignored; nginx keeps the first-loaded virtual server",
                             first,
                         );
                     } else {
@@ -1085,25 +1207,38 @@ impl<'a> Resolver<'a> {
                     if !is_supported_server_name(name.kind) {
                         continue;
                     }
-                    let identity = (name.kind, name.normalized.clone());
-                    if let Some((first_server, first_origin)) =
-                        claimed_names.get(&identity).copied()
-                    {
-                        if first_server != *server_id {
-                            self.block_related(
-                                name.origin.occurrence,
-                                E_DUPLICATE_IDENTITY,
-                                "duplicate virtual server name on nginx listen identity",
-                                first_origin,
-                            );
+                    let mut accepted = Vec::new();
+                    let mut conflict = None;
+                    for claim in server_name_claims(name) {
+                        let identity = (claim.kind, claim.normalized.clone());
+                        if let Some((first_server, first_origin)) =
+                            claimed_names.get(&identity).copied()
+                        {
+                            if first_server != *server_id && conflict.is_none() {
+                                conflict = Some(first_origin);
+                            }
+                        } else {
+                            claimed_names.insert(identity, (*server_id, name.origin.occurrence));
+                            accepted.push(claim);
                         }
-                    } else {
-                        claimed_names.insert(identity, (*server_id, name.origin.occurrence));
                     }
-                    bind.names.push(BoundServerName {
-                        server: *server_id,
-                        name: name.clone(),
-                    });
+                    if let Some(first_origin) = conflict {
+                        self.warn_related(
+                            name.origin.occurrence,
+                            E_DUPLICATE_IDENTITY,
+                            "duplicate virtual server name claim is ignored; nginx keeps the first-loaded virtual server",
+                            first_origin,
+                        );
+                    }
+                    if name.kind == ServerNameKind::LeadingWildcardAndExact && accepted.len() == 2 {
+                        accepted.clear();
+                        accepted.push(name.clone());
+                    }
+                    bind.names
+                        .extend(accepted.into_iter().map(|name| BoundServerName {
+                            server: *server_id,
+                            name,
+                        }));
                 }
             }
         }
@@ -1125,6 +1260,13 @@ impl<'a> Resolver<'a> {
         self.block(directive.occurrence, E_UNSUPPORTED_FEATURE, message);
         for child in directive.children.as_deref().unwrap_or_default() {
             self.block_subtree(child, message);
+        }
+    }
+
+    fn structural_subtree(&mut self, directive: &ExpandedDirective) {
+        self.dispositions[directive.occurrence.get()] = Some(OccurrenceDisposition::Structural);
+        for child in directive.children.as_deref().unwrap_or_default() {
+            self.structural_subtree(child);
         }
     }
 
@@ -1230,6 +1372,29 @@ impl<'a> Resolver<'a> {
         );
     }
 
+    fn warn_related(
+        &mut self,
+        occurrence: OccurrenceId,
+        code: DiagnosticCode,
+        message: &'static str,
+        related: OccurrenceId,
+    ) {
+        let expanded = self.occurrence(occurrence);
+        let first = self.occurrence(related);
+        self.diagnostics.push(
+            Diagnostic::new(code, Severity::Warning, DiagnosticStage::Resolve, message)
+                .with_primary_span(expanded.directive.span)
+                .with_related_span(first.directive.span, "first-loaded declaration is here")
+                .with_include_stack(
+                    expanded
+                        .provenance
+                        .include_stack
+                        .iter()
+                        .map(|frame| frame.directive_span),
+                ),
+        );
+    }
+
     fn occurrence(&self, id: OccurrenceId) -> &ExpandedOccurrence {
         let occurrence = &self.graph.expanded_occurrences[id.get()];
         debug_assert_eq!(occurrence.id, id);
@@ -1297,7 +1462,11 @@ fn parse_listen_endpoint(value: &[u8]) -> Option<ListenEndpoint> {
             _ => return None,
         };
         return Some(ListenEndpoint::Socket {
-            address: ascii_lowercase(&value[..=closing]),
+            address: if &value[..=closing] == b"[::]" {
+                b"*".to_vec()
+            } else {
+                ascii_lowercase(&value[..=closing])
+            },
             port,
         });
     }
@@ -1452,6 +1621,23 @@ fn server_name_kind(value: &[u8]) -> ServerNameKind {
     }
 }
 
+fn server_name_claims(name: &EffectiveServerName) -> Vec<EffectiveServerName> {
+    if name.kind != ServerNameKind::LeadingWildcardAndExact {
+        return vec![name.clone()];
+    }
+    let suffix = name
+        .normalized
+        .strip_prefix(b".")
+        .expect("leading-dot name has a dot prefix");
+    let mut exact = name.clone();
+    exact.kind = ServerNameKind::Exact;
+    exact.normalized = suffix.to_vec();
+    let mut wildcard = name.clone();
+    wildcard.kind = ServerNameKind::LeadingWildcard;
+    wildcard.normalized = [b"*.".as_slice(), suffix].concat();
+    vec![exact, wildcard]
+}
+
 const fn is_supported_server_name(kind: ServerNameKind) -> bool {
     matches!(
         kind,
@@ -1470,7 +1656,29 @@ fn is_http_policy(name: &[u8]) -> bool {
     is_location_policy(name)
         || matches!(
             name,
-            b"ssl_certificate" | b"ssl_certificate_key" | b"ssl_protocols" | b"http2"
+            b"ssl_certificate"
+                | b"ssl_certificate_key"
+                | b"ssl_protocols"
+                | b"ssl_ciphers"
+                | b"ssl_dhparam"
+                | b"ssl_prefer_server_ciphers"
+                | b"ssl_session_cache"
+                | b"ssl_session_tickets"
+                | b"ssl_session_timeout"
+                | b"http2"
+                | b"access_log"
+                | b"error_log"
+                | b"log_format"
+                | b"gzip"
+                | b"gzip_comp_level"
+                | b"gzip_types"
+                | b"keepalive_timeout"
+                | b"large_client_header_buffers"
+                | b"limit_conn_zone"
+                | b"limit_req_zone"
+                | b"send_timeout"
+                | b"sendfile"
+                | b"types_hash_max_size"
         )
 }
 
@@ -1500,6 +1708,17 @@ fn is_location_policy(name: &[u8]) -> bool {
             | b"return"
             | b"auth_basic"
             | b"auth_basic_user_file"
+            | b"add_header"
+            | b"alias"
+            | b"autoindex"
+            | b"autoindex_exact_size"
+            | b"autoindex_localtime"
+            | b"default_type"
+            | b"error_page"
+            | b"etag"
+            | b"expires"
+            | b"proxy_cache"
+            | b"try_files"
     )
 }
 
@@ -1526,15 +1745,37 @@ fn is_scalar_policy(name: &[u8]) -> bool {
 
 fn policy_argument_count_valid(name: &[u8], count: usize) -> bool {
     match name {
-        b"ssl_protocols" | b"index" | b"proxy_next_upstream" | b"proxy_ignore_headers" => count > 0,
-        b"proxy_set_header" | b"proxy_cookie_path" => count == 2,
+        b"ssl_protocols"
+        | b"index"
+        | b"proxy_next_upstream"
+        | b"proxy_ignore_headers"
+        | b"gzip_types"
+        | b"log_format"
+        | b"try_files"
+        | b"error_page" => count > 0,
+        b"proxy_set_header"
+        | b"proxy_cookie_path"
+        | b"large_client_header_buffers"
+        | b"limit_conn_zone"
+        | b"limit_req_zone" => count >= 2,
+        b"add_header" => matches!(count, 2 | 3),
+        b"access_log" | b"error_log" | b"keepalive_timeout" => matches!(count, 1 | 2),
         b"return" => matches!(count, 1 | 2),
         _ => count == 1,
     }
 }
 
 fn policy_allows_variables(name: &[u8]) -> bool {
-    matches!(name, b"proxy_set_header" | b"proxy_cookie_path" | b"return")
+    matches!(
+        name,
+        b"proxy_set_header"
+            | b"proxy_cookie_path"
+            | b"return"
+            | b"limit_conn_zone"
+            | b"limit_req_zone"
+            | b"log_format"
+            | b"try_files"
+    )
 }
 
 fn parse_proxy_pass(value: &[u8]) -> Option<(ProxyPassScheme, Vec<u8>, Option<Vec<u8>>)> {
@@ -1542,6 +1783,8 @@ fn parse_proxy_pass(value: &[u8]) -> Option<(ProxyPassScheme, Vec<u8>, Option<Ve
         (ProxyPassScheme::Http, rest)
     } else if let Some(rest) = value.strip_prefix(b"https://") {
         (ProxyPassScheme::Https, rest)
+    } else if let Some(rest) = value.strip_prefix(b"$scheme://") {
+        (ProxyPassScheme::Downstream, rest)
     } else {
         let separator = value.windows(3).position(|window| window == b"://")?;
         (

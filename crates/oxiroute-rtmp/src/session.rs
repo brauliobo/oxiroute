@@ -26,6 +26,7 @@ use runtime::SessionRole;
 use status::{CONNECT_REJECTION_CODE, Rejection};
 
 pub const MAX_INBOUND_CHUNK_SIZE: u32 = 1024 * 1024;
+pub const MAX_INBOUND_MESSAGE_SIZE: usize = 8 * 1024 * 1024;
 
 /// Incremental server-side RTMP connection with one live publisher or playback role.
 pub struct RtmpSession {
@@ -106,7 +107,11 @@ impl RtmpSession {
                 remaining_bytes,
             } => {
                 self.handshake = None;
-                let (protocol, startup) = ServerSession::new(ServerSessionConfig::new())?;
+                let mut config = ServerSessionConfig::new();
+                config.chunk_size = self.runtime.outbound_chunk_size();
+                config.max_inbound_chunk_size = MAX_INBOUND_CHUNK_SIZE as usize;
+                config.max_inbound_message_size = MAX_INBOUND_MESSAGE_SIZE;
+                let (protocol, startup) = ServerSession::new(config)?;
                 self.protocol = Some(protocol);
 
                 let mut outbound = non_empty(response_bytes);

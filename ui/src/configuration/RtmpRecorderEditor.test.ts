@@ -12,6 +12,9 @@ function recorder(): RtmpRecorderConfig {
     root_directory: '/var/lib/oxiroute/recordings',
     suffix_template: '.flv',
     append_unix_seconds: false,
+    timezone: 'utc',
+    time_basis: 'segment_start',
+    segment_naming: 'safe_unique',
     rotation_interval_ms: null,
     max_queue_messages: 256,
     max_queue_bytes: 8_388_608,
@@ -33,6 +36,7 @@ describe('RTMP recorder configuration editors', () => {
     await field('rtmp_services[].applications[].recorders[].root_directory').get('input').setValue('/srv/recordings')
     await field('rtmp_services[].applications[].recorders[].suffix_template').get('input').setValue('-%Y%m%d.flv')
     await field('rtmp_services[].applications[].recorders[].append_unix_seconds').get('input').setValue(true)
+    await field('rtmp_services[].applications[].recorders[].timezone').get('input').setValue('America/Recife')
     const rotation = field('rtmp_services[].applications[].recorders[].rotation_interval_ms')
     await rotation.get('select').setValue('bounded')
     await rotation.get('input').setValue(60_000)
@@ -49,6 +53,9 @@ describe('RTMP recorder configuration editors', () => {
       root_directory: '/srv/recordings',
       suffix_template: '-%Y%m%d.flv',
       append_unix_seconds: true,
+      timezone: 'America/Recife',
+      time_basis: 'segment_start',
+      segment_naming: 'safe_unique',
       rotation_interval_ms: 60_000,
       max_queue_messages: 512,
       max_queue_bytes: 16_777_216,
@@ -64,7 +71,9 @@ describe('RTMP recorder configuration editors', () => {
   it('adds default recorders, removes exact rows, and enforces the application limit', async () => {
     const service: RtmpServiceConfig = {
       name: 'live',
-      applications: [{ name: 'broadcast', live: true, idle_streams: true, recorders: [] }],
+      outbound_chunk_size: 4_096,
+      access_log: null,
+      applications: [{ name: 'broadcast', live: true, idle_streams: true, push_targets: [], fanout: { max_subscribers: 1_024, max_queue_messages_per_subscriber: 256, max_queue_bytes_per_subscriber: 8_388_608 }, recorders: [] }],
     }
     const wrapper = mount(RtmpServiceEditor, { props: { service } })
     const add = wrapper.get('.recorder-list .add-row')
@@ -82,7 +91,9 @@ describe('RTMP recorder configuration editors', () => {
       props: {
         service: {
           name: 'playback',
-          applications: [{ name: 'playback', live: false, idle_streams: true, recorders: [] }],
+          outbound_chunk_size: 4_096,
+          access_log: null,
+          applications: [{ name: 'playback', live: false, idle_streams: true, push_targets: [], fanout: { max_subscribers: 1_024, max_queue_messages_per_subscriber: 256, max_queue_bytes_per_subscriber: 8_388_608 }, recorders: [] }],
         },
       },
     })

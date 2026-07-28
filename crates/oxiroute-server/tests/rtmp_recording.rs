@@ -182,13 +182,18 @@ fn recording_config(root_directory: &std::path::Path, start: RtmpRecorderStart) 
             service: Some("live".into()),
             tls_profile: None,
             max_connections: Some(16),
+            downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
         }],
         rtmp_services: vec![RtmpService {
             name: "live".into(),
+            outbound_chunk_size: 4_096,
+            access_log: None,
             applications: vec![RtmpApplication {
                 name: "broadcast".into(),
                 live: true,
                 idle_streams: true,
+                push_targets: Vec::new(),
+                fanout: oxiroute_config::RtmpFanoutPolicy::default(),
                 recorders: vec![rtmp_recorder("archive", start, root_directory)],
             }],
         }],

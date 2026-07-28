@@ -1,5 +1,8 @@
 use std::fmt::Write as _;
 
+use chrono::{Datelike as _, TimeZone as _, Timelike as _, Utc};
+use chrono_tz::Tz;
+
 /// Maximum accepted byte length of a recording suffix template.
 pub const MAX_RECORDING_SUFFIX_TEMPLATE_BYTES: usize = 128;
 /// Maximum rendered byte length of one relative recording filename.
@@ -151,6 +154,30 @@ fn civil_from_unix_days(days: i64) -> (i64, u8, u8) {
 pub struct RecordingPathPolicy {
     suffix_template: String,
     native_unique_seconds: bool,
+    timezone: RecordingTimezone,
+    time_basis: RecordingTimeBasis,
+    segment_naming: RecordingSegmentNaming,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RecordingTimezone {
+    #[default]
+    Utc,
+    Iana(Tz),
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RecordingTimeBasis {
+    #[default]
+    SegmentStart,
+    SegmentEnd,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RecordingSegmentNaming {
+    #[default]
+    SafeUnique,
+    NginxCompatible,
 }
 
 impl RecordingPathPolicy {
@@ -174,7 +201,23 @@ impl RecordingPathPolicy {
         Ok(Self {
             suffix_template: suffix_template.to_owned(),
             native_unique_seconds,
+            timezone: RecordingTimezone::Utc,
+            time_basis: RecordingTimeBasis::SegmentStart,
+            segment_naming: RecordingSegmentNaming::SafeUnique,
         })
+    }
+
+    #[must_use]
+    pub fn with_segment_policy(
+        mut self,
+        timezone: RecordingTimezone,
+        time_basis: RecordingTimeBasis,
+        segment_naming: RecordingSegmentNaming,
+    ) -> Self {
+        self.timezone = timezone;
+        self.time_basis = time_basis;
+        self.segment_naming = segment_naming;
+        self
     }
 
     /// Renders one relative filename without reading a clock or accessing the filesystem.
@@ -231,6 +274,43 @@ impl RecordingPathPolicy {
         Ok(filename)
     }
 
+    /// Renders a filename from an explicit Unix instant using this policy's fixed timezone.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same bounded path and calendar errors as [`Self::relative_filename`].
+    pub fn relative_filename_at(
+        &self,
+        stream_name: &[u8],
+        at_unix_seconds: u64,
+    ) -> Result<String, RecordingPathError> {
+        let date_time = match self.timezone {
+            RecordingTimezone::Utc => RecordingDateTime::from_unix_seconds(at_unix_seconds)?,
+            RecordingTimezone::Iana(timezone) => zoned_date_time(at_unix_seconds, timezone)?,
+        };
+        self.relative_filename(stream_name, at_unix_seconds, date_time)
+    }
+
+    pub(crate) fn segment_filename(
+        &self,
+        stream_name: &[u8],
+        at_unix_seconds: u64,
+        _fallback_utc: RecordingDateTime,
+        sequence: u64,
+    ) -> Result<String, RecordingPathError> {
+        let name = self.relative_filename_at(stream_name, at_unix_seconds)?;
+        if self.segment_naming == RecordingSegmentNaming::SafeUnique {
+            sequenced_recording_filename(&name, sequence)
+                .ok_or(RecordingPathError::FilenameTooLong { length: usize::MAX })
+        } else {
+            Ok(name)
+        }
+    }
+
+    pub(crate) const fn time_basis(&self) -> RecordingTimeBasis {
+        self.time_basis
+    }
+
     fn render_suffix(&self, opened_at: RecordingDateTime) -> String {
         let bytes = self.suffix_template.as_bytes();
         let mut rendered = String::with_capacity(bytes.len());
@@ -264,6 +344,23 @@ impl RecordingPathPolicy {
         rendered.push_str(&self.suffix_template[literal_start..]);
         rendered
     }
+}
+
+fn zoned_date_time(seconds: u64, timezone: Tz) -> Result<RecordingDateTime, RecordingPathError> {
+    let seconds = i64::try_from(seconds).map_err(|_| invalid_date_time("year", 10_000))?;
+    let utc = Utc
+        .timestamp_opt(seconds, 0)
+        .single()
+        .ok_or_else(|| invalid_date_time("year", 10_000))?;
+    let local = utc.with_timezone(&timezone);
+    RecordingDateTime::new(
+        u16::try_from(local.year()).map_err(|_| invalid_date_time("year", 10_000))?,
+        u8::try_from(local.month()).expect("calendar month fits u8"),
+        u8::try_from(local.day()).expect("calendar day fits u8"),
+        u8::try_from(local.hour()).expect("calendar hour fits u8"),
+        u8::try_from(local.minute()).expect("calendar minute fits u8"),
+        u8::try_from(local.second()).expect("calendar second fits u8"),
+    )
 }
 
 fn validate_suffix_template(suffix_template: &str) -> Result<(), RecordingPathError> {

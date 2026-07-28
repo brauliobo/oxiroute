@@ -11,6 +11,8 @@ function service(): HttpServiceConfig {
     routes: [defaultHttpRoute()],
     upstream_io_timeout_ms: 30_000,
     max_request_body_bytes: 10_485_760,
+    gzip: null,
+    access_log: null,
   }
 }
 
@@ -66,16 +68,27 @@ describe('canonical HTTP route editors', () => {
         header_name: 'x-route-token',
         realm: 'private-api',
       },
+      policy: {
+        max_request_body_bytes: 10_485_760,
+        connect_timeout_ms: 30_000,
+        read_timeout_ms: 30_000,
+        write_timeout_ms: 30_000,
+        request_buffering: false,
+        response_buffering: false,
+      },
       action: {
         type: 'proxy',
         upstream_pool: 'origins',
         policy: {
           upstream_host: { type: 'endpoint', unix_fallback: 'localhost' },
           request_headers: [{ operation: 'set', name: 'x-client-ip', value: { type: 'client_ip' } }],
-          response_headers: [{ operation: 'set', name: 'cache-control', value: 'private' }],
+          response_headers: [{ operation: 'set', name: 'cache-control', value: 'private', always: true }],
           response_cookie_path_rewrites: [{ from: '/internal', to: '/public' }],
+          response_cookie_attributes: [],
           retry: {
             max_retries: 2,
+            target: 'next_server',
+            delay_ms: 0,
             triggers: ['connect_failure', 'connect_timeout', 'refused_stream'],
             method_safety: 'get_head',
             body_safety: 'empty',
@@ -88,6 +101,78 @@ describe('canonical HTTP route editors', () => {
       .toContain('GET and HEAD')
     expect(field('http_services[].routes[].action.policy.retry.body_safety').get('select').attributes('title'))
       .toContain('empty request body')
+  })
+
+  it('edits X-Forwarded-For source CIDR exceptions', async () => {
+    const model = service()
+    const wrapper = mount(HttpServiceEditor, {
+      props: { service: model, poolNames: ['origins'], cacheStoreNames: [] },
+    })
+    const field = (path: string) => wrapper.get(`[data-field="${path}"]`)
+
+    await button(wrapper, 'Add request mutation').trigger('click')
+    await field('http_services[].routes[].action.policy.request_headers[].operation').get('select').setValue('set')
+    await field('http_services[].routes[].action.policy.request_headers[].name').get('input').setValue('x-forwarded-for')
+    await field('http_services[].routes[].action.policy.request_headers[].value.type').get('select')
+      .setValue('appended_x_forwarded_for')
+    await button(wrapper, 'Add source CIDR').trigger('click')
+    await field('http_services[].routes[].action.policy.request_headers[].value.except_source_cidrs')
+      .get('input').setValue('127.0.0.0/8')
+
+    expect(model.routes[0]?.action).toMatchObject({
+      type: 'proxy',
+      policy: {
+        request_headers: [{
+          operation: 'set',
+          name: 'x-forwarded-for',
+          value: {
+            type: 'appended_x_forwarded_for',
+            max_bytes: 8_192,
+            except_source_cidrs: ['127.0.0.0/8'],
+          },
+        }],
+      },
+    })
+  })
+
+  it('edits nginx Host fallbacks and response-header status scope', async () => {
+    const model = service()
+    const wrapper = mount(HttpServiceEditor, {
+      props: { service: model, poolNames: ['origins'], cacheStoreNames: [] },
+    })
+    const field = (path: string) => wrapper.get(`[data-field="${path}"]`)
+
+    await field('http_services[].routes[].action.policy.upstream_host.type').get('select')
+      .setValue('nginx_host')
+    await field('http_services[].routes[].action.policy.upstream_host.fallback').get('input')
+      .setValue('default.example')
+    await button(wrapper, 'Add request mutation').trigger('click')
+    await field('http_services[].routes[].action.policy.request_headers[].operation').get('select')
+      .setValue('set')
+    await field('http_services[].routes[].action.policy.request_headers[].value.type').get('select')
+      .setValue('nginx_host')
+    await field('http_services[].routes[].action.policy.request_headers[].value.fallback').get('input')
+      .setValue('header.example')
+    expect(model.routes[0]?.action).toMatchObject({
+      policy: {
+        upstream_host: { type: 'nginx_host', fallback: 'default.example' },
+        request_headers: [{ value: { type: 'nginx_host', fallback: 'header.example' } }],
+      },
+    })
+
+    await field('http_services[].routes[].action.type').get('select').setValue('fixed_response')
+    await button(wrapper, 'Add header').trigger('click')
+    await field('http_services[].routes[].action.headers[].always').get('input').setValue(true)
+    expect(model.routes[0]?.action).toMatchObject({ headers: [{ always: true }] })
+
+    await field('http_services[].routes[].action.type').get('select').setValue('redirect')
+    await field('http_services[].routes[].action.location.kind').get('select')
+      .setValue('request_template')
+    await field('http_services[].routes[].action.location.nginx_host_fallback').get('input')
+      .setValue('redirect.example')
+    expect(model.routes[0]?.action).toMatchObject({
+      location: { nginx_host_fallback: 'redirect.example' },
+    })
   })
 
   it('replaces tagged actions exactly and exposes accessible fixed, redirect, and static controls', async () => {
@@ -111,7 +196,7 @@ describe('canonical HTTP route editors', () => {
       type: 'fixed_response',
       status: 204,
       body: '',
-      headers: [{ name: 'x-fixed', value: 'yes' }],
+      headers: [{ name: 'x-fixed', value: 'yes', always: false }],
     })
     expect(field('http_services[].routes[].action.body').get('textarea').attributes('aria-describedby')).toBeTruthy()
 
@@ -122,7 +207,12 @@ describe('canonical HTTP route editors', () => {
     expect(model.routes[0]?.action).toEqual({
       type: 'redirect',
       status: 308,
-      location: { kind: 'request_template', value: 'https://$host$request_uri' },
+      location: {
+        kind: 'request_template',
+        value: 'https://$host$request_uri',
+        nginx_host_fallback: null,
+      },
+      headers: [],
     })
     expect(field('http_services[].routes[].action.location.value').text()).toContain('$scheme')
 
@@ -135,8 +225,18 @@ describe('canonical HTTP route editors', () => {
     expect(model.routes[0]?.action).toEqual({
       type: 'static_files',
       root_directory: '/srv/site',
+      path_mapping: 'root',
       index_files: ['index.html', 'home.html'],
+      internal_index_redirects: false,
+      directory_redirects: false,
       spa_fallback: 'app.html',
+      try_files: [],
+      autoindex: false,
+      autoindex_exact_size: true,
+      autoindex_local_time: false,
+      mime: { default_type: null, types: [] },
+      headers: [],
+      error_responses: [],
     })
     expect(field('http_services[].routes[].action.root_directory').text()).toContain('Authenticated configuration only')
 

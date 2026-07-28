@@ -1,13 +1,14 @@
 use std::{net::SocketAddr, path::Path};
 
 use oxiroute_config::{
-    Config, Listener, ListenerBind, Protocol, RtmpApplication, RtmpRecorder, RtmpRecorderStart,
-    RtmpService, validate_config,
+    AccessLogPolicy, Config, DownstreamTimeoutPolicy, Listener, ListenerBind, Protocol,
+    RtmpApplication, RtmpFanoutPolicy, RtmpPushTarget, RtmpRecorder, RtmpRecorderSegmentNaming,
+    RtmpRecorderStart, RtmpRecorderTimeBasis, RtmpRecorderTimezone, RtmpService, validate_config,
 };
 
 use crate::{
     CanonicalDraft, CanonicalProvenance, Diagnostic, DiagnosticCode, DiagnosticStage,
-    E_INVALID_VALUE, Report, Severity,
+    E_INVALID_VALUE, E_SEMANTICS_NOT_REPRESENTABLE, Report, Severity,
 };
 
 use super::{
@@ -55,11 +56,50 @@ impl RtmpImportReport {
 /// Loads, resolves, lowers, and conditionally finalizes one nginx-RTMP source graph.
 #[must_use]
 pub fn import_rtmp(root: &Path, root_prefix: &Path) -> RtmpImportReport {
-    let (graph, mut diagnostics) = load(root, root_prefix).into_parts();
-    let (resolution, resolve_diagnostics) =
-        super::rtmp_semantic::resolve_rtmp_graph(&graph).into_parts();
+    lower_rtmp(load(root, root_prefix))
+}
+
+/// Imports nginx-RTMP with the host timezone that governed native local-time suffix rendering.
+#[must_use]
+pub fn import_rtmp_with_timezone(
+    root: &Path,
+    root_prefix: &Path,
+    host_timezone: &str,
+) -> RtmpImportReport {
+    lower_rtmp_with_mode(load(root, root_prefix), false, Some(host_timezone))
+}
+
+pub(super) fn lower_rtmp(loaded: Report<SourceGraph>) -> RtmpImportReport {
+    lower_rtmp_with_mode(loaded, false, None)
+}
+
+pub(super) fn lower_rtmp_root(
+    loaded: Report<SourceGraph>,
+    host_timezone: Option<&str>,
+) -> RtmpImportReport {
+    lower_rtmp_with_mode(loaded, true, host_timezone)
+}
+
+fn lower_rtmp_with_mode(
+    loaded: Report<SourceGraph>,
+    complete_root: bool,
+    host_timezone: Option<&str>,
+) -> RtmpImportReport {
+    let (graph, mut diagnostics) = loaded.into_parts();
+    let resolved = if complete_root {
+        super::rtmp_semantic::resolve_rtmp_root_graph(&graph)
+    } else {
+        super::rtmp_semantic::resolve_rtmp_graph(&graph)
+    };
+    let (resolution, resolve_diagnostics) = resolved.into_parts();
     diagnostics.extend(resolve_diagnostics);
-    Lowerer::new(graph, resolution, diagnostics).run()
+    Lowerer::new(
+        graph,
+        resolution,
+        diagnostics,
+        host_timezone.map(str::to_owned),
+    )
+    .run()
 }
 
 struct Lowerer {
@@ -69,10 +109,16 @@ struct Lowerer {
     provenance: Vec<CanonicalProvenance<DirectiveOrigin>>,
     blocked_services: Vec<BlockedRtmpService>,
     draft: CanonicalDraft,
+    host_timezone: Option<String>,
 }
 
 impl Lowerer {
-    fn new(graph: SourceGraph, resolution: RtmpResolution, diagnostics: Vec<Diagnostic>) -> Self {
+    fn new(
+        graph: SourceGraph,
+        resolution: RtmpResolution,
+        diagnostics: Vec<Diagnostic>,
+        host_timezone: Option<String>,
+    ) -> Self {
         Self {
             graph,
             resolution,
@@ -80,6 +126,7 @@ impl Lowerer {
             provenance: Vec::new(),
             blocked_services: Vec::new(),
             draft: CanonicalDraft::default(),
+            host_timezone,
         }
     }
 
@@ -88,9 +135,27 @@ impl Lowerer {
         for (rtmp_index, rtmp) in blocks.iter().enumerate() {
             for (server_index, server) in rtmp.servers.iter().enumerate() {
                 let path = format!("/nginx/rtmp/{rtmp_index}/servers/{server_index}");
-                let codes = self.blocking_codes(server.origin.occurrence, rtmp.origin.occurrence);
+                let mut codes =
+                    self.blocking_codes(server.origin.occurrence, rtmp.origin.occurrence);
+                if self.host_timezone.is_none()
+                    && server
+                        .applications
+                        .iter()
+                        .any(|application| !application.policy.recorders.is_empty())
+                {
+                    codes.push(E_SEMANTICS_NOT_REPRESENTABLE);
+                    self.diagnostics.push(
+                        Diagnostic::new(
+                            E_SEMANTICS_NOT_REPRESENTABLE,
+                            Severity::Error,
+                            DiagnosticStage::Lower,
+                            "nginx recording suffixes require an explicit host IANA timezone overlay",
+                        )
+                        .with_primary_span(server.origin.span),
+                    );
+                }
                 if codes.is_empty() {
-                    self.lower_server(server, rtmp_index, server_index);
+                    self.lower_server(server, rtmp, rtmp_index, server_index);
                 } else {
                     self.blocked_services.push(BlockedRtmpService {
                         path,
@@ -144,6 +209,7 @@ impl Lowerer {
     fn lower_server(
         &mut self,
         server: &EffectiveRtmpServer,
+        rtmp: &super::EffectiveRtmp,
         rtmp_index: usize,
         server_index: usize,
     ) {
@@ -160,12 +226,31 @@ impl Lowerer {
 
         self.draft.rtmp_services.push(RtmpService {
             name: service_name.clone(),
+            outbound_chunk_size: rtmp.outbound_chunk_size,
+            access_log: rtmp
+                .access_log_disabled
+                .then_some(AccessLogPolicy::Disabled),
             applications,
         });
         self.provenance.push(CanonicalProvenance {
             path: format!("/rtmp_services/{service_index}"),
-            origins: vec![server.origin.clone()],
+            origins: std::iter::once(server.origin.clone())
+                .chain(rtmp.chunk_size_origin.clone())
+                .chain(rtmp.access_log_origin.clone())
+                .collect(),
         });
+        if let Some(origin) = &rtmp.chunk_size_origin {
+            self.provenance.push(CanonicalProvenance {
+                path: format!("/rtmp_services/{service_index}/outbound_chunk_size"),
+                origins: vec![origin.clone()],
+            });
+        }
+        if let Some(origin) = &rtmp.access_log_origin {
+            self.provenance.push(CanonicalProvenance {
+                path: format!("/rtmp_services/{service_index}/access_log"),
+                origins: vec![origin.clone()],
+            });
+        }
 
         for listen in &server.listens {
             let address = listen
@@ -179,6 +264,7 @@ impl Lowerer {
                 service: Some(service_name.clone()),
                 tls_profile: None,
                 max_connections: None,
+                downstream_timeouts: DownstreamTimeoutPolicy::default(),
             });
             self.provenance.push(CanonicalProvenance {
                 path: format!("/listeners/{listener_index}"),
@@ -228,6 +314,12 @@ impl Lowerer {
                     .unwrap_or_else(|| application.origin.clone()),
             ],
         });
+        for (target_index, target) in application.push_targets.iter().enumerate() {
+            self.provenance.push(CanonicalProvenance {
+                path: format!("{application_path}/push_targets/{target_index}"),
+                origins: vec![target.origin.clone()],
+            });
+        }
 
         let recorders = application
             .policy
@@ -242,6 +334,20 @@ impl Lowerer {
             name,
             live: application.policy.live,
             idle_streams: application.policy.idle_streams,
+            push_targets: application
+                .push_targets
+                .iter()
+                .map(|target| RtmpPushTarget {
+                    host: target.host.clone(),
+                    port: target.port,
+                    application: target.application.clone(),
+                })
+                .collect(),
+            fanout: RtmpFanoutPolicy {
+                max_subscribers: 1_024,
+                max_queue_messages_per_subscriber: 256,
+                max_queue_bytes_per_subscriber: 8 * 1024 * 1024,
+            },
             recorders,
         }
     }
@@ -282,6 +388,13 @@ impl Lowerer {
             root_directory: recorder.root_directory.clone(),
             suffix_template: recorder.suffix_template.clone(),
             append_unix_seconds: recorder.append_unix_seconds,
+            timezone: RtmpRecorderTimezone::Iana(
+                self.host_timezone
+                    .clone()
+                    .expect("recording services require an explicit timezone overlay"),
+            ),
+            time_basis: RtmpRecorderTimeBasis::SegmentStart,
+            segment_naming: RtmpRecorderSegmentNaming::NginxCompatible,
             rotation_interval_ms: recorder.rotation_interval_ms,
             max_queue_messages: DEFAULT_MAX_QUEUE_MESSAGES,
             max_queue_bytes: DEFAULT_MAX_QUEUE_BYTES,

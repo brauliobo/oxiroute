@@ -10,7 +10,9 @@ use oxiroute_config::{Config, ListenerBind, RtmpRecorder, RtmpRecorderStart, Ups
 pub fn empty_config() -> Config {
     Config {
         version: 1,
+        max_connections: None,
         management: None,
+        stats: None,
         certificates: Vec::new(),
         tls_profiles: Vec::new(),
         listeners: Vec::new(),
@@ -58,6 +60,9 @@ pub fn rtmp_recorder(name: &str, start: RtmpRecorderStart, root_directory: &Path
         root_directory: root_directory.to_path_buf(),
         suffix_template: ".flv".into(),
         append_unix_seconds: false,
+        timezone: oxiroute_config::RtmpRecorderTimezone::default(),
+        time_basis: oxiroute_config::RtmpRecorderTimeBasis::default(),
+        segment_naming: oxiroute_config::RtmpRecorderSegmentNaming::default(),
         rotation_interval_ms: None,
         max_queue_messages: 32,
         max_queue_bytes: 1024,

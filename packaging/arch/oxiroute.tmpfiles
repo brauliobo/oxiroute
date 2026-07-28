@@ -1,0 +1,2 @@
+d /var/lib/oxiroute 0750 oxiroute oxiroute -
+d /var/lib/oxiroute/recordings 0750 oxiroute oxiroute -

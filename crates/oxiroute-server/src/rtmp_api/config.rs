@@ -19,7 +19,7 @@ use super::{
     response::system_time_ms, ui::UiAssets,
 };
 use crate::{
-    CertbotWatcherConfig, RuntimePlan,
+    CertbotWatcherConfig, GenerationManager, RuntimePlan,
     config_coordinator::{
         CanonicalConfigCoordinator, ConfigConflict, ConfigDiagnostic, ConfigLoadOutcome,
         ConfigRevision, ConfigSaveFailure, ConfigSaveOutcome, ConfigValidationOutcome,
@@ -42,6 +42,7 @@ pub(super) enum Route {
 pub(super) struct ConfigApiState {
     active_revision: ConfigRevision,
     coordinator: CanonicalConfigCoordinator,
+    generations: Option<GenerationManager>,
     token: ManagementToken,
 }
 
@@ -54,6 +55,7 @@ impl ConfigApiState {
         Ok(Self {
             active_revision,
             coordinator,
+            generations: None,
             token: ManagementToken::new(token.as_bytes()).map_err(|error| {
                 io::Error::new(io::ErrorKind::PermissionDenied, error.to_string())
             })?,
@@ -68,10 +70,22 @@ impl ConfigApiState {
         Ok(Self {
             active_revision,
             coordinator,
+            generations: None,
             token: ManagementToken::load(token_file).map_err(|error| {
                 io::Error::new(io::ErrorKind::PermissionDenied, error.to_string())
             })?,
         })
+    }
+
+    pub(super) fn set_generation_manager(&mut self, generations: GenerationManager) {
+        self.generations = Some(generations);
+    }
+
+    fn active_revision(&self) -> ConfigRevision {
+        self.generations
+            .as_ref()
+            .and_then(|generations| generations.status().active_revision)
+            .unwrap_or_else(|| self.active_revision.clone())
     }
 
     pub(super) fn unauthenticated_response(route: Route, method: &str) -> ApiResponse {
@@ -131,7 +145,7 @@ impl ConfigApiState {
         }
     }
 
-    fn authorized(&self, session: &ServerSession) -> bool {
+    pub(super) fn authorized(&self, session: &ServerSession) -> bool {
         let mut values = session.req_header().headers.get_all(AUTHORIZATION).iter();
         let Some(value) = values.next() else {
             return false;
@@ -146,7 +160,7 @@ impl ConfigApiState {
                 &json!({
                     "schemaVersion": 1,
                     "diskRevision": document.disk_revision,
-                    "activeRevision": self.active_revision,
+                    "activeRevision": self.active_revision(),
                     "config": document.normalized_config,
                     "diagnostics": document.diagnostics,
                 }),
@@ -156,7 +170,7 @@ impl ConfigApiState {
                 &json!({
                     "schemaVersion": 1,
                     "diskRevision": rejection.disk_revision,
-                    "activeRevision": self.active_revision,
+                    "activeRevision": self.active_revision(),
                     "diagnostics": rejection.diagnostics,
                     "error": {
                         "code": "canonical_config_unavailable",
@@ -238,6 +252,34 @@ impl ConfigApiState {
                 &json!({ "diagnostics": [preparation_diagnostic(error)] }),
             )
         })?;
+        if let Some(generations) = &self.generations {
+            let disk_revision = match self.coordinator.load() {
+                ConfigLoadOutcome::Loaded(document) => document.disk_revision.clone(),
+                ConfigLoadOutcome::Rejected(_) => {
+                    return Err(ApiResponse::error(
+                        503,
+                        "canonical_config_unavailable",
+                        "the persisted canonical configuration could not be loaded",
+                    ));
+                }
+            };
+            generations
+                .validate_candidate(crate::config_coordinator::CanonicalConfigDocument {
+                    disk_revision,
+                    candidate_revision: candidate.candidate_revision.clone(),
+                    normalized_config: candidate.normalized_config.clone(),
+                    lua_preview: candidate.lua_preview.clone(),
+                    diagnostics: candidate.diagnostics.clone(),
+                })
+                .map_err(|_| {
+                    ApiResponse::json(
+                        422,
+                        &json!({
+                            "diagnostics": [preparation_diagnostic(ConfigPreparationError::Runtime)]
+                        }),
+                    )
+                })?;
+        }
         Ok(PreparedCandidate {
             topology: candidate_topology(&plan.topology, now_unix_ms),
             draft: candidate,
@@ -249,22 +291,23 @@ impl ConfigApiState {
         disk_revision: &ConfigRevision,
         mut diagnostics: Vec<Value>,
     ) -> ApiResponse {
-        let unchanged_active = *disk_revision == self.active_revision;
+        let active_revision = self.active_revision();
+        let unchanged_active = *disk_revision == active_revision;
         if !unchanged_active {
-            diagnostics.push(restart_required_diagnostic());
+            diagnostics.push(activation_pending_diagnostic());
         }
         ApiResponse::json(
             200,
             &json!({
                 "diskRevision": disk_revision,
-                "activeRevision": self.active_revision,
+                "activeRevision": active_revision,
                 "outcome": if unchanged_active {
                     "unchanged_active"
                 } else {
-                    "saved_restart_required"
+                    "saved_pending_activation"
                 },
-                "activationState": if unchanged_active { "active" } else { "restart_required" },
-                "restartRequired": !unchanged_active,
+                "activationState": if unchanged_active { "active" } else { "pending" },
+                "restartRequired": false,
                 "diagnostics": diagnostics,
             }),
         )
@@ -281,7 +324,7 @@ impl ConfigApiState {
             500,
             &json!({
                 "diskRevision": failure.disk_revision,
-                "activeRevision": self.active_revision,
+                "activeRevision": self.active_revision(),
                 "outcome": "write_failed",
                 "diagnostics": failure.diagnostics,
             }),
@@ -295,7 +338,7 @@ impl ConfigApiState {
                 &json!({
                     "schemaVersion": 1,
                     "diskRevision": document.disk_revision,
-                    "activeRevision": self.active_revision,
+                    "activeRevision": self.active_revision(),
                     "expectedRevision": conflict.expected_revision,
                     "outcome": "conflict",
                     "config": document.normalized_config,
@@ -307,7 +350,7 @@ impl ConfigApiState {
                 &json!({
                     "schemaVersion": 1,
                     "diskRevision": null,
-                    "activeRevision": self.active_revision,
+                    "activeRevision": self.active_revision(),
                     "expectedRevision": conflict.expected_revision,
                     "outcome": "authoritative_state_unavailable",
                     "diagnostics": rejection.diagnostics,
@@ -390,6 +433,12 @@ impl ManagementToken {
         };
         memcmp::eq(&self.digest, &sha256(candidate))
     }
+}
+
+pub(crate) fn preflight_management_token(path: &Path) -> io::Result<()> {
+    ManagementToken::load(path)
+        .map(drop)
+        .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error.to_string()))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -498,12 +547,12 @@ fn preparation_diagnostic(error: ConfigPreparationError) -> Value {
     }
 }
 
-fn restart_required_diagnostic() -> Value {
+fn activation_pending_diagnostic() -> Value {
     json!({
-        "code": "W_RESTART_REQUIRED",
+        "code": "I_ACTIVATION_PENDING",
         "severity": "warning",
         "stage": "activation",
-        "message": "configuration was saved; restart the daemon to activate it",
+        "message": "configuration was saved and queued for generation activation",
     })
 }
 
@@ -595,7 +644,7 @@ fn validate_management_token(token: &[u8]) -> Result<(), ManagementTokenError> {
     Ok(())
 }
 
-async fn read_config_body(session: &mut ServerSession) -> Result<Vec<u8>, ApiResponse> {
+pub(crate) async fn read_config_body(session: &mut ServerSession) -> Result<Vec<u8>, ApiResponse> {
     let mut content_lengths = session.req_header().headers.get_all(CONTENT_LENGTH).iter();
     let declared_length = content_lengths
         .next()

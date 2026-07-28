@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{File, Metadata},
     io::{BufReader, Read},
     net::IpAddr,
@@ -18,7 +18,11 @@ use rustls_pemfile::{Item, read_one};
 use x509_parser::{extensions::GeneralName, parse_x509_certificate};
 use zeroize::Zeroizing;
 
-use crate::{Diagnostic, DiagnosticCode, DiagnosticStage, Report, Severity, SourceId, Span};
+use crate::{
+    ActivationRequirement, ActivationRequirementKind, DeploymentRequirement,
+    DeploymentRequirementKind, Diagnostic, DiagnosticCode, DiagnosticStage, ProvenanceRole,
+    ProvenanceSpan, Report, Severity, SourceId, Span,
+};
 pub use crate::{E_DUPLICATE_IDENTITY, E_UNRESOLVED_REFERENCE};
 
 use super::{
@@ -230,6 +234,7 @@ pub struct SemanticBlocker {
 pub enum BalanceAlgorithm {
     RoundRobin,
     LeastConnections,
+    First,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -274,6 +279,7 @@ pub struct StatusRange {
 pub struct Timeouts {
     pub client: Option<EffectiveValue<Duration>>,
     pub connect: Option<EffectiveValue<Duration>>,
+    pub queue: Option<EffectiveValue<Duration>>,
     pub server: Option<EffectiveValue<Duration>>,
     pub http_request: Option<EffectiveValue<Duration>>,
     pub http_keep_alive: Option<EffectiveValue<Duration>>,
@@ -290,6 +296,7 @@ pub struct ProxySettings {
     pub forward_for: Option<EffectiveValue<OptionState<ForwardFor>>>,
     pub http_check: Option<EffectiveValue<OptionState<HttpCheck>>>,
     pub http_check_expect: Option<EffectiveValue<Vec<StatusRange>>>,
+    pub http_server_close: Option<EffectiveValue<bool>>,
     pub maxconn: Option<EffectiveValue<u64>>,
     pub http_request_rules: Vec<EffectiveValue<HttpRequestRule>>,
     pub http_response_rules: Vec<EffectiveValue<HttpResponseRule>>,
@@ -306,12 +313,14 @@ impl ProxySettings {
         inherit_value(&mut inherited.redispatch, step);
         inherit_value(&mut inherited.timeouts.client, step);
         inherit_value(&mut inherited.timeouts.connect, step);
+        inherit_value(&mut inherited.timeouts.queue, step);
         inherit_value(&mut inherited.timeouts.server, step);
         inherit_value(&mut inherited.timeouts.http_request, step);
         inherit_value(&mut inherited.timeouts.http_keep_alive, step);
         inherit_value(&mut inherited.forward_for, step);
         inherit_value(&mut inherited.http_check, step);
         inherit_value(&mut inherited.http_check_expect, step);
+        inherit_value(&mut inherited.http_server_close, step);
         inherit_value(&mut inherited.maxconn, step);
         for rule in &mut inherited.http_request_rules {
             rule.provenance.inherit(step.clone());
@@ -330,6 +339,24 @@ fn inherit_value<T>(value: &mut Option<EffectiveValue<T>>, step: &InheritanceSte
     if let Some(value) = value {
         value.provenance.inherit(step.clone());
     }
+}
+
+fn inherit_server_defaults(
+    mut defaults: Option<EffectiveServer>,
+    step: &InheritanceStep,
+) -> Option<EffectiveServer> {
+    let defaults = defaults.as_mut()?;
+    inherit_value(&mut defaults.check, step);
+    inherit_value(&mut defaults.interval, step);
+    inherit_value(&mut defaults.fast_interval, step);
+    inherit_value(&mut defaults.down_interval, step);
+    inherit_value(&mut defaults.rise, step);
+    inherit_value(&mut defaults.fall, step);
+    inherit_value(&mut defaults.max_connections, step);
+    for option in &mut defaults.unsupported_options {
+        option.provenance.inherit(step.clone());
+    }
+    Some(defaults.clone())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -386,8 +413,11 @@ pub struct EffectiveServer {
     pub address: EffectiveValue<ServerAddress>,
     pub check: Option<EffectiveValue<bool>>,
     pub interval: Option<EffectiveValue<Duration>>,
+    pub fast_interval: Option<EffectiveValue<Duration>>,
+    pub down_interval: Option<EffectiveValue<Duration>>,
     pub rise: Option<EffectiveValue<u32>>,
     pub fall: Option<EffectiveValue<u32>>,
+    pub max_connections: Option<EffectiveValue<u64>>,
     pub unsupported_options: Vec<EffectiveValue<ServerOption>>,
 }
 
@@ -476,6 +506,7 @@ pub struct EffectiveDefaults {
     pub section: EffectiveSection,
     pub defaults: Option<DefaultsSource>,
     pub settings: ProxySettings,
+    pub server_defaults: Option<EffectiveServer>,
     pub acls: Vec<EffectiveValue<AclDefinition>>,
 }
 
@@ -537,6 +568,8 @@ pub enum BlockingReason {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Externalization {
     ProcessOwned,
+    LogTransport,
+    Activation,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -587,6 +620,10 @@ pub struct EffectiveConfiguration {
     pub listens: Vec<EffectiveListen>,
     pub ledger: DecisionLedger,
     pub root_decisions: Vec<super::RootLoadDecision>,
+    pub deployment_requirements: Vec<DeploymentRequirement<ProvenanceSpan>>,
+    pub activation_requirements: Vec<ActivationRequirement<ProvenanceSpan>>,
+    pub activation_only_sections: HashSet<SectionId>,
+    pub supported_stats_sections: HashSet<SectionId>,
 }
 
 /// Resolves parsed `HAProxy` sources in their existing occurrence order.
@@ -641,6 +678,7 @@ struct SectionState {
     settings: ProxySettings,
     binds: Vec<EffectiveBind>,
     servers: Vec<EffectiveServer>,
+    server_defaults: Option<EffectiveServer>,
     acls: Vec<EffectiveValue<AclDefinition>>,
     pending_use_backends: Vec<PendingUseBackend>,
     use_backends: Vec<EffectiveValue<UseBackend>>,
@@ -912,29 +950,15 @@ impl Resolver {
                         self.consume(occurrence, Consumption::Setting);
                     }
                 }
-                b"stats" => self.reject_distinction(
+                b"stats" => self.externalize_activation(
                     occurrence,
                     directive,
-                    E_STATS_UNSUPPORTED,
-                    BlockingReason::Statistics,
-                    "HAProxy statistics behavior is not represented by the import IR",
+                    ActivationRequirementKind::StatisticsEndpoint,
+                    None,
+                    false,
                 ),
                 name if is_logging_directive_name(name) => {
-                    self.effective
-                        .global
-                        .semantic_blockers
-                        .push(semantic_blocker(
-                            SemanticBlockerKind::Logging,
-                            occurrence,
-                            directive,
-                        ));
-                    self.reject_distinction(
-                        occurrence,
-                        directive,
-                        E_LOGGING_UNSUPPORTED,
-                        BlockingReason::Logging,
-                        "HAProxy logging behavior is not represented by the import IR",
-                    );
+                    self.externalize_log_transport(occurrence, directive);
                 }
                 name if is_global_security_directive(name) => {
                     self.effective
@@ -979,9 +1003,10 @@ impl Resolver {
             return None;
         };
 
-        let (settings, defaults) = self.explicit_defaults_base(&meta, &header);
+        let (settings, server_defaults, defaults) = self.explicit_defaults_base(&meta, &header);
         let mut state = SectionState {
             settings,
+            server_defaults,
             ..SectionState::default()
         };
         self.resolve_section_directives(index, &header, &mut state);
@@ -991,6 +1016,7 @@ impl Resolver {
             section: effective_section(&meta, &header),
             defaults,
             settings: state.settings,
+            server_defaults: state.server_defaults,
             acls: state.acls,
         };
         self.consume(
@@ -1010,16 +1036,20 @@ impl Resolver {
         &mut self,
         meta: &SectionMeta,
         header: &ParsedHeader,
-    ) -> (ProxySettings, Option<DefaultsSource>) {
+    ) -> (
+        ProxySettings,
+        Option<EffectiveServer>,
+        Option<DefaultsSource>,
+    ) {
         let Some((name, reference_span)) = &header.from else {
-            return (ProxySettings::default(), None);
+            return (ProxySettings::default(), None, None);
         };
         let Some(target_index) = self.resolve_defaults_reference(
             OccurrenceId::SectionHeader(meta.id),
             *reference_span,
             name,
         ) else {
-            return (ProxySettings::default(), None);
+            return (ProxySettings::default(), None, None);
         };
         if self.defaults_state[target_index] == DefaultsResolutionState::Visiting {
             self.unresolved_reference(
@@ -1030,7 +1060,7 @@ impl Resolver {
                 &[],
                 "forms an inheritance cycle",
             );
-            return (ProxySettings::default(), None);
+            return (ProxySettings::default(), None, None);
         }
         let Some(target) = self.resolve_defaults(target_index) else {
             self.unresolved_reference(
@@ -1041,7 +1071,7 @@ impl Resolver {
                 &[],
                 "does not resolve to a representable defaults section",
             );
-            return (ProxySettings::default(), None);
+            return (ProxySettings::default(), None, None);
         };
         let step = InheritanceStep {
             source_defaults: target.section.id,
@@ -1057,7 +1087,11 @@ impl Resolver {
             DefaultsSelection::Explicit,
             *reference_span,
         );
-        (target.settings.inherited(&step), Some(source))
+        (
+            target.settings.inherited(&step),
+            inherit_server_defaults(target.server_defaults, &step),
+            Some(source),
+        )
     }
 
     fn resolve_proxy(&mut self, index: usize) {
@@ -1066,9 +1100,10 @@ impl Resolver {
             self.block_section_directives(index, BlockingReason::UnsupportedForm);
             return;
         };
-        let (settings, defaults) = self.proxy_defaults_base(index, &meta, &header);
+        let (settings, server_defaults, defaults) = self.proxy_defaults_base(index, &meta, &header);
         let mut state = SectionState {
             settings,
+            server_defaults,
             ..SectionState::default()
         };
         self.resolve_section_directives(index, &header, &mut state);
@@ -1117,12 +1152,16 @@ impl Resolver {
         index: usize,
         meta: &SectionMeta,
         header: &ParsedHeader,
-    ) -> (ProxySettings, Option<DefaultsSource>) {
+    ) -> (
+        ProxySettings,
+        Option<EffectiveServer>,
+        Option<DefaultsSource>,
+    ) {
         let (target_index, selection, reference_span) = if let Some((name, span)) = &header.from {
             let Some(target) =
                 self.resolve_defaults_reference(OccurrenceId::SectionHeader(meta.id), *span, name)
             else {
-                return (ProxySettings::default(), None);
+                return (ProxySettings::default(), None, None);
             };
             (target, DefaultsSelection::Explicit, *span)
         } else {
@@ -1130,7 +1169,7 @@ impl Resolver {
                 .iter()
                 .rposition(|section| section.section.kind == SectionKind::Defaults)
             else {
-                return (ProxySettings::default(), None);
+                return (ProxySettings::default(), None, None);
             };
             (
                 target,
@@ -1150,7 +1189,7 @@ impl Resolver {
                 &[],
                 "does not resolve to a representable defaults section",
             );
-            return (ProxySettings::default(), None);
+            return (ProxySettings::default(), None, None);
         };
         let step = InheritanceStep {
             source_defaults: target.section.id,
@@ -1166,9 +1205,14 @@ impl Resolver {
             selection,
             reference_span,
         );
-        (target.settings.inherited(&step), Some(source))
+        (
+            target.settings.inherited(&step),
+            inherit_server_defaults(target.server_defaults, &step),
+            Some(source),
+        )
     }
 
+    #[allow(clippy::too_many_lines)]
     fn resolve_section_directives(
         &mut self,
         index: usize,
@@ -1181,29 +1225,38 @@ impl Resolver {
             if self.block_preprocessing(occurrence, directive) {
                 continue;
             }
-            if directive.name.value == b"stats" {
-                self.reject_distinction(
+            if directive.name.value == b"http-request"
+                && directive
+                    .arguments
+                    .first()
+                    .is_some_and(|argument| argument.value == b"use-service")
+                && directive
+                    .arguments
+                    .get(1)
+                    .is_some_and(|argument| argument.value == b"prometheus-exporter")
+            {
+                let supported = exact_prometheus_exporter(directive);
+                self.externalize_activation(
                     occurrence,
                     directive,
-                    E_STATS_UNSUPPORTED,
-                    BlockingReason::Statistics,
-                    "HAProxy statistics behavior is not represented by the import IR",
+                    ActivationRequirementKind::PrometheusExporter,
+                    Some(meta.id),
+                    supported,
+                );
+                continue;
+            }
+            if directive.name.value == b"stats" {
+                self.externalize_activation(
+                    occurrence,
+                    directive,
+                    ActivationRequirementKind::StatisticsEndpoint,
+                    Some(meta.id),
+                    false,
                 );
                 continue;
             }
             if is_logging_directive(directive) {
-                state.settings.semantic_blockers.push(semantic_blocker(
-                    SemanticBlockerKind::Logging,
-                    occurrence,
-                    directive,
-                ));
-                self.reject_distinction(
-                    occurrence,
-                    directive,
-                    E_LOGGING_UNSUPPORTED,
-                    BlockingReason::Logging,
-                    "HAProxy logging behavior is not represented by the import IR",
-                );
+                self.externalize_log_transport(occurrence, directive);
                 continue;
             }
             if is_process_owned(&directive.name.value) {
@@ -1224,6 +1277,9 @@ impl Resolver {
                 }
                 b"server" if supports_server(meta.section.kind) => {
                     self.resolve_server(occurrence, directive, state);
+                }
+                b"default-server" if supports_backend_policy(meta.section.kind) => {
+                    self.resolve_default_server(occurrence, directive, state);
                 }
                 b"retries" if supports_backend_policy(meta.section.kind) => {
                     self.resolve_retries(occurrence, directive, state);
@@ -1411,6 +1467,7 @@ impl Resolver {
         let algorithm = match argument.value.as_slice() {
             b"roundrobin" => BalanceAlgorithm::RoundRobin,
             b"leastconn" => BalanceAlgorithm::LeastConnections,
+            b"first" => BalanceAlgorithm::First,
             _ => {
                 self.unsupported_directive_form_for_occurrence(occurrence, directive);
                 return;
@@ -1433,7 +1490,33 @@ impl Resolver {
             self.unsupported_directive_form_for_occurrence(occurrence, directive);
             return;
         };
-        let server = parsed.server;
+        let mut server = parsed.server;
+        if let Some(defaults) = &state.server_defaults {
+            if server.check.is_none() {
+                server.check.clone_from(&defaults.check);
+            }
+            if server.interval.is_none() {
+                server.interval.clone_from(&defaults.interval);
+            }
+            if server.fast_interval.is_none() {
+                server.fast_interval.clone_from(&defaults.fast_interval);
+            }
+            if server.down_interval.is_none() {
+                server.down_interval.clone_from(&defaults.down_interval);
+            }
+            if server.rise.is_none() {
+                server.rise.clone_from(&defaults.rise);
+            }
+            if server.fall.is_none() {
+                server.fall.clone_from(&defaults.fall);
+            }
+            if server.max_connections.is_none() {
+                server.max_connections.clone_from(&defaults.max_connections);
+            }
+            server
+                .unsupported_options
+                .extend(defaults.unsupported_options.iter().cloned());
+        }
         for conflict in parsed.conflicts {
             self.conflicting_option(
                 occurrence,
@@ -1490,6 +1573,52 @@ impl Resolver {
         state.servers.push(server);
     }
 
+    fn resolve_default_server(
+        &mut self,
+        occurrence: OccurrenceId,
+        directive: &Directive,
+        state: &mut SectionState,
+    ) {
+        let synthetic_word = |value: &[u8]| super::Word {
+            value: value.to_vec(),
+            span: directive.span,
+            environment_references: Vec::new(),
+        };
+        let mut synthetic = directive.clone();
+        synthetic.arguments = vec![
+            synthetic_word("__defaults".as_bytes()),
+            synthetic_word("127.0.0.1:1".as_bytes()),
+        ];
+        synthetic.arguments.extend(directive.arguments.clone());
+        let Some(parsed) = parse_server(&synthetic, occurrence) else {
+            self.unsupported_directive_form_for_occurrence(occurrence, directive);
+            return;
+        };
+        for conflict in parsed.conflicts {
+            self.conflicting_option(
+                occurrence,
+                conflict.current_span,
+                conflict.previous_span,
+                &conflict.name,
+            );
+        }
+        if parsed.server.unsupported_options.is_empty() {
+            match &mut state.server_defaults {
+                Some(defaults) => merge_server_defaults(defaults, parsed.server),
+                None => state.server_defaults = Some(parsed.server),
+            }
+            self.consume(occurrence, Consumption::Setting);
+        } else {
+            self.track_and_reject_semantics(
+                occurrence,
+                directive,
+                SemanticBlockerKind::ProxyDefault,
+                state,
+                "HAProxy default-server contains options without canonical server equivalents",
+            );
+        }
+    }
+
     fn resolve_retries(
         &mut self,
         occurrence: OccurrenceId,
@@ -1525,6 +1654,7 @@ impl Resolver {
         let slot = match class.value.as_slice() {
             b"client" => &mut state.settings.timeouts.client,
             b"connect" => &mut state.settings.timeouts.connect,
+            b"queue" => &mut state.settings.timeouts.queue,
             b"server" => &mut state.settings.timeouts.server,
             b"http-request" => &mut state.settings.timeouts.http_request,
             b"http-keep-alive" => &mut state.settings.timeouts.http_keep_alive,
@@ -1655,6 +1785,7 @@ impl Resolver {
         });
     }
 
+    #[allow(clippy::too_many_lines)]
     fn resolve_option(
         &mut self,
         occurrence: OccurrenceId,
@@ -1750,7 +1881,20 @@ impl Resolver {
                     self.consume(occurrence, Consumption::Setting);
                 }
             }
-            name if is_logging_option(name) => self.reject_logging(occurrence, directive),
+            b"http-server-close" if supports_backend_policy(kind) => {
+                if !arguments.is_empty() {
+                    self.unsupported_directive_form_for_occurrence(occurrence, directive);
+                    return;
+                }
+                let value = EffectiveValue::direct(!disabled, occurrence, directive.span);
+                let conflict = self.set_setting(&mut state.settings.http_server_close, value);
+                if !self.finish_setting(occurrence, directive, conflict, &mut state.settings) {
+                    self.consume(occurrence, Consumption::Setting);
+                }
+            }
+            name if is_logging_option(name) => {
+                self.externalize_log_transport(occurrence, directive);
+            }
             _ => self.track_and_reject_semantics(
                 occurrence,
                 directive,
@@ -2000,31 +2144,6 @@ impl Resolver {
         true
     }
 
-    fn reject_distinction(
-        &mut self,
-        occurrence: OccurrenceId,
-        directive: &Directive,
-        code: DiagnosticCode,
-        reason: BlockingReason,
-        message: &'static str,
-    ) {
-        self.block(occurrence, reason);
-        self.diagnostics.push(
-            Diagnostic::new(code, Severity::Error, DiagnosticStage::Resolve, message)
-                .with_primary_span(directive.span),
-        );
-    }
-
-    fn reject_logging(&mut self, occurrence: OccurrenceId, directive: &Directive) {
-        self.reject_distinction(
-            occurrence,
-            directive,
-            E_LOGGING_UNSUPPORTED,
-            BlockingReason::Logging,
-            "HAProxy logging behavior is not represented by the import IR",
-        );
-    }
-
     fn reject_semantic_directive(
         &mut self,
         occurrence: OccurrenceId,
@@ -2152,6 +2271,92 @@ impl Resolver {
             )
             .with_primary_span(directive.span),
         );
+        self.effective
+            .deployment_requirements
+            .push(DeploymentRequirement {
+                kind: process_requirement_kind(&directive.name.value),
+                directive: display_bytes(&directive.name.value),
+                value: directive
+                    .arguments
+                    .iter()
+                    .map(|argument| display_bytes(&argument.value))
+                    .collect(),
+                origin: ProvenanceSpan {
+                    role: ProvenanceRole::Value,
+                    span: directive.span,
+                },
+            });
+    }
+
+    fn externalize_log_transport(&mut self, occurrence: OccurrenceId, directive: &Directive) {
+        let decision = self.pending_decision_mut(occurrence);
+        if decision.outcome.is_none() {
+            decision.outcome = Some(DecisionOutcome::Externalized(Externalization::LogTransport));
+        }
+        self.diagnostics.push(
+            Diagnostic::new(
+                E_LOGGING_UNSUPPORTED,
+                Severity::Warning,
+                DiagnosticStage::Resolve,
+                "HAProxy log transport is externalized to the deployment; no format equivalence is claimed",
+            )
+            .with_primary_span(directive.span),
+        );
+        self.effective
+            .deployment_requirements
+            .push(DeploymentRequirement {
+                kind: DeploymentRequirementKind::LogTransport,
+                directive: display_bytes(&directive.name.value),
+                value: directive
+                    .arguments
+                    .iter()
+                    .map(|argument| display_bytes(&argument.value))
+                    .collect(),
+                origin: ProvenanceSpan {
+                    role: ProvenanceRole::Value,
+                    span: directive.span,
+                },
+            });
+    }
+
+    fn externalize_activation(
+        &mut self,
+        occurrence: OccurrenceId,
+        directive: &Directive,
+        kind: ActivationRequirementKind,
+        section: Option<SectionId>,
+        supported: bool,
+    ) {
+        let decision = self.pending_decision_mut(occurrence);
+        if decision.outcome.is_none() {
+            decision.outcome = Some(DecisionOutcome::Externalized(Externalization::Activation));
+        }
+        self.diagnostics.push(
+            Diagnostic::new(
+                E_STATS_UNSUPPORTED,
+                Severity::Warning,
+                DiagnosticStage::Resolve,
+                "HAProxy statistics endpoint requires explicit activation; no runtime equivalence is claimed",
+            )
+            .with_primary_span(directive.span),
+        );
+        self.effective
+            .activation_requirements
+            .push(ActivationRequirement {
+                kind,
+                directive: display_directive(directive),
+                origin: ProvenanceSpan {
+                    role: ProvenanceRole::Value,
+                    span: directive.span,
+                },
+                equivalent_runtime_endpoint: false,
+            });
+        if let Some(section) = section {
+            self.effective.activation_only_sections.insert(section);
+            if supported {
+                self.effective.supported_stats_sections.insert(section);
+            }
+        }
     }
 
     fn unknown_directive(
@@ -3105,6 +3310,30 @@ struct OptionConflict {
     previous_span: Span,
 }
 
+fn merge_server_defaults(current: &mut EffectiveServer, incoming: EffectiveServer) {
+    if incoming.check.is_some() {
+        current.check = incoming.check;
+    }
+    if incoming.interval.is_some() {
+        current.interval = incoming.interval;
+    }
+    if incoming.fast_interval.is_some() {
+        current.fast_interval = incoming.fast_interval;
+    }
+    if incoming.down_interval.is_some() {
+        current.down_interval = incoming.down_interval;
+    }
+    if incoming.rise.is_some() {
+        current.rise = incoming.rise;
+    }
+    if incoming.fall.is_some() {
+        current.fall = incoming.fall;
+    }
+    if incoming.max_connections.is_some() {
+        current.max_connections = incoming.max_connections;
+    }
+}
+
 fn parse_server(directive: &Directive, occurrence: OccurrenceId) -> Option<ParsedServer> {
     let [name, address, options @ ..] = directive.arguments.as_slice() else {
         return None;
@@ -3115,8 +3344,11 @@ fn parse_server(directive: &Directive, occurrence: OccurrenceId) -> Option<Parse
         address: EffectiveValue::direct(address_value, occurrence, address.span),
         check: None,
         interval: None,
+        fast_interval: None,
+        down_interval: None,
         rise: None,
         fall: None,
+        max_connections: None,
         unsupported_options: Vec::new(),
     };
     let mut seen: HashMap<Vec<u8>, (Vec<Vec<u8>>, Span)> = HashMap::new();
@@ -3147,10 +3379,25 @@ fn parse_server(directive: &Directive, occurrence: OccurrenceId) -> Option<Parse
             b"check" => {
                 server.check = Some(EffectiveValue::direct(true, occurrence, option.span));
             }
+            b"no-check" => {
+                server.check = Some(EffectiveValue::direct(false, occurrence, option.span));
+            }
             b"inter" => {
                 let value = &option_arguments[0];
                 let duration = parse_duration(&value.value)?;
                 server.interval = Some(EffectiveValue::direct(duration, occurrence, value.span));
+            }
+            b"fastinter" => {
+                let value = &option_arguments[0];
+                let duration = parse_duration(&value.value)?;
+                server.fast_interval =
+                    Some(EffectiveValue::direct(duration, occurrence, value.span));
+            }
+            b"downinter" => {
+                let value = &option_arguments[0];
+                let duration = parse_duration(&value.value)?;
+                server.down_interval =
+                    Some(EffectiveValue::direct(duration, occurrence, value.span));
             }
             b"rise" => {
                 let value = &option_arguments[0];
@@ -3164,6 +3411,14 @@ fn parse_server(directive: &Directive, occurrence: OccurrenceId) -> Option<Parse
                 let value = &option_arguments[0];
                 server.fall = Some(EffectiveValue::direct(
                     parse_u32(&value.value)?,
+                    occurrence,
+                    value.span,
+                ));
+            }
+            b"maxconn" => {
+                let value = &option_arguments[0];
+                server.max_connections = Some(EffectiveValue::direct(
+                    parse_u64(&value.value)?,
                     occurrence,
                     value.span,
                 ));
@@ -3520,8 +3775,7 @@ fn is_global_security_directive(name: &[u8]) -> bool {
 fn is_proxy_default_directive(name: &[u8]) -> bool {
     matches!(
         name,
-        b"default-server"
-            | b"dispatch"
+        b"dispatch"
             | b"fullconn"
             | b"hash-type"
             | b"http-reuse"
@@ -3556,6 +3810,16 @@ fn is_process_owned(name: &[u8]) -> bool {
             | b"setuid"
             | b"user"
     )
+}
+
+fn process_requirement_kind(name: &[u8]) -> DeploymentRequirementKind {
+    match name {
+        b"user" | b"setuid" => DeploymentRequirementKind::ProcessUser,
+        b"group" | b"setgid" => DeploymentRequirementKind::ProcessGroup,
+        b"chroot" => DeploymentRequirementKind::Chroot,
+        b"daemon" | b"master-worker" | b"pidfile" => DeploymentRequirementKind::Daemonization,
+        _ => DeploymentRequirementKind::WorkerModel,
+    }
 }
 
 fn is_logging_directive(directive: &Directive) -> bool {
@@ -3606,4 +3870,33 @@ fn section_name(kind: SectionKind) -> &'static str {
 
 fn display_bytes(value: &[u8]) -> String {
     String::from_utf8_lossy(value).into_owned()
+}
+
+fn display_directive(directive: &Directive) -> String {
+    std::iter::once(directive.name.value.as_slice())
+        .chain(
+            directive
+                .arguments
+                .iter()
+                .map(|argument| argument.value.as_slice()),
+        )
+        .map(display_bytes)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn exact_prometheus_exporter(directive: &Directive) -> bool {
+    directive
+        .arguments
+        .iter()
+        .map(|argument| argument.value.as_slice())
+        .eq([
+            b"use-service".as_slice(),
+            b"prometheus-exporter".as_slice(),
+            b"if".as_slice(),
+            b"{".as_slice(),
+            b"path".as_slice(),
+            b"/metrics".as_slice(),
+            b"}".as_slice(),
+        ])
 }

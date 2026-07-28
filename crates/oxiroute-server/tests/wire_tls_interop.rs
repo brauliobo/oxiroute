@@ -8,7 +8,7 @@ use http::{Method, StatusCode};
 use oxiroute_config::{
     AlpnProtocol, Certificate, CertificateSource, HttpLiteralHeader, HttpRequestHeaderMutation,
     HttpRequestHeaderValue, HttpRetryPolicy, HttpRetryTrigger, HttpRouteAction, HttpVersion,
-    HttpVersionPolicy, TlsVersion, UpstreamTls,
+    HttpVersionPolicy, TlsVersion, UpstreamServer, UpstreamTls,
 };
 use oxiroute_server::CertificateGeneration;
 use rustls::{HandshakeKind, ProtocolVersion};
@@ -491,6 +491,7 @@ async fn downstream_h2_executes_fixed_actions_with_head_semantics_without_an_ups
             headers: vec![HttpLiteralHeader {
                 name: "x-action".into(),
                 value: "fixed".into(),
+                always: true,
             }],
         };
         let proxy = ProxyHarness::start(&config, reserved);
@@ -912,6 +913,62 @@ async fn h2_only_upstream_preserves_grpc_data_and_trailers_without_h1_downgrade(
     })
     .await
     .expect("upstream H2/gRPC wire test timed out");
+}
+
+#[tokio::test]
+async fn maxconn_one_multiplexes_concurrent_h2_requests_on_one_physical_connection() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = TlsOrigin::start_h2().await;
+        let reserved = ReservedListener::new();
+        let mut config = proxy_config(
+            reserved.address,
+            origin.address,
+            vec![AlpnProtocol::H2],
+            Some(verified_upstream(ORIGIN_SERVER_NAME, "ca-a.pem")),
+            HttpVersionPolicy {
+                min: HttpVersion::Http2,
+                max: HttpVersion::Http2,
+            },
+        );
+        let endpoint = config.upstream_pools[0]
+            .endpoints
+            .pop()
+            .expect("upstream endpoint");
+        config.upstream_pools[0].servers.push(UpstreamServer {
+            name: "origin".into(),
+            endpoint,
+            max_connections: Some(1),
+            dns_resolution: oxiroute_config::DnsResolutionPolicy::OnConnect,
+        });
+        config.upstream_pools[0].queue_timeout_ms = Some(1_000);
+        let proxy = ProxyHarness::start(&config, reserved);
+        let proxy_address = proxy.address;
+        let request = |path: &'static str| async move {
+            let stream = tls_connect(proxy_address, PROXY_SERVER_NAME, "ca-a.pem", &[b"h2"])
+                .await
+                .expect("capped downstream H2 connection");
+            let mut client = H2Client::from_tls(stream)
+                .await
+                .expect("capped downstream H2 client");
+            let response = client
+                .request(Method::GET, path)
+                .await
+                .expect("capped H2 response");
+            client.finish().await;
+            response
+        };
+
+        let (first, second) = tokio::join!(request("/h2"), request("/h2"));
+        assert_eq!(first.body.as_ref(), b"h2-origin");
+        assert_eq!(second.body.as_ref(), b"h2-origin");
+        origin.observations.wait_for_http_requests(2).await;
+        assert_eq!(origin.observations.alpn(), vec![b"h2".to_vec()]);
+
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("capped H2 multiplexing test timed out");
 }
 
 #[tokio::test]

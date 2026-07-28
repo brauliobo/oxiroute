@@ -286,7 +286,7 @@ async fn shutdown_signal_cancels_an_established_relay() {
             .await
             .expect_err("shutdown must cancel relay");
         assert!(matches!(failure.kind, RelayFailureKind::Cancelled));
-        assert_eq!(pool.health_snapshot().endpoints[0].active_leases, 0);
+        assert_eq!(pool.health_snapshot().endpoints[0].active_connections, 0);
 
         drop(client);
         cancellation.await.expect("cancellation task");
@@ -341,7 +341,7 @@ async fn resolves_dns_when_connecting_and_releases_the_lease() {
             .await
             .expect("DNS relay task")
             .expect("DNS relay");
-        assert_eq!(pool.health_snapshot().endpoints[0].active_leases, 0);
+        assert_eq!(pool.health_snapshot().endpoints[0].active_connections, 0);
     })
     .await
     .expect("DNS relay timed out");
@@ -410,7 +410,7 @@ async fn relays_over_a_unix_upstream_with_half_close_and_accounting() {
                 .bytes_sent,
             13
         );
-        assert_eq!(pool.health_snapshot().endpoints[0].active_leases, 0);
+        assert_eq!(pool.health_snapshot().endpoints[0].active_connections, 0);
     })
     .await
     .expect("Unix relay timed out");
@@ -437,7 +437,7 @@ async fn connect_failure_releases_the_selected_lease() {
         .await
         .expect_err("unavailable upstream must fail");
     assert!(matches!(failure.kind, RelayFailureKind::Connect(_)));
-    assert_eq!(pool.health_snapshot().endpoints[0].active_leases, 0);
+    assert_eq!(pool.health_snapshot().endpoints[0].active_connections, 0);
 }
 
 #[tokio::test]

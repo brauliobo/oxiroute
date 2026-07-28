@@ -1,0 +1,70 @@
+# Maintainer: OxiRoute maintainers <https://github.com/oxiroute/oxiroute/issues>
+
+pkgname=oxiroute
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Pingora-based HTTP, TCP, and RTMP proxy runtime'
+arch=('x86_64')
+url='https://github.com/brauliobo/oxiroute'
+license=('Apache-2.0')
+depends=('ca-certificates' 'gcc-libs' 'glibc' 'openssl')
+makedepends=('rust>=1.87')
+optdepends=('certbot: provide certificate lineages consumed by configured Certbot sources')
+backup=('etc/oxiroute/oxiroute.env'
+        'etc/oxiroute/oxiroute.lua')
+install=oxiroute.install
+_target='x86_64-unknown-linux-gnu'
+source=("oxiroute-${pkgver}.tar.gz::${url}/releases/download/v${pkgver}/oxiroute-${pkgver}.tar.gz"
+        'oxiroute.service'
+        'oxiroute.sysusers'
+        'oxiroute.tmpfiles'
+        'oxiroute.env'
+        'oxiroute.lua'
+        'README.md')
+sha256sums=('90201aee0139fe061a40645b1ad8d21e7e95942d6c9a8e0044e04ea9e80eeebb'
+            'ad2d8536df423a144f0da179fd68ae7712ae2e39226c068a088a248bdbadf0e3'
+            'ece087105e74910e9d4a6c3551082828378ac5c62fc15e97a755a3bc93020e72'
+            '632c14735ddea0bf780abea05d3d288f9530ca41f201a37e428223d04acffe3a'
+            'bf78e2cc42f96db9fc88a999b66e59c9048267346a00b6e8a23a6d523bed7886'
+            'f55a08f56ff139b566afac6b0c9cbbc4ed08f69a7e04810128bfb8c98a0f0564'
+            '87c98a2a3fb1dcfe3767020630d0fa29cef4fa7caf9999d3d2eea418073fc36d')
+
+prepare() {
+  cd "oxiroute-${pkgver}"
+  cargo fetch --locked --target "${_target}"
+}
+
+build() {
+  cd "oxiroute-${pkgver}"
+  export CARGO_NET_OFFLINE=true
+  export OPENSSL_NO_VENDOR=1
+  export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=${srcdir}=/usr/src/debug/${pkgname}"
+  cargo build --frozen --release --package oxiroute --target "${_target}"
+}
+
+package() {
+  cd "oxiroute-${pkgver}"
+
+  install -Dm755 "target/${_target}/release/oxiroute" \
+    "${pkgdir}/usr/bin/oxiroute"
+  ln -s oxiroute "${pkgdir}/usr/bin/oxr"
+  # Some Arch glibc crt objects overstate their ISA requirement; all compiled code targets baseline x86-64.
+  objcopy --remove-section .note.gnu.property "${pkgdir}/usr/bin/oxiroute"
+  install -Dm644 LICENSE \
+    "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+
+  install -Dm644 "${srcdir}/oxiroute.service" \
+    "${pkgdir}/usr/lib/systemd/system/oxiroute.service"
+  install -Dm644 "${srcdir}/oxiroute.sysusers" \
+    "${pkgdir}/usr/lib/sysusers.d/oxiroute.conf"
+  install -Dm644 "${srcdir}/oxiroute.tmpfiles" \
+    "${pkgdir}/usr/lib/tmpfiles.d/oxiroute.conf"
+  install -Dm644 "${srcdir}/oxiroute.env" \
+    "${pkgdir}/etc/oxiroute/oxiroute.env"
+  install -Dm644 "${srcdir}/oxiroute.lua" \
+    "${pkgdir}/etc/oxiroute/oxiroute.lua"
+  install -Dm644 "${srcdir}/README.md" \
+    "${pkgdir}/usr/share/doc/${pkgname}/arch-packaging.md"
+  install -Dm644 docs/MANAGEMENT_CLI.md \
+    "${pkgdir}/usr/share/doc/${pkgname}/management-cli.md"
+}

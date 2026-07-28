@@ -107,6 +107,30 @@ where
         if h1_only {
             let (h1, reused) = self.h1.get_http_session(peer).await?;
             Ok((HttpSession::H1(h1), reused))
+        } else if let Some(lifetime) = peer.connection_lifetime() {
+            loop {
+                let generation = lifetime.capacity_generation();
+                if let Some(h2) = self.h2.reused_http_session(peer).await? {
+                    return Ok((HttpSession::H2(h2), true));
+                }
+                let h2_only = peer
+                    .get_peer_options()
+                    .is_some_and(|o| o.alpn.get_min_http_version() == 2)
+                    && !self.h2.h1_is_preferred(peer);
+                if !h2_only {
+                    if let Some(h1) = self.h1.reused_http_session(peer).await {
+                        return Ok((HttpSession::H1(h1), true));
+                    }
+                }
+                if lifetime.try_acquire()? {
+                    let session = self
+                        .h2
+                        .new_http_session_with_lifetime(peer, lifetime)
+                        .await?;
+                    return Ok((session, false));
+                }
+                lifetime.wait_for_capacity(generation).await?;
+            }
         } else {
             // the peer allows h2, we first check the h2 reuse pool
             let reused_h2 = self.h2.reused_http_session(peer).await?;

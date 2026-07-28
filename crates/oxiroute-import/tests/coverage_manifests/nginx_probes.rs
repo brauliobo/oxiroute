@@ -43,6 +43,10 @@ fn nginx_manifest_forms_execute_parser_semantic_and_lowering_decisions() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "executable manifest contexts and cross-directive contracts are one coverage gate"
+)]
 fn nginx_manifest_contexts_and_cross_directive_requirements_are_executable() {
     let manifest: DirectiveManifest<DirectiveForm> = read_manifest("nginx-directives.json");
     for entry in &manifest.entries {
@@ -120,19 +124,30 @@ fn nginx_manifest_contexts_and_cross_directive_requirements_are_executable() {
     assert_nginx_probe(include, &glob_include, "glob include");
 
     let defaults = import_nginx_plaintext_supported_fixture();
-    assert_diagnostic_message(&defaults.diagnostics, "proxy defaults");
+    assert!(!defaults.has_errors(), "{:?}", defaults.diagnostics);
+    assert!(defaults.config.is_some());
 
     let unequal_timeouts = import_nginx_source(
         render_nginx_fixture(standard_nginx_fixture())
             .replace("proxy_send_timeout 15s", "proxy_send_timeout 16s"),
     );
-    assert_diagnostic_message(
-        &unequal_timeouts.diagnostics,
-        "timeouts are not one uniform I/O timeout",
+    assert!(
+        !unequal_timeouts.has_errors(),
+        "{:?}",
+        unequal_timeouts.diagnostics
     );
+    let policy = unequal_timeouts.config.as_ref().unwrap().http_services[0].routes[0].policy;
+    assert_eq!(policy.connect_timeout_ms, 15_000);
+    assert_eq!(policy.read_timeout_ms, 15_000);
+    assert_eq!(policy.write_timeout_ms, 16_000);
 
     let bad_key = import_nginx_source(nginx_mismatched_key_probe());
-    assert_diagnostic_message(&bad_key.diagnostics, "private key material");
+    assert!(
+        bad_key
+            .diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.message().contains("private key material"))
+    );
 
     let directory = TempDir::new().expect("create nginx glob grammar probe directory");
     fs::write(
@@ -252,6 +267,9 @@ fn nginx_context_probe_source(entry: &DirectiveForm, context: &str, directory: &
     if entry.key == "location" && context == "location" {
         return nginx_nested_location_probe(entry.id.as_str());
     }
+    if matches!(entry.key.as_str(), "root" | "index") && context == "location" {
+        return source;
+    }
     if entry.contexts.len() == 1 || entry.contexts == ["any"] {
         return source;
     }
@@ -351,6 +369,7 @@ fn nginx_probe_source(id: &str, directory: &Path) -> String {
         | "directive.nginx.upstream.named-block"
         | "directive.nginx.upstream-server.static"
         | "directive.nginx.http-server.block"
+        | "directive.nginx.access-log.off"
         | "directive.nginx.client-max-body-size"
         | "directive.nginx.proxy-connect-timeout"
         | "directive.nginx.proxy-read-timeout"
@@ -396,11 +415,12 @@ fn nginx_listen_probe(id: &str) -> String {
 fn nginx_server_name_probe(id: &str) -> String {
     match id {
         "directive.nginx.server-name.incompatible-wildcard" => {
-            nginx_with_nondefault_server(".example.test")
+            nginx_with_nondefault_server("www.example.*")
         }
         "directive.nginx.server-name.leading-wildcard" => {
             nginx_with_nondefault_server("*.example.test")
         }
+        "directive.nginx.server-name.leading-dot" => nginx_with_nondefault_server(".example.test"),
         "directive.nginx.server-name.canonical" => {
             nginx_with_nondefault_server("exact.example.test")
         }
@@ -470,8 +490,8 @@ fn nginx_return_probe(id: &str) -> String {
 
 fn nginx_static_probe() -> String {
     render_nginx_fixture(standard_nginx_fixture()).replace(
-        "proxy_pass http://app;",
-        "root /srv/static;\n      index index.html home.html;",
+        "location / { proxy_pass http://app; }",
+        "location / {\n      root /srv/static;\n      index index.html home.html;\n    }",
     )
 }
 
@@ -525,7 +545,7 @@ fn render_nginx_fixture(spec: NginxFixtureSpec<'_>) -> String {
     ))
     .expect("canonical private-key fixture path");
     format!(
-        "http {{\n  client_max_body_size 2m;\n  proxy_connect_timeout 15s;\n  proxy_read_timeout 15s;\n  proxy_send_timeout 15s;\n  proxy_http_version {};\n  proxy_buffering off;\n  proxy_request_buffering off;\n  proxy_next_upstream off;\n  proxy_next_upstream_tries 1;\n  proxy_set_header Host $http_host;\n  proxy_hide_header X-Powered-By;\n  proxy_pass_header Server;\n  proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;\n  proxy_cookie_path / /application;\n  auth_basic off;\n  {}\n  upstream app {{ server {}; }}\n  server {{\n    listen {};\n    server_name {};\n    ssl_certificate {};\n    ssl_certificate_key {};\n    ssl_protocols TLSv1.2 TLSv1.3;\n    {}\n    {} {{ proxy_pass {}; }}\n  }}\n}}\n",
+        "http {{\n  access_log off;\n  client_max_body_size 2m;\n  proxy_connect_timeout 15s;\n  proxy_read_timeout 15s;\n  proxy_send_timeout 15s;\n  proxy_http_version {};\n  proxy_buffering off;\n  proxy_request_buffering off;\n  proxy_next_upstream off;\n  proxy_next_upstream_tries 1;\n  proxy_set_header Host $http_host;\n  proxy_hide_header X-Powered-By;\n  proxy_pass_header Server;\n  proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;\n  proxy_cookie_path / /application;\n  auth_basic off;\n  {}\n  upstream app {{ server {}; }}\n  server {{\n    listen {};\n    server_name {};\n    ssl_certificate {};\n    ssl_certificate_key {};\n    ssl_protocols TLSv1.2 TLSv1.3;\n    {}\n    {} {{ proxy_pass {}; }}\n  }}\n}}\n",
         spec.proxy_http_version,
         spec.extra_http,
         spec.upstream_server,

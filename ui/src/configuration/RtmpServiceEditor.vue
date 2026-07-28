@@ -8,6 +8,14 @@ header.form-heading
   label.field(data-field="rtmp_services[].name")
     span Stable name
     input(type="text" v-model="service.name")
+  label.field(data-field="rtmp_services[].outbound_chunk_size")
+    span Outbound chunk size (bytes)
+    input(type="number" min="1" max="1048576" step="1" v-model.number="service.outbound_chunk_size")
+  label.field(data-field="rtmp_services[].access_log.type")
+    span Session access log
+    select(:value="service.access_log?.type ?? 'default'" @change="setAccessLog")
+      option(value="default") Runtime default
+      option(value="disabled") Disabled
 fieldset.route-list(data-field="rtmp_services[].applications")
   .route-heading
     legend Applications
@@ -37,6 +45,38 @@ fieldset.route-list(data-field="rtmp_services[].applications")
       label.enable-row.compact-enable(data-field="rtmp_services[].applications[].idle_streams")
         input(type="checkbox" v-model="application.idle_streams")
         span Allow viewers before a publisher
+    fieldset.object-block(data-field="rtmp_services[].applications[].fanout")
+      legend Fanout bounds
+      .field-grid
+        label.field(data-field="rtmp_services[].applications[].fanout.max_subscribers")
+          span Maximum subscribers
+          input(type="number" min="1" max="1000000" step="1" v-model.number="application.fanout.max_subscribers")
+        label.field(data-field="rtmp_services[].applications[].fanout.max_queue_messages_per_subscriber")
+          span Queue messages per subscriber
+          input(type="number" min="1" max="65536" step="1" v-model.number="application.fanout.max_queue_messages_per_subscriber")
+        label.field(data-field="rtmp_services[].applications[].fanout.max_queue_bytes_per_subscriber")
+          span Queue bytes per subscriber
+          input(type="number" min="1" max="1073741824" step="1" v-model.number="application.fanout.max_queue_bytes_per_subscriber")
+    fieldset.route-list(data-field="rtmp_services[].applications[].push_targets")
+      .route-heading
+        legend Push relays
+        button.add-row(type="button" :disabled="!application.live || application.push_targets.length >= 16" @click="addPushTarget(applicationIndex)") + Add push target
+      p.empty-list(v-if="application.push_targets.length === 0") No outbound relay is configured.
+      article.route-card(v-for="(target, targetIndex) in application.push_targets" :key="targetIndex")
+        header.route-card-heading
+          strong Push target {{ targetIndex + 1 }}
+          button.danger-link(type="button" @click="removePushTarget(applicationIndex, targetIndex)") Remove
+        .field-grid
+          label.field(data-field="rtmp_services[].applications[].push_targets[].host")
+            span Host
+            input(type="text" v-model="target.host")
+          label.field(data-field="rtmp_services[].applications[].push_targets[].port")
+            span Port
+            input(type="number" min="1" max="65535" step="1" v-model.number="target.port")
+          label.field(data-field="rtmp_services[].applications[].push_targets[].application")
+            span Destination application
+            input(type="text" v-model="target.application" placeholder="$name")
+            small Use $name for the exact source stream name.
     fieldset.route-list.recorder-list(data-field="rtmp_services[].applications[].recorders")
       .route-heading
         legend Recorders
@@ -67,7 +107,18 @@ const emit = defineEmits<{
 }>()
 
 function newApplication(): RtmpApplicationConfig {
-  return { name: '', live: true, idle_streams: true, recorders: [] }
+  return {
+    name: '',
+    live: true,
+    idle_streams: true,
+    push_targets: [],
+    fanout: {
+      max_subscribers: 1_024,
+      max_queue_messages_per_subscriber: 256,
+      max_queue_bytes_per_subscriber: 8_388_608,
+    },
+    recorders: [],
+  }
 }
 
 function newRecorder(): RtmpRecorderConfig {
@@ -77,6 +128,9 @@ function newRecorder(): RtmpRecorderConfig {
     root_directory: '/var/lib/oxiroute/recordings',
     suffix_template: '.flv',
     append_unix_seconds: false,
+    timezone: 'utc',
+    time_basis: 'segment_start',
+    segment_naming: 'safe_unique',
     rotation_interval_ms: null,
     max_queue_messages: 256,
     max_queue_bytes: 8_388_608,
@@ -90,6 +144,24 @@ function newRecorder(): RtmpRecorderConfig {
 function addApplication(): void {
   if (props.service.applications.length >= 256) return
   props.service.applications.push(newApplication())
+  emit('changed')
+}
+
+function setAccessLog(event: Event): void {
+  const value = (event.target as HTMLSelectElement).value
+  props.service.access_log = value === 'disabled' ? { type: 'disabled' } : null
+  emit('changed')
+}
+
+function addPushTarget(applicationIndex: number): void {
+  const application = props.service.applications[applicationIndex]
+  if (!application?.live || application.push_targets.length >= 16) return
+  application.push_targets.push({ host: '127.0.0.1', port: 1_936, application: '$name' })
+  emit('changed')
+}
+
+function removePushTarget(applicationIndex: number, targetIndex: number): void {
+  props.service.applications[applicationIndex]?.push_targets.splice(targetIndex, 1)
   emit('changed')
 }
 

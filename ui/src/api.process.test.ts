@@ -23,7 +23,7 @@ const targetDirectory = process.env.CARGO_TARGET_DIR
       ? process.env.CARGO_TARGET_DIR
       : resolve(workspaceRoot, process.env.CARGO_TARGET_DIR))
   : join(workspaceRoot, 'target')
-const serverBinary = join(targetDirectory, 'debug', 'oxiroute-server')
+const serverBinary = join(targetDirectory, 'debug', 'oxiroute')
 
 let child: ChildProcessWithoutNullStreams | undefined
 let directory = ''
@@ -32,7 +32,7 @@ let origin = ''
 let stderr = ''
 
 beforeAll(async () => {
-  const build = spawnSync('cargo', ['+1.87.0', 'build', '-p', 'oxiroute-server', '--bin', 'oxiroute-server'], {
+  const build = spawnSync('cargo', ['+1.87.0', 'build', '-p', 'oxiroute', '--bin', 'oxiroute'], {
     cwd: workspaceRoot,
     encoding: 'utf8',
     env: { ...process.env, CARGO_INCREMENTAL: '0' },
@@ -63,7 +63,7 @@ beforeAll(async () => {
     stderr += chunk
   })
   origin = `http://127.0.0.1:${port}`
-  await waitForServer(`${origin}/api/v1/monitoring`)
+  await waitForServer(`${origin}/ready`)
 
   const nativeFetch = globalThis.fetch
   vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) =>
@@ -91,13 +91,14 @@ afterAll(async () => {
 describe('production API client against the built management process', () => {
   it('runs the browser fetch sequence against real response JSON and token authentication', async () => {
     const [monitoring, catalog, topology, snapshot] = await Promise.all([
-      fetchMonitoring(),
-      fetchRtmpCatalog(),
-      fetchTopology(),
+      fetchMonitoring(undefined, token),
+      fetchRtmpCatalog(undefined, token),
+      fetchTopology(undefined, token),
       fetchConfig(token),
     ])
 
     expect(monitoring.listeners).toEqual([{
+      administrativeState: 'ready',
       name: 'process-live',
       protocol: 'rtmp',
       bind: `unix:${listenerPath}`,
@@ -123,6 +124,13 @@ describe('production API client against the built management process', () => {
       recorderSegmentsStarted: '0',
       recorderSegmentsCompleted: '0',
       recorderDiscontinuities: '0',
+      relayConnectionAttempts: '0',
+      relayConnections: '0',
+      relayReconnects: '0',
+      relayEventsSent: '0',
+      relayEventsDropped: '0',
+      relayPayloadBytesSent: '0',
+      relays: [],
       recorders: [],
     })
     expect(catalog).toEqual({
@@ -158,16 +166,23 @@ describe('production API client against the built management process', () => {
       activeRevision: expect.stringMatching(/^[0-9a-f]{64}$/),
       config: {
         version: 1,
+        max_connections: null,
         management: { bind: origin.slice('http://'.length), ui_dir: null },
+        stats: null,
         certificates: [],
         tls_profiles: [],
         listeners: [{
           name: 'process-live',
-          bind: { type: 'unix', path: listenerPath },
+          bind: { type: 'unix', path: listenerPath, mode: null },
           protocol: 'rtmp',
           service: 'live',
           tls_profile: null,
           max_connections: 8,
+          downstream_timeouts: {
+            client_timeout_ms: null,
+            request_timeout_ms: null,
+            keepalive_timeout_ms: null,
+          },
         }],
         cache_stores: [],
         upstream_pools: [],
@@ -175,10 +190,18 @@ describe('production API client against the built management process', () => {
         forward_proxy_services: [],
         rtmp_services: [{
           name: 'live',
+          outbound_chunk_size: 4_096,
+          access_log: null,
           applications: [{
             name: 'broadcast',
             live: true,
             idle_streams: false,
+            push_targets: [],
+            fanout: {
+              max_subscribers: 1_024,
+              max_queue_messages_per_subscriber: 256,
+              max_queue_bytes_per_subscriber: 8_388_608,
+            },
             recorders: [],
           }],
         }],
@@ -207,12 +230,12 @@ describe('production API client against the built management process', () => {
     expect(saved).toEqual({
       diskRevision: expect.stringMatching(/^[0-9a-f]{64}$/),
       activeRevision: snapshot.activeRevision,
-      outcome: 'saved_restart_required',
-      activationState: 'restart_required',
-      restartRequired: true,
+      outcome: 'saved_pending_activation',
+      activationState: 'pending',
+      restartRequired: false,
       diagnostics: [{
-        code: 'W_RESTART_REQUIRED',
-        message: 'configuration was saved; restart the daemon to activate it',
+        code: 'I_ACTIVATION_PENDING',
+        message: 'configuration was saved and queued for generation activation',
         severity: 'warning',
         stage: 'activation',
       }],
@@ -305,15 +328,28 @@ function processTopologyNode(path: string) {
     name: 'process-live',
     configPath: '/listeners/0',
     attributes: {
-      bind: { type: 'unix', path },
+      bind: { type: 'unix', path, mode: null },
+      downstreamTimeouts: {
+        clientTimeoutMs: null,
+        keepaliveTimeoutMs: null,
+        requestTimeoutMs: null,
+      },
       protocol: 'rtmp',
       service: 'live',
       tlsProfile: null,
       maxConnections: 8,
+      outboundChunkSize: 4_096,
+      accessLog: 'default_disabled',
       applications: [{
         name: 'broadcast',
         live: true,
         idleStreams: false,
+        pushTargetCount: 0,
+        fanout: {
+          maxSubscribers: 1_024,
+          maxQueueMessagesPerSubscriber: 256,
+          maxQueueBytesPerSubscriber: 8_388_608,
+        },
         recording: {
           supported: false,
           recorderCount: 0,

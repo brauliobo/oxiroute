@@ -52,6 +52,28 @@ pub trait UniqueID {
     fn id(&self) -> UniqueIDType;
 }
 
+/// Application-owned admission and state retained for one physical upstream connection.
+#[async_trait]
+pub trait ConnectionLifetime: Debug + Send + Sync + 'static {
+    /// Attempt to reserve capacity for a new physical connection.
+    fn try_acquire(&self) -> crate::Result<bool> {
+        Ok(true)
+    }
+
+    /// Return a version that changes when capacity or a reusable connection becomes available.
+    fn capacity_generation(&self) -> u64 {
+        0
+    }
+
+    /// Wait until connection acquisition should retry.
+    async fn wait_for_capacity(&self, _generation: u64) -> crate::Result<()> {
+        Ok(())
+    }
+
+    /// Notify capacity waiters that this physical connection can serve another request.
+    fn notify_reusable(&self) {}
+}
+
 /// Interface to get TLS info
 pub trait Ssl {
     /// Return the TLS info if the connection is over TLS

@@ -4,14 +4,19 @@ mod report;
 mod tls;
 mod upstream;
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
-use oxiroute_config::{Certificate, HttpService, Listener, ListenerBind, TlsProfile, UpstreamPool};
+use oxiroute_config::{
+    Certificate, HttpService, Listener, ListenerBind, TlsProfile, UpstreamPool, UpstreamTls,
+};
 
 use crate::{CanonicalDraft, CanonicalProvenance, Diagnostic, DiagnosticCode};
 
 use super::{DirectiveOrigin, HttpResolution, SourceGraph};
 
+pub(super) use report::lower_http_root_with_overlays;
 pub use report::{BlockedService, ImportReport, import_http_fragment};
 
 struct Lowerer {
@@ -22,10 +27,22 @@ struct Lowerer {
     certificate_identities: HashMap<tls::CertificateIdentity, tls::CertificateMetadata>,
     draft: CanonicalDraft,
     provenance: Vec<CanonicalProvenance<DirectiveOrigin>>,
+    upstream_tls_overlays: HashMap<Vec<u8>, UpstreamTls>,
+    bearer_token_overlays: HashMap<Vec<u8>, PathBuf>,
+    used_upstream_tls_overlays: RefCell<HashSet<Vec<u8>>>,
+    used_bearer_token_overlays: RefCell<HashSet<Vec<u8>>>,
+    used_certificate_overlays: RefCell<HashSet<super::OccurrenceId>>,
+    used_htpasswd_overlays: RefCell<HashSet<super::OccurrenceId>>,
 }
 
 impl Lowerer {
-    fn new(graph: SourceGraph, resolution: HttpResolution, diagnostics: Vec<Diagnostic>) -> Self {
+    fn new(
+        graph: SourceGraph,
+        resolution: HttpResolution,
+        diagnostics: Vec<Diagnostic>,
+        upstream_tls_overlays: HashMap<Vec<u8>, UpstreamTls>,
+        bearer_token_overlays: HashMap<Vec<u8>, PathBuf>,
+    ) -> Self {
         Self {
             graph,
             resolution,
@@ -34,6 +51,12 @@ impl Lowerer {
             certificate_identities: HashMap::new(),
             draft: CanonicalDraft::default(),
             provenance: Vec::new(),
+            upstream_tls_overlays,
+            bearer_token_overlays,
+            used_upstream_tls_overlays: RefCell::new(HashSet::new()),
+            used_bearer_token_overlays: RefCell::new(HashSet::new()),
+            used_certificate_overlays: RefCell::new(HashSet::new()),
+            used_htpasswd_overlays: RefCell::new(HashSet::new()),
         }
     }
 }

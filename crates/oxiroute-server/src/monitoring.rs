@@ -16,7 +16,10 @@ use serde::Serialize;
 
 use oxiroute_config::ListenerBind;
 
-use crate::{CertbotReconciler, CertbotWatcherMonitor, PoolHealthSnapshot, RoundRobinPool};
+use crate::{
+    AdministrativeState, CertbotReconciler, CertbotWatcherMonitor, PoolHealthSnapshot,
+    RoundRobinPool,
+};
 
 #[derive(Debug)]
 pub enum MetricsError {
@@ -30,6 +33,13 @@ pub enum MetricsError {
     ConnectionLimitReached {
         listener: String,
         limit: u64,
+    },
+    ProcessConnectionLimitReached {
+        limit: u64,
+    },
+    AdministrativeDrain {
+        resource: &'static str,
+        name: String,
     },
     CounterOverflow(&'static str),
     StatePoisoned(&'static str),
@@ -68,6 +78,15 @@ impl fmt::Display for MetricsError {
                 write!(
                     formatter,
                     "listener `{listener}` reached its {limit}-connection limit"
+                )
+            }
+            Self::ProcessConnectionLimitReached { limit } => {
+                write!(formatter, "process reached its {limit}-connection limit")
+            }
+            Self::AdministrativeDrain { resource, name } => {
+                write!(
+                    formatter,
+                    "{resource} `{name}` is not accepting new connections"
                 )
             }
             Self::CounterOverflow(counter) => {
@@ -112,12 +131,56 @@ pub struct RuntimeMetrics {
 }
 
 struct RuntimeMetricsInner {
-    started_at: Instant,
+    process_admission: Arc<ProcessAdmissionState>,
+    process_runtime: ProcessRuntime,
     listeners: RwLock<HashMap<String, Arc<ListenerMetricsState>>>,
     upstream_pools: RwLock<Vec<Arc<RoundRobinPool>>>,
     certbot: RwLock<CertbotMonitoring>,
     previous_cpu_sample: Mutex<Option<CpuSample>>,
     rtmp_recording_supported: AtomicBool,
+}
+
+#[derive(Clone)]
+pub struct ProcessRuntime {
+    inner: Arc<ProcessRuntimeInner>,
+}
+
+struct ProcessRuntimeInner {
+    admission: Arc<ProcessAdmissionState>,
+    listeners: Mutex<HashMap<String, Arc<SharedListenerMetricsState>>>,
+    started_at: Instant,
+}
+
+impl ProcessRuntime {
+    #[must_use]
+    pub fn new(max_connections: Option<u64>) -> Self {
+        Self {
+            inner: Arc::new(ProcessRuntimeInner {
+                admission: Arc::new(ProcessAdmissionState::new(max_connections)),
+                listeners: Mutex::new(HashMap::new()),
+                started_at: Instant::now(),
+            }),
+        }
+    }
+
+    fn listener(
+        &self,
+        bind: &str,
+        max_connections: Option<u64>,
+    ) -> Result<Arc<SharedListenerMetricsState>, MetricsError> {
+        let mut listeners = self
+            .inner
+            .listeners
+            .lock()
+            .map_err(|_| MetricsError::StatePoisoned("process listeners"))?;
+        Ok(Arc::clone(listeners.entry(bind.to_owned()).or_insert_with(
+            || Arc::new(SharedListenerMetricsState::new(max_connections)),
+        )))
+    }
+
+    fn activate_limit(&self, max_connections: Option<u64>) {
+        self.inner.admission.set_limit(max_connections);
+    }
 }
 
 #[derive(Default)]
@@ -129,15 +192,35 @@ struct CertbotMonitoring {
 impl RuntimeMetrics {
     #[must_use]
     pub fn new() -> Self {
+        Self::with_max_connections(None)
+    }
+
+    #[must_use]
+    pub fn with_max_connections(max_connections: Option<u64>) -> Self {
+        Self::for_process(ProcessRuntime::new(max_connections))
+    }
+
+    #[must_use]
+    pub fn for_process(process_runtime: ProcessRuntime) -> Self {
         Self {
             inner: Arc::new(RuntimeMetricsInner {
-                started_at: Instant::now(),
+                process_admission: Arc::clone(&process_runtime.inner.admission),
+                process_runtime,
                 listeners: RwLock::new(HashMap::new()),
                 upstream_pools: RwLock::new(Vec::new()),
                 certbot: RwLock::new(CertbotMonitoring::default()),
                 previous_cpu_sample: Mutex::new(None),
                 rtmp_recording_supported: AtomicBool::new(false),
             }),
+        }
+    }
+
+    pub(crate) fn activate_limits(&self, max_connections: Option<u64>) {
+        self.inner.process_runtime.activate_limit(max_connections);
+        if let Ok(listeners) = self.inner.listeners.read() {
+            for listener in listeners.values() {
+                listener.shared.set_limit(listener.max_connections);
+            }
         }
     }
 
@@ -210,14 +293,22 @@ impl RuntimeMetrics {
             .map_err(|_| MetricsError::StatePoisoned("listeners"))?;
         match listeners.entry(name.clone()) {
             Entry::Vacant(entry) => {
+                let shared = self
+                    .inner
+                    .process_runtime
+                    .listener(&bind, max_connections)?;
                 let state = Arc::new(ListenerMetricsState::new(
                     name,
                     protocol,
                     bind,
                     max_connections,
+                    shared,
                 ));
                 entry.insert(Arc::clone(&state));
-                Ok(ListenerMetrics { state })
+                Ok(ListenerMetrics {
+                    process: Arc::clone(&self.inner.process_admission),
+                    state,
+                })
             }
             Entry::Occupied(_) => Err(MetricsError::DuplicateListener(name)),
         }
@@ -240,7 +331,7 @@ impl RuntimeMetrics {
         let bind = match bind {
             ListenerBind::Socket { address } => format!("socket:{address}"),
             ListenerBind::Udp { address } => format!("udp:{address}"),
-            ListenerBind::Unix { path } => {
+            ListenerBind::Unix { path, .. } => {
                 let path = path
                     .to_str()
                     .ok_or_else(|| MetricsError::InvalidListenerBind {
@@ -265,6 +356,7 @@ impl RuntimeMetrics {
             .read()
             .map_err(|_| MetricsError::StatePoisoned("listeners"))?;
         Ok(listeners.get(name).map(|state| ListenerMetrics {
+            process: Arc::clone(&self.inner.process_admission),
             state: Arc::clone(state),
         }))
     }
@@ -281,6 +373,54 @@ impl RuntimeMetrics {
         self.listener(listener_name)?
             .ok_or_else(|| MetricsError::ListenerNotFound(listener_name.to_owned()))?
             .begin_connection()
+    }
+
+    /// Acquires only process-wide connection capacity, for runtime-owned listeners without a
+    /// canonical listener metrics identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the process cap is reached or an admission counter would overflow.
+    pub fn begin_process_connection(&self) -> Result<ProcessConnectionGuard, MetricsError> {
+        self.inner.process_admission.acquire()
+    }
+
+    /// Acquires process capacity for a local control-plane connection while bypassing a data-plane
+    /// administrative drain.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the process capacity is reached or a counter would overflow.
+    pub fn begin_control_connection(&self) -> Result<ProcessConnectionGuard, MetricsError> {
+        self.inner.process_admission.acquire_control()
+    }
+
+    pub fn set_process_administrative_state(&self, state: AdministrativeState) {
+        self.inner
+            .process_admission
+            .administrative_state
+            .store(state as u8, Ordering::Release);
+    }
+
+    /// Changes admission state for one exact listener.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the listener is unknown or the registry is poisoned.
+    pub fn set_listener_administrative_state(
+        &self,
+        name: &str,
+        state: AdministrativeState,
+    ) -> Result<(), MetricsError> {
+        let listener = self
+            .listener(name)?
+            .ok_or_else(|| MetricsError::ListenerNotFound(name.to_owned()))?;
+        listener
+            .state
+            .shared
+            .administrative_state
+            .store(state as u8, Ordering::Release);
+        Ok(())
     }
 
     /// Records whether successfully activated RTMP services own any recorder runtime.
@@ -318,8 +458,15 @@ impl RuntimeMetrics {
         let system = sample_system()?;
         let cpu_percent = cpu_percent(previous_cpu_sample.as_ref(), &system.cpu)?;
         let sampled_at_unix_ms = unix_time_ms()?;
-        let uptime_ms = u64::try_from(self.inner.started_at.elapsed().as_millis())
-            .map_err(|_| MetricsError::ValueOutOfRange("uptime milliseconds"))?;
+        let uptime_ms = u64::try_from(
+            self.inner
+                .process_runtime
+                .inner
+                .started_at
+                .elapsed()
+                .as_millis(),
+        )
+        .map_err(|_| MetricsError::ValueOutOfRange("uptime milliseconds"))?;
 
         let SystemSample {
             resident_memory_bytes,
@@ -333,7 +480,25 @@ impl RuntimeMetrics {
             sampled_at_unix_ms,
             uptime_ms,
             process: ProcessSnapshot {
+                active_connections: self.inner.process_admission.active.load(Ordering::Relaxed),
+                administrative_state: AdministrativeState::from_u8(
+                    self.inner
+                        .process_admission
+                        .administrative_state
+                        .load(Ordering::Acquire),
+                ),
                 cpu_percent,
+                max_connections: self.inner.process_admission.limit(),
+                rejected_connections: self
+                    .inner
+                    .process_admission
+                    .rejected
+                    .load(Ordering::Relaxed),
+                retry_attempts: self
+                    .inner
+                    .process_admission
+                    .retry_attempts
+                    .load(Ordering::Relaxed),
                 resident_memory_bytes,
                 virtual_memory_bytes,
                 thread_count,
@@ -482,6 +647,7 @@ impl Default for RuntimeMetrics {
 
 #[derive(Clone)]
 pub struct ListenerMetrics {
+    process: Arc<ProcessAdmissionState>,
     state: Arc<ListenerMetricsState>,
 }
 
@@ -499,6 +665,18 @@ impl ListenerMetrics {
     #[must_use]
     pub fn bind(&self) -> &str {
         &self.state.bind
+    }
+
+    #[must_use]
+    pub fn accepting(&self) -> bool {
+        AdministrativeState::from_u8(self.process.administrative_state.load(Ordering::Acquire))
+            == AdministrativeState::Ready
+            && AdministrativeState::from_u8(
+                self.state
+                    .shared
+                    .administrative_state
+                    .load(Ordering::Acquire),
+            ) == AdministrativeState::Ready
     }
 
     /// Marks the listener socket as bound and available to the runtime.
@@ -532,18 +710,47 @@ impl ListenerMetrics {
     /// Returns an error if a configured connection cap is reached or the accepted or active
     /// connection counter would overflow.
     pub fn begin_connection(&self) -> Result<ConnectionGuard, MetricsError> {
+        if AdministrativeState::from_u8(
+            self.state
+                .shared
+                .administrative_state
+                .load(Ordering::Acquire),
+        ) != AdministrativeState::Ready
+        {
+            checked_atomic_add(
+                &self.state.shared.rejected_connections,
+                1,
+                "listener.rejectedConnections",
+            )?;
+            return Err(MetricsError::AdministrativeDrain {
+                resource: "listener",
+                name: self.state.name.clone(),
+            });
+        }
         checked_atomic_add(
-            &self.state.accepted_connections,
+            &self.state.shared.accepted_connections,
             1,
             "listener.acceptedConnections",
         )?;
-        let admission = self.state.active_connections.fetch_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
+        let process = match self.process.acquire() {
+            Ok(process) => process,
+            Err(error) => {
+                checked_atomic_add(
+                    &self.state.shared.rejected_connections,
+                    1,
+                    "listener.rejectedConnections",
+                )?;
+                return Err(error);
+            }
+        };
+        let admission = self.state.shared.active_connections.fetch_update(
+            Ordering::AcqRel,
+            Ordering::Acquire,
             |current| {
                 if self
                     .state
-                    .max_connections
+                    .shared
+                    .limit()
                     .is_some_and(|limit| current >= limit)
                 {
                     return None;
@@ -553,12 +760,12 @@ impl ListenerMetrics {
         );
         if let Err(current) = admission {
             checked_atomic_add(
-                &self.state.rejected_connections,
+                &self.state.shared.rejected_connections,
                 1,
                 "listener.rejectedConnections",
             )?;
             return Err(
-                if let Some(limit) = self.state.max_connections.filter(|limit| current >= *limit) {
+                if let Some(limit) = self.state.shared.limit().filter(|limit| current >= *limit) {
                     MetricsError::ConnectionLimitReached {
                         listener: self.state.name.clone(),
                         limit,
@@ -568,7 +775,27 @@ impl ListenerMetrics {
                 },
             );
         }
+        if AdministrativeState::from_u8(
+            self.state
+                .shared
+                .administrative_state
+                .load(Ordering::Acquire),
+        ) != AdministrativeState::Ready
+        {
+            decrement_counter(&self.state.shared.active_connections);
+            checked_atomic_add(
+                &self.state.shared.rejected_connections,
+                1,
+                "listener.rejectedConnections",
+            )?;
+            drop(process);
+            return Err(MetricsError::AdministrativeDrain {
+                resource: "listener",
+                name: self.state.name.clone(),
+            });
+        }
         Ok(ConnectionGuard {
+            process: Some(process),
             state: Arc::clone(&self.state),
             releases_active_connection: true,
         })
@@ -581,6 +808,7 @@ impl ListenerMetrics {
     #[must_use]
     pub fn traffic_accounting(&self) -> ConnectionGuard {
         ConnectionGuard {
+            process: None,
             state: Arc::clone(&self.state),
             releases_active_connection: false,
         }
@@ -592,7 +820,11 @@ impl ListenerMetrics {
     ///
     /// Returns an error if the byte counter would overflow.
     pub fn record_bytes_received(&self, bytes: u64) -> Result<(), MetricsError> {
-        checked_atomic_add(&self.state.bytes_received, bytes, "listener.bytesReceived")
+        checked_atomic_add(
+            &self.state.shared.bytes_received,
+            bytes,
+            "listener.bytesReceived",
+        )
     }
 
     /// Adds bytes written across this listener to its traffic total.
@@ -601,11 +833,17 @@ impl ListenerMetrics {
     ///
     /// Returns an error if the byte counter would overflow.
     pub fn record_bytes_sent(&self, bytes: u64) -> Result<(), MetricsError> {
-        checked_atomic_add(&self.state.bytes_sent, bytes, "listener.bytesSent")
+        checked_atomic_add(&self.state.shared.bytes_sent, bytes, "listener.bytesSent")
+    }
+
+    /// Accounts for a retry that the HTTP proxy handed back to Pingora.
+    pub fn record_retry_attempt(&self) {
+        self.process.retry_attempts.fetch_add(1, Ordering::Relaxed);
     }
 }
 
 pub struct ConnectionGuard {
+    process: Option<ProcessConnectionGuard>,
     state: Arc<ListenerMetricsState>,
     releases_active_connection: bool,
 }
@@ -622,7 +860,11 @@ impl ConnectionGuard {
     ///
     /// Returns an error if the byte counter would overflow.
     pub fn record_bytes_received(&self, bytes: u64) -> Result<(), MetricsError> {
-        checked_atomic_add(&self.state.bytes_received, bytes, "listener.bytesReceived")
+        checked_atomic_add(
+            &self.state.shared.bytes_received,
+            bytes,
+            "listener.bytesReceived",
+        )
     }
 
     /// Adds bytes written to this connection to its listener total.
@@ -631,15 +873,121 @@ impl ConnectionGuard {
     ///
     /// Returns an error if the byte counter would overflow.
     pub fn record_bytes_sent(&self, bytes: u64) -> Result<(), MetricsError> {
-        checked_atomic_add(&self.state.bytes_sent, bytes, "listener.bytesSent")
+        checked_atomic_add(&self.state.shared.bytes_sent, bytes, "listener.bytesSent")
     }
 }
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
         if self.releases_active_connection {
-            decrement_counter(&self.state.active_connections);
+            decrement_counter(&self.state.shared.active_connections);
         }
+        self.process.take();
+    }
+}
+
+struct ProcessAdmissionState {
+    active: AtomicU64,
+    administrative_state: AtomicU8,
+    limit: AtomicU64,
+    rejected: AtomicU64,
+    retry_attempts: AtomicU64,
+}
+
+impl ProcessAdmissionState {
+    fn new(limit: Option<u64>) -> Self {
+        Self {
+            active: AtomicU64::new(0),
+            administrative_state: AtomicU8::new(AdministrativeState::Ready as u8),
+            limit: AtomicU64::new(encode_limit(limit)),
+            rejected: AtomicU64::new(0),
+            retry_attempts: AtomicU64::new(0),
+        }
+    }
+
+    fn limit(&self) -> Option<u64> {
+        decode_limit(self.limit.load(Ordering::Acquire))
+    }
+
+    fn set_limit(&self, limit: Option<u64>) {
+        self.limit.store(encode_limit(limit), Ordering::Release);
+    }
+
+    fn acquire(self: &Arc<Self>) -> Result<ProcessConnectionGuard, MetricsError> {
+        self.acquire_inner(true)
+    }
+
+    fn acquire_control(self: &Arc<Self>) -> Result<ProcessConnectionGuard, MetricsError> {
+        self.acquire_inner(false)
+    }
+
+    fn acquire_inner(
+        self: &Arc<Self>,
+        enforce_administrative_state: bool,
+    ) -> Result<ProcessConnectionGuard, MetricsError> {
+        if enforce_administrative_state
+            && AdministrativeState::from_u8(self.administrative_state.load(Ordering::Acquire))
+                != AdministrativeState::Ready
+        {
+            checked_atomic_add(&self.rejected, 1, "process.rejectedConnections")?;
+            return Err(MetricsError::AdministrativeDrain {
+                resource: "process",
+                name: "oxiroute".into(),
+            });
+        }
+        let admission = self
+            .active
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                if (enforce_administrative_state
+                    && AdministrativeState::from_u8(
+                        self.administrative_state.load(Ordering::Acquire),
+                    ) != AdministrativeState::Ready)
+                    || self.limit().is_some_and(|limit| current >= limit)
+                {
+                    None
+                } else {
+                    current.checked_add(1)
+                }
+            });
+        match admission {
+            Ok(_) => {
+                if enforce_administrative_state
+                    && AdministrativeState::from_u8(
+                        self.administrative_state.load(Ordering::Acquire),
+                    ) != AdministrativeState::Ready
+                {
+                    decrement_counter(&self.active);
+                    checked_atomic_add(&self.rejected, 1, "process.rejectedConnections")?;
+                    return Err(MetricsError::AdministrativeDrain {
+                        resource: "process",
+                        name: "oxiroute".into(),
+                    });
+                }
+                Ok(ProcessConnectionGuard {
+                    state: Arc::clone(self),
+                })
+            }
+            Err(current) => {
+                checked_atomic_add(&self.rejected, 1, "process.rejectedConnections")?;
+                Err(
+                    if let Some(limit) = self.limit().filter(|limit| current >= *limit) {
+                        MetricsError::ProcessConnectionLimitReached { limit }
+                    } else {
+                        MetricsError::CounterOverflow("process.activeConnections")
+                    },
+                )
+            }
+        }
+    }
+}
+
+pub struct ProcessConnectionGuard {
+    state: Arc<ProcessAdmissionState>,
+}
+
+impl Drop for ProcessConnectionGuard {
+    fn drop(&mut self) {
+        decrement_counter(&self.state.active);
     }
 }
 
@@ -649,6 +997,12 @@ struct ListenerMetricsState {
     bind: String,
     max_connections: Option<u64>,
     runtime_state: AtomicU8,
+    shared: Arc<SharedListenerMetricsState>,
+}
+
+struct SharedListenerMetricsState {
+    administrative_state: AtomicU8,
+    limit: AtomicU64,
     accepted_connections: AtomicU64,
     rejected_connections: AtomicU64,
     active_connections: AtomicU64,
@@ -657,13 +1011,47 @@ struct ListenerMetricsState {
 }
 
 impl ListenerMetricsState {
-    fn new(name: String, protocol: String, bind: String, max_connections: Option<u64>) -> Self {
+    fn new(
+        name: String,
+        protocol: String,
+        bind: String,
+        max_connections: Option<u64>,
+        shared: Arc<SharedListenerMetricsState>,
+    ) -> Self {
         Self {
             name,
             protocol,
             bind,
             max_connections,
             runtime_state: AtomicU8::new(ListenerRuntimeState::Configured as u8),
+            shared,
+        }
+    }
+
+    fn snapshot(&self) -> ListenerSnapshot {
+        ListenerSnapshot {
+            administrative_state: AdministrativeState::from_u8(
+                self.shared.administrative_state.load(Ordering::Acquire),
+            ),
+            name: self.name.clone(),
+            protocol: self.protocol.clone(),
+            bind: self.bind.clone(),
+            max_connections: self.shared.limit(),
+            state: ListenerRuntimeState::from_u8(self.runtime_state.load(Ordering::Acquire)),
+            accepted_connections: self.shared.accepted_connections.load(Ordering::Relaxed),
+            rejected_connections: self.shared.rejected_connections.load(Ordering::Relaxed),
+            active_connections: self.shared.active_connections.load(Ordering::Relaxed),
+            bytes_received: self.shared.bytes_received.load(Ordering::Relaxed),
+            bytes_sent: self.shared.bytes_sent.load(Ordering::Relaxed),
+        }
+    }
+}
+
+impl SharedListenerMetricsState {
+    fn new(max_connections: Option<u64>) -> Self {
+        Self {
+            administrative_state: AtomicU8::new(AdministrativeState::Ready as u8),
+            limit: AtomicU64::new(encode_limit(max_connections)),
             accepted_connections: AtomicU64::new(0),
             rejected_connections: AtomicU64::new(0),
             active_connections: AtomicU64::new(0),
@@ -672,20 +1060,24 @@ impl ListenerMetricsState {
         }
     }
 
-    fn snapshot(&self) -> ListenerSnapshot {
-        ListenerSnapshot {
-            name: self.name.clone(),
-            protocol: self.protocol.clone(),
-            bind: self.bind.clone(),
-            max_connections: self.max_connections,
-            state: ListenerRuntimeState::from_u8(self.runtime_state.load(Ordering::Acquire)),
-            accepted_connections: self.accepted_connections.load(Ordering::Relaxed),
-            rejected_connections: self.rejected_connections.load(Ordering::Relaxed),
-            active_connections: self.active_connections.load(Ordering::Relaxed),
-            bytes_received: self.bytes_received.load(Ordering::Relaxed),
-            bytes_sent: self.bytes_sent.load(Ordering::Relaxed),
-        }
+    fn limit(&self) -> Option<u64> {
+        decode_limit(self.limit.load(Ordering::Acquire))
     }
+
+    fn set_limit(&self, limit: Option<u64>) {
+        self.limit.store(encode_limit(limit), Ordering::Release);
+    }
+}
+
+const fn encode_limit(limit: Option<u64>) -> u64 {
+    match limit {
+        Some(limit) => limit,
+        None => 0,
+    }
+}
+
+const fn decode_limit(limit: u64) -> Option<u64> {
+    if limit == 0 { None } else { Some(limit) }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -767,7 +1159,14 @@ pub struct CertbotWatcherSnapshot {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessSnapshot {
+    pub active_connections: u64,
+    pub administrative_state: AdministrativeState,
     pub cpu_percent: Option<f64>,
+    pub max_connections: Option<u64>,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub rejected_connections: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub retry_attempts: u64,
     pub resident_memory_bytes: u64,
     pub virtual_memory_bytes: u64,
     pub thread_count: u64,
@@ -801,6 +1200,7 @@ pub struct TrafficSnapshot {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListenerSnapshot {
+    pub administrative_state: AdministrativeState,
     pub name: String,
     pub protocol: String,
     pub bind: String,
@@ -1254,6 +1654,77 @@ fn unix_time_ms() -> Result<u64, MetricsError> {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_uptime_admission_and_listener_capacity_survive_generation_overlap() {
+        let process = ProcessRuntime::new(Some(2));
+        let first = RuntimeMetrics::for_process(process.clone());
+        let first_listener = first
+            .register_listener("old-name", "tcp", "socket:127.0.0.1:8080", Some(1))
+            .expect("first listener");
+        first.activate_limits(Some(2));
+        let held = first_listener.begin_connection().expect("held connection");
+        let first_uptime = first.snapshot().expect("first snapshot").uptime_ms;
+
+        let second = RuntimeMetrics::for_process(process);
+        let second_listener = second
+            .register_listener("new-name", "tcp", "socket:127.0.0.1:8080", Some(1))
+            .expect("second listener");
+        second.activate_limits(Some(2));
+
+        assert!(matches!(
+            second_listener.begin_connection(),
+            Err(MetricsError::ConnectionLimitReached { limit: 1, .. })
+        ));
+        assert!(second.snapshot().expect("second snapshot").uptime_ms >= first_uptime);
+        second.set_process_administrative_state(AdministrativeState::Drain);
+        assert!(!first_listener.accepting());
+        drop(held);
+    }
+
+    #[test]
+    fn listener_rejection_rolls_back_process_admission() {
+        let runtime = RuntimeMetrics::with_max_connections(Some(2));
+        let listener = runtime
+            .register_listener("http", "http", "socket:127.0.0.1:8080", Some(1))
+            .expect("listener");
+        let admitted = listener.begin_connection().expect("first connection");
+        assert!(matches!(
+            listener.begin_connection(),
+            Err(MetricsError::ConnectionLimitReached { limit: 1, .. })
+        ));
+
+        let process_only = runtime
+            .begin_process_connection()
+            .expect("listener rejection released process slot");
+        assert!(matches!(
+            runtime.begin_process_connection(),
+            Err(MetricsError::ProcessConnectionLimitReached { limit: 2 })
+        ));
+        drop(process_only);
+        drop(admitted);
+
+        let listener = listener.state.snapshot();
+        assert_eq!(listener.accepted_connections, 2);
+        assert_eq!(listener.rejected_connections, 1);
+        assert_eq!(listener.active_connections, 0);
+        assert_eq!(
+            runtime
+                .inner
+                .process_admission
+                .active
+                .load(Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            runtime
+                .inner
+                .process_admission
+                .rejected
+                .load(Ordering::Relaxed),
+            1
+        );
+    }
 
     #[test]
     fn parses_process_cpu_ticks_when_command_contains_parentheses() {

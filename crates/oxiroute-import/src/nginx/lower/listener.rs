@@ -5,18 +5,21 @@ use std::{
 };
 
 use oxiroute_config::{
-    HttpCookiePathRewrite, HttpHostSelector, HttpLiteralHeader, HttpPathSelector, HttpProxyPolicy,
-    HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
+    AccessLogPolicy, DnsResolutionPolicy, DownstreamTimeoutPolicy, HttpAccessPolicy,
+    HttpCookiePathRewrite, HttpHostSelector, HttpLiteralHeader, HttpMimeType, HttpPathSelector,
+    HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
     HttpResponseHeaderMutation, HttpRetryPolicy, HttpRetryTrigger, HttpRoute, HttpRouteAction,
-    HttpService, HttpUpstreamHost, HttpVersionPolicy, Listener, ListenerBind, Protocol,
-    UpstreamPool, canonicalize_http_path,
+    HttpRoutePolicy, HttpService, HttpStaticErrorResponse, HttpStaticMimePolicy,
+    HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost, HttpVersionPolicy, Listener,
+    ListenerBind, Protocol, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool,
+    UpstreamServer, UpstreamTls, canonicalize_http_path,
 };
 
 use crate::{E_INVALID_VALUE, E_SEMANTICS_NOT_REPRESENTABLE, E_UNSUPPORTED_FEATURE};
 
 use crate::nginx::{
     DirectiveOrigin, EffectiveBind, EffectiveHttp, EffectiveLocation, EffectiveServer,
-    ListenEndpoint, LocationKind, OccurrenceId, ServerNameKind,
+    ListenEndpoint, LocationKind, OccurrenceId, ProxyPassScheme, ServerNameKind, StaticEndpoint,
 };
 
 use super::{
@@ -57,31 +60,18 @@ fn socket_addr(endpoint: &ListenEndpoint) -> Option<SocketAddr> {
     Some(SocketAddr::new(ip, *port))
 }
 
-fn listener_bind(bind: &EffectiveBind, servers: &[&EffectiveServer]) -> Option<ListenerBind> {
+fn listener_bind(bind: &EffectiveBind, _servers: &[&EffectiveServer]) -> Option<ListenerBind> {
     match &bind.endpoint {
-        ListenEndpoint::Unix { path } => Some(ListenerBind::Unix { path: path.clone() }),
+        ListenEndpoint::Unix { path } => Some(ListenerBind::Unix {
+            path: path.clone(),
+            mode: None,
+        }),
         ListenEndpoint::Socket { address, port } => socket_addr(&bind.endpoint)
             .or_else(|| {
-                (address == b"*"
-                    && servers.iter().all(|server| {
-                        matching_listen(server, &bind.endpoint)
-                            .value
-                            .as_ref()
-                            .is_some_and(|value| explicit_ipv4_wildcard(&value.value, *port))
-                    }))
-                .then(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), *port))
+                (address == b"*").then(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), *port))
             })
             .map(|address| ListenerBind::Socket { address }),
     }
-}
-
-fn explicit_ipv4_wildcard(value: &[u8], expected_port: u16) -> bool {
-    value == b"0.0.0.0"
-        || value
-            .strip_prefix(b"0.0.0.0:")
-            .and_then(utf8)
-            .and_then(|port| port.parse::<u16>().ok())
-            == Some(expected_port)
 }
 
 pub(super) fn matching_listen<'a>(
@@ -179,6 +169,37 @@ impl Lowerer {
             .collect::<Vec<_>>();
         let listener_bind = listener_bind(bind, &servers);
         let mut issues = self.semantic_bind_issues(http, &servers);
+        for server in &servers {
+            if let Some(gzip) = self.effective_policy(server.origin.occurrence, b"gzip") {
+                if gzip.arguments.as_slice() != [b"off".to_vec()] {
+                    issues.push(issue(
+                        gzip.origins.last().unwrap_or(&server.origin),
+                        E_SEMANTICS_NOT_REPRESENTABLE,
+                        "enabled nginx gzip policy is broader than runtime response compression semantics",
+                    ));
+                }
+            }
+            let Some(access_log) = self.effective_policy(server.origin.occurrence, b"access_log")
+            else {
+                issues.push(issue(
+                    &server.origin,
+                    E_SEMANTICS_NOT_REPRESENTABLE,
+                    "omitted nginx access_log enables the unrepresented default combined log",
+                ));
+                continue;
+            };
+            if access_log
+                .arguments
+                .first()
+                .is_none_or(|value| value != b"off")
+            {
+                issues.push(issue(
+                    access_log.origins.last().unwrap_or(&server.origin),
+                    E_SEMANTICS_NOT_REPRESENTABLE,
+                    "nginx formatted access_log output is not equivalent to canonical JSON access logging",
+                ));
+            }
+        }
         if listener_bind.is_none() {
             issues.push(issue(
                 servers
@@ -198,6 +219,12 @@ impl Lowerer {
         let listener_bind = listener_bind.expect("checked explicit bind");
 
         let service_name = format!("nginx-http-service-{http_index}-{bind_index}");
+        let downstream_tls = servers.iter().any(|server| {
+            matching_listen(server, &bind.endpoint)
+                .options
+                .iter()
+                .any(|option| option.value == b"ssl")
+        });
         let candidate = self.lower_bind_routes(
             http,
             bind,
@@ -206,6 +233,7 @@ impl Lowerer {
             service_name,
             http_index,
             bind_index,
+            downstream_tls,
             &mut issues,
         );
         BindBlock {
@@ -229,23 +257,36 @@ impl Lowerer {
         service_name: String,
         http_index: usize,
         bind_index: usize,
+        downstream_tls: bool,
         issues: &mut Vec<LowerIssue>,
     ) -> Option<BindCandidate> {
         let mut routes = Vec::new();
         let mut pools = Vec::new();
         let mut pool_names = HashSet::new();
         let mut route_origins = Vec::new();
-        let mut body_policy = None;
-        let mut timeout_policy = None;
         let mut all_origins = Vec::new();
         for server in servers {
-            let hosts = match Self::route_hosts(server, bind.default_server) {
+            if server.origin.occurrence != bind.default_server
+                && !bind
+                    .names
+                    .iter()
+                    .any(|name| name.server == server.origin.occurrence)
+            {
+                continue;
+            }
+            let hosts = match Self::route_hosts(server, bind) {
                 Ok(hosts) => hosts,
                 Err(server_issues) => {
                     issues.extend(server_issues);
                     continue;
                 }
             };
+            let nginx_host_fallback = server.server_names.iter().find_map(|name| {
+                (name.kind == ServerNameKind::Exact)
+                    .then(|| utf8(&name.normalized))
+                    .flatten()
+                    .and_then(canonical_exact_host)
+            });
             all_origins.push(server.origin.clone());
             let mut has_local_catch_all = false;
             for location in &server.locations {
@@ -262,33 +303,18 @@ impl Lowerer {
                     &service_name,
                     http_index,
                     routes.len(),
+                    downstream_tls,
+                    nginx_host_fallback.as_deref(),
                 ) {
                     Ok(lowered) => {
-                        if body_policy.is_some_and(|policy| policy != lowered.body_bytes) {
-                            issues.push(issue(
-                                &location.origin,
-                                E_SEMANTICS_NOT_REPRESENTABLE,
-                                "nginx locations use different request-body limits, but canonical HTTP limits are per service",
-                            ));
-                        } else {
-                            body_policy = Some(lowered.body_bytes);
-                        }
-                        if let Some(timeout) = lowered.timeout_ms {
-                            if timeout_policy.is_some_and(|policy| policy != timeout) {
-                                issues.push(issue(
-                                    &location.origin,
-                                    E_SEMANTICS_NOT_REPRESENTABLE,
-                                    "nginx locations use different proxy timeout policies, but canonical HTTP timeouts are per service",
-                                ));
-                            } else {
-                                timeout_policy = Some(timeout);
-                            }
-                        }
                         for mut route in lowered.routes {
                             route.origins.push(server.origin.clone());
-                            route
-                                .origins
-                                .extend(server.server_names.iter().map(|name| name.origin.clone()));
+                            route.origins.extend(
+                                bind.names
+                                    .iter()
+                                    .filter(|name| name.server == server.origin.occurrence)
+                                    .map(|name| name.name.origin.clone()),
+                            );
                             route_origins.push(route.origins.clone());
                             all_origins.extend(route.origins.clone());
                             if let Some(pool) = route.pool {
@@ -347,12 +373,15 @@ impl Lowerer {
                 service: Some(service_name.clone()),
                 tls_profile: tls_profile.as_ref().map(|profile| profile.name.clone()),
                 max_connections: None,
+                downstream_timeouts: DownstreamTimeoutPolicy::default(),
             },
             service: HttpService {
                 name: service_name,
                 routes,
-                upstream_io_timeout_ms: timeout_policy.unwrap_or(NGINX_DEFAULT_PROXY_TIMEOUT_MS),
-                max_request_body_bytes: body_policy.unwrap_or(Some(NGINX_DEFAULT_BODY_BYTES)),
+                upstream_io_timeout_ms: NGINX_DEFAULT_PROXY_TIMEOUT_MS,
+                max_request_body_bytes: Some(NGINX_DEFAULT_BODY_BYTES),
+                gzip: None,
+                access_log: Some(AccessLogPolicy::Disabled),
             },
             pools,
             certificates,
@@ -405,36 +434,50 @@ impl Lowerer {
 
     fn route_hosts(
         server: &EffectiveServer,
-        default_server: OccurrenceId,
+        bind: &EffectiveBind,
     ) -> Result<Vec<Option<HttpHostSelector>>, Vec<LowerIssue>> {
-        if server.origin.occurrence == default_server {
+        if server.origin.occurrence == bind.default_server {
             return Ok(vec![None]);
         }
         let mut hosts = Vec::new();
         let mut issues = Vec::new();
-        for name in &server.server_names {
+        for name in bind
+            .names
+            .iter()
+            .filter(|name| name.server == server.origin.occurrence)
+            .map(|name| &name.name)
+        {
+            if name.normalized == b"_" {
+                continue;
+            }
             let host = match name.kind {
-                ServerNameKind::Exact => utf8(&name.normalized).and_then(canonical_exact_host),
-                ServerNameKind::LeadingWildcard => {
+                ServerNameKind::Exact => utf8(&name.normalized)
+                    .and_then(canonical_exact_host)
+                    .map(|value| HttpHostSelector::NormalizedHost { value }),
+                ServerNameKind::LeadingWildcard => utf8(&name.normalized)
+                    .and_then(|name| name.strip_prefix("*."))
+                    .filter(|suffix| canonical_dns_name(suffix))
+                    .map(|value| HttpHostSelector::NginxLeadingWildcard {
+                        value: value.into(),
+                    }),
+                ServerNameKind::LeadingWildcardAndExact => utf8(&name.normalized)
+                    .and_then(|name| name.strip_prefix('.'))
+                    .filter(|suffix| canonical_dns_name(suffix))
+                    .map(|value| HttpHostSelector::NginxLeadingDot {
+                        value: value.into(),
+                    }),
+                ServerNameKind::TrailingWildcard => {
                     issues.push(issue(
                         &name.origin,
                         E_SEMANTICS_NOT_REPRESENTABLE,
-                        "nginx leading wildcard host semantics are not exactly representable",
-                    ));
-                    None
-                }
-                ServerNameKind::LeadingWildcardAndExact | ServerNameKind::TrailingWildcard => {
-                    issues.push(issue(
-                        &name.origin,
-                        E_SEMANTICS_NOT_REPRESENTABLE,
-                        "nginx wildcard does not have canonical one-label semantics",
+                        "nginx trailing wildcard has no canonical host selector",
                     ));
                     None
                 }
                 ServerNameKind::Regex | ServerNameKind::Variable | ServerNameKind::Invalid => None,
             };
             if let Some(host) = host {
-                if !hosts.iter().any(|candidate: &String| candidate == &host) {
+                if !hosts.contains(&host) {
                     hosts.push(host);
                 }
             } else if issues.is_empty() {
@@ -453,10 +496,7 @@ impl Lowerer {
             ));
         }
         if issues.is_empty() {
-            Ok(hosts
-                .into_iter()
-                .map(|value| Some(HttpHostSelector::NormalizedHost { value }))
-                .collect())
+            Ok(hosts.into_iter().map(Some).collect())
         } else {
             Err(issues)
         }
@@ -466,6 +506,7 @@ impl Lowerer {
         clippy::too_many_lines,
         reason = "matcher, action, and provenance must be accepted or rejected as one route"
     )]
+    #[allow(clippy::too_many_arguments)]
     fn lower_location(
         &self,
         http: &EffectiveHttp,
@@ -474,6 +515,8 @@ impl Lowerer {
         service_name: &str,
         http_index: usize,
         route_ordinal: usize,
+        downstream_tls: bool,
+        nginx_host_fallback: Option<&str>,
     ) -> Result<LoweredLocation, Vec<LowerIssue>> {
         let mut issues = Vec::new();
         if !matches!(location.kind, LocationKind::Exact | LocationKind::Prefix) {
@@ -516,8 +559,36 @@ impl Lowerer {
             _ => HttpPathSelector::RawPrefix { value: "/".into() },
         };
         let return_policy = self.effective_policy(location.origin.occurrence, b"return");
-        let (action, pool, timeout_ms, mut origins) = if let Some(value) = return_policy {
-            let action = Self::lower_return(&value, &location.origin, &mut issues);
+        let (action, pool, timeouts, mut origins) = if let Some(value) = return_policy {
+            let return_status = match value.arguments.as_slice() {
+                [payload]
+                    if payload.starts_with(b"http://") || payload.starts_with(b"https://") =>
+                {
+                    Some(302)
+                }
+                [status] | [status, _] => utf8(status).and_then(|status| status.parse().ok()),
+                _ => None,
+            };
+            if return_status.is_some_and(|status| {
+                self.error_page_matches_status(location.origin.occurrence, status)
+            }) {
+                issues.push(issue(
+                    value.origins.last().unwrap_or(&location.origin),
+                    E_SEMANTICS_NOT_REPRESENTABLE,
+                    "nginx return status triggers an error_page redirect outside local action semantics",
+                ));
+            }
+            let mut header_origins = Vec::new();
+            let headers = self.lower_literal_headers(location, &mut header_origins, &mut issues);
+            let action = Self::lower_return(
+                &value,
+                &location.origin,
+                nginx_host_fallback,
+                headers,
+                &mut issues,
+            );
+            let mut origins = value.origins;
+            origins.extend(header_origins);
             (
                 action.unwrap_or(HttpRouteAction::FixedResponse {
                     status: 500,
@@ -526,7 +597,7 @@ impl Lowerer {
                 }),
                 None,
                 None,
-                value.origins,
+                origins,
             )
         } else if let Some(proxy) = &location.proxy_pass {
             match self.lower_proxy(
@@ -536,6 +607,8 @@ impl Lowerer {
                 service_name,
                 http_index,
                 route_ordinal,
+                downstream_tls,
+                nginx_host_fallback,
                 &mut issues,
             ) {
                 Some(proxy) => (
@@ -544,7 +617,7 @@ impl Lowerer {
                         policy: proxy.policy,
                     },
                     Some(proxy.pool),
-                    Some(proxy.timeout_ms),
+                    Some(proxy.timeouts),
                     proxy.origins,
                 ),
                 None => (
@@ -558,14 +631,9 @@ impl Lowerer {
                     Vec::new(),
                 ),
             }
+        } else if let Some((action, origins)) = self.lower_static(location, &mut issues) {
+            (action, None, None, origins)
         } else {
-            self.block_static(location, &mut issues);
-            let mut static_origins = Vec::new();
-            for name in [b"root".as_slice(), b"index".as_slice()] {
-                for policy in self.effective_list_policy_chain(location.origin.occurrence, name) {
-                    static_origins.extend(policy.origins);
-                }
-            }
             (
                 HttpRouteAction::FixedResponse {
                     status: 500,
@@ -574,7 +642,7 @@ impl Lowerer {
                 },
                 None,
                 None,
-                static_origins,
+                Vec::new(),
             )
         };
         origins.push(location.origin.clone());
@@ -592,14 +660,23 @@ impl Lowerer {
                         path: selector.clone(),
                         methods: Vec::new(),
                         access_policy: access_policy.clone(),
+                        policy: HttpRoutePolicy {
+                            max_request_body_bytes: body_bytes,
+                            connect_timeout_ms: timeouts
+                                .map_or(NGINX_DEFAULT_PROXY_TIMEOUT_MS, |value| value.connect),
+                            read_timeout_ms: timeouts
+                                .map_or(NGINX_DEFAULT_PROXY_TIMEOUT_MS, |value| value.read),
+                            write_timeout_ms: timeouts
+                                .map_or(NGINX_DEFAULT_PROXY_TIMEOUT_MS, |value| value.write),
+                            request_buffering: false,
+                            response_buffering: false,
+                        },
                         action: action.clone(),
                     },
                     pool: (index == 0).then(|| pool.clone()).flatten(),
                     origins: origins.clone(),
                 })
                 .collect(),
-            body_bytes,
-            timeout_ms,
         })
     }
 
@@ -621,8 +698,27 @@ impl Lowerer {
             issues.push(issue(
                 origin,
                 E_SEMANTICS_NOT_REPRESENTABLE,
-                "proxy_http_version must explicitly be 1.1",
+                "proxy_http_version must explicitly be 1.1 because nginx defaults to 1.0",
             ));
+        }
+        for name in [b"proxy_buffering".as_slice(), b"proxy_request_buffering"] {
+            let policy = self.effective_policy(scope, name);
+            if policy
+                .as_ref()
+                .is_none_or(|value| value.arguments.as_slice() != [b"off".to_vec()])
+            {
+                issues.push(issue(
+                    policy
+                        .as_ref()
+                        .and_then(|value| value.origins.last())
+                        .unwrap_or(fallback_origin),
+                    E_SEMANTICS_NOT_REPRESENTABLE,
+                    format!(
+                        "{} must explicitly be off to match unbuffered runtime semantics",
+                        String::from_utf8_lossy(name)
+                    ),
+                ));
+            }
         }
         if issues.is_empty() {
             Ok(())
@@ -668,25 +764,104 @@ impl Lowerer {
         location: &EffectiveLocation,
         issues: &mut Vec<LowerIssue>,
     ) -> Option<oxiroute_config::HttpAccessPolicy> {
-        for name in [b"auth_basic".as_slice(), b"auth_basic_user_file".as_slice()] {
-            if let Some(value) = self.effective_policy(location.origin.occurrence, name) {
-                let disabled =
-                    name == b"auth_basic" && value.arguments.as_slice() == [b"off".to_vec()];
-                if !disabled {
-                    issues.push(issue(
-                        value.origins.last().unwrap_or(&location.origin),
-                        E_SEMANTICS_NOT_REPRESENTABLE,
-                        "nginx Basic authentication does not have bearer-token-file semantics",
-                    ));
-                }
+        if let Some(conditional) = self.graph.expanded_occurrences.iter().find(|occurrence| {
+            occurrence.parent == Some(location.origin.occurrence)
+                && occurrence.directive.name.value == b"if"
+                && occurrence.directive.arguments.iter().any(|argument| {
+                    argument
+                        .value
+                        .windows(b"<redacted>".len())
+                        .any(|window| window == b"<redacted>")
+                })
+        }) {
+            let server = self
+                .resolution
+                .http_blocks
+                .iter()
+                .flat_map(|http| &http.servers)
+                .find(|server| {
+                    self.is_descendant(location.origin.occurrence, server.origin.occurrence)
+                });
+            let overlay = server.and_then(|server| {
+                server.server_names.iter().find_map(|name| {
+                    self.bearer_token_overlays
+                        .get(&name.normalized)
+                        .cloned()
+                        .map(|path| (name.normalized.clone(), path))
+                })
+            });
+            let Some((overlay_name, token_file_path)) = overlay else {
+                issues.push(issue(
+                    &self.origin(conditional.id),
+                    E_SEMANTICS_NOT_REPRESENTABLE,
+                    "redacted nginx authorization rule requires an explicit bearer token file overlay",
+                ));
+                return None;
+            };
+            if !token_file_path.is_absolute() {
+                issues.push(issue(
+                    &self.origin(conditional.id),
+                    E_INVALID_VALUE,
+                    "bearer token overlay path must be absolute",
+                ));
+                return None;
             }
+            self.used_bearer_token_overlays
+                .borrow_mut()
+                .insert(overlay_name);
+            return Some(HttpAccessPolicy::BearerTokenFile {
+                token_file_path,
+                header_name: "authorization".into(),
+                realm: None,
+            });
         }
-        None
+        let basic = self.effective_policy(location.origin.occurrence, b"auth_basic")?;
+        if basic.arguments.as_slice() == [b"off".to_vec()] {
+            return None;
+        }
+        let Some(file) = self.effective_policy(location.origin.occurrence, b"auth_basic_user_file")
+        else {
+            issues.push(issue(
+                basic.origins.last().unwrap_or(&location.origin),
+                E_INVALID_VALUE,
+                "nginx Basic authentication requires an htpasswd file",
+            ));
+            return None;
+        };
+        let Some(realm) = basic.arguments.first().and_then(|value| utf8(value)) else {
+            issues.push(issue(
+                basic.origins.last().unwrap_or(&location.origin),
+                E_INVALID_VALUE,
+                "nginx Basic authentication realm is not UTF-8",
+            ));
+            return None;
+        };
+        let Some(path) = file
+            .arguments
+            .first()
+            .and_then(|value| canonical_file_path(value))
+        else {
+            issues.push(issue(
+                file.origins.last().unwrap_or(&location.origin),
+                E_INVALID_VALUE,
+                "nginx htpasswd path is not a canonical absolute file",
+            ));
+            return None;
+        };
+        self.used_htpasswd_overlays
+            .borrow_mut()
+            .extend(file.origins.iter().map(|origin| origin.occurrence));
+        Some(HttpAccessPolicy::BasicHtpasswdFile {
+            htpasswd_file_path: path,
+            realm: realm.into(),
+        })
     }
 
     fn lower_return(
         value: &PolicyValue,
         fallback: &DirectiveOrigin,
+        nginx_host_fallback: Option<&str>,
+        headers: Vec<HttpLiteralHeader>,
         issues: &mut Vec<LowerIssue>,
     ) -> Option<HttpRouteAction> {
         let origin = value.origins.last().unwrap_or(fallback);
@@ -718,53 +893,108 @@ impl Lowerer {
             let location = if payload.contains('$') {
                 HttpRedirectLocation::RequestTemplate {
                     value: payload.into(),
+                    nginx_host_fallback: nginx_host_fallback.map(str::to_owned),
                 }
             } else {
                 HttpRedirectLocation::Literal {
                     value: payload.into(),
                 }
             };
-            return Some(HttpRouteAction::Redirect { status, location });
+            return Some(HttpRouteAction::Redirect {
+                status,
+                location,
+                headers,
+            });
         }
         Some(HttpRouteAction::FixedResponse {
             status,
             body: payload.into(),
-            headers: Vec::<HttpLiteralHeader>::new(),
+            headers,
         })
     }
 
-    fn block_static(&self, location: &EffectiveLocation, issues: &mut Vec<LowerIssue>) {
-        let Some(root) = self.effective_policy(location.origin.occurrence, b"root") else {
-            issues.push(issue(
-                &location.origin,
-                E_SEMANTICS_NOT_REPRESENTABLE,
-                "nginx location has no proxy, return, or static root action",
-            ));
-            return;
+    fn lower_static(
+        &self,
+        location: &EffectiveLocation,
+        issues: &mut Vec<LowerIssue>,
+    ) -> Option<(HttpRouteAction, Vec<DirectiveOrigin>)> {
+        let root = self.effective_policy(location.origin.occurrence, b"root");
+        let alias = self.effective_policy(location.origin.occurrence, b"alias");
+        let (directory, path_mapping, mut origins) = match (root, alias) {
+            (Some(root), None) => (root, HttpStaticPathMapping::Root, Vec::new()),
+            (None, Some(alias)) => (alias, HttpStaticPathMapping::Alias, Vec::new()),
+            (Some(root), Some(alias)) => {
+                issues.push(issue(
+                    alias.origins.last().unwrap_or(&location.origin),
+                    E_INVALID_VALUE,
+                    "nginx static location cannot combine root and alias",
+                ));
+                (root, HttpStaticPathMapping::Root, Vec::new())
+            }
+            (None, None) => {
+                issues.push(issue(
+                    &location.origin,
+                    E_SEMANTICS_NOT_REPRESENTABLE,
+                    "nginx location has no proxy, return, or static root action",
+                ));
+                return None;
+            }
         };
-        let root_origin = root.origins.last().unwrap_or(&location.origin);
-        if root
+        origins.extend(directory.origins.clone());
+        let Some(root_directory) = directory
             .arguments
             .first()
             .and_then(|value| canonical_directory(value))
-            .is_none()
-        {
+        else {
             issues.push(issue(
-                root_origin,
+                directory.origins.last().unwrap_or(&location.origin),
                 E_INVALID_VALUE,
-                "nginx root is not a canonical absolute directory",
+                "nginx static root is not a canonical absolute directory",
             ));
-            return;
+            return None;
+        };
+
+        let mut index_files = Vec::new();
+        for policy in self.effective_list_policy_chain(location.origin.occurrence, b"index") {
+            origins.extend(policy.origins.clone());
+            for value in policy.arguments {
+                if let Some(value) = utf8(&value) {
+                    index_files.push(value.into());
+                }
+            }
         }
-        let indexes = self.effective_list_policy_chain(location.origin.occurrence, b"index");
-        issues.push(issue(
-            indexes
-                .last()
-                .and_then(|value| value.origins.last())
-                .unwrap_or(&location.origin),
-            E_SEMANTICS_NOT_REPRESENTABLE,
-            "nginx static index handling internally redirects and reruns location selection, but canonical static files open indexes directly",
-        ));
+        if index_files.is_empty() {
+            index_files.push("index.html".into());
+        }
+
+        let try_files = self.lower_try_files(location, &mut origins, issues);
+        let mime = self.lower_static_mime(location, &mut origins, issues);
+        let headers = self.lower_literal_headers(location, &mut origins, issues);
+        let error_responses = self.lower_error_responses(location, &mut origins, issues);
+        let autoindex = self.policy_enabled(location.origin.occurrence, b"autoindex", false);
+        let autoindex_exact_size =
+            self.policy_enabled(location.origin.occurrence, b"autoindex_exact_size", true);
+        let autoindex_local_time =
+            self.policy_enabled(location.origin.occurrence, b"autoindex_localtime", false);
+
+        Some((
+            HttpRouteAction::StaticFiles {
+                root_directory,
+                path_mapping,
+                index_files,
+                internal_index_redirects: true,
+                directory_redirects: true,
+                spa_fallback: None,
+                try_files,
+                autoindex,
+                autoindex_exact_size,
+                autoindex_local_time,
+                mime,
+                headers,
+                error_responses,
+            },
+            origins,
+        ))
     }
 
     #[expect(
@@ -780,8 +1010,20 @@ impl Lowerer {
         service_name: &str,
         http_index: usize,
         route_ordinal: usize,
+        downstream_tls: bool,
+        nginx_host_fallback: Option<&str>,
         issues: &mut Vec<LowerIssue>,
     ) -> Option<LoweredProxy> {
+        if let Some(error_page) = self
+            .effective_list_policy_chain(location.origin.occurrence, b"error_page")
+            .last()
+        {
+            issues.push(issue(
+                error_page.origins.last().unwrap_or(&location.origin),
+                E_SEMANTICS_NOT_REPRESENTABLE,
+                "nginx proxy error_page handling is not represented for generated proxy errors",
+            ));
+        }
         if proxy.replacement_uri.is_some() {
             issues.push(issue(
                 &proxy.origin,
@@ -789,61 +1031,51 @@ impl Lowerer {
                 "proxy_pass URI replacement is not represented by canonical routes",
             ));
         }
-        if let Err(origin_issues) = self.validate_proxy_origin(http, proxy) {
-            issues.extend(origin_issues);
-        }
-        let policy_values =
-            self.validate_route_policy(location.origin.occurrence, &location.origin);
-        if let Err(policy_issues) = policy_values {
+        let upstream_tls = match self.validate_proxy_origin(http, proxy, downstream_tls) {
+            Ok(tls) => tls,
+            Err(origin_issues) => {
+                issues.extend(origin_issues);
+                None
+            }
+        };
+        if let Err(policy_issues) =
+            self.validate_route_policy(location.origin.occurrence, &location.origin)
+        {
             issues.extend(policy_issues);
         }
-        let issue_count_before_explicit_proxy_policy = issues.len();
-        for name in [
-            b"proxy_buffering".as_slice(),
-            b"proxy_request_buffering".as_slice(),
-        ] {
-            let policy = self.effective_policy(location.origin.occurrence, name);
-            if policy
-                .as_ref()
-                .is_none_or(|value| value.arguments.as_slice() != [b"off".to_vec()])
-            {
+        if let Some(policy) = self.effective_policy(location.origin.occurrence, b"proxy_buffering")
+        {
+            if policy.arguments.as_slice() != [b"off".to_vec()] {
                 issues.push(issue(
-                    policy
-                        .as_ref()
-                        .and_then(|value| value.origins.last())
-                        .unwrap_or(&proxy.origin),
+                    policy.origins.last().unwrap_or(&proxy.origin),
                     E_SEMANTICS_NOT_REPRESENTABLE,
-                    format!(
-                        "{} must be explicitly disabled to match streaming canonical proxy semantics",
-                        utf8(name).expect("static nginx directive name")
-                    ),
+                    "proxy_buffering must be disabled to match streaming canonical proxy semantics",
                 ));
             }
         }
-        let pool = Self::proxy_pool(http, proxy, service_name, http_index, route_ordinal, issues)?;
-        let upstream_host = self.lower_proxy_headers(location, proxy, issues);
-        let request_headers = upstream_host
-            .as_ref()
-            .map_or_else(Vec::new, |(_, headers)| headers.clone());
-        let upstream_host =
-            upstream_host.map_or(HttpUpstreamHost::PreserveIncoming, |(host, _)| host);
+        let pool = Self::proxy_pool(
+            http,
+            proxy,
+            service_name,
+            http_index,
+            route_ordinal,
+            upstream_tls,
+            issues,
+        )?;
+        let (upstream_host, request_headers) =
+            self.lower_proxy_headers(location, proxy, nginx_host_fallback, issues);
         self.validate_response_controls(location, proxy, issues);
-        let response_headers = self.lower_response_headers(location, issues);
+        let mut response_header_origins = Vec::new();
+        let response_headers =
+            self.lower_response_headers(location, &mut response_header_origins, issues);
         let response_cookie_path_rewrites = self.lower_cookie_rewrites(location, issues);
-        let retry = self.lower_proxy_retry(location, pool.pool.endpoints.len(), issues);
-        if issues.len() > issue_count_before_explicit_proxy_policy {
-            issues.push(issue(
-                &proxy.origin,
-                E_SEMANTICS_NOT_REPRESENTABLE,
-                "nginx proxy defaults remain blockers unless Host, buffering, request buffering, and retry behavior are explicit",
-            ));
-        }
-        let timeout_ms =
-            self.uniform_proxy_timeout(location.origin.occurrence, &location.origin, issues);
+        let retry = self.lower_proxy_retry(location, pool.pool.servers.len(), issues);
+        let timeouts = self.proxy_timeouts(location.origin.occurrence, &location.origin, issues);
         if !issues.is_empty() {
             return None;
         }
         let mut origins = vec![proxy.origin.clone(), location.origin.clone()];
+        origins.extend(response_header_origins);
         for name in [
             b"client_max_body_size".as_slice(),
             b"proxy_connect_timeout".as_slice(),
@@ -886,10 +1118,11 @@ impl Lowerer {
                 request_headers,
                 response_headers,
                 response_cookie_path_rewrites,
+                response_cookie_attributes: Vec::new(),
                 retry,
                 cache: None,
             },
-            timeout_ms,
+            timeouts,
             origins,
         })
     }
@@ -900,6 +1133,7 @@ impl Lowerer {
         service_name: &str,
         http_index: usize,
         route_ordinal: usize,
+        upstream_tls: Option<UpstreamTls>,
         issues: &mut Vec<LowerIssue>,
     ) -> Option<PoolCandidate> {
         let (endpoints, origin, endpoint_origins) = match proxy.upstream {
@@ -907,7 +1141,9 @@ impl Lowerer {
                 proxy
                     .direct_endpoint
                     .as_ref()
-                    .map(canonical_endpoint)
+                    .map(|endpoint| {
+                        canonical_proxy_endpoint(endpoint, proxy, upstream_tls.is_some())
+                    })
                     .into_iter()
                     .collect(),
                 proxy.origin.clone(),
@@ -959,14 +1195,36 @@ impl Lowerer {
                 format!("{service_name}-pool-{route_ordinal}")
             }
         };
+        let servers = endpoints
+            .into_iter()
+            .enumerate()
+            .map(|(index, endpoint)| {
+                let dns_resolution = if matches!(endpoint, UpstreamEndpoint::Dns { .. }) {
+                    DnsResolutionPolicy::Startup
+                } else {
+                    DnsResolutionPolicy::OnConnect
+                };
+                UpstreamServer {
+                    name: format!("endpoint-{}", index + 1),
+                    endpoint,
+                    max_connections: None,
+                    dns_resolution,
+                }
+            })
+            .collect();
         Some(PoolCandidate {
             pool: UpstreamPool {
                 name,
-                endpoints,
+                servers,
+                endpoints: Vec::new(),
                 algorithm: oxiroute_config::UpstreamAlgorithm::RoundRobin,
                 health_check: None,
-                tls: None,
+                tls: upstream_tls,
                 http_versions: HttpVersionPolicy::default(),
+                queue_timeout_ms: None,
+                connect_timeout_ms: None,
+                server_timeout_ms: None,
+                connection_reuse: UpstreamConnectionReuse::Safe,
             },
             origin,
             endpoint_origins,
@@ -977,8 +1235,9 @@ impl Lowerer {
         &self,
         location: &EffectiveLocation,
         proxy: &crate::nginx::EffectiveProxyPass,
+        nginx_host_fallback: Option<&str>,
         issues: &mut Vec<LowerIssue>,
-    ) -> Option<(HttpUpstreamHost, Vec<HttpRequestHeaderMutation>)> {
+    ) -> (HttpUpstreamHost, Vec<HttpRequestHeaderMutation>) {
         let policies =
             self.effective_list_policy_chain(location.origin.occurrence, b"proxy_set_header");
         let mut host = None;
@@ -1005,13 +1264,13 @@ impl Lowerer {
                     ));
                     continue;
                 }
-                host = Self::proxy_host_policy(value, proxy, origin, issues);
+                host = Self::proxy_host_policy(value, proxy, nginx_host_fallback);
                 continue;
             }
             let mutation = if value.is_empty() {
                 Some(HttpRequestHeaderMutation::Remove { name: name.into() })
             } else {
-                Self::request_header_value(value, proxy).map(|value| {
+                Self::request_header_value(value, proxy, nginx_host_fallback).map(|value| {
                     HttpRequestHeaderMutation::Set {
                         name: name.into(),
                         value,
@@ -1028,36 +1287,22 @@ impl Lowerer {
                 ));
             }
         }
-        let Some(host) = host else {
-            issues.push(issue(
-                &proxy.origin,
-                E_SEMANTICS_NOT_REPRESENTABLE,
-                "proxy_set_header Host must be explicit for canonical proxy lowering",
-            ));
-            return None;
-        };
-        Some((host, headers))
+        (host.unwrap_or(HttpUpstreamHost::PreserveIncoming), headers)
     }
 
     fn proxy_host_policy(
         value: &[u8],
         proxy: &crate::nginx::EffectiveProxyPass,
-        origin: &DirectiveOrigin,
-        issues: &mut Vec<LowerIssue>,
+        nginx_host_fallback: Option<&str>,
     ) -> Option<HttpUpstreamHost> {
         match value {
             b"$http_host" => Some(HttpUpstreamHost::PreserveIncoming),
+            b"$host" => nginx_host_fallback.map(|fallback| HttpUpstreamHost::NginxHost {
+                fallback: fallback.to_owned(),
+            }),
             b"$proxy_host" => utf8(&proxy.authority).map(|value| HttpUpstreamHost::Literal {
                 value: value.into(),
             }),
-            b"$host" => {
-                issues.push(issue(
-                    origin,
-                    E_SEMANTICS_NOT_REPRESENTABLE,
-                    "nginx $host fallback semantics are not an exact incoming-authority policy",
-                ));
-                None
-            }
             value if !value.contains(&b'$') => utf8(value).map(|value| HttpUpstreamHost::Literal {
                 value: value.into(),
             }),
@@ -1068,11 +1313,23 @@ impl Lowerer {
     fn request_header_value(
         value: &[u8],
         proxy: &crate::nginx::EffectiveProxyPass,
+        nginx_host_fallback: Option<&str>,
     ) -> Option<HttpRequestHeaderValue> {
         match value {
             b"$http_host" => Some(HttpRequestHeaderValue::IncomingAuthority),
-            b"$host" => Some(HttpRequestHeaderValue::NormalizedHost),
+            b"$host" => nginx_host_fallback.map(|fallback| HttpRequestHeaderValue::NginxHost {
+                fallback: fallback.to_owned(),
+            }),
             b"$remote_addr" => Some(HttpRequestHeaderValue::ClientIp),
+            b"$proxy_add_x_forwarded_for" => Some(HttpRequestHeaderValue::AppendedXForwardedFor {
+                max_bytes: 8_192,
+                except_source_cidrs: Vec::new(),
+            }),
+            b"$scheme" => Some(HttpRequestHeaderValue::DownstreamScheme),
+            b"$http_upgrade" => Some(HttpRequestHeaderValue::IncomingHeader {
+                name: "upgrade".into(),
+                max_bytes: 8_192,
+            }),
             b"$proxy_host" => utf8(&proxy.authority).map(|value| HttpRequestHeaderValue::Literal {
                 value: value.into(),
             }),
@@ -1088,6 +1345,7 @@ impl Lowerer {
     fn lower_response_headers(
         &self,
         location: &EffectiveLocation,
+        origins: &mut Vec<DirectiveOrigin>,
         issues: &mut Vec<LowerIssue>,
     ) -> Vec<HttpResponseHeaderMutation> {
         let mut hidden = NGINX_DEFAULT_HIDDEN_RESPONSE_HEADERS
@@ -1133,10 +1391,18 @@ impl Lowerer {
             }
             hidden.retain(|candidate| !candidate.eq_ignore_ascii_case(name));
         }
-        hidden
+        let mut mutations = hidden
             .into_iter()
             .map(|name| HttpResponseHeaderMutation::Remove { name })
-            .collect()
+            .collect::<Vec<_>>();
+        for header in self.lower_literal_headers(location, origins, issues) {
+            mutations.push(HttpResponseHeaderMutation::Add {
+                name: header.name,
+                value: header.value,
+                always: header.always,
+            });
+        }
+        mutations
     }
 
     fn validate_response_controls(
@@ -1147,25 +1413,32 @@ impl Lowerer {
     ) {
         let policies =
             self.effective_list_policy_chain(location.origin.occurrence, b"proxy_ignore_headers");
+        if policies.is_empty() {
+            issues.push(issue(
+                &proxy.origin,
+                E_SEMANTICS_NOT_REPRESENTABLE,
+                "proxy_ignore_headers must explicitly disable every nginx X-Accel response control",
+            ));
+            return;
+        }
         let ignored = policies
             .iter()
             .flat_map(|policy| &policy.arguments)
             .collect::<Vec<_>>();
-        if NGINX_RESPONSE_CONTROL_HEADERS.iter().all(|required| {
+        if !NGINX_RESPONSE_CONTROL_HEADERS.iter().all(|required| {
             ignored
                 .iter()
                 .any(|candidate| candidate.eq_ignore_ascii_case(required))
         }) {
-            return;
+            issues.push(issue(
+                policies
+                    .last()
+                    .and_then(|policy| policy.origins.last())
+                    .unwrap_or(&proxy.origin),
+                E_SEMANTICS_NOT_REPRESENTABLE,
+                "explicit proxy_ignore_headers omits an nginx X-Accel response control",
+            ));
         }
-        issues.push(issue(
-            policies
-                .last()
-                .and_then(|policy| policy.origins.last())
-                .unwrap_or(&proxy.origin),
-            E_SEMANTICS_NOT_REPRESENTABLE,
-            "nginx X-Accel response controls must all be disabled with proxy_ignore_headers before canonical proxy lowering",
-        ));
     }
 
     fn lower_cookie_rewrites(
@@ -1184,6 +1457,7 @@ impl Lowerer {
                     return None;
                 }
                 let (from, to) = pair.expect("checked cookie paths");
+                let to = to.split(';').next().unwrap_or(to).trim_end();
                 Some(HttpCookiePathRewrite { from: from.into(), to: to.into() })
             })
             .collect()
@@ -1198,12 +1472,17 @@ impl Lowerer {
         let Some(policy) =
             self.effective_policy(location.origin.occurrence, b"proxy_next_upstream")
         else {
-            issues.push(issue(
-                &location.origin,
-                E_SEMANTICS_NOT_REPRESENTABLE,
-                "proxy_next_upstream must be explicit for canonical retry lowering",
-            ));
-            return HttpRetryPolicy::default();
+            if endpoint_count > 1 {
+                issues.push(issue(
+                    &location.origin,
+                    E_SEMANTICS_NOT_REPRESENTABLE,
+                    "nginx defaults proxy_next_upstream to error timeout, whose request/write/read failure breadth is wider than canonical connect retries",
+                ));
+            }
+            return HttpRetryPolicy {
+                max_retries: 0,
+                ..HttpRetryPolicy::default()
+            };
         };
         if policy.arguments.as_slice() == [b"off".to_vec()] {
             return HttpRetryPolicy {
@@ -1214,8 +1493,11 @@ impl Lowerer {
         let mut triggers = Vec::new();
         for trigger in &policy.arguments {
             match trigger.as_slice() {
-                b"error" => triggers.push(HttpRetryTrigger::ConnectFailure),
-                b"timeout" => triggers.push(HttpRetryTrigger::ConnectTimeout),
+                b"error" | b"timeout" => issues.push(issue(
+                    policy.origins.last().unwrap_or(&location.origin),
+                    E_SEMANTICS_NOT_REPRESENTABLE,
+                    "nginx proxy_next_upstream error/timeout includes post-connect request, response-header, and I/O failures beyond canonical connect retry triggers",
+                )),
                 _ => issues.push(issue(
                     policy.origins.last().unwrap_or(&location.origin),
                     E_SEMANTICS_NOT_REPRESENTABLE,
@@ -1255,35 +1537,31 @@ impl Lowerer {
         }
     }
 
-    fn uniform_proxy_timeout(
+    fn proxy_timeouts(
         &self,
         scope: OccurrenceId,
         origin: &DirectiveOrigin,
         issues: &mut Vec<LowerIssue>,
-    ) -> u64 {
+    ) -> ProxyTimeouts {
         let connect = collect_result(
             self.proxy_timeout(scope, b"proxy_connect_timeout", origin),
             issues,
-        );
+        )
+        .unwrap_or(NGINX_DEFAULT_PROXY_TIMEOUT_MS);
         let read = collect_result(
             self.proxy_timeout(scope, b"proxy_read_timeout", origin),
             issues,
-        );
+        )
+        .unwrap_or(NGINX_DEFAULT_PROXY_TIMEOUT_MS);
         let send = collect_result(
             self.proxy_timeout(scope, b"proxy_send_timeout", origin),
             issues,
-        );
-        match (connect, read, send) {
-            (Some(connect), Some(read), Some(send)) if connect == read && read == send => connect,
-            (Some(_), Some(_), Some(_)) => {
-                issues.push(issue(
-                    origin,
-                    E_SEMANTICS_NOT_REPRESENTABLE,
-                    "nginx connect, read, and send timeouts are not one uniform I/O timeout",
-                ));
-                NGINX_DEFAULT_PROXY_TIMEOUT_MS
-            }
-            _ => NGINX_DEFAULT_PROXY_TIMEOUT_MS,
+        )
+        .unwrap_or(NGINX_DEFAULT_PROXY_TIMEOUT_MS);
+        ProxyTimeouts {
+            connect,
+            read,
+            write: send,
         }
     }
 
@@ -1304,6 +1582,272 @@ impl Lowerer {
                 })
             })
     }
+
+    fn lower_try_files(
+        &self,
+        location: &EffectiveLocation,
+        origins: &mut Vec<DirectiveOrigin>,
+        issues: &mut Vec<LowerIssue>,
+    ) -> Vec<HttpStaticTryFile> {
+        let mut lowered = Vec::new();
+        for policy in self.effective_list_policy_chain(location.origin.occurrence, b"try_files") {
+            origins.extend(policy.origins.clone());
+            let last = policy.arguments.len().saturating_sub(1);
+            for (index, value) in policy.arguments.into_iter().enumerate() {
+                if index == last && !value.starts_with(b"=") {
+                    issues.push(issue(
+                        policy.origins.last().unwrap_or(&location.origin),
+                        E_SEMANTICS_NOT_REPRESENTABLE,
+                        "nginx try_files URI fallback requires authenticated internal rerouting",
+                    ));
+                    continue;
+                }
+                let item = match value.as_slice() {
+                    b"$uri" => Some(HttpStaticTryFile::RequestPath),
+                    b"$uri/" => Some(HttpStaticTryFile::RequestPathDirectory),
+                    value if value.starts_with(b"=") => utf8(&value[1..])
+                        .and_then(|status| status.parse::<u16>().ok())
+                        .map(|status| HttpStaticTryFile::Status { status }),
+                    value if !value.contains(&b'$') => {
+                        utf8(value).map(|path| HttpStaticTryFile::Relative {
+                            path: PathBuf::from(path.trim_start_matches('/')),
+                        })
+                    }
+                    _ => None,
+                };
+                if let Some(item) = item {
+                    lowered.push(item);
+                } else {
+                    issues.push(issue(
+                        policy.origins.last().unwrap_or(&location.origin),
+                        E_SEMANTICS_NOT_REPRESENTABLE,
+                        "nginx try_files entry is outside the canonical static lookup subset",
+                    ));
+                }
+            }
+        }
+        lowered
+    }
+
+    fn lower_static_mime(
+        &self,
+        location: &EffectiveLocation,
+        origins: &mut Vec<DirectiveOrigin>,
+        issues: &mut Vec<LowerIssue>,
+    ) -> HttpStaticMimePolicy {
+        let default_type = self
+            .effective_policy(location.origin.occurrence, b"default_type")
+            .and_then(|policy| {
+                origins.extend(policy.origins.clone());
+                policy
+                    .arguments
+                    .first()
+                    .and_then(|value| utf8(value))
+                    .map(str::to_owned)
+            })
+            .or_else(|| Some("text/plain".to_owned()));
+        let mut types = Vec::<HttpMimeType>::new();
+        let Some(types_occurrence) = self.effective_types_occurrence(location.origin.occurrence)
+        else {
+            return HttpStaticMimePolicy {
+                default_type,
+                types,
+            };
+        };
+        origins.push(self.origin(types_occurrence));
+        for mapping in self
+            .graph
+            .expanded_occurrences
+            .iter()
+            .filter(|occurrence| occurrence.parent == Some(types_occurrence))
+        {
+            let Some(content_type) = utf8(&mapping.directive.name.value) else {
+                issues.push(issue(
+                    &self.origin(mapping.id),
+                    E_INVALID_VALUE,
+                    "nginx MIME content type is not UTF-8",
+                ));
+                continue;
+            };
+            origins.push(self.origin(mapping.id));
+            for extension in &mapping.directive.arguments {
+                let Some(extension) = utf8(&extension.value) else {
+                    issues.push(issue(
+                        &self.origin(mapping.id),
+                        E_INVALID_VALUE,
+                        "nginx MIME extension is not UTF-8",
+                    ));
+                    continue;
+                };
+                let entry = HttpMimeType {
+                    extension: extension.to_ascii_lowercase(),
+                    content_type: content_type.to_owned(),
+                };
+                if let Some(existing) = types
+                    .iter_mut()
+                    .find(|candidate| candidate.extension == entry.extension)
+                {
+                    *existing = entry;
+                } else {
+                    types.push(entry);
+                }
+            }
+        }
+        HttpStaticMimePolicy {
+            default_type,
+            types,
+        }
+    }
+
+    fn effective_types_occurrence(&self, scope: OccurrenceId) -> Option<OccurrenceId> {
+        let mut current = Some(scope);
+        while let Some(scope) = current {
+            if let Some(types) = self
+                .graph
+                .expanded_occurrences
+                .iter()
+                .rev()
+                .find(|occurrence| {
+                    occurrence.parent == Some(scope) && occurrence.directive.name.value == b"types"
+                })
+            {
+                return Some(types.id);
+            }
+            current = self
+                .occurrence(scope)
+                .and_then(|occurrence| occurrence.parent);
+        }
+        None
+    }
+
+    fn lower_literal_headers(
+        &self,
+        location: &EffectiveLocation,
+        origins: &mut Vec<DirectiveOrigin>,
+        issues: &mut Vec<LowerIssue>,
+    ) -> Vec<HttpLiteralHeader> {
+        let mut headers = Vec::new();
+        for policy in self.effective_list_policy_chain(location.origin.occurrence, b"add_header") {
+            origins.extend(policy.origins.clone());
+            let ([name, value] | [name, value, _]) = policy.arguments.as_slice() else {
+                continue;
+            };
+            let always = policy
+                .arguments
+                .get(2)
+                .is_some_and(|value| value == b"always");
+            if policy.arguments.len() == 3 && !always {
+                issues.push(issue(
+                    policy.origins.last().unwrap_or(&location.origin),
+                    E_INVALID_VALUE,
+                    "nginx add_header third argument must be always",
+                ));
+                continue;
+            }
+            let (Some(name), Some(value)) = (utf8(name), utf8(value)) else {
+                issues.push(issue(
+                    policy.origins.last().unwrap_or(&location.origin),
+                    E_INVALID_VALUE,
+                    "nginx static response header is not UTF-8",
+                ));
+                continue;
+            };
+            headers.push(HttpLiteralHeader {
+                name: name.into(),
+                value: value.into(),
+                always,
+            });
+        }
+        headers
+    }
+
+    fn lower_error_responses(
+        &self,
+        location: &EffectiveLocation,
+        origins: &mut Vec<DirectiveOrigin>,
+        issues: &mut Vec<LowerIssue>,
+    ) -> Vec<HttpStaticErrorResponse> {
+        let mut responses = Vec::new();
+        for policy in self.effective_list_policy_chain(location.origin.occurrence, b"error_page") {
+            origins.extend(policy.origins.clone());
+            let Some(file) = policy.arguments.last().and_then(|value| utf8(value)) else {
+                continue;
+            };
+            let statuses = policy.arguments[..policy.arguments.len().saturating_sub(1)]
+                .iter()
+                .map(|value| {
+                    utf8(value)
+                        .and_then(|value| value.parse::<u16>().ok())
+                        .filter(|status| (400..=599).contains(status))
+                })
+                .collect::<Option<Vec<_>>>();
+            let canonical_file = canonicalize_http_path(file)
+                .filter(|canonical| canonical.as_ref() == file)
+                .filter(|_| file.starts_with('/'));
+            let (Some(statuses), Some(canonical_file)) = (statuses, canonical_file) else {
+                issues.push(issue(
+                    policy.origins.last().unwrap_or(&location.origin),
+                    E_INVALID_VALUE,
+                    "nginx error_page requires 400..=599 statuses and an absolute canonical URI target",
+                ));
+                continue;
+            };
+            responses.push(HttpStaticErrorResponse {
+                statuses,
+                file: PathBuf::from(canonical_file.trim_start_matches('/')),
+                internal_redirect: Some(canonical_file.into_owned()),
+            });
+        }
+        responses
+    }
+
+    fn error_page_matches_status(&self, scope: OccurrenceId, status: u16) -> bool {
+        self.effective_list_policy_chain(scope, b"error_page")
+            .iter()
+            .any(|policy| {
+                policy.arguments[..policy.arguments.len().saturating_sub(1)]
+                    .iter()
+                    .any(|value| {
+                        utf8(value).and_then(|value| value.parse::<u16>().ok()) == Some(status)
+                    })
+            })
+    }
+
+    fn policy_enabled(&self, scope: OccurrenceId, name: &[u8], default: bool) -> bool {
+        self.effective_policy(scope, name)
+            .and_then(|policy| policy.arguments.first().cloned())
+            .map_or(default, |value| value == b"on")
+    }
+}
+
+fn canonical_proxy_endpoint(
+    endpoint: &StaticEndpoint,
+    proxy: &crate::nginx::EffectiveProxyPass,
+    secure: bool,
+) -> oxiroute_config::UpstreamEndpoint {
+    let mut endpoint = canonical_endpoint(endpoint);
+    if proxy.scheme == ProxyPassScheme::Downstream
+        && secure
+        && !authority_has_explicit_port(&proxy.authority)
+    {
+        match &mut endpoint {
+            oxiroute_config::UpstreamEndpoint::Socket { address } => address.set_port(443),
+            oxiroute_config::UpstreamEndpoint::Dns { port, .. } => *port = 443,
+            oxiroute_config::UpstreamEndpoint::Unix { .. } => {}
+        }
+    }
+    endpoint
+}
+
+#[allow(clippy::naive_bytecount)]
+fn authority_has_explicit_port(authority: &[u8]) -> bool {
+    if authority.starts_with(b"[") {
+        return authority
+            .iter()
+            .position(|byte| *byte == b']')
+            .is_some_and(|end| authority.get(end + 1) == Some(&b':'));
+    }
+    authority.iter().filter(|byte| **byte == b':').count() == 1
 }
 
 #[derive(Clone)]
@@ -1315,23 +1859,42 @@ struct LoweredRoute {
 
 struct LoweredLocation {
     routes: Vec<LoweredRoute>,
-    body_bytes: Option<u64>,
-    timeout_ms: Option<u64>,
 }
 
 struct LoweredProxy {
     pool: PoolCandidate,
     policy: HttpProxyPolicy,
-    timeout_ms: u64,
+    timeouts: ProxyTimeouts,
     origins: Vec<DirectiveOrigin>,
+}
+
+#[derive(Clone, Copy)]
+struct ProxyTimeouts {
+    connect: u64,
+    read: u64,
+    write: u64,
 }
 
 fn canonical_directory(value: &[u8]) -> Option<PathBuf> {
     let value = utf8(value)?;
+    let normalized = if value == "/" {
+        value
+    } else {
+        value.trim_end_matches('/')
+    };
+    let path = Path::new(normalized);
+    (path.is_absolute()
+        && !value.contains("//")
+        && !value.split('/').any(|part| matches!(part, "." | "..")))
+    .then(|| path.to_path_buf())
+}
+
+fn canonical_file_path(value: &[u8]) -> Option<PathBuf> {
+    let value = utf8(value)?;
     let path = Path::new(value);
     (path.is_absolute()
         && !value.contains("//")
-        && (value == "/" || !value.ends_with('/'))
+        && !value.ends_with('/')
         && !value.split('/').any(|part| matches!(part, "." | "..")))
     .then(|| path.to_path_buf())
 }

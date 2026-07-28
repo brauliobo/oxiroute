@@ -20,7 +20,7 @@ const topology: TopologySnapshot = {
       maxConnections: null,
     }),
     node('rtmp_listener:4:live', 'rtmp_listener', 'live', '/listeners/1', {
-      bind: { type: 'unix', path: '/run/oxiroute/live.sock' },
+      bind: { type: 'unix', path: '/run/oxiroute/live.sock', mode: null },
       protocol: 'rtmp',
       maxConnections: 100,
       applications: [{

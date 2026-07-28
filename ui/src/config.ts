@@ -20,12 +20,18 @@ export type TlsVersion = '1.2' | '1.3'
 export type AlpnProtocol = 'h3' | 'h2' | 'http/1.1'
 export type HttpVersion = '1.1' | '2'
 export type HealthCheckType = 'http' | 'tcp'
-export type UpstreamAlgorithm = 'round_robin' | 'least_connections'
+export type UpstreamAlgorithm = 'round_robin' | 'least_connections' | 'first'
 export type RtmpRecorderStart = 'continuous' | 'manual'
+export type AccessLogConfig = { type: 'disabled' } | { type: 'file'; path: string }
 
 export interface ManagementConfig {
   bind: string
   ui_dir: string | null
+}
+
+export interface StatsConfig {
+  binds: string[]
+  admin_token_file: string | null
 }
 
 export interface DirectCertificateSource {
@@ -64,6 +70,7 @@ export interface SocketListenerBind {
 export interface UnixListenerBind {
   type: 'unix'
   path: string
+  mode: number | null
 }
 
 export interface UdpListenerBind {
@@ -80,6 +87,11 @@ export interface ListenerConfig {
   service: string | null
   tls_profile: string | null
   max_connections: number | null
+  downstream_timeouts: {
+    client_timeout_ms: number | null
+    request_timeout_ms: number | null
+    keepalive_timeout_ms: number | null
+  }
 }
 
 interface CacheStoreLimitsConfig {
@@ -113,8 +125,13 @@ export interface HealthCheckConfig {
   timeout_ms: number
   healthy_threshold: number
   unhealthy_threshold: number
+  startup: 'healthy' | 'unhealthy' | 'checking'
+  fast_interval_ms: number | null
+  down_interval_ms: number | null
   host: string | null
   path: string | null
+  expected_status: number | null
+  http_version: '1.0' | '1.1' | null
 }
 
 export interface UpstreamTlsConfig {
@@ -148,16 +165,32 @@ export type UpstreamEndpoint =
   | DnsUpstreamEndpoint
   | UnixUpstreamEndpoint
 
+export interface UpstreamServerConfig {
+  name: string
+  endpoint: UpstreamEndpoint
+  max_connections: number | null
+  dns_resolution: 'startup' | 'on_connect'
+}
+
 export interface UpstreamPoolConfig {
   name: string
-  endpoints: UpstreamEndpoint[]
+  servers: UpstreamServerConfig[]
+  endpoints?: UpstreamEndpoint[]
   algorithm: UpstreamAlgorithm
   health_check: HealthCheckConfig | null
   tls: UpstreamTlsConfig | null
   http_versions: HttpVersionPolicyConfig
+  queue_timeout_ms: number | null
+  connect_timeout_ms: number | null
+  server_timeout_ms: number | null
+  connection_reuse: 'never' | 'safe' | 'always'
 }
 
-export type HttpHostKind = 'normalized_host' | 'exact_authority'
+export type HttpHostKind =
+  | 'normalized_host'
+  | 'exact_authority'
+  | 'nginx_leading_wildcard'
+  | 'nginx_leading_dot'
 export type HttpPathKind = 'segment_prefix' | 'raw_prefix' | 'exact'
 export const HTTP_RETRY_TRIGGERS = [
   'connect_failure',
@@ -183,10 +216,19 @@ export interface HttpBearerTokenFileAccessConfig {
   realm: string | null
 }
 
-export type HttpAccessPolicyConfig = HttpBearerTokenFileAccessConfig
+export interface HttpBasicHtpasswdFileAccessConfig {
+  type: 'basic_htpasswd_file'
+  htpasswd_file_path: string
+  realm: string
+}
+
+export type HttpAccessPolicyConfig =
+  | HttpBearerTokenFileAccessConfig
+  | HttpBasicHtpasswdFileAccessConfig
 
 export type HttpUpstreamHostConfig =
   | { type: 'preserve_incoming' }
+  | { type: 'nginx_host'; fallback: string }
   | { type: 'endpoint'; unix_fallback: string | null }
   | { type: 'literal'; value: string }
 
@@ -194,7 +236,11 @@ export type HttpRequestHeaderValueConfig =
   | { type: 'literal'; value: string }
   | { type: 'incoming_authority' }
   | { type: 'normalized_host' }
+  | { type: 'nginx_host'; fallback: string }
   | { type: 'client_ip' }
+  | { type: 'appended_x_forwarded_for'; max_bytes: number; except_source_cidrs: string[] }
+  | { type: 'downstream_scheme' }
+  | { type: 'incoming_header'; name: string; max_bytes: number }
   | { type: 'selected_upstream_host' }
 
 export type HttpRequestHeaderMutationConfig =
@@ -202,7 +248,8 @@ export type HttpRequestHeaderMutationConfig =
   | { operation: 'remove'; name: string }
 
 export type HttpResponseHeaderMutationConfig =
-  | { operation: 'set'; name: string; value: string }
+  | { operation: 'set'; name: string; value: string; always: boolean }
+  | { operation: 'add'; name: string; value: string; always: boolean }
   | { operation: 'remove'; name: string }
 
 export interface HttpCookiePathRewriteConfig {
@@ -210,8 +257,17 @@ export interface HttpCookiePathRewriteConfig {
   to: string
 }
 
+export interface HttpCookieAttributePolicyConfig {
+  name: string
+  secure: boolean | null
+  http_only: boolean | null
+  same_site: 'strict' | 'lax' | 'none' | null
+}
+
 export interface HttpRetryPolicyConfig {
   max_retries: number
+  target: 'same_server' | 'next_server'
+  delay_ms: number
   triggers: HttpRetryTrigger[]
   method_safety: 'get_head'
   body_safety: 'empty'
@@ -222,6 +278,7 @@ export interface HttpProxyPolicyConfig {
   request_headers: HttpRequestHeaderMutationConfig[]
   response_headers: HttpResponseHeaderMutationConfig[]
   response_cookie_path_rewrites: HttpCookiePathRewriteConfig[]
+  response_cookie_attributes: HttpCookieAttributePolicyConfig[]
   retry: HttpRetryPolicyConfig
   cache: HttpCachePolicyConfig | null
 }
@@ -286,11 +343,12 @@ export interface HttpCachePolicyConfig {
 export interface HttpLiteralHeaderConfig {
   name: string
   value: string
+  always?: boolean
 }
 
 export type HttpRedirectLocationConfig =
   | { kind: 'literal'; value: string }
-  | { kind: 'request_template'; value: string }
+  | { kind: 'request_template'; value: string; nginx_host_fallback: string | null }
 
 export interface HttpProxyActionConfig {
   type: 'proxy'
@@ -309,13 +367,32 @@ export interface HttpRedirectActionConfig {
   type: 'redirect'
   status: number
   location: HttpRedirectLocationConfig
+  headers: HttpLiteralHeaderConfig[]
 }
 
 export interface HttpStaticFilesActionConfig {
   type: 'static_files'
   root_directory: string
+  path_mapping: 'root' | 'alias'
   index_files: string[]
+  internal_index_redirects: boolean
+  directory_redirects: boolean
   spa_fallback: string | null
+  try_files: Array<
+    | { type: 'request_path' }
+    | { type: 'request_path_directory' }
+    | { type: 'relative'; path: string }
+    | { type: 'status'; status: number }
+  >
+  autoindex: boolean
+  autoindex_exact_size: boolean
+  autoindex_local_time: boolean
+  mime: {
+    default_type: string | null
+    types: Array<{ extension: string; content_type: string }>
+  }
+  headers: HttpLiteralHeaderConfig[]
+  error_responses: Array<{ statuses: number[]; file: string; internal_redirect: string | null }>
 }
 
 export type HttpRouteActionConfig =
@@ -329,6 +406,14 @@ export interface HttpRouteConfig {
   path: HttpPathSelectorConfig
   methods: string[]
   access_policy: HttpAccessPolicyConfig | null
+  policy: {
+    max_request_body_bytes: number | null
+    connect_timeout_ms: number
+    read_timeout_ms: number
+    write_timeout_ms: number
+    request_buffering: boolean
+    response_buffering: boolean
+  }
   action: HttpRouteActionConfig
 }
 
@@ -337,12 +422,20 @@ export interface HttpServiceConfig {
   routes: HttpRouteConfig[]
   upstream_io_timeout_ms: number
   max_request_body_bytes: number | null
+  gzip: { level: number; content_types: string[] } | null
+  access_log: AccessLogConfig | null
 }
 
 export interface RtmpApplicationConfig {
   name: string
   live: boolean
   idle_streams: boolean
+  push_targets: Array<{ host: string; port: number; application: string }>
+  fanout: {
+    max_subscribers: number
+    max_queue_messages_per_subscriber: number
+    max_queue_bytes_per_subscriber: number
+  }
   recorders: RtmpRecorderConfig[]
 }
 
@@ -352,6 +445,9 @@ export interface RtmpRecorderConfig {
   root_directory: string
   suffix_template: string
   append_unix_seconds: boolean
+  timezone: string
+  time_basis: 'segment_start' | 'segment_end'
+  segment_naming: 'safe_unique' | 'nginx_compatible'
   rotation_interval_ms: number | null
   max_queue_messages: number
   max_queue_bytes: number
@@ -363,6 +459,8 @@ export interface RtmpRecorderConfig {
 
 export interface RtmpServiceConfig {
   name: string
+  outbound_chunk_size: number
+  access_log: AccessLogConfig | null
   applications: RtmpApplicationConfig[]
 }
 
@@ -424,7 +522,9 @@ export interface L4ServiceConfig {
 
 export interface CanonicalConfig {
   version: number
+  max_connections: number | null
   management: ManagementConfig | null
+  stats?: StatsConfig | null
   certificates: CertificateConfig[]
   tls_profiles: TlsProfileConfig[]
   listeners: ListenerConfig[]
@@ -472,8 +572,8 @@ export interface ConfigValidationResponse {
   topology: CandidateTopologySnapshot
 }
 
-export type ConfigSaveOutcome = 'saved_restart_required' | 'unchanged_active'
-export type ConfigActivationState = 'restart_required' | 'active'
+export type ConfigSaveOutcome = 'saved_pending_activation' | 'unchanged_active'
+export type ConfigActivationState = 'pending' | 'active'
 
 export interface ConfigSaveResponse {
   diskRevision: string
@@ -489,9 +589,11 @@ export interface ConfigRequest {
 }
 
 export function isCanonicalConfig(value: unknown): value is CanonicalConfig {
-  if (!isRecord(value) || !safeInteger(value.version) ||
+  if (!isRecord(value) || !safeInteger(value.version) || !nullableSafeInteger(value.max_connections) ||
     !(value.management === null || (isRecord(value.management) &&
       typeof value.management.bind === 'string' && nullableString(value.management.ui_dir))) ||
+    !(value.stats === undefined || value.stats === null || (isRecord(value.stats) &&
+      arrayOf(value.stats.binds, isString) && nullableString(value.stats.admin_token_file))) ||
     !arrayOf(value.certificates, isCertificate) || !arrayOf(value.tls_profiles, isTlsProfile) ||
     !arrayOf(value.listeners, isListener) || !arrayOf(value.cache_stores, isCacheStore) ||
     !arrayOf(value.upstream_pools, isUpstreamPool) || !arrayOf(value.http_services, isHttpService) ||
@@ -534,13 +636,17 @@ function isListener(value: unknown): value is ListenerConfig {
   return isRecord(value) && typeof value.name === 'string' && isListenerBind(value.bind) &&
     ['http', 'tcp', 'rtmp', 'forward_http1', 'forward_http2', 'forward_http3']
       .includes(String(value.protocol)) && nullableString(value.service) &&
-    nullableString(value.tls_profile) && nullableSafeInteger(value.max_connections)
+    nullableString(value.tls_profile) && nullableSafeInteger(value.max_connections) &&
+    isRecord(value.downstream_timeouts) &&
+    nullableSafeInteger(value.downstream_timeouts.client_timeout_ms) &&
+    nullableSafeInteger(value.downstream_timeouts.request_timeout_ms) &&
+    nullableSafeInteger(value.downstream_timeouts.keepalive_timeout_ms)
 }
 
 function isListenerBind(value: unknown): value is ListenerBind {
   return isRecord(value) && (value.type === 'socket' || value.type === 'udp'
     ? typeof value.address === 'string'
-    : value.type === 'unix' && typeof value.path === 'string')
+    : value.type === 'unix' && typeof value.path === 'string' && nullableSafeInteger(value.mode))
 }
 
 function isCacheStore(value: unknown): value is CacheStoreConfig {
@@ -556,13 +662,23 @@ function isCacheStore(value: unknown): value is CacheStoreConfig {
 }
 
 function isUpstreamPool(value: unknown): value is UpstreamPoolConfig {
-  return isRecord(value) && typeof value.name === 'string' && arrayOf(value.endpoints, isEndpoint) &&
-    ['round_robin', 'least_connections'].includes(String(value.algorithm)) &&
+  return isRecord(value) && typeof value.name === 'string' && arrayOf(value.servers, isUpstreamServer) &&
+    (value.endpoints === undefined || arrayOf(value.endpoints, isEndpoint)) &&
+    ['round_robin', 'least_connections', 'first'].includes(String(value.algorithm)) &&
     (value.health_check === null || isHealthCheck(value.health_check)) &&
     (value.tls === null || (isRecord(value.tls) && typeof value.tls.server_name === 'string' &&
       nullableString(value.tls.ca_certificate_path))) && isRecord(value.http_versions) &&
     ['1.1', '2'].includes(String(value.http_versions.min)) &&
-    ['1.1', '2'].includes(String(value.http_versions.max))
+    ['1.1', '2'].includes(String(value.http_versions.max)) &&
+    nullableSafeInteger(value.queue_timeout_ms) && nullableSafeInteger(value.connect_timeout_ms) &&
+    nullableSafeInteger(value.server_timeout_ms) &&
+    ['never', 'safe', 'always'].includes(String(value.connection_reuse))
+}
+
+function isUpstreamServer(value: unknown): value is UpstreamServerConfig {
+  return isRecord(value) && typeof value.name === 'string' && isEndpoint(value.endpoint) &&
+    nullableSafeInteger(value.max_connections) &&
+    ['startup', 'on_connect'].includes(String(value.dns_resolution))
 }
 
 function isEndpoint(value: unknown): value is UpstreamEndpoint {
@@ -577,19 +693,34 @@ function isHealthCheck(value: unknown): value is HealthCheckConfig {
   return isRecord(value) && ['http', 'tcp'].includes(String(value.type)) &&
     safeInteger(value.interval_ms) && safeInteger(value.timeout_ms) &&
     safeInteger(value.healthy_threshold) && safeInteger(value.unhealthy_threshold) &&
-    nullableString(value.host) && nullableString(value.path)
+    ['healthy', 'unhealthy', 'checking'].includes(String(value.startup)) &&
+    nullableSafeInteger(value.fast_interval_ms) && nullableSafeInteger(value.down_interval_ms) &&
+    nullableString(value.host) && nullableString(value.path) &&
+    nullableSafeInteger(value.expected_status) &&
+    (value.http_version === null || ['1.0', '1.1'].includes(String(value.http_version)))
 }
 
 function isHttpService(value: unknown): value is HttpServiceConfig {
   return isRecord(value) && typeof value.name === 'string' && arrayOf(value.routes, (route) =>
     isRecord(route) && (route.host === null || isHttpHost(route.host)) && isHttpPath(route.path) &&
     arrayOf(route.methods, isString) && (route.access_policy === null || isHttpAccess(route.access_policy)) &&
-    isHttpAction(route.action)) && safeInteger(value.upstream_io_timeout_ms) &&
-    nullableSafeInteger(value.max_request_body_bytes)
+    isHttpRoutePolicy(route.policy) && isHttpAction(route.action)) && safeInteger(value.upstream_io_timeout_ms) &&
+    nullableSafeInteger(value.max_request_body_bytes) &&
+    (value.gzip === null || (isRecord(value.gzip) && safeInteger(value.gzip.level) &&
+      arrayOf(value.gzip.content_types, isString))) &&
+    (value.access_log === null || isAccessLog(value.access_log))
+}
+
+function isHttpRoutePolicy(value: unknown): boolean {
+  return isRecord(value) && nullableSafeInteger(value.max_request_body_bytes) &&
+    safeInteger(value.connect_timeout_ms) && safeInteger(value.read_timeout_ms) &&
+    safeInteger(value.write_timeout_ms) && typeof value.request_buffering === 'boolean' &&
+    typeof value.response_buffering === 'boolean'
 }
 
 function isHttpHost(value: unknown): value is HttpHostSelectorConfig {
-  return isRecord(value) && ['normalized_host', 'exact_authority'].includes(String(value.kind)) &&
+  return isRecord(value) && ['normalized_host', 'exact_authority', 'nginx_leading_wildcard',
+    'nginx_leading_dot'].includes(String(value.kind)) &&
     typeof value.value === 'string'
 }
 
@@ -599,9 +730,11 @@ function isHttpPath(value: unknown): value is HttpPathSelectorConfig {
 }
 
 function isHttpAccess(value: unknown): value is HttpAccessPolicyConfig {
-  return isRecord(value) && value.type === 'bearer_token_file' &&
-    typeof value.token_file_path === 'string' && typeof value.header_name === 'string' &&
-    nullableString(value.realm)
+  return isRecord(value) && (value.type === 'bearer_token_file'
+    ? typeof value.token_file_path === 'string' && typeof value.header_name === 'string' &&
+      nullableString(value.realm)
+    : value.type === 'basic_htpasswd_file' && typeof value.htpasswd_file_path === 'string' &&
+      typeof value.realm === 'string')
 }
 
 function isHttpAction(value: unknown): value is HttpRouteActionConfig {
@@ -611,18 +744,43 @@ function isHttpAction(value: unknown): value is HttpRouteActionConfig {
       return typeof value.upstream_pool === 'string' && isHttpProxyPolicy(value.policy)
     case 'fixed_response':
       return integerInRange(value.status, 200, 599) && typeof value.body === 'string' &&
-        arrayOf(value.headers, (header) => isRecord(header) &&
-          typeof header.name === 'string' && typeof header.value === 'string')
+        arrayOf(value.headers, isLiteralHeader)
     case 'redirect':
-      return [301, 302, 307, 308].includes(Number(value.status)) && isRecord(value.location) &&
-        ['literal', 'request_template'].includes(String(value.location.kind)) &&
-        typeof value.location.value === 'string'
+      return [301, 302, 307, 308].includes(Number(value.status)) &&
+        isHttpRedirectLocation(value.location) && arrayOf(value.headers, isLiteralHeader)
     case 'static_files':
       return typeof value.root_directory === 'string' && arrayOf(value.index_files, isString) &&
-        nullableString(value.spa_fallback)
+        typeof value.internal_index_redirects === 'boolean' &&
+        typeof value.directory_redirects === 'boolean' &&
+        nullableString(value.spa_fallback) && ['root', 'alias'].includes(String(value.path_mapping)) &&
+        arrayOf(value.try_files, isStaticTryFile) && typeof value.autoindex === 'boolean' &&
+        typeof value.autoindex_exact_size === 'boolean' &&
+        typeof value.autoindex_local_time === 'boolean' &&
+        isRecord(value.mime) && nullableString(value.mime.default_type) &&
+        arrayOf(value.mime.types, (entry) => isRecord(entry) && typeof entry.extension === 'string' &&
+          typeof entry.content_type === 'string') && arrayOf(value.headers, isLiteralHeader) &&
+        arrayOf(value.error_responses, (entry) => isRecord(entry) &&
+          arrayOf(entry.statuses, safeInteger) && typeof entry.file === 'string' &&
+          nullableString(entry.internal_redirect))
     default:
       return false
   }
+}
+
+function isStaticTryFile(value: unknown): boolean {
+  return isRecord(value) && (['request_path', 'request_path_directory'].includes(String(value.type)) ||
+    (value.type === 'relative' && typeof value.path === 'string') ||
+    (value.type === 'status' && safeInteger(value.status)))
+}
+
+function isLiteralHeader(value: unknown): boolean {
+  return isRecord(value) && typeof value.name === 'string' && typeof value.value === 'string' &&
+    (value.always === undefined || typeof value.always === 'boolean')
+}
+
+function isHttpRedirectLocation(value: unknown): value is HttpRedirectLocationConfig {
+  return isRecord(value) && typeof value.value === 'string' && (value.kind === 'literal' ||
+    (value.kind === 'request_template' && nullableString(value.nginx_host_fallback)))
 }
 
 function isHttpProxyPolicy(value: unknown): value is HttpProxyPolicyConfig {
@@ -631,7 +789,13 @@ function isHttpProxyPolicy(value: unknown): value is HttpProxyPolicyConfig {
     arrayOf(value.response_headers, isResponseHeaderMutation) &&
     arrayOf(value.response_cookie_path_rewrites, (rewrite) => isRecord(rewrite) &&
       typeof rewrite.from === 'string' && typeof rewrite.to === 'string') &&
+    arrayOf(value.response_cookie_attributes, (policy) => isRecord(policy) &&
+      typeof policy.name === 'string' && (policy.secure === null || typeof policy.secure === 'boolean') &&
+      (policy.http_only === null || typeof policy.http_only === 'boolean') &&
+      (policy.same_site === null || ['strict', 'lax', 'none'].includes(String(policy.same_site)))) &&
     isRecord(value.retry) && integerInRange(value.retry.max_retries, 0, 2) &&
+    ['same_server', 'next_server'].includes(String(value.retry.target)) &&
+    integerInRange(value.retry.delay_ms, 0, 60_000) &&
     isHttpRetryTriggers(value.retry.triggers) &&
     value.retry.method_safety === 'get_head' && value.retry.body_safety === 'empty' &&
     (value.cache === null || isHttpCachePolicy(value.cache))
@@ -678,27 +842,52 @@ function isHttpRetryTriggers(value: unknown): value is HttpRetryTrigger[] {
 
 function isHttpUpstreamHost(value: unknown): value is HttpUpstreamHostConfig {
   return isRecord(value) && (value.type === 'preserve_incoming' ||
+    (value.type === 'nginx_host' && typeof value.fallback === 'string') ||
     (value.type === 'endpoint' && nullableString(value.unix_fallback)) ||
     (value.type === 'literal' && typeof value.value === 'string'))
 }
 
 function isRequestHeaderMutation(value: unknown): value is HttpRequestHeaderMutationConfig {
   return isRecord(value) && typeof value.name === 'string' && (value.operation === 'remove' ||
-    (value.operation === 'set' && isRecord(value.value) &&
-      ['literal', 'incoming_authority', 'normalized_host', 'client_ip', 'selected_upstream_host']
-        .includes(String(value.value.type)) &&
-      (value.value.type !== 'literal' || typeof value.value.value === 'string')))
+    (value.operation === 'set' && isRequestHeaderValue(value.value)))
+}
+
+function isRequestHeaderValue(value: unknown): value is HttpRequestHeaderValueConfig {
+  if (!isRecord(value)) return false
+  if (['incoming_authority', 'normalized_host', 'client_ip', 'downstream_scheme',
+    'selected_upstream_host'].includes(String(value.type))) return true
+  if (value.type === 'nginx_host') return typeof value.fallback === 'string'
+  if (value.type === 'literal') return typeof value.value === 'string'
+  if (value.type === 'appended_x_forwarded_for') {
+    return safeInteger(value.max_bytes) &&
+      arrayOf(value.except_source_cidrs, (cidr): cidr is string => typeof cidr === 'string') &&
+      value.except_source_cidrs.length <= 16
+  }
+  return value.type === 'incoming_header' && typeof value.name === 'string' && safeInteger(value.max_bytes)
 }
 
 function isResponseHeaderMutation(value: unknown): value is HttpResponseHeaderMutationConfig {
   return isRecord(value) && typeof value.name === 'string' && (value.operation === 'remove' ||
-    (value.operation === 'set' && typeof value.value === 'string'))
+    (['set', 'add'].includes(String(value.operation)) && typeof value.value === 'string' &&
+      typeof value.always === 'boolean'))
 }
 
 function isRtmpService(value: unknown): value is RtmpServiceConfig {
-  return isRecord(value) && typeof value.name === 'string' && arrayOf(value.applications, (application) =>
+  return isRecord(value) && typeof value.name === 'string' && safeInteger(value.outbound_chunk_size) &&
+    (value.access_log === null || isAccessLog(value.access_log)) && arrayOf(value.applications, (application) =>
     isRecord(application) && typeof application.name === 'string' && typeof application.live === 'boolean' &&
-    typeof application.idle_streams === 'boolean' && arrayOf(application.recorders, isRtmpRecorder))
+    typeof application.idle_streams === 'boolean' && arrayOf(application.push_targets, (target) =>
+      isRecord(target) && typeof target.host === 'string' && safeInteger(target.port) &&
+      typeof target.application === 'string') && isRecord(application.fanout) &&
+    safeInteger(application.fanout.max_subscribers) &&
+    safeInteger(application.fanout.max_queue_messages_per_subscriber) &&
+    safeInteger(application.fanout.max_queue_bytes_per_subscriber) &&
+    arrayOf(application.recorders, isRtmpRecorder))
+}
+
+function isAccessLog(value: unknown): value is AccessLogConfig {
+  return isRecord(value) && (value.type === 'disabled' ||
+    (value.type === 'file' && typeof value.path === 'string'))
 }
 
 function isForwardProxyService(value: unknown): value is ForwardProxyServiceConfig {
@@ -729,6 +918,9 @@ function isRtmpRecorder(value: unknown): value is RtmpRecorderConfig {
   return isRecord(value) && typeof value.name === 'string' &&
     ['continuous', 'manual'].includes(String(value.start)) && typeof value.root_directory === 'string' &&
     typeof value.suffix_template === 'string' && typeof value.append_unix_seconds === 'boolean' &&
+    typeof value.timezone === 'string' && value.timezone.length > 0 &&
+    ['segment_start', 'segment_end'].includes(String(value.time_basis)) &&
+    ['safe_unique', 'nginx_compatible'].includes(String(value.segment_naming)) &&
     nullableSafeInteger(value.rotation_interval_ms) && safeInteger(value.max_queue_messages) &&
     safeInteger(value.max_queue_bytes) && safeInteger(value.shutdown_timeout_ms) &&
     safeInteger(value.max_storage_bytes) && safeInteger(value.max_storage_files) &&
@@ -762,6 +954,9 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'management', kind: 'object' },
   { path: 'management.bind', kind: 'string' },
   { path: 'management.ui_dir', kind: 'string' },
+  { path: 'stats', kind: 'object' },
+  { path: 'stats.binds', kind: 'string_list' },
+  { path: 'stats.admin_token_file', kind: 'string' },
   { path: 'certificates', kind: 'collection' },
   { path: 'certificates[].name', kind: 'string' },
   { path: 'certificates[].dns_names', kind: 'string_list' },
@@ -845,6 +1040,7 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'http_services[].routes[].action.policy', kind: 'object' },
   { path: 'http_services[].routes[].action.policy.upstream_host', kind: 'object' },
   { path: 'http_services[].routes[].action.policy.upstream_host.type', kind: 'enum' },
+  { path: 'http_services[].routes[].action.policy.upstream_host.fallback', kind: 'string' },
   { path: 'http_services[].routes[].action.policy.upstream_host.unix_fallback', kind: 'string' },
   { path: 'http_services[].routes[].action.policy.upstream_host.value', kind: 'string' },
   { path: 'http_services[].routes[].action.policy.request_headers', kind: 'collection' },
@@ -853,15 +1049,20 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'http_services[].routes[].action.policy.request_headers[].value', kind: 'object' },
   { path: 'http_services[].routes[].action.policy.request_headers[].value.type', kind: 'enum' },
   { path: 'http_services[].routes[].action.policy.request_headers[].value.value', kind: 'string' },
+  { path: 'http_services[].routes[].action.policy.request_headers[].value.fallback', kind: 'string' },
+  { path: 'http_services[].routes[].action.policy.request_headers[].value.except_source_cidrs', kind: 'string_list' },
   { path: 'http_services[].routes[].action.policy.response_headers', kind: 'collection' },
   { path: 'http_services[].routes[].action.policy.response_headers[].operation', kind: 'enum' },
   { path: 'http_services[].routes[].action.policy.response_headers[].name', kind: 'string' },
   { path: 'http_services[].routes[].action.policy.response_headers[].value', kind: 'string' },
+  { path: 'http_services[].routes[].action.policy.response_headers[].always', kind: 'boolean' },
   { path: 'http_services[].routes[].action.policy.response_cookie_path_rewrites', kind: 'collection' },
   { path: 'http_services[].routes[].action.policy.response_cookie_path_rewrites[].from', kind: 'string' },
   { path: 'http_services[].routes[].action.policy.response_cookie_path_rewrites[].to', kind: 'string' },
   { path: 'http_services[].routes[].action.policy.retry', kind: 'object' },
   { path: 'http_services[].routes[].action.policy.retry.max_retries', kind: 'integer' },
+  { path: 'http_services[].routes[].action.policy.retry.target', kind: 'enum' },
+  { path: 'http_services[].routes[].action.policy.retry.delay_ms', kind: 'integer' },
   { path: 'http_services[].routes[].action.policy.retry.triggers', kind: 'enum' },
   { path: 'http_services[].routes[].action.policy.retry.method_safety', kind: 'enum' },
   { path: 'http_services[].routes[].action.policy.retry.body_safety', kind: 'enum' },
@@ -905,12 +1106,17 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'http_services[].routes[].action.headers', kind: 'collection' },
   { path: 'http_services[].routes[].action.headers[].name', kind: 'string' },
   { path: 'http_services[].routes[].action.headers[].value', kind: 'string' },
+  { path: 'http_services[].routes[].action.headers[].always', kind: 'boolean' },
   { path: 'http_services[].routes[].action.location', kind: 'object' },
   { path: 'http_services[].routes[].action.location.kind', kind: 'enum' },
   { path: 'http_services[].routes[].action.location.value', kind: 'string' },
+  { path: 'http_services[].routes[].action.location.nginx_host_fallback', kind: 'string' },
   { path: 'http_services[].routes[].action.root_directory', kind: 'string' },
   { path: 'http_services[].routes[].action.index_files', kind: 'string_list' },
+  { path: 'http_services[].routes[].action.internal_index_redirects', kind: 'boolean' },
+  { path: 'http_services[].routes[].action.directory_redirects', kind: 'boolean' },
   { path: 'http_services[].routes[].action.spa_fallback', kind: 'string' },
+  { path: 'http_services[].routes[].action.error_responses[].internal_redirect', kind: 'string' },
   { path: 'http_services[].upstream_io_timeout_ms', kind: 'integer' },
   { path: 'http_services[].max_request_body_bytes', kind: 'integer' },
   { path: 'forward_proxy_services', kind: 'collection' },
@@ -970,4 +1176,81 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'l4_services[].connect_timeout_ms', kind: 'integer' },
   { path: 'l4_services[].idle_timeout_ms', kind: 'integer' },
   { path: 'l4_services[].lifetime_timeout_ms', kind: 'integer' },
+  { path: 'max_connections', kind: 'integer' },
+  { path: 'listeners[].bind.mode', kind: 'integer' },
+  { path: 'listeners[].downstream_timeouts', kind: 'object' },
+  { path: 'listeners[].downstream_timeouts.client_timeout_ms', kind: 'integer' },
+  { path: 'listeners[].downstream_timeouts.request_timeout_ms', kind: 'integer' },
+  { path: 'listeners[].downstream_timeouts.keepalive_timeout_ms', kind: 'integer' },
+  { path: 'upstream_pools[].servers', kind: 'collection' },
+  { path: 'upstream_pools[].servers[].name', kind: 'string' },
+  { path: 'upstream_pools[].servers[].endpoint', kind: 'object' },
+  { path: 'upstream_pools[].servers[].endpoint.type', kind: 'enum' },
+  { path: 'upstream_pools[].servers[].endpoint.address', kind: 'string' },
+  { path: 'upstream_pools[].servers[].endpoint.host', kind: 'string' },
+  { path: 'upstream_pools[].servers[].endpoint.port', kind: 'integer' },
+  { path: 'upstream_pools[].servers[].endpoint.path', kind: 'string' },
+  { path: 'upstream_pools[].servers[].max_connections', kind: 'integer' },
+  { path: 'upstream_pools[].servers[].dns_resolution', kind: 'enum' },
+  { path: 'upstream_pools[].queue_timeout_ms', kind: 'integer' },
+  { path: 'upstream_pools[].connect_timeout_ms', kind: 'integer' },
+  { path: 'upstream_pools[].server_timeout_ms', kind: 'integer' },
+  { path: 'upstream_pools[].connection_reuse', kind: 'enum' },
+  { path: 'upstream_pools[].health_check.startup', kind: 'enum' },
+  { path: 'upstream_pools[].health_check.fast_interval_ms', kind: 'integer' },
+  { path: 'upstream_pools[].health_check.down_interval_ms', kind: 'integer' },
+  { path: 'upstream_pools[].health_check.expected_status', kind: 'integer' },
+  { path: 'upstream_pools[].health_check.http_version', kind: 'enum' },
+  { path: 'http_services[].routes[].access_policy.htpasswd_file_path', kind: 'string' },
+  { path: 'http_services[].routes[].policy', kind: 'object' },
+  { path: 'http_services[].routes[].policy.max_request_body_bytes', kind: 'integer' },
+  { path: 'http_services[].routes[].policy.connect_timeout_ms', kind: 'integer' },
+  { path: 'http_services[].routes[].policy.read_timeout_ms', kind: 'integer' },
+  { path: 'http_services[].routes[].policy.write_timeout_ms', kind: 'integer' },
+  { path: 'http_services[].routes[].policy.request_buffering', kind: 'boolean' },
+  { path: 'http_services[].routes[].policy.response_buffering', kind: 'boolean' },
+  { path: 'http_services[].routes[].action.policy.request_headers[].value.name', kind: 'string' },
+  { path: 'http_services[].routes[].action.policy.request_headers[].value.max_bytes', kind: 'integer' },
+  { path: 'http_services[].routes[].action.policy.response_cookie_attributes', kind: 'collection' },
+  { path: 'http_services[].routes[].action.policy.response_cookie_attributes[].name', kind: 'string' },
+  { path: 'http_services[].routes[].action.policy.response_cookie_attributes[].secure', kind: 'boolean' },
+  { path: 'http_services[].routes[].action.policy.response_cookie_attributes[].http_only', kind: 'boolean' },
+  { path: 'http_services[].routes[].action.policy.response_cookie_attributes[].same_site', kind: 'enum' },
+  { path: 'http_services[].routes[].action.path_mapping', kind: 'enum' },
+  { path: 'http_services[].routes[].action.try_files', kind: 'collection' },
+  { path: 'http_services[].routes[].action.try_files[].type', kind: 'enum' },
+  { path: 'http_services[].routes[].action.try_files[].path', kind: 'string' },
+  { path: 'http_services[].routes[].action.try_files[].status', kind: 'integer' },
+  { path: 'http_services[].routes[].action.autoindex', kind: 'boolean' },
+  { path: 'http_services[].routes[].action.autoindex_exact_size', kind: 'boolean' },
+  { path: 'http_services[].routes[].action.autoindex_local_time', kind: 'boolean' },
+  { path: 'http_services[].routes[].action.mime', kind: 'object' },
+  { path: 'http_services[].routes[].action.mime.default_type', kind: 'string' },
+  { path: 'http_services[].routes[].action.mime.types', kind: 'collection' },
+  { path: 'http_services[].routes[].action.mime.types[].extension', kind: 'string' },
+  { path: 'http_services[].routes[].action.mime.types[].content_type', kind: 'string' },
+  { path: 'http_services[].routes[].action.error_responses', kind: 'collection' },
+  { path: 'http_services[].routes[].action.error_responses[].statuses', kind: 'collection' },
+  { path: 'http_services[].routes[].action.error_responses[].file', kind: 'string' },
+  { path: 'http_services[].gzip', kind: 'object' },
+  { path: 'http_services[].gzip.level', kind: 'integer' },
+  { path: 'http_services[].gzip.content_types', kind: 'string_list' },
+  { path: 'http_services[].access_log', kind: 'object' },
+  { path: 'http_services[].access_log.type', kind: 'enum' },
+  { path: 'http_services[].access_log.path', kind: 'string' },
+  { path: 'rtmp_services[].outbound_chunk_size', kind: 'integer' },
+  { path: 'rtmp_services[].access_log', kind: 'object' },
+  { path: 'rtmp_services[].access_log.type', kind: 'enum' },
+  { path: 'rtmp_services[].access_log.path', kind: 'string' },
+  { path: 'rtmp_services[].applications[].push_targets', kind: 'collection' },
+  { path: 'rtmp_services[].applications[].push_targets[].host', kind: 'string' },
+  { path: 'rtmp_services[].applications[].push_targets[].port', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].push_targets[].application', kind: 'string' },
+  { path: 'rtmp_services[].applications[].fanout', kind: 'object' },
+  { path: 'rtmp_services[].applications[].fanout.max_subscribers', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].fanout.max_queue_messages_per_subscriber', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].fanout.max_queue_bytes_per_subscriber', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].recorders[].timezone', kind: 'enum' },
+  { path: 'rtmp_services[].applications[].recorders[].time_basis', kind: 'enum' },
+  { path: 'rtmp_services[].applications[].recorders[].segment_naming', kind: 'enum' },
 ] as const satisfies readonly CanonicalFieldDefinition[]

@@ -1,5 +1,5 @@
 [package]
-name = "oxiroute-server"
+name = "oxiroute"
 description = "Pingora-based HTTP and TCP proxy runtime for OxiRoute"
 edition.workspace = true
 license.workspace = true
@@ -7,24 +7,38 @@ repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+[lib]
+name = "oxiroute_server"
+
+[[bin]]
+name = "oxiroute"
+path = "src/main.rs"
+
 [dependencies]
 arc-swap.workspace = true
 async-trait.workspace = true
+base64.workspace = true
+bcrypt.workspace = true
 bytes.workspace = true
+clap.workspace = true
 env_logger.workspace = true
 futures-util.workspace = true
 h2.workspace = true
 http.workspace = true
+httpdate.workspace = true
 log.workspace = true
 notify.workspace = true
 openssl.workspace = true
 oxiroute-config = { path = "../oxiroute-config" }
+oxiroute-import = { path = "../oxiroute-import" }
 oxiroute-rtmp = { path = "../oxiroute-rtmp" }
 pingora.workspace = true
 rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+signal-hook.workspace = true
 thiserror.workspace = true
+time.workspace = true
 tokio.workspace = true
 x509-parser.workspace = true
 zeroize.workspace = true

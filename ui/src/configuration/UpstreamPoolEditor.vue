@@ -13,19 +13,24 @@ header.form-heading
     select(v-model="pool.algorithm")
       option(value="round_robin") Round robin
       option(value="least_connections") Least connections
-fieldset.route-list.endpoint-editor(data-field="upstream_pools[].endpoints")
+fieldset.route-list.endpoint-editor(data-field="upstream_pools[].servers")
   .route-heading
-    legend Endpoints
-    button.add-row(type="button" @click="addEndpoint") + Add endpoint
-  p.empty-list(v-if="pool.endpoints.length === 0") At least one endpoint is required.
-  UpstreamEndpointField(
-    v-for="(endpoint, endpointIndex) in pool.endpoints"
-    :key="endpointIndex"
-    :endpoint="endpoint"
-    :index="endpointIndex"
-    @update:endpoint="replaceEndpoint(endpointIndex, $event)"
-    @remove="removeEndpoint(endpointIndex)"
-  )
+    legend Servers
+    button.add-row(type="button" @click="addServer") + Add server
+  p.empty-list(v-if="pool.servers.length === 0") At least one server is required.
+  article.route-card(v-for="(server, serverIndex) in pool.servers" :key="serverIndex")
+    header.route-card-heading
+      strong Server {{ serverIndex + 1 }}
+      button.danger-link(type="button" :aria-label="`Remove upstream server ${serverIndex + 1}`" @click="removeServer(serverIndex)") Remove
+    label.field(data-field="upstream_pools[].servers[].name")
+      span Stable server name
+      input(type="text" v-model="server.name" required)
+    UpstreamEndpointField(
+      :endpoint="server.endpoint"
+      :index="serverIndex"
+      @update:endpoint="replaceEndpoint(serverIndex, $event)"
+      @remove="removeServer(serverIndex)"
+    )
 fieldset.object-block(data-field="upstream_pools[].health_check")
   legend Health check
   label.enable-row
@@ -99,7 +104,7 @@ fieldset.object-block(data-field="upstream_pools[].http_versions")
 <script setup lang="ts">
 import { computed } from 'vue'
 
-import type { L4ServiceConfig, UpstreamEndpoint, UpstreamPoolConfig } from '../config'
+import type { L4ServiceConfig, UpstreamEndpoint, UpstreamPoolConfig, UpstreamServerConfig } from '../config'
 import UpstreamEndpointField from './UpstreamEndpointField.vue'
 
 const props = defineProps<{
@@ -112,7 +117,7 @@ const emit = defineEmits<{
   remove: []
 }>()
 
-const hasUnixEndpoint = computed(() => props.pool.endpoints.some(({ type }) => type === 'unix'))
+const hasUnixEndpoint = computed(() => props.pool.servers.some(({ endpoint }) => endpoint.type === 'unix'))
 const healthCheckDisabledReason = computed(() => {
   if (hasUnixEndpoint.value) return 'The server does not support health checks for Unix endpoints.'
   if (props.pool.tls !== null) return 'The server does not support active health checks with upstream TLS.'
@@ -124,23 +129,30 @@ const tlsDisabledReason = computed(() => {
   return undefined
 })
 
-function newEndpoint(): UpstreamEndpoint {
-  return { type: 'socket', address: '127.0.0.1:3000' }
+function newServer(): UpstreamServerConfig {
+  return {
+    name: `server-${props.pool.servers.length + 1}`,
+    endpoint: { type: 'socket', address: '127.0.0.1:3000' },
+    max_connections: null,
+    dns_resolution: 'on_connect',
+  }
 }
 
-function addEndpoint(): void {
-  props.pool.endpoints.push(newEndpoint())
+function addServer(): void {
+  props.pool.servers.push(newServer())
   emit('changed')
 }
 
-function removeEndpoint(index: number): void {
-  props.pool.endpoints.splice(index, 1)
+function removeServer(index: number): void {
+  props.pool.servers.splice(index, 1)
   normalizeEndpointRestrictions()
   emit('changed')
 }
 
 function replaceEndpoint(index: number, endpoint: UpstreamEndpoint): void {
-  props.pool.endpoints[index] = endpoint
+  const server = props.pool.servers[index]
+  if (!server) return
+  server.endpoint = endpoint
   normalizeEndpointRestrictions()
 }
 
@@ -165,8 +177,13 @@ function toggleHealthCheck(event: Event): void {
         timeout_ms: 1_000,
         healthy_threshold: 1,
         unhealthy_threshold: 3,
+        startup: 'checking',
+        fast_interval_ms: null,
+        down_interval_ms: null,
         host: null,
         path: null,
+        expected_status: null,
+        http_version: null,
       }
     : null
 }

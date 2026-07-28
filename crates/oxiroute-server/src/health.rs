@@ -7,7 +7,8 @@ use async_trait::async_trait;
 use futures_util::{StreamExt, stream};
 use log::info;
 use oxiroute_config::{
-    HealthCheck as HealthCheckConfig, HealthCheckType, validate_health_check_config,
+    HealthCheck as HealthCheckConfig, HealthCheckType, HealthHttpVersion,
+    validate_health_check_config,
 };
 use pingora::{
     ErrorType,
@@ -31,9 +32,12 @@ const MAX_CONCURRENT_PROBES: usize = 32;
 #[derive(Clone)]
 struct HealthTarget {
     check: Arc<dyn HealthCheck + Send + Sync>,
+    down_interval: Duration,
     endpoint: RuntimeEndpoint,
     endpoint_index: usize,
+    fast_interval: Duration,
     healthy_threshold: u16,
+    interval: Duration,
     pool: Arc<RoundRobinPool>,
     pool_name: String,
     probe_lock: Arc<Mutex<()>>,
@@ -44,6 +48,9 @@ struct HealthTarget {
 impl HealthTarget {
     async fn probe(self, semaphore: Arc<Semaphore>) {
         let _probe_guard = self.probe_lock.lock().await;
+        if !self.pool.health_checks_running(self.endpoint_index) {
+            return;
+        }
         let Ok(_permit) = semaphore.acquire_owned().await else {
             return;
         };
@@ -71,11 +78,20 @@ impl HealthTarget {
 
     async fn run_probe(&self) -> Result<(), HealthFailure> {
         let addresses = self
-            .endpoint
-            .resolve_addresses()
+            .pool
+            .resolve_server_addresses(self.endpoint_index)
             .await
             .map_err(|_| HealthFailure::ConnectFailed)?;
         self.run_probe_addresses(&addresses).await
+    }
+
+    fn next_interval(&self) -> Duration {
+        match self.pool.health_state(self.endpoint_index) {
+            Some(crate::EndpointHealthState::Unknown) => self.fast_interval,
+            Some(crate::EndpointHealthState::Unhealthy) => self.down_interval,
+            Some(crate::EndpointHealthState::Unchecked | crate::EndpointHealthState::Healthy)
+            | None => self.interval,
+        }
     }
 
     async fn run_probe_addresses(
@@ -111,7 +127,6 @@ fn classify_probe_error(error: &pingora::Error) -> HealthFailure {
 
 #[derive(Clone)]
 pub(crate) struct HealthGroup {
-    interval: Duration,
     targets: Vec<HealthTarget>,
 }
 
@@ -165,22 +180,12 @@ impl BackgroundService for HealthSupervisor {
 async fn run_group(group: HealthGroup, shutdown: ShutdownWatch, semaphore: Arc<Semaphore>) {
     stream::iter(group.targets)
         .for_each_concurrent(None, |target| {
-            run_target(
-                target,
-                group.interval,
-                shutdown.clone(),
-                Arc::clone(&semaphore),
-            )
+            run_target(target, shutdown.clone(), Arc::clone(&semaphore))
         })
         .await;
 }
 
-async fn run_target(
-    target: HealthTarget,
-    interval: Duration,
-    mut shutdown: ShutdownWatch,
-    semaphore: Arc<Semaphore>,
-) {
+async fn run_target(target: HealthTarget, mut shutdown: ShutdownWatch, semaphore: Arc<Semaphore>) {
     loop {
         if *shutdown.borrow() {
             return;
@@ -192,6 +197,7 @@ async fn run_target(
         if *shutdown.borrow() {
             return;
         }
+        let interval = target.next_interval();
         tokio::select! {
             () = sleep(interval) => {}
             _ = shutdown.changed() => return,
@@ -220,18 +226,36 @@ pub(crate) fn compile_health_group(
             Arc::new(check)
         }
         HealthCheckType::Http => {
-            let host = config
-                .host
-                .as_deref()
-                .ok_or(HealthBuildError::MissingHost)?;
+            let host = config.host.as_deref();
             let path = config
                 .path
                 .as_deref()
                 .ok_or(HealthBuildError::MissingPath)?;
+            let version = match config.http_version.unwrap_or(HealthHttpVersion::Http11) {
+                HealthHttpVersion::Http10 => http::Version::HTTP_10,
+                HealthHttpVersion::Http11 => http::Version::HTTP_11,
+            };
             let mut request = RequestHeader::build("GET", path.as_bytes(), Some(1))?;
-            request.append_header("Host", host)?;
-            let mut check = HttpHealthCheck::new(host, false);
+            request.set_version(version);
+            if let Some(host) = host {
+                request.append_header("Host", host)?;
+            }
+            let mut check = HttpHealthCheck::new(host.unwrap_or_default(), false);
             check.req = request;
+            let expected_status = config.expected_status.unwrap_or(200);
+            check.validator = Some(Box::new(move |response| {
+                let actual = response.status.as_u16();
+                if actual == expected_status {
+                    Ok(())
+                } else {
+                    pingora::Error::e_explain(
+                        ErrorType::CustomCode("non 200 code", actual),
+                        format!(
+                            "health check expected status {expected_status}, received {actual}"
+                        ),
+                    )
+                }
+            }));
             check.peer_template.options.connection_timeout = Some(timeout);
             check.peer_template.options.total_connection_timeout = Some(timeout);
             check.peer_template.options.read_timeout = Some(timeout);
@@ -243,9 +267,16 @@ pub(crate) fn compile_health_group(
         .endpoints()
         .map(|(endpoint_index, endpoint)| HealthTarget {
             check: Arc::clone(&check),
+            down_interval: Duration::from_millis(
+                config.down_interval_ms.unwrap_or(config.interval_ms),
+            ),
             endpoint,
             endpoint_index,
+            fast_interval: Duration::from_millis(
+                config.fast_interval_ms.unwrap_or(config.interval_ms),
+            ),
             healthy_threshold: config.healthy_threshold,
+            interval: Duration::from_millis(config.interval_ms),
             pool: Arc::clone(pool),
             pool_name: name.to_owned(),
             probe_lock: Arc::new(Mutex::new(())),
@@ -254,18 +285,13 @@ pub(crate) fn compile_health_group(
         })
         .collect();
 
-    Ok(HealthGroup {
-        interval: Duration::from_millis(config.interval_ms),
-        targets,
-    })
+    Ok(HealthGroup { targets })
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum HealthBuildError {
     #[error("invalid health check configuration: {0}")]
     InvalidConfig(#[from] oxiroute_config::ConfigError),
-    #[error("HTTP health check requires a host")]
-    MissingHost,
     #[error("HTTP health check requires a path")]
     MissingPath,
     #[error("health check construction failed: {0}")]
@@ -340,9 +366,12 @@ mod tests {
         });
         let target = HealthTarget {
             check: Arc::<AddressFallbackCheck>::clone(&check),
+            down_interval: Duration::from_secs(1),
             endpoint,
             endpoint_index: 0,
+            fast_interval: Duration::from_secs(1),
             healthy_threshold: 1,
+            interval: Duration::from_secs(1),
             pool,
             pool_name: "fallback".into(),
             probe_lock: Arc::new(Mutex::new(())),
@@ -359,6 +388,40 @@ mod tests {
             *check.attempts.lock().expect("health attempts"),
             vec![first, second]
         );
+    }
+
+    #[test]
+    fn health_intervals_follow_checking_down_and_healthy_state() {
+        let endpoint = RuntimeEndpoint::from(std::net::SocketAddr::from(([127, 0, 0, 1], 3_000)));
+        let pool = Arc::new(
+            RoundRobinPool::new_named(
+                "intervals".into(),
+                [endpoint.clone()],
+                oxiroute_config::UpstreamAlgorithm::First,
+                true,
+            )
+            .expect("health pool"),
+        );
+        let target = HealthTarget {
+            check: Arc::new(TcpHealthCheck::default()),
+            down_interval: Duration::from_secs(5),
+            endpoint,
+            endpoint_index: 0,
+            fast_interval: Duration::from_secs(1),
+            healthy_threshold: 1,
+            interval: Duration::from_secs(2),
+            pool: Arc::clone(&pool),
+            pool_name: "intervals".into(),
+            probe_lock: Arc::new(Mutex::new(())),
+            timeout: Duration::from_millis(100),
+            unhealthy_threshold: 1,
+        };
+
+        assert_eq!(target.next_interval(), Duration::from_secs(1));
+        pool.record_health(0, false, Some(HealthFailure::ConnectFailed), Some(1), 1, 1);
+        assert_eq!(target.next_interval(), Duration::from_secs(5));
+        pool.record_health(0, true, None, Some(2), 1, 1);
+        assert_eq!(target.next_interval(), Duration::from_secs(2));
     }
 
     #[async_trait]
@@ -406,9 +469,12 @@ mod tests {
             .enumerate()
             .map(|(endpoint_index, address)| HealthTarget {
                 check: Arc::<BlockingCheck>::clone(&check),
+                down_interval: Duration::from_secs(1),
                 endpoint: RuntimeEndpoint::from(address),
                 endpoint_index,
+                fast_interval: Duration::from_secs(1),
                 healthy_threshold: 1,
+                interval: Duration::from_secs(1),
                 pool: Arc::clone(&pool),
                 pool_name: "bounded".into(),
                 probe_lock: Arc::new(Mutex::new(())),

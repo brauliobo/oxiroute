@@ -7,13 +7,13 @@ struct StaticAsset {
     content_type: &'static str,
 }
 
-pub(super) struct UiAssets {
+pub(crate) struct UiAssets {
     index: StaticAsset,
     assets: HashMap<String, StaticAsset>,
 }
 
 impl UiAssets {
-    pub(super) fn load(directory: &Path) -> io::Result<Self> {
+    pub(crate) fn load(directory: &Path) -> io::Result<Self> {
         let index = StaticAsset {
             body: fs::read(directory.join("index.html"))?,
             content_type: "text/html; charset=utf-8",

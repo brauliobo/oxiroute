@@ -186,23 +186,114 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
         mut stack: TransportStack,
         mut shutdown: ShutdownWatch,
     ) {
+        let mut gate = app_logic.accept_gate().map(|gate| gate.register());
         // the accept loop, until the system is shutting down
         loop {
-            let new_io = tokio::select! { // TODO: consider biased for perf reason?
-                new_io = stack.accept() => new_io,
-                shutdown_signal = shutdown.changed() => {
-                    match shutdown_signal {
-                        Ok(()) => {
-                            if !*shutdown.borrow() {
-                                // happen in the initial read
+            let new_io = if let Some(participant) = &mut gate {
+                let state = participant.state();
+                if !state.accepting {
+                    participant.acknowledge(state.epoch);
+                    tokio::select! {
+                        biased;
+                        shutdown_signal = shutdown.changed() => {
+                            if shutdown_signal.is_err() || *shutdown.borrow() {
+                                break;
+                            }
+                        }
+                        changed = participant.changed() => {
+                            if changed.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    continue;
+                }
+                let Some(ownership) = participant.claim() else {
+                    continue;
+                };
+                tokio::select! {
+                    biased;
+                    shutdown_signal = shutdown.changed() => {
+                        drop(ownership);
+                        match shutdown_signal {
+                            Ok(()) => {
+                                if !*shutdown.borrow() {
+                                    continue;
+                                }
+                                info!("Shutting down {}", stack.as_str());
+                                break;
+                            }
+                            Err(e) => {
+                                error!("shutdown_signal error {e}");
+                                break;
+                            }
+                        }
+                    }
+                    changed = participant.changed() => {
+                        drop(ownership);
+                        match changed {
+                            Ok(state) => {
+                                if !state.accepting {
+                                    participant.acknowledge(state.epoch);
+                                }
                                 continue;
                             }
-                            info!("Shutting down {}", stack.as_str());
-                            break;
+                            Err(error) => {
+                                error!("accept gate error {error}");
+                                break;
+                            }
                         }
-                        Err(e) => {
-                            error!("shutdown_signal error {e}");
-                            break;
+                    }
+                    new_io = stack.accept() => {
+                        let admission = app_logic.admit_owned_connection();
+                        drop(ownership);
+                        let Some(admission) = admission else {
+                            continue;
+                        };
+                        match new_io {
+                            Ok(io) => {
+                                let app = app_logic.clone();
+                                let shutdown = shutdown.clone();
+                                current_handle().spawn(async move {
+                                    let _admission = admission;
+                                    let peer_addr = io.peer_addr();
+                                    match timeout(Duration::from_secs(60), io.handshake()).await {
+                                        Ok(handshake) => match handshake {
+                                            Ok(io) => Self::handle_event(io, app, shutdown).await,
+                                            Err(e) => {
+                                                if let Some(addr) = peer_addr {
+                                                    error!("Downstream handshake error from {}: {e}", addr);
+                                                } else {
+                                                    error!("Downstream handshake error: {e}");
+                                                }
+                                            }
+                                        },
+                                        Err(_) => error!("Downstream handshake timeout"),
+                                    }
+                                });
+                                continue;
+                            }
+                            Err(error) => Err(error),
+                        }
+                    }
+                }
+            } else {
+                tokio::select! { // TODO: consider biased for perf reason?
+                    new_io = stack.accept() => new_io,
+                    shutdown_signal = shutdown.changed() => {
+                        match shutdown_signal {
+                            Ok(()) => {
+                                if !*shutdown.borrow() {
+                                    // happen in the initial read
+                                    continue;
+                                }
+                                info!("Shutting down {}", stack.as_str());
+                                break;
+                            }
+                            Err(e) => {
+                                error!("shutdown_signal error {e}");
+                                break;
+                            }
                         }
                     }
                 }

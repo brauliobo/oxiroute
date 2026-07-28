@@ -4,8 +4,8 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicU8, AtomicU64, Ordering, fence},
+        Arc, Mutex, RwLock,
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering, fence},
     },
 };
 
@@ -14,9 +14,14 @@ use http::{
     uri::{Authority, PathAndQuery},
 };
 use oxiroute_config::{
-    HttpHostSelector, HttpPathSelector, UpstreamAlgorithm, UpstreamEndpoint, canonicalize_http_path,
+    HealthStartup, HttpHostSelector, HttpPathSelector, UpstreamAlgorithm, UpstreamEndpoint,
+    canonicalize_http_path,
 };
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
+use tokio::{
+    sync::Notify,
+    time::{Instant, timeout_at},
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum HostMatcher {
@@ -24,23 +29,33 @@ enum HostMatcher {
     ExactAuthority(String),
     NormalizedExact(String),
     Wildcard(String),
+    NginxLeadingWildcard(String),
+    NginxLeadingDot(String),
 }
 
 impl HostMatcher {
-    fn rank_if_matches(&self, authority: Option<&Authority>) -> Option<u8> {
+    fn rank_if_matches(&self, authority: Option<&Authority>) -> Option<(u8, usize)> {
         match self {
-            Self::Any => Some(0),
+            Self::Any => Some((0, 0)),
             Self::ExactAuthority(expected) => authority
                 .is_some_and(|authority| authority.as_str() == expected)
-                .then_some(3),
+                .then_some((3, expected.len())),
             Self::NormalizedExact(expected) => authority
                 .and_then(normalized_authority_host)
                 .is_some_and(|host| host == *expected)
-                .then_some(2),
+                .then_some((2, expected.len())),
             Self::Wildcard(suffix) => authority
                 .and_then(normalized_authority_host)
                 .is_some_and(|host| wildcard_matches(&host, suffix))
-                .then_some(1),
+                .then_some((1, suffix.len())),
+            Self::NginxLeadingWildcard(suffix) => authority
+                .and_then(normalized_authority_host)
+                .is_some_and(|host| nginx_suffix_matches(&host, suffix, false))
+                .then_some((1, suffix.len())),
+            Self::NginxLeadingDot(suffix) => authority
+                .and_then(normalized_authority_host)
+                .is_some_and(|host| nginx_suffix_matches(&host, suffix, true))
+                .then_some((1, suffix.len())),
         }
     }
 }
@@ -143,6 +158,7 @@ pub enum RouteError {
     InvalidPathPrefix(String),
     EmptyMethodSet,
     EmptyRouteIdentity,
+    UnsupportedHostSelector,
 }
 
 impl fmt::Display for RouteError {
@@ -154,6 +170,9 @@ impl fmt::Display for RouteError {
             }
             Self::EmptyMethodSet => formatter.write_str("route method set cannot be empty"),
             Self::EmptyRouteIdentity => formatter.write_str("route identity cannot be empty"),
+            Self::UnsupportedHostSelector => {
+                formatter.write_str("route host selector is not implemented by runtime")
+            }
         }
     }
 }
@@ -245,6 +264,20 @@ fn normalize_host(host: Option<HttpHostSelector>) -> Result<HostMatcher, RouteEr
             }
             Ok(HostMatcher::NormalizedExact(value))
         }
+        HttpHostSelector::NginxLeadingWildcard { mut value } => {
+            value.make_ascii_lowercase();
+            if value.len() > 253 || !is_dns_name(&value) {
+                return Err(RouteError::InvalidHost(value));
+            }
+            Ok(HostMatcher::NginxLeadingWildcard(value))
+        }
+        HttpHostSelector::NginxLeadingDot { mut value } => {
+            value.make_ascii_lowercase();
+            if value.len() > 253 || !is_dns_name(&value) {
+                return Err(RouteError::InvalidHost(value));
+            }
+            Ok(HostMatcher::NginxLeadingDot(value))
+        }
     }
 }
 
@@ -316,6 +349,18 @@ fn wildcard_matches(host: &str, suffix: &str) -> bool {
         && !host[..dot_index].contains('.')
 }
 
+fn nginx_suffix_matches(host: &str, suffix: &str, include_base: bool) -> bool {
+    if include_base && host == suffix {
+        return true;
+    }
+    host.len() > suffix.len()
+        && host.ends_with(suffix)
+        && host
+            .as_bytes()
+            .get(host.len() - suffix.len() - 1)
+            .is_some_and(|separator| *separator == b'.')
+}
+
 fn normalized_authority_host(authority: &Authority) -> Option<String> {
     let host = authority.host();
     if let Some(ip) = parse_host_ip(host) {
@@ -375,7 +420,7 @@ impl RuntimeEndpoint {
         }
     }
 
-    fn order_addresses(
+    pub(crate) fn order_addresses(
         &self,
         addresses: impl IntoIterator<Item = SocketAddr>,
     ) -> io::Result<Vec<SocketAddr>> {
@@ -478,7 +523,7 @@ impl EndpointHealthState {
         matches!(self, Self::Unchecked | Self::Healthy)
     }
 
-    const fn from_u8(value: u8) -> Self {
+    pub(crate) const fn from_u8(value: u8) -> Self {
         match value {
             0 => Self::Unchecked,
             2 => Self::Healthy,
@@ -498,6 +543,46 @@ pub enum HealthFailure {
     ProtocolError = 4,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[repr(u8)]
+pub enum AdministrativeState {
+    #[default]
+    Ready,
+    Drain,
+    Maintenance,
+}
+
+impl AdministrativeState {
+    pub(crate) const fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Drain,
+            2 => Self::Maintenance,
+            _ => Self::Ready,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[repr(u8)]
+pub enum HealthOverride {
+    #[default]
+    Auto,
+    Up,
+    Down,
+}
+
+impl HealthOverride {
+    const fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Up,
+            2 => Self::Down,
+            _ => Self::Auto,
+        }
+    }
+}
+
 impl HealthFailure {
     const fn from_u8(value: u8) -> Option<Self> {
         match value {
@@ -510,10 +595,27 @@ impl HealthFailure {
     }
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct RuntimeServer {
+    pub(crate) name: String,
+    pub(crate) endpoint: RuntimeEndpoint,
+    pub(crate) max_connections: Option<u64>,
+    pub(crate) pinned_addresses: Option<Arc<[SocketAddr]>>,
+    pub(crate) protected_addresses: Arc<[SocketAddr]>,
+}
+
 #[derive(Debug)]
 struct PoolEndpoint {
-    active_leases: Arc<AtomicU64>,
+    active_work: AtomicU64,
+    administrative_state: AtomicU8,
+    checks_enabled: AtomicBool,
+    health_override: AtomicU8,
     endpoint: RuntimeEndpoint,
+    configured_max_connections: Option<u64>,
+    max_connections_override: AtomicU64,
+    name: String,
+    pinned_addresses: Option<RwLock<Arc<[SocketAddr]>>>,
+    protected_addresses: Arc<[SocketAddr]>,
     state: AtomicU8,
     last_checked_at_unix_ms: AtomicU64,
     last_transition_at_unix_ms: AtomicU64,
@@ -525,11 +627,25 @@ struct PoolEndpoint {
 }
 
 impl PoolEndpoint {
-    fn new(endpoint: RuntimeEndpoint, checked: bool) -> Self {
+    fn new(server: RuntimeServer, startup: Option<HealthStartup>) -> Self {
+        let state = match startup {
+            None => EndpointHealthState::Unchecked,
+            Some(HealthStartup::Healthy) => EndpointHealthState::Healthy,
+            Some(HealthStartup::Unhealthy) => EndpointHealthState::Unhealthy,
+            Some(HealthStartup::Checking) => EndpointHealthState::Unknown,
+        };
         Self {
-            active_leases: Arc::new(AtomicU64::new(0)),
-            endpoint,
-            state: AtomicU8::new(u8::from(checked)),
+            active_work: AtomicU64::new(0),
+            administrative_state: AtomicU8::new(AdministrativeState::Ready as u8),
+            checks_enabled: AtomicBool::new(true),
+            health_override: AtomicU8::new(HealthOverride::Auto as u8),
+            endpoint: server.endpoint,
+            configured_max_connections: server.max_connections,
+            max_connections_override: AtomicU64::new(0),
+            name: server.name,
+            pinned_addresses: server.pinned_addresses.map(RwLock::new),
+            protected_addresses: server.protected_addresses,
+            state: AtomicU8::new(state as u8),
             last_checked_at_unix_ms: AtomicU64::new(0),
             last_transition_at_unix_ms: AtomicU64::new(0),
             successful_checks: AtomicU64::new(0),
@@ -542,6 +658,134 @@ impl PoolEndpoint {
 
     fn state(&self) -> EndpointHealthState {
         EndpointHealthState::from_u8(self.state.load(Ordering::Acquire))
+    }
+
+    fn selectable(&self) -> bool {
+        self.administrative_state() == AdministrativeState::Ready
+            && match self.health_override() {
+                HealthOverride::Auto => self.state().selectable(),
+                HealthOverride::Up => true,
+                HealthOverride::Down => false,
+            }
+    }
+
+    fn has_capacity(&self) -> bool {
+        self.max_connections()
+            .is_none_or(|limit| self.active_work.load(Ordering::Acquire) < limit)
+    }
+
+    fn administrative_state(&self) -> AdministrativeState {
+        AdministrativeState::from_u8(self.administrative_state.load(Ordering::Acquire))
+    }
+
+    fn health_override(&self) -> HealthOverride {
+        HealthOverride::from_u8(self.health_override.load(Ordering::Acquire))
+    }
+
+    fn max_connections(&self) -> Option<u64> {
+        match self.max_connections_override.load(Ordering::Acquire) {
+            0 => self.configured_max_connections,
+            limit => Some(limit),
+        }
+    }
+
+    fn checks_running(&self) -> bool {
+        self.checks_enabled.load(Ordering::Acquire)
+            && self.administrative_state() != AdministrativeState::Maintenance
+    }
+
+    fn try_acquire(self: &Arc<Self>, queue: &Arc<PoolQueue>) -> Option<EndpointLease> {
+        if !self.selectable() {
+            return None;
+        }
+        self.try_acquire_capacity()?;
+        if !self.selectable() {
+            self.release_capacity(queue);
+            return None;
+        }
+        Some(EndpointLease::acquired(Arc::clone(self), Arc::clone(queue)))
+    }
+
+    fn try_acquire_capacity(&self) -> Option<()> {
+        self.active_work
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                if !self.selectable() || self.max_connections().is_some_and(|limit| active >= limit)
+                {
+                    None
+                } else {
+                    active.checked_add(1)
+                }
+            })
+            .ok()?;
+        Some(())
+    }
+
+    fn release_capacity(&self, queue: &PoolQueue) {
+        let released =
+            self.active_work
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                    active.checked_sub(1)
+                });
+        debug_assert!(released.is_ok(), "endpoint lease counter underflow");
+        queue.generation.fetch_add(1, Ordering::Release);
+        queue.notify.notify_waiters();
+    }
+
+    async fn resolve_addresses(&self) -> io::Result<Vec<SocketAddr>> {
+        let addresses = if let Some(addresses) = &self.pinned_addresses {
+            addresses
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .to_vec()
+        } else {
+            self.endpoint.resolve_addresses().await?
+        };
+        self.reject_protected_addresses(&addresses)?;
+        Ok(addresses)
+    }
+
+    async fn resolve_fresh_dns(&self) -> io::Result<Vec<SocketAddr>> {
+        if !matches!(self.endpoint, RuntimeEndpoint::Dns { .. }) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "upstream server does not use DNS",
+            ));
+        }
+        let addresses = self.endpoint.resolve_addresses().await?;
+        self.reject_protected_addresses(&addresses)?;
+        Ok(addresses)
+    }
+
+    fn commit_dns(&self, addresses: &[SocketAddr]) -> io::Result<()> {
+        if !matches!(self.endpoint, RuntimeEndpoint::Dns { .. }) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "upstream server does not use DNS",
+            ));
+        }
+        self.reject_protected_addresses(addresses)?;
+        if let Some(pinned) = &self.pinned_addresses {
+            *pinned
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = addresses.to_vec().into();
+        }
+        Ok(())
+    }
+
+    fn reject_protected_addresses(&self, addresses: &[SocketAddr]) -> io::Result<()> {
+        if addresses.iter().any(|address| {
+            self.protected_addresses.iter().any(|protected| {
+                address.port() == protected.port()
+                    && (address.ip() == protected.ip() || protected.ip().is_unspecified())
+            })
+        }) {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "upstream DNS resolved to a protected management or statistics listener",
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     fn record(
@@ -609,8 +853,15 @@ impl PoolEndpoint {
 
     fn snapshot(&self) -> EndpointHealthSnapshot {
         EndpointHealthSnapshot {
-            active_leases: self.active_leases.load(Ordering::Relaxed),
+            active_connections: self.active_work.load(Ordering::Relaxed),
+            administrative_state: self.administrative_state(),
             address: self.endpoint.clone(),
+            checks_enabled: self.checks_enabled.load(Ordering::Acquire),
+            checks_running: self.checks_running(),
+            configured_max_connections: self.configured_max_connections,
+            health_override: self.health_override(),
+            max_connections: self.max_connections(),
+            name: self.name.clone(),
             state: self.state(),
             last_checked_at_unix_ms: nonzero(self.last_checked_at_unix_ms.load(Ordering::Relaxed)),
             last_transition_at_unix_ms: nonzero(
@@ -633,8 +884,15 @@ const fn nonzero(value: u64) -> Option<u64> {
 #[serde(rename_all = "camelCase")]
 pub struct EndpointHealthSnapshot {
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]
-    pub active_leases: u64,
+    pub active_connections: u64,
+    pub administrative_state: AdministrativeState,
     pub address: RuntimeEndpoint,
+    pub checks_enabled: bool,
+    pub checks_running: bool,
+    pub configured_max_connections: Option<u64>,
+    pub health_override: HealthOverride,
+    pub max_connections: Option<u64>,
+    pub name: String,
     pub state: EndpointHealthState,
     pub last_checked_at_unix_ms: Option<u64>,
     pub last_transition_at_unix_ms: Option<u64>,
@@ -658,18 +916,37 @@ pub struct PoolHealthSnapshot {
     pub total_endpoints: usize,
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub unavailable_selections: u64,
+    pub queued: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub queued_total: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub queue_timeouts: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub queue_cancellations: u64,
     pub endpoints: Vec<EndpointHealthSnapshot>,
 }
 
-/// A health-aware selector over a fixed, nonempty endpoint list.
+#[derive(Debug, Default)]
+struct PoolQueue {
+    cancellations: AtomicU64,
+    generation: AtomicU64,
+    notify: Notify,
+    queued: AtomicU64,
+    queued_total: AtomicU64,
+    timeouts: AtomicU64,
+}
+
+/// A health-aware selector over a fixed, nonempty named-server list.
 #[derive(Debug)]
 pub struct EndpointPool {
     algorithm: UpstreamAlgorithm,
     name: String,
-    endpoints: Box<[PoolEndpoint]>,
+    endpoints: Box<[Arc<PoolEndpoint>]>,
     health_version: AtomicU64,
     health_writer: Mutex<()>,
-    selection: Arc<Mutex<SelectionState>>,
+    selection: Mutex<SelectionState>,
+    queue: Arc<PoolQueue>,
+    queue_timeout: Option<std::time::Duration>,
     unavailable_selections: AtomicU64,
 }
 
@@ -683,40 +960,167 @@ pub type RoundRobinPool = EndpointPool;
 
 #[derive(Debug)]
 pub struct EndpointLease {
-    active_leases: Arc<AtomicU64>,
-    endpoint: RuntimeEndpoint,
-    selection: Option<Arc<Mutex<SelectionState>>>,
+    inner: Arc<EndpointLeaseInner>,
+}
+
+#[derive(Debug)]
+struct EndpointLeaseInner {
+    acquired: AtomicBool,
+    deadline: Option<Instant>,
+    queue: Arc<PoolQueue>,
+    server: Arc<PoolEndpoint>,
 }
 
 impl EndpointLease {
+    fn acquired(server: Arc<PoolEndpoint>, queue: Arc<PoolQueue>) -> Self {
+        Self {
+            inner: Arc::new(EndpointLeaseInner {
+                acquired: AtomicBool::new(true),
+                deadline: None,
+                queue,
+                server,
+            }),
+        }
+    }
+
+    fn pending(
+        server: Arc<PoolEndpoint>,
+        queue: Arc<PoolQueue>,
+        queue_timeout: Option<std::time::Duration>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(EndpointLeaseInner {
+                acquired: AtomicBool::new(false),
+                deadline: queue_timeout.map(|timeout| Instant::now() + timeout),
+                queue,
+                server,
+            }),
+        }
+    }
+
     #[must_use]
-    pub const fn endpoint(&self) -> &RuntimeEndpoint {
-        &self.endpoint
+    pub fn endpoint(&self) -> &RuntimeEndpoint {
+        &self.inner.server.endpoint
+    }
+
+    #[must_use]
+    pub fn server_name(&self) -> &str {
+        &self.inner.server.name
+    }
+
+    pub(crate) async fn resolve_addresses(&self) -> io::Result<Vec<SocketAddr>> {
+        self.inner.server.resolve_addresses().await
+    }
+
+    pub(crate) fn connection_lifetime(
+        &self,
+    ) -> std::sync::Weak<dyn pingora::protocols::ConnectionLifetime> {
+        let lifetime: Arc<dyn pingora::protocols::ConnectionLifetime> = self.inner.clone();
+        Arc::downgrade(&lifetime)
     }
 }
 
-impl Drop for EndpointLease {
+impl Drop for EndpointLeaseInner {
     fn drop(&mut self) {
-        let _selection = self.selection.as_ref().map(|selection| {
-            selection
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-        });
-        let released =
-            self.active_leases
-                .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |active| {
-                    active.checked_sub(1)
-                });
-        debug_assert!(released.is_ok(), "endpoint lease counter underflow");
+        if !self.acquired.load(Ordering::Acquire) {
+            return;
+        }
+        self.server.release_capacity(&self.queue);
     }
+}
+
+#[async_trait::async_trait]
+impl pingora::protocols::ConnectionLifetime for EndpointLeaseInner {
+    fn try_acquire(&self) -> pingora::Result<bool> {
+        if self.acquired.load(Ordering::Acquire) {
+            return Ok(true);
+        }
+        if self.server.try_acquire_capacity().is_none() {
+            return Ok(false);
+        }
+        self.acquired.store(true, Ordering::Release);
+        Ok(true)
+    }
+
+    fn capacity_generation(&self) -> u64 {
+        self.queue.generation.load(Ordering::Acquire)
+    }
+
+    async fn wait_for_capacity(&self, generation: u64) -> pingora::Result<()> {
+        let Some(deadline) = self.deadline else {
+            return Err(pingora::Error::new_up(pingora::ErrorType::HTTPStatus(503)));
+        };
+        loop {
+            if self.queue.generation.load(Ordering::Acquire) != generation {
+                return Ok(());
+            }
+            let notified = self.queue.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.queue.generation.load(Ordering::Acquire) != generation {
+                return Ok(());
+            }
+            if timeout_at(deadline, notified).await.is_err() {
+                self.queue.timeouts.fetch_add(1, Ordering::Relaxed);
+                return Err(pingora::Error::new_up(pingora::ErrorType::HTTPStatus(503)));
+            }
+        }
+    }
+
+    fn notify_reusable(&self) {
+        self.queue.generation.fetch_add(1, Ordering::Release);
+        self.queue.notify.notify_waiters();
+    }
+}
+
+struct QueueWaitGuard {
+    completed: bool,
+    queue: Arc<PoolQueue>,
+}
+
+impl QueueWaitGuard {
+    fn new(queue: Arc<PoolQueue>) -> Self {
+        queue.queued.fetch_add(1, Ordering::Relaxed);
+        queue.queued_total.fetch_add(1, Ordering::Relaxed);
+        Self {
+            completed: false,
+            queue,
+        }
+    }
+
+    fn complete(&mut self) {
+        self.completed = true;
+    }
+}
+
+impl Drop for QueueWaitGuard {
+    fn drop(&mut self) {
+        let released =
+            self.queue
+                .queued
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |queued| {
+                    queued.checked_sub(1)
+                });
+        debug_assert!(released.is_ok(), "pool queue counter underflow");
+        if !self.completed {
+            self.queue.cancellations.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+struct SelectionAttempt {
+    lease: Option<EndpointLease>,
+    pool_available: bool,
+    saturated: bool,
 }
 
 impl EndpointPool {
-    /// Creates a pool whose first selection returns the first endpoint.
+    /// Creates an unchecked round-robin pool from socket addresses.
     ///
     /// # Errors
     ///
-    /// Returns [`PoolError::Empty`] when no endpoints are provided.
+    /// Returns [`PoolError::Empty`] when no endpoints are provided or a typed endpoint error when
+    /// an address cannot be represented by the runtime.
     pub fn new(endpoints: impl IntoIterator<Item = SocketAddr>) -> Result<Self, PoolError> {
         Self::from_endpoints(
             endpoints.into_iter().map(RuntimeEndpoint::from),
@@ -724,12 +1128,12 @@ impl EndpointPool {
         )
     }
 
-    /// Creates a pool with the configured balancing algorithm.
+    /// Creates an unchecked pool using the configured balancing algorithm.
     ///
     /// # Errors
     ///
-    /// Returns a typed error when the endpoint list is empty or an endpoint cannot be represented
-    /// by the runtime without connecting to it.
+    /// Returns [`PoolError::Empty`] when no endpoints are provided or a typed endpoint error when
+    /// an endpoint cannot be represented by the runtime.
     pub fn from_endpoints(
         endpoints: impl IntoIterator<Item = RuntimeEndpoint>,
         algorithm: UpstreamAlgorithm,
@@ -743,27 +1147,156 @@ impl EndpointPool {
         algorithm: UpstreamAlgorithm,
         checked: bool,
     ) -> Result<Self, PoolError> {
-        let endpoints = endpoints
+        let servers = endpoints
             .into_iter()
-            .map(|endpoint| {
-                endpoint.preflight()?;
-                Ok(PoolEndpoint::new(endpoint, checked))
+            .enumerate()
+            .map(|(index, endpoint)| RuntimeServer {
+                name: index.to_string(),
+                endpoint,
+                max_connections: None,
+                pinned_addresses: None,
+                protected_addresses: Arc::from([]),
+            });
+        Self::new_named_servers(
+            name,
+            servers,
+            algorithm,
+            checked.then_some(HealthStartup::Checking),
+            None,
+        )
+    }
+
+    pub(crate) fn new_named_servers(
+        name: String,
+        servers: impl IntoIterator<Item = RuntimeServer>,
+        algorithm: UpstreamAlgorithm,
+        startup: Option<HealthStartup>,
+        queue_timeout: Option<std::time::Duration>,
+    ) -> Result<Self, PoolError> {
+        let endpoints = servers
+            .into_iter()
+            .map(|server| {
+                server.endpoint.preflight()?;
+                Ok(Arc::new(PoolEndpoint::new(server, startup)))
             })
             .collect::<Result<Vec<_>, PoolError>>()?
             .into_boxed_slice();
         if endpoints.is_empty() {
             return Err(PoolError::Empty);
         }
-
         Ok(Self {
             algorithm,
             name,
             endpoints,
             health_version: AtomicU64::new(0),
             health_writer: Mutex::new(()),
-            selection: Arc::new(Mutex::new(SelectionState::default())),
+            selection: Mutex::new(SelectionState::default()),
+            queue: Arc::new(PoolQueue::default()),
+            queue_timeout,
             unavailable_selections: AtomicU64::new(0),
         })
+    }
+
+    fn select_server_excluding(&self, excluded: &[String]) -> SelectionAttempt {
+        let mut selection = self
+            .selection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let start = selection.next;
+        let (candidates, pool_available) = self.read_health(|endpoints| {
+            let pool_available = endpoints.iter().any(|server| server.selectable());
+            let candidates = (0..endpoints.len())
+                .filter_map(|offset| {
+                    let index = (start + offset) % endpoints.len();
+                    let server = &endpoints[index];
+                    (server.selectable() && !excluded.contains(&server.name))
+                        .then_some((index, server.active_work.load(Ordering::Acquire)))
+                })
+                .collect::<Vec<_>>();
+            (candidates, pool_available)
+        });
+        let saturated = candidates
+            .iter()
+            .any(|(index, _)| !self.endpoints[*index].has_capacity());
+        let selected = match self.algorithm {
+            UpstreamAlgorithm::RoundRobin => candidates
+                .iter()
+                .map(|(index, _)| *index)
+                .find(|index| self.endpoints[*index].has_capacity()),
+            UpstreamAlgorithm::LeastConnections => candidates
+                .iter()
+                .filter(|(index, _)| self.endpoints[*index].has_capacity())
+                .min_by_key(|(_, active)| *active)
+                .map(|(index, _)| *index),
+            UpstreamAlgorithm::First => candidates
+                .iter()
+                .map(|(index, _)| *index)
+                .filter(|index| self.endpoints[*index].has_capacity())
+                .min(),
+        };
+        let lease = selected.and_then(|index| {
+            let lease = self.endpoints[index].try_acquire(&self.queue)?;
+            if self.algorithm != UpstreamAlgorithm::First {
+                selection.next = (index + 1) % self.endpoints.len();
+            }
+            Some(lease)
+        });
+        SelectionAttempt {
+            lease,
+            pool_available,
+            saturated: saturated && !candidates.is_empty(),
+        }
+    }
+
+    pub(crate) fn select_connection_target_excluding(
+        &self,
+        excluded: &[String],
+    ) -> Option<EndpointLease> {
+        let mut selection = self
+            .selection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let start = selection.next;
+        let candidates = self.read_health(|endpoints| {
+            (0..endpoints.len())
+                .filter_map(|offset| {
+                    let index = (start + offset) % endpoints.len();
+                    let server = &endpoints[index];
+                    (server.selectable() && !excluded.contains(&server.name))
+                        .then_some((index, server.active_work.load(Ordering::Acquire)))
+                })
+                .collect::<Vec<_>>()
+        });
+        let available = candidates
+            .iter()
+            .copied()
+            .filter(|(index, _)| self.endpoints[*index].has_capacity())
+            .collect::<Vec<_>>();
+        let candidates = if available.is_empty() {
+            &candidates
+        } else {
+            &available
+        };
+        let selected = match self.algorithm {
+            UpstreamAlgorithm::RoundRobin => candidates.first().map(|(index, _)| *index),
+            UpstreamAlgorithm::LeastConnections => candidates
+                .iter()
+                .min_by_key(|(_, active)| *active)
+                .map(|(index, _)| *index),
+            UpstreamAlgorithm::First => candidates.iter().map(|(index, _)| *index).min(),
+        };
+        let Some(index) = selected else {
+            self.note_unavailable_selection();
+            return None;
+        };
+        if self.algorithm != UpstreamAlgorithm::First {
+            selection.next = (index + 1) % self.endpoints.len();
+        }
+        Some(EndpointLease::pending(
+            Arc::clone(&self.endpoints[index]),
+            Arc::clone(&self.queue),
+            self.queue_timeout,
+        ))
     }
 
     #[must_use]
@@ -771,56 +1304,74 @@ impl EndpointPool {
         self.select_excluding(&[])
     }
 
-    /// Selects the next endpoint not present in a request's attempted-endpoint set.
     #[must_use]
     pub fn select_excluding(&self, excluded: &[RuntimeEndpoint]) -> Option<EndpointLease> {
-        let mut selection = self
-            .selection
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let start = selection.next;
-        let (selected, pool_available) = self.read_health(|endpoints| {
-            let pool_available = endpoints
-                .iter()
-                .any(|endpoint| endpoint.state().selectable());
-            let candidates = (0..endpoints.len()).filter_map(|offset| {
-                let index = (start + offset) % endpoints.len();
-                let endpoint = &endpoints[index];
-                (endpoint.state().selectable()
-                    && !excluded.contains(&endpoint.endpoint)
-                    && endpoint.active_leases.load(Ordering::Relaxed) < u64::MAX)
-                    .then_some((index, endpoint.active_leases.load(Ordering::Relaxed)))
-            });
-            let selected = match self.algorithm {
-                UpstreamAlgorithm::RoundRobin => candidates.map(|(index, _)| index).next(),
-                UpstreamAlgorithm::LeastConnections => candidates
-                    .fold(None, |best, candidate| match best {
-                        Some((_, best_active)) if best_active <= candidate.1 => best,
-                        _ => Some(candidate),
-                    })
-                    .map(|(index, _)| index),
-            };
-            (selected, pool_available)
-        });
-        let Some(index) = selected else {
-            if !pool_available {
+        let names = self
+            .endpoints
+            .iter()
+            .filter(|server| excluded.contains(&server.endpoint))
+            .map(|server| server.name.clone())
+            .collect::<Vec<_>>();
+        let attempt = self.select_server_excluding(&names);
+        if attempt.lease.is_none() && !attempt.pool_available {
+            self.note_unavailable_selection();
+        }
+        attempt.lease
+    }
+
+    pub async fn select_wait(&self) -> Option<EndpointLease> {
+        self.select_wait_excluding(&[]).await
+    }
+
+    pub(crate) async fn select_wait_excluding(&self, excluded: &[String]) -> Option<EndpointLease> {
+        let first = self.select_server_excluding(excluded);
+        if let Some(lease) = first.lease {
+            return Some(lease);
+        }
+        let Some(queue_timeout) = self.queue_timeout.filter(|_| first.saturated) else {
+            if !first.pool_available {
                 self.note_unavailable_selection();
             }
             return None;
         };
-        let endpoint = &self.endpoints[index];
-        endpoint
-            .active_leases
-            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |active| {
-                active.checked_add(1)
-            })
-            .ok()?;
-        selection.next = (index + 1) % self.endpoints.len();
-        Some(EndpointLease {
-            active_leases: Arc::clone(&endpoint.active_leases),
-            endpoint: endpoint.endpoint.clone(),
-            selection: (self.algorithm == UpstreamAlgorithm::LeastConnections)
-                .then(|| Arc::clone(&self.selection)),
+        let deadline = Instant::now() + queue_timeout;
+        let mut waiting = QueueWaitGuard::new(Arc::clone(&self.queue));
+        loop {
+            let generation = self.queue.generation.load(Ordering::Acquire);
+            let notified = self.queue.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            let attempt = self.select_server_excluding(excluded);
+            if let Some(lease) = attempt.lease {
+                waiting.complete();
+                return Some(lease);
+            }
+            if !attempt.pool_available || !attempt.saturated {
+                waiting.complete();
+                if !attempt.pool_available {
+                    self.note_unavailable_selection();
+                }
+                return None;
+            }
+            if self.queue.generation.load(Ordering::Acquire) != generation {
+                continue;
+            }
+            if timeout_at(deadline, notified).await.is_err() {
+                waiting.complete();
+                self.queue.timeouts.fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
+        }
+    }
+
+    pub(crate) fn select_server_connection_target(&self, name: &str) -> Option<EndpointLease> {
+        let server = self.endpoints.iter().find(|server| server.name == name)?;
+        server.selectable().then(|| {
+            EndpointLease::pending(
+                Arc::clone(server),
+                Arc::clone(&self.queue),
+                self.queue_timeout,
+            )
         })
     }
 
@@ -832,9 +1383,18 @@ impl EndpointPool {
     #[must_use]
     pub fn has_unattempted(&self, attempted: &[RuntimeEndpoint]) -> bool {
         self.read_health(|endpoints| {
-            endpoints.iter().any(|endpoint| {
-                endpoint.state().selectable() && !attempted.contains(&endpoint.endpoint)
-            })
+            endpoints
+                .iter()
+                .any(|server| server.selectable() && !attempted.contains(&server.endpoint))
+        })
+    }
+
+    #[must_use]
+    pub(crate) fn has_unattempted_servers(&self, attempted: &[String]) -> bool {
+        self.read_health(|endpoints| {
+            endpoints
+                .iter()
+                .any(|server| server.selectable() && !attempted.contains(&server.name))
         })
     }
 
@@ -843,7 +1403,7 @@ impl EndpointPool {
         self.read_health(|endpoints| {
             endpoints
                 .iter()
-                .any(|endpoint| endpoint.state().selectable())
+                .any(|server| server.selectable() && server.has_capacity())
         })
     }
 
@@ -851,11 +1411,114 @@ impl EndpointPool {
         self.unavailable_selections.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Changes one named server's administrative state. Existing leases continue draining.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this pool has no server with the exact canonical name.
+    pub fn set_server_administrative_state(
+        &self,
+        name: &str,
+        state: AdministrativeState,
+    ) -> Result<(), PoolAdminError> {
+        let server = self.server(name)?;
+        server
+            .administrative_state
+            .store(state as u8, Ordering::Release);
+        self.queue.generation.fetch_add(1, Ordering::Release);
+        self.queue.notify.notify_waiters();
+        Ok(())
+    }
+
+    pub fn set_administrative_state(&self, state: AdministrativeState) {
+        for server in &self.endpoints {
+            server
+                .administrative_state
+                .store(state as u8, Ordering::Release);
+        }
+        self.queue.generation.fetch_add(1, Ordering::Release);
+        self.queue.notify.notify_waiters();
+    }
+
+    /// Sets a selection-only health override without changing observed health.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the exact server name is unknown.
+    pub fn set_server_health_override(
+        &self,
+        name: &str,
+        health_override: HealthOverride,
+    ) -> Result<(), PoolAdminError> {
+        self.server(name)?
+            .health_override
+            .store(health_override as u8, Ordering::Release);
+        self.queue.generation.fetch_add(1, Ordering::Release);
+        self.queue.notify.notify_waiters();
+        Ok(())
+    }
+
+    /// Enables or disables configured health probes for one server.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the exact server name is unknown.
+    pub fn set_server_checks_enabled(
+        &self,
+        name: &str,
+        enabled: bool,
+    ) -> Result<(), PoolAdminError> {
+        self.server(name)?
+            .checks_enabled
+            .store(enabled, Ordering::Release);
+        Ok(())
+    }
+
+    /// Sets a runtime capacity override, or restores configured capacity with `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for zero capacity or an unknown exact server name.
+    pub fn set_server_max_connections(
+        &self,
+        name: &str,
+        limit: Option<u64>,
+    ) -> Result<(), PoolAdminError> {
+        if limit == Some(0) {
+            return Err(PoolAdminError::InvalidMaxConnections);
+        }
+        self.server(name)?
+            .max_connections_override
+            .store(limit.unwrap_or(0), Ordering::Release);
+        self.queue.generation.fetch_add(1, Ordering::Release);
+        self.queue.notify.notify_waiters();
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn has_server(&self, name: &str) -> bool {
+        self.endpoints.iter().any(|server| server.name == name)
+    }
+
+    fn server(&self, name: &str) -> Result<&Arc<PoolEndpoint>, PoolAdminError> {
+        self.endpoints
+            .iter()
+            .find(|server| server.name == name)
+            .ok_or_else(|| PoolAdminError::UnknownServer(name.to_owned()))
+    }
+
     pub(crate) fn endpoints(&self) -> impl Iterator<Item = (usize, RuntimeEndpoint)> + '_ {
         self.endpoints
             .iter()
             .enumerate()
-            .map(|(index, endpoint)| (index, endpoint.endpoint.clone()))
+            .map(|(index, server)| (index, server.endpoint.clone()))
+    }
+
+    pub(crate) fn servers(&self) -> impl Iterator<Item = (usize, String, RuntimeEndpoint)> + '_ {
+        self.endpoints
+            .iter()
+            .enumerate()
+            .map(|(index, server)| (index, server.name.clone(), server.endpoint.clone()))
     }
 
     pub(crate) fn record_health(
@@ -872,8 +1535,8 @@ impl EndpointPool {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.health_version.fetch_add(1, Ordering::AcqRel);
-        let transition = self.endpoints.get(index).and_then(|endpoint| {
-            endpoint.record(
+        let transition = self.endpoints.get(index).and_then(|server| {
+            server.record(
                 healthy,
                 failure,
                 at_unix_ms,
@@ -882,7 +1545,59 @@ impl EndpointPool {
             )
         });
         self.health_version.fetch_add(1, Ordering::Release);
+        if transition.is_some() {
+            self.queue.generation.fetch_add(1, Ordering::Release);
+            self.queue.notify.notify_waiters();
+        }
         transition
+    }
+
+    pub(crate) fn health_state(&self, index: usize) -> Option<EndpointHealthState> {
+        self.endpoints.get(index).map(|server| server.state())
+    }
+
+    pub(crate) fn health_checks_running(&self, index: usize) -> bool {
+        self.endpoints
+            .get(index)
+            .is_some_and(|server| server.checks_running())
+    }
+
+    /// Resolves one server immediately without mutating runtime state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown server or failed/empty DNS resolution.
+    pub async fn resolve_server_dns(&self, name: &str) -> Result<Vec<SocketAddr>, PoolAdminError> {
+        let server = Arc::clone(self.server(name)?);
+        server
+            .resolve_fresh_dns()
+            .await
+            .map_err(|_| PoolAdminError::DnsRefreshFailed)
+    }
+
+    /// Commits an already-resolved address set without performing external I/O.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown server, a non-DNS endpoint, or a protected address.
+    pub fn commit_server_dns(
+        &self,
+        name: &str,
+        addresses: &[SocketAddr],
+    ) -> Result<(), PoolAdminError> {
+        self.server(name)?
+            .commit_dns(addresses)
+            .map_err(|_| PoolAdminError::DnsRefreshFailed)
+    }
+
+    pub(crate) async fn resolve_server_addresses(
+        &self,
+        index: usize,
+    ) -> io::Result<Vec<SocketAddr>> {
+        let server = self.endpoints.get(index).cloned().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "upstream server index is invalid")
+        })?;
+        server.resolve_addresses().await
     }
 
     #[must_use]
@@ -890,7 +1605,7 @@ impl EndpointPool {
         let endpoints = self.read_health(|endpoints| {
             endpoints
                 .iter()
-                .map(PoolEndpoint::snapshot)
+                .map(|server| server.snapshot())
                 .collect::<Vec<_>>()
         });
         PoolHealthSnapshot {
@@ -898,15 +1613,26 @@ impl EndpointPool {
             algorithm: algorithm_name(self.algorithm),
             available_endpoints: endpoints
                 .iter()
-                .filter(|endpoint| endpoint.state.selectable())
+                .filter(|endpoint| {
+                    endpoint.administrative_state == AdministrativeState::Ready
+                        && match endpoint.health_override {
+                            HealthOverride::Auto => endpoint.state.selectable(),
+                            HealthOverride::Up => true,
+                            HealthOverride::Down => false,
+                        }
+                })
                 .count(),
             total_endpoints: endpoints.len(),
             unavailable_selections: self.unavailable_selections.load(Ordering::Relaxed),
+            queued: self.queue.queued.load(Ordering::Relaxed),
+            queued_total: self.queue.queued_total.load(Ordering::Relaxed),
+            queue_timeouts: self.queue.timeouts.load(Ordering::Relaxed),
+            queue_cancellations: self.queue.cancellations.load(Ordering::Relaxed),
             endpoints,
         }
     }
 
-    fn read_health<T>(&self, read: impl Fn(&[PoolEndpoint]) -> T) -> T {
+    fn read_health<T>(&self, read: impl Fn(&[Arc<PoolEndpoint>]) -> T) -> T {
         for _ in 0..8 {
             let version = self.health_version.load(Ordering::Acquire);
             if version % 2 != 0 {
@@ -927,10 +1653,21 @@ impl EndpointPool {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum PoolAdminError {
+    #[error("unknown upstream server `{0}`")]
+    UnknownServer(String),
+    #[error("max-connections must be greater than zero")]
+    InvalidMaxConnections,
+    #[error("upstream DNS refresh failed")]
+    DnsRefreshFailed,
+}
+
 const fn algorithm_name(algorithm: UpstreamAlgorithm) -> &'static str {
     match algorithm {
         UpstreamAlgorithm::RoundRobin => "round_robin",
         UpstreamAlgorithm::LeastConnections => "least_connections",
+        UpstreamAlgorithm::First => "first",
     }
 }
 
@@ -938,15 +1675,23 @@ const fn algorithm_name(algorithm: UpstreamAlgorithm) -> &'static str {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PoolError {
     Empty,
+    StartupDns { server: String, detail: String },
     InvalidSocketEndpoint(SocketAddr),
     InvalidDnsEndpoint { host: String, port: u16 },
     InvalidUnixEndpoint(PathBuf),
+    ProtectedEndpoint { server: String },
 }
 
 impl fmt::Display for PoolError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => formatter.write_str("upstream endpoint pool cannot be empty"),
+            Self::StartupDns { server, detail } => {
+                write!(
+                    formatter,
+                    "upstream server `{server}` startup DNS resolution failed: {detail}"
+                )
+            }
             Self::InvalidSocketEndpoint(address) => {
                 write!(formatter, "invalid socket endpoint `{address}`")
             }
@@ -956,6 +1701,10 @@ impl fmt::Display for PoolError {
             Self::InvalidUnixEndpoint(path) => {
                 write!(formatter, "invalid Unix endpoint `{}`", path.display())
             }
+            Self::ProtectedEndpoint { server } => write!(
+                formatter,
+                "upstream server `{server}` resolves to a protected management or statistics listener"
+            ),
         }
     }
 }
@@ -1055,6 +1804,382 @@ mod tests {
                 ))
             })
             .collect()
+    }
+
+    fn runtime_server(name: &str, port: u16, max_connections: Option<u64>) -> RuntimeServer {
+        RuntimeServer {
+            name: name.into(),
+            endpoint: RuntimeEndpoint::from(SocketAddr::from(([127, 0, 0, 1], port))),
+            max_connections,
+            pinned_addresses: None,
+            protected_addresses: Arc::from([]),
+        }
+    }
+
+    #[test]
+    fn administrative_drain_rejects_new_work_without_revoking_existing_leases() {
+        let pool = RoundRobinPool::new_named_servers(
+            "api".into(),
+            [runtime_server("one", 3000, Some(2))],
+            UpstreamAlgorithm::RoundRobin,
+            Some(HealthStartup::Healthy),
+            None,
+        )
+        .expect("pool");
+        let lease = pool.select().expect("existing lease");
+
+        pool.set_server_administrative_state("one", AdministrativeState::Drain)
+            .expect("drain");
+
+        assert!(pool.select().is_none());
+        assert_eq!(pool.health_snapshot().endpoints[0].active_connections, 1);
+        drop(lease);
+        assert_eq!(pool.health_snapshot().endpoints[0].active_connections, 0);
+    }
+
+    #[test]
+    fn maintenance_suspends_checks_while_drain_keeps_checks_running() {
+        let pool = RoundRobinPool::new_named_servers(
+            "api".into(),
+            [runtime_server("one", 3000, None)],
+            UpstreamAlgorithm::RoundRobin,
+            Some(HealthStartup::Healthy),
+            None,
+        )
+        .expect("pool");
+
+        pool.set_server_administrative_state("one", AdministrativeState::Drain)
+            .expect("drain");
+        assert!(pool.health_checks_running(0));
+        pool.set_server_administrative_state("one", AdministrativeState::Maintenance)
+            .expect("maintenance");
+        assert!(!pool.health_checks_running(0));
+        pool.set_server_checks_enabled("one", false)
+            .expect("disable checks");
+        pool.set_server_administrative_state("one", AdministrativeState::Ready)
+            .expect("ready");
+        assert!(!pool.health_checks_running(0));
+    }
+
+    #[test]
+    fn health_override_is_independent_from_observed_health_and_resets_to_auto() {
+        let pool = RoundRobinPool::new_named_servers(
+            "api".into(),
+            [runtime_server("one", 3000, None)],
+            UpstreamAlgorithm::RoundRobin,
+            Some(HealthStartup::Healthy),
+            None,
+        )
+        .expect("pool");
+        pool.record_health(0, false, Some(HealthFailure::ConnectFailed), Some(1), 1, 1);
+        assert!(pool.select().is_none());
+
+        pool.set_server_health_override("one", HealthOverride::Up)
+            .expect("force up");
+        assert!(pool.select().is_some());
+        let snapshot = pool.health_snapshot().endpoints.remove(0);
+        assert_eq!(snapshot.state, EndpointHealthState::Unhealthy);
+        assert_eq!(snapshot.health_override, HealthOverride::Up);
+
+        pool.set_server_health_override("one", HealthOverride::Auto)
+            .expect("automatic health");
+        assert!(pool.select().is_none());
+    }
+
+    #[test]
+    fn max_connections_override_and_reset_preserve_configured_capacity() {
+        let pool = RoundRobinPool::new_named_servers(
+            "api".into(),
+            [runtime_server("one", 3000, Some(2))],
+            UpstreamAlgorithm::RoundRobin,
+            Some(HealthStartup::Healthy),
+            None,
+        )
+        .expect("pool");
+        pool.set_server_max_connections("one", Some(1))
+            .expect("override");
+        let first = pool.select().expect("first");
+        assert!(pool.select().is_none());
+        drop(first);
+
+        pool.set_server_max_connections("one", None).expect("reset");
+        let first = pool.select().expect("first after reset");
+        let second = pool.select().expect("configured second capacity");
+        assert_eq!(pool.health_snapshot().endpoints[0].max_connections, Some(2));
+        drop((first, second));
+    }
+
+    #[test]
+    fn first_uses_the_first_healthy_administrative_server_with_capacity() {
+        let pool = RoundRobinPool::new_named_servers(
+            "first".into(),
+            [
+                runtime_server("primary", 3000, Some(1)),
+                runtime_server("backup", 3001, Some(1)),
+            ],
+            UpstreamAlgorithm::First,
+            Some(HealthStartup::Healthy),
+            None,
+        )
+        .expect("first pool");
+
+        let primary = pool.select().expect("primary capacity");
+        assert_eq!(primary.server_name(), "primary");
+        let backup = pool.select().expect("backup capacity");
+        assert_eq!(backup.server_name(), "backup");
+        drop(primary);
+        assert_eq!(
+            pool.select().expect("primary restored").server_name(),
+            "primary"
+        );
+        drop(backup);
+
+        pool.record_health(0, false, Some(HealthFailure::ConnectFailed), Some(1), 1, 1);
+        assert_eq!(
+            pool.select().expect("healthy backup").server_name(),
+            "backup"
+        );
+    }
+
+    #[test]
+    fn least_connections_uses_named_server_work_and_rotates_equal_ties() {
+        let pool = RoundRobinPool::new_named_servers(
+            "least".into(),
+            [
+                runtime_server("one", 3000, Some(2)),
+                runtime_server("two", 3001, Some(2)),
+                runtime_server("three", 3002, Some(2)),
+            ],
+            UpstreamAlgorithm::LeastConnections,
+            None,
+            None,
+        )
+        .expect("least-connections pool");
+
+        let one = pool.select().expect("one");
+        let two = pool.select().expect("two");
+        let three = pool.select().expect("three");
+        assert_eq!(
+            [one.server_name(), two.server_name(), three.server_name()],
+            ["one", "two", "three"]
+        );
+        assert_eq!(
+            pool.health_snapshot()
+                .endpoints
+                .iter()
+                .map(|server| (server.name.as_str(), server.active_connections))
+                .collect::<Vec<_>>(),
+            vec![("one", 1), ("two", 1), ("three", 1)]
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_capacity_queue_releases_and_times_out_exactly_once() {
+        let pool = Arc::new(
+            RoundRobinPool::new_named_servers(
+                "queued".into(),
+                [runtime_server("only", 3000, Some(1))],
+                UpstreamAlgorithm::First,
+                None,
+                Some(Duration::from_millis(30)),
+            )
+            .expect("queued pool"),
+        );
+        let held = pool.select().expect("initial capacity");
+        let waiting_pool = Arc::clone(&pool);
+        let waiter = tokio::spawn(async move { waiting_pool.select_wait().await });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while pool.health_snapshot().queued != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("waiter entered queue");
+        drop(held);
+        let acquired = waiter
+            .await
+            .expect("waiter task")
+            .expect("released capacity");
+        assert_eq!(acquired.server_name(), "only");
+        drop(acquired);
+        let held = pool.select().expect("capacity after release");
+        assert!(pool.select_wait().await.is_none());
+        drop(held);
+
+        let snapshot = pool.health_snapshot();
+        assert_eq!(snapshot.queued, 0);
+        assert_eq!(snapshot.queued_total, 2);
+        assert_eq!(snapshot.queue_timeouts, 1);
+        assert_eq!(snapshot.queue_cancellations, 0);
+        assert_eq!(snapshot.endpoints[0].active_connections, 0);
+    }
+
+    #[tokio::test]
+    async fn capacity_release_cannot_race_a_waiter_notification_registration() {
+        let pool = Arc::new(
+            RoundRobinPool::new_named_servers(
+                "wakeups".into(),
+                [runtime_server("only", 3000, Some(1))],
+                UpstreamAlgorithm::First,
+                None,
+                Some(Duration::from_secs(1)),
+            )
+            .expect("queued pool"),
+        );
+
+        for _ in 0..256 {
+            let held = pool.select().expect("held capacity");
+            let waiting_pool = Arc::clone(&pool);
+            let waiter = tokio::spawn(async move { waiting_pool.select_wait().await });
+            tokio::task::yield_now().await;
+            drop(held);
+            let acquired = tokio::time::timeout(Duration::from_millis(100), waiter)
+                .await
+                .expect("capacity notification was not lost")
+                .expect("waiter task")
+                .expect("released capacity");
+            drop(acquired);
+        }
+        assert_eq!(pool.health_snapshot().queued, 0);
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_capacity_waiter_rolls_back_queue_state_once() {
+        let pool = Arc::new(
+            RoundRobinPool::new_named_servers(
+                "cancelled".into(),
+                [runtime_server("only", 3000, Some(1))],
+                UpstreamAlgorithm::First,
+                None,
+                Some(Duration::from_secs(10)),
+            )
+            .expect("queued pool"),
+        );
+        let held = pool.select().expect("initial capacity");
+        let waiting_pool = Arc::clone(&pool);
+        let waiter = tokio::spawn(async move { waiting_pool.select_wait().await });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while pool.health_snapshot().queued != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("waiter entered queue");
+        waiter.abort();
+        assert!(waiter.await.expect_err("waiter cancelled").is_cancelled());
+        drop(held);
+
+        let snapshot = pool.health_snapshot();
+        assert_eq!(snapshot.queued, 0);
+        assert_eq!(snapshot.queued_total, 1);
+        assert_eq!(snapshot.queue_cancellations, 1);
+        assert_eq!(snapshot.queue_timeouts, 0);
+        assert_eq!(snapshot.endpoints[0].active_connections, 0);
+    }
+
+    #[tokio::test]
+    async fn startup_dns_uses_only_the_addresses_pinned_in_the_runtime_plan() {
+        let pinned = SocketAddr::from(([192, 0, 2, 10], 443));
+        let pool = RoundRobinPool::new_named_servers(
+            "pinned".into(),
+            [RuntimeServer {
+                name: "origin".into(),
+                endpoint: RuntimeEndpoint::Dns {
+                    host: "origin.example.test".into(),
+                    port: 443,
+                },
+                max_connections: None,
+                pinned_addresses: Some(vec![pinned].into()),
+                protected_addresses: Arc::from([]),
+            }],
+            UpstreamAlgorithm::First,
+            None,
+            None,
+        )
+        .expect("startup-pinned pool");
+
+        let server = pool.select().expect("pinned server");
+        assert_eq!(
+            server.resolve_addresses().await.expect("pinned addresses"),
+            vec![pinned]
+        );
+        assert_eq!(server.endpoint().to_string(), "origin.example.test:443");
+    }
+
+    #[tokio::test]
+    async fn dns_refresh_resolution_does_not_mutate_pinned_addresses_before_commit() {
+        let pinned = SocketAddr::from(([192, 0, 2, 10], 443));
+        let pool = RoundRobinPool::new_named_servers(
+            "pinned".into(),
+            [RuntimeServer {
+                name: "origin".into(),
+                endpoint: RuntimeEndpoint::Dns {
+                    host: "localhost".into(),
+                    port: 443,
+                },
+                max_connections: None,
+                pinned_addresses: Some(vec![pinned].into()),
+                protected_addresses: Arc::from([]),
+            }],
+            UpstreamAlgorithm::First,
+            None,
+            None,
+        )
+        .expect("startup-pinned pool");
+
+        let resolved = pool
+            .resolve_server_dns("origin")
+            .await
+            .expect("external DNS resolution");
+        let before_commit = pool.select().expect("server before commit");
+        assert_eq!(
+            before_commit
+                .resolve_addresses()
+                .await
+                .expect("pinned address"),
+            vec![pinned]
+        );
+        drop(before_commit);
+
+        pool.commit_server_dns("origin", &resolved)
+            .expect("atomic DNS commit");
+        let after_commit = pool.select().expect("server after commit");
+        assert_eq!(
+            after_commit
+                .resolve_addresses()
+                .await
+                .expect("committed addresses"),
+            resolved
+        );
+    }
+
+    #[tokio::test]
+    async fn on_connect_dns_rejects_a_protected_listener_after_resolution() {
+        let protected = SocketAddr::from(([127, 0, 0, 1], 18404));
+        let pool = RoundRobinPool::new_named_servers(
+            "protected".into(),
+            [RuntimeServer {
+                name: "rebind".into(),
+                endpoint: RuntimeEndpoint::Dns {
+                    host: "localhost".into(),
+                    port: protected.port(),
+                },
+                max_connections: None,
+                pinned_addresses: None,
+                protected_addresses: Arc::from([protected]),
+            }],
+            UpstreamAlgorithm::RoundRobin,
+            None,
+            None,
+        )
+        .expect("protected DNS pool");
+
+        let lease = pool.select().expect("selected DNS server");
+        let error = lease
+            .resolve_addresses()
+            .await
+            .expect_err("protected address must be rejected after DNS resolution");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     }
 
     #[test]
@@ -1336,7 +2461,7 @@ mod tests {
         pool.unavailable_selections
             .store(u64::MAX, Ordering::Relaxed);
         pool.endpoints[0]
-            .active_leases
+            .active_work
             .store(u64::MAX, Ordering::Relaxed);
         pool.endpoints[0]
             .successful_checks
@@ -1354,7 +2479,7 @@ mod tests {
         let json = serde_json::to_value(pool.health_snapshot()).expect("health snapshot JSON");
         let exact = u64::MAX.to_string();
         assert_eq!(json["unavailableSelections"], exact);
-        assert_eq!(json["endpoints"][0]["activeLeases"], exact);
+        assert_eq!(json["endpoints"][0]["activeConnections"], exact);
         assert_eq!(json["endpoints"][0]["successfulChecks"], exact);
         assert_eq!(json["endpoints"][0]["failedChecks"], exact);
         assert_eq!(json["endpoints"][0]["consecutiveSuccesses"], exact);

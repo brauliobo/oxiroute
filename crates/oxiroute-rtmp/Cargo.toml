@@ -9,6 +9,8 @@ version.workspace = true
 
 [dependencies]
 bytes.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
 rml_rtmp.workspace = true
 rustix.workspace = true
 thiserror.workspace = true

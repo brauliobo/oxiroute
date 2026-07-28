@@ -31,11 +31,21 @@ Implemented endpoints:
 | `GET` | `/api/v1/rtmp/streams/{streamId}` | One exact-ID active stream snapshot. |
 | `POST` | `/api/v1/rtmp/streams/{streamId}/recorders/{recorderId}/start` | Request one exact-ID manual recorder start. |
 | `POST` | `/api/v1/rtmp/streams/{streamId}/recorders/{recorderId}/stop` | Request one exact-ID manual recorder stop. |
+| `GET` | `/api/v1/status` | Active generation and listener status. |
+| `GET` | `/api/v1/listeners`, `/api/v1/pools`, `/api/v1/servers` | Active operational inventory. |
+| `POST` | `/api/v1/servers/refresh-dns` | Resolve every prevalidated target and report explicit non-atomic per-server outcomes. |
+| `GET` | `/api/v1/generations` | Active, previous, candidate, and quarantined generation state. |
+| `POST` | `/api/v1/generations/reload`, `/api/v1/generations/rollback`, `/api/v1/generations/drain` | Revision-checked generation operations. |
 
-`/api/v1/status`, `/api/v1/events`, certificate routes, import routes, and `/metrics` are not
-implemented. Recorder routes control configured `start = "manual"` workers in the active publisher
-incarnation. `capabilities.manual_recording` is true when the active config contains at least one
-manual recorder; continuous-only recording does not set that capability.
+Native import routes and unbounded event streaming are not implemented. Recorder routes control
+configured `start = "manual"` workers in the active publisher incarnation.
+`capabilities.manual_recording` is true when the active config contains at least one manual
+recorder; continuous-only recording does not set that capability.
+
+The statistics listener additionally serves public `GET /metrics` and `GET /ready`. Authenticated
+`GET /stats` renders the local server table. `POST /stats/admin` accepts one JSON
+`{pool, server, action}` target plus `If-Generation-Revision`; `GET` and `HEAD` return `405` and can
+never mutate state.
 
 Manual recorder responses are exact:
 
@@ -58,8 +68,9 @@ to 514 bytes so a maximum-size token may include one line ending. One trailing L
 the remaining token MUST be 32 through 512 visible ASCII bytes (`0x21` through `0x7e`). Other
 whitespace is part of the token or makes it invalid.
 
-Each configuration request requires exactly one `Authorization: Bearer <token>` header. Missing,
-duplicate, malformed, or incorrect authorization returns `401` with `WWW-Authenticate: Bearer`.
+Each authenticated request requires exactly one `Authorization: Bearer <token>` header. Duplicate
+authorization returns `400 duplicate_authorization`; missing, malformed, or incorrect authorization
+returns `401` with `WWW-Authenticate: Bearer`.
 The token is hashed after startup loading and compared in constant time. Non-configuration routes do
 not currently apply this authentication check.
 
@@ -85,8 +96,8 @@ canonical file. The save then re-reads and compares the authoritative disk bytes
 
 Successful writes return `200` with both revisions, diagnostics, and one of two exact outcomes:
 
-- `saved_restart_required`: disk changed, `activationState` is `restart_required`, and
-  `restartRequired` is `true`.
+- `saved_pending_activation`: disk changed, `activationState` is `pending`, and
+  `restartRequired` is `false` while the watcher starts the prepared generation.
 - `unchanged_active`: disk equals the startup generation, `activationState` is `active`, and
   `restartRequired` is `false`.
 

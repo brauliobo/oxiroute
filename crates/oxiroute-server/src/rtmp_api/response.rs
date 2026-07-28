@@ -16,7 +16,7 @@ pub struct ApiResponse {
 }
 
 impl ApiResponse {
-    pub(super) fn bytes(status: u16, body: Vec<u8>, content_type: &'static str) -> Self {
+    pub(crate) fn bytes(status: u16, body: Vec<u8>, content_type: &'static str) -> Self {
         Self {
             status,
             body,
@@ -26,11 +26,11 @@ impl ApiResponse {
         }
     }
 
-    pub(super) fn json(status: u16, value: &Value) -> Self {
+    pub(crate) fn json(status: u16, value: &Value) -> Self {
         Self::bytes(status, value.to_string().into_bytes(), "application/json")
     }
 
-    pub(super) fn error(status: u16, code: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn error(status: u16, code: &'static str, message: impl Into<String>) -> Self {
         let value = json!({
             "error": {
                 "code": code,
@@ -40,17 +40,17 @@ impl ApiResponse {
         Self::json(status, &value)
     }
 
-    pub(super) fn route_not_found() -> Self {
+    pub(crate) fn route_not_found() -> Self {
         Self::error(404, "route_not_found", "route does not exist")
     }
 
-    pub(super) fn method_not_allowed(allow: &'static str) -> Self {
+    pub(crate) fn method_not_allowed(allow: &'static str) -> Self {
         let mut response = Self::error(405, "method_not_allowed", "method is not allowed");
         response.allow = Some(allow);
         response
     }
 
-    pub(super) fn unauthorized() -> Self {
+    pub(crate) fn unauthorized() -> Self {
         let mut response = Self::error(
             401,
             "unauthorized",
@@ -80,7 +80,7 @@ pub(super) fn system_time_ms() -> Result<u64, ApiResponse> {
     })
 }
 
-pub(super) fn to_http_response(response: ApiResponse) -> Response<Vec<u8>> {
+pub(crate) fn to_http_response(response: ApiResponse) -> Response<Vec<u8>> {
     let mut result = Response::new(response.body);
     *result.status_mut() =
         StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);

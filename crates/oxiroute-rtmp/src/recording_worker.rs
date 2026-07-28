@@ -6,13 +6,13 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crate::{
     FlvMuxer, MediaEvent, MediaEventKind, RecordingCommit, RecordingDateTime, RecordingFile,
     RecordingPathError, RecordingPathPolicy, RecordingStore, RecordingStoreError,
-    recording_path::sequenced_recording_filename,
+    RecordingTimeBasis,
 };
 
 const TIMESTAMP_HALF_RANGE: u32 = 1 << 31;
@@ -116,6 +116,8 @@ pub enum RecorderWorkerStartError {
 
 /// One independent disk worker with a bounded try-enqueue media queue.
 pub struct RecorderWorker {
+    default_arrival_origin: Instant,
+    default_arrival_unix_ms: u64,
     shared: Arc<WorkerShared>,
     thread: Option<JoinHandle<()>>,
 }
@@ -147,13 +149,19 @@ struct WorkerShared {
 }
 
 struct QueueState {
-    events: VecDeque<MediaEvent>,
+    events: VecDeque<QueuedMediaEvent>,
     bytes: usize,
     accepting: bool,
     events_enqueued: u64,
     events_dropped: u64,
     discontinuities: u64,
     discontinuity_pending: bool,
+}
+
+struct QueuedMediaEvent {
+    event: MediaEvent,
+    arrived_at: Instant,
+    arrived_at_unix_seconds: u64,
 }
 
 struct WorkerStatusState {
@@ -212,8 +220,16 @@ impl RecorderWorker {
                 }
             })
             .transpose()?;
-        let relative_name =
-            path_policy.relative_filename(stream_name, opened_at_unix_seconds, opened_at_utc)?;
+        path_policy.segment_filename(stream_name, opened_at_unix_seconds, opened_at_utc, 0)?;
+        let path_policy = path_policy.clone();
+        let stream_name = Arc::<[u8]>::from(stream_name);
+        let setup = WorkerSetup {
+            store,
+            path_policy,
+            stream_name,
+            rotation_interval: rotation_interval_ms
+                .map(|value| Duration::from_millis(value.into())),
+        };
         let shared = Arc::new(WorkerShared {
             max_queue_messages: config.max_queue_messages,
             max_queue_bytes: config.max_queue_bytes,
@@ -250,7 +266,7 @@ impl RecorderWorker {
             .name("rtmp-recorder".to_owned())
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_worker(&worker_shared, store, relative_name, rotation_interval_ms);
+                    run_worker(&worker_shared, setup);
                 }));
                 if result.is_err() {
                     worker_shared.fail(WorkerError::new(RecorderFailure::WorkerPanicked));
@@ -260,6 +276,8 @@ impl RecorderWorker {
             .map_err(RecorderWorkerStartError::ThreadSpawn)?;
 
         Ok(Self {
+            default_arrival_origin: Instant::now(),
+            default_arrival_unix_ms: opened_at_unix_seconds.saturating_mul(1_000),
             shared,
             thread: Some(thread),
         })
@@ -268,6 +286,23 @@ impl RecorderWorker {
     /// Attempts to enqueue one immutable media event without waiting for capacity or disk I/O.
     #[must_use]
     pub fn try_enqueue(&self, event: MediaEvent) -> RecorderEnqueueResult {
+        let elapsed = Duration::from_millis(u64::from(event.timestamp_ms()));
+        self.try_enqueue_at(
+            event,
+            self.default_arrival_origin + elapsed,
+            self.default_arrival_unix_ms
+                .saturating_add(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)),
+        )
+    }
+
+    /// Enqueues media with independently supplied monotonic arrival and wall-clock observation.
+    #[must_use]
+    pub fn try_enqueue_at(
+        &self,
+        event: MediaEvent,
+        arrived_at: Instant,
+        at_unix_ms: u64,
+    ) -> RecorderEnqueueResult {
         let mut queue = self.shared.lock_queue();
         if !queue.accepting {
             return RecorderEnqueueResult::Inactive;
@@ -284,7 +319,11 @@ impl RecorderWorker {
         }
 
         queue.bytes = queue_bytes;
-        queue.events.push_back(event);
+        queue.events.push_back(QueuedMediaEvent {
+            event,
+            arrived_at,
+            arrived_at_unix_seconds: at_unix_ms / 1_000,
+        });
         queue.events_enqueued = queue.events_enqueued.saturating_add(1);
         drop(queue);
         self.shared.available.notify_one();
@@ -455,7 +494,7 @@ impl WorkerShared {
                 return NextEvent::Discontinuity;
             }
             if let Some(event) = queue.events.pop_front() {
-                queue.bytes -= event.payload_len();
+                queue.bytes -= event.event.payload_len();
                 return NextEvent::Event(event);
             }
             if !queue.accepting {
@@ -566,7 +605,7 @@ impl WorkerShared {
 }
 
 enum NextEvent {
-    Event(MediaEvent),
+    Event(QueuedMediaEvent),
     Discontinuity,
     Finished,
 }
@@ -610,35 +649,51 @@ impl WorkerError {
 struct WorkerContext {
     shared: Arc<WorkerShared>,
     store: RecordingStore,
-    relative_name: String,
+    path_policy: RecordingPathPolicy,
+    stream_name: Arc<[u8]>,
     next_segment_sequence: u64,
-    rotation_interval_ms: Option<u32>,
+    rotation_interval: Option<Duration>,
     segment: Option<Segment>,
-    segment_started_at: Option<u32>,
+    segment_started_at: Option<Instant>,
+    segment_started_at_unix_seconds: Option<u64>,
+    latest_event_at_unix_seconds: u64,
+    last_written_at_unix_seconds: u64,
     video_seen: bool,
     segment_headers: SegmentHeaders,
 }
 
-fn run_worker(
-    shared: &Arc<WorkerShared>,
+struct WorkerSetup {
     store: RecordingStore,
-    relative_name: String,
-    rotation_interval_ms: Option<u32>,
-) {
+    path_policy: RecordingPathPolicy,
+    stream_name: Arc<[u8]>,
+    rotation_interval: Option<Duration>,
+}
+
+fn run_worker(shared: &Arc<WorkerShared>, setup: WorkerSetup) {
     {
         let mut status = shared.lock_status();
         if !matches!(status.phase, RecorderWorkerPhase::Failed(_)) {
             status.phase = RecorderWorkerPhase::Recording;
         }
     }
+    let WorkerSetup {
+        store,
+        path_policy,
+        stream_name,
+        rotation_interval,
+    } = setup;
     let mut context = WorkerContext {
         shared: Arc::clone(shared),
         store,
-        relative_name,
+        path_policy,
+        stream_name,
         next_segment_sequence: 0,
-        rotation_interval_ms,
+        rotation_interval,
         segment: None,
         segment_started_at: None,
+        segment_started_at_unix_seconds: None,
+        latest_event_at_unix_seconds: 0,
+        last_written_at_unix_seconds: 0,
         video_seen: false,
         segment_headers: SegmentHeaders::default(),
     };
@@ -671,7 +726,9 @@ fn run_worker(
 }
 
 impl WorkerContext {
-    fn process(&mut self, event: &MediaEvent) -> Result<(), WorkerError> {
+    fn process(&mut self, queued: &QueuedMediaEvent) -> Result<(), WorkerError> {
+        let event = &queued.event;
+        self.latest_event_at_unix_seconds = queued.arrived_at_unix_seconds;
         if is_unsupported_video_event(event) {
             return Err(WorkerError::new(RecorderFailure::UnsupportedCodec));
         }
@@ -695,38 +752,49 @@ impl WorkerContext {
         ) {
             self.segment_headers.update(event.clone());
             if self.segment.is_none() {
-                self.open_segment()?;
+                self.open_segment(queued.arrived_at, queued.arrived_at_unix_seconds)?;
             } else {
                 self.segment
                     .as_mut()
                     .expect("segment was checked above")
                     .write(event)?;
             }
+            self.last_written_at_unix_seconds = self.latest_event_at_unix_seconds;
             return Ok(());
         }
 
         if self.segment.is_none() {
-            self.open_segment()?;
-        } else if self.should_rotate(event) {
+            self.open_segment(queued.arrived_at, queued.arrived_at_unix_seconds)?;
+        } else if self.should_rotate(event, queued.arrived_at) {
             self.finish_segment()?;
             self.segment_started_at = None;
-            self.open_segment()?;
+            self.segment_started_at_unix_seconds = None;
+            self.open_segment(queued.arrived_at, queued.arrived_at_unix_seconds)?;
         }
         self.segment
             .as_mut()
             .expect("media processing opens a segment")
             .write(event)?;
-        if self.segment_started_at.is_none() && self.starts_segment_clock(event) {
-            self.segment_started_at = Some(event.timestamp_ms());
-        }
+        self.last_written_at_unix_seconds = self.latest_event_at_unix_seconds;
         Ok(())
     }
 
-    fn open_segment(&mut self) -> Result<(), WorkerError> {
+    fn open_segment(
+        &mut self,
+        arrived_at: Instant,
+        arrived_at_unix_seconds: u64,
+    ) -> Result<(), WorkerError> {
         let headers = self.segment_headers.ordered();
-        let segment_name =
-            sequenced_recording_filename(&self.relative_name, self.next_segment_sequence)
-                .ok_or_else(|| WorkerError::new(RecorderFailure::Open))?;
+        let segment_name = self
+            .path_policy
+            .segment_filename(
+                &self.stream_name,
+                arrived_at_unix_seconds,
+                RecordingDateTime::from_unix_seconds(arrived_at_unix_seconds)
+                    .map_err(|_| WorkerError::new(RecorderFailure::Open))?,
+                self.next_segment_sequence,
+            )
+            .map_err(|_| WorkerError::new(RecorderFailure::Open))?;
         let next_segment_sequence = self
             .next_segment_sequence
             .checked_add(1)
@@ -745,6 +813,8 @@ impl WorkerContext {
             return Err(WorkerError::new(RecorderFailure::ShutdownTimedOut));
         }
         self.segment = Some(segment);
+        self.segment_started_at = Some(arrived_at);
+        self.segment_started_at_unix_seconds = Some(arrived_at_unix_seconds);
         self.next_segment_sequence = next_segment_sequence;
         let mut status = self.shared.lock_status();
         if !matches!(status.phase, RecorderWorkerPhase::Failed(_)) {
@@ -763,7 +833,25 @@ impl WorkerContext {
         let Some(segment) = self.segment.take() else {
             return Ok(());
         };
-        let RecordingCommit { relative_name, .. } = segment.finish(&self.shared.cancelled)?;
+        let sequence = self.next_segment_sequence.saturating_sub(1);
+        let naming_time = match self.path_policy.time_basis() {
+            RecordingTimeBasis::SegmentStart => self
+                .segment_started_at_unix_seconds
+                .expect("an open segment retains its wall-clock start"),
+            RecordingTimeBasis::SegmentEnd => self.last_written_at_unix_seconds,
+        };
+        let final_name = self
+            .path_policy
+            .segment_filename(
+                &self.stream_name,
+                naming_time,
+                RecordingDateTime::from_unix_seconds(naming_time)
+                    .map_err(|_| WorkerError::new(RecorderFailure::Finalize))?,
+                sequence,
+            )
+            .map_err(|_| WorkerError::new(RecorderFailure::Finalize))?;
+        let RecordingCommit { relative_name, .. } =
+            segment.finish(&self.shared.cancelled, final_name)?;
         let mut status = self.shared.lock_status();
         status.current_relative_name = None;
         status.current_partial_name = None;
@@ -778,35 +866,18 @@ impl WorkerContext {
         }
     }
 
-    fn should_rotate(&self, event: &MediaEvent) -> bool {
-        let (Some(interval), Some(started_at)) =
-            (self.rotation_interval_ms, self.segment_started_at)
+    fn should_rotate(&self, event: &MediaEvent, arrived_at: Instant) -> bool {
+        let (Some(interval), Some(started_at)) = (self.rotation_interval, self.segment_started_at)
         else {
             return false;
         };
-        let elapsed = event.timestamp_ms().wrapping_sub(started_at);
-        if elapsed >= TIMESTAMP_HALF_RANGE || elapsed < interval {
+        if arrived_at.saturating_duration_since(started_at) < interval {
             return false;
         }
         if self.video_seen {
             event.kind() == MediaEventKind::VideoKeyframe
         } else {
             event.kind() == MediaEventKind::Audio
-        }
-    }
-
-    fn starts_segment_clock(&self, event: &MediaEvent) -> bool {
-        match event.kind() {
-            MediaEventKind::Audio => !self.segment_headers.has_avc(),
-            MediaEventKind::VideoKeyframe => true,
-            MediaEventKind::VideoInterframe | MediaEventKind::VideoDisposable => {
-                !self.segment_headers.has_avc()
-            }
-            MediaEventKind::Metadata
-            | MediaEventKind::AacSequenceHeader
-            | MediaEventKind::AvcSequenceHeader
-            | MediaEventKind::HevcSequenceHeader
-            | MediaEventKind::Av1SequenceHeader => false,
         }
     }
 }
@@ -885,13 +956,20 @@ impl Segment {
         write_to_muxer(&mut self.muxer, event)
     }
 
-    fn finish(self, cancelled: &AtomicBool) -> Result<RecordingCommit, WorkerError> {
+    fn finish(
+        self,
+        cancelled: &AtomicBool,
+        final_name: String,
+    ) -> Result<RecordingCommit, WorkerError> {
         self.preserve_partial.store(true, Ordering::Release);
-        let file = self.muxer.close().map_err(|_| WorkerError {
+        let mut file = self.muxer.close().map_err(|_| WorkerError {
             kind: RecorderFailure::Finalize,
             recoverable_partial_name: Some(self.partial_relative_name),
             published_but_not_durable_relative_name: None,
         })?;
+        file.inner
+            .set_final_relative_name(final_name)
+            .map_err(|error| WorkerError::finalization(&error))?;
         file.commit_unless(|| cancelled.load(Ordering::Acquire))
             .map_err(|error| WorkerError::finalization(&error))
     }
@@ -994,9 +1072,5 @@ impl SegmentHeaders {
             .into_iter()
             .map(|header| header.event.clone())
             .collect()
-    }
-
-    fn has_avc(&self) -> bool {
-        self.avc.is_some()
     }
 }

@@ -4,7 +4,9 @@ use std::{
 };
 
 use oxiroute_config::{
-    HttpVersionPolicy, Listener, ListenerBind, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool,
+    DnsResolutionPolicy, DownstreamTimeoutPolicy, HealthCheck, HealthCheckType, HealthStartup,
+    HttpVersionPolicy, Listener, ListenerBind, UpstreamAlgorithm, UpstreamConnectionReuse,
+    UpstreamEndpoint, UpstreamPool, UpstreamServer,
 };
 
 use super::{Lowerer, Representability};
@@ -20,6 +22,7 @@ use super::{
 };
 
 impl Lowerer<'_> {
+    #[allow(clippy::too_many_lines)]
     pub(super) fn lower_pool(
         &mut self,
         section: &EffectiveSection,
@@ -27,16 +30,6 @@ impl Lowerer<'_> {
         servers: &[EffectiveServer],
     ) {
         let semantic_settings_blocked = self.block_semantic_settings(settings);
-        self.block_forward_for(settings);
-        self.block_redispatch(settings);
-        self.require_zero_retries(section, settings);
-        if settings
-            .mode
-            .as_ref()
-            .is_some_and(|mode| matches!(&mode.value, ProxyMode::Http))
-        {
-            self.matching_http_timeout(section, settings);
-        }
         let Some(name) = self.canonical_name(section, "upstream pool") else {
             return;
         };
@@ -47,7 +40,7 @@ impl Lowerer<'_> {
             );
         }
 
-        let mut endpoints = Vec::with_capacity(servers.len());
+        let mut lowered_servers = Vec::with_capacity(servers.len());
         let mut endpoint_set = HashSet::with_capacity(servers.len());
         let mut decision = Representability::new(!servers.is_empty() && !semantic_settings_blocked);
         for server in servers {
@@ -64,17 +57,97 @@ impl Lowerer<'_> {
                 );
                 decision.require(false);
             }
-            endpoints.push(endpoint);
+            let Some(server_name) = std::str::from_utf8(&server.name.value)
+                .ok()
+                .filter(|name| !name.trim().is_empty() && name.trim() == *name)
+            else {
+                self.block_value(
+                    &server.name,
+                    "HAProxy server name is not a canonical UTF-8 identity",
+                );
+                decision.require(false);
+                continue;
+            };
+            let dns_resolution = if matches!(endpoint, UpstreamEndpoint::Dns { .. }) {
+                DnsResolutionPolicy::Startup
+            } else {
+                DnsResolutionPolicy::OnConnect
+            };
+            lowered_servers.push(UpstreamServer {
+                name: server_name.into(),
+                endpoint,
+                max_connections: server
+                    .max_connections
+                    .as_ref()
+                    .and_then(|value| (value.value != 0).then_some(value.value)),
+                dns_resolution,
+            });
         }
         let algorithm = self.lower_algorithm(
             section,
             settings.balance.as_ref(),
             settings.mode.as_ref(),
-            &endpoints,
+            &lowered_servers
+                .iter()
+                .map(|server| server.endpoint.clone())
+                .collect::<Vec<_>>(),
         );
         decision.require(algorithm.is_some());
-        let startup_clear = !self.block_health_startup(settings, servers);
-        decision.require(startup_clear);
+        let health_check = self.lower_health_check(section, settings, servers);
+        decision.require(health_check.is_some());
+        let connection_sensitive = algorithm
+            .as_ref()
+            .is_some_and(|algorithm| *algorithm != UpstreamAlgorithm::RoundRobin)
+            || lowered_servers
+                .iter()
+                .any(|server| server.max_connections.is_some());
+        let source_closes_after_request = settings
+            .http_server_close
+            .as_ref()
+            .is_some_and(|value| value.value);
+        let overlay_closes_after_request = if connection_sensitive
+            && settings
+                .mode
+                .as_ref()
+                .is_some_and(|mode| mode.value == ProxyMode::Http)
+            && !source_closes_after_request
+        {
+            let matching = self
+                .options
+                .one_request_per_connection
+                .iter()
+                .enumerate()
+                .filter(|(_, overlay)| {
+                    section
+                        .name
+                        .as_deref()
+                        .is_some_and(|name| name == overlay.backend.as_bytes())
+                })
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            if matching.len() == 1 {
+                self.used_connection_lifecycle_overlays.insert(matching[0]);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        let closes_after_request = source_closes_after_request || overlay_closes_after_request;
+        if settings
+            .mode
+            .as_ref()
+            .is_some_and(|mode| mode.value == ProxyMode::Http)
+            && connection_sensitive
+            && !closes_after_request
+        {
+            self.block_section(
+                section,
+                "HAProxy server maxconn/leastconn/first requires option http-server-close or an explicit audited one-request-per-connection overlay",
+            );
+            return;
+        }
         if !decision.is_complete() {
             return;
         }
@@ -84,11 +157,32 @@ impl Lowerer<'_> {
         self.lowered_pools.insert(section.id);
         self.draft.upstream_pools.push(UpstreamPool {
             name: name.clone(),
-            endpoints,
+            servers: lowered_servers,
+            endpoints: Vec::new(),
             algorithm,
-            health_check: None,
+            health_check: health_check.flatten(),
             tls: None,
             http_versions: HttpVersionPolicy::default(),
+            queue_timeout_ms: settings
+                .timeouts
+                .queue
+                .as_ref()
+                .and_then(|value| Self::duration_value_ms(value.value)),
+            connect_timeout_ms: settings
+                .timeouts
+                .connect
+                .as_ref()
+                .and_then(|value| Self::duration_value_ms(value.value)),
+            server_timeout_ms: settings
+                .timeouts
+                .server
+                .as_ref()
+                .and_then(|value| Self::duration_value_ms(value.value)),
+            connection_reuse: if closes_after_request {
+                UpstreamConnectionReuse::Never
+            } else {
+                UpstreamConnectionReuse::Safe
+            },
         });
         let pool_path = CanonicalPath::indexed("upstream_pools", pool_index);
         let mut sources = section_sources(section);
@@ -100,17 +194,30 @@ impl Lowerer<'_> {
             extend_sources(&mut sources, &server.address.provenance);
         }
         self.record(pool_path.clone(), sources);
+        if let Some(queue_timeout) = &settings.timeouts.queue {
+            self.record(
+                pool_path.field("queue_timeout_ms"),
+                provenance_sources(&queue_timeout.provenance),
+            );
+        }
         if let Some(balance) = &settings.balance {
             self.record(
                 pool_path.field("algorithm"),
                 provenance_sources(&balance.provenance),
             );
         }
-        let endpoints_path = pool_path.field("endpoints");
+        let servers_path = pool_path.field("servers");
         for (endpoint_index, server) in servers.iter().enumerate() {
-            let path = endpoints_path.index(endpoint_index);
+            let path = servers_path.index(endpoint_index);
             let origins = provenance_sources(&server.address.provenance);
-            let endpoint = self.draft.upstream_pools[pool_index].endpoints[endpoint_index].clone();
+            let endpoint = self.draft.upstream_pools[pool_index].servers[endpoint_index]
+                .endpoint
+                .clone();
+            self.record(
+                path.field("name"),
+                provenance_sources(&server.name.provenance),
+            );
+            let path = path.field("endpoint");
             self.record(path.field("type"), origins.clone());
             match endpoint {
                 UpstreamEndpoint::Socket { .. } => self.record(path.field("address"), origins),
@@ -127,7 +234,7 @@ impl Lowerer<'_> {
         &mut self,
         section: &EffectiveSection,
         balance: Option<&EffectiveValue<BalanceAlgorithm>>,
-        mode: Option<&EffectiveValue<ProxyMode>>,
+        _mode: Option<&EffectiveValue<ProxyMode>>,
         endpoints: &[UpstreamEndpoint],
     ) -> Option<UpstreamAlgorithm> {
         match balance {
@@ -135,23 +242,24 @@ impl Lowerer<'_> {
                 Some(UpstreamAlgorithm::RoundRobin)
             }
             Some(balance)
-                if balance.value == BalanceAlgorithm::LeastConnections
-                    && mode.is_some_and(|mode| mode.value == ProxyMode::Tcp)
-                    && !endpoints.is_empty() =>
+                if balance.value == BalanceAlgorithm::LeastConnections && !endpoints.is_empty() =>
             {
                 Some(UpstreamAlgorithm::LeastConnections)
+            }
+            Some(balance) if balance.value == BalanceAlgorithm::First && !endpoints.is_empty() => {
+                Some(UpstreamAlgorithm::First)
             }
             Some(balance) => {
                 self.block_value(
                     balance,
-                    "HAProxy leastconn is lowerable only for a complete TCP endpoint set with canonical connection-count semantics",
+                    "HAProxy balance policy is not represented by the canonical upstream algorithms",
                 );
                 None
             }
             None => {
                 self.block_section(
                     section,
-                    "HAProxy backend requires an explicit roundrobin or exactly representable leastconn balance policy for lowering",
+                    "HAProxy backend requires an explicit representable balance policy for lowering",
                 );
                 None
             }
@@ -198,52 +306,204 @@ impl Lowerer<'_> {
         !server.unsupported_options.is_empty()
     }
 
-    fn block_health_startup(
+    #[expect(
+        clippy::too_many_lines,
+        clippy::option_option,
+        reason = "one health transaction distinguishes invalid policy from a disabled check"
+    )]
+    fn lower_health_check(
         &mut self,
+        section: &EffectiveSection,
         settings: &ProxySettings,
         servers: &[EffectiveServer],
-    ) -> bool {
-        let provenance = servers
+    ) -> Option<Option<HealthCheck>> {
+        let checked = servers
             .iter()
-            .find_map(|server| {
-                server
-                    .check
-                    .as_ref()
-                    .map(|value| &value.provenance)
-                    .or_else(|| server.interval.as_ref().map(|value| &value.provenance))
-                    .or_else(|| server.rise.as_ref().map(|value| &value.provenance))
-                    .or_else(|| server.fall.as_ref().map(|value| &value.provenance))
-            })
-            .or_else(|| {
-                settings
-                    .http_check
-                    .as_ref()
-                    .filter(|check| matches!(check.value, OptionState::Enabled(_)))
-                    .map(|check| &check.provenance)
-            })
-            .or_else(|| {
-                settings
-                    .http_check_expect
-                    .as_ref()
-                    .map(|expect| &expect.provenance)
-            });
-        if let Some(provenance) = provenance {
-            self.block_provenance(
-                provenance,
-                "HAProxy checked servers are initially eligible, while canonical checked pools start unavailable",
+            .map(|server| server.check.as_ref().is_some_and(|check| check.value))
+            .collect::<HashSet<_>>();
+        if checked.len() > 1 {
+            self.block_section(
+                section,
+                "canonical pool health checks cannot target only part of a HAProxy backend",
             );
-            true
-        } else {
-            false
+            return None;
         }
+        if checked == HashSet::from([false]) {
+            return Some(None);
+        }
+        let Some(interval_ms) = Self::common_server_u64(servers, |server| {
+            server
+                .interval
+                .as_ref()
+                .and_then(|value| Self::duration_value_ms(value.value))
+                .or(Some(2_000))
+        }) else {
+            self.block_section(
+                section,
+                "HAProxy servers have non-uniform effective health intervals",
+            );
+            return None;
+        };
+        let Ok(fast_interval_ms) = Self::common_server_optional_u64(servers, |server| {
+            server
+                .fast_interval
+                .as_ref()
+                .and_then(|value| Self::duration_value_ms(value.value))
+        }) else {
+            self.block_section(
+                section,
+                "HAProxy servers have non-uniform effective fast health intervals",
+            );
+            return None;
+        };
+        let Ok(down_interval_ms) = Self::common_server_optional_u64(servers, |server| {
+            server
+                .down_interval
+                .as_ref()
+                .and_then(|value| Self::duration_value_ms(value.value))
+        }) else {
+            self.block_section(
+                section,
+                "HAProxy servers have non-uniform effective down health intervals",
+            );
+            return None;
+        };
+        let Some(healthy_threshold) = Self::common_server_u16(servers, |server| {
+            server
+                .rise
+                .as_ref()
+                .and_then(|value| u16::try_from(value.value).ok())
+                .or(Some(2))
+        }) else {
+            self.block_section(
+                section,
+                "HAProxy servers have non-uniform effective health rise thresholds",
+            );
+            return None;
+        };
+        let Some(unhealthy_threshold) = Self::common_server_u16(servers, |server| {
+            server
+                .fall
+                .as_ref()
+                .and_then(|value| u16::try_from(value.value).ok())
+                .or(Some(3))
+        }) else {
+            self.block_section(
+                section,
+                "HAProxy servers have non-uniform effective health fall thresholds",
+            );
+            return None;
+        };
+        let timeout_ms = settings
+            .timeouts
+            .connect
+            .as_ref()
+            .and_then(|value| Self::duration_value_ms(value.value))
+            .unwrap_or(interval_ms)
+            .min(interval_ms.saturating_sub(1))
+            .max(1);
+        let (kind, path, host, http_version) = match settings.http_check.as_ref() {
+            Some(check_value) => match &check_value.value {
+                OptionState::Enabled(check) => {
+                    let (Ok(path), Ok(host)) = (
+                        std::str::from_utf8(&check.uri),
+                        check.host.as_deref().map(std::str::from_utf8).transpose(),
+                    ) else {
+                        self.block_value(
+                            check_value,
+                            "HAProxy HTTP check path or host is not UTF-8",
+                        );
+                        return None;
+                    };
+                    let version = match check.version.as_slice() {
+                        b"HTTP/1.0" => Some(oxiroute_config::HealthHttpVersion::Http10),
+                        b"HTTP/1.1" => Some(oxiroute_config::HealthHttpVersion::Http11),
+                        _ => None,
+                    };
+                    (
+                        HealthCheckType::Http,
+                        Some(path.into()),
+                        host.map(str::to_owned),
+                        version,
+                    )
+                }
+                OptionState::Disabled => (HealthCheckType::Tcp, None, None, None),
+            },
+            None => (HealthCheckType::Tcp, None, None, None),
+        };
+        let expected_status = match (kind, settings.http_check_expect.as_ref()) {
+            (HealthCheckType::Http, Some(expect)) => match expect.value.as_slice() {
+                [range] if range.start == range.end => Some(range.start),
+                _ => {
+                    self.block_value(
+                        expect,
+                        "HAProxy HTTP health status ranges cannot lower to one exact canonical status",
+                    );
+                    return None;
+                }
+            },
+            (HealthCheckType::Http, None) => {
+                self.block_section(
+                    section,
+                    "HAProxy HTTP health checks require an exact http-check expect status before canonical lowering",
+                );
+                return None;
+            }
+            (HealthCheckType::Tcp, _) => None,
+        };
+        Some(Some(HealthCheck {
+            kind,
+            interval_ms,
+            timeout_ms,
+            healthy_threshold,
+            unhealthy_threshold,
+            startup: HealthStartup::Healthy,
+            fast_interval_ms,
+            down_interval_ms,
+            host,
+            path,
+            expected_status,
+            http_version,
+        }))
     }
 
+    fn duration_value_ms(duration: std::time::Duration) -> Option<u64> {
+        u64::try_from(duration.as_millis()).ok()
+    }
+
+    fn common_server_u64(
+        servers: &[EffectiveServer],
+        value: impl Fn(&EffectiveServer) -> Option<u64>,
+    ) -> Option<u64> {
+        let values = servers.iter().filter_map(value).collect::<HashSet<_>>();
+        (values.len() == 1).then(|| *values.iter().next().expect("one value"))
+    }
+
+    fn common_server_u16(
+        servers: &[EffectiveServer],
+        value: impl Fn(&EffectiveServer) -> Option<u16>,
+    ) -> Option<u16> {
+        let values = servers.iter().filter_map(value).collect::<HashSet<_>>();
+        (values.len() == 1).then(|| *values.iter().next().expect("one value"))
+    }
+
+    fn common_server_optional_u64(
+        servers: &[EffectiveServer],
+        value: impl Fn(&EffectiveServer) -> Option<u64>,
+    ) -> Result<Option<u64>, ()> {
+        let values = servers.iter().map(value).collect::<HashSet<_>>();
+        (values.len() == 1)
+            .then(|| *values.iter().next().expect("one value"))
+            .ok_or(())
+    }
+
+    #[allow(clippy::too_many_lines)]
     pub(super) fn lower_listeners(
         &mut self,
         section: &EffectiveSection,
         service_name: &str,
         binds: &[EffectiveBind],
-        maxconn: Option<&EffectiveValue<u64>>,
+        settings: &ProxySettings,
         mode: &ModeSelection,
     ) -> bool {
         if binds.is_empty() {
@@ -253,10 +513,7 @@ impl Lowerer<'_> {
             );
             return false;
         }
-        if self.effective.global.maxconn.is_some() {
-            return false;
-        }
-        let Some(caps) = self.listener_caps(section, binds, maxconn) else {
+        let Some(caps) = self.listener_caps(section, binds, settings.maxconn.as_ref()) else {
             return false;
         };
         if mode.protocol != oxiroute_config::Protocol::Http {
@@ -308,6 +565,23 @@ impl Lowerer<'_> {
                 service: Some(service_name.to_owned()),
                 tls_profile,
                 max_connections,
+                downstream_timeouts: DownstreamTimeoutPolicy {
+                    client_timeout_ms: settings
+                        .timeouts
+                        .client
+                        .as_ref()
+                        .and_then(|value| Self::duration_value_ms(value.value)),
+                    request_timeout_ms: settings
+                        .timeouts
+                        .http_request
+                        .as_ref()
+                        .and_then(|value| Self::duration_value_ms(value.value)),
+                    keepalive_timeout_ms: settings
+                        .timeouts
+                        .http_keep_alive
+                        .as_ref()
+                        .and_then(|value| Self::duration_value_ms(value.value)),
+                },
             });
             let listener_path = CanonicalPath::indexed("listeners", listener_index);
             let mut sources = section_sources(section);
@@ -372,7 +646,7 @@ impl Lowerer<'_> {
                     );
                     return None;
                 };
-                Some(ListenerBind::Unix { path })
+                Some(ListenerBind::Unix { path, mode: None })
             }
         }
     }

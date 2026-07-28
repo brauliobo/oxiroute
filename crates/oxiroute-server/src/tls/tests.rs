@@ -2154,7 +2154,9 @@ fn rejects_empty_duplicate_expired_and_non_ca_custom_anchors() {
 fn config_with_identity(files: &IdentityFiles) -> Config {
     Config {
         version: 1,
+        max_connections: None,
         management: None,
+        stats: None,
         certificates: vec![Certificate {
             name: "primary".into(),
             dns_names: vec!["www.example.test".into()],
@@ -2326,6 +2328,7 @@ fn upstream_pool(
 ) -> UpstreamPool {
     UpstreamPool {
         name: "origin".into(),
+        servers: Vec::new(),
         endpoints: vec![UpstreamEndpoint::Socket {
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 443)),
         }],
@@ -2336,6 +2339,10 @@ fn upstream_pool(
             ca_certificate_path,
         }),
         http_versions: HttpVersionPolicy { min, max },
+        queue_timeout_ms: None,
+        connect_timeout_ms: None,
+        server_timeout_ms: None,
+        connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
     }
 }
 

@@ -41,7 +41,7 @@ impl RtmpWireClient {
         Self::establish(stream, application).await
     }
 
-    async fn establish(mut stream: TcpStream, application: &str) -> Self {
+    pub(crate) async fn establish(mut stream: TcpStream, application: &str) -> Self {
         let mut handshake = Handshake::new(PeerType::Client);
         let client_hello = handshake
             .generate_outbound_p0_and_p1()

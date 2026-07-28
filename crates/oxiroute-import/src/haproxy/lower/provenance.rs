@@ -12,6 +12,10 @@ use crate::haproxy::{EffectiveSection, Provenance, ProxySettings};
 pub(super) struct CanonicalPath(String);
 
 impl CanonicalPath {
+    pub(super) fn root(field: &str) -> Self {
+        Self(format!("/{field}"))
+    }
+
     pub(super) fn indexed(collection: &str, index: usize) -> Self {
         Self(format!("/{collection}/{index}"))
     }

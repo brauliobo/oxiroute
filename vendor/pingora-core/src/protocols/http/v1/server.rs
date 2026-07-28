@@ -61,6 +61,9 @@ pub struct HttpSession {
     update_resp_headers: bool,
     /// timeouts:
     keepalive_timeout: KeepaliveStatus,
+    idle_keepalive_timeout: Option<Duration>,
+    request_header_timeout: Option<Duration>,
+    reused_connection: bool,
     read_timeout: Option<Duration>,
     write_timeout: Option<Duration>,
     /// How long to wait to make downstream session reusable, if body needs to be drained.
@@ -110,6 +113,9 @@ impl HttpSession {
             body_writer: BodyWriter::new(),
             body_write_buf: BytesMut::new(),
             keepalive_timeout: KeepaliveStatus::Off,
+            idle_keepalive_timeout: None,
+            request_header_timeout: None,
+            reused_connection: false,
             update_resp_headers: true,
             response_written: None,
             request_header: None,
@@ -151,27 +157,50 @@ impl HttpSession {
 
             let read_result = {
                 let read_event = self.underlying_stream.read_buf(&mut buf);
-                match self.keepalive_timeout {
-                    KeepaliveStatus::Timeout(d) => match timeout(d, read_event).await {
-                        Ok(res) => res,
-                        Err(e) => {
-                            debug!("keepalive timeout {d:?} reached, {e}");
+                let phase_timeout = if self.reused_connection && already_read == 0 {
+                    self.idle_keepalive_timeout
+                } else {
+                    self.request_header_timeout
+                };
+                match phase_timeout {
+                    Some(duration) => match timeout(duration, read_event).await {
+                        Ok(result) => result,
+                        Err(error) if self.reused_connection && already_read == 0 => {
+                            debug!("keepalive timeout {duration:?} reached, {error}");
                             return Ok(None);
                         }
+                        Err(_) => {
+                            return Error::e_explain(
+                                ReadTimedout,
+                                format!("reading request header, timeout: {duration:?}"),
+                            );
+                        }
                     },
-                    KeepaliveStatus::Infinite => {
-                        // FIXME: this should only apply to reads between requests
-                        read_event.await
-                    }
-                    KeepaliveStatus::Off => match self.read_timeout {
-                        Some(t) => match timeout(t, read_event).await {
+                    None => match self.keepalive_timeout {
+                        KeepaliveStatus::Timeout(d) => match timeout(d, read_event).await {
                             Ok(res) => res,
                             Err(e) => {
-                                debug!("read timeout {t:?} reached, {e}");
-                                return Error::e_explain(ReadTimedout, format!("timeout: {t:?}"));
+                                debug!("keepalive timeout {d:?} reached, {e}");
+                                return Ok(None);
                             }
                         },
-                        None => read_event.await,
+                        KeepaliveStatus::Infinite => {
+                            // FIXME: this should only apply to reads between requests
+                            read_event.await
+                        }
+                        KeepaliveStatus::Off => match self.read_timeout {
+                            Some(t) => match timeout(t, read_event).await {
+                                Ok(res) => res,
+                                Err(e) => {
+                                    debug!("read timeout {t:?} reached, {e}");
+                                    return Error::e_explain(
+                                        ReadTimedout,
+                                        format!("timeout: {t:?}"),
+                                    );
+                                }
+                            },
+                            None => read_event.await,
+                        },
                     },
                 }
             };
@@ -981,6 +1010,18 @@ impl HttpSession {
         } else {
             self.set_keepalive(keepalive);
         }
+    }
+
+    pub fn set_idle_keepalive_timeout(&mut self, timeout: Option<Duration>) {
+        self.idle_keepalive_timeout = timeout;
+    }
+
+    pub fn set_request_header_timeout(&mut self, timeout: Option<Duration>) {
+        self.request_header_timeout = timeout;
+    }
+
+    pub(crate) fn mark_reused_connection(&mut self) {
+        self.reused_connection = true;
     }
 
     /// Sets the downstream read timeout. This will trigger if we're unable
