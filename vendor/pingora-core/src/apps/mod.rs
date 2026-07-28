@@ -20,7 +20,9 @@ pub mod prometheus_http_app;
 use crate::server::ShutdownWatch;
 use async_trait::async_trait;
 use log::{debug, error};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 use std::{any::Any, future::poll_fn};
 
 use crate::protocols::http::v2::server;
@@ -35,12 +37,368 @@ const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 /// An application-owned guard retained for the complete transport connection lifetime.
 pub type ConnectionAdmission = Box<dyn Any + Send + Sync>;
 
+#[derive(Clone)]
+/// Coordinates exclusive accept ownership across listener tasks during runtime handoff.
+pub struct AcceptGate {
+    inner: Arc<AcceptGateInner>,
+}
+
+struct AcceptGateInner {
+    changed: tokio::sync::watch::Sender<AcceptGateState>,
+    quiesced: Condvar,
+    state: Mutex<AcceptGateInnerState>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AcceptGateState {
+    pub accepting: bool,
+    pub epoch: u64,
+}
+
+struct AcceptGateInnerState {
+    claims: usize,
+    next_participant_id: u64,
+    participants: HashMap<u64, u64>,
+    published: AcceptGateState,
+}
+
+impl AcceptGate {
+    #[must_use]
+    pub fn closed() -> Self {
+        let published = AcceptGateState {
+            accepting: false,
+            epoch: 0,
+        };
+        let (changed, _) = tokio::sync::watch::channel(published);
+        Self {
+            inner: Arc::new(AcceptGateInner {
+                changed,
+                quiesced: Condvar::new(),
+                state: Mutex::new(AcceptGateInnerState {
+                    claims: 0,
+                    next_participant_id: 0,
+                    participants: HashMap::new(),
+                    published,
+                }),
+            }),
+        }
+    }
+
+    #[must_use]
+    pub fn accepting(&self) -> bool {
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .published
+            .accepting
+    }
+
+    #[must_use]
+    pub fn register(&self) -> AcceptGateParticipant {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.next_participant_id = state
+            .next_participant_id
+            .checked_add(1)
+            .expect("accept gate participant ID overflow");
+        let id = state.next_participant_id;
+        let acknowledged_epoch = if state.published.accepting {
+            state.published.epoch.saturating_sub(1)
+        } else {
+            state.published.epoch
+        };
+        state.participants.insert(id, acknowledged_epoch);
+        drop(state);
+        AcceptGateParticipant {
+            gate: self.clone(),
+            id,
+            watch: self.inner.changed.subscribe(),
+        }
+    }
+
+    #[must_use]
+    pub fn claim(&self) -> Option<AcceptOwnership> {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.published.accepting {
+            return None;
+        }
+        state.claims = state
+            .claims
+            .checked_add(1)
+            .expect("accept ownership claim overflow");
+        Some(AcceptOwnership { gate: self.clone() })
+    }
+
+    pub fn enable(&self) {
+        let published = {
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            debug_assert_eq!(state.claims, 0, "accept gate enabled with live claims");
+            debug_assert!(
+                state
+                    .participants
+                    .values()
+                    .all(|epoch| *epoch >= state.published.epoch),
+                "accept gate enabled before participants quiesced"
+            );
+            state.published = AcceptGateState {
+                accepting: true,
+                epoch: state
+                    .published
+                    .epoch
+                    .checked_add(1)
+                    .expect("accept gate epoch overflow"),
+            };
+            state.published
+        };
+        self.inner.changed.send_replace(published);
+    }
+
+    /// Restores acceptance when a close attempt is abandoned before publication.
+    pub fn reopen(&self) {
+        let published = {
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.published.accepting {
+                return;
+            }
+            state.published = AcceptGateState {
+                accepting: true,
+                epoch: state
+                    .published
+                    .epoch
+                    .checked_add(1)
+                    .expect("accept gate epoch overflow"),
+            };
+            state.published
+        };
+        self.inner.changed.send_replace(published);
+    }
+
+    #[must_use]
+    pub fn close_and_wait(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.published.accepting {
+            state.published = AcceptGateState {
+                accepting: false,
+                epoch: state
+                    .published
+                    .epoch
+                    .checked_add(1)
+                    .expect("accept gate epoch overflow"),
+            };
+            let published = state.published;
+            drop(state);
+            self.inner.changed.send_replace(published);
+            state = self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        let epoch = state.published.epoch;
+        loop {
+            if state.claims == 0
+                && state
+                    .participants
+                    .values()
+                    .all(|acknowledged| *acknowledged >= epoch)
+            {
+                return true;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            let (next, timeout) = self
+                .inner
+                .quiesced
+                .wait_timeout(state, deadline.saturating_duration_since(now))
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = next;
+            if timeout.timed_out() {
+                return state.claims == 0
+                    && state
+                        .participants
+                        .values()
+                        .all(|acknowledged| *acknowledged >= epoch);
+            }
+        }
+    }
+}
+
+pub struct AcceptGateParticipant {
+    gate: AcceptGate,
+    id: u64,
+    watch: tokio::sync::watch::Receiver<AcceptGateState>,
+}
+
+impl AcceptGateParticipant {
+    #[must_use]
+    pub fn state(&self) -> AcceptGateState {
+        *self.watch.borrow()
+    }
+
+    pub async fn changed(
+        &mut self,
+    ) -> Result<AcceptGateState, tokio::sync::watch::error::RecvError> {
+        self.watch.changed().await?;
+        Ok(*self.watch.borrow_and_update())
+    }
+
+    #[must_use]
+    pub fn claim(&self) -> Option<AcceptOwnership> {
+        self.gate.claim()
+    }
+
+    pub fn acknowledge(&self, epoch: u64) {
+        let mut state = self
+            .gate
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(acknowledged) = state.participants.get_mut(&self.id) else {
+            return;
+        };
+        *acknowledged = (*acknowledged).max(epoch);
+        self.gate.inner.quiesced.notify_all();
+    }
+}
+
+impl Drop for AcceptGateParticipant {
+    fn drop(&mut self) {
+        let mut state = self
+            .gate
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.participants.remove(&self.id);
+        self.gate.inner.quiesced.notify_all();
+    }
+}
+
+pub struct AcceptOwnership {
+    gate: AcceptGate,
+}
+
+impl Drop for AcceptOwnership {
+    fn drop(&mut self) {
+        let mut state = self
+            .gate
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.claims = state
+            .claims
+            .checked_sub(1)
+            .expect("accept ownership claim underflow");
+        self.gate.inner.quiesced.notify_all();
+    }
+}
+
+#[cfg(test)]
+mod accept_gate_tests {
+    use std::{sync::mpsc, thread, time::Duration};
+
+    use super::AcceptGate;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn close_waits_for_every_participant_and_ownership_claim() {
+        let gate = AcceptGate::closed();
+        gate.enable();
+        let mut first = gate.register();
+        let mut second = gate.register();
+        let first_claim = first.claim().expect("first ownership claim");
+        let second_claim = second.claim().expect("second ownership claim");
+        let closing_gate = gate.clone();
+        let (closed_tx, closed_rx) = mpsc::sync_channel(1);
+        let closer = thread::spawn(move || {
+            closed_tx
+                .send(closing_gate.close_and_wait(Duration::from_secs(1)))
+                .expect("close result receiver");
+        });
+
+        let first_state = first.changed().await.expect("first close notification");
+        let second_state = second.changed().await.expect("second close notification");
+        assert!(!first_state.accepting);
+        assert_eq!(first_state, second_state);
+        assert!(closed_rx.try_recv().is_err());
+
+        first.acknowledge(first_state.epoch);
+        drop(first_claim);
+        assert!(closed_rx.try_recv().is_err());
+
+        second.acknowledge(second_state.epoch);
+        assert!(closed_rx.try_recv().is_err());
+        drop(second_claim);
+
+        assert!(closed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("gate close result"));
+        closer.join().expect("gate closer");
+    }
+
+    #[test]
+    fn timed_out_close_can_be_reopened_without_waiting_for_a_live_claim() {
+        let gate = AcceptGate::closed();
+        gate.enable();
+        let ownership = gate.claim().expect("ownership claim");
+
+        assert!(!gate.close_and_wait(Duration::ZERO));
+        gate.reopen();
+        assert!(gate.accepting());
+        assert!(gate.claim().is_some());
+
+        drop(ownership);
+    }
+}
+
 #[async_trait]
 /// This trait defines the interface of a transport layer (TCP or TLS) application.
 pub trait ServerApp {
+    /// Returns the shared gate used to cancel and acknowledge this application's accept loops.
+    fn accept_gate(&self) -> Option<AcceptGate> {
+        None
+    }
+
+    /// Reports whether this application currently permits its listener to accept a transport.
+    fn accepting(&self) -> bool {
+        true
+    }
+
     /// Acquires capacity before a transport handshake. Returning `None` rejects the connection.
     fn admit_connection(&self) -> Option<ConnectionAdmission> {
         Some(Box::new(()))
+    }
+
+    /// Admits a connection while the listener still holds an [`AcceptOwnership`] claim.
+    ///
+    /// Implementations must not recheck the gate: publication waits for the claim to be converted
+    /// into the returned connection-lifetime guard.
+    fn admit_owned_connection(&self) -> Option<ConnectionAdmission> {
+        self.admit_connection()
     }
 
     /// Whenever a new connection is established, this function will be called with the established
@@ -120,6 +478,7 @@ impl HttpPersistentSettings {
 
         session.set_keepalive(keepalive_timeout);
         session.set_keepalive_reuses_remaining(keepalive_reuses_remaining);
+        session.mark_reused_connection();
     }
 }
 

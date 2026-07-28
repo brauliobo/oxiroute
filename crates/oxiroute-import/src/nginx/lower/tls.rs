@@ -1,20 +1,9 @@
 use std::{
-    collections::{HashMap, HashSet},
-    fs::File,
-    io::Read,
-    net::IpAddr,
-    os::unix::fs::MetadataExt,
+    collections::HashSet,
     path::{Path, PathBuf},
 };
 
-use openssl::{
-    pkey::{Id, PKey},
-    x509::X509,
-};
 use oxiroute_config::{AlpnProtocol, Certificate, CertificateSource, TlsProfile, TlsVersion};
-use rustix::fs::{self as rustix_fs, Mode, OFlags};
-use x509_parser::{extensions::GeneralName, parse_x509_certificate, pem::Pem};
-use zeroize::Zeroizing;
 
 use crate::{E_INVALID_VALUE, E_SEMANTICS_NOT_REPRESENTABLE};
 
@@ -25,16 +14,9 @@ use crate::nginx::{
 
 use super::{
     LowerIssue, Lowerer,
-    listener::{
-        canonical_dns_name, canonical_exact_host, canonical_wildcard_host, matching_listen,
-    },
+    listener::{canonical_exact_host, canonical_wildcard_host, matching_listen},
     provenance::{issue, utf8},
 };
-
-const MAX_CERTIFICATE_CHAIN_BYTES: usize = 4 * 1024 * 1024;
-const MAX_PRIVATE_KEY_BYTES: usize = 256 * 1024;
-const MAX_CERTIFICATES_IN_CHAIN: usize = 16;
-const MAX_CERTIFICATE_DNS_NAMES: usize = 100;
 
 struct CertificateCandidate {
     name: String,
@@ -59,30 +41,12 @@ pub(super) struct CertificateIdentity {
 #[derive(Clone)]
 pub(super) struct CertificateMetadata {
     name: String,
-    dns_names: Vec<String>,
 }
 
 struct TlsListenPolicy<'a> {
     server: &'a EffectiveServer,
     tls: bool,
     h2: bool,
-}
-
-#[derive(Clone, Copy)]
-enum MaterialFailure {
-    Certificate,
-    PrivateKey,
-}
-
-#[derive(Eq, PartialEq)]
-struct CertificateFingerprint {
-    length: u64,
-    device: u64,
-    inode: u64,
-    modified_seconds: i64,
-    modified_nanoseconds: i64,
-    changed_seconds: i64,
-    changed_nanoseconds: i64,
 }
 
 fn canonical_file_path(value: &[u8]) -> Option<PathBuf> {
@@ -99,194 +63,34 @@ fn canonical_file_path(value: &[u8]) -> Option<PathBuf> {
     .then(|| path.to_path_buf())
 }
 
-fn load_certificate_identity(
-    certificate_path: &Path,
-    private_key_path: &Path,
-) -> Result<Vec<String>, MaterialFailure> {
-    let (dns_names, leaf) = read_certificate(certificate_path)?;
-    let private_key_bytes = read_private_key(private_key_path)?;
-    if !has_one_supported_private_key_pem(&private_key_bytes) {
-        return Err(MaterialFailure::PrivateKey);
-    }
-    let private_key =
-        PKey::private_key_from_pem(&private_key_bytes).map_err(|_| MaterialFailure::PrivateKey)?;
-    let minimum_bits = match private_key.id() {
-        Id::RSA | Id::RSA_PSS => 2_048,
-        Id::EC => 256,
-        _ => return Err(MaterialFailure::PrivateKey),
-    };
-    if private_key.bits() < minimum_bits {
-        return Err(MaterialFailure::PrivateKey);
-    }
-    let public_key = leaf.public_key().map_err(|_| MaterialFailure::PrivateKey)?;
-    if !public_key.public_eq(&private_key) {
-        return Err(MaterialFailure::PrivateKey);
-    }
-    Ok(dns_names)
-}
-
-fn read_certificate(path: &Path) -> Result<(Vec<String>, X509), MaterialFailure> {
-    let bytes = read_stable_certificate(path)?;
-    let blocks = Pem::iter_from_buffer(&bytes)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| MaterialFailure::Certificate)?;
-    if blocks.is_empty() {
-        return Err(MaterialFailure::Certificate);
-    }
-    if blocks.len() > MAX_CERTIFICATES_IN_CHAIN {
-        return Err(MaterialFailure::Certificate);
-    }
-    if blocks.iter().any(|block| block.label != "CERTIFICATE") {
-        return Err(MaterialFailure::Certificate);
-    }
-    for block in &blocks {
-        let (remainder, _) =
-            parse_x509_certificate(&block.contents).map_err(|_| MaterialFailure::Certificate)?;
-        if !remainder.is_empty() {
-            return Err(MaterialFailure::Certificate);
-        }
-    }
-
-    let (_, leaf) =
-        parse_x509_certificate(&blocks[0].contents).map_err(|_| MaterialFailure::Certificate)?;
-    let subject_alt_name = leaf
-        .subject_alternative_name()
-        .map_err(|_| MaterialFailure::Certificate)?
-        .ok_or(MaterialFailure::Certificate)?;
-    let mut dns_names = Vec::new();
-    for general_name in &subject_alt_name.value.general_names {
-        let GeneralName::DNSName(dns_name) = general_name else {
-            continue;
+fn certificate_source(chain: PathBuf, key: PathBuf) -> CertificateSource {
+    let live_directory = chain.parent();
+    let certbot_root = live_directory.and_then(Path::parent);
+    let certbot_domain = live_directory.and_then(Path::file_name);
+    if chain
+        .file_name()
+        .is_some_and(|name| name == "fullchain.pem")
+        && key.file_name().is_some_and(|name| name == "privkey.pem")
+        && key.parent() == live_directory
+        && certbot_root
+            .and_then(Path::file_name)
+            .is_some_and(|name| name == "live")
+    {
+        let root = certbot_root
+            .and_then(Path::parent)
+            .expect("live directory has a parent");
+        return CertificateSource::Certbot {
+            live_directory_path: live_directory
+                .expect("certbot live directory")
+                .to_path_buf(),
+            archive_directory_path: root
+                .join("archive")
+                .join(certbot_domain.expect("certbot domain directory")),
         };
-        let dns_name =
-            canonical_certificate_dns_name(dns_name).ok_or(MaterialFailure::Certificate)?;
-        if dns_names.contains(&dns_name) {
-            return Err(MaterialFailure::Certificate);
-        }
-        dns_names.push(dns_name);
     }
-    if dns_names.is_empty() {
-        return Err(MaterialFailure::Certificate);
-    }
-    if dns_names.len() > MAX_CERTIFICATE_DNS_NAMES {
-        return Err(MaterialFailure::Certificate);
-    }
-    let leaf = X509::from_der(&blocks[0].contents).map_err(|_| MaterialFailure::Certificate)?;
-    Ok((dns_names, leaf))
-}
-
-fn read_stable_certificate(path: &Path) -> Result<Vec<u8>, MaterialFailure> {
-    let mut file = File::open(path).map_err(|_| MaterialFailure::Certificate)?;
-    let before = file.metadata().map_err(|_| MaterialFailure::Certificate)?;
-    if !before.is_file() {
-        return Err(MaterialFailure::Certificate);
-    }
-    if before.len() > u64::try_from(MAX_CERTIFICATE_CHAIN_BYTES).unwrap_or(u64::MAX) {
-        return Err(MaterialFailure::Certificate);
-    }
-    let mut bytes = Vec::new();
-    (&mut file)
-        .take(
-            u64::try_from(MAX_CERTIFICATE_CHAIN_BYTES)
-                .unwrap_or(u64::MAX)
-                .saturating_add(1),
-        )
-        .read_to_end(&mut bytes)
-        .map_err(|_| MaterialFailure::Certificate)?;
-    let after = file.metadata().map_err(|_| MaterialFailure::Certificate)?;
-    if certificate_fingerprint(&before) != certificate_fingerprint(&after) {
-        return Err(MaterialFailure::Certificate);
-    }
-    if bytes.len() > MAX_CERTIFICATE_CHAIN_BYTES {
-        return Err(MaterialFailure::Certificate);
-    }
-    Ok(bytes)
-}
-
-fn read_private_key(path: &Path) -> Result<Zeroizing<Vec<u8>>, MaterialFailure> {
-    let descriptor = rustix_fs::open(
-        path,
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-        Mode::empty(),
-    )
-    .map_err(|_| MaterialFailure::PrivateKey)?;
-    let mut file = File::from(descriptor);
-    let before = file.metadata().map_err(|_| MaterialFailure::PrivateKey)?;
-    if !before.is_file()
-        || before.len() > u64::try_from(MAX_PRIVATE_KEY_BYTES).unwrap_or(u64::MAX)
-        || !matches!(before.mode() & 0o7777, 0o400 | 0o600 | 0o440 | 0o640)
-    {
-        return Err(MaterialFailure::PrivateKey);
-    }
-    let mut bytes = Zeroizing::new(Vec::new());
-    (&mut file)
-        .take(
-            u64::try_from(MAX_PRIVATE_KEY_BYTES)
-                .unwrap_or(u64::MAX)
-                .saturating_add(1),
-        )
-        .read_to_end(&mut bytes)
-        .map_err(|_| MaterialFailure::PrivateKey)?;
-    let after = file.metadata().map_err(|_| MaterialFailure::PrivateKey)?;
-    if certificate_fingerprint(&before) != certificate_fingerprint(&after)
-        || bytes.is_empty()
-        || bytes.len() > MAX_PRIVATE_KEY_BYTES
-    {
-        return Err(MaterialFailure::PrivateKey);
-    }
-    Ok(bytes)
-}
-
-fn has_one_supported_private_key_pem(bytes: &[u8]) -> bool {
-    let Ok(text) = std::str::from_utf8(bytes) else {
-        return false;
-    };
-    let mut begin = None;
-    let mut end = None;
-    for line in text.lines() {
-        if let Some(label) = line
-            .strip_prefix("-----BEGIN ")
-            .and_then(|line| line.strip_suffix("-----"))
-        {
-            if begin.replace(label).is_some() {
-                return false;
-            }
-        }
-        if let Some(label) = line
-            .strip_prefix("-----END ")
-            .and_then(|line| line.strip_suffix("-----"))
-        {
-            if end.replace(label).is_some() {
-                return false;
-            }
-        }
-    }
-    matches!(
-        begin,
-        Some("PRIVATE KEY" | "RSA PRIVATE KEY" | "EC PRIVATE KEY")
-    ) && end == begin
-}
-
-fn certificate_fingerprint(metadata: &std::fs::Metadata) -> CertificateFingerprint {
-    CertificateFingerprint {
-        length: metadata.len(),
-        device: metadata.dev(),
-        inode: metadata.ino(),
-        modified_seconds: metadata.mtime(),
-        modified_nanoseconds: metadata.mtime_nsec(),
-        changed_seconds: metadata.ctime(),
-        changed_nanoseconds: metadata.ctime_nsec(),
-    }
-}
-
-fn canonical_certificate_dns_name(name: &str) -> Option<String> {
-    let name = name.to_ascii_lowercase();
-    if canonical_wildcard_host(&name)
-        || (canonical_dns_name(&name) && name.parse::<IpAddr>().is_err())
-    {
-        Some(name)
-    } else {
-        None
+    CertificateSource::Files {
+        certificate_chain_path: chain,
+        private_key_path: key,
     }
 }
 
@@ -342,6 +146,24 @@ impl Lowerer {
         let mut default_certificate = None;
         for policy in policies {
             let server = policy.server;
+            for directive in [
+                b"ssl_ciphers".as_slice(),
+                b"ssl_dhparam",
+                b"ssl_session_cache",
+                b"ssl_session_tickets",
+                b"ssl_session_timeout",
+            ] {
+                if let Some(value) = self.effective_policy(server.origin.occurrence, directive) {
+                    issues.push(issue(
+                        value.origins.last().unwrap_or(&server.origin),
+                        E_SEMANTICS_NOT_REPRESENTABLE,
+                        format!(
+                            "explicit {} policy is not represented by canonical TLS profiles",
+                            String::from_utf8_lossy(directive)
+                        ),
+                    ));
+                }
+            }
             let protocols = self.tls_versions(server.origin.occurrence, &server.origin);
             match protocols {
                 Ok((minimum, _)) => {
@@ -361,12 +183,12 @@ impl Lowerer {
                 issues.push(issue(
                     &server.origin,
                     E_SEMANTICS_NOT_REPRESENTABLE,
-                    "virtual servers on one bind disagree about HTTP/2",
+                    "virtual servers on one bind have mismatched HTTP/2 policies",
                 ));
             } else {
                 h2_policy = Some(policy.h2);
             }
-            match self.certificate_for_server(http, server) {
+            match self.certificate_for_server(http, bind, server) {
                 Ok(certificate) => {
                     if server.origin.occurrence == bind.default_server {
                         default_certificate = Some(certificate.name.clone());
@@ -380,31 +202,27 @@ impl Lowerer {
             return Err(issues);
         }
         let default_certificate = default_certificate.expect("default server certificate");
-        issues.extend(Self::certificate_selection_issues(
-            bind,
-            servers,
-            &certificates,
-            &default_certificate,
-        ));
-        if !issues.is_empty() {
-            return Err(issues);
-        }
         let mut canonical_certificates = Vec::new();
         let mut certificate_names = Vec::new();
         let mut origins = Vec::new();
         for certificate in certificates {
             origins.push(certificate.origin.clone());
-            if certificate_names.contains(&certificate.name) {
+            if let Some(existing) = canonical_certificates
+                .iter_mut()
+                .find(|existing: &&mut Certificate| existing.name == certificate.name)
+            {
+                for dns_name in certificate.dns_names {
+                    if !existing.dns_names.contains(&dns_name) {
+                        existing.dns_names.push(dns_name);
+                    }
+                }
                 continue;
             }
             certificate_names.push(certificate.name.clone());
             canonical_certificates.push(Certificate {
                 name: certificate.name,
                 dns_names: certificate.dns_names,
-                source: CertificateSource::Files {
-                    certificate_chain_path: certificate.chain,
-                    private_key_path: certificate.key,
-                },
+                source: certificate_source(certificate.chain, certificate.key),
             });
         }
         Ok(Some(LoweredTls {
@@ -422,63 +240,6 @@ impl Lowerer {
             },
             origins,
         }))
-    }
-
-    fn certificate_selection_issues(
-        bind: &EffectiveBind,
-        servers: &[&EffectiveServer],
-        certificates: &[CertificateCandidate],
-        default_certificate: &str,
-    ) -> Vec<LowerIssue> {
-        let mut issues = Vec::new();
-        let mut names_by_certificate: HashMap<&str, HashSet<String>> = HashMap::new();
-        for (server, certificate) in servers.iter().zip(certificates) {
-            if server.origin.occurrence == bind.default_server
-                || certificate.name == default_certificate
-            {
-                continue;
-            }
-            let names = names_by_certificate
-                .entry(certificate.name.as_str())
-                .or_default();
-            for name in &server.server_names {
-                if name.kind != ServerNameKind::Exact {
-                    continue;
-                }
-                let Some(host) = utf8(&name.normalized).and_then(canonical_exact_host) else {
-                    continue;
-                };
-                if !certificate.dns_names.contains(&host) {
-                    issues.push(issue(
-                        &name.origin,
-                        E_SEMANTICS_NOT_REPRESENTABLE,
-                        "certificate SAN ownership cannot preserve nginx virtual-server selection",
-                    ));
-                }
-                names.insert(host);
-            }
-        }
-
-        let mut checked = HashSet::new();
-        for certificate in certificates {
-            let name = certificate.name.as_str();
-            let Some(server_names) = names_by_certificate.get(name) else {
-                continue;
-            };
-            if !checked.insert(name) {
-                continue;
-            }
-            for dns_name in &certificate.dns_names {
-                if dns_name.starts_with("*.") || !server_names.contains(dns_name) {
-                    issues.push(issue(
-                        &certificate.origin,
-                        E_SEMANTICS_NOT_REPRESENTABLE,
-                        "non-default certificate SAN ownership exceeds its nginx server_name selection",
-                    ));
-                }
-            }
-        }
-        issues
     }
 
     fn tls_listen_policies<'a>(
@@ -562,9 +323,14 @@ impl Lowerer {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "certificate inheritance, identity, and source validation are one atomic decision"
+    )]
     fn certificate_for_server(
         &mut self,
         http: &EffectiveHttp,
+        bind: &EffectiveBind,
         server: &EffectiveServer,
     ) -> Result<CertificateCandidate, Vec<LowerIssue>> {
         let chains = self.effective_list_policy(
@@ -614,6 +380,12 @@ impl Lowerer {
         }
         let chain = chain.expect("checked chain path");
         let key = key.expect("checked key path");
+        self.used_certificate_overlays.borrow_mut().extend(
+            chains
+                .iter()
+                .chain(&keys)
+                .flat_map(|policy| policy.origins.iter().map(|origin| origin.occurrence)),
+        );
         let identity = CertificateIdentity {
             chain: chain.clone(),
             key: key.clone(),
@@ -621,30 +393,57 @@ impl Lowerer {
         let metadata = if let Some(metadata) = self.certificate_identities.get(&identity) {
             metadata.clone()
         } else {
-            let dns_names = load_certificate_identity(&chain, &key).map_err(|failure| {
-                let (origin, message) = match failure {
-                    MaterialFailure::Certificate => (
-                        chains[0].origins.last().unwrap_or(&server.origin),
-                        "certificate metadata is unreadable or unsupported",
-                    ),
-                    MaterialFailure::PrivateKey => (
-                        keys[0].origins.last().unwrap_or(&server.origin),
-                        "private key material is unreadable or unsupported",
-                    ),
-                };
-                vec![issue(origin, E_INVALID_VALUE, message)]
-            })?;
             let metadata = CertificateMetadata {
                 name: format!("nginx-certificate-{}", self.certificate_identities.len()),
-                dns_names,
             };
             self.certificate_identities
                 .insert(identity.clone(), metadata.clone());
             metadata
         };
+        let mut dns_names = Vec::new();
+        for name in bind
+            .names
+            .iter()
+            .filter(|name| name.server == server.origin.occurrence)
+            .map(|name| &name.name)
+        {
+            match name.kind {
+                ServerNameKind::Exact => {
+                    if let Some(name) = utf8(&name.normalized).and_then(canonical_exact_host) {
+                        dns_names.push(name);
+                    }
+                }
+                ServerNameKind::LeadingWildcard => {
+                    if let Some(name) = utf8(&name.normalized).and_then(|name| {
+                        canonical_wildcard_host(name).then(|| name.to_ascii_lowercase())
+                    }) {
+                        dns_names.push(name);
+                    }
+                }
+                ServerNameKind::LeadingWildcardAndExact => {
+                    if let Some(suffix) = utf8(&name.normalized)
+                        .and_then(|name| name.strip_prefix('.'))
+                        .filter(|suffix| super::listener::canonical_dns_name(suffix))
+                    {
+                        dns_names.push(suffix.to_ascii_lowercase());
+                        dns_names.push(format!("*.{}", suffix.to_ascii_lowercase()));
+                    }
+                }
+                _ => {}
+            }
+        }
+        dns_names.sort();
+        dns_names.dedup();
+        if dns_names.is_empty() {
+            return Err(vec![issue(
+                &server.origin,
+                E_SEMANTICS_NOT_REPRESENTABLE,
+                "TLS virtual server needs a canonical DNS server_name for certificate activation",
+            )]);
+        }
         Ok(CertificateCandidate {
             name: metadata.name,
-            dns_names: metadata.dns_names,
+            dns_names,
             chain,
             key,
             origin: server.origin.clone(),

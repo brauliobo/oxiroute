@@ -7,6 +7,8 @@ mod loader;
 mod lower;
 mod parser;
 #[cfg(unix)]
+mod root;
+#[cfg(unix)]
 mod rtmp_lower;
 #[cfg(unix)]
 mod rtmp_semantic;
@@ -26,11 +28,20 @@ pub use loader::{
 pub use lower::{BlockedService, ImportReport, import_http_fragment};
 pub use parser::{Directive, Document, Word, parse};
 #[cfg(unix)]
-pub use rtmp_lower::{BlockedRtmpService, RtmpImportReport, import_rtmp};
+pub use root::{
+    NginxBearerTokenOverlay, NginxHostTimezoneOverlay, NginxImportOptions, NginxImportReport,
+    NginxUpstreamTlsOverlay, RootOccurrenceDecision, RootOccurrenceDisposition, import_root,
+    import_root_with_options,
+};
+#[cfg(unix)]
+pub use rtmp_lower::{
+    BlockedRtmpService, RtmpImportReport, import_rtmp, import_rtmp_with_timezone,
+};
 #[cfg(unix)]
 pub use rtmp_semantic::{
     EffectiveRtmp, EffectiveRtmpApplication, EffectiveRtmpListen, EffectiveRtmpPolicy,
-    EffectiveRtmpRecorder, EffectiveRtmpServer, RtmpRecordMode, RtmpResolution, resolve_rtmp,
+    EffectiveRtmpPushTarget, EffectiveRtmpRecorder, EffectiveRtmpServer, RtmpRecordMode,
+    RtmpResolution, resolve_rtmp,
 };
 #[cfg(unix)]
 pub use semantic::{

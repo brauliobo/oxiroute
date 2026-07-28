@@ -9,13 +9,13 @@ use rml_rtmp::{
 use crate::{
     CatalogError, LiveHub, MediaEvent, MediaSnapshot, PublisherLease, PublisherRegistration,
     RtmpRegistry, SessionId, StreamId, StreamKey, VideoCodecIdentifier,
-    recording_runtime::RecorderController,
+    recording_runtime::RecorderController, relay::RtmpRelayController,
 };
 
 use super::{
     RtmpSession,
     identity::{self, StreamIdentity},
-    runtime::{SessionRole, drop_role, release_role},
+    runtime::SessionRole,
     status::{self, PUBLISH_REJECTION_CODE, Rejection, RtmpSessionError},
 };
 
@@ -29,6 +29,12 @@ pub(super) struct PublishSession {
     media: MediaSnapshot,
     media_sequence: u64,
     recorders: Vec<(crate::RecorderId, Arc<RecorderController>)>,
+    relays: Vec<Arc<RtmpRelayController>>,
+}
+
+pub(super) struct PublisherOutputs {
+    pub recorders: Vec<(crate::RecorderId, Arc<RecorderController>)>,
+    pub relays: Vec<Arc<RtmpRelayController>>,
 }
 
 impl PublishSession {
@@ -39,8 +45,9 @@ impl PublishSession {
         registration: PublisherRegistration,
         registry: Arc<RtmpRegistry>,
         session_id: SessionId,
-        recorders: Vec<(crate::RecorderId, Arc<RecorderController>)>,
+        outputs: PublisherOutputs,
     ) -> Self {
+        let PublisherOutputs { recorders, relays } = outputs;
         Self {
             key,
             hub,
@@ -51,6 +58,7 @@ impl PublishSession {
             media: MediaSnapshot::default(),
             media_sequence: 0,
             recorders,
+            relays,
         }
     }
 
@@ -120,16 +128,23 @@ impl PublishSession {
     }
 
     pub(super) fn release(&mut self, at_unix_ms: u64) -> Result<(), CatalogError> {
-        release_role(
-            &self.hub,
-            &mut self.registration,
-            &mut self.lease,
-            at_unix_ms,
-            |registration, at_unix_ms| {
-                registration.observe_at(at_unix_ms);
-                registration.release(at_unix_ms)
-            },
-        )
+        let hub = self.hub.clone();
+        let shutdown = {
+            let _transaction = hub.lock_roles();
+            let shutdown = self
+                .registration
+                .take()
+                .map_or(Ok(None), |mut registration| {
+                    registration.observe_at(at_unix_ms);
+                    registration.release_deferred(at_unix_ms).map(Some)
+                })?;
+            self.lease.take();
+            shutdown
+        };
+        if let Some(shutdown) = shutdown {
+            shutdown.shutdown(at_unix_ms);
+        }
+        Ok(())
     }
 
     fn stream_id(&self) -> StreamId {
@@ -166,6 +181,9 @@ impl PublishSession {
                 at_unix_ms,
             );
         }
+        for relay in &self.relays {
+            relay.try_enqueue(event.clone());
+        }
         self.registry.update_media_sample(
             stream_id,
             self.session_id,
@@ -179,7 +197,25 @@ impl PublishSession {
 
 impl Drop for PublishSession {
     fn drop(&mut self) {
-        drop_role(&self.hub, &mut self.registration, &mut self.lease);
+        if self.registration.is_none() && self.lease.is_none() {
+            return;
+        }
+        let hub = self.hub.clone();
+        let (shutdown, shutdown_at) = {
+            let _transaction = hub.lock_roles();
+            let (shutdown, shutdown_at) =
+                self.registration
+                    .take()
+                    .map_or((None, 0), |mut registration| {
+                        let at_unix_ms = registration.last_observed_at_unix_ms();
+                        (registration.release_deferred(at_unix_ms).ok(), at_unix_ms)
+                    });
+            self.lease.take();
+            (shutdown, shutdown_at)
+        };
+        if let Some(shutdown) = shutdown {
+            shutdown.shutdown(shutdown_at);
+        }
     }
 }
 

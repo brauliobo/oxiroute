@@ -4,6 +4,8 @@ mod config_support;
 mod fixture_support;
 #[path = "support/http.rs"]
 mod http_support;
+#[path = "support/rtmp.rs"]
+mod rtmp_support;
 
 use std::{
     fs,
@@ -14,6 +16,8 @@ use std::{
     },
     path::PathBuf,
     sync::Arc,
+    thread,
+    time::{Duration, Instant},
 };
 
 use oxiroute_config::{
@@ -21,7 +25,9 @@ use oxiroute_config::{
     RtmpRecorderStart, RtmpService, render_lua,
 };
 use oxiroute_rtmp::{
-    MediaSnapshot, RtmpCapabilities, RtmpRegistry, SessionId, StreamKey, TrackSnapshot,
+    LiveHub, LiveHubLimits, MediaSnapshot, RtmpApplication as RuntimeRtmpApplication,
+    RtmpCapabilities, RtmpPushApplication, RtmpPushTarget, RtmpRegistry, RtmpRelayConfig,
+    RtmpServiceRuntime, RtmpSessionPolicy, SessionId, StreamKey, TrackSnapshot,
     VideoCodecIdentifier,
 };
 use oxiroute_server::{
@@ -38,6 +44,8 @@ use pingora::{
 };
 use serde_json::Value;
 use tempfile::TempDir;
+
+use rtmp_support::RtmpSessionClient;
 use tokio::{
     sync::{Mutex as TokioMutex, watch},
     task::JoinHandle,
@@ -210,6 +218,77 @@ fn exposes_runtime_listener_and_rtmp_monitoring() {
 }
 
 #[test]
+fn relay_state_and_counters_are_observable_without_stream_queries() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve absent relay port");
+    let destination = listener.local_addr().expect("relay destination");
+    drop(listener);
+    let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
+        live_ingest: true,
+        manual_recording: false,
+    }));
+    let runtime = RtmpServiceRuntime::new(
+        "live",
+        Arc::clone(&registry),
+        LiveHub::new(LiveHubLimits::default()),
+        RtmpSessionPolicy::new([RuntimeRtmpApplication::with_runtime(
+            "broadcast",
+            true,
+            true,
+            LiveHub::new(LiveHubLimits::default()),
+            [RtmpPushTarget {
+                address: destination,
+                application: RtmpPushApplication::StreamName,
+                config: RtmpRelayConfig {
+                    connect_timeout: Duration::from_millis(10),
+                    reconnect_interval: Duration::from_millis(20),
+                    ..RtmpRelayConfig::default()
+                },
+            }],
+            [],
+        )]),
+    );
+    let mut publisher = RtmpSessionClient::connect(&runtime, "broadcast");
+    publisher.publish("camera?token=relay-wire-secret", 100);
+    publisher.publish_audio(1, &[0xaf, 0x01, 0x44], 101);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while registry.snapshot().streams[0].relays[0]
+        .status
+        .connection_attempts
+        < 2
+    {
+        assert!(Instant::now() < deadline, "relay retry timeout");
+        thread::sleep(Duration::from_millis(5));
+    }
+    let api = management_api(Arc::clone(&registry), RuntimeMetrics::new());
+
+    let catalog = api.handle("GET", "/api/v1/rtmp/streams", 200);
+    let monitoring = api.handle("GET", "/api/v1/monitoring", 200);
+    let catalog_json: Value = serde_json::from_slice(&catalog.body).expect("catalog JSON");
+    let monitoring_json: Value = serde_json::from_slice(&monitoring.body).expect("monitoring JSON");
+    assert_eq!(catalog_json["streams"][0]["relays"][0]["phase"], "backoff");
+    assert_eq!(
+        catalog_json["streams"][0]["relays"][0]["destination"]["application"],
+        "camera"
+    );
+    assert!(
+        monitoring_json["rtmp"]["relayConnectionAttempts"]
+            .as_str()
+            .is_some_and(|attempts| attempts.parse::<u64>().is_ok_and(|attempts| attempts >= 2))
+    );
+    assert_eq!(
+        monitoring_json["rtmp"]["relays"][0]["lastFailure"],
+        "connect"
+    );
+    let wire = format!(
+        "{}{}",
+        String::from_utf8_lossy(&catalog.body),
+        String::from_utf8_lossy(&monitoring.body)
+    );
+    assert!(!wire.contains("relay-wire-secret"));
+    publisher.server.close(300).expect("publisher close");
+}
+
+#[test]
 fn monitoring_response_preserves_large_rtmp_cumulative_totals() {
     let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
         live_ingest: true,
@@ -294,6 +373,13 @@ async fn config_routes_require_the_injected_bearer_token() {
     assert_eq!(
         harness
             .request_with("GET", "/api/v1/topology", None, None, None, None)
+            .await
+            .status,
+        401
+    );
+    assert_eq!(
+        harness
+            .request("GET", "/api/v1/topology", None, None)
             .await
             .status,
         200
@@ -805,13 +891,18 @@ fn candidate_config(active: &Config, listener_name: &str) -> Config {
         service: Some("live".into()),
         tls_profile: None,
         max_connections: Some(100),
+        downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
     });
     candidate.rtmp_services.push(RtmpService {
         name: "live".into(),
+        outbound_chunk_size: 4_096,
+        access_log: None,
         applications: vec![RtmpApplication {
             name: "broadcast".into(),
             live: true,
             idle_streams: false,
+            push_targets: Vec::new(),
+            fanout: oxiroute_config::RtmpFanoutPolicy::default(),
             recorders: Vec::new(),
         }],
     });

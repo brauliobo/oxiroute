@@ -2,7 +2,8 @@ use std::path::Path;
 
 use oxiroute_rtmp::{
     MAX_RECORDING_FILENAME_BYTES, MAX_RECORDING_SUFFIX_TEMPLATE_BYTES, RecordingDateTime,
-    RecordingPathError, RecordingPathPolicy,
+    RecordingPathError, RecordingPathPolicy, RecordingSegmentNaming, RecordingTimeBasis,
+    RecordingTimezone,
 };
 
 #[test]
@@ -263,6 +264,30 @@ fn unix_conversion_is_exhaustive_at_every_gregorian_day_boundary() {
         }
     }
     assert_eq!(seconds, 253_402_300_800);
+}
+
+#[test]
+fn america_bahia_policy_is_deterministic_across_historical_dst_and_standard_time() {
+    let policy = RecordingPathPolicy::new("-%Y-%m-%d_%H-%M-%S.mp4", false)
+        .expect("path policy")
+        .with_segment_policy(
+            RecordingTimezone::Iana("America/Bahia".parse().expect("IANA timezone")),
+            RecordingTimeBasis::SegmentStart,
+            RecordingSegmentNaming::NginxCompatible,
+        );
+
+    assert_eq!(
+        policy
+            .relative_filename_at(b"camera", 1_325_386_800)
+            .expect("Bahia daylight time"),
+        "camera-2012-01-01_01-00-00.mp4"
+    );
+    assert_eq!(
+        policy
+            .relative_filename_at(b"camera", 1_341_111_600)
+            .expect("Bahia standard time"),
+        "camera-2012-07-01_00-00-00.mp4"
+    );
 }
 
 fn policy(suffix_template: &str, native_unique_seconds: bool) -> RecordingPathPolicy {

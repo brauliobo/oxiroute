@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use oxiroute_config::{
     HttpHostSelector, HttpLiteralHeader, HttpPathSelector, HttpProxyPolicy, HttpRedirectLocation,
-    HttpRequestHeaderValue, HttpRoute, HttpRouteAction, HttpService,
+    HttpRequestHeaderValue, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpService,
 };
 
 use crate::ProvenanceSpan;
@@ -71,12 +71,20 @@ impl Lowerer<'_> {
         if routes.is_empty() {
             return None;
         }
-        let (upstream_io_timeout_ms, mut sources) =
+        let (connect_timeout_ms, upstream_io_timeout_ms, mut sources) =
             self.lower_http_policy(&frontend.section, &frontend.settings, &target_ids)?;
         let policies = self.lower_proxy_policies(&frontend.settings, &target_ids)?;
         let routes = routes
             .into_iter()
             .map(|mut route| {
+                route.route.policy = HttpRoutePolicy {
+                    max_request_body_bytes: None,
+                    connect_timeout_ms,
+                    read_timeout_ms: upstream_io_timeout_ms,
+                    write_timeout_ms: upstream_io_timeout_ms,
+                    request_buffering: false,
+                    response_buffering: false,
+                };
                 route.route.action = proxy_action(
                     self.section_name(route.target)
                         .expect("lowered route target has a canonical name"),
@@ -105,6 +113,8 @@ impl Lowerer<'_> {
                 routes: routes.into_iter().map(|route| route.route).collect(),
                 upstream_io_timeout_ms,
                 max_request_body_bytes: None,
+                gzip: None,
+                access_log: None,
             },
             sources,
             routes: route_sources,
@@ -138,12 +148,20 @@ impl Lowerer<'_> {
         if routes.is_empty() {
             return None;
         }
-        let (upstream_io_timeout_ms, mut sources) =
+        let (connect_timeout_ms, upstream_io_timeout_ms, mut sources) =
             self.lower_http_policy(&listen.section, &listen.settings, &target_ids)?;
         let policies = self.lower_proxy_policies(&listen.settings, &target_ids)?;
         let routes = routes
             .into_iter()
             .map(|mut route| {
+                route.route.policy = HttpRoutePolicy {
+                    max_request_body_bytes: None,
+                    connect_timeout_ms,
+                    read_timeout_ms: upstream_io_timeout_ms,
+                    write_timeout_ms: upstream_io_timeout_ms,
+                    request_buffering: false,
+                    response_buffering: false,
+                };
                 route.route.action = proxy_action(
                     self.section_name(route.target)
                         .expect("lowered route target has a canonical name"),
@@ -172,6 +190,8 @@ impl Lowerer<'_> {
                 routes: routes.into_iter().map(|route| route.route).collect(),
                 upstream_io_timeout_ms,
                 max_request_body_bytes: None,
+                gzip: None,
+                access_log: None,
             },
             sources,
             routes: route_sources,
@@ -293,6 +313,7 @@ impl Lowerer<'_> {
                         oxiroute_config::HttpResponseHeaderMutation::Set { .. }
                     ) {
                         self.record(path.field("value"), sources.to_vec());
+                        self.record(path.field("always"), sources.to_vec());
                     }
                 }
                 for index in 0..policy.response_cookie_path_rewrites.len() {
@@ -352,6 +373,7 @@ impl Lowerer<'_> {
                     location: HttpRedirectLocation::Literal {
                         value: location.into(),
                     },
+                    headers: Vec::new(),
                 }
             }
             HttpRequestRule::FixedResponse {
@@ -371,6 +393,7 @@ impl Lowerer<'_> {
                     vec![HttpLiteralHeader {
                         name: "content-type".into(),
                         value: content_type.into(),
+                        always: true,
                     }]
                 } else {
                     Vec::new()
@@ -395,10 +418,20 @@ impl Lowerer<'_> {
                     path: HttpPathSelector::RawPrefix { value: "/".into() },
                     methods: Vec::new(),
                     access_policy: None,
+                    policy: HttpRoutePolicy {
+                        max_request_body_bytes: None,
+                        connect_timeout_ms: 30_000,
+                        read_timeout_ms: 30_000,
+                        write_timeout_ms: 30_000,
+                        request_buffering: false,
+                        response_buffering: false,
+                    },
                     action,
                 }],
                 upstream_io_timeout_ms: 30_000,
                 max_request_body_bytes: None,
+                gzip: None,
+                access_log: None,
             },
             sources: sources.clone(),
             routes: vec![sources],
@@ -480,6 +513,7 @@ impl Lowerer<'_> {
                             },
                             methods: Vec::new(),
                             access_policy: None,
+                            policy: HttpRoutePolicy::default(),
                             action: proxy_action(pool.clone(), HttpProxyPolicy::default()),
                         },
                         matcher,
@@ -559,6 +593,7 @@ impl Lowerer<'_> {
                         path: HttpPathSelector::RawPrefix { value: "/".into() },
                         methods: Vec::new(),
                         access_policy: None,
+                        policy: HttpRoutePolicy::default(),
                         action: proxy_action(pool, HttpProxyPolicy::default()),
                     },
                     matcher: RouteMatcher {
@@ -593,6 +628,7 @@ impl Lowerer<'_> {
                     path: HttpPathSelector::RawPrefix { value: "/".into() },
                     methods: Vec::new(),
                     access_policy: None,
+                    policy: HttpRoutePolicy::default(),
                     action: proxy_action(pool, HttpProxyPolicy::default()),
                 },
                 matcher: RouteMatcher {
@@ -646,17 +682,22 @@ impl Lowerer<'_> {
 
 fn matchers_overlap(left: &RouteMatcher, right: &RouteMatcher) -> bool {
     let hosts_overlap = match (&left.host, &right.host) {
-        (Some(left), Some(right)) => host_value(left) == host_value(right),
+        (Some(left), Some(right)) => match (host_value(left), host_value(right)) {
+            (Some(left), Some(right)) => left == right,
+            _ => true,
+        },
         _ => true,
     };
     hosts_overlap && raw_prefixes_overlap(&left.path_prefix, &right.path_prefix)
 }
 
-fn host_value(selector: &HttpHostSelector) -> &str {
+fn host_value(selector: &HttpHostSelector) -> Option<&str> {
     match selector {
         HttpHostSelector::NormalizedHost { value } | HttpHostSelector::ExactAuthority { value } => {
-            value
+            Some(value)
         }
+        HttpHostSelector::NginxLeadingWildcard { .. }
+        | HttpHostSelector::NginxLeadingDot { .. } => None,
     }
 }
 

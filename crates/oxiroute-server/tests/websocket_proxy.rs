@@ -5,8 +5,9 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
 use oxiroute_config::{
-    Config, HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction, HttpService,
-    HttpVersionPolicy, Listener, Protocol, UpstreamAlgorithm, UpstreamPool,
+    Config, HttpPathSelector, HttpProxyPolicy, HttpRequestHeaderMutation, HttpRequestHeaderValue,
+    HttpRoute, HttpRouteAction, HttpService, HttpVersionPolicy, Listener, Protocol,
+    UpstreamAlgorithm, UpstreamPool,
 };
 use oxiroute_server::{HttpReverseProxy, RuntimeMetrics, ServiceKind, service_specs};
 use pingora::{apps::ServerApp, proxy::http_proxy, server::configuration::ServerConf};
@@ -99,14 +100,20 @@ fn websocket_config(proxy_address: SocketAddr, origin_address: SocketAddr) -> Co
             service: Some("websocket".into()),
             tls_profile: None,
             max_connections: Some(100),
+            downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
         }],
         upstream_pools: vec![UpstreamPool {
             name: "origin".into(),
+            servers: Vec::new(),
             endpoints: vec![socket_endpoint(origin_address)],
             algorithm: UpstreamAlgorithm::RoundRobin,
             health_check: None,
             tls: None,
             http_versions: HttpVersionPolicy::default(),
+            queue_timeout_ms: None,
+            connect_timeout_ms: None,
+            server_timeout_ms: None,
+            connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
         }],
         http_services: vec![HttpService {
             name: "websocket".into(),
@@ -115,13 +122,33 @@ fn websocket_config(proxy_address: SocketAddr, origin_address: SocketAddr) -> Co
                 path: HttpPathSelector::SegmentPrefix { value: "/".into() },
                 methods: Vec::new(),
                 access_policy: None,
+                policy: oxiroute_config::HttpRoutePolicy::default(),
                 action: HttpRouteAction::Proxy {
                     upstream_pool: "origin".into(),
-                    policy: HttpProxyPolicy::default(),
+                    policy: HttpProxyPolicy {
+                        request_headers: vec![
+                            HttpRequestHeaderMutation::Set {
+                                name: "upgrade".into(),
+                                value: HttpRequestHeaderValue::IncomingHeader {
+                                    name: "upgrade".into(),
+                                    max_bytes: 128,
+                                },
+                            },
+                            HttpRequestHeaderMutation::Set {
+                                name: "connection".into(),
+                                value: HttpRequestHeaderValue::Literal {
+                                    value: "upgrade".into(),
+                                },
+                            },
+                        ],
+                        ..HttpProxyPolicy::default()
+                    },
                 },
             }],
             upstream_io_timeout_ms: 5_000,
             max_request_body_bytes: Some(8),
+            gzip: None,
+            access_log: None,
         }],
         ..empty_config()
     }

@@ -39,14 +39,14 @@ Those results must not be inferred from reverse H1.
 ## Requirements
 
 - Linux with `/proc`, Bash 4 or newer, Python 3, nginx, HAProxy, and Rust 1.87.
-- A release OxiRoute binary at `target/release/oxiroute-server`, or an executable path in
+- A release OxiRoute binary at `target/release/oxiroute`, or an executable path in
   `OXIROUTE_BIN`.
 - The benchmark ports must be free. The preflight checks this before any process starts.
 
 Build OxiRoute outside the harness so compilation is never mixed with measurement:
 
 ```sh
-cargo +1.87.0 build --release --locked -p oxiroute-server
+cargo +1.87.0 build --release --locked -p oxiroute
 cargo +1.87.0 build --release --locked --manifest-path benchmarks/loadgen/Cargo.toml
 ```
 
@@ -81,7 +81,7 @@ The following environment variables tune a run without changing checked-in confi
 
 | Variable | Default | Meaning |
 | --- | ---: | --- |
-| `OXIROUTE_BIN` | `target/release/oxiroute-server` | Release daemon path |
+| `OXIROUTE_BIN` | `target/release/oxiroute` | Release daemon path |
 | `BENCH_LOADGEN_BIN` | `benchmarks/loadgen/target/release/oxiroute-loadgen` | Repository load-generator path |
 | `BENCH_ORIGIN_PORT` | `19080` | Dedicated origin port |
 | `BENCH_PROXY_PORT` | `19081` | Sequential proxy port |

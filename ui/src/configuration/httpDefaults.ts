@@ -15,6 +15,14 @@ export function defaultHttpRoute(): HttpRouteConfig {
     path: { kind: 'segment_prefix', value: '/' },
     methods: [],
     access_policy: null,
+    policy: {
+      max_request_body_bytes: 10_485_760,
+      connect_timeout_ms: 30_000,
+      read_timeout_ms: 30_000,
+      write_timeout_ms: 30_000,
+      request_buffering: false,
+      response_buffering: false,
+    },
     action: defaultHttpAction('proxy'),
   }
 }
@@ -35,9 +43,24 @@ export function defaultHttpAction(type: HttpRouteActionConfig['type']): HttpRout
     case 'fixed_response':
       return { type, status: 200, body: '', headers: [] }
     case 'redirect':
-      return { type, status: 302, location: defaultRedirectLocation('literal') }
+      return { type, status: 302, location: defaultRedirectLocation('literal'), headers: [] }
     case 'static_files':
-      return { type, root_directory: '', index_files: ['index.html'], spa_fallback: null }
+      return {
+        type,
+        root_directory: '',
+        path_mapping: 'root',
+        index_files: ['index.html'],
+        internal_index_redirects: false,
+        directory_redirects: false,
+        spa_fallback: null,
+        try_files: [],
+        autoindex: false,
+        autoindex_exact_size: true,
+        autoindex_local_time: false,
+        mime: { default_type: null, types: [] },
+        headers: [],
+        error_responses: [],
+      }
   }
 }
 
@@ -47,8 +70,11 @@ export function defaultHttpProxyPolicy(): HttpProxyPolicyConfig {
     request_headers: [],
     response_headers: [],
     response_cookie_path_rewrites: [],
+    response_cookie_attributes: [],
     retry: {
       max_retries: 0,
+      target: 'next_server',
+      delay_ms: 0,
       triggers: [...HTTP_RETRY_TRIGGERS],
       method_safety: 'get_head',
       body_safety: 'empty',
@@ -60,6 +86,7 @@ export function defaultHttpProxyPolicy(): HttpProxyPolicyConfig {
 export function defaultUpstreamHost(type: HttpUpstreamHostConfig['type']): HttpUpstreamHostConfig {
   switch (type) {
     case 'preserve_incoming': return { type }
+    case 'nginx_host': return { type, fallback: 'localhost' }
     case 'endpoint': return { type, unix_fallback: null }
     case 'literal': return { type, value: '' }
   }
@@ -68,5 +95,7 @@ export function defaultUpstreamHost(type: HttpUpstreamHostConfig['type']): HttpU
 export function defaultRedirectLocation(
   kind: HttpRedirectLocationConfig['kind'],
 ): HttpRedirectLocationConfig {
-  return { kind, value: kind === 'request_template' ? '$scheme://$host$request_uri' : '/' }
+  return kind === 'request_template'
+    ? { kind, value: '$scheme://$host$request_uri', nginx_host_fallback: null }
+    : { kind, value: '/' }
 }

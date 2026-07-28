@@ -1,4 +1,8 @@
-use std::{fs, net::SocketAddr, path::PathBuf};
+use std::{
+    fs,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    path::PathBuf,
+};
 
 use oxiroute_config::{
     HttpHostSelector, HttpPathSelector, HttpRouteAction, ListenerBind, Protocol, UpstreamAlgorithm,
@@ -9,8 +13,11 @@ use oxiroute_import::{
     SourceFile, SourceId,
     haproxy::{
         CanonicalCandidate, E_CONDITIONAL_PREPROCESSING, E_ENVIRONMENT_EXPANSION,
-        E_LOGGING_UNSUPPORTED, E_PROCESS_OWNED, E_STATS_UNSUPPORTED, E_UNKNOWN_DIRECTIVE,
-        E_UNSUPPORTED_FORM, LoadedSource, analyze_sources, import_sources,
+        E_LOGGING_UNSUPPORTED, E_PROCESS_OWNED, E_STATS_UNSUPPORTED, E_UNCONSUMED_DIRECTIVE,
+        E_UNKNOWN_DIRECTIVE, E_UNSUPPORTED_FORM, HaproxyImportOptions,
+        HaproxyOneRequestPerConnectionOverlay, HaproxyPrometheusMigrationOverlay, LoadedSource,
+        PreprocessingEnvironment, analyze_sources, import_roots_with_environment,
+        import_roots_with_options, import_sources,
     },
 };
 use tempfile::tempdir;
@@ -22,12 +29,16 @@ const PHOENIX: &[u8] = include_bytes!("fixtures/haproxy/phoenix-dormant.cfg");
 const MINIMAL: &[u8] = include_bytes!("fixtures/haproxy/minimal-representable.cfg");
 
 #[test]
-fn hostrouter_active_report_retains_every_audited_activation_blocker() {
+fn hostrouter_active_report_retains_non_equivalent_stats_and_remaining_blockers() {
     let lowered = import_fixture("hostrouter-active.cfg", HOSTROUTER);
     let candidate = lowered.value();
 
     assert!(candidate.config.is_none());
     assert!(candidate.draft.upstream_pools.is_empty());
+    assert!(diagnostic_contains(
+        lowered.diagnostics(),
+        "one-request-per-connection overlay"
+    ));
     assert!(
         candidate
             .draft
@@ -37,15 +48,16 @@ fn hostrouter_active_report_retains_every_audited_activation_blocker() {
     );
     assert_eq!(code_count(lowered.diagnostics(), E_LOGGING_UNSUPPORTED), 3);
     assert_eq!(code_count(lowered.diagnostics(), E_STATS_UNSUPPORTED), 6);
+    assert!(candidate.draft.stats.is_none());
+    assert_eq!(candidate.activation_requirements.len(), 6);
     assert_eq!(code_count(lowered.diagnostics(), E_PROCESS_OWNED), 4);
     assert_process_settings_are_external_warnings(lowered.diagnostics());
-    assert_blocker(lowered.diagnostics(), "aggregate process limit");
-    assert_blocker(lowered.diagnostics(), "leastconn");
-    assert_blocker(lowered.diagnostics(), "initially eligible");
-    assert_blocker(lowered.diagnostics(), "HAProxy retries");
-    assert_blocker(lowered.diagnostics(), "redispatch persistence");
-    assert_blocker(lowered.diagnostics(), "timeout scope");
-    assert_blocker(lowered.diagnostics(), "forwardfor header insertion");
+    assert_eq!(candidate.draft.max_connections, Some(4096));
+    assert_has_provenance(candidate, "/max_connections");
+    assert!(!diagnostic_contains(
+        lowered.diagnostics(),
+        "forwardfor header insertion"
+    ));
     assert!(!diagnostic_contains(
         lowered.diagnostics(),
         "Unix bind sockets"
@@ -64,10 +76,12 @@ fn phoenix_dormant_report_cannot_activate_or_substitute_its_dns_pool() {
 
     assert!(lowered.value().config.is_none());
     assert!(lowered.value().draft.upstream_pools.is_empty());
+    assert!(diagnostic_contains(
+        lowered.diagnostics(),
+        "one-request-per-connection overlay"
+    ));
     assert!(lowered.value().draft.listeners.is_empty());
     assert_eq!(code_count(lowered.diagnostics(), E_PROCESS_OWNED), 4);
-    assert_blocker(lowered.diagnostics(), "leastconn");
-    assert_blocker(lowered.diagnostics(), "initially eligible");
     assert!(!diagnostic_contains(
         lowered.diagnostics(),
         "Unix bind sockets"
@@ -77,6 +91,181 @@ fn phoenix_dormant_report_cannot_activate_or_substitute_its_dns_pool() {
         "DNS-named servers"
     ));
     assert_no_fallback_routes(lowered.value());
+}
+
+#[test]
+fn sanitized_whitebeast_haproxy_imports_from_the_complete_capture() {
+    assert_complete_live_haproxy("whitebeast", Ipv4Addr::new(10, 0, 0, 10), true);
+}
+
+#[test]
+fn sanitized_hostrouter_haproxy_imports_from_the_complete_capture() {
+    assert_complete_live_haproxy("hostrouter", Ipv4Addr::new(10, 0, 0, 1), false);
+}
+
+#[test]
+fn sanitized_phoenix_haproxy_imports_with_explicit_environment() {
+    assert_complete_live_haproxy("phoenix", Ipv4Addr::new(10, 0, 0, 11), true);
+}
+
+fn assert_complete_live_haproxy(host: &str, node_ip: Ipv4Addr, gpu1_defined: bool) {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/live")
+        .join(host)
+        .join("haproxy.cfg");
+    let options = HaproxyImportOptions {
+        one_request_per_connection: (host == "hostrouter")
+            .then(|| HaproxyOneRequestPerConnectionOverlay {
+                backend: "app_ollama".into(),
+            })
+            .into_iter()
+            .collect(),
+        prometheus_migrations: Vec::new(),
+    };
+    let report = import_roots_with_options(
+        &[path],
+        PreprocessingEnvironment {
+            node_ip: IpAddr::V4(node_ip),
+            gpu1_defined,
+        },
+        &options,
+    );
+    assert_eq!(code_count(report.diagnostics(), E_UNKNOWN_DIRECTIVE), 0);
+    assert_eq!(code_count(report.diagnostics(), E_UNCONSUMED_DIRECTIVE), 0);
+    assert_eq!(code_count(report.diagnostics(), E_ENVIRONMENT_EXPANSION), 0);
+    assert_eq!(
+        code_count(report.diagnostics(), E_CONDITIONAL_PREPROCESSING),
+        0
+    );
+    if host == "hostrouter" {
+        assert_eq!(report.value().draft.upstream_pools.len(), 1);
+        assert_eq!(
+            report.value().draft.upstream_pools[0].connection_reuse,
+            oxiroute_config::UpstreamConnectionReuse::Never
+        );
+        assert!(!diagnostic_contains(
+            report.diagnostics(),
+            "requires option http-server-close"
+        ));
+        assert!(
+            report
+                .value()
+                .operational_overlays
+                .iter()
+                .any(|overlay| overlay.satisfied
+                    && overlay.id == "haproxy.one-request-per-connection:app_ollama")
+        );
+    } else {
+        assert!(!report.value().draft.upstream_pools.is_empty());
+    }
+    let queue_timeouts = report
+        .value()
+        .draft
+        .upstream_pools
+        .iter()
+        .map(|pool| pool.queue_timeout_ms)
+        .collect::<Vec<_>>();
+    match host {
+        "whitebeast" => {
+            assert!(queue_timeouts.contains(&Some(1_800_000)));
+        }
+        "phoenix" => assert!(
+            queue_timeouts
+                .iter()
+                .all(|timeout| *timeout == Some(600_000))
+        ),
+        "hostrouter" => assert!(queue_timeouts.iter().all(Option::is_none)),
+        _ => unreachable!(),
+    }
+    assert!(
+        report
+            .value()
+            .source_metadata
+            .environment_fingerprint_sha256
+            .is_some()
+    );
+}
+
+#[test]
+fn audited_connection_lifecycle_overlay_is_backend_scoped_and_fail_closed() {
+    let directory = tempdir().expect("HAProxy lifecycle overlay directory");
+    let root = directory.path().join("haproxy.cfg");
+    fs::write(
+        &root,
+        b"defaults web\n  mode http\n  retries 0\n  timeout connect 5s\n  timeout client 30s\n  timeout server 30s\nfrontend public\n  bind 127.0.0.1:18080 maxconn 10\n  maxconn 10\n  default_backend app\nbackend app\n  balance leastconn\n  server app1 127.0.0.1:3000 maxconn 2\n",
+    )
+    .expect("write lifecycle overlay fixture");
+    let environment = PreprocessingEnvironment {
+        node_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        gpu1_defined: false,
+    };
+    let options = HaproxyImportOptions {
+        one_request_per_connection: vec![HaproxyOneRequestPerConnectionOverlay {
+            backend: "app".into(),
+        }],
+        prometheus_migrations: Vec::new(),
+    };
+
+    let imported = import_roots_with_options(&[&root], environment, &options);
+    let candidate = imported.value();
+    let config = candidate.config.as_ref().expect("audited lifecycle config");
+    assert_eq!(
+        config.upstream_pools[0].connection_reuse,
+        oxiroute_config::UpstreamConnectionReuse::Never
+    );
+    assert!(candidate.operational_overlays[0].satisfied);
+
+    let wrong_backend = import_roots_with_options(
+        &[&root],
+        environment,
+        &HaproxyImportOptions {
+            one_request_per_connection: vec![HaproxyOneRequestPerConnectionOverlay {
+                backend: "other".into(),
+            }],
+            prometheus_migrations: Vec::new(),
+        },
+    );
+    assert!(wrong_backend.value().config.is_none());
+    assert!(!wrong_backend.value().operational_overlays[0].satisfied);
+}
+
+#[test]
+fn ordered_default_server_health_options_materialize_on_subsequent_servers() {
+    let source = b"defaults web
+  mode http
+  retries 0
+  timeout connect 5s
+  timeout client 30s
+  timeout server 30s
+  default-server check inter 10s fastinter 3s
+  default-server inter 20s downinter 1m fall 3 rise 2
+frontend public
+  bind 127.0.0.1:18080 maxconn 10
+  maxconn 10
+  default_backend app
+backend app
+  balance roundrobin
+  option httpchk GET /health
+  http-check expect status 200
+  server app1 127.0.0.1:3000
+  server app2 127.0.0.1:3001
+";
+
+    let imported = import_fixture("ordered-default-server.cfg", source);
+    let health = imported
+        .value()
+        .config
+        .as_ref()
+        .expect("default-server config")
+        .upstream_pools[0]
+        .health_check
+        .as_ref()
+        .expect("materialized health check");
+    assert_eq!(health.interval_ms, 20_000);
+    assert_eq!(health.fast_interval_ms, Some(3_000));
+    assert_eq!(health.down_interval_ms, Some(60_000));
+    assert_eq!(health.healthy_threshold, 2);
+    assert_eq!(health.unhealthy_threshold, 3);
 }
 
 #[test]
@@ -100,12 +289,17 @@ fn minimal_static_tcp_fixture_finalizes_and_validates() {
         }
     );
     assert_eq!(config.upstream_pools[0].name, "postgres_pool");
+    assert_eq!(config.upstream_pools[0].queue_timeout_ms, Some(15_000));
     assert_eq!(
         config.upstream_pools[0].algorithm,
         UpstreamAlgorithm::RoundRobin
     );
     assert_eq!(
-        config.upstream_pools[0].endpoints,
+        config.upstream_pools[0]
+            .servers
+            .iter()
+            .map(|server| server.endpoint.clone())
+            .collect::<Vec<_>>(),
         [UpstreamEndpoint::Socket {
             address: "127.0.0.1:5432".parse::<SocketAddr>().unwrap()
         }]
@@ -160,8 +354,8 @@ fn minimal_static_tcp_fixture_finalizes_and_validates() {
     for path in [
         "/listeners/0/bind/type",
         "/listeners/0/bind/address",
-        "/upstream_pools/0/endpoints/0/type",
-        "/upstream_pools/0/endpoints/0/address",
+        "/upstream_pools/0/servers/0/endpoint/type",
+        "/upstream_pools/0/servers/0/endpoint/address",
         "/upstream_pools/0/algorithm",
     ] {
         assert_has_provenance(candidate, path);
@@ -188,12 +382,17 @@ fn audited_shape_unix_frontend_and_dns_leastconn_backend_finalizes_without_resol
     assert_eq!(
         config.listeners[0].bind,
         ListenerBind::Unix {
-            path: "/run/haproxy/hostrouter.sock".into()
+            path: "/run/haproxy/hostrouter.sock".into(),
+            mode: None,
         }
     );
     assert_eq!(config.listeners[0].max_connections, Some(1500));
     assert_eq!(
-        config.upstream_pools[0].endpoints,
+        config.upstream_pools[0]
+            .servers
+            .iter()
+            .map(|server| server.endpoint.clone())
+            .collect::<Vec<_>>(),
         [
             UpstreamEndpoint::Dns {
                 host: "unresolvable-app01.invalid".into(),
@@ -213,9 +412,9 @@ fn audited_shape_unix_frontend_and_dns_leastconn_backend_finalizes_without_resol
         "/listeners/0/bind/type",
         "/listeners/0/bind/path",
         "/listeners/0/max_connections",
-        "/upstream_pools/0/endpoints/0/type",
-        "/upstream_pools/0/endpoints/0/host",
-        "/upstream_pools/0/endpoints/0/port",
+        "/upstream_pools/0/servers/0/endpoint/type",
+        "/upstream_pools/0/servers/0/endpoint/host",
+        "/upstream_pools/0/servers/0/endpoint/port",
         "/upstream_pools/0/algorithm",
     ] {
         assert_has_provenance(candidate, path);
@@ -289,12 +488,16 @@ fn absolute_unix_server_lowers_without_socket_substitution() {
         .expect("finalized Unix pool");
 
     assert_eq!(
-        config.upstream_pools[0].endpoints,
+        config.upstream_pools[0]
+            .servers
+            .iter()
+            .map(|server| server.endpoint.clone())
+            .collect::<Vec<_>>(),
         [UpstreamEndpoint::Unix {
             path: "/run/postgresql/.s.PGSQL.5432".into()
         }]
     );
-    assert_has_provenance(lowered.value(), "/upstream_pools/0/endpoints/0/path");
+    assert_has_provenance(lowered.value(), "/upstream_pools/0/servers/0/endpoint/path");
 }
 
 #[test]
@@ -619,7 +822,7 @@ fn automatic_or_aggregate_maxconn_never_emits_an_optional_cap_placeholder() {
 }
 
 #[test]
-fn global_fallback_blocks_while_bind_maxconn_lowers_to_an_exact_optional_cap() {
+fn global_and_bind_maxconn_lower_to_their_distinct_canonical_scopes() {
     let global_fallback = b"global
   maxconn 500
 defaults tcp_defaults
@@ -629,7 +832,8 @@ defaults tcp_defaults
   timeout client 5m
   timeout server 5m
 frontend database
-  bind 127.0.0.1:15432
+  bind 127.0.0.1:15432 maxconn 100
+  maxconn 100
   default_backend database_pool
 backend database_pool
   balance roundrobin
@@ -651,9 +855,15 @@ backend database_pool
 ";
 
     let global_fallback = import_fixture("global-admission.cfg", global_fallback);
-    assert!(global_fallback.value().config.is_none());
-    assert!(global_fallback.value().draft.listeners.is_empty());
-    assert_blocker(global_fallback.diagnostics(), "aggregate process limit");
+    let config = global_fallback
+        .value()
+        .config
+        .as_ref()
+        .expect("global admission limit");
+    assert!(!config.listeners.is_empty(), "{global_fallback:#?}");
+    assert_eq!(config.max_connections, Some(500));
+    assert_eq!(config.listeners[0].max_connections, Some(100));
+    assert_has_provenance(global_fallback.value(), "/max_connections");
 
     let bind_cap = import_fixture("bind-admission.cfg", bind_cap);
     let config = bind_cap
@@ -663,6 +873,254 @@ backend database_pool
         .expect("exact bind admission");
     assert_eq!(config.listeners[0].max_connections, Some(75));
     assert_has_provenance(bind_cap.value(), "/listeners/0/max_connections");
+}
+
+#[test]
+fn explicit_preprocessing_records_environment_and_inactive_gpu_provenance() {
+    let directory = tempdir().expect("preprocessing fixture directory");
+    let root = directory.path().join("haproxy.cfg");
+    fs::write(
+        &root,
+        b"global\n  maxconn 64\n  log stdout format raw local0\n  user haproxy\ndefaults\n  mode tcp\n  retries 0\n  timeout connect 5s\n  timeout client 2h\n  timeout server 2h\nfrontend node\n  bind ${NODE_IP}:10440 maxconn 10\n  maxconn 10\n  default_backend workers\nbackend workers\n  balance first\n  option http-server-close\n  server gpu0 127.0.0.1:10450 maxconn 1 no-check\n.if defined(GPU1)\n  server gpu1 127.0.0.1:10451 maxconn 1 no-check\n.endif\n",
+    )
+    .expect("write preprocessing fixture");
+
+    let without_gpu = import_roots_with_environment(
+        &[&root],
+        PreprocessingEnvironment {
+            node_ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
+            gpu1_defined: false,
+        },
+    );
+    let candidate = without_gpu.value();
+    let config = candidate.config.as_ref().expect("preprocessed config");
+    assert!(!config.listeners.is_empty(), "{without_gpu:#?}");
+    assert_eq!(config.max_connections, Some(64));
+    assert_eq!(
+        config.listeners[0].bind,
+        ListenerBind::Socket {
+            address: "192.0.2.10:10440".parse().unwrap()
+        }
+    );
+    assert_eq!(config.upstream_pools[0].servers.len(), 1);
+    assert_eq!(config.upstream_pools[0].algorithm, UpstreamAlgorithm::First);
+    assert_eq!(config.upstream_pools[0].servers[0].max_connections, Some(1));
+    assert_eq!(
+        config.upstream_pools[0].connection_reuse,
+        oxiroute_config::UpstreamConnectionReuse::Never
+    );
+    assert_eq!(candidate.deployment_requirements.len(), 2);
+    assert_eq!(candidate.source_metadata.inactive_sources.len(), 1);
+    assert_eq!(candidate.source_metadata.original_sources.len(), 1);
+    assert_eq!(candidate.source_metadata.source_maps.len(), 1);
+    assert_eq!(
+        candidate.source_metadata.original_sources[0].bytes(),
+        fs::read(&root).unwrap()
+    );
+    let source_map = &candidate.source_metadata.source_maps[0];
+    let original = &candidate.source_metadata.original_sources[0];
+    assert!(candidate.provenance.iter().any(|entry| {
+        entry.origins.iter().any(|origin| {
+            source_map
+                .translate(origin.span)
+                .and_then(|span| original.slice(span.range()))
+                .is_some_and(|bytes| {
+                    bytes
+                        .windows(b"${NODE_IP}".len())
+                        .any(|part| part == b"${NODE_IP}")
+                })
+        })
+    }));
+    assert_eq!(
+        candidate.source_metadata.inactive_sources[0].condition,
+        "defined(GPU1)"
+    );
+    let without_gpu_fingerprint = candidate
+        .source_metadata
+        .environment_fingerprint_sha256
+        .as_deref()
+        .expect("environment fingerprint");
+    assert_eq!(without_gpu_fingerprint.len(), 64);
+
+    let with_gpu = import_roots_with_environment(
+        &[&root],
+        PreprocessingEnvironment {
+            node_ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
+            gpu1_defined: true,
+        },
+    );
+    let candidate = with_gpu.value();
+    assert_eq!(
+        candidate
+            .config
+            .as_ref()
+            .expect("GPU config")
+            .upstream_pools[0]
+            .servers
+            .len(),
+        2
+    );
+    assert!(candidate.source_metadata.inactive_sources.is_empty());
+    assert_ne!(
+        candidate
+            .source_metadata
+            .environment_fingerprint_sha256
+            .as_deref()
+            .expect("GPU environment fingerprint"),
+        without_gpu_fingerprint
+    );
+}
+
+#[test]
+fn prometheus_service_retains_migration_requirement_without_an_operator_overlay() {
+    let source = b"defaults web
+  mode http
+  retries 0
+  timeout connect 5s
+  timeout server 30s
+frontend metrics
+  bind 127.0.0.1:8404
+  http-request use-service prometheus-exporter if { path /metrics }
+frontend app
+  bind 127.0.0.1:8080 maxconn 10
+  maxconn 10
+  default_backend workers
+backend workers
+  balance roundrobin
+  server app1 127.0.0.1:3000
+";
+
+    let imported = import_fixture("prometheus-activation.cfg", source);
+    let candidate = imported.value();
+    let config = candidate.config.as_ref().expect("unrelated app config");
+    assert_eq!(config.listeners.len(), 1);
+    assert!(config.stats.is_none());
+    assert_eq!(candidate.activation_requirements.len(), 1);
+    assert_eq!(
+        candidate.activation_requirements[0].kind,
+        oxiroute_import::ActivationRequirementKind::PrometheusExporter
+    );
+    assert!(!candidate.activation_requirements[0].equivalent_runtime_endpoint);
+    assert_eq!(code_count(imported.diagnostics(), E_STATS_UNSUPPORTED), 1);
+}
+
+#[test]
+fn explicit_prometheus_migration_overlay_enables_the_distinct_oxiroute_stats_contract() {
+    let source = b"frontend metrics
+  bind 127.0.0.1:8404
+  stats auth operator:secret
+  stats uri /admin
+  stats admin if TRUE
+  http-request use-service prometheus-exporter if { path /metrics }
+";
+
+    let parsed = analyze_fixture("strict-stats-forms.cfg", source);
+    let imported = import_fixture_with_options(
+        "strict-stats-forms.cfg",
+        source,
+        &HaproxyImportOptions {
+            one_request_per_connection: Vec::new(),
+            prometheus_migrations: vec![HaproxyPrometheusMigrationOverlay {
+                section: "metrics".into(),
+            }],
+        },
+    );
+    assert_eq!(
+        parsed.value().supported_stats_sections.len(),
+        1,
+        "fixture must remain an exact native Prometheus service"
+    );
+    let candidate = imported.value();
+    assert_eq!(
+        candidate
+            .draft
+            .stats
+            .as_ref()
+            .expect("exact Prometheus endpoint")
+            .binds,
+        ["127.0.0.1:8404".parse().unwrap()]
+    );
+    assert_eq!(candidate.activation_requirements.len(), 4);
+    assert!(
+        candidate
+            .activation_requirements
+            .iter()
+            .all(|requirement| { !requirement.equivalent_runtime_endpoint })
+    );
+    assert!(candidate.operational_overlays.iter().any(|overlay| {
+        overlay.kind == oxiroute_import::OperationalOverlayKind::PrometheusMigration
+            && overlay.satisfied
+    }));
+    assert_eq!(code_count(imported.diagnostics(), E_STATS_UNSUPPORTED), 4);
+}
+
+#[test]
+fn prometheus_migration_overlay_must_uniquely_match_a_dedicated_exact_service() {
+    let source = b"frontend metrics
+  bind 127.0.0.1:8404
+  http-request use-service prometheus-exporter if { path /metrics }
+";
+    for sections in [vec!["missing"], vec!["metrics", "metrics"]] {
+        let imported = import_fixture_with_options(
+            "invalid-prometheus-migration.cfg",
+            source,
+            &HaproxyImportOptions {
+                one_request_per_connection: Vec::new(),
+                prometheus_migrations: sections
+                    .into_iter()
+                    .map(|section| HaproxyPrometheusMigrationOverlay {
+                        section: section.into(),
+                    })
+                    .collect(),
+            },
+        );
+        assert!(imported.value().config.is_none());
+        assert!(imported.value().draft.stats.is_none());
+        assert!(imported.value().operational_overlays.iter().all(|overlay| {
+            overlay.kind != oxiroute_import::OperationalOverlayKind::PrometheusMigration
+                || !overlay.satisfied
+        }));
+        assert!(diagnostic_contains(
+            imported.diagnostics(),
+            "must uniquely match one exact, dedicated Prometheus service"
+        ));
+    }
+}
+
+#[test]
+fn forwardfor_loopback_exception_lowers_to_canonical_source_cidr_policy() {
+    let source = b"defaults web
+  mode http
+  retries 0
+  timeout connect 5s
+  timeout server 30s
+frontend app
+  bind 127.0.0.1:8080 maxconn 10
+  maxconn 10
+  option forwardfor except 127.0.0.0/8
+  default_backend workers
+backend workers
+  balance roundrobin
+  server app1 127.0.0.1:3000
+";
+
+    let imported = import_fixture("forwardfor-except.cfg", source);
+    let config = imported.value().config.as_ref().expect("forwardfor config");
+    let HttpRouteAction::Proxy { policy, .. } = &config.http_services[0].routes[0].action else {
+        panic!("proxy route")
+    };
+    assert!(policy.request_headers.iter().any(|mutation| {
+        matches!(
+            mutation,
+            oxiroute_config::HttpRequestHeaderMutation::Set {
+                name,
+                value: oxiroute_config::HttpRequestHeaderValue::AppendedXForwardedFor {
+                    max_bytes: 8_192,
+                    except_source_cidrs,
+                },
+            } if name == "x-forwarded-for" && except_source_cidrs == &["127.0.0.0/8"]
+        )
+    }));
 }
 
 #[test]
@@ -732,7 +1190,7 @@ backend pool
 }
 
 #[test]
-fn leastconn_remains_blocking_for_http_request_and_connection_accounting() {
+fn leastconn_lowers_for_http_connection_accounting() {
     let source = b"defaults web
   mode http
   retries 0
@@ -744,16 +1202,27 @@ frontend public
   default_backend app
 backend app
   balance leastconn
+  option http-server-close
   server app1 127.0.0.1:3000
   server app2 127.0.0.1:3001
 ";
     let lowered = import_fixture("http-leastconn.cfg", source);
 
-    assert!(lowered.value().config.is_none());
-    assert!(lowered.value().draft.upstream_pools.is_empty());
-    assert!(lowered.value().draft.http_services.is_empty());
-    assert!(lowered.value().draft.listeners.is_empty());
-    assert_blocker(lowered.diagnostics(), "complete TCP endpoint set");
+    let config = lowered
+        .value()
+        .config
+        .as_ref()
+        .expect("HTTP leastconn config");
+    assert_eq!(
+        config.upstream_pools[0].algorithm,
+        UpstreamAlgorithm::LeastConnections
+    );
+    assert_eq!(
+        config.upstream_pools[0].connection_reuse,
+        oxiroute_config::UpstreamConnectionReuse::Never
+    );
+    assert_eq!(config.http_services.len(), 1);
+    assert_eq!(config.listeners.len(), 1);
     assert!(!diagnostic_contains(
         lowered.diagnostics(),
         "request-body limit"
@@ -823,6 +1292,36 @@ backend app
     };
     assert_eq!(policy.retry.max_retries, 0);
     assert_has_provenance(candidate, "/http_services/0/max_request_body_bytes");
+}
+
+#[test]
+fn positive_http_retries_finalize_for_unrestricted_methods_as_pre_send_connection_retries() {
+    let source = b"defaults web
+  mode http
+  retries 1
+  timeout connect 30s
+  timeout server 30s
+frontend public
+  bind 127.0.0.1:18080
+  maxconn 100
+  default_backend app
+backend app
+  balance roundrobin
+  server app1 127.0.0.1:3000
+";
+    let lowered = import_fixture("positive-http-retries.cfg", source);
+
+    assert!(
+        lowered.value().config.is_some(),
+        "{:?}",
+        lowered.diagnostics()
+    );
+    let HttpRouteAction::Proxy { policy, .. } =
+        &lowered.value().config.as_ref().unwrap().http_services[0].routes[0].action
+    else {
+        panic!("proxy action");
+    };
+    assert_eq!(policy.retry.max_retries, 1);
 }
 
 #[test]
@@ -932,7 +1431,7 @@ fn public_source_import_carries_syntax_diagnostics_through_finalization() {
 }
 
 #[test]
-fn tls_bind_retains_pem_san_identities_and_sidecar_key_without_emitting_http_policy() {
+fn tls_bind_retains_pem_san_identities_sidecar_key_and_downstream_timeout() {
     let certificate_path = fixture_path("tls-chain.pem");
     let source = format!(
         "defaults web\n  mode http\n  retries 0\n  timeout connect 30s\n  timeout client 30s\n  timeout server 30s\nfrontend public\n  bind 127.0.0.1:8443 ssl crt {} alpn h2,http/1.1\n  maxconn 100\n  default_backend app\nbackend app\n  balance roundrobin\n  server app1 127.0.0.1:3000\n",
@@ -953,11 +1452,18 @@ fn tls_bind_retains_pem_san_identities_and_sidecar_key_without_emitting_http_pol
     let lowered = import_fixture("tls.cfg", source.as_bytes());
     let candidate = lowered.value();
 
-    assert!(candidate.draft.certificates.is_empty());
-    assert!(candidate.draft.tls_profiles.is_empty());
-    assert!(candidate.draft.listeners.is_empty());
-    assert!(candidate.draft.http_services.is_empty());
-    assert_blocker(lowered.diagnostics(), "downstream/request timeout scope");
+    let config = candidate
+        .config
+        .as_ref()
+        .expect("TLS config with client timeout");
+    assert_eq!(config.certificates.len(), 1);
+    assert_eq!(config.tls_profiles.len(), 1);
+    assert_eq!(config.listeners.len(), 1);
+    assert_eq!(config.http_services.len(), 1);
+    assert_eq!(
+        config.listeners[0].downstream_timeouts.client_timeout_ms,
+        Some(30_000)
+    );
 }
 
 #[test]
@@ -1020,7 +1526,7 @@ fn tls_sidecar_key_must_match_the_leaf_certificate() {
 }
 
 #[test]
-fn repeated_tls_bundle_is_retained_deterministically_without_canonical_claims() {
+fn repeated_tls_bundle_is_deduplicated_across_canonical_listeners() {
     let certificate_path = fixture_path("tls-chain.pem");
     let source = format!(
         "defaults web\n  mode http\n  retries 0\n  timeout connect 30s\n  timeout client 30s\n  timeout server 30s\nfrontend first\n  bind 127.0.0.1:8443 ssl crt {} alpn h2,http/1.1\n  maxconn 100\n  default_backend app\nfrontend second\n  bind 127.0.0.1:9443 ssl crt {} alpn h2,http/1.1\n  maxconn 100\n  default_backend app\nbackend app\n  balance roundrobin\n  server app1 127.0.0.1:3000\n",
@@ -1041,14 +1547,15 @@ fn repeated_tls_bundle_is_retained_deterministically_without_canonical_claims() 
     let lowered = import_fixture("reused-tls.cfg", source.as_bytes());
     let candidate = lowered.value();
 
-    assert!(candidate.draft.certificates.is_empty());
-    assert!(candidate.draft.tls_profiles.is_empty());
-    assert!(candidate.draft.listeners.is_empty());
+    let config = candidate.config.as_ref().expect("reused TLS config");
+    assert_eq!(config.certificates.len(), 1);
+    assert_eq!(config.tls_profiles.len(), 2);
+    assert_eq!(config.listeners.len(), 2);
     assert!(
         candidate
             .provenance
             .iter()
-            .all(|provenance| !provenance.path.starts_with("/certificates/"))
+            .any(|provenance| provenance.path.starts_with("/certificates/"))
     );
 }
 
@@ -1141,6 +1648,17 @@ fn analyze_fixture(
 
 fn import_fixture(name: &str, contents: &[u8]) -> Report<CanonicalCandidate> {
     import_sources(&[loaded_fixture(name, contents)])
+}
+
+fn import_fixture_with_options(
+    name: &str,
+    contents: &[u8],
+    options: &HaproxyImportOptions,
+) -> Report<CanonicalCandidate> {
+    oxiroute_import::haproxy::import_parsed_with_options(
+        oxiroute_import::haproxy::parse_sources(&[loaded_fixture(name, contents)]),
+        options,
+    )
 }
 
 fn fixture_path(name: &str) -> PathBuf {

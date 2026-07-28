@@ -14,6 +14,7 @@ use crate::{
         RecorderCommandContext, RecorderController, RecorderReaper, RecorderReaperHandle,
         RecorderReaperOwner, RecorderRuntimeStatus, recorder_error_code,
     },
+    relay::{RtmpRelayController, RtmpRelayStatus},
 };
 
 pub const MAX_RTMP_APPLICATION_BYTES: usize = 128;
@@ -57,6 +58,7 @@ macro_rules! id_type {
 id_type!(StreamId);
 id_type!(SessionId);
 id_type!(RecorderId);
+id_type!(RelayId);
 id_type!(OperationId);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -310,6 +312,12 @@ pub struct RecorderSnapshot {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RelaySnapshot {
+    pub id: RelayId,
+    pub status: RtmpRelayStatus,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecorderDefinition {
     pub name: Option<String>,
     pub manual: bool,
@@ -345,6 +353,7 @@ pub struct StreamSnapshot {
     pub publisher: Option<PublisherSnapshot>,
     pub subscriber_count: usize,
     pub media: MediaSnapshot,
+    pub relays: Vec<RelaySnapshot>,
     pub recorders: Vec<RecorderSnapshot>,
 }
 
@@ -428,6 +437,20 @@ struct MutableRecorder {
     control: Option<Arc<RecorderController>>,
 }
 
+struct MutableRelay {
+    id: RelayId,
+    control: Arc<RtmpRelayController>,
+}
+
+impl MutableRelay {
+    fn snapshot(&self) -> RelaySnapshot {
+        RelaySnapshot {
+            id: self.id,
+            status: self.control.status(),
+        }
+    }
+}
+
 trait IntoRecorderControl {
     fn into_recorder_control(self) -> Option<Arc<RecorderController>>;
 }
@@ -480,6 +503,7 @@ struct MutableStream {
     subscribers: HashSet<SessionId>,
     media: MediaSnapshot,
     media_sample_sequence: u64,
+    relays: Vec<MutableRelay>,
     recorders: HashMap<RecorderId, MutableRecorder>,
     recorder_order: Vec<RecorderId>,
 }
@@ -495,6 +519,7 @@ impl MutableStream {
             subscribers: HashSet::new(),
             media: MediaSnapshot::default(),
             media_sample_sequence: 0,
+            relays: Vec::new(),
             recorders: HashMap::new(),
             recorder_order: Vec::new(),
         }
@@ -516,6 +541,7 @@ impl MutableStream {
             publisher: self.publisher,
             subscriber_count: self.subscribers.len(),
             media: self.media,
+            relays: self.relays.iter().map(MutableRelay::snapshot).collect(),
             recorders,
         }
     }
@@ -562,6 +588,13 @@ impl RtmpRegistry {
     pub fn snapshot(&self) -> Arc<RtmpCatalogSnapshot> {
         let mut inner = self.lock();
         refresh_recorder_statuses(&mut inner);
+        if inner
+            .streams
+            .values()
+            .any(|stream| !stream.relays.is_empty())
+        {
+            inner.snapshot_dirty = true;
+        }
         publish_snapshot_if_dirty(&mut inner, self.capabilities);
         Arc::clone(&inner.current)
     }
@@ -606,9 +639,11 @@ impl RtmpRegistry {
         key: StreamKey,
         session_id: SessionId,
         recorders: Vec<(RecorderDefinition, Arc<RecorderController>)>,
+        relays: Vec<Arc<RtmpRelayController>>,
         at_unix_ms: u64,
     ) -> Result<PublisherRegistration, CatalogError> {
-        let stream_id = self.attach_publisher_inner(key, session_id, recorders, at_unix_ms)?;
+        let stream_id =
+            self.attach_publisher_inner(key, session_id, recorders, relays, at_unix_ms)?;
         Ok(PublisherRegistration {
             registry: Arc::clone(self),
             stream_id,
@@ -662,6 +697,7 @@ impl RtmpRegistry {
                 .into_iter()
                 .map(|definition| (definition, None))
                 .collect(),
+            Vec::new(),
             at_unix_ms,
         )
     }
@@ -671,6 +707,7 @@ impl RtmpRegistry {
         key: StreamKey,
         session_id: SessionId,
         recorder_definitions: Vec<(RecorderDefinition, C)>,
+        relays: Vec<Arc<RtmpRelayController>>,
         at_unix_ms: u64,
     ) -> Result<StreamId, CatalogError>
     where
@@ -699,6 +736,13 @@ impl RtmpRegistry {
         });
         stream.media = MediaSnapshot::default();
         stream.media_sample_sequence = 0;
+        stream.relays = relays
+            .into_iter()
+            .map(|control| MutableRelay {
+                id: RelayId::new(),
+                control,
+            })
+            .collect();
         let mut recorder_order = Vec::with_capacity(recorder_definitions.len());
         stream.recorders = recorder_definitions
             .into_iter()
@@ -813,9 +857,20 @@ impl RtmpRegistry {
         session_id: SessionId,
         at_unix_ms: u64,
     ) -> Result<(), CatalogError> {
-        let controls = {
+        self.detach_publisher_deferred(stream_id, session_id, at_unix_ms)?
+            .shutdown(at_unix_ms);
+        Ok(())
+    }
+
+    fn detach_publisher_deferred(
+        &self,
+        stream_id: StreamId,
+        session_id: SessionId,
+        at_unix_ms: u64,
+    ) -> Result<PublisherShutdown, CatalogError> {
+        let (recorder_controls, relay_controls) = {
             let mut inner = self.lock();
-            let (remove, controls) = {
+            let (remove, recorder_controls, relay_controls) = {
                 let stream = inner
                     .streams
                     .get_mut(&stream_id)
@@ -829,27 +884,36 @@ impl RtmpRegistry {
                 stream.publisher = None;
                 stream.media = MediaSnapshot::default();
                 stream.media_sample_sequence = 0;
-                let controls = stream
+                let recorder_controls = stream
                     .recorders
                     .values()
                     .filter_map(|recorder| recorder.control.clone())
                     .collect::<Vec<_>>();
+                let relay_controls = stream
+                    .relays
+                    .drain(..)
+                    .map(|relay| relay.control)
+                    .collect::<Vec<_>>();
                 stream.recorders.clear();
                 stream.recorder_order.clear();
                 stream.revision = stream.revision.saturating_add(1);
-                (stream.subscribers.is_empty(), controls)
+                (
+                    stream.subscribers.is_empty(),
+                    recorder_controls,
+                    relay_controls,
+                )
             };
             if remove {
                 remove_stream(&mut inner, stream_id);
             }
             mark_mutation(&mut inner, at_unix_ms);
             publish_snapshot_if_dirty(&mut inner, self.capabilities);
-            controls
+            (recorder_controls, relay_controls)
         };
-        for control in controls {
-            control.deactivate(at_unix_ms);
-        }
-        Ok(())
+        Ok(PublisherShutdown {
+            recorder_controls,
+            relay_controls,
+        })
     }
 
     /// Detaches a subscriber.
@@ -1409,6 +1473,29 @@ pub struct PublisherRegistration {
     active: bool,
 }
 
+pub(crate) struct PublisherShutdown {
+    recorder_controls: Vec<Arc<RecorderController>>,
+    relay_controls: Vec<Arc<RtmpRelayController>>,
+}
+
+impl PublisherShutdown {
+    fn empty() -> Self {
+        Self {
+            recorder_controls: Vec::new(),
+            relay_controls: Vec::new(),
+        }
+    }
+
+    pub(crate) fn shutdown(self, at_unix_ms: u64) {
+        for control in self.recorder_controls {
+            control.deactivate(at_unix_ms);
+        }
+        for control in self.relay_controls {
+            control.deactivate();
+        }
+    }
+}
+
 impl PublisherRegistration {
     #[must_use]
     pub const fn stream_id(&self) -> StreamId {
@@ -1430,13 +1517,27 @@ impl PublisherRegistration {
     ///
     /// Returns an error if this registration is no longer the catalog publisher.
     pub fn release(&mut self, at_unix_ms: u64) -> Result<(), CatalogError> {
-        if !self.active {
-            return Ok(());
-        }
-        self.registry
-            .detach_publisher(self.stream_id, self.session_id, at_unix_ms)?;
-        self.active = false;
+        self.release_deferred(at_unix_ms)?.shutdown(at_unix_ms);
         Ok(())
+    }
+
+    pub(crate) fn release_deferred(
+        &mut self,
+        at_unix_ms: u64,
+    ) -> Result<PublisherShutdown, CatalogError> {
+        if !self.active {
+            return Ok(PublisherShutdown::empty());
+        }
+        let at_unix_ms = at_unix_ms.max(self.last_observed_at_unix_ms);
+        let shutdown =
+            self.registry
+                .detach_publisher_deferred(self.stream_id, self.session_id, at_unix_ms)?;
+        self.active = false;
+        Ok(shutdown)
+    }
+
+    pub(crate) const fn last_observed_at_unix_ms(&self) -> u64 {
+        self.last_observed_at_unix_ms
     }
 }
 

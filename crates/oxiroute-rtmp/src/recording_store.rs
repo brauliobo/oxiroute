@@ -391,6 +391,15 @@ impl RecordingFile {
         Arc::clone(&self.preserve_partial)
     }
 
+    pub(crate) fn set_final_relative_name(
+        &mut self,
+        final_relative_name: String,
+    ) -> Result<(), RecordingStoreError> {
+        validate_relative_name(&final_relative_name)?;
+        self.final_relative_name = final_relative_name;
+        Ok(())
+    }
+
     /// Flushes and synchronizes the partial, closes it, then atomically publishes it without
     /// replacing an existing entry. A collision receives a bounded deterministic relative suffix.
     ///

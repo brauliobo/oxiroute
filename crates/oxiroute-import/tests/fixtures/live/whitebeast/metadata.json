@@ -1,0 +1,55 @@
+{
+  "schema_version": 3,
+  "host": "whitebeast",
+  "host_timezone": "America/Recife",
+  "audit_status": "live_origin_hashed_read_only_captured",
+  "sanitized": true,
+  "origin_captures": [
+    {
+      "product": "nginx",
+      "captured_on": "2026-07-26",
+      "read_command": "ssh -T whitebeast 'sudo -n nginx -T 2>&1'",
+      "hash_command": "ssh -T whitebeast 'sudo -n nginx -T 2>&1' | sha256sum",
+      "sha256": "e6832fc9bb18b1bfb9623f16f2959d438ae800922a4e3add9a5e1e87b0031f2f",
+      "availability": "recorded",
+      "raw_bytes_stored": false
+    },
+    {
+      "product": "haproxy",
+      "captured_on": "2026-07-27",
+      "read_command": "sudo -A cat /etc/haproxy/haproxy.cfg",
+      "hash_command": "sha256sum /etc/haproxy/haproxy.cfg",
+      "sha256": "24bfddb26022e2dfc9d778a0683666516fe6cb8521c6473949f84147578ffa27",
+      "availability": "recorded",
+      "raw_bytes_stored": false
+    }
+  ],
+  "sanitizer": {
+    "input": "Ephemeral stdout from the read commands; no unsanitized byte stream was written to disk.",
+    "steps": [
+      "Split nginx -T output at '# configuration file <path>:' markers and retain the referenced nginx configuration files.",
+      "Retain HAProxy configuration syntax from the read-only stdout capture.",
+      "Replace inline authorization credential values with the literal <redacted> marker.",
+      "Exclude private-key, certificate, htpasswd, bearer-token, and other credential file contents while preserving configuration path references.",
+      "Write only sanitized configuration files and calculate each checked-in file's post_sanitization_sha256 independently."
+    ],
+    "raw_bytes_stored": false
+  },
+  "native_versions": { "nginx": "1.30.4", "haproxy": "3.4.2" },
+  "native_version_availability": "recorded",
+  "files": [
+    { "path": "haproxy.cfg", "post_sanitization_sha256": "24bfddb26022e2dfc9d778a0683666516fe6cb8521c6473949f84147578ffa27" },
+    { "path": "nginx/letsencrypt/options-ssl-nginx.conf", "post_sanitization_sha256": "789c4c0a2ed74ad22613230a61a4e8c0a0b14ddafad9656e4bbc89b8eba39c73" },
+    { "path": "nginx/mime.types", "post_sanitization_sha256": "d53950395ecd95d31c996d01ba2a8639ba79d019fbad4b36f6607d2e7932c9e1" },
+    { "path": "nginx/nginx.conf", "post_sanitization_sha256": "573b574441e6179d7c860b953beef2e63d41dd2b9650020cade6ebe17886ed03" },
+    { "path": "nginx/sites-enabled/dev3000.conf", "post_sanitization_sha256": "07c5e3f2d5c145d4d03b48aa1a33af3fc485e358f97322916a155d5f96161c66" },
+    { "path": "nginx/sites-enabled/ernani.conf", "post_sanitization_sha256": "5ecfa2c1ae280a381610d4d547c5cd5022fae8cf60df0ecad653d2a09c55c98f" },
+    { "path": "nginx/sites-enabled/olery.conf", "post_sanitization_sha256": "5d51735b3917cc5266331c1fed2810431111a034a3e89c609df868770f9776f9" },
+    { "path": "nginx/sites-enabled/opencode-voice-8096.conf", "post_sanitization_sha256": "c6e910a039db62a363b7a6214cde87264b02a438f37d9f72ead018955437e0a9" },
+    { "path": "nginx/sites-enabled/openwrt.conf", "post_sanitization_sha256": "eedb0e0f45280468dd8384016e93c3eebaf7684727101142223a201b08811be2" }
+  ],
+  "overlay_inventory": [
+    { "kind": "certificate_material", "count": 6 },
+    { "kind": "htpasswd_file", "count": 3 }
+  ]
+}

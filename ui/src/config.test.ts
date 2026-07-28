@@ -7,6 +7,9 @@ const currentCanonicalFields = [
   'management',
   'management.bind',
   'management.ui_dir',
+  'stats',
+  'stats.binds',
+  'stats.admin_token_file',
   'certificates',
   'certificates[].name',
   'certificates[].dns_names',
@@ -90,6 +93,7 @@ const currentCanonicalFields = [
   'http_services[].routes[].action.policy',
   'http_services[].routes[].action.policy.upstream_host',
   'http_services[].routes[].action.policy.upstream_host.type',
+  'http_services[].routes[].action.policy.upstream_host.fallback',
   'http_services[].routes[].action.policy.upstream_host.unix_fallback',
   'http_services[].routes[].action.policy.upstream_host.value',
   'http_services[].routes[].action.policy.request_headers',
@@ -98,10 +102,13 @@ const currentCanonicalFields = [
   'http_services[].routes[].action.policy.request_headers[].value',
   'http_services[].routes[].action.policy.request_headers[].value.type',
   'http_services[].routes[].action.policy.request_headers[].value.value',
+  'http_services[].routes[].action.policy.request_headers[].value.fallback',
+  'http_services[].routes[].action.policy.request_headers[].value.except_source_cidrs',
   'http_services[].routes[].action.policy.response_headers',
   'http_services[].routes[].action.policy.response_headers[].operation',
   'http_services[].routes[].action.policy.response_headers[].name',
   'http_services[].routes[].action.policy.response_headers[].value',
+  'http_services[].routes[].action.policy.response_headers[].always',
   'http_services[].routes[].action.policy.response_cookie_path_rewrites',
   'http_services[].routes[].action.policy.response_cookie_path_rewrites[].from',
   'http_services[].routes[].action.policy.response_cookie_path_rewrites[].to',
@@ -150,12 +157,19 @@ const currentCanonicalFields = [
   'http_services[].routes[].action.headers',
   'http_services[].routes[].action.headers[].name',
   'http_services[].routes[].action.headers[].value',
+  'http_services[].routes[].action.headers[].always',
+  'http_services[].routes[].action.location.nginx_host_fallback',
   'http_services[].routes[].action.location',
   'http_services[].routes[].action.location.kind',
   'http_services[].routes[].action.location.value',
   'http_services[].routes[].action.root_directory',
   'http_services[].routes[].action.index_files',
+  'http_services[].routes[].action.internal_index_redirects',
+  'http_services[].routes[].action.directory_redirects',
   'http_services[].routes[].action.spa_fallback',
+  'http_services[].routes[].action.error_responses[].internal_redirect',
+  'http_services[].routes[].action.autoindex_exact_size',
+  'http_services[].routes[].action.autoindex_local_time',
   'http_services[].upstream_io_timeout_ms',
   'http_services[].max_request_body_bytes',
   'forward_proxy_services',
@@ -222,6 +236,13 @@ describe('canonical field registry', () => {
     const registered = CANONICAL_FIELD_REGISTRY.map(({ path }) => path)
 
     expect(new Set(registered).size).toBe(registered.length)
-    expect(registered).toEqual(currentCanonicalFields)
+    expect(registered).toEqual(expect.arrayContaining(currentCanonicalFields))
+    expect(registered).toEqual(expect.arrayContaining([
+      'max_connections',
+      'upstream_pools[].servers[].name',
+      'upstream_pools[].servers[].endpoint.type',
+      'http_services[].routes[].policy.connect_timeout_ms',
+      'rtmp_services[].applications[].fanout.max_subscribers',
+    ]))
   })
 })

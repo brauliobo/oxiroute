@@ -13,11 +13,12 @@ use std::{
 use http::{Method, Uri, uri::Authority};
 use openssl::x509::X509;
 use oxiroute_config::{
-    AlpnProtocol, Certificate, CertificateSource, Config, ConfigError, HealthCheck,
-    HealthCheckType, HttpHostSelector, HttpPathSelector, HttpProxyPolicy, HttpRoute,
-    HttpRouteAction, HttpService, HttpVersionPolicy, L4Service, Listener, ListenerBind, Protocol,
-    RtmpApplication, RtmpRecorderStart, RtmpService, TlsProfile, TlsVersion, UpstreamAlgorithm,
-    UpstreamEndpoint, UpstreamPool, UpstreamTls, load_lua,
+    AccessLogPolicy, AlpnProtocol, Certificate, CertificateSource, Config, ConfigError,
+    DnsResolutionPolicy, HealthCheck, HealthCheckType, HealthHttpVersion, HttpAccessPolicy,
+    HttpHostSelector, HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction, HttpService,
+    HttpVersionPolicy, L4Service, Listener, ListenerBind, Protocol, RtmpApplication,
+    RtmpPushTarget, RtmpRecorderStart, RtmpService, Stats, TlsProfile, TlsVersion,
+    UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls, load_lua,
 };
 use oxiroute_rtmp::{RtmpCapabilities, RtmpRegistry, StreamKey};
 use oxiroute_server::{
@@ -34,6 +35,45 @@ use config_support::{
 use fixture_support::{create_secure_root, write_file_with_mode, write_test_identity};
 
 #[test]
+fn startup_dns_cannot_resolve_to_a_statistics_listener() {
+    let mut config = empty_config();
+    config.stats = Some(Stats {
+        binds: vec!["127.0.0.1:18404".parse().expect("stats bind")],
+        admin_token_file: None,
+    });
+    config.upstream_pools.push(UpstreamPool {
+        name: "protected".into(),
+        servers: vec![UpstreamServer {
+            name: "stats-rebind".into(),
+            endpoint: UpstreamEndpoint::Dns {
+                host: "localhost".into(),
+                port: 18404,
+            },
+            max_connections: None,
+            dns_resolution: DnsResolutionPolicy::Startup,
+        }],
+        endpoints: Vec::new(),
+        algorithm: UpstreamAlgorithm::RoundRobin,
+        health_check: None,
+        tls: None,
+        http_versions: HttpVersionPolicy::default(),
+        queue_timeout_ms: None,
+        connect_timeout_ms: None,
+        server_timeout_ms: None,
+        connection_reuse: oxiroute_config::UpstreamConnectionReuse::Safe,
+    });
+
+    let Err(error) = runtime_plan(&config) else {
+        panic!("protected startup DNS must fail")
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("protected management or statistics listener")
+    );
+}
+
+#[test]
 fn distributed_example_compiles_into_an_active_runtime_plan() {
     let config = load_lua(include_str!("../../../oxiroute.example.lua"))
         .expect("distributed example configuration");
@@ -42,6 +82,125 @@ fn distributed_example_compiles_into_an_active_runtime_plan() {
 
     assert_eq!(plan.services.len(), 3);
     assert!(plan.health_supervisor.is_some());
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one integration case keeps all three audited host pool shapes visible"
+)]
+fn whitebeast_hostrouter_and_phoenix_pool_shapes_compile_with_named_policy() {
+    let haproxy_http_check = HealthCheck {
+        kind: HealthCheckType::Http,
+        interval_ms: 2_000,
+        timeout_ms: 1_000,
+        healthy_threshold: 2,
+        unhealthy_threshold: 3,
+        startup: oxiroute_config::HealthStartup::Checking,
+        fast_interval_ms: Some(1_000),
+        down_interval_ms: Some(5_000),
+        host: None,
+        path: Some("/healthz".into()),
+        expected_status: Some(200),
+        http_version: Some(HealthHttpVersion::Http10),
+    };
+    let dns_server = |name: String, port| UpstreamServer {
+        endpoint: UpstreamEndpoint::Dns {
+            host: format!("{name}.lan"),
+            port,
+        },
+        name,
+        max_connections: Some(100),
+        dns_resolution: DnsResolutionPolicy::OnConnect,
+    };
+    let pool = |name: &str,
+                servers: Vec<UpstreamServer>,
+                algorithm,
+                health_check: Option<HealthCheck>| UpstreamPool {
+        name: name.into(),
+        servers,
+        endpoints: Vec::new(),
+        algorithm,
+        health_check,
+        tls: None,
+        http_versions: HttpVersionPolicy::default(),
+        queue_timeout_ms: Some(5_000),
+        connect_timeout_ms: Some(5_000),
+        server_timeout_ms: Some(50_000),
+        connection_reuse: oxiroute_config::UpstreamConnectionReuse::Safe,
+    };
+    let config = Config {
+        max_connections: Some(4_096),
+        upstream_pools: vec![
+            pool(
+                "whitebeast",
+                vec![
+                    dns_server("whitebeast01".into(), 3_000),
+                    dns_server("whitebeast02".into(), 3_000),
+                ],
+                UpstreamAlgorithm::First,
+                Some(haproxy_http_check.clone()),
+            ),
+            pool(
+                "app_nodes",
+                vec![
+                    dns_server("app01".into(), 3_000),
+                    dns_server("app02".into(), 3_000),
+                ],
+                UpstreamAlgorithm::LeastConnections,
+                Some(haproxy_http_check.clone()),
+            ),
+            pool(
+                "phoenix_nodes",
+                (1..=8)
+                    .map(|ordinal| dns_server(format!("phoenix{ordinal:02}"), 4_000))
+                    .collect(),
+                UpstreamAlgorithm::LeastConnections,
+                Some(haproxy_http_check),
+            ),
+        ],
+        ..empty_config()
+    };
+
+    let plan = runtime_plan(&config).expect("host-shaped runtime plan");
+    assert_eq!(plan.max_connections, Some(4_096));
+    assert!(plan.health_supervisor.is_some());
+    assert_eq!(
+        plan.pools
+            .iter()
+            .map(|pool| {
+                let snapshot = pool.health_snapshot();
+                (
+                    snapshot.name,
+                    snapshot.algorithm,
+                    snapshot
+                        .endpoints
+                        .into_iter()
+                        .map(|server| server.name)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "whitebeast".into(),
+                "first",
+                vec!["whitebeast01".into(), "whitebeast02".into()]
+            ),
+            (
+                "app_nodes".into(),
+                "least_connections",
+                vec!["app01".into(), "app02".into()]
+            ),
+            (
+                "phoenix_nodes".into(),
+                "least_connections",
+                (1..=8)
+                    .map(|ordinal| format!("phoenix{ordinal:02}"))
+                    .collect()
+            ),
+        ]
+    );
 }
 
 #[test]
@@ -89,6 +248,7 @@ return {
     },
   },
 }
+
 "#,
     )
     .expect("canonical cache configuration");
@@ -104,6 +264,117 @@ return {
             service,
             route: 0
         } if service == "web"
+    ));
+}
+
+#[test]
+fn buffering_off_is_the_streaming_runtime_and_buffering_on_fails_closed() {
+    let mut config = canonical_config();
+    config.http_services[0].routes[0].policy.request_buffering = true;
+
+    let error = match runtime_plan(&config) {
+        Ok(_) => panic!("buffering-on must not be silently ignored"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        ServicePlanError::RuntimePolicyUnavailable {
+            policy: "http_services[].routes[].policy.buffering_on"
+        }
+    ));
+
+    config.http_services[0].routes[0].policy.request_buffering = false;
+    config.http_services[0].routes[0].policy.response_buffering = false;
+    runtime_plan(&config).expect("explicit buffering-off is Pingora streaming");
+}
+
+#[test]
+fn runtime_rejects_duplicate_routes_until_importer_first_wins_has_resolved_them() {
+    let mut config = canonical_config();
+    let duplicate = config.http_services[0].routes[0].clone();
+    config.http_services[0].routes.push(duplicate);
+
+    assert!(matches!(
+        runtime_plan(&config),
+        Err(ServicePlanError::InvalidConfig(error))
+            if matches!(*error, ConfigError::DuplicateHttpRoute { .. })
+    ));
+
+    config.http_services[0].routes.pop();
+    runtime_plan(&config).expect("importer-resolved first route only");
+}
+
+#[cfg(unix)]
+#[test]
+fn basic_auth_rejects_symlinks_and_hashes_outside_the_explicit_bcrypt_policy() {
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+    let directory = TempDir::new().expect("htpasswd fixture");
+    let unsupported = directory.path().join("unsupported.htpasswd");
+    fs::write(&unsupported, "user:{SHA}VBPuJHI7uixaa6LQGWx4s+5GKNE=\n")
+        .expect("unsupported htpasswd");
+    fs::set_permissions(&unsupported, fs::Permissions::from_mode(0o600)).expect("htpasswd mode");
+    let mut config = canonical_config();
+    config.http_services[0].routes[0].access_policy = Some(HttpAccessPolicy::BasicHtpasswdFile {
+        htpasswd_file_path: unsupported.clone(),
+        realm: "private".into(),
+    });
+    assert!(matches!(
+        runtime_plan(&config),
+        Err(ServicePlanError::AccessPreflight { .. })
+    ));
+
+    let bcrypt = directory.path().join("bcrypt.htpasswd");
+    fs::write(
+        &bcrypt,
+        "user:$2y$05$c4WoMPo3SXsafkva.HHa6uXQZWr7oboPiC2bT/r7q1BB8I2s0BRqC\n",
+    )
+    .expect("bcrypt htpasswd");
+    fs::set_permissions(&bcrypt, fs::Permissions::from_mode(0o600)).expect("bcrypt mode");
+    let link = directory.path().join("linked.htpasswd");
+    symlink(&bcrypt, &link).expect("htpasswd symlink");
+    config.http_services[0].routes[0].access_policy = Some(HttpAccessPolicy::BasicHtpasswdFile {
+        htpasswd_file_path: link,
+        realm: "private".into(),
+    });
+    assert!(matches!(
+        runtime_plan(&config),
+        Err(ServicePlanError::AccessPreflight { .. })
+    ));
+
+    let excessive = directory.path().join("excessive.htpasswd");
+    fs::write(
+        &excessive,
+        "user:$2y$13$c4WoMPo3SXsafkva.HHa6uXQZWr7oboPiC2bT/r7q1BB8I2s0BRqC\n",
+    )
+    .expect("excessive bcrypt htpasswd");
+    fs::set_permissions(&excessive, fs::Permissions::from_mode(0o600)).expect("htpasswd mode");
+    config.http_services[0].routes[0].access_policy = Some(HttpAccessPolicy::BasicHtpasswdFile {
+        htpasswd_file_path: excessive,
+        realm: "private".into(),
+    });
+    assert!(matches!(
+        runtime_plan(&config),
+        Err(ServicePlanError::AccessPreflight { .. })
+    ));
+
+    let mixed = directory.path().join("mixed.htpasswd");
+    fs::write(
+        &mixed,
+        concat!(
+            "first:$2y$05$c4WoMPo3SXsafkva.HHa6uXQZWr7oboPiC2bT/r7q1BB8I2s0BRqC\n",
+            "second:$2y$06$c4WoMPo3SXsafkva.HHa6uXQZWr7oboPiC2bT/r7q1BB8I2s0BRqC\n",
+        ),
+    )
+    .expect("mixed bcrypt htpasswd");
+    fs::set_permissions(&mixed, fs::Permissions::from_mode(0o600)).expect("htpasswd mode");
+    config.http_services[0].routes[0].access_policy = Some(HttpAccessPolicy::BasicHtpasswdFile {
+        htpasswd_file_path: mixed,
+        realm: "private".into(),
+    });
+    assert!(matches!(
+        runtime_plan(&config),
+        Err(ServicePlanError::AccessPreflight { .. })
     ));
 }
 
@@ -198,6 +469,49 @@ fn rtmp_listeners_share_one_service_identity_catalog_and_hub() {
     assert!(second_runtime.hub().has_publisher(&key));
 }
 
+#[test]
+fn compiles_chunk_disabled_access_log_and_application_fanout_policy() {
+    let mut config = canonical_config();
+    let service = &mut config.rtmp_services[0];
+    service.outbound_chunk_size = 8_192;
+    service.access_log = Some(AccessLogPolicy::Disabled);
+    service.applications[0].fanout = oxiroute_config::RtmpFanoutPolicy {
+        max_subscribers: 7,
+        max_queue_messages_per_subscriber: 11,
+        max_queue_bytes_per_subscriber: 4_096,
+    };
+
+    let services = service_specs(&config).expect("lowered RTMP runtime policy");
+    let ServiceKind::Rtmp(plan) = &services[3].kind else {
+        panic!("RTMP service plan");
+    };
+    let limits = plan.hub().limits();
+    assert_eq!(limits.max_subscribers, 7);
+    assert_eq!(limits.max_subscribers_per_stream, 7);
+    assert_eq!(limits.max_queue_messages_per_subscriber, 11);
+    assert_eq!(limits.max_queue_bytes_per_subscriber, 4_096);
+    assert_eq!(limits.max_fanout_bytes, 7 * 4_096);
+}
+
+#[test]
+fn resolves_absent_push_port_without_connecting_and_rejects_direct_listener_loops() {
+    let mut config = canonical_config();
+    config.rtmp_services[0].applications[0]
+        .push_targets
+        .push(RtmpPushTarget {
+            host: "127.0.0.1".into(),
+            port: 1_936,
+            application: "$name".into(),
+        });
+    service_specs(&config).expect("absent push destination is a runtime concern");
+
+    config.rtmp_services[0].applications[0].push_targets[0].port = 1_935;
+    assert!(matches!(
+        service_specs(&config),
+        Err(ServicePlanError::RtmpPushDirectLoop { target: 0, .. })
+    ));
+}
+
 #[cfg(unix)]
 #[test]
 fn recorder_planning_is_read_only_and_runtime_activation_opens_the_store() {
@@ -273,10 +587,14 @@ fn excludes_unreferenced_rtmp_services_from_active_capabilities() {
     let mut config = canonical_config();
     config.rtmp_services.push(RtmpService {
         name: "orphan".into(),
+        outbound_chunk_size: 4_096,
+        access_log: None,
         applications: vec![RtmpApplication {
             name: "unused".into(),
             live: true,
             idle_streams: false,
+            push_targets: Vec::new(),
+            fanout: oxiroute_config::RtmpFanoutPolicy::default(),
             recorders: vec![recorder(
                 "manual-orphan",
                 RtmpRecorderStart::Manual,
@@ -658,8 +976,13 @@ fn refuses_to_discard_a_required_health_supervisor() {
         timeout_ms: 100,
         healthy_threshold: 1,
         unhealthy_threshold: 1,
+        startup: oxiroute_config::HealthStartup::default(),
+        fast_interval_ms: None,
+        down_interval_ms: None,
         host: None,
         path: None,
+        expected_status: None,
+        http_version: None,
     });
 
     assert!(matches!(
@@ -722,6 +1045,7 @@ fn runtime_preflight_preserves_every_endpoint_identity_without_connecting() {
     let mut config = canonical_config();
     config.listeners[2].bind = ListenerBind::Unix {
         path: "/tmp/oxiroute-listener-preflight-does-not-exist.sock".into(),
+        mode: None,
     };
     config.upstream_pools[0].endpoints = vec![
         socket_endpoint(3000),
@@ -739,6 +1063,7 @@ fn runtime_preflight_preserves_every_endpoint_identity_without_connecting() {
         plan.services[2].bind,
         ListenerBind::Unix {
             path: "/tmp/oxiroute-listener-preflight-does-not-exist.sock".into(),
+            mode: None,
         }
     );
     let endpoints = &plan.pools[0].health_snapshot().endpoints;
@@ -777,8 +1102,18 @@ fn http_access_and_static_preflight_is_read_only_secure_and_redacted() {
         });
     config.http_services[0].routes[0].action = HttpRouteAction::StaticFiles {
         root_directory: root.clone(),
+        path_mapping: oxiroute_config::HttpStaticPathMapping::default(),
         index_files: vec!["index.html".into()],
+        internal_index_redirects: false,
+        directory_redirects: false,
         spa_fallback: None,
+        try_files: Vec::new(),
+        autoindex: false,
+        autoindex_exact_size: true,
+        autoindex_local_time: false,
+        mime: oxiroute_config::HttpStaticMimePolicy::default(),
+        headers: Vec::new(),
+        error_responses: Vec::new(),
     };
 
     runtime_plan(&config).expect("secure read-only HTTP preflight");
@@ -823,6 +1158,7 @@ fn http_access_and_static_preflight_is_read_only_secure_and_redacted() {
     assert!(!error.to_string().contains(&root.display().to_string()));
 }
 
+#[allow(clippy::too_many_lines)]
 fn canonical_config() -> Config {
     Config {
         listeners: vec![
@@ -833,6 +1169,7 @@ fn canonical_config() -> Config {
                 service: Some("api".into()),
                 tls_profile: None,
                 max_connections: Some(500),
+                downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
             },
             Listener {
                 name: "web-alt".into(),
@@ -841,6 +1178,7 @@ fn canonical_config() -> Config {
                 service: Some("api".into()),
                 tls_profile: None,
                 max_connections: Some(250),
+                downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
             },
             Listener {
                 name: "database".into(),
@@ -849,6 +1187,7 @@ fn canonical_config() -> Config {
                 service: Some("database".into()),
                 tls_profile: None,
                 max_connections: Some(100),
+                downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
             },
             Listener {
                 name: "live".into(),
@@ -857,24 +1196,35 @@ fn canonical_config() -> Config {
                 service: Some("live".into()),
                 tls_profile: None,
                 max_connections: Some(50),
+                downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
             },
         ],
         upstream_pools: vec![
             UpstreamPool {
                 name: "api".into(),
+                servers: Vec::new(),
                 endpoints: vec![socket_endpoint(3000), socket_endpoint(3001)],
                 algorithm: UpstreamAlgorithm::RoundRobin,
                 health_check: None,
                 tls: None,
                 http_versions: HttpVersionPolicy::default(),
+                queue_timeout_ms: None,
+                connect_timeout_ms: None,
+                server_timeout_ms: None,
+                connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
             },
             UpstreamPool {
                 name: "database".into(),
+                servers: Vec::new(),
                 endpoints: vec![socket_endpoint(5432)],
                 algorithm: UpstreamAlgorithm::RoundRobin,
                 health_check: None,
                 tls: None,
                 http_versions: HttpVersionPolicy::default(),
+                queue_timeout_ms: None,
+                connect_timeout_ms: None,
+                server_timeout_ms: None,
+                connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
             },
         ],
         http_services: vec![HttpService {
@@ -888,6 +1238,7 @@ fn canonical_config() -> Config {
                 },
                 methods: vec!["GET".into()],
                 access_policy: None,
+                policy: oxiroute_config::HttpRoutePolicy::default(),
                 action: HttpRouteAction::Proxy {
                     upstream_pool: "api".into(),
                     policy: HttpProxyPolicy {
@@ -901,13 +1252,19 @@ fn canonical_config() -> Config {
             }],
             upstream_io_timeout_ms: 15_000,
             max_request_body_bytes: Some(2 * 1024 * 1024),
+            gzip: None,
+            access_log: None,
         }],
         rtmp_services: vec![RtmpService {
             name: "live".into(),
+            outbound_chunk_size: 4_096,
+            access_log: None,
             applications: vec![RtmpApplication {
                 name: "live".into(),
                 live: true,
                 idle_streams: true,
+                push_targets: Vec::new(),
+                fanout: oxiroute_config::RtmpFanoutPolicy::default(),
                 recorders: Vec::new(),
             }],
         }],

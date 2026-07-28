@@ -16,9 +16,14 @@ The daemon currently accepts the following canonical object families:
 ```lua
 return {
   version = 1,
+  max_connections = 4096,
   management = {
     bind = "127.0.0.1:9080",
     ui_dir = "./ui/dist",
+  },
+  stats = {
+    binds = { "127.0.0.1:8404", "[::1]:8404" },
+    admin_token_file = "/etc/oxiroute/stats-admin.token",
   },
   certificates = {
     {
@@ -51,7 +56,7 @@ return {
     },
     {
       name = "postgres",
-      bind = { type = "unix", path = "/run/oxiroute/postgres.sock" },
+      bind = { type = "unix", path = "/run/oxiroute/postgres.sock", mode = 432 },
       protocol = "tcp",
       service = "postgres",
       max_connections = null,
@@ -66,9 +71,13 @@ return {
   upstream_pools = {
     {
       name = "web",
-      endpoints = {
-        { type = "socket", address = "127.0.0.1:3000" },
-        { type = "dns", host = "backend.example.com", port = 3001 },
+      servers = {
+        { name = "web-1", endpoint = { type = "socket", address = "127.0.0.1:3000" } },
+        {
+          name = "web-2",
+          endpoint = { type = "dns", host = "backend.example.com", port = 3001 },
+          dns_resolution = "startup",
+        },
       },
       algorithm = "round_robin",
       health_check = {
@@ -83,14 +92,20 @@ return {
     },
     {
       name = "postgres",
-      endpoints = {
-        { type = "unix", path = "/run/postgresql/.s.PGSQL.5432" },
+      servers = {
+        {
+          name = "postgres-1",
+          endpoint = { type = "unix", path = "/run/postgresql/.s.PGSQL.5432" },
+        },
       },
     },
     {
       name = "secure-api",
-      endpoints = {
-        { type = "dns", host = "origin.example.com", port = 443 },
+      servers = {
+        {
+          name = "secure-api-1",
+          endpoint = { type = "dns", host = "origin.example.com", port = 443 },
+        },
       },
       tls = {
         server_name = "origin.example.com",
@@ -179,17 +194,28 @@ return {
 Current constraints:
 
 - `version` MUST be `1`.
+- Root `max_connections` is an optional aggregate process admission limit. Omission or explicit
+  `null` means unbounded; a configured value MUST be a positive exact JSON integer.
 - `management` is optional and MUST use a loopback IP with a nonzero port. The current
   configuration routes use bearer authentication, but the schema does not expose a remote
   management mode.
 - `management.ui_dir` optionally points to a prebuilt Vue distribution loaded into memory at daemon startup.
+- `stats` is optional and accepts one to eight nonoverlapping IPv4/IPv6 binds. Every bind serves
+  public read-only `/metrics` and `/ready` responses. `/stats` and `/api/v1/status` require a
+  loopback peer and the configured Bearer token. Server
+  enable/disable uses `POST /stats/admin` with JSON `{ "pool": "...", "server": "...", "action":
+  "enable" | "disable" }` plus `If-Generation-Revision`, and succeeds only for a loopback peer with
+  exactly one matching Bearer token loaded from a no-follow regular file whose mode is `0400` or
+  `0600`. GET and HEAD can never mutate pool state. Metric labels omit listener binds, upstream
+  addresses, paths, stream keys, and token material.
 - Names MUST be unique within their certificate, TLS-profile, listener, pool, HTTP-service,
   RTMP-service, or L4-service namespace.
 - Listener binds MUST be unique after normalization.
 - Names MUST contain non-whitespace text without surrounding whitespace or control characters.
 - A listener `bind` is exactly one tagged object: `{ type = "socket", address = "IP:port" }` or
-  `{ type = "unix", path = "/absolute/socket/path" }`. Socket ports MUST be nonzero. Exact socket
-  duplicates, wildcard socket binds that overlap another listener or management bind, and duplicate
+  `{ type = "unix", path = "/absolute/socket/path", mode = 432 }`. The optional Unix mode contains
+  permission bits `001` through `777`, represented as an integer. Socket ports MUST be nonzero. Exact socket
+  duplicates, wildcard socket binds that overlap another listener, management, or stats bind, and duplicate
   normalized Unix paths are rejected.
 - Unix paths MUST be valid UTF-8 absolute paths of at most 107 bytes. Repeated `/` separators are
   collapsed; a root-only path, trailing `/`, NUL, and `.` or `..` segments are rejected. Unix
@@ -205,8 +231,10 @@ Current constraints:
   Excess accepted connections are closed immediately after TCP accept, before TLS handshakes or
   protocol handling, and one admission remains charged for the complete transport connection
   lifetime. Deterministic canonical rendering writes the unbounded value as explicit `null`.
-- Pools MUST contain between 1 and 256 unique tagged endpoints, and one configuration MUST contain
-  at most 1024 pool endpoints in total. An endpoint is exactly one of
+- Pools MUST contain between 1 and 256 uniquely named servers, and one configuration MUST contain
+  at most 1024 servers in total. Each server owns one tagged `endpoint`, optional positive
+  `max_connections`, and `dns_resolution = "startup" | "on_connect"`. Startup resolution applies
+  only to DNS endpoints. An endpoint is exactly one of
   `{ type = "socket", address = "IP:port" }`,
   `{ type = "dns", host = "origin.example.com", port = 443 }`, or
   `{ type = "unix", path = "/absolute/socket/path" }`. Socket and DNS ports MUST be nonzero.
@@ -219,15 +247,22 @@ Current constraints:
   L4 traffic try that same deterministic address order until one connects; overflow and empty
   answers fail closed. One configured connect timeout bounds DNS resolution plus all address
   attempts for the logical endpoint.
-- Endpoints MUST be unique after socket, DNS-name, and Unix-path normalization. A socket endpoint
+- Server names and endpoints MUST both be unique after socket, DNS-name, and Unix-path normalization. A socket endpoint
   cannot directly target the loopback management endpoint because that would bypass its exposure
   boundary. Pools containing any Unix endpoint cannot enable upstream TLS or active health checks.
-- `algorithm` accepts `round_robin` (the default) or `least_connections`. Both skip unavailable and
-  request-excluded endpoints. Least-connections selects the eligible endpoint with the fewest
-  active leases and rotates deterministic ties from the pool cursor. A lease is acquired before
-  connection preparation and released when the HTTP request or L4 relay attempt finishes, including
-  failure paths.
+- `algorithm` accepts `round_robin` (the default), `least_connections`, or `first`. All skip unavailable and
+  request-excluded servers. `first` chooses the first healthy administrative server with capacity.
+  Least-connections selects the eligible named server with the least active work and rotates
+  deterministic ties from the pool cursor. A capacity permit is acquired before connection
+  preparation and, for reusable HTTP, remains held by the physical upstream socket through idle
+  pooling and later requests. Nonreusable HTTP and L4 attempts release it at transport teardown.
+  When every eligible server is at capacity, `queue_timeout_ms` bounds the wait for a released slot;
+  timeout and cancellation remove exactly one waiter.
 - HTTP services MUST contain at least one route. Route pool references MUST resolve.
+- Listener `downstream_timeouts` independently represents optional client, request-header, and HTTP
+  keepalive deadlines from 1 through 86400000 milliseconds. Request and keepalive deadlines are
+  accepted only on HTTP listener protocols. The HTTP runtime enforces all three through downstream
+  read deadlines; configured Unix listener modes are applied after descriptor-safe reservation.
 - A missing route `host` matches any authority. A host may be an exact DNS name/IP literal or a
   single-label wildcard such as `*.example.com`; names are normalized to lowercase.
 - `path_prefix` defaults to `/`, matches only complete path segments, and has trailing slashes
@@ -242,7 +277,12 @@ Current constraints:
   path separators are rejected with `400` before upstream selection. Route prefixes use the same
   path policy so configured routes remain reachable. Accepted percent-triplet hex digits are
   canonicalized to uppercase for matching.
-- `upstream_io_timeout_ms` defaults to `30000` and applies independently to upstream connect,
+- Each route owns a `policy` with a nullable body limit, separate connect/read/write deadlines, and
+  explicit request/response buffering booleans. Deadlines default to `30000`, buffering defaults to
+  false, and the body limit defaults to 10 MiB while explicit `null` means unbounded. Buffering-off
+  is the active Pingora streaming behavior; either buffering flag set to true fails startup.
+- The version-1 service fields `upstream_io_timeout_ms` and `max_request_body_bytes` remain accepted
+  because current canonical files use them. New configuration uses route policy. The service I/O timeout defaults to `30000` and applies independently to upstream connect,
   read-inactivity, and write-inactivity operations; progress resets the I/O deadline, so this is
   not a total request deadline. Omitted `max_request_body_bytes` defaults to `10485760`; explicit
   `null` means unbounded streaming, and a configured limit MUST be positive. Oversized declared
@@ -252,7 +292,9 @@ Current constraints:
 - `max_retries` is the number of additional connection attempts after the first, defaults to `0`,
   and MUST be at most `2`. Retries are permitted only for bodyless `GET` and `HEAD` requests that
   are not protocol upgrades, only after a transient connection-establishment failure, and only
-  when a distinct canonical endpoint identity remains. Trying alternate addresses for one DNS
+  when the configured `target` can be selected. `target = "next_server"` requires a distinct named
+  server; `target = "same_server"` reselects the same named server. `delay_ms` defaults to `0`, is
+  bounded to `60000`, and is applied before each route retry. Trying alternate addresses for one DNS
   endpoint is transport fallback and does not consume `max_retries`; route retry begins only after
   that bounded address set is exhausted. Established-connection errors, response statuses,
   body-bearing requests, unsafe methods, and upgrades are never retried. Each attempt has its own
@@ -264,6 +306,46 @@ Current constraints:
 - Unknown fields and unknown protocol values are errors.
 - Source is limited to 1 MiB, extra Lua memory to 4 MiB, and execution to one million instructions.
 - No Lua standard libraries are loaded and binary chunks are rejected.
+
+### Host replacement policy objects
+
+The remaining host-required behavior uses closed typed objects rather than arbitrary nginx or
+HAProxy directives:
+
+- Pools optionally define one-day-bounded queue/connect/server timeouts and
+  `connection_reuse = "never" | "safe" | "always"`.
+- Health checks add startup state, regular/fast/down intervals, exact HTTP status, HTTP/1.0 or 1.1,
+  and an optional Host authority. Omitted HTTP status and version retain 200 and HTTP/1.1 behavior.
+- `nginx_leading_wildcard` stores a suffix matched by one or more leading labels;
+  `nginx_leading_dot` additionally matches the suffix itself. Regex names remain unsupported.
+- Dynamic request-header values are closed to appended X-Forwarded-For, downstream scheme, and one
+  named incoming header. Values derived from request headers carry an explicit 1 through 8192 byte
+  output bound. Hop-by-hop mutations remain forbidden except for the exact standard nginx WebSocket
+  pair, which is bounds-checked but left under Pingora's upgrade ownership.
+- Basic access loads one bounded no-follow regular htpasswd file with mode `0400` or `0600`, accepts
+  only bcrypt `$2a$`, `$2b$`, and `$2y$` hashes, and verifies credentials off the async executor.
+  Cookie attribute rules are keyed by exact cookie name and set or clear Secure/HttpOnly and SameSite.
+- Static actions choose root or alias path mapping and support an ordered closed `try_files` list,
+  index lookup, exact/human autoindex sizes, UTC/local autoindex timestamps, bounded MIME mappings,
+  literal headers, status-to-relative-file error responses, single byte ranges, and 416 responses.
+  Roots are descriptor-pinned; files are opened no-follow and stream in 64 KiB chunks up to 8 GiB.
+- Gzip exposes only level 1 through 9 and bounded content types. HTTP and RTMP access logs are either
+  disabled or use the implementation's fixed structured format at one validated absolute path;
+  custom format strings are deliberately absent. HTTP JSONL logging uses a bounded asynchronous
+  writer opened through descriptor-pinned ancestors. HTTP gzip uses Pingora streaming for exact
+  configured content types. HTTP access events omit URI, query, Authorization, Cookie, and values
+  derived from credentials.
+
+Anonymous `endpoints` remain decode-only compatibility for current version-1 files. Validation
+assigns deterministic `endpoint-N` identities, clears the legacy collection, and canonical Lua
+rendering emits only `servers`.
+
+The server runtime enforces aggregate/listener admission, Unix modes, downstream and route-local
+policies, nginx suffix routing, bounded headers/auth/cookies, static extensions, gzip and HTTP
+logging, named-server capacity and bounded queue waits, pool deadlines/reuse, startup/on-connect DNS,
+all three balancing algorithms, and the extended health policy. Buffering-on and active cache
+policies fail startup. RTMP relay/fanout controls and recorder naming choices still require runtime
+compilation. Importers remain outside this server-runtime boundary.
 
 ### Downstream certificates and TLS profiles
 
@@ -374,8 +456,11 @@ omitted, Pingora uses its default trust roots.
 upstream_pools = {
   {
     name = "secure-origin",
-    endpoints = {
-      { type = "dns", host = "origin.example.com", port = 443 },
+    servers = {
+      {
+        name = "origin-1",
+        endpoint = { type = "dns", host = "origin.example.com", port = 443 },
+      },
     },
     tls = {
       server_name = "origin.example.com",
@@ -410,7 +495,7 @@ upstream_pools = {
 
 ### Active pool health checks
 
-`health_check` is optional on every upstream pool. Omitting it leaves the pool's endpoints in the
+`health_check` is optional on every upstream pool. Omitting it leaves the pool's servers in the
 selectable `unchecked` state. When present, it has this strict schema:
 
 | Field | Required | Default | Constraint |
@@ -420,26 +505,32 @@ selectable `unchecked` state. When present, it has this strict schema:
 | `timeout_ms` | no | `1000` | `1` through `30000` inclusive and less than `interval_ms` |
 | `healthy_threshold` | no | `1` | `1` through `100` inclusive |
 | `unhealthy_threshold` | no | `3` | `1` through `100` inclusive |
-| `host` | HTTP only | none | Required HTTP authority, at most 255 bytes, without userinfo; any port MUST be numeric |
+| `startup` | no | `checking` | `healthy`, `unhealthy`, or `checking` |
+| `fast_interval_ms` | no | none | `1000` through `86400000` inclusive |
+| `down_interval_ms` | no | none | `1000` through `86400000` inclusive |
+| `host` | HTTP only | none | Optional HTTP authority, at most 255 bytes, without userinfo; any port MUST be numeric |
 | `path` | HTTP only | none | Required query-free absolute path, at most 2048 bytes, accepted by the request-path ambiguity policy |
+| `expected_status` | HTTP only | `200` | `200` through `599` |
+| `http_version` | HTTP only | `1.1` | `1.0` or `1.1` |
 
-TCP checks accept neither `host` nor `path` and succeed when a connection to the endpoint is
-established. HTTP checks send a plaintext HTTP/1.1 `GET` to the endpoint using the configured path
-and exact `Host` header; only status `200` succeeds. `timeout_ms` bounds the complete probe. DNS
+TCP checks accept no HTTP-specific fields and succeed when a connection to the endpoint is
+established. HTTP checks use the configured path, version, optional Host, and expected status.
+`timeout_ms` bounds the complete probe. DNS
 endpoints are resolved for each probe and each returned address may be attempted; Unix endpoints
 cannot be health checked.
 
-Health-enabled endpoints start `unknown` and are not selectable. The healthy threshold must be met
-by consecutive successes before an unknown or unhealthy endpoint becomes `healthy`; the unhealthy
-threshold must be met by consecutive failures before an unknown or healthy endpoint becomes
-`unhealthy`.
+Health-enabled servers start in the configured `healthy`, `unhealthy`, or non-selectable `checking`
+state. The healthy threshold must be met by consecutive successes before a checking or unhealthy
+server becomes `healthy`; the unhealthy threshold must be met by consecutive failures before a
+checking or healthy server becomes `unhealthy`.
 Success resets the failure streak and failure detail, while failure resets the success streak.
 Round robin and least-connections selection skip unknown and unhealthy endpoints, and a matched
 HTTP route whose pool has no selectable endpoint returns `503`.
 
-Each endpoint runs its first probe immediately, then waits its pool's `interval_ms` after that probe
-completes. A slow endpoint does not shift another endpoint's schedule, even within the same pool.
-All pools share a limit of 32 concurrent probes, and an endpoint never has overlapping probes.
+Each server runs its first probe immediately, then waits `fast_interval_ms` while checking,
+`down_interval_ms` while unhealthy, or `interval_ms` while healthy; an omitted state-specific
+interval uses `interval_ms`. A slow server does not shift another server's schedule, even within the
+same pool. All pools share a limit of 32 concurrent probes, and a server never overlaps its probes.
 
 ### Cache policy timeline
 
@@ -562,8 +653,9 @@ or plugin credentials. Canonical output MUST NOT inline private keys or DNS API 
 
 ### RTMP service and recorder
 
-The current RTMP model supports live applications and canonical recorder policies. Relay, VOD,
-segment, callback, access, and logging policies remain future fields. The strict nginx-RTMP
+The current RTMP model supports live applications, structured push targets, bounded fanout,
+service access-log policy, and canonical recorder policies. Pull relay, VOD, callbacks, and media
+segmenters remain future fields. The strict nginx-RTMP
 importer retains source tokens, effective inheritance, terminal decisions, and provenance for its
 supported subset as defined in `RTMP_SPEC.md`.
 
@@ -583,11 +675,21 @@ listeners = {
 rtmp_services = {
   {
     name = "live",
+    outbound_chunk_size = 4096,
+    access_log = { type = "disabled" },
     applications = {
       {
         name = "live",
         live = true,
-        idle_streams = true,
+          idle_streams = true,
+          push_targets = {
+            { host = "127.0.0.1", port = 1936, application = "$name" },
+          },
+          fanout = {
+            max_subscribers = 1024,
+            max_queue_messages_per_subscriber = 256,
+            max_queue_bytes_per_subscriber = 8388608,
+          },
         recorders = {
           {
             name = "archive",
@@ -607,6 +709,16 @@ permits a viewer to wait before a publisher. One application accepts at most 8 u
 recorders, one configuration accepts at most 256 recorders and 64 normalized recording roots, and
 recorders require `live = true`.
 
+`outbound_chunk_size` defaults to 4096, is bounded to 1 MiB, and is announced by the server session
+on wire. Push targets are unique structured host, port, and application tuples; they are resolved
+and pinned during runtime planning, reject any resolved direct listener loop, and are valid only for
+live applications. Application `$name` expands to the exact source stream name; the destination
+stream name is always the exact source stream name. Each publisher incarnation owns an independent
+bounded relay worker. An unavailable target retries every three seconds and can recover later;
+relay backpressure never blocks local viewers or recorders. Fanout limits default to 1024
+subscribers, 256 queued messages, and 8 MiB per subscriber and compile per application.
+Other `$` substitutions are rejected instead of being treated as implicit templates.
+
 Recorder fields are:
 
 | Field | Required | Default | Constraint |
@@ -615,7 +727,10 @@ Recorder fields are:
 | `start` | no | `"continuous"` | `"continuous"` or `"manual"`. |
 | `root_directory` | yes | none | Normalized absolute UTF-8 directory path, at most 4096 bytes. |
 | `suffix_template` | no | `".flv"` | At most 128 bytes; only UTC `%Y`, `%m`, `%d`, `%H`, `%M`, `%S`, and `%%`; no NUL or path separator. |
-| `append_unix_seconds` | no | `false` | Appends `-<open Unix seconds>` before the suffix. |
+| `append_unix_seconds` | no | `false` | Appends `-<segment-start Unix seconds>` before the suffix. |
+| `timezone` | no | `"utc"` | `"utc"` or an explicit IANA name such as `"America/Bahia"`; historical DST comes from `chrono-tz`. nginx imports require one uniquely consumed captured-host timezone overlay. |
+| `time_basis` | no | `"segment_start"` | `"segment_start"` renders suffix time fields from the current segment's opening timestamp; `"segment_end"` uses its closing timestamp. |
+| `segment_naming` | no | `"safe_unique"` | Sequenced safe names or `"nginx_compatible"`, which rerenders the suffix and `record_unique` seconds for every segment; publication remains no-replace and collision-safe. |
 | `rotation_interval_ms` | no | `null` | `null` or `1` through `2147483647`. |
 | `max_queue_messages` | no | `256` | `1` through `65536`. |
 | `max_queue_bytes` | no | `8388608` | `1` through `1073741824`, and no greater than `max_storage_bytes`. |
@@ -640,6 +755,10 @@ Existing regular files count against root quotas. Stores for the same directory 
 byte, file, and active-recorder counters within one daemon process. The ownership protocol protects
 partial cleanup across processes, but quota counters are not distributed: multiple daemon
 processes can collectively exceed the configured limits and require deployment-level isolation.
+The suffix does not select a container: recorder output remains FLV even when the suffix is `.mp4`.
+RTMP `access_log = { type = "disabled" }` explicitly emits no session access records while
+transport, protocol, relay, and recorder failures remain operationally observable. RTMP file access
+logging is rejected at runtime planning.
 
 ## Deterministic rendering
 
@@ -661,7 +780,7 @@ The backend, not the browser, renders typed JSON into canonical Lua.
   watcher prerequisites before any disk mutation.
 - Writes use a unique same-directory temporary file, complete write, permission setting,
   file sync, atomic rename, and parent-directory sync.
-- A changed save returns `saved_restart_required`; an idempotent save of the active generation
+- A changed save returns `saved_pending_activation`; an idempotent save of the active generation
   returns `unchanged_active`. Neither path activates a new generation in the running daemon.
 - There is no canonical-config watcher. External changes are observed only on an API read or a
   later revision-checked write; invalid external edits make the persisted configuration

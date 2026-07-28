@@ -7,8 +7,8 @@ use oxiroute_import::{
     DiagnosticStage, Report,
     haproxy::{
         BlockingReason, CanonicalCandidate as HaproxyCandidate, Configuration, DecisionOutcome,
-        E_UNCONSUMED_DIRECTIVE, E_UNKNOWN_DIRECTIVE, EffectiveConfiguration, Externalization,
-        SectionKind, import_parsed as import_haproxy, resolve_parsed,
+        E_UNCONSUMED_DIRECTIVE, E_UNKNOWN_DIRECTIVE, EffectiveConfiguration, SectionKind,
+        import_parsed as import_haproxy, resolve_parsed,
     },
 };
 use syn::Item;
@@ -123,7 +123,7 @@ fn haproxy_manifest_contexts_and_http_matching_requirements_are_executable() {
     ));
     assert!(matches!(
         unix_listener.value().config.as_ref().unwrap().listeners[0].bind,
-        ListenerBind::Unix { ref path } if path == std::path::Path::new("/run/coverage.sock")
+        ListenerBind::Unix { ref path, .. } if path == std::path::Path::new("/run/coverage.sock")
     ));
 
     let dns_source = haproxy_tcp_base().replace(
@@ -132,7 +132,7 @@ fn haproxy_manifest_contexts_and_http_matching_requirements_are_executable() {
     );
     let dns = import_haproxy(parse_haproxy_source("dns.cfg", dns_source.as_bytes()));
     assert!(matches!(
-        dns.value().config.as_ref().unwrap().upstream_pools[0].endpoints[0],
+        dns.value().config.as_ref().unwrap().upstream_pools[0].servers[0].endpoint,
         UpstreamEndpoint::Dns { ref host, port: 5432 } if host == "database.internal"
     ));
 
@@ -142,7 +142,7 @@ fn haproxy_manifest_contexts_and_http_matching_requirements_are_executable() {
     );
     let unix = import_haproxy(parse_haproxy_source("unix.cfg", unix_source.as_bytes()));
     assert!(matches!(
-        unix.value().config.as_ref().unwrap().upstream_pools[0].endpoints[0],
+        unix.value().config.as_ref().unwrap().upstream_pools[0].servers[0].endpoint,
         UpstreamEndpoint::Unix { ref path } if path == std::path::Path::new("/run/database.sock")
     ));
 
@@ -173,6 +173,7 @@ fn assert_haproxy_lowered_subset(entries: &[DirectiveForm]) {
         .collect::<BTreeSet<_>>();
     let expected = [
         "directive.haproxy.balance.roundrobin-tcp",
+        "directive.haproxy.maxconn.global",
         "directive.haproxy.bind.tcp",
         "directive.haproxy.bind.unix-tcp",
         "directive.haproxy.default-backend.tcp",
@@ -183,15 +184,20 @@ fn assert_haproxy_lowered_subset(entries: &[DirectiveForm]) {
         "directive.haproxy.no-option.redispatch-tcp",
         "directive.haproxy.retries.zero-tcp",
         "directive.haproxy.balance.leastconn-tcp",
+        "directive.haproxy.balance.first-tcp",
         "directive.haproxy.server.dns-tcp",
         "directive.haproxy.server.static-ip-tcp",
         "directive.haproxy.server.unix-tcp",
+        "directive.haproxy.server.health-options",
+        "directive.haproxy.default-server.health-options",
         "directive.haproxy.maxconn.proxy-http",
         "directive.haproxy.mode.http",
         "directive.haproxy.bind.http",
         "directive.haproxy.bind.unix-http",
         "directive.haproxy.default-backend.http",
         "directive.haproxy.balance.roundrobin-http",
+        "directive.haproxy.balance.leastconn-http",
+        "directive.haproxy.balance.first-http",
         "directive.haproxy.server.static-ip-http",
         "directive.haproxy.server.dns-http",
         "directive.haproxy.server.unix-http",
@@ -201,7 +207,9 @@ fn assert_haproxy_lowered_subset(entries: &[DirectiveForm]) {
         "directive.haproxy.use-backend",
         "directive.haproxy.no-option.redispatch-http",
         "directive.haproxy.no-option.forwardfor-http",
+        "directive.haproxy.option.forwardfor",
         "directive.haproxy.no-option.httpchk-http",
+        "directive.haproxy.option.http-server-close",
         "directive.haproxy.http-request.return",
         "directive.haproxy.http-request.redirect",
         "directive.haproxy.http-request.set-header",
@@ -409,9 +417,11 @@ fn assert_haproxy_entry_probe(
             }
         }
         Disposition::Externalized => {
-            assert!(decisions.iter().any(|decision| {
-                decision.outcome == DecisionOutcome::Externalized(Externalization::ProcessOwned)
-            }));
+            assert!(
+                decisions.iter().any(|decision| {
+                    matches!(decision.outcome, DecisionOutcome::Externalized(_))
+                })
+            );
             assert!(
                 lowered.value().config.is_some(),
                 "{} blocks activation ({label})",
@@ -421,6 +431,10 @@ fn assert_haproxy_entry_probe(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the exhaustive directive fixture registry stays adjacent to its manifest IDs"
+)]
 fn haproxy_context_directives(entry: &DirectiveForm, context: &str) -> Vec<&'static str> {
     if entry.id.starts_with("directive.haproxy.section.") {
         return vec![""];
@@ -447,8 +461,13 @@ fn haproxy_context_directives(entry: &DirectiveForm, context: &str) -> Vec<&'sta
         "directive.haproxy.default-backend.http" => vec!["default_backend fallback"],
         "directive.haproxy.balance.roundrobin-tcp"
         | "directive.haproxy.balance.roundrobin-http" => vec!["balance roundrobin"],
-        "directive.haproxy.balance.leastconn-tcp" | "directive.haproxy.balance.leastconn-http" => {
-            vec!["balance leastconn"]
+        "directive.haproxy.balance.leastconn-tcp" => vec!["balance leastconn"],
+        "directive.haproxy.balance.leastconn-http" => {
+            vec!["balance leastconn\noption http-server-close"]
+        }
+        "directive.haproxy.balance.first-tcp" => vec!["balance first"],
+        "directive.haproxy.balance.first-http" => {
+            vec!["balance first\noption http-server-close"]
         }
         "directive.haproxy.server.static-ip-tcp" | "directive.haproxy.server.static-ip-http" => {
             vec!["server primary 127.0.0.1:5432"]
@@ -462,6 +481,9 @@ fn haproxy_context_directives(entry: &DirectiveForm, context: &str) -> Vec<&'sta
         "directive.haproxy.server.health-options" => {
             vec!["server primary 127.0.0.1:5432 check inter 2s rise 2 fall 3"]
         }
+        "directive.haproxy.default-server.health-options" => {
+            vec!["default-server check inter 2s fastinter 1s downinter 5s rise 2 fall 3"]
+        }
         "directive.haproxy.retries.zero-tcp" | "directive.haproxy.retries.zero-http" => {
             vec!["retries 0"]
         }
@@ -469,6 +491,7 @@ fn haproxy_context_directives(entry: &DirectiveForm, context: &str) -> Vec<&'sta
         "directive.haproxy.timeout" => vec![
             "timeout client 30s",
             "timeout connect 30s",
+            "timeout queue 30s",
             "timeout server 30s",
             "timeout http-request 30s",
             "timeout http-keep-alive 30s",
@@ -490,6 +513,7 @@ fn haproxy_context_directives(entry: &DirectiveForm, context: &str) -> Vec<&'sta
         "directive.haproxy.no-option.forwardfor-tcp"
         | "directive.haproxy.no-option.forwardfor-http" => vec!["no option forwardfor"],
         "directive.haproxy.option.httpchk" => vec!["option httpchk GET /health"],
+        "directive.haproxy.option.http-server-close" => vec!["option http-server-close"],
         "directive.haproxy.no-option.httpchk-tcp" | "directive.haproxy.no-option.httpchk-http" => {
             vec!["no option httpchk"]
         }
@@ -652,6 +676,7 @@ fn haproxy_http_form(id: &str) -> bool {
             "directive.haproxy.use-backend"
                 | "directive.haproxy.option.forwardfor"
                 | "directive.haproxy.option.httpchk"
+                | "directive.haproxy.option.http-server-close"
                 | "directive.haproxy.http-check.expect-status"
         )
 }
@@ -676,6 +701,9 @@ fn haproxy_probe_source(entry: &DirectiveForm) -> String {
             "server primary 127.0.0.1:5432",
             "server primary 127.0.0.1:5432 check inter 2s rise 2 fall 3",
         ),
+        "directive.haproxy.default-server.health-options" => inject_haproxy_defaults(
+            "default-server check inter 2s fastinter 1s downinter 5s rise 2 fall 3",
+        ),
         "directive.haproxy.retries.positive" => {
             haproxy_tcp_base().replace("retries 0", "retries 3")
         }
@@ -697,7 +725,7 @@ fn haproxy_probe_source(entry: &DirectiveForm) -> String {
         "directive.haproxy.no-option.redispatch-http" => {
             inject_haproxy_http_defaults("no option redispatch")
         }
-        "directive.haproxy.option.forwardfor" => inject_haproxy_defaults("option forwardfor"),
+        "directive.haproxy.option.forwardfor" => inject_haproxy_http_defaults("option forwardfor"),
         "directive.haproxy.no-option.forwardfor-tcp" => {
             inject_haproxy_defaults("no option forwardfor")
         }
@@ -706,6 +734,9 @@ fn haproxy_probe_source(entry: &DirectiveForm) -> String {
         }
         "directive.haproxy.option.httpchk" => {
             inject_haproxy_http_defaults("option httpchk GET /health")
+        }
+        "directive.haproxy.option.http-server-close" => {
+            inject_haproxy_http_defaults("option http-server-close")
         }
         "directive.haproxy.no-option.httpchk-tcp" => inject_haproxy_defaults("no option httpchk"),
         "directive.haproxy.no-option.httpchk-http" => {
@@ -765,9 +796,17 @@ fn haproxy_transport_probe(id: &str) -> Option<String> {
         "directive.haproxy.balance.leastconn-tcp" => {
             Some(haproxy_tcp_base().replace("balance roundrobin", "balance leastconn"))
         }
-        "directive.haproxy.balance.leastconn-http" => {
-            Some(haproxy_http_base().replace("balance roundrobin", "balance leastconn"))
+        "directive.haproxy.balance.leastconn-http" => Some(
+            inject_haproxy_http_defaults("option http-server-close")
+                .replace("balance roundrobin", "balance leastconn"),
+        ),
+        "directive.haproxy.balance.first-tcp" => {
+            Some(haproxy_tcp_base().replace("balance roundrobin", "balance first"))
         }
+        "directive.haproxy.balance.first-http" => Some(
+            inject_haproxy_http_defaults("option http-server-close")
+                .replace("balance roundrobin", "balance first"),
+        ),
         "directive.haproxy.server.dns-tcp" => Some(haproxy_tcp_base().replace(
             "server primary 127.0.0.1:5432",
             "server primary database.lan:5432",

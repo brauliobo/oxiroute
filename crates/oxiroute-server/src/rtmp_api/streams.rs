@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use oxiroute_rtmp::{
-    CatalogError, RecorderId, RecorderPhase, RecorderSnapshot, RecordingAction,
+    CatalogError, RecorderId, RecorderPhase, RecorderSnapshot, RecordingAction, RelaySnapshot,
     RtmpCatalogSnapshot, RtmpRegistry, StreamId, StreamSnapshot, TrackSnapshot,
     VideoCodecIdentifier,
 };
@@ -171,10 +171,52 @@ fn stream_json(stream: &StreamSnapshot) -> Value {
             "video": track_json(&stream.media.video),
             "fanout_payload_bytes": stream.media.fanout_payload_bytes_queued.to_string(),
         },
+        "relays": stream.relays.iter().map(relay_json).collect::<Vec<_>>(),
         "recording_supported": !stream.recorders.is_empty(),
         "manual_recording": stream.recorders.iter().any(|recorder| recorder.manual),
         "recorders": stream.recorders.iter().map(recorder_json).collect::<Vec<_>>(),
     })
+}
+
+fn relay_json(relay: &RelaySnapshot) -> Value {
+    json!({
+        "id": relay.id.to_string(),
+        "destination": {
+            "address": relay.status.destination.address.to_string(),
+            "application": relay.status.destination.application,
+            "stream_name": relay.status.destination.stream_name,
+        },
+        "phase": relay_phase(relay.status.phase),
+        "last_failure": relay.status.last_failure.map(relay_failure),
+        "queue_messages": relay.status.queue_messages,
+        "queue_bytes": relay.status.queue_bytes.to_string(),
+        "connection_attempts": relay.status.connection_attempts.to_string(),
+        "connections": relay.status.connections.to_string(),
+        "reconnects": relay.status.reconnects.to_string(),
+        "events_enqueued": relay.status.events_enqueued.to_string(),
+        "events_sent": relay.status.events_sent.to_string(),
+        "events_dropped": relay.status.events_dropped.to_string(),
+        "payload_bytes_sent": relay.status.payload_bytes_sent.to_string(),
+    })
+}
+
+const fn relay_phase(phase: oxiroute_rtmp::RtmpRelayPhase) -> &'static str {
+    match phase {
+        oxiroute_rtmp::RtmpRelayPhase::Connecting => "connecting",
+        oxiroute_rtmp::RtmpRelayPhase::Publishing => "publishing",
+        oxiroute_rtmp::RtmpRelayPhase::Backoff => "backoff",
+        oxiroute_rtmp::RtmpRelayPhase::Stopped => "stopped",
+    }
+}
+
+const fn relay_failure(failure: oxiroute_rtmp::RtmpRelayFailure) -> &'static str {
+    match failure {
+        oxiroute_rtmp::RtmpRelayFailure::Connect => "connect",
+        oxiroute_rtmp::RtmpRelayFailure::Handshake => "handshake",
+        oxiroute_rtmp::RtmpRelayFailure::Session => "session",
+        oxiroute_rtmp::RtmpRelayFailure::Transport => "transport",
+        oxiroute_rtmp::RtmpRelayFailure::Thread => "thread",
+    }
 }
 
 fn track_json(track: &TrackSnapshot) -> Value {

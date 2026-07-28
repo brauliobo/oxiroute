@@ -23,6 +23,7 @@ use super::l4::ext::{get_original_dest, get_recv_buf, get_snd_buf, get_tcp_info,
 use super::l4::socket::SocketAddr;
 use super::raw_connect::ProxyDigest;
 use super::tls::digest::SslDigest;
+use super::ConnectionLifetime;
 
 /// The information can be extracted from a connection
 #[derive(Clone, Debug, Default)]
@@ -72,6 +73,7 @@ pub struct SocketDigest {
     pub local_addr: OnceCell<Option<SocketAddr>>,
     /// Original destination address
     pub original_dst: OnceCell<Option<SocketAddr>>,
+    connection_lifetime: OnceCell<Arc<dyn ConnectionLifetime>>,
 }
 
 impl SocketDigest {
@@ -82,6 +84,7 @@ impl SocketDigest {
             peer_addr: OnceCell::new(),
             local_addr: OnceCell::new(),
             original_dst: OnceCell::new(),
+            connection_lifetime: OnceCell::new(),
         }
     }
 
@@ -92,7 +95,19 @@ impl SocketDigest {
             peer_addr: OnceCell::new(),
             local_addr: OnceCell::new(),
             original_dst: OnceCell::new(),
+            connection_lifetime: OnceCell::new(),
         }
+    }
+
+    pub(crate) fn attach_connection_lifetime(
+        &self,
+        lifetime: Arc<dyn ConnectionLifetime>,
+    ) -> Result<(), Arc<dyn ConnectionLifetime>> {
+        self.connection_lifetime.set(lifetime)
+    }
+
+    pub(crate) fn connection_lifetime(&self) -> Option<Arc<dyn ConnectionLifetime>> {
+        self.connection_lifetime.get().cloned()
     }
 
     #[cfg(unix)]

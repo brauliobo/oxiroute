@@ -1,0 +1,67 @@
+{
+  "schema_version": 3,
+  "host": "hostrouter",
+  "host_timezone": "America/Bahia",
+  "audit_status": "live_origin_hashed_read_only_captured",
+  "sanitized": true,
+  "origin_captures": [
+    {
+      "product": "nginx",
+      "captured_on": "2026-07-26",
+      "read_command": "ssh -T hostrouter.lan 'sudo -n nginx -T 2>&1'",
+      "hash_command": "ssh -T hostrouter.lan 'sudo -n nginx -T 2>&1' | sha256sum",
+      "sha256": "6ed001a3532b36fb12a97497a9cb96ce5bdbd50ba8516b0e7c3ba7ad24ec860a",
+      "availability": "recorded",
+      "raw_bytes_stored": false
+    },
+    {
+      "product": "haproxy",
+      "captured_on": "2026-07-26",
+      "read_command": "ssh -T hostrouter.lan 'sudo -n cat /etc/haproxy/haproxy.cfg'",
+      "hash_command": "ssh -T hostrouter.lan 'sudo -n cat /etc/haproxy/haproxy.cfg' | sha256sum",
+      "sha256": "13410dac9ee450b3979aae14a3b88eef094720e859e2e8a00dd2a65f40c14ffd",
+      "availability": "recorded",
+      "raw_bytes_stored": false
+    }
+  ],
+  "sanitizer": {
+    "input": "Ephemeral stdout from the read commands; no unsanitized byte stream was written to disk.",
+    "steps": [
+      "Split nginx -T output at '# configuration file <path>:' markers and retain the referenced nginx configuration files.",
+      "Retain HAProxy configuration syntax from the read-only stdout capture.",
+      "Replace inline authorization credential values with the literal <redacted> marker.",
+      "Exclude private-key, certificate, htpasswd, bearer-token, and other credential file contents while preserving configuration path references.",
+      "Write only sanitized configuration files and calculate each checked-in file's post_sanitization_sha256 independently."
+    ],
+    "raw_bytes_stored": false
+  },
+  "native_versions": { "nginx": "1.30.4", "haproxy": "3.4.2" },
+  "native_version_availability": "recorded",
+  "files": [
+    { "path": "haproxy.cfg", "post_sanitization_sha256": "13410dac9ee450b3979aae14a3b88eef094720e859e2e8a00dd2a65f40c14ffd" },
+    { "path": "nginx/letsencrypt/options-ssl-nginx.conf", "post_sanitization_sha256": "789c4c0a2ed74ad22613230a61a4e8c0a0b14ddafad9656e4bbc89b8eba39c73" },
+    { "path": "nginx/mime.types", "post_sanitization_sha256": "d53950395ecd95d31c996d01ba2a8639ba79d019fbad4b36f6607d2e7932c9e1" },
+    { "path": "nginx/nginx.conf", "post_sanitization_sha256": "b38814f3869b4e375a44a198ecc131b2f34c3f6e6da559c64739ba9ad5350d31" },
+    { "path": "nginx/sites-enabled/01-olery.conf", "post_sanitization_sha256": "b3a16ac306ce4179990e7f475af1069fd28d28e5aa617812c1355820b2601a41" },
+    { "path": "nginx/sites-enabled/01-phoenix.conf", "post_sanitization_sha256": "c8bbdd083916004a91941aaa3a2eb53def207c1349a7144f2cb5a053ccf72a9c" },
+    { "path": "nginx/sites-enabled/02-n8n.conf", "post_sanitization_sha256": "4700590b96620a7961f1c6317ae32d73f11848b2707d57b36507acc515408571" },
+    { "path": "nginx/sites-enabled/bc1.conf", "post_sanitization_sha256": "1d8bd7b09f3ff3ee19c836ba7a41b54c28ee8077238f4aa834e585ee6b6e0197" },
+    { "path": "nginx/sites-enabled/braulio.conf", "post_sanitization_sha256": "1ee82e770d5f8c386bb6014c8aa2ee7a84d2869e2df9569457470cdc32b5b354" },
+    { "path": "nginx/sites-enabled/chandrabose.conf", "post_sanitization_sha256": "a0542e81f175d9ce6851dd2d322397a86abf37ea2ecd46bd7930e028fe6927e9" },
+    { "path": "nginx/sites-enabled/ckpu.conf", "post_sanitization_sha256": "5c8871ab09fa81865193a23106d74547580002df3947a09a07134ab201f1946c" },
+    { "path": "nginx/sites-enabled/cloud.brauliobo.conf", "post_sanitization_sha256": "962b23cb4e21fc18360420006abf44b280b8cad716ef7bdfd6b2174e90880c55" },
+    { "path": "nginx/sites-enabled/hestiacp.conf", "post_sanitization_sha256": "709485bdafc2e244ce548ce1da565181ecb86a2004b2c951479b2ee07146689d" },
+    { "path": "nginx/sites-enabled/jitsi.brauliobo.conf", "post_sanitization_sha256": "47c5d0e94304b9a9729d2db5d837bf7600b5916254ec1b43b50ea0ecb874e43b" },
+    { "path": "nginx/sites-enabled/olery.conf", "post_sanitization_sha256": "b057529817bb7fbcac9529bc980ce6ce1bbc08fd853c3b6127896322a00d57c9" },
+    { "path": "nginx/sites-enabled/open-design.conf", "post_sanitization_sha256": "06cace257b05ec7b60b9429868822d41bbb906dacbf0996bc3c0736fe32fa04f" },
+    { "path": "nginx/sites-enabled/openwrt.conf", "post_sanitization_sha256": "33b40b2a25fd9dcaa648f6c38fd0cdf00e4fa105945b86862e1bb91587314806" },
+    { "path": "nginx/sites-enabled/pzt.conf", "post_sanitization_sha256": "6c442a3b6edb30aef1c35e75d24162c5347c4bc3897b8084acbb9c678ce1f2cf" },
+    { "path": "nginx/sites-enabled/wb.conf", "post_sanitization_sha256": "0a1b279ac1f986e6861b2c7b8324e690dd35dd9b7383e26388625caba20cc6f9" },
+    { "path": "nginx/sites-enabled/ym.conf", "post_sanitization_sha256": "2189173045af580cc550bdf493eda12e6097074028dc71327b503da79b950678" }
+  ],
+  "overlay_inventory": [
+    { "kind": "certificate_material", "count": 50 },
+    { "kind": "bearer_token_file", "count": 2 },
+    { "kind": "upstream_tls_policy", "count": 7 }
+  ]
+}

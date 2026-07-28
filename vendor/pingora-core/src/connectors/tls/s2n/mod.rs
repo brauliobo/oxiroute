@@ -145,7 +145,7 @@ where
     let config = tls_ctx.load_config(config_options)?;
 
     let connection_builder = S2NConnectionBuilder {
-        config: config,
+        config,
         psk_config: peer.get_psk().cloned(),
         security_policy: Some(security_policy.clone()),
     };

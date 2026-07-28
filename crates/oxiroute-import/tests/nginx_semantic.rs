@@ -3,8 +3,8 @@
 use std::{fmt::Write as _, fs, path::Path};
 
 use oxiroute_import::{
-    DiagnosticStage, E_DUPLICATE_IDENTITY, E_INCLUDE_NOT_FOUND, E_INVALID_VALUE,
-    E_SEMANTICS_NOT_REPRESENTABLE, E_SOURCE_IO, E_UNSUPPORTED_FEATURE,
+    DiagnosticStage, E_DUPLICATE_IDENTITY, E_INCLUDE_NOT_FOUND, E_INVALID_VALUE, E_SOURCE_IO,
+    E_UNSUPPORTED_FEATURE, Severity,
     nginx::{
         DefaultServerSelection, HttpDeclaration, HttpResolution, LocationKind,
         OccurrenceDisposition, ProxyPassScheme, ServerNameKind, SourceGraph, StaticEndpoint,
@@ -284,7 +284,7 @@ fn represents_a_static_numeric_proxy_pass_as_a_direct_endpoint() {
 }
 
 #[test]
-fn duplicate_effective_identities_are_blocking() {
+fn duplicate_server_names_warn_while_other_duplicate_identities_block() {
     let source = br"
         http {
             upstream duplicate {
@@ -320,7 +320,15 @@ fn duplicate_effective_identities_are_blocking() {
                 decision.disposition == OccurrenceDisposition::Blocking(E_DUPLICATE_IDENTITY)
             })
             .count(),
-        4
+        3
+    );
+    assert_eq!(
+        resolved
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.severity() == Severity::Warning)
+            .count(),
+        1
     );
 }
 
@@ -378,37 +386,36 @@ fn duplicate_scalar_directives_are_blocking_before_lowering() {
 }
 
 #[test]
-fn conflicting_listen_combinations_are_rejected_during_resolution() {
-    for (label, source) in [
-        (
-            "overlapping sockets",
-            br"http {
+fn overlapping_listens_block_while_protocol_options_are_reconciled() {
+    let overlapping = resolve_source(
+        br"http {
                 server { listen 0.0.0.0:8080; server_name wildcard.example; }
                 server { listen 127.0.0.1:8080; server_name specific.example; }
-            }"
-            .as_slice(),
-        ),
-        (
-            "protocol disagreement",
-            br"http {
+            }",
+        &[],
+    );
+    assert!(overlapping.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code() == E_INVALID_VALUE
+            && diagnostic.stage() == DiagnosticStage::Resolve
+            && diagnostic.severity() == Severity::Error
+            && diagnostic.message().contains("conflicting listen")
+    }));
+
+    let protocols = resolve_source(
+        br"http {
                 server { listen 127.0.0.1:8443 ssl; server_name tls.example; }
                 server { listen 127.0.0.1:8443; server_name clear.example; }
-            }"
-            .as_slice(),
-        ),
-    ] {
-        let resolved = resolve_source(source, &[]);
-
-        assert!(
-            resolved.diagnostics().iter().any(|diagnostic| {
-                diagnostic.code() == E_INVALID_VALUE
-                    && diagnostic.stage() == DiagnosticStage::Resolve
-                    && diagnostic.message().contains("conflicting listen")
-            }),
-            "{label}: {:?}",
-            resolved.diagnostics()
-        );
-    }
+            }",
+        &[],
+    );
+    assert!(protocols.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code() == E_INVALID_VALUE
+            && diagnostic.stage() == DiagnosticStage::Resolve
+            && diagnostic.severity() == Severity::Warning
+            && diagnostic
+                .message()
+                .contains("protocol options are reconciled")
+    }));
 }
 
 #[test]
@@ -506,7 +513,7 @@ fn every_expanded_occurrence_has_one_ordered_terminal_decision() {
 }
 
 #[test]
-fn represents_but_blocks_variables_special_locations_and_unsafe_https_defaults() {
+fn represents_variable_special_location_and_static_https_forms() {
     let source = br"
         http {
             upstream backend { server 127.0.0.1:8080; }
@@ -555,11 +562,12 @@ fn represents_but_blocks_variables_special_locations_and_unsafe_https_defaults()
             .scheme,
         ProxyPassScheme::Https
     );
+    assert!(!resolved.diagnostics().is_empty());
     assert!(
         resolved
             .diagnostics()
             .iter()
-            .any(|diagnostic| diagnostic.code() == E_SEMANTICS_NOT_REPRESENTABLE)
+            .all(|diagnostic| diagnostic.code() == E_UNSUPPORTED_FEATURE)
     );
     assert_eq!(
         resolved
@@ -568,7 +576,7 @@ fn represents_but_blocks_variables_special_locations_and_unsafe_https_defaults()
             .iter()
             .filter(|decision| matches!(decision.disposition, OccurrenceDisposition::Blocking(_)))
             .count(),
-        6
+        5
     );
 }
 

@@ -10,10 +10,10 @@ use std::{
 };
 
 use crate::{
-    MediaEvent, OperationId, RecorderEnqueueResult, RecorderErrorCode, RecorderFailure, RecorderId,
-    RecorderWorker, RecorderWorkerConfig, RecorderWorkerPhase, RecorderWorkerStatus,
-    RecorderWorkerSupervisor, RecordingDateTime, RecordingPathPolicy, RecordingStore, RtmpRegistry,
-    SessionId, StreamId,
+    MediaEvent, MediaEventKind, OperationId, RecorderEnqueueResult, RecorderErrorCode,
+    RecorderFailure, RecorderId, RecorderWorker, RecorderWorkerConfig, RecorderWorkerPhase,
+    RecorderWorkerStatus, RecorderWorkerSupervisor, RecordingDateTime, RecordingPathPolicy,
+    RecordingStore, RtmpRegistry, SessionId, StreamId,
 };
 
 const REAPER_POLL_INTERVAL: Duration = Duration::from_millis(2);
@@ -99,9 +99,54 @@ pub(crate) struct RecorderController {
 
 struct ControllerState {
     active: bool,
+    bootstrap: RecorderBootstrap,
     stopping: bool,
     worker: Option<RecorderWorker>,
     last_status: Option<RecorderWorkerStatus>,
+}
+
+#[derive(Default)]
+struct RecorderBootstrap {
+    metadata: Option<MediaEvent>,
+    aac: Option<MediaEvent>,
+    avc: Option<MediaEvent>,
+    keyframe: Option<MediaEvent>,
+    unsupported_video: bool,
+}
+
+impl RecorderBootstrap {
+    fn update(&mut self, event: &MediaEvent) {
+        match event.kind() {
+            MediaEventKind::Metadata => self.metadata = Some(event.clone()),
+            MediaEventKind::AacSequenceHeader => self.aac = Some(event.clone()),
+            MediaEventKind::AvcSequenceHeader => {
+                self.avc = Some(event.clone());
+                self.keyframe = None;
+                self.unsupported_video = false;
+            }
+            MediaEventKind::HevcSequenceHeader | MediaEventKind::Av1SequenceHeader => {
+                self.avc = None;
+                self.keyframe = None;
+                self.unsupported_video = true;
+            }
+            MediaEventKind::VideoKeyframe if !self.unsupported_video => {
+                self.keyframe = Some(event.clone());
+            }
+            MediaEventKind::Audio
+            | MediaEventKind::VideoKeyframe
+            | MediaEventKind::VideoInterframe
+            | MediaEventKind::VideoDisposable => {}
+        }
+    }
+
+    fn events(&self) -> impl Iterator<Item = MediaEvent> + '_ {
+        self.metadata
+            .iter()
+            .chain(self.aac.iter())
+            .chain(self.avc.iter())
+            .chain(self.keyframe.iter())
+            .cloned()
+    }
 }
 
 #[derive(Clone)]
@@ -133,6 +178,7 @@ impl RecorderController {
             reaper,
             state: Mutex::new(ControllerState {
                 active: true,
+                bootstrap: RecorderBootstrap::default(),
                 stopping: false,
                 worker: None,
                 last_status: None,
@@ -150,6 +196,9 @@ impl RecorderController {
             let mut state = self.lock();
             if !state.active {
                 return Err(RecorderErrorCode::StalePublisher);
+            }
+            if state.bootstrap.unsupported_video {
+                return Err(RecorderErrorCode::UnsupportedCodec);
             }
             if let Some(worker) = state.worker.as_ref() {
                 let status = worker.status();
@@ -187,6 +236,13 @@ impl RecorderController {
                         RecorderErrorCode::OpenFailed
                     }
                 })?;
+                for event in state.bootstrap.events() {
+                    if worker.try_enqueue_at(event, Instant::now(), context.at_unix_ms)
+                        != RecorderEnqueueResult::Queued
+                    {
+                        return Err(RecorderErrorCode::BackendUnavailable);
+                    }
+                }
                 state.last_status = Some(worker.status());
                 state.stopping = false;
                 state.worker = Some(worker);
@@ -223,10 +279,11 @@ impl RecorderController {
     pub(crate) fn try_enqueue(&self, event: MediaEvent, at_unix_ms: u64) -> RecorderEnqueueResult {
         self.observe_at(at_unix_ms);
         let mut state = self.lock();
+        state.bootstrap.update(&event);
         let Some(worker) = state.worker.as_ref() else {
             return RecorderEnqueueResult::Inactive;
         };
-        let result = worker.try_enqueue(event);
+        let result = worker.try_enqueue_at(event, Instant::now(), at_unix_ms);
         state.last_status = Some(worker.status());
         result
     }

@@ -9,8 +9,8 @@ use std::{
 use oxiroute_rtmp::{
     LiveHub, LiveHubLimits, MediaEvent, RecorderEnqueueResult, RecorderFailure, RecorderShutdown,
     RecorderVideoCodec, RecorderWorker, RecorderWorkerConfig, RecorderWorkerPhase,
-    RecorderWorkerStartError, RecordingDateTime, RecordingPathPolicy, RecordingStore,
-    RecordingStoreLimits, StreamKey,
+    RecorderWorkerStartError, RecordingDateTime, RecordingPathPolicy, RecordingSegmentNaming,
+    RecordingStore, RecordingStoreLimits, RecordingTimeBasis, RecordingTimezone, StreamKey,
 };
 use rustix::fs::{FlockOperation, flock};
 use tempfile::tempdir;
@@ -157,6 +157,93 @@ fn every_rotation_gets_a_fresh_deterministic_extension_preserving_name() {
                 .join(format!("camera-{sequence:06}.flv"))
                 .is_file()
         );
+    }
+}
+
+#[test]
+fn hourly_bahia_segments_rerender_the_suffix_and_keep_flv_payload_with_mp4_names() {
+    let temporary = tempdir().expect("temporary directory");
+    let store = RecordingStore::open(
+        temporary.path(),
+        RecordingStoreLimits {
+            max_bytes: 1024 * 1024,
+            max_files: 16,
+            max_active_recorders: 1,
+        },
+    )
+    .expect("recording store");
+    let path = RecordingPathPolicy::new("-%Y-%m-%d_%H.mp4", false)
+        .expect("path policy")
+        .with_segment_policy(
+            RecordingTimezone::Iana("America/Bahia".parse().expect("IANA timezone")),
+            RecordingTimeBasis::SegmentStart,
+            RecordingSegmentNaming::NginxCompatible,
+        );
+    let worker = RecorderWorker::start(
+        store,
+        &path,
+        b"camera",
+        1_721_619_000,
+        RecordingDateTime::new(2024, 7, 22, 3, 30, 0).expect("UTC start"),
+        RecorderWorkerConfig {
+            max_queue_messages: 16,
+            max_queue_bytes: 1024,
+            rotation_interval: Some(Duration::from_secs(3_600)),
+            shutdown_timeout: Duration::from_secs(1),
+            video_codec: None,
+        },
+    )
+    .expect("recorder worker");
+    enqueue(&worker, aac_header(0, 0x12));
+    enqueue(&worker, audio(0, 0x10));
+    enqueue(&worker, audio(3_600_000, 0x11));
+    enqueue(&worker, audio(7_200_000, 0x12));
+
+    let status = shutdown(worker);
+    assert_eq!(status.segments_completed, 3);
+    for hour in 0..=2 {
+        let name = format!("camera-2024-07-22_{hour:02}.mp4");
+        let payload = fs::read(temporary.path().join(name)).expect("hourly segment");
+        assert_eq!(&payload[..3], b"FLV");
+    }
+}
+
+#[test]
+fn record_unique_and_segment_end_are_recomputed_for_every_rotation() {
+    let temporary = tempdir().expect("temporary directory");
+    let store = store(temporary.path());
+    let path = RecordingPathPolicy::new(".mp4", true)
+        .expect("path policy")
+        .with_segment_policy(
+            RecordingTimezone::Utc,
+            RecordingTimeBasis::SegmentEnd,
+            RecordingSegmentNaming::NginxCompatible,
+        );
+    let worker = RecorderWorker::start(
+        store,
+        &path,
+        b"camera",
+        1_721_619_000,
+        RecordingDateTime::new(2024, 7, 22, 3, 30, 0).expect("UTC start"),
+        RecorderWorkerConfig {
+            max_queue_messages: 8,
+            max_queue_bytes: 1024,
+            rotation_interval: Some(Duration::from_secs(1)),
+            shutdown_timeout: Duration::from_secs(1),
+            video_codec: None,
+        },
+    )
+    .expect("recorder worker");
+    enqueue(&worker, aac_header(0, 0x12));
+    enqueue(&worker, audio(0, 0x10));
+    enqueue(&worker, audio(1_000, 0x11));
+
+    let status = shutdown(worker);
+    assert_eq!(status.segments_completed, 2);
+    for second in [1_721_619_000, 1_721_619_001] {
+        let payload = fs::read(temporary.path().join(format!("camera-{second}.mp4")))
+            .expect("record_unique segment");
+        assert_eq!(&payload[..3], b"FLV");
     }
 }
 

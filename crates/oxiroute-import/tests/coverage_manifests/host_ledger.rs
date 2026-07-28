@@ -1,27 +1,34 @@
 use std::{
-    collections::{BTreeSet, HashSet},
-    path::Path,
+    collections::{BTreeSet, HashMap, HashSet},
+    fmt::Write as _,
+    fs,
+    path::{Path, PathBuf},
 };
 
-use oxiroute_config::RtmpRecorderStart;
+use oxiroute_config::{RtmpRecorderStart, UpstreamTls};
 use oxiroute_import::{
-    DiagnosticStage, Severity,
+    DiagnosticStage, OperationalOverlayKind, Severity,
     haproxy::{
         BalanceAlgorithm, BindAddress, E_LOGGING_UNSUPPORTED, E_PROCESS_OWNED, E_STATS_UNSUPPORTED,
-        ServerAddress, import_parsed as import_haproxy, resolve_parsed,
+        HaproxyImportOptions, HaproxyOneRequestPerConnectionOverlay, ServerAddress,
+        import_parsed_with_options, resolve_parsed,
     },
-    nginx::OccurrenceDisposition,
+    nginx::{
+        NginxBearerTokenOverlay, NginxHostTimezoneOverlay, NginxImportOptions,
+        NginxUpstreamTlsOverlay, OccurrenceDisposition, import_root_with_options,
+    },
 };
 use serde::Deserialize;
+use syn::{Attribute, Item};
 
 use crate::{
     report_invariants::{
-        assert_diagnostic_message, assert_haproxy_report_invariants,
-        assert_import_report_invariants, assert_rtmp_import_report_invariants, diagnostic_count,
-        import_nginx_fixture, import_rtmp_fixture, parse_haproxy_fixture,
+        assert_haproxy_report_invariants, assert_import_report_invariants,
+        assert_rtmp_import_report_invariants, diagnostic_count, import_nginx_fixture,
+        import_rtmp_fixture, parse_haproxy_fixture,
     },
     squid_probes::assert_hostrouter_squid_inventory,
-    support::{read_manifest, workspace_path},
+    support::{read_manifest, read_source, reference_parts, workspace_path},
 };
 
 #[derive(Debug, Deserialize)]
@@ -47,6 +54,7 @@ struct HostAudit {
 #[serde(rename_all = "snake_case")]
 enum HostAuditStatus {
     NonAudited,
+    LiveOriginHashedReadOnlyCaptured,
 }
 
 #[derive(Debug, Deserialize)]
@@ -110,10 +118,60 @@ struct DirectServiceInventory {
     access_rules: usize,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LiveFixtureMetadata {
+    schema_version: u32,
+    host: String,
+    host_timezone: String,
+    audit_status: HostAuditStatus,
+    sanitized: bool,
+    origin_captures: Vec<LiveOriginCapture>,
+    sanitizer: LiveSanitizer,
+    native_versions: HashMap<String, String>,
+    native_version_availability: String,
+    files: Vec<LiveFixtureFile>,
+    overlay_inventory: Vec<LiveOverlayInventory>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LiveOriginCapture {
+    product: String,
+    captured_on: Option<String>,
+    read_command: String,
+    hash_command: String,
+    sha256: Option<String>,
+    availability: String,
+    raw_bytes_stored: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LiveSanitizer {
+    input: String,
+    steps: Vec<String>,
+    raw_bytes_stored: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LiveFixtureFile {
+    path: String,
+    post_sanitization_sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LiveOverlayInventory {
+    kind: String,
+    count: usize,
+}
+
 #[test]
 fn host_manifest_covers_the_documented_inventory_and_enforces_gates() {
     let manifest: HostManifest = read_manifest("host-cases.json");
-    assert_eq!(manifest.schema_version, 1);
+    assert_eq!(manifest.schema_version, 3);
     assert_eq!(manifest.source, "docs/HOST_CONFIG_COVERAGE.md");
     assert_eq!(manifest.direct_inventory, "coverage/host-inventory.json");
     validate_direct_host_inventory(&manifest);
@@ -162,7 +220,10 @@ fn covered_host_status_rejects_one_missing_required_gate() {
             tests: Gate(true),
             native_lowering: Gate(false),
         },
-        evidence: vec!["coverage/host-cases.json".into()],
+        evidence: vec![
+            "crates/oxiroute-import/tests/coverage_manifests/host_ledger.rs#covered_host_status_rejects_one_missing_required_gate"
+                .into(),
+        ],
     };
 
     assert_eq!(
@@ -283,6 +344,7 @@ fn validate_host_case(case: &HostCase) -> Result<(), String> {
     if case.evidence.is_empty() {
         return Err("case requires current evidence".into());
     }
+    let mut has_executable_test_anchor = false;
     for evidence in &case.evidence {
         let path = evidence
             .split('#')
@@ -291,6 +353,18 @@ fn validate_host_case(case: &HostCase) -> Result<(), String> {
         if !workspace_path(path).exists() {
             return Err(format!("evidence path does not exist: {path}"));
         }
+        if path.contains("/tests/")
+            && Path::new(path)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
+            && evidence.contains('#')
+        {
+            assert_host_test_reference(&case.id, evidence);
+            has_executable_test_anchor = true;
+        }
+    }
+    if case.gates.tests.0 && !has_executable_test_anchor {
+        return Err("tests gate requires an executable Rust test anchor".into());
     }
 
     let gates = [
@@ -314,7 +388,11 @@ fn validate_host_fixture_probes(manifest: &HostManifest) {
         .collect::<HashSet<_>>();
     let mut probed = HashSet::new();
     for fixture in &manifest.audit.fixtures {
-        assert_eq!(fixture.status, HostAuditStatus::NonAudited);
+        assert!(
+            !fixture.cases.is_empty(),
+            "host fixture mapping must name at least one executable case: {}",
+            fixture.path
+        );
         assert!(
             fixture
                 .path
@@ -347,9 +425,389 @@ fn validate_host_fixture_probes(manifest: &HostManifest) {
                     assert_eq!(case, "SQ-01");
                     assert_hostrouter_squid_inventory();
                 }
+                "crates/oxiroute-import/tests/fixtures/live/whitebeast/metadata.json" => {
+                    assert_eq!(
+                        fixture.status,
+                        HostAuditStatus::LiveOriginHashedReadOnlyCaptured
+                    );
+                    assert_live_origin_hashed_fixture("whitebeast", case);
+                }
+                "crates/oxiroute-import/tests/fixtures/live/hostrouter/metadata.json" => {
+                    assert_eq!(
+                        fixture.status,
+                        HostAuditStatus::LiveOriginHashedReadOnlyCaptured
+                    );
+                    assert_live_origin_hashed_fixture("hostrouter", case);
+                }
+                "crates/oxiroute-import/tests/fixtures/live/phoenix/metadata.json" => {
+                    assert_eq!(
+                        fixture.status,
+                        HostAuditStatus::LiveOriginHashedReadOnlyCaptured
+                    );
+                    assert_live_origin_hashed_fixture("phoenix", case);
+                }
                 path => panic!("host fixture has no executable assertion: {path}"),
             }
         }
+        if fixture.status == HostAuditStatus::LiveOriginHashedReadOnlyCaptured {
+            assert_live_fixture_metadata(&fixture.path);
+        }
+    }
+}
+
+fn assert_host_test_reference(case: &str, reference: &str) {
+    let (relative_path, function_name) = reference_parts(case, reference);
+    let syntax = syn::parse_file(&read_source(relative_path))
+        .unwrap_or_else(|error| panic!("parse host evidence {relative_path}: {error}"));
+    let matches = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Fn(function) if function.sig.ident == function_name => Some(function),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        matches.len(),
+        1,
+        "{case} evidence does not resolve exactly one test: {reference}"
+    );
+    assert!(
+        matches[0].attrs.iter().any(is_test_attribute),
+        "{case} evidence anchor is not an executable test: {reference}"
+    );
+}
+
+fn is_test_attribute(attribute: &Attribute) -> bool {
+    attribute
+        .path()
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == "test")
+}
+
+fn assert_live_fixture_metadata(metadata_path: &str) {
+    let metadata: LiveFixtureMetadata = crate::support::read_json(metadata_path);
+    assert_eq!(metadata.schema_version, 3);
+    assert_eq!(
+        metadata.audit_status,
+        HostAuditStatus::LiveOriginHashedReadOnlyCaptured
+    );
+    assert!(metadata.sanitized);
+    assert!(!metadata.host_timezone.is_empty());
+    assert_origin_capture_metadata(&metadata);
+    assert!(!metadata.sanitizer.raw_bytes_stored);
+    assert!(
+        metadata
+            .sanitizer
+            .input
+            .contains("no unsanitized byte stream")
+    );
+    assert_eq!(metadata.sanitizer.steps.len(), 5);
+    assert!(metadata.sanitizer.steps.iter().any(|step| {
+        step.contains("post_sanitization_sha256") && step.contains("independently")
+    }));
+    assert_eq!(metadata.native_version_availability, "recorded");
+    assert_eq!(
+        metadata.native_versions.get("nginx").map(String::as_str),
+        Some("1.30.4")
+    );
+    assert_eq!(
+        metadata.native_versions.get("haproxy").map(String::as_str),
+        Some("3.4.2")
+    );
+
+    let metadata_file = workspace_path(metadata_path);
+    let root = metadata_file.parent().expect("live fixture root");
+    let declared = metadata
+        .files
+        .iter()
+        .map(|file| file.path.clone())
+        .collect::<HashSet<_>>();
+    let actual = fixture_files(root)
+        .into_iter()
+        .filter(|path| path != &metadata_file)
+        .map(|path| {
+            path.strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(declared, actual, "{} fixture file inventory", metadata.host);
+    for file in &metadata.files {
+        assert_eq!(
+            live_file_hash(root, file),
+            file.post_sanitization_sha256,
+            "{}: {}",
+            metadata.host,
+            file.path
+        );
+    }
+
+    let report = import_root_with_options(
+        Path::new("nginx.conf"),
+        &root.join("nginx"),
+        &live_options(&metadata.host),
+    );
+    let mut actual_overlays = HashMap::<&str, usize>::new();
+    for overlay in &report.candidate.operational_overlays {
+        let kind = match overlay.kind {
+            OperationalOverlayKind::CertificateMaterial => "certificate_material",
+            OperationalOverlayKind::HostTimezone => "host_timezone",
+            OperationalOverlayKind::OneRequestPerConnection => "one_request_per_connection",
+            OperationalOverlayKind::PrometheusMigration => "prometheus_migration",
+            OperationalOverlayKind::HtpasswdFile => "htpasswd_file",
+            OperationalOverlayKind::BearerTokenFile => "bearer_token_file",
+            OperationalOverlayKind::UpstreamTlsPolicy => "upstream_tls_policy",
+        };
+        *actual_overlays.entry(kind).or_default() += 1;
+    }
+    let expected_overlays = metadata
+        .overlay_inventory
+        .iter()
+        .map(|entry| (entry.kind.as_str(), entry.count))
+        .collect::<HashMap<_, _>>();
+    assert_eq!(
+        actual_overlays, expected_overlays,
+        "{} overlay inventory",
+        metadata.host
+    );
+}
+
+fn assert_origin_capture_metadata(metadata: &LiveFixtureMetadata) {
+    assert_eq!(metadata.origin_captures.len(), 2);
+    let captures = metadata
+        .origin_captures
+        .iter()
+        .map(|capture| (capture.product.as_str(), capture))
+        .collect::<HashMap<_, _>>();
+    assert_eq!(captures.len(), 2);
+    for product in ["nginx", "haproxy"] {
+        let capture = captures
+            .get(product)
+            .unwrap_or_else(|| panic!("{} missing {product} origin capture", metadata.host));
+        let target = if metadata.host == "hostrouter" {
+            "hostrouter.lan"
+        } else {
+            "phoenix.lan"
+        };
+        let expected_read = if metadata.host == "whitebeast" && product == "nginx" {
+            "ssh -T whitebeast 'sudo -n nginx -T 2>&1'".to_owned()
+        } else if metadata.host == "whitebeast" {
+            "sudo -A cat /etc/haproxy/haproxy.cfg".to_owned()
+        } else if product == "nginx" {
+            format!("ssh -T {target} 'sudo -n nginx -T 2>&1'")
+        } else {
+            format!("ssh -T {target} 'sudo -n cat /etc/haproxy/haproxy.cfg'")
+        };
+        assert_eq!(capture.read_command, expected_read);
+        let expected_hash_command = if metadata.host == "whitebeast" && product == "haproxy" {
+            "sha256sum /etc/haproxy/haproxy.cfg".to_owned()
+        } else {
+            format!("{expected_read} | sha256sum")
+        };
+        assert_eq!(capture.hash_command, expected_hash_command);
+        assert!(!capture.raw_bytes_stored);
+
+        let expected_hash = match (metadata.host.as_str(), product) {
+            ("whitebeast", "nginx") => {
+                Some("e6832fc9bb18b1bfb9623f16f2959d438ae800922a4e3add9a5e1e87b0031f2f")
+            }
+            ("whitebeast", "haproxy") => {
+                Some("24bfddb26022e2dfc9d778a0683666516fe6cb8521c6473949f84147578ffa27")
+            }
+            ("hostrouter", "nginx") => {
+                Some("6ed001a3532b36fb12a97497a9cb96ce5bdbd50ba8516b0e7c3ba7ad24ec860a")
+            }
+            ("hostrouter", "haproxy") => {
+                Some("13410dac9ee450b3979aae14a3b88eef094720e859e2e8a00dd2a65f40c14ffd")
+            }
+            ("phoenix", "nginx") => {
+                Some("bce24fd2f2015f2f35f711a820aa2edbeda3dc6c991c669a6eec0662d21ee0b9")
+            }
+            ("phoenix", "haproxy") => {
+                Some("4fbe3adb2f19cbf4991a5ef3d0176f6a4af7d4043c887a66abfe16d4d3cfa860")
+            }
+            _ => unreachable!(),
+        };
+        assert_eq!(capture.sha256.as_deref(), expected_hash);
+        if expected_hash.is_some() {
+            let expected_date = if metadata.host == "whitebeast" && product == "haproxy" {
+                "2026-07-27"
+            } else {
+                "2026-07-26"
+            };
+            assert_eq!(capture.captured_on.as_deref(), Some(expected_date));
+            assert_eq!(capture.availability, "recorded");
+            assert!(capture.sha256.as_deref().is_some_and(is_sha256));
+        } else {
+            assert!(capture.captured_on.is_none());
+            assert_eq!(capture.availability, "pending_live_recapture_after_change");
+        }
+    }
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .as_bytes()
+            .iter()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+#[test]
+fn live_origin_hashes_pin_direct_read_only_commands_without_storing_raw_bytes() {
+    for host in ["whitebeast", "hostrouter", "phoenix"] {
+        let metadata: LiveFixtureMetadata = crate::support::read_json(format!(
+            "crates/oxiroute-import/tests/fixtures/live/{host}/metadata.json"
+        ));
+        assert_origin_capture_metadata(&metadata);
+    }
+}
+
+#[test]
+fn checked_in_sanitized_hash_gate_rejects_per_file_drift() {
+    let metadata: LiveFixtureMetadata = crate::support::read_json(
+        "crates/oxiroute-import/tests/fixtures/live/phoenix/metadata.json",
+    );
+    let source_root = workspace_path("crates/oxiroute-import/tests/fixtures/live/phoenix");
+    let source = &metadata.files[0];
+    let directory = tempfile::tempdir().expect("fixture hash drift directory");
+    let destination = directory.path().join(&source.path);
+    fs::create_dir_all(destination.parent().unwrap()).expect("fixture hash parent");
+    fs::copy(source_root.join(&source.path), &destination).expect("copy fixture hash source");
+    assert_eq!(
+        live_file_hash(directory.path(), source),
+        source.post_sanitization_sha256
+    );
+    let mut bytes = fs::read(&destination).unwrap();
+    bytes.push(b'\n');
+    fs::write(&destination, bytes).unwrap();
+    assert_ne!(
+        live_file_hash(directory.path(), source),
+        source.post_sanitization_sha256
+    );
+}
+
+fn live_file_hash(root: &Path, file: &LiveFixtureFile) -> String {
+    let bytes = fs::read(root.join(&file.path)).expect("read live fixture file");
+    sha256_hex(&bytes)
+}
+
+fn fixture_files(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut directories = vec![root.to_path_buf()];
+    while let Some(directory) = directories.pop() {
+        for entry in fs::read_dir(directory).expect("read fixture directory") {
+            let path = entry.expect("fixture directory entry").path();
+            if path.is_dir() {
+                directories.push(path);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    files
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(64);
+    for byte in openssl::sha::sha256(bytes) {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
+}
+
+fn assert_live_origin_hashed_fixture(host: &str, case: &str) {
+    let root = workspace_path(format!(
+        "crates/oxiroute-import/tests/fixtures/live/{host}/nginx"
+    ));
+    let report = import_root_with_options(Path::new("nginx.conf"), &root, &live_options(host));
+    if host == "whitebeast" {
+        assert!(report.candidate.config.is_none());
+        match case {
+            "HN-17" => assert!(
+                report
+                    .candidate
+                    .operational_overlays
+                    .iter()
+                    .any(|overlay| overlay.kind == OperationalOverlayKind::HtpasswdFile)
+            ),
+            id => panic!("live-origin fixture case has no assertion: {id}"),
+        }
+        return;
+    }
+    if host == "hostrouter" {
+        assert!(report.candidate.config.is_none());
+        match case {
+            "HN-11" => assert!(
+                report
+                    .candidate
+                    .operational_overlays
+                    .iter()
+                    .any(|overlay| overlay.kind == OperationalOverlayKind::UpstreamTlsPolicy)
+            ),
+            "HN-12" => assert!(
+                report
+                    .candidate
+                    .operational_overlays
+                    .iter()
+                    .filter(|overlay| overlay.kind == OperationalOverlayKind::UpstreamTlsPolicy)
+                    .count()
+                    >= 2
+            ),
+            "HN-19" => assert!(!report.diagnostics.iter().any(|diagnostic| {
+                diagnostic.stage() == DiagnosticStage::Lower
+                    && diagnostic.message().contains("proxy defaults")
+            })),
+            id => panic!("live-origin fixture case has no assertion: {id}"),
+        }
+        return;
+    }
+    assert!(report.candidate.config.is_none());
+    let rtmp = &report.candidate.draft.rtmp_services[0];
+    match case {
+        "PR-03" => assert!(rtmp.applications[0].live),
+        "PR-05" => assert!(!rtmp.applications[0].recorders.is_empty()),
+        "PR-06" => assert!(!rtmp.applications[0].recorders[0].suffix_template.is_empty()),
+        id => panic!("live-origin fixture case has no assertion: {id}"),
+    }
+}
+
+fn live_options(host: &str) -> NginxImportOptions {
+    let mut options = NginxImportOptions::default();
+    if host == "phoenix" {
+        options.host_timezones = vec![NginxHostTimezoneOverlay {
+            timezone: "America/Bahia".into(),
+        }];
+    }
+    if host == "hostrouter" {
+        options.upstream_tls = vec![
+            live_tls_overlay("10.0.11.211", "phoenix.brauliobo.org", false),
+            live_tls_overlay("phoenix.lan:4081", "phoenix.lan", true),
+            live_tls_overlay("10.0.11.204", "nuvem.d4all.org", false),
+        ];
+        options.bearer_tokens = vec![NginxBearerTokenOverlay {
+            server_name: "ollama.yellowmaverick.com".into(),
+            token_file_path: "/run/secrets/ollama.token".into(),
+        }];
+    }
+    options
+}
+
+fn live_tls_overlay(
+    authority: &str,
+    server_name: &str,
+    activation: bool,
+) -> NginxUpstreamTlsOverlay {
+    NginxUpstreamTlsOverlay {
+        authority: authority.into(),
+        tls: UpstreamTls {
+            server_name: server_name.into(),
+            ca_certificate_path: None,
+        },
+        require_connectivity_activation: activation,
     }
 }
 
@@ -388,12 +846,14 @@ fn assert_phoenix_rtmp_case(case: &str) {
             );
             assert_eq!(recorder.suffix_template, ".flv");
             assert!(!recorder.append_unix_seconds);
-            for directive in [b"record_suffix".as_slice(), b"record_max_size".as_slice()] {
-                assert!(report.occurrence_ledger.iter().any(|decision| {
-                    decision.name.value == directive
-                        && matches!(decision.disposition, OccurrenceDisposition::Blocking(_))
-                }));
-            }
+            assert!(report.occurrence_ledger.iter().any(|decision| {
+                decision.name.value == b"record_suffix"
+                    && decision.disposition == OccurrenceDisposition::Resolved
+            }));
+            assert!(report.occurrence_ledger.iter().any(|decision| {
+                decision.name.value == b"record_max_size"
+                    && matches!(decision.disposition, OccurrenceDisposition::Blocking(_))
+            }));
         }
         id => panic!("Phoenix RTMP case has no fixture assertion: {id}"),
     }
@@ -412,7 +872,8 @@ fn assert_nginx_host_case(case: &str) {
                 && decision.disposition == OccurrenceDisposition::Resolved
         })),
         "HN-09" => {
-            assert_eq!(report.blocked_services.len(), 2);
+            assert!(report.blocked_services.is_empty());
+            assert!(report.config.is_some());
             assert!(report.occurrence_ledger.iter().any(|decision| {
                 decision.name.value == b"server"
                     && decision
@@ -427,7 +888,8 @@ fn assert_nginx_host_case(case: &str) {
             }));
         }
         "HN-19" => {
-            assert!(report.diagnostics.iter().any(|diagnostic| {
+            assert!(report.config.is_some());
+            assert!(!report.diagnostics.iter().any(|diagnostic| {
                 diagnostic.stage() == DiagnosticStage::Lower
                     && diagnostic.message().contains("proxy defaults")
             }));
@@ -436,14 +898,25 @@ fn assert_nginx_host_case(case: &str) {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one exhaustive match binds every authenticated HAProxy host case"
+)]
 fn assert_haproxy_host_case(case: &str) {
     let parsed = parse_haproxy_fixture("hostrouter-active.cfg");
     let resolved = resolve_parsed(parsed.clone());
-    let lowered = import_haproxy(parsed.clone());
+    let lowered = import_parsed_with_options(
+        parsed.clone(),
+        &HaproxyImportOptions {
+            one_request_per_connection: vec![HaproxyOneRequestPerConnectionOverlay {
+                backend: "app_nodes".into(),
+            }],
+            prometheus_migrations: Vec::new(),
+        },
+    );
     assert_haproxy_report_invariants(parsed.value(), resolved.value());
     let effective = resolved.value();
     let diagnostics = lowered.diagnostics();
-    assert_remaining_audited_haproxy_blockers(diagnostics);
     match case {
         "HH-01" => {
             assert!(matches!(
@@ -463,7 +936,7 @@ fn assert_haproxy_host_case(case: &str) {
                     .value,
                 BalanceAlgorithm::LeastConnections
             );
-            assert_diagnostic_message(diagnostics, "leastconn");
+            assert_no_diagnostic_message(diagnostics, "leastconn");
         }
         "HH-04" => {
             assert!(matches!(
@@ -483,7 +956,7 @@ fn assert_haproxy_host_case(case: &str) {
                     .value,
                 2
             );
-            assert_diagnostic_message(diagnostics, "initially eligible");
+            assert_no_diagnostic_message(diagnostics, "initially eligible");
         }
         "HH-06" => {
             assert_eq!(
@@ -496,7 +969,7 @@ fn assert_haproxy_host_case(case: &str) {
                 3
             );
             assert!(effective.backends[0].settings.redispatch.is_some());
-            assert_diagnostic_message(diagnostics, "redispatch persistence");
+            assert_no_diagnostic_message(diagnostics, "redispatch persistence");
         }
         "HH-07" => {
             let timeouts = &effective.frontends[0].settings.timeouts;
@@ -508,7 +981,7 @@ fn assert_haproxy_host_case(case: &str) {
         }
         "HH-08" => {
             assert!(effective.frontends[0].settings.forward_for.is_some());
-            assert_diagnostic_message(diagnostics, "forwardfor header insertion");
+            assert_no_diagnostic_message(diagnostics, "forwardfor header insertion");
         }
         "HH-09" => {
             assert_eq!(effective.global.maxconn.as_ref().unwrap().value, 4096);
@@ -522,7 +995,11 @@ fn assert_haproxy_host_case(case: &str) {
                 2000
             );
         }
-        "HH-10" => assert_eq!(diagnostic_count(diagnostics, E_STATS_UNSUPPORTED), 6),
+        "HH-10" => {
+            assert_eq!(diagnostic_count(diagnostics, E_STATS_UNSUPPORTED), 6);
+            assert!(lowered.value().draft.stats.is_none());
+            assert_eq!(lowered.value().activation_requirements.len(), 6);
+        }
         "HH-11" => assert_eq!(diagnostic_count(diagnostics, E_LOGGING_UNSUPPORTED), 3),
         "HH-12" => assert_external_process_settings(diagnostics),
         id => panic!("HAProxy host case has no fixture assertion: {id}"),
@@ -540,20 +1017,6 @@ fn assert_external_process_settings(diagnostics: &[oxiroute_import::Diagnostic])
             .count(),
         4
     );
-}
-
-fn assert_remaining_audited_haproxy_blockers(diagnostics: &[oxiroute_import::Diagnostic]) {
-    for message in [
-        "aggregate process limit",
-        "leastconn",
-        "initially eligible",
-        "HAProxy retries",
-        "redispatch persistence",
-        "timeout scope",
-        "forwardfor header insertion",
-    ] {
-        assert_diagnostic_message(diagnostics, message);
-    }
 }
 
 fn assert_no_diagnostic_message(diagnostics: &[oxiroute_import::Diagnostic], unexpected: &str) {

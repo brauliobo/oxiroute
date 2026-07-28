@@ -34,9 +34,24 @@ impl Connector {
         &self,
         peer: &P,
     ) -> Result<(HttpSession, bool)> {
-        let (stream, reused) = self.transport.get_stream(peer).await?;
-        let http = HttpSession::new_with_options(stream, peer);
-        Ok((http, reused))
+        let Some(lifetime) = peer.connection_lifetime() else {
+            let (stream, reused) = self.transport.get_stream(peer).await?;
+            return Ok((HttpSession::new_with_options(stream, peer), reused));
+        };
+        loop {
+            let generation = lifetime.capacity_generation();
+            if let Some(stream) = self.transport.reused_stream(peer).await {
+                return Ok((HttpSession::new_with_options(stream, peer), true));
+            }
+            if lifetime.try_acquire()? {
+                let stream = self
+                    .transport
+                    .new_stream_with_lifetime(peer, Some(lifetime))
+                    .await?;
+                return Ok((HttpSession::new_with_options(stream, peer), false));
+            }
+            lifetime.wait_for_capacity(generation).await?;
+        }
     }
 
     pub async fn reused_http_session<P: Peer + Send + Sync + 'static>(

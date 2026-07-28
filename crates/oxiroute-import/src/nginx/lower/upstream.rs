@@ -1,5 +1,5 @@
 use crate::{E_SEMANTICS_NOT_REPRESENTABLE, E_UNSUPPORTED_FEATURE};
-use oxiroute_config::UpstreamEndpoint;
+use oxiroute_config::{UpstreamEndpoint, UpstreamTls};
 
 use crate::nginx::{
     EffectiveHttp, EffectiveProxyPass, EffectiveUpstream, ProxyPassScheme, StaticEndpoint,
@@ -24,14 +24,9 @@ impl Lowerer {
         &self,
         http: &EffectiveHttp,
         proxy: &EffectiveProxyPass,
-    ) -> Result<(), Vec<LowerIssue>> {
-        if proxy.scheme != ProxyPassScheme::Http {
-            return Err(vec![issue(
-                &proxy.origin,
-                E_SEMANTICS_NOT_REPRESENTABLE,
-                "only plaintext HTTP origins are safely representable",
-            )]);
-        }
+        downstream_tls: bool,
+    ) -> Result<Option<UpstreamTls>, Vec<LowerIssue>> {
+        let tls = self.proxy_origin_tls(proxy, downstream_tls)?;
         match proxy.upstream {
             UpstreamReference::Direct => Self::validate_direct_origin(proxy),
             UpstreamReference::Resolved(occurrence) => {
@@ -47,7 +42,52 @@ impl Lowerer {
                 E_UNSUPPORTED_FEATURE,
                 "dynamic or unresolved proxy origin cannot be lowered",
             )]),
+        }?;
+        Ok(tls)
+    }
+
+    fn proxy_origin_tls(
+        &self,
+        proxy: &EffectiveProxyPass,
+        downstream_tls: bool,
+    ) -> Result<Option<UpstreamTls>, Vec<LowerIssue>> {
+        let secure = match proxy.scheme {
+            ProxyPassScheme::Http => false,
+            ProxyPassScheme::Https => true,
+            ProxyPassScheme::Downstream => downstream_tls,
+            ProxyPassScheme::Unsupported(_) => {
+                return Err(vec![issue(
+                    &proxy.origin,
+                    E_UNSUPPORTED_FEATURE,
+                    "unsupported proxy origin scheme cannot be lowered",
+                )]);
+            }
+        };
+        if !secure {
+            return Ok(None);
         }
+        let authority = proxy
+            .authority
+            .iter()
+            .map(u8::to_ascii_lowercase)
+            .collect::<Vec<_>>();
+        if let Some(tls) = self.upstream_tls_overlays.get(&authority) {
+            self.used_upstream_tls_overlays
+                .borrow_mut()
+                .insert(authority);
+            return Ok(Some(tls.clone()));
+        }
+        if let Some(StaticEndpoint::Dns { host, .. }) = &proxy.direct_endpoint {
+            return Ok(Some(UpstreamTls {
+                server_name: host.clone(),
+                ca_certificate_path: None,
+            }));
+        }
+        Err(vec![issue(
+            &proxy.origin,
+            E_SEMANTICS_NOT_REPRESENTABLE,
+            "HTTPS proxy origin with an IP or named-upstream authority requires an explicit verified DNS SNI/trust overlay",
+        )])
     }
 
     fn validate_direct_origin(proxy: &EffectiveProxyPass) -> Result<(), Vec<LowerIssue>> {

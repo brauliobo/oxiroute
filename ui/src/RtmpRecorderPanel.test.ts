@@ -33,7 +33,7 @@ function stream(recorders: RecorderSnapshot[] = [recorder()]): StreamSnapshot {
     created_at_unix_ms: 1_750_000_000_000,
     publisher: { session_id: 'publisher-1', attached_at_unix_ms: 1_750_000_000_000 },
     subscriber_count: 0,
-    media: {
+      media: {
       audio: {
         codec_id: 10,
         codec_fourcc: null,
@@ -52,8 +52,9 @@ function stream(recorders: RecorderSnapshot[] = [recorder()]): StreamSnapshot {
         last_rtmp_timestamp_ms: 1,
         last_observed_at_unix_ms: 1_750_000_000_000,
       },
-      fanout_payload_bytes: '0',
-    },
+        fanout_payload_bytes: '0',
+      },
+      relays: [],
     recording_supported: true,
     manual_recording: true,
     recorders,

@@ -82,6 +82,7 @@ describe('cache and forward proxy editors', () => {
       service: 'egress',
       tls_profile: null,
       max_connections: 1_000,
+      downstream_timeouts: { client_timeout_ms: null, request_timeout_ms: null, keepalive_timeout_ms: null },
     }
     const wrapper = mount(ListenerEditor, {
       props: {

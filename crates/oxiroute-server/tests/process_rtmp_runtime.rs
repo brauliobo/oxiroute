@@ -13,17 +13,24 @@ mod rtmp_support;
 use std::{fs, net::SocketAddr, path::Path, time::Duration};
 
 use oxiroute_config::{
-    Config, Listener, Management, Protocol, RtmpApplication, RtmpRecorderStart, RtmpService,
+    Config, HttpPathSelector, HttpRoute, HttpRouteAction, HttpService, HttpVersionPolicy,
+    L4Service, Listener, Management, Protocol, RtmpApplication, RtmpRecorderStart, RtmpService,
+    Stats, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool,
 };
 use rml_rtmp::sessions::ClientSessionEvent;
 use serde_json::Value;
 use tempfile::TempDir;
-use tokio::time::{sleep, timeout};
+use tokio::{
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    net::{TcpListener, TcpStream},
+    task::JoinSet,
+    time::{sleep, timeout},
+};
 
 use config_support::{empty_config, rtmp_recorder_with_queue_bytes, socket_bind};
 use fixture_support::create_secure_root;
 use http_support::http_request;
-use process_support::{ServerProcess, reserve_tcp_address};
+use process_support::{ServerProcess, reserve_tcp_address, write_config};
 use rtmp_support::RtmpWireClient;
 
 const TOKEN: &str = "55f17e0e05826acaa3bc493350f59986f12d42ad762ddf934570c51fd28bea74";
@@ -34,7 +41,7 @@ const INITIAL_PLAYBACK_TICKS: Duration = Duration::from_millis(30);
 async fn idle_and_publisher_connections_survive_initial_playback_timer_ticks() {
     let management_address = reserve_tcp_address();
     let rtmp_address = reserve_tcp_address();
-    let config = idle_runtime_config(management_address, rtmp_address);
+    let mut config = idle_runtime_config(management_address, rtmp_address);
     let mut server = ServerProcess::start(&config, Some(TOKEN));
     server.wait_for_tcp(management_address).await;
     server.wait_for_tcp(rtmp_address).await;
@@ -53,7 +60,131 @@ async fn idle_and_publisher_connections_survive_initial_playback_timer_ticks() {
         })
     })
     .await;
+    let authorization = format!("Bearer {TOKEN}");
+    let original_revision = http_request(
+        management_address,
+        "GET",
+        "/api/v1/status",
+        &[("Authorization", &authorization)],
+        &[],
+    )
+    .await
+    .json()["activeRevision"]
+        .as_str()
+        .expect("active revision")
+        .to_owned();
+    config.max_connections = Some(100);
+    write_config(&server.config_path, &config);
+    timeout(WIRE_TIMEOUT, async {
+        loop {
+            let status = http_request(
+                management_address,
+                "GET",
+                "/api/v1/status",
+                &[("Authorization", &authorization)],
+                &[],
+            )
+            .await;
+            if status.status == 200
+                && status.json()["activeRevision"].as_str() != Some(original_revision.as_str())
+            {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("generation reload timed out");
+    publisher.publish_audio(3, &[0xaf, 0x01, 0x55]).await;
     publisher.close().await;
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn queued_connections_survive_generation_handoff_on_every_listener_kind() {
+    const CONNECTIONS_PER_ENDPOINT: usize = 24;
+
+    let management_address = reserve_tcp_address();
+    let stats_addresses = [reserve_tcp_address(), reserve_tcp_address()];
+    let http_addresses = [reserve_tcp_address(), reserve_tcp_address()];
+    let tcp_address = reserve_tcp_address();
+    let rtmp_address = reserve_tcp_address();
+    let upstream = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("TCP upstream bind");
+    let upstream_address = upstream.local_addr().expect("TCP upstream address");
+    let upstream_task = tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = upstream.accept().await.expect("TCP upstream accept");
+            tokio::spawn(async move {
+                let mut payload = [0; 4];
+                if stream.read_exact(&mut payload).await.is_err() {
+                    return;
+                }
+                stream
+                    .write_all(&payload)
+                    .await
+                    .expect("TCP upstream write");
+            });
+        }
+    });
+    let mut config = handoff_runtime_config(
+        management_address,
+        stats_addresses,
+        http_addresses,
+        tcp_address,
+        rtmp_address,
+        upstream_address,
+    );
+    let mut server = ServerProcess::start(&config, Some(TOKEN));
+    for address in [
+        management_address,
+        stats_addresses[0],
+        stats_addresses[1],
+        http_addresses[0],
+        http_addresses[1],
+        tcp_address,
+        rtmp_address,
+    ] {
+        server.wait_for_tcp(address).await;
+    }
+
+    let management = connect_many(management_address, CONNECTIONS_PER_ENDPOINT).await;
+    let first_stats = connect_many(stats_addresses[0], CONNECTIONS_PER_ENDPOINT).await;
+    let second_stats = connect_many(stats_addresses[1], CONNECTIONS_PER_ENDPOINT).await;
+    let first_http = connect_many(http_addresses[0], CONNECTIONS_PER_ENDPOINT).await;
+    let second_http = connect_many(http_addresses[1], CONNECTIONS_PER_ENDPOINT).await;
+    let tcp = connect_many(tcp_address, CONNECTIONS_PER_ENDPOINT).await;
+    let rtmp = connect_many(rtmp_address, CONNECTIONS_PER_ENDPOINT).await;
+
+    let authorization = format!("Bearer {TOKEN}");
+    let original_revision = http_request(
+        management_address,
+        "GET",
+        "/api/v1/status",
+        &[("Authorization", &authorization)],
+        &[],
+    )
+    .await
+    .json()["activeRevision"]
+        .as_str()
+        .expect("active revision")
+        .to_owned();
+    config.max_connections = Some(1_024);
+    write_config(&server.config_path, &config);
+    wait_for_new_revision(management_address, &authorization, &original_revision).await;
+
+    let ready_request = b"GET /ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    let fixed_request = b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    assert_http_connections(management, ready_request, b"200 OK").await;
+    assert_http_connections(first_stats, ready_request, b"200 OK").await;
+    assert_http_connections(second_stats, ready_request, b"200 OK").await;
+    assert_http_connections(first_http, fixed_request, b"handoff-ok").await;
+    assert_http_connections(second_http, fixed_request, b"handoff-ok").await;
+    assert_tcp_connections(tcp).await;
+    assert_rtmp_connections(rtmp).await;
+
+    upstream_task.abort();
     server.shutdown();
 }
 
@@ -75,6 +206,7 @@ async fn built_runtime_publishes_plays_and_records_continuous_and_manual_streams
     let mut server = ServerProcess::start(&config, Some(TOKEN));
     server.wait_for_tcp(management_address).await;
     server.wait_for_tcp(rtmp_address).await;
+    let authorization = format!("Bearer {TOKEN}");
 
     let mut publisher = RtmpWireClient::connect(rtmp_address, "continuous").await;
     publisher
@@ -133,8 +265,30 @@ async fn built_runtime_publishes_plays_and_records_continuous_and_manual_streams
     let recorder_id = manual_stream["recorders"][0]["id"]
         .as_str()
         .expect("manual recorder ID");
+    let active_revision = http_request(
+        management_address,
+        "GET",
+        "/api/v1/generations",
+        &[("Authorization", &authorization)],
+        &[],
+    )
+    .await
+    .json()["generation"]["activeRevision"]
+        .as_str()
+        .expect("active revision")
+        .to_owned();
     let start_path = format!("/api/v1/rtmp/streams/{stream_id}/recorders/{recorder_id}/start");
-    let started = http_request(management_address, "POST", &start_path, &[], &[]).await;
+    let started = http_request(
+        management_address,
+        "POST",
+        &start_path,
+        &[
+            ("Authorization", &authorization),
+            ("If-Generation-Revision", &active_revision),
+        ],
+        &[],
+    )
+    .await;
     assert!(matches!(started.status, 200 | 202));
     wait_for_catalog(management_address, |catalog| {
         stream_for(catalog, "manual")
@@ -154,7 +308,17 @@ async fn built_runtime_publishes_plays_and_records_continuous_and_manual_streams
     })
     .await;
     let stop_path = format!("/api/v1/rtmp/streams/{stream_id}/recorders/{recorder_id}/stop");
-    let stopped = http_request(management_address, "POST", &stop_path, &[], &[]).await;
+    let stopped = http_request(
+        management_address,
+        "POST",
+        &stop_path,
+        &[
+            ("Authorization", &authorization),
+            ("If-Generation-Revision", &active_revision),
+        ],
+        &[],
+    )
+    .await;
     assert!(matches!(stopped.status, 200 | 202));
     wait_for_catalog(management_address, |catalog| {
         stream_for(catalog, "manual")
@@ -163,7 +327,14 @@ async fn built_runtime_publishes_plays_and_records_continuous_and_manual_streams
     .await;
     wait_for_file(&manual_root.join("operator.flv")).await;
 
-    let monitoring = http_request(management_address, "GET", "/api/v1/monitoring", &[], &[]).await;
+    let monitoring = http_request(
+        management_address,
+        "GET",
+        "/api/v1/monitoring",
+        &[("Authorization", &authorization)],
+        &[],
+    )
+    .await;
     assert_eq!(monitoring.status, 200);
     let monitoring_wire = String::from_utf8(monitoring.body).expect("monitoring UTF-8");
     assert!(!monitoring_wire.contains(TOKEN));
@@ -185,6 +356,7 @@ fn runtime_config(
             bind: management_address,
             ui_dir: None,
         }),
+        stats: None,
         listeners: vec![Listener {
             name: "wire-rtmp".into(),
             bind: socket_bind(rtmp_address),
@@ -192,9 +364,12 @@ fn runtime_config(
             service: Some("wire-rtmp".into()),
             tls_profile: None,
             max_connections: Some(8),
+            downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
         }],
         rtmp_services: vec![RtmpService {
             name: "wire-rtmp".into(),
+            outbound_chunk_size: 4_096,
+            access_log: None,
             applications: vec![
                 application("continuous", RtmpRecorderStart::Continuous, continuous_root),
                 application("manual", RtmpRecorderStart::Manual, manual_root),
@@ -210,6 +385,7 @@ fn idle_runtime_config(management_address: SocketAddr, rtmp_address: SocketAddr)
             bind: management_address,
             ui_dir: None,
         }),
+        stats: None,
         listeners: vec![Listener {
             name: "timer-rtmp".into(),
             bind: socket_bind(rtmp_address),
@@ -217,13 +393,18 @@ fn idle_runtime_config(management_address: SocketAddr, rtmp_address: SocketAddr)
             service: Some("timer-rtmp".into()),
             tls_profile: None,
             max_connections: Some(4),
+            downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
         }],
         rtmp_services: vec![RtmpService {
             name: "timer-rtmp".into(),
+            outbound_chunk_size: 4_096,
+            access_log: None,
             applications: vec![RtmpApplication {
                 name: "live".into(),
                 live: true,
                 idle_streams: true,
+                push_targets: Vec::new(),
+                fanout: oxiroute_config::RtmpFanoutPolicy::default(),
                 recorders: Vec::new(),
             }],
         }],
@@ -231,11 +412,227 @@ fn idle_runtime_config(management_address: SocketAddr, rtmp_address: SocketAddr)
     }
 }
 
+fn handoff_runtime_config(
+    management_address: SocketAddr,
+    stats_addresses: [SocketAddr; 2],
+    http_addresses: [SocketAddr; 2],
+    tcp_address: SocketAddr,
+    rtmp_address: SocketAddr,
+    upstream_address: SocketAddr,
+) -> Config {
+    let listener = |name: &str, address, protocol, service: &str| Listener {
+        name: name.into(),
+        bind: socket_bind(address),
+        protocol,
+        service: Some(service.into()),
+        tls_profile: None,
+        max_connections: Some(512),
+        downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+    };
+    Config {
+        management: Some(Management {
+            bind: management_address,
+            ui_dir: None,
+        }),
+        stats: Some(Stats {
+            binds: stats_addresses.to_vec(),
+            admin_token_file: None,
+        }),
+        listeners: vec![
+            listener(
+                "handoff-http-a",
+                http_addresses[0],
+                Protocol::Http,
+                "handoff-http",
+            ),
+            listener(
+                "handoff-http-b",
+                http_addresses[1],
+                Protocol::Http,
+                "handoff-http",
+            ),
+            listener("handoff-tcp", tcp_address, Protocol::Tcp, "handoff-tcp"),
+            listener("handoff-rtmp", rtmp_address, Protocol::Rtmp, "handoff-rtmp"),
+        ],
+        upstream_pools: vec![UpstreamPool {
+            name: "handoff-upstream".into(),
+            servers: Vec::new(),
+            endpoints: vec![UpstreamEndpoint::Socket {
+                address: upstream_address,
+            }],
+            algorithm: UpstreamAlgorithm::RoundRobin,
+            health_check: None,
+            tls: None,
+            http_versions: HttpVersionPolicy::default(),
+            queue_timeout_ms: None,
+            connect_timeout_ms: None,
+            server_timeout_ms: None,
+            connection_reuse: UpstreamConnectionReuse::Safe,
+        }],
+        http_services: vec![HttpService {
+            name: "handoff-http".into(),
+            routes: vec![HttpRoute {
+                host: None,
+                path: HttpPathSelector::SegmentPrefix { value: "/".into() },
+                methods: Vec::new(),
+                access_policy: None,
+                policy: oxiroute_config::HttpRoutePolicy::default(),
+                action: HttpRouteAction::FixedResponse {
+                    status: 200,
+                    body: "handoff-ok".into(),
+                    headers: Vec::new(),
+                },
+            }],
+            upstream_io_timeout_ms: 1_000,
+            max_request_body_bytes: Some(1_024),
+            gzip: None,
+            access_log: None,
+        }],
+        rtmp_services: vec![RtmpService {
+            name: "handoff-rtmp".into(),
+            outbound_chunk_size: 4_096,
+            access_log: None,
+            applications: vec![RtmpApplication {
+                name: "live".into(),
+                live: true,
+                idle_streams: true,
+                push_targets: Vec::new(),
+                fanout: oxiroute_config::RtmpFanoutPolicy::default(),
+                recorders: Vec::new(),
+            }],
+        }],
+        l4_services: vec![L4Service {
+            name: "handoff-tcp".into(),
+            upstream_pool: "handoff-upstream".into(),
+            connect_timeout_ms: 1_000,
+            idle_timeout_ms: 10_000,
+            lifetime_timeout_ms: None,
+        }],
+        ..empty_config()
+    }
+}
+
+async fn connect_many(address: SocketAddr, count: usize) -> Vec<TcpStream> {
+    let mut connections = JoinSet::new();
+    for _ in 0..count {
+        connections.spawn(async move {
+            TcpStream::connect(address)
+                .await
+                .unwrap_or_else(|error| panic!("connect to {address}: {error}"))
+        });
+    }
+    let mut streams = Vec::with_capacity(count);
+    while let Some(stream) = connections.join_next().await {
+        streams.push(stream.expect("connection task"));
+    }
+    streams
+}
+
+async fn wait_for_new_revision(address: SocketAddr, authorization: &str, original: &str) {
+    timeout(WIRE_TIMEOUT, async {
+        loop {
+            let status = http_request(
+                address,
+                "GET",
+                "/api/v1/status",
+                &[("Authorization", authorization)],
+                &[],
+            )
+            .await;
+            assert_eq!(status.status, 200);
+            if status.json()["activeRevision"].as_str() != Some(original) {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("generation reload timed out");
+}
+
+async fn assert_http_connections(
+    streams: Vec<TcpStream>,
+    request: &'static [u8],
+    expected: &'static [u8],
+) {
+    let mut exchanges = JoinSet::new();
+    for mut stream in streams {
+        exchanges.spawn(async move {
+            stream.write_all(request).await.expect("HTTP request write");
+            let mut response = Vec::new();
+            stream
+                .read_to_end(&mut response)
+                .await
+                .expect("HTTP response read");
+            assert!(
+                response
+                    .windows(expected.len())
+                    .any(|bytes| bytes == expected),
+                "unexpected HTTP response: {}",
+                String::from_utf8_lossy(&response)
+            );
+        });
+    }
+    timeout(WIRE_TIMEOUT, async {
+        while let Some(exchange) = exchanges.join_next().await {
+            exchange.expect("HTTP exchange task");
+        }
+    })
+    .await
+    .expect("HTTP handoff exchanges timed out");
+}
+
+async fn assert_tcp_connections(streams: Vec<TcpStream>) {
+    let mut exchanges = JoinSet::new();
+    for (index, mut stream) in streams.into_iter().enumerate() {
+        exchanges.spawn(async move {
+            let payload = u32::try_from(index)
+                .expect("TCP payload index")
+                .to_be_bytes();
+            stream.write_all(&payload).await.expect("TCP relay write");
+            let mut response = [0; 4];
+            stream
+                .read_exact(&mut response)
+                .await
+                .expect("TCP relay read");
+            assert_eq!(response, payload);
+        });
+    }
+    timeout(WIRE_TIMEOUT, async {
+        while let Some(exchange) = exchanges.join_next().await {
+            exchange.expect("TCP exchange task");
+        }
+    })
+    .await
+    .expect("TCP handoff exchanges timed out");
+}
+
+async fn assert_rtmp_connections(streams: Vec<TcpStream>) {
+    let mut handshakes = JoinSet::new();
+    for stream in streams {
+        handshakes.spawn(async move {
+            RtmpWireClient::establish(stream, "live")
+                .await
+                .close()
+                .await;
+        });
+    }
+    timeout(WIRE_TIMEOUT, async {
+        while let Some(handshake) = handshakes.join_next().await {
+            handshake.expect("RTMP handshake task");
+        }
+    })
+    .await
+    .expect("RTMP handoff handshakes timed out");
+}
+
 fn application(name: &str, start: RtmpRecorderStart, root_directory: &Path) -> RtmpApplication {
     RtmpApplication {
         name: name.into(),
         live: true,
         idle_streams: true,
+        push_targets: Vec::new(),
+        fanout: oxiroute_config::RtmpFanoutPolicy::default(),
         recorders: vec![rtmp_recorder_with_queue_bytes(
             "archive",
             start,
@@ -251,8 +648,15 @@ async fn wait_for_catalog(
 ) -> Value {
     timeout(WIRE_TIMEOUT, async {
         loop {
-            let response =
-                http_request(management_address, "GET", "/api/v1/rtmp/streams", &[], &[]).await;
+            let authorization = format!("Bearer {TOKEN}");
+            let response = http_request(
+                management_address,
+                "GET",
+                "/api/v1/rtmp/streams",
+                &[("Authorization", &authorization)],
+                &[],
+            )
+            .await;
             assert_eq!(response.status, 200);
             let catalog = response.json();
             if predicate(&catalog) {

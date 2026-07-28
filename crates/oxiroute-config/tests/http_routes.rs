@@ -330,6 +330,9 @@ fn rejects_invalid_or_conflicting_header_mutations() {
     let endpoint = r#"{ type = "socket", address = "127.0.0.1:3000" }"#;
     for policy in [
         r#"              request_headers = { { operation = "remove", name = "Connection" } },"#,
+        r#"              request_headers = { { operation = "set", name = "Connection", value = { type = "literal", value = "close" } } },"#,
+        r#"              request_headers = { { operation = "set", name = "Upgrade", value = { type = "literal", value = "websocket" } } },"#,
+        r#"              request_headers = { { operation = "set", name = "Upgrade", value = { type = "incoming_header", name = "X-Upgrade", max_bytes = 128 } } },"#,
         r#"              request_headers = { { operation = "set", name = "Content-Length", value = { type = "literal", value = "1" } } },"#,
         r#"              request_headers = { { operation = "set", name = "Bad Name", value = { type = "literal", value = "x" } } },"#,
         r#"              request_headers = { { operation = "set", name = "X-Test", value = { type = "literal", value = "line\nvalue" } } },"#,
@@ -342,6 +345,45 @@ fn rejects_invalid_or_conflicting_header_mutations() {
         let route = proxy_route("", policy);
         assert!(error(&config(&route, endpoint)).contains("header"));
     }
+}
+
+#[test]
+fn validates_and_renders_x_forwarded_for_source_exceptions() {
+    let endpoint = r#"{ type = "socket", address = "127.0.0.1:3000" }"#;
+    let policy = r#"              request_headers = {
+                { operation = "set", name = "X-Forwarded-For", value = { type = "appended_x_forwarded_for", max_bytes = 8192, except_source_cidrs = { "127.0.0.0/8", "2001:db8::/32" } } },
+              },"#;
+    let loaded = load_lua(&config(&proxy_route("", policy), endpoint)).expect("valid XFF policy");
+    let rendered = render_lua(&loaded).expect("render XFF policy");
+    assert!(rendered.contains("except_source_cidrs"));
+    assert!(rendered.contains("127.0.0.0/8"));
+    assert_eq!(load_lua(&rendered).expect("reload XFF policy"), loaded);
+
+    for invalid in [
+        r#"{ operation = "set", name = "X-Other", value = { type = "appended_x_forwarded_for", max_bytes = 8192 } }"#,
+        r#"{ operation = "set", name = "X-Forwarded-For", value = { type = "appended_x_forwarded_for", max_bytes = 8192, except_source_cidrs = { "127.0.0.1/8" } } }"#,
+        r#"{ operation = "set", name = "X-Forwarded-For", value = { type = "appended_x_forwarded_for", max_bytes = 8192, except_source_cidrs = { "127.0.0.0/8", "127.0.0.0/8" } } }"#,
+    ] {
+        let policy = format!("              request_headers = {{ {invalid} }},");
+        assert!(error(&config(&proxy_route("", &policy), endpoint)).contains("header"));
+    }
+}
+
+#[test]
+fn accepts_only_the_pingora_managed_websocket_header_idiom() {
+    let route = proxy_route(
+        "",
+        r#"              request_headers = {
+                { operation = "set", name = "Upgrade", value = { type = "incoming_header", name = "Upgrade", max_bytes = 128 } },
+                { operation = "set", name = "Connection", value = { type = "literal", value = "upgrade" } },
+              },"#,
+    );
+
+    load_lua(&config(
+        &route,
+        r#"{ type = "socket", address = "127.0.0.1:3000" }"#,
+    ))
+    .expect("standard nginx WebSocket headers are managed by Pingora");
 }
 
 #[test]

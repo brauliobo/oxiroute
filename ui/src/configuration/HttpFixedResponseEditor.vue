@@ -30,6 +30,9 @@
         label.field(data-field="http_services[].routes[].action.headers[].value")
           span Header value
           input(type="text" v-model="header.value")
+        label.enable-row(data-field="http_services[].routes[].action.headers[].always")
+          input(type="checkbox" v-model="header.always")
+          span Add on every response status
 </template>
 
 <script setup lang="ts">
@@ -45,7 +48,7 @@ const bodyForbiddenWithContent = computed(
 
 function addHeader(): void {
   if (props.action.headers.length >= 32) return
-  props.action.headers.push({ name: '', value: '' })
+  props.action.headers.push({ name: '', value: '', always: false })
   emit('changed')
 }
 

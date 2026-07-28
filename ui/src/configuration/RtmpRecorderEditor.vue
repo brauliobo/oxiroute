@@ -21,6 +21,20 @@ article.route-card.recorder-card
     label.enable-row.compact-enable(data-field="rtmp_services[].applications[].recorders[].append_unix_seconds")
       input(type="checkbox" v-model="recorder.append_unix_seconds")
       span Append Unix seconds to file names
+    label.field(data-field="rtmp_services[].applications[].recorders[].timezone")
+      span Filename timezone
+      input(type="text" v-model="recorder.timezone" required placeholder="America/Bahia")
+      small Use `utc` or an IANA timezone name.
+    label.field(data-field="rtmp_services[].applications[].recorders[].time_basis")
+      span Filename time basis
+      select(v-model="recorder.time_basis")
+        option(value="segment_start") Segment start
+        option(value="segment_end") Segment end
+    label.field(data-field="rtmp_services[].applications[].recorders[].segment_naming")
+      span Rotation naming
+      select(v-model="recorder.segment_naming")
+        option(value="safe_unique") Sequenced safe names
+        option(value="nginx_compatible") Rerender suffix each segment
   NullableLimitField(
     v-model="recorder.rotation_interval_ms"
     :default-value="60000"

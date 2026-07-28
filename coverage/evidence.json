@@ -70,12 +70,12 @@
       "tests": [
         "crates/oxiroute-import/tests/nginx_includes.rs#unsupported_glob_grammar_is_blocking_instead_of_an_empty_success",
         "crates/oxiroute-import/tests/nginx_semantic.rs#every_expanded_occurrence_has_one_ordered_terminal_decision",
-        "crates/oxiroute-import/tests/nginx_lower.rs#blocks_unrepresented_proxy_defaults_and_listener_admission",
-        "crates/oxiroute-import/tests/nginx_lower.rs#blocks_unsafe_or_mismatched_private_keys_without_exposing_details",
+        "crates/oxiroute-import/tests/nginx_lower.rs#lowers_explicit_nginx_proxy_version_with_canonical_defaults",
+        "crates/oxiroute-import/tests/nginx_lower.rs#lowers_certificate_paths_without_reading_operational_material",
         "crates/oxiroute-import/tests/nginx_lower.rs#exact_location_fixed_and_redirect_actions_finalize_without_placeholders",
-        "crates/oxiroute-import/tests/nginx_lower.rs#blocks_static_index_behavior_that_would_skip_nginx_location_reselection",
+        "crates/oxiroute-import/tests/nginx_lower.rs#lowers_static_index_behavior_into_canonical_static_routes",
         "crates/oxiroute-import/tests/nginx_lower.rs#explicit_proxy_headers_cookie_rewrite_and_safe_retry_subset_finalize",
-        "crates/oxiroute-import/tests/nginx_lower.rs#blocks_unrepresented_x_accel_response_controls",
+        "crates/oxiroute-import/tests/nginx_lower.rs#blocks_x_accel_response_controls_that_the_runtime_does_not_implement",
         "crates/oxiroute-import/tests/nginx_lower.rs#one_named_upstream_is_shared_by_routes_and_listeners",
         "crates/oxiroute-import/tests/nginx_lower.rs#complete_nginx_configs_are_rejected_by_the_http_fragment_api"
       ]
@@ -114,7 +114,7 @@
         "crates/oxiroute-import/tests/nginx_rtmp.rs#applies_native_application_and_recorder_defaults_explicitly",
         "crates/oxiroute-import/tests/nginx_rtmp.rs#maps_only_nginx_manual_recording_that_also_selects_all_media",
         "crates/oxiroute-import/tests/nginx_rtmp.rs#enforces_exact_path_suffix_interval_and_listener_bounds",
-        "crates/oxiroute-import/tests/nginx_rtmp.rs#blocks_every_unrepresented_recorder_form_and_non_exact_suffix",
+        "crates/oxiroute-import/tests/nginx_rtmp.rs#blocks_every_unrepresented_recorder_form",
         "crates/oxiroute-import/tests/nginx_rtmp.rs#lowers_named_recorders_and_explicit_disabled_file_policies",
         "crates/oxiroute-import/tests/nginx_rtmp.rs#source_noop_hls_muxdelay_does_not_block_an_exact_application",
         "crates/oxiroute-import/tests/nginx_rtmp.rs#keeps_supported_servers_in_the_draft_without_placeholder_for_a_blocked_server"
@@ -162,8 +162,12 @@
     {
       "id": "evidence.host.behavior",
       "tests": [
-        "crates/oxiroute-import/tests/haproxy_lower.rs#hostrouter_active_report_retains_every_audited_activation_blocker",
+        "crates/oxiroute-import/tests/haproxy_lower.rs#hostrouter_active_report_retains_non_equivalent_stats_and_remaining_blockers",
+        "crates/oxiroute-import/tests/haproxy_lower.rs#sanitized_hostrouter_haproxy_imports_from_the_complete_capture",
+        "crates/oxiroute-import/tests/haproxy_lower.rs#ordered_default_server_health_options_materialize_on_subsequent_servers",
         "crates/oxiroute-server/tests/http_routing.rs#host_matching_ignores_ascii_case_and_legal_ports",
+        "crates/oxiroute-server/tests/http_proxy_routing.rs#reusable_upstream_connection_holds_its_lease_until_the_socket_closes",
+        "crates/oxiroute-server/tests/http_proxy_routing.rs#delayed_same_server_retry_waits_and_reselects_the_original_server",
         "crates/oxiroute-server/tests/service_plan.rs#rtmp_listeners_share_one_service_identity_catalog_and_hub"
       ]
     },
@@ -179,7 +183,7 @@
     {
       "id": "evidence.import.no-placeholder",
       "tests": [
-        "crates/oxiroute-import/tests/nginx_lower.rs#hostrouter_shaped_dns_service_stays_blocked_without_a_placeholder",
+        "crates/oxiroute-import/tests/nginx_lower.rs#hostrouter_shaped_dns_service_finalizes_without_a_placeholder",
         "crates/oxiroute-import/tests/haproxy_lower.rs#automatic_or_aggregate_maxconn_never_emits_an_optional_cap_placeholder"
       ]
     }

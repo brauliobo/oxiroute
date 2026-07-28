@@ -63,7 +63,7 @@ parser round-trip properties remain planned.
 - TLS SNI/ALPN, upstream verification, certificate rotation, and expiry. Client authentication
   remains a future gate.
 - Atomic config writes, exact revision preconditions, stale conflicts, complete preflight before
-  disk mutation, redaction, authentication, and explicit restart-required outcomes.
+  disk mutation, redaction, authentication, and explicit pending-activation outcomes.
 - Management API monitoring/topology/RTMP/config response shapes and real HTTP behavior, including
   decimal-string cumulative counters and complete top-level/listener topology state parsing.
 - Continuous recording start/media/finalization, manual exact-ID start/stop, read-only candidate
@@ -82,22 +82,33 @@ Current nginx and HAProxy fixtures live under:
 
 ```text
 crates/oxiroute-import/tests/fixtures/<product>/
+crates/oxiroute-import/tests/fixtures/live/<host>/
 ```
+
+The live fixture directories contain sanitized HAProxy sources, nginx source trees reconstructed
+from `nginx -T` source markers, and live-origin hashed/read-only capture metadata. Tests pin the
+exact direct origin hash commands and 2026-07-26 origin hashes without retaining raw capture bytes;
+whitebeast HAProxy remains pending after its live configuration changed. Separate tests verify the
+post-sanitization hash of every listed file, reject missing or extra files, compare operational
+overlay inventories, and enforce the recorded sanitizer process. This evidence does not claim a
+cryptographic signer. Tests also require stable complete source graphs, deterministic preprocessing, and
+terminal accounting without treating remaining semantic blockers as a finalized-candidate claim.
 
 The current suite combines source files with parser/semantic/lowering assertions and repository
 coverage manifests. The product/category layout, capability profiles, expected-model sidecars, and
 optional native-validator output remain target fixture structure. Synthetic fixtures do not count
-as audited host evidence unless `coverage/host-cases.json` explicitly maps them.
+as live-host evidence unless `coverage/host-cases.json` explicitly maps them to live-origin hashed
+metadata.
 
 HAProxy lowering tests include an error-free static TCP fixture with a Unix listener, DNS
 `leastconn` backend, exact per-listener admission, and no import-time DNS resolution, plus a Unix
-server fixture. Separate audited-host fixtures assert that all remaining activation blockers are
+server fixture. Separate live-origin hashed host fixtures assert that all remaining activation blockers are
 retained and no fallback routes or endpoints are invented.
 
 nginx HTTP conformance uses the explicit fragment API. Tests reject complete nginx files, require
 exact response-control suppression before proxy finalization, preserve nginx hide/pass defaults,
-share named upstream pools across routes/listeners, and block static index behavior that would rerun
-nginx location selection.
+share named upstream pools across routes/listeners, lower the bounded static-index subset without
+rerunning nginx location selection, and carry only semantic first-wins host claims into routes.
 
 nginx-RTMP conformance tests cover deterministic include inheritance, strict listener/application
 lowering, continuous and all-media manual recording, native defaults, no import-time root access,
@@ -185,10 +196,10 @@ No checked-in CI workflow currently enforces that set. Representative focused ga
 `cargo test -p oxiroute-config --test lua_config`,
 `cargo test -p oxiroute-import --test coverage_manifests`,
 `cargo test -p oxiroute-import --test nginx_rtmp`,
-`cargo test -p oxiroute-server --test rtmp_api`,
-`cargo test -p oxiroute-server --test rtmp_recording`,
-`cargo test -p oxiroute-server --test wire_tls_interop`,
-`cargo test -p oxiroute-rtmp --test recorder_session --test recording_store --test recording_worker`,
+`cargo test -p oxiroute --test rtmp_api`,
+`cargo test -p oxiroute --test rtmp_recording`,
+`cargo test -p oxiroute --test wire_tls_interop`,
+`cargo test -p oxiroute-rtmp --test recorder_session --test recording_store --test recording_worker --test push_relay --test session_policy`,
 and `pnpm --dir ui test`.
 
 Future automation will add real-browser tests, local ACME integration, fuzz smoke corpora,

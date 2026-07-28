@@ -2,7 +2,7 @@ use std::{collections::HashSet, time::Duration};
 
 use oxiroute_config::{
     HttpProxyPolicy, HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpResponseHeaderMutation,
-    HttpRetryPolicy, HttpUpstreamHost, Protocol,
+    HttpRetryPolicy, HttpRetryTarget, HttpUpstreamHost, Protocol,
 };
 
 use crate::{Diagnostic, DiagnosticStage, E_SEMANTICS_NOT_REPRESENTABLE, ProvenanceSpan, Severity};
@@ -316,11 +316,9 @@ impl Lowerer<'_> {
         section: &EffectiveSection,
         frontend: &ProxySettings,
         targets: &HashSet<SectionId>,
-    ) -> Option<(u64, Vec<ProvenanceSpan>)> {
+    ) -> Option<(u64, u64, Vec<ProvenanceSpan>)> {
         let mut decision = Representability::new(true);
-        let frontend_scopes_clear = !self.block_frontend_http_scopes(frontend);
-        decision.require(frontend_scopes_clear);
-        let mut timeout = None;
+        let mut timeouts = None;
         let mut sources = Vec::new();
         for target in targets {
             let Some(backend) = self.backend_view(*target) else {
@@ -329,13 +327,9 @@ impl Lowerer<'_> {
             };
             let backend_section = backend.section().clone();
             let settings = backend.settings().clone();
-            let redispatch_clear = !self.block_redispatch(&settings);
-            decision.require(redispatch_clear);
-            let retries_clear = self.require_zero_retries(&backend_section, &settings);
-            decision.require(retries_clear);
-            let candidate = self.matching_http_timeout(&backend_section, &settings);
-            match (timeout, candidate) {
-                (None, Some(value)) => timeout = Some(value),
+            let candidate = self.http_timeouts(&backend_section, &settings);
+            match (timeouts, candidate) {
+                (None, Some(value)) => timeouts = Some(value),
                 (Some(first), Some(value)) if first == value => {}
                 (Some(_), Some(_)) => {
                     self.block_section(
@@ -381,7 +375,8 @@ impl Lowerer<'_> {
         if !decision.is_complete() {
             return None;
         }
-        Some((timeout?, sources))
+        let (connect_timeout_ms, server_timeout_ms) = timeouts?;
+        Some((connect_timeout_ms, server_timeout_ms, sources))
     }
 
     pub(super) fn lower_proxy_policies(
@@ -399,9 +394,7 @@ impl Lowerer<'_> {
                 self.lower_request_header_rules(frontend, &settings)?;
             request_headers.append(&mut explicit_request_headers);
             let response_headers = self.lower_response_header_rules(frontend, &settings)?;
-            if !self.require_zero_retries(&section, &settings) {
-                return None;
-            }
+            let max_retries = self.http_retries(&section, &settings)?;
             policies.insert(
                 *target,
                 HttpProxyPolicy {
@@ -409,7 +402,9 @@ impl Lowerer<'_> {
                     request_headers,
                     response_headers,
                     retry: HttpRetryPolicy {
-                        max_retries: 0,
+                        max_retries,
+                        target: HttpRetryTarget::SameServer,
+                        delay_ms: 0,
                         ..HttpRetryPolicy::default()
                     },
                     ..HttpProxyPolicy::default()
@@ -537,6 +532,7 @@ impl Lowerer<'_> {
                     mutations.push(HttpResponseHeaderMutation::Set {
                         name: name.into(),
                         value: value.into(),
+                        always: true,
                     });
                 }
                 HttpResponseRule::RemoveHeader { name } => {
@@ -556,19 +552,60 @@ impl Lowerer<'_> {
         frontend: &ProxySettings,
         backend: &ProxySettings,
     ) -> Option<Vec<HttpRequestHeaderMutation>> {
-        let enabled = [frontend.forward_for.as_ref(), backend.forward_for.as_ref()]
+        let mut enabled = [frontend.forward_for.as_ref(), backend.forward_for.as_ref()]
             .into_iter()
             .flatten()
             .filter(|value| matches!(&value.value, OptionState::Enabled(_)))
             .collect::<Vec<_>>();
+        if enabled.len() == 2 && enabled[0].provenance.origin == enabled[1].provenance.origin {
+            enabled.truncate(1);
+        }
         if enabled.is_empty() {
             return Some(Vec::new());
         }
-        self.block_value(
-            enabled[0],
-            "HAProxy forwardfor header insertion can append a duplicate field and is not one canonical set-header mutation",
-        );
-        None
+        if enabled.len() != 1 {
+            self.block_value(
+                enabled[1],
+                "multiple effective HAProxy forwardfor policies would append the client address more than once",
+            );
+            return None;
+        }
+        let policy = enabled[0];
+        let OptionState::Enabled(forward_for) = &policy.value else {
+            unreachable!("enabled forwardfor policy was filtered")
+        };
+        if forward_for.if_none {
+            self.block_value(
+                policy,
+                "HAProxy forwardfor if-none condition has no canonical header-presence policy",
+            );
+            return None;
+        }
+        if forward_for.header.is_some() {
+            self.block_value(
+                policy,
+                "HAProxy forwardfor custom header names are not canonical X-Forwarded-For",
+            );
+            return None;
+        }
+        let except_source_cidrs = match forward_for.except.as_deref() {
+            None => Vec::new(),
+            Some(b"127.0.0.0/8") => vec!["127.0.0.0/8".into()],
+            Some(_) => {
+                self.block_value(
+                    policy,
+                    "HAProxy forwardfor except is outside the canonical source-CIDR subset",
+                );
+                return None;
+            }
+        };
+        Some(vec![HttpRequestHeaderMutation::Set {
+            name: "x-forwarded-for".into(),
+            value: HttpRequestHeaderValue::AppendedXForwardedFor {
+                max_bytes: 8_192,
+                except_source_cidrs,
+            },
+        }])
     }
 
     pub(super) fn lower_tcp_policy(
@@ -645,11 +682,11 @@ impl Lowerer<'_> {
         })
     }
 
-    pub(super) fn matching_http_timeout(
+    pub(super) fn http_timeouts(
         &mut self,
         section: &EffectiveSection,
         settings: &ProxySettings,
-    ) -> Option<u64> {
+    ) -> Option<(u64, u64)> {
         let connect = settings
             .timeouts
             .connect
@@ -660,42 +697,44 @@ impl Lowerer<'_> {
             .server
             .as_ref()
             .and_then(|value| self.duration_ms(value, "HAProxy server timeout"));
-        match (connect, server) {
-            (Some(connect), Some(server)) if connect == server => Some(connect),
-            (Some(_), Some(_)) => {
-                self.block_section(
-                    section,
-                    "separate HAProxy connect/server timeout scopes cannot map to one canonical HTTP I/O timeout",
-                );
-                None
-            }
-            _ => {
-                self.block_section(
-                    section,
-                    "HAProxy timeout connect and timeout server must both be explicit for canonical HTTP lowering",
-                );
-                None
-            }
+        if let (Some(connect), Some(server)) = (connect, server) {
+            Some((connect, server))
+        } else {
+            self.block_section(
+                section,
+                "HAProxy timeout connect and timeout server must both be explicit for canonical HTTP lowering",
+            );
+            None
         }
     }
 
-    fn block_frontend_http_scopes(&mut self, settings: &ProxySettings) -> bool {
-        let mut blocked = false;
-        for timeout in [
-            settings.timeouts.client.as_ref(),
-            settings.timeouts.http_request.as_ref(),
-            settings.timeouts.http_keep_alive.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
+    fn http_retries(&mut self, section: &EffectiveSection, settings: &ProxySettings) -> Option<u8> {
+        if let Some(redispatch) = settings
+            .redispatch
+            .as_ref()
+            .filter(|value| matches!(value.value, OptionState::Enabled(_)))
         {
             self.block_value(
-                timeout,
-                "HAProxy downstream/request timeout scope has no canonical HTTP service equivalent",
+                redispatch,
+                "HAProxy redispatch retry scheduling cannot be represented as same-server retries without an exact redispatch attempt policy",
             );
-            blocked = true;
+            return None;
         }
-        blocked
+        if let Some(retries) = &settings.retries {
+            match u8::try_from(retries.value) {
+                Ok(value) if value <= 8 => Some(value),
+                _ => {
+                    self.block_value(retries, "HAProxy retries exceed the canonical retry bound");
+                    None
+                }
+            }
+        } else {
+            self.block_section(
+                section,
+                "HAProxy retries must be explicit for HTTP lowering",
+            );
+            None
+        }
     }
 
     pub(super) fn require_zero_retries(

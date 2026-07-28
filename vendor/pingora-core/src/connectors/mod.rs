@@ -179,6 +179,24 @@ impl TransportConnector {
     ///
     /// No connection is reused.
     pub async fn new_stream<P: Peer + Send + Sync + 'static>(&self, peer: &P) -> Result<Stream> {
+        let lifetime = peer.connection_lifetime();
+        if let Some(lifetime) = &lifetime {
+            loop {
+                let generation = lifetime.capacity_generation();
+                if lifetime.try_acquire()? {
+                    break;
+                }
+                lifetime.wait_for_capacity(generation).await?;
+            }
+        }
+        self.new_stream_with_lifetime(peer, lifetime).await
+    }
+
+    pub(crate) async fn new_stream_with_lifetime<P: Peer + Send + Sync + 'static>(
+        &self,
+        peer: &P,
+        lifetime: Option<Arc<dyn crate::protocols::ConnectionLifetime>>,
+    ) -> Result<Stream> {
         let rt = self
             .offload
             .as_ref()
@@ -194,6 +212,21 @@ impl TransportConnector {
         } else {
             do_connect(peer, bind_to, alpn_override, &self.tls_ctx.ctx).await?
         };
+
+        if let Some(lifetime) = lifetime {
+            let digest = stream.get_socket_digest().ok_or_else(|| {
+                Error::explain(
+                    InternalError,
+                    "upstream connection has no socket lifetime metadata",
+                )
+            })?;
+            digest.attach_connection_lifetime(lifetime).map_err(|_| {
+                Error::explain(
+                    InternalError,
+                    "upstream connection lifetime metadata was already attached",
+                )
+            })?;
+        }
 
         Ok(stream)
     }
@@ -264,12 +297,18 @@ impl TransportConnector {
         if !test_reusable_stream(&mut stream) {
             return;
         }
+        let lifetime = stream
+            .get_socket_digest()
+            .and_then(|digest| digest.connection_lifetime());
         let id = stream.id();
         let meta = ConnectionMeta::new(key, id);
         debug!("Try to keepalive client session");
         let stream = Arc::new(Mutex::new(stream));
         let locked_stream = stream.clone().try_lock_owned().unwrap(); // safe as we just created it
         let (notify_close, watch_use) = self.connection_pool.put(&meta, stream);
+        if let Some(lifetime) = lifetime {
+            lifetime.notify_reusable();
+        }
         let pool = self.connection_pool.clone(); //clone the arc
         let rt = pingora_runtime::current_handle();
         rt.spawn(async move {

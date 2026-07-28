@@ -4,13 +4,14 @@ use std::{
 };
 
 use crate::{
-    CanonicalCandidate as SharedCanonicalCandidate, CanonicalDraft, CanonicalProvenance,
-    Diagnostic, ProvenanceSpan,
+    ActivationRequirement, CanonicalCandidate as SharedCanonicalCandidate, CanonicalDraft,
+    CanonicalProvenance, DeploymentRequirement, Diagnostic, OperationalOverlayRequirement,
+    ProvenanceSpan,
 };
 
 use super::{
-    EffectiveBackend, EffectiveConfiguration, EffectiveListen, EffectiveSection, ProxySettings,
-    SectionId,
+    EffectiveBackend, EffectiveConfiguration, EffectiveListen, EffectiveSection,
+    HaproxyImportOptions, ProxySettings, SectionId,
 };
 
 mod endpoint;
@@ -32,6 +33,11 @@ pub(super) struct Lowerer<'a> {
     provenance: Vec<CanonicalProvenance<ProvenanceSpan>>,
     lowered_pools: HashSet<SectionId>,
     certificate_names: HashMap<(PathBuf, PathBuf), (String, usize)>,
+    deployment_requirements: Vec<DeploymentRequirement<ProvenanceSpan>>,
+    activation_requirements: Vec<ActivationRequirement<ProvenanceSpan>>,
+    operational_overlays: Vec<OperationalOverlayRequirement<ProvenanceSpan>>,
+    options: &'a HaproxyImportOptions,
+    used_connection_lifecycle_overlays: HashSet<usize>,
 }
 
 pub(super) struct Representability {

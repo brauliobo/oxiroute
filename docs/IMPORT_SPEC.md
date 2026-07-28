@@ -19,36 +19,59 @@ security, TLS, listener, or upstream semantics cannot be represented.
 
 ## Current implementation boundary
 
-Import is currently a Rust library capability in `oxiroute-import`. The daemon has no import CLI,
-management API, UI workflow, watcher, or activation integration.
+Import is implemented in `oxiroute-import` and exposed by the daemon binary as an offline report or
+preview command. There is no import management API, UI workflow, watcher, or activation integration;
+preview is emitted only for a fully finalized candidate.
 
 - nginx exposes an explicit HTTP-fragment importer: the expanded root may contain only one `http`
   block. It has bounded byte-preserving parsing, deterministic includes/globs, provenance, HTTP
   inheritance, an occurrence ledger, blocked-service reports, and conditional canonical lowering.
   It rejects complete nginx files rather than implying support for `events`, process, or module roots.
-- The strict nginx HTTP subset can finalize exact/default virtual hosts with representable flat
+- nginx also exposes `import_root`, which loads one complete include graph, resolves HTTP and RTMP
+  from that same snapshot, records one root-level terminal decision per expanded occurrence, and
+  retains process, events, module, and error-log directives as typed deployment requirements.
+  Certificate/key and htpasswd paths plus explicit bearer/upstream-TLS options become value-bearing
+  operational overlays; every supplied option must have one unique normalized identity and be used
+  by lowering before finalization. Import does not open private keys or secret files.
+- The strict nginx HTTP subset carries nginx's first-loaded accepted exact and wildcard name claims
+  into lowering, including the exact-plus-wildcard claims of a leading-dot name. It can finalize
+  exact/default virtual hosts with representable flat
   routes, fixed responses or redirects, static socket/DNS/Unix origins, explicit proxy defaults,
   exact response-control suppression, response hide/pass defaults, and shared named upstream pools.
-  URI replacement, incompatible routing/admission policy, and static index behavior remain blocking;
+  URI replacement and incompatible routing/admission policy remain blocking;
   a blocked service is retained only in the report draft.
 - nginx-RTMP has an independent 117-directive parser/registry plus deterministic include expansion,
   effective inheritance, a terminal occurrence ledger, provenance, blocked-service reporting, and
-  strict conditional canonical finalization for an exact listener/application/recording subset.
+  strict conditional canonical finalization for an exact listener/application/recording subset,
+  including outbound chunk size, disabled access logging, bounded suffixes tied to an explicit
+  host IANA timezone overlay, and static RTMP push targets whose application is literal or `$name`.
   Import never accesses a configured recording root. Most directive families remain blocking, and
   the daemon still has no import integration.
 - HAProxy has ordered `-f` file/directory loading, byte-preserving lexing/parsing, defaults and
   frontend/backend/listen resolution, a terminal decision ledger, stable diagnostics, provenance,
   and conservative canonical lowering.
-- HAProxy finalizes only complete, error-free candidates. The tested finalizable slice is strict
-  static TCP with explicit compatible modes, exact socket or Unix binds, exact positive
-  per-listener `maxconn`, static socket/DNS/Unix servers, explicit `roundrobin` or `leastconn`, zero
-  retries, and representable connect/client/server timeout scopes. DNS names remain canonical and
-  are not resolved during import.
+- HAProxy finalizes only complete, error-free candidates. An explicit preprocessing API accepts a
+  typed node IP and GPU-presence bit, expands only `${NODE_IP}` and `defined(GPU1)`, fingerprints
+  those inputs, retains immutable original source snapshots and inactive spans, and emits a source
+  map from generated spans back to the covering original bytes. The finalizable subset covers HTTP and TCP,
+  aggregate/listener/server admission, socket/DNS/Unix endpoints, `roundrobin`, `leastconn`, and
+  `first`, healthy-startup checks, bounded retries, independent timeout scopes including upstream
+  queue deadlines, source-CIDR `forwardfor` exceptions, cumulative inherited `default-server`
+  health intervals/capacity, and server-close connection reuse. A backend-scoped, uniquely consumed
+  one-request-per-connection overlay can provide the same lifecycle boundary when captured
+  surrounding evidence, such as hostrouter's nginx HTTP/1.0/no-keepalive hop, establishes it. DNS
+  names remain canonical and are not resolved during import.
 - The synthetic `hostrouter-static-representable.cfg` fixture proves that an audited-shaped Unix
-  frontend plus DNS `leastconn` backend can finalize; it is not audited-host evidence. The complete
-  audited active candidate remains blocked by logging/stats/process policy, aggregate admission,
-  HTTP `leastconn` accounting, checked-server startup eligibility, retry/redispatch behavior,
-  timeout scopes, and forwarded-header policy.
+  frontend plus DNS `leastconn` backend can finalize; it is not live-host evidence. Live sanitized
+  fixture trees are mapped in `coverage/host-cases.json` as live-origin hashed/read-only captured
+  evidence. Their metadata separates direct origin hashes and exact hash commands from checked-in
+  post-sanitization per-file hashes, records the sanitizer steps, and states that raw bytes were not
+  stored. This is not cryptographic signer authentication. Logging and process policy are typed
+  deployment requirements. HAProxy stats page, URI, authentication, refresh, administration, and
+  exact `http-request use-service prometheus-exporter if { path /metrics }` forms remain
+  non-equivalent activation requirements. The exact Prometheus form emits canonical OxiRoute stats
+  only when a uniquely matched operator migration overlay explicitly accepts different metric
+  families and the broader OxiRoute stats routes.
 - Squid has a bounded source/include, parser, and typed semantic-report foundation. Final recheck
   verifies source bytes, root/include path identities, and include-glob result sets; it emits no
   canonical candidate and has no runtime integration.
@@ -91,8 +114,8 @@ semantics cannot be safely round-tripped.
 
 ## nginx
 
-The public `import_http_fragment` entry point is intentionally not a complete native-config API.
-Target support beyond its current strict subset includes:
+The public `import_http_fragment` entry point intentionally remains fragment-only. Use `import_root`
+for a complete process/events/http/rtmp root. Target support beyond the current strict subset includes:
 
 - `http`, `server`, `listen`, `server_name`, ordinary prefix/exact `location`, static `proxy_pass`.
 - `upstream` with static `server` entries.
@@ -118,8 +141,9 @@ and the inheritable `live`, `idle_streams`, and exact recording policy below:
 
 - `record off`, `record all`, or `record all manual`/`record manual all`.
 - Recording only on `live on` applications and only with a secure absolute `record_path`.
-- Default `.flv` or a separator-free, at-most-128-byte `record_suffix` containing literals and
-  `%%`; nginx local-time calendar formats do not lower to canonical UTC formats.
+- Default `.flv` or a separator-free, at-most-128-byte `record_suffix` containing bounded calendar
+  fields; nginx calendar fields lower with the uniquely consumed host IANA timezone overlay, segment-start time
+  basis, and compatible naming.
 - `record_unique on|off` and a continuous-only `record_interval` of 1 through 2147483647 ms.
 - Canonical recorder queue/shutdown/storage defaults where nginx has no exact equivalent.
 
@@ -130,21 +154,21 @@ but no placeholder is invented for a blocked server.
 
 Blocking forms include listen options, overlapping sockets, duplicate scalar/application identities,
 missing or insecure paths, recording without `live on`, bare `record manual`, partial
-audio/video/keyframe masks, manual intervals, local-time suffix formats, `record_append`,
+ audio/video/keyframe masks, manual intervals, unsupported suffix fields, `record_append`,
 `record_lock`, size/frame/notify policy, named `recorder {}` blocks, global RTMP policy, access,
-push/pull, callbacks, exec, VOD, HLS/DASH, logs, stats, and native control behavior. This strict
+ dynamic push/pull, callbacks, exec, VOD, HLS/DASH, file logs, stats, and native control behavior. This strict
 subset is not full nginx-RTMP compatibility and is not an audited-host claim unless the authoritative
 coverage manifest maps an audited fixture.
 
 ## HAProxy
 
-Target support beyond the current strict TCP slice:
+Target support beyond the current HTTP/TCP slice:
 
 - `global` values required to interpret supported sections.
 - `defaults`, `frontend`, `backend`, and `listen`.
 - `bind`, `mode http`, `mode tcp`, `default_backend`.
 - Simple ordered `use_backend` rules using exact host or path-prefix ACLs.
-- `balance roundrobin` and static-TCP `leastconn`; broader HTTP accounting remains a blocker.
+- `balance roundrobin`, `leastconn`, and `first` with canonical connection accounting.
 - Static socket, DNS, and Unix `server` endpoints and basic frontend/backend TLS where the canonical
   transport has equivalent semantics.
 
@@ -195,5 +219,6 @@ additional evidence, not proof that translated behavior is equivalent.
 
 The planned complete corpus groups fixtures by product and category: `valid`, `invalid`,
 `unsupported`, and `edge`. Each fixture will record its expected include graph, canonical model,
-diagnostics, and optional native-validator output. Current nginx, HAProxy, Squid, and Varnish
-fixtures live under `crates/oxiroute-import/tests/fixtures/<product>/`.
+diagnostics, and optional native-validator output. Current synthetic nginx, HAProxy, Squid, and
+Varnish fixtures live under `crates/oxiroute-import/tests/fixtures/<product>/`; authenticated
+sanitized host trees and metadata live under `crates/oxiroute-import/tests/fixtures/live/<host>/`.

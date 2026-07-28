@@ -321,7 +321,7 @@ fn validate_cidrs(
     Ok(())
 }
 
-fn normalize_cidr(value: &str) -> Option<String> {
+pub(crate) fn normalize_cidr(value: &str) -> Option<String> {
     let (address, prefix) = value.split_once('/')?;
     if prefix.is_empty() || prefix.starts_with('+') || (prefix.len() > 1 && prefix.starts_with('0'))
     {

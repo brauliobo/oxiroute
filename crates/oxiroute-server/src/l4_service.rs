@@ -22,4 +22,8 @@ impl L4ServicePlan {
     pub fn select(&self) -> Option<EndpointLease> {
         self.pool.select()
     }
+
+    pub async fn select_wait(&self) -> Option<EndpointLease> {
+        self.pool.select_wait().await
+    }
 }

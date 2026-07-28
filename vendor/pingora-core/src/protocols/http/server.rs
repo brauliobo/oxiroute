@@ -287,6 +287,26 @@ impl Session {
         }
     }
 
+    /// Sets an exact idle timeout used only while a reused HTTP/1 connection awaits a request.
+    pub fn set_idle_keepalive_timeout(&mut self, timeout: Option<Duration>) {
+        if let Self::H1(session) = self {
+            session.set_idle_keepalive_timeout(timeout);
+        }
+    }
+
+    /// Sets the timeout for an active HTTP/1 request header.
+    pub fn set_request_header_timeout(&mut self, timeout: Option<Duration>) {
+        if let Self::H1(session) = self {
+            session.set_request_header_timeout(timeout);
+        }
+    }
+
+    pub(crate) fn mark_reused_connection(&mut self) {
+        if let Self::H1(session) = self {
+            session.mark_reused_connection();
+        }
+    }
+
     /// Get the keepalive timeout. None if keepalive is disabled. Not applicable for h2 or
     /// subrequest
     pub fn get_keepalive(&self) -> Option<u64> {

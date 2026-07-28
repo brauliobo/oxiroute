@@ -1,14 +1,17 @@
 use std::{net::SocketAddr, path::PathBuf};
 
 use oxiroute_config::{
-    AlpnProtocol, Certificate, CertificateSource, Config, ConfigError, HealthCheck,
-    HealthCheckType, HttpAccessPolicy, HttpCookiePathRewrite, HttpHostSelector, HttpLiteralHeader,
-    HttpPathSelector, HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation,
-    HttpRequestHeaderValue, HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryMethodSafety,
-    HttpRetryPolicy, HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpService, HttpUpstreamHost,
-    HttpVersion, HttpVersionPolicy, L4Service, Listener, ListenerBind, Management, Protocol,
-    RtmpApplication, RtmpRecorder, RtmpRecorderStart, RtmpService, TlsProfile, TlsVersion,
-    UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, UpstreamTls, load_lua, render_lua,
+    AlpnProtocol, Certificate, CertificateSource, Config, ConfigError, DnsResolutionPolicy,
+    DownstreamTimeoutPolicy, HealthCheck, HealthCheckType, HealthStartup, HttpAccessPolicy,
+    HttpCookiePathRewrite, HttpHostSelector, HttpLiteralHeader, HttpPathSelector, HttpProxyPolicy,
+    HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
+    HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryMethodSafety, HttpRetryPolicy,
+    HttpRetryTarget, HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpService,
+    HttpStaticMimePolicy, HttpStaticPathMapping, HttpUpstreamHost, HttpVersion, HttpVersionPolicy,
+    L4Service, Listener, ListenerBind, Management, Protocol, RtmpApplication, RtmpRecorder,
+    RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis, RtmpRecorderTimezone,
+    RtmpService, TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamConnectionReuse,
+    UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls, load_lua, render_lua,
     validate_config,
 };
 
@@ -17,6 +20,15 @@ type Mutation = (&'static str, fn(&mut Config));
 
 fn socket(value: &str) -> SocketAddr {
     value.parse().expect("valid test socket address")
+}
+
+fn server(name: &str, endpoint: UpstreamEndpoint) -> UpstreamServer {
+    UpstreamServer {
+        name: name.into(),
+        endpoint,
+        max_connections: None,
+        dns_resolution: DnsResolutionPolicy::OnConnect,
+    }
 }
 
 fn test_certificates() -> Vec<Certificate> {
@@ -72,6 +84,7 @@ fn test_listeners() -> Vec<Listener> {
             service: Some("web".into()),
             tls_profile: Some("edge-tls".into()),
             max_connections: Some(MAX_SAFE_INTEGER),
+            downstream_timeouts: DownstreamTimeoutPolicy::default(),
         },
         Listener {
             name: "plain-web".into(),
@@ -82,6 +95,7 @@ fn test_listeners() -> Vec<Listener> {
             service: Some("fallback".into()),
             tls_profile: None,
             max_connections: Some(10_000),
+            downstream_timeouts: DownstreamTimeoutPolicy::default(),
         },
         Listener {
             name: "database".into(),
@@ -92,33 +106,44 @@ fn test_listeners() -> Vec<Listener> {
             service: Some("database".into()),
             tls_profile: None,
             max_connections: Some(2_000),
+            downstream_timeouts: DownstreamTimeoutPolicy::default(),
         },
         Listener {
             name: "live".into(),
             bind: ListenerBind::Unix {
                 path: "/run//oxiroute/live.sock".into(),
+                mode: Some(0o660),
             },
             protocol: Protocol::Rtmp,
             service: Some("live".into()),
             tls_profile: None,
             max_connections: None,
+            downstream_timeouts: DownstreamTimeoutPolicy::default(),
         },
     ]
 }
 
+#[allow(clippy::too_many_lines)]
 fn test_upstream_pools() -> Vec<UpstreamPool> {
     vec![
         UpstreamPool {
             name: "secure-backends".into(),
-            endpoints: vec![
-                UpstreamEndpoint::Socket {
-                    address: socket("10.0.0.20:443"),
-                },
-                UpstreamEndpoint::Dns {
-                    host: "SECURE.EXAMPLE.TEST".into(),
-                    port: 443,
-                },
+            servers: vec![
+                server(
+                    "secure-ip",
+                    UpstreamEndpoint::Socket {
+                        address: socket("10.0.0.20:443"),
+                    },
+                ),
+                server(
+                    "secure-dns",
+                    UpstreamEndpoint::Dns {
+                        host: "SECURE.EXAMPLE.TEST".into(),
+                        port: 443,
+                    },
+                ),
             ],
+            endpoints: Vec::new(),
             algorithm: UpstreamAlgorithm::RoundRobin,
             health_check: None,
             tls: Some(UpstreamTls {
@@ -129,18 +154,29 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
                 min: HttpVersion::Http11,
                 max: HttpVersion::Http2,
             },
+            queue_timeout_ms: Some(5_000),
+            connect_timeout_ms: Some(10_000),
+            server_timeout_ms: Some(30_000),
+            connection_reuse: UpstreamConnectionReuse::Safe,
         },
         UpstreamPool {
             name: "web-backends".into(),
-            endpoints: vec![
-                UpstreamEndpoint::Socket {
-                    address: socket("127.0.0.1:3001"),
-                },
-                UpstreamEndpoint::Dns {
-                    host: "WEB.EXAMPLE.TEST".into(),
-                    port: 3000,
-                },
+            servers: vec![
+                server(
+                    "web-ip",
+                    UpstreamEndpoint::Socket {
+                        address: socket("127.0.0.1:3001"),
+                    },
+                ),
+                server(
+                    "web-dns",
+                    UpstreamEndpoint::Dns {
+                        host: "WEB.EXAMPLE.TEST".into(),
+                        port: 3000,
+                    },
+                ),
             ],
+            endpoints: Vec::new(),
             algorithm: UpstreamAlgorithm::LeastConnections,
             health_check: Some(HealthCheck {
                 kind: HealthCheckType::Http,
@@ -148,17 +184,30 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
                 timeout_ms: 750,
                 healthy_threshold: 2,
                 unhealthy_threshold: 4,
+                startup: HealthStartup::default(),
+                fast_interval_ms: Some(2_000),
+                down_interval_ms: Some(20_000),
                 host: Some("backend.internal:3000".into()),
                 path: Some("/healthz".into()),
+                expected_status: Some(200),
+                http_version: Some(oxiroute_config::HealthHttpVersion::Http11),
             }),
             tls: None,
             http_versions: HttpVersionPolicy::default(),
+            queue_timeout_ms: None,
+            connect_timeout_ms: None,
+            server_timeout_ms: None,
+            connection_reuse: UpstreamConnectionReuse::Safe,
         },
         UpstreamPool {
             name: "database-backends".into(),
-            endpoints: vec![UpstreamEndpoint::Socket {
-                address: socket("10.0.0.12:5432"),
-            }],
+            servers: vec![server(
+                "database",
+                UpstreamEndpoint::Socket {
+                    address: socket("10.0.0.12:5432"),
+                },
+            )],
+            endpoints: Vec::new(),
             algorithm: UpstreamAlgorithm::RoundRobin,
             health_check: Some(HealthCheck {
                 kind: HealthCheckType::Tcp,
@@ -166,21 +215,38 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
                 timeout_ms: 1_000,
                 healthy_threshold: 1,
                 unhealthy_threshold: 3,
+                startup: HealthStartup::default(),
+                fast_interval_ms: None,
+                down_interval_ms: None,
                 host: None,
                 path: None,
+                expected_status: None,
+                http_version: None,
             }),
             tls: None,
             http_versions: HttpVersionPolicy::default(),
+            queue_timeout_ms: None,
+            connect_timeout_ms: None,
+            server_timeout_ms: None,
+            connection_reuse: UpstreamConnectionReuse::Never,
         },
         UpstreamPool {
             name: "unix-backends".into(),
-            endpoints: vec![UpstreamEndpoint::Unix {
-                path: "/run//oxiroute/backend.sock".into(),
-            }],
+            servers: vec![server(
+                "unix",
+                UpstreamEndpoint::Unix {
+                    path: "/run//oxiroute/backend.sock".into(),
+                },
+            )],
+            endpoints: Vec::new(),
             algorithm: UpstreamAlgorithm::RoundRobin,
             health_check: None,
             tls: None,
             http_versions: HttpVersionPolicy::default(),
+            queue_timeout_ms: None,
+            connect_timeout_ms: None,
+            server_timeout_ms: None,
+            connection_reuse: UpstreamConnectionReuse::Never,
         },
     ]
 }
@@ -221,6 +287,7 @@ fn test_proxy_policy() -> HttpProxyPolicy {
             HttpResponseHeaderMutation::Set {
                 name: "X-Frame-Options".into(),
                 value: "same-origin".into(),
+                always: true,
             },
             HttpResponseHeaderMutation::Remove {
                 name: "X-Remove".into(),
@@ -230,6 +297,7 @@ fn test_proxy_policy() -> HttpProxyPolicy {
             from: "/".into(),
             to: "/application".into(),
         }],
+        response_cookie_attributes: Vec::new(),
         retry: HttpRetryPolicy {
             max_retries: 2,
             triggers: vec![
@@ -238,11 +306,14 @@ fn test_proxy_policy() -> HttpProxyPolicy {
             ],
             method_safety: HttpRetryMethodSafety::GetHead,
             body_safety: HttpRetryBodySafety::Empty,
+            target: HttpRetryTarget::SameServer,
+            delay_ms: 25,
         },
         cache: None,
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn test_http_services() -> Vec<HttpService> {
     vec![
         HttpService {
@@ -261,6 +332,7 @@ fn test_http_services() -> Vec<HttpService> {
                         header_name: "X-Api-Token".into(),
                         realm: Some("private-api".into()),
                     }),
+                    policy: HttpRoutePolicy::default(),
                     action: HttpRouteAction::Proxy {
                         upstream_pool: "secure-backends".into(),
                         policy: test_proxy_policy(),
@@ -273,12 +345,14 @@ fn test_http_services() -> Vec<HttpService> {
                     },
                     methods: Vec::new(),
                     access_policy: None,
+                    policy: HttpRoutePolicy::default(),
                     action: HttpRouteAction::FixedResponse {
                         status: 200,
                         body: "healthy\n".into(),
                         headers: vec![HttpLiteralHeader {
                             name: "X-Source".into(),
                             value: "oxiroute".into(),
+                            always: true,
                         }],
                     },
                 },
@@ -291,11 +365,14 @@ fn test_http_services() -> Vec<HttpService> {
                     },
                     methods: Vec::new(),
                     access_policy: None,
+                    policy: HttpRoutePolicy::default(),
                     action: HttpRouteAction::Redirect {
                         status: 308,
                         location: HttpRedirectLocation::RequestTemplate {
                             value: "$scheme://$host$request_uri".into(),
+                            nginx_host_fallback: None,
                         },
+                        headers: Vec::new(),
                     },
                 },
                 HttpRoute {
@@ -305,15 +382,28 @@ fn test_http_services() -> Vec<HttpService> {
                     },
                     methods: vec!["GET".into()],
                     access_policy: None,
+                    policy: HttpRoutePolicy::default(),
                     action: HttpRouteAction::StaticFiles {
                         root_directory: "/srv//www/application".into(),
+                        path_mapping: HttpStaticPathMapping::Root,
                         index_files: vec!["index.html".into()],
+                        internal_index_redirects: false,
+                        directory_redirects: false,
                         spa_fallback: Some("application/index.html".into()),
+                        try_files: Vec::new(),
+                        autoindex: false,
+                        autoindex_exact_size: true,
+                        autoindex_local_time: false,
+                        mime: HttpStaticMimePolicy::default(),
+                        headers: Vec::new(),
+                        error_responses: Vec::new(),
                     },
                 },
             ],
-            upstream_io_timeout_ms: MAX_SAFE_INTEGER,
-            max_request_body_bytes: Some(MAX_SAFE_INTEGER - 1),
+            upstream_io_timeout_ms: 30_000,
+            max_request_body_bytes: Some(10 * 1024 * 1024),
+            gzip: None,
+            access_log: None,
         },
         HttpService {
             name: "fallback".into(),
@@ -324,6 +414,7 @@ fn test_http_services() -> Vec<HttpService> {
                 path: HttpPathSelector::SegmentPrefix { value: "/".into() },
                 methods: vec!["HEAD".into()],
                 access_policy: None,
+                policy: HttpRoutePolicy::default(),
                 action: HttpRouteAction::Proxy {
                     upstream_pool: "web-backends".into(),
                     policy: HttpProxyPolicy {
@@ -333,6 +424,7 @@ fn test_http_services() -> Vec<HttpService> {
                         request_headers: Vec::new(),
                         response_headers: Vec::new(),
                         response_cookie_path_rewrites: Vec::new(),
+                        response_cookie_attributes: Vec::new(),
                         retry: HttpRetryPolicy::default(),
                         cache: None,
                     },
@@ -340,6 +432,8 @@ fn test_http_services() -> Vec<HttpService> {
             }],
             upstream_io_timeout_ms: 30_000,
             max_request_body_bytes: None,
+            gzip: None,
+            access_log: None,
         },
     ]
 }
@@ -366,10 +460,18 @@ fn test_l4_services() -> Vec<L4Service> {
 fn test_rtmp_services() -> Vec<RtmpService> {
     vec![RtmpService {
         name: "live".into(),
+        outbound_chunk_size: 4_096,
+        access_log: None,
         applications: vec![RtmpApplication {
             name: "live".into(),
             live: true,
             idle_streams: true,
+            push_targets: Vec::new(),
+            fanout: oxiroute_config::RtmpFanoutPolicy {
+                max_subscribers: 1_024,
+                max_queue_messages_per_subscriber: 256,
+                max_queue_bytes_per_subscriber: 8 * 1_024 * 1_024,
+            },
             recorders: vec![
                 RtmpRecorder {
                     name: "continuous".into(),
@@ -377,6 +479,9 @@ fn test_rtmp_services() -> Vec<RtmpService> {
                     root_directory: "/var//lib/oxiroute/recordings".into(),
                     suffix_template: "-%Y-%m-%dT%H-%M-%S.flv".into(),
                     append_unix_seconds: true,
+                    timezone: RtmpRecorderTimezone::Utc,
+                    time_basis: RtmpRecorderTimeBasis::SegmentStart,
+                    segment_naming: RtmpRecorderSegmentNaming::SafeUnique,
                     rotation_interval_ms: Some(60_000),
                     max_queue_messages: 256,
                     max_queue_bytes: 8 * 1024 * 1024,
@@ -391,6 +496,9 @@ fn test_rtmp_services() -> Vec<RtmpService> {
                     root_directory: "/var/lib/oxiroute/recordings".into(),
                     suffix_template: ".flv".into(),
                     append_unix_seconds: false,
+                    timezone: RtmpRecorderTimezone::Iana("America/Bahia".into()),
+                    time_basis: RtmpRecorderTimeBasis::SegmentEnd,
+                    segment_naming: RtmpRecorderSegmentNaming::NginxCompatible,
                     rotation_interval_ms: None,
                     max_queue_messages: 64,
                     max_queue_bytes: 1024 * 1024,
@@ -407,10 +515,12 @@ fn test_rtmp_services() -> Vec<RtmpService> {
 fn complete_config() -> Config {
     Config {
         version: 1,
+        max_connections: Some(MAX_SAFE_INTEGER),
         management: Some(Management {
             bind: socket("127.0.0.1:9080"),
             ui_dir: Some(PathBuf::from("./ui/dist")),
         }),
+        stats: None,
         certificates: test_certificates(),
         tls_profiles: test_tls_profiles(),
         listeners: test_listeners(),
@@ -426,7 +536,9 @@ fn complete_config() -> Config {
 fn minimal_config() -> Config {
     Config {
         version: 1,
+        max_connections: None,
         management: None,
+        stats: None,
         certificates: Vec::new(),
         tls_profiles: Vec::new(),
         listeners: Vec::new(),
@@ -449,6 +561,7 @@ fn normalized_round_trip(mut config: Config) -> (Config, String) {
 
 const RENDERED_FIELDS: &[&str] = &[
     "version",
+    "max_connections",
     "management",
     "certificates",
     "tls_profiles",
@@ -477,7 +590,7 @@ const RENDERED_FIELDS: &[&str] = &[
     "service",
     "tls_profile",
     "max_connections",
-    "endpoints",
+    "servers",
     "algorithm",
     "health_check",
     "tls",
@@ -579,9 +692,18 @@ fn serializes_the_complete_canonical_model_for_typed_ui_data() {
         value["listeners"][3]["max_connections"],
         serde_json::Value::Null
     );
-    assert_eq!(value["upstream_pools"][0]["endpoints"][0]["type"], "socket");
-    assert_eq!(value["upstream_pools"][0]["endpoints"][1]["type"], "dns");
-    assert_eq!(value["upstream_pools"][3]["endpoints"][0]["type"], "unix");
+    assert_eq!(
+        value["upstream_pools"][0]["servers"][0]["endpoint"]["type"],
+        "socket"
+    );
+    assert_eq!(
+        value["upstream_pools"][0]["servers"][1]["endpoint"]["type"],
+        "dns"
+    );
+    assert_eq!(
+        value["upstream_pools"][3]["servers"][0]["endpoint"]["type"],
+        "unix"
+    );
     assert_eq!(value["upstream_pools"][1]["algorithm"], "least_connections");
     assert_eq!(value["upstream_pools"][0]["http_versions"]["max"], "2");
     assert_eq!(value["upstream_pools"][1]["health_check"]["type"], "http");
@@ -640,7 +762,9 @@ fn emits_defaults_empty_vectors_and_options_explicitly_as_data_only_lua() {
         source,
         r"return {
   version = 1,
+  max_connections = null,
   management = nil,
+  stats = nil,
   certificates = {
   },
   tls_profiles = {
@@ -730,6 +854,7 @@ fn identity_mutations() -> Vec<Mutation> {
         ("Unix listener path", |config| {
             config.listeners[3].bind = ListenerBind::Unix {
                 path: "/run/oxiroute/changed-live.sock".into(),
+                mode: Some(0o600),
             };
         }),
         ("listener.tls_profile", |config| {
@@ -747,21 +872,21 @@ fn upstream_mutations() -> Vec<Mutation> {
             config.upstream_pools.reverse();
         }),
         ("upstream endpoints", |config| {
-            config.upstream_pools[0].endpoints.reverse();
+            config.upstream_pools[0].servers.reverse();
         }),
         ("socket endpoint address", |config| {
-            config.upstream_pools[0].endpoints[0] = UpstreamEndpoint::Socket {
+            config.upstream_pools[0].servers[0].endpoint = UpstreamEndpoint::Socket {
                 address: socket("10.0.0.21:443"),
             };
         }),
         ("DNS endpoint host and port", |config| {
-            config.upstream_pools[0].endpoints[1] = UpstreamEndpoint::Dns {
+            config.upstream_pools[0].servers[1].endpoint = UpstreamEndpoint::Dns {
                 host: "CHANGED.EXAMPLE.TEST".into(),
                 port: 8443,
             };
         }),
         ("Unix endpoint path", |config| {
-            config.upstream_pools[3].endpoints[0] = UpstreamEndpoint::Unix {
+            config.upstream_pools[3].servers[0].endpoint = UpstreamEndpoint::Unix {
                 path: "/run/oxiroute/changed-backend.sock".into(),
             };
         }),
@@ -912,6 +1037,7 @@ fn rejects_non_utf8_paths_without_lossy_exposure() {
     let mut listener = complete_config();
     listener.listeners[3].bind = ListenerBind::Unix {
         path: non_utf8.clone(),
+        mode: None,
     };
     assert!(matches!(
         render_lua(&listener),
@@ -924,7 +1050,7 @@ fn rejects_non_utf8_paths_without_lossy_exposure() {
     ));
 
     let mut endpoint = complete_config();
-    endpoint.upstream_pools[3].endpoints[0] = UpstreamEndpoint::Unix { path: non_utf8 };
+    endpoint.upstream_pools[3].servers[0].endpoint = UpstreamEndpoint::Unix { path: non_utf8 };
     assert!(matches!(
         render_lua(&endpoint),
         Err(ConfigError::InvalidUnixPath {
@@ -1028,6 +1154,7 @@ fn rejects_rendered_sources_beyond_the_loader_limit() {
         service: Some("live".into()),
         tls_profile: None,
         max_connections: Some(1),
+        downstream_timeouts: DownstreamTimeoutPolicy::default(),
     });
     config.rtmp_services = test_rtmp_services();
 

@@ -1,4 +1,7 @@
-use crate::model::{AlpnProtocol, CacheKeyComponent, ForwardHttpVersion, HttpRetryTrigger};
+use crate::model::{
+    AlpnProtocol, CacheKeyComponent, ForwardHttpVersion, HttpRetryTrigger, HttpRoutePolicy,
+    RtmpFanoutPolicy,
+};
 
 pub(crate) const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_LUA_MEMORY_BYTES: usize = 4 * 1024 * 1024;
@@ -13,6 +16,10 @@ const DEFAULT_HEALTH_INTERVAL_MS: u64 = 10_000;
 const DEFAULT_HEALTH_TIMEOUT_MS: u64 = 1_000;
 const DEFAULT_HEALTHY_THRESHOLD: u16 = 1;
 const DEFAULT_UNHEALTHY_THRESHOLD: u16 = 3;
+const DEFAULT_RTMP_OUTBOUND_CHUNK_SIZE: u32 = 4_096;
+const DEFAULT_RTMP_MAX_SUBSCRIBERS: u64 = 1_024;
+const DEFAULT_RTMP_FANOUT_QUEUE_MESSAGES: u64 = 256;
+const DEFAULT_RTMP_FANOUT_QUEUE_BYTES: u64 = 8 * 1_024 * 1_024;
 const DEFAULT_RECORDER_MAX_QUEUE_MESSAGES: u64 = 256;
 const DEFAULT_RECORDER_MAX_QUEUE_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_RECORDER_SHUTDOWN_TIMEOUT_MS: u64 = 5_000;
@@ -74,6 +81,15 @@ pub(crate) const MAX_HTTP_ACCESS_REALM_BYTES: usize = 128;
 pub(crate) const MAX_HTTP_STATIC_INDEX_FILES: usize = 8;
 pub(crate) const MAX_HTTP_STATIC_INDEX_BYTES: usize = 255;
 pub(crate) const MAX_HTTP_STATIC_FALLBACK_BYTES: usize = 1024;
+pub(crate) const MAX_HTTP_STATIC_TRY_FILES: usize = 16;
+pub(crate) const MAX_HTTP_STATIC_MIME_TYPES: usize = 2_048;
+pub(crate) const MAX_HTTP_STATIC_ERROR_RESPONSES: usize = 16;
+pub(crate) const MAX_HTTP_STATIC_ERROR_STATUSES: usize = 16;
+pub(crate) const MAX_HTTP_MIME_TYPE_BYTES: usize = 128;
+pub(crate) const MAX_HTTP_FILE_EXTENSION_BYTES: usize = 32;
+pub(crate) const MAX_HTTP_COOKIE_ATTRIBUTE_RULES: usize = 16;
+pub(crate) const MAX_HTTP_GZIP_TYPES: usize = 64;
+pub(crate) const MAX_HTTP_TIMEOUT_MS: u64 = 86_400_000;
 pub(crate) const MAX_RTMP_SERVICES: usize = 64;
 pub(crate) const MAX_RTMP_APPLICATIONS_PER_SERVICE: usize = 256;
 pub(crate) const MAX_RTMP_RECORDERS_PER_APPLICATION: usize = 8;
@@ -87,6 +103,12 @@ pub(crate) const MAX_RECORDER_SHUTDOWN_TIMEOUT_MS: u64 = 60_000;
 pub(crate) const MAX_RECORDER_STORAGE_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
 pub(crate) const MAX_RECORDER_STORAGE_FILES: u64 = 1_000_000;
 pub(crate) const MAX_RECORDER_ACTIVE_RECORDERS: u64 = 256;
+pub(crate) const MAX_RTMP_OUTBOUND_CHUNK_SIZE: u32 = 1_048_576;
+pub(crate) const MAX_RTMP_PUSH_TARGETS: usize = 16;
+pub(crate) const MAX_RTMP_APPLICATION_BYTES: usize = 255;
+pub(crate) const MAX_RTMP_SUBSCRIBERS: u64 = 1_000_000;
+pub(crate) const MAX_RTMP_FANOUT_QUEUE_MESSAGES: u64 = 65_536;
+pub(crate) const MAX_RTMP_FANOUT_QUEUE_BYTES: u64 = 1_024 * 1_024 * 1_024;
 pub(crate) const MAX_CACHE_STORES: usize = 64;
 pub(crate) const MAX_CACHE_STORE_BYTES: u64 = 1024 * 1024 * 1024 * 1024 * 1024;
 pub(crate) const MAX_CACHE_ENTRIES: u64 = 10_000_000;
@@ -150,6 +172,22 @@ pub(crate) const fn default_healthy_threshold() -> u16 {
 
 pub(crate) const fn default_unhealthy_threshold() -> u16 {
     DEFAULT_UNHEALTHY_THRESHOLD
+}
+
+pub(crate) const fn default_http_route_policy() -> HttpRoutePolicy {
+    HttpRoutePolicy::new()
+}
+
+pub(crate) const fn default_rtmp_outbound_chunk_size() -> u32 {
+    DEFAULT_RTMP_OUTBOUND_CHUNK_SIZE
+}
+
+pub(crate) const fn default_rtmp_fanout_policy() -> RtmpFanoutPolicy {
+    RtmpFanoutPolicy {
+        max_subscribers: DEFAULT_RTMP_MAX_SUBSCRIBERS,
+        max_queue_messages_per_subscriber: DEFAULT_RTMP_FANOUT_QUEUE_MESSAGES,
+        max_queue_bytes_per_subscriber: DEFAULT_RTMP_FANOUT_QUEUE_BYTES,
+    }
 }
 
 pub(crate) fn default_alpn() -> Vec<AlpnProtocol> {

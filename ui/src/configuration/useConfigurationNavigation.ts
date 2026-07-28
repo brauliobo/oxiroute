@@ -192,6 +192,11 @@ export function useConfigurationNavigation(
           service: httpServiceNames.value[0] ?? null,
           tls_profile: null,
           max_connections: 10_000,
+          downstream_timeouts: {
+            client_timeout_ms: null,
+            request_timeout_ms: null,
+            keepalive_timeout_ms: null,
+          },
         })
         break
       case 'cache_stores':
@@ -200,11 +205,20 @@ export function useConfigurationNavigation(
       case 'upstream_pools':
         draft.value.upstream_pools.push({
           name: '',
-          endpoints: [{ type: 'socket', address: '127.0.0.1:3000' }],
+          servers: [{
+            name: 'server-1',
+            endpoint: { type: 'socket', address: '127.0.0.1:3000' },
+            max_connections: null,
+            dns_resolution: 'on_connect',
+          }],
           algorithm: 'round_robin',
           health_check: null,
           tls: null,
           http_versions: { min: '1.1', max: '1.1' },
+          queue_timeout_ms: null,
+          connect_timeout_ms: null,
+          server_timeout_ms: null,
+          connection_reuse: 'safe',
         })
         break
       case 'http_services':
@@ -213,6 +227,8 @@ export function useConfigurationNavigation(
           routes: [defaultHttpRoute()],
           upstream_io_timeout_ms: 30_000,
           max_request_body_bytes: 10_485_760,
+          gzip: null,
+          access_log: null,
         })
         break
       case 'forward_proxy_services':
@@ -221,7 +237,20 @@ export function useConfigurationNavigation(
       case 'rtmp_services':
         draft.value.rtmp_services.push({
           name: '',
-          applications: [{ name: '', live: true, idle_streams: true, recorders: [] }],
+          outbound_chunk_size: 4_096,
+          access_log: null,
+          applications: [{
+            name: '',
+            live: true,
+            idle_streams: true,
+            push_targets: [],
+            fanout: {
+              max_subscribers: 1_024,
+              max_queue_messages_per_subscriber: 256,
+              max_queue_bytes_per_subscriber: 8_388_608,
+            },
+            recorders: [],
+          }],
         })
         break
       case 'l4_services':
@@ -252,7 +281,7 @@ export function useConfigurationNavigation(
   }
 
   function selectionExists(key: string): boolean {
-    if (key === 'general' || key === 'management') return true
+    if (key === 'general' || key === 'management' || key === 'stats') return true
     return objectOptions.value.some((option) => option.key === key)
   }
 
@@ -313,8 +342,9 @@ function forwardProxySummary(
 
 function poolSummary(pool: UpstreamPoolConfig | undefined): string {
   if (!pool) return ''
-  const algorithm = pool.algorithm === 'least_connections' ? 'least connections' : 'round robin'
-  return `${pool.endpoints.length} endpoints / ${algorithm}`
+  const algorithm = pool.algorithm === 'least_connections' ? 'least connections' :
+    pool.algorithm === 'first' ? 'first' : 'round robin'
+  return `${pool.servers.length} servers / ${algorithm}`
 }
 
 export function moveConfigurationNavigationFocus(event: KeyboardEvent): void {

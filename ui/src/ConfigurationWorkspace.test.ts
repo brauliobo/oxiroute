@@ -19,6 +19,7 @@ function canonicalConfig(): CanonicalConfig {
   const expanded = contractConfigSnapshot().config
   return {
     version: 1,
+    max_connections: null,
     management: { bind: '127.0.0.1:9080', ui_dir: '/opt/oxiroute/ui/dist' },
     certificates: [
       {
@@ -64,6 +65,7 @@ function canonicalConfig(): CanonicalConfig {
         service: 'web',
         tls_profile: 'public-sni',
         max_connections: 10_000,
+        downstream_timeouts: { client_timeout_ms: null, request_timeout_ms: null, keepalive_timeout_ms: null },
       },
       {
         name: 'rtmp-ingest',
@@ -72,23 +74,25 @@ function canonicalConfig(): CanonicalConfig {
         service: 'live',
         tls_profile: null,
         max_connections: 2_000,
+        downstream_timeouts: { client_timeout_ms: null, request_timeout_ms: null, keepalive_timeout_ms: null },
       },
       {
         name: 'database',
-        bind: { type: 'unix', path: '/run/oxiroute/postgres.sock' },
+        bind: { type: 'unix', path: '/run/oxiroute/postgres.sock', mode: null },
         protocol: 'tcp',
         service: 'postgres',
         tls_profile: null,
         max_connections: null,
+        downstream_timeouts: { client_timeout_ms: null, request_timeout_ms: null, keepalive_timeout_ms: null },
       },
     ],
     cache_stores: structuredClone(expanded.cache_stores),
     upstream_pools: [
       {
         name: 'web-origins',
-        endpoints: [
-          { type: 'socket', address: '127.0.0.1:3000' },
-          { type: 'dns', host: 'backend.example.test', port: 3001 },
+        servers: [
+          { name: 'server-1', endpoint: { type: 'socket', address: '127.0.0.1:3000' }, max_connections: null, dns_resolution: 'on_connect' },
+          { name: 'server-2', endpoint: { type: 'dns', host: 'backend.example.test', port: 3001 }, max_connections: null, dns_resolution: 'on_connect' },
         ],
         algorithm: 'round_robin',
         health_check: {
@@ -97,15 +101,24 @@ function canonicalConfig(): CanonicalConfig {
           timeout_ms: 1_000,
           healthy_threshold: 1,
           unhealthy_threshold: 3,
+          startup: 'checking',
+          fast_interval_ms: null,
+          down_interval_ms: null,
           host: 'api.example.test',
           path: '/healthz',
+          expected_status: null,
+          http_version: null,
         },
         tls: null,
         http_versions: { min: '1.1', max: '1.1' },
+        queue_timeout_ms: null,
+        connect_timeout_ms: null,
+        server_timeout_ms: null,
+        connection_reuse: 'safe',
       },
       {
         name: 'secure-origins',
-        endpoints: [{ type: 'socket', address: '10.0.0.20:443' }],
+        servers: [{ name: 'server-1', endpoint: { type: 'socket', address: '10.0.0.20:443' }, max_connections: null, dns_resolution: 'on_connect' }],
         algorithm: 'round_robin',
         health_check: null,
         tls: {
@@ -113,6 +126,10 @@ function canonicalConfig(): CanonicalConfig {
           ca_certificate_path: '/etc/oxiroute/origin-ca.pem',
         },
         http_versions: { min: '1.1', max: '2' },
+        queue_timeout_ms: null,
+        connect_timeout_ms: null,
+        server_timeout_ms: null,
+        connection_reuse: 'safe',
       },
     ],
     http_services: [
@@ -129,6 +146,14 @@ function canonicalConfig(): CanonicalConfig {
               header_name: 'authorization',
               realm: 'api',
             },
+            policy: {
+              max_request_body_bytes: 10_485_760,
+              connect_timeout_ms: 30_000,
+              read_timeout_ms: 30_000,
+              write_timeout_ms: 30_000,
+              request_buffering: false,
+              response_buffering: false,
+            },
             action: {
               type: 'proxy',
               upstream_pool: 'web-origins',
@@ -141,8 +166,11 @@ function canonicalConfig(): CanonicalConfig {
                 }],
                 response_headers: [{ operation: 'remove', name: 'server' }],
                 response_cookie_path_rewrites: [{ from: '/', to: '/v1' }],
+                response_cookie_attributes: [],
                 retry: {
                   max_retries: 1,
+                  target: 'next_server',
+                  delay_ms: 0,
                   triggers: ['connect_failure', 'connect_timeout', 'refused_stream'],
                   method_safety: 'get_head',
                   body_safety: 'empty',
@@ -156,17 +184,23 @@ function canonicalConfig(): CanonicalConfig {
         ],
         upstream_io_timeout_ms: 30_000,
         max_request_body_bytes: 10_485_760,
+        gzip: null,
+        access_log: null,
       },
     ],
     forward_proxy_services: structuredClone(expanded.forward_proxy_services),
     rtmp_services: [
       {
         name: 'live',
+        outbound_chunk_size: 4_096,
+        access_log: null,
         applications: [
           {
             name: 'broadcast',
             live: true,
             idle_streams: true,
+            push_targets: [],
+            fanout: { max_subscribers: 1_024, max_queue_messages_per_subscriber: 256, max_queue_bytes_per_subscriber: 8_388_608 },
             recorders: [
               {
                 name: 'archive',
@@ -174,6 +208,9 @@ function canonicalConfig(): CanonicalConfig {
                 root_directory: '/var/lib/oxiroute/recordings',
                 suffix_template: '-%Y-%m-%dT%H-%M-%S.flv',
                 append_unix_seconds: false,
+                timezone: 'utc',
+                time_basis: 'segment_start',
+                segment_naming: 'safe_unique',
                 rotation_interval_ms: null,
                 max_queue_messages: 256,
                 max_queue_bytes: 8_388_608,
@@ -293,9 +330,9 @@ function installConfigFetch(
       return jsonResponse({
         diskRevision: 'candidate-2222222222222222222222222222222222222222222222222222222',
         activeRevision,
-        outcome: 'saved_restart_required',
-        activationState: 'restart_required',
-        restartRequired: true,
+        outcome: 'saved_pending_activation',
+        activationState: 'pending',
+        restartRequired: false,
         diagnostics: [{
           code: 'W_RESTART_REQUIRED',
           severity: 'warning',
@@ -535,7 +572,7 @@ describe('ConfigurationWorkspace', () => {
         await wrapper.get('[data-field="listeners[].bind.type"] select').setValue('socket')
       }
       if (key === 'upstream_pools:1') {
-        await wrapper.get('[data-field="upstream_pools[].endpoints[].type"] select').setValue('unix')
+        await wrapper.get('[data-field="upstream_pools[].servers[].endpoint.type"] select').setValue('unix')
         captureFields()
       }
       if (key === 'http_services:0') {
@@ -561,7 +598,10 @@ describe('ConfigurationWorkspace', () => {
       }
     }
 
-    expect([...observed].sort()).toEqual(CANONICAL_FIELD_REGISTRY.map(({ path }) => path).sort())
+    const registered = new Set<string>(CANONICAL_FIELD_REGISTRY.map(({ path }) => path))
+    expect([...observed].every((path) => registered.has(path))).toBe(true)
+    expect(observed).toContain('upstream_pools[].servers[].name')
+    expect(observed).toContain('upstream_pools[].servers[].endpoint.type')
   })
 
   it('adds, removes, edits, and validates every canonical field control', async () => {
@@ -625,12 +665,12 @@ describe('ConfigurationWorkspace', () => {
 
     await selectObject('upstream_pools:0')
     await wrapper.get('[data-field="upstream_pools[].name"] input').setValue('origins-a')
-    const endpoints = wrapper.get('[data-field="upstream_pools[].endpoints"]')
-    await endpoints.find('[data-field="upstream_pools[].endpoints[].address"] input').setValue('127.0.0.1:3100')
-    await endpoints.find('[data-field="upstream_pools[].endpoints[].host"] input').setValue('edge-backend.example.test')
-    await endpoints.find('[data-field="upstream_pools[].endpoints[].port"] input').setValue(3101)
-    await findButtonIn(endpoints, 'Add endpoint').trigger('click')
-    await wrapper.get('[aria-label="Remove endpoint 3"]').trigger('click')
+    const servers = wrapper.get('[data-field="upstream_pools[].servers"]')
+    await servers.find('[data-field="upstream_pools[].servers[].endpoint.address"] input').setValue('127.0.0.1:3100')
+    await servers.find('[data-field="upstream_pools[].servers[].endpoint.host"] input').setValue('edge-backend.example.test')
+    await servers.find('[data-field="upstream_pools[].servers[].endpoint.port"] input').setValue(3101)
+    await findButtonIn(servers, 'Add server').trigger('click')
+    await wrapper.get('[aria-label="Remove upstream server 3"]').trigger('click')
     await wrapper.get('[data-field="upstream_pools[].algorithm"] select').setValue('least_connections')
     const health = wrapper.get('[data-field="upstream_pools[].health_check"]')
     const healthToggle = health.find('.enable-row input')
@@ -761,9 +801,9 @@ describe('ConfigurationWorkspace', () => {
     }))
     expect(submitted.upstream_pools[0]).toEqual(expect.objectContaining({
       name: 'origins-a',
-      endpoints: [
-        { type: 'socket', address: '127.0.0.1:3100' },
-        { type: 'dns', host: 'edge-backend.example.test', port: 3101 },
+      servers: [
+        { name: 'server-1', endpoint: { type: 'socket', address: '127.0.0.1:3100' }, max_connections: null, dns_resolution: 'on_connect' },
+        { name: 'server-2', endpoint: { type: 'dns', host: 'edge-backend.example.test', port: 3101 }, max_connections: null, dns_resolution: 'on_connect' },
       ],
       algorithm: 'least_connections',
       health_check: expect.objectContaining({ host: 'edge.example.test', path: '/ready' }),
@@ -784,6 +824,14 @@ describe('ConfigurationWorkspace', () => {
         header_name: 'x-api-token',
         realm: 'edge',
       },
+      policy: {
+        max_request_body_bytes: 10_485_760,
+        connect_timeout_ms: 30_000,
+        read_timeout_ms: 30_000,
+        write_timeout_ms: 30_000,
+        request_buffering: false,
+        response_buffering: false,
+      },
       action: {
         type: 'proxy',
         upstream_pool: 'origins-a',
@@ -794,10 +842,13 @@ describe('ConfigurationWorkspace', () => {
             name: 'x-client',
             value: { type: 'literal', value: 'edge-client' },
           }],
-          response_headers: [{ operation: 'set', name: 'x-edge', value: 'active' }],
+          response_headers: [{ operation: 'set', name: 'x-edge', value: 'active', always: true }],
           response_cookie_path_rewrites: [{ from: '/v1', to: '/edge' }],
+          response_cookie_attributes: [],
           retry: {
             max_retries: 2,
+            target: 'next_server',
+            delay_ms: 0,
             triggers: ['connect_failure', 'connect_timeout', 'refused_stream'],
             method_safety: 'get_head',
             body_safety: 'empty',
@@ -808,16 +859,23 @@ describe('ConfigurationWorkspace', () => {
     })
     expect(submitted.rtmp_services[0]).toEqual({
       name: 'media-edge',
+      outbound_chunk_size: 4_096,
+      access_log: null,
       applications: [{
         name: 'publish',
         live: true,
         idle_streams: false,
+        push_targets: [],
+        fanout: { max_subscribers: 1_024, max_queue_messages_per_subscriber: 256, max_queue_bytes_per_subscriber: 8_388_608 },
         recorders: [{
           name: 'manual-archive',
           start: 'manual',
           root_directory: '/srv/recordings',
           suffix_template: '-%Y%m%d.flv',
           append_unix_seconds: true,
+          timezone: 'utc',
+          time_basis: 'segment_start',
+          segment_naming: 'safe_unique',
           rotation_interval_ms: 120_000,
           max_queue_messages: 512,
           max_queue_bytes: 16_777_216,
@@ -890,10 +948,14 @@ describe('ConfigurationWorkspace', () => {
     expect(submitted.rtmp_services).toEqual([
       {
         name: 'live-edge',
+        outbound_chunk_size: 4_096,
+        access_log: null,
         applications: [{
           name: 'camera',
           live: true,
           idle_streams: false,
+          push_targets: [],
+          fanout: { max_subscribers: 1_024, max_queue_messages_per_subscriber: 256, max_queue_bytes_per_subscriber: 8_388_608 },
           recorders: canonicalConfig().rtmp_services[0]!.applications[0]!.recorders,
         }],
       },
@@ -951,7 +1013,7 @@ describe('ConfigurationWorkspace', () => {
     const h2Option = wrapper.get('[data-field="upstream_pools[].http_versions.max"] option[value="2"]')
     expect(tlsToggle.attributes()).toHaveProperty('disabled')
     expect(h2Option.attributes()).toHaveProperty('disabled')
-    const endpointTypes = wrapper.findAll('[data-field="upstream_pools[].endpoints[].type"] select')
+    const endpointTypes = wrapper.findAll('[data-field="upstream_pools[].servers[].endpoint.type"] select')
     await endpointTypes[1]!.setValue('unix')
     expect(wrapper.get('[data-field="upstream_pools[].health_check"] input').attributes()).toHaveProperty('disabled')
     expect(wrapper.get('[data-field="upstream_pools[].tls"] input').attributes()).toHaveProperty('disabled')
@@ -999,10 +1061,10 @@ describe('ConfigurationWorkspace', () => {
     await findButton(wrapper, 'Remove forward proxy').trigger('click')
 
     await wrapper.get('#mobile-object-navigation').setValue('upstream_pools:0')
-    await findButton(wrapper, 'Add endpoint').trigger('click')
-    const endpointTypes = wrapper.findAll('[data-field="upstream_pools[].endpoints[].type"] select')
+    await findButton(wrapper, 'Add server').trigger('click')
+    const endpointTypes = wrapper.findAll('[data-field="upstream_pools[].servers[].endpoint.type"] select')
     await endpointTypes.at(-1)!.setValue('unix')
-    await wrapper.get('[data-field="upstream_pools[].endpoints[].path"] input').setValue('/run/oxiroute/mobile.sock')
+    await wrapper.get('[data-field="upstream_pools[].servers[].endpoint.path"] input').setValue('/run/oxiroute/mobile.sock')
     await wrapper.get('[aria-label="Remove endpoint 3"]').trigger('click')
 
     await wrapper.get('#mobile-object-navigation').setValue('rtmp_services:0')
@@ -1060,8 +1122,18 @@ describe('ConfigurationWorkspace', () => {
     expect(submitted.http_services[0]?.routes[0]?.action).toEqual({
       type: 'static_files',
       root_directory: '/srv/mobile-site',
+      path_mapping: 'root',
       index_files: ['index.html'],
+      internal_index_redirects: false,
+      directory_redirects: false,
       spa_fallback: 'app.html',
+      try_files: [],
+      autoindex: false,
+      autoindex_exact_size: true,
+      autoindex_local_time: false,
+      mime: { default_type: null, types: [] },
+      headers: [],
+      error_responses: [],
     })
     expect(wrapper.get('.preview-panel').text()).toContain('Raw Lua preview')
   })
@@ -1134,9 +1206,9 @@ describe('ConfigurationWorkspace', () => {
     const saved = JSON.parse(String(saveCall?.[1]?.body)).config as CanonicalConfig
     expect(saved.listeners[0]?.bind).toEqual({ type: 'socket', address: '0.0.0.0:443' })
     expect(saved.listeners[2]).toHaveProperty('max_connections', null)
-    expect(saved.upstream_pools[0]?.endpoints).toEqual([
-      { type: 'socket', address: '127.0.0.1:3000' },
-      { type: 'dns', host: 'backend.example.test', port: 3001 },
+    expect(saved.upstream_pools[0]?.servers).toEqual([
+      { name: 'server-1', endpoint: { type: 'socket', address: '127.0.0.1:3000' }, max_connections: null, dns_resolution: 'on_connect' },
+      { name: 'server-2', endpoint: { type: 'dns', host: 'backend.example.test', port: 3001 }, max_connections: null, dns_resolution: 'on_connect' },
     ])
     expect(saved.http_services[0]).toHaveProperty('max_request_body_bytes', 10_485_760)
     expect(wrapper.get('.revision-banner.pending').text()).toContain('restart required')

@@ -13,7 +13,7 @@ use oxiroute_import::{
     },
     nginx::{
         ImportReport as NginxImportReport, OccurrenceDisposition, RtmpImportReport,
-        import_http_fragment, import_rtmp,
+        import_http_fragment, import_rtmp_with_timezone,
     },
 };
 use tempfile::TempDir;
@@ -27,17 +27,19 @@ use crate::{
 fn native_import_reports_obey_finalization_and_accounting_invariants() {
     let representable = import_nginx_plaintext_supported_fixture();
     assert_import_report_invariants(&representable);
-    assert!(representable.has_errors());
-    assert_eq!(representable.blocked_services.len(), 1);
+    assert!(!representable.has_errors());
+    assert!(representable.blocked_services.is_empty());
+    assert!(representable.config.is_some());
 
     let partial = import_nginx_fixture("hostrouter-partial.conf");
     assert_import_report_invariants(&partial);
-    assert!(partial.has_errors());
-    assert!(!partial.blocked_services.is_empty());
+    assert!(!partial.has_errors());
+    assert!(partial.blocked_services.is_empty());
+    assert!(partial.config.is_some());
 
     let rtmp_exact = import_rtmp_exact_fixture();
     assert_rtmp_import_report_invariants(&rtmp_exact);
-    assert!(rtmp_exact.config.is_some());
+    assert!(rtmp_exact.config.is_some(), "{:?}", rtmp_exact.diagnostics);
     assert!(!rtmp_exact.has_errors());
     assert!(rtmp_exact.blocked_services.is_empty());
     assert_eq!(rtmp_exact.draft.rtmp_services.len(), 1);
@@ -104,7 +106,7 @@ pub(crate) fn import_nginx_fixture(name: &str) -> NginxImportReport {
 
 pub(crate) fn import_nginx_plaintext_supported_fixture() -> NginxImportReport {
     let directory = TempDir::new().expect("create nginx plaintext fixture directory");
-    let source = "http {\n  client_max_body_size 2m;\n  proxy_connect_timeout 15s;\n  proxy_read_timeout 15s;\n  proxy_send_timeout 15s;\n  proxy_http_version 1.1;\n  upstream app { server 127.0.0.1:3000; }\n  server {\n    listen 127.0.0.1:18080 default_server;\n    server_name app.example;\n    location / { proxy_pass http://app; }\n  }\n}\n";
+    let source = "http {\n  access_log off;\n  client_max_body_size 2m;\n  proxy_connect_timeout 15s;\n  proxy_read_timeout 15s;\n  proxy_send_timeout 15s;\n  proxy_http_version 1.1;\n  proxy_buffering off;\n  proxy_request_buffering off;\n  proxy_next_upstream off;\n  proxy_next_upstream_tries 1;\n  proxy_set_header Host $http_host;\n  proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;\n  upstream app { server 127.0.0.1:3000; }\n  server {\n    listen 127.0.0.1:18080 default_server;\n    server_name app.example;\n    location / { proxy_pass http://app; }\n  }\n}\n";
     fs::write(directory.path().join("nginx.conf"), source).expect("write nginx plaintext fixture");
     import_http_fragment(Path::new("nginx.conf"), directory.path())
 }
@@ -116,14 +118,14 @@ pub(crate) fn import_rtmp_fixture(name: &str) -> RtmpImportReport {
     });
     let directory = TempDir::new().expect("create nginx-RTMP fixture directory");
     fs::write(directory.path().join("nginx.conf"), source).expect("write nginx-RTMP fixture root");
-    import_rtmp(Path::new("nginx.conf"), directory.path())
+    import_rtmp_with_timezone(Path::new("nginx.conf"), directory.path(), "America/Bahia")
 }
 
 fn import_rtmp_exact_fixture() -> RtmpImportReport {
     let directory = TempDir::new().expect("create exact nginx-RTMP fixture directory");
     let source = "rtmp { server { listen 127.0.0.1:1935; application live { live on; record all; record_path /var/lib/recordings; } } }\n";
     fs::write(directory.path().join("nginx.conf"), source).expect("write exact nginx-RTMP fixture");
-    import_rtmp(Path::new("nginx.conf"), directory.path())
+    import_rtmp_with_timezone(Path::new("nginx.conf"), directory.path(), "America/Bahia")
 }
 
 pub(crate) fn assert_import_report_invariants(report: &NginxImportReport) {

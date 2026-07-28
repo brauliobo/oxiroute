@@ -256,6 +256,32 @@ impl Connector {
         peer: &P,
     ) -> Result<HttpSession<C>> {
         let stream = self.transport.new_stream(peer).await?;
+        self.new_http_session_from_stream(peer, stream).await
+    }
+
+    pub(crate) async fn new_http_session_with_lifetime<
+        P: Peer + Send + Sync + 'static,
+        C: Session,
+    >(
+        &self,
+        peer: &P,
+        lifetime: Arc<dyn crate::protocols::ConnectionLifetime>,
+    ) -> Result<HttpSession<C>> {
+        let stream = self
+            .transport
+            .new_stream_with_lifetime(peer, Some(lifetime))
+            .await?;
+        self.new_http_session_from_stream(peer, stream).await
+    }
+
+    async fn new_http_session_from_stream<P: Peer + Send + Sync + 'static, C: Session>(
+        &self,
+        peer: &P,
+        stream: Stream,
+    ) -> Result<HttpSession<C>> {
+        let lifetime = stream
+            .get_socket_digest()
+            .and_then(|digest| digest.connection_lifetime());
 
         // check alpn
         match stream.selected_alpn_proto() {
@@ -290,6 +316,9 @@ impl Connector {
             .expect("newly created connections should have at least one free stream");
         if conn.more_streams_allowed() {
             self.in_use_pool.insert(peer.reuse_hash(), conn);
+            if let Some(lifetime) = lifetime {
+                lifetime.notify_reusable();
+            }
         }
         Ok(HttpSession::H2(h2_stream))
     }
@@ -363,6 +392,10 @@ impl Connector {
         peer: &P,
         idle_timeout: Option<Duration>,
     ) {
+        let lifetime = session
+            .digest()
+            .and_then(|digest| digest.socket_digest.as_ref())
+            .and_then(|digest| digest.connection_lifetime());
         let id = session.conn.id();
         let reuse_hash = peer.reuse_hash();
         // get a ref to the connection, which we might need below, before dropping the h2
@@ -399,6 +432,9 @@ impl Connector {
         } else {
             self.in_use_pool.insert(reuse_hash, conn);
             drop(locked);
+        }
+        if let Some(lifetime) = lifetime {
+            lifetime.notify_reusable();
         }
     }
 

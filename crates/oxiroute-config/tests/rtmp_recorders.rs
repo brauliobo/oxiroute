@@ -85,6 +85,7 @@ fn applies_explicit_bounded_recorder_defaults() {
     assert_eq!(recorder["root_directory"], "/var/lib/oxiroute/recordings");
     assert_eq!(recorder["suffix_template"], ".flv");
     assert_eq!(recorder["append_unix_seconds"], false);
+    assert_eq!(recorder["timezone"], "utc");
     assert_eq!(recorder["rotation_interval_ms"], serde_json::Value::Null);
     assert_eq!(recorder["max_queue_messages"], DEFAULT_MAX_QUEUE_MESSAGES);
     assert_eq!(recorder["max_queue_bytes"], DEFAULT_MAX_QUEUE_BYTES);
@@ -95,6 +96,32 @@ fn applies_explicit_bounded_recorder_defaults() {
         recorder["max_active_recorders"],
         DEFAULT_MAX_ACTIVE_RECORDERS
     );
+}
+
+#[test]
+fn accepts_exact_iana_timezones_and_rejects_local_or_invalid_names() {
+    let source = one_recorder_source(
+        true,
+        "/var/lib/oxiroute/recordings",
+        "              timezone = \"America/Bahia\",",
+    );
+    let loaded = load_lua(&source).expect("explicit IANA recorder timezone");
+    let rendered = render_lua(&loaded).expect("render explicit IANA recorder timezone");
+    assert!(rendered.contains("timezone = \"America/Bahia\","));
+
+    for timezone in ["local", "america/bahia", "Not/A_Zone"] {
+        let source = one_recorder_source(
+            true,
+            "/var/lib/oxiroute/recordings",
+            &format!("              timezone = \"{timezone}\","),
+        );
+        let error = error(&source);
+        assert!(error.contains("timezone"), "unexpected error: {error}");
+        assert!(
+            error.contains("exact IANA timezone"),
+            "unexpected error: {error}"
+        );
+    }
 }
 
 #[test]

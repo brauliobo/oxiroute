@@ -38,7 +38,7 @@ BENCH_STOP_TIMEOUT_SECONDS=${BENCH_STOP_TIMEOUT_SECONDS:-10}
 proxy_cpu=${BENCH_PROXY_CPU:-2}
 origin_cpu=${BENCH_ORIGIN_CPU:-3}
 load_cpu=${BENCH_LOAD_CPU:-4}
-oxiroute_bin=${OXIROUTE_BIN:-"$REPOSITORY_ROOT/target/release/oxiroute-server"}
+oxiroute_bin=${OXIROUTE_BIN:-"$REPOSITORY_ROOT/target/release/oxiroute"}
 loadgen_bin=${BENCH_LOADGEN_BIN:-"$BENCHMARK_ROOT/loadgen/target/release/oxiroute-loadgen"}
 export BENCH_STOP_TIMEOUT_SECONDS
 

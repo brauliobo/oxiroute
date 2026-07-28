@@ -17,6 +17,13 @@
     :max-items="8"
     @update:model-value="$emit('changed')"
   )
+  .field-grid
+    label.enable-row(data-field="http_services[].routes[].action.internal_index_redirects")
+      input(type="checkbox" v-model="action.internal_index_redirects")
+      span Re-evaluate routes for index files
+    label.enable-row(data-field="http_services[].routes[].action.directory_redirects")
+      input(type="checkbox" v-model="action.directory_redirects")
+      span Redirect directories to trailing slash
 </template>
 
 <script setup lang="ts">

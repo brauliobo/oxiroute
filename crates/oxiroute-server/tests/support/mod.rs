@@ -528,14 +528,20 @@ pub fn proxy_config(
             service: Some("wire".into()),
             tls_profile: Some("downstream".into()),
             max_connections: Some(100),
+            downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
         }],
         upstream_pools: vec![UpstreamPool {
             name: "origin".into(),
+            servers: Vec::new(),
             endpoints: vec![socket_endpoint(origin_address)],
             algorithm: UpstreamAlgorithm::RoundRobin,
             health_check: None,
             tls: upstream_tls,
             http_versions: upstream_versions,
+            queue_timeout_ms: None,
+            connect_timeout_ms: None,
+            server_timeout_ms: None,
+            connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
         }],
         http_services: vec![HttpService {
             name: "wire".into(),
@@ -544,6 +550,7 @@ pub fn proxy_config(
                 path: HttpPathSelector::SegmentPrefix { value: "/".into() },
                 methods: Vec::new(),
                 access_policy: None,
+                policy: oxiroute_config::HttpRoutePolicy::default(),
                 action: HttpRouteAction::Proxy {
                     upstream_pool: "origin".into(),
                     policy: HttpProxyPolicy::default(),
@@ -551,6 +558,8 @@ pub fn proxy_config(
             }],
             upstream_io_timeout_ms: 2_000,
             max_request_body_bytes: Some(64 * 1024),
+            gzip: None,
+            access_log: None,
         }],
         ..empty_config()
     };

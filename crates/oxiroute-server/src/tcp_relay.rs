@@ -182,7 +182,7 @@ impl TcpRelayCore {
             }
             result = timeout(
                 self.policy.connect,
-                connect_upstream(self.upstream.endpoint()),
+                connect_upstream(&self.upstream),
             ) => {
                 match result {
                     Ok(Ok(upstream)) => upstream,
@@ -206,8 +206,8 @@ impl TcpRelayCore {
     }
 }
 
-async fn connect_upstream(endpoint: &RuntimeEndpoint) -> io::Result<Stream> {
-    match endpoint {
+async fn connect_upstream(upstream: &EndpointLease) -> io::Result<Stream> {
+    match upstream.endpoint() {
         RuntimeEndpoint::Socket { address } => {
             let stream = TcpStream::connect(address).await?;
             Ok(Box::new(pingora::protocols::l4::stream::Stream::from(
@@ -215,7 +215,7 @@ async fn connect_upstream(endpoint: &RuntimeEndpoint) -> io::Result<Stream> {
             )))
         }
         RuntimeEndpoint::Dns { .. } => {
-            let addresses = endpoint.resolve_addresses().await?;
+            let addresses = upstream.resolve_addresses().await?;
             let stream = connect_addresses(&addresses).await?;
             Ok(Box::new(pingora::protocols::l4::stream::Stream::from(
                 stream,

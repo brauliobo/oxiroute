@@ -23,6 +23,17 @@ main.console-shell(:aria-busy="activeView === 'overview' && monitoring === null 
       :aria-current="activeView === 'configuration' ? 'page' : undefined"
       @click="activateView('configuration')"
     ) Configuration
+    form.management-auth(@submit.prevent="setManagementToken")
+      label(for="management-access-token") Management token
+      input#management-access-token(
+        v-model="managementTokenInput"
+        type="password"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="Bearer token"
+      )
+      button(type="submit" :disabled="managementTokenInput.length === 0")
+        | {{ managementToken ? 'Replace token' : 'Unlock telemetry' }}
 
   section.readout-bar(v-show="activeView === 'overview'" aria-label="Live monitoring summary")
     .readout
@@ -338,6 +349,7 @@ const healthFailureLabels: Record<HealthFailure, string> = {
 const poolAlgorithmLabels: Record<MonitoringPool['algorithm'], string> = {
   round_robin:       'Round robin',
   least_connections: 'Least connections',
+  first:             'First server',
 }
 const listenerProtocolLabels: Record<ListenerProtocol, string> = {
   http:          'HTTP',
@@ -351,6 +363,8 @@ const listenerProtocolLabels: Record<ListenerProtocol, string> = {
 type AppView = 'overview' | 'configuration'
 
 const activeView = ref<AppView>(viewFromHash())
+const managementToken = ref('')
+const managementTokenInput = ref('')
 const monitoring = ref<MonitoringSnapshot | null>(null)
 const catalog = ref<RtmpCatalog | null>(null)
 const topology = ref<TopologySnapshot | null>(null)
@@ -433,6 +447,13 @@ function activateView(view: AppView): void {
   }
 }
 
+function setManagementToken(): void {
+  if (!managementTokenInput.value) return
+  managementToken.value = managementTokenInput.value
+  managementTokenInput.value = ''
+  if (activeView.value === 'overview') void refresh()
+}
+
 function syncViewFromHash(): void {
   activateView(viewFromHash())
 }
@@ -464,7 +485,7 @@ async function refreshData(controller: AbortController): Promise<void> {
 
 async function refreshMonitoring(controller: AbortController): Promise<void> {
   try {
-    const result = await fetchMonitoring(controller.signal)
+    const result = await fetchMonitoring(controller.signal, managementToken.value || undefined)
     if (activeController !== controller) return
     monitoring.value = result
     monitoringError.value = null
@@ -477,7 +498,7 @@ async function refreshMonitoring(controller: AbortController): Promise<void> {
 
 async function refreshCatalog(controller: AbortController): Promise<void> {
   try {
-    const result = await fetchRtmpCatalog(controller.signal)
+    const result = await fetchRtmpCatalog(controller.signal, managementToken.value || undefined)
     if (activeController !== controller) return
     catalog.value = result
     catalogError.value = null
@@ -488,7 +509,7 @@ async function refreshCatalog(controller: AbortController): Promise<void> {
 
 async function refreshTopology(controller: AbortController): Promise<void> {
   try {
-    const result = await fetchTopology(controller.signal)
+    const result = await fetchTopology(controller.signal, managementToken.value || undefined)
     if (activeController !== controller) return
     topology.value = result
     topologyError.value = null
@@ -518,7 +539,7 @@ async function controlRecorder(
   busyRecorder.value = recorder.id
   catalogError.value = null
   try {
-    const result = await setRecording(stream.id, recorder.id, action)
+    const result = await setRecording(stream.id, recorder.id, action, managementToken.value || undefined)
     if (result.id !== recorder.id) {
       throw new Error('Recorder command returned a mismatched recorder identity.')
     }
@@ -712,6 +733,46 @@ onUnmounted(() => {
   gap: 4px;
   padding: 10px 0;
   border-bottom: 1px solid #34392f;
+}
+
+.management-auth {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.management-auth label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+.management-auth input,
+.management-auth button {
+  min-height: 36px;
+  border: 1px solid #4a5143;
+  background: #171a15;
+  color: #eef2e7;
+  font: 700 0.7rem/1 "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+.management-auth input {
+  width: min(32vw, 260px);
+  padding: 0 10px;
+}
+
+.management-auth button {
+  padding: 0 12px;
+  color: #b6ff51;
+  cursor: pointer;
+}
+
+.management-auth button:disabled {
+  color: #6c7365;
+  cursor: not-allowed;
 }
 
 .app-navigation a {
@@ -1639,6 +1700,16 @@ h2 {
   .app-navigation {
     display: grid;
     grid-template-columns: 1fr 1fr;
+  }
+
+  .management-auth {
+    grid-column: 1 / -1;
+    margin-left: 0;
+  }
+
+  .management-auth input {
+    width: 100%;
+    min-width: 0;
   }
 
   .app-navigation a {

@@ -59,6 +59,22 @@ export interface RecorderSnapshot {
   recoverable_partial_name: string | null
 }
 
+export interface RelaySnapshot {
+  id: string
+  destination: { address: string; application: string; stream_name: string }
+  phase: 'connecting' | 'publishing' | 'backoff' | 'stopped'
+  last_failure: 'connect' | 'handshake' | 'session' | 'transport' | 'thread' | null
+  queue_messages: number
+  queue_bytes: string
+  connection_attempts: string
+  connections: string
+  reconnects: string
+  events_enqueued: string
+  events_sent: string
+  events_dropped: string
+  payload_bytes_sent: string
+}
+
 export interface StreamSnapshot {
   id: string
   revision: string
@@ -76,6 +92,7 @@ export interface StreamSnapshot {
     video: TrackSnapshot
     fanout_payload_bytes: string
   }
+  relays: RelaySnapshot[]
   recording_supported: boolean
   manual_recording: boolean
   recorders: RecorderSnapshot[]
@@ -89,6 +106,7 @@ export interface RtmpCatalog {
 }
 
 export interface MonitoringProcess {
+  administrativeState: AdministrativeState
   cpuPercent: number | null
   residentMemoryBytes: number
   virtualMemoryBytes: number
@@ -113,8 +131,10 @@ export interface MonitoringTraffic {
 }
 
 export type ListenerRuntimeState = 'configured' | 'listening' | 'stopped' | 'failed'
+export type AdministrativeState = 'ready' | 'drain' | 'maintenance'
 
 export interface MonitoringListener extends MonitoringTraffic {
+  administrativeState: AdministrativeState
   name: string
   protocol: ListenerProtocol
   bind: string
@@ -133,7 +153,32 @@ export interface MonitoringRtmp {
   recorderSegmentsStarted: string
   recorderSegmentsCompleted: string
   recorderDiscontinuities: string
+  relayConnectionAttempts: string
+  relayConnections: string
+  relayReconnects: string
+  relayEventsSent: string
+  relayEventsDropped: string
+  relayPayloadBytesSent: string
+  relays: MonitoringRelay[]
   recorders: MonitoringRecorder[]
+}
+
+export interface MonitoringRelay {
+  streamId: string
+  relayId: string
+  address: string
+  application: string
+  streamName: string
+  phase: RelaySnapshot['phase']
+  lastFailure: RelaySnapshot['last_failure']
+  queueMessages: number
+  queueBytes: string
+  connectionAttempts: string
+  connections: string
+  reconnects: string
+  eventsSent: string
+  eventsDropped: string
+  payloadBytesSent: string
 }
 
 export interface MonitoringRecorder {
@@ -348,16 +393,27 @@ export interface CandidateTopologySnapshot extends Omit<TopologySnapshot, 'state
   }
 }
 
-export async function fetchRtmpCatalog(signal?: AbortSignal): Promise<RtmpCatalog> {
-  return parseRtmpCatalog(await request<unknown>('/api/v1/rtmp/streams', { signal }))
+export async function fetchRtmpCatalog(signal?: AbortSignal, token?: string): Promise<RtmpCatalog> {
+  return parseRtmpCatalog(await request<unknown>('/api/v1/rtmp/streams', {
+    headers: token ? authorizationHeader(token) : undefined,
+    signal,
+  }))
 }
 
-export async function fetchMonitoring(signal?: AbortSignal): Promise<MonitoringSnapshot> {
-  return parseMonitoring(await request<unknown>('/api/v1/monitoring', { cache: 'no-store', signal }))
+export async function fetchMonitoring(signal?: AbortSignal, token?: string): Promise<MonitoringSnapshot> {
+  return parseMonitoring(await request<unknown>('/api/v1/monitoring', {
+    cache: 'no-store',
+    headers: token ? authorizationHeader(token) : undefined,
+    signal,
+  }))
 }
 
-export async function fetchTopology(signal?: AbortSignal): Promise<TopologySnapshot> {
-  return parseTopology(await request<unknown>('/api/v1/topology', { cache: 'no-store', signal }))
+export async function fetchTopology(signal?: AbortSignal, token?: string): Promise<TopologySnapshot> {
+  return parseTopology(await request<unknown>('/api/v1/topology', {
+    cache: 'no-store',
+    headers: token ? authorizationHeader(token) : undefined,
+    signal,
+  }))
 }
 
 export async function fetchConfig(token: string, signal?: AbortSignal): Promise<ConfigSnapshot> {
@@ -406,11 +462,27 @@ export async function setRecording(
   streamId: string,
   recorderId: string,
   action: 'start' | 'stop',
+  token?: string,
 ): Promise<RecorderSnapshot> {
+  const headers = token ? {
+    ...authorizationHeader(token),
+    'If-Generation-Revision': await fetchActiveRevision(token),
+  } : undefined
   return parseRecorder(await request<unknown>(
     `/api/v1/rtmp/streams/${streamId}/recorders/${recorderId}/${action}`,
-    { method: 'POST' },
+    { method: 'POST', headers },
   ))
+}
+
+async function fetchActiveRevision(token: string): Promise<string> {
+  const value = await request<unknown>('/api/v1/generations', {
+    cache: 'no-store',
+    headers: authorizationHeader(token),
+  })
+  if (!isRecord(value) || !isRecord(value.generation) || typeof value.generation.activeRevision !== 'string') {
+    throw new Error('generation response has no active revision')
+  }
+  return value.generation.activeRevision
 }
 
 export class ApiError extends Error {
@@ -483,6 +555,10 @@ function parseMonitoring(value: unknown): MonitoringSnapshot {
     typeof value.rtmp.recordingSupported !== 'boolean' || typeof value.rtmp.manualRecording !== 'boolean' ||
     !decimalString(value.rtmp.recorderBytesWritten) || !decimalString(value.rtmp.recorderSegmentsStarted) ||
     !decimalString(value.rtmp.recorderSegmentsCompleted) || !decimalString(value.rtmp.recorderDiscontinuities) ||
+    !decimalString(value.rtmp.relayConnectionAttempts) || !decimalString(value.rtmp.relayConnections) ||
+    !decimalString(value.rtmp.relayReconnects) || !decimalString(value.rtmp.relayEventsSent) ||
+    !decimalString(value.rtmp.relayEventsDropped) || !decimalString(value.rtmp.relayPayloadBytesSent) ||
+    !Array.isArray(value.rtmp.relays) || !value.rtmp.relays.every(monitoringRelay) ||
     !Array.isArray(value.rtmp.recorders) || !value.rtmp.recorders.every(monitoringRecorder)
   ) return invalidPayload('monitoring')
   return value as unknown as MonitoringSnapshot
@@ -509,11 +585,11 @@ function parseSave(value: unknown): ConfigSaveResponse {
     !(value.activeRevision === null || typeof value.activeRevision === 'string') ||
     !diagnostics(value.diagnostics)
   ) return invalidPayload('configuration save')
-  const restart = value.outcome === 'saved_restart_required' &&
-    value.activationState === 'restart_required' && value.restartRequired === true
+  const pending = value.outcome === 'saved_pending_activation' &&
+    value.activationState === 'pending' && value.restartRequired === false
   const unchanged = value.outcome === 'unchanged_active' &&
     value.activationState === 'active' && value.restartRequired === false
-  if (!restart && !unchanged) return invalidPayload('configuration save')
+  if (!pending && !unchanged) return invalidPayload('configuration save')
   return value as unknown as ConfigSaveResponse
 }
 
@@ -541,8 +617,20 @@ function isStream(value: unknown): value is StreamSnapshot {
       typeof value.publisher.session_id === 'string' && safeInteger(value.publisher.attached_at_unix_ms))) &&
     safeInteger(value.subscriber_count) && isRecord(value.media) && isTrack(value.media.audio) &&
     isTrack(value.media.video) && decimalString(value.media.fanout_payload_bytes) &&
+    Array.isArray(value.relays) && value.relays.every(isRelay) &&
     typeof value.recording_supported === 'boolean' && typeof value.manual_recording === 'boolean' &&
     Array.isArray(value.recorders) && value.recorders.every(isRecorder)
+}
+
+function isRelay(value: unknown): value is RelaySnapshot {
+  return isRecord(value) && typeof value.id === 'string' && isRecord(value.destination) &&
+    typeof value.destination.address === 'string' && typeof value.destination.application === 'string' &&
+    typeof value.destination.stream_name === 'string' &&
+    ['connecting', 'publishing', 'backoff', 'stopped'].includes(String(value.phase)) &&
+    (value.last_failure === null || ['connect', 'handshake', 'session', 'transport', 'thread']
+      .includes(String(value.last_failure))) && safeInteger(value.queue_messages) &&
+    ['queue_bytes', 'connection_attempts', 'connections', 'reconnects', 'events_enqueued',
+      'events_sent', 'events_dropped', 'payload_bytes_sent'].every((key) => decimalString(value[key]))
 }
 
 function isTrack(value: unknown): value is TrackSnapshot {
@@ -636,6 +724,17 @@ function monitoringRecorder(value: unknown): boolean {
     decimalString(value.segmentsCompleted) && decimalString(value.discontinuities) &&
     nullableString(value.currentRelativeName) && nullableString(value.lastCompletedRelativeName) &&
     nullableString(value.recoverablePartialName) && nullableString(value.publishedButNotDurableRelativeName)
+}
+
+function monitoringRelay(value: unknown): boolean {
+  return isRecord(value) && typeof value.streamId === 'string' && typeof value.relayId === 'string' &&
+    typeof value.address === 'string' && typeof value.application === 'string' &&
+    typeof value.streamName === 'string' &&
+    ['connecting', 'publishing', 'backoff', 'stopped'].includes(String(value.phase)) &&
+    (value.lastFailure === null || ['connect', 'handshake', 'session', 'transport', 'thread']
+      .includes(String(value.lastFailure))) && safeInteger(value.queueMessages) &&
+    ['queueBytes', 'connectionAttempts', 'connections', 'reconnects', 'eventsSent', 'eventsDropped',
+      'payloadBytesSent'].every((key) => decimalString(value[key]))
 }
 
 function topologyNode(value: unknown): boolean {

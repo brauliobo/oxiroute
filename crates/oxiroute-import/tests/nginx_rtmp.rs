@@ -5,7 +5,7 @@ use std::{fs, path::Path};
 use oxiroute_config::{Protocol, RtmpRecorderStart};
 use oxiroute_import::{
     DiagnosticStage, E_DUPLICATE_IDENTITY, E_SEMANTICS_NOT_REPRESENTABLE, E_UNSUPPORTED_FEATURE,
-    nginx::{OccurrenceDisposition, import_rtmp, load, resolve_rtmp},
+    nginx::{OccurrenceDisposition, import_rtmp, import_rtmp_with_timezone, load, resolve_rtmp},
 };
 use tempfile::TempDir;
 
@@ -63,6 +63,26 @@ fn lowers_inherited_exact_rtmp_and_recorder_policy_without_accessing_the_root() 
         entry.path == "/rtmp_services/0/applications/0/live"
             && entry.origins[0].provenance.include_stack.is_empty()
     }));
+}
+
+#[test]
+fn recording_import_requires_an_explicit_host_iana_timezone() {
+    let directory = TempDir::new().expect("RTMP source directory");
+    fs::write(
+        directory.path().join("nginx.conf"),
+        b"rtmp { server { listen 127.0.0.1:1935; application live { live on; record all; record_path /srv/recordings; } } }",
+    )
+    .expect("write RTMP source");
+
+    let report = import_rtmp(Path::new("nginx.conf"), directory.path());
+
+    assert!(report.config.is_none());
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.message().contains("IANA timezone overlay") })
+    );
 }
 
 #[test]
@@ -248,7 +268,7 @@ fn duplicates_and_overlapping_listens_are_terminal_blockers() {
 }
 
 #[test]
-fn blocks_every_unrepresented_recorder_form_and_non_exact_suffix() {
+fn blocks_every_unrepresented_recorder_form() {
     for directive in [
         "record audio;",
         "record video;",
@@ -258,7 +278,6 @@ fn blocks_every_unrepresented_recorder_form_and_non_exact_suffix() {
         "record_notify on;",
         "record_max_size 1m;",
         "record_max_frames 100;",
-        "record_suffix -%Y.flv;",
     ] {
         let inherited_record = if directive.starts_with("record ") {
             ""
@@ -364,7 +383,8 @@ fn source_noop_hls_muxdelay_does_not_block_an_exact_application() {
 #[test]
 fn keeps_supported_servers_in_the_draft_without_placeholder_for_a_blocked_server() {
     let directory = fixture("phoenix-audited-partial.conf");
-    let report = import_rtmp(Path::new("nginx.conf"), directory.path());
+    let report =
+        import_rtmp_with_timezone(Path::new("nginx.conf"), directory.path(), "America/Bahia");
 
     assert!(report.config.is_none());
     assert_eq!(report.blocked_services.len(), 1);
@@ -421,7 +441,7 @@ fn import_source(
     for (name, contents) in includes {
         fs::write(directory.path().join(name), contents).expect("write RTMP include");
     }
-    import_rtmp(Path::new("nginx.conf"), directory.path())
+    import_rtmp_with_timezone(Path::new("nginx.conf"), directory.path(), "America/Bahia")
 }
 
 fn fixture(name: &str) -> TempDir {

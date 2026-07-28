@@ -485,9 +485,11 @@ cache objects
     assert_eq!(code_count(&report, E_UNSUPPORTED_SECTION), 1);
     assert!(reasons.contains(&BlockingReason::ConditionalPreprocessing));
     assert!(reasons.contains(&BlockingReason::EnvironmentPreprocessing));
-    assert!(reasons.contains(&BlockingReason::Logging));
+    assert!(!reasons.contains(&BlockingReason::Logging));
     assert!(externalized);
-    assert!(reasons.contains(&BlockingReason::Statistics));
+    assert!(!reasons.contains(&BlockingReason::Statistics));
+    assert_eq!(report.value().activation_requirements.len(), 1);
+    assert!(report.value().deployment_requirements.len() >= 2);
     assert!(reasons.contains(&BlockingReason::UnknownDirective));
     assert!(reasons.contains(&BlockingReason::UnresolvedReference));
     assert!(reasons.contains(&BlockingReason::UnsupportedForm));
@@ -526,9 +528,13 @@ backend app
         SemanticBlockerKind::GlobalSecurity
     );
     let defaults = &report.value().defaults[0];
-    assert!(defaults.settings.semantic_blockers.iter().any(|blocker| {
-        blocker.value.kind == SemanticBlockerKind::Logging && blocker.value.keyword == b"log-format"
-    }));
+    assert!(
+        report
+            .value()
+            .deployment_requirements
+            .iter()
+            .any(|requirement| requirement.directive == "log-format")
+    );
     assert!(defaults.settings.semantic_blockers.iter().any(|blocker| {
         blocker.value.kind == SemanticBlockerKind::ProxyDefault
             && blocker.value.keyword == b"default-server"
@@ -536,10 +542,19 @@ backend app
     assert!(defaults.settings.semantic_blockers.iter().any(|blocker| {
         blocker.value.kind == SemanticBlockerKind::Retry && blocker.value.keyword == b"retry-on"
     }));
-    assert!(defaults.settings.semantic_blockers.iter().any(|blocker| {
-        blocker.value.kind == SemanticBlockerKind::Timeout && blocker.value.arguments[0] == b"queue"
-    }));
+    assert_eq!(
+        defaults
+            .settings
+            .timeouts
+            .queue
+            .as_ref()
+            .expect("queue timeout")
+            .value
+            .as_secs(),
+        5
+    );
     let server = &report.value().backends[0].servers[0];
+    assert_eq!(server.max_connections.as_ref().unwrap().value, 10);
     assert_eq!(
         server
             .unsupported_options
@@ -549,7 +564,6 @@ backend app
         [
             b"weight".as_slice(),
             b"backup".as_slice(),
-            b"maxconn".as_slice(),
             b"ssl".as_slice(),
             b"verify".as_slice(),
             b"sni".as_slice(),

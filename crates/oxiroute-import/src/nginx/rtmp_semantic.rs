@@ -16,6 +16,7 @@ use super::{
 const MAX_RECORDING_ROOT_BYTES: usize = 4_096;
 const MAX_SUFFIX_BYTES: usize = 128;
 const MAX_ROTATION_INTERVAL_MS: u64 = (1 << 31) - 1;
+const MAX_OUTBOUND_CHUNK_SIZE: u32 = 1_048_576;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RtmpResolution {
@@ -27,12 +28,18 @@ pub struct RtmpResolution {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EffectiveRtmp {
     pub origin: DirectiveOrigin,
+    pub outbound_chunk_size: u32,
+    pub chunk_size_origin: Option<DirectiveOrigin>,
+    pub access_log_disabled: bool,
+    pub access_log_origin: Option<DirectiveOrigin>,
     pub servers: Vec<EffectiveRtmpServer>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EffectiveRtmpServer {
     pub origin: DirectiveOrigin,
+    pub outbound_chunk_size: Option<u32>,
+    pub chunk_size_origin: Option<DirectiveOrigin>,
     pub listens: Vec<EffectiveRtmpListen>,
     pub applications: Vec<EffectiveRtmpApplication>,
 }
@@ -49,6 +56,15 @@ pub struct EffectiveRtmpApplication {
     pub origin: DirectiveOrigin,
     pub name: Option<NginxValue>,
     pub policy: EffectiveRtmpPolicy,
+    pub push_targets: Vec<EffectiveRtmpPushTarget>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EffectiveRtmpPushTarget {
+    pub host: String,
+    pub port: u16,
+    pub application: String,
+    pub origin: DirectiveOrigin,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -143,21 +159,27 @@ pub fn resolve_rtmp(loaded: Report<SourceGraph>) -> Report<RtmpResolution> {
 }
 
 pub(super) fn resolve_rtmp_graph(graph: &SourceGraph) -> Report<RtmpResolution> {
-    Resolver::new(graph).run()
+    Resolver::new(graph, false).run()
+}
+
+pub(super) fn resolve_rtmp_root_graph(graph: &SourceGraph) -> Report<RtmpResolution> {
+    Resolver::new(graph, true).run()
 }
 
 struct Resolver<'a> {
     graph: &'a SourceGraph,
     dispositions: Vec<Option<OccurrenceDisposition>>,
     diagnostics: Vec<Diagnostic>,
+    complete_root: bool,
 }
 
 impl<'a> Resolver<'a> {
-    fn new(graph: &'a SourceGraph) -> Self {
+    fn new(graph: &'a SourceGraph, complete_root: bool) -> Self {
         Self {
             graph,
             dispositions: vec![None; graph.expanded_occurrences.len()],
             diagnostics: Vec::new(),
+            complete_root,
         }
     }
 
@@ -178,6 +200,8 @@ impl<'a> Resolver<'a> {
                     first_rtmp = Some(directive.occurrence);
                 }
                 rtmp_blocks.push(self.resolve_rtmp_block(directive));
+            } else if self.complete_root {
+                self.structural_subtree(directive);
             } else if Self::is_registered_in_context(directive, DirectiveContext::NginxMain) {
                 self.resolve_unsupported_subtree(
                     directive,
@@ -213,10 +237,70 @@ impl<'a> Resolver<'a> {
         let policy =
             self.resolve_local_policy(children, DirectiveContext::RtmpMain, Policy::default());
         let mut servers = Vec::new();
+        let mut outbound_chunk_size = 4_096;
+        let mut chunk_size_origin = None;
+        let mut access_log_disabled = false;
+        let mut access_log_origin = None;
 
         for child in children {
             if child.directive.name.value == b"server" {
-                servers.push(self.resolve_server(child, &policy));
+                let server = self.resolve_server(child, &policy);
+                if let Some(server_chunk_size) = server.outbound_chunk_size {
+                    if chunk_size_origin.is_some() && outbound_chunk_size != server_chunk_size {
+                        self.block(
+                            server
+                                .chunk_size_origin
+                                .as_ref()
+                                .expect("server chunk size retains its origin")
+                                .occurrence,
+                            E_SEMANTICS_NOT_REPRESENTABLE,
+                            "nginx-RTMP servers use different chunk sizes but canonical policy is service-wide",
+                        );
+                    } else {
+                        outbound_chunk_size = server_chunk_size;
+                        chunk_size_origin.clone_from(&server.chunk_size_origin);
+                    }
+                }
+                servers.push(server);
+            } else if child.directive.name.value == b"chunk_size" {
+                if self
+                    .validate_registered(child, DirectiveContext::RtmpMain)
+                    .is_ok()
+                    && child.directive.children.is_none()
+                    && child.directive.arguments.len() == 1
+                {
+                    match parse_u32(&child.directive.arguments[0].value) {
+                        Some(value) if (1..=MAX_OUTBOUND_CHUNK_SIZE).contains(&value) => {
+                            outbound_chunk_size = value;
+                            chunk_size_origin = Some(Self::origin(child));
+                            self.resolved(child.occurrence);
+                        }
+                        _ => self.block(
+                            child.occurrence,
+                            E_INVALID_VALUE,
+                            "chunk_size is outside canonical RTMP outbound chunk bounds",
+                        ),
+                    }
+                }
+            } else if child.directive.name.value == b"access_log" {
+                if self
+                    .validate_registered(child, DirectiveContext::RtmpMain)
+                    .is_ok()
+                    && child.directive.children.is_none()
+                    && child.directive.arguments.len() == 1
+                {
+                    if child.directive.arguments[0].value == b"off" {
+                        access_log_disabled = true;
+                        access_log_origin = Some(Self::origin(child));
+                        self.resolved(child.occurrence);
+                    } else {
+                        self.block(
+                            child.occurrence,
+                            E_UNSUPPORTED_FEATURE,
+                            "only disabled nginx-RTMP access logging has exact canonical semantics",
+                        );
+                    }
+                }
             } else if child.directive.name.value == b"hls_muxdelay" {
                 self.resolve_source_noop(child, DirectiveContext::RtmpMain);
             } else if !is_supported_policy(&child.directive.name.value) {
@@ -237,6 +321,10 @@ impl<'a> Resolver<'a> {
         }
         EffectiveRtmp {
             origin: Self::origin(directive),
+            outbound_chunk_size,
+            chunk_size_origin,
+            access_log_disabled,
+            access_log_origin,
             servers,
         }
     }
@@ -253,10 +341,18 @@ impl<'a> Resolver<'a> {
         let mut listens = Vec::new();
         let mut applications = Vec::new();
         let mut application_names = HashMap::new();
+        let mut outbound_chunk_size = None;
+        let mut chunk_size_origin = None;
 
         for child in children {
             match child.directive.name.value.as_slice() {
                 b"listen" => listens.push(self.resolve_listen(child)),
+                b"chunk_size" => {
+                    if let Some(value) = self.resolve_server_chunk_size(child) {
+                        outbound_chunk_size = Some(value);
+                        chunk_size_origin = Some(Self::origin(child));
+                    }
+                }
                 b"application" => {
                     let application = self.resolve_application(child, &policy);
                     if let Some(name) = &application.name {
@@ -299,8 +395,35 @@ impl<'a> Resolver<'a> {
         }
         EffectiveRtmpServer {
             origin: Self::origin(directive),
+            outbound_chunk_size,
+            chunk_size_origin,
             listens,
             applications,
+        }
+    }
+
+    fn resolve_server_chunk_size(&mut self, directive: &ExpandedDirective) -> Option<u32> {
+        if self
+            .validate_registered(directive, DirectiveContext::RtmpServer)
+            .is_err()
+            || directive.directive.children.is_some()
+            || directive.directive.arguments.len() != 1
+        {
+            return None;
+        }
+        match parse_u32(&directive.directive.arguments[0].value) {
+            Some(value) if (1..=MAX_OUTBOUND_CHUNK_SIZE).contains(&value) => {
+                self.resolved(directive.occurrence);
+                Some(value)
+            }
+            _ => {
+                self.block(
+                    directive.occurrence,
+                    E_INVALID_VALUE,
+                    "chunk_size is outside canonical RTMP outbound chunk bounds",
+                );
+                None
+            }
         }
     }
 
@@ -339,6 +462,7 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn resolve_application(
         &mut self,
         directive: &ExpandedDirective,
@@ -368,6 +492,7 @@ impl<'a> Resolver<'a> {
             inherited.clone(),
         );
         let mut recorders = Vec::new();
+        let mut push_targets = Vec::new();
         let default_recorder_name = format!("nginx-recorder-{}", directive.occurrence.get());
         let mut recorder_names = HashMap::new();
         if let Some(recorder) = self.effective_recorder(
@@ -399,6 +524,31 @@ impl<'a> Resolver<'a> {
                 if let Some(recorder) = self.resolve_recorder(child, &policy) {
                     recorders.push(recorder);
                 }
+            } else if child.directive.name.value == b"push" {
+                if self
+                    .validate_registered(child, DirectiveContext::RtmpApplication)
+                    .is_ok()
+                    && child.directive.children.is_none()
+                    && child.directive.arguments.len() == 1
+                {
+                    if let Some((host, port, application)) =
+                        parse_push_target(&child.directive.arguments[0].value)
+                    {
+                        push_targets.push(EffectiveRtmpPushTarget {
+                            host,
+                            port,
+                            application,
+                            origin: Self::origin(child),
+                        });
+                        self.resolved(child.occurrence);
+                    } else {
+                        self.block(
+                            child.occurrence,
+                            E_INVALID_VALUE,
+                            "push must be an rtmp:// host, optional port, and one literal or $name application",
+                        );
+                    }
+                }
             } else if child.directive.name.value == b"hls_muxdelay" {
                 self.resolve_source_noop(child, DirectiveContext::RtmpApplication);
             } else if !is_supported_policy(&child.directive.name.value) {
@@ -413,6 +563,7 @@ impl<'a> Resolver<'a> {
         EffectiveRtmpApplication {
             origin: Self::origin(directive),
             name,
+            push_targets,
             policy: EffectiveRtmpPolicy {
                 live: policy.live.value,
                 live_origin: policy.live.origin,
@@ -1057,6 +1208,10 @@ fn parse_record(arguments: &[Word]) -> Result<RecordSetting, &'static str> {
     }
 }
 
+fn parse_u32(value: &[u8]) -> Option<u32> {
+    std::str::from_utf8(value).ok()?.parse().ok()
+}
+
 fn valid_canonical_name(value: &[u8]) -> bool {
     std::str::from_utf8(value).is_ok_and(|name| {
         !name.trim().is_empty() && name.trim() == name && !name.chars().any(char::is_control)
@@ -1097,12 +1252,43 @@ fn exact_suffix(value: &[u8]) -> Option<String> {
             index += 1;
             continue;
         }
-        if bytes.get(index + 1) != Some(&b'%') {
+        if !matches!(
+            bytes.get(index + 1),
+            Some(b'Y' | b'm' | b'd' | b'H' | b'M' | b'S' | b'%')
+        ) {
             return None;
         }
         index += 2;
     }
     Some(value.to_owned())
+}
+
+fn parse_push_target(value: &[u8]) -> Option<(String, u16, String)> {
+    let value = std::str::from_utf8(value).ok()?.strip_prefix("rtmp://")?;
+    let (authority, application) = value.split_once('/')?;
+    if authority.is_empty()
+        || application.is_empty()
+        || application.contains(['/', '?', '#'])
+        || application.contains('$') && application != "$name"
+    {
+        return None;
+    }
+    let (host, port) = if let Some((host, port)) = authority.rsplit_once(':') {
+        if host.is_empty() || host.contains(':') {
+            return None;
+        }
+        (host, port.parse().ok()?)
+    } else {
+        (authority, 1_935)
+    };
+    if port == 0
+        || host.contains(['@', '/', '?', '#'])
+        || host.parse::<std::net::IpAddr>().is_err()
+            && (!host.is_ascii() || host.split('.').any(str::is_empty))
+    {
+        return None;
+    }
+    Some((host.to_ascii_lowercase(), port, application.to_owned()))
 }
 
 fn parse_nginx_milliseconds(value: &[u8]) -> Option<u64> {

@@ -3,6 +3,41 @@ use oxiroute_config::{
     Protocol, TlsVersion, UpstreamAlgorithm, UpstreamEndpoint, load_lua,
 };
 
+#[test]
+fn loads_multiple_ipv4_ipv6_statistics_binds_and_admin_token_path() {
+    let config = load_lua(
+        r#"return {
+          version = 1,
+          listeners = {},
+          stats = {
+            binds = { "127.0.0.1:8404", "[::1]:8404" },
+            admin_token_file = "/etc/oxiroute/stats.token",
+          },
+        }"#,
+    )
+    .expect("statistics config");
+    let stats = config.stats.expect("statistics");
+    assert_eq!(stats.binds.len(), 2);
+    assert_eq!(
+        stats.admin_token_file.as_deref(),
+        Some(std::path::Path::new("/etc/oxiroute/stats.token"))
+    );
+}
+
+#[test]
+fn rejects_statistics_binds_that_overlap_management() {
+    let error = load_lua(
+        r#"return {
+          version = 1,
+          management = { bind = "127.0.0.1:8404" },
+          stats = { binds = { "0.0.0.0:8404" } },
+          listeners = {},
+        }"#,
+    )
+    .expect_err("overlap");
+    assert!(matches!(error, ConfigError::OverlappingBind { .. }));
+}
+
 const VALID_CONFIG: &str = r#"
 return {
   version = 1,
@@ -211,7 +246,7 @@ fn loads_the_canonical_configuration() {
     assert_eq!(config.listeners[2].service.as_deref(), Some("live"));
     assert_eq!(config.upstream_pools.len(), 2);
     assert_eq!(
-        config.upstream_pools[0].endpoints[0],
+        config.upstream_pools[0].servers[0].endpoint,
         UpstreamEndpoint::Socket {
             address: "127.0.0.1:3000".parse().expect("socket address")
         }
@@ -257,6 +292,7 @@ fn loads_the_distributed_example_configuration() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn applies_all_collection_and_field_defaults() {
     let minimal = load_lua(
         r#"
@@ -284,13 +320,26 @@ return {
     .expect("minimal configuration");
 
     assert_eq!(minimal.management, None);
+    assert_eq!(minimal.max_connections, None);
     assert!(minimal.certificates.is_empty());
     assert!(minimal.tls_profiles.is_empty());
     assert_eq!(minimal.listeners[0].max_connections, None);
+    assert_eq!(
+        minimal.listeners[0].downstream_timeouts,
+        oxiroute_config::DownstreamTimeoutPolicy::default()
+    );
     assert_eq!(minimal.listeners[0].tls_profile, None);
     assert!(minimal.upstream_pools.is_empty());
     assert!(minimal.http_services.is_empty());
     assert!(minimal.rtmp_services[0].applications[0].idle_streams);
+    assert_eq!(minimal.rtmp_services[0].outbound_chunk_size, 4_096);
+    assert_eq!(minimal.rtmp_services[0].access_log, None);
+    assert_eq!(
+        minimal.rtmp_services[0].applications[0]
+            .fanout
+            .max_subscribers,
+        1_024
+    );
     assert!(
         minimal.rtmp_services[0].applications[0]
             .recorders
@@ -337,6 +386,11 @@ return {
         "/api"
     );
     assert!(route.methods.is_empty());
+    assert_eq!(route.policy.connect_timeout_ms, 30_000);
+    assert_eq!(route.policy.read_timeout_ms, 30_000);
+    assert_eq!(route.policy.write_timeout_ms, 30_000);
+    assert!(!route.policy.request_buffering);
+    assert!(!route.policy.response_buffering);
     assert_eq!(config.http_services[0].upstream_io_timeout_ms, 30_000);
     assert_eq!(
         serde_json::to_value(route).expect("serialized route")["action"]["policy"]["retry"]["max_retries"],
@@ -355,6 +409,7 @@ return {
         pool.tls.is_none()
             && pool.http_versions.min == HttpVersion::Http11
             && pool.http_versions.max == HttpVersion::Http11
+            && pool.connection_reuse == oxiroute_config::UpstreamConnectionReuse::Safe
     }));
 }
 
@@ -450,6 +505,7 @@ fn applies_the_same_optional_admission_contract_to_json() {
 
     let omitted: oxiroute_config::Config =
         serde_json::from_value(base.clone()).expect("omitted JSON limits");
+    assert_eq!(omitted.max_connections, None);
     assert_eq!(omitted.listeners[0].max_connections, None);
     assert_eq!(
         omitted.http_services[0].max_request_body_bytes,
@@ -458,18 +514,22 @@ fn applies_the_same_optional_admission_contract_to_json() {
 
     let mut explicit_null = base.clone();
     explicit_null["listeners"][0]["max_connections"] = serde_json::Value::Null;
+    explicit_null["max_connections"] = serde_json::Value::Null;
     explicit_null["http_services"][0]["max_request_body_bytes"] = serde_json::Value::Null;
     let explicit_null: oxiroute_config::Config =
         serde_json::from_value(explicit_null).expect("null JSON limits");
     assert_eq!(explicit_null.listeners[0].max_connections, None);
+    assert_eq!(explicit_null.max_connections, None);
     assert_eq!(explicit_null.http_services[0].max_request_body_bytes, None);
 
     let mut numeric = base;
     numeric["listeners"][0]["max_connections"] = 321.into();
+    numeric["max_connections"] = 123.into();
     numeric["http_services"][0]["max_request_body_bytes"] = 654.into();
     let numeric: oxiroute_config::Config =
         serde_json::from_value(numeric).expect("numeric JSON limits");
     assert_eq!(numeric.listeners[0].max_connections, Some(321));
+    assert_eq!(numeric.max_connections, Some(123));
     assert_eq!(numeric.http_services[0].max_request_body_bytes, Some(654));
 }
 
@@ -538,12 +598,17 @@ return {
     assert_eq!(
         config.listeners[0].bind,
         ListenerBind::Unix {
-            path: "/run/oxiroute/local.sock".into()
+            path: "/run/oxiroute/local.sock".into(),
+            mode: None,
         }
     );
     assert_eq!(config.listeners[0].max_connections, None);
     assert_eq!(
-        config.upstream_pools[0].endpoints,
+        config.upstream_pools[0]
+            .servers
+            .iter()
+            .map(|server| server.endpoint.clone())
+            .collect::<Vec<_>>(),
         [
             UpstreamEndpoint::Socket {
                 address: "127.0.0.1:3000".parse().expect("socket address")
@@ -583,7 +648,7 @@ fn validates_and_normalizes_dns_endpoints_without_resolution_or_expansion() {
     );
     let config = load_lua(&source).expect("253-byte DNS endpoint");
     assert!(matches!(
-        &config.upstream_pools[0].endpoints[0],
+        &config.upstream_pools[0].servers[0].endpoint,
         UpstreamEndpoint::Dns { host, port: 443 } if host == &boundary
     ));
 
@@ -957,8 +1022,6 @@ fn validates_and_normalizes_certificate_dns_names() {
 
     for dns_name in [
         "",
-        "127.0.0.1",
-        "::1",
         "example.test.",
         "caf\u{e9}.example.test",
         "-api.example.test",
@@ -1484,14 +1547,21 @@ fn rejects_non_utf8_file_paths() {
     use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf};
 
     use oxiroute_config::{
-        HttpVersionPolicy, UpstreamPool, UpstreamTls, validate_upstream_pool_definitions,
+        DnsResolutionPolicy, HttpVersionPolicy, UpstreamConnectionReuse, UpstreamPool,
+        UpstreamServer, UpstreamTls, validate_upstream_pool_definitions,
     };
 
     let pool = UpstreamPool {
         name: "secure".into(),
-        endpoints: vec![UpstreamEndpoint::Socket {
-            address: "127.0.0.1:443".parse().expect("endpoint"),
+        servers: vec![UpstreamServer {
+            name: "secure-1".into(),
+            endpoint: UpstreamEndpoint::Socket {
+                address: "127.0.0.1:443".parse().expect("endpoint"),
+            },
+            max_connections: None,
+            dns_resolution: DnsResolutionPolicy::OnConnect,
         }],
+        endpoints: Vec::new(),
         algorithm: UpstreamAlgorithm::RoundRobin,
         health_check: None,
         tls: Some(UpstreamTls {
@@ -1501,6 +1571,10 @@ fn rejects_non_utf8_file_paths() {
             ))),
         }),
         http_versions: HttpVersionPolicy::default(),
+        queue_timeout_ms: None,
+        connect_timeout_ms: None,
+        server_timeout_ms: None,
+        connection_reuse: UpstreamConnectionReuse::Safe,
     };
 
     assert!(matches!(
@@ -1643,8 +1717,12 @@ fn rejects_invalid_health_check_timing_and_thresholds() {
 
 #[test]
 fn rejects_health_check_fields_that_do_not_match_the_probe_type() {
+    load_lua(&with_web_pool_fields(
+        r#"      health_check = { type = "http", path = "/healthz" },"#,
+    ))
+    .expect("HTTP health-check Host policy is optional");
+
     for policy in [
-        r#"{ type = "http", path = "/healthz" }"#,
         r#"{ type = "http", host = "backend.internal" }"#,
         r#"{ type = "http", host = "user@backend.internal", path = "/healthz" }"#,
         r#"{ type = "http", host = "backend.internal:not-a-port", path = "/healthz" }"#,

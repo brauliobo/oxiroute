@@ -9,10 +9,7 @@ use oxiroute_config::{
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::{
-    ListenerRuntimeState, RoundRobinPool, RuntimeEndpoint, ServiceSpec,
-    monitoring::RuntimeHealthSnapshot,
-};
+use crate::{ListenerRuntimeState, RoundRobinPool, ServiceSpec, monitoring::RuntimeHealthSnapshot};
 
 pub const TOPOLOGY_SCHEMA_VERSION: u32 = 1;
 
@@ -23,7 +20,7 @@ pub struct TopologySnapshot {
     edges: Box<[TopologyEdge]>,
     listener_nodes: HashMap<String, String>,
     pool_nodes: HashMap<String, String>,
-    endpoint_nodes: HashMap<(String, RuntimeEndpoint), String>,
+    endpoint_nodes: HashMap<(String, String), String>,
 }
 
 impl TopologySnapshot {
@@ -142,21 +139,26 @@ impl TopologySnapshot {
                     "availableEndpoints": pool.available_endpoints,
                     "totalEndpoints": pool.total_endpoints,
                     "unavailableSelections": pool.unavailable_selections.to_string(),
+                    "queued": pool.queued,
+                    "queuedTotal": pool.queued_total.to_string(),
+                    "queueTimeouts": pool.queue_timeouts.to_string(),
+                    "queueCancellations": pool.queue_cancellations.to_string(),
                 }),
             });
             for endpoint in &pool.endpoints {
                 let node_id = self
                     .endpoint_nodes
-                    .get(&(pool.name.clone(), endpoint.address.clone()))
+                    .get(&(pool.name.clone(), endpoint.name.clone()))
                     .ok_or_else(|| TopologyResponseError::UnknownEndpoint {
                         pool: pool.name.clone(),
-                        endpoint: endpoint.address.clone(),
+                        endpoint: endpoint.name.clone(),
                     })?;
                 overlays.push(TopologyRuntimeOverlay {
                     node_id: node_id.clone(),
                     state: endpoint_state(endpoint.state),
                     metrics: json!({
-                        "activeLeases": endpoint.active_leases.to_string(),
+                        "activeConnections": endpoint.active_connections.to_string(),
+                        "maxConnections": endpoint.max_connections,
                         "lastCheckedAtUnixMs": endpoint.last_checked_at_unix_ms,
                         "lastTransitionAtUnixMs": endpoint.last_transition_at_unix_ms,
                         "successfulChecks": endpoint.successful_checks.to_string(),
@@ -177,18 +179,18 @@ impl TopologySnapshot {
                 return Err(TopologyResponseError::MissingPool(pool.clone()));
             }
         }
-        for (pool, endpoint) in self.endpoint_nodes.keys() {
+        for (pool, server) in self.endpoint_nodes.keys() {
             let present = runtime.upstream_pools.iter().any(|snapshot| {
                 snapshot.name == *pool
                     && snapshot
                         .endpoints
                         .iter()
-                        .any(|candidate| candidate.address == *endpoint)
+                        .any(|candidate| candidate.name == *server)
             });
             if !present {
                 return Err(TopologyResponseError::MissingEndpoint {
                     pool: pool.clone(),
-                    endpoint: endpoint.clone(),
+                    endpoint: server.clone(),
                 });
             }
         }
@@ -201,7 +203,7 @@ struct TopologyBuilder {
     edges: Vec<TopologyEdge>,
     listener_nodes: HashMap<String, String>,
     pool_nodes: HashMap<String, String>,
-    endpoint_nodes: HashMap<(String, RuntimeEndpoint), String>,
+    endpoint_nodes: HashMap<(String, String), String>,
 }
 
 impl TopologyBuilder {
@@ -237,18 +239,29 @@ impl TopologyBuilder {
                 "service": listener.service,
                 "tlsProfile": listener.tls_profile,
                 "maxConnections": listener.max_connections,
+                "downstreamTimeouts": {
+                    "clientTimeoutMs": listener.downstream_timeouts.client_timeout_ms,
+                    "requestTimeoutMs": listener.downstream_timeouts.request_timeout_ms,
+                    "keepaliveTimeoutMs": listener.downstream_timeouts.keepalive_timeout_ms,
+                },
             });
             if listener.protocol == Protocol::Rtmp {
-                attributes["applications"] = listener
-                    .service
-                    .as_deref()
-                    .and_then(|name| {
-                        config
-                            .rtmp_services
-                            .iter()
-                            .find(|candidate| candidate.name == name)
-                    })
-                    .map_or_else(|| Value::Array(Vec::new()), rtmp_applications);
+                if let Some(rtmp_service) = listener.service.as_deref().and_then(|name| {
+                    config
+                        .rtmp_services
+                        .iter()
+                        .find(|candidate| candidate.name == name)
+                }) {
+                    attributes["outboundChunkSize"] = json!(rtmp_service.outbound_chunk_size);
+                    attributes["accessLog"] = json!(match rtmp_service.access_log {
+                        Some(oxiroute_config::AccessLogPolicy::Disabled) => "disabled",
+                        Some(oxiroute_config::AccessLogPolicy::File { .. }) => "structured_file",
+                        None => "default_disabled",
+                    });
+                    attributes["applications"] = rtmp_applications(rtmp_service);
+                } else {
+                    attributes["applications"] = Value::Array(Vec::new());
+                }
             }
             self.nodes.push(TopologyNode {
                 id: id.clone(),
@@ -337,6 +350,15 @@ impl TopologyBuilder {
                 attributes: json!({
                     "upstreamIoTimeoutMs": service.upstream_io_timeout_ms,
                     "maxRequestBodyBytes": service.max_request_body_bytes,
+                    "gzip": service.gzip.as_ref().map(|gzip| json!({
+                        "level": gzip.level,
+                        "contentTypes": gzip.content_types,
+                    })),
+                    "accessLog": match service.access_log {
+                        Some(oxiroute_config::AccessLogPolicy::Disabled) => "disabled",
+                        Some(oxiroute_config::AccessLogPolicy::File { .. }) => "structured_file",
+                        None => "default_disabled",
+                    },
                 }),
             });
             for (route_index, route) in service.routes.iter().enumerate() {
@@ -352,6 +374,14 @@ impl TopologyBuilder {
                         "path": path_selector(&route.path),
                         "methods": route.methods,
                         "access": route.access_policy.as_ref().map(access_policy),
+                        "policy": {
+                            "maxRequestBodyBytes": route.policy.max_request_body_bytes,
+                            "connectTimeoutMs": route.policy.connect_timeout_ms,
+                            "readTimeoutMs": route.policy.read_timeout_ms,
+                            "writeTimeoutMs": route.policy.write_timeout_ms,
+                            "requestBuffering": route.policy.request_buffering,
+                            "responseBuffering": route.policy.response_buffering,
+                        },
                         "action": route_action(&route.action),
                     }),
                 });
@@ -423,21 +453,23 @@ impl TopologyBuilder {
             self.pool_nodes
                 .insert(runtime_pool_name.clone(), id.clone());
 
-            for ((endpoint_index, endpoint), (_, runtime_endpoint)) in pool
-                .endpoints
-                .iter()
-                .enumerate()
-                .zip(runtime_pool.endpoints())
+            for ((server_index, server), (_, runtime_name, _runtime_endpoint)) in
+                pool.servers.iter().enumerate().zip(runtime_pool.servers())
             {
-                let endpoint_id = endpoint_id(&pool.name, endpoint);
-                let endpoint_name = endpoint.to_string();
-                let endpoint_path = format!("{config_path}/endpoints/{endpoint_index}");
+                let endpoint = &server.endpoint;
+                let endpoint_id = endpoint_id(&pool.name, &server.name);
+                let endpoint_name = server.name.clone();
+                let endpoint_path = format!("{config_path}/servers/{server_index}");
+                let mut attributes = endpoint_attributes(endpoint);
+                attributes["address"] = json!(endpoint.to_string());
+                attributes["maxConnections"] = json!(server.max_connections);
+                attributes["serverName"] = json!(server.name);
                 self.nodes.push(TopologyNode {
                     id: endpoint_id.clone(),
                     kind: TopologyNodeKind::Endpoint,
                     name: endpoint_name.clone(),
                     config_path: endpoint_path.clone(),
-                    attributes: endpoint_attributes(endpoint),
+                    attributes,
                 });
                 self.edges.push(TopologyEdge::new(
                     TopologyEdgeKind::PoolEndpoint,
@@ -446,7 +478,7 @@ impl TopologyBuilder {
                     endpoint_path,
                 ));
                 self.endpoint_nodes
-                    .insert((runtime_pool_name.clone(), runtime_endpoint), endpoint_id);
+                    .insert((runtime_pool_name.clone(), runtime_name), endpoint_id);
             }
         }
     }
@@ -472,16 +504,10 @@ pub(crate) enum TopologyResponseError {
     MissingPool(String),
     #[error("active upstream pool `{0}` is absent from the compiled topology")]
     UnknownPool(String),
-    #[error("active endpoint `{endpoint}` in pool `{pool}` is absent from the compiled topology")]
-    UnknownEndpoint {
-        pool: String,
-        endpoint: RuntimeEndpoint,
-    },
-    #[error("compiled endpoint `{endpoint}` in pool `{pool}` has no active runtime state")]
-    MissingEndpoint {
-        pool: String,
-        endpoint: RuntimeEndpoint,
-    },
+    #[error("active server `{endpoint}` in pool `{pool}` is absent from the compiled topology")]
+    UnknownEndpoint { pool: String, endpoint: String },
+    #[error("compiled server `{endpoint}` in pool `{pool}` has no active runtime state")]
+    MissingEndpoint { pool: String, endpoint: String },
     #[error("active topology could not be serialized: {0}")]
     Serialize(#[source] serde_json::Error),
 }
@@ -614,6 +640,12 @@ fn rtmp_applications(service: &oxiroute_config::RtmpService) -> Value {
                     "name": application.name,
                     "live": application.live,
                     "idleStreams": application.idle_streams,
+                    "pushTargetCount": application.push_targets.len(),
+                    "fanout": {
+                        "maxSubscribers": application.fanout.max_subscribers,
+                        "maxQueueMessagesPerSubscriber": application.fanout.max_queue_messages_per_subscriber,
+                        "maxQueueBytesPerSubscriber": application.fanout.max_queue_bytes_per_subscriber,
+                    },
                     "recording": {
                         "supported": !application.recorders.is_empty(),
                         "recorderCount": application.recorders.len(),
@@ -670,6 +702,12 @@ fn http_route_id(service: &str, route: &HttpRoute) -> String {
         .map_or_else(String::new, |host| match host {
             HttpHostSelector::NormalizedHost { value } => format!("normalized_host:{value}"),
             HttpHostSelector::ExactAuthority { value } => format!("exact_authority:{value}"),
+            HttpHostSelector::NginxLeadingWildcard { value } => {
+                format!("nginx_leading_wildcard:{value}")
+            }
+            HttpHostSelector::NginxLeadingDot { value } => {
+                format!("nginx_leading_dot:{value}")
+            }
         });
     let path = match &route.path {
         HttpPathSelector::SegmentPrefix { value } => format!("segment_prefix:{value}"),
@@ -687,18 +725,8 @@ fn pool_id(name: &str) -> String {
     stable_id("upstream_pool", &[name])
 }
 
-fn endpoint_id(pool: &str, endpoint: &UpstreamEndpoint) -> String {
-    match endpoint {
-        UpstreamEndpoint::Socket { address } => {
-            stable_id("endpoint", &[pool, "socket", &address.to_string()])
-        }
-        UpstreamEndpoint::Dns { host, port } => {
-            stable_id("endpoint", &[pool, "dns", host, &port.to_string()])
-        }
-        UpstreamEndpoint::Unix { path } => {
-            stable_id("endpoint", &[pool, "unix", &path.display().to_string()])
-        }
-    }
+fn endpoint_id(pool: &str, server: &str) -> String {
+    stable_id("upstream_server", &[pool, server])
 }
 
 const fn edge_kind_name(kind: TopologyEdgeKind) -> &'static str {
@@ -715,9 +743,10 @@ const fn edge_kind_name(kind: TopologyEdgeKind) -> &'static str {
 
 fn route_name(route: &HttpRoute) -> String {
     let host = route.host.as_ref().map_or("*", |selector| match selector {
-        HttpHostSelector::NormalizedHost { value } | HttpHostSelector::ExactAuthority { value } => {
-            value
-        }
+        HttpHostSelector::NormalizedHost { value }
+        | HttpHostSelector::ExactAuthority { value }
+        | HttpHostSelector::NginxLeadingWildcard { value }
+        | HttpHostSelector::NginxLeadingDot { value } => value,
     });
     let path = match &route.path {
         HttpPathSelector::SegmentPrefix { value }
@@ -735,6 +764,14 @@ fn host_selector(selector: &HttpHostSelector) -> Value {
         }),
         HttpHostSelector::ExactAuthority { value } => json!({
             "kind": "exact_authority",
+            "value": value,
+        }),
+        HttpHostSelector::NginxLeadingWildcard { value } => json!({
+            "kind": "nginx_leading_wildcard",
+            "value": value,
+        }),
+        HttpHostSelector::NginxLeadingDot { value } => json!({
+            "kind": "nginx_leading_dot",
             "value": value,
         }),
     }
@@ -768,6 +805,13 @@ fn access_policy(policy: &HttpAccessPolicy) -> Value {
             "headerName": header_name,
             "realm": realm,
         }),
+        HttpAccessPolicy::BasicHtpasswdFile {
+            htpasswd_file_path: _,
+            realm,
+        } => json!({
+            "type": "basic_htpasswd_file",
+            "realm": realm,
+        }),
     }
 }
 
@@ -781,15 +825,19 @@ fn route_action(action: &HttpRouteAction) -> Value {
             "upstreamPool": upstream_pool,
             "upstreamHost": match &policy.upstream_host {
                 HttpUpstreamHost::PreserveIncoming => "preserve_incoming",
+                HttpUpstreamHost::NginxHost { .. } => "nginx_host",
                 HttpUpstreamHost::Endpoint { .. } => "endpoint",
                 HttpUpstreamHost::Literal { .. } => "literal",
             },
             "requestHeaderMutationCount": policy.request_headers.len(),
             "responseHeaderMutationCount": policy.response_headers.len(),
             "cookiePathRewriteCount": policy.response_cookie_path_rewrites.len(),
+            "cookieAttributePolicyCount": policy.response_cookie_attributes.len(),
             "retry": {
                 "maxRetries": policy.retry.max_retries,
                 "triggers": policy.retry.triggers,
+                "target": policy.retry.target,
+                "delayMs": policy.retry.delay_ms,
             },
         }),
         HttpRouteAction::FixedResponse {
@@ -802,22 +850,48 @@ fn route_action(action: &HttpRouteAction) -> Value {
             "bodyBytes": body.len(),
             "headerCount": headers.len(),
         }),
-        HttpRouteAction::Redirect { status, location } => json!({
+        HttpRouteAction::Redirect {
+            status,
+            location,
+            headers,
+        } => json!({
             "type": "redirect",
             "status": status,
             "locationType": match location {
                 oxiroute_config::HttpRedirectLocation::Literal { .. } => "literal",
                 oxiroute_config::HttpRedirectLocation::RequestTemplate { .. } => "request_template",
             },
+            "headerCount": headers.len(),
         }),
         HttpRouteAction::StaticFiles {
             root_directory: _,
+            path_mapping,
             index_files,
             spa_fallback,
+            try_files,
+            autoindex,
+            autoindex_exact_size,
+            autoindex_local_time,
+            mime,
+            headers,
+            error_responses,
+            ..
         } => json!({
             "type": "static_files",
+            "pathMapping": match path_mapping {
+                oxiroute_config::HttpStaticPathMapping::Root => "root",
+                oxiroute_config::HttpStaticPathMapping::Alias => "alias",
+            },
             "indexFiles": index_files,
             "spaFallback": spa_fallback.is_some(),
+            "tryFileCount": try_files.len(),
+            "autoindex": autoindex,
+            "autoindexExactSize": autoindex_exact_size,
+            "autoindexLocalTime": autoindex_local_time,
+            "mimeMappingCount": mime.types.len(),
+            "defaultType": mime.default_type,
+            "headerCount": headers.len(),
+            "errorResponseCount": error_responses.len(),
         }),
     }
 }
@@ -862,6 +936,7 @@ const fn upstream_algorithm(algorithm: UpstreamAlgorithm) -> &'static str {
     match algorithm {
         UpstreamAlgorithm::RoundRobin => "round_robin",
         UpstreamAlgorithm::LeastConnections => "least_connections",
+        UpstreamAlgorithm::First => "first",
     }
 }
 
@@ -875,9 +950,10 @@ fn listener_bind(bind: &ListenerBind) -> Value {
             "type": "udp",
             "address": address,
         }),
-        ListenerBind::Unix { path } => json!({
+        ListenerBind::Unix { path, mode } => json!({
             "type": "unix",
             "path": path,
+            "mode": mode,
         }),
     }
 }

@@ -9,7 +9,7 @@ use oxiroute_config::{
     AlpnProtocol, Certificate, CertificateSource, Config, HttpAccessPolicy, HttpHostSelector,
     HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction, HttpService, HttpVersionPolicy,
     L4Service, Listener, ListenerBind, Protocol, RtmpApplication, RtmpService, TlsProfile,
-    TlsVersion, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool,
+    TlsVersion, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, UpstreamServer,
 };
 use oxiroute_rtmp::{RtmpCapabilities, RtmpRegistry};
 use oxiroute_server::{
@@ -33,7 +33,7 @@ fn compiles_stable_redacted_nodes_and_typed_reference_edges() {
     let mut reordered = config.clone();
     reordered.listeners.reverse();
     reordered.upstream_pools.reverse();
-    reordered.upstream_pools[1].endpoints.reverse();
+    reordered.upstream_pools[1].servers.reverse();
     let reordered_plan = runtime_plan(&reordered).expect("reordered runtime plan");
     let mut node_ids = plan
         .topology
@@ -120,6 +120,7 @@ fn assert_canonical_listener_service_and_endpoint_attributes(plan: &RuntimePlan)
         serde_json::json!({
             "type": "unix",
             "path": "/run/oxiroute/database.sock",
+            "mode": null,
         })
     );
 
@@ -139,10 +140,10 @@ fn assert_canonical_listener_service_and_endpoint_attributes(plan: &RuntimePlan)
     assert_eq!(
         endpoint_ids,
         [
-            "endpoint:3:api:3:dns:20:backend.example.test:4:3001",
-            "endpoint:3:api:4:unix:22:/run/oxiroute/api.sock",
-            "endpoint:3:api:6:socket:14:127.0.0.1:3000",
-            "endpoint:8:database:6:socket:14:127.0.0.1:5432",
+            "upstream_server:3:api:5:api-1",
+            "upstream_server:3:api:5:api-2",
+            "upstream_server:3:api:5:api-3",
+            "upstream_server:8:database:10:database-1",
         ]
     );
     let endpoints = plan
@@ -153,25 +154,33 @@ fn assert_canonical_listener_service_and_endpoint_attributes(plan: &RuntimePlan)
         .map(|node| (node.id.as_str(), &node.attributes))
         .collect::<std::collections::HashMap<_, _>>();
     assert_eq!(
-        endpoints["endpoint:3:api:6:socket:14:127.0.0.1:3000"],
+        endpoints["upstream_server:3:api:5:api-1"],
         &serde_json::json!({
             "type": "socket",
             "address": "127.0.0.1:3000",
+            "maxConnections": null,
+            "serverName": "api-1",
         })
     );
     assert_eq!(
-        endpoints["endpoint:3:api:3:dns:20:backend.example.test:4:3001"],
+        endpoints["upstream_server:3:api:5:api-2"],
         &serde_json::json!({
             "type": "dns",
             "host": "backend.example.test",
             "port": 3001,
+            "address": "backend.example.test:3001",
+            "maxConnections": null,
+            "serverName": "api-2",
         })
     );
     assert_eq!(
-        endpoints["endpoint:3:api:4:unix:22:/run/oxiroute/api.sock"],
+        endpoints["upstream_server:3:api:5:api-3"],
         &serde_json::json!({
             "type": "unix",
             "path": "/run/oxiroute/api.sock",
+            "address": "/run/oxiroute/api.sock",
+            "maxConnections": null,
+            "serverName": "api-3",
         })
     );
 }
@@ -266,18 +275,18 @@ fn serves_active_topology_with_name_joined_runtime_overlays() {
         .expect("API pool overlay");
     assert_eq!(api_pool["state"], "available");
     assert_eq!(api_pool["metrics"]["availableEndpoints"], 3);
-    for (endpoint_id, active_leases) in [
-        ("endpoint:3:api:3:dns:20:backend.example.test:4:3001", "0"),
-        ("endpoint:3:api:4:unix:22:/run/oxiroute/api.sock", "0"),
-        ("endpoint:3:api:6:socket:14:127.0.0.1:3000", "1"),
-        ("endpoint:8:database:6:socket:14:127.0.0.1:5432", "0"),
+    for (endpoint_id, active_connections) in [
+        ("upstream_server:3:api:5:api-1", "1"),
+        ("upstream_server:3:api:5:api-2", "0"),
+        ("upstream_server:3:api:5:api-3", "0"),
+        ("upstream_server:8:database:10:database-1", "0"),
     ] {
         let endpoint = overlays
             .iter()
             .find(|overlay| overlay["nodeId"] == endpoint_id)
             .expect("endpoint overlay joined by canonical identity");
         assert_eq!(endpoint["state"], "unchecked");
-        assert_eq!(endpoint["metrics"]["activeLeases"], active_leases);
+        assert_eq!(endpoint["metrics"]["activeConnections"], active_connections);
     }
 
     let body_text = String::from_utf8(response.body).expect("UTF-8 topology body");
@@ -327,10 +336,21 @@ fn action_aware_topology_never_serializes_access_tokens_or_filesystem_roots() {
             header_name: "authorization".into(),
             realm: Some("private".into()),
         }),
+        policy: oxiroute_config::HttpRoutePolicy::default(),
         action: HttpRouteAction::StaticFiles {
             root_directory: root.clone(),
+            path_mapping: oxiroute_config::HttpStaticPathMapping::default(),
             index_files: vec!["index.html".into()],
+            internal_index_redirects: false,
+            directory_redirects: false,
             spa_fallback: None,
+            try_files: Vec::new(),
+            autoindex: false,
+            autoindex_exact_size: true,
+            autoindex_local_time: false,
+            mime: oxiroute_config::HttpStaticMimePolicy::default(),
+            headers: Vec::new(),
+            error_responses: Vec::new(),
         },
     });
 
@@ -352,6 +372,7 @@ fn action_aware_topology_never_serializes_access_tokens_or_filesystem_roots() {
     assert!(!serialized.contains(&root.display().to_string()));
 }
 
+#[allow(clippy::too_many_lines)]
 fn topology_config(temp: &TempDir) -> Config {
     let (certificate_chain_path, private_key_path) =
         write_test_identity(temp.path(), "topology-private-key-do-not-expose.pem");
@@ -375,28 +396,47 @@ fn topology_config(temp: &TempDir) -> Config {
         upstream_pools: vec![
             UpstreamPool {
                 name: "api".into(),
-                endpoints: vec![
-                    socket_endpoint("[::ffff:127.0.0.1]:3000"),
-                    UpstreamEndpoint::Dns {
-                        host: "BACKEND.EXAMPLE.TEST".into(),
-                        port: 3001,
-                    },
-                    UpstreamEndpoint::Unix {
-                        path: "/run//oxiroute///api.sock".into(),
-                    },
+                servers: vec![
+                    upstream_server("api-1", socket_endpoint("[::ffff:127.0.0.1]:3000")),
+                    upstream_server(
+                        "api-2",
+                        UpstreamEndpoint::Dns {
+                            host: "BACKEND.EXAMPLE.TEST".into(),
+                            port: 3001,
+                        },
+                    ),
+                    upstream_server(
+                        "api-3",
+                        UpstreamEndpoint::Unix {
+                            path: "/run//oxiroute///api.sock".into(),
+                        },
+                    ),
                 ],
+                endpoints: Vec::new(),
                 algorithm: UpstreamAlgorithm::LeastConnections,
                 health_check: None,
                 tls: None,
                 http_versions: HttpVersionPolicy::default(),
+                queue_timeout_ms: None,
+                connect_timeout_ms: None,
+                server_timeout_ms: None,
+                connection_reuse: oxiroute_config::UpstreamConnectionReuse::Never,
             },
             UpstreamPool {
                 name: "database".into(),
-                endpoints: vec![socket_endpoint("127.0.0.1:5432")],
+                servers: vec![upstream_server(
+                    "database-1",
+                    socket_endpoint("127.0.0.1:5432"),
+                )],
+                endpoints: Vec::new(),
                 algorithm: UpstreamAlgorithm::RoundRobin,
                 health_check: None,
                 tls: None,
                 http_versions: HttpVersionPolicy::default(),
+                queue_timeout_ms: None,
+                connect_timeout_ms: None,
+                server_timeout_ms: None,
+                connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
             },
         ],
         http_services: vec![HttpService {
@@ -410,6 +450,7 @@ fn topology_config(temp: &TempDir) -> Config {
                 },
                 methods: vec!["GET".into()],
                 access_policy: None,
+                policy: oxiroute_config::HttpRoutePolicy::default(),
                 action: HttpRouteAction::Proxy {
                     upstream_pool: "api".into(),
                     policy: HttpProxyPolicy {
@@ -423,13 +464,19 @@ fn topology_config(temp: &TempDir) -> Config {
             }],
             upstream_io_timeout_ms: 15_000,
             max_request_body_bytes: None,
+            gzip: None,
+            access_log: None,
         }],
         rtmp_services: vec![RtmpService {
             name: "live".into(),
+            outbound_chunk_size: 4_096,
+            access_log: None,
             applications: vec![RtmpApplication {
                 name: "live".into(),
                 live: true,
                 idle_streams: true,
+                push_targets: Vec::new(),
+                fanout: oxiroute_config::RtmpFanoutPolicy::default(),
                 recorders: Vec::new(),
             }],
         }],
@@ -444,6 +491,15 @@ fn topology_config(temp: &TempDir) -> Config {
     }
 }
 
+fn upstream_server(name: &str, endpoint: UpstreamEndpoint) -> UpstreamServer {
+    UpstreamServer {
+        name: name.into(),
+        endpoint,
+        max_connections: None,
+        dns_resolution: oxiroute_config::DnsResolutionPolicy::default(),
+    }
+}
+
 fn topology_listeners() -> Vec<Listener> {
     vec![
         Listener {
@@ -453,16 +509,19 @@ fn topology_listeners() -> Vec<Listener> {
             service: Some("api".into()),
             tls_profile: Some("public".into()),
             max_connections: None,
+            downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
         },
         Listener {
             name: "database".into(),
             bind: ListenerBind::Unix {
                 path: "/run//oxiroute///database.sock".into(),
+                mode: None,
             },
             protocol: Protocol::Tcp,
             service: Some("database".into()),
             tls_profile: None,
             max_connections: Some(100),
+            downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
         },
         Listener {
             name: "live".into(),
@@ -471,6 +530,7 @@ fn topology_listeners() -> Vec<Listener> {
             service: Some("live".into()),
             tls_profile: None,
             max_connections: Some(50),
+            downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
         },
     ]
 }

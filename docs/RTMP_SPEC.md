@@ -169,12 +169,12 @@ allowlists and resource limits. It does not reproduce reference pointer/filter d
 FLV append, locking, size/frame bounds, notify, named recorder blocks, and other recorder forms remain
 unsupported.
 
-The native `record_unique` form appends open Unix seconds and is not collision-free when multiple
-opens occur in one second. OxiRoute preserves that suffix and then uses exclusive partial creation
+The native `record_unique` form appends segment-start Unix seconds and is not collision-free when
+multiple segments start in one second. OxiRoute preserves that suffix and then uses exclusive partial creation
 and atomic no-replace publication with bounded collision suffixes. Canonical configuration supports
-the bounded UTC `%Y %m %d %H %M %S %%` subset. Strict nginx lowering accepts only literal suffix
-bytes and `%%`, because nginx calendar formatting uses local time and is not exactly equivalent to
-canonical UTC formatting.
+the bounded `%Y %m %d %H %M %S %%` subset. Strict nginx lowering requires one uniquely consumed
+host IANA timezone overlay and renders calendar fields from segment-start time, matching the native
+local-time basis without inferring the host timezone.
 
 Canonical recording percent-escapes one relative stream-name component, drops query arguments,
 limits the rendered name to 255 bytes, and rotates on audio boundaries or video keyframes. These

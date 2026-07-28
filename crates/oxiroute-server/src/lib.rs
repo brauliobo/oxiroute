@@ -1,35 +1,56 @@
+pub mod cli;
 pub mod config_coordinator;
+mod config_watcher;
+mod generation;
 mod health;
 mod http_action;
 mod http_proxy;
 mod l4_service;
+mod listener_reservation;
 mod monitoring;
+mod operational_event;
+mod prometheus;
 mod routing;
 mod rtmp_api;
 mod service_plan;
+mod stats;
 mod tcp_relay;
 pub mod tls;
 mod topology;
 mod upstream_peer;
 mod wire;
 
+pub use config_watcher::{ConfigWatcher, ConfigWatcherOptions, ConfigWatcherStatus};
+pub use generation::{
+    GenerationAdmission, GenerationCandidate, GenerationError, GenerationManager,
+    GenerationMutation, GenerationReference, GenerationRevision, GenerationStatus,
+    PreparedGeneration, RuntimeGeneration, RuntimeReferenceKind,
+};
 pub use health::{HealthBuildError, HealthSupervisor};
-pub use http_proxy::{HttpListenerApp, HttpRequestContext, HttpReverseProxy, MonitoredHttpApp};
+pub use http_proxy::{
+    HttpDownstreamPolicyApp, HttpListenerApp, HttpRequestContext, HttpReverseProxy,
+    MonitoredHttpApp,
+};
 pub use l4_service::L4ServicePlan;
+pub use listener_reservation::{ListenerReservation, ListenerReservations};
 pub use monitoring::{
     CertbotCertificateSnapshot, CertbotWatcherHealth, CertbotWatcherSnapshot, ConnectionGuard,
     HostSnapshot, ListenerMetrics, ListenerRuntimeState, ListenerSnapshot, MetricsError,
-    ProcessSnapshot, RuntimeMetrics, RuntimeSnapshot, TrafficSnapshot,
+    ProcessConnectionGuard, ProcessRuntime, ProcessSnapshot, RuntimeMetrics, RuntimeSnapshot,
+    TrafficSnapshot,
 };
+pub use prometheus::{PrometheusError, render_prometheus};
 pub use routing::{
-    EndpointHealthSnapshot, EndpointHealthState, EndpointLease, EndpointPool, HealthFailure,
-    PoolError, PoolHealthSnapshot, RoundRobinPool, Route, RouteError, RouteTable, RuntimeEndpoint,
+    AdministrativeState, EndpointHealthSnapshot, EndpointHealthState, EndpointLease, EndpointPool,
+    HealthFailure, HealthOverride, PoolAdminError, PoolError, PoolHealthSnapshot, RoundRobinPool,
+    Route, RouteError, RouteTable, RuntimeEndpoint,
 };
 pub use rtmp_api::{ApiResponse, RtmpManagementApi};
 pub use service_plan::{
     HttpServicePlan, RtmpServicePlan, RuntimePlan, ServiceKind, ServicePlanError, ServiceSpec,
     runtime_plan, service_specs,
 };
+pub use stats::HaproxyStatsApi;
 pub use tcp_relay::{
     RELAY_BUFFER_SIZE, RelayDirection, RelayFailure, RelayFailureKind, RelayOperation, RelayPolicy,
     RelayStats, TcpRelayCore, relay_streams,

@@ -15,12 +15,16 @@
           span Host policy
           select(:value="action.policy.upstream_host.type" @change="changeUpstreamHost")
             option(value="preserve_incoming") Preserve incoming authority
+            option(value="nginx_host") nginx $host with fallback
             option(value="endpoint") Selected endpoint authority
             option(value="literal") Literal authority
         label.field(v-if="action.policy.upstream_host.type === 'endpoint'" data-field="http_services[].routes[].action.policy.upstream_host.unix_fallback")
           span Unix endpoint fallback
           input(type="text" :value="action.policy.upstream_host.unix_fallback ?? ''" placeholder="localhost" @input="setUnixFallback")
           small Required when the selected pool contains a Unix endpoint.
+        label.field(v-else-if="action.policy.upstream_host.type === 'nginx_host'" data-field="http_services[].routes[].action.policy.upstream_host.fallback")
+          span Missing-Host fallback
+          input(type="text" v-model="action.policy.upstream_host.fallback" placeholder="localhost")
         label.field(v-else-if="action.policy.upstream_host.type === 'literal'" data-field="http_services[].routes[].action.policy.upstream_host.value")
           span Literal authority
           input(type="text" v-model="action.policy.upstream_host.value" placeholder="origin.example.test")
@@ -38,6 +42,7 @@
             span Operation
             select(:value="mutation.operation" @change="changeRequestOperation(mutationIndex, $event)")
               option(value="set") Set
+              option(value="add") Add
               option(value="remove") Remove
           label.field(data-field="http_services[].routes[].action.policy.request_headers[].name")
             span Header name
@@ -51,11 +56,31 @@
                   option(value="literal") Literal
                   option(value="incoming_authority") Incoming authority
                   option(value="normalized_host") Normalized host
+                  option(value="nginx_host") nginx $host with fallback
                   option(value="client_ip") Client IP
+                  option(value="appended_x_forwarded_for") Append client IP to X-Forwarded-For
+                  option(value="downstream_scheme") Downstream scheme
                   option(value="selected_upstream_host") Selected upstream Host
               label.field(v-if="mutation.value.type === 'literal'" data-field="http_services[].routes[].action.policy.request_headers[].value.value")
                 span Literal value
                 input(type="text" v-model="mutation.value.value")
+              label.field(v-if="mutation.value.type === 'nginx_host'" data-field="http_services[].routes[].action.policy.request_headers[].value.fallback")
+                span Missing-Host fallback
+                input(type="text" v-model="mutation.value.fallback" placeholder="localhost")
+              label.field(v-if="mutation.value.type === 'appended_x_forwarded_for'" data-field="http_services[].routes[].action.policy.request_headers[].value.max_bytes")
+                span Maximum header bytes
+                input(type="number" min="1" step="1" v-model.number="mutation.value.max_bytes")
+            fieldset.route-list(v-if="mutation.value.type === 'appended_x_forwarded_for'" data-field="http_services[].routes[].action.policy.request_headers[].value.except_source_cidrs")
+              .route-heading
+                legend Source CIDR exceptions
+                button.add-row(type="button" :disabled="mutation.value.except_source_cidrs.length >= 16" :title="mutation.value.except_source_cidrs.length >= 16 ? 'The server allows at most 16 source CIDR exceptions.' : undefined" @click="addXffException(mutationIndex)") + Add source CIDR
+              article.route-card(v-for="(cidr, cidrIndex) in mutation.value.except_source_cidrs" :key="cidrIndex")
+                header.route-card-heading
+                  strong Source CIDR {{ cidrIndex + 1 }}
+                  button.danger-link(type="button" :aria-label="`Remove source CIDR ${cidrIndex + 1}`" @click="removeXffException(mutationIndex, cidrIndex)") Remove
+                label.field
+                  span Canonical CIDR
+                  input(type="text" :value="cidr" placeholder="127.0.0.0/8" @input="setXffException(mutationIndex, cidrIndex, $event)")
 
     fieldset.route-list(data-field="http_services[].routes[].action.policy.response_headers")
       .route-heading
@@ -74,9 +99,12 @@
           label.field(data-field="http_services[].routes[].action.policy.response_headers[].name")
             span Header name
             input(type="text" v-model="mutation.name")
-          label.field(v-if="mutation.operation === 'set'" data-field="http_services[].routes[].action.policy.response_headers[].value")
+          label.field(v-if="mutation.operation !== 'remove'" data-field="http_services[].routes[].action.policy.response_headers[].value")
             span Header value
             input(type="text" v-model="mutation.value")
+          label.enable-row(v-if="mutation.operation !== 'remove'" data-field="http_services[].routes[].action.policy.response_headers[].always")
+            input(type="checkbox" v-model="mutation.always")
+            span Add on every response status
 
     fieldset.route-list(data-field="http_services[].routes[].action.policy.response_cookie_path_rewrites")
       .route-heading
@@ -100,6 +128,14 @@
         label.field(data-field="http_services[].routes[].action.policy.retry.max_retries")
           span Maximum retries
           input(type="number" min="0" max="2" step="1" v-model.number="action.policy.retry.max_retries")
+        label.field(data-field="http_services[].routes[].action.policy.retry.target")
+          span Retry target
+          select(v-model="action.policy.retry.target")
+            option(value="next_server") Next available server
+            option(value="same_server") Same server
+        label.field(data-field="http_services[].routes[].action.policy.retry.delay_ms")
+          span Delay (milliseconds)
+          input(type="number" min="0" max="60000" step="1" v-model.number="action.policy.retry.delay_ms")
         label.field(data-field="http_services[].routes[].action.policy.retry.method_safety")
           span Method safety
           select(v-model="action.policy.retry.method_safety" disabled title="Retries are restricted to GET and HEAD.")
@@ -170,11 +206,43 @@ function changeRequestValue(index: number, event: Event): void {
   const current = props.action.policy.request_headers[index]
   if (!current || current.operation !== 'set') return
   const type = (event.target as HTMLSelectElement).value as HttpRequestHeaderValueConfig['type']
-  current.value = type === 'literal' ? { type, value: '' } : { type }
+  if (type === 'literal') current.value = { type, value: '' }
+  else if (type === 'nginx_host') current.value = { type, fallback: 'localhost' }
+  else if (type === 'appended_x_forwarded_for') {
+    current.value = { type, max_bytes: 8_192, except_source_cidrs: [] }
+  }
+  else if (type === 'incoming_header') current.value = { type, name: '', max_bytes: 8_192 }
+  else current.value = { type }
+}
+
+function addXffException(mutationIndex: number): void {
+  const mutation = props.action.policy.request_headers[mutationIndex]
+  if (mutation?.operation !== 'set' || mutation.value.type !== 'appended_x_forwarded_for' ||
+    mutation.value.except_source_cidrs.length >= 16) return
+  mutation.value.except_source_cidrs.push('')
+  emit('changed')
+}
+
+function removeXffException(mutationIndex: number, cidrIndex: number): void {
+  const mutation = props.action.policy.request_headers[mutationIndex]
+  if (mutation?.operation !== 'set' || mutation.value.type !== 'appended_x_forwarded_for') return
+  mutation.value.except_source_cidrs.splice(cidrIndex, 1)
+  emit('changed')
+}
+
+function setXffException(mutationIndex: number, cidrIndex: number, event: Event): void {
+  const mutation = props.action.policy.request_headers[mutationIndex]
+  if (mutation?.operation !== 'set' || mutation.value.type !== 'appended_x_forwarded_for') return
+  mutation.value.except_source_cidrs[cidrIndex] = (event.target as HTMLInputElement).value
 }
 
 function changeResponseOperation(index: number, event: Event): void {
-  changeHeaderOperation(props.action.policy.response_headers, index, event, '')
+  const current = props.action.policy.response_headers[index]
+  if (!current) return
+  const operation = (event.target as HTMLSelectElement).value
+  props.action.policy.response_headers[index] = operation === 'remove'
+    ? { operation, name: current.name }
+    : { operation: operation as 'set' | 'add', name: current.name, value: '', always: true }
 }
 
 type HeaderMutation<T> =

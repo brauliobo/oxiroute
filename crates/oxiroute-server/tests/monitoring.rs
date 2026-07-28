@@ -243,6 +243,7 @@ fn configured_bind_identities_distinguish_socket_and_unix_without_redaction() {
             "http",
             &ListenerBind::Unix {
                 path: "/run/oxiroute/private-api.sock".into(),
+                mode: None,
             },
             None,
         )

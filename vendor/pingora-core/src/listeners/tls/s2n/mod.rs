@@ -89,7 +89,7 @@ impl TlsSettings {
 
         let config = builder.build().unwrap();
         let connection_builder = S2NConnectionBuilder {
-            config: config,
+            config,
             psk_config: self.psk_config.clone(),
             security_policy: Some(policy.clone()),
         };

@@ -6,8 +6,8 @@ mod http_support;
 use std::{net::SocketAddr, time::Duration};
 
 use oxiroute_config::{
-    Config, ConfigError, HealthCheck, HealthCheckType, HttpVersionPolicy, UpstreamAlgorithm,
-    UpstreamEndpoint, UpstreamPool,
+    Config, ConfigError, HealthCheck, HealthCheckType, HealthHttpVersion, HttpVersionPolicy,
+    UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool,
 };
 use oxiroute_server::{
     EndpointHealthState, HealthFailure, RuntimeMetrics, ServicePlanError, runtime_plan,
@@ -129,6 +129,42 @@ async fn http_probe_sends_the_configured_host_and_path() {
     })
     .await
     .expect("HTTP health test timed out");
+}
+
+#[tokio::test]
+async fn http_probe_honors_http_10_optional_host_and_exact_status() {
+    timeout(TEST_TIMEOUT, async {
+        let (address, server) = http_origin(204, false).await;
+        let mut policy = http_policy(1_000, 300);
+        policy.host = None;
+        policy.expected_status = Some(204);
+        policy.http_version = Some(HealthHttpVersion::Http10);
+        let plan = runtime_plan(&config(socket_endpoint(address), policy))
+            .expect("HTTP/1.0 health runtime plan");
+
+        plan.health_supervisor
+            .expect("health supervisor")
+            .probe_once()
+            .await;
+        let request = server.await.expect("health origin");
+
+        assert!(
+            request.starts_with("GET /healthz HTTP/1.0\r\n"),
+            "{request}"
+        );
+        assert!(
+            !request
+                .lines()
+                .any(|line| line.to_ascii_lowercase().starts_with("host:")),
+            "{request}"
+        );
+        assert_eq!(
+            plan.pools[0].health_snapshot().endpoints[0].state,
+            EndpointHealthState::Healthy
+        );
+    })
+    .await
+    .expect("HTTP/1.0 health test timed out");
 }
 
 #[tokio::test]
@@ -274,11 +310,16 @@ async fn endpoints_in_one_pool_schedule_from_their_own_completion() {
         let plan = runtime_plan(&Config {
             upstream_pools: vec![UpstreamPool {
                 name: "mixed".into(),
+                servers: Vec::new(),
                 endpoints: vec![socket_endpoint(fast_address), socket_endpoint(slow_address)],
                 algorithm: UpstreamAlgorithm::RoundRobin,
                 health_check: Some(http_policy(1_000, 900)),
                 tls: None,
                 http_versions: HttpVersionPolicy::default(),
+                queue_timeout_ms: None,
+                connect_timeout_ms: None,
+                server_timeout_ms: None,
+                connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
             }],
             ..empty_config()
         })
@@ -347,11 +388,16 @@ async fn runtime_plan_enforces_programmatic_endpoint_cardinality() {
     let result = runtime_plan(&Config {
         upstream_pools: vec![UpstreamPool {
             name: "oversized".into(),
+            servers: Vec::new(),
             endpoints,
             algorithm: UpstreamAlgorithm::RoundRobin,
             health_check: Some(tcp_policy(1_000, 200, 1, 1)),
             tls: None,
             http_versions: HttpVersionPolicy::default(),
+            queue_timeout_ms: None,
+            connect_timeout_ms: None,
+            server_timeout_ms: None,
+            connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
         }],
         ..empty_config()
     });
@@ -464,11 +510,16 @@ fn config(endpoint: UpstreamEndpoint, health_check: HealthCheck) -> Config {
 fn pool(name: &str, endpoint: UpstreamEndpoint, health_check: HealthCheck) -> UpstreamPool {
     UpstreamPool {
         name: name.into(),
+        servers: Vec::new(),
         endpoints: vec![endpoint],
         algorithm: UpstreamAlgorithm::RoundRobin,
         health_check: Some(health_check),
         tls: None,
         http_versions: HttpVersionPolicy::default(),
+        queue_timeout_ms: None,
+        connect_timeout_ms: None,
+        server_timeout_ms: None,
+        connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
     }
 }
 
@@ -484,8 +535,13 @@ fn tcp_policy(
         timeout_ms,
         healthy_threshold,
         unhealthy_threshold,
+        startup: oxiroute_config::HealthStartup::default(),
+        fast_interval_ms: None,
+        down_interval_ms: None,
         host: None,
         path: None,
+        expected_status: None,
+        http_version: None,
     }
 }
 
@@ -496,8 +552,13 @@ fn http_policy(interval_ms: u64, timeout_ms: u64) -> HealthCheck {
         timeout_ms,
         healthy_threshold: 1,
         unhealthy_threshold: 1,
+        startup: oxiroute_config::HealthStartup::default(),
+        fast_interval_ms: None,
+        down_interval_ms: None,
         host: Some("backend.internal".into()),
         path: Some("/healthz".into()),
+        expected_status: None,
+        http_version: None,
     }
 }
 

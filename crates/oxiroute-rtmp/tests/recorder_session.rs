@@ -90,6 +90,63 @@ fn manual_start_and_stop_control_the_exact_recorder() {
 }
 
 #[test]
+fn manual_start_bootstraps_cached_metadata_codec_headers_and_matching_keyframe() {
+    let fixture = Fixture::new(RtmpRecorderStart::Manual, limits(), worker_config());
+    let (mut server, mut client) = fixture.publisher("camera");
+    publish_metadata(&mut client, &mut server, 1_721_657_969_010);
+    publish_audio_payload(
+        &mut client,
+        &mut server,
+        0,
+        &[0xaf, 0x00, 0x12],
+        1_721_657_969_020,
+    );
+    publish_video_payload(
+        &mut client,
+        &mut server,
+        1,
+        &[0x17, 0x00, 0, 0, 0, 0x01],
+        1_721_657_969_030,
+    );
+    publish_video_payload(
+        &mut client,
+        &mut server,
+        2,
+        &[0x17, 0x01, 0, 0, 0, 0x22],
+        1_721_657_969_040,
+    );
+    let stream = fixture.registry.snapshot().streams[0].clone();
+    let recorder_id = stream.recorders[0].id;
+
+    fixture
+        .registry
+        .start_recording(stream.id, recorder_id, 1_721_657_969_100)
+        .expect("manual start with bootstrap");
+    fixture
+        .registry
+        .stop_recording(stream.id, recorder_id, 1_721_657_969_200)
+        .expect("manual stop");
+    wait_for_phase(&fixture.registry, |phase| phase == RecorderPhase::Idle);
+    wait_for_file(fixture.root.path(), "camera.flv");
+
+    let output = std::fs::read(fixture.root.path().join("camera.flv")).expect("recorded FLV");
+    let recorder = &fixture.registry.snapshot().streams[0].recorders[0];
+    assert_eq!(recorder.events_enqueued, 4);
+    assert!(output.windows(3).any(|window| window == [0xaf, 0x00, 0x12]));
+    assert!(
+        output
+            .windows(6)
+            .any(|window| window == [0x17, 0x00, 0, 0, 0, 0x01])
+    );
+    assert!(
+        output
+            .windows(6)
+            .any(|window| window == [0x17, 0x01, 0, 0, 0, 0x22])
+    );
+    server.close(1_721_657_969_300).expect("publisher close");
+}
+
+#[test]
 fn manual_recorder_can_stop_before_the_first_media_event() {
     let fixture = Fixture::new(RtmpRecorderStart::Manual, limits(), worker_config());
     let (mut server, _client) = fixture.publisher("camera");
@@ -519,6 +576,40 @@ fn publish_audio(
             false,
         )
         .expect("audio packet");
+    exchange(client, server, vec![packet], at_unix_ms);
+}
+
+fn publish_audio_payload(
+    client: &mut ClientSession,
+    server: &mut RtmpSession,
+    timestamp: u32,
+    payload: &[u8],
+    at_unix_ms: u64,
+) {
+    let packet = client
+        .publish_audio_data(
+            Bytes::copy_from_slice(payload),
+            RtmpTimestamp::new(timestamp),
+            false,
+        )
+        .expect("audio packet");
+    exchange(client, server, vec![packet], at_unix_ms);
+}
+
+fn publish_video_payload(
+    client: &mut ClientSession,
+    server: &mut RtmpSession,
+    timestamp: u32,
+    payload: &[u8],
+    at_unix_ms: u64,
+) {
+    let packet = client
+        .publish_video_data(
+            Bytes::copy_from_slice(payload),
+            RtmpTimestamp::new(timestamp),
+            false,
+        )
+        .expect("video packet");
     exchange(client, server, vec![packet], at_unix_ms);
 }
 

@@ -10,7 +10,7 @@
       "id": "cache-h1",
       "status": "skipped",
       "reason_code": "oxiroute_cache_runtime_unavailable",
-      "reason": "The v1 schema accepts cache policy, but oxiroute-server does not activate cache stores."
+      "reason": "The v1 schema accepts cache policy, but oxiroute does not activate cache stores."
     },
     {
       "id": "forward-h1",
