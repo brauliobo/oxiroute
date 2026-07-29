@@ -35,7 +35,7 @@
     {
       "id": "evidence.canonical.rtmp-recorders",
       "tests": [
-        "crates/oxiroute-config/tests/rtmp_recorders.rs#applies_explicit_bounded_recorder_defaults",
+        "crates/oxiroute-config/tests/rtmp_recorders.rs#defaults_storage_quotas_to_unbounded",
         "crates/oxiroute-config/tests/rtmp_recorders.rs#loads_normalizes_and_deterministically_renders_the_complete_policy",
         "crates/oxiroute-config/tests/rtmp_recorders.rs#accepts_omitted_and_explicit_null_rotation_without_aliases",
         "crates/oxiroute-config/tests/rtmp_recorders.rs#enforces_nonzero_bounded_recorder_limits",
