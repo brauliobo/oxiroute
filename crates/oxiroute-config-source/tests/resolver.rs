@@ -1,0 +1,280 @@
+#![cfg(unix)]
+
+use std::{fs, path::Path};
+
+use oxiroute_config_source::{
+    ConfigFormat, ConfigSourceError, decode_value, resolve_source, resolve_source_with_format,
+};
+use tempfile::tempdir;
+
+#[test]
+fn concise_kdl_imports_relative_nginx_and_ordered_haproxy_roots() {
+    let directory = native_fixture_directory();
+    let source_path = directory.path().join("host.kdl");
+    let source = br#"
+nginx_server "nginx.conf" { root_prefix "." }
+haproxy_server "frontend.cfg" "backend.cfg" {
+  node_ip "10.0.0.11"
+  gpu1_defined #false
+}
+"#;
+
+    let resolved = resolve_source(&source_path, source).expect("resolved native KDL");
+
+    assert_eq!(resolved.format, ConfigFormat::Kdl);
+    assert_eq!(resolved.config.version, 1);
+    assert_eq!(resolved.config.listeners.len(), 2);
+    assert!(resolved.compositional);
+    assert_eq!(resolved.dependencies.len(), 3);
+    assert_eq!(
+        resolved.dependencies[0],
+        fs::canonicalize(directory.path().join("nginx.conf")).unwrap()
+    );
+    assert_eq!(
+        resolved.dependencies[1],
+        directory.path().join("frontend.cfg")
+    );
+    assert_eq!(
+        resolved.dependencies[2],
+        directory.path().join("backend.cfg")
+    );
+}
+
+#[test]
+fn kdl_native_nodes_are_repeated_but_their_shapes_remain_strict() {
+    let invalid = [
+        "nginx_server path=\"nginx.conf\"",
+        "(source)nginx_server \"nginx.conf\"",
+        "nginx_server \"nginx.conf\" { root_prefix \"/\"; root_prefix \"/tmp\"; }",
+        "nginx_server \"nginx.conf\" { root_prefix \"/\" { nested \"bad\" } }",
+        "haproxy_server 1",
+    ];
+    for source in invalid {
+        assert!(
+            matches!(
+                resolve_source_with_format(
+                    Path::new("host.kdl"),
+                    source.as_bytes(),
+                    ConfigFormat::Kdl
+                ),
+                Err(ConfigSourceError::Parse {
+                    format: "KDL 2",
+                    ..
+                })
+            ),
+            "accepted invalid native node: {source}"
+        );
+    }
+}
+
+#[test]
+fn hocon_accepts_native_objects_and_arrays() {
+    let directory = native_fixture_directory();
+    let source = r#"
+nginx_server = {
+  path = "nginx.conf"
+  root_prefix = "."
+}
+haproxy_server = [{
+  paths = ["frontend.cfg", "backend.cfg"]
+  node_ip = "10.0.0.11"
+  gpu1_defined = false
+}]
+"#;
+
+    let resolved = resolve_source(&directory.path().join("host.hocon"), source.as_bytes())
+        .expect("resolved native HOCON");
+
+    assert_eq!(resolved.config.listeners.len(), 2);
+    assert_eq!(resolved.dependencies.len(), 3);
+    assert!(resolved.compositional);
+}
+
+#[test]
+fn uci_main_and_generic_json_compose_with_native_sections() {
+    let directory = native_fixture_directory();
+    let source = br"
+config json 'root'
+  option kind 'object'
+
+config json 'listeners'
+  option parent 'root'
+  option key 'listeners'
+  option kind 'array'
+
+config oxiroute 'main'
+  option version '1'
+
+config nginx_server 'web'
+  option path 'nginx.conf'
+  option root_prefix '.'
+
+config haproxy_server 'database'
+  list path 'frontend.cfg'
+  list path 'backend.cfg'
+  option node_ip '10.0.0.11'
+  option gpu1_defined '0'
+";
+
+    let resolved =
+        resolve_source(&directory.path().join("host.uci"), source).expect("resolved friendly UCI");
+
+    assert_eq!(resolved.config.version, 1);
+    assert_eq!(resolved.config.listeners.len(), 2);
+    assert_eq!(resolved.dependencies.len(), 3);
+    assert!(resolved.compositional);
+}
+
+#[test]
+fn lua_resolves_through_the_legacy_loader_and_matches_kdl() {
+    let lua = resolve_source(
+        Path::new("empty.lua"),
+        b"return { version = 1, listeners = {} }",
+    )
+    .expect("resolved Lua");
+    let kdl = resolve_source(Path::new("empty.kdl"), b"version 1\n(array)listeners {}\n")
+        .expect("resolved KDL");
+
+    assert_eq!(lua.config, kdl.config);
+    assert_eq!(lua.canonical_kdl, kdl.canonical_kdl);
+    assert!(!lua.compositional);
+    assert!(lua.dependencies.is_empty());
+}
+
+#[test]
+fn templates_expand_before_typing_and_preview_is_deterministic() {
+    let source = br#"
+templates = { empty = { listeners = [] } }
+use = "empty"
+version = 1
+"#;
+    let first = resolve_source(Path::new("templated.hocon"), source).expect("first resolution");
+    let second = resolve_source(Path::new("templated.hocon"), source).expect("second resolution");
+
+    assert!(first.compositional);
+    assert_eq!(first, second);
+    assert_eq!(
+        decode_value(ConfigFormat::Kdl, first.canonical_kdl.as_bytes()).unwrap(),
+        serde_json::to_value(&first.config).unwrap()
+    );
+}
+
+#[test]
+fn sanitized_phoenix_sources_resolve_as_one_host() {
+    let fixture = live_fixture("phoenix");
+    let source = br#"
+nginx_server "nginx/nginx.conf" {
+  root_prefix "nginx"
+  host_timezone "America/Bahia"
+  default_access_log_file "/var/lib/oxiroute/http-access.jsonl"
+  recording_root "/mnt/cloud/4tb/cam-rtmp"
+  default_error_server "nginx/1.30.2"
+}
+haproxy_server "haproxy.cfg" {
+  node_ip "10.0.0.11"
+  gpu1_defined #false
+}
+"#;
+
+    let resolved = resolve_source(&fixture.join("host.kdl"), source).expect("Phoenix host");
+
+    assert!(!resolved.config.http_services.is_empty());
+    assert!(!resolved.config.rtmp_services.is_empty());
+    assert!(!resolved.config.upstream_pools.is_empty());
+    assert!(resolved.dependencies.len() >= 4);
+}
+
+#[test]
+fn sanitized_back1_and_chicopc_haproxy_sources_use_explicit_environments() {
+    for (host, node_ip) in [("back1", "10.0.0.7"), ("chicopc", "10.0.0.15")] {
+        let fixture = live_fixture(host);
+        let source = format!(
+            "haproxy_server \"haproxy.cfg\" {{ node_ip \"{node_ip}\"; gpu1_defined #true; }}"
+        );
+        let resolved = resolve_source(&fixture.join("host.kdl"), source.as_bytes())
+            .unwrap_or_else(|error| panic!("{host} did not resolve: {error}"));
+
+        assert!(!resolved.config.listeners.is_empty());
+        assert_eq!(resolved.dependencies, vec![fixture.join("haproxy.cfg")]);
+    }
+}
+
+#[test]
+fn non_final_native_candidate_exposes_only_stable_code_counts() {
+    let fixture = fixture_root().join("haproxy/hostrouter-active.cfg");
+    let path = serde_json::to_string(fixture.to_str().unwrap()).unwrap();
+    let source = format!("haproxy_server = {{ paths = [{path}] }}");
+
+    let error = resolve_source(Path::new("blocked.hocon"), source.as_bytes()).unwrap_err();
+    let rendered = error.to_string();
+    let ConfigSourceError::NativeImport {
+        importer,
+        diagnostics,
+    } = error
+    else {
+        panic!("unexpected error: {rendered}")
+    };
+
+    assert_eq!(importer, "HAProxy");
+    assert!(!diagnostics.counts.is_empty());
+    assert!(
+        diagnostics
+            .counts
+            .windows(2)
+            .all(|pair| pair[0].code < pair[1].code)
+    );
+    assert!(!rendered.contains("stats enable"));
+}
+
+#[test]
+fn inline_and_native_identity_collisions_are_rejected_by_composition() {
+    let fixture = fixture_root().join("haproxy/minimal-representable.cfg");
+    let path = serde_json::to_string(fixture.to_str().unwrap()).unwrap();
+    let source = format!(
+        r#"
+version = 1
+listeners = []
+upstream_pools = [{{
+  name = "postgres_pool"
+  servers = [{{
+    name = "inline"
+    endpoint = {{ type = "socket", address = "127.0.0.1:5433" }}
+  }}]
+}}]
+haproxy_server = {{ paths = [{path}] }}
+"#
+    );
+
+    assert!(matches!(
+        resolve_source(Path::new("collision.hocon"), source.as_bytes()),
+        Err(ConfigSourceError::Composition(_))
+    ));
+}
+
+fn native_fixture_directory() -> tempfile::TempDir {
+    let directory = tempdir().expect("temporary native sources");
+    fs::write(
+        directory.path().join("nginx.conf"),
+        b"events { worker_connections 16; } http { access_log off; server { listen 127.0.0.1:18080 default_server; location / { return 200 ok; } } }",
+    )
+    .expect("nginx fixture");
+    fs::write(
+        directory.path().join("frontend.cfg"),
+        b"defaults tcp_defaults\n  mode tcp\n  retries 0\n  timeout connect 10s\n  timeout queue 15s\n  timeout client 5m\n  timeout server 5m\nfrontend database\n  bind 127.0.0.1:15432\n  default_backend database_pool\n",
+    )
+    .expect("HAProxy frontend fixture");
+    fs::write(
+        directory.path().join("backend.cfg"),
+        b"backend database_pool\n  balance roundrobin\n  server primary 127.0.0.1:5432\n",
+    )
+    .expect("HAProxy backend fixture");
+    directory
+}
+
+fn fixture_root() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../oxiroute-import/tests/fixtures")
+}
+
+fn live_fixture(host: &str) -> std::path::PathBuf {
+    fixture_root().join("live").join(host)
+}
