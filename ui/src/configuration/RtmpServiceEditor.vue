@@ -135,8 +135,8 @@ function newRecorder(): RtmpRecorderConfig {
     max_queue_messages: 256,
     max_queue_bytes: 8_388_608,
     shutdown_timeout_ms: 5_000,
-    max_storage_bytes: 10_737_418_240,
-    max_storage_files: 10_000,
+    max_storage_bytes: null,
+    max_storage_files: null,
     max_active_recorders: 8,
   }
 }
