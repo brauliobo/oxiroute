@@ -10,9 +10,14 @@ version.workspace = true
 [dependencies]
 hocon-parser.workspace = true
 kdl.workspace = true
+oxiroute-config = { path = "../oxiroute-config" }
+oxiroute-import = { path = "../oxiroute-import" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

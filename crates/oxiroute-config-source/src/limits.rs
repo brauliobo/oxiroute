@@ -16,6 +16,8 @@ pub const MAX_NODES: usize = 100_000;
 pub const MAX_STRING_BYTES: usize = 256 * 1024;
 /// Maximum recursive template inheritance depth.
 pub const MAX_EXPANSION_DEPTH: usize = 64;
+/// Maximum native dependency paths retained for diagnostics and watching.
+pub const MAX_DEPENDENCY_PATHS: usize = 4_096;
 
 pub(crate) fn source_text(source: &[u8]) -> Result<&str, ConfigSourceError> {
     if source.len() > MAX_SOURCE_BYTES {

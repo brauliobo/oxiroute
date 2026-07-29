@@ -6,6 +6,7 @@ use serde_json::{Map, Number, Value};
 
 use crate::ConfigSourceError;
 use crate::limits::{MAX_NODES, MAX_STRUCTURAL_DEPTH, check_string, validate_value};
+use crate::native::{NativeDirective, decode_haproxy, decode_nginx};
 
 pub(crate) fn decode(source: &str) -> Result<Value, ConfigSourceError> {
     let document = KdlDocument::parse(source)
@@ -14,6 +15,160 @@ pub(crate) fn decode(source: &str) -> Result<Value, ConfigSourceError> {
     let value = Value::Object(decode_object(document.nodes(), 0, &mut nodes)?);
     validate_value(&value)?;
     Ok(value)
+}
+
+pub(crate) fn decode_with_directives(
+    source: &str,
+) -> Result<(Value, Vec<NativeDirective>), ConfigSourceError> {
+    let document = KdlDocument::parse(source)
+        .map_err(|error| ConfigSourceError::parse("KDL 2", error.to_string()))?;
+    let mut generic_nodes = Vec::new();
+    let mut directives = Vec::new();
+    let mut nodes = 0;
+    for node in document.nodes() {
+        match node.name().value() {
+            "nginx_server" => directives.push(decode_nginx_node(node, &mut nodes)?),
+            "haproxy_server" => directives.push(decode_haproxy_node(node, &mut nodes)?),
+            _ => generic_nodes.push(node.clone()),
+        }
+    }
+    let value = Value::Object(decode_object(&generic_nodes, 0, &mut nodes)?);
+    validate_value(&value)?;
+    Ok((value, directives))
+}
+
+fn decode_nginx_node(
+    node: &KdlNode,
+    count: &mut usize,
+) -> Result<NativeDirective, ConfigSourceError> {
+    increment_node_count(count)?;
+    let paths = directive_paths(node)?;
+    if paths.len() != 1 {
+        return Err(ConfigSourceError::parse(
+            "KDL 2",
+            "nginx_server requires exactly one string path argument",
+        ));
+    }
+    let mut object = decode_option_children(node, count)?;
+    if object.contains_key("path") {
+        return Err(ConfigSourceError::parse(
+            "KDL 2",
+            "nginx_server path must be a positional argument",
+        ));
+    }
+    object.insert("path".to_owned(), Value::String(paths[0].clone()));
+    decode_nginx(Value::Object(object), "KDL 2").map(NativeDirective::Nginx)
+}
+
+fn decode_haproxy_node(
+    node: &KdlNode,
+    count: &mut usize,
+) -> Result<NativeDirective, ConfigSourceError> {
+    increment_node_count(count)?;
+    let paths = directive_paths(node)?;
+    if paths.is_empty() {
+        return Err(ConfigSourceError::parse(
+            "KDL 2",
+            "haproxy_server requires at least one string path argument",
+        ));
+    }
+    let mut object = decode_option_children(node, count)?;
+    if object.contains_key("paths") {
+        return Err(ConfigSourceError::parse(
+            "KDL 2",
+            "haproxy_server paths must be positional arguments",
+        ));
+    }
+    object.insert(
+        "paths".to_owned(),
+        Value::Array(paths.into_iter().map(Value::String).collect()),
+    );
+    decode_haproxy(Value::Object(object), "KDL 2").map(NativeDirective::Haproxy)
+}
+
+fn directive_paths(node: &KdlNode) -> Result<Vec<String>, ConfigSourceError> {
+    if node.ty().is_some() {
+        return Err(ConfigSourceError::parse(
+            "KDL 2",
+            format!(
+                "type annotations are not allowed on native directive `{}`",
+                node.name().value()
+            ),
+        ));
+    }
+    let mut paths = Vec::with_capacity(node.entries().len());
+    for entry in node.entries() {
+        if entry.name().is_some() {
+            return Err(ConfigSourceError::parse(
+                "KDL 2",
+                format!(
+                    "properties are not allowed on native directive `{}`",
+                    node.name().value()
+                ),
+            ));
+        }
+        if entry.ty().is_some() {
+            return Err(ConfigSourceError::parse(
+                "KDL 2",
+                format!(
+                    "typed path arguments are not allowed on native directive `{}`",
+                    node.name().value()
+                ),
+            ));
+        }
+        let KdlValue::String(path) = entry.value() else {
+            return Err(ConfigSourceError::parse(
+                "KDL 2",
+                format!(
+                    "native directive `{}` path arguments must be strings",
+                    node.name().value()
+                ),
+            ));
+        };
+        check_string(path)?;
+        paths.push(path.clone());
+    }
+    Ok(paths)
+}
+
+fn decode_option_children(
+    node: &KdlNode,
+    count: &mut usize,
+) -> Result<Map<String, Value>, ConfigSourceError> {
+    let mut options = Map::new();
+    for child in node.children().map_or(&[][..], |children| children.nodes()) {
+        increment_node_count(count)?;
+        let name = child.name().value();
+        check_string(name)?;
+        if child.ty().is_some() {
+            return Err(ConfigSourceError::parse(
+                "KDL 2",
+                format!("type annotations are not allowed on native option `{name}`"),
+            ));
+        }
+        if child.entries().iter().any(|entry| entry.name().is_some()) {
+            return Err(ConfigSourceError::parse(
+                "KDL 2",
+                format!("properties are not allowed on native option `{name}`"),
+            ));
+        }
+        if options.contains_key(name) {
+            return Err(ConfigSourceError::parse(
+                "KDL 2",
+                format!("duplicate native option `{name}`"),
+            ));
+        }
+        options.insert(name.to_owned(), decode_scalar(child)?);
+    }
+    Ok(options)
+}
+
+fn increment_node_count(count: &mut usize) -> Result<(), ConfigSourceError> {
+    *count = count.checked_add(1).ok_or(ConfigSourceError::NodeLimit)?;
+    if *count > MAX_NODES {
+        return Err(ConfigSourceError::NodeLimit);
+    }
+    Ok(())
 }
 
 fn decode_object(
@@ -44,10 +199,7 @@ fn decode_node(
     count: &mut usize,
 ) -> Result<Value, ConfigSourceError> {
     check_depth(depth)?;
-    *count = count.checked_add(1).ok_or(ConfigSourceError::NodeLimit)?;
-    if *count > MAX_NODES {
-        return Err(ConfigSourceError::NodeLimit);
-    }
+    increment_node_count(count)?;
     if node.entries().iter().any(|entry| entry.name().is_some()) {
         return Err(ConfigSourceError::parse(
             "KDL 2",

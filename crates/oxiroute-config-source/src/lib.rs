@@ -1,25 +1,30 @@
-//! Bounded adapters between configuration source formats and [`serde_json::Value`].
+//! Bounded configuration source adapters and resolution into [`oxiroute_config::Config`].
 //!
 //! KDL follows the reversible mapping documented in `docs/CONFIG_FORMATS.md`: the document is an
 //! implicit root object, scalar nodes have exactly one positional argument, `(object)` and
 //! `(array)` nodes are explicit containers, and array children are named `-`. The decoder accepts
 //! KDL 2 only. UCI uses named `config json` records rooted at `root`; each non-root record has a
 //! `parent` plus either `key` or `index`, and every record has a `kind` and optional scalar `value`.
+//! Source resolution additionally recognizes strict native nginx and `HAProxy` directives without
+//! changing these generic reversible mappings.
 
 mod error;
 mod hocon;
 mod kdl;
 mod limits;
+mod native;
+mod resolver;
 mod templates;
 mod uci;
 
 use std::path::Path;
 
-pub use error::ConfigSourceError;
+pub use error::{ConfigSourceError, NativeDiagnosticCount, NativeDiagnostics};
 pub use limits::{
-    MAX_EXPANSION_DEPTH, MAX_NODES, MAX_OUTPUT_BYTES, MAX_SOURCE_BYTES, MAX_STRING_BYTES,
-    MAX_STRUCTURAL_DEPTH,
+    MAX_DEPENDENCY_PATHS, MAX_EXPANSION_DEPTH, MAX_NODES, MAX_OUTPUT_BYTES, MAX_SOURCE_BYTES,
+    MAX_STRING_BYTES, MAX_STRUCTURAL_DEPTH,
 };
+pub use resolver::{ResolvedSource, resolve_source, resolve_source_with_format};
 pub use templates::expand_templates;
 pub use uci::{UciDocument, UciEntry, UciSection, parse_uci_document, render_uci_document};
 
@@ -32,7 +37,7 @@ pub enum ConfigFormat {
     /// KDL 2.0, the default source and preview format.
     #[default]
     Kdl,
-    /// Legacy restricted Lua, implemented by `oxiroute-config` during this milestone.
+    /// Legacy restricted Lua, resolved through [`oxiroute_config::load_lua`].
     Lua,
     /// `OpenWrt` UCI using deterministic generic JSON records.
     Uci,
@@ -68,8 +73,8 @@ impl ConfigFormat {
 
 /// Decodes already-supplied source bytes into the bounded format-neutral value tree.
 ///
-/// This function performs no file or environment access. Lua intentionally remains unsupported in
-/// this crate for milestone 1.
+/// This function performs no file or environment access. Lua is available only through
+/// [`resolve_source`], which returns a typed configuration rather than a generic value.
 ///
 /// # Errors
 ///
@@ -89,8 +94,8 @@ pub fn decode_value(format: ConfigFormat, source: &[u8]) -> Result<Value, Config
 
 /// Deterministically renders a bounded value tree in the selected format.
 ///
-/// HOCON output is sorted, pretty JSON, which is valid HOCON. Lua intentionally remains
-/// unsupported in this crate for milestone 1.
+/// HOCON output is sorted, pretty JSON, which is valid HOCON. Lua rendering remains unsupported;
+/// resolved Lua sources receive a canonical KDL preview instead.
 ///
 /// # Errors
 ///
