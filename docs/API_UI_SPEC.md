@@ -22,9 +22,9 @@ Implemented endpoints:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/v1/config` | Typed config, disk revision, active revision, and diagnostics. |
+| `GET` | `/api/v1/config` | Typed config, source format/composition metadata, disk/candidate/active revisions, format-preserving preview, and diagnostics. |
 | `POST` | `/api/v1/config/validate` | Validate a typed draft without writing or activating it. |
-| `PUT` | `/api/v1/config` | Preflight and revision-checked durable canonical save; changed generations require restart. |
+| `PUT` | `/api/v1/config` | Preflight and revision-checked durable canonical save; changed generations are queued for watcher-driven activation. |
 | `GET` | `/api/v1/topology` | Active redacted configuration graph with runtime health overlays. |
 | `GET` | `/api/v1/monitoring` | Runtime process, host load, listener traffic, pool/endpoint health, and RTMP activity snapshot. |
 | `GET` | `/api/v1/rtmp/streams` | Active RTMP catalog and runtime capabilities. |
@@ -76,14 +76,18 @@ not currently apply this authentication check.
 
 ### Configuration routes
 
-`GET /api/v1/config` returns `200` with `schemaVersion`, `diskRevision`, `activeRevision`, normalized
-`config`, and `diagnostics`. If the persisted canonical file cannot be read and decoded, it returns
+`GET /api/v1/config` returns `200` with `schemaVersion`, `diskRevision`, `candidateRevision`,
+`activeRevision`, normalized `config`, `configFormat`, `compositional`, `dependencyCount`,
+format-preserving `configPreview`, and `diagnostics`. A restricted-Lua root also receives the legacy
+`luaPreview` alias. If the persisted canonical file cannot be read and decoded, it returns
 `503 canonical_config_unavailable`, the known disk revision or `null`, the unchanged active
 revision, and redacted diagnostics.
 
 `POST /api/v1/config/validate` accepts exactly `{ "config": <canonical object> }`. A `200` response
-contains `candidateRevision`, `normalizedConfig`, deterministic `luaPreview`, diagnostics, and a
-candidate topology explicitly marked `not_active`. Validation compiles the complete runtime plan,
+contains `candidateRevision`, `normalizedConfig`, `configFormat`, `compositional`, `dependencyCount`,
+format-preserving `configPreview`, diagnostics, and a candidate topology explicitly marked
+`not_active`. A restricted-Lua coordinator also returns the legacy `luaPreview` alias. Validation
+compiles the complete runtime plan,
 loads configured UI assets, starts then shuts down a candidate Certbot watcher, and performs a
 read-only recording-root ownership/quota preflight. Recorder preflight does not create an ownership
 lock, probe, partial, or recording file. Actual daemon activation separately opens and pins each
@@ -94,16 +98,24 @@ preflight before opening the write transaction, so a `422` preflight failure can
 canonical file. The save then re-reads and compares the authoritative disk bytes, writes mode
 `0600`, synchronizes, atomically replaces, and synchronizes the parent directory.
 
-Successful writes return `200` with both revisions, diagnostics, and one of two exact outcomes:
+Typed saves preserve the root's selected syntax but normalize it to deterministic output. They are
+allowed only when the authoritative root is non-compositional. If `templates`, `nginx_server`, or
+`haproxy_server` contributed to the loaded source, `PUT` returns `422` with
+`E_COMPOSITIONAL_ROOT`; it never destroys those declarations by replacing them with a flattened
+typed object. `config compose` is the explicit operator-controlled flattening path.
+
+Successful writes return `200` with disk, candidate, and active revisions, diagnostics, and one of
+two exact outcomes:
 
 - `saved_pending_activation`: disk changed, `activationState` is `pending`, and
   `restartRequired` is `false` while the watcher starts the prepared generation.
-- `unchanged_active`: disk equals the startup generation, `activationState` is `active`, and
+- `unchanged_active`: the candidate revision equals the active generation, `activationState` is `active`, and
   `restartRequired` is `false`.
 
-There is no `202` asynchronous activation path. The daemon does not activate a changed saved
-generation or watch the canonical file; `activeRevision` remains the startup generation until a
-process restart.
+There is no `202` API response. For a changed save, the file watcher observes the durable
+replacement, prepares a candidate, and the generation supervisor publishes it only after the new
+runtime reports ready. The `200 saved_pending_activation` response does not claim that publication
+has already completed; clients observe `activeRevision` or generation status for completion.
 
 Configuration request failures use these statuses:
 
@@ -274,16 +286,21 @@ available for configured manual recorder definitions on active publishers. The t
 exposes stable config paths and exact redacted attributes without recording roots.
 
 The configuration workspace keeps its bearer token only in page memory, exposes every current
-canonical field, validates through the server, renders the backend Lua and candidate topology for
-review, and saves with `If-Config-Revision`. It preserves dirty drafts across refresh failures and
-`409` conflicts, distinguishes disk and active revisions, and reports changed saves as requiring a
-restart. Certificate lifecycle management, imports, and event views remain planned.
+canonical field, validates through the server, renders the format-preserving backend preview and
+candidate topology for review, and saves with `If-Config-Revision` when the root is
+non-compositional. It consumes `configPreview` and `configFormat` for KDL, Lua, HOCON, and UCI, and
+uses `compositional` plus `dependencyCount` to make compositional roots inspectable and
+server-validatable but read-only. It preserves dirty drafts across refresh failures and `409`
+conflicts. The pending-save copy still says restart is required even though the backend now watches
+and activates prepared generations; operators should use generation status as authoritative. Certificate
+lifecycle management, imports, and event views remain planned.
 
 ## File-change behavior
 
-- The backend does not watch the canonical file.
+- The backend watches the canonical root's parent directory, debounces events, and periodically
+  reconciles the effective configuration, including native references.
 - The UI checks disk state on explicit load, unlock, or **Check disk revision**; it does not poll or
-  receive file-change events.
+  receive watcher events.
 - A clean explicit refresh loads an externally changed valid file.
 - A dirty explicit refresh is marked stale and offers discard/reload.
 - Save against a stale revision returns `409`; the server never performs last-writer-wins.
@@ -304,6 +321,9 @@ restart. Certificate lifecycle management, imports, and event views remain plann
   The management bearer token is the explicit exception and is retained only in page memory.
 - A future import UI will keep unsupported constructs read-only and will not save a lossy conversion
   without explicit ownership change.
+- The backend rejects typed saves to compositional roots, and the browser disables editing/save
+  controls when `compositional` is true. Validation remains available without flattening source
+  files.
 
 ## Accessibility and responsiveness
 

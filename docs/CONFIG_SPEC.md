@@ -2,16 +2,24 @@
 
 ## Principles
 
-The canonical file is Lua syntax used as a constrained data language. It returns exactly
-one table. It is not a plugin system and cannot call operating-system or network APIs.
+The canonical model is a strict Rust-owned typed object. KDL 2.0 is the default file syntax and
+deterministic revision format. Restricted Lua, HOCON, and OpenWrt UCI remain supported source and
+rendering formats; syntax is selected by the path extension, with an extensionless path defaulting
+to KDL. See [`CONFIG_FORMATS.md`](CONFIG_FORMATS.md) for their exact reversible mappings,
+declarative templates, native references, bounds, and security limitations.
 
-Rust owns the schema. The loader evaluates a fresh state, converts the returned value into
-strict Rust types, validates cross-references, and destroys the state. Runtime components
-receive an immutable compiled snapshot.
+Every source resolves into the same bounded value tree and strict Rust types before defaults,
+cross-reference validation, runtime preparation, and immutable generation compilation. Lua alone
+evaluates code: it runs as a constrained data language in a fresh state with no standard libraries,
+then the state is destroyed. KDL, HOCON, and UCI are declarative parsers and do not execute source.
 
-## Current schema
+## Current Schema
 
-The daemon currently accepts the following canonical object families:
+The daemon currently accepts the following canonical object families. KDL is the recommended
+authoring syntax; [`../oxiroute.example.kdl`](../oxiroute.example.kdl) is a complete deterministic
+KDL example. The larger schema illustration below uses the still-supported restricted Lua notation
+because its inline object syntax is compact; it describes the same typed model rather than a
+Lua-only contract.
 
 ```lua
 return {
@@ -304,8 +312,12 @@ Current constraints:
   nonzero. An L4 service MUST NOT reference a TLS-enabled upstream pool; opaque TLS pass-through
   uses an ordinary plaintext-configured TCP pool and does not terminate or originate TLS.
 - Unknown fields and unknown protocol values are errors.
-- Source is limited to 1 MiB, extra Lua memory to 4 MiB, and execution to one million instructions.
-- No Lua standard libraries are loaded and binary chunks are rejected.
+- Every authored source and deterministic rendered output is limited to 1 MiB. Generic source trees
+  are additionally limited to 128 structural levels, 100,000 nodes, 256 KiB per string, 64 template
+  inheritance levels, and 4,096 recorded native dependency paths.
+- Restricted Lua has the same 1 MiB source limit, 4 MiB of additional memory, and one million
+  instructions. No Lua standard libraries are loaded and binary chunks are rejected. Lua does not
+  support generic templates or native-server references.
 
 ### Host replacement policy objects
 
@@ -337,7 +349,7 @@ HAProxy directives:
   derived from credentials.
 
 Anonymous `endpoints` remain decode-only compatibility for current version-1 files. Validation
-assigns deterministic `endpoint-N` identities, clears the legacy collection, and canonical Lua
+assigns deterministic `endpoint-N` identities, clears the legacy collection, and deterministic
 rendering emits only `servers`.
 
 The server runtime enforces aggregate/listener admission, Unix modes, downstream and route-local
@@ -760,19 +772,27 @@ RTMP `access_log = { type = "disabled" }` explicitly emits no session access rec
 transport, protocol, relay, and recorder failures remain operationally observable. RTMP file access
 logging is rejected at runtime planning.
 
-## Deterministic rendering
+## Deterministic Rendering
 
-The backend, not the browser, renders typed JSON into canonical Lua.
+The backend, not the browser, renders typed JSON. KDL is the default preview and `config compose`
+output. Revision-checked API saves render the syntax selected by the configured root path: KDL,
+restricted Lua, UCI, or HOCON.
 
 - Rendering MUST be deterministic for the same typed model.
 - A successful UI save normalizes formatting and field order.
-- Arbitrary comments and executable Lua syntax are not guaranteed to round-trip.
+- Comments, source formatting, Lua expressions, HOCON substitutions/merges, UCI record names,
+  templates, and native-reference declarations do not round-trip through a typed save.
+- A root using `templates`, `nginx_server`, or `haproxy_server` is marked compositional. The backend
+  rejects typed replacement of that root with `E_COMPOSITIONAL_ROOT`; operators must edit the source
+  graph directly or explicitly flatten it with `config compose` into a separately owned file.
 - The API MUST state that normalization will occur before accepting a save.
 
 ## Revisions and activation
 
-- `diskRevision` is the SHA-256 hash of the complete canonical file bytes.
-- `activeRevision` identifies the compiled runtime generation.
+- `diskRevision` is the SHA-256 hash of the exact authored root-file bytes.
+- `candidateRevision` is the SHA-256 hash of deterministic normalized KDL after template expansion,
+  native resolution, composition, defaults, and validation. `activeRevision` identifies the
+  compiled runtime generation using that effective revision.
 - The implemented API requires one raw 64-hex `If-Config-Revision` header on writes.
 - The backend MUST re-read and compare immediately before writing.
 - A mismatch returns a conflict and does not write.
@@ -781,10 +801,10 @@ The backend, not the browser, renders typed JSON into canonical Lua.
 - Writes use a unique same-directory temporary file, complete write, permission setting,
   file sync, atomic rename, and parent-directory sync.
 - A changed save returns `saved_pending_activation`; an idempotent save of the active generation
-  returns `unchanged_active`. Neither path activates a new generation in the running daemon.
-- There is no canonical-config watcher. External changes are observed only on an API read or a
-  later revision-checked write; invalid external edits make the persisted configuration
-  unavailable while the startup generation continues serving traffic.
+  returns `unchanged_active`. The parent-directory watcher and generation supervisor prepare, start,
+  and atomically publish valid changed generations in-process; `restartRequired` remains false.
+- The watcher debounces root-directory events and periodically re-resolves the root and native
+  references. Invalid edits are rejected while the last active generation continues serving.
 
 ## Diagnostics
 

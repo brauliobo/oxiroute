@@ -20,8 +20,15 @@ security, TLS, listener, or upstream semantics cannot be represented.
 ## Current implementation boundary
 
 Import is implemented in `oxiroute-import` and exposed by the daemon binary as an offline report or
-preview command. There is no import management API, UI workflow, watcher, or activation integration;
-preview is emitted only for a fully finalized candidate.
+preview command. There is no import management API or UI workflow; standalone preview is emitted
+only for a fully finalized candidate, defaults to deterministic KDL, and accepts
+`--format kdl|lua|uci|hocon`.
+
+KDL, HOCON, and UCI roots may instead contain `nginx_server` and `haproxy_server` references. The
+normal source resolver runs those references through the same complete import pipelines, composes
+only fully finalized candidates with inline canonical objects in source order, and lets the daemon
+watch/reconcile the effective result. This is runtime integration for strict source references, not
+general activation of standalone import reports. Restricted Lua cannot declare native references.
 
 - nginx exposes an explicit HTTP-fragment importer: the expanded root may contain only one `http`
   block. It has bounded byte-preserving parsing, deterministic includes/globs, provenance, HTTP
@@ -87,6 +94,18 @@ preview is emitted only for a fully finalized candidate.
 Coverage manifests and importer tests enforce that a candidate cannot finalize while any blocking
 error remains and that no fallback service or route is invented.
 
+Native references expose only the options defined by the source adapter. nginx accepts one path and
+optional `root_prefix`, `host_timezone`, `default_access_log_file`, `recording_root`, and
+`default_error_server`; HAProxy accepts one or more ordered paths plus optional `node_ip` and
+`gpu1_defined`. Relative paths resolve from the OxiRoute source directory. Shadow listener offsets
+and other standalone CLI-only overlays are not reference fields.
+
+Referenced files remain administrator-owned and read-only to OxiRoute, but they are intentionally
+read using the daemon account's filesystem access. nginx include expansion and HAProxy ordered roots
+retain their importer bounds and fail closed. References never invoke nginx, HAProxy, a shell, or
+process-environment discovery. Management-facing resolver failures are redacted to stable importer
+names and diagnostic code counts; operators use the offline report command for detailed diagnostics.
+
 ## Planned operating modes
 
 ### One-time import
@@ -94,14 +113,15 @@ error remains and that no fallback service or route is invented.
 Read native files, emit an import report, and write a new canonical OxiRoute file only
 after explicit confirmation. Native files remain untouched.
 
-### Watched import
+### Watched import workflow
 
-Watch native source directories, resolve the complete include graph after a change, build a
-candidate, and activate only when the whole import validates. The UI shows native disk,
-canonical candidate, and active revisions separately.
+The current source-reference path periodically re-resolves the complete importer input and activates
+only a fully prepared candidate. It does not provide a native-source editor, import report history,
+or separate native revision in the UI. Rich per-source watches and the UI workflow remain planned.
 
-UI edits in watched mode write an OxiRoute overlay or require conversion to canonical-only
-ownership. They MUST NOT rewrite native files because comments, modules, and unsupported
+Typed API/UI saves reject a compositional root instead of flattening or rewriting it. Operators may
+edit the OxiRoute/native sources directly or use `config compose` to create a separate flattened,
+canonical-only file. The UI MUST NOT rewrite native files because comments, modules, and unsupported
 semantics cannot be safely round-tripped.
 
 ## Target common subset

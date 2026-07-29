@@ -6,27 +6,40 @@
 existing invocations. Offline commands are:
 
 ```sh
-oxiroute config check /etc/oxiroute/oxiroute.lua
+oxiroute serve /etc/oxiroute/oxiroute.kdl
+oxiroute config check /etc/oxiroute/oxiroute.kdl
 oxiroute import nginx /etc/nginx/nginx.conf --root-prefix / --output report
-oxiroute import nginx /etc/nginx/nginx.conf --root-prefix / --host-timezone America/Bahia --default-access-log-file /var/lib/oxiroute/http-access.jsonl --recording-root /mnt/cloud/4tb/cam-rtmp --default-error-server nginx/1.30.2 --output preview
+oxiroute import nginx /etc/nginx/nginx.conf --root-prefix / --host-timezone America/Bahia --default-access-log-file /var/lib/oxiroute/http-access.jsonl --recording-root /mnt/cloud/4tb/cam-rtmp --default-error-server nginx/1.30.2 --format kdl --output preview
 oxiroute import haproxy /etc/haproxy/haproxy.cfg --output preview
 oxiroute import haproxy /etc/haproxy/haproxy.cfg --node-ip 10.0.0.15 --gpu1-defined --output preview
 oxiroute import haproxy /etc/haproxy/haproxy.cfg --node-ip 10.0.0.15 --gpu1-defined --shadow-port-offset 10000 --output preview
-oxiroute config compose nginx.lua haproxy.lua
+oxiroute config compose edge.kdl legacy.lua openwrt.uci site.conf
+oxiroute config compose --format hocon edge.kdl legacy.lua
 oxiroute version
 ```
 
 Import `report` output includes diagnostics and unresolved deployment/activation requirements.
-`preview` succeeds only for a finalized canonical candidate and writes deterministic Lua to stdout.
+`preview` succeeds only for a finalized canonical candidate and writes deterministic KDL by default;
+`--format kdl|lua|uci|hocon` selects another rendering.
 HAProxy files using `${NODE_IP}` or `defined(GPU1)` require the corresponding explicit
 `--node-ip` and `--gpu1-defined` preprocessing inputs; the importer fingerprints those values.
 `--shadow-port-offset` is preview-only and shifts imported IP socket listener ports after exact
 lowering, then revalidates the complete canonical configuration for side-by-side canaries.
 `--recording-root` replaces exactly one native nginx recording root with an explicit canonical
 no-symlink path and fails closed when the source has zero or multiple recording roots.
-`config compose` loads finalized canonical inputs in order and rejects conflicting process-wide
-settings, duplicate names, and invalid cross-references. Run `config check` on the composed file in
-the target host environment to verify runtime preparation and referenced files before activation.
+`config compose` loads finalized inputs of any supported syntax in order and rejects conflicting
+process-wide settings, duplicate names, and invalid cross-references. It emits deterministic KDL by
+default; `--format kdl|lua|uci|hocon` selects another output adapter. This output is a flattened typed
+configuration: templates and native references are resolved rather than copied. Run `config check`
+on the composed file in the target host environment to verify runtime preparation and referenced
+files before activation.
+
+The standalone `import nginx|haproxy --output preview` commands accept only fully finalized native
+candidates and emit deterministic KDL by default. `--format kdl|lua|uci|hocon` selects preview
+syntax. The flag does not change `--output report`; report output remains importer evidence.
+
+`serve` defaults to `oxiroute.kdl`. Extensionless paths and `.kdl`/`.kdl2` use KDL 2.0; `.lua` uses
+restricted Lua, `.uci` uses OpenWrt UCI, and `.hocon`/`.conf` use HOCON.
 
 ## Generations
 
@@ -45,6 +58,18 @@ The watcher observes the parent directory so rename-based replacement is visible
 bursts, and periodically reconciles exact SHA-256 disk revisions. Invalid snapshots are rejected and
 do not replace active generation state. Operational logs on the `oxiroute::operations` target are
 structured JSON and never include source text, secret values, configured paths, or OS error strings.
+
+For compositional KDL/HOCON/UCI roots, periodic reconciliation re-resolves templates and native
+references even when the root bytes are unchanged. A native change can therefore produce a new
+candidate revision while `diskRevision` remains unchanged. Native import failure diagnostics crossing
+the management boundary contain stable code counts, not source text, paths, or native diagnostic
+messages.
+
+Configuration sources are privileged administrator input. HOCON includes and process-environment
+fallbacks are disabled, UCI is parsed as data without shell execution, and Lua has no standard
+libraries. Native references are the deliberate exception to no-I/O parsing: they read the named
+nginx/HAProxy roots and their importer-defined include graphs with the daemon account's filesystem
+permissions. They do not execute native binaries, shell expansions, or infer process environment.
 
 This release does not claim cross-process inherited-file-descriptor upgrade. Listener reuse is
 strictly process-local.
