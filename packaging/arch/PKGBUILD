@@ -21,7 +21,7 @@ source=("oxiroute-${pkgver}.tar.gz::${url}/releases/download/v${pkgver}/oxiroute
         'oxiroute.env'
         'oxiroute.lua'
         'README.md')
-sha256sums=('90201aee0139fe061a40645b1ad8d21e7e95942d6c9a8e0044e04ea9e80eeebb'
+sha256sums=('8b8cfbdd4912b9f1adbc03c0133f08060cac3eacc39f9ef7fd062c925677c0a2'
             'ad2d8536df423a144f0da179fd68ae7712ae2e39226c068a088a248bdbadf0e3'
             'ece087105e74910e9d4a6c3551082828378ac5c62fc15e97a755a3bc93020e72'
             '632c14735ddea0bf780abea05d3d288f9530ca41f201a37e428223d04acffe3a'
