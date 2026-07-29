@@ -345,6 +345,86 @@ async fn built_runtime_publishes_plays_and_records_continuous_and_manual_streams
     server.shutdown();
 }
 
+#[tokio::test]
+async fn phoenix_continuous_recording_resumes_after_process_restart_and_publisher_reconnect() {
+    let recording_directory = TempDir::new().expect("recording directory");
+    let continuous_root = create_secure_root(recording_directory.path(), "phoenix-recordings");
+    let manual_root = create_secure_root(recording_directory.path(), "unused-manual-recordings");
+    let management_address = reserve_tcp_address();
+    let rtmp_address = reserve_tcp_address();
+    let mut config = runtime_config(
+        management_address,
+        rtmp_address,
+        &continuous_root,
+        &manual_root,
+    );
+    let recorder = &mut config.rtmp_services[0].applications[0].recorders[0];
+    recorder.suffix_template = "-%Y%m%d_%H%M%S.mp4".into();
+    recorder.append_unix_seconds = true;
+    recorder.timezone = oxiroute_config::RtmpRecorderTimezone::Iana("America/Bahia".into());
+    recorder.time_basis = oxiroute_config::RtmpRecorderTimeBasis::SegmentStart;
+    recorder.segment_naming = oxiroute_config::RtmpRecorderSegmentNaming::NginxCompatible;
+    recorder.rotation_interval_ms = Some(3_600_000);
+
+    let mut first_server = ServerProcess::start(&config, Some(TOKEN));
+    first_server.wait_for_tcp(management_address).await;
+    first_server.wait_for_tcp(rtmp_address).await;
+    let mut first_publisher = RtmpWireClient::connect(rtmp_address, "continuous").await;
+    first_publisher.publish("camera").await;
+    first_publisher.publish_audio(1, &[0xaf, 0x00, 0x12]).await;
+    first_publisher.publish_audio(2, &[0xaf, 0x01, 0x44]).await;
+    wait_for_catalog(management_address, |catalog| {
+        stream_for(catalog, "continuous").is_some_and(|stream| {
+            stream["recorders"][0]["phase"]["state"] == "recording"
+                && stream["recorders"][0]["bytes_written"] != "0"
+        })
+    })
+    .await;
+
+    first_server.shutdown();
+    drop(first_publisher);
+    let first_files = wait_for_recording_file_count(&continuous_root, 1).await;
+    let first_path = first_files[0].clone();
+    let first_bytes = fs::read(&first_path).expect("first Phoenix-shaped segment");
+    assert!(first_bytes.starts_with(b"FLV"));
+    assert_eq!(
+        first_path.extension().and_then(|value| value.to_str()),
+        Some("mp4")
+    );
+
+    let mut second_server = ServerProcess::start(&config, Some(TOKEN));
+    second_server.wait_for_tcp(management_address).await;
+    second_server.wait_for_tcp(rtmp_address).await;
+    let mut second_publisher = RtmpWireClient::connect(rtmp_address, "continuous").await;
+    second_publisher.publish("camera").await;
+    second_publisher.publish_audio(3, &[0xaf, 0x00, 0x12]).await;
+    second_publisher.publish_audio(4, &[0xaf, 0x01, 0x55]).await;
+    wait_for_catalog(management_address, |catalog| {
+        stream_for(catalog, "continuous").is_some_and(|stream| {
+            stream["recorders"][0]["phase"]["state"] == "recording"
+                && stream["recorders"][0]["bytes_written"] != "0"
+        })
+    })
+    .await;
+    second_publisher.close().await;
+
+    let second_files = wait_for_recording_file_count(&continuous_root, 2).await;
+    assert_eq!(
+        fs::read(&first_path).expect("unchanged first segment"),
+        first_bytes
+    );
+    let second_path = second_files
+        .iter()
+        .find(|path| **path != first_path)
+        .expect("new segment after reconnect");
+    assert!(
+        fs::read(second_path)
+            .expect("second Phoenix-shaped segment")
+            .starts_with(b"FLV")
+    );
+    second_server.shutdown();
+}
+
 fn runtime_config(
     management_address: SocketAddr,
     rtmp_address: SocketAddr,
@@ -687,4 +767,35 @@ async fn wait_for_file(path: &Path) {
     })
     .await
     .unwrap_or_else(|_| panic!("recording did not finalize at {}", path.display()));
+}
+
+async fn wait_for_recording_file_count(root: &Path, expected: usize) -> Vec<std::path::PathBuf> {
+    timeout(WIRE_TIMEOUT, async {
+        loop {
+            let mut files = fs::read_dir(root)
+                .expect("recording directory")
+                .map(|entry| entry.expect("recording entry").path())
+                .filter(|path| {
+                    path.is_file()
+                        && path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(|name| {
+                                name != ".oxiroute-recording.lock" && !name.contains(".partial.")
+                            })
+                })
+                .collect::<Vec<_>>();
+            files.sort();
+            if files.len() == expected
+                && files
+                    .iter()
+                    .all(|path| fs::metadata(path).is_ok_and(|metadata| metadata.len() > 13))
+            {
+                return files;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("recording file count")
 }
