@@ -105,7 +105,51 @@ fn sanitized_hostrouter_haproxy_imports_from_the_complete_capture() {
 
 #[test]
 fn sanitized_phoenix_haproxy_imports_with_explicit_environment() {
-    assert_complete_live_haproxy("phoenix", Ipv4Addr::new(10, 0, 0, 11), true);
+    assert_complete_live_haproxy("phoenix", Ipv4Addr::new(10, 0, 0, 11), false);
+}
+
+#[test]
+fn live_inference_node_health_routes_and_native_default_retries_finalize() {
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/live/phoenix/haproxy.cfg");
+    let report = import_roots_with_environment(
+        &[path],
+        PreprocessingEnvironment {
+            node_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 15)),
+            gpu1_defined: true,
+        },
+    );
+    let config = report.value().config.as_ref().unwrap_or_else(|| {
+        panic!(
+            "inference-node config did not finalize: {:#?}",
+            report.diagnostics()
+        )
+    });
+
+    assert_eq!(config.http_services.len(), 3);
+    assert_eq!(config.upstream_pools.len(), 3);
+    assert!(
+        config
+            .upstream_pools
+            .iter()
+            .all(|pool| pool.servers.len() == 2)
+    );
+    for service in &config.http_services {
+        assert_eq!(service.routes.len(), 2);
+        assert!(matches!(
+            service.routes[0].path,
+            HttpPathSelector::AsciiCaseInsensitiveExact { ref value }
+                if value == "/_infra/health"
+        ));
+        assert!(matches!(
+            service.routes[0].action,
+            HttpRouteAction::FixedResponse { status: 200, ref body, .. } if body == "ok"
+        ));
+        let HttpRouteAction::Proxy { ref policy, .. } = service.routes[1].action else {
+            panic!("inference-node fallback route")
+        };
+        assert_eq!(policy.retry.max_retries, 3);
+    }
 }
 
 fn assert_complete_live_haproxy(host: &str, node_ip: Ipv4Addr, gpu1_defined: bool) {

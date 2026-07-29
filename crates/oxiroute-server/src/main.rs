@@ -578,7 +578,7 @@ fn main() -> ExitCode {
         Command::Import { .. }
         | Command::Version
         | Command::Config {
-            command: ConfigCommand::Check { .. },
+            command: ConfigCommand::Check { .. } | ConfigCommand::Compose { .. },
         } => execute_offline(cli.command()).map(|output| {
             if let Some(output) = output {
                 print!("{output}");

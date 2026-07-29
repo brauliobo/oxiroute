@@ -4,7 +4,7 @@ use std::{
     fmt::{self, Write as _},
     fs::File,
     io::{self, BufRead, BufReader, Read as _, Write as _},
-    net::{TcpStream, ToSocketAddrs as _},
+    net::{IpAddr, TcpStream, ToSocketAddrs as _},
     path::{Path, PathBuf},
     process::ExitCode,
     thread,
@@ -127,12 +127,36 @@ pub enum ImportCommand {
         config: PathBuf,
         #[arg(long, value_name = "DIRECTORY", default_value = "/")]
         root_prefix: PathBuf,
+        /// Preserve native local-time recording suffixes with this IANA timezone.
+        #[arg(long, value_name = "IANA_TIMEZONE")]
+        host_timezone: Option<String>,
+        /// Explicitly migrate omitted nginx combined logs to `OxiRoute` structured JSONL.
+        #[arg(long, value_name = "FILE")]
+        default_access_log_file: Option<PathBuf>,
+        /// Replace one unique native recording root with this no-symlink canonical path.
+        #[arg(long, value_name = "DIRECTORY")]
+        recording_root: Option<PathBuf>,
+        /// Preserve nginx's branded default static 404 body and response header.
+        #[arg(long, value_name = "SERVER_TOKEN")]
+        default_error_server: Option<String>,
+        /// Shift imported IP socket listener ports for side-by-side validation.
+        #[arg(long, value_name = "PORTS", value_parser = clap::value_parser!(u16).range(1..))]
+        shadow_port_offset: Option<u16>,
         #[arg(long, value_enum, default_value_t = ImportOutput::Report)]
         output: ImportOutput,
     },
     Haproxy {
         #[arg(value_name = "CONFIG", required = true)]
         configs: Vec<PathBuf>,
+        /// Expand `${NODE_IP}` using this exact host address.
+        #[arg(long, value_name = "IP")]
+        node_ip: Option<IpAddr>,
+        /// Treat `defined(GPU1)` conditions as true.
+        #[arg(long, requires = "node_ip")]
+        gpu1_defined: bool,
+        /// Shift imported IP socket listener ports for side-by-side validation.
+        #[arg(long, value_name = "PORTS", value_parser = clap::value_parser!(u16).range(1..))]
+        shadow_port_offset: Option<u16>,
         #[arg(long, value_enum, default_value_t = ImportOutput::Report)]
         output: ImportOutput,
     },
@@ -272,11 +296,24 @@ pub enum GenerationCommand {
 
 #[derive(Subcommand)]
 pub enum ConfigCommand {
-    Check { config: PathBuf },
+    Check {
+        config: PathBuf,
+    },
+    /// Compose finalized canonical configurations in the supplied order.
+    Compose {
+        #[arg(value_name = "CONFIG", required = true, num_args = 1..)]
+        configs: Vec<PathBuf>,
+    },
     Get,
-    Validate { file: PathBuf },
-    Apply { file: PathBuf },
-    Diff { file: PathBuf },
+    Validate {
+        file: PathBuf,
+    },
+    Apply {
+        file: PathBuf,
+    },
+    Diff {
+        file: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -425,17 +462,47 @@ pub fn execute_offline(command: &Command) -> Result<Option<String>, Box<dyn Erro
                 "configuration is valid and runtime-preparable\n".into(),
             ))
         }
+        Command::Config {
+            command: ConfigCommand::Compose { configs },
+        } => Ok(Some(compose_config_files(configs)?)),
         Command::Import {
             command:
                 ImportCommand::Nginx {
                     config,
                     root_prefix,
+                    host_timezone,
+                    default_access_log_file,
+                    recording_root,
+                    default_error_server,
+                    shadow_port_offset,
                     output,
                 },
-        } => Ok(Some(import_nginx(config, root_prefix, *output)?)),
+        } => Ok(Some(import_nginx(
+            config,
+            root_prefix,
+            host_timezone.as_deref(),
+            default_access_log_file.as_deref(),
+            recording_root.as_deref(),
+            default_error_server.as_deref(),
+            *shadow_port_offset,
+            *output,
+        )?)),
         Command::Import {
-            command: ImportCommand::Haproxy { configs, output },
-        } => Ok(Some(import_haproxy(configs, *output)?)),
+            command:
+                ImportCommand::Haproxy {
+                    configs,
+                    node_ip,
+                    gpu1_defined,
+                    shadow_port_offset,
+                    output,
+                },
+        } => Ok(Some(import_haproxy(
+            configs,
+            *node_ip,
+            *gpu1_defined,
+            *shadow_port_offset,
+            *output,
+        )?)),
         _ => Ok(None),
     }
 }
@@ -447,19 +514,77 @@ fn check_config(path: &Path) -> Result<(), Box<dyn Error>> {
     };
     GenerationManager::new()
         .validate_candidate(*document)
-        .map_err(|_| "configuration cannot be prepared as a complete runtime generation")?;
+        .map_err(|error| {
+            format!("configuration cannot be prepared as a complete runtime generation: {error}")
+        })?;
     Ok(())
 }
 
+fn compose_config_files(paths: &[PathBuf]) -> Result<String, Box<dyn Error>> {
+    let mut configs = Vec::with_capacity(paths.len());
+    for path in paths {
+        let coordinator = CanonicalConfigCoordinator::new(path)?;
+        let ConfigLoadOutcome::Loaded(document) = coordinator.load() else {
+            return Err(
+                format!("canonical configuration `{}` was rejected", path.display()).into(),
+            );
+        };
+        configs.push(document.normalized_config.clone());
+    }
+    let composed = oxiroute_config::compose_configs(&configs)?;
+    Ok(oxiroute_config::render_lua(&composed)?)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "offline nginx import inputs map directly to explicit operator overlays"
+)]
 fn import_nginx(
     path: &Path,
     root_prefix: &Path,
+    host_timezone: Option<&str>,
+    default_access_log_file: Option<&Path>,
+    recording_root: Option<&Path>,
+    default_error_server: Option<&str>,
+    shadow_port_offset: Option<u16>,
     output: ImportOutput,
 ) -> Result<String, Box<dyn Error>> {
-    let report = oxiroute_import::nginx::import_root(path, root_prefix);
+    let options = oxiroute_import::nginx::NginxImportOptions {
+        host_timezones: host_timezone
+            .map(
+                |timezone| oxiroute_import::nginx::NginxHostTimezoneOverlay {
+                    timezone: timezone.into(),
+                },
+            )
+            .into_iter()
+            .collect(),
+        default_access_log: default_access_log_file.map(|path| {
+            oxiroute_import::nginx::NginxDefaultAccessLogOverlay {
+                path: path.to_path_buf(),
+            }
+        }),
+        recording_root: recording_root.map(|path| {
+            oxiroute_import::nginx::NginxRecordingRootOverlay {
+                path: path.to_path_buf(),
+            }
+        }),
+        default_error_page: default_error_server.map(|server| {
+            oxiroute_import::nginx::NginxDefaultErrorPageOverlay {
+                server: server.to_owned(),
+            }
+        }),
+        ..oxiroute_import::nginx::NginxImportOptions::default()
+    };
+    let report = oxiroute_import::nginx::import_root_with_options(path, root_prefix, &options);
     match output {
-        ImportOutput::Preview => preview(report.candidate.config.as_ref()),
+        ImportOutput::Preview => preview_with_shadow_listener_offset(
+            report.candidate.config.as_ref(),
+            shadow_port_offset,
+        ),
         ImportOutput::Report => {
+            if shadow_port_offset.is_some() {
+                return Err("--shadow-port-offset requires --output preview".into());
+            }
             let mut result = report_header("nginx", &report.diagnostics);
             writeln!(result, "finalized: {}", report.candidate.config.is_some())?;
             writeln!(
@@ -477,11 +602,33 @@ fn import_nginx(
     }
 }
 
-fn import_haproxy(paths: &[PathBuf], output: ImportOutput) -> Result<String, Box<dyn Error>> {
-    let report = oxiroute_import::haproxy::import_roots(paths);
+fn import_haproxy(
+    paths: &[PathBuf],
+    node_ip: Option<IpAddr>,
+    gpu1_defined: bool,
+    shadow_port_offset: Option<u16>,
+    output: ImportOutput,
+) -> Result<String, Box<dyn Error>> {
+    let report = node_ip.map_or_else(
+        || oxiroute_import::haproxy::import_roots(paths),
+        |node_ip| {
+            oxiroute_import::haproxy::import_roots_with_environment(
+                paths,
+                oxiroute_import::haproxy::PreprocessingEnvironment {
+                    node_ip,
+                    gpu1_defined,
+                },
+            )
+        },
+    );
     match output {
-        ImportOutput::Preview => preview(report.value().config.as_ref()),
+        ImportOutput::Preview => {
+            preview_with_shadow_listener_offset(report.value().config.as_ref(), shadow_port_offset)
+        }
         ImportOutput::Report => {
+            if shadow_port_offset.is_some() {
+                return Err("--shadow-port-offset requires --output preview".into());
+            }
             let candidate = report.value();
             let mut result = report_header("haproxy", report.diagnostics());
             writeln!(result, "finalized: {}", candidate.config.is_some())?;
@@ -498,6 +645,32 @@ fn import_haproxy(paths: &[PathBuf], output: ImportOutput) -> Result<String, Box
             Ok(result)
         }
     }
+}
+
+fn preview_with_shadow_listener_offset(
+    config: Option<&oxiroute_config::Config>,
+    shadow_port_offset: Option<u16>,
+) -> Result<String, Box<dyn Error>> {
+    let Some(offset) = shadow_port_offset else {
+        return preview(config);
+    };
+    let mut config = config
+        .ok_or("native configuration did not produce an activatable candidate")?
+        .clone();
+    for listener in &mut config.listeners {
+        let oxiroute_config::ListenerBind::Socket { address } = &mut listener.bind else {
+            continue;
+        };
+        address.set_port(
+            address
+                .port()
+                .checked_add(offset)
+                .ok_or("shadow listener port offset exceeds 65535")?,
+        );
+    }
+    oxiroute_config::validate_config(&mut config)
+        .map_err(|_| "shadow listener configuration is not valid")?;
+    Ok(oxiroute_config::render_lua(&config)?)
 }
 
 fn preview(config: Option<&oxiroute_config::Config>) -> Result<String, Box<dyn Error>> {
@@ -814,7 +987,7 @@ fn execute(cli: &Cli, client: &Client) -> Result<FollowOutcome, CliError> {
         | Command::Import { .. }
         | Command::Version
         | Command::Config {
-            command: ConfigCommand::Check { .. },
+            command: ConfigCommand::Check { .. } | ConfigCommand::Compose { .. },
         } => {
             return Err(CliError::Local(
                 "local command was dispatched through the management client".into(),
@@ -1684,6 +1857,150 @@ mod tests {
                 command: ConfigCommand::Get
             }
         ));
+    }
+
+    #[test]
+    fn parses_canonical_config_composition_inputs_in_order() {
+        let cli = Cli::try_parse_process_from([
+            "oxiroute",
+            "config",
+            "compose",
+            "nginx.lua",
+            "haproxy.lua",
+        ])
+        .expect("config compose");
+
+        assert!(matches!(
+            cli.command(),
+            Command::Config {
+                command: ConfigCommand::Compose { configs }
+            } if configs == &[PathBuf::from("nginx.lua"), PathBuf::from("haproxy.lua")]
+        ));
+    }
+
+    #[test]
+    fn parses_explicit_haproxy_preprocessing_environment() {
+        let cli = Cli::try_parse_process_from([
+            "oxiroute",
+            "import",
+            "haproxy",
+            "/etc/haproxy/haproxy.cfg",
+            "--node-ip",
+            "10.0.0.15",
+            "--gpu1-defined",
+            "--shadow-port-offset",
+            "10000",
+            "--output",
+            "preview",
+        ])
+        .expect("HAProxy import");
+
+        let Command::Import {
+            command:
+                ImportCommand::Haproxy {
+                    configs,
+                    node_ip,
+                    gpu1_defined,
+                    shadow_port_offset,
+                    output,
+                },
+        } = cli.command()
+        else {
+            panic!("HAProxy import command")
+        };
+        assert_eq!(configs, &[PathBuf::from("/etc/haproxy/haproxy.cfg")]);
+        assert_eq!(*node_ip, Some("10.0.0.15".parse().unwrap()));
+        assert!(*gpu1_defined);
+        assert_eq!(*shadow_port_offset, Some(10_000));
+        assert!(matches!(output, ImportOutput::Preview));
+    }
+
+    #[test]
+    fn parses_nginx_timezone_and_shadow_inputs() {
+        let cli = Cli::try_parse_process_from([
+            "oxiroute",
+            "import",
+            "nginx",
+            "/etc/nginx/nginx.conf",
+            "--host-timezone",
+            "America/Bahia",
+            "--default-access-log-file",
+            "/var/lib/oxiroute/http-access.jsonl",
+            "--recording-root",
+            "/mnt/cloud/4tb/cam-rtmp",
+            "--default-error-server",
+            "nginx/1.30.2",
+            "--shadow-port-offset",
+            "10000",
+            "--output",
+            "preview",
+        ])
+        .expect("nginx import");
+
+        assert!(matches!(
+            cli.command(),
+            Command::Import {
+                command: ImportCommand::Nginx {
+                    host_timezone: Some(timezone),
+                    default_access_log_file: Some(path),
+                    recording_root: Some(recording_root),
+                    default_error_server: Some(server),
+                    shadow_port_offset: Some(10_000),
+                    output: ImportOutput::Preview,
+                    ..
+                }
+            } if timezone == "America/Bahia"
+                && path == Path::new("/var/lib/oxiroute/http-access.jsonl")
+                && recording_root == Path::new("/mnt/cloud/4tb/cam-rtmp")
+                && server == "nginx/1.30.2"
+        ));
+    }
+
+    #[test]
+    fn haproxy_gpu_presence_requires_a_node_ip() {
+        assert!(
+            Cli::try_parse_process_from([
+                "oxiroute",
+                "import",
+                "haproxy",
+                "/etc/haproxy/haproxy.cfg",
+                "--gpu1-defined",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn haproxy_shadow_preview_shifts_only_listener_ports() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../oxiroute-import/tests/fixtures/live/phoenix/haproxy.cfg");
+        let output = import_haproxy(
+            &[fixture],
+            Some("10.0.0.15".parse().unwrap()),
+            true,
+            Some(10_000),
+            ImportOutput::Preview,
+        )
+        .expect("shadow preview");
+
+        for listener in ["10.0.0.15:20440", "10.0.0.15:22002", "10.0.0.15:18080"] {
+            assert!(output.contains(listener), "missing {listener}");
+        }
+        assert!(output.contains("127.0.0.1:10450"));
+        assert!(output.contains("127.0.0.1:10451"));
+    }
+
+    #[test]
+    fn haproxy_shadow_preview_rejects_port_overflow_and_report_mode() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../oxiroute-import/tests/fixtures/live/phoenix/haproxy.cfg");
+        let paths = [fixture];
+        let node_ip = Some("10.0.0.15".parse().unwrap());
+
+        assert!(
+            import_haproxy(&paths, node_ip, true, Some(60_000), ImportOutput::Preview).is_err()
+        );
+        assert!(import_haproxy(&paths, node_ip, true, Some(10_000), ImportOutput::Report).is_err());
     }
 
     #[test]

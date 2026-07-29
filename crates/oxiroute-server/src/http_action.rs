@@ -771,6 +771,10 @@ enum StaticTryFilePlan {
 enum StaticErrorResponsePlan {
     File(Box<[OsString]>),
     InternalRedirect(String),
+    Literal {
+        body: Bytes,
+        headers: Box<[(HeaderName, HeaderValue)]>,
+    },
 }
 
 impl StaticFilesPlan {
@@ -839,13 +843,34 @@ impl StaticFilesPlan {
                     .map(move |status| (*status, response))
             })
             .map(|(status, response)| {
+                if let Some(body) = &response.body {
+                    let headers = response
+                        .headers
+                        .iter()
+                        .map(|header| {
+                            Ok((
+                                HeaderName::from_bytes(header.name.as_bytes())
+                                    .map_err(|_| StaticPreflightError)?,
+                                HeaderValue::from_str(&header.value)
+                                    .map_err(|_| StaticPreflightError)?,
+                            ))
+                        })
+                        .collect::<Result<Box<[_]>, StaticPreflightError>>()?;
+                    return Ok((
+                        status,
+                        StaticErrorResponsePlan::Literal {
+                            body: Bytes::copy_from_slice(body.as_bytes()),
+                            headers,
+                        },
+                    ));
+                }
                 if let Some(path) = &response.internal_redirect {
                     return Ok((
                         status,
                         StaticErrorResponsePlan::InternalRedirect(path.clone()),
                     ));
                 }
-                path_components(&response.file)
+                path_components(response.file.as_deref().ok_or(StaticPreflightError)?)
                     .map(|components| {
                         (
                             status,
@@ -964,11 +989,14 @@ impl StaticFilesPlan {
 
     pub(crate) async fn error_document(&self, status: u16) -> Option<StaticErrorTarget> {
         let response = self.error_responses.get(&status)?.clone();
-        let StaticErrorResponsePlan::File(components) = response else {
-            let StaticErrorResponsePlan::InternalRedirect(path) = response else {
-                unreachable!();
-            };
-            return Some(StaticErrorTarget::InternalRedirect(path));
+        let components = match response {
+            StaticErrorResponsePlan::InternalRedirect(path) => {
+                return Some(StaticErrorTarget::InternalRedirect(path));
+            }
+            StaticErrorResponsePlan::Literal { body, headers } => {
+                return Some(StaticErrorTarget::Literal { body, headers });
+            }
+            StaticErrorResponsePlan::File(components) => components,
         };
         let root = Arc::clone(&self.root);
         tokio::task::spawn_blocking(move || {
@@ -1062,6 +1090,10 @@ pub(crate) enum StaticTarget {
 pub(crate) enum StaticErrorTarget {
     File(StaticFile),
     InternalRedirect(String),
+    Literal {
+        body: Bytes,
+        headers: Box<[(HeaderName, HeaderValue)]>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]

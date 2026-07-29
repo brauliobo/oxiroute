@@ -1052,6 +1052,13 @@ async fn write_static_error(
                 Ok(None)
             }
             StaticErrorTarget::InternalRedirect(path) => Ok(Some(path)),
+            StaticErrorTarget::Literal { body, headers } => {
+                let mut response_headers = files.headers(status);
+                response_headers.extend(headers);
+                response_headers.extend_from_slice(extra_headers);
+                write_local_response(session, status, &response_headers, body, head).await?;
+                Ok(None)
+            }
         }
     } else {
         let mut headers = files.headers(status);

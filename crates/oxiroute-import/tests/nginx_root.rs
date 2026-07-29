@@ -6,13 +6,14 @@ use std::{
 };
 
 use oxiroute_config::{
-    AccessLogPolicy, RtmpRecorderSegmentNaming, RtmpRecorderTimeBasis, RtmpRecorderTimezone,
-    UpstreamEndpoint, UpstreamTls,
+    AccessLogPolicy, HttpRouteAction, RtmpRecorderSegmentNaming, RtmpRecorderTimeBasis,
+    RtmpRecorderTimezone, UpstreamEndpoint, UpstreamTls,
 };
 use oxiroute_import::{
     DeploymentRequirementKind, OperationalOverlayKind,
     nginx::{
-        NginxBearerTokenOverlay, NginxHostTimezoneOverlay, NginxImportOptions,
+        NginxBearerTokenOverlay, NginxDefaultAccessLogOverlay, NginxDefaultErrorPageOverlay,
+        NginxHostTimezoneOverlay, NginxImportOptions, NginxRecordingRootOverlay,
         NginxUpstreamTlsOverlay, RootOccurrenceDisposition, import_root, import_root_with_options,
     },
 };
@@ -325,6 +326,9 @@ fn duplicate_unresolved_and_misspelled_security_overlays_never_finalize() {
             ],
             upstream_tls: live_options("hostrouter").upstream_tls,
             host_timezones: Vec::new(),
+            default_access_log: None,
+            recording_root: None,
+            default_error_page: None,
         },
     );
     assert!(hostrouter.candidate.config.is_none());
@@ -411,7 +415,7 @@ fn sanitized_live_source_trees_load_as_complete_graphs() {
                 "America/Bahia"
             }
         );
-        assert_eq!(metadata["schema_version"], 3);
+        assert_eq!(metadata["schema_version"], 4);
         assert_eq!(
             metadata["audit_status"],
             "live_origin_hashed_read_only_captured"
@@ -442,9 +446,9 @@ fn sanitized_live_nginx_roots_enforce_security_overlays_and_unrelated_blockers()
             &live_fixture(host),
             &live_options(host),
         );
-        assert!(report.has_errors());
-        assert!(report.candidate.config.is_none());
         if host != "phoenix" {
+            assert!(report.has_errors());
+            assert!(report.candidate.config.is_none());
             assert!(
                 report
                     .candidate
@@ -464,6 +468,44 @@ fn sanitized_live_nginx_roots_enforce_security_overlays_and_unrelated_blockers()
             }
             continue;
         }
+        assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+        assert!(report.candidate.config.is_some());
+        assert!(report.candidate.operational_overlays.iter().any(|overlay| {
+            overlay.kind == OperationalOverlayKind::StructuredAccessLogMigration
+                && overlay.satisfied
+        }));
+        assert!(report.candidate.operational_overlays.iter().any(|overlay| {
+            overlay.kind == OperationalOverlayKind::RecordingRootMigration && overlay.satisfied
+        }));
+        assert_eq!(
+            report.candidate.config.as_ref().unwrap().rtmp_services[0].applications[0].recorders[0]
+                .root_directory,
+            Path::new("/mnt/cloud/4tb/cam-rtmp")
+        );
+        let default_404 = report
+            .candidate
+            .config
+            .as_ref()
+            .unwrap()
+            .http_services
+            .iter()
+            .flat_map(|service| &service.routes)
+            .find_map(|route| match &route.action {
+                HttpRouteAction::StaticFiles {
+                    error_responses, ..
+                } => error_responses
+                    .iter()
+                    .find(|response| response.statuses.contains(&404)),
+                _ => None,
+            })
+            .expect("nginx default 404 migration");
+        assert_eq!(default_404.body.as_deref().map(str::len), Some(153));
+        assert!(
+            default_404
+                .headers
+                .iter()
+                .any(|header| { header.name == "server" && header.value == "nginx/1.30.2" })
+        );
         assert_eq!(
             report.candidate.draft.rtmp_services[0].outbound_chunk_size,
             4_096
@@ -484,6 +526,15 @@ fn live_options(host: &str) -> NginxImportOptions {
         options.host_timezones = vec![NginxHostTimezoneOverlay {
             timezone: "America/Bahia".into(),
         }];
+        options.default_access_log = Some(NginxDefaultAccessLogOverlay {
+            path: "/var/lib/oxiroute/http-access.jsonl".into(),
+        });
+        options.recording_root = Some(NginxRecordingRootOverlay {
+            path: "/mnt/cloud/4tb/cam-rtmp".into(),
+        });
+        options.default_error_page = Some(NginxDefaultErrorPageOverlay {
+            server: "nginx/1.30.2".into(),
+        });
     }
     if host == "hostrouter" {
         options.upstream_tls = vec![

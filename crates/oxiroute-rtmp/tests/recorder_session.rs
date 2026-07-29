@@ -198,8 +198,8 @@ fn recorder_storage_failure_does_not_fail_live_ingest() {
     let fixture = Fixture::new(
         RtmpRecorderStart::Continuous,
         RecordingStoreLimits {
-            max_bytes: 13,
-            max_files: 8,
+            max_bytes: Some(13),
+            max_files: Some(8),
             max_active_recorders: 2,
         },
         worker_config(),
@@ -546,8 +546,8 @@ impl Fixture {
 
 fn limits() -> RecordingStoreLimits {
     RecordingStoreLimits {
-        max_bytes: 1024 * 1024,
-        max_files: 32,
+        max_bytes: Some(1024 * 1024),
+        max_files: Some(32),
         max_active_recorders: 4,
     }
 }

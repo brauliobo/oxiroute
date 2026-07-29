@@ -1498,7 +1498,9 @@ async fn nginx_internal_static_redirects_reselect_exact_routes_and_recheck_basic
                     vec![HttpStaticTryFile::Status { status: 503 }],
                     vec![HttpStaticErrorResponse {
                         statuses: vec![503],
-                        file: "50x.html".into(),
+                        file: Some("50x.html".into()),
+                        body: None,
+                        headers: Vec::new(),
                         internal_redirect: Some("/50x.html".into()),
                     }],
                 ),
@@ -1526,7 +1528,9 @@ async fn nginx_internal_static_redirects_reselect_exact_routes_and_recheck_basic
                     vec![HttpStaticTryFile::Status { status: 503 }],
                     vec![HttpStaticErrorResponse {
                         statuses: vec![503],
-                        file: "loop".into(),
+                        file: Some("loop".into()),
+                        body: None,
+                        headers: Vec::new(),
                         internal_redirect: Some("/loop".into()),
                     }],
                 ),
@@ -1699,7 +1703,7 @@ async fn host_shaped_static_policy_covers_root_alias_try_files_index_autoindex_m
             Vec::new(),
             host_shaped_static_routes(&root),
             1024,
-            20,
+            21,
         )
         .await;
 
@@ -1802,6 +1806,13 @@ async fn host_shaped_static_policy_covers_root_alias_try_files_index_autoindex_m
             .request("GET /fallback/missing HTTP/1.1\r\nHost: static.test\r\n")
             .await;
         assert_eq!(fallback.body(), b"fallback");
+
+        let inline_error = proxy
+            .request("GET /assets/missing HTTP/1.1\r\nHost: static.test\r\n")
+            .await;
+        assert_eq!(inline_error.status, 404);
+        assert_eq!(inline_error.body(), b"branded missing");
+        assert_eq!(inline_error.header("server"), Some("nginx/test"));
 
         let custom_error = proxy
             .request("GET /status/missing HTTP/1.1\r\nHost: static.test\r\n")
@@ -1949,11 +1960,26 @@ fn host_shaped_static_route(
                     always: false,
                 },
             ],
-            error_responses: vec![HttpStaticErrorResponse {
-                statuses: vec![416, 500, 502, 503, 504],
-                file: "50x.html".into(),
-                internal_redirect: None,
-            }],
+            error_responses: vec![
+                HttpStaticErrorResponse {
+                    statuses: vec![416, 500, 502, 503, 504],
+                    file: Some("50x.html".into()),
+                    body: None,
+                    headers: Vec::new(),
+                    internal_redirect: None,
+                },
+                HttpStaticErrorResponse {
+                    statuses: vec![404],
+                    file: None,
+                    body: Some("branded missing".into()),
+                    headers: vec![HttpLiteralHeader {
+                        name: "server".into(),
+                        value: "nginx/test".into(),
+                        always: true,
+                    }],
+                    internal_redirect: None,
+                },
+            ],
         },
     }
 }

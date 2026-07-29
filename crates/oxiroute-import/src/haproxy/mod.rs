@@ -28,10 +28,10 @@ pub use resolver::{
     E_UNSUPPORTED_SECTION, EffectiveBackend, EffectiveBind, EffectiveConfiguration,
     EffectiveDefaults, EffectiveFrontend, EffectiveGlobal, EffectiveListen, EffectiveSection,
     EffectiveServer, EffectiveValue, Externalization, ForwardFor, HttpCheck, HttpHeaderValue,
-    HttpRequestRule, HttpResponseRule, InheritanceStep, OccurrenceId, OptionState, Provenance,
-    ProxyMode, ProxySettings, Redispatch, ReferenceProvenance, ReferenceTarget, SectionId,
-    SemanticBlocker, SemanticBlockerKind, ServerAddress, ServerOption, StatusRange, Timeouts,
-    TlsAlpn, TlsMinimumVersion, UseBackend,
+    HttpRequestCondition, HttpRequestRule, HttpResponseRule, InheritanceStep, OccurrenceId,
+    OptionState, Provenance, ProxyMode, ProxySettings, Redispatch, ReferenceProvenance,
+    ReferenceTarget, SectionId, SemanticBlocker, SemanticBlockerKind, ServerAddress, ServerOption,
+    StatusRange, Timeouts, TlsAlpn, TlsMinimumVersion, UseBackend,
 };
 pub use source_roots::{
     HaproxyLoadLimits, LoadedRoots, LoadedSource, RootLoadDecision, RootLoadFailure,

@@ -68,11 +68,29 @@ pub struct NginxHostTimezoneOverlay {
     pub timezone: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NginxDefaultAccessLogOverlay {
+    pub path: PathBuf,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NginxRecordingRootOverlay {
+    pub path: PathBuf,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NginxDefaultErrorPageOverlay {
+    pub server: String,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct NginxImportOptions {
     pub upstream_tls: Vec<NginxUpstreamTlsOverlay>,
     pub bearer_tokens: Vec<NginxBearerTokenOverlay>,
     pub host_timezones: Vec<NginxHostTimezoneOverlay>,
+    pub default_access_log: Option<NginxDefaultAccessLogOverlay>,
+    pub recording_root: Option<NginxRecordingRootOverlay>,
+    pub default_error_page: Option<NginxDefaultErrorPageOverlay>,
 }
 
 #[derive(Default)]
@@ -155,6 +173,14 @@ pub fn import_root_with_options(
         Report::new(graph.clone(), Vec::new()),
         upstream_tls,
         bearer_tokens,
+        options
+            .default_access_log
+            .as_ref()
+            .map(|overlay| overlay.path.clone()),
+        options
+            .default_error_page
+            .as_ref()
+            .map(|overlay| overlay.server.clone()),
     );
     if options.host_timezones.len() > 1 {
         diagnostics.push(Diagnostic::new(
@@ -171,6 +197,10 @@ pub fn import_root_with_options(
             .first()
             .filter(|_| options.host_timezones.len() == 1)
             .map(|overlay| overlay.timezone.as_str()),
+        options
+            .recording_root
+            .as_ref()
+            .map(|overlay| overlay.path.as_path()),
     );
 
     diagnostics.extend(http.diagnostics.iter().cloned());
@@ -205,6 +235,24 @@ pub fn import_root_with_options(
     append_host_timezone_overlays(
         options,
         &rtmp.draft,
+        &mut operational_overlays,
+        &mut diagnostics,
+    );
+    append_default_access_log_overlay(
+        options,
+        http.used_default_access_log_overlay,
+        &mut operational_overlays,
+        &mut diagnostics,
+    );
+    append_recording_root_overlay(
+        options,
+        rtmp.used_recording_root_overlay,
+        &mut operational_overlays,
+        &mut diagnostics,
+    );
+    append_default_error_page_overlay(
+        options,
+        http.used_default_error_overlay,
         &mut operational_overlays,
         &mut diagnostics,
     );
@@ -259,6 +307,87 @@ pub fn import_root_with_options(
             source_metadata: SourceImportMetadata::default(),
             config,
         },
+    }
+}
+
+fn append_default_access_log_overlay(
+    options: &NginxImportOptions,
+    used: bool,
+    overlays: &mut Vec<OperationalOverlayRequirement<DirectiveOrigin>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(overlay) = &options.default_access_log else {
+        return;
+    };
+    overlays.push(OperationalOverlayRequirement {
+        id: "nginx-default-access-log-migration".into(),
+        kind: OperationalOverlayKind::StructuredAccessLogMigration,
+        origin: None,
+        redacted_evidence: false,
+        values: vec![format!("path={}", overlay.path.display())],
+        satisfied: used,
+    });
+    if !used {
+        diagnostics.push(Diagnostic::new(
+            E_INVALID_VALUE,
+            Severity::Error,
+            DiagnosticStage::Lower,
+            "nginx default access-log migration overlay matches no uniquely lowerable omitted access_log policy",
+        ));
+    }
+}
+
+fn append_recording_root_overlay(
+    options: &NginxImportOptions,
+    used: bool,
+    overlays: &mut Vec<OperationalOverlayRequirement<DirectiveOrigin>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(overlay) = &options.recording_root else {
+        return;
+    };
+    overlays.push(OperationalOverlayRequirement {
+        id: "nginx-recording-root-migration".into(),
+        kind: OperationalOverlayKind::RecordingRootMigration,
+        origin: None,
+        redacted_evidence: false,
+        values: vec![format!("path={}", overlay.path.display())],
+        satisfied: used,
+    });
+    if !used {
+        diagnostics.push(Diagnostic::new(
+            E_INVALID_VALUE,
+            Severity::Error,
+            DiagnosticStage::Lower,
+            "nginx recording-root migration requires exactly one lowerable native recording root",
+        ));
+    }
+}
+
+fn append_default_error_page_overlay(
+    options: &NginxImportOptions,
+    used: bool,
+    overlays: &mut Vec<OperationalOverlayRequirement<DirectiveOrigin>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(overlay) = &options.default_error_page else {
+        return;
+    };
+    overlays.push(OperationalOverlayRequirement {
+        id: "nginx-default-error-page-migration".into(),
+        kind: OperationalOverlayKind::DefaultErrorPageMigration,
+        origin: None,
+        redacted_evidence: false,
+        values: vec![format!("server={}", overlay.server)],
+        satisfied: used,
+    });
+    if !used {
+        diagnostics.push(Diagnostic::new(
+            E_INVALID_VALUE,
+            Severity::Error,
+            DiagnosticStage::Lower,
+            "nginx default error-page migration overlay matches no lowerable static 404 policy",
+        ));
     }
 }
 

@@ -134,7 +134,7 @@ fn preflight_rejects_existing_quota_without_cleanup_or_lock_creation() {
         RecordingStore::preflight(
             root,
             RecordingStoreLimits {
-                max_bytes: 4,
+                max_bytes: Some(4),
                 ..limits()
             }
         ),
@@ -145,6 +145,30 @@ fn preflight_rejects_existing_quota_without_cleanup_or_lock_creation() {
     ));
     assert_eq!(recording_entry_names(root), before);
     assert!(!root.join(".oxiroute-recording.lock").exists());
+}
+
+#[test]
+fn omitted_storage_quotas_accept_existing_usage_and_new_growth() {
+    let temporary = tempdir().expect("temporary directory");
+    let existing = fs::File::create(temporary.path().join("existing.flv")).expect("existing file");
+    existing
+        .set_len(11 * 1024 * 1024 * 1024)
+        .expect("sparse existing recording");
+    let limits = RecordingStoreLimits {
+        max_bytes: None,
+        max_files: None,
+        max_active_recorders: 8,
+    };
+
+    let stats = RecordingStore::preflight(temporary.path(), limits).expect("unbounded preflight");
+    assert_eq!(stats.bytes_used, 11 * 1024 * 1024 * 1024);
+    assert_eq!(stats.files, 1);
+
+    let store = RecordingStore::open(temporary.path(), limits).expect("unbounded store");
+    let mut recording = store.create("next.flv").expect("new recording");
+    recording.write_all(b"growth").expect("unbounded growth");
+    recording.commit().expect("committed growth");
+    assert_eq!(store.stats().files, 2);
 }
 
 #[test]
@@ -273,8 +297,8 @@ fn opening_a_second_store_never_cleans_an_active_writers_partial() {
 fn independently_opened_stores_share_process_wide_quota_state() {
     let temporary = tempdir().expect("temporary directory");
     let limits = RecordingStoreLimits {
-        max_bytes: 5,
-        max_files: 1,
+        max_bytes: Some(5),
+        max_files: Some(1),
         max_active_recorders: 1,
     };
     let first_store = RecordingStore::open(temporary.path(), limits).expect("first store");
@@ -301,7 +325,7 @@ fn reopening_one_root_with_different_limits_fails_closed() {
     let temporary = tempdir().expect("temporary directory");
     let _store = RecordingStore::open(temporary.path(), limits()).expect("first store");
     let different = RecordingStoreLimits {
-        max_bytes: 1,
+        max_bytes: Some(1),
         ..limits()
     };
 
@@ -325,8 +349,8 @@ fn enforces_active_file_and_growth_quotas_and_releases_aborted_partials() {
     let store = RecordingStore::open(
         temporary.path(),
         RecordingStoreLimits {
-            max_bytes: 5,
-            max_files: 1,
+            max_bytes: Some(5),
+            max_files: Some(1),
             max_active_recorders: 1,
         },
     )
@@ -368,8 +392,8 @@ fn counts_existing_regular_files_and_reserves_committed_file_slots() {
     let store = RecordingStore::open(
         temporary.path(),
         RecordingStoreLimits {
-            max_bytes: 8,
-            max_files: 2,
+            max_bytes: Some(8),
+            max_files: Some(2),
             max_active_recorders: 1,
         },
     )
@@ -394,8 +418,8 @@ fn publishes_same_requested_name_without_overwrite_and_bounds_collision_names() 
     let store = RecordingStore::open(
         temporary.path(),
         RecordingStoreLimits {
-            max_bytes: 64,
-            max_files: 3,
+            max_bytes: Some(64),
+            max_files: Some(3),
             max_active_recorders: 2,
         },
     )
@@ -481,8 +505,8 @@ fn rejects_non_component_final_names() {
 
 fn limits() -> RecordingStoreLimits {
     RecordingStoreLimits {
-        max_bytes: 1024 * 1024,
-        max_files: 64,
+        max_bytes: Some(1024 * 1024),
+        max_files: Some(64),
         max_active_recorders: 8,
     }
 }

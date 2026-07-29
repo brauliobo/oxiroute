@@ -29,7 +29,8 @@ pub use lower::{BlockedService, ImportReport, import_http_fragment};
 pub use parser::{Directive, Document, Word, parse};
 #[cfg(unix)]
 pub use root::{
-    NginxBearerTokenOverlay, NginxHostTimezoneOverlay, NginxImportOptions, NginxImportReport,
+    NginxBearerTokenOverlay, NginxDefaultAccessLogOverlay, NginxDefaultErrorPageOverlay,
+    NginxHostTimezoneOverlay, NginxImportOptions, NginxImportReport, NginxRecordingRootOverlay,
     NginxUpstreamTlsOverlay, RootOccurrenceDecision, RootOccurrenceDisposition, import_root,
     import_root_with_options,
 };

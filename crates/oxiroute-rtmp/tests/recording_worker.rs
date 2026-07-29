@@ -126,8 +126,8 @@ fn every_rotation_gets_a_fresh_deterministic_extension_preserving_name() {
     let store = RecordingStore::open(
         temporary.path(),
         RecordingStoreLimits {
-            max_bytes: 1024 * 1024,
-            max_files: 64,
+            max_bytes: Some(1024 * 1024),
+            max_files: Some(64),
             max_active_recorders: 2,
         },
     )
@@ -166,8 +166,8 @@ fn hourly_bahia_segments_rerender_the_suffix_and_keep_flv_payload_with_mp4_names
     let store = RecordingStore::open(
         temporary.path(),
         RecordingStoreLimits {
-            max_bytes: 1024 * 1024,
-            max_files: 16,
+            max_bytes: Some(1024 * 1024),
+            max_files: Some(16),
             max_active_recorders: 1,
         },
     )
@@ -326,8 +326,8 @@ fn simulated_full_disk_fails_only_the_recorder_and_leaves_live_playback_healthy(
     let store = RecordingStore::open(
         temporary.path(),
         RecordingStoreLimits {
-            max_bytes: 13,
-            max_files: 4,
+            max_bytes: Some(13),
+            max_files: Some(4),
             max_active_recorders: 1,
         },
     )
@@ -379,8 +379,8 @@ fn final_name_exhaustion_is_failed_and_exposes_a_recoverable_partial() {
     let store = RecordingStore::open(
         temporary.path(),
         RecordingStoreLimits {
-            max_bytes: 1024 * 1024,
-            max_files: 64,
+            max_bytes: Some(1024 * 1024),
+            max_files: Some(64),
             max_active_recorders: 2,
         },
     )
@@ -525,8 +525,8 @@ fn store(root: &Path) -> RecordingStore {
     RecordingStore::open(
         root,
         RecordingStoreLimits {
-            max_bytes: 1024 * 1024,
-            max_files: 16,
+            max_bytes: Some(1024 * 1024),
+            max_files: Some(16),
             max_active_recorders: 2,
         },
     )

@@ -1401,7 +1401,7 @@ fn rejects_dns_name_ownership_overlap_within_a_tls_profile() {
 
 #[test]
 fn loads_a_bounded_http_retry_budget() {
-    for max_retries in [1, 2] {
+    for max_retries in [1, 2, 3] {
         let source = changed(
             "            policy = {},",
             &format!("            policy = {{ retry = {{ max_retries = {max_retries} }} }},"),
@@ -1420,7 +1420,7 @@ fn loads_a_bounded_http_retry_budget() {
 fn rejects_an_excessive_http_retry_budget() {
     let source = changed(
         "            policy = {},",
-        "            policy = { retry = { max_retries = 3 } },",
+        "            policy = { retry = { max_retries = 4 } },",
     );
     let error = error_from(&source);
 
