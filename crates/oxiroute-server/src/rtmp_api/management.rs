@@ -453,7 +453,7 @@ impl ManagementState {
                 202,
                 &json!({
                     "outcome": "startup_requested",
-                    "candidateRevision": candidate.revision().disk,
+                    "candidateRevision": candidate.revision().candidate,
                 }),
             ),
             Err(error) => ApiResponse::error(
@@ -481,7 +481,7 @@ impl ManagementState {
                 202,
                 &json!({
                     "outcome": "rollback_startup_requested",
-                    "candidateRevision": candidate.revision().disk,
+                    "candidateRevision": candidate.revision().candidate,
                 }),
             ),
             Err(error) => {

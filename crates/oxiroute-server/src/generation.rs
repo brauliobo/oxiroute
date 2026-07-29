@@ -9,6 +9,7 @@ use std::{
 };
 
 use oxiroute_config::Config;
+use oxiroute_config_source::ConfigFormat;
 use oxiroute_rtmp::{RtmpRegistry, RtmpServiceRuntime};
 use pingora::apps::{AcceptGate, AcceptOwnership};
 use serde::Serialize;
@@ -474,6 +475,7 @@ impl GenerationManager {
             .as_ref()
             .map(|generation| generation.reservations.clone());
         let disk_revision = document.disk_revision.clone();
+        let candidate_revision = document.candidate_revision.clone();
         let prepared =
             PreparedGeneration::prepare(document, previous.as_ref(), self.process.clone())
                 .map(|prepared| Arc::new(RuntimeGeneration::activate(prepared)));
@@ -491,7 +493,7 @@ impl GenerationManager {
                 crate::operational_event::emit(
                     "generation_prepare",
                     "prepared",
-                    Some(&candidate.revision().disk),
+                    Some(&candidate.revision().candidate),
                 );
                 self.counters.prepares.fetch_add(1, Ordering::Relaxed);
                 state.candidate = Some(candidate.clone());
@@ -503,10 +505,10 @@ impl GenerationManager {
                 crate::operational_event::emit(
                     "generation_prepare",
                     "rejected",
-                    state.disk_revision.as_ref(),
+                    Some(&candidate_revision),
                 );
                 self.counters.failures.fetch_add(1, Ordering::Relaxed);
-                state.quarantined_revision = Some(disk_revision);
+                state.quarantined_revision = Some(candidate_revision);
                 state.last_failure = Some(error.code());
                 Err(error)
             }
@@ -595,7 +597,7 @@ impl GenerationManager {
         crate::operational_event::emit(
             "generation_activate",
             "activated",
-            Some(&active.revision.disk),
+            Some(&active.revision.candidate),
         );
         Ok(active)
     }
@@ -668,7 +670,7 @@ impl GenerationManager {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let previous = state.previous.clone().ok_or(GenerationError::NoPrevious)?;
-            if state.quarantined_revision.as_ref() == Some(&previous.revision.disk) {
+            if state.quarantined_revision.as_ref() == Some(&previous.revision.candidate) {
                 return Err(GenerationError::QuarantinedRevision);
             }
             previous
@@ -678,7 +680,10 @@ impl GenerationManager {
             disk_revision: previous_config.revision.disk.clone(),
             candidate_revision: previous_config.revision.candidate.clone(),
             normalized_config: (*previous_config.config).clone(),
-            lua_preview: String::new(),
+            format: ConfigFormat::Kdl,
+            compositional: false,
+            dependencies: Vec::new(),
+            config_preview: String::new(),
             diagnostics: Vec::new(),
         };
         let prepared = PreparedGeneration::prepare(
@@ -698,7 +703,7 @@ impl GenerationManager {
         crate::operational_event::emit(
             "generation_rollback",
             "prepared",
-            Some(&candidate.revision().disk),
+            Some(&candidate.revision().candidate),
         );
         Ok(candidate)
     }
@@ -719,13 +724,13 @@ impl GenerationManager {
                 state.starting_candidate = None;
             }
             state.candidate = None;
-            state.quarantined_revision = Some(candidate.revision().disk.clone());
+            state.quarantined_revision = Some(candidate.revision().candidate.clone());
             state.last_failure = Some(failure);
             self.counters.failures.fetch_add(1, Ordering::Relaxed);
             crate::operational_event::emit(
                 "generation_start",
                 "quarantined",
-                Some(&candidate.revision().disk),
+                Some(&candidate.revision().candidate),
             );
         }
     }
@@ -737,6 +742,13 @@ impl GenerationManager {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .candidate
             .clone()
+    }
+
+    pub(crate) fn observe_disk_revision(&self, revision: ConfigRevision) {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .disk_revision = Some(revision);
     }
 
     /// Acquires an active-generation permit that prevents publication until it is dropped.
@@ -756,7 +768,7 @@ impl GenerationManager {
         if state.starting_candidate.is_some() {
             return Err(GenerationError::MutationInProgress);
         }
-        if active.revision.disk.as_str() != expected_revision {
+        if active.revision.candidate.as_str() != expected_revision {
             return Err(GenerationError::RevisionConflict);
         }
         active.mutations.fetch_add(1, Ordering::AcqRel);
@@ -809,11 +821,11 @@ impl GenerationManager {
             active_revision: state
                 .active
                 .as_ref()
-                .map(|active| active.revision.disk.clone()),
+                .map(|active| active.revision.candidate.clone()),
             previous_revision: state
                 .previous
                 .as_ref()
-                .map(|previous| previous.revision.disk.clone()),
+                .map(|previous| previous.revision.candidate.clone()),
             quarantined_revision: state.quarantined_revision.clone(),
             active_accepting: state
                 .active
@@ -1140,7 +1152,7 @@ mod tests {
         ));
         assert!(
             manager
-                .begin_mutation(active.revision().disk.as_str())
+                .begin_mutation(active.revision().candidate.as_str())
                 .is_ok()
         );
     }
@@ -1152,7 +1164,7 @@ mod tests {
         let active = manager.activate(&first).expect("active");
         let second = manager.prepare(document()).expect("second candidate");
         let mutation = manager
-            .begin_mutation(active.revision().disk.as_str())
+            .begin_mutation(active.revision().candidate.as_str())
             .expect("active mutation");
 
         assert!(matches!(
@@ -1165,7 +1177,7 @@ mod tests {
             .begin_candidate_start(&second)
             .expect("reserved candidate startup");
         assert!(matches!(
-            manager.begin_mutation(active.revision().disk.as_str()),
+            manager.begin_mutation(active.revision().candidate.as_str()),
             Err(GenerationError::MutationInProgress)
         ));
         let activated = startup.activate().expect("reserved activation");

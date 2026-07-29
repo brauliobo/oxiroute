@@ -9,6 +9,9 @@ use std::{
 
 use tempfile::TempDir;
 
+use oxiroute_config::Config;
+use oxiroute_config_source::{ConfigFormat, decode_value, render_config};
+
 const TOKEN: &str = "cdb85a91948758cfcb895216a3603c8fcd8aaf691f39f5fd82b5df15af14628e";
 
 #[test]
@@ -152,6 +155,73 @@ fn chunked_interim_response_is_decoded_by_the_cli_process() {
         String::from_utf8(output.stdout).unwrap(),
         "{\"ready\":true}\n"
     );
+}
+
+#[test]
+fn config_check_accepts_all_source_formats_and_compose_defaults_to_kdl() {
+    let directory = TempDir::new().expect("directory");
+    let config = empty_config();
+    for (extension, format) in [
+        ("kdl", ConfigFormat::Kdl),
+        ("lua", ConfigFormat::Lua),
+        ("uci", ConfigFormat::Uci),
+        ("hocon", ConfigFormat::Hocon),
+    ] {
+        let path = directory.path().join(format!("oxiroute.{extension}"));
+        fs::write(&path, render_config(format, &config).expect("render")).expect("source");
+        let output = cli()
+            .args(["config", "check", path.to_str().unwrap()])
+            .output()
+            .expect("config check");
+        assert!(
+            output.status.success(),
+            "{format:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let lua_path = directory.path().join("oxiroute.lua");
+    let composed = cli()
+        .args(["config", "compose", lua_path.to_str().unwrap()])
+        .output()
+        .expect("config compose");
+    assert!(composed.status.success());
+    assert!(decode_value(ConfigFormat::Kdl, &composed.stdout).is_ok());
+
+    let lua = cli()
+        .args([
+            "config",
+            "compose",
+            "--format",
+            "lua",
+            lua_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Lua compose");
+    assert!(lua.status.success());
+    assert!(
+        String::from_utf8(lua.stdout)
+            .unwrap()
+            .starts_with("return {")
+    );
+}
+
+fn empty_config() -> Config {
+    Config {
+        version: 1,
+        max_connections: None,
+        management: None,
+        stats: None,
+        certificates: Vec::new(),
+        tls_profiles: Vec::new(),
+        listeners: Vec::new(),
+        cache_stores: Vec::new(),
+        upstream_pools: Vec::new(),
+        http_services: Vec::new(),
+        forward_proxy_services: Vec::new(),
+        rtmp_services: Vec::new(),
+        l4_services: Vec::new(),
+    }
 }
 
 fn cli() -> Command {

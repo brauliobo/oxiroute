@@ -30,6 +30,7 @@ log.workspace = true
 notify.workspace = true
 openssl.workspace = true
 oxiroute-config = { path = "../oxiroute-config" }
+oxiroute-config-source = { path = "../oxiroute-config-source" }
 oxiroute-import = { path = "../oxiroute-import" }
 oxiroute-rtmp = { path = "../oxiroute-rtmp" }
 pingora.workspace = true

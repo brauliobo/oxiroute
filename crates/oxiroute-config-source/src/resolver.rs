@@ -10,7 +10,7 @@ use crate::error::{NativeDiagnosticCount, NativeDiagnostics};
 use crate::native::{NativeDirective, extract_directives};
 use crate::{
     ConfigFormat, ConfigSourceError, MAX_DEPENDENCY_PATHS, expand_templates, hocon, kdl, limits,
-    render_value, uci,
+    render_config, uci,
 };
 
 /// A fully resolved, normalized configuration source.
@@ -139,9 +139,7 @@ fn finish(
 ) -> Result<ResolvedSource, ConfigSourceError> {
     let config = compose_configs(&[config])
         .map_err(|error| ConfigSourceError::Composition(error.to_string()))?;
-    let value = serde_json::to_value(&config)
-        .map_err(|error| ConfigSourceError::TypedConfig(error.to_string()))?;
-    let canonical_kdl = render_value(ConfigFormat::Kdl, &value)?;
+    let canonical_kdl = render_config(ConfigFormat::Kdl, &config)?;
     Ok(ResolvedSource {
         format,
         config,

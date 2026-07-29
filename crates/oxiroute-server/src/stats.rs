@@ -471,7 +471,7 @@ mod tests {
         let generations = GenerationManager::new();
         let candidate = generations.prepare(*document).expect("prepare");
         let active = generations.activate(&candidate).expect("activate");
-        let revision = active.revision().disk.as_str().to_owned();
+        let revision = active.revision().candidate.as_str().to_owned();
         let pool = Arc::clone(&active.plan().pools[0]);
         let api = HaproxyStatsApi::new(
             active.metrics().clone(),

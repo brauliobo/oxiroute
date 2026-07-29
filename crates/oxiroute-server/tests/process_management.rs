@@ -589,7 +589,10 @@ async fn built_management_ui_and_authenticated_config_lifecycle_run_over_real_tc
     let snapshot = get.json();
     assert_eq!(snapshot["schemaVersion"], 1);
     assert_eq!(snapshot["config"], serde_json::to_value(&active).unwrap());
-    assert_eq!(snapshot["diskRevision"], snapshot["activeRevision"]);
+    assert_eq!(snapshot["candidateRevision"], snapshot["activeRevision"]);
+    assert_ne!(snapshot["diskRevision"], snapshot["activeRevision"]);
+    assert_eq!(snapshot["configFormat"], "lua");
+    assert_eq!(snapshot["compositional"], false);
     assert!(!String::from_utf8_lossy(&get.body).contains(TOKEN));
 
     let missing_root = TempDir::new()
@@ -639,6 +642,11 @@ async fn built_management_ui_and_authenticated_config_lifecycle_run_over_real_tc
     assert_eq!(
         validated.json()["normalizedConfig"],
         serde_json::to_value(&candidate).unwrap()
+    );
+    assert_eq!(validated.json()["configFormat"], "lua");
+    assert_eq!(
+        validated.json()["configPreview"],
+        validated.json()["luaPreview"]
     );
 
     let revision = snapshot["diskRevision"].as_str().unwrap();
