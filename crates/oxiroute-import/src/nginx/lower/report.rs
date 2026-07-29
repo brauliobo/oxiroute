@@ -33,6 +33,8 @@ pub struct ImportReport {
     pub(crate) used_bearer_token_overlays: std::collections::HashSet<Vec<u8>>,
     pub(crate) used_certificate_overlays: std::collections::HashSet<OccurrenceId>,
     pub(crate) used_htpasswd_overlays: std::collections::HashSet<OccurrenceId>,
+    pub(crate) used_default_access_log_overlay: bool,
+    pub(crate) used_default_error_overlay: bool,
 }
 
 impl ImportReport {
@@ -51,15 +53,24 @@ pub fn import_http_fragment(root: &Path, root_prefix: &Path) -> ImportReport {
 }
 
 pub(super) fn lower_http(loaded: Report<SourceGraph>) -> ImportReport {
-    lower_http_with_mode(loaded, false, HashMap::new(), HashMap::new())
+    lower_http_with_mode(loaded, false, HashMap::new(), HashMap::new(), None, None)
 }
 
 pub(crate) fn lower_http_root_with_overlays(
     loaded: Report<SourceGraph>,
     upstream_tls_overlays: HashMap<Vec<u8>, UpstreamTls>,
     bearer_token_overlays: HashMap<Vec<u8>, std::path::PathBuf>,
+    default_access_log_path: Option<std::path::PathBuf>,
+    default_error_server: Option<String>,
 ) -> ImportReport {
-    lower_http_with_mode(loaded, true, upstream_tls_overlays, bearer_token_overlays)
+    lower_http_with_mode(
+        loaded,
+        true,
+        upstream_tls_overlays,
+        bearer_token_overlays,
+        default_access_log_path,
+        default_error_server,
+    )
 }
 
 fn lower_http_with_mode(
@@ -67,6 +78,8 @@ fn lower_http_with_mode(
     complete_root: bool,
     upstream_tls_overlays: HashMap<Vec<u8>, UpstreamTls>,
     bearer_token_overlays: HashMap<Vec<u8>, std::path::PathBuf>,
+    default_access_log_path: Option<std::path::PathBuf>,
+    default_error_server: Option<String>,
 ) -> ImportReport {
     let (graph, mut diagnostics) = loaded.into_parts();
     let resolved = if complete_root {
@@ -82,6 +95,8 @@ fn lower_http_with_mode(
         diagnostics,
         upstream_tls_overlays,
         bearer_token_overlays,
+        default_access_log_path,
+        default_error_server,
     )
     .run()
 }
@@ -103,6 +118,8 @@ impl Lowerer {
         let used_bearer_token_overlays = self.used_bearer_token_overlays.into_inner();
         let used_certificate_overlays = self.used_certificate_overlays.into_inner();
         let used_htpasswd_overlays = self.used_htpasswd_overlays.into_inner();
+        let used_default_access_log_overlay = self.used_default_access_log_overlay;
+        let used_default_error_overlay = self.used_default_error_overlay.into_inner();
         let ((), diagnostics) = Report::new((), self.diagnostics).into_parts();
         ImportReport {
             source_graph: self.graph,
@@ -116,6 +133,8 @@ impl Lowerer {
             used_bearer_token_overlays,
             used_certificate_overlays,
             used_htpasswd_overlays,
+            used_default_access_log_overlay,
+            used_default_error_overlay,
         }
     }
 

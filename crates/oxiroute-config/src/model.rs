@@ -23,7 +23,6 @@ use crate::defaults::{
     default_http_route_policy, default_http_static_index_files, default_idle_timeout_ms,
     default_max_request_body_bytes, default_recorder_max_active_recorders,
     default_recorder_max_queue_bytes, default_recorder_max_queue_messages,
-    default_recorder_max_storage_bytes, default_recorder_max_storage_files,
     default_recorder_shutdown_timeout_ms, default_recorder_suffix_template,
     default_rtmp_fanout_policy, default_rtmp_outbound_chunk_size, default_true,
     default_unhealthy_threshold, default_upstream_io_timeout_ms,
@@ -531,14 +530,16 @@ pub enum HttpPathSelector {
     SegmentPrefix { value: String },
     RawPrefix { value: String },
     Exact { value: String },
+    AsciiCaseInsensitiveExact { value: String },
 }
 
 impl HttpPathSelector {
     pub(crate) fn value_mut(&mut self) -> &mut String {
         match self {
-            Self::SegmentPrefix { value } | Self::RawPrefix { value } | Self::Exact { value } => {
-                value
-            }
+            Self::SegmentPrefix { value }
+            | Self::RawPrefix { value }
+            | Self::Exact { value }
+            | Self::AsciiCaseInsensitiveExact { value } => value,
         }
     }
 }
@@ -646,7 +647,12 @@ pub struct HttpMimeType {
 #[serde(deny_unknown_fields)]
 pub struct HttpStaticErrorResponse {
     pub statuses: Vec<u16>,
-    pub file: PathBuf,
+    #[serde(default)]
+    pub file: Option<PathBuf>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub headers: Vec<HttpLiteralHeader>,
     #[serde(default)]
     pub internal_redirect: Option<String>,
 }
@@ -1088,12 +1094,12 @@ pub struct RtmpRecorder {
     /// Defaults to the recorder worker's 5-second shutdown timeout.
     #[serde(default = "default_recorder_shutdown_timeout_ms")]
     pub shutdown_timeout_ms: u64,
-    /// Defaults to a finite 10 GiB quota shared by normalized root directory.
-    #[serde(default = "default_recorder_max_storage_bytes")]
-    pub max_storage_bytes: u64,
-    /// Defaults to a finite 10,000-file quota shared by normalized root directory.
-    #[serde(default = "default_recorder_max_storage_files")]
-    pub max_storage_files: u64,
+    /// Omitted or explicit null means no byte quota for the normalized root directory.
+    #[serde(default)]
+    pub max_storage_bytes: Option<u64>,
+    /// Omitted or explicit null means no file-count quota for the normalized root directory.
+    #[serde(default)]
+    pub max_storage_files: Option<u64>,
     /// Defaults to 8 active recorders per normalized root directory.
     #[serde(default = "default_recorder_max_active_recorders")]
     pub max_active_recorders: u64,

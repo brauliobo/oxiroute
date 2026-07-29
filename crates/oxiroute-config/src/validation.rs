@@ -728,8 +728,8 @@ fn validate_forward_listener(
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct RtmpRecorderStorageLimits {
-    bytes: u64,
-    files: u64,
+    bytes: Option<u64>,
+    files: Option<u64>,
     active_recorders: u64,
 }
 
@@ -943,20 +943,24 @@ fn validate_rtmp_recorder(
         "must be between 1 and 60000",
         &invalid,
     )?;
-    validate_rtmp_recorder_limit(
-        recorder.max_storage_bytes,
-        MAX_RECORDER_STORAGE_BYTES,
-        "max_storage_bytes",
-        "must be between 1 and 1099511627776",
-        &invalid,
-    )?;
-    validate_rtmp_recorder_limit(
-        recorder.max_storage_files,
-        MAX_RECORDER_STORAGE_FILES,
-        "max_storage_files",
-        "must be between 1 and 1000000",
-        &invalid,
-    )?;
+    if let Some(max_storage_bytes) = recorder.max_storage_bytes {
+        validate_rtmp_recorder_limit(
+            max_storage_bytes,
+            MAX_RECORDER_STORAGE_BYTES,
+            "max_storage_bytes",
+            "must be null or between 1 and 1099511627776",
+            &invalid,
+        )?;
+    }
+    if let Some(max_storage_files) = recorder.max_storage_files {
+        validate_rtmp_recorder_limit(
+            max_storage_files,
+            MAX_RECORDER_STORAGE_FILES,
+            "max_storage_files",
+            "must be null or between 1 and 1000000",
+            &invalid,
+        )?;
+    }
     validate_rtmp_recorder_limit(
         recorder.max_active_recorders,
         MAX_RECORDER_ACTIVE_RECORDERS,
@@ -973,7 +977,10 @@ fn validate_rtmp_recorder(
             "must be null or between 1 and 2147483647",
         ));
     }
-    if recorder.max_queue_bytes > recorder.max_storage_bytes {
+    if recorder
+        .max_storage_bytes
+        .is_some_and(|maximum| recorder.max_queue_bytes > maximum)
+    {
         return Err(ConfigError::RtmpRecorderQueueExceedsStorage {
             service: service.into(),
             application: application.into(),

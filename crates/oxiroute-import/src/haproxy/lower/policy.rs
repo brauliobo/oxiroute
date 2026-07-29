@@ -708,7 +708,11 @@ impl Lowerer<'_> {
         }
     }
 
-    fn http_retries(&mut self, section: &EffectiveSection, settings: &ProxySettings) -> Option<u8> {
+    fn http_retries(
+        &mut self,
+        _section: &EffectiveSection,
+        settings: &ProxySettings,
+    ) -> Option<u8> {
         if let Some(redispatch) = settings
             .redispatch
             .as_ref()
@@ -722,18 +726,14 @@ impl Lowerer<'_> {
         }
         if let Some(retries) = &settings.retries {
             match u8::try_from(retries.value) {
-                Ok(value) if value <= 8 => Some(value),
+                Ok(value) if value <= 3 => Some(value),
                 _ => {
                     self.block_value(retries, "HAProxy retries exceed the canonical retry bound");
                     None
                 }
             }
         } else {
-            self.block_section(
-                section,
-                "HAProxy retries must be explicit for HTTP lowering",
-            );
-            None
+            Some(3)
         }
     }
 

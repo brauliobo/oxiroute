@@ -1672,8 +1672,8 @@ mod tests {
         let store = RecordingStore::open(
             root.path(),
             RecordingStoreLimits {
-                max_bytes: 1024 * 1024,
-                max_files: 8,
+                max_bytes: Some(1024 * 1024),
+                max_files: Some(8),
                 max_active_recorders: 4,
             },
         )
@@ -1747,8 +1747,8 @@ mod tests {
         let store = RecordingStore::open(
             root.path(),
             RecordingStoreLimits {
-                max_bytes: 1024 * 1024,
-                max_files: 8,
+                max_bytes: Some(1024 * 1024),
+                max_files: Some(8),
                 max_active_recorders: 4,
             },
         )

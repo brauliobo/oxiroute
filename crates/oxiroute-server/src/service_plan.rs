@@ -749,7 +749,8 @@ fn http_path_value(path: &oxiroute_config::HttpPathSelector) -> &str {
     match path {
         oxiroute_config::HttpPathSelector::SegmentPrefix { value }
         | oxiroute_config::HttpPathSelector::RawPrefix { value }
-        | oxiroute_config::HttpPathSelector::Exact { value } => value,
+        | oxiroute_config::HttpPathSelector::Exact { value }
+        | oxiroute_config::HttpPathSelector::AsciiCaseInsensitiveExact { value } => value,
     }
 }
 
@@ -1022,7 +1023,11 @@ fn compile_rtmp_recorder(
     };
     let store_limits = RecordingStoreLimits {
         max_bytes: recorder.max_storage_bytes,
-        max_files: usize::try_from(recorder.max_storage_files).map_err(|_| invalid())?,
+        max_files: recorder
+            .max_storage_files
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| invalid())?,
         max_active_recorders: usize::try_from(recorder.max_active_recorders)
             .map_err(|_| invalid())?,
     };

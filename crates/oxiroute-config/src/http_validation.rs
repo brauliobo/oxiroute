@@ -25,8 +25,8 @@ use crate::{
     },
     model::{
         AccessLogPolicy, ConfigError, HttpAccessPolicy, HttpCookieAttributePolicy,
-        HttpCookiePathRewrite, HttpHostSelector, HttpLiteralHeader, HttpProxyPolicy,
-        HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
+        HttpCookiePathRewrite, HttpHostSelector, HttpLiteralHeader, HttpPathSelector,
+        HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
         HttpResponseHeaderMutation, HttpRetryPolicy, HttpRetryTrigger, HttpRoute, HttpRouteAction,
         HttpService, HttpStaticErrorResponse, HttpStaticMimePolicy, HttpStaticTryFile,
         HttpUpstreamHost, UpstreamEndpoint, UpstreamPool,
@@ -209,7 +209,19 @@ fn validate_matcher(
     if let Some(host) = &mut route.host {
         validate_host_selector(service, route_index, host)?;
     }
+    let requires_ascii = matches!(
+        route.path,
+        HttpPathSelector::AsciiCaseInsensitiveExact { .. }
+    );
     let path = route.path.value_mut();
+    if requires_ascii && !path.is_ascii() {
+        return Err(invalid_route(
+            service,
+            route_index,
+            "path",
+            "ASCII case-insensitive exact matching requires an ASCII path",
+        ));
+    }
     let valid = path.starts_with('/')
         && path
             .parse::<PathAndQuery>()
@@ -909,7 +921,7 @@ fn validate_retry(
             service,
             route_index,
             "action.policy.retry.max_retries",
-            "must be between 0 and 2",
+            "must be between 0 and 3",
         ));
     }
     if retry.delay_ms > 60_000 {
@@ -1103,7 +1115,7 @@ struct StaticFilesValidation<'a> {
     try_files: &'a [HttpStaticTryFile],
     mime: &'a HttpStaticMimePolicy,
     headers: &'a mut [HttpLiteralHeader],
-    error_responses: &'a [HttpStaticErrorResponse],
+    error_responses: &'a mut [HttpStaticErrorResponse],
 }
 
 fn validate_static_files(
@@ -1224,7 +1236,7 @@ fn validate_static_try_files(
 fn validate_static_error_responses(
     service: &str,
     route_index: usize,
-    error_responses: &[HttpStaticErrorResponse],
+    error_responses: &mut [HttpStaticErrorResponse],
 ) -> Result<(), ConfigError> {
     if error_responses.len() > MAX_HTTP_STATIC_ERROR_RESPONSES {
         return Err(invalid_route(
@@ -1245,15 +1257,39 @@ fn validate_static_error_responses(
                 "each response must contain 1..=16 statuses",
             ));
         }
-        validate_relative_path(&response.file, MAX_HTTP_STATIC_FALLBACK_BYTES).map_err(
-            |detail| {
-                invalid_route(
+        match (&response.file, &response.body) {
+            (Some(file), None) => validate_relative_path(file, MAX_HTTP_STATIC_FALLBACK_BYTES)
+                .map_err(|detail| {
+                    invalid_route(
+                        service,
+                        route_index,
+                        "action.static_files.error_responses",
+                        detail,
+                    )
+                })?,
+            (None, Some(body)) if body.len() <= MAX_HTTP_FIXED_RESPONSE_BODY_BYTES => {}
+            _ => {
+                return Err(invalid_route(
                     service,
                     route_index,
                     "action.static_files.error_responses",
-                    detail,
-                )
-            },
+                    "must configure exactly one bounded file or inline body",
+                ));
+            }
+        }
+        if response.body.is_some() && response.internal_redirect.is_some() {
+            return Err(invalid_route(
+                service,
+                route_index,
+                "action.static_files.error_responses.internal_redirect",
+                "is valid only for a file response",
+            ));
+        }
+        validate_literal_headers(
+            service,
+            route_index,
+            "action.static_files.error_responses.headers",
+            &mut response.headers,
         )?;
         if let Some(path) = &response.internal_redirect {
             let canonical = canonicalize_http_path(path).ok_or_else(|| {

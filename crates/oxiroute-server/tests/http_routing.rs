@@ -118,6 +118,35 @@ fn path_precedence_is_exact_then_segment_prefix_then_raw_prefix() {
 }
 
 #[test]
+fn ascii_case_insensitive_exact_path_beats_the_proxy_fallback() {
+    let table = RouteTable::new(vec![
+        route_with_path(
+            None,
+            HttpPathSelector::AsciiCaseInsensitiveExact {
+                value: "/_infra/health".into(),
+            },
+            None,
+            "health",
+        ),
+        route_with_path(
+            None,
+            HttpPathSelector::RawPrefix { value: "/".into() },
+            None,
+            "proxy",
+        ),
+    ]);
+
+    assert_eq!(
+        selected_pool(&table, None, "/_INFRA/Health", &Method::GET),
+        Some("health")
+    );
+    assert_eq!(
+        selected_pool(&table, None, "/_infra/health/extra", &Method::GET),
+        Some("proxy")
+    );
+}
+
+#[test]
 fn wildcard_matches_exactly_one_host_label() {
     let table = RouteTable::new(vec![
         route(None, "/", None, "catch-all"),

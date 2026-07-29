@@ -65,6 +65,7 @@ enum PathMatcher {
     RawPrefix(String),
     SegmentPrefix(String),
     Exact(String),
+    AsciiCaseInsensitiveExact(String),
 }
 
 impl PathMatcher {
@@ -81,13 +82,17 @@ impl PathMatcher {
                         .is_some_and(|remainder| remainder.starts_with('/')),
             ),
             Self::Exact(value) => (2, value, path == value),
+            Self::AsciiCaseInsensitiveExact(value) => (2, value, path.eq_ignore_ascii_case(value)),
         };
         matches.then_some((rank, value.len()))
     }
 
     fn value(&self) -> &str {
         match self {
-            Self::RawPrefix(value) | Self::SegmentPrefix(value) | Self::Exact(value) => value,
+            Self::RawPrefix(value)
+            | Self::SegmentPrefix(value)
+            | Self::Exact(value)
+            | Self::AsciiCaseInsensitiveExact(value) => value,
         }
     }
 }
@@ -313,7 +318,8 @@ fn normalize_path(path: HttpPathSelector) -> Result<PathMatcher, RouteError> {
     let value = match &path {
         HttpPathSelector::SegmentPrefix { value }
         | HttpPathSelector::RawPrefix { value }
-        | HttpPathSelector::Exact { value } => value,
+        | HttpPathSelector::Exact { value }
+        | HttpPathSelector::AsciiCaseInsensitiveExact { value } => value,
     };
     let valid_path = value.starts_with('/')
         && value
@@ -332,6 +338,9 @@ fn normalize_path(path: HttpPathSelector) -> Result<PathMatcher, RouteError> {
         HttpPathSelector::SegmentPrefix { value } => PathMatcher::SegmentPrefix(value),
         HttpPathSelector::RawPrefix { value } => PathMatcher::RawPrefix(value),
         HttpPathSelector::Exact { value } => PathMatcher::Exact(value),
+        HttpPathSelector::AsciiCaseInsensitiveExact { value } => {
+            PathMatcher::AsciiCaseInsensitiveExact(value)
+        }
     })
 }
 

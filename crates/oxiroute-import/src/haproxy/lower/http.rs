@@ -55,6 +55,15 @@ impl Lowerer<'_> {
             .iter()
             .any(|rule| is_terminal_rule(&rule.value))
         {
+            if has_conditional_terminal_rule(&frontend.settings.http_request_rules) {
+                return self.lower_conditional_terminal_http_service(
+                    &frontend.section,
+                    &frontend.settings,
+                    &frontend.acls,
+                    frontend.settings.default_backend.as_ref(),
+                    name,
+                );
+            }
             return self.lower_terminal_http_service(&frontend.section, &frontend.settings, name);
         }
         let routes = self.lower_routes(
@@ -132,6 +141,15 @@ impl Lowerer<'_> {
             .iter()
             .any(|rule| is_terminal_rule(&rule.value))
         {
+            if has_conditional_terminal_rule(&listen.settings.http_request_rules) {
+                return self.lower_conditional_terminal_http_service(
+                    &listen.section,
+                    &listen.settings,
+                    &listen.acls,
+                    None,
+                    name,
+                );
+            }
             return self.lower_terminal_http_service(&listen.section, &listen.settings, name);
         }
         let routes = self.lower_routes(
@@ -380,7 +398,15 @@ impl Lowerer<'_> {
                 status,
                 body,
                 content_type,
+                condition,
             } => {
+                if condition.is_some() {
+                    self.block_value(
+                        rule,
+                        "conditional HAProxy fixed response requires a representable fallback route",
+                    );
+                    return None;
+                }
                 let Ok(body) = std::str::from_utf8(body) else {
                     self.block_value(rule, "HAProxy fixed response body is not canonical UTF-8");
                     return None;
@@ -436,6 +462,184 @@ impl Lowerer<'_> {
             sources: sources.clone(),
             routes: vec![sources],
         })
+    }
+
+    fn lower_conditional_terminal_http_service(
+        &mut self,
+        section: &EffectiveSection,
+        settings: &crate::haproxy::ProxySettings,
+        acls: &[EffectiveValue<AclDefinition>],
+        default_backend: Option<&EffectiveValue<BackendReference>>,
+        name: &str,
+    ) -> Option<LoweredHttpService> {
+        if settings.http_request_rules.len() != 1 || !settings.http_response_rules.is_empty() {
+            self.block_section(
+                section,
+                "HAProxy ordered conditional terminal and header rules are not one canonical route action",
+            );
+            return None;
+        }
+        let rule = &settings.http_request_rules[0];
+        let (mut routes, mut route_sources) =
+            self.lower_conditional_fixed_response_routes(rule, acls)?;
+        let Some(backend) = default_backend else {
+            self.block_section(
+                section,
+                "HAProxy conditional fixed response requires an explicit fallback backend",
+            );
+            return None;
+        };
+        if !self.lowered_pools.contains(&backend.value.target) {
+            self.block_value(
+                backend,
+                "HAProxy conditional fixed-response fallback backend did not lower to a complete canonical pool",
+            );
+            return None;
+        }
+        let pool = self.section_name(backend.value.target)?;
+        let targets = HashSet::from([backend.value.target]);
+        let (connect_timeout_ms, upstream_io_timeout_ms, mut sources) =
+            self.lower_http_policy(section, settings, &targets)?;
+        let policies = self.lower_proxy_policies(settings, &targets)?;
+        routes.push(HttpRoute {
+            host: None,
+            path: HttpPathSelector::RawPrefix { value: "/".into() },
+            methods: Vec::new(),
+            access_policy: None,
+            policy: HttpRoutePolicy {
+                max_request_body_bytes: None,
+                connect_timeout_ms,
+                read_timeout_ms: upstream_io_timeout_ms,
+                write_timeout_ms: upstream_io_timeout_ms,
+                request_buffering: false,
+                response_buffering: false,
+            },
+            action: proxy_action(
+                pool,
+                policies
+                    .get(&backend.value.target)
+                    .expect("fallback target has a policy")
+                    .clone(),
+            ),
+        });
+        route_sources.push(provenance_sources(&backend.provenance));
+        sources.extend(section_sources(section));
+        for route_source in &route_sources {
+            sources.extend(route_source.clone());
+        }
+        deduplicate_sources(&mut sources);
+        Some(LoweredHttpService {
+            service: HttpService {
+                name: name.into(),
+                routes,
+                upstream_io_timeout_ms,
+                max_request_body_bytes: None,
+                gzip: None,
+                access_log: None,
+            },
+            sources,
+            routes: route_sources,
+        })
+    }
+
+    fn lower_conditional_fixed_response_routes(
+        &mut self,
+        rule: &EffectiveValue<HttpRequestRule>,
+        acls: &[EffectiveValue<AclDefinition>],
+    ) -> Option<(Vec<HttpRoute>, Vec<Vec<ProvenanceSpan>>)> {
+        let HttpRequestRule::FixedResponse {
+            status,
+            body,
+            content_type,
+            condition: Some(condition),
+        } = &rule.value
+        else {
+            self.block_value(
+                rule,
+                "only a conditional HAProxy fixed response has an exact canonical route action",
+            );
+            return None;
+        };
+        if condition.polarity != ConditionPolarity::If || condition.condition_negated {
+            self.block_value(
+                rule,
+                "negated HAProxy fixed-response conditions have no simple canonical route matcher",
+            );
+            return None;
+        }
+        let Ok(body) = std::str::from_utf8(body) else {
+            self.block_value(rule, "HAProxy fixed response body is not canonical UTF-8");
+            return None;
+        };
+        let headers = if let Some(content_type) = content_type {
+            let Ok(content_type) = std::str::from_utf8(content_type) else {
+                self.block_value(rule, "HAProxy fixed response content type is not UTF-8");
+                return None;
+            };
+            vec![HttpLiteralHeader {
+                name: "content-type".into(),
+                value: content_type.into(),
+                always: true,
+            }]
+        } else {
+            Vec::new()
+        };
+        let definitions = acls
+            .iter()
+            .map(|acl| (acl.provenance.origin, acl))
+            .collect::<HashMap<_, _>>();
+        let mut routes = Vec::new();
+        let mut route_sources = Vec::new();
+        for occurrence in &condition.condition.definitions {
+            let Some(acl) = definitions.get(occurrence) else {
+                self.block_value(rule, "HAProxy fixed-response ACL definition is unavailable");
+                return None;
+            };
+            if acl.value.criterion != AclCriterion::PathExact {
+                self.block_value(
+                    acl,
+                    "HAProxy fixed-response condition is not an exact path ACL",
+                );
+                return None;
+            }
+            for value in &acl.value.values {
+                let Some(value) = std::str::from_utf8(value)
+                    .ok()
+                    .filter(|value| value.is_ascii() && value.starts_with('/'))
+                else {
+                    self.block_value(
+                        acl,
+                        "HAProxy exact path ACL is not an absolute canonical ASCII path",
+                    );
+                    return None;
+                };
+                let path = if acl.value.case_insensitive {
+                    HttpPathSelector::AsciiCaseInsensitiveExact {
+                        value: value.into(),
+                    }
+                } else {
+                    HttpPathSelector::Exact {
+                        value: value.into(),
+                    }
+                };
+                let mut sources = provenance_sources(&rule.provenance);
+                extend_sources(&mut sources, &acl.provenance);
+                routes.push(HttpRoute {
+                    host: None,
+                    path,
+                    methods: Vec::new(),
+                    access_policy: None,
+                    policy: HttpRoutePolicy::default(),
+                    action: HttpRouteAction::FixedResponse {
+                        status: *status,
+                        body: body.into(),
+                        headers: headers.clone(),
+                    },
+                });
+                route_sources.push(sources);
+            }
+        }
+        Some((routes, route_sources))
     }
 
     fn lower_routes(
@@ -554,6 +758,13 @@ impl Lowerer<'_> {
                     }),
                     path_prefix: "/".into(),
                 })
+            }
+            AclCriterion::PathExact => {
+                self.block_value(
+                    acl,
+                    "HAProxy exact path ACL is supported only for conditional fixed responses",
+                );
+                None
             }
             AclCriterion::PathPrefix => {
                 let Some(value) = value.filter(|value| value.starts_with('/')) else {
@@ -732,6 +943,18 @@ fn is_terminal_rule(rule: &HttpRequestRule) -> bool {
         rule,
         HttpRequestRule::Redirect { .. } | HttpRequestRule::FixedResponse { .. }
     )
+}
+
+fn has_conditional_terminal_rule(rules: &[EffectiveValue<HttpRequestRule>]) -> bool {
+    rules.iter().any(|rule| {
+        matches!(
+            rule.value,
+            HttpRequestRule::FixedResponse {
+                condition: Some(_),
+                ..
+            }
+        )
+    })
 }
 
 fn route_pool(route: &HttpRoute) -> Option<&str> {

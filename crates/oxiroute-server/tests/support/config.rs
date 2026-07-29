@@ -67,8 +67,8 @@ pub fn rtmp_recorder(name: &str, start: RtmpRecorderStart, root_directory: &Path
         max_queue_messages: 32,
         max_queue_bytes: 1024,
         shutdown_timeout_ms: 1_000,
-        max_storage_bytes: 1024 * 1024,
-        max_storage_files: 32,
+        max_storage_bytes: Some(1024 * 1024),
+        max_storage_files: Some(32),
         max_active_recorders: 4,
     }
 }

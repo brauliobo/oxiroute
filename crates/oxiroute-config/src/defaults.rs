@@ -23,8 +23,6 @@ const DEFAULT_RTMP_FANOUT_QUEUE_BYTES: u64 = 8 * 1_024 * 1_024;
 const DEFAULT_RECORDER_MAX_QUEUE_MESSAGES: u64 = 256;
 const DEFAULT_RECORDER_MAX_QUEUE_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_RECORDER_SHUTDOWN_TIMEOUT_MS: u64 = 5_000;
-const DEFAULT_RECORDER_MAX_STORAGE_BYTES: u64 = 10 * 1024 * 1024 * 1024;
-const DEFAULT_RECORDER_MAX_STORAGE_FILES: u64 = 10_000;
 const DEFAULT_RECORDER_MAX_ACTIVE_RECORDERS: u64 = 8;
 const DEFAULT_CACHE_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const DEFAULT_DISK_CACHE_MAX_BYTES: u64 = 100 * 1024 * 1024 * 1024;
@@ -65,7 +63,7 @@ pub(crate) const MAX_UNIX_SOCKET_PATH_BYTES: usize = 107;
 pub(crate) const MAX_ENDPOINTS_PER_POOL: usize = 256;
 pub(crate) const MAX_TOTAL_ENDPOINTS: usize = 1_024;
 pub(crate) const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
-pub(crate) const MAX_HTTP_RETRIES: u8 = 2;
+pub(crate) const MAX_HTTP_RETRIES: u8 = 3;
 pub(crate) const MAX_HTTP_METHODS_PER_ROUTE: usize = 16;
 pub(crate) const MAX_HTTP_METHOD_BYTES: usize = 32;
 pub(crate) const MAX_HTTP_AUTHORITY_BYTES: usize = 255;
@@ -208,14 +206,6 @@ pub(crate) const fn default_recorder_max_queue_bytes() -> u64 {
 
 pub(crate) const fn default_recorder_shutdown_timeout_ms() -> u64 {
     DEFAULT_RECORDER_SHUTDOWN_TIMEOUT_MS
-}
-
-pub(crate) const fn default_recorder_max_storage_bytes() -> u64 {
-    DEFAULT_RECORDER_MAX_STORAGE_BYTES
-}
-
-pub(crate) const fn default_recorder_max_storage_files() -> u64 {
-    DEFAULT_RECORDER_MAX_STORAGE_FILES
 }
 
 pub(crate) const fn default_recorder_max_active_recorders() -> u64 {

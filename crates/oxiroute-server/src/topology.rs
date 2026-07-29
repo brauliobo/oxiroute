@@ -713,6 +713,9 @@ fn http_route_id(service: &str, route: &HttpRoute) -> String {
         HttpPathSelector::SegmentPrefix { value } => format!("segment_prefix:{value}"),
         HttpPathSelector::RawPrefix { value } => format!("raw_prefix:{value}"),
         HttpPathSelector::Exact { value } => format!("exact:{value}"),
+        HttpPathSelector::AsciiCaseInsensitiveExact { value } => {
+            format!("ascii_case_insensitive_exact:{value}")
+        }
     };
     stable_id("http_route", &[service, &host, &path, &methods.join(",")])
 }
@@ -751,7 +754,8 @@ fn route_name(route: &HttpRoute) -> String {
     let path = match &route.path {
         HttpPathSelector::SegmentPrefix { value }
         | HttpPathSelector::RawPrefix { value }
-        | HttpPathSelector::Exact { value } => value,
+        | HttpPathSelector::Exact { value }
+        | HttpPathSelector::AsciiCaseInsensitiveExact { value } => value,
     };
     format!("{host} {path}")
 }
@@ -789,6 +793,10 @@ fn path_selector(selector: &HttpPathSelector) -> Value {
         }),
         HttpPathSelector::Exact { value } => json!({
             "kind": "exact",
+            "value": value,
+        }),
+        HttpPathSelector::AsciiCaseInsensitiveExact { value } => json!({
+            "kind": "ascii_case_insensitive_exact",
             "value": value,
         }),
     }

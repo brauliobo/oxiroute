@@ -4,7 +4,7 @@ mod report;
 mod tls;
 mod upstream;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -29,10 +29,14 @@ struct Lowerer {
     provenance: Vec<CanonicalProvenance<DirectiveOrigin>>,
     upstream_tls_overlays: HashMap<Vec<u8>, UpstreamTls>,
     bearer_token_overlays: HashMap<Vec<u8>, PathBuf>,
+    default_access_log_path: Option<PathBuf>,
+    default_error_server: Option<String>,
     used_upstream_tls_overlays: RefCell<HashSet<Vec<u8>>>,
     used_bearer_token_overlays: RefCell<HashSet<Vec<u8>>>,
     used_certificate_overlays: RefCell<HashSet<super::OccurrenceId>>,
     used_htpasswd_overlays: RefCell<HashSet<super::OccurrenceId>>,
+    used_default_access_log_overlay: bool,
+    used_default_error_overlay: Cell<bool>,
 }
 
 impl Lowerer {
@@ -42,6 +46,8 @@ impl Lowerer {
         diagnostics: Vec<Diagnostic>,
         upstream_tls_overlays: HashMap<Vec<u8>, UpstreamTls>,
         bearer_token_overlays: HashMap<Vec<u8>, PathBuf>,
+        default_access_log_path: Option<PathBuf>,
+        default_error_server: Option<String>,
     ) -> Self {
         Self {
             graph,
@@ -53,10 +59,14 @@ impl Lowerer {
             provenance: Vec::new(),
             upstream_tls_overlays,
             bearer_token_overlays,
+            default_access_log_path,
+            default_error_server,
             used_upstream_tls_overlays: RefCell::new(HashSet::new()),
             used_bearer_token_overlays: RefCell::new(HashSet::new()),
             used_certificate_overlays: RefCell::new(HashSet::new()),
             used_htpasswd_overlays: RefCell::new(HashSet::new()),
+            used_default_access_log_overlay: false,
+            used_default_error_overlay: Cell::new(false),
         }
     }
 }

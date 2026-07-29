@@ -64,7 +64,8 @@ impl PreparedGeneration {
         process: ProcessRuntime,
     ) -> Result<Self, GenerationError> {
         let config = Arc::new(document.normalized_config);
-        let plan = runtime_plan(&config).map_err(|_| GenerationError::RuntimePrepare)?;
+        let plan =
+            runtime_plan(&config).map_err(|source| GenerationError::Plan(Box::new(source)))?;
         let reservations = ListenerReservations::prepare(&config, previous)?;
         crate::stats::preflight_admin_token(
             config
@@ -848,6 +849,8 @@ pub struct GenerationStatus {
 
 #[derive(Debug, thiserror::Error)]
 pub enum GenerationError {
+    #[error("candidate runtime preparation failed: {0}")]
+    Plan(#[source] Box<crate::ServicePlanError>),
     #[error("candidate runtime preparation failed")]
     RuntimePrepare,
     #[error("candidate listener reservation failed")]
@@ -880,6 +883,7 @@ impl GenerationError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
+            Self::Plan(_) => "service_plan_prepare",
             Self::RuntimePrepare => "runtime_prepare",
             Self::Listener(_) => "listener_reservation",
             Self::Metrics(_) => "metrics_prepare",

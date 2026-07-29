@@ -1,4 +1,8 @@
-use std::{net::SocketAddr, path::Path};
+use std::{
+    collections::BTreeSet,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 use oxiroute_config::{
     AccessLogPolicy, Config, DownstreamTimeoutPolicy, Listener, ListenerBind, Protocol,
@@ -20,8 +24,6 @@ use super::{
 const DEFAULT_MAX_QUEUE_MESSAGES: u64 = 256;
 const DEFAULT_MAX_QUEUE_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS: u64 = 5_000;
-const DEFAULT_MAX_STORAGE_BYTES: u64 = 10 * 1024 * 1024 * 1024;
-const DEFAULT_MAX_STORAGE_FILES: u64 = 10_000;
 const DEFAULT_MAX_ACTIVE_RECORDERS: u64 = 8;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -42,6 +44,7 @@ pub struct RtmpImportReport {
     pub blocked_services: Vec<BlockedRtmpService>,
     pub draft: CanonicalDraft,
     pub config: Option<Config>,
+    pub(crate) used_recording_root_overlay: bool,
 }
 
 impl RtmpImportReport {
@@ -66,24 +69,26 @@ pub fn import_rtmp_with_timezone(
     root_prefix: &Path,
     host_timezone: &str,
 ) -> RtmpImportReport {
-    lower_rtmp_with_mode(load(root, root_prefix), false, Some(host_timezone))
+    lower_rtmp_with_mode(load(root, root_prefix), false, Some(host_timezone), None)
 }
 
 pub(super) fn lower_rtmp(loaded: Report<SourceGraph>) -> RtmpImportReport {
-    lower_rtmp_with_mode(loaded, false, None)
+    lower_rtmp_with_mode(loaded, false, None, None)
 }
 
 pub(super) fn lower_rtmp_root(
     loaded: Report<SourceGraph>,
     host_timezone: Option<&str>,
+    recording_root: Option<&Path>,
 ) -> RtmpImportReport {
-    lower_rtmp_with_mode(loaded, true, host_timezone)
+    lower_rtmp_with_mode(loaded, true, host_timezone, recording_root)
 }
 
 fn lower_rtmp_with_mode(
     loaded: Report<SourceGraph>,
     complete_root: bool,
     host_timezone: Option<&str>,
+    recording_root: Option<&Path>,
 ) -> RtmpImportReport {
     let (graph, mut diagnostics) = loaded.into_parts();
     let resolved = if complete_root {
@@ -98,6 +103,7 @@ fn lower_rtmp_with_mode(
         resolution,
         diagnostics,
         host_timezone.map(str::to_owned),
+        recording_root.map(Path::to_path_buf),
     )
     .run()
 }
@@ -110,6 +116,8 @@ struct Lowerer {
     blocked_services: Vec<BlockedRtmpService>,
     draft: CanonicalDraft,
     host_timezone: Option<String>,
+    recording_root: Option<PathBuf>,
+    used_recording_root_overlay: bool,
 }
 
 impl Lowerer {
@@ -118,6 +126,7 @@ impl Lowerer {
         resolution: RtmpResolution,
         diagnostics: Vec<Diagnostic>,
         host_timezone: Option<String>,
+        recording_root: Option<PathBuf>,
     ) -> Self {
         Self {
             graph,
@@ -127,11 +136,25 @@ impl Lowerer {
             blocked_services: Vec::new(),
             draft: CanonicalDraft::default(),
             host_timezone,
+            recording_root,
+            used_recording_root_overlay: false,
         }
     }
 
     fn run(mut self) -> RtmpImportReport {
         let blocks = self.resolution.rtmp_blocks.clone();
+        if self.recording_root.is_some() {
+            let native_roots = blocks
+                .iter()
+                .flat_map(|rtmp| &rtmp.servers)
+                .flat_map(|server| &server.applications)
+                .flat_map(|application| &application.policy.recorders)
+                .map(|recorder| recorder.root_directory.clone())
+                .collect::<BTreeSet<_>>();
+            if native_roots.len() != 1 {
+                self.recording_root = None;
+            }
+        }
         for (rtmp_index, rtmp) in blocks.iter().enumerate() {
             for (server_index, server) in rtmp.servers.iter().enumerate() {
                 let path = format!("/nginx/rtmp/{rtmp_index}/servers/{server_index}");
@@ -203,6 +226,7 @@ impl Lowerer {
             blocked_services: self.blocked_services,
             draft: self.draft,
             config,
+            used_recording_root_overlay: self.used_recording_root_overlay,
         }
     }
 
@@ -385,7 +409,13 @@ impl Lowerer {
                 RtmpRecordMode::Continuous => RtmpRecorderStart::Continuous,
                 RtmpRecordMode::Manual => RtmpRecorderStart::Manual,
             },
-            root_directory: recorder.root_directory.clone(),
+            root_directory: self.recording_root.as_ref().map_or_else(
+                || recorder.root_directory.clone(),
+                |root| {
+                    self.used_recording_root_overlay = true;
+                    root.clone()
+                },
+            ),
             suffix_template: recorder.suffix_template.clone(),
             append_unix_seconds: recorder.append_unix_seconds,
             timezone: RtmpRecorderTimezone::Iana(
@@ -399,8 +429,8 @@ impl Lowerer {
             max_queue_messages: DEFAULT_MAX_QUEUE_MESSAGES,
             max_queue_bytes: DEFAULT_MAX_QUEUE_BYTES,
             shutdown_timeout_ms: DEFAULT_SHUTDOWN_TIMEOUT_MS,
-            max_storage_bytes: DEFAULT_MAX_STORAGE_BYTES,
-            max_storage_files: DEFAULT_MAX_STORAGE_FILES,
+            max_storage_bytes: None,
+            max_storage_files: None,
             max_active_recorders: DEFAULT_MAX_ACTIVE_RECORDERS,
         }
     }

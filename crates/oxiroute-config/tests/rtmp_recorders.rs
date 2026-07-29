@@ -3,8 +3,6 @@ use oxiroute_config::{Config, ConfigError, load_lua, render_lua, validate_config
 const DEFAULT_MAX_QUEUE_MESSAGES: u64 = 256;
 const DEFAULT_MAX_QUEUE_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS: u64 = 5_000;
-const DEFAULT_MAX_STORAGE_BYTES: u64 = 10 * 1024 * 1024 * 1024;
-const DEFAULT_MAX_STORAGE_FILES: u64 = 10_000;
 const DEFAULT_MAX_ACTIVE_RECORDERS: u64 = 8;
 
 fn config(services: &str) -> String {
@@ -73,7 +71,7 @@ fn first_recorder(source: &str) -> serde_json::Value {
 }
 
 #[test]
-fn applies_explicit_bounded_recorder_defaults() {
+fn defaults_storage_quotas_to_unbounded() {
     let recorder = first_recorder(&one_recorder_source(
         true,
         "/var/lib/oxiroute/recordings",
@@ -90,12 +88,24 @@ fn applies_explicit_bounded_recorder_defaults() {
     assert_eq!(recorder["max_queue_messages"], DEFAULT_MAX_QUEUE_MESSAGES);
     assert_eq!(recorder["max_queue_bytes"], DEFAULT_MAX_QUEUE_BYTES);
     assert_eq!(recorder["shutdown_timeout_ms"], DEFAULT_SHUTDOWN_TIMEOUT_MS);
-    assert_eq!(recorder["max_storage_bytes"], DEFAULT_MAX_STORAGE_BYTES);
-    assert_eq!(recorder["max_storage_files"], DEFAULT_MAX_STORAGE_FILES);
+    assert_eq!(recorder["max_storage_bytes"], serde_json::Value::Null);
+    assert_eq!(recorder["max_storage_files"], serde_json::Value::Null);
     assert_eq!(
         recorder["max_active_recorders"],
         DEFAULT_MAX_ACTIVE_RECORDERS
     );
+}
+
+#[test]
+fn accepts_explicit_unbounded_storage_quotas() {
+    let recorder = first_recorder(&one_recorder_source(
+        true,
+        "/var/lib/oxiroute/recordings",
+        "              max_storage_bytes = null,\n              max_storage_files = null,",
+    ));
+
+    assert_eq!(recorder["max_storage_bytes"], serde_json::Value::Null);
+    assert_eq!(recorder["max_storage_files"], serde_json::Value::Null);
 }
 
 #[test]
@@ -151,7 +161,8 @@ fn applies_the_same_defaults_and_normalization_to_json() {
     assert_eq!(recorder["root_directory"], "/var/lib/oxiroute/recordings");
     assert_eq!(recorder["suffix_template"], ".flv");
     assert_eq!(recorder["rotation_interval_ms"], serde_json::Value::Null);
-    assert_eq!(recorder["max_storage_bytes"], DEFAULT_MAX_STORAGE_BYTES);
+    assert_eq!(recorder["max_storage_bytes"], serde_json::Value::Null);
+    assert_eq!(recorder["max_storage_files"], serde_json::Value::Null);
 }
 
 #[test]

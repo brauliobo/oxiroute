@@ -169,6 +169,8 @@ impl Lowerer {
             .collect::<Vec<_>>();
         let listener_bind = listener_bind(bind, &servers);
         let mut issues = self.semantic_bind_issues(http, &servers);
+        let mut uses_default_access_log = false;
+        let mut disables_access_log = false;
         for server in &servers {
             if let Some(gzip) = self.effective_policy(server.origin.occurrence, b"gzip") {
                 if gzip.arguments.as_slice() != [b"off".to_vec()] {
@@ -179,26 +181,31 @@ impl Lowerer {
                     ));
                 }
             }
-            let Some(access_log) = self.effective_policy(server.origin.occurrence, b"access_log")
-            else {
-                issues.push(issue(
+            match self.effective_policy(server.origin.occurrence, b"access_log") {
+                None if self.default_access_log_path.is_some() => uses_default_access_log = true,
+                None => issues.push(issue(
                     &server.origin,
                     E_SEMANTICS_NOT_REPRESENTABLE,
                     "omitted nginx access_log enables the unrepresented default combined log",
-                ));
-                continue;
-            };
-            if access_log
-                .arguments
-                .first()
-                .is_none_or(|value| value != b"off")
-            {
-                issues.push(issue(
+                )),
+                Some(access_log)
+                    if access_log.arguments.first().is_some_and(|value| value == b"off") =>
+                {
+                    disables_access_log = true;
+                }
+                Some(access_log) => issues.push(issue(
                     access_log.origins.last().unwrap_or(&server.origin),
                     E_SEMANTICS_NOT_REPRESENTABLE,
                     "nginx formatted access_log output is not equivalent to canonical JSON access logging",
-                ));
+                )),
             }
+        }
+        if uses_default_access_log && disables_access_log {
+            issues.push(issue(
+                servers.first().map_or(&http.origin, |server| &server.origin),
+                E_SEMANTICS_NOT_REPRESENTABLE,
+                "one canonical HTTP service cannot mix migrated default and disabled nginx access logs",
+            ));
         }
         if listener_bind.is_none() {
             issues.push(issue(
@@ -234,6 +241,7 @@ impl Lowerer {
             http_index,
             bind_index,
             downstream_tls,
+            uses_default_access_log,
             &mut issues,
         );
         BindBlock {
@@ -258,6 +266,7 @@ impl Lowerer {
         http_index: usize,
         bind_index: usize,
         downstream_tls: bool,
+        uses_default_access_log: bool,
         issues: &mut Vec<LowerIssue>,
     ) -> Option<BindCandidate> {
         let mut routes = Vec::new();
@@ -365,6 +374,17 @@ impl Lowerer {
         if let Some(tls) = tls {
             all_origins.extend(tls.origins);
         }
+        let access_log = if uses_default_access_log {
+            self.used_default_access_log_overlay = true;
+            Some(AccessLogPolicy::File {
+                path: self
+                    .default_access_log_path
+                    .clone()
+                    .expect("default access-log migration path"),
+            })
+        } else {
+            Some(AccessLogPolicy::Disabled)
+        };
         Some(BindCandidate {
             listener: Listener {
                 name: format!("nginx-http-listener-{http_index}-{bind_index}"),
@@ -381,7 +401,7 @@ impl Lowerer {
                 upstream_io_timeout_ms: NGINX_DEFAULT_PROXY_TIMEOUT_MS,
                 max_request_body_bytes: Some(NGINX_DEFAULT_BODY_BYTES),
                 gzip: None,
-                access_log: Some(AccessLogPolicy::Disabled),
+                access_log,
             },
             pools,
             certificates,
@@ -970,7 +990,13 @@ impl Lowerer {
         let try_files = self.lower_try_files(location, &mut origins, issues);
         let mime = self.lower_static_mime(location, &mut origins, issues);
         let headers = self.lower_literal_headers(location, &mut origins, issues);
-        let error_responses = self.lower_error_responses(location, &mut origins, issues);
+        let mut error_responses = self.lower_error_responses(location, &mut origins, issues);
+        if let Some(server) = self.default_error_server.clone() {
+            if !self.error_page_matches_status(location.origin.occurrence, 404) {
+                error_responses.push(nginx_default_404(&server));
+                self.used_default_error_overlay.set(true);
+            }
+        }
         let autoindex = self.policy_enabled(location.origin.occurrence, b"autoindex", false);
         let autoindex_exact_size =
             self.policy_enabled(location.origin.occurrence, b"autoindex_exact_size", true);
@@ -1794,7 +1820,9 @@ impl Lowerer {
             };
             responses.push(HttpStaticErrorResponse {
                 statuses,
-                file: PathBuf::from(canonical_file.trim_start_matches('/')),
+                file: Some(PathBuf::from(canonical_file.trim_start_matches('/'))),
+                body: None,
+                headers: Vec::new(),
                 internal_redirect: Some(canonical_file.into_owned()),
             });
         }
@@ -1817,6 +1845,29 @@ impl Lowerer {
         self.effective_policy(scope, name)
             .and_then(|policy| policy.arguments.first().cloned())
             .map_or(default, |value| value == b"on")
+    }
+}
+
+fn nginx_default_404(server: &str) -> HttpStaticErrorResponse {
+    HttpStaticErrorResponse {
+        statuses: vec![404],
+        file: None,
+        body: Some(format!(
+            "<html>\r\n<head><title>404 Not Found</title></head>\r\n<body>\r\n<center><h1>404 Not Found</h1></center>\r\n<hr><center>{server}</center>\r\n</body>\r\n</html>\r\n"
+        )),
+        headers: vec![
+            HttpLiteralHeader {
+                name: "server".into(),
+                value: server.into(),
+                always: true,
+            },
+            HttpLiteralHeader {
+                name: "content-type".into(),
+                value: "text/html".into(),
+                always: true,
+            },
+        ],
+        internal_redirect: None,
     }
 }
 

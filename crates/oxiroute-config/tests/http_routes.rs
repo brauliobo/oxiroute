@@ -132,6 +132,10 @@ fn normalizes_host_and_path_selectors_without_collapsing_semantics() {
             r#"          path = { kind = "exact", value = "/api" },"#,
             "",
         ),
+        proxy_route(
+            r#"          path = { kind = "ascii_case_insensitive_exact", value = "/Health" },"#,
+            "",
+        ),
     ]
     .join("\n");
     let loaded = load_lua(&config(
@@ -150,12 +154,28 @@ fn normalizes_host_and_path_selectors_without_collapsing_semantics() {
     assert_eq!(routes[1]["host"]["value"], "Example.COM:8443");
     assert_eq!(routes[1]["path"]["kind"], "raw_prefix");
     assert_eq!(routes[2]["path"]["kind"], "exact");
+    assert_eq!(routes[3]["path"]["kind"], "ascii_case_insensitive_exact");
 
     let rendered = render_lua(&loaded).expect("rendered selectors");
     assert_eq!(
         render_lua(&load_lua(&rendered).expect("selector reload")).expect("second render"),
         rendered
     );
+}
+
+#[test]
+fn ascii_case_insensitive_exact_paths_reject_non_ascii_values() {
+    let route = proxy_route(
+        r#"          path = { kind = "ascii_case_insensitive_exact", value = "/saude" },"#,
+        "",
+    )
+    .replace("/saude", "/saúde");
+    let error = error(&config(
+        &route,
+        r#"{ type = "socket", address = "127.0.0.1:3000" }"#,
+    ));
+
+    assert!(error.contains("ASCII path"));
 }
 
 #[test]
@@ -725,7 +745,7 @@ fn validates_secret_backed_bearer_access_without_inline_tokens() {
 fn validates_explicit_retry_triggers_and_safety_rules() {
     let endpoint = r#"{ type = "socket", address = "127.0.0.1:3000" }"#;
     for policy in [
-        r"              retry = { max_retries = 3 },",
+        r"              retry = { max_retries = 4 },",
         r"              retry = { max_retries = 1, triggers = {} },",
         r#"              retry = { triggers = { "connect_failure", "connect_failure" } },"#,
         r#"              retry = { triggers = { "response_status" } },"#,

@@ -647,7 +647,7 @@ fn rejects_insecure_and_overquota_recording_roots_without_path_disclosure() {
         overquota_root.path(),
     );
     policy.max_queue_bytes = 1;
-    policy.max_storage_bytes = 1;
+    policy.max_storage_bytes = Some(1);
     overquota.rtmp_services[0].applications[0]
         .recorders
         .push(policy);

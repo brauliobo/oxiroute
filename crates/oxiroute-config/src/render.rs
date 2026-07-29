@@ -517,8 +517,14 @@ impl Renderer {
         self.integer_field("max_queue_messages", max_queue_messages);
         self.integer_field("max_queue_bytes", max_queue_bytes);
         self.integer_field("shutdown_timeout_ms", shutdown_timeout_ms);
-        self.integer_field("max_storage_bytes", max_storage_bytes);
-        self.integer_field("max_storage_files", max_storage_files);
+        match max_storage_bytes {
+            Some(limit) => self.integer_field("max_storage_bytes", limit),
+            None => self.null_field("max_storage_bytes"),
+        }
+        match max_storage_files {
+            Some(limit) => self.integer_field("max_storage_files", limit),
+            None => self.null_field("max_storage_files"),
+        }
         self.integer_field("max_active_recorders", max_active_recorders);
         Ok(())
     }
@@ -821,6 +827,9 @@ impl Renderer {
             HttpPathSelector::SegmentPrefix { value } => ("segment_prefix", value),
             HttpPathSelector::RawPrefix { value } => ("raw_prefix", value),
             HttpPathSelector::Exact { value } => ("exact", value),
+            HttpPathSelector::AsciiCaseInsensitiveExact { value } => {
+                ("ascii_case_insensitive_exact", value)
+            }
         };
         self.string_field("kind", kind);
         self.string_field("value", value);
@@ -1049,15 +1058,20 @@ impl Renderer {
         response: &HttpStaticErrorResponse,
     ) -> Result<(), ConfigError> {
         self.integer_list_field("statuses", &response.statuses);
-        self.string_field(
-            "file",
-            utf8_http_route_path(
-                &response.file,
-                service,
-                route_index,
-                "action.static_files.error_responses[].file",
-            )?,
-        );
+        match &response.file {
+            Some(file) => self.string_field(
+                "file",
+                utf8_http_route_path(
+                    file,
+                    service,
+                    route_index,
+                    "action.static_files.error_responses[].file",
+                )?,
+            ),
+            None => self.null_field("file"),
+        }
+        self.optional_string_field("body", response.body.as_deref());
+        self.table_list_or_nil_field("headers", &response.headers, Self::http_literal_header);
         self.optional_string_field("internal_redirect", response.internal_redirect.as_deref());
         Ok(())
     }

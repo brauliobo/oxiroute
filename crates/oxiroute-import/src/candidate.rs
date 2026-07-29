@@ -50,9 +50,12 @@ pub struct ActivationRequirement<Origin> {
 pub enum OperationalOverlayKind {
     BearerTokenFile,
     CertificateMaterial,
+    DefaultErrorPageMigration,
     HostTimezone,
     OneRequestPerConnection,
     PrometheusMigration,
+    RecordingRootMigration,
+    StructuredAccessLogMigration,
     HtpasswdFile,
     UpstreamTlsPolicy,
 }

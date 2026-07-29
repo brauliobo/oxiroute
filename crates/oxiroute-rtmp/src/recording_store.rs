@@ -28,11 +28,11 @@ const UUID_SIMPLE_LENGTH: usize = 32;
 const MAX_NAME_ATTEMPTS: usize = 16;
 const OWNERSHIP_RETRY_INTERVAL: Duration = Duration::from_millis(2);
 
-/// Hard storage bounds enforced by one pinned recording root.
+/// Optional storage quotas and the hard active-recorder bound for one pinned recording root.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RecordingStoreLimits {
-    pub max_bytes: u64,
-    pub max_files: usize,
+    pub max_bytes: Option<u64>,
+    pub max_files: Option<usize>,
     pub max_active_recorders: usize,
 }
 
@@ -309,9 +309,14 @@ impl RecordingStore {
                 maximum: self.shared.limits.max_active_recorders,
             });
         }
-        if state.files >= self.shared.limits.max_files {
+        if self
+            .shared
+            .limits
+            .max_files
+            .is_some_and(|maximum| state.files >= maximum)
+        {
             return Err(RecordingStoreError::FileLimit {
-                maximum: self.shared.limits.max_files,
+                maximum: self.shared.limits.max_files.expect("checked file quota"),
             });
         }
 
@@ -586,10 +591,14 @@ impl Write for RecordingFile {
         {
             let mut state = self.shared.lock();
             let Some(new_total) = state.bytes_used.checked_add(reserved_growth) else {
-                return Err(byte_quota_error(self.shared.limits.max_bytes));
+                return Err(byte_quota_error(
+                    self.shared.limits.max_bytes.unwrap_or(u64::MAX),
+                ));
             };
-            if new_total > self.shared.limits.max_bytes {
-                return Err(byte_quota_error(self.shared.limits.max_bytes));
+            if let Some(maximum) = self.shared.limits.max_bytes {
+                if new_total > maximum {
+                    return Err(byte_quota_error(maximum));
+                }
             }
             state.bytes_used = new_total;
         }
@@ -728,7 +737,13 @@ fn scan_root(
     if cleaned {
         rustix_fs::fsync(root).map_err(|source| RecordingStoreError::RootSync(source.into()))?;
     }
-    if state.bytes_used > limits.max_bytes || state.files > limits.max_files {
+    if limits
+        .max_bytes
+        .is_some_and(|maximum| state.bytes_used > maximum)
+        || limits
+            .max_files
+            .is_some_and(|maximum| state.files > maximum)
+    {
         return Err(RecordingStoreError::ExistingUsageExceedsLimits {
             bytes_used: state.bytes_used,
             files: state.files,

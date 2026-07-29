@@ -430,6 +430,7 @@ pub struct ServerOption {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AclCriterion {
     HostExact,
+    PathExact,
     PathPrefix,
 }
 
@@ -485,7 +486,15 @@ pub enum HttpRequestRule {
         status: u16,
         body: Vec<u8>,
         content_type: Option<Vec<u8>>,
+        condition: Option<HttpRequestCondition>,
     },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HttpRequestCondition {
+    pub condition: AclReference,
+    pub polarity: ConditionPolarity,
+    pub condition_negated: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -680,8 +689,23 @@ struct SectionState {
     servers: Vec<EffectiveServer>,
     server_defaults: Option<EffectiveServer>,
     acls: Vec<EffectiveValue<AclDefinition>>,
+    pending_http_request_rules: Vec<PendingHttpRequestRule>,
     pending_use_backends: Vec<PendingUseBackend>,
     use_backends: Vec<EffectiveValue<UseBackend>>,
+}
+
+struct PendingHttpRequestRule {
+    occurrence: OccurrenceId,
+    span: Span,
+    rule: HttpRequestRule,
+    condition: Option<PendingAclCondition>,
+}
+
+struct PendingAclCondition {
+    name: Vec<u8>,
+    span: Span,
+    polarity: ConditionPolarity,
+    negated: bool,
 }
 
 struct PendingUseBackend {
@@ -1010,6 +1034,7 @@ impl Resolver {
             ..SectionState::default()
         };
         self.resolve_section_directives(index, &header, &mut state);
+        self.finish_http_request_rules(&mut state);
         self.finish_use_backends(&mut state);
 
         let resolved = EffectiveDefaults {
@@ -1107,6 +1132,7 @@ impl Resolver {
             ..SectionState::default()
         };
         self.resolve_section_directives(index, &header, &mut state);
+        self.finish_http_request_rules(&mut state);
         self.finish_use_backends(&mut state);
         self.consume(
             OccurrenceId::SectionHeader(meta.id),
@@ -1698,15 +1724,18 @@ impl Resolver {
         directive: &Directive,
         state: &mut SectionState,
     ) {
-        let Some(rule) = parse_http_request_rule(&directive.arguments) else {
+        let Some((rule, condition)) = parse_http_request_rule(&directive.arguments) else {
             self.unsupported_directive_form_for_occurrence(occurrence, directive);
             return;
         };
         state
-            .settings
-            .http_request_rules
-            .push(EffectiveValue::direct(rule, occurrence, directive.span));
-        self.consume(occurrence, Consumption::Entry);
+            .pending_http_request_rules
+            .push(PendingHttpRequestRule {
+                occurrence,
+                span: directive.span,
+                rule,
+                condition,
+            });
     }
 
     fn resolve_http_response_rule(
@@ -1927,6 +1956,71 @@ impl Resolver {
         let conflict = self.set_setting(&mut state.settings.http_check_expect, value);
         if !self.finish_setting(occurrence, directive, conflict, &mut state.settings) {
             self.consume(occurrence, Consumption::Setting);
+        }
+    }
+
+    fn finish_http_request_rules(&mut self, state: &mut SectionState) {
+        let mut definitions: HashMap<Vec<u8>, Vec<&EffectiveValue<AclDefinition>>> = HashMap::new();
+        for acl in &state.acls {
+            definitions
+                .entry(acl.value.name.clone())
+                .or_default()
+                .push(acl);
+        }
+
+        for pending in state.pending_http_request_rules.drain(..) {
+            let mut references = Vec::new();
+            let condition = if let Some(condition) = pending.condition {
+                let Some(acls) = definitions.get(&condition.name) else {
+                    self.unresolved_reference(
+                        pending.occurrence,
+                        condition.span,
+                        "ACL",
+                        &condition.name,
+                        &[],
+                        "is not defined in this section",
+                    );
+                    continue;
+                };
+                let targets = acls
+                    .iter()
+                    .map(|acl| ReferenceTarget {
+                        occurrence: acl.provenance.origin,
+                        span: acl.provenance.origin_span,
+                    })
+                    .collect::<Vec<_>>();
+                references.push(ReferenceProvenance {
+                    use_span: condition.span,
+                    targets: targets.clone(),
+                });
+                Some(HttpRequestCondition {
+                    condition: AclReference {
+                        name: condition.name,
+                        definitions: targets.iter().map(|target| target.occurrence).collect(),
+                    },
+                    polarity: condition.polarity,
+                    condition_negated: condition.negated,
+                })
+            } else {
+                None
+            };
+            let mut rule = pending.rule;
+            if let HttpRequestRule::FixedResponse {
+                condition: target, ..
+            } = &mut rule
+            {
+                *target = condition;
+            }
+            state
+                .settings
+                .http_request_rules
+                .push(EffectiveValue::direct_references(
+                    rule,
+                    pending.occurrence,
+                    pending.span,
+                    references,
+                ));
+            self.consume(pending.occurrence, Consumption::Entry);
         }
     }
 
@@ -3493,6 +3587,7 @@ fn parse_acl(directive: &Directive) -> Option<AclDefinition> {
     };
     let criterion = match criterion.value.as_slice() {
         b"hdr(host)" => AclCriterion::HostExact,
+        b"path" => AclCriterion::PathExact,
         b"path_beg" => AclCriterion::PathPrefix,
         _ => return None,
     };
@@ -3512,17 +3607,23 @@ fn parse_acl(directive: &Directive) -> Option<AclDefinition> {
     })
 }
 
-fn parse_http_request_rule(arguments: &[super::Word]) -> Option<HttpRequestRule> {
+fn parse_http_request_rule(
+    arguments: &[super::Word],
+) -> Option<(HttpRequestRule, Option<PendingAclCondition>)> {
     match arguments {
-        [action, name, value] if action.value == b"set-header" => {
-            Some(HttpRequestRule::SetHeader {
+        [action, name, value] if action.value == b"set-header" => Some((
+            HttpRequestRule::SetHeader {
                 name: name.value.clone(),
                 value: parse_http_header_value(&value.value)?,
-            })
-        }
-        [action, name] if action.value == b"del-header" => Some(HttpRequestRule::RemoveHeader {
-            name: name.value.clone(),
-        }),
+            },
+            None,
+        )),
+        [action, name] if action.value == b"del-header" => Some((
+            HttpRequestRule::RemoveHeader {
+                name: name.value.clone(),
+            },
+            None,
+        )),
         [action, kind, location, rest @ ..]
             if action.value == b"redirect" && kind.value == b"location" =>
         {
@@ -3534,13 +3635,59 @@ fn parse_http_request_rule(arguments: &[super::Word]) -> Option<HttpRequestRule>
                 [code, value] if code.value == b"code" => parse_u16(&value.value)?,
                 _ => return None,
             };
-            matches!(status, 301 | 302 | 307 | 308).then(|| HttpRequestRule::Redirect {
-                status,
-                location: location.value.clone(),
+            matches!(status, 301 | 302 | 307 | 308).then(|| {
+                (
+                    HttpRequestRule::Redirect {
+                        status,
+                        location: location.value.clone(),
+                    },
+                    None,
+                )
             })
         }
-        [action, rest @ ..] if action.value == b"return" => parse_http_return_rule(rest),
+        [action, rest @ ..] if action.value == b"return" => {
+            let (arguments, condition) = split_http_condition(rest);
+            Some((parse_http_return_rule(arguments)?, condition))
+        }
         _ => None,
+    }
+}
+
+fn split_http_condition(
+    arguments: &[super::Word],
+) -> (&[super::Word], Option<PendingAclCondition>) {
+    match arguments {
+        [action @ .., polarity, negation, acl]
+            if matches!(polarity.value.as_slice(), b"if" | b"unless") && negation.value == b"!" =>
+        {
+            (
+                action,
+                Some(PendingAclCondition {
+                    name: acl.value.clone(),
+                    span: acl.span,
+                    polarity: parse_condition_polarity(&polarity.value),
+                    negated: true,
+                }),
+            )
+        }
+        [action @ .., polarity, acl] if matches!(polarity.value.as_slice(), b"if" | b"unless") => (
+            action,
+            Some(PendingAclCondition {
+                name: acl.value.clone(),
+                span: acl.span,
+                polarity: parse_condition_polarity(&polarity.value),
+                negated: false,
+            }),
+        ),
+        _ => (arguments, None),
+    }
+}
+
+fn parse_condition_polarity(value: &[u8]) -> ConditionPolarity {
+    match value {
+        b"if" => ConditionPolarity::If,
+        b"unless" => ConditionPolarity::Unless,
+        _ => unreachable!("condition syntax accepts only if or unless"),
     }
 }
 
@@ -3572,6 +3719,7 @@ fn parse_http_return_rule(arguments: &[super::Word]) -> Option<HttpRequestRule> 
         status,
         body,
         content_type,
+        condition: None,
     })
 }
 
