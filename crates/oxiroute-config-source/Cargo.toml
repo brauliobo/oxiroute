@@ -1,0 +1,18 @@
+[package]
+name = "oxiroute-config-source"
+description = "Bounded format-neutral configuration source adapters and expansion"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+hocon-parser.workspace = true
+kdl.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

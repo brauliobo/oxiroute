@@ -2,6 +2,7 @@
 members = [
     "crates/oxiroute-cache",
     "crates/oxiroute-config",
+    "crates/oxiroute-config-source",
     "crates/oxiroute-forward-proxy",
     "crates/oxiroute-import",
     "crates/oxiroute-rtmp",
@@ -29,9 +30,11 @@ clap = { version = "4.5", features = ["derive", "env"] }
 env_logger = "0.11"
 futures-util = "0.3"
 h2 = "0.4.15"
+hocon-parser = { version = "=1.11.0", features = ["serde"] }
 http = "1"
 httpdate = "1"
 log = "0.4"
+kdl = { version = "=6.5.0", default-features = false }
 mlua = { version = "0.11", features = ["lua54", "serialize", "vendored"] }
 notify = "8.2"
 openssl = "0.10.81"
