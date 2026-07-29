@@ -8,6 +8,7 @@ use std::{
 use http::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE};
 use openssl::{memcmp, sha::sha256};
 use oxiroute_config::Config;
+use oxiroute_config_source::ConfigFormat;
 use pingora::protocols::http::ServerSession;
 use rustix::fs::{self as rustix_fs, FileType, Mode, OFlags};
 use serde::Deserialize;
@@ -155,16 +156,22 @@ impl ConfigApiState {
 
     fn config_response(&self) -> ApiResponse {
         match self.coordinator.load() {
-            ConfigLoadOutcome::Loaded(document) => ApiResponse::json(
-                200,
-                &json!({
+            ConfigLoadOutcome::Loaded(document) => {
+                let mut response = json!({
                     "schemaVersion": 1,
                     "diskRevision": document.disk_revision,
+                    "candidateRevision": document.candidate_revision,
                     "activeRevision": self.active_revision(),
                     "config": document.normalized_config,
+                    "configFormat": document.format,
+                    "compositional": document.compositional,
+                    "dependencyCount": document.dependencies.len(),
+                    "configPreview": document.config_preview,
                     "diagnostics": document.diagnostics,
-                }),
-            ),
+                });
+                add_legacy_lua_preview(&mut response, document.format, &document.config_preview);
+                ApiResponse::json(200, &response)
+            }
             ConfigLoadOutcome::Rejected(rejection) => ApiResponse::json(
                 503,
                 &json!({
@@ -186,21 +193,27 @@ impl ConfigApiState {
             Ok(draft) => draft,
             Err(response) => return response,
         };
-        let candidate = match self.prepare_candidate(draft, now_unix_ms) {
+        let candidate = match self.prepare_candidate(&draft, now_unix_ms) {
             Ok(candidate) => candidate,
             Err(response) => return response,
         };
 
-        ApiResponse::json(
-            200,
-            &json!({
-                "candidateRevision": candidate.draft.candidate_revision,
-                "normalizedConfig": candidate.draft.normalized_config,
-                "luaPreview": candidate.draft.lua_preview,
-                "diagnostics": candidate.draft.diagnostics,
-                "topology": candidate.topology,
-            }),
-        )
+        let mut response = json!({
+            "candidateRevision": candidate.draft.candidate_revision,
+            "normalizedConfig": candidate.draft.normalized_config,
+            "configFormat": candidate.draft.format,
+            "compositional": candidate.draft.compositional,
+            "dependencyCount": candidate.draft.dependencies.len(),
+            "configPreview": candidate.draft.config_preview,
+            "diagnostics": candidate.draft.diagnostics,
+            "topology": candidate.topology,
+        });
+        add_legacy_lua_preview(
+            &mut response,
+            candidate.draft.format,
+            &candidate.draft.config_preview,
+        );
+        ApiResponse::json(200, &response)
     }
 
     fn save_config_response(
@@ -213,15 +226,16 @@ impl ConfigApiState {
             Ok(draft) => draft,
             Err(response) => return response,
         };
-        let candidate = match self.prepare_candidate(draft, now_unix_ms) {
+        let candidate = match self.prepare_candidate(&draft, now_unix_ms) {
             Ok(candidate) => candidate,
             Err(response) => return response,
         };
         let normalized_config = candidate.draft.normalized_config;
 
-        match self.coordinator.save(expected, normalized_config) {
+        match self.coordinator.save(expected, &normalized_config) {
             ConfigSaveOutcome::Saved(document) => self.saved_response(
                 &document.disk_revision,
+                &document.candidate_revision,
                 diagnostics_json(&document.diagnostics, false),
             ),
             ConfigSaveOutcome::Conflict(conflict) => self.conflict_response(&conflict),
@@ -234,7 +248,7 @@ impl ConfigApiState {
 
     fn prepare_candidate(
         &self,
-        draft: Config,
+        draft: &Config,
         now_unix_ms: u64,
     ) -> Result<PreparedCandidate, ApiResponse> {
         let candidate = match self.coordinator.validate(draft) {
@@ -268,7 +282,10 @@ impl ConfigApiState {
                     disk_revision,
                     candidate_revision: candidate.candidate_revision.clone(),
                     normalized_config: candidate.normalized_config.clone(),
-                    lua_preview: candidate.lua_preview.clone(),
+                    format: candidate.format,
+                    compositional: candidate.compositional,
+                    dependencies: candidate.dependencies.clone(),
+                    config_preview: candidate.config_preview.clone(),
                     diagnostics: candidate.diagnostics.clone(),
                 })
                 .map_err(|_| {
@@ -289,10 +306,11 @@ impl ConfigApiState {
     fn saved_response(
         &self,
         disk_revision: &ConfigRevision,
+        candidate_revision: &ConfigRevision,
         mut diagnostics: Vec<Value>,
     ) -> ApiResponse {
         let active_revision = self.active_revision();
-        let unchanged_active = *disk_revision == active_revision;
+        let unchanged_active = *candidate_revision == active_revision;
         if !unchanged_active {
             diagnostics.push(activation_pending_diagnostic());
         }
@@ -300,6 +318,7 @@ impl ConfigApiState {
             200,
             &json!({
                 "diskRevision": disk_revision,
+                "candidateRevision": candidate_revision,
                 "activeRevision": active_revision,
                 "outcome": if unchanged_active {
                     "unchanged_active"
@@ -314,8 +333,10 @@ impl ConfigApiState {
     }
 
     fn failed_save_response(&self, failure: &ConfigSaveFailure) -> ApiResponse {
-        if failure.disk_revision.as_ref() == Some(&failure.candidate_revision) {
+        let preview_disk_revision = ConfigRevision::from_bytes(failure.config_preview.as_bytes());
+        if failure.disk_revision.as_ref() == Some(&preview_disk_revision) {
             return self.saved_response(
+                &preview_disk_revision,
                 &failure.candidate_revision,
                 diagnostics_json(&failure.diagnostics, true),
             );
@@ -333,18 +354,24 @@ impl ConfigApiState {
 
     fn conflict_response(&self, conflict: &ConfigConflict) -> ApiResponse {
         match self.coordinator.load() {
-            ConfigLoadOutcome::Loaded(document) => ApiResponse::json(
-                409,
-                &json!({
+            ConfigLoadOutcome::Loaded(document) => {
+                let mut response = json!({
                     "schemaVersion": 1,
                     "diskRevision": document.disk_revision,
+                    "candidateRevision": document.candidate_revision,
                     "activeRevision": self.active_revision(),
                     "expectedRevision": conflict.expected_revision,
                     "outcome": "conflict",
                     "config": document.normalized_config,
+                    "configFormat": document.format,
+                    "compositional": document.compositional,
+                    "dependencyCount": document.dependencies.len(),
+                    "configPreview": document.config_preview,
                     "diagnostics": conflict.diagnostics,
-                }),
-            ),
+                });
+                add_legacy_lua_preview(&mut response, document.format, &document.config_preview);
+                ApiResponse::json(409, &response)
+            }
             ConfigLoadOutcome::Rejected(rejection) => ApiResponse::json(
                 503,
                 &json!({
@@ -361,6 +388,15 @@ impl ConfigApiState {
                 }),
             ),
         }
+    }
+}
+
+fn add_legacy_lua_preview(response: &mut Value, format: ConfigFormat, preview: &str) {
+    if format == ConfigFormat::Lua {
+        response
+            .as_object_mut()
+            .expect("configuration response is an object")
+            .insert("luaPreview".to_owned(), Value::String(preview.to_owned()));
     }
 }
 

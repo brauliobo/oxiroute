@@ -407,7 +407,7 @@ fn management_token_files_are_bounded_regular_nofollow_and_owner_only() {
         RtmpManagementApi::new(empty_registry(), RuntimeMetrics::new(), empty_topology())
             .with_config_coordinator_from_token_file(
                 coordinator.clone(),
-                document.disk_revision.clone(),
+                document.candidate_revision.clone(),
                 &token_path,
             )
             .is_ok()
@@ -418,7 +418,7 @@ fn management_token_files_are_bounded_regular_nofollow_and_owner_only() {
         RtmpManagementApi::new(empty_registry(), RuntimeMetrics::new(), empty_topology())
             .with_config_coordinator_from_token_file(
                 coordinator.clone(),
-                document.disk_revision.clone(),
+                document.candidate_revision.clone(),
                 &token_path,
             )
             .is_err()
@@ -431,7 +431,7 @@ fn management_token_files_are_bounded_regular_nofollow_and_owner_only() {
         RtmpManagementApi::new(empty_registry(), RuntimeMetrics::new(), empty_topology())
             .with_config_coordinator_from_token_file(
                 coordinator.clone(),
-                document.disk_revision.clone(),
+                document.candidate_revision.clone(),
                 &token_link,
             )
             .is_err()
@@ -442,7 +442,7 @@ fn management_token_files_are_bounded_regular_nofollow_and_owner_only() {
         RtmpManagementApi::new(empty_registry(), RuntimeMetrics::new(), empty_topology())
             .with_config_coordinator_from_token_file(
                 coordinator,
-                document.disk_revision,
+                document.candidate_revision,
                 &token_path,
             )
             .is_err()
@@ -476,7 +476,7 @@ async fn config_writes_require_a_current_revision_and_return_authoritative_confl
         .request(
             "PUT",
             "/api/v1/config",
-            Some(harness.active_revision.as_str()),
+            Some(harness.disk_revision.as_str()),
             Some(&request),
         )
         .await;
@@ -503,6 +503,63 @@ async fn config_writes_require_a_current_revision_and_return_authoritative_confl
 }
 
 #[tokio::test]
+async fn config_api_reports_source_format_composition_and_native_preview_name() {
+    let active = editable_config();
+    let harness = ManagementHarness::start(&active).await;
+
+    let get = harness.request("GET", "/api/v1/config", None, None).await;
+    assert_eq!(get.status, 200);
+    let get = get.json();
+    assert_eq!(get["configFormat"], "lua");
+    assert_eq!(get["compositional"], false);
+    assert_eq!(get["dependencyCount"], 0);
+    assert_eq!(get["configPreview"], get["luaPreview"]);
+    assert_eq!(get["candidateRevision"], get["activeRevision"]);
+    assert_ne!(get["diskRevision"], get["candidateRevision"]);
+
+    let request = serde_json::json!({ "config": active });
+    let validated = harness
+        .request("POST", "/api/v1/config/validate", None, Some(&request))
+        .await;
+    assert_eq!(validated.status, 200);
+    let validated = validated.json();
+    assert_eq!(validated["configFormat"], "lua");
+    assert_eq!(validated["configPreview"], validated["luaPreview"]);
+}
+
+#[tokio::test]
+async fn config_api_rejects_typed_save_over_a_compositional_root() {
+    let config = editable_config();
+    let rendered = serde_json::json!({
+        "templates": { "base": serde_json::to_value(&config).unwrap() },
+        "use": "base",
+    });
+    let source = serde_json::to_vec_pretty(&rendered).unwrap();
+    let harness = ManagementHarness::start_source(&config, "hocon", &source).await;
+    let before = fs::read(&harness.config_path).unwrap();
+    let get = harness.request("GET", "/api/v1/config", None, None).await;
+    let snapshot = get.json();
+    assert_eq!(snapshot["configFormat"], "hocon");
+    assert_eq!(snapshot["compositional"], true);
+
+    let request = serde_json::json!({ "config": config });
+    let response = harness
+        .request(
+            "PUT",
+            "/api/v1/config",
+            snapshot["diskRevision"].as_str(),
+            Some(&request),
+        )
+        .await;
+    assert_eq!(response.status, 422);
+    assert_eq!(
+        response.json()["diagnostics"][0]["code"],
+        "E_COMPOSITIONAL_ROOT"
+    );
+    assert_eq!(fs::read(&harness.config_path).unwrap(), before);
+}
+
+#[tokio::test]
 async fn rejects_invalid_malformed_and_oversized_config_requests() {
     let active = editable_config();
     let harness = ManagementHarness::start(&active).await;
@@ -525,7 +582,7 @@ async fn rejects_invalid_malformed_and_oversized_config_requests() {
         .request(
             "PUT",
             "/api/v1/config",
-            Some(harness.active_revision.as_str()),
+            Some(harness.disk_revision.as_str()),
             Some(&invalid_request),
         )
         .await;
@@ -680,7 +737,7 @@ async fn direct_put_preflight_failure_does_not_mutate_disk() {
         .request(
             "PUT",
             "/api/v1/config",
-            Some(harness.active_revision.as_str()),
+            Some(harness.disk_revision.as_str()),
             Some(&request),
         )
         .await;
@@ -740,7 +797,7 @@ async fn candidate_recorder_preflight_never_mutates_the_recording_root() {
         .request(
             "PUT",
             "/api/v1/config",
-            Some(harness.active_revision.as_str()),
+            Some(harness.disk_revision.as_str()),
             Some(&request),
         )
         .await;
@@ -769,7 +826,7 @@ async fn missing_candidate_ui_assets_are_rejected_without_mutating_disk() {
         .request(
             "PUT",
             "/api/v1/config",
-            Some(harness.active_revision.as_str()),
+            Some(harness.disk_revision.as_str()),
             Some(&request),
         )
         .await;
@@ -791,7 +848,7 @@ async fn saving_the_active_generation_is_truthfully_idempotent() {
         .request(
             "PUT",
             "/api/v1/config",
-            Some(harness.active_revision.as_str()),
+            Some(harness.disk_revision.as_str()),
             Some(&request),
         )
         .await;
@@ -801,6 +858,10 @@ async fn saving_the_active_generation_is_truthfully_idempotent() {
     assert_eq!(response_json["activationState"], "active");
     assert_eq!(response_json["restartRequired"], false);
     assert_eq!(
+        response_json["candidateRevision"],
+        response_json["activeRevision"]
+    );
+    assert_ne!(
         response_json["diskRevision"],
         response_json["activeRevision"]
     );
@@ -817,7 +878,7 @@ async fn conflict_reload_failure_returns_no_fabricated_revision() {
         .request(
             "PUT",
             "/api/v1/config",
-            Some(harness.active_revision.as_str()),
+            Some(harness.disk_revision.as_str()),
             Some(&request),
         )
         .await;
@@ -911,6 +972,7 @@ fn candidate_config(active: &Config, listener_name: &str) -> Config {
 
 struct ManagementHarness {
     active_revision: ConfigRevision,
+    disk_revision: ConfigRevision,
     address: SocketAddr,
     config_path: PathBuf,
     shutdown: watch::Sender<bool>,
@@ -920,18 +982,20 @@ struct ManagementHarness {
 
 impl ManagementHarness {
     async fn start(config: &Config) -> Self {
+        let source = render_lua(config).expect("active config renders");
+        Self::start_source(config, "lua", source.as_bytes()).await
+    }
+
+    async fn start_source(config: &Config, extension: &str, source: &[u8]) -> Self {
         let directory = TempDir::new().expect("temporary canonical config directory");
-        let config_path = directory.path().join("oxiroute.lua");
-        fs::write(
-            &config_path,
-            render_lua(config).expect("active config renders"),
-        )
-        .expect("write active config");
+        let config_path = directory.path().join(format!("oxiroute.{extension}"));
+        fs::write(&config_path, source).expect("write active config");
         let coordinator = CanonicalConfigCoordinator::new(&config_path).expect("coordinator");
         let ConfigLoadOutcome::Loaded(document) = coordinator.load() else {
             panic!("active config must load")
         };
-        let active_revision = document.disk_revision.clone();
+        let active_revision = document.candidate_revision.clone();
+        let disk_revision = document.disk_revision.clone();
         let plan = runtime_plan(config).expect("active runtime plan");
         let metrics = RuntimeMetrics::new();
         metrics.set_rtmp_recording_supported(plan.rtmp_recording_supported);
@@ -959,6 +1023,7 @@ impl ManagementHarness {
 
         Self {
             active_revision,
+            disk_revision,
             address,
             config_path,
             shutdown,

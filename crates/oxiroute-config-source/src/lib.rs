@@ -28,10 +28,13 @@ pub use resolver::{ResolvedSource, resolve_source, resolve_source_with_format};
 pub use templates::expand_templates;
 pub use uci::{UciDocument, UciEntry, UciSection, parse_uci_document, render_uci_document};
 
+use oxiroute_config::{Config, compose_configs, render_lua};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// A supported configuration source syntax.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
 #[non_exhaustive]
 pub enum ConfigFormat {
     /// KDL 2.0, the default source and preview format.
@@ -116,4 +119,27 @@ pub fn render_value(format: ConfigFormat, value: &Value) -> Result<String, Confi
     };
     limits::check_output(&output)?;
     Ok(output)
+}
+
+/// Validates, normalizes, and deterministically renders a typed configuration.
+///
+/// KDL, UCI, and HOCON are rendered from the normalized serde value. Lua uses the existing
+/// restricted canonical renderer.
+///
+/// # Errors
+///
+/// Returns an error when the typed configuration is invalid or the selected format cannot
+/// represent the normalized value within the configured bounds.
+pub fn render_config(format: ConfigFormat, config: &Config) -> Result<String, ConfigSourceError> {
+    let normalized = compose_configs(std::slice::from_ref(config))
+        .map_err(|error| ConfigSourceError::Composition(error.to_string()))?;
+    if format == ConfigFormat::Lua {
+        return render_lua(&normalized).map_err(|error| ConfigSourceError::Render {
+            format: "Lua",
+            message: error.to_string(),
+        });
+    }
+    let value = serde_json::to_value(normalized)
+        .map_err(|error| ConfigSourceError::TypedConfig(error.to_string()))?;
+    render_value(format, &value)
 }

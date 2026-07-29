@@ -13,6 +13,7 @@ use oxiroute_config::{
     HttpService, HttpVersionPolicy, Listener, ListenerBind, Protocol, RtmpApplication, RtmpService,
     UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, render_lua,
 };
+use oxiroute_config_source::{ConfigFormat, render_config};
 use tempfile::TempDir;
 
 use super::{storage::StorageFailure, *};
@@ -210,11 +211,15 @@ fn load_hashes_exact_disk_bytes_and_returns_a_normalized_preview() {
     assert!(document.normalized_config.rtmp_services.is_empty());
     assert_eq!(
         document.candidate_revision,
-        ConfigRevision::from_bytes(document.lua_preview.as_bytes())
+        ConfigRevision::from_bytes(
+            render_config(ConfigFormat::Kdl, &document.normalized_config)
+                .unwrap()
+                .as_bytes()
+        )
     );
     assert_ne!(document.disk_revision, document.candidate_revision);
     assert_eq!(
-        oxiroute_config::load_lua(&document.lua_preview).unwrap(),
+        oxiroute_config::load_lua(&document.config_preview).unwrap(),
         document.normalized_config
     );
     assert!(document.diagnostics.is_empty());
@@ -224,10 +229,11 @@ fn load_hashes_exact_disk_bytes_and_returns_a_normalized_preview() {
 fn typed_validation_is_normalized_and_deterministic() {
     let (_temp, _path, coordinator) = fixture(&minimal_config());
 
-    let ConfigValidationOutcome::Valid(first) = coordinator.validate(normalizable_config()) else {
+    let ConfigValidationOutcome::Valid(first) = coordinator.validate(&normalizable_config()) else {
         panic!("first draft is invalid")
     };
-    let ConfigValidationOutcome::Valid(second) = coordinator.validate(normalizable_config()) else {
+    let ConfigValidationOutcome::Valid(second) = coordinator.validate(&normalizable_config())
+    else {
         panic!("second draft is invalid")
     };
     let first = *first;
@@ -250,8 +256,63 @@ fn typed_validation_is_normalized_and_deterministic() {
     );
     assert_eq!(
         render_lua(&first.normalized_config).unwrap(),
-        first.lua_preview
+        first.config_preview
     );
+}
+
+#[test]
+fn materialized_formats_load_and_save_in_their_authored_format() {
+    let directory = TempDir::new().unwrap();
+    for (extension, format) in [
+        ("kdl", ConfigFormat::Kdl),
+        ("lua", ConfigFormat::Lua),
+        ("uci", ConfigFormat::Uci),
+        ("hocon", ConfigFormat::Hocon),
+    ] {
+        let path = directory.path().join(format!("oxiroute.{extension}"));
+        let source = render_config(format, &minimal_config()).unwrap();
+        fs::write(&path, &source).unwrap();
+        let coordinator = CanonicalConfigCoordinator::new(&path).unwrap();
+        let document = loaded(coordinator.load());
+
+        assert_eq!(document.format, format);
+        assert!(!document.compositional);
+        assert!(document.dependencies.is_empty());
+        assert_eq!(document.config_preview, source);
+        assert_eq!(
+            document.disk_revision,
+            ConfigRevision::from_bytes(source.as_bytes())
+        );
+
+        let mut draft = minimal_config();
+        draft.max_connections = Some(17);
+        let ConfigSaveOutcome::Saved(saved) = coordinator.save(&document.disk_revision, &draft)
+        else {
+            panic!("{format:?} save failed")
+        };
+        assert_eq!(saved.format, format);
+        assert_eq!(fs::read_to_string(&path).unwrap(), saved.config_preview);
+        assert_eq!(loaded(coordinator.load()).normalized_config, draft);
+    }
+}
+
+#[test]
+fn typed_save_rejects_a_compositional_root_without_flattening_it() {
+    let directory = TempDir::new().unwrap();
+    let path = directory.path().join("oxiroute.hocon");
+    let source = b"templates = { empty = { listeners = [] } }\nuse = \"empty\"\nversion = 1\n";
+    fs::write(&path, source).unwrap();
+    let coordinator = CanonicalConfigCoordinator::new(&path).unwrap();
+    let document = loaded(coordinator.load());
+
+    assert!(document.compositional);
+    let ConfigSaveOutcome::InvalidDraft(rejection) =
+        coordinator.save(&document.disk_revision, &minimal_config())
+    else {
+        panic!("compositional root was flattened")
+    };
+    assert_eq!(rejection.diagnostics[0].code, "E_COMPOSITIONAL_ROOT");
+    assert_eq!(fs::read(&path).unwrap(), source);
 }
 
 #[test]
@@ -261,15 +322,15 @@ fn save_escapes_values_and_installs_a_secure_regular_file() {
     let expected = loaded(coordinator.load()).disk_revision;
     let draft = rtmp_config("edge \"quoted\" \\ slash café");
 
-    let ConfigSaveOutcome::Saved(saved) = coordinator.save(&expected, draft.clone()) else {
+    let ConfigSaveOutcome::Saved(saved) = coordinator.save(&expected, &draft) else {
         panic!("save failed")
     };
 
     let bytes = fs::read(&path).unwrap();
-    assert_eq!(bytes, saved.lua_preview.as_bytes());
+    assert_eq!(bytes, saved.config_preview.as_bytes());
     assert!(
         saved
-            .lua_preview
+            .config_preview
             .contains(r#"name = "edge \"quoted\" \\ slash café","#)
     );
     assert_eq!(fs::symlink_metadata(&path).unwrap().mode() & 0o7777, 0o600);
@@ -285,7 +346,7 @@ fn invalid_draft_is_redacted_and_never_touches_disk() {
     let mut draft = rtmp_config("private-diagnostic-value");
     draft.version = 99;
 
-    let ConfigSaveOutcome::InvalidDraft(rejection) = coordinator.save(&expected, draft) else {
+    let ConfigSaveOutcome::InvalidDraft(rejection) = coordinator.save(&expected, &draft) else {
         panic!("draft was not rejected")
     };
 
@@ -320,7 +381,7 @@ fn stale_expected_revision_conflicts_without_overwriting_external_change() {
     fs::write(&path, &external).unwrap();
 
     let ConfigSaveOutcome::Conflict(conflict) =
-        coordinator.save(&expected, rtmp_config("candidate"))
+        coordinator.save(&expected, &rtmp_config("candidate"))
     else {
         panic!("stale save did not conflict")
     };
@@ -342,7 +403,7 @@ fn exchange_point_race_is_detected_and_external_file_is_restored() {
 
     let outcome = coordinator.save_inner(
         &expected,
-        rtmp_config("candidate"),
+        &rtmp_config("candidate"),
         || fs::write(&raced_path, &external).map_err(|_| ()),
         || {},
         ReplaceControl::default(),
@@ -370,7 +431,7 @@ fn post_exchange_replacement_conflicts_without_destroying_external_write() {
 
     let outcome = coordinator.save_inner(
         &expected,
-        rtmp_config("candidate"),
+        &rtmp_config("candidate"),
         || Ok(()),
         || fs::rename(&external_path, &raced_path).unwrap(),
         ReplaceControl::default(),
@@ -396,7 +457,7 @@ fn post_exchange_in_place_write_conflicts_without_rolling_back_external_bytes() 
 
     let outcome = coordinator.save_inner(
         &expected,
-        rtmp_config("candidate"),
+        &rtmp_config("candidate"),
         || Ok(()),
         || fs::write(&raced_path, &external).unwrap(),
         ReplaceControl::default(),
@@ -426,7 +487,7 @@ fn post_exchange_writer_is_not_destroyed_when_displaced_revision_also_conflicts(
 
     let outcome = coordinator.save_inner(
         &expected,
-        rtmp_config("candidate"),
+        &rtmp_config("candidate"),
         || fs::write(&before_path, &pre_exchange).map_err(|_| ()),
         || fs::rename(&external_path, &after_path).unwrap(),
         ReplaceControl::default(),
@@ -455,7 +516,7 @@ fn concurrent_saves_allow_exactly_one_revision_winner() {
         let barrier = Arc::clone(&barrier);
         workers.push(thread::spawn(move || {
             barrier.wait();
-            coordinator.save(&expected, rtmp_config(name))
+            coordinator.save(&expected, &rtmp_config(name))
         }));
     }
     barrier.wait();
@@ -506,7 +567,7 @@ fn independent_coordinators_serialize_the_complete_save_transaction() {
     let first_worker = thread::spawn(move || {
         first.save_inner(
             &first_expected,
-            rtmp_config("first"),
+            &rtmp_config("first"),
             || {
                 first_ready_tx.send(()).unwrap();
                 release_first_rx.recv().unwrap();
@@ -522,7 +583,7 @@ fn independent_coordinators_serialize_the_complete_save_transaction() {
     let (second_done_tx, second_done_rx) = mpsc::channel();
     let second_worker = thread::spawn(move || {
         second_started_tx.send(()).unwrap();
-        let outcome = second.save(&expected, rtmp_config("second"));
+        let outcome = second.save(&expected, &rtmp_config("second"));
         second_done_tx.send(()).unwrap();
         outcome
     });
@@ -565,7 +626,7 @@ fn child_process_save_helper() {
     let outcome = if mode == "holder" {
         coordinator.save_inner(
             &expected,
-            rtmp_config("child-first"),
+            &rtmp_config("child-first"),
             || {
                 fs::write(&ready, []).unwrap();
                 wait_for_path(&release);
@@ -576,7 +637,7 @@ fn child_process_save_helper() {
         )
     } else {
         fs::write(&ready, []).unwrap();
-        coordinator.save(&expected, rtmp_config("child-second"))
+        coordinator.save(&expected, &rtmp_config("child-second"))
     };
     let label = match outcome {
         ConfigSaveOutcome::Saved(_) => "saved",
@@ -642,7 +703,7 @@ fn replacing_the_lock_entry_cannot_create_an_overlapping_lock_namespace() {
     let first_worker = thread::spawn(move || {
         first.save_inner(
             &first_expected,
-            rtmp_config("first"),
+            &rtmp_config("first"),
             || {
                 first_ready_tx.send(()).unwrap();
                 release_first_rx.recv().unwrap();
@@ -666,7 +727,7 @@ fn replacing_the_lock_entry_cannot_create_an_overlapping_lock_namespace() {
 
     let (second_done_tx, second_done_rx) = mpsc::channel();
     let second_worker = thread::spawn(move || {
-        let outcome = second.save(&expected, rtmp_config("second"));
+        let outcome = second.save(&expected, &rtmp_config("second"));
         second_done_tx.send(()).unwrap();
         outcome
     });
@@ -697,7 +758,7 @@ fn replacing_the_lock_entry_cannot_create_an_overlapping_lock_namespace() {
 fn transaction_lock_is_mode_restricted_and_never_follows_symlinks() {
     let (temp, path, coordinator) = fixture(&minimal_config());
     let expected = loaded(coordinator.load()).disk_revision;
-    let ConfigSaveOutcome::Saved(first) = coordinator.save(&expected, rtmp_config("first")) else {
+    let ConfigSaveOutcome::Saved(first) = coordinator.save(&expected, &rtmp_config("first")) else {
         panic!("initial save failed")
     };
     let lock_path = lock_entry(temp.path()).expect("transaction lock entry");
@@ -709,7 +770,7 @@ fn transaction_lock_is_mode_restricted_and_never_follows_symlinks() {
     fs::set_permissions(&lock_path, fs::Permissions::from_mode(0o644)).unwrap();
     let outcome = CanonicalConfigCoordinator::new(&path)
         .unwrap()
-        .save(&first.disk_revision, rtmp_config("wrong-mode"));
+        .save(&first.disk_revision, &rtmp_config("wrong-mode"));
     let ConfigSaveOutcome::Failed(failure) = outcome else {
         panic!("permissive transaction lock was accepted")
     };
@@ -722,7 +783,7 @@ fn transaction_lock_is_mode_restricted_and_never_follows_symlinks() {
     symlink(&outside, &lock_path).unwrap();
     let outcome = CanonicalConfigCoordinator::new(&path)
         .unwrap()
-        .save(&first.disk_revision, rtmp_config("symlink"));
+        .save(&first.disk_revision, &rtmp_config("symlink"));
     let ConfigSaveOutcome::Failed(failure) = outcome else {
         panic!("symbolic transaction lock was followed")
     };
@@ -743,7 +804,7 @@ fn symlink_and_special_file_targets_are_rejected_without_following() {
     fs::remove_file(&path).unwrap();
     symlink(&outside, &path).unwrap();
 
-    let outcome = coordinator.save(&expected, rtmp_config("candidate"));
+    let outcome = coordinator.save(&expected, &rtmp_config("candidate"));
 
     assert!(matches!(outcome, ConfigSaveOutcome::Failed(_)));
     assert_eq!(fs::read_to_string(&outside).unwrap(), outside_bytes);
@@ -783,7 +844,7 @@ fn intermediate_parent_symlinks_are_rejected_without_following() {
 
     let outcome = coordinator.save(
         &ConfigRevision::from_bytes(original.as_bytes()),
-        rtmp_config("candidate"),
+        &rtmp_config("candidate"),
     );
     assert!(matches!(outcome, ConfigSaveOutcome::Failed(_)));
     assert_eq!(fs::read_to_string(real_path).unwrap(), original);
@@ -837,7 +898,7 @@ fn commit_sync_failure_rolls_back_to_the_old_file() {
 
     let outcome = coordinator.save_inner(
         &expected,
-        rtmp_config("candidate"),
+        &rtmp_config("candidate"),
         || Ok(()),
         || {},
         ReplaceControl {
@@ -863,7 +924,7 @@ fn committed_cleanup_sync_failure_returns_saved_with_a_warning() {
 
     let outcome = coordinator.save_inner(
         &expected,
-        candidate,
+        &candidate,
         || Ok(()),
         || {},
         ReplaceControl {
@@ -898,7 +959,7 @@ fn rollback_cleanup_sync_failure_is_reported() {
 
     let outcome = coordinator.save_inner(
         &expected,
-        rtmp_config("candidate"),
+        &rtmp_config("candidate"),
         || Ok(()),
         || {},
         ReplaceControl {
@@ -924,7 +985,7 @@ fn failure_after_temp_sync_leaves_old_file_and_no_temp_entry() {
 
     let outcome = coordinator.save_inner(
         &expected,
-        rtmp_config("candidate"),
+        &rtmp_config("candidate"),
         || Ok(()),
         || {},
         ReplaceControl {

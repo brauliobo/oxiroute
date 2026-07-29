@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use oxiroute_config_source::{
-    ConfigFormat, ConfigSourceError, MAX_SOURCE_BYTES, decode_value, render_value,
+    ConfigFormat, ConfigSourceError, MAX_SOURCE_BYTES, decode_value, render_config, render_value,
 };
 use serde_json::json;
 
@@ -58,5 +58,40 @@ fn all_decoders_apply_the_source_bound_before_parsing() {
             decode_value(format, &oversized),
             Err(ConfigSourceError::SourceTooLarge)
         ));
+    }
+}
+
+#[test]
+fn typed_configs_render_in_every_supported_format() {
+    let config = oxiroute_config::Config {
+        version: 1,
+        max_connections: None,
+        management: None,
+        stats: None,
+        certificates: Vec::new(),
+        tls_profiles: Vec::new(),
+        listeners: Vec::new(),
+        cache_stores: Vec::new(),
+        upstream_pools: Vec::new(),
+        http_services: Vec::new(),
+        forward_proxy_services: Vec::new(),
+        rtmp_services: Vec::new(),
+        l4_services: Vec::new(),
+    };
+
+    for format in [
+        ConfigFormat::Kdl,
+        ConfigFormat::Lua,
+        ConfigFormat::Uci,
+        ConfigFormat::Hocon,
+    ] {
+        let rendered = render_config(format, &config).expect("typed render");
+        let resolved = oxiroute_config_source::resolve_source_with_format(
+            Path::new("config"),
+            rendered.as_bytes(),
+            format,
+        )
+        .expect("rendered source resolves");
+        assert_eq!(resolved.config, config);
     }
 }

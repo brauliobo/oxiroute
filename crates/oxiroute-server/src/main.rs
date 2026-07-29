@@ -630,7 +630,7 @@ impl GenerationProcess {
         let thread = thread::Builder::new()
             .name(format!(
                 "oxiroute-generation-{}",
-                &generation.revision().disk.as_str()[..12]
+                &generation.revision().candidate.as_str()[..12]
             ))
             .spawn(move || {
                 if let Err(error) = serve_generation(
@@ -927,7 +927,7 @@ fn serve_generation(
     shutdown: tokio::sync::watch::Receiver<bool>,
     setup: &mpsc::SyncSender<Result<(), String>>,
 ) -> Result<(), Box<dyn Error>> {
-    let active_revision = generation.revision().disk.clone();
+    let active_revision = generation.revision().candidate.clone();
     let config = generation.config();
     let management_token_file = if config.management.is_some() {
         Some(PathBuf::from(
@@ -1164,7 +1164,7 @@ mod tests {
     #[test]
     fn active_runtime_death_fails_the_generation_supervisor() {
         let directory = tempfile::tempdir().expect("directory");
-        let path = directory.path().join("oxiroute.lua");
+        let path = directory.path().join("oxiroute.kdl");
         let config = Config {
             version: 1,
             max_connections: None,
@@ -1180,7 +1180,15 @@ mod tests {
             rtmp_services: Vec::new(),
             l4_services: Vec::new(),
         };
-        fs::write(&path, oxiroute_config::render_lua(&config).expect("render")).expect("config");
+        fs::write(
+            &path,
+            oxiroute_config_source::render_config(
+                oxiroute_config_source::ConfigFormat::Kdl,
+                &config,
+            )
+            .expect("render"),
+        )
+        .expect("config");
         let coordinator = CanonicalConfigCoordinator::new(path).expect("coordinator");
         let ConfigLoadOutcome::Loaded(document) = coordinator.load() else {
             panic!("load")

@@ -163,9 +163,11 @@ fn reconcile(
     match coordinator.load() {
         ConfigLoadOutcome::Loaded(document) => {
             let status = generations.status();
-            let revision = &document.disk_revision;
+            generations.observe_disk_revision(document.disk_revision.clone());
+            let revision = &document.candidate_revision;
             if status.active_revision.as_ref() != Some(revision)
                 && status.candidate_revision.as_ref() != Some(revision)
+                && status.quarantined_revision.as_ref() != Some(revision)
                 && generations.prepare(*document).is_err()
             {
                 counters.rejected.fetch_add(1, Ordering::Relaxed);
@@ -219,7 +221,7 @@ mod tests {
         };
         let candidate = manager.prepare(*initial).expect("initial prepare");
         let initial = manager.activate(&candidate).expect("initial activation");
-        let initial_revision = initial.revision().disk.clone();
+        let initial_revision = initial.revision().candidate.clone();
         let mut watcher = ConfigWatcher::start(
             coordinator,
             manager.clone(),
@@ -255,6 +257,58 @@ mod tests {
         let started = Instant::now();
         watcher.shutdown();
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn periodic_reconciliation_prepares_native_dependency_changes() {
+        let directory = TempDir::new().expect("directory");
+        let native_directory = directory.path().join("native");
+        fs::create_dir(&native_directory).expect("native directory");
+        let native_path = native_directory.join("haproxy.cfg");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener port");
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        fs::write(&native_path, haproxy_source(port, 5432)).expect("native source");
+        let path = directory.path().join("oxiroute.kdl");
+        fs::write(&path, "haproxy_server \"native/haproxy.cfg\"\n").expect("root source");
+        let root_bytes = fs::read(&path).unwrap();
+        let coordinator = CanonicalConfigCoordinator::new(&path).expect("coordinator");
+        let manager = GenerationManager::new();
+        let ConfigLoadOutcome::Loaded(initial) = coordinator.load() else {
+            panic!("initial load")
+        };
+        let initial_candidate_revision = initial.candidate_revision.clone();
+        let initial = manager.prepare(*initial).expect("initial prepare");
+        manager.activate(&initial).expect("initial activation");
+        let mut watcher = ConfigWatcher::start(
+            coordinator,
+            manager.clone(),
+            ConfigWatcherOptions {
+                debounce: Duration::from_millis(10),
+                max_debounce: Duration::from_millis(30),
+                reconciliation_interval: Duration::from_millis(40),
+            },
+        )
+        .expect("watcher");
+
+        fs::write(&native_path, haproxy_source(port, 5433)).expect("native edit");
+        wait_until(|| {
+            manager
+                .status()
+                .candidate_revision
+                .as_ref()
+                .is_some_and(|revision| revision != &initial_candidate_revision)
+        });
+
+        assert_eq!(fs::read(&path).unwrap(), root_bytes);
+        assert!(watcher.status().reconciliations > 0);
+        watcher.shutdown();
+    }
+
+    fn haproxy_source(listener_port: u16, upstream_port: u16) -> String {
+        format!(
+            "defaults tcp_defaults\n  mode tcp\n  retries 0\n  timeout connect 10s\n  timeout queue 15s\n  timeout client 5m\n  timeout server 5m\nfrontend database\n  bind 127.0.0.1:{listener_port}\n  default_backend database_pool\nbackend database_pool\n  balance roundrobin\n  server primary 127.0.0.1:{upstream_port}\n"
+        )
     }
 
     fn empty_config() -> Config {

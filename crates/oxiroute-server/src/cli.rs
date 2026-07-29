@@ -12,6 +12,7 @@ use std::{
 };
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use oxiroute_config_source::{ConfigFormat, render_config};
 use oxiroute_import::{Diagnostic, Severity};
 use rustix::fs::{self as rustix_fs, FileType, Mode, OFlags};
 use serde_json::{Value, json};
@@ -69,7 +70,7 @@ pub enum Output {
 pub enum Command {
     /// Run the proxy and reconcile changes to its canonical configuration.
     Serve {
-        #[arg(value_name = "CONFIG", default_value = "oxiroute.lua")]
+        #[arg(value_name = "CONFIG", default_value = "oxiroute.kdl")]
         config: PathBuf,
     },
     Status,
@@ -301,6 +302,8 @@ pub enum ConfigCommand {
     },
     /// Compose finalized canonical configurations in the supplied order.
     Compose {
+        #[arg(long, value_enum, default_value_t = ComposeFormat::Kdl)]
+        format: ComposeFormat,
         #[arg(value_name = "CONFIG", required = true, num_args = 1..)]
         configs: Vec<PathBuf>,
     },
@@ -314,6 +317,26 @@ pub enum ConfigCommand {
     Diff {
         file: PathBuf,
     },
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum ComposeFormat {
+    #[default]
+    Kdl,
+    Lua,
+    Uci,
+    Hocon,
+}
+
+impl From<ComposeFormat> for ConfigFormat {
+    fn from(format: ComposeFormat) -> Self {
+        match format {
+            ComposeFormat::Kdl => Self::Kdl,
+            ComposeFormat::Lua => Self::Lua,
+            ComposeFormat::Uci => Self::Uci,
+            ComposeFormat::Hocon => Self::Hocon,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -413,7 +436,7 @@ impl Cli {
                 config: cli
                     .legacy_config
                     .take()
-                    .unwrap_or_else(|| PathBuf::from("oxiroute.lua")),
+                    .unwrap_or_else(|| PathBuf::from("oxiroute.kdl")),
             });
         }
         cli
@@ -463,8 +486,8 @@ pub fn execute_offline(command: &Command) -> Result<Option<String>, Box<dyn Erro
             ))
         }
         Command::Config {
-            command: ConfigCommand::Compose { configs },
-        } => Ok(Some(compose_config_files(configs)?)),
+            command: ConfigCommand::Compose { format, configs },
+        } => Ok(Some(compose_config_files(configs, (*format).into())?)),
         Command::Import {
             command:
                 ImportCommand::Nginx {
@@ -520,7 +543,7 @@ fn check_config(path: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn compose_config_files(paths: &[PathBuf]) -> Result<String, Box<dyn Error>> {
+fn compose_config_files(paths: &[PathBuf], format: ConfigFormat) -> Result<String, Box<dyn Error>> {
     let mut configs = Vec::with_capacity(paths.len());
     for path in paths {
         let coordinator = CanonicalConfigCoordinator::new(path)?;
@@ -532,7 +555,7 @@ fn compose_config_files(paths: &[PathBuf]) -> Result<String, Box<dyn Error>> {
         configs.push(document.normalized_config.clone());
     }
     let composed = oxiroute_config::compose_configs(&configs)?;
-    Ok(oxiroute_config::render_lua(&composed)?)
+    Ok(render_config(format, &composed)?)
 }
 
 #[expect(
@@ -1836,6 +1859,7 @@ mod tests {
         let check = Cli::try_parse_process_from(["oxiroute", "config", "check", "edge.lua"])
             .expect("config check");
         let get = Cli::try_parse_process_from(["oxiroute", "config", "get"]).expect("config get");
+        let default = Cli::try_parse_process_from(["oxiroute"]).expect("default serve");
 
         assert!(matches!(
             explicit.command(),
@@ -1857,6 +1881,10 @@ mod tests {
                 command: ConfigCommand::Get
             }
         ));
+        assert!(matches!(
+            default.command(),
+            Command::Serve { config } if config == &PathBuf::from("oxiroute.kdl")
+        ));
     }
 
     #[test]
@@ -1865,6 +1893,8 @@ mod tests {
             "oxiroute",
             "config",
             "compose",
+            "--format",
+            "hocon",
             "nginx.lua",
             "haproxy.lua",
         ])
@@ -1873,8 +1903,9 @@ mod tests {
         assert!(matches!(
             cli.command(),
             Command::Config {
-                command: ConfigCommand::Compose { configs }
-            } if configs == &[PathBuf::from("nginx.lua"), PathBuf::from("haproxy.lua")]
+                command: ConfigCommand::Compose { format, configs }
+            } if *format == ComposeFormat::Hocon
+                && configs == &[PathBuf::from("nginx.lua"), PathBuf::from("haproxy.lua")]
         ));
     }
 

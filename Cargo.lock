@@ -1841,6 +1841,7 @@ dependencies = [
  "notify",
  "openssl",
  "oxiroute-config",
+ "oxiroute-config-source",
  "oxiroute-import",
  "oxiroute-rtmp",
  "pingora",

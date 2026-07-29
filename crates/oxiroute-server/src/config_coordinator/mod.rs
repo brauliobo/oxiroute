@@ -6,7 +6,8 @@ use std::{
 };
 
 use openssl::sha::sha256;
-use oxiroute_config::{Config, ConfigError, load_lua, render_lua, validate_config};
+use oxiroute_config::{Config, compose_configs};
+use oxiroute_config_source::{ConfigFormat, ConfigSourceError, render_config, resolve_source};
 use serde::Serialize;
 
 mod storage;
@@ -22,7 +23,7 @@ pub const MAX_CANONICAL_CONFIG_BYTES: usize = 1024 * 1024;
 pub struct ConfigRevision(String);
 
 impl ConfigRevision {
-    fn from_bytes(bytes: &[u8]) -> Self {
+    pub(crate) fn from_bytes(bytes: &[u8]) -> Self {
         Self(lower_hex(&sha256(bytes)))
     }
 
@@ -100,7 +101,11 @@ pub struct CanonicalConfigDocument {
     pub disk_revision: ConfigRevision,
     pub candidate_revision: ConfigRevision,
     pub normalized_config: Config,
-    pub lua_preview: String,
+    pub format: ConfigFormat,
+    pub compositional: bool,
+    #[serde(skip)]
+    pub dependencies: Vec<PathBuf>,
+    pub config_preview: String,
     pub diagnostics: Vec<ConfigDiagnostic>,
 }
 
@@ -117,12 +122,16 @@ pub struct ConfigLoadRejection {
     pub diagnostics: Vec<ConfigDiagnostic>,
 }
 
-/// A normalized typed draft and the exact Lua bytes that would be saved.
+/// A normalized typed draft and the exact format-appropriate bytes that would be saved.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ValidatedConfigDraft {
     pub candidate_revision: ConfigRevision,
     pub normalized_config: Config,
-    pub lua_preview: String,
+    pub format: ConfigFormat,
+    pub compositional: bool,
+    #[serde(skip)]
+    pub dependencies: Vec<PathBuf>,
+    pub config_preview: String,
     pub diagnostics: Vec<ConfigDiagnostic>,
 }
 
@@ -154,7 +163,11 @@ pub struct ConfigConflict {
     pub disk_revision: ConfigRevision,
     pub candidate_revision: ConfigRevision,
     pub normalized_config: Config,
-    pub lua_preview: String,
+    pub format: ConfigFormat,
+    pub compositional: bool,
+    #[serde(skip)]
+    pub dependencies: Vec<PathBuf>,
+    pub config_preview: String,
     pub diagnostics: Vec<ConfigDiagnostic>,
 }
 
@@ -163,7 +176,11 @@ pub struct ConfigSaveFailure {
     pub disk_revision: Option<ConfigRevision>,
     pub candidate_revision: ConfigRevision,
     pub normalized_config: Config,
-    pub lua_preview: String,
+    pub format: ConfigFormat,
+    pub compositional: bool,
+    #[serde(skip)]
+    pub dependencies: Vec<PathBuf>,
+    pub config_preview: String,
     pub diagnostics: Vec<ConfigDiagnostic>,
 }
 
@@ -171,13 +188,16 @@ pub struct ConfigSaveFailure {
 pub enum ConfigCoordinatorPathError {
     #[error("canonical configuration path must identify one file")]
     MissingFileName,
+    #[error("canonical configuration path has an unsupported source format")]
+    UnsupportedFormat,
 }
 
 /// Coordinates reads, validation, previews, and revision-checked durable saves for one canonical
-/// Lua path. Runtime activation and its revision remain the caller's responsibility.
+/// source path. Runtime activation and its revision remain the caller's responsibility.
 #[derive(Clone)]
 pub struct CanonicalConfigCoordinator {
     canonical_path: PathBuf,
+    format: ConfigFormat,
     operation_lock: Arc<Mutex<()>>,
 }
 
@@ -190,8 +210,11 @@ impl CanonicalConfigCoordinator {
     pub fn new(canonical_path: impl Into<PathBuf>) -> Result<Self, ConfigCoordinatorPathError> {
         let canonical_path = canonical_path.into();
         storage::validate_path(&canonical_path)?;
+        let format = ConfigFormat::infer(&canonical_path)
+            .map_err(|_| ConfigCoordinatorPathError::UnsupportedFormat)?;
         Ok(Self {
             canonical_path,
+            format,
             operation_lock: Arc::new(Mutex::new(())),
         })
     }
@@ -199,6 +222,11 @@ impl CanonicalConfigCoordinator {
     #[must_use]
     pub fn canonical_path(&self) -> &Path {
         &self.canonical_path
+    }
+
+    #[must_use]
+    pub const fn format(&self) -> ConfigFormat {
+        self.format
     }
 
     /// Reads one stable no-follow snapshot and returns its normalized typed representation.
@@ -217,42 +245,35 @@ impl CanonicalConfigCoordinator {
             Err(error) => return rejected_load(None, error.diagnostic()),
         };
         let disk_revision = ConfigRevision::from_bytes(&disk);
-        let Ok(source) = std::str::from_utf8(&disk) else {
-            return rejected_load(
-                Some(disk_revision),
-                diagnostic(
-                    "E_SYNTAX",
-                    ConfigDiagnosticStage::Parse,
-                    "canonical configuration is not valid UTF-8",
-                ),
-            );
-        };
-        let normalized_config = match load_lua(source) {
-            Ok(config) => config,
+        let resolved = match resolve_source(&self.canonical_path, &disk) {
+            Ok(resolved) => resolved,
             Err(error) => {
-                return rejected_load(Some(disk_revision), config_error_diagnostic(&error));
+                return rejected_load(Some(disk_revision), source_error_diagnostic(&error));
             }
         };
-        let lua_preview = match render_lua(&normalized_config) {
+        let config_preview = match render_config(resolved.format, &resolved.config) {
             Ok(preview) => preview,
             Err(error) => {
-                return rejected_load(Some(disk_revision), render_error_diagnostic(&error));
+                return rejected_load(Some(disk_revision), source_error_diagnostic(&error));
             }
         };
 
         ConfigLoadOutcome::Loaded(Box::new(CanonicalConfigDocument {
             disk_revision,
-            candidate_revision: ConfigRevision::from_bytes(lua_preview.as_bytes()),
-            normalized_config,
-            lua_preview,
+            candidate_revision: ConfigRevision::from_bytes(resolved.canonical_kdl.as_bytes()),
+            normalized_config: resolved.config,
+            format: resolved.format,
+            compositional: resolved.compositional,
+            dependencies: resolved.dependencies,
+            config_preview,
             diagnostics: Vec::new(),
         }))
     }
 
     /// Validates and normalizes a typed draft without reading or writing the canonical file.
     #[must_use]
-    pub fn validate(&self, draft: Config) -> ConfigValidationOutcome {
-        validate_draft(draft)
+    pub fn validate(&self, draft: &Config) -> ConfigValidationOutcome {
+        validate_draft(self.format, draft)
     }
 
     /// Saves a valid typed draft only when the exact on-disk bytes still match `expected_revision`.
@@ -264,7 +285,7 @@ impl CanonicalConfigCoordinator {
     /// warning in the saved document rather than as an unwritten failure. This method does not
     /// activate or publish a runtime generation.
     #[must_use]
-    pub fn save(&self, expected_revision: &ConfigRevision, draft: Config) -> ConfigSaveOutcome {
+    pub fn save(&self, expected_revision: &ConfigRevision, draft: &Config) -> ConfigSaveOutcome {
         self.save_inner(
             expected_revision,
             draft,
@@ -277,7 +298,7 @@ impl CanonicalConfigCoordinator {
     fn save_inner<F, G>(
         &self,
         expected_revision: &ConfigRevision,
-        draft: Config,
+        draft: &Config,
         before_exchange: F,
         after_exchange: G,
         control: ReplaceControl,
@@ -286,7 +307,7 @@ impl CanonicalConfigCoordinator {
         F: FnOnce() -> Result<(), ()>,
         G: FnOnce(),
     {
-        let candidate = match validate_draft(draft) {
+        let candidate = match validate_draft(self.format, draft) {
             ConfigValidationOutcome::Valid(candidate) => *candidate,
             ConfigValidationOutcome::Invalid(rejection) => {
                 return ConfigSaveOutcome::InvalidDraft(rejection);
@@ -312,11 +333,26 @@ impl CanonicalConfigCoordinator {
         if initial_revision != *expected_revision {
             return conflict(expected_revision, initial_revision, candidate);
         }
+        match resolve_source(&self.canonical_path, &initial_disk) {
+            Ok(resolved) if resolved.compositional => {
+                return ConfigSaveOutcome::InvalidDraft(ConfigDraftRejection {
+                    diagnostics: vec![compositional_root_diagnostic()],
+                });
+            }
+            Ok(_) => {}
+            Err(error) => {
+                return failed_save(
+                    Some(initial_revision),
+                    candidate,
+                    source_error_diagnostic(&error),
+                );
+            }
+        }
 
         match storage.replace(
             &transaction,
             expected_revision,
-            candidate.lua_preview.as_bytes(),
+            candidate.config_preview.as_bytes(),
             before_exchange,
             after_exchange,
             control,
@@ -325,14 +361,20 @@ impl CanonicalConfigCoordinator {
                 let ValidatedConfigDraft {
                     candidate_revision,
                     normalized_config,
-                    lua_preview,
+                    format,
+                    compositional,
+                    dependencies,
+                    config_preview,
                     ..
                 } = candidate;
                 ConfigSaveOutcome::Saved(CanonicalConfigDocument {
-                    disk_revision: candidate_revision.clone(),
+                    disk_revision: ConfigRevision::from_bytes(config_preview.as_bytes()),
                     candidate_revision,
                     normalized_config,
-                    lua_preview,
+                    format,
+                    compositional,
+                    dependencies,
+                    config_preview,
                     diagnostics: if cleanup_degraded {
                         vec![cleanup_durability_warning()]
                     } else {
@@ -363,27 +405,82 @@ impl fmt::Debug for CanonicalConfigCoordinator {
     }
 }
 
-fn validate_draft(mut draft: Config) -> ConfigValidationOutcome {
-    if let Err(error) = validate_config(&mut draft) {
+fn validate_draft(format: ConfigFormat, draft: &Config) -> ConfigValidationOutcome {
+    let Ok(normalized_config) = compose_configs(std::slice::from_ref(draft)) else {
         return ConfigValidationOutcome::Invalid(ConfigDraftRejection {
-            diagnostics: vec![config_error_diagnostic(&error)],
+            diagnostics: vec![diagnostic(
+                "E_INVALID_VALUE",
+                ConfigDiagnosticStage::Validation,
+                "configuration values or references are invalid",
+            )],
         });
-    }
-    let lua_preview = match render_lua(&draft) {
+    };
+    let canonical_kdl = match render_config(ConfigFormat::Kdl, &normalized_config) {
         Ok(preview) => preview,
         Err(error) => {
             return ConfigValidationOutcome::Invalid(ConfigDraftRejection {
-                diagnostics: vec![render_error_diagnostic(&error)],
+                diagnostics: vec![source_error_diagnostic(&error)],
+            });
+        }
+    };
+    let config_preview = match render_config(format, &normalized_config) {
+        Ok(preview) => preview,
+        Err(error) => {
+            return ConfigValidationOutcome::Invalid(ConfigDraftRejection {
+                diagnostics: vec![source_error_diagnostic(&error)],
             });
         }
     };
 
     ConfigValidationOutcome::Valid(Box::new(ValidatedConfigDraft {
-        candidate_revision: ConfigRevision::from_bytes(lua_preview.as_bytes()),
-        normalized_config: draft,
-        lua_preview,
+        candidate_revision: ConfigRevision::from_bytes(canonical_kdl.as_bytes()),
+        normalized_config,
+        format,
+        compositional: false,
+        dependencies: Vec::new(),
+        config_preview,
         diagnostics: Vec::new(),
     }))
+}
+
+fn source_error_diagnostic(error: &ConfigSourceError) -> ConfigDiagnostic {
+    match error {
+        ConfigSourceError::SourceTooLarge => diagnostic(
+            "E_CONFIG_TOO_LARGE",
+            ConfigDiagnosticStage::Read,
+            "canonical configuration exceeds the one-MiB limit",
+        ),
+        ConfigSourceError::Utf8(_)
+        | ConfigSourceError::Parse { .. }
+        | ConfigSourceError::Lua(_) => diagnostic(
+            "E_SYNTAX",
+            ConfigDiagnosticStage::Parse,
+            "canonical configuration could not be decoded",
+        ),
+        ConfigSourceError::Render { .. } | ConfigSourceError::OutputTooLarge => diagnostic(
+            "E_RENDER",
+            ConfigDiagnosticStage::Render,
+            "normalized configuration could not be rendered in the canonical format",
+        ),
+        ConfigSourceError::NativeImport { .. } => diagnostic(
+            "E_NATIVE_SOURCE",
+            ConfigDiagnosticStage::Validation,
+            "a referenced native configuration could not be resolved",
+        ),
+        _ => diagnostic(
+            "E_INVALID_VALUE",
+            ConfigDiagnosticStage::Validation,
+            "configuration values, composition, or references are invalid",
+        ),
+    }
+}
+
+const fn compositional_root_diagnostic() -> ConfigDiagnostic {
+    diagnostic(
+        "E_COMPOSITIONAL_ROOT",
+        ConfigDiagnosticStage::Validation,
+        "typed saves cannot replace a compositional configuration root",
+    )
 }
 
 fn conflict(
@@ -394,7 +491,10 @@ fn conflict(
     let ValidatedConfigDraft {
         candidate_revision,
         normalized_config,
-        lua_preview,
+        format,
+        compositional,
+        dependencies,
+        config_preview,
         ..
     } = candidate;
     ConfigSaveOutcome::Conflict(ConfigConflict {
@@ -402,7 +502,10 @@ fn conflict(
         disk_revision,
         candidate_revision,
         normalized_config,
-        lua_preview,
+        format,
+        compositional,
+        dependencies,
+        config_preview,
         diagnostics: vec![diagnostic(
             "E_REVISION_CONFLICT",
             ConfigDiagnosticStage::Conflict,
@@ -419,14 +522,20 @@ fn failed_save(
     let ValidatedConfigDraft {
         candidate_revision,
         normalized_config,
-        lua_preview,
+        format,
+        compositional,
+        dependencies,
+        config_preview,
         ..
     } = candidate;
     ConfigSaveOutcome::Failed(ConfigSaveFailure {
         disk_revision,
         candidate_revision,
         normalized_config,
-        lua_preview,
+        format,
+        compositional,
+        dependencies,
+        config_preview,
         diagnostics: vec![diagnostic],
     })
 }
@@ -439,29 +548,6 @@ fn rejected_load(
         disk_revision,
         diagnostics: vec![diagnostic],
     })
-}
-
-fn config_error_diagnostic(error: &ConfigError) -> ConfigDiagnostic {
-    if matches!(error, ConfigError::Lua(_)) {
-        diagnostic(
-            "E_SYNTAX",
-            ConfigDiagnosticStage::Parse,
-            "canonical Lua could not be decoded into a configuration",
-        )
-    } else {
-        diagnostic(
-            "E_INVALID_VALUE",
-            ConfigDiagnosticStage::Validation,
-            "configuration values or references are invalid",
-        )
-    }
-}
-
-fn render_error_diagnostic(error: &ConfigError) -> ConfigDiagnostic {
-    let mut diagnostic = config_error_diagnostic(error);
-    diagnostic.stage = ConfigDiagnosticStage::Render;
-    diagnostic.message = "normalized configuration could not be rendered as canonical Lua";
-    diagnostic
 }
 
 const fn diagnostic(
