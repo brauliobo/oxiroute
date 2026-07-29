@@ -143,6 +143,9 @@ pub enum ImportCommand {
         /// Shift imported IP socket listener ports for side-by-side validation.
         #[arg(long, value_name = "PORTS", value_parser = clap::value_parser!(u16).range(1..))]
         shadow_port_offset: Option<u16>,
+        /// Render preview output in this canonical configuration format.
+        #[arg(long, value_enum, default_value_t = ComposeFormat::Kdl)]
+        format: ComposeFormat,
         #[arg(long, value_enum, default_value_t = ImportOutput::Report)]
         output: ImportOutput,
     },
@@ -158,6 +161,9 @@ pub enum ImportCommand {
         /// Shift imported IP socket listener ports for side-by-side validation.
         #[arg(long, value_name = "PORTS", value_parser = clap::value_parser!(u16).range(1..))]
         shadow_port_offset: Option<u16>,
+        /// Render preview output in this canonical configuration format.
+        #[arg(long, value_enum, default_value_t = ComposeFormat::Kdl)]
+        format: ComposeFormat,
         #[arg(long, value_enum, default_value_t = ImportOutput::Report)]
         output: ImportOutput,
     },
@@ -498,6 +504,7 @@ pub fn execute_offline(command: &Command) -> Result<Option<String>, Box<dyn Erro
                     recording_root,
                     default_error_server,
                     shadow_port_offset,
+                    format,
                     output,
                 },
         } => Ok(Some(import_nginx(
@@ -508,6 +515,7 @@ pub fn execute_offline(command: &Command) -> Result<Option<String>, Box<dyn Erro
             recording_root.as_deref(),
             default_error_server.as_deref(),
             *shadow_port_offset,
+            (*format).into(),
             *output,
         )?)),
         Command::Import {
@@ -517,6 +525,7 @@ pub fn execute_offline(command: &Command) -> Result<Option<String>, Box<dyn Erro
                     node_ip,
                     gpu1_defined,
                     shadow_port_offset,
+                    format,
                     output,
                 },
         } => Ok(Some(import_haproxy(
@@ -524,6 +533,7 @@ pub fn execute_offline(command: &Command) -> Result<Option<String>, Box<dyn Erro
             *node_ip,
             *gpu1_defined,
             *shadow_port_offset,
+            (*format).into(),
             *output,
         )?)),
         _ => Ok(None),
@@ -570,6 +580,7 @@ fn import_nginx(
     recording_root: Option<&Path>,
     default_error_server: Option<&str>,
     shadow_port_offset: Option<u16>,
+    format: ConfigFormat,
     output: ImportOutput,
 ) -> Result<String, Box<dyn Error>> {
     let options = oxiroute_import::nginx::NginxImportOptions {
@@ -603,6 +614,7 @@ fn import_nginx(
         ImportOutput::Preview => preview_with_shadow_listener_offset(
             report.candidate.config.as_ref(),
             shadow_port_offset,
+            format,
         ),
         ImportOutput::Report => {
             if shadow_port_offset.is_some() {
@@ -630,6 +642,7 @@ fn import_haproxy(
     node_ip: Option<IpAddr>,
     gpu1_defined: bool,
     shadow_port_offset: Option<u16>,
+    format: ConfigFormat,
     output: ImportOutput,
 ) -> Result<String, Box<dyn Error>> {
     let report = node_ip.map_or_else(
@@ -645,9 +658,11 @@ fn import_haproxy(
         },
     );
     match output {
-        ImportOutput::Preview => {
-            preview_with_shadow_listener_offset(report.value().config.as_ref(), shadow_port_offset)
-        }
+        ImportOutput::Preview => preview_with_shadow_listener_offset(
+            report.value().config.as_ref(),
+            shadow_port_offset,
+            format,
+        ),
         ImportOutput::Report => {
             if shadow_port_offset.is_some() {
                 return Err("--shadow-port-offset requires --output preview".into());
@@ -673,9 +688,10 @@ fn import_haproxy(
 fn preview_with_shadow_listener_offset(
     config: Option<&oxiroute_config::Config>,
     shadow_port_offset: Option<u16>,
+    format: ConfigFormat,
 ) -> Result<String, Box<dyn Error>> {
     let Some(offset) = shadow_port_offset else {
-        return preview(config);
+        return preview(config, format);
     };
     let mut config = config
         .ok_or("native configuration did not produce an activatable candidate")?
@@ -693,12 +709,15 @@ fn preview_with_shadow_listener_offset(
     }
     oxiroute_config::validate_config(&mut config)
         .map_err(|_| "shadow listener configuration is not valid")?;
-    Ok(oxiroute_config::render_lua(&config)?)
+    Ok(render_config(format, &config)?)
 }
 
-fn preview(config: Option<&oxiroute_config::Config>) -> Result<String, Box<dyn Error>> {
+fn preview(
+    config: Option<&oxiroute_config::Config>,
+    format: ConfigFormat,
+) -> Result<String, Box<dyn Error>> {
     let config = config.ok_or("native configuration did not produce an activatable candidate")?;
-    Ok(oxiroute_config::render_lua(config)?)
+    Ok(render_config(format, config)?)
 }
 
 fn report_header(kind: &str, diagnostics: &[Diagnostic]) -> String {
@@ -1921,6 +1940,8 @@ mod tests {
             "--gpu1-defined",
             "--shadow-port-offset",
             "10000",
+            "--format",
+            "hocon",
             "--output",
             "preview",
         ])
@@ -1933,6 +1954,7 @@ mod tests {
                     node_ip,
                     gpu1_defined,
                     shadow_port_offset,
+                    format,
                     output,
                 },
         } = cli.command()
@@ -1943,6 +1965,7 @@ mod tests {
         assert_eq!(*node_ip, Some("10.0.0.15".parse().unwrap()));
         assert!(*gpu1_defined);
         assert_eq!(*shadow_port_offset, Some(10_000));
+        assert_eq!(*format, ComposeFormat::Hocon);
         assert!(matches!(output, ImportOutput::Preview));
     }
 
@@ -1963,6 +1986,8 @@ mod tests {
             "nginx/1.30.2",
             "--shadow-port-offset",
             "10000",
+            "--format",
+            "lua",
             "--output",
             "preview",
         ])
@@ -1977,6 +2002,7 @@ mod tests {
                     recording_root: Some(recording_root),
                     default_error_server: Some(server),
                     shadow_port_offset: Some(10_000),
+                    format: ComposeFormat::Lua,
                     output: ImportOutput::Preview,
                     ..
                 }
@@ -2010,6 +2036,7 @@ mod tests {
             Some("10.0.0.15".parse().unwrap()),
             true,
             Some(10_000),
+            ConfigFormat::Hocon,
             ImportOutput::Preview,
         )
         .expect("shadow preview");
@@ -2019,6 +2046,9 @@ mod tests {
         }
         assert!(output.contains("127.0.0.1:10450"));
         assert!(output.contains("127.0.0.1:10451"));
+        assert!(
+            oxiroute_config_source::decode_value(ConfigFormat::Hocon, output.as_bytes()).is_ok()
+        );
     }
 
     #[test]
@@ -2029,9 +2059,27 @@ mod tests {
         let node_ip = Some("10.0.0.15".parse().unwrap());
 
         assert!(
-            import_haproxy(&paths, node_ip, true, Some(60_000), ImportOutput::Preview).is_err()
+            import_haproxy(
+                &paths,
+                node_ip,
+                true,
+                Some(60_000),
+                ConfigFormat::Kdl,
+                ImportOutput::Preview,
+            )
+            .is_err()
         );
-        assert!(import_haproxy(&paths, node_ip, true, Some(10_000), ImportOutput::Report).is_err());
+        assert!(
+            import_haproxy(
+                &paths,
+                node_ip,
+                true,
+                Some(10_000),
+                ConfigFormat::Kdl,
+                ImportOutput::Report,
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -3,6 +3,7 @@ use std::{
     io::{Read as _, Write as _},
     net::TcpListener,
     os::unix::fs::PermissionsExt as _,
+    path::Path,
     process::Command,
     thread,
 };
@@ -10,7 +11,9 @@ use std::{
 use tempfile::TempDir;
 
 use oxiroute_config::Config;
-use oxiroute_config_source::{ConfigFormat, decode_value, render_config};
+use oxiroute_config_source::{
+    ConfigFormat, decode_value, render_config, resolve_source_with_format,
+};
 
 const TOKEN: &str = "cdb85a91948758cfcb895216a3603c8fcd8aaf691f39f5fd82b5df15af14628e";
 
@@ -206,6 +209,76 @@ fn config_check_accepts_all_source_formats_and_compose_defaults_to_kdl() {
     );
 }
 
+#[test]
+fn import_previews_default_to_kdl_and_round_trip_every_format() {
+    let directory = TempDir::new().expect("directory");
+    let nginx_path = directory.path().join("nginx.conf");
+    fs::write(
+        &nginx_path,
+        r"http {
+          access_log off;
+          proxy_http_version 1.1;
+          proxy_buffering off;
+          proxy_request_buffering off;
+          proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+          upstream backend { server 127.0.0.1:8080; }
+          server {
+            listen 127.0.0.1:8088 default_server;
+            server_name proxy.example;
+            location / { proxy_pass http://backend; }
+          }
+        }",
+    )
+    .expect("nginx source");
+    let haproxy_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../oxiroute-import/tests/fixtures/haproxy/minimal-representable.cfg");
+    let nginx_args = ["import", "nginx", nginx_path.to_str().unwrap()];
+    let haproxy_args = ["import", "haproxy", haproxy_path.to_str().unwrap()];
+
+    let default_nginx = import_preview(&nginx_args, None, ConfigFormat::Kdl);
+    let default_haproxy = import_preview(&haproxy_args, None, ConfigFormat::Kdl);
+    assert_eq!(default_nginx.listeners.len(), 1);
+    assert_eq!(default_haproxy.listeners.len(), 1);
+
+    for (name, format) in [
+        ("kdl", ConfigFormat::Kdl),
+        ("lua", ConfigFormat::Lua),
+        ("uci", ConfigFormat::Uci),
+        ("hocon", ConfigFormat::Hocon),
+    ] {
+        assert_eq!(
+            import_preview(&nginx_args, Some(name), format),
+            default_nginx,
+            "nginx {name} preview"
+        );
+        assert_eq!(
+            import_preview(&haproxy_args, Some(name), format),
+            default_haproxy,
+            "HAProxy {name} preview"
+        );
+    }
+}
+
+#[test]
+fn import_report_output_is_unchanged_by_preview_format() {
+    let haproxy_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../oxiroute-import/tests/fixtures/haproxy/minimal-representable.cfg");
+    let path = haproxy_path.to_str().unwrap();
+    let report = cli()
+        .args(["import", "haproxy", path])
+        .output()
+        .expect("default report");
+    let formatted_report = cli()
+        .args(["import", "haproxy", path, "--format", "lua"])
+        .output()
+        .expect("formatted report");
+
+    assert!(report.status.success());
+    assert!(formatted_report.status.success());
+    assert_eq!(formatted_report.stdout, report.stdout);
+    assert_eq!(formatted_report.stderr, report.stderr);
+}
+
 fn empty_config() -> Config {
     Config {
         version: 1,
@@ -222,6 +295,26 @@ fn empty_config() -> Config {
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
     }
+}
+
+fn import_preview(args: &[&str], format_name: Option<&str>, format: ConfigFormat) -> Config {
+    let mut command = cli();
+    command.args(args).args(["--output", "preview"]);
+    if let Some(format_name) = format_name {
+        command.args(["--format", format_name]);
+    }
+    let output = command.output().expect("import preview");
+    assert!(
+        output.status.success(),
+        "{format:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if format == ConfigFormat::Lua {
+        assert!(output.stdout.starts_with(b"return {"));
+    }
+    resolve_source_with_format(Path::new("preview"), &output.stdout, format)
+        .expect("preview round trip")
+        .config
 }
 
 fn cli() -> Command {
