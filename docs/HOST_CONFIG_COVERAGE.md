@@ -117,6 +117,24 @@ preprocessing selects `NODE_IP=10.0.0.11` without `GPU1` on Phoenix, `NODE_IP=10
 | F | nginx and HAProxy source frontends and semantic lowering | partial |
 | G | RTMP application plan, playback/fanout, FLV recording, and push relay | partial |
 
+## KDL deployment verification
+
+On 2026-07-29, the active Phoenix, Chicopc, and Back1 deployments moved from materialized Lua to
+KDL 2.0 roots that reference their existing native nginx and HAProxy files. Before each restart, the
+new root and the prior Lua file were independently resolved to deterministic KDL and required to be
+byte-identical.
+
+| Host | KDL root SHA-256 | Resolved revision | Live gates |
+| --- | --- | --- | --- |
+| `phoenix.lan` | `7d1f12e09a349518e280d40053b7d21106d80aebe5c56829e212be43c86d074b` | `b27e9df312169ddb5fdd4e98c1ee127b6ad57d197e7bb6732a3222fe9ee15816` | Exact root and nginx 404 body hashes, three inference health responses, structured access-log growth, recorder ownership, and the established ten-publisher baseline passed. One extra pre-restart publisher was transient and did not return during the bounded soak. |
+| `chicopc.lan` | `4f8dd2852d181daee732f243ff1e19c889b01a58d7b1cdc0f6cfbc7978b64490` | `d97fedd5ff51d3b082ac1b18c9ae673145b640f4118a948e1a780f610857ab76` | All three inference health responses passed after restart. |
+| `back1.lan` | `6e263a653b953776fd4b4aa881403fa34771cfb2cbc094e530c494c428512907` | `7a9abd3f66873dd57d33527e4a83c7748a752540687f4bac0a72ce4b4e3cecbe` | All three inference health responses passed after restart. |
+
+All three hosts run binary SHA-256
+`b2de4949a07d35dcc413469d456a66928c67a12aa736a15e3c2d0390f8bc1c59`, keep OxiRoute enabled,
+keep replaced native services disabled, and emitted no warning-level OxiRoute journal entries during
+the migration soak.
+
 ## Operational observations
 
 - Every currently captured native configuration passed its product's read-only validator.
