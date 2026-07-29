@@ -3,8 +3,9 @@
 ## Scope
 
 This ledger tracks the effective configurations read from `hostrouter.lan` and `phoenix.lan` on
-2026-07-22, plus sanitized complete captures from `whitebeast`, `hostrouter`, and `phoenix` on
-2026-07-26. Credentials and certificate contents are intentionally excluded. A row is `covered`
+2026-07-22, sanitized complete captures from `whitebeast`, `hostrouter`, and `phoenix` on
+2026-07-26/27, and HAProxy-only captures from `chicopc` and `back1` on 2026-07-28. Credentials and
+certificate contents are intentionally excluded. A row is `covered`
 only when canonical configuration, runtime behavior, failure handling, tests, and native lowering
 exist. Manual approximation does not count as native compatibility.
 
@@ -85,17 +86,24 @@ Status values are `covered`, `partial`, `missing`, `external`, and `inactive`.
 | PN-02 | nginx worker/sendfile/keepalive controls | external | Some limits have non-equivalent runtime knobs. |
 | PR-01 | RTMP listener on port 1935 | partial | Canonical/runtime and strict native lowering exist; the authoritative audited native-lowering gate remains incomplete. |
 | PR-02 | Outbound RTMP chunk size 4096 | partial | Canonical policy is compiled into `ServerSessionConfig`, verified on wire, and lowered natively; authoritative fixture evidence remains incomplete. |
-| PR-03 | Configured `live` application boundary and live publishing | partial | Canonical/runtime and strict native lowering exist; the authoritative audited native-lowering gate remains incomplete. |
+| PR-03 | Configured `live` application boundary and live publishing | covered | The audited Phoenix root finalizes with its explicit operational overlays, composes with the host HAProxy candidate, and preserves the exact live application boundary. |
 | PR-04 | Live playback, late join, and bounded fanout | partial | Application-scoped canonical subscriber/message/byte limits drive runtime fanout; authoritative native lowering remains incomplete. |
-| PR-05 | Automatic FLV recording of all tracks | partial | Canonical continuous legacy AVC/AAC recording and strict lowering exist, but authoritative audited-case gates remain incomplete and enhanced codecs are rejected. |
-| PR-06 | Safe recording path, unique naming, interval rotation, suffix formatting | partial | Canonical/runtime path, quotas, collision-safe publication, per-segment suffix rendering, explicit IANA host timezone policy with DST, monotonic rotation, `record_unique`, and FLV-in-`.mp4` behavior are tested; authoritative audited-case gates remain incomplete. |
+| PR-05 | Automatic FLV recording of all tracks | covered | The audited Phoenix root lowers continuous legacy AVC/AAC recording, and process restart plus publisher reconnect creates a new finalized segment without changing prior bytes; unsupported enhanced codecs remain fail-closed. |
+| PR-06 | Safe recording path, unique naming, interval rotation, suffix formatting | covered | The audited Phoenix root lowers its recording path, hourly rotation, Bahia timezone, native suffix, and collision policy; restart/reconnect and FLV-in-`.mp4` behavior are verified end to end. |
 | PR-07 | RTMP push relay to loopback port 1936 | partial | The typed client relay retries the initially absent port, recovers, bootstraps media, isolates bounded backpressure, exposes redacted counters, and lowers static `$name` targets. |
 | PR-08 | RTMP access-log suppression | partial | Explicit disabled policy runs without session access events and lowers natively; file RTMP access logging remains unsupported. |
 
-## `phoenix.lan` dormant HAProxy cases
+## Inference-node HAProxy cases
 
-The valid HAProxy file is inactive. If activated, cases `HH-01` through `HH-12` apply with eight
-DNS-named backend servers instead of ten. They remain migration blockers but are not active traffic.
+`phoenix.lan`, `chicopc.lan`, and `back1.lan` have the same captured HAProxy source hash. Explicit
+preprocessing selects `NODE_IP=10.0.0.11` without `GPU1` on Phoenix, `NODE_IP=10.0.0.15` with
+`GPU1` on Chicopc, and `NODE_IP=10.0.0.7` with `GPU1` on Back1.
+
+| ID | Host | Effective behavior | Status | Notes |
+| --- | --- | --- | --- | --- |
+| PI-01 | `phoenix.lan` | Three HTTP frontends, case-insensitive exact health responses, `balance first`, one GPU worker per pool, and native default retries | covered | Live-origin hash, explicit environment fingerprint, canonical lowering, and runtime path precedence are tested. |
+| CI-01 | `chicopc.lan` | Same topology with two GPU workers per pool | covered | Live-origin hash, explicit environment fingerprint, canonical lowering, and runtime path precedence are tested. |
+| BI-01 | `back1.lan` | Same topology with two GPU workers per pool | covered | Live-origin hash, explicit environment fingerprint, canonical lowering, and runtime path precedence are tested. |
 
 ## Iteration progress
 
@@ -111,7 +119,7 @@ DNS-named backend servers instead of ten. They remain migration blockers but are
 
 ## Operational observations
 
-- Both effective nginx configurations and both HAProxy files passed native validation.
+- Every currently captured native configuration passed its product's read-only validator.
 - `hostrouter.lan` nginx reports deprecated/redefined HTTP/2 listener options and a type-hash sizing
   warning.
 - `phoenix.lan` nginx reports a type-hash sizing warning.
