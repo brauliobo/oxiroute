@@ -23,13 +23,13 @@ pkgbase = oxiroute
 	source = oxiroute.kdl
 	source = oxiroute.lua
 	source = README.md
-	sha256sums = 4b61761ff4c793a4d75a69157be0fbf96772c67a06dfd2d0902f1f75a22a6de7
+	sha256sums = d0101d17e27056dbc4a0355635ee76ef95089a34dcd0e6af09e5b4eead3bd561
 	sha256sums = 4013c417cabead75b1fd398bdcd4f368d3e333dc988bdeb41b9c75e448b92cd1
 	sha256sums = ece087105e74910e9d4a6c3551082828378ac5c62fc15e97a755a3bc93020e72
 	sha256sums = 632c14735ddea0bf780abea05d3d288f9530ca41f201a37e428223d04acffe3a
 	sha256sums = bf78e2cc42f96db9fc88a999b66e59c9048267346a00b6e8a23a6d523bed7886
 	sha256sums = 57e5cb6cf58a38b6c5efd99e0b5a9a36bac3fafba438059a8396b07e9b6e80a9
 	sha256sums = f55a08f56ff139b566afac6b0c9cbbc4ed08f69a7e04810128bfb8c98a0f0564
-	sha256sums = 31bc6d1fda1d43fbd3e5dd5caac2c6286f0e09c5020ececfff2bfe85d4ebc466
+	sha256sums = 4c4fc88d3115ea428f0cec63d45e82310b96cfdd472a7f1299df43b971b40d9f
 
 pkgname = oxiroute

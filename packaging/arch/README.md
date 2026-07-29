@@ -11,6 +11,9 @@ then use `systemctl enable --now oxiroute.service` when it is ready.
 The unit executes `oxiroute serve /etc/oxiroute/oxiroute.kdl`; validate edits offline with
 `oxiroute config check /etc/oxiroute/oxiroute.kdl`. The installed `/etc/oxiroute/oxiroute.lua`
 retains the equivalent restricted-Lua compatibility example but is not the service default.
+When upgrading from a Lua-default package, the package hook atomically converts the existing Lua
+configuration if the newly installed KDL file is still the packaged empty default. If conversion
+fails, a systemd drop-in keeps the service on Lua instead of silently starting the empty KDL root.
 The shipped secret-free examples are root-owned and world-readable so the dynamic service account can
 read them on filesystems without POSIX ACL support. Tighten them as described below when adding secrets.
 
@@ -61,9 +64,8 @@ For a normal AUR build after publishing the release asset:
 makepkg --cleanbuild
 ```
 
-The KDL source currently uses a transitional `SKIP`, and hashes for modified package artifacts are
-intentionally left at the previous milestone. Refresh every source checksum and regenerate
-`.SRCINFO` together at the final package milestone before publication.
+Every source and package artifact is checksum-pinned. Regenerate `.SRCINFO` whenever those hashes
+change.
 
 ## Service access
 
