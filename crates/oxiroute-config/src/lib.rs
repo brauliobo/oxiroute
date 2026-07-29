@@ -1,4 +1,5 @@
 mod cache_validation;
+mod composition;
 mod defaults;
 mod forward_validation;
 mod http_validation;
@@ -8,6 +9,7 @@ mod model;
 mod render;
 mod validation;
 
+pub use composition::{ConfigCompositionError, compose_configs};
 pub use lexical::{canonicalize_http_path, is_unambiguous_http_path};
 pub use lua::load_lua;
 pub use model::*;
