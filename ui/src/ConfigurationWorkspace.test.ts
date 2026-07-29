@@ -240,8 +240,13 @@ function configSnapshot(): ConfigSnapshot {
   return {
     schemaVersion: 1,
     diskRevision,
+    candidateRevision: 'candidate-1111111111111111111111111111111111111111111111111111111',
     activeRevision,
     config: canonicalConfig(),
+    configFormat: 'kdl',
+    compositional: false,
+    dependencyCount: 0,
+    configPreview: 'version 1\n',
     diagnostics: [],
   }
 }
@@ -250,7 +255,10 @@ function validationResponse(config: CanonicalConfig, diagnostics: ConfigDiagnost
   return {
     candidateRevision: 'candidate-2222222222222222222222222222222222222222222222222222222',
     normalizedConfig: structuredClone(config),
-    luaPreview: `return {\n  version = ${config.version},\n}`,
+    configFormat: 'kdl',
+    compositional: false,
+    dependencyCount: 0,
+    configPreview: `version ${config.version}\n`,
     diagnostics,
     topology: {
       schemaVersion: 1,
@@ -329,6 +337,7 @@ function installConfigFetch(
       if (putResponse) return putResponse(body.config)
       return jsonResponse({
         diskRevision: 'candidate-2222222222222222222222222222222222222222222222222222222',
+        candidateRevision: 'candidate-2222222222222222222222222222222222222222222222222222222',
         activeRevision,
         outcome: 'saved_pending_activation',
         activationState: 'pending',
@@ -1093,7 +1102,7 @@ describe('ConfigurationWorkspace', () => {
         recorders: [expect.objectContaining({ name: 'mobile-manual', start: 'manual' })],
       }),
     ])
-    expect(wrapper.get('.preview-panel').text()).toContain('Raw Lua preview')
+    expect(wrapper.get('.preview-panel').text()).toContain('KDL configuration preview')
   })
 
   it('edits fixed, redirect, and static actions through the authenticated mobile workspace', async () => {
@@ -1135,7 +1144,7 @@ describe('ConfigurationWorkspace', () => {
       headers: [],
       error_responses: [],
     })
-    expect(wrapper.get('.preview-panel').text()).toContain('Raw Lua preview')
+    expect(wrapper.get('.preview-panel').text()).toContain('KDL configuration preview')
   })
 
   it('guards browser unload and explicit draft reset', async () => {
@@ -1159,7 +1168,50 @@ describe('ConfigurationWorkspace', () => {
     expect((wrapper.get('[data-field="version"] input').element as HTMLInputElement).value).toBe('1')
   })
 
-  it('validates, presents backend Lua for review, and saves with If-Config-Revision', async () => {
+  it('keeps compositional roots read-only while preserving inspection and validation', async () => {
+    const compositionalSnapshot = {
+      ...configSnapshot(),
+      configFormat: 'hocon' as const,
+      compositional: true,
+      dependencyCount: 2,
+      configPreview: '{ version: 1 }',
+    }
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/v1/config' && !init?.method) return jsonResponse(compositionalSnapshot)
+      if (url === '/api/v1/config/validate') {
+        const body = JSON.parse(String(init?.body)) as { config: CanonicalConfig }
+        return jsonResponse({
+          ...validationResponse(body.config),
+          configFormat: 'hocon',
+          compositional: true,
+          dependencyCount: 2,
+          configPreview: '{ version: 1 }',
+        })
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetch)
+    const wrapper = await mountUnlocked()
+
+    expect(wrapper.get('.revision-banner.compositional').text()).toContain('Compositional root is read-only')
+    expect(wrapper.get('.revision-banner.compositional').text()).toContain('2 dependencies')
+    expect(wrapper.get('.editor-form').attributes()).toMatchObject({ inert: '', 'aria-readonly': 'true' })
+    expect(wrapper.findAll('.mobile-add').every((button) => button.attributes('disabled') !== undefined)).toBe(true)
+    expect(wrapper.findAll('.nav-add').every((button) => button.attributes('disabled') !== undefined)).toBe(true)
+
+    await findButton(wrapper, 'Validate candidate').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.preview-panel').text()).toContain('HOCON configuration preview')
+    expect(wrapper.get('.preview-panel pre').text()).toContain('{ version: 1 }')
+    const reviewButton = findButton(wrapper, 'Review save')
+    expect((reviewButton.element as HTMLButtonElement).disabled).toBe(true)
+    expect(reviewButton.attributes('title')).toContain('cannot replace a compositional configuration root')
+    expect(fetch.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false)
+  })
+
+  it('validates, presents the format-neutral preview, and saves with If-Config-Revision', async () => {
     const fetch = installConfigFetch()
     const wrapper = await mountUnlocked(true)
 
@@ -1174,8 +1226,8 @@ describe('ConfigurationWorkspace', () => {
       headers: expect.objectContaining({ Authorization: `Bearer ${bearerToken}` }),
     }))
     expect(JSON.parse(String(validationCall?.[1]?.body)).config.listeners[0].name).toBe('public-https')
-    expect(wrapper.get('.preview-panel').text()).toContain('Raw Lua preview')
-    expect(wrapper.get('.preview-panel pre').text()).toContain('return {')
+    expect(wrapper.get('.preview-panel').text()).toContain('KDL configuration preview')
+    expect(wrapper.get('.preview-panel pre').text()).toContain('version 1')
     expect(wrapper.get('.candidate-topology').text()).toContain('public-https')
     expect(wrapper.get('.candidate-state').text()).toContain('Candidate only / not active')
 
@@ -1220,6 +1272,7 @@ describe('ConfigurationWorkspace', () => {
   it('renders an exact unchanged-active 200 outcome without requiring restart', async () => {
     installConfigFetch(() => jsonResponse({
       diskRevision,
+      candidateRevision: 'candidate-unchanged',
       activeRevision,
       outcome: 'unchanged_active',
       activationState: 'active',
@@ -1315,7 +1368,7 @@ describe('ConfigurationWorkspace', () => {
     firstValidation.resolve(jsonResponse({ diagnostics: [invalidDiagnostic] }, 422))
     await flushPromises()
 
-    expect(wrapper.get('.preview-panel pre').text()).toContain('version = 3')
+    expect(wrapper.get('.preview-panel pre').text()).toContain('version 3')
     expect(wrapper.text()).not.toContain('Candidate is invalid')
     expect(wrapper.find('.diagnostic-list').exists()).toBe(false)
   })

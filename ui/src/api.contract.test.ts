@@ -7,6 +7,7 @@ import {
   fetchConfig,
   fetchMonitoring,
   fetchTopology,
+  validateConfig,
 } from './api'
 import {
   contractConfigSnapshot,
@@ -49,6 +50,59 @@ describe('API contracts over HTTP', () => {
     ])
   })
 
+  it.each(['kdl', 'lua', 'uci', 'hocon'] as const)(
+    'parses %s configuration source metadata without exposing native source paths',
+    async (configFormat) => {
+      const snapshotPayload = {
+        ...emptyConfigSnapshot(),
+        configFormat,
+        compositional: configFormat !== 'lua',
+        dependencyCount: configFormat === 'lua' ? 0 : 2,
+        configPreview: `${configFormat} preview`,
+        ...(configFormat === 'lua' ? { luaPreview: 'lua preview' } : {}),
+        dependencies: ['/native/private/config-fragment'],
+        sourcePath: '/native/private/config-root',
+      }
+      responseOverrides.set('GET /api/v1/config', snapshotPayload)
+
+      const snapshot = await fetchConfig(token)
+
+      expect(snapshot).toMatchObject({
+        configFormat,
+        compositional: configFormat !== 'lua',
+        dependencyCount: configFormat === 'lua' ? 0 : 2,
+        configPreview: `${configFormat} preview`,
+      })
+      expect(JSON.stringify(snapshot)).not.toContain('/native/private')
+      expect(snapshot.luaPreview).toBe(configFormat === 'lua' ? 'lua preview' : undefined)
+
+      responseOverrides.set('POST /api/v1/config/validate', {
+        candidateRevision: snapshot.candidateRevision,
+        normalizedConfig: snapshot.config,
+        configFormat,
+        compositional: snapshot.compositional,
+        dependencyCount: snapshot.dependencyCount,
+        configPreview: snapshot.configPreview,
+        ...(configFormat === 'lua' ? { luaPreview: 'lua preview' } : {}),
+        dependencies: ['/native/private/config-fragment'],
+        sourcePath: '/native/private/config-root',
+        diagnostics: [],
+        topology: {
+          schemaVersion: 1,
+          state: { config: 'candidate', runtime: 'not_active', sampledAtUnixMs: 1 },
+          nodes: [],
+          edges: [],
+          overlays: [],
+        },
+      })
+
+      const validation = await validateConfig(snapshot.config, token)
+      expect(JSON.stringify(validation)).not.toContain('/native/private')
+      expect(validation.luaPreview).toBe(configFormat === 'lua' ? 'lua preview' : undefined)
+      responseOverrides.clear()
+    },
+  )
+
   it('parses exact monitoring counters and every active topology runtime state', async () => {
     const monitoring = contractMonitoring()
     monitoring.listeners = (['configured', 'listening', 'stopped', 'failed'] as const).map((state) => ({
@@ -90,6 +144,12 @@ describe('API contracts over HTTP', () => {
     await expect(fetchConfig(token)).rejects.toThrow('invalid response payload')
     responseOverrides.delete('GET /api/v1/config')
 
+    const missingSourceMetadata = emptyConfigSnapshot() as Partial<ReturnType<typeof emptyConfigSnapshot>>
+    delete missingSourceMetadata.configPreview
+    responseOverrides.set('GET /api/v1/config', missingSourceMetadata)
+    await expect(fetchConfig(token)).rejects.toThrow('invalid response payload')
+    responseOverrides.delete('GET /api/v1/config')
+
     const monitoring = contractMonitoring()
     monitoring.traffic.activeConnections = Number.MAX_SAFE_INTEGER + 1
     responseOverrides.set('GET /api/v1/monitoring', monitoring)
@@ -123,6 +183,25 @@ function route(request: IncomingMessage, response: ServerResponse): void {
   const overrideKey = `${request.method} ${path}`
   if (responseOverrides.has(overrideKey)) return json(response, responseOverrides.get(overrideKey))
   if (request.method === 'GET' && path === '/api/v1/config') return json(response, contractConfigSnapshot())
+  if (request.method === 'POST' && path === '/api/v1/config/validate') {
+    const snapshot = contractConfigSnapshot()
+    return json(response, {
+      candidateRevision: snapshot.candidateRevision,
+      normalizedConfig: snapshot.config,
+      configFormat: snapshot.configFormat,
+      compositional: snapshot.compositional,
+      dependencyCount: snapshot.dependencyCount,
+      configPreview: snapshot.configPreview,
+      diagnostics: [],
+      topology: {
+        schemaVersion: 1,
+        state: { config: 'candidate', runtime: 'not_active', sampledAtUnixMs: 1 },
+        nodes: [],
+        edges: [],
+        overlays: [],
+      },
+    })
+  }
   if (request.method === 'GET' && path === '/api/v1/monitoring') return json(response, contractMonitoring())
   if (request.method === 'GET' && path === '/api/v1/topology') return json(response, contractTopology())
   json(response, { error: { code: 'route_not_found', message: 'route does not exist' } }, 404)

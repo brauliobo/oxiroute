@@ -54,7 +54,10 @@ describe('application navigation', () => {
         return jsonResponse({
           candidateRevision: 'candidate',
           normalizedConfig: body.config,
-          luaPreview: 'return { version = 2 }',
+          configFormat: 'uci',
+          compositional: false,
+          dependencyCount: 0,
+          configPreview: "config 'json' 'root'\n",
           diagnostics: [diagnostic],
           topology: {
             schemaVersion: 1,
