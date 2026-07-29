@@ -8,12 +8,25 @@ existing invocations. Offline commands are:
 ```sh
 oxiroute config check /etc/oxiroute/oxiroute.lua
 oxiroute import nginx /etc/nginx/nginx.conf --root-prefix / --output report
+oxiroute import nginx /etc/nginx/nginx.conf --root-prefix / --host-timezone America/Bahia --default-access-log-file /var/lib/oxiroute/http-access.jsonl --recording-root /mnt/cloud/4tb/cam-rtmp --default-error-server nginx/1.30.2 --output preview
 oxiroute import haproxy /etc/haproxy/haproxy.cfg --output preview
+oxiroute import haproxy /etc/haproxy/haproxy.cfg --node-ip 10.0.0.15 --gpu1-defined --output preview
+oxiroute import haproxy /etc/haproxy/haproxy.cfg --node-ip 10.0.0.15 --gpu1-defined --shadow-port-offset 10000 --output preview
+oxiroute config compose nginx.lua haproxy.lua
 oxiroute version
 ```
 
 Import `report` output includes diagnostics and unresolved deployment/activation requirements.
 `preview` succeeds only for a finalized canonical candidate and writes deterministic Lua to stdout.
+HAProxy files using `${NODE_IP}` or `defined(GPU1)` require the corresponding explicit
+`--node-ip` and `--gpu1-defined` preprocessing inputs; the importer fingerprints those values.
+`--shadow-port-offset` is preview-only and shifts imported IP socket listener ports after exact
+lowering, then revalidates the complete canonical configuration for side-by-side canaries.
+`--recording-root` replaces exactly one native nginx recording root with an explicit canonical
+no-symlink path and fails closed when the source has zero or multiple recording roots.
+`config compose` loads finalized canonical inputs in order and rejects conflicting process-wide
+settings, duplicate names, and invalid cross-references. Run `config check` on the composed file in
+the target host environment to verify runtime preparation and referenced files before activation.
 
 ## Generations
 

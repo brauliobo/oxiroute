@@ -290,7 +290,7 @@ Current constraints:
   returns `413` when an origin response has not already committed. Canonical rendering preserves
   the unbounded policy as explicit `null`.
 - `max_retries` is the number of additional connection attempts after the first, defaults to `0`,
-  and MUST be at most `2`. Retries are permitted only for bodyless `GET` and `HEAD` requests that
+  and MUST be at most `3`. Retries are permitted only for bodyless `GET` and `HEAD` requests that
   are not protocol upgrades, only after a transient connection-establishment failure, and only
   when the configured `target` can be selected. `target = "next_server"` requires a distinct named
   server; `target = "same_server"` reselects the same named server. `delay_ms` defaults to `0`, is
@@ -735,8 +735,8 @@ Recorder fields are:
 | `max_queue_messages` | no | `256` | `1` through `65536`. |
 | `max_queue_bytes` | no | `8388608` | `1` through `1073741824`, and no greater than `max_storage_bytes`. |
 | `shutdown_timeout_ms` | no | `5000` | `1` through `60000`. |
-| `max_storage_bytes` | no | `10737418240` | `1` through `1099511627776`. |
-| `max_storage_files` | no | `10000` | `1` through `1000000`. |
+| `max_storage_bytes` | no | `null` | `null` for no byte quota, or `1` through `1099511627776`. |
+| `max_storage_files` | no | `null` | `null` for no file-count quota, or `1` through `1000000`. |
 | `max_active_recorders` | no | `8` | `1` through `256`. |
 
 Repeated `/` separators in `root_directory` are collapsed. `/`, a trailing `/`, NUL, `.` or `..`

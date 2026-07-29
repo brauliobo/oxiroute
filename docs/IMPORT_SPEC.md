@@ -50,6 +50,8 @@ preview is emitted only for a fully finalized candidate.
 - HAProxy has ordered `-f` file/directory loading, byte-preserving lexing/parsing, defaults and
   frontend/backend/listen resolution, a terminal decision ledger, stable diagnostics, provenance,
   and conservative canonical lowering.
+- The offline HAProxy CLI accepts explicit `--node-ip` and `--gpu1-defined` preprocessing inputs;
+  it never reads or infers the native service environment.
 - HAProxy finalizes only complete, error-free candidates. An explicit preprocessing API accepts a
   typed node IP and GPU-presence bit, expands only `${NODE_IP}` and `defined(GPU1)`, fingerprints
   those inputs, retains immutable original source snapshots and inactive spans, and emits a source
@@ -61,6 +63,9 @@ preview is emitted only for a fully finalized candidate.
   one-request-per-connection overlay can provide the same lifecycle boundary when captured
   surrounding evidence, such as hostrouter's nginx HTTP/1.0/no-keepalive hop, establishes it. DNS
   names remain canonical and are not resolved during import.
+- The strict HTTP subset also preserves HAProxy's default three connection retries and exact
+  `path -i` ACLs used by conditional fixed health responses; those lower to an ASCII case-insensitive
+  exact canonical path selector ahead of the proxy fallback.
 - The synthetic `hostrouter-static-representable.cfg` fixture proves that an audited-shaped Unix
   frontend plus DNS `leastconn` backend can finalize; it is not live-host evidence. Live sanitized
   fixture trees are mapped in `coverage/host-cases.json` as live-origin hashed/read-only captured
