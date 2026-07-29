@@ -11,6 +11,7 @@ depends=('ca-certificates' 'gcc-libs' 'glibc' 'openssl')
 makedepends=('rust>=1.87')
 optdepends=('certbot: provide certificate lineages consumed by configured Certbot sources')
 backup=('etc/oxiroute/oxiroute.env'
+        'etc/oxiroute/oxiroute.kdl'
         'etc/oxiroute/oxiroute.lua')
 install=oxiroute.install
 _target='x86_64-unknown-linux-gnu'
@@ -19,15 +20,17 @@ source=("oxiroute-${pkgver}.tar.gz::${url}/releases/download/v${pkgver}/oxiroute
         'oxiroute.sysusers'
         'oxiroute.tmpfiles'
         'oxiroute.env'
+        'oxiroute.kdl'
         'oxiroute.lua'
         'README.md')
-sha256sums=('8b8cfbdd4912b9f1adbc03c0133f08060cac3eacc39f9ef7fd062c925677c0a2'
-            'ad2d8536df423a144f0da179fd68ae7712ae2e39226c068a088a248bdbadf0e3'
+sha256sums=('46b4c263df00a27db6dd0085c02f6a6ebb3741a7fedf8f715dac2363c24285d5'
+            '4013c417cabead75b1fd398bdcd4f368d3e333dc988bdeb41b9c75e448b92cd1'
             'ece087105e74910e9d4a6c3551082828378ac5c62fc15e97a755a3bc93020e72'
             '632c14735ddea0bf780abea05d3d288f9530ca41f201a37e428223d04acffe3a'
             'bf78e2cc42f96db9fc88a999b66e59c9048267346a00b6e8a23a6d523bed7886'
+            '57e5cb6cf58a38b6c5efd99e0b5a9a36bac3fafba438059a8396b07e9b6e80a9'
             'f55a08f56ff139b566afac6b0c9cbbc4ed08f69a7e04810128bfb8c98a0f0564'
-            '87c98a2a3fb1dcfe3767020630d0fa29cef4fa7caf9999d3d2eea418073fc36d')
+            '31bc6d1fda1d43fbd3e5dd5caac2c6286f0e09c5020ececfff2bfe85d4ebc466')
 
 prepare() {
   cd "oxiroute-${pkgver}"
@@ -61,6 +64,8 @@ package() {
     "${pkgdir}/usr/lib/tmpfiles.d/oxiroute.conf"
   install -Dm644 "${srcdir}/oxiroute.env" \
     "${pkgdir}/etc/oxiroute/oxiroute.env"
+  install -Dm644 "${srcdir}/oxiroute.kdl" \
+    "${pkgdir}/etc/oxiroute/oxiroute.kdl"
   install -Dm644 "${srcdir}/oxiroute.lua" \
     "${pkgdir}/etc/oxiroute/oxiroute.lua"
   install -Dm644 "${srcdir}/README.md" \
