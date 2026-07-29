@@ -7,7 +7,9 @@ imports, and operational visibility.
 
 The current code is intentionally much smaller than that goal. It provides:
 
-- A restricted Lua configuration loader with strict typed validation.
+- A KDL 2.0-default configuration pipeline with strict typed validation, deterministic KDL
+  previews, declarative templates, native nginx/HAProxy references, and restricted Lua, HOCON, and
+  OpenWrt UCI compatibility sources.
 - Pingora-backed HTTP reverse proxy listeners with deterministic host/path/method routing,
   health-aware typed socket/DNS/Unix pools, static round-robin or least-connections balancing,
   active TCP/HTTP checks for non-Unix pools, bounded safe connect-failure retries, upstream I/O
@@ -45,7 +47,9 @@ The current code is intentionally much smaller than that goal. It provides:
   validation, preview, and revision-checked durable writes.
 - A responsive Vue/Pug runtime observatory for host/process load, listener traffic, upstream
   health, and live RTMP state, plus a typed canonical configuration workspace with server-side
-  validation, Lua preview, conflict handling, and explicit save review.
+  validation, format-aware previews, conflict handling, and explicit save review. The browser can
+  save non-compositional KDL, Lua, HOCON, and UCI roots; compositional roots remain inspectable and
+  validatable but read-only so templates and native references cannot be flattened accidentally.
 - Acceptance tests for configuration isolation, runtime planning, and independent TLS/H2 wire
   interoperability.
 
@@ -67,7 +71,7 @@ pnpm --dir ui build
 umask 077
 openssl rand -hex 32 > /tmp/oxiroute-management.token
 OXIROUTE_MANAGEMENT_TOKEN_FILE=/tmp/oxiroute-management.token \
-  cargo run -p oxiroute -- serve oxiroute.example.lua
+  cargo run -p oxiroute -- serve oxiroute.example.kdl
 ```
 
 Operator management uses the separately installed `oxiroute` client. See
@@ -87,12 +91,18 @@ The distributed example intentionally remains plaintext and needs no certificate
 canonical TLS example in [`docs/CONFIG_SPEC.md`](docs/CONFIG_SPEC.md) for HTTPS listener and
 upstream configuration.
 
-Use `RUST_LOG=info` to enable runtime logs. Configuration files are local administrator
-input, but they still run in a fresh Lua state with no standard libraries and bounded
-source, memory, and instruction use.
+Use `RUST_LOG=info` to enable runtime logs. KDL 2.0 is the default for `serve`, canonical previews,
+and `config compose`; `.lua`, `.uci`, `.hocon`, and `.conf` select the compatibility adapters.
+KDL, HOCON, and UCI are bounded declarative inputs and never evaluate shell commands. Restricted Lua
+runs in a fresh state with no standard libraries and bounded source, memory, and instruction use.
+Native references are available only in KDL/HOCON/UCI and deliberately read their explicitly named
+nginx or HAProxy source graphs, so those files must be trusted local administrator input too.
 
-Operational CLI commands are `serve`, `config check`, `import nginx`, `import haproxy`, and
-`version`; the historical single positional configuration path remains an alias for `serve`.
+Operational CLI commands include `serve`, `config check`, `config compose`, `import nginx`,
+`import haproxy`, and `version`; the historical single positional configuration path remains an
+alias for `serve`. `config compose` accepts any supported input formats and emits KDL by default;
+`--format kdl|lua|uci|hocon` selects its output syntax. Native `import ... --output preview` also
+defaults to KDL and accepts the same `--format` choices.
 Configured statistics binds expose public Prometheus `/metrics` and readiness at `/ready`.
 Read-only `/stats`, revision/listener status at `/api/v1/status`, and POST-only statistics
 administration are restricted to loopback peers and require the configured Bearer token.
@@ -114,7 +124,9 @@ acceptance tests were run and observed failing before their implementations were
 
 - [`docs/UPSTREAM_ANALYSIS.md`](docs/UPSTREAM_ANALYSIS.md) records the upstream findings.
 - [`docs/PRODUCT_SPEC.md`](docs/PRODUCT_SPEC.md) defines goals and functional requirements.
-- [`docs/CONFIG_SPEC.md`](docs/CONFIG_SPEC.md) defines the Lua and canonical config contracts.
+- [`docs/CONFIG_SPEC.md`](docs/CONFIG_SPEC.md) defines the typed canonical configuration contract.
+- [`docs/CONFIG_FORMATS.md`](docs/CONFIG_FORMATS.md) defines KDL 2.0 and the compatibility source
+  adapters.
 - [`docs/IMPORT_SPEC.md`](docs/IMPORT_SPEC.md) defines native configuration compatibility.
 - [`docs/API_UI_SPEC.md`](docs/API_UI_SPEC.md) defines control-plane and UI behavior.
 - [`docs/ACME_SPEC.md`](docs/ACME_SPEC.md) defines certificate issuance and auto-renewal.

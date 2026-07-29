@@ -1,0 +1,221 @@
+(array)cache_stores {
+}
+(array)certificates {
+}
+(array)forward_proxy_services {
+}
+(array)http_services {
+  (object)- {
+    access_log #null
+    gzip #null
+    max_request_body_bytes 10485760
+    name "web"
+    (array)routes {
+      (object)- {
+        access_policy #null
+        (object)action {
+          (object)policy {
+            cache #null
+            (array)request_headers {
+            }
+            (array)response_cookie_attributes {
+            }
+            (array)response_cookie_path_rewrites {
+            }
+            (array)response_headers {
+            }
+            (object)retry {
+              body_safety "empty"
+              delay_ms 0
+              max_retries 0
+              method_safety "get_head"
+              target "next_server"
+              (array)triggers {
+                - "connect_failure"
+                - "connect_timeout"
+                - "refused_stream"
+              }
+            }
+            (object)upstream_host {
+              type "preserve_incoming"
+            }
+          }
+          type "proxy"
+          upstream_pool "web"
+        }
+        host #null
+        (array)methods {
+        }
+        (object)path {
+          kind "segment_prefix"
+          value "/"
+        }
+        (object)policy {
+          connect_timeout_ms 30000
+          max_request_body_bytes 10485760
+          read_timeout_ms 30000
+          request_buffering #false
+          response_buffering #false
+          write_timeout_ms 30000
+        }
+      }
+    }
+    upstream_io_timeout_ms 30000
+  }
+}
+(array)l4_services {
+  (object)- {
+    connect_timeout_ms 10000
+    idle_timeout_ms 300000
+    lifetime_timeout_ms #null
+    name "postgres"
+    upstream_pool "postgres"
+  }
+}
+(array)listeners {
+  (object)- {
+    (object)bind {
+      address "127.0.0.1:8080"
+      type "socket"
+    }
+    (object)downstream_timeouts {
+      client_timeout_ms #null
+      keepalive_timeout_ms #null
+      request_timeout_ms #null
+    }
+    max_connections #null
+    name "web"
+    protocol "http"
+    service "web"
+    tls_profile #null
+  }
+  (object)- {
+    (object)bind {
+      address "127.0.0.1:15432"
+      type "socket"
+    }
+    (object)downstream_timeouts {
+      client_timeout_ms #null
+      keepalive_timeout_ms #null
+      request_timeout_ms #null
+    }
+    max_connections #null
+    name "postgres"
+    protocol "tcp"
+    service "postgres"
+    tls_profile #null
+  }
+  (object)- {
+    (object)bind {
+      address "127.0.0.1:1935"
+      type "socket"
+    }
+    (object)downstream_timeouts {
+      client_timeout_ms #null
+      keepalive_timeout_ms #null
+      request_timeout_ms #null
+    }
+    max_connections #null
+    name "live"
+    protocol "rtmp"
+    service "live"
+    tls_profile #null
+  }
+}
+(object)management {
+  bind "127.0.0.1:9080"
+  ui_dir "./ui/dist"
+}
+max_connections #null
+(array)rtmp_services {
+  (object)- {
+    access_log #null
+    (array)applications {
+      (object)- {
+        (object)fanout {
+          max_queue_bytes_per_subscriber 8388608
+          max_queue_messages_per_subscriber 256
+          max_subscribers 1024
+        }
+        idle_streams #true
+        live #true
+        name "live"
+        (array)push_targets {
+        }
+        (array)recorders {
+        }
+      }
+    }
+    name "live"
+    outbound_chunk_size 4096
+  }
+}
+stats #null
+(array)tls_profiles {
+}
+(array)upstream_pools {
+  (object)- {
+    algorithm "round_robin"
+    connect_timeout_ms #null
+    connection_reuse "safe"
+    (object)health_check {
+      down_interval_ms #null
+      expected_status #null
+      fast_interval_ms #null
+      healthy_threshold 1
+      host "127.0.0.1:3000"
+      http_version #null
+      interval_ms 5000
+      path "/healthz"
+      startup "checking"
+      timeout_ms 1000
+      type "http"
+      unhealthy_threshold 3
+    }
+    (object)http_versions {
+      max "1.1"
+      min "1.1"
+    }
+    name "web"
+    queue_timeout_ms #null
+    server_timeout_ms #null
+    (array)servers {
+      (object)- {
+        dns_resolution "on_connect"
+        (object)endpoint {
+          address "127.0.0.1:3000"
+          type "socket"
+        }
+        max_connections #null
+        name "endpoint-1"
+      }
+    }
+    tls #null
+  }
+  (object)- {
+    algorithm "round_robin"
+    connect_timeout_ms #null
+    connection_reuse "safe"
+    health_check #null
+    (object)http_versions {
+      max "1.1"
+      min "1.1"
+    }
+    name "postgres"
+    queue_timeout_ms #null
+    server_timeout_ms #null
+    (array)servers {
+      (object)- {
+        dns_resolution "on_connect"
+        (object)endpoint {
+          address "127.0.0.1:5432"
+          type "socket"
+        }
+        max_connections #null
+        name "endpoint-1"
+      }
+    }
+    tls #null
+  }
+}
+version 1
