@@ -54,20 +54,32 @@ article.route-card.recorder-card
         input(type="number" min="1" max="65536" step="1" v-model.number="recorder.max_queue_messages")
       label.field(data-field="rtmp_services[].applications[].recorders[].max_queue_bytes")
         span Maximum queued bytes
-        input(type="number" min="1" :max="Math.min(1073741824, recorder.max_storage_bytes)" step="1" v-model.number="recorder.max_queue_bytes")
-        small Must not exceed the storage byte limit.
+        input(type="number" min="1" :max="recorder.max_storage_bytes === null ? 1073741824 : Math.min(1073741824, recorder.max_storage_bytes)" step="1" v-model.number="recorder.max_queue_bytes")
+        small Must not exceed a configured storage byte limit.
       label.field(data-field="rtmp_services[].applications[].recorders[].shutdown_timeout_ms")
         span Shutdown timeout (ms)
         input(type="number" min="1" max="60000" step="1" v-model.number="recorder.shutdown_timeout_ms")
   fieldset.object-block.recorder-limits
     legend Shared storage limits
+    NullableLimitField(
+      v-model="recorder.max_storage_bytes"
+      :default-value="10_737_418_240"
+      field-path="rtmp_services[].applications[].recorders[].max_storage_bytes"
+      legend="Storage bytes"
+      input-label="Maximum storage bytes"
+      :max="1_099_511_627_776"
+      unbounded-label="No byte quota"
+    )
+    NullableLimitField(
+      v-model="recorder.max_storage_files"
+      :default-value="10_000"
+      field-path="rtmp_services[].applications[].recorders[].max_storage_files"
+      legend="Storage files"
+      input-label="Maximum storage files"
+      :max="1_000_000"
+      unbounded-label="No file quota"
+    )
     .field-grid
-      label.field(data-field="rtmp_services[].applications[].recorders[].max_storage_bytes")
-        span Maximum storage bytes
-        input(type="number" min="1" max="1099511627776" step="1" v-model.number="recorder.max_storage_bytes")
-      label.field(data-field="rtmp_services[].applications[].recorders[].max_storage_files")
-        span Maximum storage files
-        input(type="number" min="1" max="1000000" step="1" v-model.number="recorder.max_storage_files")
       label.field(data-field="rtmp_services[].applications[].recorders[].max_active_recorders")
         span Maximum active recorders
         input(type="number" min="1" max="256" step="1" v-model.number="recorder.max_active_recorders")

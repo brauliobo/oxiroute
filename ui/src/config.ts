@@ -392,7 +392,13 @@ export interface HttpStaticFilesActionConfig {
     types: Array<{ extension: string; content_type: string }>
   }
   headers: HttpLiteralHeaderConfig[]
-  error_responses: Array<{ statuses: number[]; file: string; internal_redirect: string | null }>
+  error_responses: Array<{
+    statuses: number[]
+    file: string | null
+    body: string | null
+    headers: HttpLiteralHeaderConfig[]
+    internal_redirect: string | null
+  }>
 }
 
 export type HttpRouteActionConfig =
@@ -452,8 +458,8 @@ export interface RtmpRecorderConfig {
   max_queue_messages: number
   max_queue_bytes: number
   shutdown_timeout_ms: number
-  max_storage_bytes: number
-  max_storage_files: number
+  max_storage_bytes: number | null
+  max_storage_files: number | null
   max_active_recorders: number
 }
 
@@ -760,7 +766,8 @@ function isHttpAction(value: unknown): value is HttpRouteActionConfig {
         arrayOf(value.mime.types, (entry) => isRecord(entry) && typeof entry.extension === 'string' &&
           typeof entry.content_type === 'string') && arrayOf(value.headers, isLiteralHeader) &&
         arrayOf(value.error_responses, (entry) => isRecord(entry) &&
-          arrayOf(entry.statuses, safeInteger) && typeof entry.file === 'string' &&
+          arrayOf(entry.statuses, safeInteger) && nullableString(entry.file) &&
+          nullableString(entry.body) && arrayOf(entry.headers, isLiteralHeader) &&
           nullableString(entry.internal_redirect))
     default:
       return false
@@ -923,7 +930,7 @@ function isRtmpRecorder(value: unknown): value is RtmpRecorderConfig {
     ['safe_unique', 'nginx_compatible'].includes(String(value.segment_naming)) &&
     nullableSafeInteger(value.rotation_interval_ms) && safeInteger(value.max_queue_messages) &&
     safeInteger(value.max_queue_bytes) && safeInteger(value.shutdown_timeout_ms) &&
-    safeInteger(value.max_storage_bytes) && safeInteger(value.max_storage_files) &&
+    nullableSafeInteger(value.max_storage_bytes) && nullableSafeInteger(value.max_storage_files) &&
     safeInteger(value.max_active_recorders)
 }
 
@@ -1117,6 +1124,11 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'http_services[].routes[].action.directory_redirects', kind: 'boolean' },
   { path: 'http_services[].routes[].action.spa_fallback', kind: 'string' },
   { path: 'http_services[].routes[].action.error_responses[].internal_redirect', kind: 'string' },
+  { path: 'http_services[].routes[].action.error_responses[].body', kind: 'string' },
+  { path: 'http_services[].routes[].action.error_responses[].headers', kind: 'collection' },
+  { path: 'http_services[].routes[].action.error_responses[].headers[].name', kind: 'string' },
+  { path: 'http_services[].routes[].action.error_responses[].headers[].value', kind: 'string' },
+  { path: 'http_services[].routes[].action.error_responses[].headers[].always', kind: 'boolean' },
   { path: 'http_services[].upstream_io_timeout_ms', kind: 'integer' },
   { path: 'http_services[].max_request_body_bytes', kind: 'integer' },
   { path: 'forward_proxy_services', kind: 'collection' },

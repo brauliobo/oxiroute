@@ -79,7 +79,12 @@ describe('RTMP recorder configuration editors', () => {
     const add = wrapper.get('.recorder-list .add-row')
 
     await add.trigger('click')
-    expect(service.applications[0]?.recorders).toEqual([{ ...recorder(), name: '' }])
+    expect(service.applications[0]?.recorders).toEqual([{
+      ...recorder(),
+      name: '',
+      max_storage_bytes: null,
+      max_storage_files: null,
+    }])
     await wrapper.get('[aria-label="Remove recorder 1"]').trigger('click')
     expect(service.applications[0]?.recorders).toEqual([])
 
