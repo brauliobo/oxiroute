@@ -562,18 +562,30 @@ export interface ConfigDiagnostic {
   path?: string
 }
 
+export type ConfigFormat = 'kdl' | 'lua' | 'uci' | 'hocon'
+
 export interface ConfigSnapshot {
   schemaVersion: 1
   diskRevision: string
+  candidateRevision: string
   activeRevision: string | null
   config: CanonicalConfig
+  configFormat: ConfigFormat
+  compositional: boolean
+  dependencyCount: number
+  configPreview: string
+  luaPreview?: string
   diagnostics: ConfigDiagnostic[]
 }
 
 export interface ConfigValidationResponse {
   candidateRevision: string
   normalizedConfig: CanonicalConfig
-  luaPreview: string
+  configFormat: ConfigFormat
+  compositional: boolean
+  dependencyCount: number
+  configPreview: string
+  luaPreview?: string
   diagnostics: ConfigDiagnostic[]
   topology: CandidateTopologySnapshot
 }
@@ -583,6 +595,7 @@ export type ConfigActivationState = 'pending' | 'active'
 
 export interface ConfigSaveResponse {
   diskRevision: string
+  candidateRevision: string
   activeRevision: string | null
   outcome: ConfigSaveOutcome
   activationState: ConfigActivationState

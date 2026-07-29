@@ -386,6 +386,7 @@ export function emptyConfigSnapshot(): ConfigSnapshot {
   return {
     schemaVersion: 1,
     diskRevision: 'disk',
+    candidateRevision: 'candidate',
     activeRevision: 'disk',
     config: {
       version: 1,
@@ -401,6 +402,10 @@ export function emptyConfigSnapshot(): ConfigSnapshot {
       rtmp_services: [],
       l4_services: [],
     },
+    configFormat: 'kdl',
+    compositional: false,
+    dependencyCount: 0,
+    configPreview: 'version 1\n',
     diagnostics: [],
   }
 }

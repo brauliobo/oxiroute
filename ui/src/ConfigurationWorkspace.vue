@@ -4,7 +4,7 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
     div
       p.eyebrow Canonical control plane
       h2#configuration-heading Configuration workspace
-      p.workspace-deck Edit typed objects, validate on the server, then review the canonical Lua before writing.
+      p.workspace-deck Edit typed objects, validate on the server, then review the source-format preview before writing.
     button.secondary-button(
       v-if="snapshot && accessToken"
       type="button"
@@ -99,6 +99,11 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
       strong Disk and active revisions differ.
       |  The saved file is not the generation currently serving traffic.
 
+    .revision-banner.compositional(v-if="snapshot.compositional" :inert="reviewOpen ? '' : null" role="status")
+      div
+        strong Compositional root is read-only.
+        p Typed saves are unavailable because this {{ formatLabel(snapshot.configFormat) }} root resolves {{ snapshot.dependencyCount }} {{ snapshot.dependencyCount === 1 ? 'dependency' : 'dependencies' }}. Inspection and server validation remain available without flattening its source files.
+
     .revision-banner.stale(v-if="staleRevision" :inert="reviewOpen ? '' : null" tabindex="-1" role="alert")
       div
         strong Draft preserved: the disk revision changed.
@@ -136,6 +141,8 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
             :key="group.collection"
             type="button"
             :aria-label="`Add ${group.singular}`"
+            :disabled="snapshot.compositional"
+            :title="snapshot.compositional ? 'Compositional roots are read-only.' : undefined"
             @click="addObject(group.collection)"
           ) + {{ group.singular }}
 
@@ -154,7 +161,7 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
           template(v-for="group in navigationGroups" :key="group.collection")
             .nav-group-heading(:data-field="group.collection")
               p.nav-section-label {{ group.label }}
-              button.nav-add(type="button" :aria-label="`Add ${group.singular}`" @click="addObject(group.collection)") +
+              button.nav-add(type="button" :aria-label="`Add ${group.singular}`" :disabled="snapshot.compositional" :title="snapshot.compositional ? 'Compositional roots are read-only.' : undefined" @click="addObject(group.collection)") +
             p.nav-empty(v-if="group.items.length === 0") None
             button.object-link(
               v-for="item in group.items"
@@ -167,7 +174,7 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
               small {{ item.detail }}
 
       main.editor-surface
-        form.editor-form(@submit.prevent @input="markDraftChanged" @change="markDraftChanged")
+        form.editor-form(:inert="snapshot.compositional ? '' : null" :aria-readonly="snapshot.compositional" @submit.prevent @input="markDraftChanged" @change="markDraftChanged")
           template(v-if="selectedKey === 'general'")
             header.form-heading
               div
@@ -304,9 +311,9 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
         header.output-heading
           div
             p.eyebrow Backend rendered
-            h3 Raw Lua preview
+            h3 {{ formatLabel(validationResult.configFormat) }} configuration preview
           code {{ shortRevision(validationResult.candidateRevision) }}
-        pre(tabindex="0") {{ validationResult.luaPreview }}
+        pre(tabindex="0") {{ validationResult.configPreview }}
       article.candidate-topology
         header.output-heading
           div
@@ -469,6 +476,7 @@ const validationDisabledReason = computed(() => {
 })
 const reviewDisabledReason = computed(() => {
   if (saving.value) return 'A configuration save is in progress.'
+  if (snapshot.value?.compositional) return 'Typed saves cannot replace a compositional configuration root.'
   if (staleRevision.value !== null) return 'Reload the changed disk revision before reviewing a save.'
   if (!validationCurrent.value) return 'Validate the current draft on the server before reviewing a save.'
   return undefined
@@ -681,6 +689,15 @@ function nullableInput(event: Event): string | null {
 
 function shortRevision(revision: string): string {
   return revision.length > 16 ? `${revision.slice(0, 12)}...${revision.slice(-4)}` : revision
+}
+
+function formatLabel(format: ConfigSnapshot['configFormat']): string {
+  return {
+    kdl: 'KDL',
+    lua: 'Lua',
+    uci: 'UCI',
+    hocon: 'HOCON',
+  }[format]
 }
 
 function clone<T>(value: T): T {

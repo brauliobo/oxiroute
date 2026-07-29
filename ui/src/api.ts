@@ -1,6 +1,7 @@
 import type {
   CanonicalConfig,
   ConfigDiagnostic,
+  ConfigFormat,
   ConfigRequest,
   ConfigSaveResponse,
   ConfigSnapshot,
@@ -566,22 +567,46 @@ function parseMonitoring(value: unknown): MonitoringSnapshot {
 
 function parseConfigSnapshot(value: unknown): ConfigSnapshot {
   if (!isRecord(value) || value.schemaVersion !== 1 || typeof value.diskRevision !== 'string' ||
+    typeof value.candidateRevision !== 'string' ||
     !(value.activeRevision === null || typeof value.activeRevision === 'string') ||
-    !isCanonicalConfig(value.config) || !diagnostics(value.diagnostics)
+    !isCanonicalConfig(value.config) || !configurationSource(value) || !diagnostics(value.diagnostics)
   ) return invalidPayload('configuration')
-  return value as unknown as ConfigSnapshot
+  return {
+    schemaVersion: 1,
+    diskRevision: value.diskRevision,
+    candidateRevision: value.candidateRevision,
+    activeRevision: value.activeRevision,
+    config: value.config,
+    configFormat: value.configFormat,
+    compositional: value.compositional,
+    dependencyCount: value.dependencyCount,
+    configPreview: value.configPreview,
+    ...(value.luaPreview === undefined ? {} : { luaPreview: value.luaPreview }),
+    diagnostics: value.diagnostics,
+  }
 }
 
 function parseValidation(value: unknown): ConfigValidationResponse {
   if (!isRecord(value) || typeof value.candidateRevision !== 'string' ||
-    !isCanonicalConfig(value.normalizedConfig) || typeof value.luaPreview !== 'string' ||
+    !isCanonicalConfig(value.normalizedConfig) || !configurationSource(value) ||
     !diagnostics(value.diagnostics) || !candidateTopology(value.topology)
   ) return invalidPayload('configuration validation')
-  return value as unknown as ConfigValidationResponse
+  return {
+    candidateRevision: value.candidateRevision,
+    normalizedConfig: value.normalizedConfig,
+    configFormat: value.configFormat,
+    compositional: value.compositional,
+    dependencyCount: value.dependencyCount,
+    configPreview: value.configPreview,
+    ...(value.luaPreview === undefined ? {} : { luaPreview: value.luaPreview }),
+    diagnostics: value.diagnostics,
+    topology: value.topology,
+  }
 }
 
 function parseSave(value: unknown): ConfigSaveResponse {
   if (!isRecord(value) || typeof value.diskRevision !== 'string' ||
+    typeof value.candidateRevision !== 'string' ||
     !(value.activeRevision === null || typeof value.activeRevision === 'string') ||
     !diagnostics(value.diagnostics)
   ) return invalidPayload('configuration save')
@@ -591,6 +616,19 @@ function parseSave(value: unknown): ConfigSaveResponse {
     value.activationState === 'active' && value.restartRequired === false
   if (!pending && !unchanged) return invalidPayload('configuration save')
   return value as unknown as ConfigSaveResponse
+}
+
+function configurationSource(value: Record<string, unknown>): value is Record<string, unknown> & {
+  configFormat: ConfigFormat
+  compositional: boolean
+  dependencyCount: number
+  configPreview: string
+  luaPreview?: string
+} {
+  return ['kdl', 'lua', 'uci', 'hocon'].includes(String(value.configFormat)) &&
+    typeof value.compositional === 'boolean' && safeInteger(value.dependencyCount) &&
+    typeof value.configPreview === 'string' &&
+    (value.luaPreview === undefined || typeof value.luaPreview === 'string')
 }
 
 function parseTopology(value: unknown): TopologySnapshot {

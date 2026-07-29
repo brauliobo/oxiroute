@@ -71,6 +71,8 @@ export function useConfigurationLifecycle(options: ConfigurationLifecycleOptions
     () =>
       validationCurrent.value &&
       validationResult.value !== null &&
+      options.snapshot.value?.compositional === false &&
+      !validationResult.value.compositional &&
       !validationResult.value.diagnostics.some((diagnostic) => diagnostic.severity === 'error') &&
       options.staleRevision.value === null,
   )
@@ -148,7 +150,8 @@ export function useConfigurationLifecycle(options: ConfigurationLifecycleOptions
 
   async function writeCandidate(): Promise<void> {
     const token = options.accessToken.value
-    if (!validationCurrent.value || !validationResult.value || !token) return
+    if (!canReviewSave.value || !validationResult.value || !token) return
+    const validation = validationResult.value
     saveController?.abort()
     const controller = new AbortController()
     saveController = controller
@@ -163,7 +166,7 @@ export function useConfigurationLifecycle(options: ConfigurationLifecycleOptions
         controller.signal,
       )
       if (controller.signal.aborted) return
-      applySaveResult(result, normalized)
+      applySaveResult(result, normalized, validation)
       options.onExitReview('.revision-banner.save-state')
     } catch (error) {
       if (controller.signal.aborted) return
@@ -215,15 +218,25 @@ export function useConfigurationLifecycle(options: ConfigurationLifecycleOptions
     }
   }
 
-  function applySaveResult(result: ConfigSaveResponse, config: CanonicalConfig): void {
+  function applySaveResult(
+    result: ConfigSaveResponse,
+    config: CanonicalConfig,
+    validation: ConfigValidationResponse,
+  ): void {
     options.diskRevision.value = result.diskRevision
     options.activeRevision.value = result.activeRevision
     options.diskDiagnostics.value = result.diagnostics
     options.snapshot.value = {
       schemaVersion: 1,
       diskRevision: result.diskRevision,
+      candidateRevision: result.candidateRevision,
       activeRevision: result.activeRevision,
       config: clone(config),
+      configFormat: validation.configFormat,
+      compositional: validation.compositional,
+      dependencyCount: validation.dependencyCount,
+      configPreview: validation.configPreview,
+      ...(validation.luaPreview === undefined ? {} : { luaPreview: validation.luaPreview }),
       diagnostics: result.diagnostics,
     }
     options.draft.value = clone(config)

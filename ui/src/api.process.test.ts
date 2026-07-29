@@ -163,6 +163,7 @@ describe('production API client against the built management process', () => {
     expect(snapshot).toEqual({
       schemaVersion: 1,
       diskRevision: expect.stringMatching(/^[0-9a-f]{64}$/),
+      candidateRevision: expect.stringMatching(/^[0-9a-f]{64}$/),
       activeRevision: expect.stringMatching(/^[0-9a-f]{64}$/),
       config: {
         version: 1,
@@ -207,11 +208,23 @@ describe('production API client against the built management process', () => {
         }],
         l4_services: [],
       },
+      configFormat: 'lua',
+      compositional: false,
+      dependencyCount: 0,
+      configPreview: expect.stringContaining('return {'),
+      luaPreview: expect.stringContaining('return {'),
       diagnostics: [],
     })
+    expect(snapshot).not.toHaveProperty('dependencies')
+    expect(snapshot).not.toHaveProperty('sourcePath')
 
     const validation = await validateConfig(snapshot.config, token)
     expect(validation.normalizedConfig).toEqual(snapshot.config)
+    expect(validation.configFormat).toBe('lua')
+    expect(validation.compositional).toBe(false)
+    expect(validation.dependencyCount).toBe(0)
+    expect(validation.configPreview).toContain('return {')
+    expect(validation.luaPreview).toBe(validation.configPreview)
     expect(validation.diagnostics).toEqual([])
     expect(validation.topology).toEqual({
       schemaVersion: 1,
@@ -224,26 +237,24 @@ describe('production API client against the built management process', () => {
       edges: [],
       overlays: [],
     })
-    expect(validation.luaPreview).toContain('return {')
+    expect(validation).not.toHaveProperty('dependencies')
+    expect(validation).not.toHaveProperty('sourcePath')
 
     const saved = await saveConfig(snapshot.config, snapshot.diskRevision, token)
     expect(saved).toEqual({
       diskRevision: expect.stringMatching(/^[0-9a-f]{64}$/),
+      candidateRevision: expect.stringMatching(/^[0-9a-f]{64}$/),
       activeRevision: snapshot.activeRevision,
-      outcome: 'saved_pending_activation',
-      activationState: 'pending',
+      outcome: 'unchanged_active',
+      activationState: 'active',
       restartRequired: false,
-      diagnostics: [{
-        code: 'I_ACTIVATION_PENDING',
-        message: 'configuration was saved and queued for generation activation',
-        severity: 'warning',
-        stage: 'activation',
-      }],
+      diagnostics: [],
     })
     expect(saved.diskRevision).not.toBe(snapshot.diskRevision)
     expect(await fetchConfig(token)).toEqual({
       ...snapshot,
       diskRevision: saved.diskRevision,
+      candidateRevision: saved.candidateRevision,
     })
 
     try {
