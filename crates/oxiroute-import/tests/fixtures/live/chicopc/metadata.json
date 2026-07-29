@@ -1,0 +1,36 @@
+{
+  "schema_version": 4,
+  "host": "chicopc",
+  "host_timezone": "America/Bahia",
+  "audit_status": "live_origin_hashed_read_only_captured",
+  "sanitized": true,
+  "origin_captures": [
+    {
+      "product": "haproxy",
+      "captured_on": "2026-07-28",
+      "read_command": "ssh -T chicopc.lan 'sudo -n cat /etc/haproxy/haproxy.cfg'",
+      "hash_command": "ssh -T chicopc.lan 'sudo -n cat /etc/haproxy/haproxy.cfg' | sha256sum",
+      "sha256": "4fbe3adb2f19cbf4991a5ef3d0176f6a4af7d4043c887a66abfe16d4d3cfa860",
+      "availability": "recorded",
+      "raw_bytes_stored": false
+    }
+  ],
+  "sanitizer": {
+    "input": "Ephemeral stdout from the read command; no unsanitized byte stream was written to disk.",
+    "steps": [
+      "Retain HAProxy configuration syntax from the read-only stdout capture.",
+      "Replace inline authorization credential values with the literal <redacted> marker.",
+      "Exclude private-key, certificate, htpasswd, bearer-token, and other credential file contents while preserving configuration path references.",
+      "Record the explicit NODE_IP and GPU1-presence preprocessing inputs separately from source bytes.",
+      "Write only sanitized configuration files and calculate each checked-in file's post_sanitization_sha256 independently."
+    ],
+    "raw_bytes_stored": false
+  },
+  "native_versions": { "haproxy": "3.4.2" },
+  "native_version_availability": "recorded",
+  "haproxy_environment": { "node_ip": "10.0.0.15", "gpu1_defined": true },
+  "files": [
+    { "path": "haproxy.cfg", "post_sanitization_sha256": "4fbe3adb2f19cbf4991a5ef3d0176f6a4af7d4043c887a66abfe16d4d3cfa860" }
+  ],
+  "overlay_inventory": []
+}

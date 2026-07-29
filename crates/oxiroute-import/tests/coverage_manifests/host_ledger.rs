@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeSet, HashMap, HashSet},
     fmt::Write as _,
     fs,
+    net::IpAddr,
     path::{Path, PathBuf},
 };
 
@@ -10,11 +11,12 @@ use oxiroute_import::{
     DiagnosticStage, OperationalOverlayKind, Severity,
     haproxy::{
         BalanceAlgorithm, BindAddress, E_LOGGING_UNSUPPORTED, E_PROCESS_OWNED, E_STATS_UNSUPPORTED,
-        HaproxyImportOptions, HaproxyOneRequestPerConnectionOverlay, ServerAddress,
-        import_parsed_with_options, resolve_parsed,
+        HaproxyImportOptions, HaproxyOneRequestPerConnectionOverlay, PreprocessingEnvironment,
+        ServerAddress, import_parsed_with_options, import_roots_with_environment, resolve_parsed,
     },
     nginx::{
-        NginxBearerTokenOverlay, NginxHostTimezoneOverlay, NginxImportOptions,
+        NginxBearerTokenOverlay, NginxDefaultAccessLogOverlay, NginxDefaultErrorPageOverlay,
+        NginxHostTimezoneOverlay, NginxImportOptions, NginxRecordingRootOverlay,
         NginxUpstreamTlsOverlay, OccurrenceDisposition, import_root_with_options,
     },
 };
@@ -130,8 +132,16 @@ struct LiveFixtureMetadata {
     sanitizer: LiveSanitizer,
     native_versions: HashMap<String, String>,
     native_version_availability: String,
+    haproxy_environment: Option<LiveHaproxyEnvironment>,
     files: Vec<LiveFixtureFile>,
     overlay_inventory: Vec<LiveOverlayInventory>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LiveHaproxyEnvironment {
+    node_ip: IpAddr,
+    gpu1_defined: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -266,12 +276,12 @@ fn assert_recording_case_gates(manifest: &HostManifest) {
             .iter()
             .find(|case| case.id == id)
             .unwrap_or_else(|| panic!("missing recording host case {id}"));
-        assert_eq!(case.status, HostStatus::Partial, "{id} status");
+        assert_eq!(case.status, HostStatus::Covered, "{id} status");
         assert!(case.gates.canonical.0, "{id} canonical gate");
         assert!(case.gates.runtime.0, "{id} runtime gate");
         assert!(case.gates.failure.0, "{id} failure gate");
         assert!(case.gates.tests.0, "{id} tests gate");
-        assert!(!case.gates.native_lowering.0, "{id} native lowering gate");
+        assert!(case.gates.native_lowering.0, "{id} native lowering gate");
     }
 }
 
@@ -335,8 +345,10 @@ fn is_host_case_id(id: &str) -> bool {
     let Some((prefix, ordinal)) = id.split_once('-') else {
         return false;
     };
-    matches!(prefix, "IMP" | "HN" | "HH" | "PN" | "PR" | "SQ" | "HV")
-        && ordinal.len() == 2
+    matches!(
+        prefix,
+        "IMP" | "HN" | "HH" | "PN" | "PR" | "PI" | "CI" | "BI" | "SQ" | "HV"
+    ) && ordinal.len() == 2
         && ordinal.bytes().all(|byte| byte.is_ascii_digit())
 }
 
@@ -446,6 +458,20 @@ fn validate_host_fixture_probes(manifest: &HostManifest) {
                     );
                     assert_live_origin_hashed_fixture("phoenix", case);
                 }
+                "crates/oxiroute-import/tests/fixtures/live/chicopc/metadata.json" => {
+                    assert_eq!(
+                        fixture.status,
+                        HostAuditStatus::LiveOriginHashedReadOnlyCaptured
+                    );
+                    assert_live_origin_hashed_fixture("chicopc", case);
+                }
+                "crates/oxiroute-import/tests/fixtures/live/back1/metadata.json" => {
+                    assert_eq!(
+                        fixture.status,
+                        HostAuditStatus::LiveOriginHashedReadOnlyCaptured
+                    );
+                    assert_live_origin_hashed_fixture("back1", case);
+                }
                 path => panic!("host fixture has no executable assertion: {path}"),
             }
         }
@@ -488,7 +514,7 @@ fn is_test_attribute(attribute: &Attribute) -> bool {
 
 fn assert_live_fixture_metadata(metadata_path: &str) {
     let metadata: LiveFixtureMetadata = crate::support::read_json(metadata_path);
-    assert_eq!(metadata.schema_version, 3);
+    assert_eq!(metadata.schema_version, 4);
     assert_eq!(
         metadata.audit_status,
         HostAuditStatus::LiveOriginHashedReadOnlyCaptured
@@ -507,15 +533,7 @@ fn assert_live_fixture_metadata(metadata_path: &str) {
     assert!(metadata.sanitizer.steps.iter().any(|step| {
         step.contains("post_sanitization_sha256") && step.contains("independently")
     }));
-    assert_eq!(metadata.native_version_availability, "recorded");
-    assert_eq!(
-        metadata.native_versions.get("nginx").map(String::as_str),
-        Some("1.30.4")
-    );
-    assert_eq!(
-        metadata.native_versions.get("haproxy").map(String::as_str),
-        Some("3.4.2")
-    );
+    assert_native_capture_metadata(&metadata);
 
     let metadata_file = workspace_path(metadata_path);
     let root = metadata_file.parent().expect("live fixture root");
@@ -545,23 +563,30 @@ fn assert_live_fixture_metadata(metadata_path: &str) {
         );
     }
 
-    let report = import_root_with_options(
-        Path::new("nginx.conf"),
-        &root.join("nginx"),
-        &live_options(&metadata.host),
-    );
     let mut actual_overlays = HashMap::<&str, usize>::new();
-    for overlay in &report.candidate.operational_overlays {
-        let kind = match overlay.kind {
-            OperationalOverlayKind::CertificateMaterial => "certificate_material",
-            OperationalOverlayKind::HostTimezone => "host_timezone",
-            OperationalOverlayKind::OneRequestPerConnection => "one_request_per_connection",
-            OperationalOverlayKind::PrometheusMigration => "prometheus_migration",
-            OperationalOverlayKind::HtpasswdFile => "htpasswd_file",
-            OperationalOverlayKind::BearerTokenFile => "bearer_token_file",
-            OperationalOverlayKind::UpstreamTlsPolicy => "upstream_tls_policy",
-        };
-        *actual_overlays.entry(kind).or_default() += 1;
+    if root.join("nginx").is_dir() {
+        let report = import_root_with_options(
+            Path::new("nginx.conf"),
+            &root.join("nginx"),
+            &live_options(&metadata.host),
+        );
+        for overlay in &report.candidate.operational_overlays {
+            let kind = match overlay.kind {
+                OperationalOverlayKind::CertificateMaterial => "certificate_material",
+                OperationalOverlayKind::DefaultErrorPageMigration => "default_error_page_migration",
+                OperationalOverlayKind::HostTimezone => "host_timezone",
+                OperationalOverlayKind::OneRequestPerConnection => "one_request_per_connection",
+                OperationalOverlayKind::PrometheusMigration => "prometheus_migration",
+                OperationalOverlayKind::RecordingRootMigration => "recording_root_migration",
+                OperationalOverlayKind::StructuredAccessLogMigration => {
+                    "structured_access_log_migration"
+                }
+                OperationalOverlayKind::HtpasswdFile => "htpasswd_file",
+                OperationalOverlayKind::BearerTokenFile => "bearer_token_file",
+                OperationalOverlayKind::UpstreamTlsPolicy => "upstream_tls_policy",
+            };
+            *actual_overlays.entry(kind).or_default() += 1;
+        }
     }
     let expected_overlays = metadata
         .overlay_inventory
@@ -575,22 +600,61 @@ fn assert_live_fixture_metadata(metadata_path: &str) {
     );
 }
 
+fn assert_native_capture_metadata(metadata: &LiveFixtureMetadata) {
+    assert_eq!(metadata.native_version_availability, "recorded");
+    let captured_products = metadata
+        .origin_captures
+        .iter()
+        .map(|capture| capture.product.as_str())
+        .collect::<HashSet<_>>();
+    assert_eq!(captured_products.len(), metadata.native_versions.len());
+    if captured_products.contains("nginx") {
+        assert_eq!(
+            metadata.native_versions.get("nginx").map(String::as_str),
+            Some("1.30.4")
+        );
+    }
+    if !captured_products.contains("haproxy") {
+        return;
+    }
+    assert_eq!(
+        metadata.native_versions.get("haproxy").map(String::as_str),
+        Some("3.4.2")
+    );
+    if metadata.host == "hostrouter" {
+        assert!(metadata.haproxy_environment.is_none());
+        return;
+    }
+    let environment = metadata
+        .haproxy_environment
+        .as_ref()
+        .expect("captured HAProxy environment");
+    let (node_ip, gpu1_defined) = match metadata.host.as_str() {
+        "whitebeast" => ("10.0.0.10", true),
+        "phoenix" => ("10.0.0.11", false),
+        "chicopc" => ("10.0.0.15", true),
+        "back1" => ("10.0.0.7", true),
+        host => panic!("unknown HAProxy environment host {host}"),
+    };
+    assert_eq!(environment.node_ip, node_ip.parse::<IpAddr>().unwrap());
+    assert_eq!(environment.gpu1_defined, gpu1_defined);
+}
+
 fn assert_origin_capture_metadata(metadata: &LiveFixtureMetadata) {
-    assert_eq!(metadata.origin_captures.len(), 2);
     let captures = metadata
         .origin_captures
         .iter()
         .map(|capture| (capture.product.as_str(), capture))
         .collect::<HashMap<_, _>>();
-    assert_eq!(captures.len(), 2);
-    for product in ["nginx", "haproxy"] {
-        let capture = captures
-            .get(product)
-            .unwrap_or_else(|| panic!("{} missing {product} origin capture", metadata.host));
-        let target = if metadata.host == "hostrouter" {
-            "hostrouter.lan"
-        } else {
-            "phoenix.lan"
+    assert_eq!(captures.len(), metadata.origin_captures.len());
+    for (product, capture) in captures {
+        let target = match metadata.host.as_str() {
+            "hostrouter" => "hostrouter.lan",
+            "phoenix" => "phoenix.lan",
+            "chicopc" => "chicopc.lan",
+            "back1" => "back1.lan",
+            "whitebeast" => "whitebeast",
+            host => panic!("unknown live fixture host {host}"),
         };
         let expected_read = if metadata.host == "whitebeast" && product == "nginx" {
             "ssh -T whitebeast 'sudo -n nginx -T 2>&1'".to_owned()
@@ -626,17 +690,17 @@ fn assert_origin_capture_metadata(metadata: &LiveFixtureMetadata) {
             ("phoenix", "nginx") => {
                 Some("bce24fd2f2015f2f35f711a820aa2edbeda3dc6c991c669a6eec0662d21ee0b9")
             }
-            ("phoenix", "haproxy") => {
+            ("phoenix" | "chicopc" | "back1", "haproxy") => {
                 Some("4fbe3adb2f19cbf4991a5ef3d0176f6a4af7d4043c887a66abfe16d4d3cfa860")
             }
             _ => unreachable!(),
         };
         assert_eq!(capture.sha256.as_deref(), expected_hash);
         if expected_hash.is_some() {
-            let expected_date = if metadata.host == "whitebeast" && product == "haproxy" {
-                "2026-07-27"
-            } else {
-                "2026-07-26"
+            let expected_date = match (metadata.host.as_str(), product) {
+                ("whitebeast", "haproxy") => "2026-07-27",
+                ("chicopc" | "back1", "haproxy") => "2026-07-28",
+                _ => "2026-07-26",
             };
             assert_eq!(capture.captured_on.as_deref(), Some(expected_date));
             assert_eq!(capture.availability, "recorded");
@@ -658,7 +722,7 @@ fn is_sha256(value: &str) -> bool {
 
 #[test]
 fn live_origin_hashes_pin_direct_read_only_commands_without_storing_raw_bytes() {
-    for host in ["whitebeast", "hostrouter", "phoenix"] {
+    for host in ["whitebeast", "hostrouter", "phoenix", "chicopc", "back1"] {
         let metadata: LiveFixtureMetadata = crate::support::read_json(format!(
             "crates/oxiroute-import/tests/fixtures/live/{host}/metadata.json"
         ));
@@ -720,6 +784,42 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn assert_live_origin_hashed_fixture(host: &str, case: &str) {
+    if matches!(case, "PI-01" | "CI-01" | "BI-01") {
+        let fixture_root =
+            workspace_path(format!("crates/oxiroute-import/tests/fixtures/live/{host}"));
+        let metadata: LiveFixtureMetadata = crate::support::read_json(format!(
+            "crates/oxiroute-import/tests/fixtures/live/{host}/metadata.json"
+        ));
+        let environment = metadata
+            .haproxy_environment
+            .expect("captured HAProxy environment");
+        let report = import_roots_with_environment(
+            &[fixture_root.join("haproxy.cfg")],
+            PreprocessingEnvironment {
+                node_ip: environment.node_ip,
+                gpu1_defined: environment.gpu1_defined,
+            },
+        );
+        let config = report
+            .value()
+            .config
+            .as_ref()
+            .unwrap_or_else(|| panic!("{host} HAProxy fixture did not finalize"));
+        assert_eq!(config.listeners.len(), 3);
+        assert_eq!(config.upstream_pools.len(), 3);
+        let expected_servers = if host == "phoenix" { 1 } else { 2 };
+        assert!(
+            config
+                .upstream_pools
+                .iter()
+                .all(|pool| pool.servers.len() == expected_servers)
+        );
+        match (host, case) {
+            ("phoenix", "PI-01") | ("chicopc", "CI-01") | ("back1", "BI-01") => {}
+            (_, id) => panic!("live-origin fixture case has no assertion: {id}"),
+        }
+        return;
+    }
     let root = workspace_path(format!(
         "crates/oxiroute-import/tests/fixtures/live/{host}/nginx"
     ));
@@ -765,7 +865,7 @@ fn assert_live_origin_hashed_fixture(host: &str, case: &str) {
         }
         return;
     }
-    assert!(report.candidate.config.is_none());
+    assert!(report.candidate.config.is_some());
     let rtmp = &report.candidate.draft.rtmp_services[0];
     match case {
         "PR-03" => assert!(rtmp.applications[0].live),
@@ -781,6 +881,15 @@ fn live_options(host: &str) -> NginxImportOptions {
         options.host_timezones = vec![NginxHostTimezoneOverlay {
             timezone: "America/Bahia".into(),
         }];
+        options.default_access_log = Some(NginxDefaultAccessLogOverlay {
+            path: "/var/lib/oxiroute/http-access.jsonl".into(),
+        });
+        options.recording_root = Some(NginxRecordingRootOverlay {
+            path: "/mnt/cloud/4tb/cam-rtmp".into(),
+        });
+        options.default_error_page = Some(NginxDefaultErrorPageOverlay {
+            server: "nginx/1.30.2".into(),
+        });
     }
     if host == "hostrouter" {
         options.upstream_tls = vec![

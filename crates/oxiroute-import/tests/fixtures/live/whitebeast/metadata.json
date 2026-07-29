@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "host": "whitebeast",
   "host_timezone": "America/Recife",
   "audit_status": "live_origin_hashed_read_only_captured",
@@ -37,6 +37,7 @@
   },
   "native_versions": { "nginx": "1.30.4", "haproxy": "3.4.2" },
   "native_version_availability": "recorded",
+  "haproxy_environment": { "node_ip": "10.0.0.10", "gpu1_defined": true },
   "files": [
     { "path": "haproxy.cfg", "post_sanitization_sha256": "24bfddb26022e2dfc9d778a0683666516fe6cb8521c6473949f84147578ffa27" },
     { "path": "nginx/letsencrypt/options-ssl-nginx.conf", "post_sanitization_sha256": "789c4c0a2ed74ad22613230a61a4e8c0a0b14ddafad9656e4bbc89b8eba39c73" },

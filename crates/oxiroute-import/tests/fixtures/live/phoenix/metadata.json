@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "host": "phoenix",
   "host_timezone": "America/Bahia",
   "audit_status": "live_origin_hashed_read_only_captured",
@@ -37,6 +37,7 @@
   },
   "native_versions": { "nginx": "1.30.4", "haproxy": "3.4.2" },
   "native_version_availability": "recorded",
+  "haproxy_environment": { "node_ip": "10.0.0.11", "gpu1_defined": false },
   "files": [
     { "path": "haproxy.cfg", "post_sanitization_sha256": "4fbe3adb2f19cbf4991a5ef3d0176f6a4af7d4043c887a66abfe16d4d3cfa860" },
     { "path": "nginx/mime.types", "post_sanitization_sha256": "d53950395ecd95d31c996d01ba2a8639ba79d019fbad4b36f6607d2e7932c9e1" },
@@ -44,6 +45,9 @@
     { "path": "nginx/rtmp.conf", "post_sanitization_sha256": "06a410ef8875bb46d18a9f40cd47e525287b508002049197debb0df6a920ebb0" }
   ],
   "overlay_inventory": [
-    { "kind": "host_timezone", "count": 1 }
+    { "kind": "default_error_page_migration", "count": 1 },
+    { "kind": "host_timezone", "count": 1 },
+    { "kind": "recording_root_migration", "count": 1 },
+    { "kind": "structured_access_log_migration", "count": 1 }
   ]
 }

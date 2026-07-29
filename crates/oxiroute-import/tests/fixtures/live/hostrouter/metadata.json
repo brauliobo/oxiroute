@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "host": "hostrouter",
   "host_timezone": "America/Bahia",
   "audit_status": "live_origin_hashed_read_only_captured",

@@ -35,7 +35,17 @@
       {
         "path": "crates/oxiroute-import/tests/fixtures/live/phoenix/metadata.json",
         "status": "live_origin_hashed_read_only_captured",
-        "cases": ["PR-03", "PR-05", "PR-06"]
+        "cases": ["PR-03", "PR-05", "PR-06", "PI-01"]
+      },
+      {
+        "path": "crates/oxiroute-import/tests/fixtures/live/chicopc/metadata.json",
+        "status": "live_origin_hashed_read_only_captured",
+        "cases": ["CI-01"]
+      },
+      {
+        "path": "crates/oxiroute-import/tests/fixtures/live/back1/metadata.json",
+        "status": "live_origin_hashed_read_only_captured",
+        "cases": ["BI-01"]
       }
     ]
   },
@@ -290,6 +300,25 @@
     },
 
     {
+      "id": "PI-01",
+      "status": "covered",
+      "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": true },
+      "evidence": ["crates/oxiroute-import/tests/haproxy_lower.rs#live_inference_node_health_routes_and_native_default_retries_finalize", "crates/oxiroute-server/tests/http_routing.rs#ascii_case_insensitive_exact_path_beats_the_proxy_fallback"]
+    },
+    {
+      "id": "CI-01",
+      "status": "covered",
+      "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": true },
+      "evidence": ["crates/oxiroute-import/tests/haproxy_lower.rs#live_inference_node_health_routes_and_native_default_retries_finalize", "crates/oxiroute-server/tests/http_routing.rs#ascii_case_insensitive_exact_path_beats_the_proxy_fallback"]
+    },
+    {
+      "id": "BI-01",
+      "status": "covered",
+      "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": true },
+      "evidence": ["crates/oxiroute-import/tests/haproxy_lower.rs#live_inference_node_health_routes_and_native_default_retries_finalize", "crates/oxiroute-server/tests/http_routing.rs#ascii_case_insensitive_exact_path_beats_the_proxy_fallback"]
+    },
+
+    {
       "id": "PN-01",
       "status": "partial",
       "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": false },
@@ -315,9 +344,9 @@
     },
     {
       "id": "PR-03",
-      "status": "partial",
-      "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": false },
-      "evidence": ["crates/oxiroute-import/tests/nginx_rtmp.rs#lowers_inherited_exact_rtmp_and_recorder_policy_without_accessing_the_root", "crates/oxiroute-rtmp/tests/publish_session.rs", "crates/oxiroute-server/tests/rtmp_recording.rs"]
+      "status": "covered",
+      "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": true },
+      "evidence": ["crates/oxiroute-import/tests/nginx_root.rs#sanitized_live_nginx_roots_enforce_security_overlays_and_unrelated_blockers", "crates/oxiroute-import/tests/host_composition.rs#phoenix_nginx_and_haproxy_candidates_compose_as_one_canonical_host", "crates/oxiroute-rtmp/tests/publish_session.rs"]
     },
     {
       "id": "PR-04",
@@ -327,15 +356,15 @@
     },
     {
       "id": "PR-05",
-      "status": "partial",
-      "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": false },
-      "evidence": ["crates/oxiroute-import/tests/nginx_rtmp.rs#keeps_supported_servers_in_the_draft_without_placeholder_for_a_blocked_server", "crates/oxiroute-rtmp/tests/recorder_session.rs#continuous_recorder_starts_records_and_disconnects_without_leaking_catalog_state", "crates/oxiroute-server/tests/rtmp_recording.rs#continuous_recording_finalizes_on_disconnect_and_is_fully_observable"]
+      "status": "covered",
+      "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": true },
+      "evidence": ["crates/oxiroute-import/tests/nginx_root.rs#sanitized_live_nginx_roots_enforce_security_overlays_and_unrelated_blockers", "crates/oxiroute-rtmp/tests/recorder_session.rs#continuous_recorder_starts_records_and_disconnects_without_leaking_catalog_state", "crates/oxiroute-server/tests/process_rtmp_runtime.rs#phoenix_continuous_recording_resumes_after_process_restart_and_publisher_reconnect"]
     },
     {
       "id": "PR-06",
-      "status": "partial",
-      "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": false },
-      "evidence": ["crates/oxiroute-config/tests/rtmp_recorders.rs#enforces_the_recording_path_policy_suffix_grammar", "crates/oxiroute-import/tests/nginx_rtmp.rs#enforces_exact_path_suffix_interval_and_listener_bounds", "crates/oxiroute-rtmp/tests/recording_worker.rs#delays_video_rotation_until_a_keyframe_and_replays_codec_headers"]
+      "status": "covered",
+      "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": true },
+      "evidence": ["crates/oxiroute-import/tests/nginx_root.rs#sanitized_live_nginx_roots_enforce_security_overlays_and_unrelated_blockers", "crates/oxiroute-rtmp/tests/recording_worker.rs#hourly_bahia_segments_rerender_the_suffix_and_keep_flv_payload_with_mp4_names", "crates/oxiroute-server/tests/process_rtmp_runtime.rs#phoenix_continuous_recording_resumes_after_process_restart_and_publisher_reconnect"]
     },
     {
       "id": "PR-07",
