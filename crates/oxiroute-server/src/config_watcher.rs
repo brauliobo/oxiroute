@@ -79,9 +79,7 @@ impl ConfigWatcher {
         let watcher_events = events_tx.clone();
         let mut watcher = RecommendedWatcher::new(
             move |event: notify::Result<notify::Event>| {
-                if event.is_ok() {
-                    let _ = watcher_events.try_send(());
-                }
+                handle_notify_event(&watcher_events, event);
             },
             notify::Config::default(),
         )?;
@@ -154,6 +152,18 @@ impl Drop for ConfigWatcher {
     }
 }
 
+fn handle_notify_event(wake: &mpsc::SyncSender<()>, event: notify::Result<notify::Event>) {
+    match event {
+        Ok(event) if event.need_rescan() => {
+            let _ = wake.try_send(());
+        }
+        Ok(event) if event.kind.is_access() => {}
+        Ok(_) | Err(_) => {
+            let _ = wake.try_send(());
+        }
+    }
+}
+
 fn reconcile(
     coordinator: &CanonicalConfigCoordinator,
     generations: &GenerationManager,
@@ -191,8 +201,15 @@ fn validate_options(options: ConfigWatcherOptions) -> notify::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, time::Instant};
+    use std::{fs, sync::mpsc::TryRecvError, time::Instant};
 
+    use notify::{
+        Event, EventKind,
+        event::{
+            AccessKind, AccessMode, CreateKind, DataChange, Flag, ModifyKind, RemoveKind,
+            RenameMode,
+        },
+    };
     use oxiroute_config::{Config, render_lua};
     use tempfile::TempDir;
 
@@ -206,6 +223,65 @@ mod tests {
             reconciliation_interval: Duration::from_secs(30),
         };
         assert!(validate_options(invalid).is_err());
+    }
+
+    #[test]
+    fn notify_access_events_are_ignored() {
+        let (wake, receiver) = mpsc::sync_channel(1);
+        for kind in [
+            AccessKind::Read,
+            AccessKind::Open(AccessMode::Read),
+            AccessKind::Close(AccessMode::Read),
+        ] {
+            handle_notify_event(&wake, Ok(Event::new(EventKind::Access(kind))));
+        }
+
+        assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn notify_rescans_changes_and_backend_errors_wake_reconciliation() {
+        let (wake, receiver) = mpsc::sync_channel(1);
+        let events = [
+            Ok(Event::new(EventKind::Access(AccessKind::Read)).set_flag(Flag::Rescan)),
+            Ok(Event::new(EventKind::Modify(ModifyKind::Data(
+                DataChange::Any,
+            )))),
+            Ok(Event::new(EventKind::Create(CreateKind::File))),
+            Ok(Event::new(EventKind::Remove(RemoveKind::File))),
+            Ok(Event::new(EventKind::Modify(ModifyKind::Name(
+                RenameMode::Any,
+            )))),
+            Err(notify::Error::generic("backend error")),
+        ];
+
+        for event in events {
+            handle_notify_event(&wake, event);
+            receiver.try_recv().expect("reconciliation wake");
+        }
+    }
+
+    #[test]
+    fn periodic_reconciliation_does_not_feed_access_events_back() {
+        let directory = TempDir::new().expect("directory");
+        let path = directory.path().join("oxiroute.lua");
+        fs::write(&path, render_lua(&empty_config()).expect("render")).expect("config");
+        let coordinator = CanonicalConfigCoordinator::new(&path).expect("coordinator");
+        let manager = GenerationManager::new();
+        let options = ConfigWatcherOptions {
+            debounce: Duration::from_millis(10),
+            max_debounce: Duration::from_millis(30),
+            reconciliation_interval: Duration::from_millis(80),
+        };
+        let started = Instant::now();
+        let mut watcher = ConfigWatcher::start(coordinator, manager, options).expect("watcher");
+
+        wait_until(|| watcher.status().reconciliations >= 4);
+
+        let status = watcher.status();
+        assert_eq!(status.events, 0);
+        assert!(started.elapsed() >= options.reconciliation_interval * 3);
+        watcher.shutdown();
     }
 
     #[test]
