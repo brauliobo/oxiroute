@@ -5,8 +5,8 @@ This directory contains the published `pingora-core 0.8.1` source from crates.io
 under its upstream Apache-2.0 license.
 
 OxiRoute's delta is intentionally limited to an OpenSSL-derived, per-peer TLS
-configure hook, pre-handshake application admission, and a non-truncating certificate subject
-conversion:
+configure hook, pre-handshake application admission, a non-truncating certificate subject
+conversion, and correct HTTP/1 HEAD informational-response framing:
 
 - `protocols/tls/mod.rs` declares the public `TlsConfigureHook` type.
 - `upstreams/peer.rs` stores the optional hook in `PeerOptions`, omits it from
@@ -19,10 +19,13 @@ conversion:
   application connection lifetime.
 - `utils/tls/boringssl_openssl.rs` uses OpenSSL's non-truncating subject string
   conversion instead of the deprecated conversion that stops at interior NULs.
+- `protocols/http/v1/client.rs` classifies informational responses before applying HEAD no-body
+  framing, so a 100/103 response does not prevent the final response from being read.
 
 The normalized crates.io `Cargo.toml` is retained. Its optional `Cargo.toml.orig` reference is
 upstream packaging commentary; that non-build manifest is intentionally omitted here.
 
 When upgrading Pingora, replace this directory from the newly locked published
-crate, reapply and review the connector hook, admission guard, and subject conversion, then rerun
-the OxiRoute TLS wire tests and strict clippy checks.
+crate, reapply and review the connector hook, admission guard, subject conversion, and HTTP/1
+HEAD informational-response fix, then rerun the OxiRoute TLS and HTTP wire tests and strict clippy
+checks.

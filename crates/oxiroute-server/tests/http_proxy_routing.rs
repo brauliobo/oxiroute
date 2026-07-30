@@ -287,6 +287,91 @@ async fn least_connections_sends_a_concurrent_request_to_the_idle_origin() {
 }
 
 #[tokio::test]
+async fn head_early_hints_reaches_final_and_reuses_upstream_connection() {
+    timeout(TEST_TIMEOUT, async {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("informational origin bind");
+        let address = listener.local_addr().expect("informational origin address");
+        let origin = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("informational origin accept");
+            let first_request = read_request_head_bytes(&mut stream)
+                .await
+                .expect("informational origin HEAD request");
+            assert!(first_request.starts_with(b"HEAD /first HTTP/1.1\r\n"));
+            stream
+                .write_all(
+                    b"HTTP/1.1 103 Early Hints\r\nLink: </style.css>; rel=preload\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: keep-alive\r\n\r\n",
+                )
+                .await
+                .expect("informational origin responses");
+
+            let second_request = read_request_head_bytes(&mut stream)
+                .await
+                .expect("reused informational origin request");
+            assert!(second_request.starts_with(b"GET /second HTTP/1.1\r\n"));
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nsecond",
+                )
+                .await
+                .expect("reused informational origin response");
+        });
+        let proxy = ProxyHarness::start(
+            vec![capped_pool("informational", address, 1)],
+            vec![route(None, "/", &[], "informational")],
+            1024,
+            1,
+        )
+        .await;
+        let mut client = TcpStream::connect(proxy.address)
+            .await
+            .expect("informational downstream connect");
+
+        client
+            .write_all(
+                b"HEAD /first HTTP/1.1\r\nHost: informational.test\r\nConnection: keep-alive\r\n\r\n",
+            )
+            .await
+            .expect("informational downstream HEAD request");
+        let informational = RawResponse::parse(
+            read_response_head(&mut client)
+                .await
+                .expect("informational downstream response"),
+        );
+        assert_eq!(informational.status, 103);
+        let final_response = RawResponse::parse(
+            read_response_head(&mut client)
+                .await
+                .expect("final downstream HEAD response"),
+        );
+        assert_eq!(final_response.status, 200);
+        assert!(final_response.body.is_empty());
+
+        client
+            .write_all(
+                b"GET /second HTTP/1.1\r\nHost: informational.test\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .expect("reused downstream request");
+        assert_eq!(
+            read_framed_response(&mut client)
+                .await
+                .expect("reused downstream response")
+                .body,
+            b"second"
+        );
+        drop(client);
+
+        origin.await.expect("informational origin task");
+        proxy.wait_for_no_active_leases().await;
+        proxy.finish().await;
+    })
+    .await
+    .expect("informational HEAD response test timed out");
+}
+
+#[tokio::test]
 async fn reusable_upstream_connection_holds_its_lease_until_the_socket_closes() {
     timeout(TEST_TIMEOUT, async {
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -3066,6 +3151,16 @@ async fn read_framed_response(stream: &mut TcpStream) -> io::Result<RawResponse>
         response.push(byte[0]);
     }
     Ok(RawResponse::parse(response))
+}
+
+async fn read_response_head(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
+    let mut response = Vec::new();
+    let mut byte = [0_u8; 1];
+    while !response.ends_with(b"\r\n\r\n") {
+        stream.read_exact(&mut byte).await?;
+        response.push(byte[0]);
+    }
+    Ok(response)
 }
 
 async fn keepalive_request(address: SocketAddr, path: &str) -> RawResponse {

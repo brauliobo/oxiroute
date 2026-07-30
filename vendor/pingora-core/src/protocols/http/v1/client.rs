@@ -625,13 +625,6 @@ impl HttpSession {
             // follow https://datatracker.ietf.org/doc/html/rfc9112#section-6.3
             let preread_body = self.preread_body.as_ref().unwrap().get(&self.buf[..]);
 
-            if let Some(req) = self.request_written.as_ref() {
-                if req.method == http::method::Method::HEAD {
-                    self.body_reader.init_content_length(0, preread_body);
-                    return;
-                }
-            }
-
             let upgraded = if let Some(code) = self.get_status() {
                 match code.as_u16() {
                     101 => self.is_upgrade_req(),
@@ -649,6 +642,13 @@ impl HttpSession {
             } else {
                 false
             };
+
+            if let Some(req) = self.request_written.as_ref() {
+                if req.method == http::method::Method::HEAD {
+                    self.body_reader.init_content_length(0, preread_body);
+                    return;
+                }
+            }
 
             if upgraded {
                 self.body_reader.init_close_delimited(preread_body);
@@ -1385,6 +1385,46 @@ mod tests_stream {
             .await
             .unwrap();
         assert_eq!(wire.len(), n);
+    }
+
+    #[rstest]
+    #[case(100)]
+    #[case(103)]
+    #[tokio::test]
+    async fn head_informational_response_precedes_final(#[case] informational_status: u16) {
+        let request = b"HEAD / HTTP/1.1\r\n\r\n";
+        let responses = format!(
+            "HTTP/1.1 {informational_status} Informational\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n"
+        );
+        let mock_io = Builder::new()
+            .write(&request[..])
+            .read(responses.as_bytes())
+            .build();
+        let mut http_stream = HttpSession::new(Box::new(mock_io));
+        http_stream
+            .write_request_header(Box::new(RequestHeader::build("HEAD", b"/", None).unwrap()))
+            .await
+            .unwrap();
+
+        match http_stream.read_response_task().await.unwrap() {
+            HttpTask::Header(header, end_of_body) => {
+                assert_eq!(header.status.as_u16(), informational_status);
+                assert!(!end_of_body);
+            }
+            task => panic!("expected informational header, got {task:?}"),
+        }
+
+        match http_stream.read_response_task().await.unwrap() {
+            HttpTask::Header(header, end_of_body) => {
+                assert_eq!(header.status, StatusCode::OK);
+                assert!(end_of_body);
+            }
+            task => panic!("expected final header, got {task:?}"),
+        }
+        assert!(matches!(
+            http_stream.read_response_task().await.unwrap(),
+            HttpTask::Done
+        ));
     }
 
     #[tokio::test]
