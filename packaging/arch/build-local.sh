@@ -22,6 +22,7 @@ else
   source_date_epoch=${SOURCE_DATE_EPOCH:-$(
     git -C "${repo_dir}" log -1 --format=%ct HEAD -- . ':(exclude)packaging/arch'
   )}
+  export SOURCE_DATE_EPOCH=${source_date_epoch}
   tar \
     --directory="${repo_dir}" \
     --sort=name \
