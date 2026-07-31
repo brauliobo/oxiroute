@@ -290,13 +290,10 @@ impl TransportConnector {
     /// If a [Stream] is dropped instead of being returned via this function. it will be closed.
     pub fn release_stream(
         &self,
-        mut stream: Stream,
+        stream: Stream,
         key: u64, // usually peer.reuse_hash()
         idle_timeout: Option<std::time::Duration>,
     ) {
-        if !test_reusable_stream(&mut stream) {
-            return;
-        }
         let lifetime = stream
             .get_socket_digest()
             .and_then(|digest| digest.connection_lifetime());
@@ -527,8 +524,379 @@ mod tests {
     use super::*;
     use crate::upstreams::peer::BasicPeer;
 
+    #[cfg(unix)]
+    use crate::protocols::l4::socket::SocketAddr;
+    #[cfg(unix)]
+    use crate::protocols::{
+        raw_connect::ProxyDigest, ConnectionLifetime, GetProxyDigest, GetSocketDigest,
+        GetTimingDigest, Peek, Shutdown, SocketDigest, Ssl, TimingDigest, UniqueID, UniqueIDType,
+    };
+    #[cfg(unix)]
+    use async_trait::async_trait;
+    #[cfg(unix)]
+    use std::fmt::{Display, Formatter, Result as FmtResult};
+    #[cfg(unix)]
+    use std::io;
+    #[cfg(unix)]
+    use std::os::unix::io::AsRawFd;
+    #[cfg(unix)]
+    use std::pin::Pin;
+    #[cfg(unix)]
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    #[cfg(unix)]
+    use std::task::{Context, Poll};
+    #[cfg(unix)]
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+    #[cfg(unix)]
+    use tokio::sync::Notify;
+
+    #[cfg(unix)]
+    #[derive(Clone, Copy, Debug)]
+    enum TestRead {
+        Pending,
+        Eof,
+        Data,
+        Error,
+    }
+
+    #[cfg(unix)]
+    #[derive(Debug, Default)]
+    struct StreamStats {
+        reads: AtomicUsize,
+        drops: AtomicUsize,
+        read: Notify,
+        dropped: Notify,
+    }
+
+    #[cfg(unix)]
+    #[derive(Debug)]
+    struct InstrumentedStream {
+        id: UniqueIDType,
+        read: TestRead,
+        stats: Arc<StreamStats>,
+        socket_digest: Arc<SocketDigest>,
+    }
+
+    #[cfg(unix)]
+    impl AsyncRead for InstrumentedStream {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            buffer: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            self.stats.reads.fetch_add(1, Ordering::SeqCst);
+            self.stats.read.notify_one();
+            match self.read {
+                TestRead::Pending => Poll::Pending,
+                TestRead::Eof => Poll::Ready(Ok(())),
+                TestRead::Data => {
+                    buffer.put_slice(b"x");
+                    Poll::Ready(Ok(()))
+                }
+                TestRead::Error => Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::ConnectionReset,
+                    "instrumented connection reset",
+                ))),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl AsyncWrite for InstrumentedStream {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            buffer: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(buffer.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for InstrumentedStream {
+        fn drop(&mut self) {
+            self.stats.drops.fetch_add(1, Ordering::SeqCst);
+            self.stats.dropped.notify_one();
+        }
+    }
+
+    #[cfg(unix)]
+    #[async_trait]
+    impl Shutdown for InstrumentedStream {
+        async fn shutdown(&mut self) {}
+    }
+
+    #[cfg(unix)]
+    impl UniqueID for InstrumentedStream {
+        fn id(&self) -> UniqueIDType {
+            self.id
+        }
+    }
+
+    #[cfg(unix)]
+    impl Ssl for InstrumentedStream {}
+
+    #[cfg(unix)]
+    impl GetTimingDigest for InstrumentedStream {
+        fn get_timing_digest(&self) -> Vec<Option<TimingDigest>> {
+            Vec::new()
+        }
+    }
+
+    #[cfg(unix)]
+    impl GetProxyDigest for InstrumentedStream {
+        fn get_proxy_digest(&self) -> Option<Arc<ProxyDigest>> {
+            None
+        }
+    }
+
+    #[cfg(unix)]
+    impl GetSocketDigest for InstrumentedStream {
+        fn get_socket_digest(&self) -> Option<Arc<SocketDigest>> {
+            Some(self.socket_digest.clone())
+        }
+    }
+
+    #[cfg(unix)]
+    impl Peek for InstrumentedStream {}
+
+    #[cfg(unix)]
+    #[derive(Clone, Debug)]
+    struct PoolTestPeer {
+        address: SocketAddr,
+        key: u64,
+        identity_checks: Arc<AtomicUsize>,
+    }
+
+    #[cfg(unix)]
+    impl PoolTestPeer {
+        fn new(key: u64) -> Self {
+            Self {
+                address: SocketAddr::Inet("127.0.0.1:1".parse().unwrap()),
+                key,
+                identity_checks: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Display for PoolTestPeer {
+        fn fmt(&self, formatter: &mut Formatter<'_>) -> FmtResult {
+            write!(formatter, "{}", self.address)
+        }
+    }
+
+    #[cfg(unix)]
+    impl Peer for PoolTestPeer {
+        fn address(&self) -> &SocketAddr {
+            &self.address
+        }
+
+        fn tls(&self) -> bool {
+            false
+        }
+
+        fn sni(&self) -> &str {
+            ""
+        }
+
+        fn reuse_hash(&self) -> u64 {
+            self.key
+        }
+
+        fn matches_fd<V: AsRawFd>(&self, _fd: V) -> bool {
+            self.identity_checks.fetch_add(1, Ordering::SeqCst);
+            true
+        }
+    }
+
+    #[cfg(unix)]
+    #[derive(Debug, Default)]
+    struct TestLifetime {
+        reusable: AtomicUsize,
+    }
+
+    #[cfg(unix)]
+    #[async_trait]
+    impl ConnectionLifetime for TestLifetime {
+        fn notify_reusable(&self) {
+            self.reusable.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[cfg(unix)]
+    fn instrumented_stream(
+        id: UniqueIDType,
+        read: TestRead,
+        lifetime: Option<Arc<dyn ConnectionLifetime>>,
+    ) -> (Stream, Arc<StreamStats>) {
+        let stats = Arc::new(StreamStats::default());
+        let socket_digest = Arc::new(SocketDigest::from_raw_fd(id));
+        if let Some(lifetime) = lifetime {
+            socket_digest
+                .attach_connection_lifetime(lifetime)
+                .expect("test connection lifetime attachment");
+        }
+        let stream = InstrumentedStream {
+            id,
+            read,
+            stats: stats.clone(),
+            socket_digest,
+        };
+        (Box::new(stream), stats)
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_drop(stats: &StreamStats) {
+        if stats.drops.load(Ordering::SeqCst) == 0 {
+            stats.dropped.notified().await;
+        }
+        assert_eq!(stats.drops.load(Ordering::SeqCst), 1);
+    }
+
     // 192.0.2.1 is effectively a black hole
     const BLACK_HOLE: &str = "192.0.2.1:79";
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn valid_immediate_checkout_runs_one_readiness_probe() {
+        let connector = TransportConnector::new(Some(ConnectorOptions::new(1)));
+        let peer = PoolTestPeer::new(11);
+        let (stream, stats) = instrumented_stream(101, TestRead::Pending, None);
+
+        connector.release_stream(stream, peer.reuse_hash(), None);
+        let reused = connector
+            .reused_stream(&peer)
+            .await
+            .expect("immediate reusable stream");
+
+        assert_eq!(reused.id(), 101);
+        assert_eq!(stats.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(peer.identity_checks.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn closed_immediate_checkout_is_rejected_by_checkout_readiness() {
+        let connector = TransportConnector::new(Some(ConnectorOptions::new(1)));
+        let peer = PoolTestPeer::new(12);
+        let (stream, stats) = instrumented_stream(102, TestRead::Eof, None);
+
+        connector.release_stream(stream, peer.reuse_hash(), None);
+
+        assert!(connector.reused_stream(&peer).await.is_none());
+        assert_eq!(stats.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(stats.drops.load(Ordering::SeqCst), 1);
+        assert_eq!(peer.identity_checks.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn closed_idle_stream_is_removed_without_checkout() {
+        let connector = TransportConnector::new(Some(ConnectorOptions::new(1)));
+        let peer = PoolTestPeer::new(13);
+        let (stream, stats) = instrumented_stream(103, TestRead::Eof, None);
+
+        connector.release_stream(stream, peer.reuse_hash(), None);
+        wait_for_drop(&stats).await;
+
+        assert_eq!(stats.reads.load(Ordering::SeqCst), 1);
+        assert!(connector.reused_stream(&peer).await.is_none());
+        assert_eq!(peer.identity_checks.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unexpected_idle_data_removes_stream_without_checkout() {
+        let connector = TransportConnector::new(Some(ConnectorOptions::new(1)));
+        let peer = PoolTestPeer::new(14);
+        let (stream, stats) = instrumented_stream(104, TestRead::Data, None);
+
+        connector.release_stream(stream, peer.reuse_hash(), None);
+        wait_for_drop(&stats).await;
+
+        assert_eq!(stats.reads.load(Ordering::SeqCst), 1);
+        assert!(connector.reused_stream(&peer).await.is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn idle_read_error_removes_stream_without_checkout() {
+        let connector = TransportConnector::new(Some(ConnectorOptions::new(1)));
+        let peer = PoolTestPeer::new(15);
+        let (stream, stats) = instrumented_stream(105, TestRead::Error, None);
+
+        connector.release_stream(stream, peer.reuse_hash(), None);
+        wait_for_drop(&stats).await;
+
+        assert_eq!(stats.reads.load(Ordering::SeqCst), 1);
+        assert!(connector.reused_stream(&peer).await.is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn idle_timeout_removes_pending_stream() {
+        let connector = TransportConnector::new(Some(ConnectorOptions::new(1)));
+        let peer = PoolTestPeer::new(16);
+        let (stream, stats) = instrumented_stream(106, TestRead::Pending, None);
+
+        connector.release_stream(
+            stream,
+            peer.reuse_hash(),
+            Some(std::time::Duration::from_millis(20)),
+        );
+        wait_for_drop(&stats).await;
+
+        assert_eq!(stats.reads.load(Ordering::SeqCst), 2);
+        assert!(connector.reused_stream(&peer).await.is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pool_capacity_evicts_lru_stream_and_keeps_new_stream() {
+        let connector = TransportConnector::new(Some(ConnectorOptions::new(1)));
+        let first_peer = PoolTestPeer::new(17);
+        let second_peer = PoolTestPeer::new(18);
+        let (first, first_stats) = instrumented_stream(107, TestRead::Pending, None);
+        let (second, _second_stats) = instrumented_stream(108, TestRead::Pending, None);
+
+        connector.release_stream(first, first_peer.reuse_hash(), None);
+        first_stats.read.notified().await;
+        connector.release_stream(second, second_peer.reuse_hash(), None);
+        wait_for_drop(&first_stats).await;
+
+        assert!(connector.reused_stream(&first_peer).await.is_none());
+        assert_eq!(first_stats.reads.load(Ordering::SeqCst), 1);
+        assert!(connector.reused_stream(&second_peer).await.is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn release_notifies_capacity_lifetime_once() {
+        let connector = TransportConnector::new(Some(ConnectorOptions::new(1)));
+        let peer = PoolTestPeer::new(19);
+        let lifetime = Arc::new(TestLifetime::default());
+        let (stream, stats) = instrumented_stream(
+            109,
+            TestRead::Pending,
+            Some(lifetime.clone() as Arc<dyn ConnectionLifetime>),
+        );
+
+        connector.release_stream(stream, peer.reuse_hash(), None);
+
+        assert_eq!(lifetime.reusable.load(Ordering::SeqCst), 1);
+        assert!(connector.reused_stream(&peer).await.is_some());
+        assert_eq!(stats.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(lifetime.reusable.load(Ordering::SeqCst), 1);
+    }
 
     #[tokio::test]
     async fn test_connect() {
