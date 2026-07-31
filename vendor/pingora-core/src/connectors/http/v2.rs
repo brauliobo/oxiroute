@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::HttpSession;
-use crate::connectors::{ConnectorOptions, TransportConnector};
+use crate::connectors::{cached_peer_addr_match, ConnectorOptions, TransportConnector};
 use crate::protocols::http::custom::client::Session;
 use crate::protocols::http::v1::client::HttpSession as Http1Session;
 use crate::protocols::http::v2::client::{drive_connection, Http2Session};
@@ -354,7 +354,9 @@ impl Connector {
             .or_else(|| self.idle_pool.get(&reuse_hash));
         if let Some(conn) = maybe_conn {
             #[cfg(unix)]
-            if !peer.matches_fd(conn.id()) {
+            if !cached_peer_addr_match(peer, conn.digest().socket_digest.as_deref())
+                .unwrap_or_else(|| peer.matches_fd(conn.id()))
+            {
                 return Ok(None);
             }
             #[cfg(windows)]
@@ -366,7 +368,9 @@ impl Connector {
                         self.0
                     }
                 }
-                if !peer.matches_sock(WrappedRawSocket(conn.id() as RawSocket)) {
+                if !cached_peer_addr_match(peer, conn.digest().socket_digest.as_deref())
+                    .unwrap_or_else(|| peer.matches_sock(WrappedRawSocket(conn.id() as RawSocket)))
+                {
                     return Ok(None);
                 }
             }
@@ -612,8 +616,12 @@ mod tests {
 
         connector.release_http_session(h2_1, &peer, None);
 
+        #[cfg(unix)]
+        crate::protocols::reset_peer_identity_syscalls();
         let h2_2 = connector.reused_http_session(&peer).await.unwrap().unwrap();
         assert_eq!(id, h2_2.conn.id());
+        #[cfg(unix)]
+        assert_eq!(crate::protocols::peer_identity_syscalls(), 0);
 
         connector.release_http_session(h2_2, &peer, None);
 

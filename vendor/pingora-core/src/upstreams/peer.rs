@@ -270,6 +270,14 @@ pub trait Peer: Display + Clone {
         self.address().check_sock_match(sock)
     }
 
+    /// Compare this peer with a physical peer address cached when the connection was established.
+    ///
+    /// Returning `None` preserves the descriptor-based identity check. Implementations should only
+    /// opt in when they can identify the physical next hop from the cached address.
+    fn matches_cached_addr(&self, _addr: &SocketAddr) -> Option<bool> {
+        None
+    }
+
     fn get_tracer(&self) -> Option<Tracer> {
         None
     }
@@ -379,6 +387,10 @@ impl Peer for BasicPeer {
         let mut hasher = AHasher::default();
         self._address.hash(&mut hasher);
         hasher.finish()
+    }
+
+    fn matches_cached_addr(&self, addr: &SocketAddr) -> Option<bool> {
+        Some(socket_addrs_match(&self._address, addr))
     }
 
     fn get_peer_options(&self) -> Option<&PeerOptions> {
@@ -759,6 +771,21 @@ impl Peer for HttpPeer {
         self.proxy.as_ref()
     }
 
+    fn matches_cached_addr(&self, addr: &SocketAddr) -> Option<bool> {
+        if let Some(proxy) = self.get_proxy() {
+            #[cfg(unix)]
+            return Some(
+                addr.as_unix().and_then(UnixSocketAddr::as_pathname)
+                    == Some(proxy.next_hop.as_ref()),
+            );
+
+            #[cfg(windows)]
+            panic!("windows do not support peers with proxy")
+        }
+
+        Some(socket_addrs_match(&self._address, addr))
+    }
+
     #[cfg(unix)]
     fn matches_fd<V: AsRawFd>(&self, fd: V) -> bool {
         if let Some(proxy) = self.get_proxy() {
@@ -788,6 +815,12 @@ impl Peer for HttpPeer {
     }
 }
 
+fn socket_addrs_match(expected: &SocketAddr, connected: &SocketAddr) -> bool {
+    const ZERO: IpAddr = IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED);
+
+    expected.as_inet().is_some_and(|addr| addr.ip() == ZERO) || expected == connected
+}
+
 /// The proxy settings to connect to the remote server, CONNECT only for now
 #[derive(Debug, Hash, Clone)]
 pub struct Proxy {
@@ -806,5 +839,76 @@ impl Display for Proxy {
             self.host,
             self.port
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn standard_peers_match_cached_ipv4_and_ipv6_addresses_exactly() {
+        let ipv4 = BasicPeer::new("192.0.2.1:8080");
+        assert_eq!(
+            ipv4.matches_cached_addr(&SocketAddr::Inet("192.0.2.1:8080".parse().unwrap())),
+            Some(true)
+        );
+        assert_eq!(
+            ipv4.matches_cached_addr(&SocketAddr::Inet("192.0.2.2:8080".parse().unwrap())),
+            Some(false)
+        );
+
+        let ipv6 = HttpPeer::new("[2001:db8::1]:8443", false, String::new());
+        assert_eq!(
+            ipv6.matches_cached_addr(&SocketAddr::Inet("[2001:db8::1]:8443".parse().unwrap())),
+            Some(true)
+        );
+        assert_eq!(
+            ipv6.matches_cached_addr(&SocketAddr::Inet("[2001:db8::1]:443".parse().unwrap())),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn zero_ipv4_destination_preserves_descriptor_match_behavior() {
+        let peer = BasicPeer::new("0.0.0.0:8080");
+
+        assert_eq!(
+            peer.matches_cached_addr(&SocketAddr::Inet("127.0.0.1:8080".parse().unwrap())),
+            Some(true)
+        );
+        assert_eq!(
+            peer.matches_cached_addr(&SocketAddr::Inet("[::1]:8080".parse().unwrap())),
+            Some(true)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn standard_and_proxy_peers_match_cached_unix_pathnames() {
+        let direct = BasicPeer::new_uds("/tmp/direct.sock").unwrap();
+        let direct_addr =
+            SocketAddr::Unix(UnixSocketAddr::from_pathname("/tmp/direct.sock").unwrap());
+        let other_addr =
+            SocketAddr::Unix(UnixSocketAddr::from_pathname("/tmp/other.sock").unwrap());
+        assert_eq!(direct.matches_cached_addr(&direct_addr), Some(true));
+        assert_eq!(direct.matches_cached_addr(&other_addr), Some(false));
+
+        let proxy = HttpPeer::new_proxy(
+            "/tmp/proxy.sock",
+            "192.0.2.1".parse().unwrap(),
+            443,
+            true,
+            "example.test",
+            BTreeMap::new(),
+        );
+        let proxy_addr =
+            SocketAddr::Unix(UnixSocketAddr::from_pathname("/tmp/proxy.sock").unwrap());
+        assert_eq!(proxy.matches_cached_addr(&proxy_addr), Some(true));
+        assert_eq!(proxy.matches_cached_addr(&direct_addr), Some(false));
+        assert_eq!(
+            proxy.matches_cached_addr(&SocketAddr::Inet("192.0.2.1:443".parse().unwrap())),
+            Some(false)
+        );
     }
 }

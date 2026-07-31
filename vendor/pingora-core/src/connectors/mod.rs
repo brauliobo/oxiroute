@@ -24,7 +24,7 @@ mod tls;
 #[cfg(not(feature = "any_tls"))]
 use crate::tls::connectors as tls;
 
-use crate::protocols::Stream;
+use crate::protocols::{SocketDigest, Stream};
 use crate::server::configuration::ServerConf;
 use crate::upstreams::peer::{Peer, ALPN};
 
@@ -245,7 +245,10 @@ impl TransportConnector {
                         // test_reusable_stream: we assume server would never actively send data
                         // first on an idle stream.
                         #[cfg(unix)]
-                        if peer.matches_fd(stream.id()) && test_reusable_stream(&mut stream) {
+                        if cached_peer_addr_match(peer, stream.get_socket_digest().as_deref())
+                            .unwrap_or_else(|| peer.matches_fd(stream.id()))
+                            && test_reusable_stream(&mut stream)
+                        {
                             Some(stream)
                         } else {
                             None
@@ -259,7 +262,10 @@ impl TransportConnector {
                                     self.0
                                 }
                             }
-                            if peer.matches_sock(WrappedRawSocket(stream.id() as RawSocket))
+                            if cached_peer_addr_match(peer, stream.get_socket_digest().as_deref())
+                                .unwrap_or_else(|| {
+                                    peer.matches_sock(WrappedRawSocket(stream.id() as RawSocket))
+                                })
                                 && test_reusable_stream(&mut stream)
                             {
                                 Some(stream)
@@ -337,6 +343,17 @@ impl TransportConnector {
     pub fn prefer_h1(&self, peer: &impl Peer) {
         self.preferred_http_version.add(peer, 1);
     }
+}
+
+pub(crate) fn cached_peer_addr_match<P: Peer>(
+    peer: &P,
+    digest: Option<&SocketDigest>,
+) -> Option<bool> {
+    digest?
+        .peer_addr
+        .get()?
+        .as_ref()
+        .and_then(|addr| peer.matches_cached_addr(addr))
 }
 
 // Perform the actual L4 and tls connection steps while respecting the peer's
@@ -523,6 +540,8 @@ mod tests {
 
     use super::*;
     use crate::upstreams::peer::BasicPeer;
+    #[cfg(unix)]
+    use crate::upstreams::peer::HttpPeer;
 
     #[cfg(unix)]
     use crate::protocols::l4::socket::SocketAddr;
@@ -574,7 +593,7 @@ mod tests {
         id: UniqueIDType,
         read: TestRead,
         stats: Arc<StreamStats>,
-        socket_digest: Arc<SocketDigest>,
+        socket_digest: Option<Arc<SocketDigest>>,
     }
 
     #[cfg(unix)]
@@ -661,7 +680,7 @@ mod tests {
     #[cfg(unix)]
     impl GetSocketDigest for InstrumentedStream {
         fn get_socket_digest(&self) -> Option<Arc<SocketDigest>> {
-            Some(self.socket_digest.clone())
+            self.socket_digest.clone()
         }
     }
 
@@ -738,13 +757,32 @@ mod tests {
         read: TestRead,
         lifetime: Option<Arc<dyn ConnectionLifetime>>,
     ) -> (Stream, Arc<StreamStats>) {
+        instrumented_stream_with_digest(id, read, lifetime, Some(None))
+    }
+
+    #[cfg(unix)]
+    fn instrumented_stream_with_digest(
+        id: UniqueIDType,
+        read: TestRead,
+        lifetime: Option<Arc<dyn ConnectionLifetime>>,
+        peer_addr: Option<Option<SocketAddr>>,
+    ) -> (Stream, Arc<StreamStats>) {
         let stats = Arc::new(StreamStats::default());
-        let socket_digest = Arc::new(SocketDigest::from_raw_fd(id));
-        if let Some(lifetime) = lifetime {
+        let socket_digest = peer_addr.map(|peer_addr| {
+            let socket_digest = Arc::new(SocketDigest::from_raw_fd(id));
+            if let Some(peer_addr) = peer_addr {
+                socket_digest
+                    .peer_addr
+                    .set(Some(peer_addr))
+                    .expect("empty test peer address");
+            }
+            if let Some(lifetime) = lifetime {
+                socket_digest
+                    .attach_connection_lifetime(lifetime)
+                    .expect("test connection lifetime attachment");
+            }
             socket_digest
-                .attach_connection_lifetime(lifetime)
-                .expect("test connection lifetime attachment");
-        }
+        });
         let stream = InstrumentedStream {
             id,
             read,
@@ -781,6 +819,136 @@ mod tests {
         assert_eq!(reused.id(), 101);
         assert_eq!(stats.reads.load(Ordering::SeqCst), 1);
         assert_eq!(peer.identity_checks.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn missing_socket_digest_falls_back_to_custom_identity_check() {
+        let connector = TransportConnector::new(Some(ConnectorOptions::new(1)));
+        let peer = PoolTestPeer::new(20);
+        let (stream, stats) = instrumented_stream_with_digest(110, TestRead::Pending, None, None);
+
+        connector.release_stream(stream, peer.reuse_hash(), None);
+        assert!(connector.reused_stream(&peer).await.is_some());
+
+        assert_eq!(stats.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(peer.identity_checks.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cached_address_still_uses_default_peer_identity_override() {
+        let connector = TransportConnector::new(Some(ConnectorOptions::new(1)));
+        let peer = PoolTestPeer::new(21);
+        let (stream, stats) = instrumented_stream_with_digest(
+            111,
+            TestRead::Pending,
+            None,
+            Some(Some(peer.address.clone())),
+        );
+
+        connector.release_stream(stream, peer.reuse_hash(), None);
+        assert!(connector.reused_stream(&peer).await.is_some());
+
+        assert_eq!(stats.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(peer.identity_checks.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cached_standard_peer_mismatch_rejects_without_syscall_or_readiness() {
+        use crate::protocols::{peer_identity_syscalls, reset_peer_identity_syscalls};
+
+        let connector = TransportConnector::new(Some(ConnectorOptions::new(1)));
+        let peer = BasicPeer::new("127.0.0.1:8000");
+        let cached_addr = SocketAddr::Inet("127.0.0.1:8001".parse().unwrap());
+        let (stream, stats) =
+            instrumented_stream_with_digest(112, TestRead::Pending, None, Some(Some(cached_addr)));
+
+        connector.release_stream(stream, peer.reuse_hash(), None);
+        reset_peer_identity_syscalls();
+        assert!(connector.reused_stream(&peer).await.is_none());
+
+        assert_eq!(peer_identity_syscalls(), 0);
+        assert_eq!(stats.reads.load(Ordering::SeqCst), 0);
+        assert_eq!(stats.drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn direct_tcp_checkout_uses_seeded_physical_peer_without_identity_syscall() {
+        use crate::protocols::{peer_identity_syscalls, reset_peer_identity_syscalls};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            let _ = shutdown_rx.await;
+        });
+        let connector = TransportConnector::new(Some(ConnectorOptions::new(1)));
+        let peer = BasicPeer::new(&address.to_string());
+        let stream = connector.new_stream(&peer).await.unwrap();
+        let digest = stream.get_socket_digest().unwrap();
+
+        assert_eq!(
+            digest.peer_addr.get().and_then(Option::as_ref),
+            Some(&SocketAddr::Inet(address))
+        );
+
+        connector.release_stream(stream, peer.reuse_hash(), None);
+        reset_peer_identity_syscalls();
+        let reused = connector.reused_stream(&peer).await;
+
+        assert!(reused.is_some());
+        assert_eq!(peer_identity_syscalls(), 0);
+        drop(reused);
+        let _ = shutdown_tx.send(());
+        server.await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn connect_proxy_checkout_uses_seeded_next_hop_without_identity_syscall() {
+        use crate::protocols::{peer_identity_syscalls, reset_peer_identity_syscalls};
+        use std::collections::BTreeMap;
+
+        let socket_path = test_utils::unique_uds_path("proxy_cached_peer");
+        let (ready_rx, shutdown_tx, server_handle) =
+            test_utils::spawn_mock_uds_server(socket_path.clone(), b"HTTP/1.1 200 OK\r\n\r\n");
+        ready_rx.await.unwrap();
+
+        let connector = TransportConnector::new(Some(ConnectorOptions::new(1)));
+        let peer = HttpPeer::new_proxy(
+            &socket_path,
+            "192.0.2.1".parse().unwrap(),
+            80,
+            false,
+            "",
+            BTreeMap::new(),
+        );
+        let stream = connector.new_stream(&peer).await.unwrap();
+        let digest = stream.get_socket_digest().unwrap();
+        assert_eq!(
+            digest
+                .peer_addr
+                .get()
+                .and_then(Option::as_ref)
+                .and_then(SocketAddr::as_unix)
+                .and_then(std::os::unix::net::SocketAddr::as_pathname),
+            Some(std::path::Path::new(&socket_path))
+        );
+
+        connector.release_stream(stream, peer.reuse_hash(), None);
+        reset_peer_identity_syscalls();
+        let reused = connector.reused_stream(&peer).await;
+
+        assert!(reused.is_some());
+        assert_eq!(peer_identity_syscalls(), 0);
+        drop(reused);
+        let _ = shutdown_tx.send(());
+        server_handle.await.unwrap();
     }
 
     #[cfg(unix)]
@@ -920,8 +1088,12 @@ mod tests {
         let stream = connector.new_stream(&peer).await.unwrap();
         connector.release_stream(stream, peer.reuse_hash(), None);
 
+        #[cfg(unix)]
+        crate::protocols::reset_peer_identity_syscalls();
         let (_, reused) = connector.get_stream(&peer).await.unwrap();
         assert!(reused);
+        #[cfg(unix)]
+        assert_eq!(crate::protocols::peer_identity_syscalls(), 0);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -944,9 +1116,16 @@ mod tests {
         assert_eq!(&buf, b"it works!");
 
         // Test connection reuse by releasing and getting the stream back
+        let digest = stream.get_socket_digest().unwrap();
+        assert_eq!(
+            digest.peer_addr.get().and_then(Option::as_ref),
+            Some(peer.address())
+        );
         connector.release_stream(stream, peer.reuse_hash(), None);
+        crate::protocols::reset_peer_identity_syscalls();
         let (stream, reused) = connector.get_stream(&peer).await.unwrap();
         assert!(reused);
+        assert_eq!(crate::protocols::peer_identity_syscalls(), 0);
 
         // Clean up: drop the stream, tell server to shutdown, and wait for it
         drop(stream);

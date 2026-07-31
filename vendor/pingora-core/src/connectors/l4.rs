@@ -99,9 +99,9 @@ where
             .err_context(|| format!("Fail to establish CONNECT proxy: {}", peer));
     }
     let peer_addr = peer.address();
-    let mut stream: Stream =
+    let (mut stream, physical_peer_addr): (Stream, Option<SocketAddr>) =
         if let Some(custom_l4) = peer.get_peer_options().and_then(|o| o.custom_l4.as_ref()) {
-            custom_l4.connect(peer_addr).await?
+            (custom_l4.connect(peer_addr).await?, None)
         } else {
             match peer_addr {
                 SocketAddr::Inet(addr) => {
@@ -143,7 +143,8 @@ where
                     match conn_res {
                         Ok(socket) => {
                             debug!("connected to new server: {}", peer.address());
-                            Ok(socket.into())
+                            let physical_peer_addr = socket.peer_addr().ok().map(SocketAddr::Inet);
+                            Ok((socket.into(), physical_peer_addr))
                         }
                         Err(e) => {
                             let c = format!("Fail to connect to {peer}");
@@ -171,7 +172,11 @@ where
                     match conn_res {
                         Ok(socket) => {
                             debug!("connected to new server: {}", peer.address());
-                            Ok(socket.into())
+                            let physical_peer_addr = socket
+                                .peer_addr()
+                                .ok()
+                                .and_then(|addr| addr.try_into().ok());
+                            Ok((socket.into(), physical_peer_addr))
                         }
                         Err(e) => {
                             let c = format!("Fail to connect to {peer}");
@@ -201,10 +206,12 @@ where
     let digest = SocketDigest::from_raw_fd(stream.as_raw_fd());
     #[cfg(windows)]
     let digest = SocketDigest::from_raw_socket(stream.as_raw_socket());
-    digest
-        .peer_addr
-        .set(Some(peer_addr.clone()))
-        .expect("newly created OnceCell must be empty");
+    if let Some(physical_peer_addr) = physical_peer_addr {
+        digest
+            .peer_addr
+            .set(Some(physical_peer_addr))
+            .expect("newly created OnceCell must be empty");
+    }
     stream.set_socket_digest(digest);
 
     Ok(stream)
@@ -270,14 +277,25 @@ async fn proxy_connect<P: Peer>(peer: &P) -> Result<Stream> {
         .chain(options.extra_proxy_headers.iter());
 
     // not likely to timeout during connect() to UDS
-    let stream: Box<Stream> = Box::new(
-        connect_uds(&proxy.next_hop)
-            .await
-            .or_err_with(ConnectError, || {
-                format!("CONNECT proxy connect() error to {:?}", &proxy.next_hop)
-            })?
-            .into(),
-    );
+    let socket = connect_uds(&proxy.next_hop)
+        .await
+        .or_err_with(ConnectError, || {
+            format!("CONNECT proxy connect() error to {:?}", &proxy.next_hop)
+        })?;
+    let physical_peer_addr = socket
+        .peer_addr()
+        .ok()
+        .and_then(|addr| addr.try_into().ok());
+    let mut stream = Stream::from(socket);
+    let digest = SocketDigest::from_raw_fd(stream.as_raw_fd());
+    if let Some(physical_peer_addr) = physical_peer_addr {
+        digest
+            .peer_addr
+            .set(Some(physical_peer_addr))
+            .expect("newly created OnceCell must be empty");
+    }
+    stream.set_socket_digest(digest);
+    let stream: Box<Stream> = Box::new(stream);
 
     let req_header = raw_connect::generate_connect_header(&proxy.host, proxy.port, &mut headers)?;
     let fut = raw_connect::connect(stream, &req_header, peer);
@@ -442,6 +460,16 @@ mod tests {
 
         // but MyL4 connects to :80 instead
         assert!(new_session.is_ok());
+        assert!(
+            new_session
+                .unwrap()
+                .get_socket_digest()
+                .unwrap()
+                .peer_addr
+                .get()
+                .is_none(),
+            "custom L4 destinations must not inherit the configured peer address"
+        );
     }
 
     #[cfg(unix)]
@@ -483,8 +511,21 @@ mod tests {
             port: 80,
             headers: BTreeMap::new(),
         });
-        let new_session = connect(&peer, None).await;
-        assert!(new_session.is_ok());
+        let new_session = connect(&peer, None).await.unwrap();
+        let connected_addr = new_session
+            .get_socket_digest()
+            .unwrap()
+            .peer_addr
+            .get()
+            .and_then(Option::as_ref)
+            .cloned();
+        assert_eq!(
+            connected_addr
+                .as_ref()
+                .and_then(SocketAddr::as_unix)
+                .and_then(std::os::unix::net::SocketAddr::as_pathname),
+            Some(peer.get_proxy().unwrap().next_hop.as_ref())
+        );
 
         // Clean up
         let _ = shutdown_tx.send(());
