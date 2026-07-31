@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fs::File,
-    io::{self, Seek, SeekFrom, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::{Component, Path},
     sync::{
         Arc, Mutex, MutexGuard, OnceLock, Weak,
@@ -98,6 +98,10 @@ pub enum RecordingStoreError {
     PartialNameCollisions,
     #[error("recording partial cannot be created")]
     PartialCreate(#[source] io::Error),
+    #[error("existing recording cannot be securely reopened")]
+    ResumeOpen(#[source] io::Error),
+    #[error("existing recording is not a complete FLV stream")]
+    ResumeInvalid,
     #[error("recording partial {partial_relative_name} cannot be flushed or synchronized")]
     FileSync {
         partial_relative_name: String,
@@ -384,6 +388,7 @@ impl RecordingStore {
                             #[cfg(test)]
                             fail_rollback_sync: AtomicBool::new(false),
                         }),
+                        resumed: false,
                     });
                 }
                 Err(Errno::EXIST) => {}
@@ -402,6 +407,113 @@ impl RecordingStore {
             files: state.files,
             active_recorders: state.active_recorders,
         }
+    }
+
+    pub(crate) fn recording_names(&self) -> Result<Vec<String>, RecordingStoreError> {
+        let mut directory = Dir::read_from(&self.shared.root)
+            .map_err(|source| RecordingStoreError::RootRead(source.into()))?;
+        let mut names = Vec::new();
+        for entry in &mut directory {
+            let entry = entry.map_err(|source| RecordingStoreError::RootRead(source.into()))?;
+            let name = entry.file_name();
+            let bytes = name.to_bytes();
+            if bytes.starts_with(b".") {
+                continue;
+            }
+            let metadata =
+                match rustix_fs::statat(&self.shared.root, name, AtFlags::SYMLINK_NOFOLLOW) {
+                    Ok(metadata) => metadata,
+                    Err(Errno::NOENT) => continue,
+                    Err(source) => {
+                        return Err(RecordingStoreError::RootEntryMetadata(source.into()));
+                    }
+                };
+            if FileType::from_raw_mode(metadata.st_mode).is_file() {
+                if let Ok(name) = std::str::from_utf8(bytes) {
+                    names.push(name.to_owned());
+                }
+            }
+        }
+        Ok(names)
+    }
+
+    pub(crate) fn resume(
+        &self,
+        relative_name: &str,
+    ) -> Result<RecordingResume, RecordingStoreError> {
+        validate_relative_name(relative_name)?;
+        let ownership = acquire_shared_ownership(
+            &self.shared.root,
+            self.shared.root_owner,
+            self.shared.lock_identity,
+            &|| false,
+        )?;
+        let descriptor = rustix_fs::openat(
+            &self.shared.root,
+            relative_name,
+            OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|source| RecordingStoreError::ResumeOpen(source.into()))?;
+        let metadata = rustix_fs::fstat(&descriptor)
+            .map_err(|source| RecordingStoreError::ResumeOpen(source.into()))?;
+        let path_metadata =
+            rustix_fs::statat(&self.shared.root, relative_name, AtFlags::SYMLINK_NOFOLLOW)
+                .map_err(|source| RecordingStoreError::ResumeOpen(source.into()))?;
+        if !FileType::from_raw_mode(metadata.st_mode).is_file()
+            || metadata.st_uid != self.shared.root_owner
+            || metadata.st_nlink != 1
+            || metadata.st_dev != path_metadata.st_dev
+            || metadata.st_ino != path_metadata.st_ino
+        {
+            return Err(RecordingStoreError::ResumeOpen(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "recording entry identity is invalid",
+            )));
+        }
+        rustix_fs::flock(&descriptor, FlockOperation::NonBlockingLockExclusive)
+            .map_err(|source| RecordingStoreError::ResumeOpen(source.into()))?;
+        let length =
+            u64::try_from(metadata.st_size).map_err(|_| RecordingStoreError::ResumeInvalid)?;
+        let mut file = File::from(descriptor);
+        let (flags, last_timestamp_ms) = inspect_flv_tail(&mut file, length)?;
+        let mut state = self.shared.lock();
+        if state.active_recorders >= self.shared.limits.max_active_recorders {
+            return Err(RecordingStoreError::ActiveRecorderLimit {
+                maximum: self.shared.limits.max_active_recorders,
+            });
+        }
+        state.active_recorders += 1;
+        drop(state);
+        Ok(RecordingResume {
+            file: RecordingFile {
+                shared: Arc::clone(&self.shared),
+                _ownership: ownership,
+                file: Some(file),
+                partial_name: relative_name.to_owned(),
+                final_relative_name: relative_name.to_owned(),
+                position: length,
+                length,
+                partial_exists: false,
+                partial_exists_state: Arc::new(AtomicBool::new(false)),
+                active_accounted: true,
+                preserve_partial: Arc::new(AtomicBool::new(false)),
+                commit: Arc::new(RecordingCommitState {
+                    state: AtomicU8::new(COMMIT_OPEN),
+                    #[cfg(test)]
+                    gate: Mutex::new(None),
+                    #[cfg(test)]
+                    fail_partial_unlink: AtomicBool::new(false),
+                    #[cfg(test)]
+                    fail_rollback_unlink: AtomicBool::new(false),
+                    #[cfg(test)]
+                    fail_rollback_sync: AtomicBool::new(false),
+                }),
+                resumed: true,
+            },
+            flags,
+            last_timestamp_ms,
+        })
     }
 
     #[must_use]
@@ -424,6 +536,13 @@ pub struct RecordingFile {
     active_accounted: bool,
     preserve_partial: Arc<AtomicBool>,
     commit: Arc<RecordingCommitState>,
+    resumed: bool,
+}
+
+pub(crate) struct RecordingResume {
+    pub file: RecordingFile,
+    pub flags: u8,
+    pub last_timestamp_ms: u32,
 }
 
 struct RecordingCommitState {
@@ -493,6 +612,9 @@ impl RecordingFile {
         final_relative_name: String,
     ) -> Result<(), RecordingStoreError> {
         validate_relative_name(&final_relative_name)?;
+        if self.resumed && self.final_relative_name != final_relative_name {
+            return Err(RecordingStoreError::InvalidRelativeName);
+        }
         self.final_relative_name = final_relative_name;
         Ok(())
     }
@@ -556,6 +678,14 @@ impl RecordingFile {
             self.commit.finish();
             return Err(RecordingStoreError::PartialOwnershipLost {
                 partial_relative_name: self.partial_name.clone(),
+            });
+        }
+        if self.resumed {
+            self.commit.finish();
+            self.release_active_as_committed();
+            return Ok(RecordingCommit {
+                relative_name: self.final_relative_name.clone(),
+                bytes: self.length,
             });
         }
 
@@ -958,6 +1088,42 @@ impl RecordingPublicationGate {
     }
 }
 
+fn inspect_flv_tail(file: &mut File, length: u64) -> Result<(u8, u32), RecordingStoreError> {
+    if length < 28 {
+        return Err(RecordingStoreError::ResumeInvalid);
+    }
+    let mut header = [0_u8; 9];
+    file.seek(SeekFrom::Start(0))
+        .and_then(|_| file.read_exact(&mut header))
+        .map_err(|_| RecordingStoreError::ResumeInvalid)?;
+    if &header[..4] != b"FLV\x01" || header[5..9] != [0, 0, 0, 9] {
+        return Err(RecordingStoreError::ResumeInvalid);
+    }
+    let mut previous_tag_size = [0_u8; 4];
+    file.seek(SeekFrom::End(-4))
+        .and_then(|_| file.read_exact(&mut previous_tag_size))
+        .map_err(|_| RecordingStoreError::ResumeInvalid)?;
+    let tag_size = u64::from(u32::from_be_bytes(previous_tag_size));
+    let tag_start = length
+        .checked_sub(4)
+        .and_then(|end| end.checked_sub(tag_size))
+        .filter(|start| *start >= 13)
+        .ok_or(RecordingStoreError::ResumeInvalid)?;
+    let mut tag_header = [0_u8; 11];
+    file.seek(SeekFrom::Start(tag_start))
+        .and_then(|_| file.read_exact(&mut tag_header))
+        .map_err(|_| RecordingStoreError::ResumeInvalid)?;
+    let data_size = u32::from_be_bytes([0, tag_header[1], tag_header[2], tag_header[3]]);
+    if tag_size != u64::from(data_size) + 11 {
+        return Err(RecordingStoreError::ResumeInvalid);
+    }
+    let timestamp_ms =
+        u32::from_be_bytes([tag_header[7], tag_header[4], tag_header[5], tag_header[6]]);
+    file.seek(SeekFrom::End(0))
+        .map_err(|_| RecordingStoreError::ResumeInvalid)?;
+    Ok((header[4], timestamp_ms))
+}
+
 impl Write for RecordingFile {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         let requested = u64::try_from(buffer.len()).map_err(|_| {
@@ -1029,6 +1195,12 @@ impl Seek for RecordingFile {
 impl Drop for RecordingFile {
     fn drop(&mut self) {
         if !self.active_accounted {
+            return;
+        }
+        if self.resumed {
+            drop(self.file.take());
+            self.shared.lock().active_recorders -= 1;
+            self.active_accounted = false;
             return;
         }
 

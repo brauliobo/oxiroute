@@ -166,8 +166,8 @@ allowlists and resource limits. It does not reproduce reference pointer/filter d
 `all` means audio and video. `off` wins if combined. `keyframes` records video keyframes;
 `manual` requires control API start. The strict lowerer maps only `record all`, `record all manual`,
 `record manual all`, and `record off`; narrower bitmasks and bare `record manual` block finalization.
-FLV append, locking, size/frame bounds, notify, named recorder blocks, and other recorder forms remain
-unsupported.
+Explicit `record_append`, locking, size/frame bounds, notify, named recorder blocks, and other
+recorder forms remain unsupported.
 
 The native `record_unique` form appends segment-start Unix seconds and is not collision-free when
 multiple segments start in one second. OxiRoute preserves that suffix and then uses exclusive partial creation
@@ -179,6 +179,11 @@ local-time basis without inferring the host timezone.
 Canonical recording percent-escapes one relative stream-name component, drops query arguments,
 limits the rendered name to 255 bytes, and rotates on audio boundaries or video keyframes. These
 policies are wired into configured publisher sessions and exact-ID manual controls.
+For a segment-start, nginx-compatible recorder with `record_unique on` and `record_interval`, a
+publisher or daemon reconnect resumes the latest exact-policy filename while its original start is
+still inside that interval. OxiRoute validates the existing FLV tail, continues timestamps after its
+last complete tag, and keeps rotation anchored to the original segment start. Once the interval has
+expired, the reconnect creates a new nginx-style filename.
 
 ### Strict nginx-RTMP lowering
 

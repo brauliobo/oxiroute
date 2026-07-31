@@ -209,6 +209,108 @@ fn hourly_bahia_segments_rerender_the_suffix_and_keep_flv_payload_with_mp4_names
 }
 
 #[test]
+fn reconnect_within_interval_resumes_the_existing_nginx_named_segment() {
+    let temporary = tempdir().expect("temporary directory");
+    let store = store(temporary.path());
+    let path = RecordingPathPolicy::new("-%Y%m%d_%H%M%S.mp4", true)
+        .expect("path policy")
+        .with_segment_policy(
+            RecordingTimezone::Utc,
+            RecordingTimeBasis::SegmentStart,
+            RecordingSegmentNaming::NginxCompatible,
+        );
+    let config = RecorderWorkerConfig {
+        max_queue_messages: 32,
+        max_queue_bytes: 1024 * 1024,
+        rotation_interval: Some(Duration::from_secs(3_600)),
+        shutdown_timeout: Duration::from_secs(1),
+        video_codec: None,
+    };
+    let opened_at = 1_721_619_000;
+    let first = RecorderWorker::start(
+        store.clone(),
+        &path,
+        b"camera",
+        opened_at,
+        RecordingDateTime::from_unix_seconds(opened_at).expect("first start"),
+        config,
+    )
+    .expect("first worker");
+    enqueue(&first, aac_header(0, 0x12));
+    enqueue(&first, audio(0, 0x11));
+    enqueue(&first, audio(100, 0x22));
+    let first_status = shutdown(first);
+    let name = first_status
+        .last_completed_relative_name
+        .expect("first segment name");
+    let first_length = fs::metadata(temporary.path().join(&name))
+        .expect("first segment")
+        .len();
+
+    let reconnected_at = opened_at + 120;
+    let second = RecorderWorker::start(
+        store,
+        &path,
+        b"camera",
+        reconnected_at,
+        RecordingDateTime::from_unix_seconds(reconnected_at).expect("reconnect start"),
+        config,
+    )
+    .expect("second worker");
+    enqueue(&second, aac_header(0, 0x13));
+    enqueue(&second, audio(0, 0x33));
+    enqueue(&second, audio(100, 0x44));
+    let second_status = shutdown(second);
+
+    assert_eq!(recording_files(temporary.path()).len(), 1);
+    assert_eq!(
+        second_status.last_completed_relative_name.as_deref(),
+        Some(name.as_str())
+    );
+    let resumed = fs::read(temporary.path().join(name)).expect("resumed segment");
+    assert!(resumed.len() as u64 > first_length);
+    let tags = parse_tags(&resumed);
+    assert!(payloads(&tags).contains(&audio_payload(0x11)));
+    assert!(payloads(&tags).contains(&audio_payload(0x44)));
+    assert!(tags.windows(2).all(|tags| tags[0].1 <= tags[1].1));
+}
+
+#[test]
+fn reconnect_after_interval_starts_a_new_nginx_named_segment() {
+    let temporary = tempdir().expect("temporary directory");
+    let store = store(temporary.path());
+    let path = RecordingPathPolicy::new("-%Y%m%d_%H%M%S.mp4", true)
+        .expect("path policy")
+        .with_segment_policy(
+            RecordingTimezone::Utc,
+            RecordingTimeBasis::SegmentStart,
+            RecordingSegmentNaming::NginxCompatible,
+        );
+    let config = RecorderWorkerConfig {
+        max_queue_messages: 32,
+        max_queue_bytes: 1024 * 1024,
+        rotation_interval: Some(Duration::from_secs(60)),
+        shutdown_timeout: Duration::from_secs(1),
+        video_codec: None,
+    };
+    for opened_at in [1_721_619_000, 1_721_619_061] {
+        let worker = RecorderWorker::start(
+            store.clone(),
+            &path,
+            b"camera",
+            opened_at,
+            RecordingDateTime::from_unix_seconds(opened_at).expect("segment start"),
+            config,
+        )
+        .expect("worker");
+        enqueue(&worker, aac_header(0, 0x12));
+        enqueue(&worker, audio(0, 0x11));
+        shutdown(worker);
+    }
+    assert_eq!(recording_files(temporary.path()).len(), 2);
+}
+
+#[test]
 fn record_unique_and_segment_end_are_recomputed_for_every_rotation() {
     let temporary = tempdir().expect("temporary directory");
     let store = store(temporary.path());

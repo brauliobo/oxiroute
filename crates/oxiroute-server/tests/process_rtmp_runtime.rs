@@ -414,21 +414,12 @@ async fn phoenix_continuous_recording_resumes_after_process_restart_and_publishe
     .await;
     second_publisher.close().await;
 
-    let second_files = wait_for_recording_file_count(&continuous_root, 2).await;
-    assert_recording_extensions(&second_files, "mp4");
-    assert_eq!(
-        fs::read(&first_path).expect("unchanged first segment"),
-        first_bytes
-    );
-    let second_path = second_files
-        .iter()
-        .find(|path| **path != first_path)
-        .expect("new segment after reconnect");
-    assert!(
-        fs::read(second_path)
-            .expect("second Phoenix-shaped segment")
-            .starts_with(b"FLV")
-    );
+    let resumed_files = wait_for_recording_file_count(&continuous_root, 1).await;
+    assert_recording_extensions(&resumed_files, "mp4");
+    assert_eq!(resumed_files, vec![first_path.clone()]);
+    let resumed_bytes = fs::read(first_path).expect("resumed Phoenix-shaped segment");
+    assert!(resumed_bytes.starts_with(b"FLV"));
+    assert!(resumed_bytes.len() > first_bytes.len());
     second_server.shutdown();
 }
 

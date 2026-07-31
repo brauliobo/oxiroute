@@ -311,6 +311,31 @@ impl RecordingPathPolicy {
         self.time_basis
     }
 
+    pub(crate) fn segment_start_from_filename(
+        &self,
+        stream_name: &[u8],
+        filename: &str,
+    ) -> Option<u64> {
+        if !self.native_unique_seconds || self.time_basis != RecordingTimeBasis::SegmentStart {
+            return None;
+        }
+        let mut prefix = String::new();
+        percent_escape_into(stream_name, &mut prefix);
+        prefix.push('-');
+        let remainder = filename.strip_prefix(&prefix)?;
+        let seconds_length = remainder.bytes().take_while(u8::is_ascii_digit).count();
+        if seconds_length == 0 {
+            return None;
+        }
+        let started_at = remainder[..seconds_length].parse().ok()?;
+        (self
+            .relative_filename_at(stream_name, started_at)
+            .ok()?
+            .as_str()
+            == filename)
+            .then_some(started_at)
+    }
+
     fn render_suffix(&self, opened_at: RecordingDateTime) -> String {
         let bytes = self.suffix_template.as_bytes();
         let mut rendered = String::with_capacity(bytes.len());
