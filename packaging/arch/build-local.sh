@@ -23,22 +23,19 @@ else
     git -C "${repo_dir}" log -1 --format=%ct HEAD -- . ':(exclude)packaging/arch'
   )}
   export SOURCE_DATE_EPOCH=${source_date_epoch}
-  tar \
-    --directory="${repo_dir}" \
-    --sort=name \
-    --mtime="@${source_date_epoch}" \
-    --owner=0 \
-    --group=0 \
-    --numeric-owner \
-    --exclude='./.git' \
-    --exclude='*/target' \
-    --exclude='./ui/node_modules' \
-    --exclude='./ui/dist' \
-    --exclude='./packaging/arch' \
-    --transform="s|^\./|oxiroute-${pkgver}/|" \
-    --create \
-    --file=- \
-    . | gzip -n >"${archive}"
+  git -C "${repo_dir}" ls-files -z -- . ':(exclude)packaging/arch' | \
+    tar \
+      --directory="${repo_dir}" \
+      --null \
+      --files-from=- \
+      --sort=name \
+      --mtime="@${source_date_epoch}" \
+      --owner=0 \
+      --group=0 \
+      --numeric-owner \
+      --transform="s|^|oxiroute-${pkgver}/|" \
+      --create \
+      --file=- | gzip -n >"${archive}"
 fi
 
 actual_sha256=$(sha256sum -- "${archive}")

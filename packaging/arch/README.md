@@ -36,9 +36,10 @@ OXIROUTE_MANAGEMENT_TOKEN_FILE=/etc/oxiroute/management.token oxiroute status
 
 `PKGBUILD` expects the checksum-pinned release asset
 `https://github.com/brauliobo/oxiroute/releases/download/v0.1.0/oxiroute-0.1.0.tar.gz`. The asset is a
-deterministic source-tree archive with the `oxiroute-0.1.0/` prefix and without build outputs or this
-`packaging/arch` directory. Excluding the AUR recipe avoids making the source checksum depend on the
-checksum recorded inside the recipe.
+deterministic archive of Git-tracked files with the `oxiroute-0.1.0/` prefix and without this
+`packaging/arch` directory. Excluding untracked and ignored files prevents local build or benchmark
+artifacts from entering a release. Excluding the AUR recipe avoids making the source checksum depend
+on the checksum recorded inside the recipe.
 
 From this repository, `./build-local.sh` recreates that archive from the current worktree, verifies it
 against the PKGBUILD checksum, and gives the unchanged PKGBUILD a local `SRCDEST`. This permits a
