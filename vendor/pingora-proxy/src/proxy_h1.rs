@@ -14,12 +14,30 @@
 
 use futures::future::OptionFuture;
 use futures::StreamExt;
+use smallvec::SmallVec;
 
 use super::*;
 use crate::proxy_cache::{range_filter::RangeBodyFilter, ServeFromCache};
 use crate::proxy_common::*;
 use pingora_cache::CachePhase;
 use pingora_core::protocols::http::custom::CUSTOM_MESSAGE_QUEUE_SIZE;
+
+type HttpTaskBuffer = SmallVec<[HttpTask; TASK_BUFFER_SIZE]>;
+
+fn collect_available_tasks(first: HttpTask, rx: &mut mpsc::Receiver<HttpTask>) -> HttpTaskBuffer {
+    let mut tasks = HttpTaskBuffer::new();
+    tasks.push(first);
+    // tokio::task::unconstrained because now_or_never may yield None when the future is ready
+    while let Some(maybe_task) = tokio::task::unconstrained(rx.recv()).now_or_never() {
+        debug!("upstream event now: {:?}", maybe_task);
+        if let Some(task) = maybe_task {
+            tasks.push(task);
+        } else {
+            break; // upstream closed
+        }
+    }
+    tasks
+}
 
 async fn prepare_h1_upstream_request<SV>(
     inner: &SV,
@@ -457,17 +475,7 @@ where
                            continue;
                         }
                         // pull as many tasks as we can
-                        let mut tasks = Vec::with_capacity(TASK_BUFFER_SIZE);
-                        tasks.push(t);
-                        // tokio::task::unconstrained because now_or_never may yield None when the future is ready
-                        while let Some(maybe_task) = tokio::task::unconstrained(rx.recv()).now_or_never() {
-                            debug!("upstream event now: {:?}", maybe_task);
-                            if let Some(t) = maybe_task {
-                                tasks.push(t);
-                            } else {
-                                break; // upstream closed
-                            }
-                        }
+                        let tasks = collect_available_tasks(t, &mut rx);
 
                         /* run filters before sending to downstream */
                         let mut filtered_tasks = Vec::with_capacity(TASK_BUFFER_SIZE);
@@ -911,6 +919,92 @@ pub(crate) async fn send_body_to1(
         }
     } else {
         Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod task_buffer_tests {
+    use super::*;
+
+    fn body_task(value: u8) -> HttpTask {
+        HttpTask::Body(Some(Bytes::from(vec![value])), false)
+    }
+
+    fn body_value(task: &HttpTask) -> Option<u8> {
+        let HttpTask::Body(Some(body), _) = task else {
+            return None;
+        };
+        body.first().copied()
+    }
+
+    async fn collect_batch(values: &[u8]) -> HttpTaskBuffer {
+        let (tx, mut rx) = mpsc::channel(TASK_BUFFER_SIZE);
+        for value in values {
+            tx.send(body_task(*value)).await.unwrap();
+        }
+        let first = rx.recv().await.unwrap();
+        collect_available_tasks(first, &mut rx)
+    }
+
+    #[tokio::test]
+    async fn batches_through_channel_capacity_stay_inline() {
+        for len in 1..=TASK_BUFFER_SIZE {
+            let values: Vec<_> = (0..len as u8).collect();
+            let tasks = collect_batch(&values).await;
+
+            assert_eq!(tasks.len(), len);
+            assert!(!tasks.spilled(), "batch of {len} tasks spilled");
+        }
+    }
+
+    #[tokio::test]
+    async fn available_batch_can_spill_without_losing_order() {
+        let (tx, mut rx) = mpsc::channel(TASK_BUFFER_SIZE);
+        for value in 0..TASK_BUFFER_SIZE as u8 {
+            tx.send(body_task(value)).await.unwrap();
+        }
+        let first = rx.recv().await.unwrap();
+        tx.try_send(body_task(TASK_BUFFER_SIZE as u8)).unwrap();
+
+        let tasks = collect_available_tasks(first, &mut rx);
+
+        assert!(tasks.spilled());
+        assert_eq!(
+            tasks.iter().filter_map(body_value).collect::<Vec<_>>(),
+            (0..=TASK_BUFFER_SIZE as u8).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_snapshot_preserves_filter_order_and_failure() {
+        let (tx, mut rx) = mpsc::channel(TASK_BUFFER_SIZE);
+        tx.send(body_task(1)).await.unwrap();
+        tx.send(body_task(2)).await.unwrap();
+        tx.send(body_task(3)).await.unwrap();
+        tx.send(HttpTask::Failed(Error::new(InternalError)))
+            .await
+            .unwrap();
+
+        let first = rx.recv().await.unwrap();
+        let tasks = collect_available_tasks(first, &mut rx);
+        tx.send(body_task(4)).await.unwrap();
+
+        let mut filtered = Vec::new();
+        let mut failure = None;
+        for task in tasks {
+            match task {
+                HttpTask::Body(Some(body), _) if body[0] % 2 == 1 => filtered.push(body[0]),
+                HttpTask::Failed(error) => {
+                    failure = Some(error);
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        assert_eq!(filtered, vec![1, 3]);
+        assert_eq!(failure.unwrap().etype(), &InternalError);
+        assert_eq!(body_value(&rx.recv().await.unwrap()), Some(4));
     }
 }
 
