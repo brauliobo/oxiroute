@@ -936,11 +936,16 @@ mod test {
                     .write_response_header(response_header.clone(), false)
                     .is_ok());
 
-                http.write_body(server_body.into(), false).await.unwrap();
+                // HTTP/2 stream halves close independently. End the response half so h2 0.4.15
+                // does not supersede the queued request DATA/EOS with CANCEL when the client drops.
+                http.write_body(server_body.into(), true).await.unwrap();
                 assert_eq!(http.body_bytes_sent(), 16);
 
-                // 3. Waiting for the client to close stream.
-                http.read_body_or_idle(http.is_body_done()).await.unwrap();
+                // 3. Wait for the empty request DATA frame carrying EOS.
+                let body = http.read_body_or_idle(false).await.unwrap().unwrap();
+                assert!(body.is_empty());
+                assert!(http.is_body_done());
+                assert_eq!(http.body_bytes_read(), 0);
             }));
         }
 

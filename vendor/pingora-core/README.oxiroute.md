@@ -7,8 +7,8 @@ under its upstream Apache-2.0 license.
 OxiRoute's delta is intentionally limited to an OpenSSL-derived, per-peer TLS configure hook,
 pre-handshake application admission, a non-truncating certificate subject conversion, correct
 HTTP/1 HEAD informational-response framing, owned HTTP/1 response preread payloads, borrowed HTTP/1
-upstream request writes, an inline HTTP response task batch, and stage-1 connection-pool
-experiments:
+upstream request writes, an inline HTTP response task batch, an HTTP/2 test lifecycle correction,
+and stage-1 connection-pool experiments:
 
 - `protocols/tls/mod.rs` declares the public `TlsConfigureHook` type.
 - `upstreams/peer.rs` stores the optional hook in `PeerOptions`, omits it from
@@ -37,6 +37,8 @@ experiments:
   `ServerSession` and the HTTP/1 server expose additive batch response APIs; HTTP/1 shares one
   implementation with the existing `Vec` API, while HTTP/2, subrequest, and custom sessions retain
   their existing `Vec` behavior through a compatibility conversion.
+- `protocols/http/v2/server.rs` closes both stream halves in the empty request DATA/EOS test before
+  dropping client handles, matching `h2` 0.4.15 cancellation behavior without changing production.
 - `connectors/mod.rs` no longer performs a release-side readiness read before a protocol-approved
   reusable stream enters the pool. The existing pre-visibility mutex guard, checkout identity and
   readiness checks, idle watcher, LRU eviction, timeout handling, and connection-lifetime
@@ -52,6 +54,6 @@ upstream packaging commentary; that non-build manifest is intentionally omitted 
 
 When upgrading Pingora, replace this directory from the newly locked published crate, reapply and
 review the connector hook, admission guard, subject conversion, HTTP/1 HEAD informational-response,
-owned-preread, borrowed-request-write, response-task batch, and connection-pool changes,
-then rerun the vendored connector pool, BodyReader, and H1 client suites, OxiRoute TLS and HTTP wire
-tests, and strict clippy checks.
+owned-preread, borrowed-request-write, response-task batch, HTTP/2 test lifecycle, and connection-pool
+changes, then rerun the vendored connector pool, BodyReader, H1 client, and H2 server suites,
+OxiRoute TLS and HTTP wire tests, and strict clippy checks.
