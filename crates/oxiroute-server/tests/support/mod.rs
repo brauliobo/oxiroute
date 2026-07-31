@@ -1649,12 +1649,50 @@ impl H2Client {
     }
 
     pub async fn request(&mut self, method: Method, path: &str) -> Result<H2Response, BoxError> {
+        self.request_inner(method, path, None).await
+    }
+
+    pub async fn request_with_body_chunks(
+        &mut self,
+        method: Method,
+        path: &str,
+        body: Vec<Bytes>,
+    ) -> Result<H2Response, BoxError> {
+        self.request_inner(method, path, Some(body)).await
+    }
+
+    async fn request_inner(
+        &mut self,
+        method: Method,
+        path: &str,
+        body: Option<Vec<Bytes>>,
+    ) -> Result<H2Response, BoxError> {
         let mut sender = self.sender.clone().ready().await?;
         let request = Request::builder()
             .method(method)
             .uri(format!("https://{PROXY_SERVER_NAME}{path}"))
             .body(())?;
-        let (response, _) = sender.send_request(request, true)?;
+        let (response, mut request_body) = sender.send_request(request, body.is_none())?;
+        if let Some(body) = body {
+            let chunk_count = body.len();
+            for (index, chunk) in body.into_iter().enumerate() {
+                request_body.reserve_capacity(chunk.len());
+                while request_body.capacity() < chunk.len() {
+                    match futures_util::future::poll_fn(|cx| request_body.poll_capacity(cx)).await {
+                        Some(Ok(_)) => {}
+                        Some(Err(error)) => return Err(error.into()),
+                        None => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::BrokenPipe,
+                                "H2 request body stream closed",
+                            )
+                            .into());
+                        }
+                    }
+                }
+                request_body.send_data(chunk, index + 1 == chunk_count)?;
+            }
+        }
         let response = timeout(IO_TIMEOUT, response)
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "H2 response timed out"))??;

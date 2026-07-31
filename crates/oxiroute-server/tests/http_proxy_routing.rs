@@ -287,7 +287,7 @@ async fn least_connections_sends_a_concurrent_request_to_the_idle_origin() {
 }
 
 #[tokio::test]
-async fn head_early_hints_reaches_final_and_reuses_upstream_connection() {
+async fn informational_responses_reach_final_and_reuse_upstream_connection() {
     timeout(TEST_TIMEOUT, async {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -301,7 +301,7 @@ async fn head_early_hints_reaches_final_and_reuses_upstream_connection() {
             assert!(first_request.starts_with(b"HEAD /first HTTP/1.1\r\n"));
             stream
                 .write_all(
-                    b"HTTP/1.1 103 Early Hints\r\nLink: </style.css>; rel=preload\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: keep-alive\r\n\r\n",
+                    b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 103 Early Hints\r\nLink: </style.css>; rel=preload\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: keep-alive\r\n\r\n",
                 )
                 .await
                 .expect("informational origin responses");
@@ -330,14 +330,20 @@ async fn head_early_hints_reaches_final_and_reuses_upstream_connection() {
 
         client
             .write_all(
-                b"HEAD /first HTTP/1.1\r\nHost: informational.test\r\nConnection: keep-alive\r\n\r\n",
+                b"HEAD /first HTTP/1.1\r\nHost: informational.test\r\nExpect: 100-continue\r\nConnection: keep-alive\r\n\r\n",
             )
             .await
             .expect("informational downstream HEAD request");
-        let informational = RawResponse::parse(
+        let continue_response = RawResponse::parse(
             read_response_head(&mut client)
                 .await
                 .expect("informational downstream response"),
+        );
+        assert_eq!(continue_response.status, 100);
+        let informational = RawResponse::parse(
+            read_response_head(&mut client)
+                .await
+                .expect("early hints downstream response"),
         );
         assert_eq!(informational.status, 103);
         let final_response = RawResponse::parse(
@@ -820,6 +826,323 @@ async fn an_unbounded_body_limit_streams_without_size_rejection() {
     })
     .await
     .expect("unbounded body test timed out");
+}
+
+#[tokio::test]
+async fn paused_upload_receives_early_final_response_without_spinning() {
+    timeout(TEST_TIMEOUT, async {
+        const ATTEMPTS: usize = 32;
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("early-final origin bind");
+        let address = listener.local_addr().expect("early-final origin address");
+        let origin = tokio::spawn(async move {
+            for attempt in 0..ATTEMPTS {
+                let (mut stream, _) = listener.accept().await.expect("early-final accept");
+                read_request_head_bytes(&mut stream)
+                    .await
+                    .expect("early-final request head");
+                if attempt % 3 == 0 {
+                    tokio::task::yield_now().await;
+                }
+                stream
+                    .write_all(
+                        b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .expect("early-final response");
+            }
+        });
+        let proxy = ProxyHarness::start(
+            vec![pool("upload", &[address])],
+            vec![route(None, "/upload", &["POST"], "upload")],
+            2 * 1024 * 1024,
+            ATTEMPTS,
+        )
+        .await;
+
+        for attempt in 0..ATTEMPTS {
+            let mut client = TcpStream::connect(proxy.address)
+                .await
+                .expect("early-final client");
+            client
+                .write_all(
+                    b"POST /upload HTTP/1.1\r\nHost: upload.test\r\nContent-Length: 1048576\r\nConnection: close\r\n\r\npartial",
+                )
+                .await
+                .expect("partial upload");
+            if attempt % 2 == 0 {
+                tokio::task::yield_now().await;
+            }
+            let response = RawResponse::parse(
+                read_response_head(&mut client)
+                    .await
+                    .expect("early-final downstream response"),
+            );
+            assert_eq!(response.status, 413);
+        }
+
+        origin.await.expect("early-final origin task");
+        proxy.wait_for_no_active_leases().await;
+        proxy.finish().await;
+    })
+    .await
+    .expect("paused upload early-final test timed out");
+}
+
+#[tokio::test]
+async fn slow_downstream_preserves_response_larger_than_pipe_capacity() {
+    timeout(TEST_TIMEOUT, async {
+        const CHUNKS: usize = 64;
+        const CHUNK_SIZE: usize = 512 * 1024;
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("slow-response origin bind");
+        let address = listener.local_addr().expect("slow-response origin address");
+        let (write_done_tx, mut write_done_rx) = oneshot::channel();
+        let origin = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("slow-response accept");
+            read_request_head_bytes(&mut stream)
+                .await
+                .expect("slow-response request");
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        CHUNKS * CHUNK_SIZE
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("slow-response head");
+            for value in 0..CHUNKS {
+                let value = u8::try_from(value).expect("response chunk index fits in u8");
+                stream
+                    .write_all(&vec![value; CHUNK_SIZE])
+                    .await
+                    .expect("slow-response chunk");
+                if value % 3 == 0 {
+                    tokio::task::yield_now().await;
+                }
+            }
+            write_done_tx
+                .send(())
+                .expect("report completed origin write");
+        });
+        let proxy = ProxyHarness::start(
+            vec![pool("slow", &[address])],
+            vec![route(None, "/", &[], "slow")],
+            1024,
+            1,
+        )
+        .await;
+        let mut client = TcpStream::connect(proxy.address)
+            .await
+            .expect("slow-response client");
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: slow.test\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("slow-response request write");
+        sleep(Duration::from_millis(25)).await;
+        assert!(
+            timeout(Duration::from_millis(50), &mut write_done_rx)
+                .await
+                .is_err(),
+            "origin did not block after the four-slot handoff and socket buffers filled"
+        );
+
+        let mut wire = Vec::new();
+        let mut buffer = [0; 1024];
+        loop {
+            let read = client
+                .read(&mut buffer)
+                .await
+                .expect("slow downstream read");
+            if read == 0 {
+                break;
+            }
+            wire.extend_from_slice(&buffer[..read]);
+            tokio::task::yield_now().await;
+        }
+        let response = RawResponse::parse(wire);
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body().len(), CHUNKS * CHUNK_SIZE);
+        for (value, chunk) in response.body().chunks_exact(CHUNK_SIZE).enumerate() {
+            let value = u8::try_from(value).expect("response chunk index fits in u8");
+            assert!(chunk.iter().all(|byte| *byte == value));
+        }
+        timeout(Duration::from_secs(1), write_done_rx)
+            .await
+            .expect("origin did not resume after downstream reads")
+            .expect("origin write completion sender dropped");
+
+        origin.await.expect("slow-response origin task");
+        proxy.wait_for_no_active_leases().await;
+        proxy.finish().await;
+    })
+    .await
+    .expect("slow downstream response test timed out");
+}
+
+#[tokio::test]
+async fn downstream_disconnect_releases_origin_blocked_by_response_backpressure() {
+    timeout(TEST_TIMEOUT, async {
+        const CHUNKS: usize = 1024;
+        const CHUNK_SIZE: usize = 64 * 1024;
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("disconnect origin bind");
+        let address = listener.local_addr().expect("disconnect origin address");
+        let (started_tx, started_rx) = oneshot::channel();
+        let (result_tx, mut result_rx) = oneshot::channel();
+        let origin = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("disconnect origin accept");
+            read_request_head_bytes(&mut stream)
+                .await
+                .expect("disconnect origin request");
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        CHUNKS * CHUNK_SIZE
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("disconnect response head");
+            started_tx.send(()).expect("report response start");
+            let chunk = vec![b'x'; CHUNK_SIZE];
+            let mut result = Ok(());
+            for _ in 0..CHUNKS {
+                if let Err(error) = stream.write_all(&chunk).await {
+                    result = Err(error);
+                    break;
+                }
+            }
+            result_tx.send(result).expect("report origin write result");
+        });
+        let proxy = ProxyHarness::start(
+            vec![pool("disconnect", &[address])],
+            vec![route(None, "/", &[], "disconnect")],
+            1024,
+            1,
+        )
+        .await;
+        let mut client = TcpStream::connect(proxy.address)
+            .await
+            .expect("disconnect client");
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: disconnect.test\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("disconnect request");
+        started_rx.await.expect("origin started response");
+        assert!(
+            timeout(Duration::from_millis(50), &mut result_rx)
+                .await
+                .is_err(),
+            "origin response completed before downstream disconnect"
+        );
+        drop(client);
+        assert!(
+            timeout(Duration::from_secs(2), result_rx)
+                .await
+                .expect("origin stayed blocked after downstream disconnect")
+                .expect("origin result sender dropped")
+                .is_err(),
+            "origin unexpectedly wrote the complete response after disconnect"
+        );
+
+        origin.await.expect("disconnect origin task");
+        proxy.wait_for_no_active_leases().await;
+        proxy.finish().await;
+    })
+    .await
+    .expect("downstream disconnect backpressure test timed out");
+}
+
+#[tokio::test]
+async fn saturated_upload_receives_early_final_then_observes_upstream_close() {
+    timeout(TEST_TIMEOUT, async {
+        const CHUNKS: usize = 512;
+        const CHUNK_SIZE: usize = 64 * 1024;
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("saturated-upload origin bind");
+        let address = listener.local_addr().expect("saturated-upload origin address");
+        let (head_seen_tx, head_seen_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let origin = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("saturated-upload accept");
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                head.push(stream.read_u8().await.expect("saturated-upload head"));
+            }
+            head_seen_tx.send(()).expect("report upload head");
+            release_rx.await.expect("release early final");
+            stream
+                .write_all(
+                    b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .expect("saturated-upload early final");
+        });
+        let proxy = ProxyHarness::start(
+            vec![pool("upload", &[address])],
+            vec![route(None, "/upload", &["POST"], "upload")],
+            64 * 1024 * 1024,
+            1,
+        )
+        .await;
+        let client = TcpStream::connect(proxy.address)
+            .await
+            .expect("saturated-upload client");
+        let (mut client_read, mut client_write) = client.into_split();
+        client_write
+            .write_all(
+                format!(
+                    "POST /upload HTTP/1.1\r\nHost: upload.test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    CHUNKS * CHUNK_SIZE
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("saturated-upload request head");
+        head_seen_rx.await.expect("origin observed request head");
+        let mut writer = tokio::spawn(async move {
+            let chunk = vec![b'u'; CHUNK_SIZE];
+            for _ in 0..CHUNKS {
+                client_write.write_all(&chunk).await?;
+            }
+            Ok::<_, io::Error>(())
+        });
+        assert!(
+            timeout(Duration::from_millis(50), &mut writer)
+                .await
+                .is_err(),
+            "upload completed without saturating request backpressure"
+        );
+        release_tx.send(()).expect("send early final");
+
+        let mut response = Vec::new();
+        while !response.ends_with(b"\r\n\r\n") {
+            response.push(client_read.read_u8().await.expect("early-final response"));
+        }
+        assert_eq!(RawResponse::parse(response).status, 413);
+        assert!(
+            timeout(Duration::from_secs(1), writer)
+                .await
+                .expect("upload writer stayed blocked after upstream close")
+                .expect("upload writer task panicked")
+                .is_err(),
+            "upload writer did not observe the closed proxy path"
+        );
+
+        origin.await.expect("saturated-upload origin task");
+        proxy.wait_for_no_active_leases().await;
+        proxy.finish().await;
+    })
+    .await
+    .expect("saturated upload early-final test timed out");
 }
 
 #[tokio::test]
