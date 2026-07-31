@@ -431,6 +431,13 @@ impl HttpSession {
             .await
     }
 
+    async fn do_read_body_bytes(&mut self) -> Result<Option<Bytes>> {
+        self.init_body_reader();
+        self.body_reader
+            .read_body_bytes(&mut self.underlying_stream)
+            .await
+    }
+
     /// Read the response body into the internal buffer.
     /// Return `Ok(Some(ref)) after a successful read.
     /// Return `Ok(None)` if there is no more body to read.
@@ -454,8 +461,18 @@ impl HttpSession {
 
     /// Similar to [`Self::read_body_ref`] but return `Bytes` instead of a slice reference.
     pub async fn read_body_bytes(&mut self) -> Result<Option<Bytes>> {
-        let read = self.read_body_ref().await?;
-        Ok(read.map(Bytes::copy_from_slice))
+        let result = match self.read_timeout {
+            Some(t) => match timeout(t, self.do_read_body_bytes()).await {
+                Ok(res) => res,
+                Err(_) => Error::e_explain(ReadTimedout, format!("reading body, timeout: {t:?}")),
+            },
+            None => self.do_read_body_bytes().await,
+        }?;
+
+        if let Some(body) = &result {
+            self.body_recv = self.body_recv.saturating_add(body.len());
+        }
+        Ok(result)
     }
 
     /// Upstream response body bytes received (payload only; excludes headers/framing).
@@ -623,7 +640,7 @@ impl HttpSession {
     fn init_body_reader(&mut self) {
         if self.body_reader.need_init() {
             // follow https://datatracker.ietf.org/doc/html/rfc9112#section-6.3
-            let preread_body = self.preread_body.as_ref().unwrap().get(&self.buf[..]);
+            let preread_body = self.preread_body.as_ref().unwrap().get_bytes(&self.buf);
 
             let upgraded = if let Some(code) = self.get_status() {
                 match code.as_u16() {
@@ -634,7 +651,7 @@ impl HttpSession {
                     }
                     204 | 304 => {
                         // no body by definition
-                        self.body_reader.init_content_length(0, preread_body);
+                        self.body_reader.init_content_length(0, &preread_body);
                         return;
                     }
                     _ => false,
@@ -645,21 +662,21 @@ impl HttpSession {
 
             if let Some(req) = self.request_written.as_ref() {
                 if req.method == http::method::Method::HEAD {
-                    self.body_reader.init_content_length(0, preread_body);
+                    self.body_reader.init_content_length(0, &preread_body);
                     return;
                 }
             }
 
             if upgraded {
-                self.body_reader.init_close_delimited(preread_body);
+                self.body_reader.init_close_delimited_owned(preread_body);
                 self.close_delimited_resp = true;
             } else if self.is_chunked_encoding() {
                 // if chunked encoding, content-length should be ignored
-                self.body_reader.init_chunked(preread_body);
+                self.body_reader.init_chunked(&preread_body);
             } else if let Some(cl) = self.get_content_length().unwrap_or(None) {
-                self.body_reader.init_content_length(cl, preread_body);
+                self.body_reader.init_content_length_owned(cl, preread_body);
             } else {
-                self.body_reader.init_close_delimited(preread_body);
+                self.body_reader.init_close_delimited_owned(preread_body);
                 self.close_delimited_resp = true;
             }
         }
@@ -1032,6 +1049,94 @@ mod tests_stream {
         // then EOF
         let _ = http.read_body_ref().await.unwrap();
         assert_eq!(http.body_bytes_received(), 3);
+    }
+
+    #[tokio::test]
+    async fn content_length_preread_body_task_shares_header_allocation() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc";
+        let body_offset = response.len() - 3;
+        let mock = Builder::new().read(response).build();
+        let mut http = HttpSession::new(Box::new(mock));
+
+        assert!(matches!(
+            http.read_response_task().await.unwrap(),
+            HttpTask::Header(_, false)
+        ));
+        let expected_ptr = http.buf.as_ptr().wrapping_add(body_offset);
+        match http.read_response_task().await.unwrap() {
+            HttpTask::Body(Some(body), true) => {
+                assert_eq!(body, b"abc"[..]);
+                assert_eq!(body.as_ptr(), expected_ptr);
+            }
+            task => panic!("expected final preread body, got {task:?}"),
+        }
+        assert!(http.body_reader.body_buf.is_none());
+    }
+
+    #[tokio::test]
+    async fn content_length_partial_preread_continues_with_socket_read() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nab";
+        let body_offset = response.len() - 2;
+        let mock = Builder::new().read(response).read(b"c").build();
+        let mut http = HttpSession::new(Box::new(mock));
+
+        assert!(matches!(
+            http.read_response_task().await.unwrap(),
+            HttpTask::Header(_, false)
+        ));
+        let expected_ptr = http.buf.as_ptr().wrapping_add(body_offset);
+        match http.read_response_task().await.unwrap() {
+            HttpTask::Body(Some(body), false) => {
+                assert_eq!(body, b"ab"[..]);
+                assert_eq!(body.as_ptr(), expected_ptr);
+            }
+            task => panic!("expected partial preread body, got {task:?}"),
+        }
+        assert!(matches!(
+            http.read_response_task().await.unwrap(),
+            HttpTask::Body(Some(body), true) if body == b"c"[..]
+        ));
+        assert_eq!(http.body_bytes_received(), 3);
+    }
+
+    #[tokio::test]
+    async fn content_length_preread_overread_disables_reuse() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nabc";
+        let body_offset = response.len() - 3;
+        let mock = Builder::new().read(response).build();
+        let mut http = HttpSession::new(Box::new(mock));
+
+        assert!(matches!(
+            http.read_response_task().await.unwrap(),
+            HttpTask::Header(_, false)
+        ));
+        let expected_ptr = http.buf.as_ptr().wrapping_add(body_offset);
+        match http.read_response_task().await.unwrap() {
+            HttpTask::Body(Some(body), true) => {
+                assert_eq!(body, b"ab"[..]);
+                assert_eq!(body.as_ptr(), expected_ptr);
+            }
+            task => panic!("expected truncated preread body, got {task:?}"),
+        }
+        assert_eq!(http.body_reader.get_body_overread(), Some(&b"c"[..]));
+        http.respect_keepalive();
+        assert!(!http.will_keepalive());
+    }
+
+    #[tokio::test]
+    async fn close_delimited_preread_shares_header_allocation() {
+        let response = b"HTTP/1.1 200 OK\r\n\r\nabc";
+        let body_offset = response.len() - 3;
+        let mock = Builder::new().read(response).read(b"").build();
+        let mut http = HttpSession::new(Box::new(mock));
+
+        http.read_response().await.unwrap();
+        let expected_ptr = http.buf.as_ptr().wrapping_add(body_offset);
+        let body = http.read_body_bytes().await.unwrap().unwrap();
+        assert_eq!(body, b"abc"[..]);
+        assert_eq!(body.as_ptr(), expected_ptr);
+        assert!(http.read_body_bytes().await.unwrap().is_none());
+        assert_eq!(http.body_reader.body_state, ParseState::Complete(3));
     }
 
     #[tokio::test]

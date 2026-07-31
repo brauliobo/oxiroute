@@ -6,7 +6,8 @@ under its upstream Apache-2.0 license.
 
 OxiRoute's delta is intentionally limited to an OpenSSL-derived, per-peer TLS
 configure hook, pre-handshake application admission, a non-truncating certificate subject
-conversion, and correct HTTP/1 HEAD informational-response framing:
+conversion, correct HTTP/1 HEAD informational-response framing, and owned HTTP/1 response preread
+payloads:
 
 - `protocols/tls/mod.rs` declares the public `TlsConfigureHook` type.
 - `upstreams/peer.rs` stores the optional hook in `PeerOptions`, omits it from
@@ -21,11 +22,15 @@ conversion, and correct HTTP/1 HEAD informational-response framing:
   conversion instead of the deprecated conversion that stops at interior NULs.
 - `protocols/http/v1/client.rs` classifies informational responses before applying HEAD no-body
   framing, so a 100/103 response does not prevent the final response from being read.
+- `protocols/http/v1/body.rs` can retain immutable content-length and close-delimited preread bytes
+  from the HTTP/1 response header allocation. The client moves those bytes into response tasks
+  without copying them; chunked and socket-read payloads keep the upstream implementation's
+  reusable-buffer behavior.
 
 The normalized crates.io `Cargo.toml` is retained. Its optional `Cargo.toml.orig` reference is
 upstream packaging commentary; that non-build manifest is intentionally omitted here.
 
 When upgrading Pingora, replace this directory from the newly locked published
 crate, reapply and review the connector hook, admission guard, subject conversion, and HTTP/1
-HEAD informational-response fix, then rerun the OxiRoute TLS and HTTP wire tests and strict clippy
-checks.
+HEAD informational-response and owned-preread changes, then rerun the vendored BodyReader and H1
+client suites, OxiRoute TLS and HTTP wire tests, and strict clippy checks.
