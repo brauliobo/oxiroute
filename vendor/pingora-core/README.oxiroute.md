@@ -7,7 +7,8 @@ under its upstream Apache-2.0 license.
 OxiRoute's delta is intentionally limited to an OpenSSL-derived, per-peer TLS configure hook,
 pre-handshake application admission, a non-truncating certificate subject conversion, correct
 HTTP/1 HEAD informational-response framing, owned HTTP/1 response preread payloads, borrowed HTTP/1
-upstream request writes, and an inline HTTP response task batch:
+upstream request writes, an inline HTTP response task batch, and a stage-1 connection-pool release
+experiment:
 
 - `protocols/tls/mod.rs` declares the public `TlsConfigureHook` type.
 - `upstreams/peer.rs` stores the optional hook in `PeerOptions`, omits it from
@@ -36,11 +37,16 @@ upstream request writes, and an inline HTTP response task batch:
   `ServerSession` and the HTTP/1 server expose additive batch response APIs; HTTP/1 shares one
   implementation with the existing `Vec` API, while HTTP/2, subrequest, and custom sessions retain
   their existing `Vec` behavior through a compatibility conversion.
+- `connectors/mod.rs` no longer performs a release-side readiness read before a protocol-approved
+  reusable stream enters the pool. The existing pre-visibility mutex guard, checkout identity and
+  readiness checks, idle watcher, LRU eviction, timeout handling, and connection-lifetime
+  notification remain unchanged.
 
 The normalized crates.io `Cargo.toml` is retained. Its optional `Cargo.toml.orig` reference is
 upstream packaging commentary; that non-build manifest is intentionally omitted here.
 
 When upgrading Pingora, replace this directory from the newly locked published crate, reapply and
 review the connector hook, admission guard, subject conversion, HTTP/1 HEAD informational-response,
-owned-preread, borrowed-request-write, and response-task batch changes, then rerun the vendored
-BodyReader and H1 client suites, OxiRoute TLS and HTTP wire tests, and strict clippy checks.
+owned-preread, borrowed-request-write, response-task batch, and connection-pool release changes,
+then rerun the vendored connector pool, BodyReader, and H1 client suites, OxiRoute TLS and HTTP wire
+tests, and strict clippy checks.
