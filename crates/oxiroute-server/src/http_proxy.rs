@@ -32,7 +32,7 @@ use pingora::{
         ALPN, Digest, Stream,
         http::{ServerSession, v2::server::H2Options},
     },
-    proxy::{ProxyHttp, Session},
+    proxy::{PreparedUpstreamRequest, ProxyHttp, Session},
     server::ShutdownWatch,
     upstreams::peer::HttpPeer,
 };
@@ -611,6 +611,30 @@ impl ProxyHttp for HttpReverseProxy {
         }
         apply_request_header_mutations(session, upstream_request, ctx)?;
         Ok(())
+    }
+
+    async fn prepare_upstream_request(
+        &self,
+        session: &mut Session,
+        ctx: &mut Self::CTX,
+    ) -> pingora::Result<PreparedUpstreamRequest> {
+        let result = enforce_http_version(
+            ctx.pool.as_deref().and_then(UpstreamPlan::tls),
+            session.req_header().version,
+        );
+        if result.is_err() {
+            ctx.release_lease();
+        }
+        result?;
+
+        if !upstream_request_requires_mutation(session, ctx)? {
+            return Ok(PreparedUpstreamRequest::Borrowed);
+        }
+
+        let mut upstream_request = session.req_header().clone();
+        self.upstream_request_filter(session, &mut upstream_request, ctx)
+            .await?;
+        Ok(PreparedUpstreamRequest::Owned(Box::new(upstream_request)))
     }
 
     async fn upstream_response_filter(
@@ -1620,6 +1644,58 @@ fn apply_request_header_mutations(
     Ok(())
 }
 
+fn upstream_request_requires_mutation(
+    session: &Session,
+    ctx: &HttpRequestContext,
+) -> pingora::Result<bool> {
+    let request = session.req_header();
+    let host_requires_mutation = match &ctx.selected_upstream_host {
+        Some(selected) => !has_single_canonical_host(request, selected),
+        None => request.headers.contains_key(HOST),
+    };
+    if host_requires_mutation
+        || ctx.pool.as_ref().is_some_and(|pool| {
+            pool.connection_reuse() == oxiroute_config::UpstreamConnectionReuse::Never
+        })
+    {
+        return Ok(true);
+    }
+
+    for mutation in &proxy_policy(ctx).request_headers {
+        if mutation.is_pingora_managed_upgrade() {
+            continue;
+        }
+        if let RequestHeaderMutationPlan::Set {
+            value:
+                RequestHeaderValuePlan::AppendedXForwardedFor {
+                    except_source_cidrs,
+                    ..
+                },
+            ..
+        } = mutation
+        {
+            if source_matches_exception(session, except_source_cidrs)? {
+                continue;
+            }
+        }
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn has_single_canonical_host(
+    request: &pingora::http::RequestHeader,
+    selected: &HeaderValue,
+) -> bool {
+    let mut hosts = request
+        .case_header_iter()
+        .filter(|(name, _)| name.as_slice().eq_ignore_ascii_case(b"host"));
+    let Some((name, value)) = hosts.next() else {
+        return false;
+    };
+    name.as_slice() == b"Host" && value == selected && hosts.next().is_none()
+}
+
 fn source_matches_exception(
     session: &Session,
     exceptions: &[crate::http_action::SourceCidr],
@@ -1929,20 +2005,107 @@ mod tests {
         net::SocketAddr,
         sync::{
             Arc,
-            atomic::{AtomicBool, Ordering},
+            atomic::{AtomicBool, AtomicUsize, Ordering},
         },
         time::Duration,
     };
 
-    use oxiroute_config::{HttpProxyPolicy, HttpResponseHeaderMutation, UpstreamAlgorithm};
+    use oxiroute_config::{
+        HttpProxyPolicy, HttpRequestHeaderMutation, HttpRequestHeaderValue,
+        HttpResponseHeaderMutation, UpstreamAlgorithm, UpstreamConnectionReuse,
+    };
     use pingora::{
         apps::ServerApp, protocols::Stream, proxy::Session, server::ShutdownWatch,
         upstreams::peer::Peer,
     };
+    use tokio::io::AsyncWriteExt as _;
     use tokio::net::{TcpListener, TcpStream};
 
     use super::*;
     use crate::{RoundRobinPool, RouteTable, RuntimeMetrics};
+
+    struct CloneProbe(Arc<AtomicUsize>);
+
+    impl Clone for CloneProbe {
+        fn clone(&self) -> Self {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Self(Arc::clone(&self.0))
+        }
+    }
+
+    async fn request_preparation_fixture(
+        policy: HttpProxyPolicy,
+        connection_reuse: UpstreamConnectionReuse,
+        request: &[u8],
+    ) -> (HttpReverseProxy, Session, HttpRequestContext, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("request preparation listener");
+        let client = TcpStream::connect(listener.local_addr().expect("preparation address"));
+        let accept = listener.accept();
+        let (client, downstream) = tokio::join!(client, accept);
+        let mut client = client.expect("request preparation client");
+        let (downstream, _) = downstream.expect("request preparation connection");
+        client
+            .write_all(request)
+            .await
+            .expect("write downstream request");
+        let mut session = Session::new_h1(Box::new(pingora::protocols::l4::stream::Stream::from(
+            downstream,
+        )));
+        session
+            .read_request()
+            .await
+            .expect("parse downstream request");
+
+        let endpoint = RuntimeEndpoint::Socket {
+            address: listener.local_addr().expect("preparation endpoint"),
+        };
+        let selector = Arc::new(
+            RoundRobinPool::new_named(
+                "preparation".into(),
+                [endpoint],
+                UpstreamAlgorithm::RoundRobin,
+                false,
+            )
+            .expect("preparation selector"),
+        );
+        let plan = Arc::new(UpstreamPlan::with_policy(
+            selector,
+            None,
+            None,
+            None,
+            connection_reuse,
+        ));
+        let route = Arc::new(HttpRoutePlan {
+            access: None,
+            action: HttpActionPlan::Proxy(crate::http_action::ProxyActionPlan {
+                pool: Arc::clone(&plan),
+                policy: ProxyPolicyPlan::compile(&policy),
+            }),
+            policy: crate::http_action::RoutePolicyPlan::compile(
+                oxiroute_config::HttpRoutePolicy::default(),
+            ),
+            route_id: "preparation".into(),
+        });
+        let runtime = RuntimeMetrics::new();
+        let metrics = runtime
+            .register_listener("preparation", "http", "127.0.0.1:8080", 10)
+            .expect("preparation metrics");
+        let service = Arc::new(HttpServicePlan::new(
+            Some(1024),
+            HashMap::new(),
+            Duration::from_secs(1),
+            RouteTable::default(),
+        ));
+        let proxy = HttpReverseProxy::new(service, metrics);
+        let mut context = proxy.new_ctx();
+        context.authority = Some("example.test".parse().expect("request authority"));
+        context.pool = Some(plan);
+        context.route = Some(route);
+        context.selected_upstream_host = Some(HeaderValue::from_static("example.test"));
+        (proxy, session, context, client)
+    }
 
     #[test]
     fn proxy_add_headers_append_and_honor_nginx_statuses_and_always() {
@@ -1978,6 +2141,162 @@ mod tests {
             .expect("upstream header");
         apply_response_policy(&mut success, &policy).expect("success response policy");
         assert_eq!(success.headers.get_all("x-selected").iter().count(), 2);
+    }
+
+    #[tokio::test]
+    async fn canonical_h1_preserve_preparation_borrows_without_cloning() {
+        let (proxy, mut session, mut context, _client) = request_preparation_fixture(
+            HttpProxyPolicy::default(),
+            UpstreamConnectionReuse::Safe,
+            b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n",
+        )
+        .await;
+        let clones = Arc::new(AtomicUsize::new(0));
+        session
+            .req_header_mut()
+            .extensions
+            .insert(CloneProbe(Arc::clone(&clones)));
+
+        for _ in 0..2 {
+            let prepared = proxy
+                .prepare_upstream_request(&mut session, &mut context)
+                .await
+                .expect("prepare canonical request");
+            assert!(matches!(prepared, PreparedUpstreamRequest::Borrowed));
+        }
+
+        assert_eq!(clones.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn mutating_retry_preparation_clones_once_and_starts_clean() {
+        let policy = HttpProxyPolicy {
+            request_headers: vec![HttpRequestHeaderMutation::Set {
+                name: "x-policy".into(),
+                value: HttpRequestHeaderValue::Literal {
+                    value: "same".into(),
+                },
+            }],
+            ..HttpProxyPolicy::default()
+        };
+        let (proxy, mut session, mut context, _client) = request_preparation_fixture(
+            policy,
+            UpstreamConnectionReuse::Safe,
+            b"GET / HTTP/1.1\r\nHost: example.test\r\nX-Policy: same\r\nx-policy: stale\r\n\r\n",
+        )
+        .await;
+        let clones = Arc::new(AtomicUsize::new(0));
+        session
+            .req_header_mut()
+            .extensions
+            .insert(CloneProbe(Arc::clone(&clones)));
+
+        let PreparedUpstreamRequest::Owned(mut first) = proxy
+            .prepare_upstream_request(&mut session, &mut context)
+            .await
+            .expect("prepare first request")
+        else {
+            panic!("configured Set must own the request");
+        };
+        assert_eq!(first.headers.get_all("x-policy").iter().count(), 1);
+        first.insert_header("x-attempt", "dirty").unwrap();
+
+        let PreparedUpstreamRequest::Owned(second) = proxy
+            .prepare_upstream_request(&mut session, &mut context)
+            .await
+            .expect("prepare retry request")
+        else {
+            panic!("configured Set must own the retry request");
+        };
+        assert_eq!(second.headers.get_all("x-policy").iter().count(), 1);
+        assert!(second.headers.get("x-attempt").is_none());
+        assert_eq!(
+            session
+                .req_header()
+                .headers
+                .get_all("x-policy")
+                .iter()
+                .count(),
+            2
+        );
+        assert_eq!(clones.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn host_preparation_preserves_old_canonical_wire_name_and_value_semantics() {
+        let cases: &[(&[u8], bool)] = &[
+            (b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n", false),
+            (b"GET / HTTP/1.1\r\nhost: example.test\r\n\r\n", true),
+            (b"GET / HTTP/1.1\r\nHOST: example.test\r\n\r\n", true),
+            (b"GET / HTTP/1.1\r\nHost: other.test\r\n\r\n", true),
+            (
+                b"GET / HTTP/1.1\r\nHost: example.test\r\nhost: example.test\r\n\r\n",
+                true,
+            ),
+        ];
+
+        for (raw_request, should_own) in cases {
+            let (proxy, mut session, mut context, _client) = request_preparation_fixture(
+                HttpProxyPolicy::default(),
+                UpstreamConnectionReuse::Safe,
+                raw_request,
+            )
+            .await;
+            let clones = Arc::new(AtomicUsize::new(0));
+            session
+                .req_header_mut()
+                .extensions
+                .insert(CloneProbe(Arc::clone(&clones)));
+
+            let prepared = proxy
+                .prepare_upstream_request(&mut session, &mut context)
+                .await
+                .expect("prepare Host request");
+            assert_eq!(
+                matches!(prepared, PreparedUpstreamRequest::Owned(_)),
+                *should_own,
+                "request: {}",
+                String::from_utf8_lossy(raw_request)
+            );
+            let prepared_request = match &prepared {
+                PreparedUpstreamRequest::Borrowed => session.req_header(),
+                PreparedUpstreamRequest::Owned(request) => request,
+            };
+            let wire =
+                pingora::protocols::http::v1::client::http_req_header_to_wire(prepared_request)
+                    .expect("serialize prepared request");
+            let wire = String::from_utf8(wire.to_vec()).expect("ASCII request wire");
+            assert_eq!(wire.matches("\r\nHost: example.test\r\n").count(), 1);
+            assert!(!wire.contains("\r\nhost:"));
+            assert!(!wire.contains("\r\nHOST:"));
+            assert_eq!(clones.load(Ordering::Relaxed), usize::from(*should_own));
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_close_policy_promotes_once() {
+        let (proxy, mut session, mut context, _client) = request_preparation_fixture(
+            HttpProxyPolicy::default(),
+            UpstreamConnectionReuse::Never,
+            b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n",
+        )
+        .await;
+        let clones = Arc::new(AtomicUsize::new(0));
+        session
+            .req_header_mut()
+            .extensions
+            .insert(CloneProbe(Arc::clone(&clones)));
+
+        let PreparedUpstreamRequest::Owned(prepared) = proxy
+            .prepare_upstream_request(&mut session, &mut context)
+            .await
+            .expect("prepare close-policy request")
+        else {
+            panic!("Connection close policy must own the request");
+        };
+
+        assert_eq!(prepared.headers.get(CONNECTION).unwrap(), "close");
+        assert_eq!(clones.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]

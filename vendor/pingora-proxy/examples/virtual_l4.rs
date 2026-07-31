@@ -144,6 +144,7 @@ impl ProxyHttp for VirtualProxy {
             client_cert_key: None,
             group_key: 0,
             options,
+            connection_lifetime: None,
         }))
     }
 }

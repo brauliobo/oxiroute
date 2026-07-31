@@ -153,6 +153,7 @@ default-features = false
 
 [dependencies.pingora-core]
 version = "0.8.1"
+path = "../pingora-core"
 default-features = false
 
 [dependencies.pingora-error]
@@ -244,3 +245,6 @@ version = "0.9"
 level = "warn"
 priority = 0
 check-cfg = ["cfg(doc_async_trait)"]
+
+[patch.crates-io]
+pingora-core = { path = "../pingora-core" }
