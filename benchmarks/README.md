@@ -18,6 +18,9 @@ Measured reports:
   interleaved optimization checks and the exact-binary cumulative comparison.
 - [`reports/2026-07-24-performance-cause-v1.md`](reports/2026-07-24-performance-cause-v1.md) traces
   the remaining nginx gap, retains release LTO, and records rejected allocator and routing changes.
+- [`../docs/PERFORMANCE_OPTIMIZATIONS.md`](../docs/PERFORMANCE_OPTIMIZATIONS.md) records the retained
+  2026-07-31 HTTP/1 ownership, pool, and handoff optimizations, rejected experiments, and final
+  exact-binary verification.
 
 ## Scope
 
