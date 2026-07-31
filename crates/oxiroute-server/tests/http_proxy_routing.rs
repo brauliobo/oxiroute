@@ -301,7 +301,7 @@ async fn informational_responses_reach_final_and_reuse_upstream_connection() {
             assert!(first_request.starts_with(b"HEAD /first HTTP/1.1\r\n"));
             stream
                 .write_all(
-                    b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 103 Early Hints\r\nLink: </style.css>; rel=preload\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: keep-alive\r\n\r\n",
+                    b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 103 Early Hints\r\nlInK: </style.css>; rel=preload\r\n\r\nHTTP/1.1 200 OK\r\ncOnTeNt-LeNgTh: 7\r\nConnection: keep-alive\r\n\r\n",
                 )
                 .await
                 .expect("informational origin responses");
@@ -346,6 +346,8 @@ async fn informational_responses_reach_final_and_reuse_upstream_connection() {
                 .expect("early hints downstream response"),
         );
         assert_eq!(informational.status, 103);
+        assert!(informational.text().contains("\r\nlink: </style.css>"));
+        assert!(!informational.text().contains("\r\nlInK:"));
         let final_response = RawResponse::parse(
             read_response_head(&mut client)
                 .await
@@ -353,6 +355,8 @@ async fn informational_responses_reach_final_and_reuse_upstream_connection() {
         );
         assert_eq!(final_response.status, 200);
         assert!(final_response.body.is_empty());
+        assert!(final_response.text().contains("\r\nContent-Length: 7\r\n"));
+        assert!(!final_response.text().contains("cOnTeNt-LeNgTh"));
 
         client
             .write_all(
@@ -2489,10 +2493,15 @@ async fn applies_host_header_cookie_and_request_response_header_policies() {
             assert!(request.contains("\r\nx-forwarded-for: trusted, 127.0.0.1\r\n"));
             assert!(request.contains("\r\nx-forwarded-proto: http\r\n"));
             assert!(request.contains("\r\nx-request-id: request-1\r\n"));
+            assert!(request.contains("\r\nx-mixed: first\r\nx-mixed: second\r\n"));
+            assert!(request.contains("\r\ncookie: a=1\r\ncookie: b=2\r\n"));
+            assert!(!request.contains("X-MiXeD:"));
+            assert!(!request.contains("CoOkIe:"));
+            assert!(!request.contains("x-hop:"));
             assert!(!request.contains("x-remove:"));
             stream
                 .write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Remove: old\r\nSet-Cookie: sid=1; Path=/internal; HttpOnly\r\nConnection: close\r\n\r\nok",
+                    b"HTTP/1.1 200 OK\r\ncOnTeNt-LeNgTh: 2\r\nX-Remove: old\r\nsEt-CoOkIe: sid=1; Path=/internal; HttpOnly\r\nSET-cookie: theme=dark; Path=/\r\nX-MiXeD: retained\r\nX-Hop: secret\r\nConnection: close\r\n\r\nok",
                 )
                 .await
                 .expect("policy origin response");
@@ -2518,7 +2527,7 @@ async fn applies_host_header_cookie_and_request_response_header_policies() {
 
         let response = proxy
             .request(
-                "GET / HTTP/1.1\r\nHost: Client.Example.:8080\r\nX-Remove: client\r\nX-Forwarded-For: trusted\r\nX-Request-Id: request-1\r\n",
+                "GET / HTTP/1.1\r\nhOsT: Client.Example.:8080\r\nX-Remove: client\r\nX-Forwarded-For: trusted\r\nX-Request-Id: request-1\r\nX-MiXeD: first\r\nx-mIXed: second\r\nCoOkIe: a=1\r\nCOOKIE: b=2\r\nX-Hop: secret\r\n",
             )
             .await;
         assert_eq!(response.status, 200, "response: {}", response.text());
@@ -2526,8 +2535,16 @@ async fn applies_host_header_cookie_and_request_response_header_policies() {
         assert_eq!(response.header("x-remove"), None);
         assert_eq!(
             response.header("set-cookie"),
-            Some("sid=1; Path=/; Secure; SameSite=Lax")
+            Some("theme=dark; Path=/")
         );
+        let response_wire = response.text();
+        assert!(response_wire.contains(
+            "\r\nSet-Cookie: sid=1; Path=/; Secure; SameSite=Lax\r\nSet-Cookie: theme=dark; Path=/\r\n"
+        ));
+        assert!(response_wire.contains("\r\nx-mixed: retained\r\n"));
+        assert!(response_wire.contains("\r\nContent-Length: 2\r\n"));
+        assert!(!response_wire.contains("X-MiXeD:"));
+        assert!(!response_wire.contains("X-Hop:"));
 
         proxy.finish().await;
         origin.await.expect("policy origin task");
@@ -2645,6 +2662,9 @@ fn host_shaped_proxy_policy() -> HttpProxyPolicy {
                     fallback: "fallback.example".into(),
                 },
             },
+            HttpRequestHeaderMutation::Remove {
+                name: "x-hop".into(),
+            },
         ],
         response_headers: vec![
             HttpResponseHeaderMutation::Set {
@@ -2654,6 +2674,9 @@ fn host_shaped_proxy_policy() -> HttpProxyPolicy {
             },
             HttpResponseHeaderMutation::Remove {
                 name: "x-remove".into(),
+            },
+            HttpResponseHeaderMutation::Remove {
+                name: "x-hop".into(),
             },
         ],
         response_cookie_path_rewrites: vec![HttpCookiePathRewrite {

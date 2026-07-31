@@ -37,7 +37,9 @@ task handoffs and response batches, and compatibility with the adjacent patched 
 - Inline tests cover SPSC capacity, FIFO ordering, cancellation and wakeup interleavings, closure,
   panic recovery, and randomized schedules; request/response pump saturation, ordering, failure, and
   disconnect behavior; task-buffer inline capacity and spill; Vec/batch response equivalence; module
-  filters and H1 output; default request ownership; HTTP/2 conversion; and active cache mutation.
+filters and H1 output; default request ownership; HTTP/2 conversion; and active cache mutation.
+The cache preparation tests also prove parsed H1 requests and parsed upstream responses enter active
+cache handling without acquiring an original-case map.
 
 The published crate excludes its upstream `tests/` directory, so the registry source contains only
 the inline unit tests under `src/`. Consistently with `vendor/pingora-core`, packaging-only

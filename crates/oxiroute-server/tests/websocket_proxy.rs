@@ -109,6 +109,12 @@ async fn upgrade_preserves_request_body_before_101_and_tunnel_bytes_after_101() 
                 head.push(byte);
             }
             assert!(String::from_utf8_lossy(&head).starts_with("POST /socket HTTP/1.1\r\n"));
+            assert!(head.windows(b"\r\nx-upgrade-meta: retained\r\n".len()).any(|window| {
+                window == b"\r\nx-upgrade-meta: retained\r\n"
+            }));
+            assert!(!head.windows(b"X-UpGrAdE-MeTa:".len()).any(|window| {
+                window == b"X-UpGrAdE-MeTa:"
+            }));
             let mut before_upgrade = [0; 4];
             stream
                 .read_exact(&mut before_upgrade)
@@ -117,7 +123,7 @@ async fn upgrade_preserves_request_body_before_101_and_tunnel_bytes_after_101() 
             assert_eq!(&before_upgrade, b"pre!");
             stream
                 .write_all(
-                    b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: test\r\n\r\n",
+                    b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: test\r\nX-UpGrAdE-MeTa: retained\r\n\r\n",
                 )
                 .await
                 .expect("origin upgrade response");
@@ -159,7 +165,7 @@ async fn upgrade_preserves_request_body_before_101_and_tunnel_bytes_after_101() 
             .expect("upgrade client");
         client
             .write_all(
-                b"POST /socket HTTP/1.1\r\nHost: upgrade.test\r\nConnection: Upgrade\r\nUpgrade: test\r\nContent-Length: 4\r\n\r\npre!",
+                b"POST /socket HTTP/1.1\r\nHost: upgrade.test\r\nConnection: Upgrade\r\nUpgrade: test\r\nX-UpGrAdE-MeTa: retained\r\nContent-Length: 4\r\n\r\npre!",
             )
             .await
             .expect("request and pre-upgrade body");
@@ -168,6 +174,12 @@ async fn upgrade_preserves_request_body_before_101_and_tunnel_bytes_after_101() 
             response.push(client.read_u8().await.expect("upgrade response"));
         }
         assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 101"));
+        assert!(response.windows(b"\r\nx-upgrade-meta: retained\r\n".len()).any(|window| {
+            window == b"\r\nx-upgrade-meta: retained\r\n"
+        }));
+        assert!(!response.windows(b"X-UpGrAdE-MeTa:".len()).any(|window| {
+            window == b"X-UpGrAdE-MeTa:"
+        }));
         client
             .write_all(b"post!")
             .await

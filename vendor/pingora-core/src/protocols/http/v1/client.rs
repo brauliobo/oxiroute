@@ -18,7 +18,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use http::{header, header::AsHeaderName, HeaderValue, StatusCode, Version};
 use log::{debug, trace};
 use pingora_error::{Error, ErrorType::*, OrErr, Result, RetryType};
-use pingora_http::{HMap, IntoCaseHeaderName, RequestHeader, ResponseHeader};
+use pingora_http::{HMap, RequestHeader, ResponseHeader};
 use pingora_timeout::timeout;
 use std::io::ErrorKind;
 use std::str;
@@ -331,7 +331,7 @@ impl HttpSession {
                     // while header_refs doesn't as it is still empty
                     let _num_headers = populate_headers(base, &mut header_refs, resp.headers);
 
-                    let mut response_header = Box::new(ResponseHeader::build(
+                    let mut response_header = Box::new(ResponseHeader::build_no_case(
                         resp.code.unwrap(),
                         Some(resp.headers.len()),
                     )?);
@@ -350,8 +350,7 @@ impl HttpSession {
                     let buf = buf.freeze();
 
                     for header in header_refs {
-                        let header_name = header.get_name_bytes(&buf);
-                        let header_name = header_name.into_case_header_name();
+                        let header_name = header.get_name(&buf);
                         let value_bytes = header.get_value_bytes(&buf);
                         let header_value = if cfg!(debug_assertions) {
                             // from_maybe_shared_unchecked() in debug mode still checks whether
@@ -375,9 +374,12 @@ impl HttpSession {
                             // safe because this is from what we parsed
                             unsafe { http::HeaderValue::from_maybe_shared_unchecked(value_bytes) }
                         };
-                        response_header
-                            .append_header(header_name, header_value)
-                            .or_err(InvalidHTTPHeader, "while parsing request header")?;
+                        append_parsed_header(
+                            &mut response_header.headers,
+                            header_name,
+                            header_value,
+                        )
+                        .or_err(InvalidHTTPHeader, "while parsing request header")?;
                     }
 
                     let contains_transfer_encoding = response_header
@@ -972,6 +974,52 @@ mod tests_stream {
     }
 
     #[tokio::test]
+    async fn parsed_response_omits_case_map_and_normalizes_h1_wire_names() {
+        let input = b"HTTP/1.1 200 OK\r\n\
+            sEt-CoOkIe: a=1; Path=/\r\n\
+            SET-cOOkie: b=2; Path=/\r\n\
+            X-MiXeD: retained\r\n\
+            cAcHe-CoNtRoL: public, max-age=60\r\n\
+            CoNnEcTiOn: x-hop\r\n\
+            X-HoP: secret\r\n\
+            cOnTeNt-LeNgTh: 0\r\n\r\n";
+        let mock_io = Builder::new().read(input).build();
+        let mut session = HttpSession::new(Box::new(mock_io));
+        session.read_response().await.unwrap();
+
+        let buffer_start = session.buf.as_ptr() as usize;
+        let buffer_end = buffer_start + session.buf.len();
+        let response = session.response_header.as_mut().unwrap();
+        assert!(!response.has_case());
+        assert_eq!(
+            response
+                .headers
+                .get_all(header::SET_COOKIE)
+                .iter()
+                .map(HeaderValue::as_bytes)
+                .collect::<Vec<_>>(),
+            [b"a=1; Path=/".as_slice(), b"b=2; Path=/".as_slice()]
+        );
+        for value in response.headers.values() {
+            let value_start = value.as_bytes().as_ptr() as usize;
+            assert!((buffer_start..buffer_end).contains(&value_start));
+        }
+
+        response.remove_header(&header::CONNECTION);
+        response.remove_header("x-hop");
+        let mut wire = Vec::new();
+        response.header_to_h1_wire(&mut wire);
+        assert_eq!(
+            wire,
+            b"Set-Cookie: a=1; Path=/\r\n\
+              Set-Cookie: b=2; Path=/\r\n\
+              x-mixed: retained\r\n\
+              Cache-Control: public, max-age=60\r\n\
+              Content-Length: 0\r\n"
+        );
+    }
+
+    #[tokio::test]
     async fn read_response_custom_reason() {
         init_log();
         let input = b"HTTP/1.1 200 Just Fine\r\n\r\n";
@@ -1340,6 +1388,16 @@ mod tests_stream {
     }
 
     #[tokio::test]
+    async fn read_rejects_malformed_response_header_name_before_no_case_append() {
+        let input = b"HTTP/1.1 200 OK\r\nBad@Name: value\r\nContent-Length: 0\r\n\r\n";
+        let mock_io = Builder::new().read(input).build();
+        let mut session = HttpSession::new(Box::new(mock_io));
+
+        let error = session.read_response().await.unwrap_err();
+        assert_eq!(error.etype(), &ErrorType::InvalidHTTPHeader);
+    }
+
+    #[tokio::test]
     async fn write() {
         let wire = b"GET /test HTTP/1.1\r\nFoo: Bar\r\n\r\n";
         let mock_io = Builder::new().write(wire).build();
@@ -1627,7 +1685,7 @@ mod tests_stream {
     async fn head_informational_response_precedes_final(#[case] informational_status: u16) {
         let request = b"HEAD / HTTP/1.1\r\n\r\n";
         let responses = format!(
-            "HTTP/1.1 {informational_status} Informational\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n"
+            "HTTP/1.1 {informational_status} Informational\r\nX-EaRlY: hint\r\n\r\nHTTP/1.1 200 OK\r\ncOnTeNt-LeNgTh: 7\r\nX-FiNaL: done\r\n\r\n"
         );
         let mock_io = Builder::new()
             .write(&request[..])
@@ -1644,6 +1702,10 @@ mod tests_stream {
             HttpTask::Header(header, end_of_body) => {
                 assert_eq!(header.status.as_u16(), informational_status);
                 assert!(!end_of_body);
+                assert!(!header.has_case());
+                let mut wire = Vec::new();
+                header.header_to_h1_wire(&mut wire);
+                assert_eq!(wire, b"x-early: hint\r\n");
             }
             task => panic!("expected informational header, got {task:?}"),
         }
@@ -1652,6 +1714,10 @@ mod tests_stream {
             HttpTask::Header(header, end_of_body) => {
                 assert_eq!(header.status, StatusCode::OK);
                 assert!(end_of_body);
+                assert!(!header.has_case());
+                let mut wire = Vec::new();
+                header.header_to_h1_wire(&mut wire);
+                assert_eq!(wire, b"Content-Length: 7\r\nx-final: done\r\n");
             }
             task => panic!("expected final header, got {task:?}"),
         }
@@ -1852,7 +1918,7 @@ mod tests_stream {
     async fn init_body_for_upgraded_req() {
         let wire =
             b"GET / HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: WS\r\nContent-Length: 0\r\n\r\n";
-        let input1 = b"HTTP/1.1 101 Switching Protocols\r\n\r\n";
+        let input1 = b"HTTP/1.1 101 Switching Protocols\r\ncOnNeCtIoN: Upgrade\r\nuPgRaDe: WS\r\nX-UpGrAdE: retained\r\n\r\n";
         let input2 = b"PAYLOAD";
         let ws_data = b"data";
 
@@ -1882,6 +1948,13 @@ mod tests_stream {
             HttpTask::Header(h, eob) => {
                 assert_eq!(h.status, 101);
                 assert!(!eob);
+                assert!(!h.has_case());
+                let mut wire = Vec::new();
+                h.header_to_h1_wire(&mut wire);
+                assert_eq!(
+                    wire,
+                    b"Connection: Upgrade\r\nupgrade: WS\r\nx-upgrade: retained\r\n"
+                );
             }
             _ => {
                 panic!("task should be header")

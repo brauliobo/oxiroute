@@ -1687,13 +1687,20 @@ fn has_single_canonical_host(
     request: &pingora::http::RequestHeader,
     selected: &HeaderValue,
 ) -> bool {
-    let mut hosts = request
-        .case_header_iter()
-        .filter(|(name, _)| name.as_slice().eq_ignore_ascii_case(b"host"));
-    let Some((name, value)) = hosts.next() else {
+    let mut hosts = request.headers.get_all(HOST).iter();
+    let Some(value) = hosts.next() else {
         return false;
     };
-    name.as_slice() == b"Host" && value == selected && hosts.next().is_none()
+    if value != selected || hosts.next().is_some() {
+        return false;
+    }
+    if !request.has_case() {
+        return true;
+    }
+    request
+        .case_header_iter()
+        .find(|(name, _)| name.as_slice().eq_ignore_ascii_case(b"host"))
+        .is_some_and(|(name, _)| name.as_slice() == b"Host")
 }
 
 fn source_matches_exception(
@@ -2144,13 +2151,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn canonical_h1_preserve_preparation_borrows_without_cloning() {
+    async fn no_case_single_host_preparation_borrows_without_cloning() {
         let (proxy, mut session, mut context, _client) = request_preparation_fixture(
             HttpProxyPolicy::default(),
             UpstreamConnectionReuse::Safe,
             b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n",
         )
         .await;
+        assert!(!session.req_header().has_case());
+        let hosts = session.req_header().headers.get_all(HOST);
+        assert_eq!(hosts.iter().count(), 1);
+        assert_eq!(
+            hosts.iter().next(),
+            Some(&HeaderValue::from_static("example.test"))
+        );
+        assert!(has_single_canonical_host(
+            session.req_header(),
+            context
+                .selected_upstream_host
+                .as_ref()
+                .expect("selected Host")
+        ));
+        assert!(!upstream_request_requires_mutation(&session, &context).unwrap());
         let clones = Arc::new(AtomicUsize::new(0));
         session
             .req_header_mut()
@@ -2223,11 +2245,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn host_preparation_preserves_old_canonical_wire_name_and_value_semantics() {
+    async fn no_case_host_preparation_uses_semantic_value_and_duplicate_count() {
         let cases: &[(&[u8], bool)] = &[
             (b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n", false),
-            (b"GET / HTTP/1.1\r\nhost: example.test\r\n\r\n", true),
-            (b"GET / HTTP/1.1\r\nHOST: example.test\r\n\r\n", true),
+            (b"GET / HTTP/1.1\r\nhost: example.test\r\n\r\n", false),
+            (b"GET / HTTP/1.1\r\nHOST: example.test\r\n\r\n", false),
             (b"GET / HTTP/1.1\r\nHost: other.test\r\n\r\n", true),
             (
                 b"GET / HTTP/1.1\r\nHost: example.test\r\nhost: example.test\r\n\r\n",
@@ -2270,6 +2292,57 @@ mod tests {
             assert!(!wire.contains("\r\nhost:"));
             assert!(!wire.contains("\r\nHOST:"));
             assert_eq!(clones.load(Ordering::Relaxed), usize::from(*should_own));
+        }
+    }
+
+    #[tokio::test]
+    async fn no_case_duplicate_host_rejects_borrowing_and_preserves_field_order() {
+        let raw_request = b"GET / HTTP/1.1\r\nX-Before: one\r\nHost: first.test\r\nhost: second.test\r\nX-After: two\r\n\r\n";
+        let (proxy, mut session, mut context, _client) = request_preparation_fixture(
+            HttpProxyPolicy::default(),
+            UpstreamConnectionReuse::Safe,
+            raw_request,
+        )
+        .await;
+        assert!(!session.req_header().has_case());
+        assert_eq!(
+            session
+                .req_header()
+                .headers
+                .get_all(HOST)
+                .iter()
+                .map(HeaderValue::as_bytes)
+                .collect::<Vec<_>>(),
+            [b"first.test".as_slice(), b"second.test".as_slice()]
+        );
+
+        let PreparedUpstreamRequest::Owned(prepared) = proxy
+            .prepare_upstream_request(&mut session, &mut context)
+            .await
+            .expect("prepare duplicate Host request")
+        else {
+            panic!("duplicate Host fields must reject borrowed preparation");
+        };
+        let wire = pingora::protocols::http::v1::client::http_req_header_to_wire(&prepared)
+            .expect("serialize duplicate Host preparation");
+        assert_eq!(
+            wire,
+            &b"GET / HTTP/1.1\r\nx-before: one\r\nHost: example.test\r\nx-after: two\r\n\r\n"[..]
+        );
+        assert_eq!(session.req_header().headers.get_all(HOST).iter().count(), 2);
+    }
+
+    #[test]
+    fn case_preserving_host_still_requires_canonical_wire_spelling() {
+        let selected = HeaderValue::from_static("example.test");
+        for (name, expected) in [("Host", true), ("host", false), ("HOST", false)] {
+            let mut request = pingora::http::RequestHeader::build("GET", b"/", None)
+                .expect("case-preserving request");
+            request
+                .append_header(name.to_owned(), selected.clone())
+                .expect("Host header");
+            assert!(request.has_case());
+            assert_eq!(has_single_canonical_host(&request, &selected), expected);
         }
     }
 

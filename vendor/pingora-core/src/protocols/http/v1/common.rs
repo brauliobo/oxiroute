@@ -14,7 +14,7 @@
 
 //! Common functions and constants
 
-use http::{header, HeaderValue};
+use http::{header, HeaderName, HeaderValue};
 use log::warn;
 use pingora_error::{Error, ErrorType::*, Result};
 use pingora_http::{HMap, RequestHeader, ResponseHeader};
@@ -274,6 +274,18 @@ pub(super) fn populate_headers(
         }
     }
     used_header_index
+}
+
+/// Append a header validated by the HTTP/1 parser without retaining its wire casing.
+#[inline]
+pub(super) fn append_parsed_header(
+    headers: &mut HMap,
+    name: &[u8],
+    value: HeaderValue,
+) -> Result<()> {
+    let name = HeaderName::from_bytes(name).map_err(|_| Error::new(InvalidHTTPHeader))?;
+    headers.append(name, value);
+    Ok(())
 }
 
 // RFC 7230:

@@ -7,8 +7,8 @@ under its upstream Apache-2.0 license.
 OxiRoute's delta is intentionally limited to an OpenSSL-derived, per-peer TLS configure hook,
 pre-handshake application admission, a non-truncating certificate subject conversion, correct
 HTTP/1 HEAD informational-response framing, owned HTTP/1 response preread payloads, borrowed HTTP/1
-upstream request writes, an inline HTTP response task batch, an HTTP/2 test lifecycle correction,
-and stage-1 connection-pool experiments:
+upstream request writes, parser-owned HTTP/1 header names, an inline HTTP response task batch, an
+HTTP/2 test lifecycle correction, and stage-1 connection-pool experiments:
 
 - `protocols/tls/mod.rs` declares the public `TlsConfigureHook` type.
 - `upstreams/peer.rs` stores the optional hook in `PeerOptions`, omits it from
@@ -33,6 +33,14 @@ and stage-1 connection-pool experiments:
   upgrade metadata for borrowed writes; request-body framing remains in `BodyWriter`. The legacy
   boxed API additionally retains its owned request until the session is dropped, preserving
   extension and resource lifetimes.
+- `protocols/http/v1/{common,server,client}.rs` stores parsed downstream request and upstream
+  response fields directly in the case-insensitive `HeaderMap`, retaining zero-copy values but no
+  second original-case map or shared name slices. Emitted HTTP/1 names use canonical title case for
+  `Accept-Ranges`, `Age`, `Cache-Control`, `Connection`, `Content-Type`, `Content-Encoding`,
+  `Content-Length`, `Date`, `Transfer-Encoding`, `Host`, `Server`, and `Set-Cookie`; every other name
+  is lowercase. HTTP field names are case-insensitive; non-compliant peers that require original
+  wire casing will observe this normalization. Programmatically built case-preserving headers,
+  generic mutation APIs, and HTTP/2 behavior remain unchanged.
 - `protocols/http/mod.rs` defines the additive four-task `HttpTaskBatch` backed by `smallvec`.
   `ServerSession` and the HTTP/1 server expose additive batch response APIs; HTTP/1 shares one
   implementation with the existing `Vec` API, while HTTP/2, subrequest, and custom sessions retain
@@ -54,6 +62,6 @@ upstream packaging commentary; that non-build manifest is intentionally omitted 
 
 When upgrading Pingora, replace this directory from the newly locked published crate, reapply and
 review the connector hook, admission guard, subject conversion, HTTP/1 HEAD informational-response,
-owned-preread, borrowed-request-write, response-task batch, HTTP/2 test lifecycle, and connection-pool
-changes, then rerun the vendored connector pool, BodyReader, H1 client, and H2 server suites,
-OxiRoute TLS and HTTP wire tests, and strict clippy checks.
+owned-preread, borrowed-request-write, parsed-header ownership, response-task batch, HTTP/2 test
+lifecycle, and connection-pool changes, then rerun the vendored connector pool, BodyReader, H1
+client, and H2 server suites, OxiRoute TLS and HTTP wire tests, and strict clippy checks.

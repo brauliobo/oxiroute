@@ -24,7 +24,7 @@ use log::{debug, trace, warn};
 use once_cell::sync::Lazy;
 use percent_encoding::{percent_encode, AsciiSet, CONTROLS};
 use pingora_error::{Error, ErrorType::*, OrErr, Result};
-use pingora_http::{IntoCaseHeaderName, RequestHeader, ResponseHeader};
+use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_timeout::timeout;
 use regex::bytes::Regex;
 use std::time::Duration;
@@ -244,18 +244,16 @@ impl HttpSession {
                         self.raw_header = Some(BufRef(0, s));
                         self.preread_body = Some(BufRef(s, already_read));
 
-                        // We have the header name and values we parsed to be just 0 copy Bytes
-                        // referencing the original buf. That requires we convert the buf from
-                        // BytesMut to Bytes. But `req` holds a reference to `buf`. So we use the
-                        // `KVRef`s to record the offset of each piece of data, drop `req`, convert
-                        // buf, the do the 0 copy update
+                        // Header values can remain zero-copy Bytes referencing the input buffer.
+                        // `req` borrows the BytesMut, so retain offsets while freezing it; names are
+                        // then validated directly into the case-insensitive HeaderMap.
                         let base = buf.as_ptr() as usize;
                         let mut header_refs = Vec::<KVRef>::with_capacity(req.headers.len());
                         // Note: req.headers has the correct number of headers
                         // while header_refs doesn't as it is still empty
                         let _num_headers = populate_headers(base, &mut header_refs, req.headers);
 
-                        let mut request_header = Box::new(RequestHeader::build(
+                        let mut request_header = Box::new(RequestHeader::build_no_case(
                             req.method.unwrap_or(""),
                             // we path httparse to allow unsafe bytes in the str
                             req.path.unwrap_or("").as_bytes(),
@@ -271,17 +269,19 @@ impl HttpSession {
                         let buf = buf.freeze();
 
                         for header in header_refs {
-                            let header_name = header.get_name_bytes(&buf);
-                            let header_name = header_name.into_case_header_name();
+                            let header_name = header.get_name(&buf);
                             let value_bytes = header.get_value_bytes(&buf);
                             // safe because this is from what we parsed
                             let header_value = unsafe {
                                 http::HeaderValue::from_maybe_shared_unchecked(value_bytes)
                             };
 
-                            request_header
-                                .append_header(header_name, header_value)
-                                .or_err(InvalidHTTPHeader, "while parsing request header")?;
+                            append_parsed_header(
+                                &mut request_header.headers,
+                                header_name,
+                                header_value,
+                            )
+                            .or_err(InvalidHTTPHeader, "while parsing request header")?;
                         }
 
                         let contains_transfer_encoding =
@@ -1728,6 +1728,64 @@ mod tests_stream {
     }
 
     #[tokio::test]
+    async fn parsed_request_omits_case_map_and_normalizes_h1_wire_names() {
+        let input = b"GET /ordered HTTP/1.1\r\n\
+            hOsT: example.test\r\n\
+            X-DuPe: one\r\n\
+            x-dUPe: two\r\n\
+            CoOkIe: a=1\r\n\
+            COOKIE: b=2\r\n\
+            CoNnEcTiOn: x-hop\r\n\
+            X-HoP: secret\r\n\
+            X-CuStOm: retained\r\n\r\n";
+        let mock_io = Builder::new().read(input).build();
+        let mut session = HttpSession::new(Box::new(mock_io));
+        session.read_request().await.unwrap();
+
+        let buffer_start = session.buf.as_ptr() as usize;
+        let buffer_end = buffer_start + session.buf.len();
+        let request = session.req_header_mut();
+        assert!(!request.has_case());
+        assert_eq!(request.headers[header::HOST], "example.test");
+        assert_eq!(
+            request
+                .headers
+                .get_all("x-dupe")
+                .iter()
+                .map(HeaderValue::as_bytes)
+                .collect::<Vec<_>>(),
+            [b"one".as_slice(), b"two".as_slice()]
+        );
+        assert_eq!(
+            request
+                .headers
+                .get_all(header::COOKIE)
+                .iter()
+                .map(HeaderValue::as_bytes)
+                .collect::<Vec<_>>(),
+            [b"a=1".as_slice(), b"b=2".as_slice()]
+        );
+        for value in request.headers.values() {
+            let value_start = value.as_bytes().as_ptr() as usize;
+            assert!((buffer_start..buffer_end).contains(&value_start));
+        }
+
+        request.remove_header(&header::CONNECTION);
+        request.remove_header("x-hop");
+        let wire = crate::protocols::http::v1::client::http_req_header_to_wire(request).unwrap();
+        assert_eq!(
+            wire,
+            &b"GET /ordered HTTP/1.1\r\n\
+                Host: example.test\r\n\
+                x-dupe: one\r\n\
+                x-dupe: two\r\n\
+                cookie: a=1\r\n\
+                cookie: b=2\r\n\
+                x-custom: retained\r\n\r\n"[..]
+        );
+    }
+
+    #[tokio::test]
     async fn read_with_body_content_length() {
         init_log();
         let input1 = b"GET / HTTP/1.1\r\n";
@@ -2069,6 +2127,16 @@ mod tests_stream {
         assert_eq!(&InvalidHTTPHeader, res.unwrap_err().etype());
     }
 
+    #[tokio::test]
+    async fn read_rejects_malformed_header_name_before_no_case_append() {
+        let input = b"GET / HTTP/1.1\r\nHost: example.test\r\nBad@Name: value\r\n\r\n";
+        let mock_io = Builder::new().read(input).build();
+        let mut session = HttpSession::new(Box::new(mock_io));
+
+        let error = session.read_request().await.unwrap_err();
+        assert_eq!(error.etype(), &InvalidHTTPHeader);
+    }
+
     async fn build_upgrade_req(upgrade: &str, conn: &str) -> HttpSession {
         let input = format!("GET / HTTP/1.1\r\nHost: pingora.org\r\nUpgrade: {upgrade}\r\nConnection: {conn}\r\n\r\n");
         let mock_io = Builder::new().read(input.as_bytes()).build();
@@ -2084,6 +2152,7 @@ mod tests_stream {
         let mock_io = Builder::new().read(&input[..]).build();
         let mut http_stream = HttpSession::new(Box::new(mock_io));
         http_stream.read_request().await.unwrap();
+        assert!(!http_stream.req_header().has_case());
         assert!(!http_stream.is_upgrade_req());
 
         // different method
