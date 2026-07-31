@@ -21,6 +21,8 @@ TLS, HTTP/2, HTTP/3, cache, uploads, remote networks, latency percentiles, or mu
 | Defer redundant pooled-stream readiness validation | `21a2264` | Instructions/request improved about 0.44%; checkout validation and idle monitoring remain |
 | Cache physical peer identity | `7251517` | `getpeername` fell from 9,999 calls per 10,000 requests to calls on physical connection creation |
 | Replace H1 Tokio MPSC handoffs with bounded SPSC handoffs | `29a786d` | Dedicated paired gain 3.695%, 95% CI `[0.924%, 6.542%]`; instructions/request fell 3.272% |
+| Omit parsed H1 header case maps | `c46af7a` | Parser case-map append and destruction stacks disappeared; instructions/request fell 7.44% in the integrated build |
+| Skip reusable notifications when queueing is disabled | `16c1303` | The unbounded `notify_waiters` path disappeared; integrated sampled notification cost fell 97.51% |
 
 The SPSC implementation preserves Pingora's independent request and response pumps. Fixed capacity
 keeps backpressure explicit, and tests cover FIFO order, saturation, reservation cancellation, lost
@@ -43,6 +45,11 @@ Correctness work discovered during optimization is retained separately from perf
 | Full socket-level zero-copy response body parser | Review found stream desynchronization, unsafe buffer handling, upgrade loss, and memory amplification before benchmarking |
 | Persistent pool entries | Only about 3-6% appeared directly removable while stale-idle, fairness, endpoint-change, and retry semantics became substantially riskier |
 | Host-native CPU build | Faster diagnostically, but distributed release binaries must remain portable |
+| Bodyless SPSC bypass | Quick throughput fell 10.50%, cycles/request increased by 1,187, and the 684-line state machine was not justified |
+| Timer bucket cache | Map search disappeared, but cache-hit replacement consumed the savings and registration cost fell only 28.87%, below the 50% gate |
+| Static peer fast path | Quick throughput fell 6.80%; instructions, branches, and cache misses regressed |
+| Allocation-free selection | Removed about 51 sampled cycles/request, but the signal was below the retention threshold and cache metrics regressed |
+| Cached Date clock | Date-path clock lookup, cache self-time, and total Date cost all increased |
 
 No rejected source experiment remains in the production path.
 
@@ -127,6 +134,31 @@ confidence intervals crossed zero. No result was excluded or selectively replace
 These invalid runs do not override the stable dedicated optimization blocks or the exact-final PMU
 result. They do prevent publishing a new absolute req/s value for the final binary on 2026-07-31.
 
+## Integrated follow-up verification
+
+The two follow-up changes were measured together against the `50a891f` baseline in exact-interval
+B-C-C-B runs. The cumulative binary also contains the unrelated `7c8dd4a` RTMP recording-resume
+change, which is inactive in this HTTP/1 `GET /payload` workload. All counters ran at 100% enabled
+time; 14,565,467 measured requests completed without request or status failures.
+
+| Metric | Cumulative versus baseline |
+| --- | ---: |
+| Throughput | +3.945% |
+| Task-clock/request | -3.917% |
+| Cycles/request | -6.334% |
+| Instructions/request | -7.440% |
+| Branches/request | -5.929% |
+| Branch misses/request | -0.335% |
+| Cache references/request | -4.343% |
+| Cache misses/request | -5.802% |
+
+Branch-miss orientations disagreed and that result is treated as neutral. Throughput is reported only
+for this paired run because unrelated host load continued to prevent a new publishable absolute rate.
+The cumulative frame-pointer profile captured 9,934 samples with zero loss, 100% frame coverage, and
+95.20% deep callchains. Parsed-header case-map append and destruction stacks disappeared,
+`notify_waiters` disappeared, and sampled `notify_reusable` cost fell 97.51%. Total sampled
+cycles/request fell 7.21%.
+
 ## Verification
 
 - `cargo fmt --all -- --check`
@@ -135,8 +167,13 @@ result. They do prevent publishing a new absolute req/s value for the final bina
 - Vendored Pingora H2 server tests: 6 passed
 - Vendored Pingora accept-gate race tests: 4 passed
 - Final benchmark and profile workloads: zero failed requests and zero non-success responses
+- Follow-up routing tests: 36 passed
+- Follow-up server library tests: 155 passed
+- Follow-up HTTP routing tests: 50 passed
+- Follow-up connector tests: 48 passed, 1 ignored
 
 Local raw evidence is retained in the ignored directories
 `benchmarks/generated/optimization-cumulative-20260731T061210Z`,
 `benchmarks/generated/optimization-spsc-final-20260731T083538Z`, and
-`benchmarks/generated/optimization-final-20260731T124855Z`.
+`benchmarks/generated/optimization-final-20260731T124855Z`, and
+`benchmarks/generated/optimization-next7-20260731T184740Z`.
