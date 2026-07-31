@@ -7,8 +7,8 @@ under its upstream Apache-2.0 license.
 OxiRoute's delta is intentionally limited to an OpenSSL-derived, per-peer TLS configure hook,
 pre-handshake application admission, a non-truncating certificate subject conversion, correct
 HTTP/1 HEAD informational-response framing, owned HTTP/1 response preread payloads, borrowed HTTP/1
-upstream request writes, an inline HTTP response task batch, and a stage-1 connection-pool release
-experiment:
+upstream request writes, an inline HTTP response task batch, and stage-1 connection-pool
+experiments:
 
 - `protocols/tls/mod.rs` declares the public `TlsConfigureHook` type.
 - `upstreams/peer.rs` stores the optional hook in `PeerOptions`, omits it from
@@ -41,12 +41,17 @@ experiment:
   reusable stream enters the pool. The existing pre-visibility mutex guard, checkout identity and
   readiness checks, idle watcher, LRU eviction, timeout handling, and connection-lifetime
   notification remain unchanged.
+- `upstreams/peer.rs` provides an additive cached-physical-address identity hook for standard peers.
+  `connectors/l4.rs` records the connected TCP, pathname Unix, or CONNECT proxy next hop when known,
+  while custom L4 connections retain descriptor fallback. Transport and HTTP/2 checkout use that
+  opt-in identity before the existing descriptor syscall without changing readiness, pool keys,
+  release behavior, or retained connection objects.
 
 The normalized crates.io `Cargo.toml` is retained. Its optional `Cargo.toml.orig` reference is
 upstream packaging commentary; that non-build manifest is intentionally omitted here.
 
 When upgrading Pingora, replace this directory from the newly locked published crate, reapply and
 review the connector hook, admission guard, subject conversion, HTTP/1 HEAD informational-response,
-owned-preread, borrowed-request-write, response-task batch, and connection-pool release changes,
+owned-preread, borrowed-request-write, response-task batch, and connection-pool changes,
 then rerun the vendored connector pool, BodyReader, and H1 client suites, OxiRoute TLS and HTTP wire
 tests, and strict clippy checks.

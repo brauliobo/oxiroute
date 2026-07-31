@@ -312,6 +312,26 @@ use std::{net::SocketAddr as InetSocketAddr, path::Path};
 
 use crate::protocols::tls::TlsRef;
 
+#[cfg(all(test, unix))]
+thread_local! {
+    static PEER_IDENTITY_SYSCALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn reset_peer_identity_syscalls() {
+    PEER_IDENTITY_SYSCALLS.set(0);
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn peer_identity_syscalls() -> usize {
+    PEER_IDENTITY_SYSCALLS.get()
+}
+
+#[cfg(all(test, unix))]
+fn record_peer_identity_syscall() {
+    PEER_IDENTITY_SYSCALLS.set(PEER_IDENTITY_SYSCALLS.get() + 1);
+}
+
 #[cfg(unix)]
 impl ConnFdReusable for SocketAddr {
     fn check_fd_match<V: AsRawFd>(&self, fd: V) -> bool {
@@ -338,6 +358,8 @@ impl ConnSockReusable for SocketAddr {
 impl ConnFdReusable for Path {
     fn check_fd_match<V: AsRawFd>(&self, fd: V) -> bool {
         let fd = fd.as_raw_fd();
+        #[cfg(test)]
+        record_peer_identity_syscall();
         match getpeername::<UnixAddr>(fd) {
             Ok(peer) => match UnixAddr::new(self) {
                 Ok(addr) => {
@@ -366,6 +388,8 @@ impl ConnFdReusable for Path {
 impl ConnFdReusable for InetSocketAddr {
     fn check_fd_match<V: AsRawFd>(&self, fd: V) -> bool {
         let fd = fd.as_raw_fd();
+        #[cfg(test)]
+        record_peer_identity_syscall();
         match getpeername::<SockaddrStorage>(fd) {
             Ok(peer) => {
                 const ZERO: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
