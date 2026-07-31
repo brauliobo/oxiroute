@@ -4,6 +4,7 @@ mod support;
 
 use std::{net::SocketAddr, sync::Arc};
 
+use bytes::Bytes;
 use http::{Method, StatusCode};
 use oxiroute_config::{
     AlpnProtocol, Certificate, CertificateSource, HttpLiteralHeader, HttpRequestHeaderMutation,
@@ -13,6 +14,8 @@ use oxiroute_config::{
 use oxiroute_server::CertificateGeneration;
 use rustls::{HandshakeKind, ProtocolVersion};
 use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpListener,
     task::JoinSet,
     time::{sleep, timeout},
 };
@@ -466,6 +469,116 @@ async fn downstream_tls_h2_negotiates_alpn_and_proxies_a_real_stream() {
     })
     .await
     .expect("downstream TLS/H2 wire test timed out");
+}
+
+#[tokio::test]
+async fn downstream_h2_upload_streams_to_plain_h1_upstream() {
+    timeout(TEST_TIMEOUT, async {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("H2 upload origin bind");
+        let origin_address = listener.local_addr().expect("H2 upload origin address");
+        let origin = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("H2 upload origin accept");
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            while !request.windows(5).any(|window| window == b"0\r\n\r\n") {
+                let read = stream
+                    .read(&mut buffer)
+                    .await
+                    .expect("H2 upload origin read");
+                assert!(read > 0, "H2 upload ended before the terminating chunk");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let request_text = String::from_utf8_lossy(&request).to_ascii_lowercase();
+            assert!(request_text.starts_with("post /upload http/1.1\r\n"));
+            assert!(request_text.contains("transfer-encoding: chunked\r\n"));
+            let (chunks, body) = parse_chunked_request_body(&request);
+            assert!(
+                chunks >= 2,
+                "multiple H2 DATA frames were collapsed upstream"
+            );
+            assert_eq!(body, b"h2-multi-data-upload");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\nupload-ok",
+                )
+                .await
+                .expect("H2 upload origin response");
+        });
+        let reserved = ReservedListener::new();
+        let config = proxy_config(
+            reserved.address,
+            origin_address,
+            vec![AlpnProtocol::H2, AlpnProtocol::Http11],
+            None,
+            HttpVersionPolicy::default(),
+        );
+        let proxy = ProxyHarness::start(&config, reserved);
+
+        let stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"h2"])
+            .await
+            .expect("H2 upload client connection");
+        let mut client = H2Client::from_tls(stream)
+            .await
+            .expect("H2 upload client handshake");
+        let response = client
+            .request_with_body_chunks(
+                Method::POST,
+                "/upload",
+                vec![
+                    Bytes::from_static(b"h2-"),
+                    Bytes::from_static(b"multi-"),
+                    Bytes::from_static(b"data-"),
+                    Bytes::from_static(b"upload"),
+                ],
+            )
+            .await
+            .expect("H2 upload response");
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.body, b"upload-ok".as_slice());
+
+        origin.await.expect("H2 upload origin task");
+        client.finish().await;
+        proxy.finish().await;
+    })
+    .await
+    .expect("downstream H2 upload test timed out");
+}
+
+fn parse_chunked_request_body(request: &[u8]) -> (usize, Vec<u8>) {
+    let mut cursor = request
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .expect("H2 upload request header terminator")
+        + 4;
+    let mut chunks = 0;
+    let mut body = Vec::new();
+    loop {
+        let line_end = request[cursor..]
+            .windows(2)
+            .position(|window| window == b"\r\n")
+            .expect("H1 chunk size terminator")
+            + cursor;
+        let size = usize::from_str_radix(
+            std::str::from_utf8(&request[cursor..line_end])
+                .expect("ASCII H1 chunk size")
+                .split(';')
+                .next()
+                .unwrap(),
+            16,
+        )
+        .expect("hex H1 chunk size");
+        cursor = line_end + 2;
+        if size == 0 {
+            return (chunks, body);
+        }
+        chunks += 1;
+        body.extend_from_slice(&request[cursor..cursor + size]);
+        cursor += size;
+        assert_eq!(&request[cursor..cursor + 2], b"\r\n");
+        cursor += 2;
+    }
 }
 
 #[tokio::test]

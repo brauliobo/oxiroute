@@ -7,8 +7,9 @@ members = [
     "crates/oxiroute-import",
     "crates/oxiroute-rtmp",
     "crates/oxiroute-server",
+    "vendor/pingora-proxy",
 ]
-exclude = ["vendor/pingora-core", "vendor/pingora-proxy"]
+exclude = ["vendor/pingora-core"]
 resolver = "3"
 
 [workspace.package]

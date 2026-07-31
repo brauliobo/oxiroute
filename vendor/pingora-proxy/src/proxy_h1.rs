@@ -18,20 +18,19 @@ use futures::StreamExt;
 use super::*;
 use crate::proxy_cache::{range_filter::RangeBodyFilter, ServeFromCache};
 use crate::proxy_common::*;
+use crate::spsc;
 use pingora_cache::CachePhase;
 use pingora_core::protocols::http::custom::CUSTOM_MESSAGE_QUEUE_SIZE;
 
-fn collect_available_tasks(first: HttpTask, rx: &mut mpsc::Receiver<HttpTask>) -> HttpTaskBatch {
+fn collect_available_tasks(
+    first: HttpTask,
+    rx: &mut spsc::Receiver<'_, HttpTask, TASK_BUFFER_SIZE>,
+) -> HttpTaskBatch {
     let mut tasks = HttpTaskBatch::new();
     tasks.push(first);
-    // tokio::task::unconstrained because now_or_never may yield None when the future is ready
-    while let Some(maybe_task) = tokio::task::unconstrained(rx.recv()).now_or_never() {
-        debug!("upstream event now: {:?}", maybe_task);
-        if let Some(task) = maybe_task {
-            tasks.push(task);
-        } else {
-            break; // upstream closed
-        }
+    while let Ok(task) = rx.try_recv() {
+        debug!("upstream event now: {:?}", task);
+        tasks.push(task);
     }
     tasks
 }
@@ -136,8 +135,10 @@ where
             .as_custom_mut()
             .and_then(|c| c.take_custom_message_writer());
 
-        let (tx_upstream, rx_upstream) = mpsc::channel::<HttpTask>(TASK_BUFFER_SIZE);
-        let (tx_downstream, rx_downstream) = mpsc::channel::<HttpTask>(TASK_BUFFER_SIZE);
+        let mut upstream_pipe = spsc::Channel::<HttpTask, TASK_BUFFER_SIZE>::new();
+        let mut downstream_pipe = spsc::Channel::<HttpTask, TASK_BUFFER_SIZE>::new();
+        let (tx_upstream, rx_upstream) = upstream_pipe.split();
+        let (tx_downstream, rx_downstream) = downstream_pipe.split();
 
         session.as_mut().enable_retry_buffering();
 
@@ -224,8 +225,8 @@ where
     async fn proxy_handle_upstream(
         &self,
         client_session: &mut HttpSessionV1,
-        tx: mpsc::Sender<HttpTask>,
-        mut rx: mpsc::Receiver<HttpTask>,
+        tx: spsc::Sender<'_, HttpTask, TASK_BUFFER_SIZE>,
+        mut rx: spsc::Receiver<'_, HttpTask, TASK_BUFFER_SIZE>,
     ) -> Result<()>
     where
         SV: ProxyHttp + Send + Sync,
@@ -311,8 +312,8 @@ where
     async fn proxy_handle_downstream(
         &self,
         session: &mut Session,
-        tx: mpsc::Sender<HttpTask>,
-        mut rx: mpsc::Receiver<HttpTask>,
+        tx: spsc::Sender<'_, HttpTask, TASK_BUFFER_SIZE>,
+        mut rx: spsc::Receiver<'_, HttpTask, TASK_BUFFER_SIZE>,
         ctx: &mut SV::CTX,
         downstream_custom_message_writer: &mut Option<Box<dyn CustomMessageWrite>>,
     ) -> Result<bool>
@@ -790,7 +791,7 @@ where
         session: &mut Session,
         mut data: Option<Bytes>,
         end_of_body: bool,
-        tx: mpsc::Permit<'_, HttpTask>,
+        tx: spsc::Permit<'_, HttpTask, TASK_BUFFER_SIZE>,
         ctx: &mut SV::CTX,
     ) -> Result<bool>
     where
@@ -941,7 +942,8 @@ mod task_buffer_tests {
     }
 
     async fn collect_batch(values: &[u8]) -> HttpTaskBatch {
-        let (tx, mut rx) = mpsc::channel(TASK_BUFFER_SIZE);
+        let mut channel = spsc::Channel::new();
+        let (tx, mut rx) = channel.split();
         for value in values {
             tx.send(body_task(*value)).await.unwrap();
         }
@@ -962,12 +964,15 @@ mod task_buffer_tests {
 
     #[tokio::test]
     async fn available_batch_can_spill_without_losing_order() {
-        let (tx, mut rx) = mpsc::channel(TASK_BUFFER_SIZE);
+        let mut channel = spsc::Channel::new();
+        let (tx, mut rx) = channel.split();
         for value in 0..TASK_BUFFER_SIZE as u8 {
             tx.send(body_task(value)).await.unwrap();
         }
         let first = rx.recv().await.unwrap();
-        tx.try_send(body_task(TASK_BUFFER_SIZE as u8)).unwrap();
+        tx.try_reserve()
+            .unwrap()
+            .send(body_task(TASK_BUFFER_SIZE as u8));
 
         let tasks = collect_available_tasks(first, &mut rx);
 
@@ -980,7 +985,8 @@ mod task_buffer_tests {
 
     #[tokio::test]
     async fn batch_snapshot_preserves_filter_order_and_failure() {
-        let (tx, mut rx) = mpsc::channel(TASK_BUFFER_SIZE);
+        let mut channel = spsc::Channel::new();
+        let (tx, mut rx) = channel.split();
         tx.send(body_task(1)).await.unwrap();
         tx.send(body_task(2)).await.unwrap();
         tx.send(body_task(3)).await.unwrap();
@@ -1050,6 +1056,228 @@ mod task_buffer_tests {
             &upgraded[0],
             HttpTask::UpgradedBody(Some(data), false) if data.as_ref() == b"upgraded"
         ));
+    }
+}
+
+#[cfg(test)]
+mod pump_saturation_tests {
+    use std::{sync::Arc, time::Duration};
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::time::timeout;
+    use tokio_test::io::Builder;
+
+    use super::*;
+
+    struct PumpProxy;
+
+    #[async_trait]
+    impl ProxyHttp for PumpProxy {
+        type CTX = ();
+
+        fn new_ctx(&self) -> Self::CTX {}
+
+        async fn upstream_peer(
+            &self,
+            _session: &mut Session,
+            _ctx: &mut Self::CTX,
+        ) -> Result<Box<HttpPeer>> {
+            unreachable!("pump tests do not select an upstream")
+        }
+    }
+
+    fn proxy() -> HttpProxy<PumpProxy> {
+        HttpProxy::new(PumpProxy, Arc::new(ServerConf::default()))
+    }
+
+    fn response_mock(chunks: &[&'static [u8]]) -> tokio_test::io::Mock {
+        let mut builder = Builder::new();
+        builder.read(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n");
+        for chunk in chunks {
+            builder.read(chunk);
+        }
+        builder.build()
+    }
+
+    fn task_marker(task: HttpTask) -> u8 {
+        match task {
+            HttpTask::Header(_, _) => b'H',
+            HttpTask::Body(Some(body), _) => body[0],
+            HttpTask::Body(None, true) => b'E',
+            HttpTask::Failed(_) => b'F',
+            task => panic!("unexpected pump task: {task:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn response_pump_blocks_at_four_tasks_and_resumes_in_fifo_order() {
+        let mock = response_mock(&[
+            b"1\r\na\r\n",
+            b"1\r\nb\r\n",
+            b"1\r\nc\r\n",
+            b"1\r\nd\r\n",
+            b"1\r\ne\r\n",
+            b"1\r\nf\r\n",
+            b"0\r\n\r\n",
+        ]);
+        let mut upstream = HttpSessionV1::new(Box::new(mock));
+        let proxy = proxy();
+        let mut response_pipe = spsc::Channel::<HttpTask, TASK_BUFFER_SIZE>::new();
+        let mut request_pipe = spsc::Channel::<HttpTask, TASK_BUFFER_SIZE>::new();
+        let (response_tx, mut response_rx) = response_pipe.split();
+        let (request_tx, request_rx) = request_pipe.split();
+        drop(request_tx);
+        let handler = proxy.proxy_handle_upstream(&mut upstream, response_tx, request_rx);
+        tokio::pin!(handler);
+
+        assert!(
+            timeout(Duration::from_millis(20), handler.as_mut())
+                .await
+                .is_err(),
+            "response pump did not block on full handoff"
+        );
+        let mut markers = Vec::new();
+        for _ in 0..TASK_BUFFER_SIZE {
+            markers.push(task_marker(response_rx.try_recv().unwrap()));
+        }
+        assert_eq!(markers, b"Habc");
+        assert!(matches!(
+            response_rx.try_recv(),
+            Err(spsc::TryRecvError::Empty)
+        ));
+
+        timeout(Duration::from_millis(100), handler.as_mut())
+            .await
+            .expect("response pump did not resume")
+            .unwrap();
+        while let Ok(task) = response_rx.try_recv() {
+            markers.push(task_marker(task));
+        }
+        assert_eq!(markers, b"HabcdefE");
+        assert!(matches!(
+            response_rx.try_recv(),
+            Err(spsc::TryRecvError::Closed)
+        ));
+    }
+
+    #[tokio::test]
+    async fn response_failure_waits_behind_queued_tasks_without_reordering() {
+        let mock = response_mock(&[
+            b"1\r\na\r\n",
+            b"1\r\nb\r\n",
+            b"1\r\nc\r\n",
+            b"not-a-chunk\r\n",
+        ]);
+        let mut upstream = HttpSessionV1::new(Box::new(mock));
+        let proxy = proxy();
+        let mut response_pipe = spsc::Channel::<HttpTask, TASK_BUFFER_SIZE>::new();
+        let mut request_pipe = spsc::Channel::<HttpTask, TASK_BUFFER_SIZE>::new();
+        let (response_tx, mut response_rx) = response_pipe.split();
+        let (request_tx, request_rx) = request_pipe.split();
+        drop(request_tx);
+        let handler = proxy.proxy_handle_upstream(&mut upstream, response_tx, request_rx);
+        tokio::pin!(handler);
+
+        assert!(
+            timeout(Duration::from_millis(20), handler.as_mut())
+                .await
+                .is_err(),
+            "failed task did not wait behind the full handoff"
+        );
+        let mut markers = Vec::new();
+        for _ in 0..TASK_BUFFER_SIZE {
+            markers.push(task_marker(response_rx.try_recv().unwrap()));
+        }
+        assert_eq!(markers, b"Habc");
+
+        timeout(Duration::from_millis(100), handler.as_mut())
+            .await
+            .expect("failed response pump did not resume")
+            .unwrap();
+        while let Ok(task) = response_rx.try_recv() {
+            markers.push(task_marker(task));
+        }
+        assert_eq!(markers, b"HabcF");
+    }
+
+    #[tokio::test]
+    async fn downstream_disconnect_wakes_response_pump_blocked_on_full_handoff() {
+        let mock = response_mock(&[b"1\r\na\r\n", b"1\r\nb\r\n", b"1\r\nc\r\n", b"1\r\nd\r\n"]);
+        let mut upstream = HttpSessionV1::new(Box::new(mock));
+        let proxy = proxy();
+        let mut response_pipe = spsc::Channel::<HttpTask, TASK_BUFFER_SIZE>::new();
+        let mut request_pipe = spsc::Channel::<HttpTask, TASK_BUFFER_SIZE>::new();
+        let (response_tx, response_rx) = response_pipe.split();
+        let (request_tx, request_rx) = request_pipe.split();
+        drop(request_tx);
+        let handler = proxy.proxy_handle_upstream(&mut upstream, response_tx, request_rx);
+        tokio::pin!(handler);
+
+        assert!(
+            timeout(Duration::from_millis(20), handler.as_mut())
+                .await
+                .is_err(),
+            "response pump did not block on full handoff"
+        );
+        drop(response_rx);
+        assert!(timeout(Duration::from_millis(100), handler.as_mut())
+            .await
+            .expect("blocked response sender missed receiver drop")
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn saturated_request_handoff_handles_early_final_and_upstream_reset() {
+        let (proxy_io, mut origin_io) = tokio::io::duplex(256);
+        let origin = tokio::spawn(async move {
+            let mut request_head = Vec::new();
+            while !request_head.ends_with(b"\r\n\r\n") {
+                request_head.push(origin_io.read_u8().await.unwrap());
+            }
+            origin_io
+                .write_all(
+                    b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+        let mut upstream = HttpSessionV1::new(Box::new(proxy_io));
+        let mut request = RequestHeader::build("POST", b"/upload", None).unwrap();
+        request
+            .insert_header(header::CONTENT_LENGTH, "1024")
+            .unwrap();
+        upstream.write_request_header_ref(&request).await.unwrap();
+
+        let proxy = proxy();
+        let mut response_pipe = spsc::Channel::<HttpTask, TASK_BUFFER_SIZE>::new();
+        let mut request_pipe = spsc::Channel::<HttpTask, TASK_BUFFER_SIZE>::new();
+        let (response_tx, mut response_rx) = response_pipe.split();
+        let (request_tx, request_rx) = request_pipe.split();
+        for value in 0..TASK_BUFFER_SIZE {
+            let value = u8::try_from(value).expect("task buffer index fits in u8");
+            request_tx
+                .try_reserve()
+                .unwrap()
+                .send(HttpTask::Body(Some(Bytes::from(vec![value; 128])), false));
+        }
+        assert_eq!(
+            request_tx.try_reserve().unwrap_err(),
+            spsc::TryReserveError::Full
+        );
+
+        timeout(
+            Duration::from_millis(100),
+            proxy.proxy_handle_upstream(&mut upstream, response_tx, request_rx),
+        )
+        .await
+        .expect("early-final/reset pump timed out")
+        .unwrap();
+        origin.await.unwrap();
+        let HttpTask::Header(response, true) = response_rx.try_recv().unwrap() else {
+            panic!("early final response was not preserved");
+        };
+        assert_eq!(response.status, http::StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(request_tx.is_closed());
     }
 }
 

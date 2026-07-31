@@ -245,6 +245,3 @@ version = "0.9"
 level = "warn"
 priority = 0
 check-cfg = ["cfg(doc_async_trait)"]
-
-[patch.crates-io]
-pingora-core = { path = "../pingora-core" }
