@@ -1289,6 +1289,7 @@ mod request_preparation_tests {
             atomic::{AtomicUsize, Ordering},
             Arc,
         },
+        time::SystemTime,
     };
 
     use pingora_cache::{
@@ -1301,6 +1302,7 @@ mod request_preparation_tests {
     use tokio_test::io::Builder;
 
     use super::*;
+    use pingora_core::protocols::http::v1::client::HttpSession as ClientSession;
 
     struct CloneProbe(Arc<AtomicUsize>);
 
@@ -1418,6 +1420,7 @@ mod request_preparation_tests {
     #[tokio::test]
     async fn active_cache_mutation_clones_before_default_filter_preparation() {
         let (mut session, clones) = session_with_probe().await;
+        assert!(!session.req_header().has_case());
         session.cache.enable(&TEST_STORAGE, None, None, None, None);
         session
             .cache
@@ -1428,8 +1431,31 @@ mod request_preparation_tests {
             .await
             .unwrap();
 
-        assert!(matches!(prepared, PreparedUpstreamRequest::Owned(_)));
+        let PreparedUpstreamRequest::Owned(request) = prepared else {
+            panic!("active cache mutation must own the request");
+        };
+        assert!(!request.has_case());
         assert!(session.upstream_headers_mutated_for_cache());
         assert_eq!(clones.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn parsed_h1_response_enters_cache_without_case_map() {
+        let response = b"HTTP/1.1 200 OK\r\nX-CaChEd: retained\r\nContent-Length: 0\r\n\r\n";
+        let mock = Builder::new().read(response).build();
+        let mut client = ClientSession::new(Box::new(mock));
+        client.read_response().await.unwrap();
+        let response = client.resp_header().unwrap().clone();
+        assert!(!response.has_case());
+
+        let now = SystemTime::now();
+        let meta = CacheMeta::new(now, now, 0, 0, response);
+        assert!(!meta.response_header().has_case());
+        assert_eq!(meta.headers()["x-cached"], "retained");
+        let cached = meta.response_header_copy();
+        assert!(!cached.has_case());
+        let mut wire = Vec::new();
+        cached.header_to_h1_wire(&mut wire);
+        assert_eq!(wire, b"x-cached: retained\r\nContent-Length: 0\r\n");
     }
 }
