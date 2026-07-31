@@ -446,6 +446,84 @@ async fn reusable_upstream_connection_holds_its_lease_until_the_socket_closes() 
 }
 
 #[tokio::test]
+async fn preread_one_kib_response_is_exact_and_keeps_upstream_reusable() {
+    timeout(TEST_TIMEOUT, async {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("preread origin bind");
+        let address = listener.local_addr().expect("preread origin address");
+        let expected_body = vec![b'x'; 1024];
+        let origin_body = expected_body.clone();
+        let origin = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("preread origin accept");
+            read_request_head(&mut stream)
+                .await
+                .expect("first preread request");
+            let mut response =
+                b"HTTP/1.1 200 OK\r\nContent-Length: 1024\r\nConnection: keep-alive\r\n\r\n"
+                    .to_vec();
+            response.extend_from_slice(&origin_body);
+            stream
+                .write_all(&response)
+                .await
+                .expect("single-write preread response");
+
+            let second_request = read_request_head_bytes(&mut stream)
+                .await
+                .expect("reused preread request");
+            assert!(second_request.starts_with(b"GET /second HTTP/1.1\r\n"));
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nsecond",
+                )
+                .await
+                .expect("reused preread response");
+        });
+        let proxy = ProxyHarness::start(
+            vec![capped_pool("preread", address, 1)],
+            vec![route(None, "/", &[], "preread")],
+            1024,
+            1,
+        )
+        .await;
+        let mut client = TcpStream::connect(proxy.address)
+            .await
+            .expect("preread downstream connect");
+
+        client
+            .write_all(
+                b"GET /first HTTP/1.1\r\nHost: preread.test\r\nConnection: keep-alive\r\n\r\n",
+            )
+            .await
+            .expect("first preread downstream request");
+        assert_eq!(
+            read_framed_response(&mut client)
+                .await
+                .expect("first preread downstream response")
+                .body,
+            expected_body
+        );
+        client
+            .write_all(b"GET /second HTTP/1.1\r\nHost: preread.test\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("second preread downstream request");
+        assert_eq!(
+            read_framed_response(&mut client)
+                .await
+                .expect("second preread downstream response")
+                .body,
+            b"second"
+        );
+
+        origin.await.expect("preread origin task");
+        proxy.wait_for_no_active_leases().await;
+        proxy.finish().await;
+    })
+    .await
+    .expect("preread response test timed out");
+}
+
+#[tokio::test]
 async fn maxconn_one_serializes_concurrent_h1_creation_and_reuses_the_physical_connection() {
     timeout(TEST_TIMEOUT, async {
         let listener = TcpListener::bind("127.0.0.1:0")
