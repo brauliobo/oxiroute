@@ -2117,6 +2117,7 @@ dependencies = [
  "serde",
  "serde_yaml",
  "sfv",
+ "smallvec",
  "socket2",
  "strum",
  "strum_macros",
@@ -2250,7 +2251,6 @@ dependencies = [
  "pingora-http",
  "rand 0.8.7",
  "regex",
- "smallvec",
  "tokio",
 ]
 

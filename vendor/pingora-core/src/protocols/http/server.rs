@@ -19,7 +19,7 @@ use super::error_resp;
 use super::subrequest::server::HttpSession as SessionSubrequest;
 use super::v1::server::HttpSession as SessionV1;
 use super::v2::server::HttpSession as SessionV2;
-use super::HttpTask;
+use super::{HttpTask, HttpTaskBatch};
 use crate::custom_session;
 use crate::protocols::{Digest, SocketAddr, Stream};
 use bytes::Bytes;
@@ -35,6 +35,10 @@ pub enum Session {
     H2(SessionV2),
     Subrequest(SessionSubrequest),
     Custom(Box<dyn SessionCustom>),
+}
+
+fn batch_into_vec(tasks: HttpTaskBatch) -> Vec<HttpTask> {
+    tasks.into_vec()
 }
 
 impl Session {
@@ -273,6 +277,16 @@ impl Session {
             Self::H2(s) => s.response_duplex_vec(tasks).await,
             Self::Subrequest(s) => s.response_duplex_vec(tasks).await,
             Self::Custom(s) => s.response_duplex_vec(tasks).await,
+        }
+    }
+
+    /// Write a batch of response tasks, retaining inline storage for HTTP/1 downstreams.
+    pub async fn response_duplex_batch(&mut self, tasks: HttpTaskBatch) -> Result<bool> {
+        match self {
+            Self::H1(s) => s.response_duplex_batch(tasks).await,
+            Self::H2(s) => s.response_duplex_vec(batch_into_vec(tasks)).await,
+            Self::Subrequest(s) => s.response_duplex_vec(batch_into_vec(tasks)).await,
+            Self::Custom(s) => s.response_duplex_vec(batch_into_vec(tasks)).await,
         }
     }
 
@@ -793,5 +807,27 @@ impl Session {
             Self::Subrequest(_) => None,
             Self::Custom(_) => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod task_batch_tests {
+    use super::*;
+
+    #[test]
+    fn h2_subrequest_and_custom_fallback_conversion_preserves_order() {
+        let mut tasks = HttpTaskBatch::new();
+        tasks.push(HttpTask::Body(Some(Bytes::from_static(b"first")), false));
+        tasks.push(HttpTask::Trailer(None));
+        tasks.push(HttpTask::Done);
+
+        let tasks = batch_into_vec(tasks);
+
+        assert!(matches!(
+            &tasks[0],
+            HttpTask::Body(Some(body), false) if body.as_ref() == b"first"
+        ));
+        assert!(matches!(&tasks[1], HttpTask::Trailer(None)));
+        assert!(matches!(&tasks[2], HttpTask::Done));
     }
 }

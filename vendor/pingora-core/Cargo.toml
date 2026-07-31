@@ -226,6 +226,9 @@ version = "0.10.4"
 version = ">=0.4, <1.0.0"
 features = ["all"]
 
+[dependencies.smallvec]
+version = "1"
+
 [dependencies.strum]
 version = "0.26.2"
 

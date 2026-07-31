@@ -168,9 +168,6 @@ version = "0.8"
 [dependencies.regex]
 version = "1"
 
-[dependencies.smallvec]
-version = "1"
-
 [dependencies.tokio]
 version = "1"
 features = [

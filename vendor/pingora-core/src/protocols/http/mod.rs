@@ -32,6 +32,12 @@ pub use server::Session as ServerSession;
 /// The Pingora server name string
 pub const SERVER_NAME: &[u8; 7] = b"Pingora";
 
+/// The number of response tasks stored inline in an [`HttpTaskBatch`].
+pub const HTTP_TASK_BATCH_CAPACITY: usize = 4;
+
+/// A response-task batch with inline storage for the common case.
+pub type HttpTaskBatch = smallvec::SmallVec<[HttpTask; HTTP_TASK_BATCH_CAPACITY]>;
+
 /// An enum to hold all possible HTTP response events.
 #[derive(Debug)]
 pub enum HttpTask {
@@ -72,5 +78,45 @@ impl HttpTask {
             HttpTask::Done => "Done",
             HttpTask::Failed(_) => "Failed",
         }
+    }
+}
+
+#[cfg(test)]
+mod task_batch_tests {
+    use bytes::Bytes;
+
+    use super::*;
+
+    fn body_task(value: u8) -> HttpTask {
+        HttpTask::Body(Some(Bytes::from(vec![value])), false)
+    }
+
+    #[test]
+    fn inline_capacity_covers_one_through_four_tasks() {
+        for len in 1..=HTTP_TASK_BATCH_CAPACITY {
+            let tasks: HttpTaskBatch = (0..len as u8).map(body_task).collect();
+
+            assert_eq!(tasks.len(), len);
+            assert!(!tasks.spilled(), "batch of {len} tasks spilled");
+        }
+    }
+
+    #[test]
+    fn batch_spills_safely_beyond_inline_capacity() {
+        let tasks: HttpTaskBatch = (0..=HTTP_TASK_BATCH_CAPACITY as u8)
+            .map(body_task)
+            .collect();
+
+        assert!(tasks.spilled());
+        assert_eq!(
+            tasks
+                .iter()
+                .map(|task| match task {
+                    HttpTask::Body(Some(body), false) => body[0],
+                    _ => panic!("unexpected task"),
+                })
+                .collect::<Vec<_>>(),
+            (0..=HTTP_TASK_BATCH_CAPACITY as u8).collect::<Vec<_>>()
+        );
     }
 }
