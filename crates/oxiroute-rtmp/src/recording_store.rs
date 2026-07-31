@@ -5,7 +5,7 @@ use std::{
     path::{Component, Path},
     sync::{
         Arc, Mutex, MutexGuard, OnceLock, Weak,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
     thread,
     time::Duration,
@@ -27,6 +27,10 @@ const OWNER_PROBE_PREFIX: &str = ".oxiroute-owner-probe-";
 const UUID_SIMPLE_LENGTH: usize = 32;
 const MAX_NAME_ATTEMPTS: usize = 16;
 const OWNERSHIP_RETRY_INTERVAL: Duration = Duration::from_millis(2);
+const COMMIT_OPEN: u8 = 0;
+const COMMIT_CANCELLED: u8 = 1;
+const COMMIT_PUBLISHING: u8 = 2;
+const COMMIT_FINISHED: u8 = 3;
 
 /// Optional storage quotas and the hard active-recorder bound for one pinned recording root.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -110,6 +114,22 @@ pub enum RecordingStoreError {
         #[source]
         source: io::Error,
     },
+    #[error("recording partial unlink failed and the published recording could not be rolled back")]
+    PublishRollback {
+        partial_relative_name: String,
+        recording: RecordingCommit,
+        #[source]
+        source: io::Error,
+        rollback_source: io::Error,
+    },
+    #[error("recording rollback could not be synchronized after the final name was removed")]
+    PublishRollbackDirectorySync {
+        partial_relative_name: String,
+        recording: RecordingCommit,
+        #[source]
+        source: io::Error,
+        directory_sync_source: io::Error,
+    },
     #[error("descriptor-based recording publication is unsupported")]
     DescriptorPublicationUnsupported { partial_relative_name: String },
     #[error("recording final-name collision retry limit reached")]
@@ -137,6 +157,14 @@ impl RecordingStoreError {
                 partial_relative_name,
                 ..
             }
+            | Self::PublishRollback {
+                partial_relative_name,
+                ..
+            }
+            | Self::PublishRollbackDirectorySync {
+                partial_relative_name,
+                ..
+            }
             | Self::DescriptorPublicationUnsupported {
                 partial_relative_name,
             }
@@ -150,7 +178,9 @@ impl RecordingStoreError {
     #[must_use]
     pub const fn published_recording(&self) -> Option<&RecordingCommit> {
         match self {
-            Self::PublishedDirectorySync { recording, .. } => Some(recording),
+            Self::PublishRollback { recording, .. }
+            | Self::PublishRollbackDirectorySync { recording, .. }
+            | Self::PublishedDirectorySync { recording, .. } => Some(recording),
             _ => None,
         }
     }
@@ -340,8 +370,20 @@ impl RecordingStore {
                         position: 0,
                         length: 0,
                         partial_exists: true,
+                        partial_exists_state: Arc::new(AtomicBool::new(true)),
                         active_accounted: true,
                         preserve_partial: Arc::new(AtomicBool::new(false)),
+                        commit: Arc::new(RecordingCommitState {
+                            state: AtomicU8::new(COMMIT_OPEN),
+                            #[cfg(test)]
+                            gate: Mutex::new(None),
+                            #[cfg(test)]
+                            fail_partial_unlink: AtomicBool::new(false),
+                            #[cfg(test)]
+                            fail_rollback_unlink: AtomicBool::new(false),
+                            #[cfg(test)]
+                            fail_rollback_sync: AtomicBool::new(false),
+                        }),
                     });
                 }
                 Err(Errno::EXIST) => {}
@@ -378,8 +420,48 @@ pub struct RecordingFile {
     position: u64,
     length: u64,
     partial_exists: bool,
+    partial_exists_state: Arc<AtomicBool>,
     active_accounted: bool,
     preserve_partial: Arc<AtomicBool>,
+    commit: Arc<RecordingCommitState>,
+}
+
+struct RecordingCommitState {
+    state: AtomicU8,
+    #[cfg(test)]
+    gate: Mutex<Option<Arc<RecordingPublicationGate>>>,
+    #[cfg(test)]
+    fail_partial_unlink: AtomicBool,
+    #[cfg(test)]
+    fail_rollback_unlink: AtomicBool,
+    #[cfg(test)]
+    fail_rollback_sync: AtomicBool,
+}
+
+#[derive(Clone)]
+pub(crate) struct RecordingCommitCancellation {
+    state: Arc<RecordingCommitState>,
+}
+
+#[cfg(test)]
+pub(crate) struct RecordingPublicationGate {
+    state: Mutex<RecordingPublicationGateState>,
+    changed: std::sync::Condvar,
+}
+
+#[cfg(test)]
+struct RecordingPublicationGateState {
+    progress: RecordingPublicationGateProgress,
+    claim_allowed: bool,
+    publication_allowed: bool,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum RecordingPublicationGateProgress {
+    Installed,
+    BeforeClaim,
+    AfterClaim,
 }
 
 impl RecordingFile {
@@ -396,6 +478,16 @@ impl RecordingFile {
         Arc::clone(&self.preserve_partial)
     }
 
+    pub(crate) fn partial_existence_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.partial_exists_state)
+    }
+
+    pub(crate) fn commit_cancellation(&self) -> RecordingCommitCancellation {
+        RecordingCommitCancellation {
+            state: Arc::clone(&self.commit),
+        }
+    }
+
     pub(crate) fn set_final_relative_name(
         &mut self,
         final_relative_name: String,
@@ -403,6 +495,31 @@ impl RecordingFile {
         validate_relative_name(&final_relative_name)?;
         self.final_relative_name = final_relative_name;
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn fail_publication_unlinks(&self) {
+        self.commit
+            .fail_partial_unlink
+            .store(true, Ordering::Release);
+        self.commit
+            .fail_rollback_unlink
+            .store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    fn fail_partial_unlink(&self) {
+        self.commit
+            .fail_partial_unlink
+            .store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    fn fail_partial_unlink_and_rollback_sync(&self) {
+        self.fail_partial_unlink();
+        self.commit
+            .fail_rollback_sync
+            .store(true, Ordering::Release);
     }
 
     /// Flushes and synchronizes the partial, closes it, then atomically publishes it without
@@ -413,62 +530,64 @@ impl RecordingFile {
     /// Returns an error when flushing, synchronizing, publishing, or synchronizing the containing
     /// directory fails. A directory-sync error carries the already-published recording.
     pub fn commit(mut self) -> Result<RecordingCommit, RecordingStoreError> {
-        self.commit_inner(|| false)
+        self.commit_inner()
     }
 
-    pub(crate) fn commit_unless(
-        mut self,
-        cancelled: impl Fn() -> bool,
-    ) -> Result<RecordingCommit, RecordingStoreError> {
-        self.commit_inner(cancelled)
-    }
-
-    fn commit_inner(
-        &mut self,
-        cancelled: impl Fn() -> bool,
-    ) -> Result<RecordingCommit, RecordingStoreError> {
+    fn commit_inner(&mut self) -> Result<RecordingCommit, RecordingStoreError> {
         self.preserve_partial.store(true, Ordering::Release);
-        if cancelled() {
+        if self.commit.cancelled() {
             return Err(self.cancelled_error());
         }
         if let Some(file) = self.file.as_mut() {
-            file.flush()
-                .map_err(|source| RecordingStoreError::FileSync {
+            if let Err(source) = file.flush().and_then(|()| file.sync_all()) {
+                self.commit.finish();
+                return Err(RecordingStoreError::FileSync {
                     partial_relative_name: self.partial_name.clone(),
                     source,
-                })?;
-            file.sync_all()
-                .map_err(|source| RecordingStoreError::FileSync {
-                    partial_relative_name: self.partial_name.clone(),
-                    source,
-                })?;
+                });
+            }
         }
-        if cancelled() {
+        if self.commit.cancelled() {
             return Err(self.cancelled_error());
         }
         if !self.partial_is_owned() {
             self.partial_exists = false;
+            self.partial_exists_state.store(false, Ordering::Release);
+            self.commit.finish();
             return Err(RecordingStoreError::PartialOwnershipLost {
                 partial_relative_name: self.partial_name.clone(),
             });
         }
 
-        if cancelled() {
+        #[cfg(test)]
+        self.commit.wait_before_publication();
+        if !self.commit.begin_publication() {
             return Err(self.cancelled_error());
         }
-        let relative_name = self.publish()?;
+        #[cfg(test)]
+        self.commit.wait_after_publication_claim();
+        let relative_name = match self.publish() {
+            Ok(relative_name) => relative_name,
+            Err(error) => {
+                self.commit.finish();
+                return Err(error);
+            }
+        };
         self.partial_exists = false;
+        self.partial_exists_state.store(false, Ordering::Release);
         self.release_active_as_committed();
         let recording = RecordingCommit {
             relative_name,
             bytes: self.length,
         };
         if let Err(source) = rustix_fs::fsync(&self.shared.root) {
+            self.commit.finish();
             return Err(RecordingStoreError::PublishedDirectorySync {
                 recording,
                 source: source.into(),
             });
         }
+        self.commit.finish();
         Ok(recording)
     }
 
@@ -522,20 +641,17 @@ impl RecordingFile {
             ) {
                 Ok(()) => {
                     if self.partial_is_owned() {
-                        if let Err(source) = rustix_fs::unlinkat(
-                            &self.shared.root,
-                            self.partial_name.as_str(),
-                            AtFlags::empty(),
-                        ) {
-                            let _ = rustix_fs::unlinkat(
+                        let unlink_partial = if publication_partial_unlink_fault(&self.commit) {
+                            Err(Errno::IO)
+                        } else {
+                            rustix_fs::unlinkat(
                                 &self.shared.root,
-                                candidate.as_str(),
+                                self.partial_name.as_str(),
                                 AtFlags::empty(),
-                            );
-                            return Err(RecordingStoreError::Publish {
-                                partial_relative_name: self.partial_name.clone(),
-                                source: source.into(),
-                            });
+                            )
+                        };
+                        if let Err(source) = unlink_partial {
+                            return Err(self.rollback_publication(candidate, source));
                         }
                     }
                     return Ok(candidate);
@@ -553,6 +669,7 @@ impl RecordingFile {
                 Err(source) => {
                     if !self.partial_is_owned() {
                         self.partial_exists = false;
+                        self.partial_exists_state.store(false, Ordering::Release);
                         return Err(RecordingStoreError::PartialOwnershipLost {
                             partial_relative_name: self.partial_name.clone(),
                         });
@@ -569,6 +686,48 @@ impl RecordingFile {
         })
     }
 
+    fn rollback_publication(&mut self, candidate: String, source: Errno) -> RecordingStoreError {
+        let recording = RecordingCommit {
+            relative_name: candidate,
+            bytes: self.length,
+        };
+        let rollback = if publication_rollback_unlink_fault(&self.commit) {
+            Err(Errno::IO)
+        } else {
+            rustix_fs::unlinkat(
+                &self.shared.root,
+                recording.relative_name.as_str(),
+                AtFlags::empty(),
+            )
+        };
+        if let Err(rollback_source) = rollback {
+            self.account_duplicate_publication();
+            return RecordingStoreError::PublishRollback {
+                partial_relative_name: self.partial_name.clone(),
+                recording,
+                source: source.into(),
+                rollback_source: rollback_source.into(),
+            };
+        }
+        let rollback_sync = if publication_rollback_sync_fault(&self.commit) {
+            Err(Errno::IO)
+        } else {
+            rustix_fs::fsync(&self.shared.root)
+        };
+        if let Err(directory_sync_source) = rollback_sync {
+            return RecordingStoreError::PublishRollbackDirectorySync {
+                partial_relative_name: self.partial_name.clone(),
+                recording,
+                source: source.into(),
+                directory_sync_source: directory_sync_source.into(),
+            };
+        }
+        RecordingStoreError::Publish {
+            partial_relative_name: self.partial_name.clone(),
+            source: source.into(),
+        }
+    }
+
     fn release_active_as_committed(&mut self) {
         if !self.active_accounted {
             return;
@@ -576,6 +735,226 @@ impl RecordingFile {
         let mut state = self.shared.lock();
         state.active_recorders -= 1;
         self.active_accounted = false;
+    }
+
+    fn account_duplicate_publication(&mut self) {
+        let mut state = self.shared.lock();
+        state.files = state.files.saturating_add(1);
+        state.bytes_used = state.bytes_used.saturating_add(self.length);
+        state.active_recorders -= 1;
+        self.active_accounted = false;
+    }
+}
+
+impl RecordingCommitState {
+    fn cancelled(&self) -> bool {
+        self.state.load(Ordering::Acquire) == COMMIT_CANCELLED
+    }
+
+    fn begin_publication(&self) -> bool {
+        self.state
+            .compare_exchange(
+                COMMIT_OPEN,
+                COMMIT_PUBLISHING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn finish(&self) {
+        if self
+            .state
+            .compare_exchange(
+                COMMIT_PUBLISHING,
+                COMMIT_FINISHED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            let _ = self.state.compare_exchange(
+                COMMIT_OPEN,
+                COMMIT_FINISHED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+    }
+
+    #[cfg(test)]
+    fn wait_before_publication(&self) {
+        let gate = self
+            .gate
+            .lock()
+            .expect("recording publication gate mutex poisoned")
+            .clone();
+        let Some(gate) = gate else {
+            return;
+        };
+        let mut state = gate
+            .state
+            .lock()
+            .expect("recording publication gate state mutex poisoned");
+        state.progress = RecordingPublicationGateProgress::BeforeClaim;
+        gate.changed.notify_all();
+        while !state.claim_allowed && !self.cancelled() {
+            state = gate
+                .changed
+                .wait(state)
+                .expect("recording publication gate state mutex poisoned");
+        }
+    }
+
+    #[cfg(test)]
+    fn wait_after_publication_claim(&self) {
+        let gate = self
+            .gate
+            .lock()
+            .expect("recording publication gate mutex poisoned")
+            .clone();
+        let Some(gate) = gate else {
+            return;
+        };
+        let mut state = gate
+            .state
+            .lock()
+            .expect("recording publication gate state mutex poisoned");
+        state.progress = RecordingPublicationGateProgress::AfterClaim;
+        gate.changed.notify_all();
+        while !state.publication_allowed {
+            state = gate
+                .changed
+                .wait(state)
+                .expect("recording publication gate state mutex poisoned");
+        }
+    }
+}
+
+#[cfg(test)]
+fn publication_partial_unlink_fault(commit: &RecordingCommitState) -> bool {
+    commit.fail_partial_unlink.swap(false, Ordering::AcqRel)
+}
+
+#[cfg(not(test))]
+const fn publication_partial_unlink_fault(_: &RecordingCommitState) -> bool {
+    false
+}
+
+#[cfg(test)]
+fn publication_rollback_unlink_fault(commit: &RecordingCommitState) -> bool {
+    commit.fail_rollback_unlink.swap(false, Ordering::AcqRel)
+}
+
+#[cfg(not(test))]
+const fn publication_rollback_unlink_fault(_: &RecordingCommitState) -> bool {
+    false
+}
+
+#[cfg(test)]
+fn publication_rollback_sync_fault(commit: &RecordingCommitState) -> bool {
+    commit.fail_rollback_sync.swap(false, Ordering::AcqRel)
+}
+
+#[cfg(not(test))]
+const fn publication_rollback_sync_fault(_: &RecordingCommitState) -> bool {
+    false
+}
+
+impl RecordingCommitCancellation {
+    pub(crate) fn cancel(&self) -> bool {
+        let cancelled = self
+            .state
+            .state
+            .compare_exchange(
+                COMMIT_OPEN,
+                COMMIT_CANCELLED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok();
+        #[cfg(test)]
+        if let Some(gate) = self
+            .state
+            .gate
+            .lock()
+            .expect("recording publication gate mutex poisoned")
+            .as_ref()
+        {
+            gate.changed.notify_all();
+        }
+        cancelled
+    }
+
+    pub(crate) fn finish(&self) {
+        self.state.finish();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_publication_gate(&self) -> Arc<RecordingPublicationGate> {
+        let gate = Arc::new(RecordingPublicationGate {
+            state: Mutex::new(RecordingPublicationGateState {
+                progress: RecordingPublicationGateProgress::Installed,
+                claim_allowed: false,
+                publication_allowed: false,
+            }),
+            changed: std::sync::Condvar::new(),
+        });
+        *self
+            .state
+            .gate
+            .lock()
+            .expect("recording publication gate mutex poisoned") = Some(Arc::clone(&gate));
+        gate
+    }
+}
+
+#[cfg(test)]
+impl RecordingPublicationGate {
+    pub(crate) fn wait_before_claim(&self, timeout: Duration) -> bool {
+        let state = self
+            .state
+            .lock()
+            .expect("recording publication gate state mutex poisoned");
+        self.changed
+            .wait_timeout_while(state, timeout, |state| {
+                state.progress == RecordingPublicationGateProgress::Installed
+            })
+            .expect("recording publication gate state mutex poisoned")
+            .0
+            .progress
+            != RecordingPublicationGateProgress::Installed
+    }
+
+    pub(crate) fn allow_claim(&self) {
+        self.state
+            .lock()
+            .expect("recording publication gate state mutex poisoned")
+            .claim_allowed = true;
+        self.changed.notify_all();
+    }
+
+    pub(crate) fn wait_after_claim(&self, timeout: Duration) -> bool {
+        let state = self
+            .state
+            .lock()
+            .expect("recording publication gate state mutex poisoned");
+        self.changed
+            .wait_timeout_while(state, timeout, |state| {
+                state.progress != RecordingPublicationGateProgress::AfterClaim
+            })
+            .expect("recording publication gate state mutex poisoned")
+            .0
+            .progress
+            == RecordingPublicationGateProgress::AfterClaim
+    }
+
+    pub(crate) fn allow_publication(&self) {
+        self.state
+            .lock()
+            .expect("recording publication gate state mutex poisoned")
+            .publication_allowed = true;
+        self.changed.notify_all();
     }
 }
 
@@ -673,6 +1052,9 @@ impl Drop for RecordingFile {
         if removed {
             state.files -= 1;
             state.bytes_used -= self.length;
+        }
+        if removed || !owned {
+            self.partial_exists_state.store(false, Ordering::Release);
         }
         self.active_accounted = false;
     }
@@ -936,4 +1318,134 @@ fn byte_quota_error(maximum: u64) -> io::Error {
         io::ErrorKind::StorageFull,
         format!("recording byte limit of {maximum} reached"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn reports_partial_and_published_name_when_publication_rollback_fails() {
+        let root = tempdir().expect("recording root");
+        let store = RecordingStore::open(
+            root.path(),
+            RecordingStoreLimits {
+                max_bytes: Some(1024),
+                max_files: Some(4),
+                max_active_recorders: 1,
+            },
+        )
+        .expect("recording store");
+        let mut recording = store.create("camera.flv").expect("recording partial");
+        recording.write_all(b"recording").expect("recording data");
+        let partial = recording.partial_relative_name().to_owned();
+        recording.fail_publication_unlinks();
+
+        let error = recording.commit().expect_err("injected rollback failure");
+
+        assert_eq!(error.recoverable_partial_name(), Some(partial.as_str()));
+        assert_eq!(
+            error.published_recording(),
+            Some(&RecordingCommit {
+                relative_name: "camera.flv".to_owned(),
+                bytes: 9,
+            })
+        );
+        assert!(root.path().join(&partial).is_file());
+        assert!(root.path().join("camera.flv").is_file());
+        assert_eq!(
+            store.stats(),
+            RecordingStoreStats {
+                bytes_used: 18,
+                files: 2,
+                active_recorders: 0,
+            }
+        );
+        assert!(matches!(
+            error,
+            RecordingStoreError::PublishRollback {
+                recording: RecordingCommit { bytes: 9, .. },
+                rollback_source: _,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn synchronizes_a_successful_publication_rollback_before_reporting_the_partial() {
+        let root = tempdir().expect("recording root");
+        let store = test_store(root.path());
+        let mut recording = store.create("camera.flv").expect("recording partial");
+        recording.write_all(b"recording").expect("recording data");
+        let partial = recording.partial_relative_name().to_owned();
+        recording.fail_partial_unlink();
+
+        let error = recording
+            .commit()
+            .expect_err("injected partial unlink failure");
+
+        assert!(matches!(error, RecordingStoreError::Publish { .. }));
+        assert_eq!(error.recoverable_partial_name(), Some(partial.as_str()));
+        assert_eq!(error.published_recording(), None);
+        assert!(root.path().join(partial).is_file());
+        assert!(!root.path().join("camera.flv").exists());
+        assert_eq!(
+            store.stats(),
+            RecordingStoreStats {
+                bytes_used: 9,
+                files: 1,
+                active_recorders: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn reports_conservative_names_when_rollback_directory_sync_fails() {
+        let root = tempdir().expect("recording root");
+        let store = test_store(root.path());
+        let mut recording = store.create("camera.flv").expect("recording partial");
+        recording.write_all(b"recording").expect("recording data");
+        let partial = recording.partial_relative_name().to_owned();
+        recording.fail_partial_unlink_and_rollback_sync();
+
+        let error = recording
+            .commit()
+            .expect_err("injected rollback directory sync failure");
+
+        assert!(matches!(
+            error,
+            RecordingStoreError::PublishRollbackDirectorySync { .. }
+        ));
+        assert_eq!(error.recoverable_partial_name(), Some(partial.as_str()));
+        assert_eq!(
+            error.published_recording(),
+            Some(&RecordingCommit {
+                relative_name: "camera.flv".to_owned(),
+                bytes: 9,
+            })
+        );
+        assert!(root.path().join(partial).is_file());
+        assert!(!root.path().join("camera.flv").exists());
+        assert_eq!(
+            store.stats(),
+            RecordingStoreStats {
+                bytes_used: 9,
+                files: 1,
+                active_recorders: 0,
+            }
+        );
+    }
+
+    fn test_store(root: &Path) -> RecordingStore {
+        RecordingStore::open(
+            root,
+            RecordingStoreLimits {
+                max_bytes: Some(1024),
+                max_files: Some(4),
+                max_active_recorders: 1,
+            },
+        )
+        .expect("recording store")
+    }
 }

@@ -401,6 +401,52 @@ fn final_name_exhaustion_is_failed_and_exposes_a_recoverable_partial() {
 }
 
 #[test]
+fn segment_end_render_failure_preserves_and_reports_the_existing_partial() {
+    let temporary = tempdir().expect("temporary directory");
+    let store = store(temporary.path());
+    let path = RecordingPathPolicy::new("-%Y.flv", false)
+        .expect("path policy")
+        .with_segment_policy(
+            RecordingTimezone::Utc,
+            RecordingTimeBasis::SegmentEnd,
+            RecordingSegmentNaming::NginxCompatible,
+        );
+    let worker = RecorderWorker::start(
+        store,
+        &path,
+        b"camera",
+        1_721_657_969,
+        RecordingDateTime::new(2024, 7, 22, 13, 26, 9).expect("recording date-time"),
+        RecorderWorkerConfig::default(),
+    )
+    .expect("recorder worker");
+    assert_eq!(
+        worker.try_enqueue_at(audio(0, 0x11), Instant::now(), 1_721_657_969_000),
+        RecorderEnqueueResult::Queued
+    );
+    assert_eq!(
+        worker.try_enqueue_at(audio(1, 0x22), Instant::now(), u64::MAX),
+        RecorderEnqueueResult::Queued
+    );
+
+    let status = shutdown(worker);
+
+    assert_eq!(
+        status.phase,
+        RecorderWorkerPhase::Failed(RecorderFailure::Finalize)
+    );
+    let partial = status
+        .recoverable_partial_name
+        .expect("render failure preserves the segment partial");
+    assert!(temporary.path().join(partial).is_file());
+    assert!(
+        recording_files(temporary.path())
+            .iter()
+            .all(|path| path.extension().is_none_or(|extension| extension != "flv"))
+    );
+}
+
+#[test]
 fn shutdown_is_bounded_when_storage_admission_is_stalled() {
     let temporary = tempdir().expect("temporary directory");
     let store = store(temporary.path());

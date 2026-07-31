@@ -36,7 +36,7 @@ pub use recording_path::{
     RecordingPathError, RecordingPathPolicy, RecordingSegmentNaming, RecordingTimeBasis,
     RecordingTimezone,
 };
-pub use recording_runtime::{RtmpRecorderPolicy, RtmpRecorderStart};
+pub use recording_runtime::{RtmpRecorderPolicy, RtmpRecorderShutdown, RtmpRecorderStart};
 pub use recording_store::{
     RecordingCommit, RecordingFile, RecordingQuotaScope, RecordingStore, RecordingStoreError,
     RecordingStoreLimits, RecordingStoreStats,
@@ -53,7 +53,8 @@ pub use relay::{
 pub use rml_rtmp::sessions::StreamMetadata;
 pub use session::{
     MAX_INBOUND_CHUNK_SIZE, MAX_INBOUND_MESSAGE_SIZE, MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN,
-    RtmpApplication, RtmpServiceRuntime, RtmpSession, RtmpSessionError, RtmpSessionPolicy,
+    RtmpApplication, RtmpRecorderLifecycle, RtmpServiceRuntime, RtmpSession, RtmpSessionError,
+    RtmpSessionPolicy,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

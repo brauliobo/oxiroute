@@ -330,6 +330,11 @@ fn catalog_error(
     action: RecordingAction,
 ) -> ApiResponse {
     match error {
+        CatalogError::AdmissionClosed => ApiResponse::error(
+            409,
+            "rtmp_admission_closed",
+            "RTMP runtime is shutting down",
+        ),
         CatalogError::RecordingUnavailable if manual_recording => recorder_failure(action),
         CatalogError::RecordingUnavailable => ApiResponse::error(
             501,

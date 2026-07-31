@@ -70,6 +70,10 @@ pub(super) fn playback_path(error: RtmpStreamPathError) -> Rejection {
 
 pub(super) fn publisher_role(error: PublisherRoleError) -> Result<Rejection, RtmpSessionError> {
     match error {
+        PublisherRoleError::AdmissionClosed => Ok(Rejection::new(
+            PUBLISH_REJECTION_CODE,
+            "RTMP runtime is shutting down",
+        )),
         PublisherRoleError::Hub(LiveHubError::PublisherAlreadyAttached { .. })
         | PublisherRoleError::Catalog(CatalogError::PublisherAlreadyAttached { .. }) => {
             Ok(Rejection::new(
@@ -90,6 +94,10 @@ pub(super) fn publisher_role(error: PublisherRoleError) -> Result<Rejection, Rtm
 
 pub(super) fn playback_role(error: PlaybackRoleError) -> Result<Rejection, RtmpSessionError> {
     match error {
+        PlaybackRoleError::AdmissionClosed => Ok(Rejection::new(
+            PLAY_REJECTION_CODE,
+            "RTMP runtime is shutting down",
+        )),
         PlaybackRoleError::NoPublisher => Ok(Rejection::new(
             PLAY_NOT_FOUND_CODE,
             "live stream has no publisher",

@@ -1,9 +1,16 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex, Weak},
+    time::Instant,
+};
 
 use crate::{
     CatalogError, LiveHub, LiveHubError, RecorderDefinition, RtmpPushTarget, RtmpRecorderPolicy,
     RtmpRecorderStart, RtmpRegistry, SessionId, StreamKey,
-    recording_runtime::{RecorderController, RecorderReaperHandle, RecorderReaperOwner},
+    recording_runtime::{
+        RecorderController, RecorderReaperHandle, RecorderReaperOwner, RecorderShutdownControl,
+        RtmpRecorderShutdown,
+    },
     relay::RtmpRelayController,
 };
 
@@ -154,12 +161,45 @@ impl Default for RtmpSessionPolicy {
 /// Shared construction context for every listener attached to one configured RTMP service.
 #[derive(Clone)]
 pub struct RtmpServiceRuntime {
+    admission_open: Arc<Mutex<bool>>,
     service_id: Arc<str>,
     registry: Arc<RtmpRegistry>,
     hub: LiveHub,
     policy: RtmpSessionPolicy,
     recorder_reaper: Option<RecorderReaperHandle>,
     recorder_reaper_owner: Option<Arc<RecorderReaperOwner>>,
+}
+
+/// Cheap, generation-independent ownership of one recorder shutdown lifecycle.
+#[derive(Clone)]
+pub struct RtmpRecorderLifecycle {
+    control: RecorderShutdownControl,
+    owner: Weak<RecorderReaperOwner>,
+    reaper: RecorderReaperHandle,
+    registry: Arc<RtmpRegistry>,
+    shutdown: RtmpRecorderShutdown,
+}
+
+impl RtmpRecorderLifecycle {
+    #[must_use]
+    pub fn is_same_lifecycle(&self, other: &Self) -> bool {
+        self.shutdown.is_same_lifecycle(&other.shutdown)
+    }
+
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.shutdown.is_complete()
+    }
+
+    #[must_use]
+    pub fn initiate_shutdown(&self, deadline: Instant) -> RtmpRecorderShutdown {
+        if let Some(owner) = self.owner.upgrade() {
+            drop(owner.initiate_shutdown(deadline));
+        }
+        let shutdown = self.control.initiate_shutdown(deadline);
+        self.registry.initiate_recorder_shutdown(&self.reaper);
+        shutdown
+    }
 }
 
 impl RtmpServiceRuntime {
@@ -186,6 +226,7 @@ impl RtmpServiceRuntime {
         let (recorder_reaper_owner, recorder_reaper) =
             recorder_runtime.map_or((None, None), |(owner, handle)| (Some(owner), Some(handle)));
         Self {
+            admission_open: Arc::new(Mutex::new(true)),
             service_id: service_id.into(),
             registry,
             hub,
@@ -215,6 +256,45 @@ impl RtmpServiceRuntime {
         RtmpSession::from_runtime(self.for_session())
     }
 
+    pub fn close_admission(&self) {
+        let mut admission_open = self
+            .admission_open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !*admission_open {
+            return;
+        }
+        *admission_open = false;
+        self.registry.close_admission();
+    }
+
+    #[must_use]
+    pub fn recorder_lifecycle(&self) -> Option<RtmpRecorderLifecycle> {
+        let (Some(owner), Some(reaper)) = (&self.recorder_reaper_owner, &self.recorder_reaper)
+        else {
+            return None;
+        };
+        Some(RtmpRecorderLifecycle {
+            control: reaper.shutdown_control(),
+            owner: Arc::downgrade(owner),
+            reaper: reaper.clone(),
+            registry: Arc::clone(&self.registry),
+            shutdown: owner.shutdown_handle(),
+        })
+    }
+
+    #[must_use]
+    pub fn initiate_recorder_shutdown(&self, deadline: Instant) -> Option<RtmpRecorderShutdown> {
+        self.close_admission();
+        let (Some(owner), Some(reaper)) = (&self.recorder_reaper_owner, &self.recorder_reaper)
+        else {
+            return None;
+        };
+        let shutdown = owner.initiate_shutdown(deadline);
+        self.registry.initiate_recorder_shutdown(reaper);
+        Some(shutdown)
+    }
+
     pub(super) const fn outbound_chunk_size(&self) -> u32 {
         self.policy.outbound_chunk_size()
     }
@@ -225,6 +305,7 @@ impl RtmpServiceRuntime {
 
     fn for_session(&self) -> Self {
         Self {
+            admission_open: Arc::clone(&self.admission_open),
             service_id: Arc::clone(&self.service_id),
             registry: Arc::clone(&self.registry),
             hub: self.hub.clone(),
@@ -240,6 +321,13 @@ impl RtmpServiceRuntime {
         session_id: SessionId,
         at_unix_ms: u64,
     ) -> Result<PublishSession, PublisherRoleError> {
+        let admission_open = self
+            .admission_open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !*admission_open {
+            return Err(PublisherRoleError::AdmissionClosed);
+        }
         let hub = self
             .application(&key.application)
             .and_then(RtmpApplication::hub)
@@ -337,6 +425,13 @@ impl RtmpServiceRuntime {
         idle_streams: bool,
         at_unix_ms: u64,
     ) -> Result<PlaybackSession, PlaybackRoleError> {
+        let admission_open = self
+            .admission_open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !*admission_open {
+            return Err(PlaybackRoleError::AdmissionClosed);
+        }
         let hub = self
             .application(&key.application)
             .and_then(RtmpApplication::hub)
@@ -399,12 +494,14 @@ impl SessionRole {
 
 #[derive(Debug)]
 pub(super) enum PublisherRoleError {
+    AdmissionClosed,
     Hub(LiveHubError),
     Catalog(CatalogError),
 }
 
 #[derive(Debug)]
 pub(super) enum PlaybackRoleError {
+    AdmissionClosed,
     NoPublisher,
     Hub(LiveHubError),
     Catalog(CatalogError),
@@ -487,5 +584,33 @@ mod tests {
         }
         writer.join().expect("publisher reconnect thread");
         assert_eq!(runtime.publisher_presence(&key), (false, false));
+    }
+
+    #[test]
+    fn existing_session_cannot_register_after_runtime_admission_closes() {
+        let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
+            live_ingest: true,
+            manual_recording: false,
+        }));
+        let runtime = RtmpServiceRuntime::new(
+            "live",
+            Arc::clone(&registry),
+            LiveHub::new(LiveHubLimits::default()),
+            RtmpSessionPolicy::default(),
+        );
+        let admitted_session = runtime.clone();
+        let key = StreamKey::new("live", "broadcast", "camera");
+
+        runtime.close_admission();
+
+        assert!(matches!(
+            admitted_session.acquire_publisher_role(key.clone(), SessionId::new(), 1),
+            Err(PublisherRoleError::AdmissionClosed)
+        ));
+        assert!(matches!(
+            registry.register_publisher(key, SessionId::new(), Vec::new(), 1),
+            Err(CatalogError::AdmissionClosed)
+        ));
+        assert!(registry.snapshot().streams.is_empty());
     }
 }

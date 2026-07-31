@@ -47,7 +47,12 @@ struct AcceptGateInner {
     changed: tokio::sync::watch::Sender<AcceptGateState>,
     quiesced: Condvar,
     state: Mutex<AcceptGateInnerState>,
+    #[cfg(test)]
+    publish_hook: Mutex<Option<AcceptGatePublishHook>>,
 }
+
+#[cfg(test)]
+type AcceptGatePublishHook = Arc<dyn Fn(AcceptGateState) + Send + Sync>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AcceptGateState {
@@ -60,6 +65,13 @@ struct AcceptGateInnerState {
     next_participant_id: u64,
     participants: HashMap<u64, u64>,
     published: AcceptGateState,
+}
+
+/// Identifies one gate close so only that close can restore acceptance.
+pub struct AcceptGateClose {
+    gate: AcceptGate,
+    epoch: u64,
+    reopen_allowed: bool,
 }
 
 impl AcceptGate {
@@ -80,6 +92,8 @@ impl AcceptGate {
                     participants: HashMap::new(),
                     published,
                 }),
+                #[cfg(test)]
+                publish_hook: Mutex::new(None),
             }),
         }
     }
@@ -162,19 +176,140 @@ impl AcceptGate {
             };
             state.published
         };
-        self.inner.changed.send_replace(published);
+        self.publish(published);
     }
 
-    /// Restores acceptance when a close attempt is abandoned before publication.
-    pub fn reopen(&self) {
-        let published = {
+    #[must_use]
+    pub fn close(&self) -> AcceptGateClose {
+        let (published, reopen_allowed) = {
             let mut state = self
                 .inner
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if state.published.accepting {
-                return;
+            let reopen_allowed = state.published.accepting;
+            state.published = AcceptGateState {
+                accepting: false,
+                epoch: state
+                    .published
+                    .epoch
+                    .checked_add(1)
+                    .expect("accept gate epoch overflow"),
+            };
+            (state.published, reopen_allowed)
+        };
+        self.publish(published);
+        AcceptGateClose {
+            gate: self.clone(),
+            epoch: published.epoch,
+            reopen_allowed,
+        }
+    }
+
+    #[must_use]
+    pub fn close_and_wait(&self, timeout: Duration) -> bool {
+        self.close().wait(timeout)
+    }
+
+    fn publish(&self, published: AcceptGateState) {
+        #[cfg(test)]
+        let hook = self
+            .inner
+            .publish_hook
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        #[cfg(test)]
+        if let Some(hook) = hook {
+            hook(published);
+        }
+        // Publishing occurs outside the gate mutex. Epoch comparison prevents a delayed sender
+        // from replacing a newer transition and avoids invoking wakeups under the gate lock.
+        self.inner.changed.send_if_modified(|current| {
+            if published.epoch <= current.epoch {
+                return false;
+            }
+            *current = published;
+            true
+        });
+    }
+
+    #[cfg(test)]
+    fn set_publish_hook(&self, hook: AcceptGatePublishHook) {
+        *self
+            .inner
+            .publish_hook
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
+    }
+}
+
+impl AcceptGateClose {
+    #[must_use]
+    pub fn wait(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut state = self
+            .gate
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            if state.claims == 0
+                && state
+                    .participants
+                    .values()
+                    .all(|acknowledged| *acknowledged >= self.epoch)
+            {
+                return true;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            let (next, timeout) = self
+                .gate
+                .inner
+                .quiesced
+                .wait_timeout(state, deadline.saturating_duration_since(now))
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = next;
+            if timeout.timed_out() {
+                return state.claims == 0
+                    && state
+                        .participants
+                        .values()
+                        .all(|acknowledged| *acknowledged >= self.epoch);
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn is_current(&self) -> bool {
+        let state = self
+            .gate
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        !state.published.accepting && state.published.epoch == self.epoch
+    }
+
+    /// Restores acceptance only when no later gate transition superseded this close.
+    #[must_use]
+    pub fn reopen(self) -> bool {
+        if !self.reopen_allowed {
+            return false;
+        }
+        let published = {
+            let mut state = self
+                .gate
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.published.accepting || state.published.epoch != self.epoch {
+                return false;
             }
             state.published = AcceptGateState {
                 accepting: true,
@@ -186,63 +321,8 @@ impl AcceptGate {
             };
             state.published
         };
-        self.inner.changed.send_replace(published);
-    }
-
-    #[must_use]
-    pub fn close_and_wait(&self, timeout: Duration) -> bool {
-        let deadline = Instant::now() + timeout;
-        let mut state = self
-            .inner
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.published.accepting {
-            state.published = AcceptGateState {
-                accepting: false,
-                epoch: state
-                    .published
-                    .epoch
-                    .checked_add(1)
-                    .expect("accept gate epoch overflow"),
-            };
-            let published = state.published;
-            drop(state);
-            self.inner.changed.send_replace(published);
-            state = self
-                .inner
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-        }
-        let epoch = state.published.epoch;
-        loop {
-            if state.claims == 0
-                && state
-                    .participants
-                    .values()
-                    .all(|acknowledged| *acknowledged >= epoch)
-            {
-                return true;
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                return false;
-            }
-            let (next, timeout) = self
-                .inner
-                .quiesced
-                .wait_timeout(state, deadline.saturating_duration_since(now))
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state = next;
-            if timeout.timed_out() {
-                return state.claims == 0
-                    && state
-                        .participants
-                        .values()
-                        .all(|acknowledged| *acknowledged >= epoch);
-            }
-        }
+        self.gate.publish(published);
+        true
     }
 }
 
@@ -320,7 +400,11 @@ impl Drop for AcceptOwnership {
 
 #[cfg(test)]
 mod accept_gate_tests {
-    use std::{sync::mpsc, thread, time::Duration};
+    use std::{
+        sync::{mpsc, Arc, Barrier},
+        thread,
+        time::Duration,
+    };
 
     use super::AcceptGate;
 
@@ -366,12 +450,70 @@ mod accept_gate_tests {
         gate.enable();
         let ownership = gate.claim().expect("ownership claim");
 
-        assert!(!gate.close_and_wait(Duration::ZERO));
-        gate.reopen();
+        let close = gate.close();
+        assert!(!close.wait(Duration::ZERO));
+        assert!(close.reopen());
         assert!(gate.accepting());
         assert!(gate.claim().is_some());
 
         drop(ownership);
+    }
+
+    #[test]
+    fn close_cannot_reopen_after_a_later_close() {
+        let gate = AcceptGate::closed();
+        gate.enable();
+
+        let activation_close = gate.close();
+        let shutdown_close = gate.close();
+
+        assert!(!activation_close.reopen());
+        assert!(!shutdown_close.reopen());
+        assert!(!gate.accepting());
+    }
+
+    #[test]
+    fn delayed_close_publication_cannot_regress_the_current_epoch() {
+        let gate = AcceptGate::closed();
+        gate.enable();
+        let participant = gate.register();
+        let delayed_epoch = participant.state().epoch + 1;
+        let release = Arc::new(Barrier::new(2));
+        let hook_release = Arc::clone(&release);
+        let (delayed, delayed_rx) = mpsc::sync_channel(1);
+        gate.set_publish_hook(Arc::new(move |state| {
+            if state.epoch == delayed_epoch {
+                delayed.send(()).expect("delayed publication receiver");
+                hook_release.wait();
+            }
+        }));
+        let delayed_gate = gate.clone();
+        let (close_tx, close_rx) = mpsc::sync_channel(1);
+        let older = thread::spawn(move || {
+            close_tx
+                .send(delayed_gate.close())
+                .expect("older close receiver");
+        });
+        delayed_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("older publication did not pause");
+
+        let current = gate.close();
+        let current_state = participant.state();
+        assert_eq!(current_state.epoch, current.epoch);
+        assert!(!current_state.accepting);
+        participant.acknowledge(current_state.epoch);
+
+        release.wait();
+        let older_close = close_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("older close");
+        older.join().expect("older close thread");
+
+        assert_eq!(participant.state(), current_state);
+        assert!(current.is_current());
+        assert!(current.wait(Duration::ZERO));
+        assert!(!older_close.is_current());
     }
 }
 

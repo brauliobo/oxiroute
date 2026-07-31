@@ -12,7 +12,7 @@ use std::{
 use crate::{
     FlvMuxer, MediaEvent, MediaEventKind, RecordingCommit, RecordingDateTime, RecordingFile,
     RecordingPathError, RecordingPathPolicy, RecordingStore, RecordingStoreError,
-    RecordingTimeBasis,
+    RecordingTimeBasis, recording_store::RecordingCommitCancellation,
 };
 
 const TIMESTAMP_HALF_RANGE: u32 = 1 << 31;
@@ -146,6 +146,12 @@ struct WorkerShared {
     finished: Mutex<bool>,
     finished_available: Condvar,
     shutdown_timeout: Duration,
+    commit_cancellation: Mutex<Option<RecordingCommitCancellation>>,
+    current_partial_exists: Mutex<Option<Arc<AtomicBool>>>,
+    #[cfg(test)]
+    panic_on_finish: AtomicBool,
+    #[cfg(test)]
+    panic_after_finish: AtomicBool,
 }
 
 struct QueueState {
@@ -260,6 +266,12 @@ impl RecorderWorker {
             finished: Mutex::new(false),
             finished_available: Condvar::new(),
             shutdown_timeout: config.shutdown_timeout,
+            commit_cancellation: Mutex::new(None),
+            current_partial_exists: Mutex::new(None),
+            #[cfg(test)]
+            panic_on_finish: AtomicBool::new(false),
+            #[cfg(test)]
+            panic_after_finish: AtomicBool::new(false),
         });
         let worker_shared = Arc::clone(&shared);
         let thread = thread::Builder::new()
@@ -335,6 +347,31 @@ impl RecorderWorker {
         self.shared.snapshot()
     }
 
+    #[cfg(test)]
+    pub(crate) fn install_publication_gate(
+        &self,
+    ) -> Arc<crate::recording_store::RecordingPublicationGate> {
+        self.shared
+            .commit_cancellation
+            .lock()
+            .expect("recorder commit cancellation mutex poisoned")
+            .as_ref()
+            .expect("active recorder segment has commit cancellation")
+            .install_publication_gate()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn panic_on_finish(&self) {
+        self.shared.panic_on_finish.store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn panic_after_finish(&self) {
+        self.shared
+            .panic_after_finish
+            .store(true, Ordering::Release);
+    }
+
     /// Stops admission and waits up to the configured timeout for the worker to join.
     ///
     /// A timeout returns a supervisor that still owns the active thread. Dropping the supervisor
@@ -371,10 +408,11 @@ impl RecorderWorker {
     }
 
     fn request_cancel(&self) {
-        self.shared.cancelled.store(true, Ordering::Release);
-        self.shared
-            .fail(WorkerError::new(RecorderFailure::ShutdownTimedOut));
-        self.shared.available.notify_all();
+        if self.shared.cancel() {
+            self.shared
+                .fail(WorkerError::new(RecorderFailure::ShutdownTimedOut));
+        }
+        self.shared.notify_cancelled();
     }
 
     fn join_thread(&mut self) {
@@ -430,10 +468,16 @@ impl RecorderWorkerSupervisor {
     }
 
     pub(crate) fn cancel(&self) {
-        self.shared.cancelled.store(true, Ordering::Release);
-        self.shared
-            .fail(WorkerError::new(RecorderFailure::ShutdownTimedOut));
-        self.shared.available.notify_all();
+        if self.shared.cancel() {
+            self.shared
+                .fail(WorkerError::new(RecorderFailure::ShutdownTimedOut));
+        }
+        self.shared.notify_cancelled();
+    }
+
+    pub(crate) fn detach(mut self) -> RecorderWorkerStatus {
+        drop(self.thread.take());
+        self.status()
     }
 
     fn join_thread(&mut self) {
@@ -461,6 +505,26 @@ impl WorkerShared {
 
     fn lock_status(&self) -> MutexGuard<'_, WorkerStatusState> {
         self.status.lock().expect("recorder status mutex poisoned")
+    }
+
+    fn notify_cancelled(&self) {
+        self.available.notify_all();
+    }
+
+    fn cancel(&self) -> bool {
+        self.cancelled.store(true, Ordering::Release);
+        let commit = self
+            .commit_cancellation
+            .lock()
+            .expect("recorder commit cancellation mutex poisoned")
+            .clone();
+        if let Some(commit) = commit {
+            return commit.cancel();
+        }
+        !matches!(
+            self.lock_status().phase,
+            RecorderWorkerPhase::Stopped | RecorderWorkerPhase::Failed(_)
+        )
     }
 
     fn record_discontinuity(&self, queue: &mut QueueState) {
@@ -508,6 +572,16 @@ impl WorkerShared {
     }
 
     fn fail(&self, failure: WorkerError) {
+        if !matches!(failure.kind, RecorderFailure::ShutdownTimedOut) {
+            if let Some(commit) = self
+                .commit_cancellation
+                .lock()
+                .expect("recorder commit cancellation mutex poisoned")
+                .as_ref()
+            {
+                commit.finish();
+            }
+        }
         {
             let mut queue = self.lock_queue();
             queue.accepting = false;
@@ -516,6 +590,12 @@ impl WorkerShared {
             queue.events.clear();
             queue.bytes = 0;
         }
+        let partial_exists = self
+            .current_partial_exists
+            .lock()
+            .expect("recorder partial existence mutex poisoned")
+            .as_ref()
+            .is_some_and(|exists| exists.load(Ordering::Acquire));
         let mut status = self.lock_status();
         if !matches!(
             status.phase,
@@ -523,7 +603,7 @@ impl WorkerShared {
         ) {
             status.phase = RecorderWorkerPhase::Failed(failure.kind);
         }
-        if failure.recoverable_partial_name.is_some() {
+        if failure.recoverable_partial_name.is_some() && partial_exists {
             status.recoverable_partial_name = failure.recoverable_partial_name;
         } else if matches!(
             failure.kind,
@@ -533,8 +613,13 @@ impl WorkerShared {
                 | RecorderFailure::Publish
                 | RecorderFailure::Discontinuity
                 | RecorderFailure::ShutdownTimedOut
+                | RecorderFailure::WorkerPanicked
         ) {
-            status.recoverable_partial_name = status.current_partial_name.take();
+            if partial_exists {
+                status.recoverable_partial_name = status.current_partial_name.take();
+            } else {
+                status.current_partial_name = None;
+            }
         }
         if failure.published_but_not_durable_relative_name.is_some() {
             status.published_but_not_durable_relative_name =
@@ -630,6 +715,8 @@ impl WorkerError {
             RecordingStoreError::FileSync { .. } => RecorderFailure::FileSync,
             RecordingStoreError::PartialOwnershipLost { .. }
             | RecordingStoreError::Publish { .. }
+            | RecordingStoreError::PublishRollback { .. }
+            | RecordingStoreError::PublishRollbackDirectorySync { .. }
             | RecordingStoreError::DescriptorPublicationUnsupported { .. }
             | RecordingStoreError::FinalNameCollisions { .. } => RecorderFailure::Publish,
             RecordingStoreError::PublishedDirectorySync { .. } => RecorderFailure::DirectorySync,
@@ -813,6 +900,14 @@ impl WorkerContext {
             return Err(WorkerError::new(RecorderFailure::ShutdownTimedOut));
         }
         self.segment = Some(segment);
+        *self
+            .shared
+            .current_partial_exists
+            .lock()
+            .expect("recorder partial existence mutex poisoned") = self
+            .segment
+            .as_ref()
+            .map(|segment| Arc::clone(&segment.partial_exists));
         self.segment_started_at = Some(arrived_at);
         self.segment_started_at_unix_seconds = Some(arrived_at_unix_seconds);
         self.next_segment_sequence = next_segment_sequence;
@@ -830,9 +925,15 @@ impl WorkerContext {
     }
 
     fn finish_segment(&mut self) -> Result<(), WorkerError> {
-        let Some(segment) = self.segment.take() else {
+        let Some(segment) = self.segment.as_ref() else {
             return Ok(());
         };
+        segment.preserve();
+        #[cfg(test)]
+        assert!(
+            !self.shared.panic_on_finish.swap(false, Ordering::AcqRel),
+            "injected recorder segment finish panic"
+        );
         let sequence = self.next_segment_sequence.saturating_sub(1);
         let naming_time = match self.path_policy.time_basis() {
             RecordingTimeBasis::SegmentStart => self
@@ -850,8 +951,21 @@ impl WorkerContext {
                 sequence,
             )
             .map_err(|_| WorkerError::new(RecorderFailure::Finalize))?;
-        let RecordingCommit { relative_name, .. } =
-            segment.finish(&self.shared.cancelled, final_name)?;
+        let segment = self
+            .segment
+            .take()
+            .expect("segment remains owned through final-name rendering");
+        let RecordingCommit { relative_name, .. } = segment.finish(final_name)?;
+        #[cfg(test)]
+        assert!(
+            !self.shared.panic_after_finish.swap(false, Ordering::AcqRel),
+            "injected recorder post-finish panic"
+        );
+        *self
+            .shared
+            .current_partial_exists
+            .lock()
+            .expect("recorder partial existence mutex poisoned") = None;
         let mut status = self.shared.lock_status();
         status.current_relative_name = None;
         status.current_partial_name = None;
@@ -862,7 +976,7 @@ impl WorkerContext {
 
     fn preserve_segment(&self) {
         if let Some(segment) = &self.segment {
-            segment.preserve_partial.store(true, Ordering::Release);
+            segment.preserve();
         }
     }
 
@@ -902,6 +1016,7 @@ struct Segment {
     muxer: FlvMuxer<CountedRecordingFile>,
     partial_relative_name: String,
     preserve_partial: Arc<AtomicBool>,
+    partial_exists: Arc<AtomicBool>,
 }
 
 impl Segment {
@@ -936,6 +1051,12 @@ impl Segment {
         }
         let partial_relative_name = file.partial_relative_name().to_owned();
         let preserve_partial = file.preservation_handle();
+        let partial_exists = file.partial_existence_handle();
+        *shared
+            .commit_cancellation
+            .lock()
+            .expect("recorder commit cancellation mutex poisoned") =
+            Some(file.commit_cancellation());
         let counted = CountedRecordingFile {
             inner: file,
             bytes_written,
@@ -949,6 +1070,7 @@ impl Segment {
             muxer,
             partial_relative_name,
             preserve_partial,
+            partial_exists,
         })
     }
 
@@ -956,11 +1078,11 @@ impl Segment {
         write_to_muxer(&mut self.muxer, event)
     }
 
-    fn finish(
-        self,
-        cancelled: &AtomicBool,
-        final_name: String,
-    ) -> Result<RecordingCommit, WorkerError> {
+    fn preserve(&self) {
+        self.preserve_partial.store(true, Ordering::Release);
+    }
+
+    fn finish(self, final_name: String) -> Result<RecordingCommit, WorkerError> {
         self.preserve_partial.store(true, Ordering::Release);
         let mut file = self.muxer.close().map_err(|_| WorkerError {
             kind: RecorderFailure::Finalize,
@@ -970,7 +1092,7 @@ impl Segment {
         file.inner
             .set_final_relative_name(final_name)
             .map_err(|error| WorkerError::finalization(&error))?;
-        file.commit_unless(|| cancelled.load(Ordering::Acquire))
+        file.commit()
             .map_err(|error| WorkerError::finalization(&error))
     }
 }
@@ -1004,11 +1126,8 @@ struct CountedRecordingFile {
 }
 
 impl CountedRecordingFile {
-    fn commit_unless(
-        self,
-        cancelled: impl Fn() -> bool,
-    ) -> Result<RecordingCommit, RecordingStoreError> {
-        self.inner.commit_unless(cancelled)
+    fn commit(self) -> Result<RecordingCommit, RecordingStoreError> {
+        self.inner.commit()
     }
 }
 

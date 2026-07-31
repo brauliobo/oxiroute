@@ -374,6 +374,8 @@ pub struct RtmpRegistryWorkStats {
 
 #[derive(Debug, thiserror::Error, Eq, PartialEq)]
 pub enum CatalogError {
+    #[error("RTMP runtime admission is closed")]
+    AdmissionClosed,
     #[error("stream {0} does not exist")]
     StreamNotFound(StreamId),
     #[error("stream {stream_id} already has publisher {session_id}")]
@@ -548,6 +550,7 @@ impl MutableStream {
 }
 
 struct RegistryInner {
+    admission_open: bool,
     revision: u64,
     as_of_unix_ms: u64,
     streams: HashMap<StreamId, MutableStream>,
@@ -568,6 +571,7 @@ impl RtmpRegistry {
         Self {
             capabilities,
             inner: Mutex::new(RegistryInner {
+                admission_open: true,
                 revision: 0,
                 as_of_unix_ms: 0,
                 streams: HashMap::new(),
@@ -609,6 +613,10 @@ impl RtmpRegistry {
         capacity: usize,
     ) -> (Arc<RecorderReaperOwner>, RecorderReaperHandle) {
         RecorderReaper::start(capacity, Arc::downgrade(self))
+    }
+
+    pub(crate) fn close_admission(&self) {
+        self.lock().admission_open = false;
     }
 
     /// Registers a publisher whose catalog entry is removed when the returned owner is dropped.
@@ -714,6 +722,9 @@ impl RtmpRegistry {
         C: IntoRecorderControl,
     {
         let mut inner = self.lock();
+        if !inner.admission_open {
+            return Err(CatalogError::AdmissionClosed);
+        }
         let stream_id = ensure_stream(&mut inner, key, at_unix_ms);
         let stream = inner
             .streams
@@ -832,6 +843,9 @@ impl RtmpRegistry {
         at_unix_ms: u64,
     ) -> Result<StreamId, CatalogError> {
         let mut inner = self.lock();
+        if !inner.admission_open {
+            return Err(CatalogError::AdmissionClosed);
+        }
         let stream_id = ensure_stream(&mut inner, key, at_unix_ms);
         let stream = inner
             .streams
@@ -968,6 +982,9 @@ impl RtmpRegistry {
         }
 
         let mut inner = self.lock();
+        if action == RecordingAction::Start && !inner.admission_open {
+            return Err(CatalogError::AdmissionClosed);
+        }
         refresh_recorder_statuses(&mut inner);
         let (snapshot, changed) = {
             let stream = inner
@@ -1097,6 +1114,9 @@ impl RtmpRegistry {
         let operation_id = OperationId::new();
         {
             let mut inner = self.lock();
+            if !inner.admission_open {
+                return;
+            }
             let Some(stream) = inner.streams.get_mut(&stream_id) else {
                 return;
             };
@@ -1360,6 +1380,65 @@ impl RtmpRegistry {
             .get(key)
             .and_then(|stream_id| inner.streams.get(stream_id))
             .is_some_and(|stream| stream.publisher.is_some())
+    }
+
+    pub(crate) fn initiate_recorder_shutdown(&self, reaper: &RecorderReaperHandle) {
+        let commands = {
+            let mut inner = self.lock();
+            let mut commands = Vec::new();
+            let mut observed_at_unix_ms = inner.as_of_unix_ms;
+            let mut changed = false;
+            for stream in inner.streams.values_mut() {
+                let Some(publisher) = stream.publisher else {
+                    continue;
+                };
+                let mut stream_changed = false;
+                for recorder in stream.recorders.values_mut() {
+                    let Some(control) = recorder.control.clone() else {
+                        continue;
+                    };
+                    if !control.uses_reaper(reaper)
+                        || matches!(
+                            recorder.phase,
+                            RecorderPhase::Idle | RecorderPhase::Stopping { .. }
+                        )
+                    {
+                        continue;
+                    }
+                    let Some(operation_id) = active_operation(recorder.phase) else {
+                        continue;
+                    };
+                    let at_unix_ms = control.observed_at_unix_ms();
+                    recorder.phase = RecorderPhase::Stopping { operation_id };
+                    recorder.changed_at_unix_ms = recorder.changed_at_unix_ms.max(at_unix_ms);
+                    observed_at_unix_ms = observed_at_unix_ms.max(at_unix_ms);
+                    stream_changed = true;
+                    commands.push((
+                        control,
+                        RecorderCommandContext {
+                            stream_id: stream.id,
+                            publisher_session_id: publisher.session_id,
+                            recorder_id: recorder.id,
+                            operation_id,
+                            at_unix_ms,
+                        },
+                    ));
+                }
+                if stream_changed {
+                    stream.revision = stream.revision.saturating_add(1);
+                    changed = true;
+                }
+            }
+            if changed {
+                mark_mutation(&mut inner, observed_at_unix_ms);
+            }
+            commands
+        };
+        for (control, context) in commands {
+            if !control.stop(context) {
+                self.fail_recorder(context, RecorderErrorCode::BackendUnavailable);
+            }
+        }
     }
 }
 
@@ -1667,6 +1746,37 @@ mod tests {
     };
 
     #[test]
+    fn terminal_admission_rejects_new_recorder_start() {
+        let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
+            live_ingest: true,
+            manual_recording: true,
+        }));
+        let session_id = SessionId::new();
+        let stream_id = registry
+            .attach_publisher_inner(
+                StreamKey::new("live", "broadcast", "camera"),
+                session_id,
+                vec![(
+                    RecorderDefinition::manual(Some("archive".into())),
+                    None::<Arc<RecorderController>>,
+                )],
+                Vec::new(),
+                1,
+            )
+            .expect("publisher");
+        let recorder_id = registry
+            .recorder_ids(stream_id, session_id)
+            .expect("recorder IDs")[0];
+
+        registry.close_admission();
+
+        assert!(matches!(
+            registry.start_recording(stream_id, recorder_id, 2),
+            Err(CatalogError::AdmissionClosed)
+        ));
+    }
+
+    #[test]
     fn reaper_backpressures_generations_while_registry_completion_is_blocked() {
         let root = tempdir().expect("recording root");
         let store = RecordingStore::open(
@@ -1834,6 +1944,213 @@ mod tests {
         controller.deactivate(1_300);
         wait_until(Duration::from_secs(2), || !controller.status().stopping);
         drop(reaper_owner);
+    }
+
+    #[test]
+    fn proactive_shutdown_transitions_recording_through_stopping_to_idle() {
+        let root = tempdir().expect("recording root");
+        let store = RecordingStore::open(
+            root.path(),
+            RecordingStoreLimits {
+                max_bytes: Some(1024 * 1024),
+                max_files: Some(8),
+                max_active_recorders: 1,
+            },
+        )
+        .expect("recording store");
+        let ownership = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(root.path().join(".oxiroute-recording.lock"))
+            .expect("ownership lock");
+        let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
+            live_ingest: true,
+            manual_recording: true,
+        }));
+        let (reaper_owner, reaper) = registry.create_recorder_reaper(1);
+        let controller = test_controller(&store, &reaper, "camera", 1024, Duration::from_secs(1));
+        let session_id = SessionId::new();
+        let registration = registry
+            .register_managed_publisher(
+                StreamKey::new("edge", "live", "camera"),
+                session_id,
+                vec![(
+                    RecorderDefinition::automatic(Some("archive".to_owned())),
+                    Arc::clone(&controller),
+                )],
+                Vec::new(),
+                1_000,
+            )
+            .expect("managed publisher");
+        let stream_id = registration.stream_id();
+        let recorder_id = registration.recorder_ids()[0];
+        registry.start_continuous_recording(stream_id, session_id, recorder_id, 1_000);
+        assert!(matches!(
+            registry
+                .recorder_snapshot(stream_id, recorder_id)
+                .expect("recording snapshot")
+                .phase,
+            RecorderPhase::Recording { .. }
+        ));
+        flock(&ownership, FlockOperation::LockExclusive).expect("stall recording storage");
+        assert_eq!(
+            controller.try_enqueue(
+                crate::MediaEvent::audio(0, Arc::<[u8]>::from(&b"audio"[..])).expect("audio event"),
+                1_100,
+            ),
+            RecorderEnqueueResult::Queued
+        );
+        thread::sleep(Duration::from_millis(20));
+
+        let shutdown = reaper_owner.initiate_shutdown(Instant::now() + Duration::from_secs(1));
+        registry.initiate_recorder_shutdown(&reaper);
+
+        assert!(matches!(
+            registry
+                .recorder_snapshot(stream_id, recorder_id)
+                .expect("stopping snapshot")
+                .phase,
+            RecorderPhase::Stopping { .. }
+        ));
+        flock(&ownership, FlockOperation::Unlock).expect("release recording storage");
+        assert!(shutdown.wait_until(Instant::now() + Duration::from_secs(1)));
+        wait_until(Duration::from_secs(1), || {
+            registry
+                .recorder_snapshot(stream_id, recorder_id)
+                .is_ok_and(|snapshot| snapshot.phase == RecorderPhase::Idle)
+        });
+        drop(registration);
+    }
+
+    #[test]
+    fn proactive_shutdown_transitions_stalled_recording_from_stopping_to_failed() {
+        let root = tempdir().expect("recording root");
+        let store = RecordingStore::open(
+            root.path(),
+            RecordingStoreLimits {
+                max_bytes: Some(1024),
+                max_files: Some(2),
+                max_active_recorders: 1,
+            },
+        )
+        .expect("recording store");
+        let ownership = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(root.path().join(".oxiroute-recording.lock"))
+            .expect("ownership lock");
+        let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
+            live_ingest: true,
+            manual_recording: true,
+        }));
+        let (reaper_owner, reaper) = registry.create_recorder_reaper(1);
+        let controller = test_controller(&store, &reaper, "camera", 1024, Duration::from_secs(1));
+        let session_id = SessionId::new();
+        let registration = registry
+            .register_managed_publisher(
+                StreamKey::new("edge", "live", "camera"),
+                session_id,
+                vec![(
+                    RecorderDefinition::automatic(Some("archive".to_owned())),
+                    Arc::clone(&controller),
+                )],
+                Vec::new(),
+                1_000,
+            )
+            .expect("managed publisher");
+        let stream_id = registration.stream_id();
+        let recorder_id = registration.recorder_ids()[0];
+        registry.start_continuous_recording(stream_id, session_id, recorder_id, 1_000);
+        flock(&ownership, FlockOperation::LockExclusive).expect("stall recording storage");
+        assert_eq!(
+            controller.try_enqueue(
+                crate::MediaEvent::audio(0, Arc::<[u8]>::from(&b"audio"[..])).expect("audio event"),
+                1_100,
+            ),
+            RecorderEnqueueResult::Queued
+        );
+        thread::sleep(Duration::from_millis(20));
+
+        let shutdown_deadline = Instant::now() + Duration::from_millis(50);
+        let shutdown = reaper_owner.initiate_shutdown(shutdown_deadline);
+        registry.initiate_recorder_shutdown(&reaper);
+        assert!(matches!(
+            registry
+                .recorder_snapshot(stream_id, recorder_id)
+                .expect("stopping snapshot")
+                .phase,
+            RecorderPhase::Stopping { .. }
+        ));
+        assert!(shutdown.wait_until(Instant::now() + Duration::from_secs(1)));
+        assert!(matches!(
+            registry
+                .recorder_snapshot(stream_id, recorder_id)
+                .expect("failed snapshot")
+                .phase,
+            RecorderPhase::Failed {
+                code: RecorderErrorCode::ShutdownTimedOut,
+                ..
+            }
+        ));
+        flock(&ownership, FlockOperation::Unlock).expect("release recording storage");
+        drop(registration);
+    }
+
+    #[test]
+    fn catalog_start_after_shutdown_snapshot_fails_terminally() {
+        let root = tempdir().expect("recording root");
+        let store = RecordingStore::open(
+            root.path(),
+            RecordingStoreLimits {
+                max_bytes: Some(1024),
+                max_files: Some(2),
+                max_active_recorders: 1,
+            },
+        )
+        .expect("recording store");
+        let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
+            live_ingest: true,
+            manual_recording: true,
+        }));
+        let (reaper_owner, reaper) = registry.create_recorder_reaper(1);
+        let shutdown = reaper_owner.initiate_shutdown(Instant::now() + Duration::from_secs(1));
+        let controller = test_controller(&store, &reaper, "camera", 1024, Duration::from_secs(1));
+        let session_id = SessionId::new();
+        let registration = registry
+            .register_managed_publisher(
+                StreamKey::new("edge", "live", "camera"),
+                session_id,
+                vec![(
+                    RecorderDefinition::manual(Some("archive".to_owned())),
+                    controller,
+                )],
+                Vec::new(),
+                1_000,
+            )
+            .expect("managed publisher");
+        let stream_id = registration.stream_id();
+        let recorder_id = registration.recorder_ids()[0];
+
+        assert!(matches!(
+            registry.start_recording(stream_id, recorder_id, 1_100),
+            Err(CatalogError::RecorderFailed {
+                code: RecorderErrorCode::BackendUnavailable,
+                ..
+            })
+        ));
+        assert!(matches!(
+            registry
+                .recorder_snapshot(stream_id, recorder_id)
+                .expect("failed recorder snapshot")
+                .phase,
+            RecorderPhase::Failed {
+                code: RecorderErrorCode::BackendUnavailable,
+                ..
+            }
+        ));
+        assert_eq!(store.stats().active_recorders, 0);
+        assert!(shutdown.wait_until(Instant::now() + Duration::from_secs(1)));
+        drop(registration);
     }
 
     fn test_controller(

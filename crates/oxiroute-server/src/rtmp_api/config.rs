@@ -230,6 +230,20 @@ impl ConfigApiState {
             Ok(candidate) => candidate,
             Err(response) => return response,
         };
+        let _mutation = if let Some(generations) = &self.generations {
+            match generations.begin_config_mutation() {
+                Ok(mutation) => Some(mutation),
+                Err(error) => {
+                    return ApiResponse::error(
+                        409,
+                        error.code(),
+                        "canonical configuration mutation is unavailable",
+                    );
+                }
+            }
+        } else {
+            None
+        };
         let normalized_config = candidate.draft.normalized_config;
 
         match self.coordinator.save(expected, &normalized_config) {

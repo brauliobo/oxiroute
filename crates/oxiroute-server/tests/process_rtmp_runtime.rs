@@ -10,7 +10,12 @@ mod process_support;
 #[path = "support/rtmp.rs"]
 mod rtmp_support;
 
-use std::{fs, net::SocketAddr, path::Path, time::Duration};
+use std::{
+    fs::{self, OpenOptions},
+    net::SocketAddr,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use oxiroute_config::{
     Config, HttpPathSelector, HttpRoute, HttpRouteAction, HttpService, HttpVersionPolicy,
@@ -18,6 +23,7 @@ use oxiroute_config::{
     Stats, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool,
 };
 use rml_rtmp::sessions::ClientSessionEvent;
+use rustix::fs::{FlockOperation, flock};
 use serde_json::Value;
 use tempfile::TempDir;
 use tokio::{
@@ -376,7 +382,10 @@ async fn phoenix_continuous_recording_resumes_after_process_restart_and_publishe
     wait_for_catalog(management_address, |catalog| {
         stream_for(catalog, "continuous").is_some_and(|stream| {
             stream["recorders"][0]["phase"]["state"] == "recording"
-                && stream["recorders"][0]["bytes_written"] != "0"
+                && stream["recorders"][0]["bytes_written"]
+                    .as_str()
+                    .and_then(|bytes| bytes.parse::<u64>().ok())
+                    .is_some_and(|bytes| bytes > 13)
         })
     })
     .await;
@@ -384,13 +393,10 @@ async fn phoenix_continuous_recording_resumes_after_process_restart_and_publishe
     first_server.shutdown();
     drop(first_publisher);
     let first_files = wait_for_recording_file_count(&continuous_root, 1).await;
+    assert_recording_extensions(&first_files, "mp4");
     let first_path = first_files[0].clone();
     let first_bytes = fs::read(&first_path).expect("first Phoenix-shaped segment");
     assert!(first_bytes.starts_with(b"FLV"));
-    assert_eq!(
-        first_path.extension().and_then(|value| value.to_str()),
-        Some("mp4")
-    );
 
     let mut second_server = ServerProcess::start(&config, Some(TOKEN));
     second_server.wait_for_tcp(management_address).await;
@@ -409,6 +415,7 @@ async fn phoenix_continuous_recording_resumes_after_process_restart_and_publishe
     second_publisher.close().await;
 
     let second_files = wait_for_recording_file_count(&continuous_root, 2).await;
+    assert_recording_extensions(&second_files, "mp4");
     assert_eq!(
         fs::read(&first_path).expect("unchanged first segment"),
         first_bytes
@@ -423,6 +430,140 @@ async fn phoenix_continuous_recording_resumes_after_process_restart_and_publishe
             .starts_with(b"FLV")
     );
     second_server.shutdown();
+}
+
+#[tokio::test]
+async fn process_shutdown_waits_for_stalled_recorder_cleanup_without_exceeding_the_budget() {
+    let recording_directory = TempDir::new().expect("recording directory");
+    let continuous_root = create_secure_root(recording_directory.path(), "stalled-recordings");
+    let manual_root = create_secure_root(recording_directory.path(), "unused-manual-recordings");
+    let management_address = reserve_tcp_address();
+    let rtmp_address = reserve_tcp_address();
+    let config = runtime_config(
+        management_address,
+        rtmp_address,
+        &continuous_root,
+        &manual_root,
+    );
+    let mut server = ServerProcess::start(&config, Some(TOKEN));
+    server.wait_for_tcp(management_address).await;
+    server.wait_for_tcp(rtmp_address).await;
+    let ownership = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(continuous_root.join(".oxiroute-recording.lock"))
+        .expect("recording ownership lock");
+    flock(&ownership, FlockOperation::LockExclusive).expect("stall recording storage");
+    let mut publisher = RtmpWireClient::connect(rtmp_address, "continuous").await;
+    publisher.publish("camera").await;
+    publisher.publish_audio(1, &[0xaf, 0x00, 0x12]).await;
+    publisher.publish_audio(2, &[0xaf, 0x01, 0x44]).await;
+    sleep(Duration::from_millis(50)).await;
+    publisher.close().await;
+    sleep(Duration::from_millis(50)).await;
+
+    let started = Instant::now();
+    server.shutdown();
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed >= Duration::from_millis(500),
+        "process exited before recorder cleanup was bounded: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "recorder cleanup exceeded the process budget: {elapsed:?}"
+    );
+    flock(&ownership, FlockOperation::Unlock).expect("release recording storage");
+}
+
+#[tokio::test]
+async fn evicted_generation_keeps_recording_live_connections_until_final_shutdown() {
+    let recording_directory = TempDir::new().expect("recording directory");
+    let continuous_root = create_secure_root(recording_directory.path(), "previous-recordings");
+    let manual_root = create_secure_root(recording_directory.path(), "unused-manual-recordings");
+    let management_address = reserve_tcp_address();
+    let rtmp_address = reserve_tcp_address();
+    let mut config = runtime_config(
+        management_address,
+        rtmp_address,
+        &continuous_root,
+        &manual_root,
+    );
+    config.rtmp_services[0].applications[0].recorders[0].shutdown_timeout_ms = 3_000;
+    config.rtmp_services[0].applications[1].recorders[0].start = RtmpRecorderStart::Continuous;
+    config.rtmp_services[0].applications[1].recorders[0].shutdown_timeout_ms = 30_000;
+    let mut server = ServerProcess::start(&config, Some(TOKEN));
+    server.wait_for_tcp(management_address).await;
+    server.wait_for_tcp(rtmp_address).await;
+    let authorization = format!("Bearer {TOKEN}");
+    let original_revision = active_revision(management_address, &authorization).await;
+    let ownership = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(manual_root.join(".oxiroute-recording.lock"))
+        .expect("recording ownership lock");
+    flock(&ownership, FlockOperation::LockExclusive).expect("stall second recorder");
+    let mut stalled = RtmpWireClient::connect(rtmp_address, "manual").await;
+    stalled.publish("blocked").await;
+    stalled.publish_audio(1, &[0xaf, 0x01, 0x33]).await;
+    let mut publisher = RtmpWireClient::connect(rtmp_address, "continuous").await;
+    publisher.publish("camera").await;
+    publisher.publish_audio(1, &[0xaf, 0x00, 0x12]).await;
+    publisher.publish_audio(2, &[0xaf, 0x01, 0x44]).await;
+    let initial_size = wait_for_partial_growth(&continuous_root, 0).await;
+
+    config.max_connections = Some(64);
+    write_config(&server.config_path, &config);
+    wait_for_new_revision(management_address, &authorization, &original_revision).await;
+    publisher.publish_audio(3, &[0xaf, 0x01, 0x55]).await;
+    let second_size = wait_for_partial_growth(&continuous_root, initial_size).await;
+    let second_revision = active_revision(management_address, &authorization).await;
+    config.max_connections = Some(65);
+    write_config(&server.config_path, &config);
+    wait_for_new_revision(management_address, &authorization, &second_revision).await;
+    publisher.publish_audio(4, &[0xaf, 0x01, 0x66]).await;
+    wait_for_partial_growth(&continuous_root, second_size).await;
+    publisher.close().await;
+    let files = wait_for_recording_file_count(&continuous_root, 1).await;
+    let recording = fs::read(&files[0]).expect("finalized evicted generation recording");
+    assert!(
+        recording
+            .windows(3)
+            .any(|bytes| bytes == [0xaf, 0x01, 0x55])
+    );
+    assert!(
+        recording
+            .windows(3)
+            .any(|bytes| bytes == [0xaf, 0x01, 0x66])
+    );
+    stalled.close().await;
+    sleep(Duration::from_millis(150)).await;
+
+    let shutdown = tokio::task::spawn_blocking(move || {
+        let started = Instant::now();
+        server.shutdown();
+        started.elapsed()
+    });
+    sleep(Duration::from_millis(250)).await;
+    assert!(
+        !shutdown.is_finished(),
+        "process shutdown did not retain evicted recorder cleanup"
+    );
+    let elapsed = timeout(WIRE_TIMEOUT, shutdown)
+        .await
+        .expect("process shutdown timeout")
+        .expect("process shutdown task");
+    flock(&ownership, FlockOperation::Unlock).expect("release recording storage");
+
+    assert!(
+        elapsed >= Duration::from_secs(4),
+        "process did not apply its deadline to evicted recorder cleanup: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(6),
+        "evicted generation recorder exceeded the process budget: {elapsed:?}"
+    );
 }
 
 fn runtime_config(
@@ -630,6 +771,21 @@ async fn wait_for_new_revision(address: SocketAddr, authorization: &str, origina
     .expect("generation reload timed out");
 }
 
+async fn active_revision(address: SocketAddr, authorization: &str) -> String {
+    http_request(
+        address,
+        "GET",
+        "/api/v1/status",
+        &[("Authorization", authorization)],
+        &[],
+    )
+    .await
+    .json()["activeRevision"]
+        .as_str()
+        .expect("active revision")
+        .to_owned()
+}
+
 async fn assert_http_connections(
     streams: Vec<TcpStream>,
     request: &'static [u8],
@@ -756,6 +912,17 @@ fn stream_for<'a>(catalog: &'a Value, application: &str) -> Option<&'a Value> {
         .find(|stream| stream["application"] == application)
 }
 
+fn assert_recording_extensions(paths: &[std::path::PathBuf], expected: &str) {
+    for path in paths {
+        assert_eq!(
+            path.extension().and_then(|value| value.to_str()),
+            Some(expected),
+            "unexpected recording path {}",
+            path.display()
+        );
+    }
+}
+
 async fn wait_for_file(path: &Path) {
     timeout(WIRE_TIMEOUT, async {
         loop {
@@ -767,6 +934,32 @@ async fn wait_for_file(path: &Path) {
     })
     .await
     .unwrap_or_else(|_| panic!("recording did not finalize at {}", path.display()));
+}
+
+async fn wait_for_partial_growth(root: &Path, previous_size: u64) -> u64 {
+    timeout(WIRE_TIMEOUT, async {
+        loop {
+            let size = fs::read_dir(root)
+                .expect("recording directory")
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_str()
+                        .is_some_and(|name| name.ends_with(".partial"))
+                })
+                .filter_map(|entry| entry.metadata().ok())
+                .map(|metadata| metadata.len())
+                .max()
+                .unwrap_or(0);
+            if size > previous_size {
+                return size;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("recording partial did not grow")
 }
 
 async fn wait_for_recording_file_count(root: &Path, expected: usize) -> Vec<std::path::PathBuf> {
@@ -781,7 +974,7 @@ async fn wait_for_recording_file_count(root: &Path, expected: usize) -> Vec<std:
                             .file_name()
                             .and_then(|name| name.to_str())
                             .is_some_and(|name| {
-                                name != ".oxiroute-recording.lock" && !name.contains(".partial.")
+                                name != ".oxiroute-recording.lock" && !name.ends_with(".partial")
                             })
                 })
                 .collect::<Vec<_>>();
