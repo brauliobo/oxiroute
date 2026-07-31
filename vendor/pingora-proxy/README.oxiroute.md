@@ -6,12 +6,12 @@ under its upstream Apache-2.0 license. The crate archive's `.cargo_vcs_info.json
 commit `719ef6cd54e40b530127751bab6c1afc5ae815a8`; the package does not identify a corresponding tag.
 
 `LICENSE` remains a byte-for-byte copy from Cargo's normalized registry extraction. OxiRoute's
-delta is limited to isolated borrowed HTTP/1 upstream request preparation, an inline HTTP/1 task
-batch buffer experiment, and compatibility with the adjacent patched core:
+delta is limited to isolated borrowed HTTP/1 upstream request preparation, inline-storage HTTP/1
+response task batches, and compatibility with the adjacent patched core:
 
 - `Cargo.toml` resolves its direct `pingora-core 0.8.1` dependency through the adjacent
   `../pingora-core` path and patches transitive crates.io references to the same path, so standalone
-  and root builds contain one patched core. It also adds `smallvec 1` for the isolated task buffer.
+  and root builds contain one patched core. The adjacent core owns the shared `smallvec` task batch.
   Every published dev dependency is retained unchanged so the published examples remain buildable
   in a complete Cargo environment.
 - `examples/virtual_l4.rs` initializes the patched core's optional connection-lifetime field to
@@ -24,10 +24,13 @@ batch buffer experiment, and compatibility with the adjacent patched core:
   HTTP/2-to-HTTP/1 conversion and active cache mutation still clone and use the old mutable filter;
   H2 and custom upstream paths are unchanged. Borrowed headers use pingora-core's borrowed request
   writer, and every retry prepares from the unchanged downstream request. Its first per-batch task
-  buffer uses inline storage for `TASK_BUFFER_SIZE` tasks with safe spill; the filtered output remains
-  the original `Vec<HttpTask>`, and channels and task APIs are unchanged.
-- Inline tests cover task-buffer allocation, spill, snapshot/order/filter/failure behavior, default
-  request ownership, HTTP/2 conversion, and active cache mutation.
+  buffer and filtered output use the core's four-task inline batch with safe spill. Module filtering
+  is shared over mutable task slices by the unchanged public `Vec<HttpTask>` writer and a private H1
+  batch writer. Cache singleton responses also use inline storage. Channels and non-H1 paths are
+  unchanged.
+- Inline tests cover task-buffer inline capacity, spill, snapshot/order/filter/failure behavior,
+  Vec/batch response equivalence, module filters and H1 output, default request ownership, HTTP/2
+  conversion, and active cache mutation.
 
 The published crate excludes its upstream `tests/` directory, so the registry source contains only
 the inline unit tests under `src/`. Consistently with `vendor/pingora-core`, packaging-only
@@ -43,13 +46,13 @@ workspace lockfile owns dependency resolution.
    "$source/examples" "$source/src" vendor/pingora-proxy/`.
 4. Reapply and review only the adjacent pingora-core dependency and transitive patch, virtual-L4
    example compatibility initializer, additive preparation API, isolated HTTP/1 borrowed path,
-   inline HTTP/1 task batch buffer, and their focused tests. Restore every published dev dependency
+   inline HTTP/1 task batch path, and their focused tests. Restore every published dev dependency
    exactly, then restore this README with the new provenance.
 5. Regenerate the workspace lockfile offline and confirm root `cargo tree -i pingora-core` reports
    one `vendor/pingora-core` package for direct and transitive proxy edges.
 6. Compare `LICENSE`, examples except the documented virtual-L4 initializer, and all `Cargo.toml`
-   entries except the documented pingora-core path and patch plus direct `smallvec` dependency
-   against the registry extraction before running the verification below.
+   entries except the documented pingora-core path and patch against the registry extraction before
+   running the verification below.
 
 ## Vendor tests
 

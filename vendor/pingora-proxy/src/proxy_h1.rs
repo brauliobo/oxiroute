@@ -14,7 +14,6 @@
 
 use futures::future::OptionFuture;
 use futures::StreamExt;
-use smallvec::SmallVec;
 
 use super::*;
 use crate::proxy_cache::{range_filter::RangeBodyFilter, ServeFromCache};
@@ -22,10 +21,8 @@ use crate::proxy_common::*;
 use pingora_cache::CachePhase;
 use pingora_core::protocols::http::custom::CUSTOM_MESSAGE_QUEUE_SIZE;
 
-type HttpTaskBuffer = SmallVec<[HttpTask; TASK_BUFFER_SIZE]>;
-
-fn collect_available_tasks(first: HttpTask, rx: &mut mpsc::Receiver<HttpTask>) -> HttpTaskBuffer {
-    let mut tasks = HttpTaskBuffer::new();
+fn collect_available_tasks(first: HttpTask, rx: &mut mpsc::Receiver<HttpTask>) -> HttpTaskBatch {
+    let mut tasks = HttpTaskBatch::new();
     tasks.push(first);
     // tokio::task::unconstrained because now_or_never may yield None when the future is ready
     while let Some(maybe_task) = tokio::task::unconstrained(rx.recv()).now_or_never() {
@@ -36,6 +33,12 @@ fn collect_available_tasks(first: HttpTask, rx: &mut mpsc::Receiver<HttpTask>) -
             break; // upstream closed
         }
     }
+    tasks
+}
+
+fn cache_task_batch(task: HttpTask) -> HttpTaskBatch {
+    let mut tasks = HttpTaskBatch::new();
+    tasks.push(task);
     tasks
 }
 
@@ -478,7 +481,7 @@ where
                         let tasks = collect_available_tasks(t, &mut rx);
 
                         /* run filters before sending to downstream */
-                        let mut filtered_tasks = Vec::with_capacity(TASK_BUFFER_SIZE);
+                        let mut filtered_tasks = HttpTaskBatch::new();
                         for mut t in tasks {
                             if self.revalidate_or_stale(session, &mut t, ctx).await {
                                 serve_from_cache.enable();
@@ -510,7 +513,7 @@ where
 
                         // set to downstream
                         let upgraded = session.was_upgraded();
-                        let response_done = session.write_response_tasks(filtered_tasks).await?;
+                        let response_done = session.write_response_task_batch(filtered_tasks).await?;
                         if !upgraded && session.was_upgraded() && downstream_state.can_poll() {
                             // just upgraded, the downstream state should be reset to continue to
                             // poll body
@@ -535,7 +538,7 @@ where
                         &mut range_body_filter, true).await?;
                     debug!("serve_from_cache task {task:?}");
 
-                    match session.write_response_tasks(vec![task]).await {
+                    match session.write_response_task_batch(cache_task_batch(task)).await {
                         Ok(b) => response_state.maybe_set_cache_done(b),
                         Err(e) => if serve_from_cache.is_miss() {
                             // give up writing to downstream but wait for upstream cache write to finish
@@ -937,7 +940,7 @@ mod task_buffer_tests {
         body.first().copied()
     }
 
-    async fn collect_batch(values: &[u8]) -> HttpTaskBuffer {
+    async fn collect_batch(values: &[u8]) -> HttpTaskBatch {
         let (tx, mut rx) = mpsc::channel(TASK_BUFFER_SIZE);
         for value in values {
             tx.send(body_task(*value)).await.unwrap();
@@ -1005,6 +1008,48 @@ mod task_buffer_tests {
         assert_eq!(filtered, vec![1, 3]);
         assert_eq!(failure.unwrap().etype(), &InternalError);
         assert_eq!(body_value(&rx.recv().await.unwrap()), Some(4));
+    }
+
+    #[test]
+    fn cache_singleton_batch_preserves_task_variants_inline() {
+        let body = cache_task_batch(HttpTask::Body(Some(Bytes::from_static(b"body")), true));
+        assert!(!body.spilled());
+        assert!(matches!(
+            &body[0],
+            HttpTask::Body(Some(data), true) if data.as_ref() == b"body"
+        ));
+
+        let mut error = Error::new(InternalError);
+        error.as_up();
+        error.set_retry(true);
+        let failed = cache_task_batch(HttpTask::Failed(error));
+        assert!(!failed.spilled());
+        let HttpTask::Failed(error) = &failed[0] else {
+            panic!("failure task changed type");
+        };
+        assert_eq!(error.etype(), &InternalError);
+        assert_eq!(error.esource(), &ErrorSource::Upstream);
+        assert!(error.retry());
+
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-trailer", http::HeaderValue::from_static("yes"));
+        let trailer = cache_task_batch(HttpTask::Trailer(Some(Box::new(headers))));
+        assert!(!trailer.spilled());
+        assert!(matches!(
+            &trailer[0],
+            HttpTask::Trailer(Some(headers))
+                if headers.get("x-trailer").is_some_and(|value| value == "yes")
+        ));
+
+        let upgraded = cache_task_batch(HttpTask::UpgradedBody(
+            Some(Bytes::from_static(b"upgraded")),
+            false,
+        ));
+        assert!(!upgraded.spilled());
+        assert!(matches!(
+            &upgraded[0],
+            HttpTask::UpgradedBody(Some(data), false) if data.as_ref() == b"upgraded"
+        ));
     }
 }
 

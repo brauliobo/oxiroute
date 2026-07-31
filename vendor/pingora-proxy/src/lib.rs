@@ -66,9 +66,9 @@ use pingora_core::protocols::http::custom::CustomMessageWrite;
 use pingora_core::protocols::http::subrequest::server::SubrequestHandle;
 use pingora_core::protocols::http::v1::client::HttpSession as HttpSessionV1;
 use pingora_core::protocols::http::v2::server::H2Options;
-use pingora_core::protocols::http::HttpTask;
 use pingora_core::protocols::http::ServerSession as HttpSession;
 use pingora_core::protocols::http::SERVER_NAME;
+use pingora_core::protocols::http::{HttpTask, HttpTaskBatch, HTTP_TASK_BATCH_CAPACITY};
 use pingora_core::protocols::Stream;
 use pingora_core::protocols::{Digest, UniqueID};
 use pingora_core::server::configuration::ServerConf;
@@ -76,7 +76,7 @@ use pingora_core::server::ShutdownWatch;
 use pingora_core::upstreams::peer::{HttpPeer, Peer};
 use pingora_error::{Error, ErrorSource, ErrorType::*, OrErr, Result};
 
-const TASK_BUFFER_SIZE: usize = 4;
+const TASK_BUFFER_SIZE: usize = HTTP_TASK_BATCH_CAPACITY;
 
 mod proxy_cache;
 mod proxy_common;
@@ -584,9 +584,9 @@ impl Session {
             .await
     }
 
-    pub async fn write_response_tasks(&mut self, mut tasks: Vec<HttpTask>) -> Result<bool> {
+    async fn filter_response_tasks(&mut self, tasks: &mut [HttpTask]) -> Result<()> {
         let mut seen_upgraded = self.was_upgraded();
-        for task in tasks.iter_mut() {
+        for task in tasks {
             match task {
                 HttpTask::Header(resp, end) => {
                     self.downstream_modules_ctx
@@ -636,7 +636,17 @@ impl Session {
                 _ => { /* Failed */ }
             }
         }
+        Ok(())
+    }
+
+    pub async fn write_response_tasks(&mut self, mut tasks: Vec<HttpTask>) -> Result<bool> {
+        self.filter_response_tasks(&mut tasks).await?;
         self.downstream_session.response_duplex_vec(tasks).await
+    }
+
+    async fn write_response_task_batch(&mut self, mut tasks: HttpTaskBatch) -> Result<bool> {
+        self.filter_response_tasks(&mut tasks).await?;
+        self.downstream_session.response_duplex_batch(tasks).await
     }
 
     /// Mark the upstream headers as modified by caching. This should lead to range filters being
@@ -1393,5 +1403,172 @@ where
 
         proxy.handle_init_modules();
         Service::new(name, proxy)
+    }
+}
+
+#[cfg(test)]
+mod response_task_tests {
+    use std::any::Any;
+
+    use pingora_core::modules::http::{HttpModule, HttpModuleBuilder, Module};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::*;
+
+    struct ResponseModule;
+
+    #[async_trait]
+    impl HttpModule for ResponseModule {
+        async fn response_header_filter(
+            &mut self,
+            response: &mut ResponseHeader,
+            _end_of_stream: bool,
+        ) -> Result<()> {
+            response.insert_header("x-module", "yes")
+        }
+
+        fn response_body_filter(
+            &mut self,
+            body: &mut Option<Bytes>,
+            _end_of_stream: bool,
+        ) -> Result<()> {
+            if let Some(data) = body {
+                let mut filtered = Vec::with_capacity(data.len() + 1);
+                filtered.extend_from_slice(data);
+                filtered.push(b'b');
+                *data = Bytes::from(filtered);
+            }
+            Ok(())
+        }
+
+        fn response_trailer_filter(
+            &mut self,
+            _trailers: &mut Option<Box<http::HeaderMap>>,
+        ) -> Result<Option<Bytes>> {
+            Ok(Some(Bytes::from_static(b"t")))
+        }
+
+        fn response_done_filter(&mut self) -> Result<Option<Bytes>> {
+            Ok(Some(Bytes::from_static(b"d")))
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
+        }
+    }
+
+    struct ResponseModuleBuilder;
+
+    impl HttpModuleBuilder for ResponseModuleBuilder {
+        fn init(&self) -> Module {
+            Box::new(ResponseModule)
+        }
+    }
+
+    fn response_modules() -> HttpModules {
+        let mut modules = HttpModules::new();
+        modules.add_module(Box::new(ResponseModuleBuilder));
+        modules
+    }
+
+    fn response_header() -> Box<ResponseHeader> {
+        let mut response = ResponseHeader::build(200, None).unwrap();
+        response.insert_header(header::CONTENT_LENGTH, "2").unwrap();
+        response
+            .insert_header(header::DATE, "Thu, 01 Jan 1970 00:00:00 GMT")
+            .unwrap();
+        response.insert_header(header::SERVER, "test").unwrap();
+        Box::new(response)
+    }
+
+    #[tokio::test]
+    async fn response_task_slice_filter_preserves_replacements_and_upgrade() {
+        let modules = response_modules();
+        let mut session = Session::new_h1_with_modules(
+            Box::new(tokio_test::io::Builder::new().build()),
+            &modules,
+        );
+        let mut tasks = vec![
+            HttpTask::Header(response_header(), false),
+            HttpTask::Body(Some(Bytes::from_static(b"a")), false),
+            HttpTask::Trailer(Some(Box::default())),
+            HttpTask::Done,
+        ];
+
+        session.filter_response_tasks(&mut tasks).await.unwrap();
+
+        let HttpTask::Header(response, false) = &tasks[0] else {
+            panic!("header task changed type");
+        };
+        assert_eq!(response.headers.get("x-module").unwrap(), "yes");
+        assert!(matches!(
+            &tasks[1],
+            HttpTask::Body(Some(body), false) if body.as_ref() == b"ab"
+        ));
+        assert!(matches!(
+            &tasks[2],
+            HttpTask::Body(Some(body), true) if body.as_ref() == b"t"
+        ));
+        assert!(matches!(
+            &tasks[3],
+            HttpTask::Body(Some(body), true) if body.as_ref() == b"d"
+        ));
+
+        let mut upgraded_tasks = vec![
+            HttpTask::UpgradedBody(Some(Bytes::from_static(b"u")), false),
+            HttpTask::Done,
+        ];
+        session
+            .filter_response_tasks(&mut upgraded_tasks)
+            .await
+            .unwrap();
+        assert!(matches!(
+            &upgraded_tasks[0],
+            HttpTask::UpgradedBody(Some(body), false) if body.as_ref() == b"ub"
+        ));
+        assert!(matches!(
+            &upgraded_tasks[1],
+            HttpTask::UpgradedBody(Some(body), true) if body.as_ref() == b"d"
+        ));
+    }
+
+    async fn filtered_h1_output(batch: bool) -> Vec<u8> {
+        let modules = response_modules();
+        let (mut client, server) = tokio::io::duplex(4096);
+        client.write_all(b"GET / HTTP/1.1\r\n\r\n").await.unwrap();
+        let mut session = Session::new_h1_with_modules(Box::new(server), &modules);
+        session.as_downstream_mut().read_request().await.unwrap();
+        let tasks = vec![
+            HttpTask::Header(response_header(), false),
+            HttpTask::Body(Some(Bytes::from_static(b"a")), true),
+        ];
+
+        let done = if batch {
+            let tasks: HttpTaskBatch = tasks.into_iter().collect();
+            session.write_response_task_batch(tasks).await.unwrap()
+        } else {
+            session.write_response_tasks(tasks).await.unwrap()
+        };
+        assert!(done);
+        drop(session);
+
+        let mut output = Vec::new();
+        client.read_to_end(&mut output).await.unwrap();
+        output
+    }
+
+    #[tokio::test]
+    async fn vec_and_batch_module_filters_have_identical_h1_output() {
+        let vec_output = filtered_h1_output(false).await;
+        let batch_output = filtered_h1_output(true).await;
+
+        assert_eq!(vec_output, batch_output);
+        let output = String::from_utf8(vec_output).unwrap().to_ascii_lowercase();
+        assert!(output.contains("x-module: yes\r\n"));
+        assert!(output.ends_with("\r\n\r\nab"));
     }
 }

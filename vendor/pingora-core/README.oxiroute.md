@@ -4,10 +4,10 @@ This directory contains the published `pingora-core 0.8.1` source from crates.io
 (registry checksum `6a7ffe2f5acf9f94fd255cfd1438866bc9124f8f0c7d42562bd3f853df2094b7`)
 under its upstream Apache-2.0 license.
 
-OxiRoute's delta is intentionally limited to an OpenSSL-derived, per-peer TLS
-configure hook, pre-handshake application admission, a non-truncating certificate subject
-conversion, correct HTTP/1 HEAD informational-response framing, and owned HTTP/1 response preread
-payloads, plus borrowed HTTP/1 upstream request writes:
+OxiRoute's delta is intentionally limited to an OpenSSL-derived, per-peer TLS configure hook,
+pre-handshake application admission, a non-truncating certificate subject conversion, correct
+HTTP/1 HEAD informational-response framing, owned HTTP/1 response preread payloads, borrowed HTTP/1
+upstream request writes, and an inline HTTP response task batch:
 
 - `protocols/tls/mod.rs` declares the public `TlsConfigureHook` type.
 - `upstreams/peer.rs` stores the optional hook in `PeerOptions`, omits it from
@@ -32,11 +32,15 @@ payloads, plus borrowed HTTP/1 upstream request writes:
   upgrade metadata for borrowed writes; request-body framing remains in `BodyWriter`. The legacy
   boxed API additionally retains its owned request until the session is dropped, preserving
   extension and resource lifetimes.
+- `protocols/http/mod.rs` defines the additive four-task `HttpTaskBatch` backed by `smallvec`.
+  `ServerSession` and the HTTP/1 server expose additive batch response APIs; HTTP/1 shares one
+  implementation with the existing `Vec` API, while HTTP/2, subrequest, and custom sessions retain
+  their existing `Vec` behavior through a compatibility conversion.
 
 The normalized crates.io `Cargo.toml` is retained. Its optional `Cargo.toml.orig` reference is
 upstream packaging commentary; that non-build manifest is intentionally omitted here.
 
-When upgrading Pingora, replace this directory from the newly locked published
-crate, reapply and review the connector hook, admission guard, subject conversion, and HTTP/1
-HEAD informational-response, owned-preread, and borrowed-request-write changes, then rerun the
-vendored BodyReader and H1 client suites, OxiRoute TLS and HTTP wire tests, and strict clippy checks.
+When upgrading Pingora, replace this directory from the newly locked published crate, reapply and
+review the connector hook, admission guard, subject conversion, HTTP/1 HEAD informational-response,
+owned-preread, borrowed-request-write, and response-task batch changes, then rerun the vendored
+BodyReader and H1 client suites, OxiRoute TLS and HTTP wire tests, and strict clippy checks.

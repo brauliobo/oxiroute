@@ -1230,16 +1230,19 @@ impl HttpSession {
         }
     }
 
-    // TODO: use vectored write to avoid copying
-    pub async fn response_duplex_vec(&mut self, mut tasks: Vec<HttpTask>) -> Result<bool> {
-        let n_tasks = tasks.len();
-        if n_tasks == 1 {
+    async fn response_duplex_tasks<T>(&mut self, tasks: T) -> Result<bool>
+    where
+        T: IntoIterator<Item = HttpTask>,
+        T::IntoIter: ExactSizeIterator,
+    {
+        let mut tasks = tasks.into_iter();
+        if tasks.len() == 1 {
             // fallback to single operation to avoid copy
-            return self.response_duplex(tasks.pop().unwrap()).await;
+            return self.response_duplex(tasks.next().unwrap()).await;
         }
 
         let mut end_stream = false;
-        for task in tasks.into_iter() {
+        for task in tasks {
             end_stream = match task {
                 HttpTask::Header(header, end_stream) => {
                     self.write_response_header(header)
@@ -1274,6 +1277,19 @@ impl HttpSession {
             self.finish_body().await.map_err(|e| e.into_down())?;
         }
         Ok(end_stream || self.body_writer.finished())
+    }
+
+    // TODO: use vectored write to avoid copying
+    pub async fn response_duplex_vec(&mut self, tasks: Vec<HttpTask>) -> Result<bool> {
+        self.response_duplex_tasks(tasks).await
+    }
+
+    /// Write a batch of response tasks using its inline storage when capacity permits.
+    pub async fn response_duplex_batch(
+        &mut self,
+        tasks: super::super::HttpTaskBatch,
+    ) -> Result<bool> {
+        self.response_duplex_tasks(tasks).await
     }
 
     /// Get the reference of the [Stream] that this HTTP session is operating upon.
@@ -1391,16 +1407,279 @@ fn http_resp_header_to_buf(
 
 #[cfg(test)]
 mod tests_stream {
+    use std::io;
+    use std::pin::Pin;
+    use std::sync::{Arc, Mutex};
+    use std::task::{Context, Poll};
+
     use super::*;
     use crate::protocols::http::v1::body::{BodyMode, ParseState};
+    use crate::protocols::http::HttpTaskBatch;
+    use crate::protocols::{
+        raw_connect::ProxyDigest, GetProxyDigest, GetSocketDigest, GetTimingDigest, Peek, Shutdown,
+        SocketDigest, Ssl, TimingDigest, UniqueID, UniqueIDType,
+    };
     use http::StatusCode;
-    use pingora_error::ErrorType;
+    use pingora_error::{ErrorSource, ErrorType};
     use rstest::rstest;
     use std::str;
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
     use tokio_test::io::Builder;
 
     fn init_log() {
         let _ = env_logger::builder().is_test(true).try_init();
+    }
+
+    #[derive(Clone, Copy)]
+    enum TaskApi {
+        Vec,
+        Batch,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum IoEvent {
+        Write(Vec<u8>),
+        Flush,
+    }
+
+    #[derive(Debug)]
+    struct RecordingIo {
+        input: &'static [u8],
+        input_offset: usize,
+        events: Arc<Mutex<Vec<IoEvent>>>,
+    }
+
+    impl AsyncRead for RecordingIo {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            let remaining = &self.input[self.input_offset..];
+            let read = remaining.len().min(buf.remaining());
+            buf.put_slice(&remaining[..read]);
+            self.input_offset += read;
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl AsyncWrite for RecordingIo {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            self.events
+                .lock()
+                .unwrap()
+                .push(IoEvent::Write(buf.to_vec()));
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            self.events.lock().unwrap().push(IoEvent::Flush);
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Shutdown for RecordingIo {
+        async fn shutdown(&mut self) {}
+    }
+
+    impl UniqueID for RecordingIo {
+        fn id(&self) -> UniqueIDType {
+            0
+        }
+    }
+
+    impl Ssl for RecordingIo {}
+
+    impl GetTimingDigest for RecordingIo {
+        fn get_timing_digest(&self) -> Vec<Option<TimingDigest>> {
+            Vec::new()
+        }
+    }
+
+    impl GetProxyDigest for RecordingIo {
+        fn get_proxy_digest(&self) -> Option<Arc<ProxyDigest>> {
+            None
+        }
+    }
+
+    impl GetSocketDigest for RecordingIo {
+        fn get_socket_digest(&self) -> Option<Arc<SocketDigest>> {
+            None
+        }
+    }
+
+    impl Peek for RecordingIo {}
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct ErrorSnapshot {
+        error_type: ErrorType,
+        source: ErrorSource,
+        retry: bool,
+        display: String,
+    }
+
+    impl ErrorSnapshot {
+        fn from_error(error: &Error) -> Self {
+            Self {
+                error_type: error.etype().clone(),
+                source: error.esource().clone(),
+                retry: error.retry(),
+                display: error.to_string(),
+            }
+        }
+    }
+
+    async fn write_tasks(
+        session: &mut HttpSession,
+        api: TaskApi,
+        tasks: Vec<HttpTask>,
+    ) -> Result<bool> {
+        match api {
+            TaskApi::Vec => session.response_duplex_vec(tasks).await,
+            TaskApi::Batch => {
+                let tasks: HttpTaskBatch = tasks.into_iter().collect();
+                session.response_duplex_batch(tasks).await
+            }
+        }
+    }
+
+    fn response_header(status: StatusCode, content_length: Option<usize>) -> Box<ResponseHeader> {
+        let mut response = ResponseHeader::build(status, None).unwrap();
+        if let Some(content_length) = content_length {
+            response
+                .insert_header(CONTENT_LENGTH, content_length.to_string())
+                .unwrap();
+        }
+        Box::new(response)
+    }
+
+    #[tokio::test]
+    async fn response_vec_and_batch_match_header_body_trailer_and_done() {
+        let request = b"GET / HTTP/1.1\r\n\r\n";
+        let expected = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc";
+
+        for trailer in [true, false] {
+            for api in [TaskApi::Vec, TaskApi::Batch] {
+                let mock_io = Builder::new().read(request).write(expected).build();
+                let mut session = HttpSession::new(Box::new(mock_io));
+                session.read_request().await.unwrap();
+                session.update_resp_headers = false;
+
+                let tasks = vec![
+                    HttpTask::Header(response_header(StatusCode::OK, Some(3)), false),
+                    HttpTask::Body(Some(Bytes::from_static(b"a")), false),
+                    HttpTask::Body(Some(Bytes::from_static(b"bc")), false),
+                    if trailer {
+                        HttpTask::Trailer(None)
+                    } else {
+                        HttpTask::Done
+                    },
+                ];
+
+                assert!(write_tasks(&mut session, api, tasks).await.unwrap());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn response_vec_and_batch_match_failure_flush() {
+        let request = b"GET / HTTP/1.1\r\n\r\n";
+        let expected = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc";
+        let mut errors = Vec::new();
+
+        for api in [TaskApi::Vec, TaskApi::Batch] {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let io = RecordingIo {
+                input: request,
+                input_offset: 0,
+                events: Arc::clone(&events),
+            };
+            let mut session = HttpSession::new(Box::new(io));
+            session.read_request().await.unwrap();
+            session.update_resp_headers = false;
+            let mut failure = Error::explain(CustomCode("response batch failure", 7), "complete");
+            failure.as_up();
+            failure.set_retry(true);
+            let tasks = vec![
+                HttpTask::Header(response_header(StatusCode::OK, Some(3)), false),
+                HttpTask::Body(Some(Bytes::from_static(b"a")), false),
+                HttpTask::Body(Some(Bytes::from_static(b"bc")), false),
+                HttpTask::Failed(failure),
+            ];
+
+            let error = write_tasks(&mut session, api, tasks).await.unwrap_err();
+            errors.push(ErrorSnapshot::from_error(&error));
+
+            let events = events.lock().unwrap();
+            let written: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    IoEvent::Write(bytes) => Some(bytes.as_slice()),
+                    IoEvent::Flush => None,
+                })
+                .flatten()
+                .copied()
+                .collect();
+            assert_eq!(written, expected);
+            assert_eq!(events.last(), Some(&IoEvent::Flush));
+        }
+
+        assert_eq!(errors[0], errors[1]);
+        assert_eq!(
+            errors[0].error_type,
+            CustomCode("response batch failure", 7)
+        );
+        assert_eq!(errors[0].source, ErrorSource::Upstream);
+        assert!(errors[0].retry);
+        assert_eq!(
+            errors[0].display,
+            "Upstream response batch failure context: complete"
+        );
+    }
+
+    #[tokio::test]
+    async fn response_vec_and_batch_match_upgraded_body() {
+        let request = b"GET / HTTP/1.1\r\nUpgrade: websocket\r\n\r\n";
+        let expected = b"HTTP/1.1 101 Switching Protocols\r\n\r\nabc";
+
+        for api in [TaskApi::Vec, TaskApi::Batch] {
+            let mock_io = Builder::new().read(request).write(expected).build();
+            let mut session = HttpSession::new(Box::new(mock_io));
+            session.read_request().await.unwrap();
+            session.update_resp_headers = false;
+            let tasks = vec![
+                HttpTask::Header(
+                    response_header(StatusCode::SWITCHING_PROTOCOLS, None),
+                    false,
+                ),
+                HttpTask::UpgradedBody(Some(Bytes::from_static(b"abc")), false),
+                HttpTask::Done,
+            ];
+
+            assert!(write_tasks(&mut session, api, tasks).await.unwrap());
+            assert!(session.was_upgraded());
+        }
+    }
+
+    #[tokio::test]
+    async fn response_vec_and_batch_match_single_task_path() {
+        for api in [TaskApi::Vec, TaskApi::Batch] {
+            let mock_io = Builder::new().build();
+            let mut session = HttpSession::new(Box::new(mock_io));
+
+            assert!(write_tasks(&mut session, api, vec![HttpTask::Done])
+                .await
+                .unwrap());
+        }
     }
 
     #[tokio::test]
