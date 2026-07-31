@@ -872,27 +872,53 @@ impl WorkerContext {
         arrived_at_unix_seconds: u64,
     ) -> Result<(), WorkerError> {
         let headers = self.segment_headers.ordered();
-        let segment_name = self
-            .path_policy
-            .segment_filename(
-                &self.stream_name,
-                arrived_at_unix_seconds,
-                RecordingDateTime::from_unix_seconds(arrived_at_unix_seconds)
-                    .map_err(|_| WorkerError::new(RecorderFailure::Open))?,
-                self.next_segment_sequence,
-            )
-            .map_err(|_| WorkerError::new(RecorderFailure::Open))?;
+        let resume = if self.next_segment_sequence == 0 {
+            self.resumable_segment(arrived_at_unix_seconds)?
+        } else {
+            None
+        };
+        let (segment_name, segment, segment_started_at, segment_started_at_unix_seconds) =
+            if let Some((segment_name, started_at_unix_seconds)) = resume {
+                let segment = Segment::resume(
+                    &self.store,
+                    &segment_name,
+                    &headers,
+                    Arc::clone(&self.shared.bytes_written),
+                    &self.shared,
+                )?;
+                let elapsed = Duration::from_secs(
+                    arrived_at_unix_seconds.saturating_sub(started_at_unix_seconds),
+                );
+                (
+                    segment_name,
+                    segment,
+                    arrived_at.checked_sub(elapsed).unwrap_or(arrived_at),
+                    started_at_unix_seconds,
+                )
+            } else {
+                let segment_name = self
+                    .path_policy
+                    .segment_filename(
+                        &self.stream_name,
+                        arrived_at_unix_seconds,
+                        RecordingDateTime::from_unix_seconds(arrived_at_unix_seconds)
+                            .map_err(|_| WorkerError::new(RecorderFailure::Open))?,
+                        self.next_segment_sequence,
+                    )
+                    .map_err(|_| WorkerError::new(RecorderFailure::Open))?;
+                let segment = Segment::open(
+                    &self.store,
+                    &segment_name,
+                    &headers,
+                    Arc::clone(&self.shared.bytes_written),
+                    &self.shared,
+                )?;
+                (segment_name, segment, arrived_at, arrived_at_unix_seconds)
+            };
         let next_segment_sequence = self
             .next_segment_sequence
             .checked_add(1)
             .ok_or_else(|| WorkerError::new(RecorderFailure::Open))?;
-        let segment = Segment::open(
-            &self.store,
-            &segment_name,
-            &headers,
-            Arc::clone(&self.shared.bytes_written),
-            &self.shared,
-        )?;
         if self.shared.discontinuity_requested.load(Ordering::Acquire) {
             return Err(WorkerError::new(RecorderFailure::Discontinuity));
         }
@@ -908,8 +934,8 @@ impl WorkerContext {
             .segment
             .as_ref()
             .map(|segment| Arc::clone(&segment.partial_exists));
-        self.segment_started_at = Some(arrived_at);
-        self.segment_started_at_unix_seconds = Some(arrived_at_unix_seconds);
+        self.segment_started_at = Some(segment_started_at);
+        self.segment_started_at_unix_seconds = Some(segment_started_at_unix_seconds);
         self.next_segment_sequence = next_segment_sequence;
         let mut status = self.shared.lock_status();
         if !matches!(status.phase, RecorderWorkerPhase::Failed(_)) {
@@ -922,6 +948,29 @@ impl WorkerContext {
             status.segments_started = status.segments_started.saturating_add(1);
         }
         Ok(())
+    }
+
+    fn resumable_segment(
+        &self,
+        arrived_at_unix_seconds: u64,
+    ) -> Result<Option<(String, u64)>, WorkerError> {
+        let Some(interval) = self.rotation_interval else {
+            return Ok(None);
+        };
+        let names = self
+            .store
+            .recording_names()
+            .map_err(|_| WorkerError::new(RecorderFailure::Open))?;
+        Ok(names
+            .into_iter()
+            .filter_map(|name| {
+                let started_at = self
+                    .path_policy
+                    .segment_start_from_filename(&self.stream_name, &name)?;
+                let age = arrived_at_unix_seconds.checked_sub(started_at)?;
+                (Duration::from_secs(age) < interval).then_some((name, started_at))
+            })
+            .max_by_key(|(_, started_at)| *started_at))
     }
 
     fn finish_segment(&mut self) -> Result<(), WorkerError> {
@@ -1063,6 +1112,40 @@ impl Segment {
         };
         let mut muxer =
             FlvMuxer::new(counted).map_err(|_| WorkerError::new(RecorderFailure::Open))?;
+        for header in headers {
+            write_to_muxer(&mut muxer, header)?;
+        }
+        Ok(Self {
+            muxer,
+            partial_relative_name,
+            preserve_partial,
+            partial_exists,
+        })
+    }
+
+    fn resume(
+        store: &RecordingStore,
+        relative_name: &str,
+        headers: &[MediaEvent],
+        bytes_written: Arc<AtomicU64>,
+        shared: &WorkerShared,
+    ) -> Result<Self, WorkerError> {
+        let resume = store
+            .resume(relative_name)
+            .map_err(|_| WorkerError::new(RecorderFailure::Open))?;
+        let partial_relative_name = resume.file.partial_relative_name().to_owned();
+        let preserve_partial = resume.file.preservation_handle();
+        let partial_exists = resume.file.partial_existence_handle();
+        *shared
+            .commit_cancellation
+            .lock()
+            .expect("recorder commit cancellation mutex poisoned") =
+            Some(resume.file.commit_cancellation());
+        let counted = CountedRecordingFile {
+            inner: resume.file,
+            bytes_written,
+        };
+        let mut muxer = FlvMuxer::resume(counted, resume.flags, resume.last_timestamp_ms);
         for header in headers {
             write_to_muxer(&mut muxer, header)?;
         }

@@ -49,6 +49,7 @@ fn lowers_inherited_exact_rtmp_and_recorder_policy_without_accessing_the_root() 
     assert_eq!(recorder.suffix_template, "-%%.flv");
     assert!(recorder.append_unix_seconds);
     assert_eq!(recorder.rotation_interval_ms, Some(1_500));
+    assert_eq!(recorder.max_active_recorders, 32);
     assert_eq!(
         report.occurrence_ledger.len(),
         report.source_graph.expanded_occurrences.len()

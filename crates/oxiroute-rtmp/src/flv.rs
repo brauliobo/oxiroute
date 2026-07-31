@@ -80,6 +80,7 @@ pub struct FlvMuxer<W> {
     writer: W,
     header_start: u64,
     flags: u8,
+    timestamp_base_ms: u32,
     first_media_timestamp_ms: Option<u32>,
     cached_codec_headers: Vec<CachedCodecHeader>,
     aac_sequence_header_seen: bool,
@@ -104,12 +105,28 @@ where
             writer,
             header_start,
             flags: 0,
+            timestamp_base_ms: 0,
             first_media_timestamp_ms: None,
             cached_codec_headers: Vec::with_capacity(2),
             aac_sequence_header_seen: false,
             avc_sequence_header_seen: false,
             waiting_for_avc_keyframe: false,
         })
+    }
+
+    /// Continues a validated FLV stream whose writer is positioned after its last complete tag.
+    pub(crate) fn resume(writer: W, flags: u8, last_timestamp_ms: u32) -> Self {
+        Self {
+            writer,
+            header_start: 0,
+            flags,
+            timestamp_base_ms: last_timestamp_ms,
+            first_media_timestamp_ms: None,
+            cached_codec_headers: Vec::with_capacity(2),
+            aac_sequence_header_seen: false,
+            avc_sequence_header_seen: false,
+            waiting_for_avc_keyframe: false,
+        }
     }
 
     /// Accepts one immutable RTMP audio-message payload at its RTMP timestamp.
@@ -197,7 +214,7 @@ where
     /// Returns an error for an oversized payload or if output fails.
     pub fn write_metadata(&mut self, payload: &[u8]) -> Result<(), FlvMuxerError> {
         validate_size(FlvTagType::Metadata, payload)?;
-        self.write_tag(FlvTagType::Metadata, 0, payload)
+        self.write_tag(FlvTagType::Metadata, self.timestamp_base_ms, payload)
     }
 
     /// Patches the FLV audio/video flags, flushes the output, and returns the writer.
@@ -236,7 +253,7 @@ where
 
         self.first_media_timestamp_ms = Some(timestamp_ms);
         for header in std::mem::take(&mut self.cached_codec_headers) {
-            self.write_tag(header.tag_type, 0, &header.payload)?;
+            self.write_tag(header.tag_type, self.timestamp_base_ms, &header.payload)?;
         }
         Ok(())
     }
@@ -252,7 +269,8 @@ where
             .expect("tags are written only after media starts");
         self.write_tag(
             tag_type,
-            relative_timestamp(first_timestamp, timestamp_ms),
+            self.timestamp_base_ms
+                .saturating_add(relative_timestamp(first_timestamp, timestamp_ms)),
             payload,
         )
     }

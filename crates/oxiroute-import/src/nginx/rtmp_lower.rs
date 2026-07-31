@@ -24,7 +24,7 @@ use super::{
 const DEFAULT_MAX_QUEUE_MESSAGES: u64 = 256;
 const DEFAULT_MAX_QUEUE_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS: u64 = 5_000;
-const DEFAULT_MAX_ACTIVE_RECORDERS: u64 = 8;
+const DEFAULT_MAX_ACTIVE_RECORDERS: u64 = 32;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BlockedRtmpService {
