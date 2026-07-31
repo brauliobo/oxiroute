@@ -8,7 +8,7 @@ members = [
     "crates/oxiroute-rtmp",
     "crates/oxiroute-server",
 ]
-exclude = ["vendor/pingora-core"]
+exclude = ["vendor/pingora-core", "vendor/pingora-proxy"]
 resolver = "3"
 
 [workspace.package]
@@ -59,6 +59,7 @@ zeroize = "1.9"
 [patch.crates-io]
 h3 = { git = "https://github.com/hyperium/h3", rev = "e07e69412876f7e26f026bd75a48b2704d8c8283" }
 pingora-core = { path = "vendor/pingora-core" }
+pingora-proxy = { path = "vendor/pingora-proxy" }
 rml_rtmp = { path = "vendor/rml_rtmp" }
 
 [profile.release]

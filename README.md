@@ -140,6 +140,6 @@ acceptance tests were run and observed failing before their implementations were
 
 ## License
 
-Apache License 2.0. Upstream projects retain their own licenses. The patched `pingora-core`
-source is vendored under its upstream Apache-2.0 license; its provenance and delta are documented
-in `vendor/pingora-core/README.oxiroute.md`.
+Apache License 2.0. Upstream projects retain their own licenses. The `pingora-core` and
+`pingora-proxy` sources are vendored under their upstream Apache-2.0 licenses; their provenance and
+local deltas are documented in their respective `vendor/*/README.oxiroute.md` files.
