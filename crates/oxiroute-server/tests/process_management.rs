@@ -85,6 +85,77 @@ async fn built_process_serves_readiness_status_and_redacted_metrics_on_multiple_
     server.shutdown();
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn generation_status_remains_responsive_through_publication() {
+    let management_address = reserve_tcp_address();
+    let mut config = management_config(management_address, None);
+    let mut server = ServerProcess::start(&config, Some(TOKEN));
+    server.wait_for_tcp(management_address).await;
+    let authorization = format!("Bearer {TOKEN}");
+    let mut status_connection = TcpStream::connect(management_address)
+        .await
+        .expect("status connection");
+    let original_status = tokio::time::timeout(
+        Duration::from_secs(1),
+        persistent_request(
+            &mut status_connection,
+            "GET",
+            "/api/v1/generations",
+            &[("Authorization", &authorization)],
+            &[],
+        ),
+    )
+    .await
+    .expect("initial generation status timed out");
+    let original_revision = original_status.json()["generation"]["activeRevision"]
+        .as_str()
+        .expect("original revision")
+        .to_owned();
+
+    let reader_authorization = authorization.clone();
+    let reader_revision = original_revision.clone();
+    let (request_started, mut request_start) = tokio::sync::mpsc::unbounded_channel();
+    let status_reader = tokio::spawn(async move {
+        let mut status_reads = 0_u64;
+        loop {
+            request_started.send(()).expect("status reader receiver");
+            let status = tokio::time::timeout(
+                Duration::from_secs(1),
+                persistent_request(
+                    &mut status_connection,
+                    "GET",
+                    "/api/v1/generations",
+                    &[("Authorization", &reader_authorization)],
+                    &[],
+                ),
+            )
+            .await
+            .expect("generation status blocked during publication");
+            assert_eq!(status.status, 200);
+            status_reads += 1;
+            if status.json()["generation"]["activeRevision"].as_str()
+                != Some(reader_revision.as_str())
+            {
+                return status_reads;
+            }
+            tokio::task::yield_now().await;
+        }
+    });
+    request_start
+        .recv()
+        .await
+        .expect("first status request started");
+    config.max_connections = Some(101);
+    write_config(&server.config_path, &config);
+    let status_reads = tokio::time::timeout(process_support::PROCESS_TIMEOUT, status_reader)
+        .await
+        .expect("generation reload timed out")
+        .expect("status reader");
+    assert!(status_reads > 1, "status was not sampled continuously");
+
+    server.shutdown();
+}
+
 #[tokio::test]
 async fn stats_admin_uses_json_targets_and_rejects_duplicate_authorization_headers() {
     let directory = TempDir::new().expect("stats admin directory");
@@ -976,14 +1047,18 @@ async fn dns_refresh_batch_reports_every_target_and_explicit_non_atomic_outcomes
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn authenticated_local_shutdown_uses_the_graceful_process_channel() {
     let management_address = reserve_tcp_address();
     let config = management_config(management_address, None);
     let mut server = ServerProcess::start(&config, Some(TOKEN));
     server.wait_for_tcp(management_address).await;
     let authorization = format!("Bearer {TOKEN}");
-    let active_revision = http_request(
-        management_address,
+    let mut management = TcpStream::connect(management_address)
+        .await
+        .expect("persistent management connection");
+    let active_revision = persistent_request(
+        &mut management,
         "GET",
         "/api/v1/generations",
         &[("Authorization", &authorization)],
@@ -994,6 +1069,23 @@ async fn authenticated_local_shutdown_uses_the_graceful_process_channel() {
         .as_str()
         .expect("active revision")
         .to_owned();
+    let config_snapshot = persistent_request(
+        &mut management,
+        "GET",
+        "/api/v1/config",
+        &[("Authorization", &authorization)],
+        &[],
+    )
+    .await
+    .json();
+    let disk_revision = config_snapshot["diskRevision"]
+        .as_str()
+        .expect("disk revision")
+        .to_owned();
+    let disk_before_shutdown = fs::read(&server.config_path).expect("canonical config");
+    let mut changed_config = config.clone();
+    changed_config.max_connections = Some(777);
+    let config_body = serde_json::to_vec(&json!({ "config": changed_config })).unwrap();
     let mutation_body = serde_json::to_vec(&json!({
         "expectedActiveRevision": active_revision,
     }))
@@ -1032,8 +1124,8 @@ async fn authenticated_local_shutdown_uses_the_graceful_process_channel() {
     let ready = http_request(management_address, "GET", "/ready", &[], &[]).await;
     assert_eq!(ready.status, 503);
     assert_eq!(ready.json()["ready"], false);
-    let shutdown = http_request(
-        management_address,
+    let shutdown = persistent_request(
+        &mut management,
         "POST",
         "/api/v1/process/shutdown",
         &[
@@ -1046,6 +1138,38 @@ async fn authenticated_local_shutdown_uses_the_graceful_process_channel() {
     assert_eq!(shutdown.status, 202);
     assert_eq!(shutdown.json()["outcome"], "shutdown_requested");
 
+    let validated = persistent_request(
+        &mut management,
+        "POST",
+        "/api/v1/config/validate",
+        &[
+            ("Authorization", &authorization),
+            ("Content-Type", "application/json"),
+        ],
+        &config_body,
+    )
+    .await;
+    assert_eq!(validated.status, 200, "{}", validated.text());
+    let rejected = persistent_request(
+        &mut management,
+        "PUT",
+        "/api/v1/config",
+        &[
+            ("Authorization", &authorization),
+            ("Content-Type", "application/json"),
+            ("If-Config-Revision", &disk_revision),
+        ],
+        &config_body,
+    )
+    .await;
+    assert_eq!(rejected.status, 409, "{}", rejected.text());
+    assert_eq!(rejected.json()["error"]["code"], "mutation_in_progress");
+    assert_eq!(
+        fs::read(&server.config_path).expect("canonical config after rejected PUT"),
+        disk_before_shutdown
+    );
+
+    drop(management);
     tokio::task::spawn_blocking(move || server.wait_for_exit())
         .await
         .expect("wait task");

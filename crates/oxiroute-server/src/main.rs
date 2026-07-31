@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     process::ExitCode,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -196,7 +196,9 @@ impl ServiceWithDependents for GenerationRuntimeMarker {
         _listeners_per_fd: usize,
         ready_notifier: ServiceReadyNotifier,
     ) {
-        self.generation.mark_runtime_started();
+        if !self.generation.mark_runtime_started() {
+            return;
+        }
         ready_notifier.notify_ready();
         while !*shutdown.borrow() && shutdown.changed().await.is_ok() {}
     }
@@ -616,6 +618,13 @@ struct GenerationProcess {
     thread: JoinHandle<()>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GenerationJoinOutcome {
+    Joined,
+    Panicked,
+    Detached,
+}
+
 impl GenerationProcess {
     fn start(
         generation: Arc<RuntimeGeneration>,
@@ -694,14 +703,90 @@ impl GenerationProcess {
         let _ = self.shutdown.send(true);
     }
 
+    fn initiate_recorder_shutdown(
+        &self,
+        deadline: std::time::Instant,
+    ) -> Vec<oxiroute_rtmp::RtmpRecorderShutdown> {
+        self.generation.initiate_recorder_shutdown(deadline)
+    }
+
     fn is_finished(&self) -> bool {
         self.thread.is_finished()
     }
 
-    fn join(self) {
+    fn join_until(self, deadline: std::time::Instant) -> GenerationJoinOutcome {
         self.request_shutdown();
-        let _ = self.thread.join();
+        while !self.thread.is_finished() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        if !self.thread.is_finished() {
+            return GenerationJoinOutcome::Detached;
+        }
+        match self.thread.join() {
+            Ok(()) => GenerationJoinOutcome::Joined,
+            Err(_) => GenerationJoinOutcome::Panicked,
+        }
     }
+}
+
+fn finish_generation_process(process: GenerationProcess, deadline: std::time::Instant) -> bool {
+    match process.join_until(deadline) {
+        GenerationJoinOutcome::Joined => true,
+        GenerationJoinOutcome::Panicked => {
+            error!("generation runtime thread panicked during shutdown");
+            false
+        }
+        GenerationJoinOutcome::Detached => {
+            warn!("generation runtime did not stop before the process shutdown deadline");
+            true
+        }
+    }
+}
+
+fn push_unique_recorder_shutdown(
+    shutdowns: &mut Vec<oxiroute_rtmp::RtmpRecorderShutdown>,
+    shutdown: oxiroute_rtmp::RtmpRecorderShutdown,
+) {
+    if !shutdowns
+        .iter()
+        .any(|existing| existing.is_same_lifecycle(&shutdown))
+    {
+        shutdowns.push(shutdown);
+    }
+}
+
+fn shutdown_generation_processes(
+    manager: &GenerationManager,
+    processes: Vec<GenerationProcess>,
+    deadline: std::time::Instant,
+) -> bool {
+    let mut recorder_shutdowns = manager.begin_shutdown(deadline);
+    for process in &processes {
+        for shutdown in process.initiate_recorder_shutdown(deadline) {
+            push_unique_recorder_shutdown(&mut recorder_shutdowns, shutdown);
+        }
+        process.generation.stop_accepting();
+    }
+    while std::time::Instant::now() < deadline
+        && processes
+            .iter()
+            .any(|process| !process.generation.drained())
+    {
+        thread::sleep(Duration::from_millis(10));
+    }
+    for process in &processes {
+        process.request_shutdown();
+    }
+    for shutdown in &recorder_shutdowns {
+        if !shutdown.wait_until(deadline) {
+            break;
+        }
+    }
+    let mut clean = true;
+    for process in processes {
+        clean &= finish_generation_process(process, deadline);
+    }
+    clean
 }
 
 fn supervise_generations(
@@ -712,11 +797,13 @@ fn supervise_generations(
     process_shutdown: &Arc<AtomicBool>,
 ) -> bool {
     let mut retired = Vec::<GenerationProcess>::new();
+    let mut successful = true;
     while !stop.load(Ordering::Acquire) {
         if current.is_finished() || current.generation.runtime_failed() {
             error!("active generation runtime terminated unexpectedly");
             process_shutdown.store(true, Ordering::Release);
-            return false;
+            successful = false;
+            break;
         }
         retired = retired
             .into_iter()
@@ -725,7 +812,7 @@ fn supervise_generations(
                     process.request_shutdown();
                 }
                 if process.is_finished() {
-                    process.join();
+                    successful &= finish_generation_process(process, std::time::Instant::now());
                     None
                 } else {
                     Some(process)
@@ -736,7 +823,7 @@ fn supervise_generations(
             thread::sleep(Duration::from_millis(20));
             continue;
         };
-        let startup = match manager.begin_candidate_start(&candidate) {
+        let mut startup = match manager.begin_candidate_start(&candidate) {
             Ok(startup) => startup,
             Err(oxiroute_server::GenerationError::MutationInProgress) => {
                 thread::sleep(Duration::from_millis(20));
@@ -744,9 +831,16 @@ fn supervise_generations(
             }
             Err(_) => continue,
         };
+        let starting_generation = match startup.claim_runtime_start() {
+            Ok(generation) => generation,
+            Err(error) => {
+                error!("candidate generation start claim failed: {error}");
+                continue;
+            }
+        };
 
         match GenerationProcess::start(
-            Arc::clone(startup.generation()),
+            starting_generation,
             coordinator.clone(),
             manager.clone(),
             process_shutdown,
@@ -765,7 +859,10 @@ fn supervise_generations(
                 }
                 Err(error) => {
                     error!("candidate generation publication failed: {error}");
-                    next.join();
+                    successful &= finish_generation_process(
+                        next,
+                        std::time::Instant::now() + Duration::from_secs(5),
+                    );
                 }
             },
             Err(error) => {
@@ -775,25 +872,9 @@ fn supervise_generations(
         }
     }
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    current.generation.stop_accepting();
-    for process in &retired {
-        process.generation.stop_accepting();
-    }
-    while std::time::Instant::now() < deadline
-        && (!current.generation.drained()
-            || retired.iter().any(|process| !process.generation.drained()))
-    {
-        thread::sleep(Duration::from_millis(10));
-    }
-    current.request_shutdown();
-    for process in &retired {
-        process.request_shutdown();
-    }
-    current.join();
-    for process in retired {
-        process.join();
-    }
-    true
+    retired.push(current);
+    let shutdown_clean = shutdown_generation_processes(manager, retired, deadline);
+    successful && shutdown_clean
 }
 
 fn wait_for_generation_ready(
@@ -832,6 +913,41 @@ fn wait_for_generation_ready(
     }
 }
 
+fn start_config_watcher_or_shutdown<F>(
+    coordinator: CanonicalConfigCoordinator,
+    manager: &GenerationManager,
+    initial: &Arc<Mutex<Option<GenerationProcess>>>,
+    start: F,
+) -> Result<ConfigWatcher, Box<dyn Error>>
+where
+    F: FnOnce(
+        CanonicalConfigCoordinator,
+        GenerationManager,
+        ConfigWatcherOptions,
+    ) -> notify::Result<ConfigWatcher>,
+{
+    match start(
+        coordinator,
+        manager.clone(),
+        ConfigWatcherOptions::default(),
+    ) {
+        Ok(watcher) => Ok(watcher),
+        Err(error) => {
+            let process = initial
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some(process) = process {
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                let _ = shutdown_generation_processes(manager, vec![process], deadline);
+            } else {
+                error!("initial generation ownership was lost before watcher failure cleanup");
+            }
+            Err(error.into())
+        }
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn run(config_path: &Path) -> Result<(), Box<dyn Error>> {
     let stop_supervisor = Arc::new(AtomicBool::new(false));
@@ -866,25 +982,43 @@ fn run(config_path: &Path) -> Result<(), Box<dyn Error>> {
     }
     let generation_manager = GenerationManager::new();
     let candidate = generation_manager.prepare(*config_document)?;
+    let mut startup = generation_manager.begin_candidate_start(&candidate)?;
+    let starting_generation = startup.claim_runtime_start()?;
     let initial = GenerationProcess::start(
-        Arc::clone(candidate.generation()),
+        starting_generation,
         config_coordinator.clone(),
         generation_manager.clone(),
         &stop_supervisor,
     )?;
     if let Err(error) = wait_for_generation_ready(candidate.generation(), &stop_supervisor) {
-        initial.join();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let _ = shutdown_generation_processes(&generation_manager, vec![initial], deadline);
+        signal_handle.close();
+        let _ = signal_thread.join();
         return Err(error);
     }
-    generation_manager.activate(&candidate)?;
     let supervisor_stop = Arc::clone(&stop_supervisor);
     let supervisor_manager = generation_manager.clone();
     let supervisor_coordinator = config_coordinator.clone();
     let supervisor_healthy = Arc::new(AtomicBool::new(true));
     let thread_supervisor_healthy = Arc::clone(&supervisor_healthy);
-    let supervisor = thread::Builder::new()
+    let initial = Arc::new(Mutex::new(Some(initial)));
+    let thread_initial = Arc::clone(&initial);
+    let (start_supervisor, await_supervisor_start) = mpsc::sync_channel(1);
+    let supervisor = match thread::Builder::new()
         .name("oxiroute-generation-supervisor".into())
         .spawn(move || {
+            if await_supervisor_start.recv().is_err() {
+                return;
+            }
+            let Some(initial) = thread_initial
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+            else {
+                thread_supervisor_healthy.store(false, Ordering::Release);
+                return;
+            };
             if !supervise_generations(
                 &supervisor_manager,
                 &supervisor_coordinator,
@@ -894,23 +1028,86 @@ fn run(config_path: &Path) -> Result<(), Box<dyn Error>> {
             ) {
                 thread_supervisor_healthy.store(false, Ordering::Release);
             }
-        })?;
-    let mut config_watcher = ConfigWatcher::start(
+        }) {
+        Ok(supervisor) => supervisor,
+        Err(error) => {
+            let initial = initial
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some(initial) = initial {
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                let _ = shutdown_generation_processes(&generation_manager, vec![initial], deadline);
+            }
+            signal_handle.close();
+            let _ = signal_thread.join();
+            return Err(error.into());
+        }
+    };
+    if let Err(error) = startup.activate() {
+        drop(start_supervisor);
+        let _ = supervisor.join();
+        let initial = initial
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(initial) = initial {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let _ = shutdown_generation_processes(&generation_manager, vec![initial], deadline);
+        }
+        signal_handle.close();
+        let _ = signal_thread.join();
+        return Err(error.into());
+    }
+    let mut config_watcher = match start_config_watcher_or_shutdown(
         config_coordinator,
-        generation_manager.clone(),
-        ConfigWatcherOptions::default(),
-    )?;
+        &generation_manager,
+        &initial,
+        ConfigWatcher::start,
+    ) {
+        Ok(watcher) => watcher,
+        Err(error) => {
+            drop(start_supervisor);
+            let _ = supervisor.join();
+            signal_handle.close();
+            let _ = signal_thread.join();
+            return Err(error);
+        }
+    };
+    if start_supervisor.send(()).is_err() {
+        config_watcher.shutdown();
+        let initial = initial
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(initial) = initial {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let _ = shutdown_generation_processes(&generation_manager, vec![initial], deadline);
+        }
+        let _ = supervisor.join();
+        signal_handle.close();
+        let _ = signal_thread.join();
+        return Err(io::Error::other("generation supervisor terminated before startup").into());
+    }
     while !stop_supervisor.load(Ordering::Acquire) {
         thread::sleep(Duration::from_millis(20));
     }
     signal_handle.close();
-    signal_thread
-        .join()
-        .map_err(|_| io::Error::other("signal thread terminated unexpectedly"))?;
+    let signal_result = signal_thread.join();
     config_watcher.shutdown();
-    supervisor
-        .join()
-        .map_err(|_| io::Error::other("generation supervisor terminated unexpectedly"))?;
+    let supervisor_result = supervisor.join();
+    if signal_result.is_err() {
+        return Err(io::Error::other("signal thread terminated unexpectedly").into());
+    }
+    if supervisor_result.is_err() {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        for shutdown in generation_manager.begin_shutdown(deadline) {
+            if !shutdown.wait_until(deadline) {
+                break;
+            }
+        }
+        return Err(io::Error::other("generation supervisor terminated unexpectedly").into());
+    }
     if supervisor_healthy.load(Ordering::Acquire) {
         Ok(())
     } else {
@@ -1150,19 +1347,126 @@ fn unix_time_ms() -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{collections::VecDeque, fs};
 
+    use bytes::Bytes;
     use oxiroute_config::{
         Config, HealthCheck, HealthCheckType, HttpVersionPolicy, L4Service, Listener, ListenerBind,
-        Protocol, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool,
+        Protocol, RtmpApplication, RtmpRecorder, RtmpRecorderStart, RtmpService, UpstreamAlgorithm,
+        UpstreamEndpoint, UpstreamPool,
     };
+    use oxiroute_rtmp::RtmpSession;
     use oxiroute_server::runtime_plan;
+    use rml_rtmp::{
+        handshake::{Handshake, HandshakeProcessResult, PeerType},
+        sessions::{
+            ClientSession, ClientSessionConfig, ClientSessionEvent, ClientSessionResult,
+            PublishRequestType,
+        },
+        time::RtmpTimestamp,
+    };
+    use rustix::fs::{FlockOperation, flock};
     use tokio::{net::TcpListener, sync::watch};
 
     use super::*;
 
     #[test]
     fn active_runtime_death_fails_the_generation_supervisor() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("oxiroute.kdl");
+        let recording_root = directory.path().join("recordings");
+        fs::create_dir(&recording_root).expect("recording root");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener address");
+        let listener_address = listener.local_addr().expect("listener address");
+        drop(listener);
+        let config = recorder_runtime_config(listener_address, &recording_root);
+        let (coordinator, manager, generation) = activate_test_generation(&path, &config);
+        let ownership = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(recording_root.join(".oxiroute-recording.lock"))
+            .expect("recording ownership lock");
+        flock(&ownership, FlockOperation::LockExclusive).expect("stall recording storage");
+        publish_stalled_recorder(&generation);
+        let (shutdown, _receiver) = tokio::sync::watch::channel(false);
+        let thread = thread::spawn(|| {});
+        while !thread.is_finished() {
+            thread::yield_now();
+        }
+        let process = GenerationProcess {
+            generation,
+            shutdown,
+            thread,
+        };
+        let stop = AtomicBool::new(false);
+        let process_shutdown = Arc::new(AtomicBool::new(false));
+        let started = std::time::Instant::now();
+
+        assert!(!supervise_generations(
+            &manager,
+            &coordinator,
+            process,
+            &stop,
+            &process_shutdown,
+        ));
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(500),
+            "runtime failure bypassed bounded recorder shutdown: {elapsed:?}"
+        );
+        assert!(elapsed < Duration::from_secs(5));
+        assert!(process_shutdown.load(Ordering::Acquire));
+        flock(&ownership, FlockOperation::Unlock).expect("release recording storage");
+    }
+
+    #[test]
+    fn post_activation_watcher_failure_runs_bounded_recorder_cleanup() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("oxiroute.kdl");
+        let recording_root = directory.path().join("recordings");
+        fs::create_dir(&recording_root).expect("recording root");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener address");
+        let listener_address = listener.local_addr().expect("listener address");
+        drop(listener);
+        let config = recorder_runtime_config(listener_address, &recording_root);
+        let (coordinator, manager, generation) = activate_test_generation(&path, &config);
+        let ownership = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(recording_root.join(".oxiroute-recording.lock"))
+            .expect("recording ownership lock");
+        flock(&ownership, FlockOperation::LockExclusive).expect("stall recording storage");
+        let (shutdown, _receiver) = tokio::sync::watch::channel(false);
+        let thread = thread::spawn(|| {});
+        while !thread.is_finished() {
+            thread::yield_now();
+        }
+        let initial = Arc::new(Mutex::new(Some(GenerationProcess {
+            generation: Arc::clone(&generation),
+            shutdown,
+            thread,
+        })));
+        let started = std::time::Instant::now();
+
+        let result =
+            start_config_watcher_or_shutdown(coordinator, &manager, &initial, move |_, _, _| {
+                publish_stalled_recorder(&generation);
+                Err(notify::Error::generic("injected watcher failure"))
+            });
+        let elapsed = started.elapsed();
+
+        assert!(result.is_err());
+        assert!(initial.lock().expect("initial process slot").is_none());
+        assert!(
+            elapsed >= Duration::from_millis(500),
+            "watcher failure bypassed recorder cleanup: {elapsed:?}"
+        );
+        assert!(elapsed < Duration::from_secs(5));
+        flock(&ownership, FlockOperation::Unlock).expect("release recording storage");
+    }
+
+    #[test]
+    fn generation_join_detaches_at_the_absolute_process_deadline() {
         let directory = tempfile::tempdir().expect("directory");
         let path = directory.path().join("oxiroute.kdl");
         let config = Config {
@@ -1180,11 +1484,61 @@ mod tests {
             rtmp_services: Vec::new(),
             l4_services: Vec::new(),
         };
+        let (_, manager, generation) = activate_test_generation(&path, &config);
+        let (release, released) = mpsc::sync_channel(0);
+        let (finished, completion) = mpsc::sync_channel(1);
+        let thread = thread::spawn(move || {
+            released.recv().expect("release stuck generation");
+            finished.send(()).expect("generation completion receiver");
+        });
+        let (shutdown, _receiver) = tokio::sync::watch::channel(false);
+        let process = GenerationProcess {
+            generation,
+            shutdown,
+            thread,
+        };
+        let started = std::time::Instant::now();
+
+        let outcome = process.join_until(started + Duration::from_millis(75));
+        let elapsed = started.elapsed();
+
+        assert_eq!(outcome, GenerationJoinOutcome::Detached);
+        assert!(elapsed >= Duration::from_millis(50));
+        assert!(elapsed < Duration::from_millis(250));
+        release.send(()).expect("release generation thread");
+        completion
+            .recv_timeout(Duration::from_secs(1))
+            .expect("detached generation completion");
+
+        let thread = thread::spawn(|| panic!("injected completed generation panic"));
+        while !thread.is_finished() {
+            thread::yield_now();
+        }
+        let (shutdown, _receiver) = tokio::sync::watch::channel(false);
+        let completed = GenerationProcess {
+            generation: manager.active().expect("active generation"),
+            shutdown,
+            thread,
+        };
+        assert_eq!(
+            completed.join_until(std::time::Instant::now()),
+            GenerationJoinOutcome::Panicked
+        );
+    }
+
+    fn activate_test_generation(
+        path: &Path,
+        config: &Config,
+    ) -> (
+        CanonicalConfigCoordinator,
+        GenerationManager,
+        Arc<RuntimeGeneration>,
+    ) {
         fs::write(
-            &path,
+            path,
             oxiroute_config_source::render_config(
                 oxiroute_config_source::ConfigFormat::Kdl,
-                &config,
+                config,
             )
             .expect("render"),
         )
@@ -1195,28 +1549,185 @@ mod tests {
         };
         let manager = GenerationManager::new();
         let candidate = manager.prepare(*document).expect("candidate");
-        let generation = manager.activate(&candidate).expect("active");
-        let (shutdown, _receiver) = tokio::sync::watch::channel(false);
-        let thread = thread::spawn(|| {});
-        while !thread.is_finished() {
-            thread::yield_now();
-        }
-        let process = GenerationProcess {
-            generation,
-            shutdown,
-            thread,
-        };
-        let stop = AtomicBool::new(false);
-        let process_shutdown = Arc::new(AtomicBool::new(false));
+        let mut startup = manager
+            .begin_candidate_start(&candidate)
+            .expect("startup reservation");
+        let generation = startup.claim_runtime_start().expect("runtime start claim");
+        assert!(generation.mark_runtime_started());
+        startup.activate().expect("active");
+        (coordinator, manager, generation)
+    }
 
-        assert!(!supervise_generations(
-            &manager,
-            &coordinator,
-            process,
-            &stop,
-            &process_shutdown,
-        ));
-        assert!(process_shutdown.load(Ordering::Acquire));
+    fn publish_stalled_recorder(generation: &RuntimeGeneration) {
+        let mut server = generation
+            .rtmp_runtime("live")
+            .expect("RTMP runtime")
+            .session();
+        let mut client = connect_rtmp_session(&mut server, "live");
+        let publish = client
+            .request_publishing("camera".into(), PublishRequestType::Live)
+            .expect("publish request");
+        let events = exchange_rtmp(&mut client, &mut server, vec![publish], 1_000);
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, ClientSessionEvent::PublishRequestAccepted))
+        );
+        let audio = client
+            .publish_audio_data(
+                Bytes::from_static(&[0xaf, 0x01, 0x44]),
+                RtmpTimestamp::new(1),
+                false,
+            )
+            .expect("audio packet");
+        exchange_rtmp(&mut client, &mut server, vec![audio], 1_001);
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    fn recorder_runtime_config(
+        listener_address: std::net::SocketAddr,
+        recording_root: &Path,
+    ) -> Config {
+        Config {
+            version: 1,
+            max_connections: None,
+            management: None,
+            stats: None,
+            certificates: Vec::new(),
+            tls_profiles: Vec::new(),
+            listeners: vec![Listener {
+                name: "live".into(),
+                bind: ListenerBind::Socket {
+                    address: listener_address,
+                },
+                protocol: Protocol::Rtmp,
+                service: Some("live".into()),
+                tls_profile: None,
+                max_connections: Some(4),
+                downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+            }],
+            cache_stores: Vec::new(),
+            upstream_pools: Vec::new(),
+            http_services: Vec::new(),
+            forward_proxy_services: Vec::new(),
+            rtmp_services: vec![RtmpService {
+                name: "live".into(),
+                outbound_chunk_size: 4_096,
+                access_log: None,
+                applications: vec![RtmpApplication {
+                    name: "live".into(),
+                    live: true,
+                    idle_streams: true,
+                    push_targets: Vec::new(),
+                    fanout: oxiroute_config::RtmpFanoutPolicy::default(),
+                    recorders: vec![RtmpRecorder {
+                        name: "archive".into(),
+                        start: RtmpRecorderStart::Continuous,
+                        root_directory: recording_root.to_path_buf(),
+                        suffix_template: ".flv".into(),
+                        append_unix_seconds: false,
+                        timezone: oxiroute_config::RtmpRecorderTimezone::default(),
+                        time_basis: oxiroute_config::RtmpRecorderTimeBasis::default(),
+                        segment_naming: oxiroute_config::RtmpRecorderSegmentNaming::default(),
+                        rotation_interval_ms: None,
+                        max_queue_messages: 32,
+                        max_queue_bytes: 1_024,
+                        shutdown_timeout_ms: 1_000,
+                        max_storage_bytes: Some(1024 * 1024),
+                        max_storage_files: Some(32),
+                        max_active_recorders: 4,
+                    }],
+                }],
+            }],
+            l4_services: Vec::new(),
+        }
+    }
+
+    fn connect_rtmp_session(server: &mut RtmpSession, application: &str) -> ClientSession {
+        let mut handshake = Handshake::new(PeerType::Client);
+        let client_hello = handshake
+            .generate_outbound_p0_and_p1()
+            .expect("client hello");
+        let server_hello = server.receive(&client_hello, 1_000).expect("server hello");
+        let client_finish = match handshake
+            .process_bytes(&server_hello.concat())
+            .expect("client handshake response")
+        {
+            HandshakeProcessResult::Completed { response_bytes, .. } => response_bytes,
+            result @ HandshakeProcessResult::InProgress { .. } => {
+                panic!("client handshake did not complete: {result:?}");
+            }
+        };
+        let startup = server
+            .receive(&client_finish, 1_000)
+            .expect("server handshake completion");
+        let (mut client, initial) = ClientSession::new(ClientSessionConfig::new()).expect("client");
+        assert!(initial.is_empty());
+        assert!(feed_rtmp_client(&mut client, startup).0.is_empty());
+        let request = client
+            .request_connection(application.into())
+            .expect("connection request");
+        let events = exchange_rtmp(&mut client, server, vec![request], 1_000);
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, ClientSessionEvent::ConnectionRequestAccepted))
+        );
+        client
+    }
+
+    fn exchange_rtmp(
+        client: &mut ClientSession,
+        server: &mut RtmpSession,
+        initial: Vec<ClientSessionResult>,
+        at_unix_ms: u64,
+    ) -> Vec<ClientSessionEvent> {
+        let mut packets = outbound_rtmp_packets(initial);
+        let mut events = Vec::new();
+        for _ in 0..8 {
+            if packets.is_empty() {
+                return events;
+            }
+            let mut responses = Vec::new();
+            while let Some(packet) = packets.pop_front() {
+                responses.extend(server.receive(&packet, at_unix_ms).expect("server input"));
+            }
+            let (next, mut raised) = feed_rtmp_client(client, responses);
+            packets = next;
+            events.append(&mut raised);
+        }
+        panic!("RTMP exchange did not settle");
+    }
+
+    fn feed_rtmp_client(
+        client: &mut ClientSession,
+        server_packets: Vec<Vec<u8>>,
+    ) -> (VecDeque<Vec<u8>>, Vec<ClientSessionEvent>) {
+        let mut packets = VecDeque::new();
+        let mut events = Vec::new();
+        for packet in server_packets {
+            for result in client.handle_input(&packet).expect("client input") {
+                match result {
+                    ClientSessionResult::OutboundResponse(packet) => {
+                        packets.push_back(packet.bytes);
+                    }
+                    ClientSessionResult::RaisedEvent(event) => events.push(event),
+                    ClientSessionResult::UnhandleableMessageReceived(_) => {}
+                }
+            }
+        }
+        (packets, events)
+    }
+
+    fn outbound_rtmp_packets(results: Vec<ClientSessionResult>) -> VecDeque<Vec<u8>> {
+        results
+            .into_iter()
+            .filter_map(|result| match result {
+                ClientSessionResult::OutboundResponse(packet) => Some(packet.bytes),
+                ClientSessionResult::RaisedEvent(_)
+                | ClientSessionResult::UnhandleableMessageReceived(_) => None,
+            })
+            .collect()
     }
 
     #[tokio::test]

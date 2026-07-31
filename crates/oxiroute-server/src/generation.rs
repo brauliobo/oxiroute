@@ -3,15 +3,17 @@ use std::{
     io,
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
 
 use oxiroute_config::Config;
 use oxiroute_config_source::ConfigFormat;
-use oxiroute_rtmp::{RtmpRegistry, RtmpServiceRuntime};
-use pingora::apps::{AcceptGate, AcceptOwnership};
+use oxiroute_rtmp::{
+    RtmpRecorderLifecycle, RtmpRecorderShutdown, RtmpRegistry, RtmpServiceRuntime,
+};
+use pingora::apps::{AcceptGate, AcceptGateClose, AcceptOwnership};
 use serde::Serialize;
 
 use crate::{
@@ -137,9 +139,14 @@ pub struct RuntimeGeneration {
     revision: GenerationRevision,
     rtmp_registry: Arc<RtmpRegistry>,
     rtmp_runtimes: HashMap<String, RtmpServiceRuntime>,
-    runtime_started: AtomicBool,
+    runtime_lifecycle: AtomicU8,
     runtime_failed: AtomicBool,
 }
+
+const RUNTIME_PREPARED: u8 = 0;
+const RUNTIME_START_CLAIMED: u8 = 1;
+const RUNTIME_STARTED: u8 = 2;
+const RUNTIME_CANCELLED: u8 = 3;
 
 impl RuntimeGeneration {
     fn activate(prepared: PreparedGeneration) -> Self {
@@ -155,7 +162,7 @@ impl RuntimeGeneration {
             revision: prepared.revision,
             rtmp_registry: prepared.rtmp_registry,
             rtmp_runtimes: prepared.rtmp_runtimes,
-            runtime_started: AtomicBool::new(false),
+            runtime_lifecycle: AtomicU8::new(RUNTIME_PREPARED),
             runtime_failed: AtomicBool::new(false),
         }
     }
@@ -195,13 +202,53 @@ impl RuntimeGeneration {
         self.rtmp_runtimes.get(service)
     }
 
-    pub fn mark_runtime_started(&self) {
-        self.runtime_started.store(true, Ordering::Release);
+    fn close_runtime_admission(&self) {
+        for runtime in self.rtmp_runtimes.values() {
+            runtime.close_admission();
+        }
+    }
+
+    pub fn initiate_recorder_shutdown(&self, deadline: Instant) -> Vec<RtmpRecorderShutdown> {
+        self.close_runtime_admission();
+        self.rtmp_runtimes
+            .values()
+            .filter_map(|runtime| runtime.initiate_recorder_shutdown(deadline))
+            .collect()
+    }
+
+    fn recorder_lifecycles(&self) -> Vec<RtmpRecorderLifecycle> {
+        self.rtmp_runtimes
+            .values()
+            .filter_map(RtmpServiceRuntime::recorder_lifecycle)
+            .collect()
+    }
+
+    fn claim_runtime_start(&self) -> bool {
+        self.runtime_lifecycle
+            .compare_exchange(
+                RUNTIME_PREPARED,
+                RUNTIME_START_CLAIMED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    #[must_use]
+    pub fn mark_runtime_started(&self) -> bool {
+        self.runtime_lifecycle
+            .compare_exchange(
+                RUNTIME_START_CLAIMED,
+                RUNTIME_STARTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
     }
 
     #[must_use]
     pub fn runtime_started(&self) -> bool {
-        self.runtime_started.load(Ordering::Acquire)
+        self.runtime_lifecycle.load(Ordering::Acquire) == RUNTIME_STARTED
     }
 
     pub fn mark_runtime_failed(&self) {
@@ -211,6 +258,12 @@ impl RuntimeGeneration {
     #[must_use]
     pub fn runtime_failed(&self) -> bool {
         self.runtime_failed.load(Ordering::Acquire)
+    }
+
+    fn cancel_runtime_start(&self) {
+        self.runtime_lifecycle
+            .store(RUNTIME_CANCELLED, Ordering::Release);
+        self.runtime_failed.store(true, Ordering::Release);
     }
 
     pub fn begin_reference(
@@ -386,7 +439,35 @@ struct GenerationState {
     last_failure: Option<&'static str>,
     previous: Option<Arc<RuntimeGeneration>>,
     quarantined_revision: Option<ConfigRevision>,
-    starting_candidate: Option<u64>,
+    shutdown_generations: Vec<Arc<RuntimeGeneration>>,
+    shutting_down: bool,
+    starting_candidate: Option<CandidateStartReservation>,
+}
+
+#[derive(Default)]
+struct GenerationCleanupRegistry {
+    recorder_lifecycles: Vec<RtmpRecorderLifecycle>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CandidateStartPhase {
+    Starting,
+    RuntimeOwned,
+    Activating,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CandidateStartReservation {
+    candidate_id: u64,
+    phase: CandidateStartPhase,
+    token: u64,
+}
+
+struct ActivationReservation {
+    previous: Option<Arc<RuntimeGeneration>>,
+    previous_revision: Option<ConfigRevision>,
+    runtime_owned: bool,
+    token: u64,
 }
 
 #[derive(Default)]
@@ -399,30 +480,59 @@ struct GenerationCounters {
 
 #[derive(Clone)]
 pub struct GenerationManager {
+    #[cfg(test)]
+    activation_hook: Arc<Mutex<Option<ActivationHook>>>,
     counters: Arc<GenerationCounters>,
+    cleanup: Arc<Mutex<GenerationCleanupRegistry>>,
     next_candidate_id: Arc<AtomicU64>,
+    next_reservation_token: Arc<AtomicU64>,
     operations: Arc<Mutex<()>>,
     process: ProcessRuntime,
     state: Arc<Mutex<GenerationState>>,
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ActivationHookPoint {
+    Reserved,
+    GateClosed,
+}
+
+#[cfg(test)]
+type ActivationHook = Arc<dyn Fn(ActivationHookPoint) + Send + Sync>;
+
 pub struct GenerationStartup {
     candidate: GenerationCandidate,
     manager: GenerationManager,
+    reservation_token: u64,
     completed: bool,
 }
 
 impl GenerationStartup {
-    #[must_use]
-    pub fn generation(&self) -> &Arc<RuntimeGeneration> {
-        self.candidate.generation()
+    /// Claims the single permitted runtime start for this candidate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the startup reservation or candidate is no longer current.
+    pub fn claim_runtime_start(&mut self) -> Result<Arc<RuntimeGeneration>, GenerationError> {
+        self.manager
+            .claim_runtime_start(&self.candidate, self.reservation_token)
     }
 
-    pub fn activate(mut self) -> Result<Arc<RuntimeGeneration>, GenerationError> {
-        let activated = self
-            .manager
-            .activate_inner(&self.candidate, Some(self.candidate.id));
-        self.completed = activated.is_ok();
+    pub fn activate(self) -> Result<Arc<RuntimeGeneration>, GenerationError> {
+        self.activate_with_timeout(Duration::from_secs(5))
+    }
+
+    fn activate_with_timeout(
+        mut self,
+        quiesce_timeout: Duration,
+    ) -> Result<Arc<RuntimeGeneration>, GenerationError> {
+        let activated = self.manager.activate_inner(
+            &self.candidate,
+            Some(self.reservation_token),
+            quiesce_timeout,
+        );
+        self.completed = true;
         activated
     }
 }
@@ -430,7 +540,8 @@ impl GenerationStartup {
 impl Drop for GenerationStartup {
     fn drop(&mut self) {
         if !self.completed {
-            self.manager.cancel_startup(self.candidate.id);
+            self.manager
+                .cancel_startup(&self.candidate, self.reservation_token);
         }
     }
 }
@@ -445,8 +556,12 @@ impl GenerationManager {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            #[cfg(test)]
+            activation_hook: Arc::new(Mutex::new(None)),
             counters: Arc::new(GenerationCounters::default()),
+            cleanup: Arc::new(Mutex::new(GenerationCleanupRegistry::default())),
             next_candidate_id: Arc::new(AtomicU64::new(0)),
+            next_reservation_token: Arc::new(AtomicU64::new(0)),
             operations: Arc::new(Mutex::new(())),
             process: ProcessRuntime::new(None),
             state: Arc::new(Mutex::new(GenerationState::default())),
@@ -467,6 +582,14 @@ impl GenerationManager {
             .operations
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .shutting_down
+        {
+            return Err(GenerationError::MutationInProgress);
+        }
         let previous = self
             .state
             .lock()
@@ -541,18 +664,40 @@ impl GenerationManager {
     /// # Errors
     ///
     /// Returns an error when no complete candidate is prepared.
-    pub fn activate(
+    #[cfg(test)]
+    pub(crate) fn activate(
         &self,
         candidate: &GenerationCandidate,
     ) -> Result<Arc<RuntimeGeneration>, GenerationError> {
-        self.activate_inner(candidate, None)
+        self.activate_inner(candidate, None, Duration::from_secs(5))
     }
 
     fn activate_inner(
         &self,
         candidate: &GenerationCandidate,
-        startup: Option<u64>,
+        startup_token: Option<u64>,
+        quiesce_timeout: Duration,
     ) -> Result<Arc<RuntimeGeneration>, GenerationError> {
+        let reservation = self.reserve_activation(candidate, startup_token)?;
+        #[cfg(test)]
+        self.run_activation_hook(ActivationHookPoint::Reserved);
+        let previous_close = reservation
+            .previous
+            .as_ref()
+            .map(|previous| previous.accept_gate.close());
+        #[cfg(test)]
+        self.run_activation_hook(ActivationHookPoint::GateClosed);
+        let quiesced = previous_close
+            .as_ref()
+            .is_none_or(|close| close.wait(quiesce_timeout));
+        self.publish_reserved_candidate(candidate, &reservation, previous_close, quiesced)
+    }
+
+    fn reserve_activation(
+        &self,
+        candidate: &GenerationCandidate,
+        startup_token: Option<u64>,
+    ) -> Result<ActivationReservation, GenerationError> {
         let _operation = self
             .operations
             .lock()
@@ -561,35 +706,162 @@ impl GenerationManager {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let pending = state
-            .candidate
-            .as_ref()
-            .filter(|pending| {
-                pending.id == candidate.id
-                    && Arc::ptr_eq(&pending.generation, &candidate.generation)
-            })
-            .ok_or(GenerationError::CandidateSuperseded)?;
-        if state.starting_candidate != startup {
-            return Err(GenerationError::CandidateSuperseded);
+        if state.shutting_down {
+            if let Some(token) = startup_token {
+                self.cancel_startup_locked(&mut state, candidate, token);
+            }
+            return Err(GenerationError::MutationInProgress);
         }
+        let (token, runtime_owned) = if let Some(token) = startup_token {
+            let Some(starting) = state.starting_candidate else {
+                return Err(GenerationError::CandidateSuperseded);
+            };
+            if starting.candidate_id != candidate.id || starting.token != token {
+                return Err(GenerationError::CandidateSuperseded);
+            }
+            if starting.phase == CandidateStartPhase::Starting {
+                state.starting_candidate = None;
+                return Err(GenerationError::RuntimePrepare);
+            }
+            if starting.phase != CandidateStartPhase::RuntimeOwned {
+                return Err(GenerationError::CandidateSuperseded);
+            }
+            if !candidate_matches(state.candidate.as_ref(), candidate) {
+                candidate.generation.cancel_runtime_start();
+                state.starting_candidate = None;
+                return Err(GenerationError::CandidateSuperseded);
+            }
+            (token, true)
+        } else {
+            if !candidate_matches(state.candidate.as_ref(), candidate) {
+                return Err(GenerationError::CandidateSuperseded);
+            }
+            if state.starting_candidate.is_some() {
+                return Err(GenerationError::MutationInProgress);
+            }
+            (self.next_reservation_token(), false)
+        };
         if state
             .active
             .as_ref()
             .is_some_and(|active| active.mutations.load(Ordering::Acquire) != 0)
         {
+            if runtime_owned {
+                candidate.generation.cancel_runtime_start();
+                state.starting_candidate = None;
+                self.quarantine_locked(&mut state, candidate, "runtime_start");
+            }
             return Err(GenerationError::MutationInProgress);
         }
-        let active = Arc::clone(&pending.generation);
-        if let Some(previous) = &state.active {
-            if !previous.accept_gate.close_and_wait(Duration::from_secs(5)) {
-                previous.accept_gate.reopen();
-                return Err(GenerationError::AcceptorQuiesce);
+        if candidate.generation.runtime_failed()
+            || (runtime_owned && !candidate.generation.runtime_started())
+        {
+            if runtime_owned {
+                candidate.generation.cancel_runtime_start();
+                state.starting_candidate = None;
             }
+            self.quarantine_locked(&mut state, candidate, "runtime_start");
+            return Err(GenerationError::RuntimePrepare);
         }
+        state.starting_candidate = Some(CandidateStartReservation {
+            candidate_id: candidate.id,
+            phase: CandidateStartPhase::Activating,
+            token,
+        });
+        let previous = state.active.clone();
+        Ok(ActivationReservation {
+            previous_revision: previous
+                .as_ref()
+                .map(|generation| generation.revision.candidate.clone()),
+            previous,
+            runtime_owned,
+            token,
+        })
+    }
+
+    fn publish_reserved_candidate(
+        &self,
+        candidate: &GenerationCandidate,
+        reservation: &ActivationReservation,
+        previous_close: Option<AcceptGateClose>,
+        quiesced: bool,
+    ) -> Result<Arc<RuntimeGeneration>, GenerationError> {
+        let operation = self
+            .operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let owns_reservation = state.starting_candidate
+            == Some(CandidateStartReservation {
+                candidate_id: candidate.id,
+                phase: CandidateStartPhase::Activating,
+                token: reservation.token,
+            });
+        let candidate_current = candidate_matches(state.candidate.as_ref(), candidate);
+        let previous_current = active_matches_reservation(&state, reservation);
+        let close_current = previous_close
+            .as_ref()
+            .is_none_or(AcceptGateClose::is_current);
+        let failure = if state.shutting_down {
+            Some(GenerationError::MutationInProgress)
+        } else if !owns_reservation || !candidate_current || !previous_current {
+            Some(GenerationError::CandidateSuperseded)
+        } else if candidate.generation.runtime_failed() {
+            Some(GenerationError::RuntimePrepare)
+        } else if !quiesced || !close_current {
+            Some(GenerationError::AcceptorQuiesce)
+        } else if state
+            .active
+            .as_ref()
+            .is_some_and(|active| active.mutations.load(Ordering::Acquire) != 0)
+        {
+            Some(GenerationError::MutationInProgress)
+        } else {
+            None
+        };
+        if let Some(error) = failure {
+            if previous_current && !state.shutting_down {
+                if let Some(close) = previous_close {
+                    let _ = close.reopen();
+                }
+            }
+            if owns_reservation {
+                state.starting_candidate = None;
+                if reservation.runtime_owned {
+                    candidate.generation.cancel_runtime_start();
+                    if candidate_current {
+                        let reason = if matches!(error, GenerationError::RuntimePrepare) {
+                            "runtime_start"
+                        } else {
+                            error.code()
+                        };
+                        self.quarantine_locked(&mut state, candidate, reason);
+                    }
+                }
+            }
+            return Err(error);
+        }
+
         state.candidate = None;
         state.starting_candidate = None;
+        let active = Arc::clone(&candidate.generation);
         if let Some(previous) = state.active.replace(Arc::clone(&active)) {
-            state.previous = Some(previous);
+            let evicted = state.previous.replace(previous);
+            if let Some(evicted) = &evicted {
+                let mut cleanup = self
+                    .cleanup
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                cleanup
+                    .recorder_lifecycles
+                    .retain(|lifecycle| !lifecycle.is_complete());
+                for lifecycle in evicted.recorder_lifecycles() {
+                    push_unique_lifecycle(&mut cleanup.recorder_lifecycles, lifecycle);
+                }
+            }
         }
         active.start_accepting();
         state.last_failure = None;
@@ -599,7 +871,80 @@ impl GenerationManager {
             "activated",
             Some(&active.revision.candidate),
         );
+        drop(state);
+        drop(operation);
         Ok(active)
+    }
+
+    fn next_reservation_token(&self) -> u64 {
+        self.next_reservation_token
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1)
+    }
+
+    #[cfg(test)]
+    fn set_activation_hook(&self, hook: ActivationHook) {
+        *self
+            .activation_hook
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
+    }
+
+    #[cfg(test)]
+    fn run_activation_hook(&self, point: ActivationHookPoint) {
+        let hook = self
+            .activation_hook
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(hook) = hook {
+            hook(point);
+        }
+    }
+
+    fn claim_runtime_start(
+        &self,
+        candidate: &GenerationCandidate,
+        reservation_token: u64,
+    ) -> Result<Arc<RuntimeGeneration>, GenerationError> {
+        let _operation = self
+            .operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.shutting_down {
+            return Err(GenerationError::MutationInProgress);
+        }
+        let expected = CandidateStartReservation {
+            candidate_id: candidate.id,
+            phase: CandidateStartPhase::Starting,
+            token: reservation_token,
+        };
+        if state.starting_candidate != Some(expected)
+            || !candidate_matches(state.candidate.as_ref(), candidate)
+        {
+            clear_starting_reservation(
+                &mut state,
+                candidate.id,
+                reservation_token,
+                CandidateStartPhase::Starting,
+            );
+            return Err(GenerationError::CandidateSuperseded);
+        }
+        if !candidate.generation.claim_runtime_start() {
+            state.starting_candidate = None;
+            self.quarantine_locked(&mut state, candidate, "runtime_start");
+            return Err(GenerationError::RuntimePrepare);
+        }
+        state.starting_candidate = Some(CandidateStartReservation {
+            candidate_id: candidate.id,
+            phase: CandidateStartPhase::RuntimeOwned,
+            token: reservation_token,
+        });
+        Ok(Arc::clone(&candidate.generation))
     }
 
     /// Reserves publication before any candidate runtime is started.
@@ -620,6 +965,9 @@ impl GenerationManager {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.shutting_down {
+            return Err(GenerationError::MutationInProgress);
+        }
         let pending = state
             .candidate
             .as_ref()
@@ -636,21 +984,50 @@ impl GenerationManager {
         {
             return Err(GenerationError::MutationInProgress);
         }
-        state.starting_candidate = Some(pending.id);
+        let reservation_token = self.next_reservation_token();
+        state.starting_candidate = Some(CandidateStartReservation {
+            candidate_id: pending.id,
+            phase: CandidateStartPhase::Starting,
+            token: reservation_token,
+        });
         Ok(GenerationStartup {
             candidate: candidate.clone(),
             manager: self.clone(),
+            reservation_token,
             completed: false,
         })
     }
 
-    fn cancel_startup(&self, candidate_id: u64) {
+    fn cancel_startup(&self, candidate: &GenerationCandidate, reservation_token: u64) {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.starting_candidate == Some(candidate_id) {
-            state.starting_candidate = None;
+        self.cancel_startup_locked(&mut state, candidate, reservation_token);
+    }
+
+    fn cancel_startup_locked(
+        &self,
+        state: &mut GenerationState,
+        candidate: &GenerationCandidate,
+        reservation_token: u64,
+    ) {
+        let Some(starting) = state.starting_candidate else {
+            return;
+        };
+        if starting.candidate_id != candidate.id || starting.token != reservation_token {
+            return;
+        }
+        match starting.phase {
+            CandidateStartPhase::Starting => {
+                state.starting_candidate = None;
+            }
+            CandidateStartPhase::RuntimeOwned => {
+                candidate.generation.cancel_runtime_start();
+                state.starting_candidate = None;
+                self.quarantine_locked(state, candidate, "runtime_start");
+            }
+            CandidateStartPhase::Activating => {}
         }
     }
 
@@ -669,6 +1046,9 @@ impl GenerationManager {
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.shutting_down {
+                return Err(GenerationError::MutationInProgress);
+            }
             let previous = state.previous.clone().ok_or(GenerationError::NoPrevious)?;
             if state.quarantined_revision.as_ref() == Some(&previous.revision.candidate) {
                 return Err(GenerationError::QuarantinedRevision);
@@ -720,19 +1100,39 @@ impl GenerationManager {
         if state.candidate.as_ref().is_some_and(|pending| {
             pending.id == candidate.id && Arc::ptr_eq(&pending.generation, &candidate.generation)
         }) {
-            if state.starting_candidate == Some(candidate.id) {
-                state.starting_candidate = None;
+            if let Some(starting) = state
+                .starting_candidate
+                .filter(|starting| starting.candidate_id == candidate.id)
+            {
+                if starting.phase != CandidateStartPhase::Starting {
+                    candidate.generation.cancel_runtime_start();
+                }
+                if starting.phase != CandidateStartPhase::Activating {
+                    state.starting_candidate = None;
+                }
             }
-            state.candidate = None;
-            state.quarantined_revision = Some(candidate.revision().candidate.clone());
-            state.last_failure = Some(failure);
-            self.counters.failures.fetch_add(1, Ordering::Relaxed);
-            crate::operational_event::emit(
-                "generation_start",
-                "quarantined",
-                Some(&candidate.revision().candidate),
-            );
+            self.quarantine_locked(&mut state, candidate, failure);
         }
+    }
+
+    fn quarantine_locked(
+        &self,
+        state: &mut GenerationState,
+        candidate: &GenerationCandidate,
+        failure: &'static str,
+    ) {
+        if !candidate_matches(state.candidate.as_ref(), candidate) {
+            return;
+        }
+        state.candidate = None;
+        state.quarantined_revision = Some(candidate.revision().candidate.clone());
+        state.last_failure = Some(failure);
+        self.counters.failures.fetch_add(1, Ordering::Relaxed);
+        crate::operational_event::emit(
+            "generation_start",
+            "quarantined",
+            Some(&candidate.revision().candidate),
+        );
     }
 
     #[must_use]
@@ -760,15 +1160,35 @@ impl GenerationManager {
         &self,
         expected_revision: &str,
     ) -> Result<GenerationMutation, GenerationError> {
+        self.begin_active_mutation(Some(expected_revision))
+    }
+
+    /// Acquires the shared active-generation permit required before mutating canonical config.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when shutdown or generation publication prevents a new mutation.
+    pub fn begin_config_mutation(&self) -> Result<GenerationMutation, GenerationError> {
+        self.begin_active_mutation(None)
+    }
+
+    fn begin_active_mutation(
+        &self,
+        expected_revision: Option<&str>,
+    ) -> Result<GenerationMutation, GenerationError> {
         let state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.shutting_down {
+            return Err(GenerationError::MutationInProgress);
+        }
         let active = state.active.as_ref().ok_or(GenerationError::NoActive)?;
         if state.starting_candidate.is_some() {
             return Err(GenerationError::MutationInProgress);
         }
-        if active.revision.candidate.as_str() != expected_revision {
+        if expected_revision.is_some_and(|expected| active.revision.candidate.as_str() != expected)
+        {
             return Err(GenerationError::RevisionConflict);
         }
         active.mutations.fetch_add(1, Ordering::AcqRel);
@@ -786,23 +1206,97 @@ impl GenerationManager {
             .clone()
     }
 
+    #[must_use]
     pub fn shutdown(&self, timeout: Duration) -> bool {
-        let active = self.active();
-        let previous = self
+        let deadline = Instant::now() + timeout;
+        let generations = self.reserve_shutdown();
+        let mut recorder_shutdowns = Self::initiate_recorder_shutdown(&generations, deadline);
+        self.collect_recorder_cleanups(deadline, &mut recorder_shutdowns);
+        let mut drained = true;
+        for generation in &generations {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            drained &= generation.drain(remaining);
+        }
+        for shutdown in &recorder_shutdowns {
+            if !shutdown.wait_until(deadline) {
+                return false;
+            }
+        }
+        drained
+    }
+
+    /// Establishes terminal admission and returns recorder completion handles without waiting.
+    #[must_use]
+    pub fn begin_shutdown(&self, deadline: Instant) -> Vec<RtmpRecorderShutdown> {
+        let generations = self.reserve_shutdown();
+        let mut shutdowns = Self::initiate_recorder_shutdown(&generations, deadline);
+        self.collect_recorder_cleanups(deadline, &mut shutdowns);
+        shutdowns
+    }
+
+    fn collect_recorder_cleanups(
+        &self,
+        deadline: Instant,
+        shutdowns: &mut Vec<RtmpRecorderShutdown>,
+    ) {
+        let lifecycles = {
+            let mut cleanup = self
+                .cleanup
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            cleanup
+                .recorder_lifecycles
+                .retain(|lifecycle| !lifecycle.is_complete());
+            cleanup.recorder_lifecycles.clone()
+        };
+        for lifecycle in &lifecycles {
+            push_unique_shutdown(shutdowns, &lifecycle.initiate_shutdown(deadline));
+        }
+    }
+
+    fn reserve_shutdown(&self) -> Vec<Arc<RuntimeGeneration>> {
+        let _operation = self
+            .operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self
             .state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .previous
-            .clone();
-        let started = Instant::now();
-        let active_drained = active
-            .as_ref()
-            .is_none_or(|generation| generation.drain(timeout));
-        let remaining = timeout.saturating_sub(started.elapsed());
-        let previous_drained = previous
-            .as_ref()
-            .is_none_or(|generation| generation.drain(remaining));
-        active_drained && previous_drained
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.shutting_down = true;
+        let mut generations = Vec::with_capacity(3);
+        if let Some(active) = &state.active {
+            push_unique_generation(&mut generations, active);
+        }
+        if let Some(previous) = &state.previous {
+            push_unique_generation(&mut generations, previous);
+        }
+        let starting = state.starting_candidate;
+        if let Some(candidate) = state.candidate.take() {
+            if starting
+                .is_some_and(|reservation| reservation.phase != CandidateStartPhase::Starting)
+            {
+                candidate.generation.cancel_runtime_start();
+            }
+            push_unique_generation(&mut generations, &candidate.generation);
+        }
+        if starting.is_none_or(|reservation| reservation.phase != CandidateStartPhase::Activating) {
+            state.starting_candidate = None;
+        }
+        for generation in generations {
+            push_unique_generation(&mut state.shutdown_generations, &generation);
+        }
+        state.shutdown_generations.clone()
+    }
+
+    fn initiate_recorder_shutdown(
+        generations: &[Arc<RuntimeGeneration>],
+        deadline: Instant,
+    ) -> Vec<RtmpRecorderShutdown> {
+        generations
+            .iter()
+            .flat_map(|generation| generation.initiate_recorder_shutdown(deadline))
+            .collect()
     }
 
     #[must_use]
@@ -838,6 +1332,82 @@ impl GenerationManager {
             failures: self.counters.failures.load(Ordering::Relaxed),
             rollbacks: self.counters.rollbacks.load(Ordering::Relaxed),
         }
+    }
+}
+
+fn candidate_matches(
+    pending: Option<&GenerationCandidate>,
+    candidate: &GenerationCandidate,
+) -> bool {
+    pending.is_some_and(|pending| {
+        pending.id == candidate.id && Arc::ptr_eq(&pending.generation, &candidate.generation)
+    })
+}
+
+fn clear_starting_reservation(
+    state: &mut GenerationState,
+    candidate_id: u64,
+    token: u64,
+    phase: CandidateStartPhase,
+) {
+    if state.starting_candidate
+        == Some(CandidateStartReservation {
+            candidate_id,
+            phase,
+            token,
+        })
+    {
+        state.starting_candidate = None;
+    }
+}
+
+fn active_matches_reservation(
+    state: &GenerationState,
+    reservation: &ActivationReservation,
+) -> bool {
+    match (&state.active, &reservation.previous) {
+        (Some(active), Some(previous)) => {
+            Arc::ptr_eq(active, previous)
+                && Some(&active.revision.candidate) == reservation.previous_revision.as_ref()
+        }
+        (None, None) => reservation.previous_revision.is_none(),
+        (Some(_), None) | (None, Some(_)) => false,
+    }
+}
+
+fn push_unique_generation(
+    generations: &mut Vec<Arc<RuntimeGeneration>>,
+    generation: &Arc<RuntimeGeneration>,
+) {
+    if !generations
+        .iter()
+        .any(|existing| Arc::ptr_eq(existing, generation))
+    {
+        generations.push(Arc::clone(generation));
+    }
+}
+
+fn push_unique_shutdown(
+    shutdowns: &mut Vec<RtmpRecorderShutdown>,
+    shutdown: &RtmpRecorderShutdown,
+) {
+    if !shutdowns
+        .iter()
+        .any(|existing| existing.is_same_lifecycle(shutdown))
+    {
+        shutdowns.push(shutdown.clone());
+    }
+}
+
+fn push_unique_lifecycle(
+    lifecycles: &mut Vec<RtmpRecorderLifecycle>,
+    lifecycle: RtmpRecorderLifecycle,
+) {
+    if !lifecycles
+        .iter()
+        .any(|existing| existing.is_same_lifecycle(&lifecycle))
+    {
+        lifecycles.push(lifecycle);
     }
 }
 
@@ -915,7 +1485,15 @@ impl GenerationError {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, thread};
+    use std::{
+        fs,
+        sync::{
+            Arc, Barrier,
+            atomic::{AtomicBool, AtomicU64, Ordering},
+            mpsc,
+        },
+        thread,
+    };
 
     use oxiroute_config::render_lua;
     use tempfile::TempDir;
@@ -925,9 +1503,13 @@ mod tests {
     use super::*;
 
     fn document() -> CanonicalConfigDocument {
+        document_with_max_connections(None)
+    }
+
+    fn document_with_max_connections(max_connections: Option<u64>) -> CanonicalConfigDocument {
         document_for(&Config {
             version: 1,
-            max_connections: None,
+            max_connections,
             management: None,
             stats: None,
             certificates: Vec::new(),
@@ -955,6 +1537,29 @@ mod tests {
         *document
     }
 
+    fn claim_and_mark_runtime_started(startup: &mut GenerationStartup) -> Arc<RuntimeGeneration> {
+        let generation = startup.claim_runtime_start().expect("runtime start claim");
+        assert!(generation.mark_runtime_started());
+        generation
+    }
+
+    fn pause_activation_at(
+        manager: &GenerationManager,
+        point: ActivationHookPoint,
+    ) -> (mpsc::Receiver<()>, Arc<Barrier>) {
+        let (paused, paused_rx) = mpsc::sync_channel(1);
+        let release = Arc::new(Barrier::new(2));
+        let hook_release = Arc::clone(&release);
+        let notified = Arc::new(AtomicBool::new(false));
+        manager.set_activation_hook(Arc::new(move |observed| {
+            if observed == point && !notified.swap(true, Ordering::AcqRel) {
+                paused.send(()).expect("activation pause receiver");
+                hook_release.wait();
+            }
+        }));
+        (paused_rx, release)
+    }
+
     #[test]
     fn activation_rollback_and_failed_activation_preserve_published_state() {
         let manager = GenerationManager::new();
@@ -970,6 +1575,28 @@ mod tests {
         let rollback = manager.rollback().expect("rollback");
         assert_eq!(rollback.revision(), first.revision());
         assert!(second.accepting());
+    }
+
+    #[test]
+    fn third_activation_keeps_only_the_immediately_previous_revision_rollbackable() {
+        let manager = GenerationManager::new();
+        let first = manager
+            .prepare(document_with_max_connections(Some(1)))
+            .expect("first candidate");
+        manager.activate(&first).expect("first activation");
+        let second = manager
+            .prepare(document_with_max_connections(Some(2)))
+            .expect("second candidate");
+        manager.activate(&second).expect("second activation");
+        let third = manager
+            .prepare(document_with_max_connections(Some(3)))
+            .expect("third candidate");
+        manager.activate(&third).expect("third activation");
+
+        let rollback = manager.rollback().expect("rollback candidate");
+
+        assert_eq!(rollback.revision(), second.revision());
+        assert_ne!(rollback.revision(), first.revision());
     }
 
     #[test]
@@ -1098,6 +1725,757 @@ mod tests {
         activation.join().expect("activation thread");
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn status_remains_readable_on_a_single_thread_runtime_during_publication() {
+        let manager = GenerationManager::new();
+        let first = manager
+            .prepare(document_with_max_connections(Some(1)))
+            .expect("first candidate");
+        manager.activate(&first).expect("first activation");
+        let second = manager
+            .prepare(document_with_max_connections(Some(2)))
+            .expect("second candidate");
+        let mut acceptor = first.generation().accept_gate().register();
+        let ownership = acceptor.claim().expect("accept ownership");
+        let (activation_paused, release_activation) =
+            pause_activation_at(&manager, ActivationHookPoint::GateClosed);
+        let reads = Arc::new(AtomicU64::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let reader_manager = manager.clone();
+        let reader_reads = Arc::clone(&reads);
+        let reader_stop = Arc::clone(&stop);
+        let reader = tokio::spawn(async move {
+            while !reader_stop.load(Ordering::Acquire) {
+                let _ = reader_manager.status();
+                reader_reads.fetch_add(1, Ordering::Relaxed);
+                tokio::task::yield_now().await;
+            }
+        });
+        let activation_manager = manager.clone();
+        let activation_candidate = second.clone();
+        let (activated_tx, activated_rx) = mpsc::sync_channel(1);
+        let activation = thread::spawn(move || {
+            activated_tx
+                .send(
+                    activation_manager
+                        .activate(&activation_candidate)
+                        .map(|_| ())
+                        .map_err(|error| error.code()),
+                )
+                .expect("activation receiver");
+        });
+
+        activation_paused
+            .recv_timeout(Duration::from_secs(1))
+            .expect("activation did not reach closed gate");
+        let gate_state = tokio::time::timeout(Duration::from_secs(1), acceptor.changed())
+            .await
+            .expect("gate close timeout")
+            .expect("gate close");
+        let reads_at_close = reads.load(Ordering::Relaxed);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while reads.load(Ordering::Relaxed) <= reads_at_close {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("status reader did not progress while publication was paused");
+        let status = manager.status();
+        assert_eq!(
+            status.active_revision,
+            Some(first.revision().candidate.clone())
+        );
+        assert_eq!(
+            status.candidate_revision,
+            Some(second.revision().candidate.clone())
+        );
+        assert!(!status.active_accepting);
+
+        acceptor.acknowledge(gate_state.epoch);
+        drop(ownership);
+        release_activation.wait();
+        activated_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("activation result")
+            .expect("activation");
+        stop.store(true, Ordering::Release);
+        reader.await.expect("status reader");
+        activation.join().expect("activation thread");
+    }
+
+    #[test]
+    fn shutdown_close_before_activation_close_prevents_publication() {
+        let manager = GenerationManager::new();
+        let first = manager.prepare(document()).expect("first candidate");
+        manager.activate(&first).expect("first activation");
+        let second = manager
+            .prepare(document_with_max_connections(Some(2)))
+            .expect("second candidate");
+        let (activation_paused, release_activation) =
+            pause_activation_at(&manager, ActivationHookPoint::Reserved);
+        let activation_manager = manager.clone();
+        let activation_candidate = second.clone();
+        let (activated, activated_rx) = mpsc::sync_channel(1);
+        let activation = thread::spawn(move || {
+            activated
+                .send(
+                    activation_manager
+                        .activate(&activation_candidate)
+                        .map(|_| ())
+                        .map_err(|error| error.code()),
+                )
+                .expect("activation receiver");
+        });
+        activation_paused
+            .recv_timeout(Duration::from_secs(1))
+            .expect("activation reservation pause");
+
+        assert!(manager.shutdown(Duration::ZERO));
+        release_activation.wait();
+
+        assert_eq!(
+            activated_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("activation result"),
+            Err(GenerationError::MutationInProgress.code())
+        );
+        activation.join().expect("activation thread");
+        assert!(Arc::ptr_eq(
+            &manager.active().expect("active"),
+            first.generation()
+        ));
+        assert!(!first.generation().accepting());
+        assert!(!second.generation().accepting());
+        assert!(manager.candidate().is_none());
+        assert_eq!(manager.status().activations, 1);
+    }
+
+    #[test]
+    fn shutdown_during_closed_gate_prevents_activation_commit() {
+        let manager = GenerationManager::new();
+        let first = manager.prepare(document()).expect("first candidate");
+        manager.activate(&first).expect("first activation");
+        let second = manager
+            .prepare(document_with_max_connections(Some(2)))
+            .expect("second candidate");
+        let (activation_paused, release_activation) =
+            pause_activation_at(&manager, ActivationHookPoint::GateClosed);
+        let activation_manager = manager.clone();
+        let activation_candidate = second.clone();
+        let (activated, activated_rx) = mpsc::sync_channel(1);
+        let activation = thread::spawn(move || {
+            activated
+                .send(
+                    activation_manager
+                        .activate(&activation_candidate)
+                        .map(|_| ())
+                        .map_err(|error| error.code()),
+                )
+                .expect("activation receiver");
+        });
+        activation_paused
+            .recv_timeout(Duration::from_secs(1))
+            .expect("closed gate pause");
+
+        assert!(manager.shutdown(Duration::ZERO));
+        release_activation.wait();
+
+        assert_eq!(
+            activated_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("activation result"),
+            Err(GenerationError::MutationInProgress.code())
+        );
+        activation.join().expect("activation thread");
+        assert!(Arc::ptr_eq(
+            &manager.active().expect("active"),
+            first.generation()
+        ));
+        assert!(!first.generation().accepting());
+        assert!(!second.generation().accepting());
+        assert!(manager.candidate().is_none());
+        assert_eq!(manager.status().activations, 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_releases_manager_state_while_owned_generations_drain() {
+        let manager = GenerationManager::new();
+        let first = manager.prepare(document()).expect("first candidate");
+        manager.activate(&first).expect("first activation");
+        let mut acceptor = first.generation().accept_gate().register();
+        let ownership = acceptor.claim().expect("accept ownership");
+        let second = manager
+            .prepare(document_with_max_connections(Some(2)))
+            .expect("second candidate");
+        let mut startup = manager
+            .begin_candidate_start(&second)
+            .expect("startup reservation");
+        claim_and_mark_runtime_started(&mut startup);
+        let shutdown_manager = manager.clone();
+        let (shutdown_tx, shutdown_rx) = mpsc::sync_channel(1);
+        let shutdown = thread::spawn(move || {
+            shutdown_tx
+                .send(shutdown_manager.shutdown(Duration::from_secs(1)))
+                .expect("shutdown receiver");
+        });
+
+        let gate_state = tokio::time::timeout(Duration::from_secs(1), acceptor.changed())
+            .await
+            .expect("shutdown gate timeout")
+            .expect("shutdown gate close");
+        let status = manager.status();
+        assert_eq!(
+            status.active_revision,
+            Some(first.revision().candidate.clone())
+        );
+        assert!(!status.active_accepting);
+        assert!(status.candidate_revision.is_none());
+        assert!(matches!(
+            manager.activate(&second),
+            Err(GenerationError::MutationInProgress)
+        ));
+        assert!(second.generation().runtime_failed());
+
+        acceptor.acknowledge(gate_state.epoch);
+        drop(ownership);
+        assert!(
+            shutdown_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("shutdown result")
+        );
+        shutdown.join().expect("shutdown thread");
+        drop(startup);
+    }
+
+    #[test]
+    fn terminal_shutdown_rejects_new_mutations_but_keeps_validation_read_only() {
+        let manager = GenerationManager::new();
+        let first = manager.prepare(document()).expect("first candidate");
+        let active = manager.activate(&first).expect("first activation");
+        let pending = manager
+            .prepare(document_with_max_connections(Some(2)))
+            .expect("pending candidate");
+
+        drop(manager.begin_shutdown(Instant::now() + Duration::from_secs(1)));
+
+        assert!(matches!(
+            manager.begin_mutation(active.revision().candidate.as_str()),
+            Err(GenerationError::MutationInProgress)
+        ));
+        assert!(matches!(
+            manager.begin_config_mutation(),
+            Err(GenerationError::MutationInProgress)
+        ));
+        assert!(matches!(
+            manager.begin_candidate_start(&pending),
+            Err(GenerationError::MutationInProgress)
+        ));
+        assert!(matches!(
+            manager.prepare(document()),
+            Err(GenerationError::MutationInProgress)
+        ));
+        assert!(matches!(
+            manager.rollback(),
+            Err(GenerationError::MutationInProgress)
+        ));
+        assert!(manager.validate_candidate(document()).is_ok());
+    }
+
+    #[test]
+    fn repeated_shutdown_retains_active_previous_and_removed_candidate() {
+        let manager = GenerationManager::new();
+        let first = manager.prepare(document()).expect("first candidate");
+        manager.activate(&first).expect("first activation");
+        let second = manager
+            .prepare(document_with_max_connections(Some(2)))
+            .expect("second candidate");
+        manager.activate(&second).expect("second activation");
+        let third = manager
+            .prepare(document_with_max_connections(Some(3)))
+            .expect("third candidate");
+
+        let first_shutdown = manager.reserve_shutdown();
+        let second_shutdown = manager.reserve_shutdown();
+
+        assert_eq!(first_shutdown.len(), 3);
+        assert_eq!(second_shutdown.len(), 3);
+        for expected in [second.generation(), first.generation(), third.generation()] {
+            assert!(
+                first_shutdown
+                    .iter()
+                    .any(|generation| Arc::ptr_eq(generation, expected))
+            );
+            assert!(
+                second_shutdown
+                    .iter()
+                    .any(|generation| Arc::ptr_eq(generation, expected))
+            );
+        }
+        assert!(manager.candidate().is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn candidate_can_be_superseded_while_the_gate_is_quiescing() {
+        let manager = GenerationManager::new();
+        let first = manager
+            .prepare(document_with_max_connections(Some(1)))
+            .expect("first candidate");
+        manager.activate(&first).expect("first activation");
+        let second = manager
+            .prepare(document_with_max_connections(Some(2)))
+            .expect("second candidate");
+        let mut acceptor = first.generation().accept_gate().register();
+        let ownership = acceptor.claim().expect("accept ownership");
+        let activation_manager = manager.clone();
+        let activation_candidate = second.clone();
+        let (activated_tx, activated_rx) = mpsc::sync_channel(1);
+        let activation = thread::spawn(move || {
+            activated_tx
+                .send(
+                    activation_manager
+                        .activate(&activation_candidate)
+                        .map(|_| ())
+                        .map_err(|error| error.code()),
+                )
+                .expect("activation receiver");
+        });
+
+        let gate_state = acceptor.changed().await.expect("gate close");
+        let third = manager
+            .prepare(document_with_max_connections(Some(3)))
+            .expect("third candidate");
+        assert!(candidate_matches(manager.candidate().as_ref(), &third));
+        assert!(matches!(
+            manager.activate(&third),
+            Err(GenerationError::MutationInProgress)
+        ));
+        acceptor.acknowledge(gate_state.epoch);
+        drop(ownership);
+
+        assert_eq!(
+            activated_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("activation result"),
+            Err(GenerationError::CandidateSuperseded.code())
+        );
+        activation.join().expect("activation thread");
+        assert!(Arc::ptr_eq(
+            &manager.active().expect("active"),
+            first.generation()
+        ));
+        assert!(first.generation().accepting());
+        assert!(!second.generation().accepting());
+        assert!(candidate_matches(manager.candidate().as_ref(), &third));
+        assert_eq!(manager.status().failures, 0);
+        drop(acceptor);
+        let active = manager.activate(&third).expect("third activation");
+        assert!(Arc::ptr_eq(&active, third.generation()));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn concurrent_activation_is_rejected_without_touching_the_gate() {
+        let manager = GenerationManager::new();
+        let first = manager.prepare(document()).expect("first candidate");
+        manager.activate(&first).expect("first activation");
+        let second = manager
+            .prepare(document_with_max_connections(Some(2)))
+            .expect("second candidate");
+        let mut acceptor = first.generation().accept_gate().register();
+        let ownership = acceptor.claim().expect("accept ownership");
+        let activation_manager = manager.clone();
+        let activation_candidate = second.clone();
+        let (activated_tx, activated_rx) = mpsc::sync_channel(1);
+        let activation = thread::spawn(move || {
+            activated_tx
+                .send(
+                    activation_manager
+                        .activate(&activation_candidate)
+                        .map(|_| ())
+                        .map_err(|error| error.code()),
+                )
+                .expect("activation receiver");
+        });
+
+        let gate_state = acceptor.changed().await.expect("gate close");
+        assert!(matches!(
+            manager.activate(&second),
+            Err(GenerationError::MutationInProgress)
+        ));
+        assert!(activated_rx.try_recv().is_err());
+        acceptor.acknowledge(gate_state.epoch);
+        drop(ownership);
+        activated_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("activation result")
+            .expect("activation");
+        activation.join().expect("activation thread");
+        assert!(Arc::ptr_eq(
+            &manager.active().expect("active"),
+            second.generation()
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn quarantine_during_publication_cancels_once_and_reopens_the_active_gate() {
+        let manager = GenerationManager::new();
+        let first = manager.prepare(document()).expect("first candidate");
+        manager.activate(&first).expect("first activation");
+        let second = manager
+            .prepare(document_with_max_connections(Some(2)))
+            .expect("second candidate");
+        let mut startup = manager
+            .begin_candidate_start(&second)
+            .expect("startup reservation");
+        claim_and_mark_runtime_started(&mut startup);
+        let mut acceptor = first.generation().accept_gate().register();
+        let ownership = acceptor.claim().expect("accept ownership");
+        let (activated_tx, activated_rx) = mpsc::sync_channel(1);
+        let activation = thread::spawn(move || {
+            activated_tx
+                .send(startup.activate().map(|_| ()).map_err(|error| error.code()))
+                .expect("activation receiver");
+        });
+
+        let gate_state = acceptor.changed().await.expect("gate close");
+        manager.quarantine(&second, "runtime_start");
+        manager.quarantine(&second, "runtime_start");
+        assert_eq!(manager.status().failures, 1);
+        acceptor.acknowledge(gate_state.epoch);
+        drop(ownership);
+
+        assert_eq!(
+            activated_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("activation result"),
+            Err(GenerationError::CandidateSuperseded.code())
+        );
+        activation.join().expect("activation thread");
+        assert!(Arc::ptr_eq(
+            &manager.active().expect("active"),
+            first.generation()
+        ));
+        assert!(first.generation().accepting());
+        assert!(manager.candidate().is_none());
+        assert_eq!(manager.status().failures, 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn runtime_failure_during_publication_is_quarantined_without_retry() {
+        let manager = GenerationManager::new();
+        let first = manager.prepare(document()).expect("first candidate");
+        manager.activate(&first).expect("first activation");
+        let second = manager
+            .prepare(document_with_max_connections(Some(2)))
+            .expect("second candidate");
+        let mut startup = manager
+            .begin_candidate_start(&second)
+            .expect("startup reservation");
+        claim_and_mark_runtime_started(&mut startup);
+        let mut acceptor = first.generation().accept_gate().register();
+        let ownership = acceptor.claim().expect("accept ownership");
+        let (activated_tx, activated_rx) = mpsc::sync_channel(1);
+        let activation = thread::spawn(move || {
+            activated_tx
+                .send(startup.activate().map(|_| ()).map_err(|error| error.code()))
+                .expect("activation receiver");
+        });
+
+        let gate_state = acceptor.changed().await.expect("gate close");
+        second.generation().mark_runtime_failed();
+        acceptor.acknowledge(gate_state.epoch);
+        drop(ownership);
+
+        assert_eq!(
+            activated_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("activation result"),
+            Err(GenerationError::RuntimePrepare.code())
+        );
+        activation.join().expect("activation thread");
+        assert!(Arc::ptr_eq(
+            &manager.active().expect("active"),
+            first.generation()
+        ));
+        assert!(first.generation().accepting());
+        assert!(manager.candidate().is_none());
+        assert_eq!(manager.status().failures, 1);
+        assert!(matches!(
+            manager.begin_candidate_start(&second),
+            Err(GenerationError::CandidateSuperseded)
+        ));
+    }
+
+    #[test]
+    fn supersession_precedes_runtime_failure_and_quiesce_timeout() {
+        let manager = GenerationManager::new();
+        let first = manager.prepare(document()).expect("first candidate");
+        manager.activate(&first).expect("first activation");
+        let second = manager
+            .prepare(document_with_max_connections(Some(2)))
+            .expect("second candidate");
+        let reservation = manager
+            .reserve_activation(&second, None)
+            .expect("activation reservation");
+        let close = first.generation().accept_gate().close();
+        let third = manager
+            .prepare(document_with_max_connections(Some(3)))
+            .expect("third candidate");
+        second.generation().mark_runtime_failed();
+
+        assert!(matches!(
+            manager.publish_reserved_candidate(&second, &reservation, Some(close), false),
+            Err(GenerationError::CandidateSuperseded)
+        ));
+        assert!(Arc::ptr_eq(
+            &manager.active().expect("active"),
+            first.generation()
+        ));
+        assert!(first.generation().accepting());
+        assert!(candidate_matches(manager.candidate().as_ref(), &third));
+        assert_eq!(manager.status().failures, 0);
+    }
+
+    #[test]
+    fn runtime_failure_precedes_quiesce_timeout_and_uses_runtime_start_quarantine() {
+        let manager = GenerationManager::new();
+        let first = manager.prepare(document()).expect("first candidate");
+        manager.activate(&first).expect("first activation");
+        let second = manager
+            .prepare(document_with_max_connections(Some(2)))
+            .expect("second candidate");
+        let mut startup = manager
+            .begin_candidate_start(&second)
+            .expect("startup reservation");
+        claim_and_mark_runtime_started(&mut startup);
+        let reservation = manager
+            .reserve_activation(&second, Some(startup.reservation_token))
+            .expect("activation reservation");
+        let close = first.generation().accept_gate().close();
+        second.generation().mark_runtime_failed();
+
+        assert!(matches!(
+            manager.publish_reserved_candidate(&second, &reservation, Some(close), false),
+            Err(GenerationError::RuntimePrepare)
+        ));
+        startup.completed = true;
+        assert!(Arc::ptr_eq(
+            &manager.active().expect("active"),
+            first.generation()
+        ));
+        assert!(first.generation().accepting());
+        assert!(manager.candidate().is_none());
+        let status = manager.status();
+        assert_eq!(status.failures, 1);
+        assert_eq!(status.last_failure, Some("runtime_start"));
+    }
+
+    #[test]
+    fn gate_timeout_consumes_a_started_candidate_and_reopens_the_active_generation() {
+        let manager = GenerationManager::new();
+        let first = manager.prepare(document()).expect("first candidate");
+        manager.activate(&first).expect("first activation");
+        let ownership = first
+            .generation()
+            .begin_admission()
+            .expect("accept ownership");
+        let second = manager
+            .prepare(document_with_max_connections(Some(2)))
+            .expect("second candidate");
+        let mut startup = manager
+            .begin_candidate_start(&second)
+            .expect("startup reservation");
+        claim_and_mark_runtime_started(&mut startup);
+
+        assert!(matches!(
+            startup.activate_with_timeout(Duration::ZERO),
+            Err(GenerationError::AcceptorQuiesce)
+        ));
+        assert!(Arc::ptr_eq(
+            &manager.active().expect("active"),
+            first.generation()
+        ));
+        assert!(first.generation().accepting());
+        assert!(manager.candidate().is_none());
+        let status = manager.status();
+        assert_eq!(status.failures, 1);
+        assert_eq!(
+            status.quarantined_revision,
+            Some(second.revision().candidate.clone())
+        );
+        assert!(matches!(
+            manager.begin_candidate_start(&second),
+            Err(GenerationError::CandidateSuperseded)
+        ));
+        drop(ownership);
+    }
+
+    #[test]
+    fn gate_timeout_keeps_an_unstarted_candidate_retryable() {
+        let manager = GenerationManager::new();
+        let first = manager.prepare(document()).expect("first candidate");
+        manager.activate(&first).expect("first activation");
+        let ownership = first
+            .generation()
+            .begin_admission()
+            .expect("accept ownership");
+        let second = manager
+            .prepare(document_with_max_connections(Some(2)))
+            .expect("second candidate");
+
+        assert!(matches!(
+            manager.activate_inner(&second, None, Duration::ZERO),
+            Err(GenerationError::AcceptorQuiesce)
+        ));
+        assert!(candidate_matches(manager.candidate().as_ref(), &second));
+        assert!(first.generation().accepting());
+        assert_eq!(manager.status().failures, 0);
+        drop(ownership);
+
+        let active = manager
+            .activate(&second)
+            .expect("retry unstarted candidate");
+        assert!(Arc::ptr_eq(&active, second.generation()));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn failed_publication_does_not_reopen_an_already_closed_active_gate() {
+        let manager = GenerationManager::new();
+        let first = manager.prepare(document()).expect("first candidate");
+        manager.activate(&first).expect("first activation");
+        let mut acceptor = first.generation().accept_gate().register();
+        first.generation().stop_accepting();
+        assert!(!first.generation().accepting());
+        let second = manager
+            .prepare(document_with_max_connections(Some(2)))
+            .expect("second candidate");
+
+        assert!(matches!(
+            manager.activate_inner(&second, None, Duration::ZERO),
+            Err(GenerationError::AcceptorQuiesce)
+        ));
+        assert!(!first.generation().accepting());
+        assert!(candidate_matches(manager.candidate().as_ref(), &second));
+        let gate_state = acceptor.changed().await.expect("gate close");
+        acceptor.acknowledge(gate_state.epoch);
+    }
+
+    #[test]
+    fn publication_failure_does_not_undo_a_later_shutdown_close() {
+        let manager = GenerationManager::new();
+        let first = manager.prepare(document()).expect("first candidate");
+        manager.activate(&first).expect("first activation");
+        let second = manager
+            .prepare(document_with_max_connections(Some(2)))
+            .expect("second candidate");
+        let reservation = manager
+            .reserve_activation(&second, None)
+            .expect("activation reservation");
+        let activation_close = first.generation().accept_gate().close();
+        first.generation().stop_accepting();
+
+        assert!(matches!(
+            manager.publish_reserved_candidate(
+                &second,
+                &reservation,
+                Some(activation_close),
+                false,
+            ),
+            Err(GenerationError::AcceptorQuiesce)
+        ));
+        assert!(Arc::ptr_eq(
+            &manager.active().expect("active"),
+            first.generation()
+        ));
+        assert!(!first.generation().accepting());
+        assert!(candidate_matches(manager.candidate().as_ref(), &second));
+    }
+
+    #[test]
+    fn cancelling_a_claimed_start_rejects_a_late_marker_and_consumes_the_candidate_once() {
+        let manager = GenerationManager::new();
+        let candidate = manager.prepare(document()).expect("candidate");
+        let mut startup = manager
+            .begin_candidate_start(&candidate)
+            .expect("startup reservation");
+        let generation = startup.claim_runtime_start().expect("runtime start claim");
+        assert!(matches!(
+            startup.claim_runtime_start(),
+            Err(GenerationError::CandidateSuperseded)
+        ));
+        let marker_generation = Arc::clone(&generation);
+        let (marker_ready, start_marker) = mpsc::sync_channel(0);
+        let marker = thread::spawn(move || {
+            start_marker.recv().expect("marker release");
+            marker_generation.mark_runtime_started()
+        });
+
+        drop(startup);
+        marker_ready.send(()).expect("marker receiver");
+
+        assert!(!marker.join().expect("runtime marker"));
+        assert!(generation.runtime_failed());
+        assert!(!generation.claim_runtime_start());
+        assert!(manager.candidate().is_none());
+        assert_eq!(manager.status().failures, 1);
+        manager.quarantine(&candidate, "runtime_start");
+        assert_eq!(manager.status().failures, 1);
+        assert!(matches!(
+            manager.begin_candidate_start(&candidate),
+            Err(GenerationError::CandidateSuperseded)
+        ));
+    }
+
+    #[test]
+    fn activation_before_runtime_claim_releases_only_the_unstarted_reservation() {
+        let manager = GenerationManager::new();
+        let candidate = manager.prepare(document()).expect("candidate");
+        let startup = manager
+            .begin_candidate_start(&candidate)
+            .expect("startup reservation");
+
+        assert!(matches!(
+            startup.activate(),
+            Err(GenerationError::RuntimePrepare)
+        ));
+        assert!(candidate_matches(manager.candidate().as_ref(), &candidate));
+        assert!(!candidate.generation().runtime_failed());
+        assert_eq!(manager.status().failures, 0);
+
+        let mut next_startup = manager
+            .begin_candidate_start(&candidate)
+            .expect("next startup reservation");
+        claim_and_mark_runtime_started(&mut next_startup);
+        let active = next_startup.activate().expect("activation");
+        assert!(Arc::ptr_eq(&active, candidate.generation()));
+    }
+
+    #[test]
+    fn stale_startup_token_cannot_cancel_a_new_reservation() {
+        let manager = GenerationManager::new();
+        let first = manager.prepare(document()).expect("first candidate");
+        let active = manager.activate(&first).expect("first activation");
+        let second = manager
+            .prepare(document_with_max_connections(Some(2)))
+            .expect("second candidate");
+        let stale = manager
+            .begin_candidate_start(&second)
+            .expect("first startup reservation");
+        let stale_token = stale.reservation_token;
+        drop(stale);
+        let mut current = manager
+            .begin_candidate_start(&second)
+            .expect("second startup reservation");
+
+        manager.cancel_startup(&second, stale_token);
+        assert!(matches!(
+            manager.begin_mutation(active.revision().candidate.as_str()),
+            Err(GenerationError::MutationInProgress)
+        ));
+        claim_and_mark_runtime_started(&mut current);
+        let activated = current.activate().expect("current startup activation");
+        assert!(Arc::ptr_eq(&activated, second.generation()));
+    }
+
     #[test]
     fn quarantined_candidate_leaves_active_unchanged_and_can_be_prepared_again() {
         let manager = GenerationManager::new();
@@ -1173,13 +2551,14 @@ mod tests {
         ));
         drop(mutation);
 
-        let startup = manager
+        let mut startup = manager
             .begin_candidate_start(&second)
             .expect("reserved candidate startup");
         assert!(matches!(
             manager.begin_mutation(active.revision().candidate.as_str()),
             Err(GenerationError::MutationInProgress)
         ));
+        claim_and_mark_runtime_started(&mut startup);
         let activated = startup.activate().expect("reserved activation");
         assert!(Arc::ptr_eq(&activated, second.generation()));
     }

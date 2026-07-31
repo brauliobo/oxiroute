@@ -2,6 +2,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+use std::time::{Duration, Instant};
 
 use oxiroute_config::CertificateSource;
 use pingora::protocols::http::ServerSession;
@@ -562,6 +563,10 @@ impl ManagementState {
             Ok(mutation) => mutation,
             Err(error) => return mutation_error(&error),
         };
+        drop(
+            self.generations
+                .begin_shutdown(Instant::now() + Duration::from_secs(5)),
+        );
         mutation
             .generation()
             .metrics()
