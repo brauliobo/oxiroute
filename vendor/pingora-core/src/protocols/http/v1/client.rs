@@ -51,7 +51,9 @@ pub struct HttpSession {
     keepalive_timeout: KeepaliveStatus,
     pub(crate) digest: Box<Digest>,
     response_header: Option<Box<ResponseHeader>>,
-    request_written: Option<Box<RequestHeader>>,
+    request_written: Option<RequestMetadata>,
+    // Preserve extension and resource lifetime for the legacy owned write API.
+    _request_written_owned: Option<Box<RequestHeader>>,
     bytes_sent: usize,
     /// Total response body payload bytes received from upstream
     body_recv: usize,
@@ -65,6 +67,23 @@ pub struct HttpSession {
     // If allowed, does not fail with error on invalid content-length
     // (treats as close-delimited response).
     allow_h1_response_invalid_content_length: bool,
+}
+
+#[derive(Debug)]
+struct RequestMetadata {
+    is_head: bool,
+    connection_keepalive: Option<bool>,
+    is_upgrade: bool,
+}
+
+impl From<&RequestHeader> for RequestMetadata {
+    fn from(req: &RequestHeader) -> Self {
+        Self {
+            is_head: req.method == http::method::Method::HEAD,
+            connection_keepalive: is_buf_keepalive(req.headers.get(header::CONNECTION)),
+            is_upgrade: is_upgrade_req(req),
+        }
+    }
 }
 
 /// HTTP 1.x client session
@@ -88,6 +107,7 @@ impl HttpSession {
             keepalive_timeout: KeepaliveStatus::Off,
             response_header: None,
             request_written: None,
+            _request_written_owned: None,
             read_timeout: None,
             write_timeout: None,
             digest,
@@ -115,11 +135,21 @@ impl HttpSession {
     /// After the request header is sent. The caller can either start reading the response or
     /// sending request body if any.
     pub async fn write_request_header(&mut self, req: Box<RequestHeader>) -> Result<usize> {
+        let written = self.write_request_header_ref(&req).await?;
+        self._request_written_owned = Some(req);
+        Ok(written)
+    }
+
+    /// Write a borrowed request header to the server.
+    /// After the request header is sent, the caller can either start reading the response or
+    /// sending request body if any.
+    pub async fn write_request_header_ref(&mut self, req: &RequestHeader) -> Result<usize> {
         // TODO: make sure this can only be called once
         // init body writer
-        self.init_req_body_writer(&req);
+        self.init_req_body_writer(req);
+        let request_metadata = RequestMetadata::from(req);
 
-        let to_wire = http_req_header_to_wire(&req).unwrap();
+        let to_wire = http_req_header_to_wire(req).unwrap();
         trace!("Writing request header: {to_wire:?}");
 
         let write_fut = self.underlying_stream.write_all(to_wire.as_ref());
@@ -143,7 +173,7 @@ impl HttpSession {
             .or_err(WriteError, "flushing request header")?;
 
         // write was successful
-        self.request_written = Some(req);
+        self.request_written = Some(request_metadata);
         Ok(to_wire.len())
     }
 
@@ -576,7 +606,7 @@ impl HttpSession {
         let request_keepalive = self
             .request_written
             .as_ref()
-            .and_then(|req| is_buf_keepalive(req.headers.get(header::CONNECTION)));
+            .and_then(|req| req.connection_keepalive);
 
         match request_keepalive {
             // ignore what the server sends if request disables keepalive explicitly
@@ -660,11 +690,9 @@ impl HttpSession {
                 false
             };
 
-            if let Some(req) = self.request_written.as_ref() {
-                if req.method == http::method::Method::HEAD {
-                    self.body_reader.init_content_length(0, &preread_body);
-                    return;
-                }
+            if self.request_written.as_ref().is_some_and(|req| req.is_head) {
+                self.body_reader.init_content_length(0, &preread_body);
+                return;
             }
 
             if upgraded {
@@ -684,10 +712,9 @@ impl HttpSession {
 
     /// Whether this request is for upgrade
     pub fn is_upgrade_req(&self) -> bool {
-        match self.request_written.as_deref() {
-            Some(req) => is_upgrade_req(req),
-            None => false,
-        }
+        self.request_written
+            .as_ref()
+            .is_some_and(|req| req.is_upgrade)
     }
 
     /// `Some(true)` if the this is a successful upgrade
@@ -899,6 +926,11 @@ impl UniqueID for HttpSession {
 
 #[cfg(test)]
 mod tests_stream {
+    use std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    };
+
     use super::*;
     use crate::protocols::http::v1::body::{BodyMode, ParseState};
     use crate::upstreams::peer::PeerOptions;
@@ -908,6 +940,24 @@ mod tests_stream {
 
     fn init_log() {
         let _ = env_logger::builder().is_test(true).try_init();
+    }
+
+    struct CloneProbe(Arc<AtomicUsize>);
+
+    impl Clone for CloneProbe {
+        fn clone(&self) -> Self {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Self(Arc::clone(&self.0))
+        }
+    }
+
+    #[derive(Clone)]
+    struct DropProbe(Arc<AtomicBool>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
     }
 
     #[tokio::test]
@@ -1303,6 +1353,84 @@ mod tests_stream {
         assert_eq!(wire.len(), n);
     }
 
+    #[tokio::test]
+    async fn borrowed_write_does_not_clone_and_preserves_body_framing() {
+        let header = b"POST /test HTTP/1.1\r\nContent-Length: 3\r\n\r\n";
+        let body = b"abc";
+        let mock_io = Builder::new().write(header).write(body).build();
+        let mut http_stream = HttpSession::new(Box::new(mock_io));
+        let clones = Arc::new(AtomicUsize::new(0));
+        let mut request = RequestHeader::build("POST", b"/test", None).unwrap();
+        request.insert_header("Content-Length", "3").unwrap();
+        request.extensions.insert(CloneProbe(Arc::clone(&clones)));
+
+        http_stream
+            .write_request_header_ref(&request)
+            .await
+            .unwrap();
+        http_stream.write_body(body).await.unwrap();
+
+        assert_eq!(clones.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn boxed_write_retains_request_extensions_until_session_drop() {
+        let wire = b"GET / HTTP/1.1\r\n\r\n";
+        let mock_io = Builder::new().write(wire).build();
+        let mut http_stream = HttpSession::new(Box::new(mock_io));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let mut request = RequestHeader::build("GET", b"/", None).unwrap();
+        request.extensions.insert(DropProbe(Arc::clone(&dropped)));
+
+        http_stream
+            .write_request_header(Box::new(request))
+            .await
+            .unwrap();
+        assert!(!dropped.load(Ordering::Relaxed));
+
+        drop(http_stream);
+        assert!(dropped.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn borrowed_write_leaves_request_extension_lifetime_with_caller() {
+        let wire = b"GET / HTTP/1.1\r\n\r\n";
+        let mock_io = Builder::new().write(wire).build();
+        let mut http_stream = HttpSession::new(Box::new(mock_io));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let mut request = RequestHeader::build("GET", b"/", None).unwrap();
+        request.extensions.insert(DropProbe(Arc::clone(&dropped)));
+
+        http_stream
+            .write_request_header_ref(&request)
+            .await
+            .unwrap();
+        assert!(!dropped.load(Ordering::Relaxed));
+
+        drop(request);
+        assert!(dropped.load(Ordering::Relaxed));
+        drop(http_stream);
+    }
+
+    #[tokio::test]
+    async fn borrowed_connection_close_request_disables_reuse() {
+        let request_wire = b"GET / HTTP/1.1\r\nConnection: close\r\n\r\n";
+        let response = b"HTTP/1.1 200 OK\r\nConnection: keep-alive\r\nContent-Length: 0\r\n\r\n";
+        let mock_io = Builder::new().write(request_wire).read(response).build();
+        let mut http_stream = HttpSession::new(Box::new(mock_io));
+        let mut request = RequestHeader::build("GET", b"/", None).unwrap();
+        request.insert_header("Connection", "close").unwrap();
+
+        http_stream
+            .write_request_header_ref(&request)
+            .await
+            .unwrap();
+        http_stream.read_response().await.unwrap();
+        http_stream.respect_keepalive();
+
+        assert!(!http_stream.will_keepalive());
+    }
+
     #[rstest]
     #[case::negative("-1")]
     #[case::not_a_number("abc")]
@@ -1506,8 +1634,9 @@ mod tests_stream {
             .read(responses.as_bytes())
             .build();
         let mut http_stream = HttpSession::new(Box::new(mock_io));
+        let request = RequestHeader::build("HEAD", b"/", None).unwrap();
         http_stream
-            .write_request_header(Box::new(RequestHeader::build("HEAD", b"/", None).unwrap()))
+            .write_request_header_ref(&request)
             .await
             .unwrap();
 
@@ -1739,7 +1868,7 @@ mod tests_stream {
         new_request.insert_header("Upgrade", "WS").unwrap();
         new_request.insert_header("Content-Length", "0").unwrap();
         let _ = http_stream
-            .write_request_header(Box::new(new_request))
+            .write_request_header_ref(&new_request)
             .await
             .unwrap();
         assert_eq!(

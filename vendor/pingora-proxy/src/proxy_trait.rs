@@ -21,6 +21,15 @@ use pingora_cache::{
 use proxy_cache::range_filter::{self};
 use std::time::Duration;
 
+/// The request header prepared for a plain HTTP/1 upstream attempt.
+///
+/// `Borrowed` means the unchanged downstream request header can be written directly. `Owned`
+/// carries a request header that was cloned and potentially modified for this attempt.
+pub enum PreparedUpstreamRequest {
+    Borrowed,
+    Owned(Box<RequestHeader>),
+}
+
 /// The interface to control the HTTP proxy
 ///
 /// The methods in [ProxyHttp] are filters/callbacks which will be performed on all requests at their
@@ -290,6 +299,25 @@ pub trait ProxyHttp {
         Self::CTX: Send + Sync,
     {
         Ok(())
+    }
+
+    /// Prepare a plain HTTP/1 request when protocol conversion and cache mutation are unnecessary.
+    ///
+    /// The default preserves [`Self::upstream_request_filter()`] behavior by cloning the downstream
+    /// request and invoking that mutable filter. Implementations may return
+    /// [`PreparedUpstreamRequest::Borrowed`] only when the downstream request can be sent unchanged.
+    async fn prepare_upstream_request(
+        &self,
+        session: &mut Session,
+        ctx: &mut Self::CTX,
+    ) -> Result<PreparedUpstreamRequest>
+    where
+        Self::CTX: Send + Sync,
+    {
+        let mut upstream_request = session.req_header().clone();
+        self.upstream_request_filter(session, &mut upstream_request, ctx)
+            .await?;
+        Ok(PreparedUpstreamRequest::Owned(Box::new(upstream_request)))
     }
 
     /// Modify the response header from the upstream

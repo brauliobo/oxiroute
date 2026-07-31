@@ -21,6 +21,55 @@ use crate::proxy_common::*;
 use pingora_cache::CachePhase;
 use pingora_core::protocols::http::custom::CUSTOM_MESSAGE_QUEUE_SIZE;
 
+async fn prepare_h1_upstream_request<SV>(
+    inner: &SV,
+    session: &mut Session,
+    ctx: &mut SV::CTX,
+) -> Result<PreparedUpstreamRequest>
+where
+    SV: ProxyHttp + Send + Sync,
+    SV::CTX: Send + Sync,
+{
+    let requires_owned = session.req_header().version == Version::HTTP_2 || session.cache.enabled();
+    if !requires_owned {
+        return inner.prepare_upstream_request(session, ctx).await;
+    }
+
+    let mut req = session.req_header().clone();
+
+    // Convert HTTP2 headers to H1
+    if req.version == Version::HTTP_2 {
+        req.set_version(Version::HTTP_11);
+        // if client has body but has no content length, add chunked encoding
+        // https://datatracker.ietf.org/doc/html/rfc9112#name-message-body
+        // "The presence of a message body in a request is signaled by a Content-Length or Transfer-Encoding header field."
+        if !session.is_body_empty() && session.get_header(header::CONTENT_LENGTH).is_none() {
+            req.insert_header(header::TRANSFER_ENCODING, "chunked")
+                .unwrap();
+        }
+        if session.get_header(header::HOST).is_none() {
+            // H2 is required to set :authority, but no necessarily header
+            // most H1 server expect host header, so convert
+            let host = req.uri.authority().map_or("", |a| a.as_str()).to_owned();
+            req.insert_header(header::HOST, host).unwrap();
+        }
+        // TODO: Add keepalive header for connection reuse, but this is not required per RFC
+    }
+
+    if session.cache.enabled() {
+        pingora_cache::filters::upstream::request_filter(
+            &mut req,
+            session.cache.maybe_cache_meta(),
+        );
+        session.mark_upstream_headers_mutated_for_cache();
+    }
+
+    inner
+        .upstream_request_filter(session, &mut req, ctx)
+        .await?;
+    Ok(PreparedUpstreamRequest::Owned(Box::new(req)))
+}
+
 impl<SV, C> HttpProxy<SV, C>
 where
     C: custom::Connector,
@@ -41,51 +90,20 @@ where
 
         // phase 2 send to upstream
 
-        let mut req = session.req_header().clone();
+        let prepared = match prepare_h1_upstream_request(&self.inner, session, ctx).await {
+            Ok(prepared) => prepared,
+            Err(e) => return (false, true, Some(e)),
+        };
 
-        // Convert HTTP2 headers to H1
-        if req.version == Version::HTTP_2 {
-            req.set_version(Version::HTTP_11);
-            // if client has body but has no content length, add chunked encoding
-            // https://datatracker.ietf.org/doc/html/rfc9112#name-message-body
-            // "The presence of a message body in a request is signaled by a Content-Length or Transfer-Encoding header field."
-            if !session.is_body_empty() && session.get_header(header::CONTENT_LENGTH).is_none() {
-                req.insert_header(header::TRANSFER_ENCODING, "chunked")
-                    .unwrap();
-            }
-            if session.get_header(header::HOST).is_none() {
-                // H2 is required to set :authority, but no necessarily header
-                // most H1 server expect host header, so convert
-                let host = req.uri.authority().map_or("", |a| a.as_str()).to_owned();
-                req.insert_header(header::HOST, host).unwrap();
-            }
-            // TODO: Add keepalive header for connection reuse, but this is not required per RFC
-        }
-
-        if session.cache.enabled() {
-            pingora_cache::filters::upstream::request_filter(
-                &mut req,
-                session.cache.maybe_cache_meta(),
-            );
-            session.mark_upstream_headers_mutated_for_cache();
-        }
-
-        match self
-            .inner
-            .upstream_request_filter(session, &mut req, ctx)
-            .await
-        {
-            Ok(_) => { /* continue */ }
-            Err(e) => {
-                return (false, true, Some(e));
-            }
-        }
-
-        session.upstream_compression.request_filter(&req);
+        let req = match &prepared {
+            PreparedUpstreamRequest::Borrowed => session.downstream_session.req_header(),
+            PreparedUpstreamRequest::Owned(req) => req,
+        };
+        session.upstream_compression.request_filter(req);
 
         debug!("Sending header to upstream {:?}", req);
 
-        match client_session.write_request_header(Box::new(req)).await {
+        match client_session.write_request_header_ref(req).await {
             Ok(_) => { /* Continue */ }
             Err(e) => {
                 return (false, false, Some(e.into_up()));
@@ -893,5 +911,158 @@ pub(crate) async fn send_body_to1(
         }
     } else {
         Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod request_preparation_tests {
+    use std::{
+        any::Any,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+    };
+
+    use pingora_cache::{
+        key::CompactCacheKey,
+        meta::CacheMeta,
+        storage::{HitHandler, MissHandler, PurgeType, Storage},
+        trace::SpanHandle,
+        CacheKey,
+    };
+    use tokio_test::io::Builder;
+
+    use super::*;
+
+    struct CloneProbe(Arc<AtomicUsize>);
+
+    impl Clone for CloneProbe {
+        fn clone(&self) -> Self {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Self(Arc::clone(&self.0))
+        }
+    }
+
+    struct DefaultProxy;
+
+    #[async_trait]
+    impl ProxyHttp for DefaultProxy {
+        type CTX = ();
+
+        fn new_ctx(&self) -> Self::CTX {}
+
+        async fn upstream_peer(
+            &self,
+            _session: &mut Session,
+            _ctx: &mut Self::CTX,
+        ) -> Result<Box<HttpPeer>> {
+            unreachable!("request preparation does not select a peer")
+        }
+    }
+
+    struct TestStorage;
+
+    #[async_trait]
+    impl Storage for TestStorage {
+        async fn lookup(
+            &'static self,
+            _key: &CacheKey,
+            _trace: &SpanHandle,
+        ) -> Result<Option<(CacheMeta, HitHandler)>> {
+            unreachable!("request preparation does not access cache storage")
+        }
+
+        async fn get_miss_handler(
+            &'static self,
+            _key: &CacheKey,
+            _meta: &CacheMeta,
+            _trace: &SpanHandle,
+        ) -> Result<MissHandler> {
+            unreachable!("request preparation does not access cache storage")
+        }
+
+        async fn purge(
+            &'static self,
+            _key: &CompactCacheKey,
+            _purge_type: PurgeType,
+            _trace: &SpanHandle,
+        ) -> Result<bool> {
+            unreachable!("request preparation does not access cache storage")
+        }
+
+        async fn update_meta(
+            &'static self,
+            _key: &CacheKey,
+            _meta: &CacheMeta,
+            _trace: &SpanHandle,
+        ) -> Result<bool> {
+            unreachable!("request preparation does not access cache storage")
+        }
+
+        fn as_any(&self) -> &(dyn Any + Send + Sync + 'static) {
+            self
+        }
+    }
+
+    static TEST_STORAGE: TestStorage = TestStorage;
+
+    async fn session_with_probe() -> (Session, Arc<AtomicUsize>) {
+        let request = b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n";
+        let mock = Builder::new().read(request).build();
+        let mut session = Session::new_h1(Box::new(mock));
+        session.read_request().await.unwrap();
+        let clones = Arc::new(AtomicUsize::new(0));
+        session
+            .req_header_mut()
+            .extensions
+            .insert(CloneProbe(Arc::clone(&clones)));
+        (session, clones)
+    }
+
+    #[tokio::test]
+    async fn default_preparation_clones_and_owns_plain_h1() {
+        let (mut session, clones) = session_with_probe().await;
+
+        let prepared = prepare_h1_upstream_request(&DefaultProxy, &mut session, &mut ())
+            .await
+            .unwrap();
+
+        assert!(matches!(prepared, PreparedUpstreamRequest::Owned(_)));
+        assert_eq!(clones.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn h2_conversion_clones_before_default_filter_preparation() {
+        let (mut session, clones) = session_with_probe().await;
+        session.req_header_mut().set_version(Version::HTTP_2);
+
+        let prepared = prepare_h1_upstream_request(&DefaultProxy, &mut session, &mut ())
+            .await
+            .unwrap();
+
+        let PreparedUpstreamRequest::Owned(request) = prepared else {
+            panic!("HTTP/2 conversion must own the request");
+        };
+        assert_eq!(request.version, Version::HTTP_11);
+        assert_eq!(clones.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn active_cache_mutation_clones_before_default_filter_preparation() {
+        let (mut session, clones) = session_with_probe().await;
+        session.cache.enable(&TEST_STORAGE, None, None, None, None);
+        session
+            .cache
+            .set_cache_key(CacheKey::new("test", "request", ""));
+        session.cache.cache_miss();
+
+        let prepared = prepare_h1_upstream_request(&DefaultProxy, &mut session, &mut ())
+            .await
+            .unwrap();
+
+        assert!(matches!(prepared, PreparedUpstreamRequest::Owned(_)));
+        assert!(session.upstream_headers_mutated_for_cache());
+        assert_eq!(clones.load(Ordering::Relaxed), 1);
     }
 }
