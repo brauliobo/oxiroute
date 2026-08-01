@@ -260,6 +260,7 @@ export interface MonitoringSnapshot {
 export type TopologyNodeKind =
   | 'listener'
   | 'forward_proxy_listener'
+  | 'forward_proxy_service'
   | 'rtmp_listener'
   | 'tls_profile'
   | 'certificate'
@@ -778,7 +779,7 @@ function monitoringRelay(value: unknown): boolean {
 function topologyNode(value: unknown): boolean {
   return isRecord(value) && typeof value.id === 'string' && typeof value.name === 'string' &&
     typeof value.configPath === 'string' && isRecord(value.attributes) &&
-    ['listener', 'forward_proxy_listener', 'rtmp_listener', 'tls_profile', 'certificate',
+    ['listener', 'forward_proxy_listener', 'forward_proxy_service', 'rtmp_listener', 'tls_profile', 'certificate',
       'http_service', 'http_route', 'l4_service', 'upstream_pool', 'endpoint']
       .includes(String(value.kind))
 }

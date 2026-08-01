@@ -637,6 +637,13 @@ export function contractConfigSnapshot(): ConfigSnapshot {
     tls_required: true,
     connect: { enabled: true, allowed_ports: [443, 8443] },
     auth: { type: 'bearer_token_file', token_file_path: '/run/oxiroute/forward.token' },
+    access_policy: {
+      rules: [{
+        action: 'allow',
+        conditions: [{ negated: false, type: 'authenticated' }],
+      }],
+      default_action: 'deny',
+    },
     destination_policy: {
       allow_domains: ['example.com'],
       deny_domains: ['blocked.example.com'],
@@ -644,6 +651,7 @@ export function contractConfigSnapshot(): ConfigSnapshot {
       deny_cidrs: ['203.0.113.128/25'],
       deny_private: true,
     },
+    header_policy: { forwarded_for: 'preserve', via: 'preserve' },
     connect_timeout_ms: 10_000,
     idle_timeout_ms: 300_000,
     lifetime_timeout_ms: 3_600_000,
@@ -651,6 +659,7 @@ export function contractConfigSnapshot(): ConfigSnapshot {
     max_header_bytes: 65_536,
     max_connections: 10_000,
     resolver: {
+      nameservers: [],
       max_cache_entries: 4_096,
       max_concurrent_queries: 256,
       max_addresses_per_name: 16,
