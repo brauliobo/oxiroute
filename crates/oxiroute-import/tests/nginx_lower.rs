@@ -714,6 +714,32 @@ fn rejects_invalid_nginx_etag_forms() {
 }
 
 #[test]
+fn bare_nginx_proxy_timeouts_preserve_seconds_for_slow_upstreams() {
+    let report = import_source(
+        r"http {
+          proxy_http_version 1.1;
+          proxy_connect_timeout 600;
+          proxy_read_timeout 600;
+          proxy_send_timeout 600;
+          proxy_buffering off;
+          proxy_request_buffering off;
+          proxy_next_upstream off;
+          proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+          server {
+            listen 127.0.0.1:8096 default_server;
+            location / { proxy_pass http://127.0.0.1:4096; }
+          }
+        }",
+    );
+
+    let config = report.config.expect("bare timeout proxy config");
+    let policy = config.http_services[0].routes[0].policy;
+    assert_eq!(policy.connect_timeout_ms, 600_000);
+    assert_eq!(policy.read_timeout_ms, 600_000);
+    assert_eq!(policy.write_timeout_ms, 600_000);
+}
+
+#[test]
 fn explicit_proxy_headers_cookie_rewrite_and_safe_retry_subset_finalize() {
     let source = r"http {
           proxy_http_version 1.1;
