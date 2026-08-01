@@ -31,6 +31,7 @@ struct Lowerer {
     bearer_token_overlays: HashMap<Vec<u8>, PathBuf>,
     default_access_log_path: Option<PathBuf>,
     default_error_server: Option<String>,
+    x_accel_controls_absent: bool,
     used_upstream_tls_overlays: RefCell<HashSet<Vec<u8>>>,
     used_bearer_token_overlays: RefCell<HashSet<Vec<u8>>>,
     used_certificate_overlays: RefCell<HashSet<super::OccurrenceId>>,
@@ -48,6 +49,7 @@ impl Lowerer {
         bearer_token_overlays: HashMap<Vec<u8>, PathBuf>,
         default_access_log_path: Option<PathBuf>,
         default_error_server: Option<String>,
+        x_accel_controls_absent: bool,
     ) -> Self {
         Self {
             graph,
@@ -61,6 +63,7 @@ impl Lowerer {
             bearer_token_overlays,
             default_access_log_path,
             default_error_server,
+            x_accel_controls_absent,
             used_upstream_tls_overlays: RefCell::new(HashSet::new()),
             used_bearer_token_overlays: RefCell::new(HashSet::new()),
             used_certificate_overlays: RefCell::new(HashSet::new()),

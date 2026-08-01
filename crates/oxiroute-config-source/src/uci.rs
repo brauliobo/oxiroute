@@ -340,6 +340,7 @@ fn decode_nginx_section(
         "default_access_log_file",
         "recording_root",
         "default_error_server",
+        "x_accel_controls_absent",
     ];
     let mut object = Map::new();
     for entry in &section.entries {
@@ -358,7 +359,14 @@ fn decode_nginx_section(
                 format!("unknown nginx_server option `{name}`"),
             ));
         }
-        object.insert(name.clone(), Value::String(value.clone()));
+        object.insert(
+            name.clone(),
+            if name == "x_accel_controls_absent" {
+                Value::Bool(parse_uci_bool(section, name, value)?)
+            } else {
+                Value::String(value.clone())
+            },
+        );
     }
     decode_nginx(Value::Object(object), "UCI")
 }

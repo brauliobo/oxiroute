@@ -378,6 +378,9 @@ impl ProxyHttp for HttpReverseProxy {
             ctx.release_lease();
         }
         result?;
+        if upstream_request.version == http::Version::HTTP_10 {
+            upstream_request.set_version(http::Version::HTTP_11);
+        }
         if let Some(host) = &ctx.selected_upstream_host {
             upstream_request.insert_header(HOST, host.clone())?;
         } else {
@@ -1464,6 +1467,9 @@ fn upstream_request_requires_mutation(
     ctx: &HttpRequestContext,
 ) -> pingora::Result<bool> {
     let request = session.req_header();
+    if request.version == http::Version::HTTP_10 {
+        return Ok(true);
+    }
     let host_requires_mutation = match &ctx.selected_upstream_host {
         Some(selected) => !has_single_canonical_host(request, selected),
         None => request.headers.contains_key(HOST),
@@ -2041,6 +2047,25 @@ mod tests {
         }
 
         assert_eq!(clones.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn downstream_http_1_0_is_normalized_to_the_canonical_http_1_1_upstream() {
+        let (proxy, mut session, mut context, _client) = request_preparation_fixture(
+            HttpProxyPolicy::default(),
+            UpstreamConnectionReuse::Safe,
+            b"GET / HTTP/1.0\r\nHost: example.test\r\n\r\n",
+        )
+        .await;
+
+        let PreparedUpstreamRequest::Owned(request) = proxy
+            .prepare_upstream_request(&mut session, &mut context)
+            .await
+            .expect("prepare HTTP/1.0 request")
+        else {
+            panic!("HTTP/1.0 requires canonical upstream normalization");
+        };
+        assert_eq!(request.version, http::Version::HTTP_11);
     }
 
     #[tokio::test]

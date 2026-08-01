@@ -140,6 +140,9 @@ pub enum ImportCommand {
         /// Preserve nginx's branded default static 404 body and response header.
         #[arg(long, value_name = "SERVER_TOKEN")]
         default_error_server: Option<String>,
+        /// Assert that audited upstreams do not emit nginx X-Accel response controls.
+        #[arg(long)]
+        x_accel_controls_absent: bool,
         /// Shift imported IP socket listener ports for side-by-side validation.
         #[arg(long, value_name = "PORTS", value_parser = clap::value_parser!(u16).range(1..))]
         shadow_port_offset: Option<u16>,
@@ -503,6 +506,7 @@ pub fn execute_offline(command: &Command) -> Result<Option<String>, Box<dyn Erro
                     default_access_log_file,
                     recording_root,
                     default_error_server,
+                    x_accel_controls_absent,
                     shadow_port_offset,
                     format,
                     output,
@@ -514,6 +518,7 @@ pub fn execute_offline(command: &Command) -> Result<Option<String>, Box<dyn Erro
             default_access_log_file.as_deref(),
             recording_root.as_deref(),
             default_error_server.as_deref(),
+            *x_accel_controls_absent,
             *shadow_port_offset,
             (*format).into(),
             *output,
@@ -579,6 +584,7 @@ fn import_nginx(
     default_access_log_file: Option<&Path>,
     recording_root: Option<&Path>,
     default_error_server: Option<&str>,
+    x_accel_controls_absent: bool,
     shadow_port_offset: Option<u16>,
     format: ConfigFormat,
     output: ImportOutput,
@@ -607,6 +613,7 @@ fn import_nginx(
                 server: server.to_owned(),
             }
         }),
+        x_accel_controls_absent,
         ..oxiroute_import::nginx::NginxImportOptions::default()
     };
     let report = oxiroute_import::nginx::import_root_with_options(path, root_prefix, &options);

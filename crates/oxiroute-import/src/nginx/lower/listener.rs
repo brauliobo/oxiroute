@@ -1124,7 +1124,7 @@ impl Lowerer {
         let version = self.effective_policy(scope, b"proxy_http_version");
         if version
             .as_ref()
-            .is_none_or(|value| value.arguments.as_slice() != [b"1.1".to_vec()])
+            .is_some_and(|value| value.arguments.as_slice() != [b"1.1".to_vec()])
         {
             let origin = version
                 .as_ref()
@@ -1133,7 +1133,7 @@ impl Lowerer {
             issues.push(issue(
                 origin,
                 E_SEMANTICS_NOT_REPRESENTABLE,
-                "proxy_http_version must explicitly be 1.1 because nginx defaults to 1.0",
+                "proxy_http_version must be 1.1 for the canonical upstream HTTP policy",
             ));
         }
         let response_buffering = self.effective_policy(scope, b"proxy_buffering");
@@ -1842,6 +1842,9 @@ impl Lowerer {
         let policies =
             self.effective_list_policy_chain(location.origin.occurrence, b"proxy_ignore_headers");
         if policies.is_empty() {
+            if self.x_accel_controls_absent {
+                return;
+            }
             issues.push(issue(
                 &proxy.origin,
                 E_SEMANTICS_NOT_REPRESENTABLE,

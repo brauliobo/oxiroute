@@ -91,6 +91,7 @@ pub struct NginxImportOptions {
     pub default_access_log: Option<NginxDefaultAccessLogOverlay>,
     pub recording_root: Option<NginxRecordingRootOverlay>,
     pub default_error_page: Option<NginxDefaultErrorPageOverlay>,
+    pub x_accel_controls_absent: bool,
 }
 
 #[derive(Default)]
@@ -181,6 +182,7 @@ pub fn import_root_with_options(
             .default_error_page
             .as_ref()
             .map(|overlay| overlay.server.clone()),
+        options.x_accel_controls_absent,
     );
     if options.host_timezones.len() > 1 {
         diagnostics.push(Diagnostic::new(
