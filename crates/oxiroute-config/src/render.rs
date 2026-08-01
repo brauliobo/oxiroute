@@ -743,6 +743,16 @@ impl Renderer {
     fn http_gzip(&mut self, gzip: &HttpGzipPolicy) {
         self.integer_field("level", gzip.level);
         self.string_list_field("content_types", &gzip.content_types);
+        self.integer_field("min_length_bytes", gzip.min_length_bytes);
+        self.string_field(
+            "min_http_version",
+            match gzip.min_http_version {
+                crate::HttpGzipMinimumVersion::Http10 => "1.0",
+                crate::HttpGzipMinimumVersion::Http11 => "1.1",
+            },
+        );
+        self.boolean_field("disable_on_via", gzip.disable_on_via);
+        self.boolean_field("vary", gzip.vary);
     }
 
     fn http_route(
@@ -943,6 +953,7 @@ impl Renderer {
             autoindex,
             autoindex_exact_size,
             autoindex_local_time,
+            etag,
             mime,
             headers,
             error_responses,
@@ -992,6 +1003,7 @@ impl Renderer {
         self.boolean_field("autoindex", *autoindex);
         self.boolean_field("autoindex_exact_size", *autoindex_exact_size);
         self.boolean_field("autoindex_local_time", *autoindex_local_time);
+        self.boolean_field("etag", *etag);
         self.begin_table_field("mime");
         self.http_static_mime(mime);
         self.end_table();

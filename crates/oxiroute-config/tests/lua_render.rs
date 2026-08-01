@@ -394,6 +394,7 @@ fn test_http_services() -> Vec<HttpService> {
                         autoindex: false,
                         autoindex_exact_size: true,
                         autoindex_local_time: false,
+                        etag: false,
                         mime: HttpStaticMimePolicy::default(),
                         headers: Vec::new(),
                         error_responses: Vec::new(),
@@ -727,6 +728,10 @@ fn serializes_the_complete_canonical_model_for_typed_ui_data() {
     assert_eq!(
         value["http_services"][0]["routes"][3]["action"]["type"],
         "static_files"
+    );
+    assert_eq!(
+        value["http_services"][0]["routes"][3]["action"]["etag"],
+        false
     );
     assert_eq!(
         value["rtmp_services"][0]["applications"][0]["recorders"][0]["start"],

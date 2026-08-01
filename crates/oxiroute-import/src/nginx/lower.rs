@@ -84,7 +84,42 @@ struct BindCandidate {
     certificates: Vec<Certificate>,
     tls_profile: Option<TlsProfile>,
     origins: Vec<DirectiveOrigin>,
+    gzip_origins: GzipOrigins,
     route_origins: Vec<Vec<DirectiveOrigin>>,
+}
+
+#[derive(Default)]
+struct GzipOrigins {
+    gzip: Vec<DirectiveOrigin>,
+    level: Vec<DirectiveOrigin>,
+    content_types: Vec<DirectiveOrigin>,
+    min_length_bytes: Vec<DirectiveOrigin>,
+    min_http_version: Vec<DirectiveOrigin>,
+    disable_on_via: Vec<DirectiveOrigin>,
+    vary: Vec<DirectiveOrigin>,
+}
+
+impl GzipOrigins {
+    fn extend(&mut self, other: Self) {
+        self.gzip.extend(other.gzip);
+        self.level.extend(other.level);
+        self.content_types.extend(other.content_types);
+        self.min_length_bytes.extend(other.min_length_bytes);
+        self.min_http_version.extend(other.min_http_version);
+        self.disable_on_via.extend(other.disable_on_via);
+        self.vary.extend(other.vary);
+    }
+
+    fn all(&self) -> Vec<DirectiveOrigin> {
+        let mut origins = self.gzip.clone();
+        origins.extend(self.level.clone());
+        origins.extend(self.content_types.clone());
+        origins.extend(self.min_length_bytes.clone());
+        origins.extend(self.min_http_version.clone());
+        origins.extend(self.disable_on_via.clone());
+        origins.extend(self.vary.clone());
+        origins
+    }
 }
 
 #[derive(Clone)]

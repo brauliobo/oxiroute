@@ -387,6 +387,7 @@ export interface HttpStaticFilesActionConfig {
   autoindex: boolean
   autoindex_exact_size: boolean
   autoindex_local_time: boolean
+  etag: boolean
   mime: {
     default_type: string | null
     types: Array<{ extension: string; content_type: string }>
@@ -428,7 +429,14 @@ export interface HttpServiceConfig {
   routes: HttpRouteConfig[]
   upstream_io_timeout_ms: number
   max_request_body_bytes: number | null
-  gzip: { level: number; content_types: string[] } | null
+  gzip: {
+    level: number
+    content_types: string[]
+    min_length_bytes: number
+    min_http_version: '1.0' | '1.1'
+    disable_on_via: boolean
+    vary: boolean
+  } | null
   access_log: AccessLogConfig | null
 }
 
@@ -726,7 +734,9 @@ function isHttpService(value: unknown): value is HttpServiceConfig {
     isHttpRoutePolicy(route.policy) && isHttpAction(route.action)) && safeInteger(value.upstream_io_timeout_ms) &&
     nullableSafeInteger(value.max_request_body_bytes) &&
     (value.gzip === null || (isRecord(value.gzip) && safeInteger(value.gzip.level) &&
-      arrayOf(value.gzip.content_types, isString))) &&
+      arrayOf(value.gzip.content_types, isString) && safeInteger(value.gzip.min_length_bytes) &&
+      ['1.0', '1.1'].includes(String(value.gzip.min_http_version)) &&
+      typeof value.gzip.disable_on_via === 'boolean' && typeof value.gzip.vary === 'boolean')) &&
     (value.access_log === null || isAccessLog(value.access_log))
 }
 
@@ -1249,6 +1259,7 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'http_services[].routes[].action.autoindex', kind: 'boolean' },
   { path: 'http_services[].routes[].action.autoindex_exact_size', kind: 'boolean' },
   { path: 'http_services[].routes[].action.autoindex_local_time', kind: 'boolean' },
+  { path: 'http_services[].routes[].action.etag', kind: 'boolean' },
   { path: 'http_services[].routes[].action.mime', kind: 'object' },
   { path: 'http_services[].routes[].action.mime.default_type', kind: 'string' },
   { path: 'http_services[].routes[].action.mime.types', kind: 'collection' },
@@ -1260,6 +1271,10 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'http_services[].gzip', kind: 'object' },
   { path: 'http_services[].gzip.level', kind: 'integer' },
   { path: 'http_services[].gzip.content_types', kind: 'string_list' },
+  { path: 'http_services[].gzip.min_length_bytes', kind: 'integer' },
+  { path: 'http_services[].gzip.min_http_version', kind: 'enum' },
+  { path: 'http_services[].gzip.disable_on_via', kind: 'boolean' },
+  { path: 'http_services[].gzip.vary', kind: 'boolean' },
   { path: 'http_services[].access_log', kind: 'object' },
   { path: 'http_services[].access_log.type', kind: 'enum' },
   { path: 'http_services[].access_log.path', kind: 'string' },

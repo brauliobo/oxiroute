@@ -348,6 +348,7 @@ fn rejects_leaf_key_usage_without_digital_signature() {
         &ca_key,
         &leaf_key,
         &["usage.example.test"],
+        &[],
         false,
         false,
         true,
@@ -1559,6 +1560,145 @@ fn requires_declared_dns_names_to_exactly_match_valid_dns_sans() {
 }
 
 #[test]
+fn accepts_ip_sans_canonicalizes_ipv6_mapped_ipv4_and_uses_ips_only_as_the_default() {
+    let temp = TempDir::new().unwrap();
+    let ca_key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+    let ca = build_certificate(
+        "IP SAN Root",
+        None,
+        &ca_key,
+        &ca_key,
+        &[],
+        false,
+        true,
+        false,
+    );
+    let leaf_key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+    let leaf = build_certificate_with_sans(
+        "ip-identity",
+        Some(&ca),
+        &ca_key,
+        &leaf_key,
+        &[],
+        &["::ffff:192.0.2.10", "2001:0DB8:0:0:0:0:0:1"],
+        false,
+        false,
+        true,
+    );
+    let files = write_identity_material(temp.path(), "ip-sans", &leaf, &[&ca], &leaf_key);
+    let mut config = config_with_identity(&files);
+    config.certificates[0].dns_names = vec!["2001:0db8:0:0:0:0:0:1".into(), "192.0.2.10".into()];
+
+    let prepared = prepare_tls(&config).unwrap();
+    let generation = prepared.certificates()["primary"].snapshot();
+    assert_eq!(
+        generation.metadata().dns_names,
+        ["192.0.2.10", "2001:db8::1"]
+    );
+    let profile = &prepared.profiles()["public"];
+    assert_eq!(profile.selected_generation(None).metadata().name, "primary");
+    assert_eq!(
+        profile
+            .selected_generation(Some("192.0.2.10"))
+            .metadata()
+            .name,
+        "primary"
+    );
+}
+
+#[test]
+fn rejects_dns_ip_san_type_mismatches_and_nonexact_identity_sets() {
+    let temp = TempDir::new().unwrap();
+    let ca_key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+    let ca = build_certificate(
+        "Typed SAN Root",
+        None,
+        &ca_key,
+        &ca_key,
+        &[],
+        false,
+        true,
+        false,
+    );
+    let leaf_key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+    let dns_ip_text = build_certificate(
+        "dns-ip-text",
+        Some(&ca),
+        &ca_key,
+        &leaf_key,
+        &["192.0.2.10"],
+        false,
+        false,
+        true,
+    );
+    let dns_ip_text_files =
+        write_identity_material(temp.path(), "dns-ip-text", &dns_ip_text, &[&ca], &leaf_key);
+    let error = CertificateGeneration::from_files(
+        "type-mismatch",
+        &["192.0.2.10".into()],
+        &dns_ip_text_files.chain,
+        &dns_ip_text_files.key,
+    )
+    .unwrap_err();
+    assert!(matches!(error, TlsBuildError::InvalidDnsSan { .. }));
+
+    let mixed_key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+    let mixed = build_certificate_with_sans(
+        "mixed-identities",
+        Some(&ca),
+        &ca_key,
+        &mixed_key,
+        &["www.example.test"],
+        &["192.0.2.10"],
+        false,
+        false,
+        true,
+    );
+    let mixed_files = write_identity_material(temp.path(), "mixed", &mixed, &[&ca], &mixed_key);
+    let error = CertificateGeneration::from_files(
+        "wildcard-ip",
+        &["*.192.0.2.10".into()],
+        &mixed_files.chain,
+        &mixed_files.key,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        TlsBuildError::InvalidDeclaredDnsNames { .. }
+    ));
+
+    for declared in [
+        vec!["www.example.test".into()],
+        vec![
+            "www.example.test".into(),
+            "192.0.2.10".into(),
+            "api.example.test".into(),
+        ],
+    ] {
+        let error = CertificateGeneration::from_files(
+            "identity-set-mismatch",
+            &declared,
+            &mixed_files.chain,
+            &mixed_files.key,
+        )
+        .unwrap_err();
+        assert!(matches!(error, TlsBuildError::DnsSanMismatch { .. }));
+    }
+
+    let generation = CertificateGeneration::from_files(
+        "mixed-identities",
+        &["192.0.2.10".into(), "WWW.EXAMPLE.TEST".into()],
+        &mixed_files.chain,
+        &mixed_files.key,
+    )
+    .unwrap();
+    assert_eq!(
+        generation.metadata().dns_names,
+        ["www.example.test", "192.0.2.10"]
+    );
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn strictly_rejects_incomplete_unordered_expired_non_ca_and_client_only_chains() {
     let temp = TempDir::new().unwrap();
@@ -2407,12 +2547,38 @@ fn build_certificate(
     is_ca: bool,
     server_auth: bool,
 ) -> X509 {
+    build_certificate_with_sans(
+        common_name,
+        issuer,
+        issuer_key,
+        subject_key,
+        dns_names,
+        &[],
+        expired,
+        is_ca,
+        server_auth,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_certificate_with_sans(
+    common_name: &str,
+    issuer: Option<&X509>,
+    issuer_key: &PKey<Private>,
+    subject_key: &PKey<Private>,
+    dns_names: &[&str],
+    ip_addresses: &[&str],
+    expired: bool,
+    is_ca: bool,
+    server_auth: bool,
+) -> X509 {
     build_certificate_with_leaf_usage(
         common_name,
         issuer,
         issuer_key,
         subject_key,
         dns_names,
+        ip_addresses,
         expired,
         is_ca,
         server_auth,
@@ -2433,6 +2599,7 @@ fn build_certificate_with_leaf_usage(
     issuer_key: &PKey<Private>,
     subject_key: &PKey<Private>,
     dns_names: &[&str],
+    ip_addresses: &[&str],
     expired: bool,
     is_ca: bool,
     server_auth: bool,
@@ -2503,10 +2670,13 @@ fn build_certificate_with_leaf_usage(
         .build(&builder.x509v3_context(issuer.map(AsRef::as_ref), None))
         .unwrap();
     builder.append_extension(authority_key_identifier).unwrap();
-    if !dns_names.is_empty() {
+    if !dns_names.is_empty() || !ip_addresses.is_empty() {
         let mut subject_alternative_name = SubjectAlternativeName::new();
         for dns_name in dns_names {
             subject_alternative_name.dns(dns_name);
+        }
+        for ip_address in ip_addresses {
+            subject_alternative_name.ip(ip_address);
         }
         let extension = subject_alternative_name
             .build(&builder.x509v3_context(issuer.map(AsRef::as_ref), None))

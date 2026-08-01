@@ -126,6 +126,14 @@ fn validate_service_limits(service: &HttpService) -> Result<(), ConfigError> {
                 detail: "must be between 1 and 9".into(),
             });
         }
+        if gzip.min_length_bytes > MAX_SAFE_JSON_INTEGER {
+            return Err(ConfigError::InvalidHttpRoute {
+                service: service.name.clone(),
+                route: 0,
+                field: "gzip.min_length_bytes",
+                detail: "must not exceed the maximum safe JSON integer".into(),
+            });
+        }
         if gzip.content_types.len() > MAX_HTTP_GZIP_TYPES {
             return Err(ConfigError::InvalidHttpRoute {
                 service: service.name.clone(),

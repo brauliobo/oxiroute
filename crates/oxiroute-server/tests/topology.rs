@@ -348,6 +348,7 @@ fn action_aware_topology_never_serializes_access_tokens_or_filesystem_roots() {
             autoindex: false,
             autoindex_exact_size: true,
             autoindex_local_time: false,
+            etag: true,
             mime: oxiroute_config::HttpStaticMimePolicy::default(),
             headers: Vec::new(),
             error_responses: Vec::new(),

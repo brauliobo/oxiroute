@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     path::PathBuf,
 };
 
@@ -196,7 +196,11 @@ fn validate_certificates(certificates: &mut [Certificate]) -> Result<(), ConfigE
         }
         let mut unique_dns_names = HashSet::with_capacity(certificate.dns_names.len());
         for dns_name in &mut certificate.dns_names {
-            dns_name.make_ascii_lowercase();
+            if let Ok(ip) = dns_name.parse::<IpAddr>() {
+                *dns_name = canonical_ip(ip).to_string();
+            } else {
+                dns_name.make_ascii_lowercase();
+            }
             if !is_valid_certificate_dns_name(dns_name) {
                 return Err(ConfigError::InvalidCertificateDnsName {
                     certificate: certificate.name.clone(),
@@ -301,6 +305,9 @@ fn validate_tls_profiles(
                     certificate: certificate_name.clone(),
                 })?;
             for dns_name in &certificate.dns_names {
+                if dns_name.parse::<IpAddr>().is_ok() {
+                    continue;
+                }
                 if let Some(first_certificate) =
                     dns_name_owners.insert(dns_name.as_str(), certificate.name.as_str())
                 {

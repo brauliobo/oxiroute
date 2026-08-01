@@ -24,6 +24,9 @@
     label.enable-row(data-field="http_services[].routes[].action.directory_redirects")
       input(type="checkbox" v-model="action.directory_redirects")
       span Redirect directories to trailing slash
+    label.enable-row(data-field="http_services[].routes[].action.etag")
+      input(type="checkbox" v-model="action.etag")
+      span Emit ETag validators
 </template>
 
 <script setup lang="ts">

@@ -2,6 +2,7 @@ use std::{
     collections::BTreeMap,
     fs::File,
     io::{self, Read},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -404,17 +405,19 @@ pub enum TlsBuildError {
         #[source]
         source: openssl::error::ErrorStack,
     },
-    #[error("certificate `{certificate}` must contain at least one DNS subject alternative name")]
+    #[error(
+        "certificate `{certificate}` must contain at least one DNS or IP subject alternative name"
+    )]
     MissingDnsSan { certificate: String },
-    #[error("certificate `{certificate}` has invalid declared DNS names")]
+    #[error("certificate `{certificate}` has invalid declared DNS/IP identities")]
     InvalidDeclaredDnsNames { certificate: String },
-    #[error("failed to inspect DNS subject alternative names for certificate `{certificate}`")]
+    #[error("failed to inspect DNS/IP subject alternative names for certificate `{certificate}`")]
     DnsSanInspection {
         certificate: String,
         #[source]
         source: Box<openssl::error::ErrorStack>,
     },
-    #[error("certificate `{certificate}` contains a malformed DNS subject alternative name")]
+    #[error("certificate `{certificate}` contains a malformed DNS/IP subject alternative name")]
     InvalidDnsSanEncoding { certificate: String },
     #[error(
         "certificate `{certificate}` contains invalid DNS subject alternative name `{dns_name}`"
@@ -424,7 +427,7 @@ pub enum TlsBuildError {
         dns_name: String,
     },
     #[error(
-        "certificate `{certificate}` DNS subject alternative names do not match its declaration"
+        "certificate `{certificate}` DNS/IP subject alternative names do not match its declaration"
     )]
     DnsSanMismatch { certificate: String },
     #[error("certificate `{certificate}` must supply at least one issuer after the leaf")]
@@ -727,53 +730,75 @@ pub(crate) fn certificate_is_ca_capable(
     )
 }
 
-pub(crate) enum CertificateDnsSans {
+pub(crate) enum CertificateIdentitySans {
     Missing,
     Malformed,
-    Names(Vec<Vec<u8>>),
+    Names(Vec<CertificateIdentitySan>),
 }
 
-pub(crate) fn certificate_dns_sans(
+pub(crate) enum CertificateIdentitySan {
+    Dns(Vec<u8>),
+    Ip(IpAddr),
+}
+
+pub(crate) fn certificate_identity_sans(
     certificate: &openssl::x509::X509Ref,
-) -> Result<CertificateDnsSans, openssl::error::ErrorStack> {
+) -> Result<CertificateIdentitySans, openssl::error::ErrorStack> {
     const SUBJECT_ALT_NAME_OID: &[u8] = &[0x55, 0x1d, 0x11];
 
     let der = certificate.to_der()?;
     let mut extensions = match certificate_extensions(&der) {
-        ParsedExtensions::Missing => return Ok(CertificateDnsSans::Missing),
-        ParsedExtensions::Malformed => return Ok(CertificateDnsSans::Malformed),
+        ParsedExtensions::Missing => return Ok(CertificateIdentitySans::Missing),
+        ParsedExtensions::Malformed => return Ok(CertificateIdentitySans::Malformed),
         ParsedExtensions::Present(extensions) => extensions,
     };
-    let mut dns_names = None;
+    let mut identities = None;
     while !extensions.is_empty() {
         let Some((oid, value)) = der_extension(&mut extensions) else {
-            return Ok(CertificateDnsSans::Malformed);
+            return Ok(CertificateIdentitySans::Malformed);
         };
         if oid != SUBJECT_ALT_NAME_OID {
             continue;
         }
-        if dns_names.is_some() {
-            return Ok(CertificateDnsSans::Malformed);
+        if identities.is_some() {
+            return Ok(CertificateIdentitySans::Malformed);
         }
         let mut value = value;
         let Some(mut general_names) = der_value(&mut value, 0x30) else {
-            return Ok(CertificateDnsSans::Malformed);
+            return Ok(CertificateIdentitySans::Malformed);
         };
         if !value.is_empty() {
-            return Ok(CertificateDnsSans::Malformed);
+            return Ok(CertificateIdentitySans::Malformed);
         }
-        let mut parsed_dns_names = Vec::new();
+        let mut parsed_identities = Vec::new();
         while !general_names.is_empty() {
             let Some((tag, value)) = der_element(&mut general_names) else {
-                return Ok(CertificateDnsSans::Malformed);
+                return Ok(CertificateIdentitySans::Malformed);
             };
-            if tag == 0x82 {
-                parsed_dns_names.push(value.to_vec());
+            match tag {
+                0x82 => parsed_identities.push(CertificateIdentitySan::Dns(value.to_vec())),
+                0x87 => {
+                    let ip = match value {
+                        [a, b, c, d] => IpAddr::V4(Ipv4Addr::new(*a, *b, *c, *d)),
+                        value if value.len() == 16 => {
+                            let octets: [u8; 16] = value
+                                .try_into()
+                                .expect("a 16-byte IP SAN is an IPv6 address");
+                            IpAddr::V6(Ipv6Addr::from(octets))
+                        }
+                        _ => return Ok(CertificateIdentitySans::Malformed),
+                    };
+                    parsed_identities.push(CertificateIdentitySan::Ip(ip));
+                }
+                _ => {}
             }
         }
-        dns_names = Some(parsed_dns_names);
+        identities = Some(parsed_identities);
     }
-    Ok(dns_names.map_or(CertificateDnsSans::Missing, CertificateDnsSans::Names))
+    Ok(identities.map_or(
+        CertificateIdentitySans::Missing,
+        CertificateIdentitySans::Names,
+    ))
 }
 
 enum ParsedExtensions<'a> {

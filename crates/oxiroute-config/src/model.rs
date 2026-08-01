@@ -496,6 +496,40 @@ impl Default for HttpRoutePolicy {
 pub struct HttpGzipPolicy {
     pub level: u8,
     pub content_types: Vec<String>,
+    #[serde(default = "default_http_gzip_min_length_bytes")]
+    pub min_length_bytes: u64,
+    #[serde(default)]
+    pub min_http_version: HttpGzipMinimumVersion,
+    #[serde(default)]
+    pub disable_on_via: bool,
+    #[serde(default = "default_true")]
+    pub vary: bool,
+}
+
+impl Default for HttpGzipPolicy {
+    fn default() -> Self {
+        Self {
+            level: 1,
+            content_types: vec!["text/html".into()],
+            min_length_bytes: default_http_gzip_min_length_bytes(),
+            min_http_version: HttpGzipMinimumVersion::default(),
+            disable_on_via: false,
+            vary: true,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub enum HttpGzipMinimumVersion {
+    #[default]
+    #[serde(rename = "1.0")]
+    Http10,
+    #[serde(rename = "1.1")]
+    Http11,
+}
+
+const fn default_http_gzip_min_length_bytes() -> u64 {
+    20
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -601,6 +635,8 @@ pub enum HttpRouteAction {
         autoindex_exact_size: bool,
         #[serde(default)]
         autoindex_local_time: bool,
+        #[serde(default = "default_true", deserialize_with = "deserialize_strict_bool")]
+        etag: bool,
         #[serde(default)]
         mime: HttpStaticMimePolicy,
         #[serde(default)]
@@ -608,6 +644,27 @@ pub enum HttpRouteAction {
         #[serde(default)]
         error_responses: Vec<HttpStaticErrorResponse>,
     },
+}
+
+fn deserialize_strict_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct StrictBoolVisitor;
+
+    impl serde::de::Visitor<'_> for StrictBoolVisitor {
+        type Value = bool;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a boolean for etag")
+        }
+
+        fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+            Ok(value)
+        }
+    }
+
+    deserializer.deserialize_any(StrictBoolVisitor)
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]

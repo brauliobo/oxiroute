@@ -1046,6 +1046,39 @@ fn validates_and_normalizes_certificate_dns_names() {
 }
 
 #[test]
+fn validates_and_canonicalizes_certificate_ip_identities() {
+    let source = changed(
+        "      dns_names = { \"WWW.EXAMPLE.TEST\", \"*.EXAMPLE.TEST\" },",
+        "      dns_names = { \"192.0.2.10\", \"2001:0DB8:0:0:0:0:0:1\" },",
+    );
+    let config = load_lua(&source).expect("IPv4 and IPv6 certificate identities");
+    assert_eq!(
+        config.certificates[0].dns_names,
+        ["192.0.2.10", "2001:db8::1"]
+    );
+
+    let source = changed(
+        "      dns_names = { \"WWW.EXAMPLE.TEST\", \"*.EXAMPLE.TEST\" },",
+        "      dns_names = { \"2001:db8::1\", \"2001:0DB8:0:0:0:0:0:1\" },",
+    );
+    assert!(matches!(
+        error_from(&source),
+        ConfigError::DuplicateCertificateDnsName { dns_name, .. }
+            if dns_name == "2001:db8::1"
+    ));
+
+    let source = changed(
+        "      dns_names = { \"WWW.EXAMPLE.TEST\", \"*.EXAMPLE.TEST\" },",
+        "      dns_names = { \"192.0.2.10\", \"::ffff:c000:020a\" },",
+    );
+    assert!(matches!(
+        error_from(&source),
+        ConfigError::DuplicateCertificateDnsName { dns_name, .. }
+            if dns_name == "192.0.2.10"
+    ));
+}
+
+#[test]
 fn validates_certificate_file_paths_lexically() {
     let path = format!("/{}", "a".repeat(4_095));
     let source = changed(
@@ -1397,6 +1430,37 @@ fn rejects_dns_name_ownership_overlap_within_a_tls_profile() {
                 && second_certificate == "overlapping-certificate"
         ));
     }
+}
+
+#[test]
+fn permits_shared_canonical_ip_identities_within_a_tls_profile() {
+    let source = changed(
+        "      dns_names = { \"WWW.EXAMPLE.TEST\", \"*.EXAMPLE.TEST\" },",
+        "      dns_names = { \"::ffff:c000:020a\" },",
+    );
+    let source = source.replace(
+        "    },\n  },\n  tls_profiles = {",
+        r#"    },
+    {
+      name = "ip-certificate",
+      dns_names = { "192.0.2.10" },
+      source = {
+        type = "files",
+        certificate_chain_path = "/etc/oxiroute/ip-chain.pem",
+        private_key_path = "/etc/oxiroute/ip-key.pem",
+      },
+    },
+  },
+  tls_profiles = {"#,
+    );
+    let source = source.replace(
+        "      certificates = { \"web-certificate\" },",
+        "      certificates = { \"web-certificate\", \"ip-certificate\" },",
+    );
+
+    let config = load_lua(&source).expect("shared IP identities do not participate in SNI");
+    assert_eq!(config.certificates[0].dns_names, ["192.0.2.10"]);
+    assert_eq!(config.certificates[1].dns_names, ["192.0.2.10"]);
 }
 
 #[test]

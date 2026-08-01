@@ -175,6 +175,7 @@ const currentCanonicalFields = [
   'http_services[].routes[].action.error_responses[].headers[].always',
   'http_services[].routes[].action.autoindex_exact_size',
   'http_services[].routes[].action.autoindex_local_time',
+  'http_services[].routes[].action.etag',
   'http_services[].upstream_io_timeout_ms',
   'http_services[].max_request_body_bytes',
   'forward_proxy_services',

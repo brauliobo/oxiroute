@@ -20,8 +20,8 @@ use std::{
 use oxiroute_config::{
     AccessLogPolicy, Config, DnsResolutionPolicy, DownstreamTimeoutPolicy, HealthCheck,
     HealthCheckType, HttpAccessPolicy, HttpCookieAttributePolicy, HttpCookiePathRewrite,
-    HttpGzipPolicy, HttpLiteralHeader, HttpMimeType, HttpPathSelector, HttpProxyPolicy,
-    HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
+    HttpGzipMinimumVersion, HttpGzipPolicy, HttpLiteralHeader, HttpMimeType, HttpPathSelector,
+    HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
     HttpResponseHeaderMutation, HttpRetryTarget, HttpRetryTrigger, HttpRoute, HttpRouteAction,
     HttpSameSite, HttpService, HttpStaticErrorResponse, HttpStaticMimePolicy,
     HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost, HttpVersionPolicy, Listener,
@@ -1852,7 +1852,7 @@ async fn bearer_access_uses_the_configured_header_without_exposing_the_token() {
 }
 
 #[tokio::test]
-async fn basic_access_loads_only_bcrypt_htpasswd_files_without_exposing_credentials() {
+async fn basic_access_verifies_apr1_for_known_and_unknown_users_without_exposing_credentials() {
     use std::os::unix::fs::PermissionsExt as _;
 
     timeout(TEST_TIMEOUT, async {
@@ -1860,7 +1860,11 @@ async fn basic_access_loads_only_bcrypt_htpasswd_files_without_exposing_credenti
         let path = directory.path().join("users.htpasswd");
         fs::write(
             &path,
-            b"myName:$2y$05$c4WoMPo3SXsafkva.HHa6uXQZWr7oboPiC2bT/r7q1BB8I2s0BRqC\n",
+            concat!(
+                "first:$apr1$r31.....$HqJZimcKQFAMYayBlzkrA/\n",
+                "myName:$apr1$r31.....$HqJZimcKQFAMYayBlzkrA/\n",
+                "last:$apr1$r31.....$HqJZimcKQFAMYayBlzkrA/\n",
+            ),
         )
         .expect("write htpasswd");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
@@ -1880,7 +1884,7 @@ async fn basic_access_loads_only_bcrypt_htpasswd_files_without_exposing_credenti
                 headers: Vec::new(),
             },
         };
-        let proxy = ProxyHarness::start(Vec::new(), vec![route], 1024, 4).await;
+        let proxy = ProxyHarness::start(Vec::new(), vec![route], 1024, 6).await;
 
         let missing = proxy
             .request("GET / HTTP/1.1\r\nHost: basic.test\r\n")
@@ -1902,6 +1906,14 @@ async fn basic_access_loads_only_bcrypt_htpasswd_files_without_exposing_credenti
             .await;
         assert_eq!(accepted.status, 200);
         assert_eq!(accepted.body(), b"authorized");
+        let first = proxy
+            .request("GET / HTTP/1.1\r\nHost: basic.test\r\nAuthorization: Basic Zmlyc3Q6bXlQYXNzd29yZA==\r\n")
+            .await;
+        assert_eq!(first.status, 200);
+        let last = proxy
+            .request("GET / HTTP/1.1\r\nHost: basic.test\r\nAuthorization: Basic bGFzdDpteVBhc3N3b3Jk\r\n")
+            .await;
+        assert_eq!(last.status, 200);
         assert!(!accepted.text().contains("bXlOYW1l"));
         assert!(!accepted.text().contains(&path.display().to_string()));
 
@@ -1909,6 +1921,79 @@ async fn basic_access_loads_only_bcrypt_htpasswd_files_without_exposing_credenti
     })
     .await
     .expect("Basic htpasswd test timed out");
+}
+
+#[tokio::test]
+async fn basic_access_preserves_bcrypt_verification() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    timeout(TEST_TIMEOUT, async {
+        let directory = tempfile::tempdir().expect("htpasswd directory");
+        let path = directory.path().join("users.htpasswd");
+        let first_hash = bcrypt::hash_with_salt(b"firstPassword", 5, *b"FirstUserSalt123")
+            .expect("first bcrypt fixture");
+        let last_hash = bcrypt::hash_with_salt(b"lastPassword", 5, *b"LastUserSalt_123")
+            .expect("last bcrypt fixture");
+        fs::write(
+            &path,
+            format!(
+                concat!(
+                    "first:{}\n",
+                    "myName:$2y$05$c4WoMPo3SXsafkva.HHa6uXQZWr7oboPiC2bT/r7q1BB8I2s0BRqC\n",
+                    "last:{}\n",
+                ),
+                first_hash, last_hash,
+            ),
+        )
+        .expect("write htpasswd");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+            .expect("secure htpasswd mode");
+        let route = HttpRoute {
+            host: None,
+            path: HttpPathSelector::SegmentPrefix { value: "/".into() },
+            methods: Vec::new(),
+            access_policy: Some(HttpAccessPolicy::BasicHtpasswdFile {
+                htpasswd_file_path: path,
+                realm: "private".into(),
+            }),
+            policy: oxiroute_config::HttpRoutePolicy::default(),
+            action: HttpRouteAction::FixedResponse {
+                status: 200,
+                body: "authorized".into(),
+                headers: Vec::new(),
+            },
+        };
+        let proxy = ProxyHarness::start(Vec::new(), vec![route], 1024, 4).await;
+
+        let wrong = proxy
+            .request("GET / HTTP/1.1\r\nHost: basic.test\r\nAuthorization: Basic bXlOYW1lOndyb25n\r\n")
+            .await;
+        assert_eq!(wrong.status, 401);
+        let accepted = proxy
+            .request("GET / HTTP/1.1\r\nHost: basic.test\r\nAuthorization: Basic bXlOYW1lOm15UGFzc3dvcmQ=\r\n")
+            .await;
+        assert_eq!(accepted.status, 200);
+        let first = proxy
+            .request(&format!(
+                "GET / HTTP/1.1\r\nHost: basic.test\r\nAuthorization: Basic {}\r\n",
+                STANDARD.encode("first:firstPassword")
+            ))
+            .await;
+        assert_eq!(first.status, 200);
+        let last = proxy
+            .request(&format!(
+                "GET / HTTP/1.1\r\nHost: basic.test\r\nAuthorization: Basic {}\r\n",
+                STANDARD.encode("last:lastPassword")
+            ))
+            .await;
+        assert_eq!(last.status, 200);
+
+        proxy.finish().await;
+    })
+    .await
+    .expect("bcrypt regression test timed out");
 }
 
 #[tokio::test]
@@ -1948,6 +2033,7 @@ async fn nginx_internal_static_redirects_reselect_exact_routes_and_recheck_basic
                 autoindex: false,
                 autoindex_exact_size: true,
                 autoindex_local_time: false,
+                etag: true,
                 mime: HttpStaticMimePolicy {
                     default_type: Some("text/plain".into()),
                     types: Vec::new(),
@@ -2093,6 +2179,7 @@ async fn static_files_pin_the_root_and_reject_symlinks_while_supporting_indexes_
                 autoindex: false,
                 autoindex_exact_size: true,
                 autoindex_local_time: false,
+                etag: true,
                 mime: oxiroute_config::HttpStaticMimePolicy::default(),
                 headers: Vec::new(),
                 error_responses: Vec::new(),
@@ -2193,7 +2280,7 @@ async fn host_shaped_static_policy_covers_root_alias_try_files_index_autoindex_m
             Vec::new(),
             host_shaped_static_routes(&root),
             1024,
-            21,
+            25,
         )
         .await;
 
@@ -2209,6 +2296,43 @@ async fn host_shaped_static_policy_covers_root_alias_try_files_index_autoindex_m
             .header("last-modified")
             .expect("static Last-Modified")
             .to_owned();
+
+        let etag_source = proxy
+            .request("GET /assets/fallback.txt HTTP/1.1\r\nHost: static.test\r\n")
+            .await;
+        let shared_etag = etag_source
+            .header("etag")
+            .expect("enabled ETag for shared static file")
+            .to_owned();
+        let shared_last_modified = etag_source
+            .header("last-modified")
+            .expect("Last-Modified for shared static file")
+            .to_owned();
+        let etag_disabled = proxy
+            .request(&format!(
+                "GET /fallback/fallback.txt HTTP/1.1\r\nHost: static.test\r\nIf-None-Match: {shared_etag}\r\n"
+            ))
+            .await;
+        assert_eq!(etag_disabled.status, 200);
+        assert_eq!(etag_disabled.body(), b"fallback");
+        assert!(etag_disabled.header("etag").is_none());
+        assert!(etag_disabled.header("last-modified").is_some());
+        assert_eq!(
+            etag_disabled.header("x-static-policy"),
+            Some("host-shaped")
+        );
+        let etag_disabled_precedence = proxy
+            .request(&format!(
+                "GET /fallback/fallback.txt HTTP/1.1\r\nHost: static.test\r\nIf-None-Match: {shared_etag}\r\nIf-Modified-Since: {shared_last_modified}\r\n"
+            ))
+            .await;
+        assert_eq!(etag_disabled_precedence.status, 200);
+        assert_eq!(etag_disabled_precedence.body(), b"fallback");
+        let etag_disabled_wildcard = proxy
+            .request("GET /fallback/fallback.txt HTTP/1.1\r\nHost: static.test\r\nIf-None-Match: *\r\n")
+            .await;
+        assert_eq!(etag_disabled_wildcard.status, 304);
+        assert!(etag_disabled_wildcard.header("etag").is_none());
 
         let failed_match = proxy
             .request("GET /assets/asset.custom HTTP/1.1\r\nHost: static.test\r\nIf-Match: \"stale\"\r\n")
@@ -2361,6 +2485,7 @@ fn host_shaped_static_routes(root: &std::path::Path) -> Vec<HttpRoute> {
             HttpStaticPathMapping::Alias,
             Vec::new(),
             false,
+            true,
         ),
         host_shaped_static_route(
             root,
@@ -2373,6 +2498,7 @@ fn host_shaped_static_routes(root: &std::path::Path) -> Vec<HttpRoute> {
                 },
             ],
             false,
+            false,
         ),
         host_shaped_static_route(
             root,
@@ -2383,12 +2509,14 @@ fn host_shaped_static_routes(root: &std::path::Path) -> Vec<HttpRoute> {
                 HttpStaticTryFile::Status { status: 503 },
             ],
             false,
+            true,
         ),
         host_shaped_static_route(
             root,
             "/listing",
             HttpStaticPathMapping::Alias,
             Vec::new(),
+            true,
             true,
         ),
         host_shaped_static_route(
@@ -2397,6 +2525,7 @@ fn host_shaped_static_routes(root: &std::path::Path) -> Vec<HttpRoute> {
             HttpStaticPathMapping::Root,
             Vec::new(),
             false,
+            true,
         ),
     ]
 }
@@ -2407,6 +2536,7 @@ fn host_shaped_static_route(
     mapping: HttpStaticPathMapping,
     try_files: Vec<HttpStaticTryFile>,
     autoindex: bool,
+    etag: bool,
 ) -> HttpRoute {
     HttpRoute {
         host: None,
@@ -2425,6 +2555,7 @@ fn host_shaped_static_route(
             autoindex,
             autoindex_exact_size: false,
             autoindex_local_time: true,
+            etag,
             mime: HttpStaticMimePolicy {
                 default_type: Some("application/x-default".into()),
                 types: vec![
@@ -2819,15 +2950,34 @@ async fn preserve_and_endpoint_host_policies_set_the_expected_upstream_authority
 }
 
 #[tokio::test]
-async fn configured_gzip_uses_pingora_streaming_only_for_exact_content_types() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "one origin sequence covers gzip policy and negotiation on the wire"
+)]
+async fn configured_gzip_honors_exact_types_defaults_and_accept_encoding() {
     timeout(TEST_TIMEOUT, async {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("gzip origin bind");
         let origin_address = listener.local_addr().expect("gzip origin address");
         let origin = tokio::spawn(async move {
-            for content_type in ["application/json", "text/plain"] {
+            for (content_type, body_len) in [
+                ("application/json", 512),
+                ("image/custom", 512),
+                ("text/plain", 512),
+                ("application/json", 512),
+                ("application/json", 512),
+                ("application/json", 512),
+                ("application/json", 512),
+                ("application/json", 512),
+                ("application/json", 512),
+                ("application/json", 512),
+                ("application/json", 512),
+                ("application/json", 512),
+                ("application/json", 512),
+                ("application/json", 19),
+            ] {
                 let (mut stream, _) = listener.accept().await.expect("gzip origin accept");
                 read_request_head(&mut stream).await.expect("gzip request");
-                let body = vec![b'a'; 512];
+                let body = vec![b'a'; body_len];
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
@@ -2843,10 +2993,14 @@ async fn configured_gzip_uses_pingora_streaming_only_for_exact_content_types() {
             100,
             0,
             false,
-            2,
+            14,
             Some(HttpGzipPolicy {
                 level: 6,
-                content_types: vec!["application/json".into()],
+                content_types: vec!["application/json".into(), "image/custom".into()],
+                min_length_bytes: 20,
+                min_http_version: HttpGzipMinimumVersion::Http11,
+                disable_on_via: true,
+                vary: false,
             }),
             None,
             DownstreamTimeoutPolicy::default(),
@@ -2859,6 +3013,12 @@ async fn configured_gzip_uses_pingora_streaming_only_for_exact_content_types() {
         assert_eq!(compressed.header("content-encoding"), Some("gzip"));
         assert_eq!(compressed.body().get(..2), Some(&[0x1f, 0x8b][..]));
         assert!(compressed.body().len() < 512);
+        assert_eq!(compressed.header("vary"), None);
+
+        let concrete_type = proxy
+            .request("GET /image HTTP/1.1\r\nHost: gzip.test\r\nAccept-Encoding: gzip\r\n")
+            .await;
+        assert_eq!(concrete_type.header("content-encoding"), Some("gzip"));
 
         let plain = proxy
             .request("GET /text HTTP/1.1\r\nHost: gzip.test\r\nAccept-Encoding: gzip\r\n")
@@ -2866,11 +3026,114 @@ async fn configured_gzip_uses_pingora_streaming_only_for_exact_content_types() {
         assert_eq!(plain.header("content-encoding"), None);
         assert_eq!(plain.body().len(), 512);
 
+        let gzip_not_brotli = proxy
+            .request("GET /preferred HTTP/1.1\r\nHost: gzip.test\r\nAccept-Encoding: br, gzip;q=0.5\r\n")
+            .await;
+        assert_eq!(gzip_not_brotli.header("content-encoding"), Some("gzip"));
+
+        let rejected = proxy
+            .request("GET /rejected HTTP/1.1\r\nHost: gzip.test\r\nAccept-Encoding: gzip;q=0\r\n")
+            .await;
+        assert_eq!(rejected.header("content-encoding"), None);
+
+        let wildcard = proxy
+            .request("GET /wildcard HTTP/1.1\r\nHost: gzip.test\r\nAccept-Encoding: *\r\n")
+            .await;
+        assert_eq!(wildcard.header("content-encoding"), Some("gzip"));
+
+        let explicit_rejection = proxy
+            .request("GET /override HTTP/1.1\r\nHost: gzip.test\r\nAccept-Encoding: *;q=1, gzip;q=0\r\n")
+            .await;
+        assert_eq!(explicit_rejection.header("content-encoding"), None);
+
+        let explicit_acceptance = proxy
+            .request("GET /override HTTP/1.1\r\nHost: gzip.test\r\nAccept-Encoding: *;q=0, gzip;q=0.5\r\n")
+            .await;
+        assert_eq!(explicit_acceptance.header("content-encoding"), Some("gzip"));
+
+        let repeated_rejection = proxy
+            .request("GET /repeated HTTP/1.1\r\nHost: gzip.test\r\nAccept-Encoding: *;q=1\r\nAccept-Encoding: gzip;q=0\r\n")
+            .await;
+        assert_eq!(repeated_rejection.header("content-encoding"), None);
+
+        let repeated_acceptance = proxy
+            .request("GET /repeated HTTP/1.1\r\nHost: gzip.test\r\nAccept-Encoding: *;q=0\r\nAccept-Encoding: gzip;q=0.5\r\n")
+            .await;
+        assert_eq!(repeated_acceptance.header("content-encoding"), Some("gzip"));
+
+        let absent = proxy
+            .request("GET /absent HTTP/1.1\r\nHost: gzip.test\r\n")
+            .await;
+        assert_eq!(absent.header("content-encoding"), None);
+
+        let old_http = proxy
+            .request("GET /old HTTP/1.0\r\nHost: gzip.test\r\nAccept-Encoding: gzip\r\n")
+            .await;
+        assert_eq!(old_http.header("content-encoding"), None);
+
+        let via = proxy
+            .request("GET /via HTTP/1.1\r\nHost: gzip.test\r\nVia: 1.1 proxy\r\nAccept-Encoding: gzip\r\n")
+            .await;
+        assert_eq!(via.header("content-encoding"), None);
+
+        let short = proxy
+            .request("GET /short HTTP/1.1\r\nHost: gzip.test\r\nAccept-Encoding: gzip\r\n")
+            .await;
+        assert_eq!(short.header("content-encoding"), None);
+        assert_eq!(short.body().len(), 19);
+
         proxy.finish().await;
         origin.await.expect("gzip origin task");
     })
     .await
     .expect("gzip policy test timed out");
+}
+
+#[tokio::test]
+async fn persisted_gzip_defaults_allow_http_1_0_via_and_emit_vary() {
+    timeout(TEST_TIMEOUT, async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("gzip origin bind");
+        let origin_address = listener.local_addr().expect("gzip origin address");
+        let origin = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("gzip origin accept");
+            read_request_head(&mut stream).await.expect("gzip request");
+            let body = vec![b'a'; 512];
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.expect("gzip head");
+            stream.write_all(&body).await.expect("gzip body");
+        });
+        let proxy = ProxyHarness::start_with_features(
+            vec![pool("origin", &[origin_address])],
+            vec![route(None, "/", &[], "origin")],
+            Some(1024),
+            100,
+            0,
+            false,
+            1,
+            Some(HttpGzipPolicy {
+                level: 6,
+                content_types: vec!["application/json".into()],
+                ..HttpGzipPolicy::default()
+            }),
+            None,
+            DownstreamTimeoutPolicy::default(),
+        )
+        .await;
+
+        let response = proxy
+            .request("GET / HTTP/1.0\r\nHost: gzip.test\r\nVia: 1.0 legacy\r\nAccept-Encoding: gzip\r\n")
+            .await;
+        assert_eq!(response.header("content-encoding"), Some("gzip"));
+        assert_eq!(response.header("vary"), Some("accept-encoding"));
+
+        proxy.finish().await;
+        origin.await.expect("gzip origin task");
+    })
+    .await
+    .expect("persisted gzip defaults test timed out");
 }
 
 #[tokio::test]
