@@ -4,7 +4,8 @@
 
 This ledger tracks the effective configurations read from `hostrouter.lan` and `phoenix.lan` on
 2026-07-22, sanitized complete captures from `whitebeast`, `hostrouter`, and `phoenix` on
-2026-07-26/27, and HAProxy-only captures from `chicopc` and `back1` on 2026-07-28. Credentials and
+2026-07-26/27 with a whitebeast HAProxy recapture on 2026-07-31, and HAProxy-only captures from
+`chicopc` and `back1` on 2026-07-28. Credentials and
 certificate contents are intentionally excluded. A row is `covered`
 only when canonical configuration, runtime behavior, failure handling, tests, and native lowering
 exist. Manual approximation does not count as native compatibility.
@@ -13,9 +14,8 @@ exist. Manual approximation does not count as native compatibility.
 fixture-to-case mappings marked `live_origin_hashed_read_only_captured` in its `audit.fixtures`
 section count as live-host evidence. This status records capture properties, not a cryptographic
 signer authentication claim. Metadata records the exact read-only origin hash commands, direct
-2026-07-26 nginx/HAProxy origin hashes, the no-raw-byte sanitizer process, every distinct checked-in
-post-sanitization file hash, and overlay inventory. The changed whitebeast HAProxy origin remains
-explicitly pending recapture. Other
+nginx/HAProxy origin hashes, the no-raw-byte sanitizer process, every distinct checked-in
+post-sanitization file hash, and overlay inventory. Other
 checked-in fixtures are synthetic implementation probes: they can test parsers,
 lowerers, and failure behavior, but MUST NOT be described as evidence that an audited host case is
 covered.
@@ -40,7 +40,7 @@ Status values are `covered`, `partial`, `missing`, `external`, and `inactive`.
 | HN-01 | 33 HTTP virtual servers sharing IPv4/IPv6 ports 80 and 443 | partial | Host routing exists; per-vhost policy lowering does not. |
 | HN-02 | Multiple exact hosts and default-server fallback | partial | Runtime and strict fragment lowering exist; the complete audited candidate remains blocked. |
 | HN-03 | Leading-dot and leading-wildcard nginx names | partial | Canonical selectors and runtime longest-suffix precedence preserve nginx semantics; native lowering remains. |
-| HN-04 | Nine file-backed certificate lineages selected by SNI on port 443 | partial | Canonical/runtime exact and wildcard DNS SNI selection, typed DNS/IP SAN equality, mapped-IP canonicalization, and strict TLS lowering exist; the audited multi-lineage candidate remains blocked. |
+| HN-04 | Nine file-backed certificate lineages selected by SNI on port 443 | partial | Canonical/runtime exact and wildcard DNS SNI selection, declared DNS/IP SAN subset verification, mapped-IP canonicalization, and strict TLS lowering exist; the audited multi-lineage candidate remains blocked. |
 | HN-05 | Certbot lineage renewal and zero-downtime activation | partial | Watching and activation are implemented; Certbot lineage semantics and the audited candidate are not lowered. |
 | HN-06 | Listener-wide TLS 1.2/1.3 and mixed H1/H2 ALPN | partial | Runtime and a strict nginx TLS subset exist; the audited candidate remains blocked. |
 | HN-07 | Certbot cipher, DH, session-cache, and ticket policy | partial | OxiRoute uses a fixed secure policy and disables resumption. |
@@ -53,11 +53,11 @@ Status values are `covered`, `partial`, `missing`, `external`, and `inactive`.
 | HN-14 | `proxy_set_header` literals and bounded nginx variables | partial | Canonical/runtime mutations and a strict lowering subset exist; audited forms remain unverified. |
 | HN-15 | Redirects and explicit status responses | partial | Canonical/runtime actions and strict lowering exist; audited routes remain unverified. |
 | HN-16 | Public static document root and index handling | partial | Descriptor-pinned root/alias mapping, ordered try-files, indexes, autoindex, MIME, headers, ETag on/off, errors, and ranges run on wire; the audited alias/try-files/ETag-off shape lowers, while broader nginx location reselection remains blocked. |
-| HN-17 | Header-based bearer and file-backed Basic authorization | partial | Secret-file bearer and uniform bcrypt or APR1 htpasswd policies are integrated; redacted inline nginx authorization lowers only with one uniquely matched secret-file overlay. Unsupported or mixed htpasswd modes fail preparation. |
+| HN-17 | Header-based bearer and file-backed Basic authorization | partial | Secret-file bearer and mixed bcrypt/APR1 htpasswd policies are integrated; redacted inline nginx authorization lowers only with one uniquely matched secret-file overlay. Unsupported hashes fail preparation. |
 | HN-18 | Cookie path/attribute rewriting | partial | Cookie Path, Secure, HttpOnly, and SameSite rewrites run on wire; native attribute lowering remains. |
-| HN-19 | Per-vhost body limits and separate connect/read/write timeouts | partial | Route-local limits and independent deadlines lower and run on wire, but the authenticated complete root remains non-finalizable while unrelated security overlays and native policy are unsatisfied. |
+| HN-19 | Per-vhost body limits and separate connect/read/write timeouts | partial | Route-local limits and independent deadlines lower bare-second, suffixed, and ordered composite nginx times and run on wire, but the authenticated complete root remains non-finalizable while unrelated security overlays and native policy are unsatisfied. |
 | HN-20 | Mixed buffered and unbuffered proxy paths | partial | Explicit buffering-off uses Pingora streaming; buffering-on fails startup rather than being ignored, and native lowering remains. |
-| HN-21 | Gzip type/level policy | partial | Gzip-only streaming negotiation and native lowering cover effective on/off, level, concrete types, 20-byte minimum, HTTP/1.1 minimum, `gzip_proxied off`, and `gzip_vary off`; all participating non-shadowed virtual servers on a bind must agree. The audited root remains blocked only by unrelated native policies and overlays. |
+| HN-21 | Gzip type/level policy | partial | Gzip-only streaming negotiation and native lowering cover effective on/off, level, concrete types, 20-byte minimum, HTTP/1.1 minimum, nginx's eligible status set, `gzip_proxied off`, and vary behavior even when request policy suppresses compression; all participating non-shadowed virtual servers on a bind must agree. The audited root remains blocked only by unrelated native policies and overlays. |
 | HN-22 | Custom access/error log formats | partial | HTTP file logging emits fixed redacted JSONL; arbitrary source formats, separate error logs, and native lowering remain unsupported. |
 | HN-23 | Declared but unapplied nginx rate/connection zones | partial | Parser decisions exist, but the complete native-lowering gate is not met. |
 

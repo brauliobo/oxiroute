@@ -803,12 +803,12 @@ impl Lowerer<'_> {
             .any(|blocker| blocker.value.kind != SemanticBlockerKind::Logging)
     }
 
-    fn duration_ms(&mut self, value: &EffectiveValue<Duration>, description: &str) -> Option<u64> {
-        let duration = value.value;
-        let milliseconds = u64::try_from(duration.as_millis()).ok();
-        let exact = milliseconds
-            .filter(|milliseconds| *milliseconds != 0)
-            .filter(|milliseconds| Duration::from_millis(*milliseconds) == duration);
+    pub(super) fn duration_ms(
+        &mut self,
+        value: &EffectiveValue<Duration>,
+        description: &str,
+    ) -> Option<u64> {
+        let exact = crate::canonical::duration_milliseconds(value.value);
         if exact.is_none() {
             self.block_provenance(
                 &value.provenance,

@@ -816,7 +816,7 @@ fn dns_names(
         }
         CertificateIdentitySans::Names(raw_identities) => raw_identities,
     };
-    let mut actual = raw_identities
+    let actual = raw_identities
         .into_iter()
         .map(|identity| match identity {
             CertificateIdentitySan::Dns(dns_name) => {
@@ -842,13 +842,13 @@ fn dns_names(
             certificate: name.into(),
         });
     }
-    actual.sort_unstable();
-    declared.sort_unstable();
-    if actual != declared {
+    let actual = actual.into_iter().collect::<HashSet<_>>();
+    if !declared.iter().all(|identity| actual.contains(identity)) {
         return Err(TlsBuildError::DnsSanMismatch {
             certificate: name.into(),
         });
     }
+    declared.sort_unstable();
     Ok(declared
         .into_iter()
         .map(CertificateIdentity::into_string)

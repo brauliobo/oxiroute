@@ -1106,7 +1106,19 @@ fn is_valid_location_template(template: &str) -> bool {
 }
 
 fn validate_nginx_host_fallback(value: &str) -> Result<(), &'static str> {
-    if value.is_empty() || value.len() > MAX_HTTP_AUTHORITY_BYTES || value.contains([':', '@']) {
+    if value.is_empty() || value.len() > MAX_HTTP_AUTHORITY_BYTES || value.contains('@') {
+        return Err("nginx host fallback must be a bounded host without a port or userinfo");
+    }
+    if let Some(ip) = value
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .and_then(|value| value.parse::<std::net::Ipv6Addr>().ok())
+    {
+        return (value == format!("[{ip}]"))
+            .then_some(())
+            .ok_or("nginx host fallback must be a normalized exact DNS name or IP address");
+    }
+    if value.contains(':') {
         return Err("nginx host fallback must be a bounded host without a port or userinfo");
     }
     let mut normalized = value.to_owned();

@@ -9,9 +9,9 @@ use bytes::Bytes;
 use http::{
     HeaderName, HeaderValue, Method,
     header::{
-        ACCEPT_RANGES, ALLOW, CONNECTION, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, ETAG, HOST,
-        IF_MATCH, IF_MODIFIED_SINCE, IF_NONE_MATCH, IF_RANGE, IF_UNMODIFIED_SINCE, LAST_MODIFIED,
-        LOCATION, RANGE, SET_COOKIE, WWW_AUTHENTICATE,
+        ACCEPT_RANGES, ALLOW, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE,
+        CONTENT_TYPE, ETAG, HOST, IF_MATCH, IF_MODIFIED_SINCE, IF_NONE_MATCH, IF_RANGE,
+        IF_UNMODIFIED_SINCE, LAST_MODIFIED, LOCATION, RANGE, SET_COOKIE, WWW_AUTHENTICATE,
     },
     uri::Authority,
 };
@@ -740,7 +740,6 @@ impl HttpModuleBuilder for ConfiguredCompressionBuilder {
             .with_minimum_compression_bytes(self.gzip.min_length_bytes)
             .with_content_type_filtering(false)
             .with_vary_header(self.gzip.vary),
-            request_eligible: false,
             ready: false,
         })
     }
@@ -753,7 +752,6 @@ impl HttpModuleBuilder for ConfiguredCompressionBuilder {
 struct ConfiguredCompression {
     gzip: Arc<HttpGzipPlan>,
     inner: ResponseCompressionCtx,
-    request_eligible: bool,
     ready: bool,
 }
 
@@ -763,7 +761,7 @@ impl HttpModule for ConfiguredCompression {
         &mut self,
         request: &mut pingora::http::RequestHeader,
     ) -> pingora::Result<()> {
-        self.request_eligible = (match self.gzip.min_http_version {
+        let request_eligible = (match self.gzip.min_http_version {
             HttpGzipMinimumVersion::Http10 => request.version != http::Version::HTTP_09,
             HttpGzipMinimumVersion::Http11 => !matches!(
                 request.version,
@@ -771,7 +769,7 @@ impl HttpModule for ConfiguredCompression {
             ),
         }) && (!self.gzip.disable_on_via
             || !request.headers.contains_key("via"));
-        if self.request_eligible {
+        if request_eligible {
             self.inner.request_filter(request);
         }
         Ok(())
@@ -782,7 +780,7 @@ impl HttpModule for ConfiguredCompression {
         response: &mut pingora::http::ResponseHeader,
         end_of_stream: bool,
     ) -> pingora::Result<()> {
-        if !self.request_eligible || !gzip_matches(&self.gzip, response) {
+        if !gzip_matches(&self.gzip, response) {
             self.ready = false;
             return Ok(());
         }
@@ -825,7 +823,11 @@ impl HttpModule for ConfiguredCompression {
 }
 
 fn gzip_matches(gzip: &HttpGzipPlan, response: &pingora::http::ResponseHeader) -> bool {
-    if response.status == http::StatusCode::PARTIAL_CONTENT {
+    if !matches!(
+        response.status,
+        http::StatusCode::OK | http::StatusCode::FORBIDDEN | http::StatusCode::NOT_FOUND
+    ) || response.headers.contains_key(CONTENT_ENCODING)
+    {
         return false;
     }
     response
@@ -1559,7 +1561,10 @@ fn nginx_host(
         .unwrap_or(host);
     let normalized = unbracketed.parse::<IpAddr>().map_or_else(
         |_| host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase(),
-        |ip| ip.to_string(),
+        |ip| match ip {
+            IpAddr::V4(ip) => ip.to_string(),
+            IpAddr::V6(ip) => format!("[{ip}]"),
+        },
     );
     dynamic_header_value(&normalized)
 }
@@ -2060,6 +2065,47 @@ mod tests {
     use tokio::net::{TcpListener, TcpStream};
 
     use super::*;
+
+    #[test]
+    fn nginx_gzip_status_eligibility_is_exact() {
+        let gzip = HttpGzipPlan {
+            level: 1,
+            content_types: Box::from(["text/html".into()]),
+            min_length_bytes: 20,
+            min_http_version: HttpGzipMinimumVersion::Http11,
+            disable_on_via: true,
+            vary: true,
+        };
+        for (status, expected) in [
+            (http::StatusCode::OK, true),
+            (http::StatusCode::FORBIDDEN, true),
+            (http::StatusCode::NOT_FOUND, true),
+            (http::StatusCode::CREATED, false),
+            (http::StatusCode::MOVED_PERMANENTLY, false),
+            (http::StatusCode::INTERNAL_SERVER_ERROR, false),
+            (http::StatusCode::PARTIAL_CONTENT, false),
+        ] {
+            let mut response = pingora::http::ResponseHeader::build(status, Some(1)).unwrap();
+            response.insert_header(CONTENT_TYPE, "text/html").unwrap();
+            assert_eq!(gzip_matches(&gzip, &response), expected, "{status}");
+        }
+        let mut encoded =
+            pingora::http::ResponseHeader::build(http::StatusCode::OK, Some(2)).unwrap();
+        encoded.insert_header(CONTENT_TYPE, "text/html").unwrap();
+        encoded.insert_header(CONTENT_ENCODING, "br").unwrap();
+        assert!(!gzip_matches(&gzip, &encoded));
+    }
+
+    #[test]
+    fn nginx_host_preserves_ipv6_authority_brackets() {
+        let authority = "[2001:db8::1]:8080".parse::<Authority>().unwrap();
+        let fallback = HeaderValue::from_static("fallback.example");
+
+        assert_eq!(
+            nginx_host(Some(&authority), &fallback).unwrap(),
+            "[2001:db8::1]"
+        );
+    }
     use crate::{RoundRobinPool, RouteTable, RuntimeMetrics};
 
     struct CloneProbe(Arc<AtomicUsize>);

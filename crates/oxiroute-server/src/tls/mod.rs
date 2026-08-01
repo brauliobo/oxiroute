@@ -426,9 +426,7 @@ pub enum TlsBuildError {
         certificate: String,
         dns_name: String,
     },
-    #[error(
-        "certificate `{certificate}` DNS/IP subject alternative names do not match its declaration"
-    )]
+    #[error("certificate `{certificate}` does not contain every declared DNS/IP identity")]
     DnsSanMismatch { certificate: String },
     #[error("certificate `{certificate}` must supply at least one issuer after the leaf")]
     IncompleteCertificateChain { certificate: String },

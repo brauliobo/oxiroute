@@ -212,6 +212,7 @@ fn assert_complete_live_haproxy(host: &str, node_ip: Ipv4Addr, gpu1_defined: boo
     match host {
         "whitebeast" => {
             assert!(queue_timeouts.contains(&Some(1_800_000)));
+            assert_eq!(report.value().draft.max_connections, Some(1_024));
         }
         "phoenix" => assert!(
             queue_timeouts
@@ -310,6 +311,53 @@ backend app
     assert_eq!(health.down_interval_ms, Some(60_000));
     assert_eq!(health.healthy_threshold, 2);
     assert_eq!(health.unhealthy_threshold, 3);
+}
+
+#[test]
+fn non_get_http_health_checks_fail_closed() {
+    let source = b"defaults web
+  mode http
+  retries 0
+  timeout connect 5s
+  timeout client 30s
+  timeout server 30s
+frontend public
+  bind 127.0.0.1:18080 maxconn 10
+  maxconn 10
+  default_backend app
+backend app
+  balance roundrobin
+  option httpchk POST /health
+  http-check expect status 200
+  default-server check inter 10s
+  server app1 127.0.0.1:3000
+";
+
+    let imported = import_fixture("post-health-check.cfg", source);
+
+    assert!(imported.value().config.is_none());
+    assert_blocker(imported.diagnostics(), "health check method");
+}
+
+#[test]
+fn fractional_millisecond_durations_fail_closed_at_their_source() {
+    for (name, defaults_directive, client_timeout, health_interval) in [
+        ("queue", "timeout queue 1500us", "30s", "10s"),
+        ("health interval", "", "30s", "1500us"),
+        ("client", "", "1500us", "10s"),
+    ] {
+        let source = format!(
+            "defaults web\n  mode http\n  retries 0\n  timeout connect 5s\n  timeout client {client_timeout}\n  timeout server 30s\n{defaults_directive}\nfrontend public\n  bind 127.0.0.1:18080 maxconn 10\n  maxconn 10\n  default_backend app\nbackend app\n  balance roundrobin\n  option httpchk GET /health\n  http-check expect status 200\n  default-server check inter {health_interval}\n  server app1 127.0.0.1:3000\n"
+        );
+        let imported = import_fixture("fractional-duration.cfg", source.as_bytes());
+
+        assert!(imported.value().config.is_none(), "{name} was truncated");
+        assert!(
+            diagnostic_contains(imported.diagnostics(), "exactly representable"),
+            "{name}: {:?}",
+            imported.diagnostics()
+        );
+    }
 }
 
 #[test]

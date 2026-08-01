@@ -4,7 +4,7 @@ use std::{fmt::Write as _, fs, path::Path};
 
 use oxiroute_config::{
     CertificateSource, HttpGzipMinimumVersion, HttpGzipPolicy, HttpHostSelector, HttpPathSelector,
-    HttpRouteAction, HttpUpstreamHost, ListenerBind, validate_config,
+    HttpRouteAction, HttpUpstreamHost, ListenerBind, UpstreamConnectionReuse, validate_config,
 };
 use oxiroute_import::{DiagnosticStage, nginx::import_http_fragment};
 use tempfile::TempDir;
@@ -28,15 +28,15 @@ fn fully_explicit_proxy_fixture_finalizes_with_canonical_routes() {
     let config = report.config.as_ref().expect("finalized nginx config");
     assert_eq!(config.listeners.len(), 1);
     assert_eq!(config.http_services.len(), 1);
-    assert_eq!(config.http_services[0].routes.len(), 3);
-    assert!(matches!(
-        config.http_services[0].routes[1].path,
+    assert_eq!(config.http_services[0].routes.len(), 5);
+    assert!(config.http_services[0].routes.iter().any(|route| matches!(
+        route.path,
         HttpPathSelector::RawPrefix { ref value } if value == "/api"
-    ));
-    assert!(matches!(
-        config.http_services[0].routes[2].host,
+    )));
+    assert!(config.http_services[0].routes.iter().any(|route| matches!(
+        route.host,
         Some(HttpHostSelector::NormalizedHost { ref value }) if value == "other.example.test"
-    ));
+    )));
     let HttpRouteAction::Proxy { policy, .. } = &config.http_services[0].routes[0].action else {
         panic!("proxy action");
     };
@@ -141,7 +141,58 @@ fn lowers_explicit_nginx_proxy_version_with_canonical_defaults() {
     assert!(!report.has_errors(), "{:?}", report.diagnostics);
     assert_eq!(report.draft.listeners.len(), 1);
     assert_eq!(report.draft.http_services.len(), 1);
-    assert!(report.config.is_some());
+    let config = report.config.expect("canonical proxy defaults");
+    let HttpRouteAction::Proxy { policy, .. } = &config.http_services[0].routes[0].action else {
+        panic!("proxy route");
+    };
+    assert_eq!(
+        policy.upstream_host,
+        HttpUpstreamHost::Literal {
+            value: "backend".into()
+        }
+    );
+    assert_eq!(
+        config.upstream_pools[0].connection_reuse,
+        UpstreamConnectionReuse::Never
+    );
+}
+
+#[test]
+fn default_server_retains_named_selectors_before_its_fallback() {
+    let report = import_source(
+        r"http {
+          server {
+            listen 127.0.0.1:8088 default_server;
+            server_name api.example.test;
+            location / { return 200 default; }
+          }
+          server {
+            listen 127.0.0.1:8088;
+            server_name *.example.test;
+            location / { return 200 wildcard; }
+          }
+        }",
+    );
+
+    let config = report.config.expect("default server host selectors");
+    let routes = &config.http_services[0].routes;
+    assert!(routes.iter().any(|route| {
+        route.host
+            == Some(HttpHostSelector::NormalizedHost {
+                value: "api.example.test".into(),
+            })
+            && matches!(
+                &route.action,
+                HttpRouteAction::FixedResponse { body, .. } if body == "default"
+            )
+    }));
+    assert!(routes.iter().any(|route| {
+        route.host.is_none()
+            && matches!(
+                &route.action,
+                HttpRouteAction::FixedResponse { body, .. } if body == "default"
+            )
+    }));
 }
 
 #[test]
@@ -611,14 +662,16 @@ fn exact_location_fixed_and_redirect_actions_finalize_without_placeholders() {
         config.http_services[0].routes[0].action,
         HttpRouteAction::FixedResponse { status: 204, .. }
     ));
-    assert!(matches!(
-        config.http_services[0].routes[1].action,
-        HttpRouteAction::Redirect { status: 308, .. }
-    ));
-    assert!(matches!(
-        config.http_services[0].routes[2].action,
+    assert!(
+        config.http_services[0]
+            .routes
+            .iter()
+            .any(|route| matches!(route.action, HttpRouteAction::Redirect { status: 308, .. }))
+    );
+    assert!(config.http_services[0].routes.iter().any(|route| matches!(
+        route.action,
         HttpRouteAction::FixedResponse { status: 404, .. }
-    ));
+    )));
     assert!(config.upstream_pools.is_empty());
     assert!(report.provenance.iter().all(|provenance| {
         !provenance.path.contains("/action/upstream_pool")
@@ -1528,6 +1581,37 @@ fn lowers_nginx_host_separately_from_http_host_with_server_name_fallback() {
             ..
         } if fallback == "fallback.example"
     )));
+}
+
+#[test]
+fn nginx_host_fallback_serializes_ipv6_as_an_http_authority() {
+    let report = import_source(
+        r"http {
+          proxy_http_version 1.1;
+          proxy_buffering off;
+          proxy_request_buffering off;
+          proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+          server {
+            listen [::1]:8088 default_server;
+            server_name 2001:db8::1;
+            location / {
+              proxy_set_header Host $host;
+              proxy_pass http://[::1]:8080;
+            }
+          }
+        }",
+    );
+
+    let config = report.config.expect("IPv6 nginx host fallback");
+    let HttpRouteAction::Proxy { policy, .. } = &config.http_services[0].routes[0].action else {
+        panic!("proxy route");
+    };
+    assert_eq!(
+        policy.upstream_host,
+        HttpUpstreamHost::NginxHost {
+            fallback: "[2001:db8::1]".into()
+        }
+    );
 }
 
 #[test]

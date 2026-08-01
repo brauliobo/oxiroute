@@ -371,7 +371,8 @@ fn nginx_suffix_matches(host: &str, suffix: &str, include_base: bool) -> bool {
 }
 
 fn normalized_authority_host(authority: &Authority) -> Option<String> {
-    let host = authority.host();
+    let authority_host = authority.host();
+    let host = authority_host.strip_suffix('.').unwrap_or(authority_host);
     if let Some(ip) = parse_host_ip(host) {
         Some(ip.to_string())
     } else if is_dns_name(host) {
@@ -1794,6 +1795,18 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn normalized_nginx_hosts_accept_one_trailing_dot() {
+        let authority = "API.EXAMPLE.TEST.:443"
+            .parse::<Authority>()
+            .expect("trailing-dot authority");
+
+        assert_eq!(
+            normalized_authority_host(&authority).as_deref(),
+            Some("api.example.test")
+        );
+    }
 
     #[test]
     fn dns_addresses_are_ordered_deterministically_for_every_consumer() {

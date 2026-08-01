@@ -15,6 +15,7 @@ use oxiroute_config::{
     UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls, canonicalize_http_path,
 };
 
+use crate::canonical::absolute_file_path;
 use crate::{E_INVALID_VALUE, E_SEMANTICS_NOT_REPRESENTABLE, E_UNSUPPORTED_FEATURE};
 
 use crate::nginx::{
@@ -154,22 +155,62 @@ fn parse_size_inner(value: &[u8], allow_zero: bool) -> Option<u64> {
 }
 
 fn parse_duration_ms(value: &[u8]) -> Option<u64> {
-    let (digits, multiplier) = if let Some(digits) = value.strip_suffix(b"ms") {
-        (digits, 1_u64)
-    } else {
-        match value.last().copied() {
-            Some(b's') => (&value[..value.len() - 1], 1_000),
-            Some(b'm') => (&value[..value.len() - 1], 60_000),
-            Some(b'h') => (&value[..value.len() - 1], 3_600_000),
-            Some(b'd') => (&value[..value.len() - 1], 86_400_000),
-            Some(b'w') => (&value[..value.len() - 1], 604_800_000),
-            Some(_) => (value, 1_000),
-            None => return None,
+    const MAX_CANONICAL_INTEGER: u64 = 9_007_199_254_740_991;
+
+    if value.iter().all(u8::is_ascii_digit) {
+        let amount = utf8(value)?.parse::<u64>().ok()?;
+        let milliseconds = amount.checked_mul(1_000)?;
+        return (milliseconds > 0 && milliseconds <= MAX_CANONICAL_INTEGER).then_some(milliseconds);
+    }
+
+    let mut remaining = value;
+    let mut previous_rank = None;
+    let mut only_bare_value_remains = false;
+    let mut total = 0_u64;
+    while !remaining.is_empty() {
+        let digit_count = remaining
+            .iter()
+            .take_while(|byte| byte.is_ascii_digit())
+            .count();
+        if digit_count == 0 {
+            return None;
         }
-    };
-    let amount = utf8(digits)?.parse::<u64>().ok()?;
-    let milliseconds = amount.checked_mul(multiplier)?;
-    (milliseconds > 0 && milliseconds <= 9_007_199_254_740_991).then_some(milliseconds)
+        let amount = utf8(&remaining[..digit_count])?.parse::<u64>().ok()?;
+        remaining = &remaining[digit_count..];
+        if remaining.is_empty() {
+            total = total.checked_add(amount.checked_mul(1_000)?)?;
+            break;
+        }
+        if only_bare_value_remains {
+            return None;
+        }
+        let (rank, multiplier, suffix_bytes) = if remaining.starts_with(b"ms") {
+            (7_u8, 1_u64, 2_usize)
+        } else {
+            match remaining[0] {
+                b'w' => (2, 7 * 86_400_000, 1),
+                b'd' => (3, 86_400_000, 1),
+                b'h' => (4, 3_600_000, 1),
+                b'm' => (5, 60_000, 1),
+                b's' => (6, 1_000, 1),
+                _ => return None,
+            }
+        };
+        if previous_rank.is_some_and(|previous| rank <= previous) {
+            return None;
+        }
+        previous_rank = Some(rank);
+        remaining = &remaining[suffix_bytes..];
+        total = total.checked_add(amount.checked_mul(multiplier)?)?;
+        if remaining.first() == Some(&b' ') {
+            if rank >= 6 {
+                return None;
+            }
+            remaining = remaining.trim_ascii_start();
+            only_bare_value_remains = true;
+        }
+    }
+    (total > 0 && total <= MAX_CANONICAL_INTEGER).then_some(total)
 }
 
 fn valid_gzip_type(value: &str) -> bool {
@@ -202,8 +243,46 @@ fn valid_gzip_type(value: &str) -> bool {
         })
 }
 
-fn gzip_policies_match(left: Option<&HttpGzipPolicy>, right: Option<&HttpGzipPolicy>) -> bool {
-    left == right
+enum NginxProxyValue {
+    IncomingAuthority,
+    NginxHost(String),
+    ClientIp,
+    AppendedXForwardedFor,
+    DownstreamScheme,
+    IncomingUpgrade,
+    Literal(String),
+}
+
+impl NginxProxyValue {
+    fn into_upstream_host(self) -> Option<HttpUpstreamHost> {
+        match self {
+            Self::IncomingAuthority => Some(HttpUpstreamHost::PreserveIncoming),
+            Self::NginxHost(fallback) => Some(HttpUpstreamHost::NginxHost { fallback }),
+            Self::Literal(value) => Some(HttpUpstreamHost::Literal { value }),
+            Self::ClientIp
+            | Self::AppendedXForwardedFor
+            | Self::DownstreamScheme
+            | Self::IncomingUpgrade => None,
+        }
+    }
+
+    fn into_request_header_value(self) -> HttpRequestHeaderValue {
+        match self {
+            Self::IncomingAuthority => HttpRequestHeaderValue::IncomingAuthority,
+            Self::NginxHost(fallback) => HttpRequestHeaderValue::NginxHost { fallback },
+            Self::ClientIp => HttpRequestHeaderValue::ClientIp,
+            Self::AppendedXForwardedFor => HttpRequestHeaderValue::AppendedXForwardedFor {
+                max_bytes: 8_192,
+                except_source_cidrs: Vec::new(),
+            },
+            Self::DownstreamScheme => HttpRequestHeaderValue::DownstreamScheme,
+            Self::IncomingUpgrade => HttpRequestHeaderValue::IncomingHeader {
+                name: "upgrade".into(),
+                max_bytes: 8_192,
+            },
+            Self::Literal(value) => HttpRequestHeaderValue::Literal { value },
+        }
+    }
 }
 
 impl Lowerer {
@@ -348,6 +427,10 @@ impl Lowerer {
                     .then(|| utf8(&name.normalized))
                     .flatten()
                     .and_then(canonical_exact_host)
+                    .map(|host| match host.parse::<IpAddr>() {
+                        Ok(IpAddr::V6(ip)) => format!("[{ip}]"),
+                        _ => host,
+                    })
             });
             all_origins.push(server.origin.clone());
             let mut has_local_catch_all = false;
@@ -480,9 +563,10 @@ impl Lowerer {
             .filter(|server| Self::server_participates(bind, server))
         {
             if let Some((policy, policy_origins)) = self.effective_gzip(server, &mut issues) {
-                if effective.as_ref().is_some_and(|existing| {
-                    !gzip_policies_match(existing.as_ref(), policy.as_ref())
-                }) {
+                if effective
+                    .as_ref()
+                    .is_some_and(|existing| existing.as_ref() != policy.as_ref())
+                {
                     let mismatch_origins = policy_origins.all();
                     issues.push(issue(
                         mismatch_origins.last().unwrap_or(&server.origin),
@@ -781,9 +865,6 @@ impl Lowerer {
         server: &EffectiveServer,
         bind: &EffectiveBind,
     ) -> Result<Vec<Option<HttpHostSelector>>, Vec<LowerIssue>> {
-        if server.origin.occurrence == bind.default_server {
-            return Ok(vec![None]);
-        }
         let mut hosts = Vec::new();
         let mut issues = Vec::new();
         for name in bind
@@ -822,8 +903,8 @@ impl Lowerer {
                 ServerNameKind::Regex | ServerNameKind::Variable | ServerNameKind::Invalid => None,
             };
             if let Some(host) = host {
-                if !hosts.contains(&host) {
-                    hosts.push(host);
+                if !hosts.contains(&Some(host.clone())) {
+                    hosts.push(Some(host));
                 }
             } else if issues.is_empty() {
                 issues.push(issue(
@@ -833,7 +914,9 @@ impl Lowerer {
                 ));
             }
         }
-        if hosts.is_empty() && issues.is_empty() {
+        if server.origin.occurrence == bind.default_server {
+            hosts.push(None);
+        } else if hosts.is_empty() && issues.is_empty() {
             issues.push(issue(
                 &server.origin,
                 E_SEMANTICS_NOT_REPRESENTABLE,
@@ -841,7 +924,7 @@ impl Lowerer {
             ));
         }
         if issues.is_empty() {
-            Ok(hosts.into_iter().map(Some).collect())
+            Ok(hosts)
         } else {
             Err(issues)
         }
@@ -1184,7 +1267,7 @@ impl Lowerer {
         let Some(path) = file
             .arguments
             .first()
-            .and_then(|value| canonical_file_path(value))
+            .and_then(|value| absolute_file_path(value))
         else {
             issues.push(issue(
                 file.origins.last().unwrap_or(&location.origin),
@@ -1413,16 +1496,6 @@ impl Lowerer {
         {
             issues.extend(policy_issues);
         }
-        if let Some(policy) = self.effective_policy(location.origin.occurrence, b"proxy_buffering")
-        {
-            if policy.arguments.as_slice() != [b"off".to_vec()] {
-                issues.push(issue(
-                    policy.origins.last().unwrap_or(&proxy.origin),
-                    E_SEMANTICS_NOT_REPRESENTABLE,
-                    "proxy_buffering must be disabled to match streaming canonical proxy semantics",
-                ));
-            }
-        }
         let pool = Self::proxy_pool(
             http,
             proxy,
@@ -1594,7 +1667,7 @@ impl Lowerer {
                 queue_timeout_ms: None,
                 connect_timeout_ms: None,
                 server_timeout_ms: None,
-                connection_reuse: UpstreamConnectionReuse::Safe,
+                connection_reuse: UpstreamConnectionReuse::Never,
             },
             origin,
             endpoint_origins,
@@ -1634,16 +1707,24 @@ impl Lowerer {
                     ));
                     continue;
                 }
-                host = Self::proxy_host_policy(value, proxy, nginx_host_fallback);
+                host = Self::proxy_value(value, proxy, nginx_host_fallback)
+                    .and_then(NginxProxyValue::into_upstream_host);
+                if host.is_none() {
+                    issues.push(issue(
+                        origin,
+                        E_SEMANTICS_NOT_REPRESENTABLE,
+                        "proxy_set_header Host value has no canonical upstream Host policy",
+                    ));
+                }
                 continue;
             }
             let mutation = if value.is_empty() {
                 Some(HttpRequestHeaderMutation::Remove { name: name.into() })
             } else {
-                Self::request_header_value(value, proxy, nginx_host_fallback).map(|value| {
+                Self::proxy_value(value, proxy, nginx_host_fallback).map(|value| {
                     HttpRequestHeaderMutation::Set {
                         name: name.into(),
-                        value,
+                        value: value.into_request_header_value(),
                     }
                 })
             };
@@ -1657,56 +1738,31 @@ impl Lowerer {
                 ));
             }
         }
-        (host.unwrap_or(HttpUpstreamHost::PreserveIncoming), headers)
+        let default_host = Self::proxy_value(b"$proxy_host", proxy, nginx_host_fallback)
+            .and_then(NginxProxyValue::into_upstream_host)
+            .expect("validated proxy authority is a canonical Host value");
+        (host.unwrap_or(default_host), headers)
     }
 
-    fn proxy_host_policy(
+    fn proxy_value(
         value: &[u8],
         proxy: &crate::nginx::EffectiveProxyPass,
         nginx_host_fallback: Option<&str>,
-    ) -> Option<HttpUpstreamHost> {
+    ) -> Option<NginxProxyValue> {
         match value {
-            b"$http_host" => Some(HttpUpstreamHost::PreserveIncoming),
-            b"$host" => nginx_host_fallback.map(|fallback| HttpUpstreamHost::NginxHost {
-                fallback: fallback.to_owned(),
-            }),
-            b"$proxy_host" => utf8(&proxy.authority).map(|value| HttpUpstreamHost::Literal {
-                value: value.into(),
-            }),
-            value if !value.contains(&b'$') => utf8(value).map(|value| HttpUpstreamHost::Literal {
-                value: value.into(),
-            }),
-            _ => None,
-        }
-    }
-
-    fn request_header_value(
-        value: &[u8],
-        proxy: &crate::nginx::EffectiveProxyPass,
-        nginx_host_fallback: Option<&str>,
-    ) -> Option<HttpRequestHeaderValue> {
-        match value {
-            b"$http_host" => Some(HttpRequestHeaderValue::IncomingAuthority),
-            b"$host" => nginx_host_fallback.map(|fallback| HttpRequestHeaderValue::NginxHost {
-                fallback: fallback.to_owned(),
-            }),
-            b"$remote_addr" => Some(HttpRequestHeaderValue::ClientIp),
-            b"$proxy_add_x_forwarded_for" => Some(HttpRequestHeaderValue::AppendedXForwardedFor {
-                max_bytes: 8_192,
-                except_source_cidrs: Vec::new(),
-            }),
-            b"$scheme" => Some(HttpRequestHeaderValue::DownstreamScheme),
-            b"$http_upgrade" => Some(HttpRequestHeaderValue::IncomingHeader {
-                name: "upgrade".into(),
-                max_bytes: 8_192,
-            }),
-            b"$proxy_host" => utf8(&proxy.authority).map(|value| HttpRequestHeaderValue::Literal {
-                value: value.into(),
-            }),
+            b"$http_host" => Some(NginxProxyValue::IncomingAuthority),
+            b"$host" => nginx_host_fallback
+                .map(str::to_owned)
+                .map(NginxProxyValue::NginxHost),
+            b"$remote_addr" => Some(NginxProxyValue::ClientIp),
+            b"$proxy_add_x_forwarded_for" => Some(NginxProxyValue::AppendedXForwardedFor),
+            b"$scheme" => Some(NginxProxyValue::DownstreamScheme),
+            b"$http_upgrade" => Some(NginxProxyValue::IncomingUpgrade),
+            b"$proxy_host" => utf8(&proxy.authority)
+                .map(str::to_owned)
+                .map(NginxProxyValue::Literal),
             value if !value.contains(&b'$') => {
-                utf8(value).map(|value| HttpRequestHeaderValue::Literal {
-                    value: value.into(),
-                })
+                utf8(value).map(str::to_owned).map(NginxProxyValue::Literal)
             }
             _ => None,
         }
@@ -2201,45 +2257,13 @@ mod tests {
         assert_eq!(parse_duration_ms(b"600"), Some(600_000));
         assert_eq!(parse_duration_ms(b"600ms"), Some(600));
         assert_eq!(parse_duration_ms(b"10m"), Some(600_000));
-    }
-
-    #[test]
-    fn bind_wide_gzip_equivalence_compares_every_canonical_field() {
-        let baseline = HttpGzipPolicy {
-            level: 6,
-            content_types: vec!["text/html".into(), "application/json".into()],
-            min_length_bytes: 20,
-            min_http_version: HttpGzipMinimumVersion::Http11,
-            disable_on_via: true,
-            vary: false,
-        };
-        let mut variants = Vec::new();
-        let mut policy = baseline.clone();
-        policy.level = 7;
-        variants.push(policy);
-        let mut policy = baseline.clone();
-        policy.content_types.push("text/plain".into());
-        variants.push(policy);
-        let mut policy = baseline.clone();
-        policy.min_length_bytes = 21;
-        variants.push(policy);
-        let mut policy = baseline.clone();
-        policy.min_http_version = HttpGzipMinimumVersion::Http10;
-        variants.push(policy);
-        let mut policy = baseline.clone();
-        policy.disable_on_via = false;
-        variants.push(policy);
-        let mut policy = baseline.clone();
-        policy.vary = true;
-        variants.push(policy);
-
-        assert!(gzip_policies_match(Some(&baseline), Some(&baseline)));
-        assert!(
-            variants
-                .iter()
-                .all(|policy| { !gzip_policies_match(Some(&baseline), Some(policy)) })
-        );
-        assert!(!gzip_policies_match(Some(&baseline), None));
+        assert_eq!(parse_duration_ms(b"1h30m"), Some(5_400_000));
+        assert_eq!(parse_duration_ms(b"1m500ms"), Some(60_500));
+        assert_eq!(parse_duration_ms(b"1h30"), Some(3_630_000));
+        assert_eq!(parse_duration_ms(b"1h 30"), Some(3_630_000));
+        assert_eq!(parse_duration_ms(b"1y"), None);
+        assert_eq!(parse_duration_ms(b"1M"), None);
+        assert_eq!(parse_duration_ms(b"1m1h"), None);
     }
 }
 
@@ -2331,16 +2355,6 @@ fn canonical_directory(value: &[u8]) -> Option<PathBuf> {
     let path = Path::new(normalized);
     (path.is_absolute()
         && !value.contains("//")
-        && !value.split('/').any(|part| matches!(part, "." | "..")))
-    .then(|| path.to_path_buf())
-}
-
-fn canonical_file_path(value: &[u8]) -> Option<PathBuf> {
-    let value = utf8(value)?;
-    let path = Path::new(value);
-    (path.is_absolute()
-        && !value.contains("//")
-        && !value.ends_with('/')
         && !value.split('/').any(|part| matches!(part, "." | "..")))
     .then(|| path.to_path_buf())
 }

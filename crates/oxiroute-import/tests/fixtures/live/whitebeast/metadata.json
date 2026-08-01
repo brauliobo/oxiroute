@@ -16,10 +16,10 @@
     },
     {
       "product": "haproxy",
-      "captured_on": "2026-07-27",
+      "captured_on": "2026-07-31",
       "read_command": "sudo -A cat /etc/haproxy/haproxy.cfg",
       "hash_command": "sha256sum /etc/haproxy/haproxy.cfg",
-      "sha256": "24bfddb26022e2dfc9d778a0683666516fe6cb8521c6473949f84147578ffa27",
+      "sha256": "946845c49e92547063affacd18cbcf84db05772e0b39f614f398330cd030a709",
       "availability": "recorded",
       "raw_bytes_stored": false
     }
@@ -39,7 +39,7 @@
   "native_version_availability": "recorded",
   "haproxy_environment": { "node_ip": "10.0.0.10", "gpu1_defined": true },
   "files": [
-    { "path": "haproxy.cfg", "post_sanitization_sha256": "24bfddb26022e2dfc9d778a0683666516fe6cb8521c6473949f84147578ffa27" },
+    { "path": "haproxy.cfg", "post_sanitization_sha256": "946845c49e92547063affacd18cbcf84db05772e0b39f614f398330cd030a709" },
     { "path": "nginx/letsencrypt/options-ssl-nginx.conf", "post_sanitization_sha256": "789c4c0a2ed74ad22613230a61a4e8c0a0b14ddafad9656e4bbc89b8eba39c73" },
     { "path": "nginx/mime.types", "post_sanitization_sha256": "d53950395ecd95d31c996d01ba2a8639ba79d019fbad4b36f6607d2e7932c9e1" },
     { "path": "nginx/nginx.conf", "post_sanitization_sha256": "573b574441e6179d7c860b953beef2e63d41dd2b9650020cade6ebe17886ed03" },

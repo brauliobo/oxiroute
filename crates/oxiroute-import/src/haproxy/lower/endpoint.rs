@@ -10,7 +10,7 @@ use oxiroute_config::{
 };
 
 use super::{Lowerer, Representability};
-use crate::canonical::{dns_name, ip_address, unix_socket_path};
+use crate::canonical::{dns_name, duration_milliseconds, ip_address, unix_socket_path};
 use crate::haproxy::{
     BalanceAlgorithm, BindAddress, EffectiveBind, EffectiveSection, EffectiveServer,
     EffectiveValue, OptionState, ProxyMode, ProxySettings,
@@ -95,6 +95,24 @@ impl Lowerer<'_> {
         decision.require(algorithm.is_some());
         let health_check = self.lower_health_check(section, settings, servers);
         decision.require(health_check.is_some());
+        let queue_timeout_ms = settings
+            .timeouts
+            .queue
+            .as_ref()
+            .and_then(|value| self.duration_ms(value, "HAProxy queue timeout"));
+        let connect_timeout_ms = settings
+            .timeouts
+            .connect
+            .as_ref()
+            .and_then(|value| self.duration_ms(value, "HAProxy connect timeout"));
+        let server_timeout_ms = settings
+            .timeouts
+            .server
+            .as_ref()
+            .and_then(|value| self.duration_ms(value, "HAProxy server timeout"));
+        decision.require(settings.timeouts.queue.is_none() || queue_timeout_ms.is_some());
+        decision.require(settings.timeouts.connect.is_none() || connect_timeout_ms.is_some());
+        decision.require(settings.timeouts.server.is_none() || server_timeout_ms.is_some());
         let connection_sensitive = algorithm
             .as_ref()
             .is_some_and(|algorithm| *algorithm != UpstreamAlgorithm::RoundRobin)
@@ -163,21 +181,9 @@ impl Lowerer<'_> {
             health_check: health_check.flatten(),
             tls: None,
             http_versions: HttpVersionPolicy::default(),
-            queue_timeout_ms: settings
-                .timeouts
-                .queue
-                .as_ref()
-                .and_then(|value| Self::duration_value_ms(value.value)),
-            connect_timeout_ms: settings
-                .timeouts
-                .connect
-                .as_ref()
-                .and_then(|value| Self::duration_value_ms(value.value)),
-            server_timeout_ms: settings
-                .timeouts
-                .server
-                .as_ref()
-                .and_then(|value| Self::duration_value_ms(value.value)),
+            queue_timeout_ms,
+            connect_timeout_ms,
+            server_timeout_ms,
             connection_reuse: if closes_after_request {
                 UpstreamConnectionReuse::Never
             } else {
@@ -331,6 +337,27 @@ impl Lowerer<'_> {
         if checked == HashSet::from([false]) {
             return Some(None);
         }
+        for server in servers {
+            for (value, description) in [
+                (server.interval.as_ref(), "HAProxy health interval"),
+                (
+                    server.fast_interval.as_ref(),
+                    "HAProxy fast health interval",
+                ),
+                (
+                    server.down_interval.as_ref(),
+                    "HAProxy down health interval",
+                ),
+            ] {
+                let Some(value) = value else {
+                    continue;
+                };
+                if duration_milliseconds(value.value).is_none() {
+                    self.duration_ms(value, description);
+                    return None;
+                }
+            }
+        }
         let Some(interval_ms) = Self::common_server_u64(servers, |server| {
             server
                 .interval
@@ -405,6 +432,13 @@ impl Lowerer<'_> {
         let (kind, path, host, http_version) = match settings.http_check.as_ref() {
             Some(check_value) => match &check_value.value {
                 OptionState::Enabled(check) => {
+                    if check.method != b"GET" {
+                        self.block_value(
+                            check_value,
+                            "HAProxy HTTP health check method is not representable by the canonical GET health check",
+                        );
+                        return None;
+                    }
                     let (Ok(path), Ok(host)) = (
                         std::str::from_utf8(&check.uri),
                         check.host.as_deref().map(std::str::from_utf8).transpose(),
@@ -468,7 +502,7 @@ impl Lowerer<'_> {
     }
 
     fn duration_value_ms(duration: std::time::Duration) -> Option<u64> {
-        u64::try_from(duration.as_millis()).ok()
+        duration_milliseconds(duration)
     }
 
     fn common_server_u64(
@@ -516,6 +550,27 @@ impl Lowerer<'_> {
         let Some(caps) = self.listener_caps(section, binds, settings.maxconn.as_ref()) else {
             return false;
         };
+        let client_timeout_ms = settings
+            .timeouts
+            .client
+            .as_ref()
+            .and_then(|value| self.duration_ms(value, "HAProxy client timeout"));
+        let request_timeout_ms = settings
+            .timeouts
+            .http_request
+            .as_ref()
+            .and_then(|value| self.duration_ms(value, "HAProxy HTTP request timeout"));
+        let keepalive_timeout_ms = settings
+            .timeouts
+            .http_keep_alive
+            .as_ref()
+            .and_then(|value| self.duration_ms(value, "HAProxy HTTP keepalive timeout"));
+        if (settings.timeouts.client.is_some() && client_timeout_ms.is_none())
+            || (settings.timeouts.http_request.is_some() && request_timeout_ms.is_none())
+            || (settings.timeouts.http_keep_alive.is_some() && keepalive_timeout_ms.is_none())
+        {
+            return false;
+        }
         if mode.protocol != oxiroute_config::Protocol::Http {
             if let Some(tls) = binds.iter().find_map(|bind| bind.tls.as_ref()) {
                 self.block_value(
@@ -566,21 +621,9 @@ impl Lowerer<'_> {
                 tls_profile,
                 max_connections,
                 downstream_timeouts: DownstreamTimeoutPolicy {
-                    client_timeout_ms: settings
-                        .timeouts
-                        .client
-                        .as_ref()
-                        .and_then(|value| Self::duration_value_ms(value.value)),
-                    request_timeout_ms: settings
-                        .timeouts
-                        .http_request
-                        .as_ref()
-                        .and_then(|value| Self::duration_value_ms(value.value)),
-                    keepalive_timeout_ms: settings
-                        .timeouts
-                        .http_keep_alive
-                        .as_ref()
-                        .and_then(|value| Self::duration_value_ms(value.value)),
+                    client_timeout_ms,
+                    request_timeout_ms,
+                    keepalive_timeout_ms,
                 },
             });
             let listener_path = CanonicalPath::indexed("listeners", listener_index);

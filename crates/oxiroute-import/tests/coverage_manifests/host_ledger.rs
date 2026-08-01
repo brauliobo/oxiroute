@@ -679,7 +679,7 @@ fn assert_origin_capture_metadata(metadata: &LiveFixtureMetadata) {
                 Some("e6832fc9bb18b1bfb9623f16f2959d438ae800922a4e3add9a5e1e87b0031f2f")
             }
             ("whitebeast", "haproxy") => {
-                Some("24bfddb26022e2dfc9d778a0683666516fe6cb8521c6473949f84147578ffa27")
+                Some("946845c49e92547063affacd18cbcf84db05772e0b39f614f398330cd030a709")
             }
             ("hostrouter", "nginx") => {
                 Some("6ed001a3532b36fb12a97497a9cb96ce5bdbd50ba8516b0e7c3ba7ad24ec860a")
@@ -698,7 +698,7 @@ fn assert_origin_capture_metadata(metadata: &LiveFixtureMetadata) {
         assert_eq!(capture.sha256.as_deref(), expected_hash);
         if expected_hash.is_some() {
             let expected_date = match (metadata.host.as_str(), product) {
-                ("whitebeast", "haproxy") => "2026-07-27",
+                ("whitebeast", "haproxy") => "2026-07-31",
                 ("chicopc" | "back1", "haproxy") => "2026-07-28",
                 _ => "2026-07-26",
             };

@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     ffi::{OsStr, OsString},
     fmt::Write as _,
     fs::File,
@@ -524,13 +524,13 @@ impl RouteAccess {
 
 pub(crate) struct BasicHtpasswdAccess {
     challenge: HeaderValue,
-    dummy_hash: BasicPasswordHash,
+    dummy_hashes: Box<[BasicPasswordHash]>,
     users: Box<[([u8; 32], BasicPasswordHash)]>,
 }
 
 #[derive(Clone)]
 enum BasicPasswordHash {
-    Bcrypt(String),
+    Bcrypt { hash: String, cost: u32 },
     Apr1(Apr1Hash),
 }
 
@@ -540,7 +540,7 @@ struct Apr1Hash {
     digest: [u8; APR1_DIGEST_BYTES],
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum BasicHashScheme {
     Bcrypt(u32),
     Apr1,
@@ -562,7 +562,7 @@ impl BasicHtpasswdAccess {
         let text = std::str::from_utf8(&bytes).map_err(|_| AccessPreflightError)?;
         let mut users = Vec::new();
         let mut username_digests = HashSet::new();
-        let mut file_scheme = None;
+        let mut schemes = BTreeSet::new();
         for line in text.lines() {
             if line.is_empty() || line.starts_with('#') {
                 continue;
@@ -580,24 +580,23 @@ impl BasicHtpasswdAccess {
                 return Err(AccessPreflightError);
             }
             let (parsed_hash, scheme) = BasicPasswordHash::parse(hash)?;
-            if file_scheme.is_some_and(|existing| existing != scheme) {
-                return Err(AccessPreflightError);
-            }
-            file_scheme = Some(scheme);
+            schemes.insert(scheme);
             users.push((username_digest, parsed_hash));
         }
         if users.is_empty() {
             return Err(AccessPreflightError);
         }
-        let dummy_hash = BasicPasswordHash::dummy(
-            file_scheme.expect("nonempty htpasswd file has a uniform hash scheme"),
-        )?;
+        let dummy_hashes = schemes
+            .into_iter()
+            .map(BasicPasswordHash::dummy)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_boxed_slice();
         Ok(Self {
             challenge: HeaderValue::from_str(&format!(
                 "Basic realm=\"{realm}\", charset=\"UTF-8\""
             ))
             .expect("validated Basic realm"),
-            dummy_hash,
+            dummy_hashes,
             users: users.into_boxed_slice(),
         })
     }
@@ -647,11 +646,18 @@ impl BasicHtpasswdAccess {
             selected_index = (selected_index & !mask) | (index & mask);
         }
         let known_user = selected_index != self.users.len();
-        let hash = if known_user {
-            self.users[selected_index].1.clone()
-        } else {
-            self.dummy_hash.clone()
-        };
+        let selected_hash = known_user.then(|| self.users[selected_index].1.clone());
+        let hashes = self
+            .dummy_hashes
+            .iter()
+            .map(|dummy| {
+                selected_hash
+                    .as_ref()
+                    .filter(|hash| hash.scheme() == dummy.scheme())
+                    .unwrap_or(dummy)
+                    .clone()
+            })
+            .collect::<Box<[_]>>();
         let password = Zeroizing::new(password.to_owned());
         let semaphore = basic_auth_semaphore();
         let Ok(permit) = semaphore.try_acquire_owned() else {
@@ -659,7 +665,9 @@ impl BasicHtpasswdAccess {
         };
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            hash.verify(password.as_bytes())
+            hashes.iter().fold(false, |verified, hash| {
+                hash.verify(password.as_bytes()) || verified
+            })
         })
         .await
         .ok()
@@ -680,7 +688,13 @@ impl BasicPasswordHash {
             if !(MIN_BASIC_BCRYPT_COST..=MAX_BASIC_BCRYPT_COST).contains(&cost) {
                 return Err(AccessPreflightError);
             }
-            return Ok((Self::Bcrypt(hash.to_owned()), BasicHashScheme::Bcrypt(cost)));
+            return Ok((
+                Self::Bcrypt {
+                    hash: hash.to_owned(),
+                    cost,
+                },
+                BasicHashScheme::Bcrypt(cost),
+            ));
         }
 
         let apr1 = Apr1Hash::parse(hash)?;
@@ -697,7 +711,7 @@ impl BasicPasswordHash {
                 )
                 .map_err(|_| AccessPreflightError)?
                 .to_string();
-                Ok(Self::Bcrypt(hash))
+                Ok(Self::Bcrypt { hash, cost })
             }
             BasicHashScheme::Apr1 => Ok(Self::Apr1(Apr1Hash {
                 salt: Box::from(&b"OxiRoute"[..]),
@@ -707,9 +721,16 @@ impl BasicPasswordHash {
         }
     }
 
+    fn scheme(&self) -> BasicHashScheme {
+        match self {
+            Self::Bcrypt { cost, .. } => BasicHashScheme::Bcrypt(*cost),
+            Self::Apr1(_) => BasicHashScheme::Apr1,
+        }
+    }
+
     fn verify(&self, password: &[u8]) -> bool {
         match self {
-            Self::Bcrypt(hash) => bcrypt::verify(password, hash).unwrap_or(false),
+            Self::Bcrypt { hash, .. } => bcrypt::verify(password, hash).unwrap_or(false),
             Self::Apr1(hash) => apr1_digest(password, &hash.salt)
                 .is_ok_and(|digest| memcmp::eq(&digest, &hash.digest)),
         }
@@ -1446,11 +1467,7 @@ fn read_regular_file(descriptor: OwnedFd, name: &OsStr) -> Result<StaticFile, St
         return Err(StaticServeError::TooLarge);
     }
     Ok(StaticFile {
-        etag: HeaderValue::from_str(&format!(
-            "\"{:x}-{:x}-{:x}-{:x}\"",
-            before.st_dev, before.st_ino, before.st_size, before.st_mtime
-        ))
-        .expect("stat fields produce a valid ETag"),
+        etag: nginx_static_etag(before.st_mtime, size),
         file: File::from(descriptor),
         modified: u64::try_from(before.st_mtime)
             .ok()
@@ -1461,6 +1478,11 @@ fn read_regular_file(descriptor: OwnedFd, name: &OsStr) -> Result<StaticFile, St
         name: name.to_os_string(),
         size,
     })
+}
+
+fn nginx_static_etag(modified: i64, size: u64) -> HeaderValue {
+    HeaderValue::from_str(&format!("\"{modified:x}-{size:x}\""))
+        .expect("stat fields produce a valid ETag")
 }
 
 struct AutoindexEntry {
@@ -1736,9 +1758,48 @@ fn trim_one_line_ending(bytes: &mut Vec<u8>) {
 
 #[cfg(test)]
 mod access_log_tests {
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
 
     use super::*;
+
+    #[tokio::test]
+    async fn mixed_htpasswd_schemes_authenticate_each_user() {
+        let directory = tempfile::tempdir().expect("htpasswd directory");
+        let path = directory.path().join("mixed.htpasswd");
+        let apr1 = String::from_utf8(apr1_digest(b"alpha-pass", b"salt").unwrap().to_vec())
+            .expect("APR1 digest");
+        let bcrypt = bcrypt::hash_with_salt(b"bravo-pass", 4, *b"OxiRouteTest1234")
+            .unwrap()
+            .to_string();
+        std::fs::write(&path, format!("alpha:$apr1$salt${apr1}\nbravo:{bcrypt}\n"))
+            .expect("htpasswd file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .expect("htpasswd mode");
+        let access = BasicHtpasswdAccess::load(&path, "private").expect("mixed htpasswd");
+
+        for (credentials, expected) in [
+            ("alpha:alpha-pass", true),
+            ("bravo:bravo-pass", true),
+            ("alpha:wrong", false),
+            ("missing:alpha-pass", false),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!(
+                    "Basic {}",
+                    STANDARD.encode(credentials.as_bytes())
+                ))
+                .unwrap(),
+            );
+            assert_eq!(access.authorizes(&headers).await, expected, "{credentials}");
+        }
+    }
+
+    #[test]
+    fn static_etags_use_nginx_mtime_and_size_format() {
+        assert_eq!(nginx_static_etag(0x1234, 0xabcd), "\"1234-abcd\"");
+    }
 
     #[test]
     fn access_log_rejects_a_symlinked_ancestor() {

@@ -1,4 +1,9 @@
-use std::{net::IpAddr, path::PathBuf};
+use std::{net::IpAddr, path::PathBuf, time::Duration};
+
+pub(crate) fn duration_milliseconds(duration: Duration) -> Option<u64> {
+    let milliseconds = u64::try_from(duration.as_millis()).ok()?;
+    (milliseconds != 0 && Duration::from_millis(milliseconds) == duration).then_some(milliseconds)
+}
 
 pub(crate) fn ip_address(value: &[u8]) -> Option<IpAddr> {
     let value = value
@@ -21,6 +26,20 @@ pub(crate) fn dns_name(value: &[u8]) -> Option<String> {
     }
     name.make_ascii_lowercase();
     Some(name)
+}
+
+pub(crate) fn absolute_file_path(value: &[u8]) -> Option<PathBuf> {
+    let value = std::str::from_utf8(value).ok()?;
+    let path = std::path::Path::new(value);
+    (value.len() <= 4096
+        && path.is_absolute()
+        && !value.as_bytes().contains(&0)
+        && !value.contains("//")
+        && !value.ends_with('/')
+        && !value
+            .split('/')
+            .any(|segment| segment == "." || segment == ".."))
+    .then(|| path.to_path_buf())
 }
 
 fn dns_label(label: &str) -> bool {
