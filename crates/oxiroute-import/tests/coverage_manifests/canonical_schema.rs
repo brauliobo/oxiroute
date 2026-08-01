@@ -74,7 +74,6 @@ fn exclude_nonintegrated_component_controls(editable_fields: &mut BTreeSet<Strin
     let components: ComponentManifest = read_manifest("components.json");
     for id in [
         "component.cache-core",
-        "component.forward-proxy-h1",
         "component.forward-proxy-h2",
         "component.forward-proxy-h3",
     ] {
@@ -92,7 +91,6 @@ fn exclude_nonintegrated_component_controls(editable_fields: &mut BTreeSet<Strin
 
     for prefix in [
         "cache_stores",
-        "forward_proxy_services",
         "http_services[].routes[].action.policy.cache",
         "max_connections",
         "listeners[].bind.mode",
@@ -209,10 +207,15 @@ fn collect_ui_fields(
         return;
     };
     for field in &source_fields.named {
+        let (inner, collection) = unwrap_schema_type(&field.ty);
+        if serde_field_flattened(&field.attrs) {
+            let type_name = rust_type_name(inner).expect("flattened schema field type");
+            collect_ui_type(schema, &type_name, prefix, fields, editable);
+            continue;
+        }
         let name = serialized_field_name(field.ident.as_ref().expect("named field"), &field.attrs);
         let path = join_path(prefix, &name);
         fields.insert(path.clone());
-        let (inner, collection) = unwrap_schema_type(&field.ty);
         let Some(type_name) = rust_type_name(inner) else {
             editable.insert(path);
             continue;
@@ -248,6 +251,26 @@ fn serde_enum_tag(attributes: &[Attribute]) -> Option<String> {
             .expect("valid serde enum attribute");
     }
     tag
+}
+
+fn serde_field_flattened(attributes: &[Attribute]) -> bool {
+    let mut flattened = false;
+    for attribute in attributes
+        .iter()
+        .filter(|attribute| attribute.path().is_ident("serde"))
+    {
+        attribute
+            .parse_nested_meta(|meta| {
+                if meta.path.is_ident("flatten") {
+                    flattened = true;
+                } else if meta.input.peek(syn::Token![=]) {
+                    let _: syn::Expr = meta.value()?.parse()?;
+                }
+                Ok(())
+            })
+            .expect("valid serde field attribute");
+    }
+    flattened
 }
 
 fn ui_registry_fields() -> BTreeSet<String> {
@@ -352,9 +375,21 @@ fn collect_canonical_fields(
         return;
     };
     for field in &fields.named {
+        let (inner, collection) = unwrap_schema_type(&field.ty);
+        if serde_field_flattened(&field.attrs) {
+            let type_name = rust_type_name(inner).expect("flattened canonical field type");
+            let item = schema.items.iter().find_map(|item| match item {
+                Item::Enum(item) if item.ident == type_name => Some(item),
+                _ => None,
+            });
+            if let Some(tag) = item.and_then(|item| serde_enum_tag(&item.attrs)) {
+                entries.insert((EntryKind::Field, join_path(prefix, &tag)));
+            }
+            collect_canonical_type(schema, &type_name, prefix, entries);
+            continue;
+        }
         let name = serialized_field_name(field.ident.as_ref().expect("named field"), &field.attrs);
         let base = join_path(prefix, &name);
-        let (inner, collection) = unwrap_schema_type(&field.ty);
         let path = if collection {
             format!("{base}[]")
         } else {

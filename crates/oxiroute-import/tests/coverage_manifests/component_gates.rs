@@ -26,15 +26,26 @@ fn cache_forward_and_varnish_foundations_are_not_integrated_runtime_claims() {
     assert_eq!(actual, expected);
 
     for entry in &manifest.entries {
-        assert_eq!(entry.status, ComponentStatus::Foundation);
         assert!(entry.gates.component.0, "{} component gate", entry.id);
         assert!(entry.gates.tests.0, "{} tests gate", entry.id);
-        assert!(!entry.gates.canonical.0, "{} canonical gate", entry.id);
-        assert!(
-            !entry.gates.integrated_runtime.0,
-            "{} integrated runtime gate",
-            entry.id
-        );
+        if entry.id == "component.forward-proxy-h1" {
+            assert_eq!(entry.status, ComponentStatus::Integrated);
+            assert!(entry.gates.canonical.0, "{} canonical gate", entry.id);
+            assert!(
+                entry.gates.integrated_runtime.0,
+                "{} integrated runtime gate",
+                entry.id
+            );
+            assert!(entry.gates.failure.0, "{} failure gate", entry.id);
+        } else {
+            assert_eq!(entry.status, ComponentStatus::Foundation);
+            assert!(!entry.gates.canonical.0, "{} canonical gate", entry.id);
+            assert!(
+                !entry.gates.integrated_runtime.0,
+                "{} integrated runtime gate",
+                entry.id
+            );
+        }
     }
     assert!(
         manifest
@@ -64,5 +75,5 @@ fn cache_forward_and_varnish_foundations_are_not_integrated_runtime_claims() {
     assert!(root_workspace.contains("crates/oxiroute-forward-proxy"));
     let server = read_source("crates/oxiroute-server/Cargo.toml");
     assert!(!server.contains("oxiroute-cache"));
-    assert!(!server.contains("oxiroute-forward-proxy"));
+    assert!(server.contains("oxiroute-forward-proxy"));
 }
