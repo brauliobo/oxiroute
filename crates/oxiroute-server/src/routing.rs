@@ -27,6 +27,7 @@ use tokio::{
 enum HostMatcher {
     Any,
     ExactAuthority(String),
+    AsciiCaseInsensitiveExactAuthority(String),
     NormalizedExact(String),
     Wildcard(String),
     NginxLeadingWildcard(String),
@@ -39,6 +40,9 @@ impl HostMatcher {
             Self::Any => Some((0, 0)),
             Self::ExactAuthority(expected) => authority
                 .is_some_and(|authority| authority.as_str() == expected)
+                .then_some((3, expected.len())),
+            Self::AsciiCaseInsensitiveExactAuthority(expected) => authority
+                .is_some_and(|authority| authority.as_str().eq_ignore_ascii_case(expected))
                 .then_some((3, expected.len())),
             Self::NormalizedExact(expected) => authority
                 .and_then(normalized_authority_host)
@@ -252,6 +256,18 @@ fn normalize_host(host: Option<HttpHostSelector>) -> Result<HostMatcher, RouteEr
                 return Err(RouteError::InvalidHost(value));
             }
             Ok(HostMatcher::ExactAuthority(value))
+        }
+        HttpHostSelector::AsciiCaseInsensitiveExactAuthority { value } => {
+            let valid = value.is_ascii()
+                && value.len() <= 255
+                && !value.contains(['*', '@'])
+                && value
+                    .parse::<Authority>()
+                    .is_ok_and(|authority| !authority.host().is_empty());
+            if !valid {
+                return Err(RouteError::InvalidHost(value));
+            }
+            Ok(HostMatcher::AsciiCaseInsensitiveExactAuthority(value))
         }
         HttpHostSelector::NormalizedHost { mut value } => {
             value.make_ascii_lowercase();

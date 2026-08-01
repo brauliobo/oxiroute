@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { CANONICAL_FIELD_REGISTRY } from './config'
+import { CANONICAL_FIELD_REGISTRY, isCanonicalConfig } from './config'
+import { contractConfigSnapshot } from './test/contractFixtures'
 
 const currentCanonicalFields = [
   'version',
@@ -10,6 +11,16 @@ const currentCanonicalFields = [
   'stats',
   'stats.binds',
   'stats.admin_token_file',
+  'stats.pages',
+  'stats.pages[].bind',
+  'stats.pages[].uri_prefix',
+  'stats.pages[].refresh_ms',
+  'stats.pages[].admin',
+  'stats.pages[].max_connections',
+  'stats.pages[].downstream_timeouts',
+  'stats.pages[].downstream_timeouts.client_timeout_ms',
+  'stats.pages[].downstream_timeouts.request_timeout_ms',
+  'stats.pages[].downstream_timeouts.keepalive_timeout_ms',
   'certificates',
   'certificates[].name',
   'certificates[].dns_names',
@@ -31,6 +42,7 @@ const currentCanonicalFields = [
   'listeners[].bind.type',
   'listeners[].bind.address',
   'listeners[].bind.path',
+  'listeners[].bind.mode',
   'listeners[].protocol',
   'listeners[].service',
   'listeners[].tls_profile',
@@ -114,6 +126,9 @@ const currentCanonicalFields = [
   'http_services[].routes[].action.policy.response_cookie_path_rewrites[].to',
   'http_services[].routes[].action.policy.retry',
   'http_services[].routes[].action.policy.retry.max_retries',
+  'http_services[].routes[].action.policy.retry.target',
+  'http_services[].routes[].action.policy.retry.delay_ms',
+  'http_services[].routes[].action.policy.retry.final_redispatch',
   'http_services[].routes[].action.policy.retry.triggers',
   'http_services[].routes[].action.policy.retry.method_safety',
   'http_services[].routes[].action.policy.retry.body_safety',
@@ -250,5 +265,38 @@ describe('canonical field registry', () => {
       'http_services[].routes[].policy.connect_timeout_ms',
       'rtmp_services[].applications[].fanout.max_subscribers',
     ]))
+  })
+
+  it('accepts new canonical variants and rejects invalid final redispatch shapes', () => {
+    const config = contractConfigSnapshot().config
+    config.stats = {
+      binds: [],
+      admin_token_file: null,
+      pages: [{
+        bind: '127.0.0.1:8404',
+        uri_prefix: '/stats',
+        refresh_ms: 10_000,
+        admin: 'localhost',
+        max_connections: 300,
+        downstream_timeouts: {
+          client_timeout_ms: 600_000,
+          request_timeout_ms: 600_000,
+          keepalive_timeout_ms: 60_000,
+        },
+      }],
+    }
+    const route = config.http_services[0]!.routes[0]!
+    route.host = { kind: 'ascii_case_insensitive_exact_authority', value: 'API.Example.Test:8443' }
+    if (route.action.type !== 'proxy') throw new Error('contract route must proxy')
+    route.action.policy.retry = {
+      ...route.action.policy.retry,
+      max_retries: 3,
+      target: 'same_server',
+      final_redispatch: true,
+    }
+
+    expect(isCanonicalConfig(config)).toBe(true)
+    route.action.policy.retry.target = 'next_server'
+    expect(isCanonicalConfig(config)).toBe(false)
   })
 })

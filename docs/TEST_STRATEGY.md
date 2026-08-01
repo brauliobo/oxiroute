@@ -23,11 +23,15 @@ checked-in fuzz targets, real-browser test runner, or CI workflow.
 - Config type decoding, validation, canonical rendering, revisions, and diagnostics.
 - Tagged listener/endpoint decoding, DNS and Unix normalization/bounds, nullable listener/body
   limits, balancing defaults, and per-pool/total endpoint caps.
-- Health-check defaults/type-specific fields, timing/threshold bounds, DNS probe resolution, and
+- Statistics page-only decoding/rendering, URI/refresh/admin bounds, bind conflicts, isolated
+  routing, and same-origin loopback administration.
+- Health-check defaults/type-specific fields, timing/threshold bounds including timeout equal to
+  interval, DNS probe resolution, and
   Unix/TLS/health incompatibilities.
 - Certificate/TLS-profile decoding, DNS/path/cardinality bounds, references, ALPN policy, upstream
   SNI/custom-CA fields, HTTP version ranges, and TLS/health/L4 incompatibilities.
-- Route precedence, health-state thresholds, health-aware round-robin and least-connections
+- Route precedence including ASCII case-insensitive exact authority, health-state thresholds,
+  health-aware round-robin and least-connections
   selection, deterministic lease ties/release, bounded ordered DNS address fallback shared by
   probes and traffic, retries, and limits.
 - TCP timeout/half-close state and RTMP catalog, fanout, FLV, canonical recorder validation/rendering,
@@ -49,8 +53,10 @@ parser round-trip properties remain planned.
 
 - Loopback-only upstreams and ephemeral ports; no root or Internet dependency.
 - HTTP methods, bodies, trailers, hop-by-hop fields, upgrades, gRPC, and negotiated versions.
-- HTTP retry target exclusion, budget exhaustion, and no-retry gates after bodies, unsafe methods,
-  upgrades, or established upstream connections.
+- HTTP retry target exclusion, budgets through three, delayed same-server attempts, immediate final
+  redispatch, the 64-attempt Pingora bound, budget exhaustion, pre-send connection retries for
+  methods and bodies that have not reached an upstream, and no-replay gates after bodies, unsafe
+  methods, upgrades, or established upstream connections.
 - DNS endpoints retain canonical identity while resolving at connection time; Unix HTTP and L4
   upstreams, Unix listeners, and platform failure behavior are covered separately. Unit and wire
   coverage prove health, HTTP, and L4 use the same bounded address order and can reach a healthy
@@ -65,7 +71,10 @@ parser round-trip properties remain planned.
 - TLS SNI/ALPN, upstream verification, certificate rotation, and expiry. Client authentication
   remains a future gate.
 - Atomic config writes, exact revision preconditions, stale conflicts, complete preflight before
-  disk mutation, redaction, authentication, and explicit pending-activation outcomes.
+  disk mutation, redaction, authentication, explicit pending-activation outcomes, and truthful
+  restart-required Unix mode changes, including candidates with other edits, that leave the active
+  generation and socket untouched; reservation tests cover namespace leases, connect-refused stale
+  sockets, fail-closed restrictive sockets, concurrent ownership, and unsafe writable parents.
 - Management API monitoring/topology/RTMP/config response shapes and real HTTP behavior, including
   decimal-string cumulative counters and complete top-level/listener topology state parsing.
 - Continuous recording start/media/finalization, manual exact-ID start/stop, read-only candidate
@@ -103,9 +112,21 @@ as live-host evidence unless `coverage/host-cases.json` explicitly maps them to 
 metadata.
 
 HAProxy lowering tests include an error-free static TCP fixture with a Unix listener, DNS
-`leastconn` backend, exact per-listener admission, and no import-time DNS resolution, plus a Unix
-server fixture. Separate live-origin hashed host fixtures assert that all remaining activation blockers are
-retained and no fallback routes or endpoints are invented.
+`leastconn` backend, exact per-listener admission, and no import-time DNS resolution, plus direct
+tests named `unmodified_live_hostrouter_finalizes_with_exact_compatibility_policy`,
+`dedicated_supported_stats_sections_lower_only_to_canonical_pages`,
+`stats_frontend_response_rules_fail_closed_instead_of_disappearing`,
+`bare_redispatch_lowers_to_delayed_same_server_retries_and_final_redispatch`, and
+`redispatch_interval_forms_remain_blocking`. They cover the live hostrouter page, `unix@` mode,
+case-insensitive Host route and fixed fallback, reusable least-connections, final redispatch, and
+exact listener/statistics-page timeout policy while retaining blockers for unsupported forms. Wire
+coverage checks page admission/request timeouts, DNS-rebinding and forwarded-header rejection,
+Referer fallback, mapped-IPv4 loopback, and HEAD representation length.
+
+UI contract coverage includes the exact Vitest cases `accepts new canonical variants and rejects
+invalid final redispatch shapes`, `edits ASCII case-insensitive authority matching and gates final
+redispatch`, and `preserves and edits imported statistics pages and compatibility routing through
+save`.
 
 nginx HTTP conformance uses the explicit fragment API. Tests reject complete nginx files, require
 exact response-control suppression before proxy finalization, preserve nginx hide/pass defaults,

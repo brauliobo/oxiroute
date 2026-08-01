@@ -5,6 +5,9 @@
       "id": "evidence.canonical.config",
       "tests": [
         "crates/oxiroute-config/tests/lua_config.rs#loads_the_canonical_configuration",
+        "crates/oxiroute-config/tests/lua_config.rs#page_only_statistics_validate_render_and_roundtrip",
+        "crates/oxiroute-config/tests/lua_config.rs#rejects_invalid_statistics_pages_and_broad_bind_conflicts",
+        "crates/oxiroute-config/tests/lua_config.rs#statistics_page_uri_prefix_requires_an_exact_ascii_http_path",
         "crates/oxiroute-config/tests/lua_config.rs#rejects_unknown_fields_including_the_old_direct_upstream",
         "crates/oxiroute-config/tests/lua_render.rs#exhaustively_round_trips_every_current_type_field_and_variant"
       ]
@@ -27,6 +30,7 @@
         "crates/oxiroute-config/tests/http_routes.rs#applies_the_explicit_safe_proxy_defaults",
         "crates/oxiroute-config/tests/http_routes.rs#applies_fixed_redirect_and_static_action_defaults",
         "crates/oxiroute-config/tests/http_routes.rs#normalizes_host_and_path_selectors_without_collapsing_semantics",
+        "crates/oxiroute-config/tests/http_routes.rs#canonicalizes_ascii_case_insensitive_exact_authority_without_dropping_ports",
         "crates/oxiroute-config/tests/http_routes.rs#renders_every_proxy_policy_variant_and_field",
         "crates/oxiroute-config/tests/http_routes.rs#validates_secret_backed_bearer_access_without_inline_tokens",
         "crates/oxiroute-config/tests/http_routes.rs#validates_explicit_retry_triggers_and_safety_rules"
@@ -87,7 +91,15 @@
         "crates/oxiroute-import/tests/haproxy_resolver.rs#use_backend_rules_retain_first_match_source_order",
         "crates/oxiroute-import/tests/haproxy_lower.rs#minimal_static_tcp_fixture_finalizes_and_validates",
         "crates/oxiroute-import/tests/haproxy_lower.rs#raw_path_prefix_acl_is_not_widened_or_narrowed_to_segment_matching",
-        "crates/oxiroute-import/tests/haproxy_lower.rs#host_header_acl_is_blocked_because_canonical_host_matching_normalizes_ports",
+        "crates/oxiroute-import/tests/haproxy_lower.rs#case_insensitive_host_acl_lowers_to_exact_authority_without_port_widening",
+        "crates/oxiroute-import/tests/haproxy_lower.rs#conditional_backend_without_default_appends_a_last_catch_all_503",
+        "crates/oxiroute-import/tests/haproxy_lower.rs#unix_at_listener_mode_lowers_with_field_provenance",
+        "crates/oxiroute-import/tests/haproxy_lower.rs#health_without_timeout_check_preserves_interval_as_exact_timeout",
+        "crates/oxiroute-import/tests/haproxy_lower.rs#dedicated_supported_stats_sections_lower_only_to_canonical_pages",
+        "crates/oxiroute-import/tests/haproxy_lower.rs#stats_frontend_response_rules_fail_closed_instead_of_disappearing",
+        "crates/oxiroute-import/tests/haproxy_lower.rs#stats_frontend_connection_close_policy_fails_closed_instead_of_disappearing",
+        "crates/oxiroute-import/tests/haproxy_lower.rs#bare_redispatch_lowers_to_delayed_same_server_retries_and_final_redispatch",
+        "crates/oxiroute-import/tests/haproxy_lower.rs#redispatch_interval_forms_remain_blocking",
         "crates/oxiroute-import/tests/haproxy_lower.rs#unconditional_fixed_response_and_redirect_actions_finalize",
         "crates/oxiroute-import/tests/haproxy_lower.rs#representable_forward_header_mutations_lower_into_proxy_policy"
       ]
@@ -96,6 +108,7 @@
       "id": "evidence.balance.least-connections",
       "tests": [
         "crates/oxiroute-import/tests/haproxy_lower.rs#audited_shape_unix_frontend_and_dns_leastconn_backend_finalizes_without_resolution",
+        "crates/oxiroute-import/tests/haproxy_lower.rs#leastconn_lowers_for_http_connection_accounting",
         "crates/oxiroute-server/tests/http_routing.rs#least_connections_prefers_the_smallest_lease_count_and_rotates_ties"
       ]
     },
@@ -168,12 +181,16 @@
     {
       "id": "evidence.host.behavior",
       "tests": [
-        "crates/oxiroute-import/tests/haproxy_lower.rs#hostrouter_active_report_retains_non_equivalent_stats_and_remaining_blockers",
+        "crates/oxiroute-import/tests/haproxy_lower.rs#unmodified_live_hostrouter_finalizes_with_exact_compatibility_policy",
         "crates/oxiroute-import/tests/haproxy_lower.rs#sanitized_hostrouter_haproxy_imports_from_the_complete_capture",
         "crates/oxiroute-import/tests/haproxy_lower.rs#ordered_default_server_health_options_materialize_on_subsequent_servers",
-        "crates/oxiroute-server/tests/http_routing.rs#host_matching_ignores_ascii_case_and_legal_ports",
+        "crates/oxiroute-server/tests/http_routing.rs#ascii_case_insensitive_exact_authority_matches_case_but_not_an_added_port",
         "crates/oxiroute-server/tests/http_proxy_routing.rs#reusable_upstream_connection_holds_its_lease_until_the_socket_closes",
         "crates/oxiroute-server/tests/http_proxy_routing.rs#delayed_same_server_retry_waits_and_reselects_the_original_server",
+        "crates/oxiroute-server/tests/http_proxy_routing.rs#final_redispatch_retries_same_server_then_selects_an_available_server",
+        "crates/oxiroute-server/tests/http_proxy_routing.rs#pingora_attempt_cap_covers_four_route_attempts_with_sixteen_dns_addresses_each",
+        "crates/oxiroute-server/tests/process_management.rs#page_only_stats_bind_exposes_only_the_page_and_loopback_form_admin",
+        "crates/oxiroute-server/tests/process_management.rs#unix_listener_mode_change_is_saved_as_restart_required_without_mutating_active_socket",
         "crates/oxiroute-server/tests/service_plan.rs#rtmp_listeners_share_one_service_identity_catalog_and_hub"
       ]
     },

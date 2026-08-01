@@ -27,10 +27,10 @@ use oxiroute_rtmp::{MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN, RtmpRegistry, RtmpServic
 use oxiroute_server::{
     CertbotWatcherConfig, CertbotWatcherSupervisor, ConfigWatcher, ConfigWatcherOptions,
     ConnectionGuard, ForwardConnectionLifecycle, ForwardHttp1ServicePlan, GenerationManager,
-    HaproxyStatsApi, HttpDownstreamPolicyApp, HttpListenerApp, HttpReverseProxy, ListenerMetrics,
-    ListenerReservation, MAX_HTTP_ATTEMPTS, MonitoredHttpApp, RtmpManagementApi, RuntimeGeneration,
-    RuntimeMetrics, RuntimeReferenceKind, ServiceKind, TcpRelayCore, TlsProfilePlan,
-    TopologySnapshot,
+    HaproxyStatsApi, HaproxyStatsPage, HttpDownstreamPolicyApp, HttpListenerApp, HttpReverseProxy,
+    ListenerMetrics, ListenerReservation, MAX_HTTP_ATTEMPTS, MonitoredHttpApp, RtmpManagementApi,
+    RuntimeGeneration, RuntimeMetrics, RuntimeReferenceKind, ServiceKind, TcpRelayCore,
+    TlsProfilePlan, TopologySnapshot,
     cli::{Cli, Command, ConfigCommand, execute_offline},
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, ConfigRevision},
 };
@@ -75,7 +75,7 @@ fn add_plain_listener<A>(
             io::ErrorKind::Unsupported,
             format!("listener `{listener_name}` cannot register UDP socket `{address}` yet"),
         )),
-        ListenerBind::Unix { path, .. } => {
+        ListenerBind::Unix { path, mode } => {
             let path = path.to_str().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -86,7 +86,12 @@ fn add_plain_listener<A>(
             })?;
             #[cfg(unix)]
             {
-                service.add_uds(path, None);
+                use std::os::unix::fs::PermissionsExt as _;
+
+                service.add_uds(
+                    path,
+                    mode.map(|mode| std::fs::Permissions::from_mode(u32::from(mode))),
+                );
                 Ok(())
             }
             #[cfg(not(unix))]
@@ -1478,6 +1483,44 @@ fn serve_generation(
                     .with_generation(Arc::clone(generation)),
             );
             info!("configured HAProxy-compatible statistics on {bind}");
+        }
+        for (index, page) in stats.pages.iter().enumerate() {
+            let app = HaproxyStatsPage::new(page, pools.clone(), generation_manager.clone());
+            let listener_name = format!("@stats-page-{index}");
+            let bind = ListenerBind::Socket { address: page.bind };
+            let metrics = runtime_metrics.register_configured_listener(
+                &listener_name,
+                "http",
+                &bind,
+                page.max_connections,
+            )?;
+            let stats_app = MonitoredHttpApp::new(
+                HttpListenerApp::new(
+                    HttpDownstreamPolicyApp::new(
+                        HttpServer::new_app(app),
+                        page.downstream_timeouts,
+                    ),
+                    None,
+                )
+                .with_generation(Arc::clone(generation)),
+                metrics.clone(),
+            )
+            .with_generation(Arc::clone(generation));
+            let mut service = Service::new(format!("OxiRoute stats page {index}"), stats_app);
+            service.add_tcp(&page.bind.to_string());
+            let reservation = generation
+                .reservations()
+                .get(&listener_name)
+                .cloned()
+                .expect("candidate reserved every statistics page listener");
+            server.add_service(
+                RuntimeListenerService::new(service, reservation, Some(metrics))
+                    .with_generation(Arc::clone(generation)),
+            );
+            info!(
+                "configured HAProxy-compatible statistics page on {}",
+                page.bind
+            );
         }
     }
 

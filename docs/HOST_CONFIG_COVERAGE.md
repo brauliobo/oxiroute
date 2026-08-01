@@ -29,8 +29,8 @@ Status values are `covered`, `partial`, `missing`, `external`, and `inactive`.
 | IMP-01 | nginx source files, deterministic includes, spans, and diagnostics | partial | Frontend implemented; canonical/runtime/native-lowering gates remain. |
 | IMP-02 | nginx HTTP inheritance and virtual-server lowering | partial | The fragment and complete-root APIs can finalize a strict subset; broader semantics, audited candidates, and daemon integration remain blocked. |
 | IMP-03 | nginx-RTMP include resolution, inheritance, and plan lowering | partial | Listener/application, chunk/log suppression, recording, and static push lowering can finalize; broad directive and audited gates remain. |
-| IMP-04 | HAProxy ordered `-f` roots and directory expansion | partial | Frontend implemented; full audited lowering remains. |
-| IMP-05 | HAProxy defaults/frontend/backend/listen resolution | partial | HTTP/TCP lowering, deterministic environment preprocessing, capacity, health, retry, timeout, and reuse policies exist; audited host gates remain. |
+| IMP-04 | HAProxy ordered `-f` roots and directory expansion | partial | Ordered immutable loading is implemented and feeds finalized live-host candidates; broader native source forms remain outside the strict subset. |
+| IMP-05 | HAProxy defaults/frontend/backend/listen resolution | partial | HTTP/TCP lowering, deterministic preprocessing, capacity, exact health/retry/timeout/reuse policy, case-insensitive Host routing, fixed fallback, and dedicated stats-page lowering finalize the live hostrouter shape; broader ACL, stats, and server policy remains blocked. |
 | IMP-06 | Stable blocking diagnostics and provenance in canonical candidates | partial | Canonical provenance plus typed deployment, activation, secret-overlay, environment-fingerprint, and inactive-source records exist. |
 
 ## `hostrouter.lan` nginx cases
@@ -65,17 +65,17 @@ Status values are `covered`, `partial`, `missing`, `external`, and `inactive`.
 
 | ID | Effective behavior | Status | Notes |
 | --- | --- | --- | --- |
-| HH-01 | Unix frontend socket with explicit mode | partial | Canonical/runtime and strict static-TCP lowering exist on Unix; the complete audited candidate remains blocked. |
-| HH-02 | Exact Host ACL and ordered `use_backend` | partial | Exact routes exist; HAProxy first-match lowering does not. |
-| HH-03 | `leastconn` across ten backend servers | partial | Runtime physical-connection work/capacity accounting, deterministic ties, and HTTP native lowering are implemented. The live-origin hashed hostrouter evidence consumes a backend-scoped nginx HTTP/1.0/no-keepalive lifecycle overlay; unrelated retry policy still blocks final activation. |
-| HH-04 | DNS-named server identities | partial | Canonical/runtime and strict static-TCP lowering exist; the authoritative audited gates remain incomplete. |
-| HH-05 | HTTP GET health check, exact 200, interval/rise/fall | partial | Canonical/runtime healthy startup, regular/fast/down intervals, status, version, optional Host, rise/fall, ordered `default-server` inheritance, and native lowering are implemented. Broader health forms remain blocked. |
-| HH-06 | `retries 3` and `redispatch` | partial | HAProxy retry lowering targets the same named server with an explicit delay field; enabled redispatch fails closed because its persistence semantics are not equivalent. |
-| HH-07 | Client/connect/server/request/keepalive timeout classes | partial | Listener, route-local, and pool timeout scopes are independently enforced and lowered. |
-| HH-08 | `forwardfor except` | partial | Canonical/runtime source-CIDR exceptions and the audited loopback form lower; the complete audited candidate remains blocked by unrelated policy. |
-| HH-09 | Frontend and process-wide `maxconn` | partial | Aggregate, listener, and server caps are enforced and lower with their distinct scopes. |
-| HH-10 | HAProxy stats page and conditional administration | missing | OxiRoute management is a different contract. Stats auth, URI, page, refresh, admin, and exact Prometheus forms remain typed non-equivalent activation requirements. A uniquely consumed operator migration overlay may explicitly select OxiRoute metric families and its broader stats routes; import never widens `/metrics` silently. |
-| HH-11 | Syslog and HAProxy HTTP log policy | missing | Fixed redacted HTTP JSONL exists, but syslog and HAProxy-format semantics are absent. |
+| HH-01 | Unix frontend socket with explicit mode | covered | The live `unix@` bind lowers with its explicit mode, reserves and registers that mode on Unix, and participates in the finalized audited candidate. A live mode change is saved as explicitly restart-required without mutating the active socket. |
+| HH-02 | Exact Host ACL and ordered `use_backend` | covered | The live `hdr(host) -i` rule lowers to ASCII case-insensitive exact authority matching without port widening; unmatched requests reach an explicit final `503`. |
+| HH-03 | `leastconn` across ten backend servers | covered | Reusable HTTP least-connections uses physical-connection work accounting and deterministic ties across the complete live endpoint set. |
+| HH-04 | DNS-named server identities | covered | All ten live DNS identities remain canonical and unresolved during import, then use bounded runtime resolution. |
+| HH-05 | HTTP GET health check, exact 200, interval/rise/fall | covered | Ordered health defaults lower with healthy startup and preserve the live interval as an equal exact timeout when `timeout check` is absent. Broader health methods/forms remain blocked outside this case. |
+| HH-06 | `retries 3` and `redispatch` | covered | Bare redispatch lowers to delayed same-server retries with only the final retry redispatched immediately; redispatch interval forms still fail closed. |
+| HH-07 | Client/connect/server/request/keepalive timeout classes | covered | Listener, route-local, pool, and health timeout scopes are independently preserved for the live candidate. |
+| HH-08 | `forwardfor except` | covered | The audited loopback source exception lowers to the canonical source-CIDR policy and runs on wire. |
+| HH-09 | Frontend and process-wide `maxconn` | covered | Aggregate, listener, and server caps retain and enforce their distinct scopes. |
+| HH-10 | HAProxy stats page and conditional administration | covered | The dedicated live page lowers with implicit URI activation, refresh, frontend admission/timeouts, and transport-plus-authority loopback administration. It is page-only and creates no routes beyond its configured prefix; response rules fail closed, and auth/broader stats/Prometheus forms remain unsupported outside this case. |
+| HH-11 | Syslog and HAProxy HTTP log policy | external | Import emits deployment warnings. OxiRoute does not reproduce HAProxy syslog destinations or HTTP log format; operators must supply an explicit deployment logging policy. |
 | HH-12 | user/chroot/daemon process settings | external | Deployment unit or container owns these settings. |
 
 ## `phoenix.lan` nginx cases

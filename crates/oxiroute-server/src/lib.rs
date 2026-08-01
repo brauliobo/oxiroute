@@ -53,7 +53,7 @@ pub use service_plan::{
     HttpServicePlan, RtmpServicePlan, RuntimePlan, ServiceKind, ServicePlanError, ServiceSpec,
     runtime_plan, service_specs,
 };
-pub use stats::HaproxyStatsApi;
+pub use stats::{HaproxyStatsApi, HaproxyStatsPage};
 pub use tcp_relay::{
     RELAY_BUFFER_SIZE, RelayDirection, RelayFailure, RelayFailureKind, RelayOperation, RelayPolicy,
     RelayStats, TcpRelayCore, relay_streams,
@@ -70,4 +70,4 @@ pub use topology::{
     TopologySnapshot,
 };
 
-pub const MAX_HTTP_ATTEMPTS: usize = routing::MAX_RESOLVED_ENDPOINT_ADDRESSES * 3;
+pub const MAX_HTTP_ATTEMPTS: usize = routing::MAX_RESOLVED_ENDPOINT_ADDRESSES * 4;

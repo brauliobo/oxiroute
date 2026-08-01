@@ -87,6 +87,7 @@ describe('API contracts over HTTP', () => {
         dependencies: ['/native/private/config-fragment'],
         sourcePath: '/native/private/config-root',
         diagnostics: [],
+        restartRequired: false,
         topology: {
           schemaVersion: 1,
           state: { config: 'candidate', runtime: 'not_active', sampledAtUnixMs: 1 },
@@ -193,6 +194,7 @@ function route(request: IncomingMessage, response: ServerResponse): void {
       dependencyCount: snapshot.dependencyCount,
       configPreview: snapshot.configPreview,
       diagnostics: [],
+      restartRequired: false,
       topology: {
         schemaVersion: 1,
         state: { config: 'candidate', runtime: 'not_active', sampledAtUnixMs: 1 },

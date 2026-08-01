@@ -87,8 +87,10 @@ runtime, failure-path, test, and native-lowering coverage all land.
   finalizes a strict proxy/fixed/redirect subset, but complete nginx files, static index semantics,
   stream lowering, audited candidates, and daemon integration remain blocked).
 - HAProxy importer for static HTTP/TCP frontends and backends (ordered roots, semantic resolution,
-  and strict static TCP finalization for socket/Unix binds, socket/DNS/Unix servers, and
-  `roundrobin`/`leastconn` exist; HTTP and audited host candidates remain blocked).
+  strict socket/DNS/Unix transport lowering, HTTP balancing/routing/retry/health policy, and the
+  audited live hostrouter candidate now finalize; broader ACLs, redispatch interval forms,
+  unsupported stats forms, and server policy remain blocked, while log/process policy is a
+  deployment warning).
 - Apache virtual-host importer for static HTTP proxy rules.
 - Native source locations, include graphs, decision ledgers, provenance, and stable diagnostic
   codes (partial for nginx and HAProxy; capability profiles and other products remain).

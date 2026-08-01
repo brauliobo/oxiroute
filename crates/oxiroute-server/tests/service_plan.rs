@@ -17,8 +17,9 @@ use oxiroute_config::{
     DnsResolutionPolicy, HealthCheck, HealthCheckType, HealthHttpVersion, HttpAccessPolicy,
     HttpHostSelector, HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction, HttpService,
     HttpVersionPolicy, L4Service, Listener, ListenerBind, Protocol, RtmpApplication,
-    RtmpPushTarget, RtmpRecorderStart, RtmpService, Stats, TlsProfile, TlsVersion,
-    UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls, load_lua,
+    RtmpPushTarget, RtmpRecorderStart, RtmpService, Stats, StatsPage, StatsPageAdminPolicy,
+    TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, UpstreamServer,
+    UpstreamTls, load_lua,
 };
 use oxiroute_rtmp::{RtmpCapabilities, RtmpRegistry, StreamKey};
 use oxiroute_server::{
@@ -40,6 +41,7 @@ fn startup_dns_cannot_resolve_to_a_statistics_listener() {
     config.stats = Some(Stats {
         binds: vec!["127.0.0.1:18404".parse().expect("stats bind")],
         admin_token_file: None,
+        pages: Vec::new(),
     });
     config.upstream_pools.push(UpstreamPool {
         name: "protected".into(),
@@ -65,6 +67,51 @@ fn startup_dns_cannot_resolve_to_a_statistics_listener() {
 
     let Err(error) = runtime_plan(&config) else {
         panic!("protected startup DNS must fail")
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("protected management or statistics listener")
+    );
+}
+
+#[test]
+fn upstream_socket_cannot_target_a_statistics_page_listener() {
+    let page_bind = "127.0.0.1:18405".parse().expect("page bind");
+    let mut config = empty_config();
+    config.stats = Some(Stats {
+        binds: Vec::new(),
+        admin_token_file: None,
+        pages: vec![StatsPage {
+            bind: page_bind,
+            uri_prefix: "/stats".into(),
+            refresh_ms: 10_000,
+            admin: StatsPageAdminPolicy::Disabled,
+            max_connections: None,
+            downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        }],
+    });
+    config.upstream_pools.push(UpstreamPool {
+        name: "protected-page".into(),
+        servers: vec![UpstreamServer {
+            name: "page-loop".into(),
+            endpoint: UpstreamEndpoint::Socket { address: page_bind },
+            max_connections: None,
+            dns_resolution: DnsResolutionPolicy::OnConnect,
+        }],
+        endpoints: Vec::new(),
+        algorithm: UpstreamAlgorithm::RoundRobin,
+        health_check: None,
+        tls: None,
+        http_versions: HttpVersionPolicy::default(),
+        queue_timeout_ms: None,
+        connect_timeout_ms: None,
+        server_timeout_ms: None,
+        connection_reuse: oxiroute_config::UpstreamConnectionReuse::Safe,
+    });
+
+    let Err(error) = runtime_plan(&config) else {
+        panic!("protected statistics page destination must fail")
     };
     assert!(
         error

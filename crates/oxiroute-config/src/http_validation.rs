@@ -326,6 +326,19 @@ fn validate_host_selector(
             parse_authority(value)
                 .map_err(|detail| invalid_route(service, route_index, "host", detail))?;
         }
+        HttpHostSelector::AsciiCaseInsensitiveExactAuthority { value } => {
+            if !value.is_ascii() || value.len() > MAX_HTTP_AUTHORITY_BYTES || value.contains('*') {
+                return Err(invalid_route(
+                    service,
+                    route_index,
+                    "host",
+                    "ascii_case_insensitive_exact_authority must be a non-wildcard ASCII authority of at most 255 bytes",
+                ));
+            }
+            parse_authority(value)
+                .map_err(|detail| invalid_route(service, route_index, "host", detail))?;
+            value.make_ascii_lowercase();
+        }
         HttpHostSelector::NginxLeadingWildcard { value }
         | HttpHostSelector::NginxLeadingDot { value } => {
             value.make_ascii_lowercase();
@@ -938,6 +951,16 @@ fn validate_retry(
             route_index,
             "action.policy.retry.delay_ms",
             "retry delay must not exceed 60000 milliseconds",
+        ));
+    }
+    if retry.final_redispatch
+        && (retry.max_retries == 0 || retry.target != crate::model::HttpRetryTarget::SameServer)
+    {
+        return Err(invalid_route(
+            service,
+            route_index,
+            "action.policy.retry.final_redispatch",
+            "final redispatch requires at least one same-server retry",
         ));
     }
     if retry.triggers.is_empty() {

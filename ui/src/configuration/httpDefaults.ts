@@ -76,6 +76,7 @@ export function defaultHttpProxyPolicy(): HttpProxyPolicyConfig {
       max_retries: 0,
       target: 'next_server',
       delay_ms: 0,
+      final_redispatch: false,
       triggers: [...HTTP_RETRY_TRIGGERS],
       method_safety: 'get_head',
       body_safety: 'empty',

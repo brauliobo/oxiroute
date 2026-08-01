@@ -308,6 +308,7 @@ fn test_proxy_policy() -> HttpProxyPolicy {
             body_safety: HttpRetryBodySafety::Empty,
             target: HttpRetryTarget::SameServer,
             delay_ms: 25,
+            final_redispatch: false,
         },
         cache: None,
     }
@@ -631,6 +632,7 @@ const RENDERED_FIELDS: &[&str] = &[
     "triggers",
     "method_safety",
     "body_safety",
+    "final_redispatch",
     "status",
     "body",
     "headers",

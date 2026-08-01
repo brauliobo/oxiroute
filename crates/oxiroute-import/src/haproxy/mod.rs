@@ -31,7 +31,7 @@ pub use resolver::{
     HttpRequestCondition, HttpRequestRule, HttpResponseRule, InheritanceStep, OccurrenceId,
     OptionState, Provenance, ProxyMode, ProxySettings, Redispatch, ReferenceProvenance,
     ReferenceTarget, SectionId, SemanticBlocker, SemanticBlockerKind, ServerAddress, ServerOption,
-    StatusRange, Timeouts, TlsAlpn, TlsMinimumVersion, UseBackend,
+    StatsAdminPolicy, StatsSettings, StatusRange, Timeouts, TlsAlpn, TlsMinimumVersion, UseBackend,
 };
 pub use source_roots::{
     HaproxyLoadLimits, LoadedRoots, LoadedSource, RootLoadDecision, RootLoadFailure,

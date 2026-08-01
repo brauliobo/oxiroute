@@ -1,6 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use oxiroute_config::{Config, Protocol, Stats, validate_config};
+use oxiroute_config::{Config, Protocol, Stats, StatsPage, StatsPageAdminPolicy, validate_config};
 
 use crate::{
     Diagnostic, DiagnosticStage, E_INVALID_VALUE, OperationalOverlayKind,
@@ -11,7 +11,8 @@ use super::{CanonicalCandidate, Lowerer};
 
 use crate::haproxy::BindAddress;
 use crate::haproxy::{
-    EffectiveConfiguration, EffectiveFrontend, EffectiveListen, HaproxyImportOptions,
+    EffectiveBind, EffectiveConfiguration, EffectiveFrontend, EffectiveListen, EffectiveSection,
+    HaproxyImportOptions, ProxyMode, StatsAdminPolicy, StatsSettings,
 };
 
 /// Lowers an `HAProxy` semantic report into a canonical draft and conditionally finalized config.
@@ -196,6 +197,7 @@ impl<'a> Lowerer<'a> {
         reason = "stats migration validation and overlay accounting are one atomic decision"
     )]
     fn lower_operational_stats(&mut self) {
+        self.lower_stats_pages();
         let overlay_counts = self.options.prometheus_migrations.iter().fold(
             std::collections::HashMap::<&str, usize>::new(),
             |mut counts, overlay| {
@@ -297,10 +299,214 @@ impl<'a> Lowerer<'a> {
         if binds.is_empty() {
             return;
         }
-        self.draft.stats = Some(Stats {
-            binds,
-            admin_token_file: None,
-        });
+        self.draft
+            .stats
+            .get_or_insert_with(|| Stats {
+                binds: Vec::new(),
+                admin_token_file: None,
+                pages: Vec::new(),
+            })
+            .binds = binds;
+    }
+
+    fn lower_stats_pages(&mut self) {
+        for frontend in self.effective.frontends.clone() {
+            if frontend.stats.enable.is_none() {
+                continue;
+            }
+            let dedicated = frontend.settings.default_backend.is_none()
+                && frontend.use_backends.is_empty()
+                && frontend.settings.http_request_rules.is_empty();
+            self.lower_stats_page(
+                &frontend.section,
+                frontend.settings.mode.as_ref(),
+                &frontend.binds,
+                &frontend.settings,
+                &frontend.stats,
+                dedicated,
+            );
+        }
+        for listen in self.effective.listens.clone() {
+            if listen.stats.enable.is_none() {
+                continue;
+            }
+            let dedicated = listen.settings.default_backend.is_none()
+                && listen.use_backends.is_empty()
+                && listen.servers.is_empty()
+                && listen.settings.http_request_rules.is_empty();
+            self.lower_stats_page(
+                &listen.section,
+                listen.settings.mode.as_ref(),
+                &listen.binds,
+                &listen.settings,
+                &listen.stats,
+                dedicated,
+            );
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "stats policy validation, page emission, and provenance are one atomic lowering decision"
+    )]
+    fn lower_stats_page(
+        &mut self,
+        section: &EffectiveSection,
+        mode: Option<&crate::haproxy::EffectiveValue<ProxyMode>>,
+        binds: &[EffectiveBind],
+        settings: &crate::haproxy::ProxySettings,
+        stats: &StatsSettings,
+        dedicated: bool,
+    ) {
+        if self
+            .effective
+            .blocked_stats_page_sections
+            .contains(&section.id)
+        {
+            return;
+        }
+        if !dedicated {
+            self.block_section(
+                section,
+                "HAProxy stats page directives must be isolated in a dedicated frontend or listen section",
+            );
+            return;
+        }
+        if !matches!(mode.map(|mode| &mode.value), Some(ProxyMode::Http)) {
+            self.block_section(section, "HAProxy stats pages require explicit HTTP mode");
+            return;
+        }
+        if self.block_semantic_settings(settings) {
+            return;
+        }
+        if !settings.http_response_rules.is_empty() {
+            for rule in &settings.http_response_rules {
+                self.block_value(
+                    rule,
+                    "HAProxy stats frontend response rules cannot be preserved by the canonical statistics page",
+                );
+            }
+            return;
+        }
+        if let Some(policy) = settings
+            .http_server_close
+            .as_ref()
+            .filter(|policy| policy.value)
+        {
+            self.block_value(
+                policy,
+                "HAProxy stats frontend connection-close policy is not represented by the canonical statistics page",
+            );
+            return;
+        }
+        let (Some(uri), Some(refresh)) = (&stats.uri_prefix, &stats.refresh) else {
+            self.block_section(
+                section,
+                "HAProxy stats page lowering requires explicit `stats uri` and `stats refresh` directives",
+            );
+            return;
+        };
+        let Ok(uri_prefix) = String::from_utf8(uri.value.clone()) else {
+            self.block_value(
+                uri,
+                "HAProxy stats URI is not representable as canonical UTF-8",
+            );
+            return;
+        };
+        let Some(refresh_ms) = crate::canonical::duration_milliseconds(refresh.value) else {
+            self.block_value(
+                refresh,
+                "HAProxy stats refresh is not exactly representable in milliseconds",
+            );
+            return;
+        };
+        if refresh_ms == 0 {
+            self.block_value(refresh, "HAProxy stats refresh must be positive");
+            return;
+        }
+        let admin = match stats.admin.as_ref().map(|admin| admin.value) {
+            None => StatsPageAdminPolicy::Disabled,
+            Some(StatsAdminPolicy::Localhost) => StatsPageAdminPolicy::Localhost,
+        };
+        let Some(caps) = self.listener_caps(section, binds, settings.maxconn.as_ref()) else {
+            return;
+        };
+        let Some(downstream_timeouts) = self.lower_downstream_timeouts(settings) else {
+            return;
+        };
+        for (bind, (max_connections, cap_sources)) in binds.iter().zip(caps) {
+            if bind.tls.is_some() {
+                self.block_value(
+                    &bind.address,
+                    "HAProxy stats page binds with TLS are not represented",
+                );
+                continue;
+            }
+            let Some(address) = stats_socket(&bind.address.value) else {
+                self.block_value(
+                    &bind.address,
+                    "HAProxy stats pages require an IPv4 or IPv6 socket bind",
+                );
+                continue;
+            };
+            let stats_config = self.draft.stats.get_or_insert_with(|| Stats {
+                binds: Vec::new(),
+                admin_token_file: None,
+                pages: Vec::new(),
+            });
+            let index = stats_config.pages.len();
+            stats_config.pages.push(StatsPage {
+                bind: address,
+                uri_prefix: uri_prefix.clone(),
+                refresh_ms,
+                admin,
+                max_connections,
+                downstream_timeouts,
+            });
+            let path = super::provenance::CanonicalPath::root("stats")
+                .field("pages")
+                .index(index);
+            self.record(path.clone(), super::provenance::section_sources(section));
+            self.record(
+                path.field("bind"),
+                super::provenance::provenance_sources(&bind.address.provenance),
+            );
+            self.record(
+                path.field("uri_prefix"),
+                super::provenance::provenance_sources(&uri.provenance),
+            );
+            self.record(
+                path.field("refresh_ms"),
+                super::provenance::provenance_sources(&refresh.provenance),
+            );
+            if let Some(admin) = &stats.admin {
+                self.record(
+                    path.field("admin"),
+                    super::provenance::provenance_sources(&admin.provenance),
+                );
+            }
+            if !cap_sources.is_empty() {
+                self.record(path.field("max_connections"), cap_sources);
+            }
+            for (field, value) in [
+                ("client_timeout_ms", settings.timeouts.client.as_ref()),
+                (
+                    "request_timeout_ms",
+                    settings.timeouts.http_request.as_ref(),
+                ),
+                (
+                    "keepalive_timeout_ms",
+                    settings.timeouts.http_keep_alive.as_ref(),
+                ),
+            ] {
+                if let Some(value) = value {
+                    self.record(
+                        path.field("downstream_timeouts").field(field),
+                        super::provenance::provenance_sources(&value.provenance),
+                    );
+                }
+            }
+        }
     }
 
     fn lower_frontend(&mut self, frontend: &EffectiveFrontend) {

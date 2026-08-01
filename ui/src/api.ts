@@ -289,6 +289,9 @@ export interface TopologyProxyActionSummary extends Record<string, unknown> {
   retry: {
     maxRetries: number
     triggers: HttpRetryTrigger[]
+    target: 'same_server' | 'next_server'
+    delayMs: number
+    finalRedispatch: boolean
   }
 }
 
@@ -590,7 +593,8 @@ function parseConfigSnapshot(value: unknown): ConfigSnapshot {
 function parseValidation(value: unknown): ConfigValidationResponse {
   if (!isRecord(value) || typeof value.candidateRevision !== 'string' ||
     !isCanonicalConfig(value.normalizedConfig) || !configurationSource(value) ||
-    !diagnostics(value.diagnostics) || !candidateTopology(value.topology)
+    !diagnostics(value.diagnostics) || typeof value.restartRequired !== 'boolean' ||
+    !candidateTopology(value.topology)
   ) return invalidPayload('configuration validation')
   return {
     candidateRevision: value.candidateRevision,
@@ -601,6 +605,7 @@ function parseValidation(value: unknown): ConfigValidationResponse {
     configPreview: value.configPreview,
     ...(value.luaPreview === undefined ? {} : { luaPreview: value.luaPreview }),
     diagnostics: value.diagnostics,
+    restartRequired: value.restartRequired,
     topology: value.topology,
   }
 }
@@ -615,7 +620,9 @@ function parseSave(value: unknown): ConfigSaveResponse {
     value.activationState === 'pending' && value.restartRequired === false
   const unchanged = value.outcome === 'unchanged_active' &&
     value.activationState === 'active' && value.restartRequired === false
-  if (!pending && !unchanged) return invalidPayload('configuration save')
+  const restart = value.outcome === 'saved_restart_required' &&
+    value.activationState === 'restart_required' && value.restartRequired === true
+  if (!pending && !unchanged && !restart) return invalidPayload('configuration save')
   return value as unknown as ConfigSaveResponse
 }
 

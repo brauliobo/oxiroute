@@ -27,7 +27,7 @@ pub(super) struct LoweredHttpService {
 struct LoweredRoute {
     route: HttpRoute,
     matcher: RouteMatcher,
-    target: SectionId,
+    target: Option<SectionId>,
     sources: Vec<ProvenanceSpan>,
 }
 
@@ -75,7 +75,7 @@ impl Lowerer<'_> {
         );
         let target_ids = routes
             .iter()
-            .map(|route| route.target)
+            .filter_map(|route| route.target)
             .collect::<HashSet<_>>();
         if routes.is_empty() {
             return None;
@@ -94,14 +94,16 @@ impl Lowerer<'_> {
                     request_buffering: false,
                     response_buffering: false,
                 };
-                route.route.action = proxy_action(
-                    self.section_name(route.target)
-                        .expect("lowered route target has a canonical name"),
-                    policies
-                        .get(&route.target)
-                        .expect("every route target has a policy")
-                        .clone(),
-                );
+                if let Some(target) = route.target {
+                    route.route.action = proxy_action(
+                        self.section_name(target)
+                            .expect("lowered route target has a canonical name"),
+                        policies
+                            .get(&target)
+                            .expect("every route target has a policy")
+                            .clone(),
+                    );
+                }
                 route.sources.extend(sources.clone());
                 deduplicate_sources(&mut route.sources);
                 route
@@ -161,7 +163,7 @@ impl Lowerer<'_> {
         );
         let target_ids = routes
             .iter()
-            .map(|route| route.target)
+            .filter_map(|route| route.target)
             .collect::<HashSet<_>>();
         if routes.is_empty() {
             return None;
@@ -180,14 +182,16 @@ impl Lowerer<'_> {
                     request_buffering: false,
                     response_buffering: false,
                 };
-                route.route.action = proxy_action(
-                    self.section_name(route.target)
-                        .expect("lowered route target has a canonical name"),
-                    policies
-                        .get(&route.target)
-                        .expect("every route target has a policy")
-                        .clone(),
-                );
+                if let Some(target) = route.target {
+                    route.route.action = proxy_action(
+                        self.section_name(target)
+                            .expect("lowered route target has a canonical name"),
+                        policies
+                            .get(&target)
+                            .expect("every route target has a policy")
+                            .clone(),
+                    );
+                }
                 route.sources.extend(sources.clone());
                 deduplicate_sources(&mut route.sources);
                 route
@@ -721,7 +725,7 @@ impl Lowerer<'_> {
                             action: proxy_action(pool.clone(), HttpProxyPolicy::default()),
                         },
                         matcher,
-                        target: rule.value.backend.target,
+                        target: Some(rule.value.backend.target),
                         sources,
                     });
                 }
@@ -735,13 +739,6 @@ impl Lowerer<'_> {
         acl: &EffectiveValue<AclDefinition>,
         value: &[u8],
     ) -> Option<RouteMatcher> {
-        if acl.value.case_insensitive {
-            self.block_value(
-                acl,
-                "case-insensitive HAProxy ACL matching is not an exact canonical raw selector",
-            );
-            return None;
-        }
         let value = std::str::from_utf8(value).ok();
         match acl.value.criterion {
             AclCriterion::HostExact => {
@@ -753,8 +750,14 @@ impl Lowerer<'_> {
                     return None;
                 };
                 Some(RouteMatcher {
-                    host: Some(HttpHostSelector::ExactAuthority {
-                        value: value.to_owned(),
+                    host: Some(if acl.value.case_insensitive {
+                        HttpHostSelector::AsciiCaseInsensitiveExactAuthority {
+                            value: value.to_owned(),
+                        }
+                    } else {
+                        HttpHostSelector::ExactAuthority {
+                            value: value.to_owned(),
+                        }
                     }),
                     path_prefix: "/".into(),
                 })
@@ -767,6 +770,13 @@ impl Lowerer<'_> {
                 None
             }
             AclCriterion::PathPrefix => {
+                if acl.value.case_insensitive {
+                    self.block_value(
+                        acl,
+                        "case-insensitive HAProxy path prefix matching is not canonical",
+                    );
+                    return None;
+                }
                 let Some(value) = value.filter(|value| value.starts_with('/')) else {
                     self.block_value(
                         acl,
@@ -811,7 +821,7 @@ impl Lowerer<'_> {
                         host: None,
                         path_prefix: "/".into(),
                     },
-                    target: reference.value.target,
+                    target: Some(reference.value.target),
                     sources: provenance_sources(&reference.provenance),
                 });
             } else {
@@ -846,15 +856,30 @@ impl Lowerer<'_> {
                     host: None,
                     path_prefix: "/".into(),
                 },
-                target,
+                target: Some(target),
                 sources: section_sources(section),
             });
         } else {
-            self.block_section(
-                section,
-                "HAProxy frontend has no default_backend; no fallback route will be inserted",
-            );
-            return false;
+            routes.push(LoweredRoute {
+                route: HttpRoute {
+                    host: None,
+                    path: HttpPathSelector::RawPrefix { value: "/".into() },
+                    methods: Vec::new(),
+                    access_policy: None,
+                    policy: HttpRoutePolicy::default(),
+                    action: HttpRouteAction::FixedResponse {
+                        status: 503,
+                        body: String::new(),
+                        headers: Vec::new(),
+                    },
+                },
+                matcher: RouteMatcher {
+                    host: None,
+                    path_prefix: "/".into(),
+                },
+                target: None,
+                sources: section_sources(section),
+            });
         }
         true
     }
@@ -907,6 +932,7 @@ fn host_value(selector: &HttpHostSelector) -> Option<&str> {
         HttpHostSelector::NormalizedHost { value } | HttpHostSelector::ExactAuthority { value } => {
             Some(value)
         }
+        HttpHostSelector::AsciiCaseInsensitiveExactAuthority { value } => Some(value),
         HttpHostSelector::NginxLeadingWildcard { .. }
         | HttpHostSelector::NginxLeadingDot { .. } => None,
     }

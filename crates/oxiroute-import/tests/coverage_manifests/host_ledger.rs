@@ -6,13 +6,17 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use oxiroute_config::{RtmpRecorderStart, UpstreamTls};
+use oxiroute_config::{
+    HttpHostSelector, HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpRetryTarget,
+    HttpRouteAction, ListenerBind, RtmpRecorderStart, StatsPageAdminPolicy, UpstreamAlgorithm,
+    UpstreamEndpoint, UpstreamTls,
+};
 use oxiroute_import::{
-    DiagnosticStage, OperationalOverlayKind, Severity,
+    DiagnosticStage, OperationalOverlayKind,
     haproxy::{
         BalanceAlgorithm, BindAddress, E_LOGGING_UNSUPPORTED, E_PROCESS_OWNED, E_STATS_UNSUPPORTED,
-        HaproxyImportOptions, HaproxyOneRequestPerConnectionOverlay, PreprocessingEnvironment,
-        ServerAddress, import_parsed_with_options, import_roots_with_environment, resolve_parsed,
+        HaproxyImportOptions, PreprocessingEnvironment, ServerAddress, import_parsed_with_options,
+        import_roots_with_environment, resolve_parsed,
     },
     nginx::{
         NginxBearerTokenOverlay, NginxDefaultAccessLogOverlay, NginxDefaultErrorPageOverlay,
@@ -27,7 +31,7 @@ use crate::{
     report_invariants::{
         assert_haproxy_report_invariants, assert_import_report_invariants,
         assert_rtmp_import_report_invariants, diagnostic_count, import_nginx_fixture,
-        import_rtmp_fixture, parse_haproxy_fixture,
+        import_rtmp_fixture, parse_haproxy_source,
     },
     squid_probes::assert_hostrouter_squid_inventory,
     support::{read_manifest, read_source, reference_parts, workspace_path},
@@ -254,7 +258,7 @@ fn documented_host_case_ids() -> BTreeSet<&'static str> {
 }
 
 fn assert_new_endpoint_case_gates(manifest: &HostManifest) {
-    for id in ["HN-09", "HN-10", "HH-01", "HH-03", "HH-04"] {
+    for id in ["HN-09", "HN-10"] {
         let case = manifest
             .cases
             .iter()
@@ -266,6 +270,19 @@ fn assert_new_endpoint_case_gates(manifest: &HostManifest) {
         assert!(case.gates.failure.0, "{id} failure gate");
         assert!(case.gates.tests.0, "{id} tests gate");
         assert!(!case.gates.native_lowering.0, "{id} native lowering gate");
+    }
+    for id in ["HH-01", "HH-03", "HH-04"] {
+        let case = manifest
+            .cases
+            .iter()
+            .find(|case| case.id == id)
+            .unwrap_or_else(|| panic!("missing endpoint host case {id}"));
+        assert_eq!(case.status, HostStatus::Covered, "{id} status");
+        assert!(case.gates.canonical.0, "{id} canonical gate");
+        assert!(case.gates.runtime.0, "{id} runtime gate");
+        assert!(case.gates.failure.0, "{id} failure gate");
+        assert!(case.gates.tests.0, "{id} tests gate");
+        assert!(case.gates.native_lowering.0, "{id} native lowering gate");
     }
 }
 
@@ -784,6 +801,10 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn assert_live_origin_hashed_fixture(host: &str, case: &str) {
+    if host == "hostrouter" && case.starts_with("HH-") {
+        assert_haproxy_host_case(case);
+        return;
+    }
     if matches!(case, "PI-01" | "CI-01" | "BI-01") {
         let fixture_root =
             workspace_path(format!("crates/oxiroute-import/tests/fixtures/live/{host}"));
@@ -1012,29 +1033,53 @@ fn assert_nginx_host_case(case: &str) {
     reason = "one exhaustive match binds every authenticated HAProxy host case"
 )]
 fn assert_haproxy_host_case(case: &str) {
-    let parsed = parse_haproxy_fixture("hostrouter-active.cfg");
+    let source_path =
+        workspace_path("crates/oxiroute-import/tests/fixtures/live/hostrouter/haproxy.cfg");
+    let source = fs::read(&source_path)
+        .unwrap_or_else(|error| panic!("read live hostrouter HAProxy config: {error}"));
+    let parsed = parse_haproxy_source("hostrouter/haproxy.cfg", &source);
     let resolved = resolve_parsed(parsed.clone());
-    let lowered = import_parsed_with_options(
-        parsed.clone(),
-        &HaproxyImportOptions {
-            one_request_per_connection: vec![HaproxyOneRequestPerConnectionOverlay {
-                backend: "app_nodes".into(),
-            }],
-            prometheus_migrations: Vec::new(),
-        },
-    );
+    let lowered = import_parsed_with_options(parsed.clone(), &HaproxyImportOptions::default());
     assert_haproxy_report_invariants(parsed.value(), resolved.value());
     let effective = resolved.value();
     let diagnostics = lowered.diagnostics();
+    let config = lowered
+        .value()
+        .config
+        .as_ref()
+        .unwrap_or_else(|| panic!("live hostrouter HAProxy config: {diagnostics:#?}"));
+    let listener = &config.listeners[0];
+    let service = &config.http_services[0];
+    let pool = &config.upstream_pools[0];
+    let HttpRouteAction::Proxy { policy, .. } = &service.routes[0].action else {
+        panic!("live hostrouter route must proxy")
+    };
     match case {
         "HH-01" => {
             assert!(matches!(
-                effective.frontends[0].binds[0].value,
+                effective.frontends[1].binds[0].value,
                 BindAddress::Unix { .. }
             ));
-            assert_no_diagnostic_message(diagnostics, "Unix bind sockets");
+            assert_eq!(
+                listener.bind,
+                ListenerBind::Unix {
+                    path: "/var/run/haproxy.sock".into(),
+                    mode: Some(0o777),
+                }
+            );
         }
-        "HH-02" => assert_eq!(effective.frontends[0].use_backends.len(), 1),
+        "HH-02" => {
+            assert_eq!(effective.frontends[1].use_backends.len(), 1);
+            assert!(matches!(
+                service.routes[0].host,
+                Some(HttpHostSelector::AsciiCaseInsensitiveExactAuthority { ref value })
+                    if value == "ollama.yellowmaverick.com"
+            ));
+            assert!(matches!(
+                service.routes[1].action,
+                HttpRouteAction::FixedResponse { status: 503, .. }
+            ));
+        }
         "HH-03" => {
             assert_eq!(
                 effective.backends[0]
@@ -1045,14 +1090,19 @@ fn assert_haproxy_host_case(case: &str) {
                     .value,
                 BalanceAlgorithm::LeastConnections
             );
-            assert_no_diagnostic_message(diagnostics, "leastconn");
+            assert_eq!(pool.algorithm, UpstreamAlgorithm::LeastConnections);
         }
         "HH-04" => {
             assert!(matches!(
                 effective.backends[0].servers[0].address.value,
-                ServerAddress::Tcp { ref host, .. } if host == b"app01.lan"
+                ServerAddress::Tcp { ref host, .. } if host == b"whitebeast.lan"
             ));
-            assert_no_diagnostic_message(diagnostics, "DNS-named servers");
+            assert_eq!(pool.servers.len(), 10);
+            assert!(
+                pool.servers
+                    .iter()
+                    .all(|server| matches!(server.endpoint, UpstreamEndpoint::Dns { .. }))
+            );
         }
         "HH-05" => {
             assert!(effective.backends[0].settings.http_check.is_some());
@@ -1065,7 +1115,11 @@ fn assert_haproxy_host_case(case: &str) {
                     .value,
                 2
             );
-            assert_no_diagnostic_message(diagnostics, "initially eligible");
+            let health = pool.health_check.as_ref().expect("live health check");
+            assert_eq!(health.interval_ms, 10_000);
+            assert_eq!(health.timeout_ms, 10_000);
+            assert_eq!(health.healthy_threshold, 2);
+            assert_eq!(health.unhealthy_threshold, 3);
         }
         "HH-06" => {
             assert_eq!(
@@ -1078,61 +1132,61 @@ fn assert_haproxy_host_case(case: &str) {
                 3
             );
             assert!(effective.backends[0].settings.redispatch.is_some());
-            assert_no_diagnostic_message(diagnostics, "redispatch persistence");
+            assert_eq!(policy.retry.max_retries, 3);
+            assert_eq!(policy.retry.target, HttpRetryTarget::SameServer);
+            assert!(policy.retry.final_redispatch);
         }
         "HH-07" => {
-            let timeouts = &effective.frontends[0].settings.timeouts;
+            let timeouts = &effective.frontends[1].settings.timeouts;
             assert!(timeouts.client.is_some());
             assert!(timeouts.connect.is_some());
             assert!(timeouts.server.is_some());
             assert!(timeouts.http_request.is_some());
             assert!(timeouts.http_keep_alive.is_some());
+            assert_eq!(
+                listener.downstream_timeouts.client_timeout_ms,
+                Some(600_000)
+            );
+            assert_eq!(service.routes[0].policy.connect_timeout_ms, 600_000);
+            assert_eq!(service.routes[0].policy.read_timeout_ms, 600_000);
+            assert_eq!(service.routes[0].policy.write_timeout_ms, 600_000);
         }
         "HH-08" => {
-            assert!(effective.frontends[0].settings.forward_for.is_some());
-            assert_no_diagnostic_message(diagnostics, "forwardfor header insertion");
+            assert!(effective.frontends[1].settings.forward_for.is_some());
+            assert!(policy.request_headers.iter().any(|mutation| matches!(
+                mutation,
+                HttpRequestHeaderMutation::Set {
+                    value: HttpRequestHeaderValue::AppendedXForwardedFor {
+                        except_source_cidrs,
+                        ..
+                    },
+                    ..
+                } if except_source_cidrs.as_slice() == ["127.0.0.0/8"]
+            )));
         }
         "HH-09" => {
-            assert_eq!(effective.global.maxconn.as_ref().unwrap().value, 4096);
+            assert_eq!(effective.global.maxconn.as_ref().unwrap().value, 20_000);
             assert_eq!(
-                effective.frontends[0]
+                effective.frontends[1]
                     .settings
                     .maxconn
                     .as_ref()
                     .unwrap()
                     .value,
-                2000
+                8_000
             );
+            assert_eq!(config.max_connections, Some(20_000));
+            assert_eq!(listener.max_connections, Some(8_000));
         }
         "HH-10" => {
-            assert_eq!(diagnostic_count(diagnostics, E_STATS_UNSUPPORTED), 6);
-            assert!(lowered.value().draft.stats.is_none());
-            assert_eq!(lowered.value().activation_requirements.len(), 6);
+            assert_eq!(diagnostic_count(diagnostics, E_STATS_UNSUPPORTED), 0);
+            let page = &config.stats.as_ref().expect("live stats").pages[0];
+            assert_eq!(page.uri_prefix, "/stats");
+            assert_eq!(page.refresh_ms, 10_000);
+            assert_eq!(page.admin, StatsPageAdminPolicy::Localhost);
         }
-        "HH-11" => assert_eq!(diagnostic_count(diagnostics, E_LOGGING_UNSUPPORTED), 3),
-        "HH-12" => assert_external_process_settings(diagnostics),
+        "HH-11" => assert_eq!(diagnostic_count(diagnostics, E_LOGGING_UNSUPPORTED), 7),
+        "HH-12" => assert_eq!(diagnostic_count(diagnostics, E_PROCESS_OWNED), 3),
         id => panic!("HAProxy host case has no fixture assertion: {id}"),
     }
-}
-
-fn assert_external_process_settings(diagnostics: &[oxiroute_import::Diagnostic]) {
-    assert_eq!(diagnostic_count(diagnostics, E_PROCESS_OWNED), 4);
-    assert_eq!(
-        diagnostics
-            .iter()
-            .filter(|diagnostic| {
-                diagnostic.code() == E_PROCESS_OWNED && diagnostic.severity() == Severity::Warning
-            })
-            .count(),
-        4
-    );
-}
-
-fn assert_no_diagnostic_message(diagnostics: &[oxiroute_import::Diagnostic], unexpected: &str) {
-    assert!(
-        diagnostics
-            .iter()
-            .all(|diagnostic| !diagnostic.message().contains(unexpected)),
-        "unexpected diagnostic containing {unexpected:?}"
-    );
 }

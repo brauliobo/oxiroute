@@ -456,6 +456,77 @@ async fn reusable_upstream_connection_holds_its_lease_until_the_socket_closes() 
 }
 
 #[tokio::test]
+async fn reusable_idle_connection_remains_counted_by_least_connections() {
+    timeout(TEST_TIMEOUT, async {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("reusable leastconn origin bind");
+        let address = listener.local_addr().expect("reusable leastconn address");
+        let (release_tx, release_rx) = oneshot::channel();
+        let retained = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("retained origin accept");
+            read_request_head(&mut stream)
+                .await
+                .expect("retained origin request");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: keep-alive\r\n\r\nretained",
+                )
+                .await
+                .expect("retained origin response");
+            release_rx.await.expect("retained origin release");
+        });
+        let idle = Origin::start("idle", 1).await;
+        let mut balanced = pool("balanced", &[address, idle.address]);
+        balanced.algorithm = UpstreamAlgorithm::LeastConnections;
+        balanced.connection_reuse = oxiroute_config::UpstreamConnectionReuse::Safe;
+        let proxy = ProxyHarness::start(
+            vec![balanced],
+            vec![route(None, "/", &[], "balanced")],
+            1024,
+            1,
+        )
+        .await;
+
+        let mut client = TcpStream::connect(proxy.address)
+            .await
+            .expect("leastconn downstream connect");
+        client
+            .write_all(b"GET /first HTTP/1.1\r\nHost: least.test\r\n\r\n")
+            .await
+            .expect("first leastconn request");
+        let first = read_framed_response(&mut client)
+            .await
+            .expect("first leastconn response");
+        assert_eq!(first.body, b"retained");
+        assert_eq!(
+            proxy.pools[0].health_snapshot().endpoints[0].active_connections,
+            1,
+            "the idle reusable socket must retain its leastconn lease"
+        );
+        client
+            .write_all(
+                b"GET /second HTTP/1.1\r\nHost: least.test\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .expect("second leastconn request");
+        let second = read_framed_response(&mut client)
+            .await
+            .expect("second leastconn response");
+        assert_origin_response(&second, "idle");
+        drop(client);
+
+        release_tx.send(()).expect("release retained origin");
+        retained.await.expect("retained origin task");
+        proxy.wait_for_no_active_leases().await;
+        proxy.finish().await;
+        idle.finish().await;
+    })
+    .await
+    .expect("reusable least-connections test timed out");
+}
+
+#[tokio::test]
 async fn preread_one_kib_response_is_exact_and_keeps_upstream_reusable() {
     timeout(TEST_TIMEOUT, async {
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -1421,6 +1492,55 @@ async fn delayed_same_server_retry_waits_and_reselects_the_original_server() {
     })
     .await
     .expect("same-server retry test timed out");
+}
+
+#[tokio::test]
+async fn final_redispatch_retries_same_server_then_selects_an_available_server() {
+    timeout(TEST_TIMEOUT, async {
+        let unavailable = unused_address().await;
+        let healthy = Origin::start("redispatched", 1).await;
+        let mut retry_route = route(None, "/", &[], "retry");
+        let HttpRouteAction::Proxy { policy, .. } = &mut retry_route.action else {
+            panic!("proxy route");
+        };
+        policy.retry.target = HttpRetryTarget::SameServer;
+        policy.retry.delay_ms = 200;
+        policy.retry.final_redispatch = true;
+        policy.retry.triggers = vec![
+            HttpRetryTrigger::ConnectFailure,
+            HttpRetryTrigger::ConnectTimeout,
+        ];
+        let proxy = ProxyHarness::start_with_retries(
+            vec![pool("retry", &[unavailable, healthy.address])],
+            vec![retry_route],
+            3,
+            1,
+        )
+        .await;
+
+        let started = Instant::now();
+        let response = proxy
+            .request("GET / HTTP/1.1\r\nHost: retry.test\r\n")
+            .await;
+
+        assert_origin_response(&response, "redispatched");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(350),
+            "elapsed: {elapsed:?}"
+        );
+        assert!(elapsed < Duration::from_millis(550), "elapsed: {elapsed:?}");
+        proxy.wait_for_no_active_leases().await;
+        proxy.finish().await;
+        healthy.finish().await;
+    })
+    .await
+    .expect("final redispatch test timed out");
+}
+
+#[test]
+fn pingora_attempt_cap_covers_four_route_attempts_with_sixteen_dns_addresses_each() {
+    assert_eq!(MAX_HTTP_ATTEMPTS, 4 * 16);
 }
 
 #[tokio::test]

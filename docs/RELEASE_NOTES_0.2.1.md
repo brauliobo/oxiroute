@@ -20,6 +20,9 @@ OxiRoute 0.2.1 adds the first integrated Squid-style explicit HTTP/1 forward-pro
   finite idle and lifetime admission bounds.
 - Render imported candidates deterministically as KDL, Lua, HOCON, or UCI. Lua reserved-word field
   names now use bracketed keys and round-trip correctly.
+- Correct HAProxy direct import for the live hostrouter shape: page-only stats with localhost
+  administration, `unix@` listener mode, case-insensitive exact Host routing with a fixed `503`
+  fallback, reusable HTTP `leastconn`, bare final redispatch, and exact health timeout preservation.
 
 ## Compatibility
 
@@ -29,3 +32,6 @@ OxiRoute 0.2.1 adds the first integrated Squid-style explicit HTTP/1 forward-pro
   and non-caching.
 - Existing nginx, HAProxy, RTMP, reverse HTTP, and L4 behavior remains covered by the full workspace
   suite.
+- HAProxy stats authentication/other unsupported forms, redispatch interval arguments, broader
+  ACLs, and server-selection policy still fail closed. Native log and process settings remain
+  explicit deployment warnings and are not silently reproduced.

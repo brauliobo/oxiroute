@@ -62,16 +62,28 @@ pub struct PreparedGeneration {
     rtmp_runtimes: HashMap<String, RtmpServiceRuntime>,
 }
 
+#[derive(Clone, Copy)]
+enum ReservationPreparation {
+    Activation,
+    Validation,
+}
+
 impl PreparedGeneration {
     fn prepare(
         document: CanonicalConfigDocument,
         previous: Option<&ListenerReservations>,
         process: ProcessRuntime,
+        reservation_preparation: ReservationPreparation,
     ) -> Result<Self, GenerationError> {
         let config = Arc::new(document.normalized_config);
         let plan =
             runtime_plan(&config).map_err(|source| GenerationError::Plan(Box::new(source)))?;
-        let reservations = ListenerReservations::prepare(&config, previous)?;
+        let reservations = match reservation_preparation {
+            ReservationPreparation::Activation => ListenerReservations::prepare(&config, previous),
+            ReservationPreparation::Validation => {
+                ListenerReservations::prepare_for_validation(&config, previous)
+            }
+        }?;
         crate::stats::preflight_admin_token(
             config
                 .stats
@@ -601,9 +613,13 @@ impl GenerationManager {
             .map(|generation| generation.reservations.clone());
         let disk_revision = document.disk_revision.clone();
         let candidate_revision = document.candidate_revision.clone();
-        let prepared =
-            PreparedGeneration::prepare(document, previous.as_ref(), self.process.clone())
-                .map(|prepared| Arc::new(RuntimeGeneration::activate(prepared)));
+        let prepared = PreparedGeneration::prepare(
+            document,
+            previous.as_ref(),
+            self.process.clone(),
+            ReservationPreparation::Activation,
+        )
+        .map(|prepared| Arc::new(RuntimeGeneration::activate(prepared)));
         let mut state = self
             .state
             .lock()
@@ -657,8 +673,13 @@ impl GenerationManager {
             .active
             .as_ref()
             .map(|generation| generation.reservations.clone());
-        PreparedGeneration::prepare(document, previous.as_ref(), ProcessRuntime::new(None))
-            .map(drop)
+        PreparedGeneration::prepare(
+            document,
+            previous.as_ref(),
+            ProcessRuntime::new(None),
+            ReservationPreparation::Validation,
+        )
+        .map(drop)
     }
 
     /// Atomically publishes the prepared candidate and stops new references to the old generation.
@@ -1072,6 +1093,7 @@ impl GenerationManager {
             document,
             Some(&active_reservations),
             self.process.clone(),
+            ReservationPreparation::Activation,
         )?;
         let candidate = GenerationCandidate {
             generation: Arc::new(RuntimeGeneration::activate(prepared)),

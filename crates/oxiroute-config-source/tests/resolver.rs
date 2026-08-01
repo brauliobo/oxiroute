@@ -253,30 +253,26 @@ fn sanitized_back1_and_chicopc_haproxy_sources_use_explicit_environments() {
 }
 
 #[test]
-fn non_final_native_candidate_exposes_only_stable_code_counts() {
+fn newly_representable_native_candidate_resolves_with_complete_policy() {
     let fixture = fixture_root().join("haproxy/hostrouter-active.cfg");
     let path = serde_json::to_string(fixture.to_str().unwrap()).unwrap();
     let source = format!("haproxy_server = {{ paths = [{path}] }}");
 
-    let error = resolve_source(Path::new("blocked.hocon"), source.as_bytes()).unwrap_err();
-    let rendered = error.to_string();
-    let ConfigSourceError::NativeImport {
-        importer,
-        diagnostics,
-    } = error
-    else {
-        panic!("unexpected error: {rendered}")
-    };
+    let resolved = resolve_source(Path::new("hostrouter.hocon"), source.as_bytes())
+        .expect("representable HAProxy root");
 
-    assert_eq!(importer, "HAProxy");
-    assert!(!diagnostics.counts.is_empty());
-    assert!(
-        diagnostics
-            .counts
-            .windows(2)
-            .all(|pair| pair[0].code < pair[1].code)
-    );
-    assert!(!rendered.contains("stats enable"));
+    assert!(resolved.compositional);
+    assert_eq!(resolved.dependencies, [fixture]);
+    assert_eq!(resolved.config.listeners.len(), 1);
+    assert_eq!(resolved.config.upstream_pools.len(), 1);
+    assert_eq!(resolved.config.http_services[0].routes.len(), 2);
+    let oxiroute_config::HttpRouteAction::Proxy { policy, .. } =
+        &resolved.config.http_services[0].routes[0].action
+    else {
+        panic!("host route must proxy")
+    };
+    assert_eq!(policy.retry.max_retries, 3);
+    assert!(policy.retry.final_redispatch);
 }
 
 #[test]

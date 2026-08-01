@@ -32,6 +32,20 @@ export interface ManagementConfig {
 export interface StatsConfig {
   binds: string[]
   admin_token_file: string | null
+  pages: StatsPageConfig[]
+}
+
+export interface StatsPageConfig {
+  bind: string
+  uri_prefix: string
+  refresh_ms: number
+  admin: 'disabled' | 'localhost'
+  max_connections: number | null
+  downstream_timeouts: {
+    client_timeout_ms: number | null
+    request_timeout_ms: number | null
+    keepalive_timeout_ms: number | null
+  }
 }
 
 export interface DirectCertificateSource {
@@ -189,6 +203,7 @@ export interface UpstreamPoolConfig {
 export type HttpHostKind =
   | 'normalized_host'
   | 'exact_authority'
+  | 'ascii_case_insensitive_exact_authority'
   | 'nginx_leading_wildcard'
   | 'nginx_leading_dot'
 export type HttpPathKind = 'segment_prefix' | 'raw_prefix' | 'exact'
@@ -268,6 +283,7 @@ export interface HttpRetryPolicyConfig {
   max_retries: number
   target: 'same_server' | 'next_server'
   delay_ms: number
+  final_redispatch: boolean
   triggers: HttpRetryTrigger[]
   method_safety: 'get_head'
   body_safety: 'empty'
@@ -622,11 +638,12 @@ export interface ConfigValidationResponse {
   configPreview: string
   luaPreview?: string
   diagnostics: ConfigDiagnostic[]
+  restartRequired: boolean
   topology: CandidateTopologySnapshot
 }
 
-export type ConfigSaveOutcome = 'saved_pending_activation' | 'unchanged_active'
-export type ConfigActivationState = 'pending' | 'active'
+export type ConfigSaveOutcome = 'saved_pending_activation' | 'saved_restart_required' | 'unchanged_active'
+export type ConfigActivationState = 'pending' | 'restart_required' | 'active'
 
 export interface ConfigSaveResponse {
   diskRevision: string
@@ -647,7 +664,8 @@ export function isCanonicalConfig(value: unknown): value is CanonicalConfig {
     !(value.management === null || (isRecord(value.management) &&
       typeof value.management.bind === 'string' && nullableString(value.management.ui_dir))) ||
     !(value.stats === undefined || value.stats === null || (isRecord(value.stats) &&
-      arrayOf(value.stats.binds, isString) && nullableString(value.stats.admin_token_file))) ||
+      arrayOf(value.stats.binds, isString) && nullableString(value.stats.admin_token_file) &&
+      arrayOf(value.stats.pages, isStatsPage))) ||
     !arrayOf(value.certificates, isCertificate) || !arrayOf(value.tls_profiles, isTlsProfile) ||
     !arrayOf(value.listeners, isListener) || !arrayOf(value.cache_stores, isCacheStore) ||
     !arrayOf(value.upstream_pools, isUpstreamPool) || !arrayOf(value.http_services, isHttpService) ||
@@ -754,6 +772,16 @@ function isHealthCheck(value: unknown): value is HealthCheckConfig {
     (value.http_version === null || ['1.0', '1.1'].includes(String(value.http_version)))
 }
 
+function isStatsPage(value: unknown): value is StatsPageConfig {
+  return isRecord(value) && typeof value.bind === 'string' && typeof value.uri_prefix === 'string' &&
+    integerInRange(value.refresh_ms, 1, 86_400_000) &&
+    ['disabled', 'localhost'].includes(String(value.admin)) &&
+    nullableSafeInteger(value.max_connections) && isRecord(value.downstream_timeouts) &&
+    nullableSafeInteger(value.downstream_timeouts.client_timeout_ms) &&
+    nullableSafeInteger(value.downstream_timeouts.request_timeout_ms) &&
+    nullableSafeInteger(value.downstream_timeouts.keepalive_timeout_ms)
+}
+
 function isHttpService(value: unknown): value is HttpServiceConfig {
   return isRecord(value) && typeof value.name === 'string' && arrayOf(value.routes, (route) =>
     isRecord(route) && (route.host === null || isHttpHost(route.host)) && isHttpPath(route.path) &&
@@ -775,7 +803,8 @@ function isHttpRoutePolicy(value: unknown): boolean {
 }
 
 function isHttpHost(value: unknown): value is HttpHostSelectorConfig {
-  return isRecord(value) && ['normalized_host', 'exact_authority', 'nginx_leading_wildcard',
+  return isRecord(value) && ['normalized_host', 'exact_authority',
+    'ascii_case_insensitive_exact_authority', 'nginx_leading_wildcard',
     'nginx_leading_dot'].includes(String(value.kind)) &&
     typeof value.value === 'string'
 }
@@ -850,9 +879,12 @@ function isHttpProxyPolicy(value: unknown): value is HttpProxyPolicyConfig {
       typeof policy.name === 'string' && (policy.secure === null || typeof policy.secure === 'boolean') &&
       (policy.http_only === null || typeof policy.http_only === 'boolean') &&
       (policy.same_site === null || ['strict', 'lax', 'none'].includes(String(policy.same_site)))) &&
-    isRecord(value.retry) && integerInRange(value.retry.max_retries, 0, 2) &&
+    isRecord(value.retry) && integerInRange(value.retry.max_retries, 0, 3) &&
     ['same_server', 'next_server'].includes(String(value.retry.target)) &&
     integerInRange(value.retry.delay_ms, 0, 60_000) &&
+    typeof value.retry.final_redispatch === 'boolean' &&
+    (!value.retry.final_redispatch ||
+      (value.retry.max_retries > 0 && value.retry.target === 'same_server')) &&
     isHttpRetryTriggers(value.retry.triggers) &&
     value.retry.method_safety === 'get_head' && value.retry.body_safety === 'empty' &&
     (value.cache === null || isHttpCachePolicy(value.cache))
@@ -1041,6 +1073,16 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'stats', kind: 'object' },
   { path: 'stats.binds', kind: 'string_list' },
   { path: 'stats.admin_token_file', kind: 'string' },
+  { path: 'stats.pages', kind: 'collection' },
+  { path: 'stats.pages[].bind', kind: 'string' },
+  { path: 'stats.pages[].uri_prefix', kind: 'string' },
+  { path: 'stats.pages[].refresh_ms', kind: 'integer' },
+  { path: 'stats.pages[].admin', kind: 'enum' },
+  { path: 'stats.pages[].max_connections', kind: 'integer' },
+  { path: 'stats.pages[].downstream_timeouts', kind: 'object' },
+  { path: 'stats.pages[].downstream_timeouts.client_timeout_ms', kind: 'integer' },
+  { path: 'stats.pages[].downstream_timeouts.request_timeout_ms', kind: 'integer' },
+  { path: 'stats.pages[].downstream_timeouts.keepalive_timeout_ms', kind: 'integer' },
   { path: 'certificates', kind: 'collection' },
   { path: 'certificates[].name', kind: 'string' },
   { path: 'certificates[].dns_names', kind: 'string_list' },
@@ -1147,6 +1189,7 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'http_services[].routes[].action.policy.retry.max_retries', kind: 'integer' },
   { path: 'http_services[].routes[].action.policy.retry.target', kind: 'enum' },
   { path: 'http_services[].routes[].action.policy.retry.delay_ms', kind: 'integer' },
+  { path: 'http_services[].routes[].action.policy.retry.final_redispatch', kind: 'boolean' },
   { path: 'http_services[].routes[].action.policy.retry.triggers', kind: 'enum' },
   { path: 'http_services[].routes[].action.policy.retry.method_safety', kind: 'enum' },
   { path: 'http_services[].routes[].action.policy.retry.body_safety', kind: 'enum' },

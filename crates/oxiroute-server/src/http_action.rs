@@ -240,6 +240,7 @@ pub(crate) struct ProxyPolicyPlan {
     pub(crate) retry_triggers: Box<[HttpRetryTrigger]>,
     pub(crate) retry_target: HttpRetryTarget,
     pub(crate) retry_delay: Duration,
+    pub(crate) final_redispatch: bool,
 }
 
 impl ProxyPolicyPlan {
@@ -265,11 +266,20 @@ impl ProxyPolicyPlan {
             retry_triggers: policy.retry.triggers.clone().into_boxed_slice(),
             retry_target: policy.retry.target,
             retry_delay: Duration::from_millis(policy.retry.delay_ms),
+            final_redispatch: policy.retry.final_redispatch,
         }
     }
 
     pub(crate) fn retries_on(&self, trigger: HttpRetryTrigger) -> bool {
         self.retry_triggers.contains(&trigger)
+    }
+
+    pub(crate) fn target_for_retry(&self, attempts: usize) -> HttpRetryTarget {
+        if self.final_redispatch && attempts == usize::from(self.max_retries) {
+            HttpRetryTarget::NextServer
+        } else {
+            self.retry_target
+        }
     }
 }
 

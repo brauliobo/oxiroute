@@ -171,6 +171,7 @@ function canonicalConfig(): CanonicalConfig {
                   max_retries: 1,
                   target: 'next_server',
                   delay_ms: 0,
+                  final_redispatch: false,
                   triggers: ['connect_failure', 'connect_timeout', 'refused_stream'],
                   method_safety: 'get_head',
                   body_safety: 'empty',
@@ -260,6 +261,7 @@ function validationResponse(config: CanonicalConfig, diagnostics: ConfigDiagnost
     dependencyCount: 0,
     configPreview: `version ${config.version}\n`,
     diagnostics,
+    restartRequired: false,
     topology: {
       schemaVersion: 1,
       state: { config: 'candidate', runtime: 'not_active', sampledAtUnixMs: 1_750_000_000_000 },
@@ -322,15 +324,20 @@ async function mountUnlocked(attachToBody = false): Promise<VueWrapper> {
 function installConfigFetch(
   putResponse?: (body: CanonicalConfig) => Response,
   validationStatus = 200,
+  snapshot = configSnapshot(),
+  validationRestartRequired = false,
 ) {
   const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
-    if (url === '/api/v1/config' && !init?.method) return jsonResponse(configSnapshot())
+    if (url === '/api/v1/config' && !init?.method) return jsonResponse(snapshot)
     if (url === '/api/v1/config/validate') {
       const body = JSON.parse(String(init?.body)) as { config: CanonicalConfig }
       return validationStatus === 422
         ? jsonResponse({ diagnostics: [invalidDiagnostic] }, 422)
-        : jsonResponse(validationResponse(body.config))
+        : jsonResponse({
+            ...validationResponse(body.config),
+            restartRequired: validationRestartRequired,
+          })
     }
     if (url === '/api/v1/config' && init?.method === 'PUT') {
       const body = JSON.parse(String(init.body)) as { config: CanonicalConfig }
@@ -343,10 +350,10 @@ function installConfigFetch(
         activationState: 'pending',
         restartRequired: false,
         diagnostics: [{
-          code: 'W_RESTART_REQUIRED',
+          code: 'I_ACTIVATION_PENDING',
           severity: 'warning',
           stage: 'activation',
-          message: 'configuration was saved; restart the daemon to activate it',
+          message: 'configuration was saved and queued for generation activation',
         }],
       })
     }
@@ -396,6 +403,113 @@ describe('ConfigurationWorkspace', () => {
     expect(wrapper.text()).not.toContain(bearerToken)
     expect(window.location.href).not.toContain(bearerToken)
     expect(storageWrite).not.toHaveBeenCalled()
+  })
+
+  it('preserves and edits imported statistics pages and compatibility routing through save', async () => {
+    const imported = configSnapshot()
+    imported.config.stats = {
+      binds: [],
+      admin_token_file: null,
+      pages: [{
+        bind: '0.0.0.0:8404',
+        uri_prefix: '/stats',
+        refresh_ms: 10_000,
+        admin: 'localhost',
+        max_connections: 300,
+        downstream_timeouts: {
+          client_timeout_ms: 600_000,
+          request_timeout_ms: 600_000,
+          keepalive_timeout_ms: 60_000,
+        },
+      }],
+    }
+    const route = imported.config.http_services[0]!.routes[0]!
+    route.host = {
+      kind: 'ascii_case_insensitive_exact_authority',
+      value: 'ollama.yellowmaverick.com',
+    }
+    if (route.action.type !== 'proxy') throw new Error('imported route must proxy')
+    route.action.policy.retry = {
+      ...route.action.policy.retry,
+      max_retries: 3,
+      target: 'same_server',
+      delay_ms: 1_000,
+      final_redispatch: true,
+    }
+
+    let saved: CanonicalConfig | undefined
+    installConfigFetch((config) => {
+      saved = config
+      return jsonResponse({
+        diskRevision: 'candidate-2222222222222222222222222222222222222222222222222222222',
+        candidateRevision: 'candidate-2222222222222222222222222222222222222222222222222222222',
+        activeRevision,
+        outcome: 'saved_pending_activation',
+        activationState: 'pending',
+        restartRequired: false,
+        diagnostics: [],
+      })
+    }, 200, imported)
+    const wrapper = await mountUnlocked()
+
+    await findButton(wrapper, 'Statistics').trigger('click')
+    const pages = wrapper.get('[data-field="stats.pages"]')
+    expect(pages.text()).toContain('adds no routes beyond its URI prefix')
+    expect(pages.text()).toContain('same-origin loopback requests')
+    await findButtonIn(pages, 'Add statistics page').trigger('click')
+    expect(wrapper.findAll('[data-field="stats.pages[].bind"]')).toHaveLength(2)
+    await wrapper.get('[aria-label="Remove statistics page 2"]').trigger('click')
+
+    await wrapper.get('[data-field="stats.pages[].bind"] input').setValue('127.0.0.1:8404')
+    await wrapper.get('[data-field="stats.pages[].uri_prefix"] input').setValue('/haproxy')
+    await wrapper.get('[data-field="stats.pages[].refresh_ms"] input').setValue(5_000)
+    const admin = wrapper.get('[data-field="stats.pages[].admin"] select')
+    await admin.setValue('disabled')
+    await admin.setValue('localhost')
+    await wrapper.get('[data-field="stats.pages[].max_connections"] input').setValue(250)
+    await wrapper.get('[data-field="stats.pages[].downstream_timeouts.client_timeout_ms"] input')
+      .setValue(30_000)
+    await wrapper.get('[data-field="stats.pages[].downstream_timeouts.request_timeout_ms"] input')
+      .setValue(5_000)
+    await wrapper.get('[data-field="stats.pages[].downstream_timeouts.keepalive_timeout_ms"] input')
+      .setValue(2_000)
+
+    await findButton(wrapper, 'Validate candidate').trigger('click')
+    await flushPromises()
+    await findButton(wrapper, 'Review save').trigger('click')
+    await findButton(wrapper, 'Save canonical configuration').trigger('click')
+    await flushPromises()
+
+    expect(saved?.stats).toEqual({
+      binds: [],
+      admin_token_file: null,
+      pages: [{
+        bind: '127.0.0.1:8404',
+        uri_prefix: '/haproxy',
+        refresh_ms: 5_000,
+        admin: 'localhost',
+        max_connections: 250,
+        downstream_timeouts: {
+          client_timeout_ms: 30_000,
+          request_timeout_ms: 5_000,
+          keepalive_timeout_ms: 2_000,
+        },
+      }],
+    })
+    expect(saved?.http_services[0]?.routes[0]?.host).toEqual({
+      kind: 'ascii_case_insensitive_exact_authority',
+      value: 'ollama.yellowmaverick.com',
+    })
+    expect(saved?.http_services[0]?.routes[0]?.action).toMatchObject({
+      policy: {
+        retry: {
+          max_retries: 3,
+          target: 'same_server',
+          delay_ms: 1_000,
+          final_redispatch: true,
+        },
+      },
+    })
   })
 
   it('re-locks on 401 and preserves a dirty draft for re-authentication', async () => {
@@ -858,6 +972,7 @@ describe('ConfigurationWorkspace', () => {
             max_retries: 2,
             target: 'next_server',
             delay_ms: 0,
+            final_redispatch: false,
             triggers: ['connect_failure', 'connect_timeout', 'refused_stream'],
             method_safety: 'get_head',
             body_safety: 'empty',
@@ -1014,6 +1129,11 @@ describe('ConfigurationWorkspace', () => {
     const listenerTls = wrapper.get('[data-field="listeners[].tls_profile"] select')
     expect((listenerTls.element as HTMLSelectElement).value).toBe('public-sni')
     await wrapper.get('[data-field="listeners[].bind.type"] select').setValue('unix')
+    const unixMode = wrapper.get('[data-field="listeners[].bind.mode"] input')
+    await unixMode.setValue('0777')
+    await unixMode.trigger('change')
+    expect((wrapper.vm as unknown as { draft: CanonicalConfig }).draft.listeners[0]?.bind)
+      .toEqual({ type: 'unix', path: '', mode: 0o777 })
     expect(listenerTls.attributes()).toHaveProperty('disabled')
     expect((listenerTls.element as HTMLSelectElement).selectedOptions[0]?.text).toBe('None')
 
@@ -1236,6 +1356,7 @@ describe('ConfigurationWorkspace', () => {
     ;(reviewButton.element as HTMLButtonElement).focus()
     await reviewButton.trigger('click')
     expect(wrapper.get('[role="dialog"]').text()).toContain('Save review')
+    expect(wrapper.get('.review-warning').text()).toContain('no process restart is required')
     expect(document.activeElement).toBe(wrapper.get('.save-review .close-button').element)
     expect(wrapper.get('.config-layout').attributes()).toHaveProperty('inert')
     await wrapper.get('[role="dialog"]').trigger('keydown', { key: 'Escape' })
@@ -1264,7 +1385,8 @@ describe('ConfigurationWorkspace', () => {
       { name: 'server-2', endpoint: { type: 'dns', host: 'backend.example.test', port: 3001 }, max_connections: null, dns_resolution: 'on_connect' },
     ])
     expect(saved.http_services[0]).toHaveProperty('max_request_body_bytes', 10_485_760)
-    expect(wrapper.get('.revision-banner.pending').text()).toContain('restart required')
+    expect(wrapper.get('.revision-banner.pending').text()).toContain('activation pending')
+    expect(wrapper.get('.revision-banner.pending').text()).toContain('no restart is required')
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
     expect(document.activeElement).toBe(wrapper.get('.revision-banner.save-state').element)
     wrapper.unmount()
@@ -1285,12 +1407,41 @@ describe('ConfigurationWorkspace', () => {
     await findButton(wrapper, 'Validate candidate').trigger('click')
     await flushPromises()
     await findButton(wrapper, 'Review save').trigger('click')
+    expect(wrapper.get('.review-warning').text()).toContain('no process restart is required')
     await findButton(wrapper, 'Save canonical configuration').trigger('click')
     await flushPromises()
 
     expect(wrapper.get('.revision-banner.success').text()).toContain('unchanged')
     expect(wrapper.get('.revision-banner.success').text()).toContain('No restart is required')
     expect(wrapper.text()).not.toContain('activation pending')
+  })
+
+  it('renders the explicit restart-required outcome for an active Unix mode change', async () => {
+    installConfigFetch(() => jsonResponse({
+      diskRevision: 'disk-restart-required',
+      candidateRevision: 'candidate-restart-required',
+      activeRevision,
+      outcome: 'saved_restart_required',
+      activationState: 'restart_required',
+      restartRequired: true,
+      diagnostics: [{
+        code: 'I_RESTART_REQUIRED',
+        severity: 'warning',
+        stage: 'activation',
+        message: 'an active Unix listener mode changed',
+      }],
+    }), 200, configSnapshot(), true)
+    const wrapper = await mountUnlocked()
+
+    await findButton(wrapper, 'Validate candidate').trigger('click')
+    await flushPromises()
+    await findButton(wrapper, 'Review save').trigger('click')
+    expect(wrapper.get('.review-warning').text()).toContain('next process restart')
+    await findButton(wrapper, 'Save canonical configuration').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.revision-banner.pending').text()).toContain('restart required')
+    expect(wrapper.get('.revision-banner.pending').text()).toContain('active Unix listener mode')
   })
 
   it('preserves the edited draft after a 409 conflict', async () => {

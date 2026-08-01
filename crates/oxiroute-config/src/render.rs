@@ -23,9 +23,9 @@ use crate::{
         HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost, HttpVersion, HttpVersionPolicy,
         L4Service, Listener, ListenerBind, Management, Protocol, RtmpApplication, RtmpFanoutPolicy,
         RtmpPushTarget, RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart,
-        RtmpRecorderTimeBasis, RtmpRecorderTimezone, RtmpService, Stats, TlsProfile, TlsVersion,
-        UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer,
-        UpstreamTls,
+        RtmpRecorderTimeBasis, RtmpRecorderTimezone, RtmpService, Stats, StatsPage,
+        StatsPageAdminPolicy, TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamConnectionReuse,
+        UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls,
     },
     validation::validate_config,
 };
@@ -146,7 +146,28 @@ impl Renderer {
             ),
             None => self.nil_field("admin_token_file"),
         }
+        self.table_list_field("pages", &stats.pages, Self::stats_page);
         Ok(())
+    }
+
+    fn stats_page(&mut self, page: &StatsPage) {
+        self.string_field("bind", &page.bind.to_string());
+        self.string_field("uri_prefix", &page.uri_prefix);
+        self.integer_field("refresh_ms", page.refresh_ms);
+        self.string_field(
+            "admin",
+            match page.admin {
+                StatsPageAdminPolicy::Disabled => "disabled",
+                StatsPageAdminPolicy::Localhost => "localhost",
+            },
+        );
+        match page.max_connections {
+            Some(limit) => self.integer_field("max_connections", limit),
+            None => self.null_field("max_connections"),
+        }
+        self.begin_table_field("downstream_timeouts");
+        self.downstream_timeouts(&page.downstream_timeouts);
+        self.end_table();
     }
 
     fn certificate(&mut self, certificate: &Certificate) -> Result<(), ConfigError> {
@@ -823,6 +844,10 @@ impl Renderer {
                 self.string_field("kind", "exact_authority");
                 self.string_field("value", value);
             }
+            HttpHostSelector::AsciiCaseInsensitiveExactAuthority { value } => {
+                self.string_field("kind", "ascii_case_insensitive_exact_authority");
+                self.string_field("value", value);
+            }
             HttpHostSelector::NginxLeadingWildcard { value } => {
                 self.string_field("kind", "nginx_leading_wildcard");
                 self.string_field("value", value);
@@ -1411,6 +1436,7 @@ impl Renderer {
             },
         );
         self.integer_field("delay_ms", retry.delay_ms);
+        self.boolean_field("final_redispatch", retry.final_redispatch);
         self.string_list_field(
             "triggers",
             &retry

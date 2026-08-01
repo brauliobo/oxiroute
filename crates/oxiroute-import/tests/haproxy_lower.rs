@@ -29,27 +29,27 @@ const PHOENIX: &[u8] = include_bytes!("fixtures/haproxy/phoenix-dormant.cfg");
 const MINIMAL: &[u8] = include_bytes!("fixtures/haproxy/minimal-representable.cfg");
 
 #[test]
-fn hostrouter_active_report_retains_non_equivalent_stats_and_remaining_blockers() {
+fn hostrouter_active_report_finalizes_proxy_while_retaining_stats_requirements() {
     let lowered = import_fixture("hostrouter-active.cfg", HOSTROUTER);
     let candidate = lowered.value();
 
-    assert!(candidate.config.is_none());
-    assert!(candidate.draft.upstream_pools.is_empty());
-    assert!(diagnostic_contains(
-        lowered.diagnostics(),
-        "one-request-per-connection overlay"
-    ));
+    assert!(candidate.config.is_some());
+    assert_eq!(candidate.draft.upstream_pools.len(), 1);
+    assert_eq!(
+        candidate.draft.upstream_pools[0].connection_reuse,
+        oxiroute_config::UpstreamConnectionReuse::Safe
+    );
     assert!(
         candidate
             .draft
             .listeners
             .iter()
-            .all(|listener| listener.name != "hostrouter")
+            .any(|listener| listener.name == "hostrouter")
     );
     assert_eq!(code_count(lowered.diagnostics(), E_LOGGING_UNSUPPORTED), 3);
-    assert_eq!(code_count(lowered.diagnostics(), E_STATS_UNSUPPORTED), 6);
+    assert_eq!(code_count(lowered.diagnostics(), E_STATS_UNSUPPORTED), 2);
     assert!(candidate.draft.stats.is_none());
-    assert_eq!(candidate.activation_requirements.len(), 6);
+    assert_eq!(candidate.activation_requirements.len(), 2);
     assert_eq!(code_count(lowered.diagnostics(), E_PROCESS_OWNED), 4);
     assert_process_settings_are_external_warnings(lowered.diagnostics());
     assert_eq!(candidate.draft.max_connections, Some(4096));
@@ -66,21 +66,21 @@ fn hostrouter_active_report_retains_non_equivalent_stats_and_remaining_blockers(
         lowered.diagnostics(),
         "DNS-named servers"
     ));
-    assert!(candidate.draft.http_services.is_empty());
+    assert_eq!(candidate.draft.http_services.len(), 1);
     assert_no_fallback_routes(candidate);
 }
 
 #[test]
-fn phoenix_dormant_report_cannot_activate_or_substitute_its_dns_pool() {
+fn phoenix_dormant_report_finalizes_with_reusable_dns_leastconn_pool() {
     let lowered = import_fixture("phoenix-dormant.cfg", PHOENIX);
 
-    assert!(lowered.value().config.is_none());
-    assert!(lowered.value().draft.upstream_pools.is_empty());
-    assert!(diagnostic_contains(
-        lowered.diagnostics(),
-        "one-request-per-connection overlay"
-    ));
-    assert!(lowered.value().draft.listeners.is_empty());
+    assert!(lowered.value().config.is_some());
+    assert_eq!(lowered.value().draft.upstream_pools.len(), 1);
+    assert_eq!(
+        lowered.value().draft.upstream_pools[0].connection_reuse,
+        oxiroute_config::UpstreamConnectionReuse::Safe
+    );
+    assert_eq!(lowered.value().draft.listeners.len(), 1);
     assert_eq!(code_count(lowered.diagnostics(), E_PROCESS_OWNED), 4);
     assert!(!diagnostic_contains(
         lowered.diagnostics(),
@@ -101,6 +101,131 @@ fn sanitized_whitebeast_haproxy_imports_from_the_complete_capture() {
 #[test]
 fn sanitized_hostrouter_haproxy_imports_from_the_complete_capture() {
     assert_complete_live_haproxy("hostrouter", Ipv4Addr::new(10, 0, 0, 1), false);
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one central live-fixture assertion pins the complete finalized policy"
+)]
+fn unmodified_live_hostrouter_finalizes_with_exact_compatibility_policy() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/live/hostrouter/haproxy.cfg");
+    let report = import_roots_with_environment(
+        &[path],
+        PreprocessingEnvironment {
+            node_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            gpu1_defined: false,
+        },
+    );
+    let candidate = report.value();
+    let config = candidate.config.as_ref().unwrap_or_else(|| {
+        panic!(
+            "live hostrouter config did not finalize: {:#?}",
+            report.diagnostics()
+        )
+    });
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics());
+    assert_eq!(
+        code_count(report.diagnostics(), E_SEMANTICS_NOT_REPRESENTABLE),
+        0
+    );
+    assert_eq!(code_count(report.diagnostics(), E_UNKNOWN_DIRECTIVE), 0);
+    assert_eq!(code_count(report.diagnostics(), E_UNCONSUMED_DIRECTIVE), 0);
+    assert_eq!(code_count(report.diagnostics(), E_LOGGING_UNSUPPORTED), 7);
+    assert_eq!(code_count(report.diagnostics(), E_PROCESS_OWNED), 3);
+    assert!(
+        report
+            .diagnostics()
+            .iter()
+            .all(|diagnostic| diagnostic.severity() == Severity::Warning)
+    );
+    assert!(candidate.activation_requirements.is_empty());
+    let stats = config.stats.as_ref().expect("HAProxy stats page");
+    assert_eq!(stats.pages.len(), 1);
+    assert_eq!(stats.pages[0].bind, "0.0.0.0:8404".parse().unwrap());
+    assert_eq!(stats.pages[0].uri_prefix, "/stats");
+    assert_eq!(stats.pages[0].refresh_ms, 10_000);
+    assert_eq!(
+        stats.pages[0].admin,
+        oxiroute_config::StatsPageAdminPolicy::Localhost
+    );
+    assert_eq!(stats.pages[0].max_connections, None);
+    assert_eq!(
+        stats.pages[0].downstream_timeouts.client_timeout_ms,
+        Some(600_000)
+    );
+    assert_eq!(
+        stats.pages[0].downstream_timeouts.request_timeout_ms,
+        Some(600_000)
+    );
+    assert_eq!(
+        stats.pages[0].downstream_timeouts.keepalive_timeout_ms,
+        Some(60_000)
+    );
+
+    assert_eq!(config.listeners.len(), 1);
+    assert_eq!(
+        config.listeners[0].bind,
+        ListenerBind::Unix {
+            path: "/var/run/haproxy.sock".into(),
+            mode: Some(0o777),
+        }
+    );
+    assert_eq!(
+        config.listeners[0].downstream_timeouts.client_timeout_ms,
+        Some(600_000)
+    );
+    assert_eq!(
+        config.listeners[0].downstream_timeouts.request_timeout_ms,
+        Some(600_000)
+    );
+    assert_eq!(
+        config.listeners[0].downstream_timeouts.keepalive_timeout_ms,
+        Some(60_000)
+    );
+    let service = &config.http_services[0];
+    assert_eq!(service.routes.len(), 2);
+    assert!(matches!(
+        service.routes[0].host,
+        Some(HttpHostSelector::AsciiCaseInsensitiveExactAuthority { ref value })
+            if value == "ollama.yellowmaverick.com"
+    ));
+    assert!(matches!(
+        service.routes[1].action,
+        HttpRouteAction::FixedResponse { status: 503, .. }
+    ));
+
+    let pool = &config.upstream_pools[0];
+    assert_eq!(pool.algorithm, UpstreamAlgorithm::LeastConnections);
+    assert_eq!(
+        pool.connection_reuse,
+        oxiroute_config::UpstreamConnectionReuse::Safe
+    );
+    let health = pool.health_check.as_ref().expect("HTTP health check");
+    assert_eq!(health.interval_ms, 10_000);
+    assert_eq!(health.timeout_ms, 10_000);
+    assert_eq!(health.healthy_threshold, 2);
+    assert_eq!(health.unhealthy_threshold, 3);
+    assert_hostrouter_endpoints(pool);
+    let HttpRouteAction::Proxy { policy, .. } = &service.routes[0].action else {
+        panic!("host route must proxy")
+    };
+    assert_eq!(policy.retry.max_retries, 3);
+    assert_eq!(
+        policy.retry.target,
+        oxiroute_config::HttpRetryTarget::SameServer
+    );
+    assert_eq!(policy.retry.delay_ms, 1_000);
+    assert!(policy.retry.final_redispatch);
+    assert_eq!(
+        policy.retry.triggers,
+        [
+            oxiroute_config::HttpRetryTrigger::ConnectFailure,
+            oxiroute_config::HttpRetryTrigger::ConnectTimeout,
+        ]
+    );
 }
 
 #[test]
@@ -157,15 +282,7 @@ fn assert_complete_live_haproxy(host: &str, node_ip: Ipv4Addr, gpu1_defined: boo
         .join("tests/fixtures/live")
         .join(host)
         .join("haproxy.cfg");
-    let options = HaproxyImportOptions {
-        one_request_per_connection: (host == "hostrouter")
-            .then(|| HaproxyOneRequestPerConnectionOverlay {
-                backend: "app_ollama".into(),
-            })
-            .into_iter()
-            .collect(),
-        prometheus_migrations: Vec::new(),
-    };
+    let options = HaproxyImportOptions::default();
     let report = import_roots_with_options(
         &[path],
         PreprocessingEnvironment {
@@ -185,20 +302,13 @@ fn assert_complete_live_haproxy(host: &str, node_ip: Ipv4Addr, gpu1_defined: boo
         assert_eq!(report.value().draft.upstream_pools.len(), 1);
         assert_eq!(
             report.value().draft.upstream_pools[0].connection_reuse,
-            oxiroute_config::UpstreamConnectionReuse::Never
+            oxiroute_config::UpstreamConnectionReuse::Safe
         );
         assert!(!diagnostic_contains(
             report.diagnostics(),
             "requires option http-server-close"
         ));
-        assert!(
-            report
-                .value()
-                .operational_overlays
-                .iter()
-                .any(|overlay| overlay.satisfied
-                    && overlay.id == "haproxy.one-request-per-connection:app_ollama")
-        );
+        assert!(report.value().operational_overlays.is_empty());
     } else {
         assert!(!report.value().draft.upstream_pools.is_empty());
     }
@@ -275,6 +385,35 @@ fn audited_connection_lifecycle_overlay_is_backend_scoped_and_fail_closed() {
 }
 
 #[test]
+fn unix_at_listener_mode_lowers_with_field_provenance() {
+    let source = b"defaults web
+  mode http
+  retries 0
+  timeout connect 5s
+  timeout server 30s
+frontend public
+  bind unix@/run/haproxy/public.sock mode 777
+  default_backend app
+backend app
+  balance roundrobin
+  server app1 127.0.0.1:3000
+";
+    let lowered = import_fixture("unix-mode.cfg", source);
+    let candidate = lowered.value();
+    let config = candidate.config.as_ref().expect("Unix mode config");
+
+    assert_eq!(
+        config.listeners[0].bind,
+        ListenerBind::Unix {
+            path: "/run/haproxy/public.sock".into(),
+            mode: Some(0o777),
+        }
+    );
+    assert_has_provenance(candidate, "/listeners/0/bind/path");
+    assert_has_provenance(candidate, "/listeners/0/bind/mode");
+}
+
+#[test]
 fn ordered_default_server_health_options_materialize_on_subsequent_servers() {
     let source = b"defaults web
   mode http
@@ -311,6 +450,37 @@ backend app
     assert_eq!(health.down_interval_ms, Some(60_000));
     assert_eq!(health.healthy_threshold, 2);
     assert_eq!(health.unhealthy_threshold, 3);
+}
+
+#[test]
+fn health_without_timeout_check_preserves_interval_as_exact_timeout() {
+    let source = b"defaults web
+  mode http
+  retries 0
+  timeout connect 5s
+  timeout server 600s
+frontend public
+  bind 127.0.0.1:18080
+  default_backend app
+backend app
+  balance roundrobin
+  option httpchk GET /
+  http-check expect status 200
+  server app1 127.0.0.1:3000 check inter 10s fall 3 rise 2
+";
+    let imported = import_fixture("equal-health-timeout.cfg", source);
+    let health = imported
+        .value()
+        .config
+        .as_ref()
+        .expect("health config")
+        .upstream_pools[0]
+        .health_check
+        .as_ref()
+        .expect("health check");
+
+    assert_eq!(health.interval_ms, 10_000);
+    assert_eq!(health.timeout_ms, 10_000);
 }
 
 #[test]
@@ -705,7 +875,7 @@ backend fallback
 }
 
 #[test]
-fn case_insensitive_raw_acl_remains_blocking() {
+fn case_insensitive_host_acl_lowers_to_exact_authority_without_port_widening() {
     let source = b"defaults web
   mode http
   retries 0
@@ -716,20 +886,63 @@ frontend public
   maxconn 100
   acl app_host hdr(host) -i app.example
   use_backend app if app_host
-  default_backend fallback
 backend app
   balance roundrobin
   server app1 127.0.0.1:3001
-backend fallback
-  balance roundrobin
-  server fallback1 127.0.0.1:3002
 ";
     let lowered = import_fixture("case-insensitive-host.cfg", source);
 
-    assert!(lowered.value().config.is_none());
-    assert!(lowered.value().draft.http_services.is_empty());
-    assert!(lowered.value().draft.listeners.is_empty());
-    assert_blocker(lowered.diagnostics(), "case-insensitive HAProxy ACL");
+    let config = lowered.value().config.as_ref().unwrap_or_else(|| {
+        panic!(
+            "case-insensitive authority did not finalize: {:#?}",
+            lowered.diagnostics()
+        )
+    });
+    assert!(matches!(
+        config.http_services[0].routes[0].host,
+        Some(HttpHostSelector::AsciiCaseInsensitiveExactAuthority { ref value })
+            if value == "app.example"
+    ));
+    assert!(matches!(
+        config.http_services[0].routes[1].action,
+        HttpRouteAction::FixedResponse { status: 503, .. }
+    ));
+}
+
+#[test]
+fn conditional_backend_without_default_appends_a_last_catch_all_503() {
+    let source = b"defaults web
+  mode http
+  retries 0
+  timeout connect 30s
+  timeout server 30s
+frontend public
+  bind 127.0.0.1:8080
+  acl app_host hdr(host) app.example
+  use_backend app if app_host
+backend app
+  balance roundrobin
+  server app1 127.0.0.1:3001
+";
+    let lowered = import_fixture("no-default-backend.cfg", source);
+    let config = lowered
+        .value()
+        .config
+        .as_ref()
+        .expect("503 fallback config");
+    let routes = &config.http_services[0].routes;
+
+    assert_eq!(routes.len(), 2);
+    assert!(matches!(routes[0].action, HttpRouteAction::Proxy { .. }));
+    assert!(routes[1].host.is_none());
+    assert!(matches!(
+        routes[1].path,
+        HttpPathSelector::RawPrefix { ref value } if value == "/"
+    ));
+    assert!(matches!(
+        routes[1].action,
+        HttpRouteAction::FixedResponse { status: 503, .. }
+    ));
 }
 
 #[test]
@@ -1097,6 +1310,151 @@ backend workers
 }
 
 #[test]
+fn dedicated_supported_stats_sections_lower_only_to_canonical_pages() {
+    let source = b"frontend stats
+  mode http
+  bind *:8404
+  maxconn 300
+  timeout client 30s
+  timeout http-request 5s
+  timeout http-keep-alive 2s
+  stats uri /stats
+  stats refresh 10s
+  stats admin if LOCALHOST
+listen public-stats
+  mode http
+  bind 127.0.0.1:8405
+  stats enable
+  stats uri /public
+  stats refresh 5s
+";
+
+    let imported = import_fixture("stats-pages.cfg", source);
+    assert!(!imported.has_errors(), "{:?}", imported.diagnostics());
+    assert_eq!(code_count(imported.diagnostics(), E_STATS_UNSUPPORTED), 0);
+    let candidate = imported.value();
+    let config = candidate.config.as_ref().expect("stats pages config");
+    let stats = config.stats.as_ref().expect("canonical stats");
+    assert!(stats.binds.is_empty());
+    assert_eq!(stats.pages.len(), 2);
+    assert_eq!(stats.pages[0].bind, "0.0.0.0:8404".parse().unwrap());
+    assert_eq!(stats.pages[0].uri_prefix, "/stats");
+    assert_eq!(stats.pages[0].refresh_ms, 10_000);
+    assert_eq!(stats.pages[0].max_connections, Some(300));
+    assert_eq!(
+        stats.pages[0].downstream_timeouts.client_timeout_ms,
+        Some(30_000)
+    );
+    assert_eq!(
+        stats.pages[0].downstream_timeouts.request_timeout_ms,
+        Some(5_000)
+    );
+    assert_eq!(
+        stats.pages[0].downstream_timeouts.keepalive_timeout_ms,
+        Some(2_000)
+    );
+    assert_eq!(
+        stats.pages[0].admin,
+        oxiroute_config::StatsPageAdminPolicy::Localhost
+    );
+    assert_eq!(
+        stats.pages[1].admin,
+        oxiroute_config::StatsPageAdminPolicy::Disabled
+    );
+    assert!(config.listeners.is_empty());
+    assert!(config.http_services.is_empty());
+    assert!(config.l4_services.is_empty());
+    assert!(candidate.activation_requirements.is_empty());
+    for path in [
+        "/stats/pages/0",
+        "/stats/pages/0/bind",
+        "/stats/pages/0/uri_prefix",
+        "/stats/pages/0/refresh_ms",
+        "/stats/pages/0/admin",
+        "/stats/pages/0/max_connections",
+        "/stats/pages/0/downstream_timeouts/client_timeout_ms",
+        "/stats/pages/0/downstream_timeouts/request_timeout_ms",
+        "/stats/pages/0/downstream_timeouts/keepalive_timeout_ms",
+    ] {
+        assert_has_provenance(candidate, path);
+    }
+}
+
+#[test]
+fn stats_frontend_response_rules_fail_closed_instead_of_disappearing() {
+    let source = b"frontend stats
+  mode http
+  bind 127.0.0.1:8404
+  stats uri /stats
+  stats refresh 10s
+  http-response set-header x-stats-policy retained
+";
+
+    let imported = import_fixture("stats-response-policy.cfg", source);
+
+    assert!(imported.value().config.is_none());
+    assert!(imported.value().draft.stats.is_none());
+    assert!(diagnostic_contains(
+        imported.diagnostics(),
+        "stats frontend response rules"
+    ));
+}
+
+#[test]
+fn stats_frontend_connection_close_policy_fails_closed_instead_of_disappearing() {
+    let source = b"frontend stats
+  mode http
+  bind 127.0.0.1:8404
+  option http-server-close
+  stats uri /stats
+  stats refresh 10s
+";
+
+    let imported = import_fixture("stats-connection-policy.cfg", source);
+
+    assert!(imported.value().config.is_none());
+    assert!(imported.value().draft.stats.is_none());
+    assert!(imported.has_errors());
+}
+
+#[test]
+fn unsupported_stats_form_suppresses_page_without_creating_an_ordinary_service() {
+    let source = b"frontend stats
+  mode http
+  bind *:8404
+  stats enable
+  stats uri /stats
+  stats refresh 10s
+  stats hide-version
+";
+
+    let imported = import_fixture("blocked-stats-page.cfg", source);
+    let candidate = imported.value();
+    assert_eq!(code_count(imported.diagnostics(), E_STATS_UNSUPPORTED), 1);
+    assert_eq!(candidate.activation_requirements.len(), 1);
+    assert!(candidate.draft.stats.is_none());
+    assert!(candidate.draft.listeners.is_empty());
+    assert!(candidate.draft.http_services.is_empty());
+}
+
+#[test]
+fn stats_auth_suppresses_page_without_creating_an_ordinary_service() {
+    let source = b"frontend stats
+  mode http
+  bind *:8404
+  stats uri /stats
+  stats auth operator:secret
+";
+
+    let imported = import_fixture("authenticated-stats-page.cfg", source);
+    let candidate = imported.value();
+    assert_eq!(code_count(imported.diagnostics(), E_STATS_UNSUPPORTED), 1);
+    assert!(candidate.draft.stats.is_none());
+    assert!(candidate.draft.listeners.is_empty());
+    assert!(candidate.draft.http_services.is_empty());
+}
+
+#[test]
 fn explicit_prometheus_migration_overlay_enables_the_distinct_oxiroute_stats_contract() {
     let source = b"frontend metrics
   bind 127.0.0.1:8404
@@ -1132,7 +1490,7 @@ fn explicit_prometheus_migration_overlay_enables_the_distinct_oxiroute_stats_con
             .binds,
         ["127.0.0.1:8404".parse().unwrap()]
     );
-    assert_eq!(candidate.activation_requirements.len(), 4);
+    assert_eq!(candidate.activation_requirements.len(), 3);
     assert!(
         candidate
             .activation_requirements
@@ -1143,7 +1501,7 @@ fn explicit_prometheus_migration_overlay_enables_the_distinct_oxiroute_stats_con
         overlay.kind == oxiroute_import::OperationalOverlayKind::PrometheusMigration
             && overlay.satisfied
     }));
-    assert_eq!(code_count(imported.diagnostics(), E_STATS_UNSUPPORTED), 4);
+    assert_eq!(code_count(imported.diagnostics(), E_STATS_UNSUPPORTED), 3);
 }
 
 #[test]
@@ -1294,7 +1652,6 @@ frontend public
   default_backend app
 backend app
   balance leastconn
-  option http-server-close
   server app1 127.0.0.1:3000
   server app2 127.0.0.1:3001
 ";
@@ -1311,7 +1668,7 @@ backend app
     );
     assert_eq!(
         config.upstream_pools[0].connection_reuse,
-        oxiroute_config::UpstreamConnectionReuse::Never
+        oxiroute_config::UpstreamConnectionReuse::Safe
     );
     assert_eq!(config.http_services.len(), 1);
     assert_eq!(config.listeners.len(), 1);
@@ -1319,6 +1676,86 @@ backend app
         lowered.diagnostics(),
         "request-body limit"
     ));
+}
+
+#[test]
+fn first_and_server_maxconn_still_require_request_lifetime_connections() {
+    for backend in [
+        "balance first\n  server app1 127.0.0.1:3000",
+        "balance roundrobin\n  server app1 127.0.0.1:3000 maxconn 2",
+    ] {
+        let source = format!(
+            "defaults web\n  mode http\n  retries 0\n  timeout connect 30s\n  timeout server 30s\nfrontend public\n  bind 127.0.0.1:18080\n  default_backend app\nbackend app\n  {backend}\n"
+        );
+        let lowered = import_fixture("request-lifetime-sensitive.cfg", source.as_bytes());
+
+        assert!(lowered.value().config.is_none(), "{backend}");
+        assert_blocker(lowered.diagnostics(), "server maxconn/first");
+    }
+}
+
+#[test]
+fn bare_redispatch_lowers_to_delayed_same_server_retries_and_final_redispatch() {
+    let source = b"defaults web
+  mode http
+  retries 3
+  option redispatch
+  timeout connect 600s
+  timeout server 600s
+frontend public
+  bind 127.0.0.1:18080
+  default_backend app
+backend app
+  balance roundrobin
+  server app1 127.0.0.1:3000
+  server app2 127.0.0.1:3001
+";
+    let lowered = import_fixture("redispatch.cfg", source);
+    let config = lowered.value().config.as_ref().unwrap_or_else(|| {
+        panic!(
+            "bare redispatch did not finalize: {:#?}",
+            lowered.diagnostics()
+        )
+    });
+    let HttpRouteAction::Proxy { policy, .. } = &config.http_services[0].routes[0].action else {
+        panic!("proxy route")
+    };
+
+    assert_eq!(policy.retry.max_retries, 3);
+    assert_eq!(
+        policy.retry.target,
+        oxiroute_config::HttpRetryTarget::SameServer
+    );
+    assert_eq!(policy.retry.delay_ms, 1_000);
+    assert!(policy.retry.final_redispatch);
+    assert_eq!(
+        policy.retry.triggers,
+        [
+            oxiroute_config::HttpRetryTrigger::ConnectFailure,
+            oxiroute_config::HttpRetryTrigger::ConnectTimeout,
+        ]
+    );
+}
+
+#[test]
+fn redispatch_interval_forms_remain_blocking() {
+    let source = b"defaults web
+  mode http
+  retries 3
+  option redispatch 2
+  timeout connect 5s
+  timeout server 30s
+frontend public
+  bind 127.0.0.1:18080
+  default_backend app
+backend app
+  balance roundrobin
+  server app1 127.0.0.1:3000
+";
+    let lowered = import_fixture("redispatch-interval.cfg", source);
+
+    assert!(lowered.value().config.is_none());
+    assert_blocker(lowered.diagnostics(), "redispatch interval forms");
 }
 
 #[test]
@@ -1784,6 +2221,32 @@ fn assert_blocker(diagnostics: &[Diagnostic], message: &str) {
                 && diagnostic.message().contains(message)
         }),
         "missing blocker containing {message:?}"
+    );
+}
+
+fn assert_hostrouter_endpoints(pool: &oxiroute_config::UpstreamPool) {
+    let endpoints = pool
+        .servers
+        .iter()
+        .map(|server| match &server.endpoint {
+            UpstreamEndpoint::Dns { host, port } => (host.as_str(), *port),
+            endpoint => panic!("unexpected hostrouter endpoint: {endpoint:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        endpoints,
+        [
+            ("whitebeast.lan", 11434),
+            ("whitebeast.lan", 11435),
+            ("bhavapower.lan", 11434),
+            ("bhavapower.lan", 11435),
+            ("phoenix.lan", 11434),
+            ("chicopc.lan", 11434),
+            ("chicopc.lan", 11435),
+            ("back1.lan", 11434),
+            ("back1.lan", 11435),
+            ("macmini.lan", 11434),
+        ]
     );
 }
 

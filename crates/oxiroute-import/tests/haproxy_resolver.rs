@@ -5,8 +5,8 @@ use oxiroute_import::haproxy::{
     E_CONFLICTING_DIRECTIVE, E_DUPLICATE_IDENTITY, E_LOGGING_UNSUPPORTED, E_PROCESS_OWNED,
     E_STATS_UNSUPPORTED, E_UNCONSUMED_DIRECTIVE, E_UNKNOWN_DIRECTIVE, E_UNRESOLVED_REFERENCE,
     E_UNSUPPORTED_FORM, E_UNSUPPORTED_SECTION, EffectiveConfiguration, Externalization,
-    LoadedSource, OptionState, ProxyMode, SemanticBlockerKind, ServerAddress, parse_sources,
-    resolve_parsed,
+    LoadedSource, OptionState, ProxyMode, SemanticBlockerKind, ServerAddress, StatsAdminPolicy,
+    parse_sources, resolve_parsed,
 };
 use oxiroute_import::{DiagnosticStage, Report, Severity, SourceFile, SourceId};
 
@@ -61,6 +61,114 @@ backend app_nodes
         occurrence_count(&configuration)
     );
     assert_eq!(code_count(&report, E_UNCONSUMED_DIRECTIVE), 0);
+}
+
+#[test]
+fn dedicated_stats_page_directives_are_typed_and_consumed_exactly() {
+    let contents = b"frontend stats
+  mode http
+  bind *:8404
+  stats uri /stats
+  stats refresh 1500ms
+  stats admin if LOCALHOST
+  stats admin if LOCALHOST
+";
+    let (configuration, report) = resolve_bytes(contents);
+
+    assert!(report.diagnostics().is_empty());
+    let frontend = &report.value().frontends[0];
+    assert!(frontend.stats.enable.as_ref().unwrap().value);
+    assert_eq!(frontend.stats.uri_prefix.as_ref().unwrap().value, b"/stats");
+    assert_eq!(
+        frontend.stats.refresh.as_ref().unwrap().value,
+        Duration::from_millis(1_500)
+    );
+    assert_eq!(
+        frontend.stats.admin.as_ref().unwrap().value,
+        StatsAdminPolicy::Localhost
+    );
+    assert_eq!(
+        report.value().ledger.len(),
+        occurrence_count(&configuration)
+    );
+    assert!(report.value().ledger.iter().all(|decision| {
+        matches!(
+            decision.outcome,
+            oxiroute_import::haproxy::DecisionOutcome::Consumed(_)
+        )
+    }));
+    assert!(report.value().activation_requirements.is_empty());
+}
+
+#[test]
+fn unix_at_bind_and_octal_mode_are_typed_with_direct_provenance() {
+    let contents = b"frontend public
+  mode http
+  bind unix@/run/haproxy/public.sock mode 777
+";
+    let (_, report) = resolve_bytes(contents);
+    let bind = &report.value().frontends[0].binds[0];
+
+    assert!(
+        report.diagnostics().is_empty(),
+        "{:?}",
+        report.diagnostics()
+    );
+    assert_eq!(
+        bind.address.value,
+        BindAddress::Unix {
+            path: b"/run/haproxy/public.sock".to_vec()
+        }
+    );
+    assert_eq!(bind.mode.as_ref().expect("Unix mode").value, 0o777);
+    assert!(
+        bind.mode
+            .as_ref()
+            .expect("Unix mode")
+            .provenance
+            .is_direct()
+    );
+}
+
+#[test]
+fn invalid_or_non_unix_bind_modes_are_rejected() {
+    for bind in [
+        "unix@/run/haproxy/public.sock mode 888",
+        "unix@/run/haproxy/public.sock mode 000",
+        "127.0.0.1:8080 mode 777",
+    ] {
+        let contents = format!("frontend public\n  mode http\n  bind {bind}\n");
+        let (_, report) = resolve_bytes(contents.as_bytes());
+
+        assert!(
+            report.has_errors(),
+            "invalid bind mode unexpectedly resolved: {bind}"
+        );
+        assert!(report.value().frontends[0].binds.is_empty());
+    }
+}
+
+#[test]
+fn unsupported_stats_forms_remain_externalized_and_block_page_activation() {
+    let contents = b"frontend stats
+  mode http
+  bind *:8404
+  stats enable
+  stats uri /stats
+  stats refresh 10s
+  stats admin if TRUE
+";
+    let (_, report) = resolve_bytes(contents);
+    let section = report.value().frontends[0].section.id;
+
+    assert_eq!(code_count(&report, E_STATS_UNSUPPORTED), 1);
+    assert_eq!(report.value().activation_requirements.len(), 1);
+    assert!(
+        report
+            .value()
+            .blocked_stats_page_sections
+            .contains(&section)
+    );
 }
 
 fn assert_hostrouter_frontend(configuration: &EffectiveConfiguration) {

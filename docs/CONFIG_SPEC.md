@@ -32,6 +32,14 @@ return {
   stats = {
     binds = { "127.0.0.1:8404", "[::1]:8404" },
     admin_token_file = "/etc/oxiroute/stats-admin.token",
+    pages = {
+      {
+        bind = "127.0.0.1:8405",
+        uri_prefix = "/haproxy",
+        refresh_ms = 10000,
+        admin = "localhost",
+      },
+    },
   },
   certificates = {
     {
@@ -241,14 +249,21 @@ Current constraints:
   configuration routes use bearer authentication, but the schema does not expose a remote
   management mode.
 - `management.ui_dir` optionally points to a prebuilt Vue distribution loaded into memory at daemon startup.
-- `stats` is optional and accepts one to eight nonoverlapping IPv4/IPv6 binds. Every bind serves
-  public read-only `/metrics` and `/ready` responses. `/stats` and `/api/v1/status` require a
-  loopback peer and the configured Bearer token. Server
+- `stats` is optional. `binds` and `pages` together contain one to eight nonoverlapping IPv4/IPv6
+  sockets. Every `binds` socket serves public read-only `/metrics` and `/ready`; `/stats` and
+  `/api/v1/status` require a loopback peer and the configured Bearer token. Server
   enable/disable uses `POST /stats/admin` with JSON `{ "pool": "...", "server": "...", "action":
   "enable" | "disable" }` plus `If-Generation-Revision`, and succeeds only for a loopback peer with
   exactly one matching Bearer token loaded from a no-follow regular file whose mode is `0400` or
   `0600`. GET and HEAD can never mutate pool state. Metric labels omit listener binds, upstream
-  addresses, paths, stream keys, and token material.
+  addresses, paths, stream keys, and token material. Each `pages` entry independently serves a
+  public HAProxy-compatible HTML table below its exact `uri_prefix`; apart from that prefix it does
+  not expose `/metrics`, `/ready`, the legacy authenticated `/stats`, `/api/v1/status`, or any other
+  observability route on that socket.
+  `refresh_ms` is `1` through `86400000`. `admin = "disabled"` makes the page read-only;
+  `admin = "localhost"` shows and accepts Ready/Drain/Maintenance forms only for same-origin
+  loopback requests with the active generation revision. Page administration does not use the
+  statistics Bearer token and MUST NOT be treated as remote administration.
 - Names MUST be unique within their certificate, TLS-profile, listener, pool, HTTP-service,
   forward-proxy-service, RTMP-service, or L4-service namespace.
 - Listener binds MUST be unique after normalization.
@@ -260,7 +275,10 @@ Current constraints:
   normalized Unix paths are rejected.
 - Unix paths MUST be valid UTF-8 absolute paths of at most 107 bytes. Repeated `/` separators are
   collapsed; a root-only path, trailing `/`, NUL, and `.` or `..` segments are rejected. Unix
-  listeners and upstreams can start only on Unix platforms. A Unix listener cannot use TLS.
+  listeners and upstreams can start only on Unix platforms. A Unix listener cannot use TLS. A Unix
+  listener directory MUST be owned by the effective service user or have the sticky bit, and no
+  path ancestor may be group/world writable unless it has the sticky bit. The runtime retains a
+  mode-`0600` `<socket>.oxiroute.lock` ownership marker beside each Unix listener.
 - HTTP, forward-HTTP/1, RTMP, and TCP listeners MUST reference an existing same-kind service. An
   RTMP service MUST contain between 1 and 256 unique applications, and one configuration accepts at
   most 64 RTMP services.
@@ -316,8 +334,12 @@ Current constraints:
   keepalive deadlines from 1 through 86400000 milliseconds. Request and keepalive deadlines are
   accepted only on HTTP listener protocols. The HTTP runtime enforces all three through downstream
   read deadlines; configured Unix listener modes are applied after descriptor-safe reservation.
-- A missing route `host` matches any authority. A host may be an exact DNS name/IP literal or a
-  single-label wildcard such as `*.example.com`; names are normalized to lowercase.
+- A missing route `host` matches any authority. `normalized_host` accepts an exact DNS name/IP
+  literal or a single-label wildcard such as `*.example.com` and normalizes names to lowercase.
+  `exact_authority` preserves and compares the authority bytes exactly, including any port.
+  `ascii_case_insensitive_exact_authority` compares only ASCII case-insensitively and does not add,
+  remove, or normalize a port. The nginx leading-wildcard and leading-dot selectors retain their
+  documented suffix semantics.
 - `path_prefix` defaults to `/`, matches only complete path segments, and has trailing slashes
   normalized away except for `/`. A missing or empty `methods` list matches every method;
   configured methods MUST be uppercase HTTP tokens.
@@ -343,15 +365,20 @@ Current constraints:
   returns `413` when an origin response has not already committed. Canonical rendering preserves
   the unbounded policy as explicit `null`.
 - `max_retries` is the number of additional connection attempts after the first, defaults to `0`,
-  and MUST be at most `3`. Retries are permitted only for bodyless `GET` and `HEAD` requests that
-  are not protocol upgrades, only after a transient connection-establishment failure, and only
-  when the configured `target` can be selected. `target = "next_server"` requires a distinct named
-  server; `target = "same_server"` reselects the same named server. `delay_ms` defaults to `0`, is
-  bounded to `60000`, and is applied before each route retry. Trying alternate addresses for one DNS
-  endpoint is transport fallback and does not consume `max_retries`; route retry begins only after
-  that bounded address set is exhausted. Established-connection errors, response statuses,
-  body-bearing requests, unsafe methods, and upgrades are never retried. Each attempt has its own
-  `upstream_io_timeout_ms` connect deadline; there is no total request deadline.
+  and MUST be at most `3`. A transient connection-establishment failure before any request bytes are
+  sent may retry any non-upgrade request because no request is replayed. A refused HTTP/2 stream is
+  replayed only for bodyless `GET` and `HEAD` requests; `method_safety = "get_head"` and
+  `body_safety = "empty"` express that replay boundary. Every retry also requires the configured
+  `target` to be selectable. `target = "next_server"` requires a distinct named server;
+  `target = "same_server"` reselects the same named server. `delay_ms` defaults to `0`, is bounded to
+  `60000`, and is applied before each route retry. Trying alternate addresses for one DNS endpoint
+  is transport fallback and does not consume `max_retries`; route retry begins only after that
+  bounded address set is exhausted. Established-connection errors other than a refused stream,
+  response statuses, upgrades, and unsafe or body-bearing request replays are never retried. Each
+  attempt has its own `upstream_io_timeout_ms` connect deadline; there is no total request deadline.
+  `final_redispatch = true` changes only the last configured retry from `same_server` to
+  `next_server`; it requires positive `max_retries` and `target = "same_server"` and otherwise
+  fails validation. It defaults to `false`.
 - L4 services reference a pool. Connect and idle timeouts default to `10000` and `300000`
   milliseconds; an optional lifetime timeout has no default. Configured timeout values MUST be
   nonzero. An L4 service MUST NOT reference a TLS-enabled upstream pool; opaque TLS pass-through
@@ -576,7 +603,7 @@ selectable `unchecked` state. When present, it has this strict schema:
 | --- | --- | --- | --- |
 | `type` | yes | none | `tcp` or `http` |
 | `interval_ms` | no | `10000` | `1000` through `86400000` inclusive |
-| `timeout_ms` | no | `1000` | `1` through `30000` inclusive and less than `interval_ms` |
+| `timeout_ms` | no | `1000` | `1` through `30000` inclusive and less than or equal to `interval_ms` |
 | `healthy_threshold` | no | `1` | `1` through `100` inclusive |
 | `unhealthy_threshold` | no | `3` | `1` through `100` inclusive |
 | `startup` | no | `checking` | `healthy`, `unhealthy`, or `checking` |
@@ -859,12 +886,18 @@ restricted Lua, UCI, or HOCON.
 - The backend MUST re-read and compare immediately before writing.
 - A mismatch returns a conflict and does not write.
 - Validation and writes prepare the complete candidate runtime, management UI assets, and Certbot
-  watcher prerequisites before any disk mutation.
+  watcher prerequisites before any disk mutation. The sole live-reservation exception is an
+  explicitly detected active Unix-listener mode change: the plan is validated without rebinding the
+  active path and the complete candidate is marked restart-required.
 - Writes use a unique same-directory temporary file, complete write, permission setting,
   file sync, atomic rename, and parent-directory sync.
-- A changed save returns `saved_pending_activation`; an idempotent save of the active generation
-  returns `unchanged_active`. The parent-directory watcher and generation supervisor prepare, start,
-  and atomically publish valid changed generations in-process; `restartRequired` remains false.
+- A changed save normally returns `saved_pending_activation`; an idempotent save of the active
+  generation returns `unchanged_active`. The parent-directory watcher and generation supervisor
+  prepare, start, and atomically publish reloadable changed generations in-process. A candidate that
+  changes the mode of an active Unix listener instead returns `saved_restart_required`,
+  `activationState = "restart_required"`, and `restartRequired = true`; candidate preparation does
+  not mutate or silently reuse the active socket, and the complete candidate is applied on process
+  restart.
 - The watcher debounces root-directory events and periodically re-resolves the root and native
   references. Invalid edits are rejected while the last active generation continues serving.
 

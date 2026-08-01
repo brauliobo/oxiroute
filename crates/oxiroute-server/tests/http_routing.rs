@@ -56,6 +56,36 @@ fn host_precedence_is_exact_authority_then_normalized_exact_wildcard_and_catch_a
 }
 
 #[test]
+fn ascii_case_insensitive_exact_authority_matches_case_but_not_an_added_port() {
+    let table = RouteTable::new(vec![
+        route(None, "/", None, "fallback"),
+        Route::new(
+            Some(HttpHostSelector::AsciiCaseInsensitiveExactAuthority {
+                value: "ollama.yellowmaverick.com".into(),
+            }),
+            HttpPathSelector::RawPrefix { value: "/".into() },
+            None,
+            "ollama",
+        )
+        .expect("case-insensitive exact authority"),
+    ]);
+
+    assert_eq!(
+        selected_pool(&table, Some("OLLAMA.YellowMaverick.COM"), "/", &Method::GET,),
+        Some("ollama")
+    );
+    assert_eq!(
+        selected_pool(
+            &table,
+            Some("ollama.yellowmaverick.com:80"),
+            "/",
+            &Method::GET,
+        ),
+        Some("fallback")
+    );
+}
+
+#[test]
 fn longest_path_prefix_wins_within_a_host_class() {
     let table = RouteTable::new(vec![
         route(Some("api.example.com"), "/", None, "root"),

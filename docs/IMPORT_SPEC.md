@@ -64,24 +64,34 @@ general activation of standalone import reports. Restricted Lua cannot declare n
   those inputs, retains immutable original source snapshots and inactive spans, and emits a source
   map from generated spans back to the covering original bytes. The finalizable subset covers HTTP and TCP,
   aggregate/listener/server admission, socket/DNS/Unix endpoints, `roundrobin`, `leastconn`, and
-  `first`, healthy-startup checks, bounded retries, independent timeout scopes including upstream
+  `first`, reusable HTTP least-connections, healthy-startup checks with exact timeout preservation,
+  bounded retries with bare final redispatch, independent timeout scopes including upstream
   queue deadlines, source-CIDR `forwardfor` exceptions, cumulative inherited `default-server`
   health intervals/capacity, and server-close connection reuse. A backend-scoped, uniquely consumed
   one-request-per-connection overlay can provide the same lifecycle boundary when captured
   surrounding evidence, such as hostrouter's nginx HTTP/1.0/no-keepalive hop, establishes it. DNS
   names remain canonical and are not resolved during import.
-- The strict HTTP subset also preserves HAProxy's default three connection retries and exact
+- The strict HTTP subset also preserves HAProxy's default three connection retries, exact
   `path -i` ACLs used by conditional fixed health responses; those lower to an ASCII case-insensitive
-  exact canonical path selector ahead of the proxy fallback.
+  exact canonical path selector ahead of the proxy fallback, and `hdr(host) -i` as an ASCII
+  case-insensitive exact authority without port widening. A conditional backend with no native
+  default receives one final fixed `503` catch-all so unmatched requests do not acquire a fabricated
+  upstream destination. `unix@` listener binds retain the Unix path and explicit mode.
 - The synthetic `hostrouter-static-representable.cfg` fixture proves that an audited-shaped Unix
   frontend plus DNS `leastconn` backend can finalize; it is not live-host evidence. Live sanitized
   fixture trees are mapped in `coverage/host-cases.json` as live-origin hashed/read-only captured
   evidence. Their metadata separates direct origin hashes and exact hash commands from checked-in
   post-sanitization per-file hashes, records the sanitizer steps, and states that raw bytes were not
-  stored. This is not cryptographic signer authentication. Logging and process policy are typed
-  deployment requirements. HAProxy stats page, URI, authentication, refresh, administration, and
-  exact `http-request use-service prometheus-exporter if { path /metrics }` forms remain
-  non-equivalent activation requirements. The exact Prometheus form emits canonical OxiRoute stats
+  stored. This is not cryptographic signer authentication. Logging and process policy remain typed
+  deployment warnings that an operator MUST reproduce outside OxiRoute; import does not implement
+  HAProxy syslog formats, user/chroot/daemon, or worker topology. A dedicated HTTP frontend/listen
+  containing a supported `stats uri` (which implicitly enables HAProxy stats), refresh, optional
+  `stats enable`, and optional `stats admin if LOCALHOST` shape lowers to an independent canonical
+  page and no ordinary HTTP service. Effective frontend/bind `maxconn` and client, HTTP-request, and
+  HTTP-keep-alive timeouts lower to page admission/downstream policy. Response rules and other active
+  unrepresented listener policy fail closed rather than disappearing. Authentication,
+  hide/version and other stats forms remain activation requirements, as does exact
+  `http-request use-service prometheus-exporter if { path /metrics }`. The exact Prometheus form emits canonical OxiRoute stats
   only when a uniquely matched operator migration overlay explicitly accepts different metric
   families and the broader OxiRoute stats routes.
 - Squid has a bounded source/include, parser, typed semantic report, and strict canonical lowering
@@ -190,20 +200,28 @@ coverage manifest maps an audited fixture.
 
 ## HAProxy
 
-Target support beyond the current HTTP/TCP slice:
+The current strict HTTP/TCP slice includes:
 
 - `global` values required to interpret supported sections.
 - `defaults`, `frontend`, `backend`, and `listen`.
 - `bind`, `mode http`, `mode tcp`, `default_backend`.
-- Simple ordered `use_backend` rules using exact host or path-prefix ACLs.
+- Simple ordered `use_backend` rules using exact host or path-prefix ACLs, including
+  case-insensitive exact Host authority without port normalization and a fixed `503` fallback when
+  no default backend exists.
 - `balance roundrobin`, `leastconn`, and `first` with canonical connection accounting.
 - Static socket, DNS, and Unix `server` endpoints and basic frontend/backend TLS where the canonical
   transport has equivalent semantics.
+- Dedicated supported stats pages, `unix@` listener modes, exact health timeout preservation,
+  reusable HTTP least-connections, and bare redispatch as delayed same-server retries with a final
+  immediate next-server attempt. Only same-server retries wait the imported
+  `min(timeout connect, 1s)` delay.
 
 Blockers:
 
 - Generic UDP, arbitrary sample expressions, maps, stick tables, Lua, and dynamic servers.
 - Complex health checks, runtime server state, SPOE, and unsupported QUIC modes.
+- Redispatch interval arguments, broader ACL expressions, unsupported stats/authentication forms,
+  and server-selection options without an equivalent request-lifetime contract.
 
 HAProxy `-f` file/directory ordering and named `defaults from` inheritance MUST be retained.
 

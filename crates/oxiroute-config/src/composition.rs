@@ -1,4 +1,4 @@
-use crate::{Config, ConfigError, validate_config};
+use crate::{Config, ConfigError, Stats, validate_config};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigCompositionError {
@@ -40,7 +40,7 @@ pub fn compose_configs(configs: &[Config]) -> Result<Config, ConfigCompositionEr
             &mut composed.management,
             config.management.as_ref(),
         )?;
-        merge_optional("stats", &mut composed.stats, config.stats.as_ref())?;
+        merge_stats(&mut composed.stats, config.stats.as_ref())?;
         composed.certificates.extend(config.certificates.clone());
         composed.tls_profiles.extend(config.tls_profiles.clone());
         composed.listeners.extend(config.listeners.clone());
@@ -90,14 +90,35 @@ fn merge_optional<T: Clone + Eq>(
     Ok(())
 }
 
+fn merge_stats(
+    target: &mut Option<Stats>,
+    incoming: Option<&Stats>,
+) -> Result<(), ConfigCompositionError> {
+    let Some(incoming) = incoming else {
+        return Ok(());
+    };
+    let Some(target) = target else {
+        *target = Some(incoming.clone());
+        return Ok(());
+    };
+    merge_optional(
+        "stats.admin_token_file",
+        &mut target.admin_token_file,
+        incoming.admin_token_file.as_ref(),
+    )?;
+    target.binds.extend(incoming.binds.iter().copied());
+    target.pages.extend(incoming.pages.clone());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::{Ipv4Addr, SocketAddr};
 
     use crate::{
         DnsResolutionPolicy, DownstreamTimeoutPolicy, HttpVersionPolicy, L4Service, Listener,
-        ListenerBind, Protocol, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint,
-        UpstreamPool, UpstreamServer,
+        ListenerBind, Protocol, StatsPage, StatsPageAdminPolicy, UpstreamAlgorithm,
+        UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer,
     };
 
     use super::*;
@@ -113,6 +134,34 @@ mod tests {
         assert_eq!(composed.max_connections, Some(4096));
         assert_eq!(composed.listeners[0].name, "nginx");
         assert_eq!(composed.listeners[1].name, "haproxy");
+    }
+
+    #[test]
+    fn composes_independent_stats_binds_and_pages() {
+        let mut first = tcp_config("nginx", 80, 9080);
+        first.stats = Some(Stats {
+            binds: vec!["127.0.0.1:9000".parse().expect("stats bind")],
+            admin_token_file: None,
+            pages: Vec::new(),
+        });
+        let mut second = tcp_config("haproxy", 8080, 9081);
+        second.stats = Some(Stats {
+            binds: Vec::new(),
+            admin_token_file: None,
+            pages: vec![StatsPage {
+                bind: "127.0.0.1:9001".parse().expect("stats page bind"),
+                uri_prefix: "/stats".into(),
+                refresh_ms: 10_000,
+                admin: StatsPageAdminPolicy::Disabled,
+                max_connections: None,
+                downstream_timeouts: DownstreamTimeoutPolicy::default(),
+            }],
+        });
+
+        let composed = compose_configs(&[first, second]).expect("composed stats");
+        let stats = composed.stats.expect("stats process");
+        assert_eq!(stats.binds.len(), 1);
+        assert_eq!(stats.pages.len(), 1);
     }
 
     #[test]

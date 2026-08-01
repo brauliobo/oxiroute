@@ -126,11 +126,37 @@ pub struct Management {
 #[serde(deny_unknown_fields)]
 pub struct Stats {
     /// Every IPv4 or IPv6 address that serves `/stats` and `/metrics`.
+    #[serde(default)]
     pub binds: Vec<SocketAddr>,
     /// Required for loopback `/stats`, `/api/v1/status`, and state-changing admin requests. The file
     /// contents are never rendered into status, stats, or metrics output.
     #[serde(default)]
     pub admin_token_file: Option<PathBuf>,
+    /// Independent public, read-only HAProxy-compatible status pages.
+    #[serde(default)]
+    pub pages: Vec<StatsPage>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct StatsPage {
+    pub bind: SocketAddr,
+    pub uri_prefix: String,
+    pub refresh_ms: u64,
+    pub admin: StatsPageAdminPolicy,
+    /// Concurrent connection cap. Omitted or explicit null means unbounded.
+    #[serde(default)]
+    pub max_connections: Option<u64>,
+    #[serde(default)]
+    pub downstream_timeouts: DownstreamTimeoutPolicy,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StatsPageAdminPolicy {
+    #[default]
+    Disabled,
+    Localhost,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -550,6 +576,9 @@ pub enum HttpHostSelector {
         value: String,
     },
     ExactAuthority {
+        value: String,
+    },
+    AsciiCaseInsensitiveExactAuthority {
         value: String,
     },
     /// nginx `*.example.com`: matches one or more labels before the suffix.
@@ -1002,6 +1031,8 @@ pub struct HttpRetryPolicy {
     pub target: HttpRetryTarget,
     #[serde(default)]
     pub delay_ms: u64,
+    #[serde(default)]
+    pub final_redispatch: bool,
 }
 
 impl Default for HttpRetryPolicy {
@@ -1013,6 +1044,7 @@ impl Default for HttpRetryPolicy {
             body_safety: HttpRetryBodySafety::default(),
             target: HttpRetryTarget::default(),
             delay_ms: 0,
+            final_redispatch: false,
         }
     }
 }
@@ -1783,6 +1815,14 @@ pub enum ConfigError {
     TlsUpstreamPoolForL4Service { service: String, pool: String },
     #[error("management listener must use loopback, got `{0}`")]
     ManagementMustUseLoopback(SocketAddr),
-    #[error("statistics must configure between one and eight unique IPv4/IPv6 listener binds")]
+    #[error(
+        "statistics must configure between one and eight total unique IPv4/IPv6 listener binds"
+    )]
     InvalidStatsBinds,
+    #[error("statistics page {page} has invalid `{field}`: {detail}")]
+    InvalidStatsPage {
+        page: usize,
+        field: &'static str,
+        detail: &'static str,
+    },
 }

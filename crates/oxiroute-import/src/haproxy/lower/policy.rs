@@ -394,7 +394,8 @@ impl Lowerer<'_> {
                 self.lower_request_header_rules(frontend, &settings)?;
             request_headers.append(&mut explicit_request_headers);
             let response_headers = self.lower_response_header_rules(frontend, &settings)?;
-            let max_retries = self.http_retries(&section, &settings)?;
+            let (max_retries, final_redispatch, delay_ms) =
+                self.http_retries(&section, &settings)?;
             policies.insert(
                 *target,
                 HttpProxyPolicy {
@@ -404,7 +405,12 @@ impl Lowerer<'_> {
                     retry: HttpRetryPolicy {
                         max_retries,
                         target: HttpRetryTarget::SameServer,
-                        delay_ms: 0,
+                        delay_ms,
+                        final_redispatch,
+                        triggers: vec![
+                            oxiroute_config::HttpRetryTrigger::ConnectFailure,
+                            oxiroute_config::HttpRetryTrigger::ConnectTimeout,
+                        ],
                         ..HttpRetryPolicy::default()
                     },
                     ..HttpProxyPolicy::default()
@@ -712,29 +718,37 @@ impl Lowerer<'_> {
         &mut self,
         _section: &EffectiveSection,
         settings: &ProxySettings,
-    ) -> Option<u8> {
-        if let Some(redispatch) = settings
-            .redispatch
-            .as_ref()
-            .filter(|value| matches!(value.value, OptionState::Enabled(_)))
-        {
-            self.block_value(
-                redispatch,
-                "HAProxy redispatch retry scheduling cannot be represented as same-server retries without an exact redispatch attempt policy",
-            );
-            return None;
-        }
-        if let Some(retries) = &settings.retries {
+    ) -> Option<(u8, bool, u64)> {
+        let redispatch = match settings.redispatch.as_ref().map(|value| &value.value) {
+            Some(OptionState::Enabled(redispatch)) if redispatch.interval.is_none() => true,
+            Some(OptionState::Enabled(_)) => {
+                self.block_value(
+                    settings.redispatch.as_ref().expect("enabled redispatch"),
+                    "HAProxy redispatch interval forms are outside the supported final-attempt subset",
+                );
+                return None;
+            }
+            Some(OptionState::Disabled) | None => false,
+        };
+        let max_retries = if let Some(retries) = &settings.retries {
             match u8::try_from(retries.value) {
-                Ok(value) if value <= 3 => Some(value),
+                Ok(value) if value <= 3 => value,
                 _ => {
                     self.block_value(retries, "HAProxy retries exceed the canonical retry bound");
-                    None
+                    return None;
                 }
             }
         } else {
-            Some(3)
-        }
+            3
+        };
+        let delay_ms = settings
+            .timeouts
+            .connect
+            .as_ref()
+            .and_then(|timeout| crate::canonical::duration_milliseconds(timeout.value))
+            .unwrap_or(1_000)
+            .min(1_000);
+        Some((max_retries, redispatch && max_retries > 0, delay_ms))
     }
 
     pub(super) fn require_zero_retries(

@@ -156,7 +156,7 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
             small {{ draft.management ? 'Configured' : 'Disabled' }}
           button.object-link(type="button" :aria-current="selectedKey === 'stats' ? 'page' : undefined" @click="selectedKey = 'stats'")
             span Statistics
-            small {{ draft.stats ? `${draft.stats.binds.length} binds` : 'Disabled' }}
+            small {{ draft.stats ? `${draft.stats.binds.length} observability binds / ${draft.stats.pages.length} pages` : 'Disabled' }}
 
           template(v-for="group in navigationGroups" :key="group.collection")
             .nav-group-heading(:data-field="group.collection")
@@ -213,7 +213,7 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
               span.object-path Config.stats
             label.enable-row(data-field="stats")
               input(type="checkbox" :checked="draft.stats != null" @change="toggleStats")
-              span Enable HAProxy-compatible stats and Prometheus endpoints
+              span Enable observability binds and/or standalone statistics pages
             .field-grid(v-if="draft.stats")
               label.field(data-field="stats.binds")
                 span Bind addresses
@@ -223,6 +223,48 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
                 span Admin token file
                 input(type="text" :value="draft.stats.admin_token_file ?? ''" placeholder="/etc/oxiroute/stats-admin.token" @input="setStatsAdminTokenFile")
                 small Optional; without it, administration remains disabled.
+            fieldset.route-list(v-if="draft.stats" data-field="stats.pages")
+              .route-heading
+                legend HAProxy-compatible pages
+                button.add-row(
+                  type="button"
+                  :disabled="draft.stats.binds.length + draft.stats.pages.length >= 8"
+                  title="The server allows at most eight statistics binds and pages in total."
+                  @click="addStatsPage"
+                ) + Add statistics page
+              p.empty-list(v-if="draft.stats.pages.length === 0") No standalone statistics pages configured.
+              article.route-card(v-for="(page, pageIndex) in draft.stats.pages" :key="pageIndex")
+                header.route-card-heading
+                  strong Statistics page {{ pageIndex + 1 }}
+                  button.danger-link(type="button" :aria-label="`Remove statistics page ${pageIndex + 1}`" @click="removeStatsPage(pageIndex)") Remove
+                .field-grid
+                  label.field(data-field="stats.pages[].bind")
+                    span Bind address
+                    input(type="text" v-model="page.bind" placeholder="127.0.0.1:8404")
+                  label.field(data-field="stats.pages[].uri_prefix")
+                    span URI prefix
+                    input(type="text" v-model="page.uri_prefix" placeholder="/stats")
+                  label.field(data-field="stats.pages[].refresh_ms")
+                    span Refresh (milliseconds)
+                    input(type="number" min="1" max="86400000" step="1" v-model.number="page.refresh_ms")
+                  label.field(data-field="stats.pages[].admin")
+                    span Administration
+                    select(v-model="page.admin")
+                      option(value="disabled") Disabled
+                      option(value="localhost") Localhost only
+                  label.field(data-field="stats.pages[].max_connections")
+                    span Maximum connections
+                    input(type="number" min="1" step="1" :value="page.max_connections ?? ''" placeholder="Unbounded" @input="setStatsPageOptionalInteger(pageIndex, 'max_connections', $event)")
+                  label.field(data-field="stats.pages[].downstream_timeouts.client_timeout_ms")
+                    span Client timeout (milliseconds)
+                    input(type="number" min="1" max="86400000" step="1" :value="page.downstream_timeouts.client_timeout_ms ?? ''" placeholder="No timeout" @input="setStatsPageTimeout(pageIndex, 'client_timeout_ms', $event)")
+                  label.field(data-field="stats.pages[].downstream_timeouts.request_timeout_ms")
+                    span Request-header timeout (milliseconds)
+                    input(type="number" min="1" max="86400000" step="1" :value="page.downstream_timeouts.request_timeout_ms ?? ''" placeholder="Inherit client timeout" @input="setStatsPageTimeout(pageIndex, 'request_timeout_ms', $event)")
+                  label.field(data-field="stats.pages[].downstream_timeouts.keepalive_timeout_ms")
+                    span Keep-alive timeout (milliseconds)
+                    input(type="number" min="1" max="86400000" step="1" :value="page.downstream_timeouts.keepalive_timeout_ms ?? ''" placeholder="Runtime default" @input="setStatsPageTimeout(pageIndex, 'keepalive_timeout_ms', $event)")
+                small The page is public and adds no routes beyond its URI prefix. Localhost administration accepts only same-origin loopback requests.
 
           CertificateEditor(
             v-else-if="selectedCertificate"
@@ -351,7 +393,8 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
             dt Normalization
             dd {{ normalizationChanged ? 'Server normalized the submitted model' : 'No model changes' }}
         p.dialog-error(v-if="dialogError" role="alert") {{ dialogError }}
-        p.review-warning A changed canonical file requires a process restart. An unchanged candidate keeps the current active generation.
+        p.review-warning(v-if="validationResult?.restartRequired") This active Unix listener mode change is saved for the next process restart.
+        p.review-warning(v-else) A changed canonical file is queued for in-process activation; no process restart is required.
         .review-actions
           button.secondary-button(type="button" @click="closeReview") Continue editing
           button.primary-button(type="button" :disabled="saving || !canReviewSave || staleRevision !== null" @click="writeCandidate") {{ saving ? 'Saving...' : 'Save canonical configuration' }}
@@ -599,7 +642,7 @@ function setManagementUiDir(event: Event): void {
 function toggleStats(event: Event): void {
   if (!draft.value) return
   draft.value.stats = (event.target as HTMLInputElement).checked
-    ? { binds: ['127.0.0.1:8404'], admin_token_file: null }
+    ? { binds: ['127.0.0.1:8404'], admin_token_file: null, pages: [] }
     : null
 }
 
@@ -613,6 +656,47 @@ function setStatsBinds(event: Event): void {
 
 function setStatsAdminTokenFile(event: Event): void {
   if (draft.value?.stats) draft.value.stats.admin_token_file = nullableInput(event)
+}
+
+function addStatsPage(): void {
+  const stats = draft.value?.stats
+  if (!stats || stats.binds.length + stats.pages.length >= 8) return
+  stats.pages.push({
+    bind: '127.0.0.1:8405',
+    uri_prefix: '/stats',
+    refresh_ms: 10_000,
+    admin: 'disabled',
+    max_connections: null,
+    downstream_timeouts: {
+      client_timeout_ms: null,
+      request_timeout_ms: null,
+      keepalive_timeout_ms: null,
+    },
+  })
+}
+
+function setStatsPageOptionalInteger(
+  index: number,
+  field: 'max_connections',
+  event: Event,
+): void {
+  const page = draft.value?.stats?.pages[index]
+  if (!page) return
+  page[field] = nullableIntegerInput(event)
+}
+
+function setStatsPageTimeout(
+  index: number,
+  field: keyof NonNullable<CanonicalConfig['stats']>['pages'][number]['downstream_timeouts'],
+  event: Event,
+): void {
+  const page = draft.value?.stats?.pages[index]
+  if (!page) return
+  page.downstream_timeouts[field] = nullableIntegerInput(event)
+}
+
+function removeStatsPage(index: number): void {
+  draft.value?.stats?.pages.splice(index, 1)
 }
 
 function closeReview(): void {
@@ -685,6 +769,11 @@ function inputValue(event: Event): string {
 
 function nullableInput(event: Event): string | null {
   return inputValue(event) || null
+}
+
+function nullableIntegerInput(event: Event): number | null {
+  const value = inputValue(event)
+  return value === '' ? null : Number(value)
 }
 
 function shortRevision(revision: string): string {

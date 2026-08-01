@@ -305,7 +305,13 @@ export function contractTopology(): TopologySnapshot {
           requestHeaderMutationCount: 0,
           responseHeaderMutationCount: 0,
           cookiePathRewriteCount: 0,
-          retry: { maxRetries: 0, triggers: ['connect_failure', 'connect_timeout', 'refused_stream'] },
+          retry: {
+            maxRetries: 0,
+            triggers: ['connect_failure', 'connect_timeout', 'refused_stream'],
+            target: 'next_server',
+            delayMs: 0,
+            finalRedispatch: false,
+          },
         },
       },
     }, {
@@ -516,6 +522,7 @@ export function contractConfigSnapshot(): ConfigSnapshot {
             max_retries: 2,
             target: 'next_server',
             delay_ms: 0,
+            final_redispatch: false,
             triggers: ['connect_failure', 'connect_timeout', 'refused_stream'],
             method_safety: 'get_head',
             body_safety: 'empty',
