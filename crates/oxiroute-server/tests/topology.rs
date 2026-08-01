@@ -8,15 +8,16 @@ use std::{fs, sync::Arc};
 use oxiroute_config::{
     AlpnProtocol, Certificate, CertificateSource, Config, HttpAccessPolicy, HttpHostSelector,
     HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction, HttpService, HttpVersionPolicy,
-    L4Service, Listener, ListenerBind, Protocol, RtmpApplication, RtmpService, TlsProfile,
-    TlsVersion, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, UpstreamServer,
+    L4Service, Listener, ListenerBind, Protocol, RtmpApplication, RtmpService, Stats, StatsPage,
+    StatsPageAdminPolicy, TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamEndpoint,
+    UpstreamPool, UpstreamServer,
 };
 use oxiroute_rtmp::{RtmpCapabilities, RtmpRegistry};
 use oxiroute_server::{
     RtmpManagementApi, RuntimeMetrics, RuntimePlan, TopologyEdgeKind, TopologyNode,
     TopologyNodeKind, runtime_plan,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use config_support::{
@@ -314,6 +315,76 @@ fn serves_active_topology_with_name_joined_runtime_overlays() {
         })
         .expect("failed web runtime overlay");
     assert_eq!(web_overlay["state"], "failed");
+}
+
+#[test]
+fn serves_topology_with_a_stats_page_runtime_overlay() {
+    let temp = TempDir::new().expect("TLS temp directory");
+    let mut config = topology_config(&temp);
+    let page_bind = "127.0.0.1:18405".parse().expect("stats page bind");
+    config.stats = Some(Stats {
+        binds: Vec::new(),
+        admin_token_file: None,
+        pages: vec![StatsPage {
+            bind: page_bind,
+            uri_prefix: "/stats".into(),
+            refresh_ms: 10_000,
+            admin: StatsPageAdminPolicy::Disabled,
+            max_connections: Some(20),
+            downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        }],
+    });
+    let plan = runtime_plan(&config).expect("runtime plan");
+    let metrics = RuntimeMetrics::new();
+    metrics
+        .register_upstream_pools(plan.pools.iter().cloned())
+        .expect("pool metrics");
+    for (listener, service) in config.listeners.iter().zip(&plan.services) {
+        metrics
+            .register_configured_listener(
+                &listener.name,
+                service.kind.protocol(),
+                &listener.bind,
+                listener.max_connections,
+            )
+            .expect("listener metrics");
+    }
+    metrics
+        .register_configured_listener(
+            "@stats-page-0",
+            "http",
+            &ListenerBind::Socket { address: page_bind },
+            Some(20),
+        )
+        .expect("stats page metrics")
+        .mark_listening();
+    let api = RtmpManagementApi::new(
+        Arc::new(RtmpRegistry::new(RtmpCapabilities {
+            live_ingest: false,
+            manual_recording: false,
+        })),
+        metrics,
+        Arc::clone(&plan.topology),
+    );
+
+    let response = api.handle("GET", "/api/v1/topology", 100);
+    let body: Value = serde_json::from_slice(&response.body).expect("topology JSON");
+
+    assert_eq!(response.status, 200);
+    let node = body["nodes"]
+        .as_array()
+        .and_then(|nodes| nodes.iter().find(|node| node["name"] == "@stats-page-0"))
+        .expect("stats page node");
+    assert_eq!(node["configPath"], "/stats/pages/0");
+    assert_eq!(
+        node["attributes"]["bind"],
+        json!({ "type": "socket", "address": page_bind })
+    );
+    assert!(body["overlays"].as_array().is_some_and(|overlays| {
+        overlays
+            .iter()
+            .any(|overlay| overlay["nodeId"] == node["id"])
+    }));
 }
 
 #[test]

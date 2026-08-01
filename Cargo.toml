@@ -46,7 +46,7 @@ notify = "8.2"
 openssl = "0.10.81"
 pingora = { version = "0.8.0", features = ["lb", "openssl", "proxy"] }
 rml_rtmp = "=0.8.0"
-rustix = { version = "1.1", features = ["fs"] }
+rustix = { version = "1.1", features = ["fs", "net", "process"] }
 rustls = { version = "0.23.40", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2.2.0"
 serde = { version = "1", features = ["derive"] }

@@ -18,6 +18,7 @@ use crate::{
         ConfigRevision, ConfigSaveFailure, ConfigSaveOutcome, ConfigValidationOutcome,
         ValidatedConfigDraft,
     },
+    listener_reservation::unix_listener_mode_change_requires_restart,
     runtime_plan,
     secure_bearer::{HeaderCardinality, SecureBearerToken, SecureBearerTokenError, single_header},
 };
@@ -178,7 +179,7 @@ impl ConfigApiState {
             Ok(draft) => draft,
             Err(response) => return response,
         };
-        let candidate = match self.prepare_candidate(&draft, now_unix_ms) {
+        let candidate = match self.prepare_candidate(&draft, now_unix_ms, None) {
             Ok(candidate) => candidate,
             Err(response) => return response,
         };
@@ -192,7 +193,14 @@ impl ConfigApiState {
             "configPreview": candidate.draft.config_preview,
             "diagnostics": candidate.draft.diagnostics,
             "topology": candidate.topology,
+            "restartRequired": candidate.restart_required,
         });
+        if candidate.restart_required {
+            response["diagnostics"]
+                .as_array_mut()
+                .expect("candidate diagnostics are an array")
+                .push(restart_required_diagnostic());
+        }
         add_legacy_lua_preview(
             &mut response,
             candidate.draft.format,
@@ -211,11 +219,7 @@ impl ConfigApiState {
             Ok(draft) => draft,
             Err(response) => return response,
         };
-        let candidate = match self.prepare_candidate(&draft, now_unix_ms) {
-            Ok(candidate) => candidate,
-            Err(response) => return response,
-        };
-        let _mutation = if let Some(generations) = &self.generations {
+        let mutation = if let Some(generations) = &self.generations {
             match generations.begin_config_mutation() {
                 Ok(mutation) => Some(mutation),
                 Err(error) => {
@@ -229,19 +233,30 @@ impl ConfigApiState {
         } else {
             None
         };
+        let active_config = mutation
+            .as_ref()
+            .map(|mutation| mutation.generation().config().as_ref());
+        let candidate = match self.prepare_candidate(&draft, now_unix_ms, active_config) {
+            Ok(candidate) => candidate,
+            Err(response) => return response,
+        };
         let normalized_config = candidate.draft.normalized_config;
+        let restart_required = candidate.restart_required;
 
         match self.coordinator.save(expected, &normalized_config) {
             ConfigSaveOutcome::Saved(document) => self.saved_response(
                 &document.disk_revision,
                 &document.candidate_revision,
                 diagnostics_json(&document.diagnostics, false),
+                restart_required,
             ),
             ConfigSaveOutcome::Conflict(conflict) => self.conflict_response(&conflict),
             ConfigSaveOutcome::InvalidDraft(rejection) => {
                 ApiResponse::json(422, &json!({ "diagnostics": rejection.diagnostics }))
             }
-            ConfigSaveOutcome::Failed(failure) => self.failed_save_response(&failure),
+            ConfigSaveOutcome::Failed(failure) => {
+                self.failed_save_response(&failure, restart_required)
+            }
         }
     }
 
@@ -249,6 +264,7 @@ impl ConfigApiState {
         &self,
         draft: &Config,
         now_unix_ms: u64,
+        active_config: Option<&Config>,
     ) -> Result<PreparedCandidate, ApiResponse> {
         let candidate = match self.coordinator.validate(draft) {
             ConfigValidationOutcome::Valid(candidate) => candidate,
@@ -265,6 +281,21 @@ impl ConfigApiState {
                 &json!({ "diagnostics": [preparation_diagnostic(error)] }),
             )
         })?;
+        let restart_required = active_config.map_or_else(
+            || {
+                self.generations.as_ref().is_some_and(|generations| {
+                    generations.active().is_some_and(|active| {
+                        unix_listener_mode_change_requires_restart(
+                            active.config(),
+                            &candidate.normalized_config,
+                        )
+                    })
+                })
+            },
+            |active| {
+                unix_listener_mode_change_requires_restart(active, &candidate.normalized_config)
+            },
+        );
         if let Some(generations) = &self.generations {
             let disk_revision = match self.coordinator.load() {
                 ConfigLoadOutcome::Loaded(document) => document.disk_revision.clone(),
@@ -299,6 +330,7 @@ impl ConfigApiState {
         Ok(PreparedCandidate {
             topology: candidate_topology(&plan.topology, now_unix_ms),
             draft: candidate,
+            restart_required,
         })
     }
 
@@ -307,11 +339,16 @@ impl ConfigApiState {
         disk_revision: &ConfigRevision,
         candidate_revision: &ConfigRevision,
         mut diagnostics: Vec<Value>,
+        restart_required: bool,
     ) -> ApiResponse {
         let active_revision = self.active_revision();
         let unchanged_active = *candidate_revision == active_revision;
         if !unchanged_active {
-            diagnostics.push(activation_pending_diagnostic());
+            diagnostics.push(if restart_required {
+                restart_required_diagnostic()
+            } else {
+                activation_pending_diagnostic()
+            });
         }
         ApiResponse::json(
             200,
@@ -321,23 +358,36 @@ impl ConfigApiState {
                 "activeRevision": active_revision,
                 "outcome": if unchanged_active {
                     "unchanged_active"
+                } else if restart_required {
+                    "saved_restart_required"
                 } else {
                     "saved_pending_activation"
                 },
-                "activationState": if unchanged_active { "active" } else { "pending" },
-                "restartRequired": false,
+                "activationState": if unchanged_active {
+                    "active"
+                } else if restart_required {
+                    "restart_required"
+                } else {
+                    "pending"
+                },
+                "restartRequired": !unchanged_active && restart_required,
                 "diagnostics": diagnostics,
             }),
         )
     }
 
-    fn failed_save_response(&self, failure: &ConfigSaveFailure) -> ApiResponse {
+    fn failed_save_response(
+        &self,
+        failure: &ConfigSaveFailure,
+        restart_required: bool,
+    ) -> ApiResponse {
         let preview_disk_revision = ConfigRevision::from_bytes(failure.config_preview.as_bytes());
         if failure.disk_revision.as_ref() == Some(&preview_disk_revision) {
             return self.saved_response(
                 &preview_disk_revision,
                 &failure.candidate_revision,
                 diagnostics_json(&failure.diagnostics, true),
+                restart_required,
             );
         }
         ApiResponse::json(
@@ -442,6 +492,7 @@ enum ConfigPreparationError {
 
 struct PreparedCandidate {
     draft: Box<ValidatedConfigDraft>,
+    restart_required: bool,
     topology: Value,
 }
 
@@ -524,6 +575,16 @@ fn activation_pending_diagnostic() -> Value {
         "severity": "warning",
         "stage": "activation",
         "message": "configuration was saved and queued for generation activation",
+    })
+}
+
+fn restart_required_diagnostic() -> Value {
+    json!({
+        "code": "I_RESTART_REQUIRED",
+        "severity": "warning",
+        "stage": "activation",
+        "path": "/config/listeners",
+        "message": "an active Unix listener mode changed; the saved configuration takes effect after a process restart",
     })
 }
 

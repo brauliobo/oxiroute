@@ -16,10 +16,10 @@ use std::{
 
 use oxiroute_config::{
     Config, DnsResolutionPolicy, HttpVersionPolicy, Listener, ListenerBind, Management, Protocol,
-    RtmpApplication, RtmpRecorderStart, RtmpService, Stats, UpstreamAlgorithm,
-    UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer,
+    RtmpApplication, RtmpRecorderStart, RtmpService, Stats, StatsPage, StatsPageAdminPolicy,
+    UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -27,7 +27,7 @@ use tokio::{
 };
 
 use config_support::{empty_config, rtmp_recorder_with_queue_bytes, socket_bind};
-use http_support::http_request;
+use http_support::{http_request, raw_http_request};
 use process_support::{
     ServerProcess, build_ui, output_text, reserve_tcp_address, run_to_failure, write_config,
     write_token,
@@ -61,6 +61,7 @@ async fn built_process_serves_readiness_status_and_redacted_metrics_on_multiple_
     config.stats = Some(Stats {
         binds: vec![ipv4_first, ipv4_second],
         admin_token_file: None,
+        pages: Vec::new(),
     });
     let mut server = ServerProcess::start(&config, None);
     server.wait_for_tcp(ipv4_first).await;
@@ -81,6 +82,212 @@ async fn built_process_serves_readiness_status_and_redacted_metrics_on_multiple_
     assert!(metrics.contains("oxiroute_generation_activations_total 1"));
     assert!(!metrics.contains(&ipv4_first.to_string()));
     assert!(!metrics.contains(&ipv4_second.to_string()));
+
+    server.shutdown();
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one wire test verifies route isolation and the complete secure form flow"
+)]
+async fn page_only_stats_bind_exposes_only_the_page_and_loopback_form_admin() {
+    let page_address = reserve_tcp_address();
+    let mut config = empty_config();
+    config.stats = Some(Stats {
+        binds: Vec::new(),
+        admin_token_file: None,
+        pages: vec![StatsPage {
+            bind: page_address,
+            uri_prefix: "/haproxy".into(),
+            refresh_ms: 10_000,
+            admin: StatsPageAdminPolicy::Localhost,
+            max_connections: Some(1),
+            downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy {
+                client_timeout_ms: Some(1_000),
+                request_timeout_ms: Some(150),
+                keepalive_timeout_ms: Some(100),
+            },
+        }],
+    });
+    config.upstream_pools = vec![UpstreamPool {
+        name: "public".into(),
+        servers: vec![UpstreamServer {
+            name: "origin-a".into(),
+            endpoint: UpstreamEndpoint::Socket {
+                address: "127.0.0.1:8080".parse().expect("upstream"),
+            },
+            max_connections: None,
+            dns_resolution: DnsResolutionPolicy::OnConnect,
+        }],
+        endpoints: Vec::new(),
+        algorithm: UpstreamAlgorithm::RoundRobin,
+        health_check: None,
+        tls: None,
+        http_versions: HttpVersionPolicy::default(),
+        queue_timeout_ms: None,
+        connect_timeout_ms: None,
+        server_timeout_ms: None,
+        connection_reuse: UpstreamConnectionReuse::Safe,
+    }];
+    let mut server = ServerProcess::start(&config, None);
+    server.wait_for_tcp(page_address).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let page = http_request(page_address, "GET", "/haproxy", &[], &[]).await;
+    assert_eq!(page.status, 200);
+    assert_eq!(page.header("cache-control"), Some("no-store"));
+    assert!(page.header("content-security-policy").is_some());
+    let get_content_length = page
+        .header("content-length")
+        .expect("GET content length")
+        .to_owned();
+    let html = String::from_utf8(page.body).expect("stats page HTML");
+    assert!(html.contains("<td>public</td><td>origin-a</td>"));
+    let revision = html
+        .split("name=generation_revision value=\"")
+        .nth(1)
+        .and_then(|value| value.split('"').next())
+        .expect("generation revision");
+
+    for path in ["/metrics", "/ready", "/api/v1/status", "/stats"] {
+        assert_eq!(
+            http_request(page_address, "GET", path, &[], &[])
+                .await
+                .status,
+            404,
+            "{path}"
+        );
+    }
+    let head = http_request(page_address, "HEAD", "/haproxy", &[], &[]).await;
+    assert!(head.body.is_empty());
+    assert_eq!(
+        head.header("content-length"),
+        Some(get_content_length.as_str())
+    );
+
+    let form = format!("generation_revision={revision}&pool=public&server=origin-a&state=drain");
+    let denied = http_request(
+        page_address,
+        "POST",
+        "/haproxy",
+        &[("Content-Type", "application/x-www-form-urlencoded")],
+        form.as_bytes(),
+    )
+    .await;
+    assert_eq!(denied.status, 403);
+    let rebound = raw_http_request(
+        page_address,
+        b"POST /haproxy HTTP/1.1\r\nHost: attacker.test\r\nOrigin: http://attacker.test\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert_eq!(rebound.status, 403);
+    let forwarded = http_request(
+        page_address,
+        "POST",
+        "/haproxy",
+        &[
+            ("Content-Type", "application/x-www-form-urlencoded"),
+            ("Origin", "http://localhost"),
+            ("Forwarded", "for=127.0.0.1"),
+        ],
+        form.as_bytes(),
+    )
+    .await;
+    assert_eq!(forwarded.status, 403);
+    let oversized_form = vec![b'a'; 8 * 1024 + 1];
+    let oversized = http_request(
+        page_address,
+        "POST",
+        "/haproxy",
+        &[
+            ("Content-Type", "application/x-www-form-urlencoded"),
+            ("Origin", "http://localhost"),
+        ],
+        &oversized_form,
+    )
+    .await;
+    assert_eq!(oversized.status, 413);
+    let drained = http_request(
+        page_address,
+        "POST",
+        "/haproxy",
+        &[
+            ("Content-Type", "application/x-www-form-urlencoded"),
+            ("Origin", "http://localhost"),
+        ],
+        form.as_bytes(),
+    )
+    .await;
+    assert_eq!(drained.status, 204, "{}", drained.text());
+    assert!(
+        http_request(page_address, "GET", "/haproxy", &[], &[])
+            .await
+            .text()
+            .contains("<td>drain</td>")
+    );
+
+    let ready_form = form.replace("state=drain", "state=ready");
+    let referer_fallback = http_request(
+        page_address,
+        "POST",
+        "/haproxy",
+        &[
+            ("Content-Type", "application/x-www-form-urlencoded"),
+            ("Referer", "http://localhost/haproxy"),
+        ],
+        ready_form.as_bytes(),
+    )
+    .await;
+    assert_eq!(referer_fallback.status, 204, "{}", referer_fallback.text());
+
+    let mut stalled = TcpStream::connect(page_address)
+        .await
+        .expect("held stats connection");
+    stalled
+        .write_all(b"GET /haproxy HTTP/1.1\r\nHost: localhost\r\n")
+        .await
+        .expect("partial stats request");
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    let mut rejected = TcpStream::connect(page_address)
+        .await
+        .expect("connection above stats cap");
+    rejected
+        .write_all(b"GET /haproxy HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .expect("request above stats cap");
+    let mut rejected_bytes = Vec::new();
+    match tokio::time::timeout(
+        Duration::from_secs(1),
+        rejected.read_to_end(&mut rejected_bytes),
+    )
+    .await
+    .expect("capped stats connection remained open")
+    {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+        Err(error) => panic!("read capped stats connection: {error}"),
+    }
+    assert!(rejected_bytes.is_empty());
+    let mut stalled_bytes = Vec::new();
+    match tokio::time::timeout(
+        Duration::from_secs(1),
+        stalled.read_to_end(&mut stalled_bytes),
+    )
+    .await
+    .expect("stats request timeout was not enforced")
+    {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+        Err(error) => panic!("read timed-out stats connection: {error}"),
+    }
+    assert!(stalled_bytes.is_empty());
+    assert_eq!(
+        http_request(page_address, "GET", "/haproxy", &[], &[])
+            .await
+            .status,
+        200
+    );
 
     server.shutdown();
 }
@@ -165,6 +372,7 @@ async fn stats_admin_uses_json_targets_and_rejects_duplicate_authorization_heade
     config.stats = Some(Stats {
         binds: vec![stats_address],
         admin_token_file: Some(token_path),
+        pages: Vec::new(),
     });
     config.upstream_pools = vec![UpstreamPool {
         name: "public".into(),
@@ -260,6 +468,7 @@ async fn persistent_old_generation_management_and_stats_connections_mutate_the_s
     config.stats = Some(Stats {
         binds: vec![stats_address],
         admin_token_file: Some(stats_token),
+        pages: Vec::new(),
     });
     config.upstream_pools = vec![UpstreamPool {
         name: "public".into(),
@@ -420,6 +629,7 @@ async fn built_process_replaces_generation_and_reuses_existing_listener_reservat
     config.stats = Some(Stats {
         binds: vec![original_bind],
         admin_token_file: None,
+        pages: Vec::new(),
     });
     let mut server = ServerProcess::start(&config, Some(TOKEN));
     server.wait_for_tcp(original_bind).await;
@@ -1265,6 +1475,143 @@ async fn built_process_activates_a_real_unix_listener() {
 
     assert!(socket_path.exists());
     server.shutdown();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one process test covers validation, save, active preservation, and restart application"
+)]
+async fn unix_listener_mode_change_is_saved_as_restart_required_without_mutating_active_socket() {
+    let directory = TempDir::new().expect("Unix mode reload case");
+    let socket_path = directory.path().join("listener.sock");
+    let management_address = reserve_tcp_address();
+    let mut active = rtmp_listener_config(ListenerBind::Unix {
+        path: socket_path.clone(),
+        mode: Some(0o600),
+    });
+    active.management = Some(Management {
+        bind: management_address,
+        ui_dir: None,
+    });
+    let mut server = ServerProcess::start(&active, Some(TOKEN));
+    server.wait_for_unix(&socket_path).await;
+    server.wait_for_tcp(management_address).await;
+    let authorization = format!("Bearer {TOKEN}");
+    let snapshot = http_request(
+        management_address,
+        "GET",
+        "/api/v1/config",
+        &[("Authorization", &authorization)],
+        &[],
+    )
+    .await
+    .json();
+    let active_revision = snapshot["activeRevision"]
+        .as_str()
+        .expect("active revision")
+        .to_owned();
+
+    let mut candidate = active.clone();
+    candidate.listeners[0].bind = ListenerBind::Unix {
+        path: socket_path.clone(),
+        mode: Some(0o660),
+    };
+    candidate.listeners[0].max_connections = Some(7);
+    let body = serde_json::to_vec(&json!({ "config": candidate.clone() })).unwrap();
+    let validated = http_request(
+        management_address,
+        "POST",
+        "/api/v1/config/validate",
+        &[
+            ("Authorization", &authorization),
+            ("Content-Type", "application/json"),
+        ],
+        &body,
+    )
+    .await;
+    assert_eq!(validated.status, 200, "{}", validated.text());
+    let validated = validated.json();
+    assert_eq!(validated["restartRequired"], true);
+    assert!(
+        validated["diagnostics"]
+            .as_array()
+            .is_some_and(|diagnostics| diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == "I_RESTART_REQUIRED"))
+    );
+    assert_eq!(
+        fs::metadata(&socket_path)
+            .expect("validated active Unix socket")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    let saved = http_request(
+        management_address,
+        "PUT",
+        "/api/v1/config",
+        &[
+            ("Authorization", &authorization),
+            ("Content-Type", "application/json"),
+            (
+                "If-Config-Revision",
+                snapshot["diskRevision"].as_str().expect("disk revision"),
+            ),
+        ],
+        &body,
+    )
+    .await;
+    assert_eq!(saved.status, 200, "{}", saved.text());
+    let saved = saved.json();
+    assert_eq!(saved["outcome"], "saved_restart_required");
+    assert_eq!(saved["activationState"], "restart_required");
+    assert_eq!(saved["restartRequired"], true);
+    assert_eq!(saved["activeRevision"], active_revision);
+    assert!(saved["diagnostics"].as_array().is_some_and(|diagnostics| {
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "I_RESTART_REQUIRED")
+    }));
+    assert_eq!(
+        fs::metadata(&socket_path)
+            .expect("active Unix socket")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let status = http_request(
+        management_address,
+        "GET",
+        "/api/v1/generations",
+        &[("Authorization", &authorization)],
+        &[],
+    )
+    .await
+    .json();
+    assert_eq!(status["generation"]["activeRevision"], active_revision);
+    assert_eq!(status["generation"]["quarantinedRevision"], Value::Null);
+    assert_eq!(status["generation"]["lastFailure"], Value::Null);
+    assert_eq!(status["generation"]["degraded"], false);
+    let ready = http_request(management_address, "GET", "/ready", &[], &[]).await;
+    assert_eq!(ready.status, 200, "{}", ready.text());
+    server.shutdown();
+
+    let mut restarted = ServerProcess::start(&candidate, Some(TOKEN));
+    restarted.wait_for_unix(&socket_path).await;
+    assert_eq!(
+        fs::metadata(&socket_path)
+            .expect("restarted Unix socket")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o660
+    );
+    restarted.shutdown();
 }
 
 fn management_config(

@@ -649,6 +649,7 @@ fn handoff_runtime_config(
         stats: Some(Stats {
             binds: stats_addresses.to_vec(),
             admin_token_file: None,
+            pages: Vec::new(),
         }),
         listeners: vec![
             listener(

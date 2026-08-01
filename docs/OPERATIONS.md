@@ -23,6 +23,10 @@ Import `report` output includes diagnostics and unresolved deployment/activation
 `--format kdl|lua|uci|hocon` selects another rendering.
 HAProxy files using `${NODE_IP}` or `defined(GPU1)` require the corresponding explicit
 `--node-ip` and `--gpu1-defined` preprocessing inputs; the importer fingerprints those values.
+HAProxy `log`/`httplog` and user, group, chroot, daemon, PID, process, and thread directives are
+reported as deployment warnings. A finalized preview does not mean those settings were implemented;
+the target service unit/container and logging pipeline MUST reproduce the required ownership,
+isolation, process topology, and log handling before cutover.
 `--shadow-port-offset` is preview-only and shifts imported IP socket listener ports after exact
 lowering, then revalidates the complete canonical configuration for side-by-side canaries.
 `--recording-root` replaces exactly one native nginx recording root with an explicit canonical
@@ -91,3 +95,22 @@ relay/recording, and generation families in Prometheus text format. `/stats` pro
 read-only HAProxy-oriented pool/server view. `/metrics` and `/ready` are public on a configured
 statistics bind; `/stats` and `/api/v1/status` require a loopback peer and the statistics Bearer
 token.
+
+Each canonical `stats.pages[]` socket is separate from those observability binds. It serves only the
+configured public HAProxy-compatible `uri_prefix` and returns `404` for `/metrics`, `/ready`,
+`/stats`, and `/api/v1/status` unless one is itself the configured prefix. `admin = "localhost"`
+adds Ready/Drain/Maintenance forms only to loopback clients. Mutation additionally requires a
+`localhost` or loopback-IP Host, a matching Origin or Origin-absent Referer, no forwarded identity,
+and the active generation revision. Each page enforces its own connection cap and downstream
+timeouts and appears in listener metrics. HEAD preserves GET `Content-Length` without a body; use
+`disabled` for an unconditionally read-only page.
+
+Changing the mode of an active Unix listener is not a live reload, even when the candidate contains
+other changes. The configuration API saves the valid candidate as `saved_restart_required` with
+`restartRequired = true`, leaves the complete active generation and socket mode untouched, and
+applies the saved candidate when the process is restarted. Unix listeners retain an exclusive
+`<socket>.oxiroute.lock` ownership marker so abnormal termination can safely reclaim unchanged
+stale sockets that reject connection attempts. Permission-denied sockets fail closed because their
+liveness cannot be proven.
+The socket directory must be owned by the effective service user or be sticky, and no path ancestor
+may be group/world writable unless it has the sticky bit.

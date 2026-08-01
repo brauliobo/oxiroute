@@ -250,11 +250,17 @@ export function useConfigurationLifecycle(options: ConfigurationLifecycleOptions
           title: 'Configuration unchanged; active generation retained.',
           detail: 'No restart is required because the canonical generation did not change.',
         }
-      : {
-          kind: 'pending',
-          title: 'Configuration saved; restart required.',
-          detail: 'The canonical file changed. Restart OxiRoute to activate the saved generation.',
-        }
+      : result.outcome === 'saved_restart_required'
+        ? {
+            kind: 'pending',
+            title: 'Configuration saved; restart required.',
+            detail: 'An active Unix listener mode changed. Restart OxiRoute to apply the saved mode.',
+          }
+        : {
+            kind: 'pending',
+            title: 'Configuration saved; activation pending.',
+            detail: 'The watcher is preparing the changed generation; no restart is required.',
+          }
   }
 
   function applyWriteFailure(value: unknown): void {

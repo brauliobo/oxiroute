@@ -34,6 +34,7 @@ impl TopologySnapshot {
 
         let mut builder = TopologyBuilder::new(config);
         builder.add_listeners(config, services);
+        builder.add_stats_pages(config);
         builder.add_tls(config);
         builder.add_forward_proxy_services(config);
         builder.add_http_services(config);
@@ -217,7 +218,9 @@ impl TopologyBuilder {
         Self {
             nodes: Vec::new(),
             edges: Vec::new(),
-            listener_nodes: HashMap::with_capacity(config.listeners.len()),
+            listener_nodes: HashMap::with_capacity(
+                config.listeners.len() + config.stats.as_ref().map_or(0, |stats| stats.pages.len()),
+            ),
             pool_nodes: HashMap::with_capacity(config.upstream_pools.len()),
             endpoint_nodes: HashMap::with_capacity(endpoint_capacity),
         }
@@ -297,6 +300,38 @@ impl TopologyBuilder {
                     format!("{config_path}/tls_profile"),
                 ));
             }
+        }
+    }
+
+    fn add_stats_pages(&mut self, config: &Config) {
+        let Some(stats) = &config.stats else {
+            return;
+        };
+        for (index, page) in stats.pages.iter().enumerate() {
+            let name = format!("@stats-page-{index}");
+            let kind = TopologyNodeKind::Listener;
+            let id = listener_id(&name, kind);
+            let config_path = format!("/stats/pages/{index}");
+            self.nodes.push(TopologyNode {
+                id: id.clone(),
+                kind,
+                name: name.clone(),
+                config_path,
+                attributes: json!({
+                    "bind": listener_bind(&ListenerBind::Socket { address: page.bind }),
+                    "protocol": "http",
+                    "maxConnections": page.max_connections,
+                    "downstreamTimeouts": {
+                        "clientTimeoutMs": page.downstream_timeouts.client_timeout_ms,
+                        "requestTimeoutMs": page.downstream_timeouts.request_timeout_ms,
+                        "keepaliveTimeoutMs": page.downstream_timeouts.keepalive_timeout_ms,
+                    },
+                    "uriPrefix": page.uri_prefix,
+                    "refreshMs": page.refresh_ms,
+                    "admin": page.admin,
+                }),
+            });
+            self.listener_nodes.insert(name, id);
         }
     }
 
@@ -744,6 +779,9 @@ fn http_route_id(service: &str, route: &HttpRoute) -> String {
         .map_or_else(String::new, |host| match host {
             HttpHostSelector::NormalizedHost { value } => format!("normalized_host:{value}"),
             HttpHostSelector::ExactAuthority { value } => format!("exact_authority:{value}"),
+            HttpHostSelector::AsciiCaseInsensitiveExactAuthority { value } => {
+                format!("ascii_case_insensitive_exact_authority:{value}")
+            }
             HttpHostSelector::NginxLeadingWildcard { value } => {
                 format!("nginx_leading_wildcard:{value}")
             }
@@ -790,6 +828,7 @@ fn route_name(route: &HttpRoute) -> String {
     let host = route.host.as_ref().map_or("*", |selector| match selector {
         HttpHostSelector::NormalizedHost { value }
         | HttpHostSelector::ExactAuthority { value }
+        | HttpHostSelector::AsciiCaseInsensitiveExactAuthority { value }
         | HttpHostSelector::NginxLeadingWildcard { value }
         | HttpHostSelector::NginxLeadingDot { value } => value,
     });
@@ -810,6 +849,10 @@ fn host_selector(selector: &HttpHostSelector) -> Value {
         }),
         HttpHostSelector::ExactAuthority { value } => json!({
             "kind": "exact_authority",
+            "value": value,
+        }),
+        HttpHostSelector::AsciiCaseInsensitiveExactAuthority { value } => json!({
+            "kind": "ascii_case_insensitive_exact_authority",
             "value": value,
         }),
         HttpHostSelector::NginxLeadingWildcard { value } => json!({
@@ -888,6 +931,7 @@ fn route_action(action: &HttpRouteAction) -> Value {
                 "triggers": policy.retry.triggers,
                 "target": policy.retry.target,
                 "delayMs": policy.retry.delay_ms,
+                "finalRedispatch": policy.retry.final_redispatch,
             },
         }),
         HttpRouteAction::FixedResponse {

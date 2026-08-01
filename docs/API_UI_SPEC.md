@@ -47,6 +47,18 @@ The statistics listener additionally serves public `GET /metrics` and `GET /read
 `{pool, server, action}` target plus `If-Generation-Revision`; `GET` and `HEAD` return `405` and can
 never mutate state.
 
+Standalone `stats.pages[]` listeners are a separate public page-only contract. `GET`/`HEAD` below
+the configured URI prefix returns the HAProxy-compatible table; unrelated observability/API paths
+return `404`. HEAD sends no body but retains the GET representation's `Content-Length`. Each page
+has its own optional `max_connections` and client/request-header/keep-alive downstream timeouts,
+enforced and reported through the normal listener admission and metrics path. `admin = "localhost"`
+exposes form controls only to loopback peers and accepts a form POST only when the transport is
+loopback, Host is `localhost` or a loopback IP literal with an optional valid port, and Origin has
+that exact HTTP authority. When Origin is absent, an HAProxy-compatible same-authority HTTP Referer
+is accepted. Forwarded identity headers, DNS Host names, duplicate headers, and mismatched
+authorities fail closed. It does not use the statistics Bearer token. `admin = "disabled"` permits
+no mutation. The token-protected statistics API uses the same IPv4-mapped loopback transport check.
+
 Manual recorder responses are exact:
 
 - `200` with the recorder snapshot when the requested state is already settled.
@@ -85,7 +97,7 @@ revision, and redacted diagnostics.
 
 `POST /api/v1/config/validate` accepts exactly `{ "config": <canonical object> }`. A `200` response
 contains `candidateRevision`, `normalizedConfig`, `configFormat`, `compositional`, `dependencyCount`,
-format-preserving `configPreview`, diagnostics, and a candidate topology explicitly marked
+format-preserving `configPreview`, diagnostics, `restartRequired`, and a candidate topology explicitly marked
 `not_active`. A restricted-Lua coordinator also returns the legacy `luaPreview` alias. Validation
 compiles the complete runtime plan,
 loads configured UI assets, starts then shuts down a candidate Certbot watcher, and performs a
@@ -94,8 +106,11 @@ lock, probe, partial, or recording file. Actual daemon activation separately ope
 store and can still fail if a root changes after validation.
 
 `PUT /api/v1/config` requires the same body plus `If-Config-Revision`. It performs the same complete
-preflight before opening the write transaction, so a `422` preflight failure cannot mutate the
-canonical file. The save then re-reads and compares the authoritative disk bytes, writes mode
+preflight before opening the write transaction, except that a detected active Unix-listener mode
+change validates the complete runtime plan without attempting to rebind the active path and is
+classified as restart-required, including when the candidate contains other changes. A `422`
+preflight failure cannot mutate the canonical file. The
+save then re-reads and compares the authoritative disk bytes, writes mode
 `0600`, synchronizes, atomically replaces, and synchronizes the parent directory.
 
 Typed saves preserve the root's selected syntax but normalize it to deterministic output. They are
@@ -104,18 +119,28 @@ allowed only when the authoritative root is non-compositional. If `templates`, `
 `E_COMPOSITIONAL_ROOT`; it never destroys those declarations by replacing them with a flattened
 typed object. `config compose` is the explicit operator-controlled flattening path.
 
+The configuration UI mirrors all canonical statistics-page fields, the ASCII case-insensitive exact
+authority selector, retry budgets through three, and final redispatch. It preserves these values
+when loading, validating, and saving an editable imported/flattened canonical configuration; the
+final-redispatch control is enabled only for a positive same-server retry budget. Compositional
+native-reference roots remain read-only as described above.
+
 Successful writes return `200` with disk, candidate, and active revisions, diagnostics, and one of
-two exact outcomes:
+three exact outcomes:
 
 - `saved_pending_activation`: disk changed, `activationState` is `pending`, and
   `restartRequired` is `false` while the watcher starts the prepared generation.
 - `unchanged_active`: the candidate revision equals the active generation, `activationState` is `active`, and
   `restartRequired` is `false`.
+- `saved_restart_required`: a valid durable candidate changes the mode of an active Unix listener,
+  `activationState` is `restart_required`, and `restartRequired` is `true`. The active generation
+  remains unchanged until a process restart applies the complete saved candidate.
 
 There is no `202` API response. For a changed save, the file watcher observes the durable
 replacement, prepares a candidate, and the generation supervisor publishes it only after the new
 runtime reports ready. The `200 saved_pending_activation` response does not claim that publication
 has already completed; clients observe `activeRevision` or generation status for completion.
+`saved_restart_required` is deliberately not queued for live publication.
 
 Configuration request failures use these statuses:
 

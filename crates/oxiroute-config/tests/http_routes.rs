@@ -77,6 +77,7 @@ fn applies_the_explicit_safe_proxy_defaults() {
     );
     assert_eq!(policy["retry"]["method_safety"], "get_head");
     assert_eq!(policy["retry"]["body_safety"], "empty");
+    assert_eq!(policy["retry"]["final_redispatch"], false);
 }
 
 #[test]
@@ -212,6 +213,28 @@ fn validates_host_selector_kinds_and_authorities() {
             .contains("invalid `host`")
         );
     }
+}
+
+#[test]
+fn canonicalizes_ascii_case_insensitive_exact_authority_without_dropping_ports() {
+    let routes = proxy_route(
+        r#"          host = { kind = "ascii_case_insensitive_exact_authority", value = "API.Example.COM:8443" },"#,
+        "",
+    );
+    let loaded = load_lua(&config(
+        &routes,
+        r#"{ type = "socket", address = "127.0.0.1:3000" }"#,
+    ))
+    .expect("case-insensitive exact authority");
+    let route =
+        serde_json::to_value(loaded).expect("serialized selector")["http_services"][0]["routes"][0]
+            .clone();
+
+    assert_eq!(
+        route["host"]["kind"],
+        "ascii_case_insensitive_exact_authority"
+    );
+    assert_eq!(route["host"]["value"], "api.example.com:8443");
 }
 
 #[test]
@@ -787,6 +810,7 @@ fn validates_explicit_retry_triggers_and_safety_rules() {
         r#"              retry = { triggers = { "response_status" } },"#,
         r#"              retry = { method_safety = "all" },"#,
         r#"              retry = { body_safety = "buffered" },"#,
+        r"              retry = { max_retries = 1, final_redispatch = true },",
     ] {
         let route = proxy_route("", policy);
         let error = error(&config(&route, endpoint));
@@ -798,19 +822,35 @@ fn validates_explicit_retry_triggers_and_safety_rules() {
         );
     }
 
-    let mut config = load_lua(&config(&proxy_route("", ""), endpoint)).expect("default retry");
-    let HttpRouteAction::Proxy { policy, .. } = &mut config.http_services[0].routes[0].action
+    let mut default_config =
+        load_lua(&config(&proxy_route("", ""), endpoint)).expect("default retry");
+    let HttpRouteAction::Proxy { policy, .. } =
+        &mut default_config.http_services[0].routes[0].action
     else {
         panic!("proxy action");
     };
     policy.retry.triggers.clear();
     assert!(matches!(
-        validate_config(&mut config),
+        validate_config(&mut default_config),
         Err(ConfigError::InvalidHttpRoute {
             field: "action.policy.retry.triggers",
             ..
         })
     ));
+
+    let route = proxy_route(
+        "",
+        r#"              retry = {
+                max_retries = 3,
+                target = "same_server",
+                delay_ms = 1000,
+                final_redispatch = true,
+                triggers = { "connect_failure", "connect_timeout" },
+              },"#,
+    );
+    let loaded = load_lua(&config(&route, endpoint)).expect("final redispatch policy");
+    let rendered = render_lua(&loaded).expect("render final redispatch");
+    assert!(rendered.contains("final_redispatch = true"));
 }
 
 #[test]

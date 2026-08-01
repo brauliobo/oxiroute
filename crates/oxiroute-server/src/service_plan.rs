@@ -523,12 +523,13 @@ fn compile_pools(config: &Config) -> Result<CompiledPools, ServicePlanError> {
         .management
         .iter()
         .map(|management| management.bind)
-        .chain(
-            config
-                .stats
+        .chain(config.stats.iter().flat_map(|stats| {
+            stats
+                .binds
                 .iter()
-                .flat_map(|stats| stats.binds.iter().copied()),
-        )
+                .copied()
+                .chain(stats.pages.iter().map(|page| page.bind))
+        }))
         .collect();
     let mut pools = HashMap::with_capacity(config.upstream_pools.len());
     let mut health_groups = Vec::new();

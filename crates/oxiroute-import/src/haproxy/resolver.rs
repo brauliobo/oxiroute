@@ -312,6 +312,19 @@ pub struct ProxySettings {
     pub semantic_blockers: Vec<EffectiveValue<SemanticBlocker>>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StatsAdminPolicy {
+    Localhost,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct StatsSettings {
+    pub enable: Option<EffectiveValue<bool>>,
+    pub uri_prefix: Option<EffectiveValue<Vec<u8>>>,
+    pub refresh: Option<EffectiveValue<Duration>>,
+    pub admin: Option<EffectiveValue<StatsAdminPolicy>>,
+}
+
 impl ProxySettings {
     fn inherited(&self, step: &InheritanceStep) -> Self {
         let mut inherited = self.clone();
@@ -398,6 +411,7 @@ pub struct BindTls {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EffectiveBind {
     pub address: EffectiveValue<BindAddress>,
+    pub mode: Option<EffectiveValue<u16>>,
     pub maxconn: Option<EffectiveValue<u64>>,
     pub tls: Option<EffectiveValue<BindTls>>,
 }
@@ -536,6 +550,7 @@ pub struct EffectiveFrontend {
     pub binds: Vec<EffectiveBind>,
     pub acls: Vec<EffectiveValue<AclDefinition>>,
     pub use_backends: Vec<EffectiveValue<UseBackend>>,
+    pub stats: StatsSettings,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -556,6 +571,7 @@ pub struct EffectiveListen {
     pub servers: Vec<EffectiveServer>,
     pub acls: Vec<EffectiveValue<AclDefinition>>,
     pub use_backends: Vec<EffectiveValue<UseBackend>>,
+    pub stats: StatsSettings,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -642,6 +658,7 @@ pub struct EffectiveConfiguration {
     pub activation_requirements: Vec<ActivationRequirement<ProvenanceSpan>>,
     pub activation_only_sections: HashSet<SectionId>,
     pub supported_stats_sections: HashSet<SectionId>,
+    pub blocked_stats_page_sections: HashSet<SectionId>,
 }
 
 /// Resolves parsed `HAProxy` sources in their existing occurrence order.
@@ -701,6 +718,7 @@ struct SectionState {
     pending_http_request_rules: Vec<PendingHttpRequestRule>,
     pending_use_backends: Vec<PendingUseBackend>,
     use_backends: Vec<EffectiveValue<UseBackend>>,
+    stats: StatsSettings,
 }
 
 struct PendingHttpRequestRule {
@@ -1161,6 +1179,7 @@ impl Resolver {
                 binds: state.binds,
                 acls: state.acls,
                 use_backends: state.use_backends,
+                stats: state.stats,
             }),
             SectionKind::Backend => self.effective.backends.push(EffectiveBackend {
                 section,
@@ -1177,6 +1196,7 @@ impl Resolver {
                 servers: state.servers,
                 acls: state.acls,
                 use_backends: state.use_backends,
+                stats: state.stats,
             }),
             _ => unreachable!("caller selected a proxy section"),
         }
@@ -1281,13 +1301,20 @@ impl Resolver {
                 continue;
             }
             if directive.name.value == b"stats" {
-                self.externalize_activation(
-                    occurrence,
-                    directive,
-                    ActivationRequirementKind::StatisticsEndpoint,
-                    Some(meta.id),
-                    false,
-                );
+                if supports_stats_page(meta.section.kind)
+                    && self.resolve_stats(occurrence, directive, state)
+                {
+                    self.effective.activation_only_sections.insert(meta.id);
+                } else {
+                    self.effective.blocked_stats_page_sections.insert(meta.id);
+                    self.externalize_activation(
+                        occurrence,
+                        directive,
+                        ActivationRequirementKind::StatisticsEndpoint,
+                        Some(meta.id),
+                        false,
+                    );
+                }
                 continue;
             }
             if is_logging_directive(directive) {
@@ -1366,6 +1393,88 @@ impl Resolver {
                     &format!("in a {} section", section_name(meta.section.kind)),
                 ),
             }
+        }
+    }
+
+    fn resolve_stats(
+        &mut self,
+        occurrence: OccurrenceId,
+        directive: &Directive,
+        state: &mut SectionState,
+    ) -> bool {
+        match directive.arguments.as_slice() {
+            [enable] if enable.value == b"enable" => {
+                let value = EffectiveValue::direct(true, occurrence, enable.span);
+                let conflict = set_idempotent_value(
+                    &mut state.stats.enable,
+                    value,
+                    &mut self.decisions,
+                    &self.decision_indices,
+                );
+                if let Err(first_span) = conflict {
+                    self.conflicting_directive(occurrence, directive, first_span);
+                } else {
+                    self.consume(occurrence, Consumption::Setting);
+                }
+                true
+            }
+            [uri, prefix] if uri.value == b"uri" && !prefix.value.is_empty() => {
+                let value = EffectiveValue::direct(prefix.value.clone(), occurrence, prefix.span);
+                let conflict = set_idempotent_value(
+                    &mut state.stats.uri_prefix,
+                    value,
+                    &mut self.decisions,
+                    &self.decision_indices,
+                );
+                if let Err(first_span) = conflict {
+                    self.conflicting_directive(occurrence, directive, first_span);
+                } else {
+                    state.stats.enable.get_or_insert_with(|| {
+                        EffectiveValue::direct(true, occurrence, prefix.span)
+                    });
+                    self.consume(occurrence, Consumption::Setting);
+                }
+                true
+            }
+            [refresh, raw] if refresh.value == b"refresh" => {
+                let Some(duration) = parse_duration(&raw.value) else {
+                    return false;
+                };
+                let value = EffectiveValue::direct(duration, occurrence, raw.span);
+                let conflict = set_idempotent_value(
+                    &mut state.stats.refresh,
+                    value,
+                    &mut self.decisions,
+                    &self.decision_indices,
+                );
+                if let Err(first_span) = conflict {
+                    self.conflicting_directive(occurrence, directive, first_span);
+                } else {
+                    self.consume(occurrence, Consumption::Setting);
+                }
+                true
+            }
+            [admin, condition, localhost]
+                if admin.value == b"admin"
+                    && condition.value == b"if"
+                    && localhost.value == b"LOCALHOST" =>
+            {
+                let value =
+                    EffectiveValue::direct(StatsAdminPolicy::Localhost, occurrence, localhost.span);
+                let conflict = set_idempotent_value(
+                    &mut state.stats.admin,
+                    value,
+                    &mut self.decisions,
+                    &self.decision_indices,
+                );
+                if let Err(first_span) = conflict {
+                    self.conflicting_directive(occurrence, directive, first_span);
+                } else {
+                    self.consume(occurrence, Consumption::Setting);
+                }
+                true
+            }
+            _ => false,
         }
     }
 
@@ -2668,6 +2777,21 @@ fn set_value<T: PartialEq>(
     conflict
 }
 
+fn set_idempotent_value<T: PartialEq>(
+    slot: &mut Option<EffectiveValue<T>>,
+    value: EffectiveValue<T>,
+    decisions: &mut [PendingDecision],
+    indices: &HashMap<OccurrenceId, usize>,
+) -> Result<(), Span> {
+    if slot
+        .as_ref()
+        .is_some_and(|current| current.provenance.is_direct() && current.value == value.value)
+    {
+        return Ok(());
+    }
+    set_value(slot, value, decisions, indices).map_or(Ok(()), Err)
+}
+
 fn parse_header(kind: SectionKind, directive: &Directive) -> Result<ParsedHeader, &'static str> {
     let arguments = directive.arguments.as_slice();
     match kind {
@@ -2807,9 +2931,10 @@ fn parse_duration(value: &[u8]) -> Option<Duration> {
 }
 
 fn parse_bind_address(value: &[u8]) -> Option<BindAddress> {
-    if value.starts_with(b"/") {
+    let unix_path = value.strip_prefix(b"unix@").unwrap_or(value);
+    if unix_path.starts_with(b"/") {
         return Some(BindAddress::Unix {
-            path: value.to_vec(),
+            path: unix_path.to_vec(),
         });
     }
     let (host, port) = parse_host_port(value)?;
@@ -2833,6 +2958,7 @@ struct BindOptions<'a> {
     alpn: Option<(Vec<TlsAlpn>, Span)>,
     minimum_version: Option<(TlsMinimumVersion, Span)>,
     maxconn: Option<(u64, Span)>,
+    mode: Option<(u16, Span)>,
 }
 
 fn parse_bind(
@@ -2851,6 +2977,18 @@ fn parse_bind(
         .ok_or(BindParseError::Malformed)?;
     let options = parse_bind_options(option_words)?;
     let tls = finish_bind_tls(&options, occurrence)?;
+    if options.mode.is_some()
+        && addresses
+            .iter()
+            .any(|address| !matches!(address, BindAddress::Unix { .. }))
+    {
+        return Err(BindParseError::Semantic(
+            "HAProxy bind mode applies only to Unix sockets".into(),
+        ));
+    }
+    let mode = options
+        .mode
+        .map(|(value, span)| EffectiveValue::direct(value, occurrence, span));
     let maxconn = options
         .maxconn
         .map(|(value, span)| EffectiveValue::direct(value, occurrence, span));
@@ -2858,6 +2996,7 @@ fn parse_bind(
         .into_iter()
         .map(|address| EffectiveBind {
             address: EffectiveValue::direct(address, occurrence, address_word.span),
+            mode: mode.clone(),
             maxconn: maxconn.clone(),
             tls: tls.clone(),
         })
@@ -2927,18 +3066,23 @@ fn parse_bind_options(options: &[super::Word]) -> Result<BindOptions<'_>, BindPa
                 parsed.maxconn = Some((maxconn, value.span));
                 index += 2;
             }
+            b"mode" if parsed.mode.is_none() => {
+                parsed.mode = Some(parse_bind_mode(options.get(index + 1))?);
+                index += 2;
+            }
             b"crt" | b"crt-list" => {
                 return Err(BindParseError::Semantic(
                     "HAProxy bind certificate selection uses crt-list or multiple crt parameters"
                         .into(),
                 ));
             }
-            b"ssl" | b"alpn" | b"ssl-min-ver" | b"maxconn" => {
+            b"ssl" | b"alpn" | b"ssl-min-ver" | b"maxconn" | b"mode" => {
                 let previous_span = match option.value.as_slice() {
                     b"ssl" => parsed.ssl,
                     b"alpn" => parsed.alpn.as_ref().map(|(_, span)| *span),
                     b"ssl-min-ver" => parsed.minimum_version.map(|(_, span)| span),
-                    _ => parsed.maxconn.map(|(_, span)| span),
+                    b"maxconn" => parsed.maxconn.map(|(_, span)| span),
+                    _ => parsed.mode.map(|(_, span)| span),
                 }
                 .expect("duplicate option has a first span");
                 return Err(BindParseError::Conflict {
@@ -2955,6 +3099,22 @@ fn parse_bind_options(options: &[super::Word]) -> Result<BindOptions<'_>, BindPa
         }
     }
     Ok(parsed)
+}
+
+fn parse_bind_mode(value: Option<&super::Word>) -> Result<(u16, Span), BindParseError> {
+    let value = value.ok_or_else(|| {
+        BindParseError::Semantic("HAProxy bind mode requires octal permission bits".into())
+    })?;
+    let mode = std::str::from_utf8(&value.value)
+        .ok()
+        .and_then(|value| u16::from_str_radix(value, 8).ok())
+        .filter(|mode| (1..=0o777).contains(mode))
+        .ok_or_else(|| {
+            BindParseError::Semantic(
+                "HAProxy bind mode requires octal permission bits from 001 through 777".into(),
+            )
+        })?;
+    Ok((mode, value.span))
 }
 
 fn finish_bind_tls(
@@ -3404,6 +3564,10 @@ fn is_supported_section(kind: SectionKind) -> bool {
 }
 
 fn supports_bind(kind: SectionKind) -> bool {
+    matches!(kind, SectionKind::Frontend | SectionKind::Listen)
+}
+
+const fn supports_stats_page(kind: SectionKind) -> bool {
     matches!(kind, SectionKind::Frontend | SectionKind::Listen)
 }
 

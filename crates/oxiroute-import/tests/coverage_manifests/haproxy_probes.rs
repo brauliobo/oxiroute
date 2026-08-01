@@ -205,6 +205,7 @@ fn assert_haproxy_lowered_subset(entries: &[DirectiveForm]) {
         "directive.haproxy.acl.path-beg",
         "directive.haproxy.acl.hdr-host",
         "directive.haproxy.use-backend",
+        "directive.haproxy.option.redispatch-bare-http",
         "directive.haproxy.no-option.redispatch-http",
         "directive.haproxy.no-option.forwardfor-http",
         "directive.haproxy.option.forwardfor",
@@ -216,6 +217,7 @@ fn assert_haproxy_lowered_subset(entries: &[DirectiveForm]) {
         "directive.haproxy.http-request.del-header",
         "directive.haproxy.http-response.set-header",
         "directive.haproxy.http-response.del-header",
+        "directive.haproxy.stats-page",
     ]
     .into_iter()
     .collect();
@@ -506,7 +508,9 @@ fn haproxy_context_directives(entry: &DirectiveForm, context: &str) -> Vec<&'sta
         "directive.haproxy.use-backend" => {
             vec!["acl coverage path_beg /api\nuse_backend api if coverage"]
         }
-        "directive.haproxy.option.redispatch" => vec!["option redispatch"],
+        "directive.haproxy.option.redispatch" | "directive.haproxy.option.redispatch-bare-http" => {
+            vec!["option redispatch"]
+        }
         "directive.haproxy.no-option.redispatch-tcp"
         | "directive.haproxy.no-option.redispatch-http" => vec!["no option redispatch"],
         "directive.haproxy.option.forwardfor" => vec!["option forwardfor"],
@@ -538,13 +542,16 @@ fn haproxy_context_directives(entry: &DirectiveForm, context: &str) -> Vec<&'sta
         "directive.haproxy.http-response.del-header" => {
             vec!["http-response del-header X-Powered-By"]
         }
+        "directive.haproxy.stats-page" => {
+            vec!["stats enable\nstats uri /stats\nstats refresh 10s\nstats admin if LOCALHOST"]
+        }
         id => panic!("HAProxy manifest form has no context directive: {id}"),
     }
 }
 
 fn haproxy_process_context_directives(id: &str, context: &str) -> Option<Vec<&'static str>> {
     let directives = match id {
-        "directive.haproxy.stats" => vec!["stats enable"],
+        "directive.haproxy.stats" => vec!["stats hide-version"],
         "directive.haproxy.log" if context == "global" => {
             vec!["log 127.0.0.1:514 local0"]
         }
@@ -573,6 +580,11 @@ fn haproxy_process_context_directives(id: &str, context: &str) -> Option<Vec<&'s
 fn haproxy_context_probe_source(entry: &DirectiveForm, context: &str, directive: &str) -> String {
     if entry.id.starts_with("directive.haproxy.section.") {
         return haproxy_probe_source(entry);
+    }
+    if entry.id == "directive.haproxy.stats-page" {
+        return format!(
+            "{context} coverage-stats\n  mode http\n  bind 127.0.0.1:18404\n  {directive}\n"
+        );
     }
     let mut source = if context == "listen" {
         if haproxy_http_form(&entry.id) {
@@ -674,6 +686,7 @@ fn haproxy_http_form(id: &str) -> bool {
         || matches!(
             id,
             "directive.haproxy.use-backend"
+                | "directive.haproxy.option.redispatch-bare-http"
                 | "directive.haproxy.option.forwardfor"
                 | "directive.haproxy.option.httpchk"
                 | "directive.haproxy.option.http-server-close"
@@ -681,6 +694,10 @@ fn haproxy_http_form(id: &str) -> bool {
         )
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the exhaustive directive fixture registry stays adjacent to its manifest IDs"
+)]
 fn haproxy_probe_source(entry: &DirectiveForm) -> String {
     if entry.id.starts_with("directive.haproxy.section.") {
         return if entry.key == "global" {
@@ -719,6 +736,9 @@ fn haproxy_probe_source(entry: &DirectiveForm) -> String {
         | "directive.haproxy.http-response.set-header"
         | "directive.haproxy.http-response.del-header" => haproxy_header_mutation_base(),
         "directive.haproxy.option.redispatch" => inject_haproxy_defaults("option redispatch"),
+        "directive.haproxy.option.redispatch-bare-http" => {
+            inject_haproxy_http_defaults("option redispatch")
+        }
         "directive.haproxy.no-option.redispatch-tcp" => {
             inject_haproxy_defaults("no option redispatch")
         }
@@ -745,7 +765,8 @@ fn haproxy_probe_source(entry: &DirectiveForm) -> String {
         "directive.haproxy.http-check.expect-status" => {
             inject_haproxy_http_defaults("http-check expect status 200")
         }
-        "directive.haproxy.stats" => inject_haproxy_defaults("stats enable"),
+        "directive.haproxy.stats" => inject_haproxy_defaults("stats hide-version"),
+        "directive.haproxy.stats-page" => "frontend coverage-stats\n  mode http\n  bind 127.0.0.1:18404\n  stats enable\n  stats uri /stats\n  stats refresh 10s\n  stats admin if LOCALHOST\n".into(),
         "directive.haproxy.log" => inject_haproxy_defaults("log global"),
         "directive.haproxy.log-format" => inject_haproxy_defaults("log-format coverage"),
         "directive.haproxy.error-log-format" => {

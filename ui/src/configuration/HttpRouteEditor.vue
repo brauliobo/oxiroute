@@ -17,9 +17,10 @@ article.route-card.http-route-card
         select(v-model="route.host.kind")
           option(value="normalized_host") Normalized host
           option(value="exact_authority") Exact authority
+          option(value="ascii_case_insensitive_exact_authority") ASCII case-insensitive exact authority
       label.field(data-field="http_services[].routes[].host.value")
-        span {{ route.host.kind === 'exact_authority' ? 'Authority' : 'Host' }} value
-        input(type="text" v-model="route.host.value" :placeholder="route.host.kind === 'exact_authority' ? 'api.example.test:8443' : '*.example.test'")
+        span {{ route.host.kind.includes('authority') ? 'Authority' : 'Host' }} value
+        input(type="text" v-model="route.host.value" :placeholder="route.host.kind === 'ascii_case_insensitive_exact_authority' ? 'API.Example.Test:8443' : route.host.kind === 'exact_authority' ? 'api.example.test:8443' : '*.example.test'")
 
   fieldset.object-block(data-field="http_services[].routes[].path")
     legend Path matcher

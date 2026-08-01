@@ -30,7 +30,7 @@ use crate::{
         AccessLogPolicy, AlpnProtocol, Certificate, CertificateSource, Config, ConfigError,
         DnsResolutionPolicy, ForwardHttpVersion, ForwardProxyService, HealthCheck, HealthCheckType,
         HttpVersion, L4Service, Listener, ListenerBind, Management, Protocol, RtmpRecorder,
-        RtmpService, Stats, TlsProfile, TlsVersion, UpstreamEndpoint, UpstreamPool,
+        RtmpService, Stats, StatsPage, TlsProfile, TlsVersion, UpstreamEndpoint, UpstreamPool,
     },
 };
 
@@ -363,7 +363,7 @@ fn validate_stats(stats: Option<&Stats>) -> Result<(), ConfigError> {
     let Some(stats) = stats else {
         return Ok(());
     };
-    if stats.binds.is_empty() || stats.binds.len() > 8 {
+    if stats.binds.len() + stats.pages.len() == 0 || stats.binds.len() + stats.pages.len() > 8 {
         return Err(ConfigError::InvalidStatsBinds);
     }
     for bind in &stats.binds {
@@ -378,6 +378,107 @@ fn validate_stats(stats: Option<&Stats>) -> Result<(), ConfigError> {
     if let Some(path) = &stats.admin_token_file {
         validate_file_path("statistics", "stats", "admin_token_file", path)?;
     }
+    for (index, page) in stats.pages.iter().enumerate() {
+        validate_stats_page(index, page)?;
+    }
+    Ok(())
+}
+
+fn validate_stats_page(index: usize, page: &StatsPage) -> Result<(), ConfigError> {
+    let page_name = format!("page-{index}");
+    if page.bind.port() == 0 {
+        return Err(ConfigError::ZeroPort {
+            kind: "statistics page",
+            name: page_name.clone(),
+            field: "bind",
+        });
+    }
+    if page.uri_prefix.len() > crate::defaults::MAX_STATS_PAGE_URI_BYTES {
+        return Err(ConfigError::InvalidStatsPage {
+            page: index,
+            field: "uri_prefix",
+            detail: "URI prefix exceeds 2048 bytes",
+        });
+    }
+    let path_and_query = page.uri_prefix.parse::<PathAndQuery>();
+    if !page.uri_prefix.is_ascii()
+        || page.uri_prefix.bytes().any(|byte| {
+            byte <= b' '
+                || byte == 0x7f
+                || matches!(
+                    byte,
+                    b'?' | b'#'
+                        | b'<'
+                        | b'>'
+                        | b'['
+                        | b']'
+                        | b'\\'
+                        | b'^'
+                        | b'`'
+                        | b'{'
+                        | b'|'
+                        | b'}'
+                )
+        })
+        || !path_and_query.is_ok_and(|path| {
+            path.query().is_none()
+                && path.path() == page.uri_prefix
+                && is_unambiguous_http_path(path.path())
+        })
+    {
+        return Err(ConfigError::InvalidStatsPage {
+            page: index,
+            field: "uri_prefix",
+            detail: "URI prefix must be an absolute unambiguous HTTP path without a query or fragment",
+        });
+    }
+    if page.refresh_ms == 0 || page.refresh_ms > crate::defaults::MAX_STATS_PAGE_REFRESH_MS {
+        return Err(ConfigError::InvalidStatsPage {
+            page: index,
+            field: "refresh_ms",
+            detail: "refresh must be between 1 and 86400000 milliseconds",
+        });
+    }
+    if page.max_connections == Some(0) {
+        return Err(ConfigError::ZeroLimit {
+            kind: "statistics page",
+            name: page_name.clone(),
+            field: "max_connections",
+        });
+    }
+    if let Some(max_connections) = page.max_connections {
+        validate_safe_integer(
+            "statistics page",
+            &page_name,
+            "max_connections",
+            max_connections,
+        )?;
+    }
+    for (field, timeout) in [
+        (
+            "downstream_timeouts.client_timeout_ms",
+            page.downstream_timeouts.client_timeout_ms,
+        ),
+        (
+            "downstream_timeouts.request_timeout_ms",
+            page.downstream_timeouts.request_timeout_ms,
+        ),
+        (
+            "downstream_timeouts.keepalive_timeout_ms",
+            page.downstream_timeouts.keepalive_timeout_ms,
+        ),
+    ] {
+        if timeout.is_some_and(|value| value == 0 || value > MAX_HTTP_TIMEOUT_MS) {
+            return Err(ConfigError::InvalidStatsPage {
+                page: index,
+                field,
+                detail: "downstream timeouts must be between 1 and 86400000 milliseconds",
+            });
+        }
+        if let Some(timeout) = timeout {
+            validate_safe_integer("statistics page", &page_name, field, timeout)?;
+        }
+    }
     Ok(())
 }
 
@@ -389,7 +490,7 @@ fn validate_bind_conflicts(
     let mut binds = Vec::with_capacity(
         listeners.len()
             + usize::from(management.is_some())
-            + stats.map_or(0, |stats| stats.binds.len()),
+            + stats.map_or(0, |stats| stats.binds.len() + stats.pages.len()),
     );
     if let Some(management) = management {
         binds.push((
@@ -413,6 +514,20 @@ fn validate_bind_conflicts(
                 }
             }
             binds.push((format!("stats-{index}"), bind));
+        }
+        for (index, page) in stats.pages.iter().enumerate() {
+            let bind = ListenerBind::Socket { address: page.bind };
+            for (first_name, first_bind) in &binds {
+                if binds_overlap(first_bind, &bind) {
+                    return Err(ConfigError::OverlappingBind {
+                        first_name: first_name.clone(),
+                        first_bind: Box::new(first_bind.clone()),
+                        second_name: format!("stats-page-{index}"),
+                        second_bind: Box::new(bind),
+                    });
+                }
+            }
+            binds.push((format!("stats-page-{index}"), bind));
         }
     }
 
@@ -1274,10 +1389,10 @@ pub fn validate_health_check_config(
     }
     if health_check.timeout_ms == 0
         || health_check.timeout_ms > MAX_HEALTH_TIMEOUT_MS
-        || health_check.timeout_ms >= health_check.interval_ms
+        || health_check.timeout_ms > health_check.interval_ms
     {
         return Err(invalid(
-            "timeout_ms must be between 1 and 30000 and less than interval_ms",
+            "timeout_ms must be between 1 and 30000 and no greater than interval_ms",
         ));
     }
     for (field, interval) in [

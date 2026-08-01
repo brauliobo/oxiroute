@@ -113,9 +113,9 @@ impl Lowerer<'_> {
         decision.require(settings.timeouts.queue.is_none() || queue_timeout_ms.is_some());
         decision.require(settings.timeouts.connect.is_none() || connect_timeout_ms.is_some());
         decision.require(settings.timeouts.server.is_none() || server_timeout_ms.is_some());
-        let connection_sensitive = algorithm
+        let request_lifetime_sensitive = algorithm
             .as_ref()
-            .is_some_and(|algorithm| *algorithm != UpstreamAlgorithm::RoundRobin)
+            .is_some_and(|algorithm| *algorithm == UpstreamAlgorithm::First)
             || lowered_servers
                 .iter()
                 .any(|server| server.max_connections.is_some());
@@ -123,7 +123,7 @@ impl Lowerer<'_> {
             .http_server_close
             .as_ref()
             .is_some_and(|value| value.value);
-        let overlay_closes_after_request = if connection_sensitive
+        let overlay_closes_after_request = if request_lifetime_sensitive
             && settings
                 .mode
                 .as_ref()
@@ -157,12 +157,12 @@ impl Lowerer<'_> {
             .mode
             .as_ref()
             .is_some_and(|mode| mode.value == ProxyMode::Http)
-            && connection_sensitive
+            && request_lifetime_sensitive
             && !closes_after_request
         {
             self.block_section(
                 section,
-                "HAProxy server maxconn/leastconn/first requires option http-server-close or an explicit audited one-request-per-connection overlay",
+                "HAProxy server maxconn/first requires option http-server-close or an explicit audited one-request-per-connection overlay",
             );
             return;
         }
@@ -421,14 +421,7 @@ impl Lowerer<'_> {
             );
             return None;
         };
-        let timeout_ms = settings
-            .timeouts
-            .connect
-            .as_ref()
-            .and_then(|value| Self::duration_value_ms(value.value))
-            .unwrap_or(interval_ms)
-            .min(interval_ms.saturating_sub(1))
-            .max(1);
+        let timeout_ms = interval_ms.max(1);
         let (kind, path, host, http_version) = match settings.http_check.as_ref() {
             Some(check_value) => match &check_value.value {
                 OptionState::Enabled(check) => {
@@ -550,27 +543,14 @@ impl Lowerer<'_> {
         let Some(caps) = self.listener_caps(section, binds, settings.maxconn.as_ref()) else {
             return false;
         };
-        let client_timeout_ms = settings
-            .timeouts
-            .client
-            .as_ref()
-            .and_then(|value| self.duration_ms(value, "HAProxy client timeout"));
-        let request_timeout_ms = settings
-            .timeouts
-            .http_request
-            .as_ref()
-            .and_then(|value| self.duration_ms(value, "HAProxy HTTP request timeout"));
-        let keepalive_timeout_ms = settings
-            .timeouts
-            .http_keep_alive
-            .as_ref()
-            .and_then(|value| self.duration_ms(value, "HAProxy HTTP keepalive timeout"));
-        if (settings.timeouts.client.is_some() && client_timeout_ms.is_none())
-            || (settings.timeouts.http_request.is_some() && request_timeout_ms.is_none())
-            || (settings.timeouts.http_keep_alive.is_some() && keepalive_timeout_ms.is_none())
-        {
+        let Some(downstream_timeouts) = self.lower_downstream_timeouts(settings) else {
             return false;
-        }
+        };
+        let DownstreamTimeoutPolicy {
+            client_timeout_ms,
+            request_timeout_ms,
+            keepalive_timeout_ms,
+        } = downstream_timeouts;
         if mode.protocol != oxiroute_config::Protocol::Http {
             if let Some(tls) = binds.iter().find_map(|bind| bind.tls.as_ref()) {
                 self.block_value(
@@ -644,6 +624,12 @@ impl Lowerer<'_> {
                 }
                 ListenerBind::Unix { .. } => {
                     self.record(bind_path.field("path"), bind_sources);
+                    if let Some(mode) = &bind.mode {
+                        self.record(
+                            bind_path.field("mode"),
+                            provenance_sources(&mode.provenance),
+                        );
+                    }
                 }
                 ListenerBind::Udp { .. } => {
                     self.block_provenance(
@@ -660,6 +646,38 @@ impl Lowerer<'_> {
             self.record(listener_path.field("service"), section_sources(section));
         }
         true
+    }
+
+    pub(super) fn lower_downstream_timeouts(
+        &mut self,
+        settings: &ProxySettings,
+    ) -> Option<DownstreamTimeoutPolicy> {
+        let client_timeout_ms = settings
+            .timeouts
+            .client
+            .as_ref()
+            .and_then(|value| self.duration_ms(value, "HAProxy client timeout"));
+        let request_timeout_ms = settings
+            .timeouts
+            .http_request
+            .as_ref()
+            .and_then(|value| self.duration_ms(value, "HAProxy HTTP request timeout"));
+        let keepalive_timeout_ms = settings
+            .timeouts
+            .http_keep_alive
+            .as_ref()
+            .and_then(|value| self.duration_ms(value, "HAProxy HTTP keepalive timeout"));
+        if (settings.timeouts.client.is_some() && client_timeout_ms.is_none())
+            || (settings.timeouts.http_request.is_some() && request_timeout_ms.is_none())
+            || (settings.timeouts.http_keep_alive.is_some() && keepalive_timeout_ms.is_none())
+        {
+            return None;
+        }
+        Some(DownstreamTimeoutPolicy {
+            client_timeout_ms,
+            request_timeout_ms,
+            keepalive_timeout_ms,
+        })
     }
 
     fn lower_listener_bind(&mut self, bind: &EffectiveBind) -> Option<ListenerBind> {
@@ -689,7 +707,10 @@ impl Lowerer<'_> {
                     );
                     return None;
                 };
-                Some(ListenerBind::Unix { path, mode: None })
+                Some(ListenerBind::Unix {
+                    path,
+                    mode: bind.mode.as_ref().map(|mode| mode.value),
+                })
             }
         }
     }

@@ -273,7 +273,8 @@ impl ProxyHttp for HttpReverseProxy {
         }
         let policy = proxy_policy(ctx);
         let has_budget = ctx.attempted_upstreams.len() <= usize::from(policy.max_retries);
-        let target_available = match policy.retry_target {
+        let retry_target = policy.target_for_retry(ctx.attempted_upstreams.len());
+        let target_available = match retry_target {
             HttpRetryTarget::SameServer => ctx.attempted_upstreams.last().is_some(),
             HttpRetryTarget::NextServer => ctx
                 .pool
@@ -291,10 +292,10 @@ impl ProxyHttp for HttpReverseProxy {
         error.set_retry(retry);
         if retry {
             if !has_address_fallback {
-                if policy.retry_target == HttpRetryTarget::SameServer {
+                if retry_target == HttpRetryTarget::SameServer {
                     ctx.retry_server = ctx.attempted_upstreams.last().cloned();
                 }
-                ctx.retry_delay_pending = true;
+                ctx.retry_delay_pending = retry_target == HttpRetryTarget::SameServer;
             }
             ctx.listener.record_retry_attempt();
         }
@@ -312,7 +313,8 @@ impl ProxyHttp for HttpReverseProxy {
         ctx.release_lease();
         let policy = proxy_policy(ctx);
         let has_budget = ctx.attempted_upstreams.len() <= usize::from(policy.max_retries);
-        let target_available = match policy.retry_target {
+        let retry_target = policy.target_for_retry(ctx.attempted_upstreams.len());
+        let target_available = match retry_target {
             HttpRetryTarget::SameServer => ctx.attempted_upstreams.last().is_some(),
             HttpRetryTarget::NextServer => ctx
                 .pool
@@ -327,10 +329,10 @@ impl ProxyHttp for HttpReverseProxy {
             && target_available;
         error.set_retry(retry);
         if retry {
-            if policy.retry_target == HttpRetryTarget::SameServer {
+            if retry_target == HttpRetryTarget::SameServer {
                 ctx.retry_server = ctx.attempted_upstreams.last().cloned();
             }
-            ctx.retry_delay_pending = true;
+            ctx.retry_delay_pending = retry_target == HttpRetryTarget::SameServer;
             ctx.listener.record_retry_attempt();
         }
         error

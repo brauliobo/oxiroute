@@ -127,10 +127,10 @@
       .field-grid
         label.field(data-field="http_services[].routes[].action.policy.retry.max_retries")
           span Maximum retries
-          input(type="number" min="0" max="2" step="1" v-model.number="action.policy.retry.max_retries")
+          input(type="number" min="0" max="3" step="1" :value="action.policy.retry.max_retries" @input="setMaxRetries")
         label.field(data-field="http_services[].routes[].action.policy.retry.target")
           span Retry target
-          select(v-model="action.policy.retry.target")
+          select(:value="action.policy.retry.target" @change="setRetryTarget")
             option(value="next_server") Next available server
             option(value="same_server") Same server
         label.field(data-field="http_services[].routes[].action.policy.retry.delay_ms")
@@ -138,12 +138,20 @@
           input(type="number" min="0" max="60000" step="1" v-model.number="action.policy.retry.delay_ms")
         label.field(data-field="http_services[].routes[].action.policy.retry.method_safety")
           span Method safety
-          select(v-model="action.policy.retry.method_safety" disabled title="Retries are restricted to GET and HEAD.")
+          select(v-model="action.policy.retry.method_safety" disabled title="Request replays are restricted to GET and HEAD; pre-send connection retries do not replay a request.")
             option(value="get_head") GET and HEAD only
         label.field(data-field="http_services[].routes[].action.policy.retry.body_safety")
           span Body safety
-          select(v-model="action.policy.retry.body_safety" disabled title="Retries require an empty request body.")
+          select(v-model="action.policy.retry.body_safety" disabled title="Request replays require an empty request body; pre-send connection retries do not replay a body.")
             option(value="empty") Empty body only
+        label.enable-row(data-field="http_services[].routes[].action.policy.retry.final_redispatch")
+          input(
+            type="checkbox"
+            :disabled="action.policy.retry.target !== 'same_server' || action.policy.retry.max_retries <= 0"
+            :title="action.policy.retry.target !== 'same_server' || action.policy.retry.max_retries <= 0 ? 'Final redispatch requires at least one same-server retry.' : undefined"
+            v-model="action.policy.retry.final_redispatch"
+          )
+          span Redispatch the final retry to another server
       fieldset.retry-triggers(data-field="http_services[].routes[].action.policy.retry.triggers")
         legend Retry triggers
         label.enable-row(v-for="trigger in HTTP_RETRY_TRIGGERS" :key="trigger")
@@ -179,6 +187,25 @@ const retryTriggerLabels: Record<HttpRetryTrigger, string> = {
   connect_failure: 'Connection failure',
   connect_timeout: 'Connection timeout',
   refused_stream: 'HTTP/2 refused stream',
+}
+
+function setMaxRetries(event: Event): void {
+  const value = (event.target as HTMLInputElement).value
+  if (value === '') return
+  props.action.policy.retry.max_retries = Number(value)
+  normalizeFinalRedispatch()
+}
+
+function setRetryTarget(event: Event): void {
+  props.action.policy.retry.target = (event.target as HTMLSelectElement).value as
+    HttpProxyActionConfig['policy']['retry']['target']
+  normalizeFinalRedispatch()
+}
+
+function normalizeFinalRedispatch(): void {
+  if (props.action.policy.retry.target !== 'same_server' || props.action.policy.retry.max_retries <= 0) {
+    props.action.policy.retry.final_redispatch = false
+  }
 }
 
 function changeUpstreamHost(event: Event): void {

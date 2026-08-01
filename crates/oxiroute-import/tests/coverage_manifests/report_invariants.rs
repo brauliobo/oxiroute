@@ -53,8 +53,8 @@ fn native_import_reports_obey_finalization_and_accounting_invariants() {
 
     for (name, expected_finalized) in [
         ("minimal-representable.cfg", true),
-        ("host-a-active.cfg", false),
-        ("host-c-dormant.cfg", false),
+        ("host-a-active.cfg", true),
+        ("host-c-dormant.cfg", true),
     ] {
         let parsed = parse_haproxy_fixture(name);
         let resolved = resolve_parsed(parsed.clone());

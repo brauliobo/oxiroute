@@ -89,6 +89,7 @@ describe('canonical HTTP route editors', () => {
             max_retries: 2,
             target: 'next_server',
             delay_ms: 0,
+            final_redispatch: false,
             triggers: ['connect_failure', 'connect_timeout', 'refused_stream'],
             method_safety: 'get_head',
             body_safety: 'empty',
@@ -101,6 +102,54 @@ describe('canonical HTTP route editors', () => {
       .toContain('GET and HEAD')
     expect(field('http_services[].routes[].action.policy.retry.body_safety').get('select').attributes('title'))
       .toContain('empty request body')
+  })
+
+  it('edits ASCII case-insensitive authority matching and gates final redispatch', async () => {
+    const model = service()
+    const wrapper = mount(HttpServiceEditor, {
+      props: { service: model, poolNames: ['origins'], cacheStoreNames: [] },
+    })
+    const field = (path: string) => wrapper.get(`[data-field="${path}"]`)
+
+    await field('http_services[].routes[].host').get('input').setValue(true)
+    const hostKind = field('http_services[].routes[].host.kind').get('select')
+    await hostKind.setValue('ascii_case_insensitive_exact_authority')
+    const hostValue = field('http_services[].routes[].host.value')
+    expect(hostValue.text()).toContain('Authority value')
+    expect(hostValue.get('input').attributes('placeholder')).toBe('API.Example.Test:8443')
+    await hostValue.get('input').setValue('API.Example.Test:8443')
+
+    const maxRetries = field('http_services[].routes[].action.policy.retry.max_retries').get('input')
+    const target = field('http_services[].routes[].action.policy.retry.target').get('select')
+    const finalRedispatch = field('http_services[].routes[].action.policy.retry.final_redispatch').get('input')
+    expect(maxRetries.attributes('max')).toBe('3')
+    expect(finalRedispatch.attributes()).toHaveProperty('disabled')
+    await target.setValue('same_server')
+    await maxRetries.setValue(3)
+    expect(finalRedispatch.attributes()).not.toHaveProperty('disabled')
+    await finalRedispatch.setValue(true)
+    expect(model.routes[0]?.action).toMatchObject({
+      policy: {
+        retry: { max_retries: 3, target: 'same_server', final_redispatch: true },
+      },
+    })
+
+    await maxRetries.setValue('')
+    expect(model.routes[0]?.action).toMatchObject({
+      policy: { retry: { max_retries: 3, final_redispatch: true } },
+    })
+    await maxRetries.setValue(0)
+    expect(model.routes[0]?.action).toMatchObject({
+      policy: { retry: { max_retries: 0, final_redispatch: false } },
+    })
+    await maxRetries.setValue(3)
+    await finalRedispatch.setValue(true)
+
+    await target.setValue('next_server')
+    expect(finalRedispatch.attributes()).toHaveProperty('disabled')
+    expect(model.routes[0]?.action).toMatchObject({
+      policy: { retry: { target: 'next_server', final_redispatch: false } },
+    })
   })
 
   it('edits X-Forwarded-For source CIDR exceptions', async () => {

@@ -14,6 +14,7 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 use crate::{
     GenerationManager,
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome},
+    listener_reservation::unix_listener_mode_change_requires_restart,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -175,9 +176,16 @@ fn reconcile(
             let status = generations.status();
             generations.observe_disk_revision(document.disk_revision.clone());
             let revision = &document.candidate_revision;
+            let restart_required = generations.active().is_some_and(|active| {
+                unix_listener_mode_change_requires_restart(
+                    active.config(),
+                    &document.normalized_config,
+                )
+            });
             if status.active_revision.as_ref() != Some(revision)
                 && status.candidate_revision.as_ref() != Some(revision)
                 && status.quarantined_revision.as_ref() != Some(revision)
+                && !restart_required
                 && generations.prepare(*document).is_err()
             {
                 counters.rejected.fetch_add(1, Ordering::Relaxed);
