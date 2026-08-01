@@ -607,6 +607,14 @@ impl RecordingFile {
         }
     }
 
+    pub(crate) fn release_active_for_finalization(&mut self) {
+        if !self.active_accounted {
+            return;
+        }
+        self.shared.lock().active_recorders -= 1;
+        self.active_accounted = false;
+    }
+
     pub(crate) fn set_final_relative_name(
         &mut self,
         final_relative_name: String,
@@ -1194,12 +1202,14 @@ impl Seek for RecordingFile {
 
 impl Drop for RecordingFile {
     fn drop(&mut self) {
-        if !self.active_accounted {
+        if !self.active_accounted && !self.partial_exists {
             return;
         }
         if self.resumed {
             drop(self.file.take());
-            self.shared.lock().active_recorders -= 1;
+            if self.active_accounted {
+                self.shared.lock().active_recorders -= 1;
+            }
             self.active_accounted = false;
             return;
         }
@@ -1220,7 +1230,9 @@ impl Drop for RecordingFile {
             !(self.partial_exists && preserve_partial && owned)
         };
         let mut state = self.shared.lock();
-        state.active_recorders -= 1;
+        if self.active_accounted {
+            state.active_recorders -= 1;
+        }
         if removed {
             state.files -= 1;
             state.bytes_used -= self.length;

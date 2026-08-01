@@ -23,6 +23,9 @@ OxiRoute 0.2.1 adds the first integrated Squid-style explicit HTTP/1 forward-pro
 - Correct HAProxy direct import for the live hostrouter shape: page-only stats with localhost
   administration, `unix@` listener mode, case-insensitive exact Host routing with a fixed `503`
   fallback, reusable HTTP `leastconn`, bare final redispatch, and exact health timeout preservation.
+- Keep RTMP media queues draining while completed segments are synchronized and published on a
+  dedicated finalizer, preventing large hourly recordings from failing with `queue_discontinuity`.
+  Reconnects within `record_interval` continue the existing validated FLV segment.
 
 ## Compatibility
 
