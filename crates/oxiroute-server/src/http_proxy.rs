@@ -411,7 +411,7 @@ impl ProxyHttp for HttpReverseProxy {
         }
         result?;
 
-        if !upstream_request_requires_mutation(session, ctx)? {
+        if !upstream_request_requires_mutation(session, ctx) {
             return Ok(PreparedUpstreamRequest::Borrowed);
         }
 
@@ -1178,7 +1178,7 @@ fn bounded_request_header_sources(
                 max_bytes,
                 except_source_cidrs,
             } => {
-                if source_matches_exception(session, except_source_cidrs)? {
+                if source_matches_exception(session, except_source_cidrs) {
                     continue;
                 }
                 let client_bytes = session
@@ -1400,7 +1400,7 @@ fn apply_request_header_mutations(
                     RequestHeaderValuePlan::AppendedXForwardedFor {
                         except_source_cidrs,
                         ..
-                    } => source_matches_exception(session, except_source_cidrs)?,
+                    } => source_matches_exception(session, except_source_cidrs),
                     _ => false,
                 };
                 if excepted {
@@ -1436,7 +1436,10 @@ fn apply_request_header_mutations(
                         dynamic_header_value(&client_ip)?
                     }
                     RequestHeaderValuePlan::AppendedXForwardedFor { max_bytes, .. } => {
-                        appended_x_forwarded_for(session, *max_bytes)?
+                        let Some(value) = appended_x_forwarded_for(session, *max_bytes)? else {
+                            continue;
+                        };
+                        value
                     }
                     RequestHeaderValuePlan::DownstreamScheme => HeaderValue::from_static(
                         if session
@@ -1464,13 +1467,10 @@ fn apply_request_header_mutations(
     Ok(())
 }
 
-fn upstream_request_requires_mutation(
-    session: &Session,
-    ctx: &HttpRequestContext,
-) -> pingora::Result<bool> {
+fn upstream_request_requires_mutation(session: &Session, ctx: &HttpRequestContext) -> bool {
     let request = session.req_header();
     if request.version == http::Version::HTTP_10 {
-        return Ok(true);
+        return true;
     }
     let host_requires_mutation = match &ctx.selected_upstream_host {
         Some(selected) => !has_single_canonical_host(request, selected),
@@ -1481,7 +1481,7 @@ fn upstream_request_requires_mutation(
             pool.connection_reuse() == oxiroute_config::UpstreamConnectionReuse::Never
         })
     {
-        return Ok(true);
+        return true;
     }
 
     for mutation in &proxy_policy(ctx).request_headers {
@@ -1497,13 +1497,13 @@ fn upstream_request_requires_mutation(
             ..
         } = mutation
         {
-            if source_matches_exception(session, except_source_cidrs)? {
+            if source_matches_exception(session, except_source_cidrs) {
                 continue;
             }
         }
-        return Ok(true);
+        return true;
     }
-    Ok(false)
+    false
 }
 
 fn has_single_canonical_host(
@@ -1529,37 +1529,46 @@ fn has_single_canonical_host(
 fn source_matches_exception(
     session: &Session,
     exceptions: &[crate::http_action::SourceCidr],
-) -> pingora::Result<bool> {
+) -> bool {
     if exceptions.is_empty() {
-        return Ok(false);
+        return false;
     }
-    let client_ip = session
+    let Some(client_ip) = session
         .client_addr()
         .and_then(|address| address.as_inet())
         .map(std::net::SocketAddr::ip)
-        .ok_or_else(|| Error::new_in(ErrorType::Custom("ClientIpUnavailable")))?;
-    Ok(exceptions
+    else {
+        return false;
+    };
+    exceptions
         .iter()
-        .any(|exception| exception.contains(client_ip)))
+        .any(|exception| exception.contains(client_ip))
 }
 
-fn appended_x_forwarded_for(session: &Session, max_bytes: usize) -> pingora::Result<HeaderValue> {
+fn appended_x_forwarded_for(
+    session: &Session,
+    max_bytes: usize,
+) -> pingora::Result<Option<HeaderValue>> {
     let client_ip = session
         .client_addr()
         .and_then(|address| address.as_inet())
-        .map(|address| address.ip().to_string())
-        .ok_or_else(|| Error::new_in(ErrorType::Custom("ClientIpUnavailable")))?;
+        .map(|address| address.ip().to_string());
     let existing = joined_header_values(
         session.req_header(),
         &HeaderName::from_static("x-forwarded-for"),
         max_bytes,
     )?;
+    let Some(client_ip) = client_ip else {
+        return existing
+            .map(|value| bounded_header_value(&value, max_bytes))
+            .transpose();
+    };
     let mut value = existing.unwrap_or_default();
     if !value.is_empty() {
         value.extend_from_slice(b", ");
     }
     value.extend_from_slice(client_ip.as_bytes());
-    bounded_header_value(&value, max_bytes)
+    bounded_header_value(&value, max_bytes).map(Some)
 }
 
 fn bounded_incoming_header(
@@ -1975,6 +1984,70 @@ mod tests {
         (proxy, session, context, client)
     }
 
+    #[cfg(unix)]
+    async fn unix_request_session(request: &[u8]) -> (Session, tokio::net::UnixStream) {
+        use tokio::net::{UnixListener, UnixStream};
+
+        let directory = tempfile::tempdir().expect("Unix request directory");
+        let path = directory.path().join("downstream.sock");
+        let listener = UnixListener::bind(&path).expect("Unix request listener");
+        let client = UnixStream::connect(&path);
+        let accept = listener.accept();
+        let (client, downstream) = tokio::join!(client, accept);
+        let mut client = client.expect("Unix request client");
+        let (downstream, _) = downstream.expect("Unix request connection");
+        client
+            .write_all(request)
+            .await
+            .expect("write Unix downstream request");
+        let mut session = Session::new_h1(Box::new(downstream));
+        session
+            .read_request()
+            .await
+            .expect("parse Unix downstream request");
+        (session, client)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_downstream_preserves_existing_x_forwarded_for_without_an_ip_peer() {
+        let policy = ProxyPolicyPlan::compile(&HttpProxyPolicy {
+            request_headers: vec![HttpRequestHeaderMutation::Set {
+                name: "x-forwarded-for".into(),
+                value: HttpRequestHeaderValue::AppendedXForwardedFor {
+                    max_bytes: 128,
+                    except_source_cidrs: vec!["127.0.0.0/8".into()],
+                },
+            }],
+            ..HttpProxyPolicy::default()
+        });
+        let RequestHeaderMutationPlan::Set {
+            value:
+                RequestHeaderValuePlan::AppendedXForwardedFor {
+                    except_source_cidrs,
+                    ..
+                },
+            ..
+        } = &policy.request_headers[0]
+        else {
+            panic!("compiled X-Forwarded-For mutation")
+        };
+        let (session, _client) = unix_request_session(
+            b"GET / HTTP/1.1\r\nHost: example.test\r\nX-Forwarded-For: trusted\r\n\r\n",
+        )
+        .await;
+
+        assert!(!source_matches_exception(&session, except_source_cidrs));
+        assert_eq!(
+            appended_x_forwarded_for(&session, 128).unwrap(),
+            Some(HeaderValue::from_static("trusted"))
+        );
+
+        let (session, _client) =
+            unix_request_session(b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n").await;
+        assert_eq!(appended_x_forwarded_for(&session, 128).unwrap(), None);
+    }
+
     #[test]
     fn proxy_add_headers_append_and_honor_nginx_statuses_and_always() {
         let policy = HttpProxyPolicy {
@@ -2033,7 +2106,7 @@ mod tests {
                 .as_ref()
                 .expect("selected Host")
         ));
-        assert!(!upstream_request_requires_mutation(&session, &context).unwrap());
+        assert!(!upstream_request_requires_mutation(&session, &context));
         let clones = Arc::new(AtomicUsize::new(0));
         session
             .req_header_mut()
