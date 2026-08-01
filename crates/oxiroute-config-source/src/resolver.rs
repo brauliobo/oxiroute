@@ -158,7 +158,41 @@ fn import_native(
     match directive {
         NativeDirective::Nginx(source) => import_nginx(source, parent, dependencies),
         NativeDirective::Haproxy(source) => import_haproxy(source, parent, dependencies),
+        NativeDirective::Squid(source) => import_squid(source, parent, dependencies),
     }
+}
+
+#[cfg(unix)]
+fn import_squid(
+    source: &crate::native::SquidSource,
+    parent: &Path,
+    dependencies: &mut Dependencies,
+) -> Result<Config, ConfigSourceError> {
+    let path = resolve_path(parent, &source.path);
+    let report = oxiroute_import::squid::import(&path);
+    if !source.externalize_cache && !report.effective.refresh_policy.patterns.is_empty() {
+        return Err(failed_native_import(
+            "squid",
+            report
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.code() == oxiroute_import::E_UNSUPPORTED_FEATURE)
+                .map(|diagnostic| diagnostic.code().as_str()),
+        ));
+    }
+    let config = report.config.clone().ok_or_else(|| {
+        failed_native_import(
+            "squid",
+            report
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.code().as_str()),
+        )
+    })?;
+    for source in &report.source_graph.sources {
+        dependencies.push(source.canonical_path.clone())?;
+    }
+    Ok(config)
 }
 
 #[cfg(not(unix))]

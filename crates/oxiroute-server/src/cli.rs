@@ -170,6 +170,18 @@ pub enum ImportCommand {
         #[arg(long, value_enum, default_value_t = ImportOutput::Report)]
         output: ImportOutput,
     },
+    Squid {
+        #[arg(value_name = "CONFIG")]
+        config: PathBuf,
+        /// Shift imported IP socket listener ports for side-by-side validation.
+        #[arg(long, value_name = "PORTS", value_parser = clap::value_parser!(u16).range(1..))]
+        shadow_port_offset: Option<u16>,
+        /// Render preview output in this canonical configuration format.
+        #[arg(long, value_enum, default_value_t = ComposeFormat::Kdl)]
+        format: ComposeFormat,
+        #[arg(long, value_enum, default_value_t = ImportOutput::Report)]
+        output: ImportOutput,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
@@ -541,6 +553,20 @@ pub fn execute_offline(command: &Command) -> Result<Option<String>, Box<dyn Erro
             (*format).into(),
             *output,
         )?)),
+        Command::Import {
+            command:
+                ImportCommand::Squid {
+                    config,
+                    shadow_port_offset,
+                    format,
+                    output,
+                },
+        } => Ok(Some(import_squid(
+            config,
+            *shadow_port_offset,
+            (*format).into(),
+            *output,
+        )?)),
         _ => Ok(None),
     }
 }
@@ -686,6 +712,33 @@ fn import_haproxy(
                 result,
                 "activation requirements: {}",
                 candidate.activation_requirements.len()
+            )?;
+            Ok(result)
+        }
+    }
+}
+
+fn import_squid(
+    path: &Path,
+    shadow_port_offset: Option<u16>,
+    format: ConfigFormat,
+    output: ImportOutput,
+) -> Result<String, Box<dyn Error>> {
+    let report = oxiroute_import::squid::import(path);
+    match output {
+        ImportOutput::Preview => {
+            preview_with_shadow_listener_offset(report.config.as_ref(), shadow_port_offset, format)
+        }
+        ImportOutput::Report => {
+            if shadow_port_offset.is_some() {
+                return Err("--shadow-port-offset requires --output preview".into());
+            }
+            let mut result = report_header("squid", &report.diagnostics);
+            writeln!(result, "finalized: {}", report.config.is_some())?;
+            writeln!(
+                result,
+                "blocked capabilities: {}",
+                report.blocked_capabilities.len()
             )?;
             Ok(result)
         }
