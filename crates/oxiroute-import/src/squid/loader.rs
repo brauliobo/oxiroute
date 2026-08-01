@@ -12,9 +12,9 @@ use crate::{
     MAX_AGGREGATE_SOURCE_BYTES, MAX_DIRECTIVES_PER_SOURCE, MAX_EXPANDED_DIRECTIVES,
     MAX_GLOB_MATCHES, MAX_SOURCE_BYTES, MAX_SOURCE_FILES, MAX_TOKENS_PER_SOURCE, Report, Severity,
     SourceFile, SourceId, Span,
+    source::{FileFingerprint, StableReadFailure, read_stable_file, stable_file_changed},
 };
 
-use super::source::{FileFingerprint, ReadFailure, stable_read};
 use super::{Directive, Document, E_UNSUPPORTED_FORM, Word, parser::parse_with_limits};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -236,9 +236,9 @@ impl Loader {
             );
             return Err(SourceLoadFailure::SourceFileLimit);
         }
-        let (bytes, fingerprint) = match stable_read(canonical_path, self.limits.max_source_bytes) {
+        let snapshot = match read_stable_file(canonical_path, self.limits.max_source_bytes) {
             Ok(read) => read,
-            Err(ReadFailure::TooLarge) => {
+            Err(StableReadFailure::TooLarge) => {
                 self.source_limit(
                     format!(
                         "Squid source exceeds the maximum size of {} bytes",
@@ -249,7 +249,7 @@ impl Loader {
                 );
                 return Err(SourceLoadFailure::SourceSizeLimit);
             }
-            Err(ReadFailure::Changed) => {
+            Err(StableReadFailure::Changed) => {
                 self.source_error(
                     E_SOURCE_CHANGED,
                     "Squid source changed while it was being read",
@@ -258,7 +258,7 @@ impl Loader {
                 );
                 return Err(SourceLoadFailure::SourceChanged);
             }
-            Err(ReadFailure::Io(error)) => {
+            Err(StableReadFailure::Io(error)) => {
                 self.source_error(
                     E_SOURCE_IO,
                     format!("failed to read Squid source: {error}"),
@@ -268,6 +268,8 @@ impl Loader {
                 return Err(SourceLoadFailure::SourceIo);
             }
         };
+        let bytes = snapshot.bytes;
+        let fingerprint = snapshot.fingerprint;
         let Some(aggregate) = self.aggregate_source_bytes.checked_add(bytes.len()) else {
             self.aggregate_limit(primary_span, include_stack);
             return Err(SourceLoadFailure::AggregateSourceLimit);
@@ -641,10 +643,12 @@ impl Loader {
             }
         }
         for record in &self.sources {
-            let changed = stable_read(&record.parsed.canonical_path, self.limits.max_source_bytes)
-                .map_or(true, |(bytes, fingerprint)| {
-                    bytes != record.parsed.source.bytes() || fingerprint != record.fingerprint
-                });
+            let changed = stable_file_changed(
+                &record.parsed.canonical_path,
+                self.limits.max_source_bytes,
+                record.parsed.source.bytes(),
+                &record.fingerprint,
+            );
             if changed {
                 self.snapshot_stable = false;
                 self.diagnostics.push(

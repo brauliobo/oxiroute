@@ -1,6 +1,7 @@
 pub mod cli;
 pub mod config_coordinator;
 mod config_watcher;
+mod encoding;
 mod generation;
 mod health;
 mod http_action;
@@ -13,6 +14,7 @@ mod operational_event;
 mod prometheus;
 mod routing;
 mod rtmp_api;
+mod secure_bearer;
 mod service_plan;
 mod stats;
 mod tcp_relay;

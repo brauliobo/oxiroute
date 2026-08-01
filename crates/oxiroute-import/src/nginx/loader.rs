@@ -1,12 +1,8 @@
 use std::{
     collections::HashMap,
     ffi::OsString,
-    fs::{self, File, Metadata},
-    io::{self, Read},
-    os::unix::{
-        ffi::{OsStrExt, OsStringExt},
-        fs::MetadataExt,
-    },
+    fs, io,
+    os::unix::ffi::{OsStrExt, OsStringExt},
     path::{Component, Path, PathBuf},
 };
 
@@ -16,6 +12,7 @@ use crate::{
     MAX_AGGREGATE_SOURCE_BYTES, MAX_DIRECTIVES_PER_SOURCE, MAX_EXPANDED_DIRECTIVES,
     MAX_GLOB_MATCHES, MAX_INCLUDE_DEPTH, MAX_SOURCE_BYTES, MAX_SOURCE_FILES, MAX_STRUCTURAL_DEPTH,
     MAX_TOKENS_PER_SOURCE, Report, Severity, SourceFile, SourceId, Span,
+    source::{FileFingerprint, StableReadFailure, read_stable_file, stable_file_changed},
 };
 
 use super::{Directive, Document, E_SYNTAX, parser::parse_with_limits};
@@ -307,9 +304,9 @@ impl Loader {
             return Err(SourceLoadFailure::SourceFileLimit);
         }
 
-        let (bytes, fingerprint) = match stable_read(canonical_path, self.limits.max_source_bytes) {
+        let snapshot = match read_stable_file(canonical_path, self.limits.max_source_bytes) {
             Ok(read) => read,
-            Err(ReadFailure::TooLarge) => {
+            Err(StableReadFailure::TooLarge) => {
                 self.push_diagnostic(
                     E_SOURCE_LIMIT,
                     DiagnosticStage::Source,
@@ -322,7 +319,7 @@ impl Loader {
                 );
                 return Err(SourceLoadFailure::SourceSizeLimit);
             }
-            Err(ReadFailure::Changed) => {
+            Err(StableReadFailure::Changed) => {
                 self.push_diagnostic(
                     E_SOURCE_CHANGED,
                     DiagnosticStage::Source,
@@ -332,7 +329,7 @@ impl Loader {
                 );
                 return Err(SourceLoadFailure::SourceChanged);
             }
-            Err(ReadFailure::Io(error)) => {
+            Err(StableReadFailure::Io(error)) => {
                 self.push_diagnostic(
                     E_SOURCE_IO,
                     DiagnosticStage::Source,
@@ -343,6 +340,8 @@ impl Loader {
                 return Err(SourceLoadFailure::SourceIo);
             }
         };
+        let bytes = snapshot.bytes;
+        let fingerprint = snapshot.fingerprint;
         let Some(aggregate_source_bytes) = self.aggregate_source_bytes.checked_add(bytes.len())
         else {
             self.push_aggregate_limit(primary_span, include_stack);
@@ -788,13 +787,12 @@ impl Loader {
 
         for source_index in 0..self.sources.len() {
             let record = &self.sources[source_index];
-            let changed =
-                match stable_read(&record.parsed.canonical_path, self.limits.max_source_bytes) {
-                    Ok((bytes, fingerprint)) => {
-                        bytes != record.parsed.source.bytes() || fingerprint != record.fingerprint
-                    }
-                    Err(_) => true,
-                };
+            let changed = stable_file_changed(
+                &record.parsed.canonical_path,
+                self.limits.max_source_bytes,
+                record.parsed.source.bytes(),
+                &record.fingerprint,
+            );
             if changed {
                 let source = SourceId::new(
                     u32::try_from(source_index).expect("source limit keeps identifiers in u32"),
@@ -1271,70 +1269,6 @@ fn pattern_first_literal(pattern: &[u8]) -> Option<u8> {
         [literal, ..] if !matches!(*literal, b'*' | b'?' | b'[') => Some(*literal),
         _ => None,
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct FileFingerprint {
-    length: u64,
-    device: u64,
-    inode: u64,
-    modified_seconds: i64,
-    modified_nanoseconds: i64,
-    changed_seconds: i64,
-    changed_nanoseconds: i64,
-}
-
-impl FileFingerprint {
-    fn new(metadata: &Metadata) -> Self {
-        Self {
-            length: metadata.len(),
-            device: metadata.dev(),
-            inode: metadata.ino(),
-            modified_seconds: metadata.mtime(),
-            modified_nanoseconds: metadata.mtime_nsec(),
-            changed_seconds: metadata.ctime(),
-            changed_nanoseconds: metadata.ctime_nsec(),
-        }
-    }
-}
-
-enum ReadFailure {
-    TooLarge,
-    Changed,
-    Io(io::Error),
-}
-
-fn stable_read(path: &Path, max_bytes: usize) -> Result<(Vec<u8>, FileFingerprint), ReadFailure> {
-    let mut file = File::open(path).map_err(ReadFailure::Io)?;
-    let before = file.metadata().map_err(ReadFailure::Io)?;
-    if !before.is_file() {
-        return Err(ReadFailure::Io(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "source is not a regular file",
-        )));
-    }
-    if before.len() > u64::try_from(max_bytes).unwrap_or(u64::MAX) {
-        return Err(ReadFailure::TooLarge);
-    }
-
-    let read_limit = u64::try_from(max_bytes)
-        .unwrap_or(u64::MAX)
-        .saturating_add(1);
-    let mut bytes = Vec::new();
-    (&mut file)
-        .take(read_limit)
-        .read_to_end(&mut bytes)
-        .map_err(ReadFailure::Io)?;
-    let after = file.metadata().map_err(ReadFailure::Io)?;
-    let before = FileFingerprint::new(&before);
-    let after = FileFingerprint::new(&after);
-    if before != after {
-        return Err(ReadFailure::Changed);
-    }
-    if bytes.len() > max_bytes {
-        return Err(ReadFailure::TooLarge);
-    }
-    Ok((bytes, after))
 }
 
 #[cfg(test)]

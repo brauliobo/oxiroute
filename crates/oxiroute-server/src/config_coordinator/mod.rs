@@ -12,6 +12,7 @@ use serde::Serialize;
 
 mod storage;
 
+use crate::encoding::lower_hex;
 use storage::{CanonicalStorage, ReplaceControl, ReplaceResult};
 
 /// The canonical file is bounded to the same one-MiB limit as the restricted Lua loader.
@@ -570,16 +571,6 @@ const fn cleanup_durability_warning() -> ConfigDiagnostic {
         stage: ConfigDiagnosticStage::Sync,
         message: "configuration was committed but cleanup durability could not be confirmed",
     }
-}
-
-fn lower_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut result = String::with_capacity(bytes.len() * 2);
-    for &byte in bytes {
-        result.push(char::from(HEX[usize::from(byte >> 4)]));
-        result.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    result
 }
 
 #[cfg(test)]

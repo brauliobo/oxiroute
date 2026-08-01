@@ -24,6 +24,7 @@ use super::{
     MAX_CA_CERTIFICATE_BYTES, TlsBuildError, certificate_is_ca_capable, pem_labels,
     read_bounded_stable,
 };
+use crate::encoding::lower_hex;
 
 const CA_FILE: &str = "custom CA bundle";
 const MAX_CA_CERTIFICATES: usize = 128;
@@ -374,14 +375,4 @@ fn group_key(
     let digest = sha256(&policy);
     let key = u64::from_be_bytes(digest[..8].try_into().expect("SHA-256 has eight bytes"));
     key.max(1)
-}
-
-fn lower_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut result = String::with_capacity(bytes.len() * 2);
-    for &byte in bytes {
-        result.push(HEX[(byte >> 4) as usize] as char);
-        result.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    result
 }

@@ -16,9 +16,10 @@ use super::{
 use crate::{
     GenerationManager, RuntimeMetrics, TopologySnapshot,
     config_coordinator::{CanonicalConfigCoordinator, ConfigRevision},
+    secure_bearer::{HeaderCardinality, single_header},
 };
 use async_trait::async_trait;
-use http::Response;
+use http::{Response, header::AUTHORIZATION};
 use oxiroute_rtmp::RtmpRegistry;
 use pingora::{apps::http_app::ServeHttp, protocols::http::ServerSession};
 
@@ -201,17 +202,15 @@ impl ServeHttp for RtmpManagementApi {
         let public_read = method == "GET" && matches!(path.as_str(), "/ready" | "/metrics");
         let api_request =
             management::match_route(&path_and_query).is_some() || match_api_route(&path).is_some();
-        let authorization_count = session
-            .req_header()
-            .headers
-            .get_all(http::header::AUTHORIZATION)
-            .iter()
-            .count();
+        let duplicate_authorization = matches!(
+            single_header(&session.req_header().headers, &AUTHORIZATION),
+            HeaderCardinality::Duplicate
+        );
         let authorized = self
             .config
             .as_ref()
             .is_some_and(|config| config.authorized(session));
-        let response = if api_request && !public_read && authorization_count > 1 {
+        let response = if api_request && !public_read && duplicate_authorization {
             ApiResponse::error(
                 400,
                 "duplicate_authorization",
