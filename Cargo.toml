@@ -17,7 +17,7 @@ edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/brauliobo/oxiroute"
 rust-version = "1.87"
-version = "0.2.0"
+version = "0.2.1"
 
 [workspace.dependencies]
 arc-swap = "1.9"
@@ -34,7 +34,12 @@ h2 = "0.4.15"
 hocon-parser = { version = "=1.11.0", features = ["serde"] }
 http = "1"
 httpdate = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+hickory-resolver = { version = "0.24", default-features = false, features = ["system-config", "tokio-runtime"] }
 log = "0.4"
+local-ip-address = "0.6"
 kdl = { version = "=6.5.0", default-features = false }
 mlua = { version = "0.11", features = ["lua54", "serialize", "vendored"] }
 notify = "8.2"
@@ -53,6 +58,7 @@ time = { version = "0.3.45", features = ["formatting", "local-offset", "macros"]
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "sync", "time"] }
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "tls12"] }
 tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect"] }
+tokio-openssl = "0.6"
 uuid = { version = "1", features = ["v4"] }
 x509-parser = "0.18.1"
 zeroize = "1.9"

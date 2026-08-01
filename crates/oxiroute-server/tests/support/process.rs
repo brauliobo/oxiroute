@@ -106,6 +106,30 @@ impl ServerProcess {
         self.stop();
     }
 
+    #[allow(dead_code)]
+    pub fn shutdown_gracefully(mut self) {
+        let status = Command::new("kill")
+            .arg("-TERM")
+            .arg(self.child.id().to_string())
+            .status()
+            .expect("signal server process");
+        assert!(status.success(), "failed to signal server process");
+        let deadline = Instant::now() + PROCESS_TIMEOUT;
+        while self
+            .child
+            .try_wait()
+            .expect("inspect server process")
+            .is_none()
+        {
+            assert!(
+                Instant::now() < deadline,
+                "server did not shut down gracefully"
+            );
+            thread::sleep(RETRY_DELAY);
+        }
+        assert!(self.child.wait().expect("server exit").success());
+    }
+
     pub fn wait_for_exit(mut self) {
         let deadline = Instant::now() + PROCESS_TIMEOUT;
         while self

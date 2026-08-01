@@ -24,6 +24,7 @@ use crate::{
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum RuntimeReferenceKind {
+    ForwardHttp1,
     Http1,
     Http2,
     WebSocket,
@@ -34,11 +35,12 @@ pub enum RuntimeReferenceKind {
 impl RuntimeReferenceKind {
     const fn index(self) -> usize {
         match self {
-            Self::Http1 => 0,
-            Self::Http2 => 1,
-            Self::WebSocket => 2,
-            Self::Tcp => 3,
-            Self::Rtmp => 4,
+            Self::ForwardHttp1 => 0,
+            Self::Http1 => 1,
+            Self::Http2 => 2,
+            Self::WebSocket => 3,
+            Self::Tcp => 4,
+            Self::Rtmp => 5,
         }
     }
 }
@@ -133,7 +135,7 @@ pub struct RuntimeGeneration {
     drain: (Mutex<()>, Condvar),
     metrics: RuntimeMetrics,
     plan: RuntimePlan,
-    references: [AtomicU64; 5],
+    references: [AtomicU64; 6],
     mutations: AtomicU64,
     reservations: ListenerReservations,
     revision: GenerationRevision,
@@ -1605,6 +1607,7 @@ mod tests {
         let candidate = manager.prepare(document()).expect("prepare");
         let generation = manager.activate(&candidate).expect("activate");
         let references = [
+            RuntimeReferenceKind::ForwardHttp1,
             RuntimeReferenceKind::Http1,
             RuntimeReferenceKind::Http2,
             RuntimeReferenceKind::WebSocket,

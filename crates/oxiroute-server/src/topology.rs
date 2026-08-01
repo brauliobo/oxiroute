@@ -35,6 +35,7 @@ impl TopologySnapshot {
         let mut builder = TopologyBuilder::new(config);
         builder.add_listeners(config, services);
         builder.add_tls(config);
+        builder.add_forward_proxy_services(config);
         builder.add_http_services(config);
         builder.add_l4_services(config);
         builder.add_upstream_pools(config, pools);
@@ -276,10 +277,10 @@ impl TopologyBuilder {
                 let target = match listener.protocol {
                     Protocol::Http => http_service_id(service),
                     Protocol::Tcp => l4_service_id(service),
-                    Protocol::Rtmp
-                    | Protocol::ForwardHttp1
-                    | Protocol::ForwardHttp2
-                    | Protocol::ForwardHttp3 => continue,
+                    Protocol::ForwardHttp1 | Protocol::ForwardHttp2 | Protocol::ForwardHttp3 => {
+                        forward_proxy_service_id(service)
+                    }
+                    Protocol::Rtmp => continue,
                 };
                 self.edges.push(TopologyEdge::new(
                     TopologyEdgeKind::DispatchService,
@@ -296,6 +297,35 @@ impl TopologyBuilder {
                     format!("{config_path}/tls_profile"),
                 ));
             }
+        }
+    }
+
+    fn add_forward_proxy_services(&mut self, config: &Config) {
+        for (index, service) in config.forward_proxy_services.iter().enumerate() {
+            let id = forward_proxy_service_id(&service.name);
+            let config_path = format!("/forward_proxy_services/{index}");
+            self.nodes.push(TopologyNode {
+                id,
+                kind: TopologyNodeKind::ForwardProxyService,
+                name: service.name.clone(),
+                config_path,
+                attributes: json!({
+                    "enabledVersions": service.enabled_versions,
+                    "allowAbsoluteForm": service.allow_absolute_form,
+                    "tlsRequired": service.tls_required,
+                    "connectEnabled": service.connect.enabled,
+                    "connectPortCount": service.connect.allowed_ports.len(),
+                    "auth": match service.auth {
+                        Some(oxiroute_config::ForwardProxyAuth::BearerTokenFile { .. }) => "bearer_token_file",
+                        Some(oxiroute_config::ForwardProxyAuth::BasicHtpasswdFile { .. }) => "basic_htpasswd_file",
+                        None => "none",
+                    },
+                    "accessRuleCount": service.access_policy.as_ref().map_or(0, |policy| policy.rules.len()),
+                    "denyPrivate": service.destination_policy.deny_private,
+                    "nameserverCount": service.resolver.nameservers.len(),
+                    "auditMode": service.audit_mode,
+                }),
+            });
         }
     }
 
@@ -524,6 +554,7 @@ pub(crate) enum TopologyResponseError {
 pub enum TopologyNodeKind {
     Listener,
     ForwardProxyListener,
+    ForwardProxyService,
     RtmpListener,
     TlsProfile,
     Certificate,
@@ -698,6 +729,10 @@ fn certificate_id(name: &str) -> String {
 
 fn http_service_id(name: &str) -> String {
     stable_id("http_service", &[name])
+}
+
+fn forward_proxy_service_id(name: &str) -> String {
+    stable_id("forward_proxy_service", &[name])
 }
 
 fn http_route_id(service: &str, route: &HttpRoute) -> String {

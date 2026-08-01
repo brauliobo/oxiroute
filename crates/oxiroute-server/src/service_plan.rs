@@ -7,9 +7,9 @@ use std::{
 };
 
 use crate::{
-    CertbotReconciler, HealthBuildError, HealthSupervisor, L4ServicePlan, PoolError, PreparedTls,
-    RelayPolicy, RoundRobinPool, Route, RouteError, RouteTable, RuntimeEndpoint, TlsBuildError,
-    TlsProfilePlan, TopologySnapshot, health,
+    CertbotReconciler, ForwardHttp1ServicePlan, HealthBuildError, HealthSupervisor, L4ServicePlan,
+    PoolError, PreparedTls, RelayPolicy, RoundRobinPool, Route, RouteError, RouteTable,
+    RuntimeEndpoint, TlsBuildError, TlsProfilePlan, TopologySnapshot, health,
     http_action::{
         AccessLog, FixedResponsePlan, HttpActionPlan, HttpGzipPlan, HttpRoutePlan, ProxyActionPlan,
         ProxyPolicyPlan, RedirectPlan, RouteAccess, RoutePolicyPlan, StaticFilesPlan,
@@ -42,6 +42,7 @@ pub struct ServiceSpec {
 
 #[derive(Clone, Debug)]
 pub enum ServiceKind {
+    ForwardHttp1(Arc<ForwardHttp1ServicePlan>),
     Http(Arc<HttpServicePlan>),
     Rtmp(Arc<RtmpServicePlan>),
     Tcp(Arc<L4ServicePlan>),
@@ -51,6 +52,7 @@ impl ServiceKind {
     #[must_use]
     pub const fn protocol(&self) -> &'static str {
         match self {
+            Self::ForwardHttp1(_) => "forward_http1",
             Self::Http(_) => "http",
             Self::Rtmp(_) => "rtmp",
             Self::Tcp(_) => "tcp",
@@ -328,6 +330,13 @@ pub enum ServicePlanError {
     UnknownRtmpService { listener: String, service: String },
     #[error("forward proxy runtime is not integrated for listener `{listener}`")]
     ForwardProxyRuntimeUnavailable { listener: String },
+    #[error("forward proxy service `{service}` failed runtime preflight: {source}")]
+    ForwardProxyPreflight {
+        service: String,
+        source: crate::forward_proxy::ForwardPlanError,
+    },
+    #[error("forward proxy listener `{listener}` references unknown service `{service}`")]
+    UnknownForwardProxyService { listener: String, service: String },
     #[error(
         "RTMP recorder `{recorder}` in application `{application}` of service `{service}` has an invalid runtime policy"
     )]
@@ -433,6 +442,7 @@ pub fn runtime_plan(config: &Config) -> Result<RuntimePlan, ServicePlanError> {
         .map_err(|source| ServicePlanError::Tls(Box::new(source)))?;
     let pools = compile_pools(&config)?;
     let http_services = compile_http_services(&config, &pools.by_name)?;
+    let forward_services = compile_forward_proxy_services(&config)?;
     let rtmp_services = compile_rtmp_services(&config)?;
     let l4_services = compile_l4_services(&config, &pools.by_name)?;
 
@@ -443,6 +453,7 @@ pub fn runtime_plan(config: &Config) -> Result<RuntimePlan, ServicePlanError> {
             compile_listener(
                 listener,
                 &http_services,
+                &forward_services,
                 &rtmp_services,
                 &l4_services,
                 tls.profiles(),
@@ -458,7 +469,7 @@ pub fn runtime_plan(config: &Config) -> Result<RuntimePlan, ServicePlanError> {
         (!pools.health_groups.is_empty()).then(|| HealthSupervisor::new(pools.health_groups));
     let mut active_rtmp_services = services.iter().filter_map(|service| match &service.kind {
         ServiceKind::Rtmp(service) => Some(service.as_ref()),
-        ServiceKind::Http(_) | ServiceKind::Tcp(_) => None,
+        ServiceKind::ForwardHttp1(_) | ServiceKind::Http(_) | ServiceKind::Tcp(_) => None,
     });
     let rtmp_capabilities = RtmpCapabilities {
         live_ingest: active_rtmp_services.clone().next().is_some(),
@@ -477,6 +488,24 @@ pub fn runtime_plan(config: &Config) -> Result<RuntimePlan, ServicePlanError> {
         tls,
         topology,
     })
+}
+
+fn compile_forward_proxy_services(
+    config: &Config,
+) -> Result<HashMap<String, Arc<ForwardHttp1ServicePlan>>, ServicePlanError> {
+    config
+        .forward_proxy_services
+        .iter()
+        .map(|service| {
+            let plan = ForwardHttp1ServicePlan::compile(service).map_err(|source| {
+                ServicePlanError::ForwardProxyPreflight {
+                    service: service.name.clone(),
+                    source,
+                }
+            })?;
+            Ok((service.name.clone(), Arc::new(plan)))
+        })
+        .collect()
 }
 
 struct CompiledPools {
@@ -1074,12 +1103,13 @@ fn socket_listener_contains(
 fn compile_listener(
     listener: &oxiroute_config::Listener,
     http_services: &HashMap<String, Arc<HttpServicePlan>>,
+    forward_services: &HashMap<String, Arc<ForwardHttp1ServicePlan>>,
     rtmp_services: &HashMap<String, Arc<RtmpServicePlan>>,
     l4_services: &HashMap<String, Arc<L4ServicePlan>>,
     tls_profiles: &crate::tls::TlsProfilePlanMap,
 ) -> Result<ServiceSpec, ServicePlanError> {
     let tls = match (listener.protocol, listener.tls_profile.as_deref()) {
-        (Protocol::Http, Some(profile)) => {
+        (Protocol::Http | Protocol::ForwardHttp1, Some(profile)) => {
             Some(Arc::clone(tls_profiles.get(profile).ok_or_else(|| {
                 ServicePlanError::UnknownListenerTlsProfile {
                     listener: listener.name.clone(),
@@ -1087,7 +1117,7 @@ fn compile_listener(
                 }
             })?))
         }
-        (Protocol::Http | Protocol::Tcp | Protocol::Rtmp, None) => None,
+        (Protocol::Http | Protocol::ForwardHttp1 | Protocol::Tcp | Protocol::Rtmp, None) => None,
         (protocol @ (Protocol::Tcp | Protocol::Rtmp), Some(profile)) => {
             return Err(ServicePlanError::UnexpectedListenerTlsProfile {
                 listener: listener.name.clone(),
@@ -1095,14 +1125,14 @@ fn compile_listener(
                 profile: profile.into(),
             });
         }
-        (Protocol::ForwardHttp1 | Protocol::ForwardHttp2 | Protocol::ForwardHttp3, _) => {
+        (Protocol::ForwardHttp2 | Protocol::ForwardHttp3, _) => {
             return Err(ServicePlanError::ForwardProxyRuntimeUnavailable {
                 listener: listener.name.clone(),
             });
         }
     };
     let kind = match (listener.protocol, listener.service.as_deref()) {
-        (Protocol::Http | Protocol::Rtmp | Protocol::Tcp, None) => {
+        (Protocol::Http | Protocol::ForwardHttp1 | Protocol::Rtmp | Protocol::Tcp, None) => {
             return Err(ServicePlanError::MissingListenerService {
                 listener: listener.name.clone(),
             });
@@ -1114,6 +1144,14 @@ fn compile_listener(
                     service: service.into(),
                 }
             })?))
+        }
+        (Protocol::ForwardHttp1, Some(service)) => {
+            ServiceKind::ForwardHttp1(Arc::clone(forward_services.get(service).ok_or_else(
+                || ServicePlanError::UnknownForwardProxyService {
+                    listener: listener.name.clone(),
+                    service: service.into(),
+                },
+            )?))
         }
         (Protocol::Tcp, Some(service)) => {
             ServiceKind::Tcp(Arc::clone(l4_services.get(service).ok_or_else(|| {
@@ -1131,7 +1169,7 @@ fn compile_listener(
                 }
             })?))
         }
-        (Protocol::ForwardHttp1 | Protocol::ForwardHttp2 | Protocol::ForwardHttp3, _) => {
+        (Protocol::ForwardHttp2 | Protocol::ForwardHttp3, _) => {
             return Err(ServicePlanError::ForwardProxyRuntimeUnavailable {
                 listener: listener.name.clone(),
             });
