@@ -23,7 +23,7 @@ source=("oxiroute-${pkgver}.tar.gz::${url}/releases/download/v${pkgver}/oxiroute
         'oxiroute.kdl'
         'oxiroute.lua'
         'README.md')
-sha256sums=('caaf20653e300819f0afc93944a1085f724839c10be1be036e334983a8a24fd2'
+sha256sums=('e694073bd30dfed6581b32ab99b71898cc76a70ffdd3119a519bd8d3f9e4f1ac'
             '4013c417cabead75b1fd398bdcd4f368d3e333dc988bdeb41b9c75e448b92cd1'
             'ece087105e74910e9d4a6c3551082828378ac5c62fc15e97a755a3bc93020e72'
             '632c14735ddea0bf780abea05d3d288f9530ca41f201a37e428223d04acffe3a'
