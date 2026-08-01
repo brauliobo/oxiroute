@@ -17,29 +17,21 @@ use http::{
 };
 use log::warn;
 use oxiroute_config::{
-    DownstreamTimeoutPolicy, HttpGzipMinimumVersion, HttpRedirectLocation, HttpRetryTarget,
-    HttpRetryTrigger, HttpSameSite, HttpUpstreamHost, is_unambiguous_http_path,
+    HttpGzipMinimumVersion, HttpRedirectLocation, HttpRetryTarget, HttpRetryTrigger, HttpSameSite,
+    HttpUpstreamHost, is_unambiguous_http_path,
 };
 use pingora::{
     Error, ErrorType,
-    apps::{
-        AcceptGate, ConnectionAdmission, HttpServerApp, HttpServerOptions, ReusedHttpStream,
-        ServerApp,
-    },
     modules::http::{HttpModule, HttpModuleBuilder, HttpModules, Module},
+    protocols::Digest,
     protocols::http::compression::{Algorithm, ResponseCompressionCtx},
-    protocols::{
-        ALPN, Digest, Stream,
-        http::{ServerSession, v2::server::H2Options},
-    },
     proxy::{PreparedUpstreamRequest, ProxyHttp, Session},
-    server::ShutdownWatch,
     upstreams::peer::HttpPeer,
 };
 
 use crate::{
     GenerationReference, HttpServicePlan, ListenerMetrics, RuntimeEndpoint, RuntimeGeneration,
-    RuntimeReferenceKind, TlsProfilePlan,
+    RuntimeReferenceKind,
     http_action::{
         HttpActionPlan, HttpGzipPlan, HttpRoutePlan, ProxyPolicyPlan, RequestHeaderMutationPlan,
         RequestHeaderValuePlan, ResponseHeaderMutationPlan, StaticErrorTarget, StaticFile,
@@ -71,225 +63,6 @@ impl HttpReverseProxy {
     pub fn with_generation(mut self, generation: Arc<RuntimeGeneration>) -> Self {
         self.generation = Some(generation);
         self
-    }
-}
-
-pub struct MonitoredHttpApp<A> {
-    generation: Option<Arc<RuntimeGeneration>>,
-    inner: Arc<A>,
-    metrics: ListenerMetrics,
-}
-
-impl<A> MonitoredHttpApp<A> {
-    #[must_use]
-    pub fn new(inner: A, metrics: ListenerMetrics) -> Self {
-        Self {
-            generation: None,
-            inner: Arc::new(inner),
-            metrics,
-        }
-    }
-
-    #[must_use]
-    pub fn with_generation(mut self, generation: Arc<RuntimeGeneration>) -> Self {
-        self.generation = Some(generation);
-        self
-    }
-}
-
-#[async_trait]
-impl<A> ServerApp for MonitoredHttpApp<A>
-where
-    A: ServerApp + Send + Sync + 'static,
-{
-    fn accept_gate(&self) -> Option<AcceptGate> {
-        self.generation.as_ref().map_or_else(
-            || self.inner.accept_gate(),
-            |generation| Some(generation.accept_gate()),
-        )
-    }
-
-    fn accepting(&self) -> bool {
-        self.metrics.accepting()
-            && self.generation.as_ref().map_or_else(
-                || self.inner.accepting(),
-                |generation| generation.accepting(),
-            )
-    }
-
-    fn admit_connection(&self) -> Option<ConnectionAdmission> {
-        let generation = if let Some(generation) = &self.generation {
-            let admission = generation.begin_admission()?;
-            let reference = generation.begin_reference(RuntimeReferenceKind::Http1)?;
-            Some((admission, reference))
-        } else {
-            None
-        };
-        let connection = match self.metrics.begin_connection() {
-            Ok(connection) => connection,
-            Err(error) => {
-                warn!("rejected HTTP connection: {error}");
-                return None;
-            }
-        };
-        let inner = self.inner.admit_connection()?;
-        Some(Box::new((generation, connection, inner)))
-    }
-
-    fn admit_owned_connection(&self) -> Option<ConnectionAdmission> {
-        let generation = self
-            .generation
-            .as_ref()
-            .map(|generation| generation.begin_owned_reference(RuntimeReferenceKind::Http1));
-        let connection = match self.metrics.begin_connection() {
-            Ok(connection) => connection,
-            Err(error) => {
-                warn!("rejected HTTP connection: {error}");
-                return None;
-            }
-        };
-        let inner = self.inner.admit_owned_connection()?;
-        Some(Box::new((generation, connection, inner)))
-    }
-
-    async fn process_new(
-        self: &Arc<Self>,
-        downstream: Stream,
-        shutdown: &ShutdownWatch,
-    ) -> Option<Stream> {
-        self.inner.process_new(downstream, shutdown).await
-    }
-
-    async fn cleanup(&self) {
-        self.inner.cleanup().await;
-    }
-}
-
-/// Enforces listener protocol policy on a negotiated transport before HTTP parsing begins.
-pub struct HttpListenerApp<A> {
-    generation: Option<Arc<RuntimeGeneration>>,
-    inner: Arc<A>,
-    h2_only: bool,
-}
-
-impl<A> HttpListenerApp<A> {
-    #[must_use]
-    pub fn new(inner: A, tls_profile: Option<&TlsProfilePlan>) -> Self {
-        Self {
-            generation: None,
-            inner: Arc::new(inner),
-            h2_only: tls_profile.is_some_and(TlsProfilePlan::is_h2_only),
-        }
-    }
-
-    #[must_use]
-    pub fn with_generation(mut self, generation: Arc<RuntimeGeneration>) -> Self {
-        self.generation = Some(generation);
-        self
-    }
-}
-
-#[async_trait]
-impl<A> ServerApp for HttpListenerApp<A>
-where
-    A: ServerApp + Send + Sync + 'static,
-{
-    fn accept_gate(&self) -> Option<AcceptGate> {
-        self.inner.accept_gate()
-    }
-
-    fn accepting(&self) -> bool {
-        self.inner.accepting()
-    }
-
-    fn admit_connection(&self) -> Option<ConnectionAdmission> {
-        self.inner.admit_connection()
-    }
-
-    fn admit_owned_connection(&self) -> Option<ConnectionAdmission> {
-        self.inner.admit_owned_connection()
-    }
-
-    async fn process_new(
-        self: &Arc<Self>,
-        mut downstream: Stream,
-        shutdown: &ShutdownWatch,
-    ) -> Option<Stream> {
-        let _h2_reference = if matches!(downstream.selected_alpn_proto(), Some(ALPN::H2)) {
-            self.generation
-                .as_ref()
-                .and_then(|generation| generation.begin_reference(RuntimeReferenceKind::Http2))
-        } else {
-            None
-        };
-        if self.h2_only && !matches!(downstream.selected_alpn_proto(), Some(ALPN::H2)) {
-            // A ClientHello without ALPN completes TLS, so close before Pingora's HTTP/1 fallback.
-            downstream.shutdown().await;
-            return None;
-        }
-        self.inner.process_new(downstream, shutdown).await
-    }
-
-    async fn cleanup(&self) {
-        self.inner.cleanup().await;
-    }
-}
-
-pub struct HttpDownstreamPolicyApp<A> {
-    inner: Arc<A>,
-    client_timeout: Option<Duration>,
-    request_timeout: Option<Duration>,
-    write_timeout: Option<Duration>,
-    keepalive_timeout: Option<Duration>,
-}
-
-impl<A> HttpDownstreamPolicyApp<A> {
-    #[must_use]
-    pub fn new(inner: A, policy: DownstreamTimeoutPolicy) -> Self {
-        let client_timeout = policy.client_timeout_ms.map(Duration::from_millis);
-        Self {
-            inner: Arc::new(inner),
-            client_timeout,
-            request_timeout: policy
-                .request_timeout_ms
-                .map(Duration::from_millis)
-                .or(client_timeout),
-            write_timeout: client_timeout,
-            keepalive_timeout: policy.keepalive_timeout_ms.map(Duration::from_millis),
-        }
-    }
-}
-
-#[async_trait]
-impl<A> HttpServerApp for HttpDownstreamPolicyApp<A>
-where
-    A: HttpServerApp + Send + Sync + 'static,
-{
-    async fn process_new_http(
-        self: &Arc<Self>,
-        mut session: ServerSession,
-        shutdown: &ShutdownWatch,
-    ) -> Option<ReusedHttpStream> {
-        session.set_read_timeout(self.client_timeout);
-        session.set_write_timeout(self.write_timeout);
-        session.set_request_header_timeout(self.request_timeout);
-        session.set_idle_keepalive_timeout(self.keepalive_timeout);
-        if self.keepalive_timeout.is_some() {
-            session.set_keepalive(Some(0));
-        }
-        self.inner.process_new_http(session, shutdown).await
-    }
-
-    fn h2_options(&self) -> Option<H2Options> {
-        self.inner.h2_options()
-    }
-
-    fn server_options(&self) -> Option<&HttpServerOptions> {
-        self.inner.server_options()
-    }
-
-    async fn http_cleanup(&self) {
-        self.inner.http_cleanup().await;
     }
 }
 
@@ -2048,7 +1821,7 @@ mod tests {
         net::SocketAddr,
         sync::{
             Arc,
-            atomic::{AtomicBool, AtomicUsize, Ordering},
+            atomic::{AtomicUsize, Ordering},
         },
         time::Duration,
     };
@@ -2057,10 +1830,7 @@ mod tests {
         HttpProxyPolicy, HttpRequestHeaderMutation, HttpRequestHeaderValue,
         HttpResponseHeaderMutation, UpstreamAlgorithm, UpstreamConnectionReuse,
     };
-    use pingora::{
-        apps::ServerApp, protocols::Stream, proxy::Session, server::ShutdownWatch,
-        upstreams::peer::Peer,
-    };
+    use pingora::{protocols::Stream, proxy::Session, upstreams::peer::Peer};
     use tokio::io::AsyncWriteExt as _;
     use tokio::net::{TcpListener, TcpStream};
 
@@ -2549,44 +2319,6 @@ mod tests {
         let (_accepted, _) = listener.accept().await.expect("second address accept");
         drop(connection);
         assert_eq!(context.attempted_upstreams.len(), 1);
-    }
-
-    struct CleanupApp {
-        cleaned: Arc<AtomicBool>,
-    }
-
-    #[async_trait]
-    impl ServerApp for CleanupApp {
-        async fn process_new(
-            self: &Arc<Self>,
-            _session: Stream,
-            _shutdown: &ShutdownWatch,
-        ) -> Option<Stream> {
-            None
-        }
-
-        async fn cleanup(&self) {
-            self.cleaned.store(true, Ordering::Relaxed);
-        }
-    }
-
-    #[tokio::test]
-    async fn monitored_http_app_delegates_cleanup() {
-        let cleaned = Arc::new(AtomicBool::new(false));
-        let runtime = RuntimeMetrics::new();
-        let metrics = runtime
-            .register_listener("http", "http", "127.0.0.1:8080", 100)
-            .expect("listener metrics");
-        let app = MonitoredHttpApp::new(
-            CleanupApp {
-                cleaned: Arc::clone(&cleaned),
-            },
-            metrics,
-        );
-
-        app.cleanup().await;
-
-        assert!(cleaned.load(Ordering::Relaxed));
     }
 
     #[test]

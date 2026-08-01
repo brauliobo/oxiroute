@@ -5,6 +5,7 @@ mod generation;
 mod health;
 mod http_action;
 mod http_proxy;
+mod http_server_app;
 mod l4_service;
 mod listener_reservation;
 mod monitoring;
@@ -27,10 +28,8 @@ pub use generation::{
     PreparedGeneration, RuntimeGeneration, RuntimeReferenceKind,
 };
 pub use health::{HealthBuildError, HealthSupervisor};
-pub use http_proxy::{
-    HttpDownstreamPolicyApp, HttpListenerApp, HttpRequestContext, HttpReverseProxy,
-    MonitoredHttpApp,
-};
+pub use http_proxy::{HttpRequestContext, HttpReverseProxy};
+pub use http_server_app::{HttpDownstreamPolicyApp, HttpListenerApp, MonitoredHttpApp};
 pub use l4_service::L4ServicePlan;
 pub use listener_reservation::{ListenerReservation, ListenerReservations};
 pub use monitoring::{
