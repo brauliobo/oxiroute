@@ -185,6 +185,7 @@ impl Drop for AccessLog {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RoutePolicyPlan {
     pub(crate) max_request_body_bytes: Option<u64>,
+    pub(crate) request_buffering: bool,
     pub(crate) connect_timeout: std::time::Duration,
     pub(crate) read_timeout: std::time::Duration,
     pub(crate) write_timeout: std::time::Duration,
@@ -194,6 +195,7 @@ impl RoutePolicyPlan {
     pub(crate) fn compile(policy: HttpRoutePolicy) -> Self {
         Self {
             max_request_body_bytes: policy.max_request_body_bytes,
+            request_buffering: policy.request_buffering,
             connect_timeout: std::time::Duration::from_millis(policy.connect_timeout_ms),
             read_timeout: std::time::Duration::from_millis(policy.read_timeout_ms),
             write_timeout: std::time::Duration::from_millis(policy.write_timeout_ms),
@@ -203,6 +205,13 @@ impl RoutePolicyPlan {
     pub(crate) fn exceeds_body_limit(self, bytes: u64) -> bool {
         self.max_request_body_bytes
             .is_some_and(|limit| bytes > limit)
+    }
+
+    pub(crate) fn request_body_buffer_limit(self) -> Option<usize> {
+        self.request_buffering
+            .then_some(self.max_request_body_bytes)
+            .flatten()
+            .and_then(|limit| usize::try_from(limit).ok())
     }
 }
 

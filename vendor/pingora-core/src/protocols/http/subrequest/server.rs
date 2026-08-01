@@ -564,8 +564,12 @@ impl HttpSession {
     }
 
     pub fn enable_retry_buffering(&mut self) {
+        self.enable_retry_buffering_with_capacity(BODY_BUF_LIMIT);
+    }
+
+    pub fn enable_retry_buffering_with_capacity(&mut self, capacity: usize) {
         if self.retry_buffer.is_none() {
-            self.retry_buffer = Some(FixedBuffer::new(BODY_BUF_LIMIT))
+            self.retry_buffer = Some(FixedBuffer::new(capacity));
         }
     }
 

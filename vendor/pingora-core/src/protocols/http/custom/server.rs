@@ -88,6 +88,10 @@ pub trait Session: Send + Sync + Unpin + 'static {
 
     fn enable_retry_buffering(&mut self);
 
+    fn enable_retry_buffering_with_capacity(&mut self, _capacity: usize) {
+        self.enable_retry_buffering();
+    }
+
     fn retry_buffer_truncated(&self) -> bool;
 
     fn get_retry_buffer(&self) -> Option<Bytes>;

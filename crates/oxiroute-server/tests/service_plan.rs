@@ -268,24 +268,35 @@ return {
 }
 
 #[test]
-fn buffering_off_is_the_streaming_runtime_and_buffering_on_fails_closed() {
+fn request_buffering_compiles_and_response_buffering_fails_closed() {
     let mut config = canonical_config();
     config.http_services[0].routes[0].policy.request_buffering = true;
 
+    runtime_plan(&config).expect("request buffering has an active runtime");
+
+    config.http_services[0].routes[0].policy.response_buffering = true;
+
     let error = match runtime_plan(&config) {
-        Ok(_) => panic!("buffering-on must not be silently ignored"),
+        Ok(_) => panic!("response buffering must not be silently ignored"),
         Err(error) => error,
     };
     assert!(matches!(
         error,
         ServicePlanError::RuntimePolicyUnavailable {
-            policy: "http_services[].routes[].policy.buffering_on"
+            policy: "http_services[].routes[].policy.response_buffering"
         }
     ));
 
-    config.http_services[0].routes[0].policy.request_buffering = false;
     config.http_services[0].routes[0].policy.response_buffering = false;
-    runtime_plan(&config).expect("explicit buffering-off is Pingora streaming");
+    config.http_services[0].routes[0]
+        .policy
+        .max_request_body_bytes = None;
+    assert!(matches!(
+        runtime_plan(&config),
+        Err(ServicePlanError::RuntimePolicyUnavailable {
+            policy: "http_services[].routes[].policy.unbounded_request_buffering"
+        })
+    ));
 }
 
 #[test]

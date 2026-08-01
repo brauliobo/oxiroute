@@ -1096,7 +1096,14 @@ impl Lowerer {
                                 .map_or(NGINX_DEFAULT_PROXY_TIMEOUT_MS, |value| value.read),
                             write_timeout_ms: timeouts
                                 .map_or(NGINX_DEFAULT_PROXY_TIMEOUT_MS, |value| value.write),
-                            request_buffering: false,
+                            request_buffering: self
+                                .effective_policy(
+                                    location.origin.occurrence,
+                                    b"proxy_request_buffering",
+                                )
+                                .is_none_or(|value| {
+                                    value.arguments.as_slice() != [b"off".to_vec()]
+                                }),
                             response_buffering: false,
                         },
                         action: action.clone(),
@@ -1129,24 +1136,19 @@ impl Lowerer {
                 "proxy_http_version must explicitly be 1.1 because nginx defaults to 1.0",
             ));
         }
-        for name in [b"proxy_buffering".as_slice(), b"proxy_request_buffering"] {
-            let policy = self.effective_policy(scope, name);
-            if policy
-                .as_ref()
-                .is_none_or(|value| value.arguments.as_slice() != [b"off".to_vec()])
-            {
-                issues.push(issue(
-                    policy
-                        .as_ref()
-                        .and_then(|value| value.origins.last())
-                        .unwrap_or(fallback_origin),
-                    E_SEMANTICS_NOT_REPRESENTABLE,
-                    format!(
-                        "{} must explicitly be off to match unbuffered runtime semantics",
-                        String::from_utf8_lossy(name)
-                    ),
-                ));
-            }
+        let response_buffering = self.effective_policy(scope, b"proxy_buffering");
+        if response_buffering
+            .as_ref()
+            .is_none_or(|value| value.arguments.as_slice() != [b"off".to_vec()])
+        {
+            issues.push(issue(
+                response_buffering
+                    .as_ref()
+                    .and_then(|value| value.origins.last())
+                    .unwrap_or(fallback_origin),
+                E_SEMANTICS_NOT_REPRESENTABLE,
+                "proxy_buffering must explicitly be off to match unbuffered runtime semantics",
+            ));
         }
         if issues.is_empty() {
             Ok(())

@@ -358,6 +358,12 @@ impl ProxyHttp for HttpReverseProxy {
         Ok(())
     }
 
+    fn request_body_buffer_limit(&self, ctx: &Self::CTX) -> Option<usize> {
+        ctx.route
+            .as_ref()
+            .and_then(|route| route.policy.request_body_buffer_limit())
+    }
+
     async fn upstream_request_filter(
         &self,
         session: &mut Session,

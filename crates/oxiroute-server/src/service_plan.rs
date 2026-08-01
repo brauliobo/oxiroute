@@ -758,8 +758,15 @@ fn reject_unimplemented_runtime_policies(config: &Config) -> Result<(), ServiceP
     let unavailable = |policy| ServicePlanError::RuntimePolicyUnavailable { policy };
     for service in &config.http_services {
         for route in &service.routes {
-            if route.policy.request_buffering || route.policy.response_buffering {
-                return Err(unavailable("http_services[].routes[].policy.buffering_on"));
+            if route.policy.request_buffering && route.policy.max_request_body_bytes.is_none() {
+                return Err(unavailable(
+                    "http_services[].routes[].policy.unbounded_request_buffering",
+                ));
+            }
+            if route.policy.response_buffering {
+                return Err(unavailable(
+                    "http_services[].routes[].policy.response_buffering",
+                ));
             }
         }
     }
