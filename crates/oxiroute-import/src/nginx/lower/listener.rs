@@ -6,13 +6,13 @@ use std::{
 
 use oxiroute_config::{
     AccessLogPolicy, DnsResolutionPolicy, DownstreamTimeoutPolicy, HttpAccessPolicy,
-    HttpCookiePathRewrite, HttpHostSelector, HttpLiteralHeader, HttpMimeType, HttpPathSelector,
-    HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
-    HttpResponseHeaderMutation, HttpRetryPolicy, HttpRetryTrigger, HttpRoute, HttpRouteAction,
-    HttpRoutePolicy, HttpService, HttpStaticErrorResponse, HttpStaticMimePolicy,
-    HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost, HttpVersionPolicy, Listener,
-    ListenerBind, Protocol, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool,
-    UpstreamServer, UpstreamTls, canonicalize_http_path,
+    HttpCookiePathRewrite, HttpGzipMinimumVersion, HttpGzipPolicy, HttpHostSelector,
+    HttpLiteralHeader, HttpMimeType, HttpPathSelector, HttpProxyPolicy, HttpRedirectLocation,
+    HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpResponseHeaderMutation, HttpRetryPolicy,
+    HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpService,
+    HttpStaticErrorResponse, HttpStaticMimePolicy, HttpStaticPathMapping, HttpStaticTryFile,
+    HttpUpstreamHost, HttpVersionPolicy, Listener, ListenerBind, Protocol, UpstreamConnectionReuse,
+    UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls, canonicalize_http_path,
 };
 
 use crate::{E_INVALID_VALUE, E_SEMANTICS_NOT_REPRESENTABLE, E_UNSUPPORTED_FEATURE};
@@ -23,13 +23,27 @@ use crate::nginx::{
 };
 
 use super::{
-    BindBlock, BindCandidate, LowerIssue, Lowerer, PoolCandidate,
+    BindBlock, BindCandidate, GzipOrigins, LowerIssue, Lowerer, PoolCandidate,
     provenance::{PolicyValue, collect_result, issue, utf8},
     upstream::canonical_endpoint,
 };
 
 const NGINX_DEFAULT_BODY_BYTES: u64 = 1024 * 1024;
 const NGINX_DEFAULT_PROXY_TIMEOUT_MS: u64 = 60_000;
+const NGINX_DEFAULT_GZIP_LEVEL: u8 = 1;
+const NGINX_DEFAULT_GZIP_MIN_LENGTH_BYTES: u64 = 20;
+const NGINX_IMPLICIT_GZIP_TYPE: &str = "text/html";
+const NGINX_GZIP_PROXIED_MODES: [&[u8]; 9] = [
+    b"off",
+    b"expired",
+    b"no-cache",
+    b"no-store",
+    b"private",
+    b"no_last_modified",
+    b"no_etag",
+    b"auth",
+    b"any",
+];
 const NGINX_DEFAULT_HIDDEN_RESPONSE_HEADERS: [&str; 8] = [
     "Date",
     "Server",
@@ -119,6 +133,14 @@ pub(super) fn canonical_dns_name(name: &str) -> bool {
 }
 
 fn parse_size(value: &[u8]) -> Option<u64> {
+    parse_size_inner(value, false)
+}
+
+fn parse_nonnegative_size(value: &[u8]) -> Option<u64> {
+    parse_size_inner(value, true)
+}
+
+fn parse_size_inner(value: &[u8], allow_zero: bool) -> Option<u64> {
     let (digits, multiplier) = match value.last().copied() {
         Some(b'k' | b'K') => (&value[..value.len() - 1], 1024_u64),
         Some(b'm' | b'M') => (&value[..value.len() - 1], 1024_u64.pow(2)),
@@ -128,7 +150,7 @@ fn parse_size(value: &[u8]) -> Option<u64> {
     };
     let amount = utf8(digits)?.parse::<u64>().ok()?;
     let bytes = amount.checked_mul(multiplier)?;
-    (bytes > 0 && bytes <= 9_007_199_254_740_991).then_some(bytes)
+    ((allow_zero || bytes > 0) && bytes <= 9_007_199_254_740_991).then_some(bytes)
 }
 
 fn parse_duration_ms(value: &[u8]) -> Option<u64> {
@@ -150,6 +172,40 @@ fn parse_duration_ms(value: &[u8]) -> Option<u64> {
     (milliseconds > 0 && milliseconds <= 9_007_199_254_740_991).then_some(milliseconds)
 }
 
+fn valid_gzip_type(value: &str) -> bool {
+    let Some((kind, subtype)) = value.split_once('/') else {
+        return false;
+    };
+    !kind.is_empty()
+        && !subtype.is_empty()
+        && !subtype.contains('/')
+        && value.len() <= 128
+        && kind.bytes().chain(subtype.bytes()).all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        })
+}
+
+fn gzip_policies_match(left: Option<&HttpGzipPolicy>, right: Option<&HttpGzipPolicy>) -> bool {
+    left == right
+}
+
 impl Lowerer {
     pub(super) fn lower_bind(
         &mut self,
@@ -169,18 +225,16 @@ impl Lowerer {
             .collect::<Vec<_>>();
         let listener_bind = listener_bind(bind, &servers);
         let mut issues = self.semantic_bind_issues(http, &servers);
+        let (gzip, gzip_origins) = match self.lower_gzip(bind, &servers) {
+            Ok(gzip) => gzip,
+            Err(gzip_issues) => {
+                issues.extend(gzip_issues);
+                (None, GzipOrigins::default())
+            }
+        };
         let mut uses_default_access_log = false;
         let mut disables_access_log = false;
         for server in &servers {
-            if let Some(gzip) = self.effective_policy(server.origin.occurrence, b"gzip") {
-                if gzip.arguments.as_slice() != [b"off".to_vec()] {
-                    issues.push(issue(
-                        gzip.origins.last().unwrap_or(&server.origin),
-                        E_SEMANTICS_NOT_REPRESENTABLE,
-                        "enabled nginx gzip policy is broader than runtime response compression semantics",
-                    ));
-                }
-            }
             match self.effective_policy(server.origin.occurrence, b"access_log") {
                 None if self.default_access_log_path.is_some() => uses_default_access_log = true,
                 None => issues.push(issue(
@@ -242,6 +296,8 @@ impl Lowerer {
             bind_index,
             downstream_tls,
             uses_default_access_log,
+            gzip,
+            gzip_origins,
             &mut issues,
         );
         BindBlock {
@@ -267,6 +323,8 @@ impl Lowerer {
         bind_index: usize,
         downstream_tls: bool,
         uses_default_access_log: bool,
+        gzip: Option<HttpGzipPolicy>,
+        gzip_origins: GzipOrigins,
         issues: &mut Vec<LowerIssue>,
     ) -> Option<BindCandidate> {
         let mut routes = Vec::new();
@@ -275,12 +333,7 @@ impl Lowerer {
         let mut route_origins = Vec::new();
         let mut all_origins = Vec::new();
         for server in servers {
-            if server.origin.occurrence != bind.default_server
-                && !bind
-                    .names
-                    .iter()
-                    .any(|name| name.server == server.origin.occurrence)
-            {
+            if !Self::server_participates(bind, server) {
                 continue;
             }
             let hosts = match Self::route_hosts(server, bind) {
@@ -374,6 +427,7 @@ impl Lowerer {
         if let Some(tls) = tls {
             all_origins.extend(tls.origins);
         }
+        all_origins.extend(gzip_origins.all());
         let access_log = if uses_default_access_log {
             self.used_default_access_log_overlay = true;
             Some(AccessLogPolicy::File {
@@ -400,15 +454,286 @@ impl Lowerer {
                 routes,
                 upstream_io_timeout_ms: NGINX_DEFAULT_PROXY_TIMEOUT_MS,
                 max_request_body_bytes: Some(NGINX_DEFAULT_BODY_BYTES),
-                gzip: None,
+                gzip,
                 access_log,
             },
             pools,
             certificates,
             tls_profile,
             origins: all_origins,
+            gzip_origins,
             route_origins,
         })
+    }
+
+    fn lower_gzip(
+        &self,
+        bind: &EffectiveBind,
+        servers: &[&EffectiveServer],
+    ) -> Result<(Option<HttpGzipPolicy>, GzipOrigins), Vec<LowerIssue>> {
+        let mut effective: Option<Option<HttpGzipPolicy>> = None;
+        let mut origins = GzipOrigins::default();
+        let mut issues = Vec::new();
+        for server in servers
+            .iter()
+            .copied()
+            .filter(|server| Self::server_participates(bind, server))
+        {
+            if let Some((policy, policy_origins)) = self.effective_gzip(server, &mut issues) {
+                if effective.as_ref().is_some_and(|existing| {
+                    !gzip_policies_match(existing.as_ref(), policy.as_ref())
+                }) {
+                    let mismatch_origins = policy_origins.all();
+                    issues.push(issue(
+                        mismatch_origins.last().unwrap_or(&server.origin),
+                        E_SEMANTICS_NOT_REPRESENTABLE,
+                        "virtual servers on one nginx bind have different effective gzip policies",
+                    ));
+                } else if effective.is_none() {
+                    effective = Some(policy.clone());
+                }
+                origins.extend(policy_origins);
+            }
+        }
+        if issues.is_empty() {
+            Ok((effective.unwrap_or(None), origins))
+        } else {
+            Err(issues)
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "effective nginx gzip inheritance, validation, and provenance are one policy"
+    )]
+    fn effective_gzip(
+        &self,
+        server: &EffectiveServer,
+        issues: &mut Vec<LowerIssue>,
+    ) -> Option<(Option<HttpGzipPolicy>, GzipOrigins)> {
+        let gzip = self.effective_policy(server.origin.occurrence, b"gzip");
+        let level = self.effective_policy(server.origin.occurrence, b"gzip_comp_level");
+        let types = self.effective_policy(server.origin.occurrence, b"gzip_types");
+        let min_length = self.effective_policy(server.origin.occurrence, b"gzip_min_length");
+        let min_http_version =
+            self.effective_policy(server.origin.occurrence, b"gzip_http_version");
+        let proxied = self.effective_policy(server.origin.occurrence, b"gzip_proxied");
+        let vary = self.effective_policy(server.origin.occurrence, b"gzip_vary");
+
+        let compression_level = level
+            .as_ref()
+            .map_or(Some(NGINX_DEFAULT_GZIP_LEVEL), |policy| {
+                let parsed = policy
+                    .arguments
+                    .first()
+                    .and_then(|value| utf8(value))
+                    .and_then(|value| value.parse::<u8>().ok())
+                    .filter(|value| (1..=9).contains(value));
+                if parsed.is_none() {
+                    issues.push(issue(
+                        policy.origins.last().unwrap_or(&server.origin),
+                        E_INVALID_VALUE,
+                        "gzip_comp_level must be an integer between 1 and 9",
+                    ));
+                }
+                parsed
+            });
+
+        let mut content_types = vec![NGINX_IMPLICIT_GZIP_TYPE.to_owned()];
+        if let Some(policy) = &types {
+            for value in &policy.arguments {
+                let Some(value) = utf8(value) else {
+                    issues.push(issue(
+                        policy.origins.last().unwrap_or(&server.origin),
+                        E_INVALID_VALUE,
+                        "gzip_types values must be UTF-8 MIME types",
+                    ));
+                    continue;
+                };
+                if value == "*" {
+                    issues.push(issue(
+                        policy.origins.last().unwrap_or(&server.origin),
+                        E_SEMANTICS_NOT_REPRESENTABLE,
+                        "gzip_types wildcard compression is not representable canonically",
+                    ));
+                    continue;
+                }
+                if !valid_gzip_type(value) {
+                    issues.push(issue(
+                        policy.origins.last().unwrap_or(&server.origin),
+                        E_INVALID_VALUE,
+                        "gzip_types values must be concrete MIME types",
+                    ));
+                    continue;
+                }
+                let value = value.to_ascii_lowercase();
+                if !content_types.contains(&value) {
+                    content_types.push(value);
+                }
+            }
+        }
+        if content_types.len() > 64 {
+            issues.push(issue(
+                types
+                    .as_ref()
+                    .and_then(|policy| policy.origins.last())
+                    .unwrap_or(&server.origin),
+                E_SEMANTICS_NOT_REPRESENTABLE,
+                "effective gzip_types exceeds the canonical limit of 64 MIME types",
+            ));
+        }
+
+        let minimum_length_bytes =
+            min_length
+                .as_ref()
+                .map_or(Some(NGINX_DEFAULT_GZIP_MIN_LENGTH_BYTES), |policy| {
+                    let parsed = policy
+                        .arguments
+                        .first()
+                        .and_then(|value| parse_nonnegative_size(value));
+                    if parsed.is_none() {
+                        issues.push(issue(
+                            policy.origins.last().unwrap_or(&server.origin),
+                            E_INVALID_VALUE,
+                            "gzip_min_length must be a nonnegative nginx size",
+                        ));
+                    }
+                    parsed
+                });
+        let minimum_http_version =
+            min_http_version
+                .as_ref()
+                .map_or(Some(HttpGzipMinimumVersion::Http11), |policy| match policy
+                    .arguments
+                    .as_slice()
+                {
+                    [value] if value == b"1.0" => Some(HttpGzipMinimumVersion::Http10),
+                    [value] if value == b"1.1" => Some(HttpGzipMinimumVersion::Http11),
+                    _ => {
+                        issues.push(issue(
+                            policy.origins.last().unwrap_or(&server.origin),
+                            E_INVALID_VALUE,
+                            "gzip_http_version must be `1.0` or `1.1`",
+                        ));
+                        None
+                    }
+                });
+        let disable_on_via = proxied.as_ref().map_or(Some(true), |policy| {
+            if policy.arguments.as_slice() == [b"off".to_vec()] {
+                return Some(true);
+            }
+            let valid = policy
+                .arguments
+                .iter()
+                .all(|argument| NGINX_GZIP_PROXIED_MODES.contains(&argument.as_slice()));
+            issues.push(issue(
+                policy.origins.last().unwrap_or(&server.origin),
+                if valid {
+                    E_SEMANTICS_NOT_REPRESENTABLE
+                } else {
+                    E_INVALID_VALUE
+                },
+                if valid {
+                    "gzip_proxied modes other than `off` are not representable canonically"
+                } else {
+                    "gzip_proxied contains an invalid mode"
+                },
+            ));
+            None
+        });
+        let vary_enabled =
+            vary.as_ref()
+                .map_or(Some(false), |policy| match policy.arguments.as_slice() {
+                    [value] if value == b"off" => Some(false),
+                    [value] if value == b"on" => Some(true),
+                    _ => {
+                        issues.push(issue(
+                            policy.origins.last().unwrap_or(&server.origin),
+                            E_INVALID_VALUE,
+                            "gzip_vary must be `on` or `off`",
+                        ));
+                        None
+                    }
+                });
+
+        let enabled = match gzip.as_ref().map(|policy| policy.arguments.as_slice()) {
+            None => false,
+            Some([value]) if value == b"off" => false,
+            Some([value]) if value == b"on" => true,
+            Some(_) => {
+                let policy = gzip.as_ref().expect("invalid explicit gzip policy");
+                issues.push(issue(
+                    policy.origins.last().unwrap_or(&server.origin),
+                    E_INVALID_VALUE,
+                    "gzip must be `on` or `off`",
+                ));
+                return None;
+            }
+        };
+        let gzip_origins = gzip
+            .as_ref()
+            .map_or_else(Vec::new, |policy| policy.origins.clone());
+        if !enabled {
+            return Some((
+                None,
+                GzipOrigins {
+                    gzip: gzip_origins,
+                    ..GzipOrigins::default()
+                },
+            ));
+        }
+        let (
+            Some(level_value),
+            Some(min_length_value),
+            Some(min_version_value),
+            Some(disable_value),
+            Some(vary_value),
+        ) = (
+            compression_level,
+            minimum_length_bytes,
+            minimum_http_version,
+            disable_on_via,
+            vary_enabled,
+        )
+        else {
+            return None;
+        };
+        let field_origins = |policy: Option<&PolicyValue>| {
+            policy.map_or_else(|| gzip_origins.clone(), |policy| policy.origins.clone())
+        };
+        let level_origins = field_origins(level.as_ref());
+        let content_type_origins = field_origins(types.as_ref());
+        let min_length_origins = field_origins(min_length.as_ref());
+        let min_version_origins = field_origins(min_http_version.as_ref());
+        let proxied_origins = field_origins(proxied.as_ref());
+        let vary_origins = field_origins(vary.as_ref());
+        Some((
+            Some(HttpGzipPolicy {
+                level: level_value,
+                content_types,
+                min_length_bytes: min_length_value,
+                min_http_version: min_version_value,
+                disable_on_via: disable_value,
+                vary: vary_value,
+            }),
+            GzipOrigins {
+                gzip: gzip_origins,
+                level: level_origins,
+                content_types: content_type_origins,
+                min_length_bytes: min_length_origins,
+                min_http_version: min_version_origins,
+                disable_on_via: proxied_origins,
+                vary: vary_origins,
+            },
+        ))
+    }
+
+    fn server_participates(bind: &EffectiveBind, server: &EffectiveServer) -> bool {
+        server.origin.occurrence == bind.default_server
+            || bind
+                .names
+                .iter()
+                .any(|name| name.server == server.origin.occurrence)
     }
 
     fn semantic_bind_issues(
@@ -1002,6 +1327,24 @@ impl Lowerer {
             self.policy_enabled(location.origin.occurrence, b"autoindex_exact_size", true);
         let autoindex_local_time =
             self.policy_enabled(location.origin.occurrence, b"autoindex_localtime", false);
+        let etag = match self.effective_policy(location.origin.occurrence, b"etag") {
+            None => true,
+            Some(policy) => {
+                origins.extend(policy.origins.clone());
+                match policy.arguments.as_slice() {
+                    [value] if value == b"on" => true,
+                    [value] if value == b"off" => false,
+                    _ => {
+                        issues.push(issue(
+                            policy.origins.last().unwrap_or(&location.origin),
+                            E_INVALID_VALUE,
+                            "etag must be `on` or `off`",
+                        ));
+                        true
+                    }
+                }
+            }
+        };
 
         Some((
             HttpRouteAction::StaticFiles {
@@ -1015,6 +1358,7 @@ impl Lowerer {
                 autoindex,
                 autoindex_exact_size,
                 autoindex_local_time,
+                etag,
                 mime,
                 headers,
                 error_responses,
@@ -1845,6 +2189,50 @@ impl Lowerer {
         self.effective_policy(scope, name)
             .and_then(|policy| policy.arguments.first().cloned())
             .map_or(default, |value| value == b"on")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bind_wide_gzip_equivalence_compares_every_canonical_field() {
+        let baseline = HttpGzipPolicy {
+            level: 6,
+            content_types: vec!["text/html".into(), "application/json".into()],
+            min_length_bytes: 20,
+            min_http_version: HttpGzipMinimumVersion::Http11,
+            disable_on_via: true,
+            vary: false,
+        };
+        let mut variants = Vec::new();
+        let mut policy = baseline.clone();
+        policy.level = 7;
+        variants.push(policy);
+        let mut policy = baseline.clone();
+        policy.content_types.push("text/plain".into());
+        variants.push(policy);
+        let mut policy = baseline.clone();
+        policy.min_length_bytes = 21;
+        variants.push(policy);
+        let mut policy = baseline.clone();
+        policy.min_http_version = HttpGzipMinimumVersion::Http10;
+        variants.push(policy);
+        let mut policy = baseline.clone();
+        policy.disable_on_via = false;
+        variants.push(policy);
+        let mut policy = baseline.clone();
+        policy.vary = true;
+        variants.push(policy);
+
+        assert!(gzip_policies_match(Some(&baseline), Some(&baseline)));
+        assert!(
+            variants
+                .iter()
+                .all(|policy| { !gzip_policies_match(Some(&baseline), Some(policy)) })
+        );
+        assert!(!gzip_policies_match(Some(&baseline), None));
     }
 }
 

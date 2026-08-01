@@ -334,19 +334,32 @@ HAProxy directives:
   named incoming header. Values derived from request headers carry an explicit 1 through 8192 byte
   output bound. Hop-by-hop mutations remain forbidden except for the exact standard nginx WebSocket
   pair, which is bounds-checked but left under Pingora's upgrade ownership.
-- Basic access loads one bounded no-follow regular htpasswd file with mode `0400` or `0600`, accepts
-  only bcrypt `$2a$`, `$2b$`, and `$2y$` hashes, and verifies credentials off the async executor.
+- Basic access loads one bounded no-follow regular htpasswd file with mode `0400`, `0600`, `0440`,
+  or `0640` and
+  accepts either a uniform bcrypt `$2a$`/`$2b$`/`$2y$` file with one cost in the supported range or
+  a uniform Apache APR1 `$apr1$` file. Mixed schemes, mixed bcrypt costs, malformed salts/digests,
+  duplicate users, and unsupported hashes fail preparation. Verification is semaphore-bounded and
+  runs off the async executor for both schemes.
   Cookie attribute rules are keyed by exact cookie name and set or clear Secure/HttpOnly and SameSite.
 - Static actions choose root or alias path mapping and support an ordered closed `try_files` list,
   index lookup, exact/human autoindex sizes, UTC/local autoindex timestamps, bounded MIME mappings,
-  literal headers, status-to-relative-file error responses, single byte ranges, and 416 responses.
+  literal headers, optional ETag emission, status-to-relative-file error responses, single byte
+  ranges, and 416 responses. Disabling ETag suppresses generated tag matching and output, while
+  `If-None-Match: *` still tests whether the selected representation exists and takes precedence
+  over `If-Modified-Since`.
   Roots are descriptor-pinned; files are opened no-follow and stream in 64 KiB chunks up to 8 GiB.
-- Gzip exposes only level 1 through 9 and bounded content types. HTTP and RTMP access logs are either
-  disabled or use the implementation's fixed structured format at one validated absolute path;
-  custom format strings are deliberately absent. HTTP JSONL logging uses a bounded asynchronous
-  writer opened through descriptor-pinned ancestors. HTTP gzip uses Pingora streaming for exact
-  configured content types. HTTP access events omit URI, query, Authorization, Cookie, and values
-  derived from credentials.
+- Gzip exposes level 1 through 9, bounded exact content types, `min_length_bytes`, a minimum request
+  version of HTTP/1.0 or HTTP/1.1, optional suppression when `Via` is present, and optional
+  `Vary: Accept-Encoding`. For compatibility with persisted minimal policies, omitted new fields
+  mean 20 bytes, HTTP/1.0 allowed, `Via` allowed, and `Vary` enabled. Native nginx import does not
+  use those compatibility defaults: it materializes nginx's effective 20-byte, HTTP/1.1,
+  `gzip_proxied off`, and `gzip_vary off` policy. Streaming compression emits gzip only, combines
+  repeated `Accept-Encoding` fields, honors quality zero and wildcard rules, and applies an exact
+  coding before a wildcard. HTTP and RTMP access logs are either disabled or use the
+  implementation's fixed structured format at one validated absolute path; custom format strings
+  are deliberately absent. HTTP JSONL logging uses a bounded asynchronous writer opened through
+  descriptor-pinned ancestors. HTTP access events omit URI, query, Authorization, Cookie, and
+  values derived from credentials.
 
 Anonymous `endpoints` remain decode-only compatibility for current version-1 files. Validation
 assigns deterministic `endpoint-N` identities, clears the legacy collection, and deterministic
@@ -410,9 +423,10 @@ listeners = {
 The current certificate and profile rules are:
 
 - One configuration accepts at most 256 certificates and 256 TLS profiles. Every certificate has
-  1 through 100 declared `dns_names`; names are lowercased, and duplicates after normalization are
-  rejected. They MUST be ASCII DNS names of at most 253 bytes with labels of at most 63 bytes. IP
-  literals, trailing dots, and wildcards other than one leading `*.` label are rejected.
+  1 through 100 declared `dns_names`; DNS names are lowercased and IP literals are canonicalized,
+  including IPv4-mapped IPv6 literals to IPv4. Duplicates after normalization are rejected. DNS
+  identities MUST be ASCII names of at most 253 bytes with labels of at most 63 bytes. Trailing
+  dots and wildcards other than one leading `*.` label are rejected.
 - Direct-file certificate and key paths MUST be distinct, valid UTF-8 absolute paths of at most
   4096 bytes. Certbot live and archive directory paths follow the same lexical rules and MUST be
   distinct. NUL, repeated `/`, a trailing `/`, and `.` or `..` segments are rejected lexically.
@@ -434,12 +448,13 @@ The current certificate and profile rules are:
   no-follow semantics. A private-key archive symlink may reuse another numbered `privkeyN.pem` only
   within the same archive. Mixed revisions, escapes, unstable reads, and insecure key modes fail
   startup without publishing material.
-- The leaf MUST contain DNS SANs; the common name is not a fallback. After lowercase normalization,
-  the complete DNS SAN set MUST exactly equal the declared `dns_names` set.
+- The leaf MUST contain DNS and/or IP SANs; the common name is not a fallback. After lowercase DNS
+  normalization and identical IP canonicalization, including IPv4-mapped IPv6 to IPv4, the complete
+  SAN identity set MUST exactly equal the declared `dns_names` set.
 - Every TLS profile MUST reference a nonempty list of unique certificates and name one listed
   `default_certificate`. Two certificates in the same profile MUST NOT claim the same normalized
-  DNS SAN. During a handshake, an exact SNI match wins over a one-label wildcard match; unknown,
-  non-DNS, and absent SNI select the explicit default certificate.
+  DNS SAN. During a handshake, an exact DNS SNI match wins over a one-label wildcard match; IP,
+  unknown, non-DNS, and absent SNI select the explicit default certificate.
 - `min_version` accepts only `"1.2"` (the default) or `"1.3"`. `alpn` defaults to
   `{ "http/1.1" }`; the only accepted policies are `{ "http/1.1" }`, `{ "h2" }`, and
   `{ "h2", "http/1.1" }` in that order.

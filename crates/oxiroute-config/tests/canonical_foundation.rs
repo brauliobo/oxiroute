@@ -1,5 +1,5 @@
 use oxiroute_config::{
-    ConfigError, HttpHostSelector, HttpRequestHeaderValue, HttpRouteAction,
+    ConfigError, HttpGzipMinimumVersion, HttpHostSelector, HttpRequestHeaderValue, HttpRouteAction,
     RtmpRecorderSegmentNaming, RtmpRecorderTimeBasis, RtmpRecorderTimezone, UpstreamAlgorithm,
     load_lua, render_lua,
 };
@@ -216,6 +216,11 @@ fn round_trips_the_complete_host_replacement_foundation() {
         recorder.segment_naming,
         RtmpRecorderSegmentNaming::NginxCompatible
     );
+    let gzip = config.http_services[0].gzip.as_ref().expect("gzip policy");
+    assert_eq!(gzip.min_length_bytes, 20);
+    assert_eq!(gzip.min_http_version, HttpGzipMinimumVersion::Http10);
+    assert!(!gzip.disable_on_via);
+    assert!(gzip.vary);
 
     let rendered = render_lua(&config).expect("rendered canonical foundation");
     assert_eq!(load_lua(&rendered).expect("rendered reload"), config);
@@ -229,6 +234,10 @@ fn round_trips_the_complete_host_replacement_foundation() {
         "fast_interval_ms",
         "expected_status",
         "response_cookie_attributes",
+        "min_length_bytes",
+        "min_http_version",
+        "disable_on_via",
+        "vary",
         "path_mapping",
         "try_files",
         "autoindex_exact_size",
@@ -243,6 +252,19 @@ fn round_trips_the_complete_host_replacement_foundation() {
     ] {
         assert!(rendered.contains(&format!("{field} =")), "missing {field}");
     }
+}
+
+#[test]
+fn persisted_minimal_gzip_policy_retains_legacy_runtime_defaults() {
+    let config = load_lua(COMPLETE).expect("persisted minimal gzip policy");
+    let gzip = config.http_services[0].gzip.as_ref().expect("gzip policy");
+
+    assert_eq!(gzip.level, 6);
+    assert_eq!(gzip.content_types, ["text/plain", "application/json"]);
+    assert_eq!(gzip.min_length_bytes, 20);
+    assert_eq!(gzip.min_http_version, HttpGzipMinimumVersion::Http10);
+    assert!(!gzip.disable_on_via);
+    assert!(gzip.vary);
 }
 
 #[test]

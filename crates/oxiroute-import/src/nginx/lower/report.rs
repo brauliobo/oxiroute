@@ -264,6 +264,7 @@ impl Lowerer {
             self.record_pool_provenance(index, &pool.origin, pool.endpoint_origins);
         }
         let service_index = self.draft.http_services.len();
+        let gzip_enabled = candidate.service.gzip.is_some();
         self.draft.http_services.push(candidate.service);
         let service_path = format!("/http_services/{service_index}");
         self.record(service_path.clone(), candidate.origins.clone());
@@ -275,6 +276,23 @@ impl Lowerer {
             format!("{service_path}/max_request_body_bytes"),
             candidate.origins.clone(),
         );
+        let gzip_origins = candidate.gzip_origins;
+        let all_gzip_origins = gzip_origins.all();
+        if !all_gzip_origins.is_empty() {
+            self.record(format!("{service_path}/gzip"), all_gzip_origins);
+            if gzip_enabled {
+                for (suffix, origins) in [
+                    ("/level", gzip_origins.level),
+                    ("/content_types", gzip_origins.content_types),
+                    ("/min_length_bytes", gzip_origins.min_length_bytes),
+                    ("/min_http_version", gzip_origins.min_http_version),
+                    ("/disable_on_via", gzip_origins.disable_on_via),
+                    ("/vary", gzip_origins.vary),
+                ] {
+                    self.record(format!("{service_path}/gzip{suffix}"), origins);
+                }
+            }
+        }
         for (route_index, origins) in candidate.route_origins.into_iter().enumerate() {
             let path = format!("{service_path}/routes/{route_index}");
             let route = self.draft.http_services[service_index].routes[route_index].clone();
@@ -315,7 +333,11 @@ impl Lowerer {
                     suffixes.extend(["/action/status", "/action/location"]);
                 }
                 oxiroute_config::HttpRouteAction::StaticFiles { .. } => {
-                    suffixes.extend(["/action/root_directory", "/action/index_files"]);
+                    suffixes.extend([
+                        "/action/root_directory",
+                        "/action/index_files",
+                        "/action/etag",
+                    ]);
                 }
             }
             for suffix in suffixes {

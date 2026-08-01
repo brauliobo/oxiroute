@@ -353,6 +353,13 @@ impl TopologyBuilder {
                     "gzip": service.gzip.as_ref().map(|gzip| json!({
                         "level": gzip.level,
                         "contentTypes": gzip.content_types,
+                        "minLengthBytes": gzip.min_length_bytes,
+                        "minHttpVersion": match gzip.min_http_version {
+                            oxiroute_config::HttpGzipMinimumVersion::Http10 => "1.0",
+                            oxiroute_config::HttpGzipMinimumVersion::Http11 => "1.1",
+                        },
+                        "disableOnVia": gzip.disable_on_via,
+                        "vary": gzip.vary,
                     })),
                     "accessLog": match service.access_log {
                         Some(oxiroute_config::AccessLogPolicy::Disabled) => "disabled",

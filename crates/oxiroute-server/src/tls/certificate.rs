@@ -8,9 +8,9 @@ use std::{
 };
 
 use super::{
-    CertificateDnsSans, MAX_CERTIFICATE_CHAIN_BYTES, MAX_CERTIFICATES_IN_CHAIN,
-    MAX_PRIVATE_KEY_BYTES, TlsBuildError, certificate_dns_sans, certificate_is_ca_capable,
-    pem_labels, read_bounded_stable,
+    CertificateIdentitySan, CertificateIdentitySans, MAX_CERTIFICATE_CHAIN_BYTES,
+    MAX_CERTIFICATES_IN_CHAIN, MAX_PRIVATE_KEY_BYTES, TlsBuildError, certificate_identity_sans,
+    certificate_is_ca_capable, pem_labels, read_bounded_stable,
 };
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
@@ -37,6 +37,21 @@ use x509_parser::parse_x509_certificate;
 const CERTIFICATE_FILE: &str = "certificate chain";
 const PRIVATE_KEY_FILE: &str = "private key";
 const MAX_DNS_NAMES: usize = 100;
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+enum CertificateIdentity {
+    Dns(String),
+    Ip(IpAddr),
+}
+
+impl CertificateIdentity {
+    fn into_string(self) -> String {
+        match self {
+            Self::Dns(dns_name) => dns_name,
+            Self::Ip(ip) => ip.to_string(),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CertificateValidity {
@@ -499,6 +514,9 @@ impl CertificateSelector {
         let mut wildcard_suffixes = BTreeMap::new();
         for (certificate_name, active_generation) in &active_generations {
             for dns_name in &active_generation.snapshot().metadata().dns_names {
+                if dns_name.parse::<IpAddr>().is_ok() {
+                    continue;
+                }
                 let (names, name) = if let Some(suffix) = dns_name.strip_prefix("*.") {
                     (&mut wildcard_suffixes, suffix)
                 } else {
@@ -780,45 +798,49 @@ fn dns_names(
     declared_dns_names: &[String],
 ) -> Result<Vec<String>, TlsBuildError> {
     let mut declared = normalize_declared_dns_names(name, declared_dns_names)?;
-    let raw_dns_names =
-        certificate_dns_sans(leaf).map_err(|source| TlsBuildError::DnsSanInspection {
+    let raw_identities =
+        certificate_identity_sans(leaf).map_err(|source| TlsBuildError::DnsSanInspection {
             certificate: name.into(),
             source: Box::new(source),
         })?;
-    let raw_dns_names = match raw_dns_names {
-        CertificateDnsSans::Missing => {
+    let raw_identities = match raw_identities {
+        CertificateIdentitySans::Missing => {
             return Err(TlsBuildError::MissingDnsSan {
                 certificate: name.into(),
             });
         }
-        CertificateDnsSans::Malformed => {
+        CertificateIdentitySans::Malformed => {
             return Err(TlsBuildError::InvalidDnsSanEncoding {
                 certificate: name.into(),
             });
         }
-        CertificateDnsSans::Names(raw_dns_names) => raw_dns_names,
+        CertificateIdentitySans::Names(raw_identities) => raw_identities,
     };
-    let mut actual = raw_dns_names
+    let mut actual = raw_identities
         .into_iter()
-        .map(|dns_name| {
-            String::from_utf8(dns_name).map_err(|_| TlsBuildError::InvalidDnsSanEncoding {
-                certificate: name.into(),
-            })
+        .map(|identity| match identity {
+            CertificateIdentitySan::Dns(dns_name) => {
+                let mut dns_name = String::from_utf8(dns_name).map_err(|_| {
+                    TlsBuildError::InvalidDnsSanEncoding {
+                        certificate: name.into(),
+                    }
+                })?;
+                dns_name.make_ascii_lowercase();
+                if !valid_dns_name(&dns_name) {
+                    return Err(TlsBuildError::InvalidDnsSan {
+                        certificate: name.into(),
+                        dns_name,
+                    });
+                }
+                Ok(CertificateIdentity::Dns(dns_name))
+            }
+            CertificateIdentitySan::Ip(ip) => Ok(CertificateIdentity::Ip(canonical_ip(ip))),
         })
         .collect::<Result<Vec<_>, _>>()?;
     if actual.is_empty() {
         return Err(TlsBuildError::MissingDnsSan {
             certificate: name.into(),
         });
-    }
-    for dns_name in &mut actual {
-        dns_name.make_ascii_lowercase();
-        if !valid_dns_name(dns_name) {
-            return Err(TlsBuildError::InvalidDnsSan {
-                certificate: name.into(),
-                dns_name: dns_name.clone(),
-            });
-        }
     }
     actual.sort_unstable();
     declared.sort_unstable();
@@ -827,13 +849,16 @@ fn dns_names(
             certificate: name.into(),
         });
     }
-    Ok(declared)
+    Ok(declared
+        .into_iter()
+        .map(CertificateIdentity::into_string)
+        .collect())
 }
 
 fn normalize_declared_dns_names(
     name: &str,
     declared_dns_names: &[String],
-) -> Result<Vec<String>, TlsBuildError> {
+) -> Result<Vec<CertificateIdentity>, TlsBuildError> {
     if declared_dns_names.is_empty() || declared_dns_names.len() > MAX_DNS_NAMES {
         return Err(TlsBuildError::InvalidDeclaredDnsNames {
             certificate: name.into(),
@@ -842,16 +867,39 @@ fn normalize_declared_dns_names(
     let mut unique = HashSet::with_capacity(declared_dns_names.len());
     let mut normalized = Vec::with_capacity(declared_dns_names.len());
     for dns_name in declared_dns_names {
+        if let Ok(ip) = dns_name.parse::<IpAddr>() {
+            let identity = CertificateIdentity::Ip(canonical_ip(ip));
+            if !unique.insert(identity.clone()) {
+                return Err(TlsBuildError::InvalidDeclaredDnsNames {
+                    certificate: name.into(),
+                });
+            }
+            normalized.push(identity);
+            continue;
+        }
         let mut dns_name = dns_name.clone();
         dns_name.make_ascii_lowercase();
-        if !valid_dns_name(&dns_name) || !unique.insert(dns_name.clone()) {
+        if !valid_dns_name(&dns_name) {
             return Err(TlsBuildError::InvalidDeclaredDnsNames {
                 certificate: name.into(),
             });
         }
-        normalized.push(dns_name);
+        let identity = CertificateIdentity::Dns(dns_name);
+        if !unique.insert(identity.clone()) {
+            return Err(TlsBuildError::InvalidDeclaredDnsNames {
+                certificate: name.into(),
+            });
+        }
+        normalized.push(identity);
     }
     Ok(normalized)
+}
+
+fn canonical_ip(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(ipv6) => ipv6.to_ipv4_mapped().map_or(IpAddr::V6(ipv6), IpAddr::V4),
+        IpAddr::V4(_) => ip,
+    }
 }
 
 fn valid_dns_name(dns_name: &str) -> bool {

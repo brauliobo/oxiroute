@@ -17,8 +17,8 @@ use http::{
 };
 use log::warn;
 use oxiroute_config::{
-    DownstreamTimeoutPolicy, HttpRedirectLocation, HttpRetryTarget, HttpRetryTrigger, HttpSameSite,
-    HttpUpstreamHost, is_unambiguous_http_path,
+    DownstreamTimeoutPolicy, HttpGzipMinimumVersion, HttpRedirectLocation, HttpRetryTarget,
+    HttpRetryTrigger, HttpSameSite, HttpUpstreamHost, is_unambiguous_http_path,
 };
 use pingora::{
     Error, ErrorType,
@@ -27,7 +27,7 @@ use pingora::{
         ServerApp,
     },
     modules::http::{HttpModule, HttpModuleBuilder, HttpModules, Module},
-    protocols::http::compression::ResponseCompressionCtx,
+    protocols::http::compression::{Algorithm, ResponseCompressionCtx},
     protocols::{
         ALPN, Digest, Stream,
         http::{ServerSession, v2::server::H2Options},
@@ -731,7 +731,16 @@ impl HttpModuleBuilder for ConfiguredCompressionBuilder {
     fn init(&self) -> Module {
         Box::new(ConfiguredCompression {
             gzip: Arc::clone(&self.gzip),
-            inner: ResponseCompressionCtx::new(self.gzip.level, false, false),
+            inner: ResponseCompressionCtx::new_for_algorithm(
+                Algorithm::Gzip,
+                self.gzip.level,
+                false,
+                false,
+            )
+            .with_minimum_compression_bytes(self.gzip.min_length_bytes)
+            .with_content_type_filtering(false)
+            .with_vary_header(self.gzip.vary),
+            request_eligible: false,
             ready: false,
         })
     }
@@ -744,6 +753,7 @@ impl HttpModuleBuilder for ConfiguredCompressionBuilder {
 struct ConfiguredCompression {
     gzip: Arc<HttpGzipPlan>,
     inner: ResponseCompressionCtx,
+    request_eligible: bool,
     ready: bool,
 }
 
@@ -753,7 +763,17 @@ impl HttpModule for ConfiguredCompression {
         &mut self,
         request: &mut pingora::http::RequestHeader,
     ) -> pingora::Result<()> {
-        self.inner.request_filter(request);
+        self.request_eligible = (match self.gzip.min_http_version {
+            HttpGzipMinimumVersion::Http10 => request.version != http::Version::HTTP_09,
+            HttpGzipMinimumVersion::Http11 => !matches!(
+                request.version,
+                http::Version::HTTP_09 | http::Version::HTTP_10
+            ),
+        }) && (!self.gzip.disable_on_via
+            || !request.headers.contains_key("via"));
+        if self.request_eligible {
+            self.inner.request_filter(request);
+        }
         Ok(())
     }
 
@@ -762,7 +782,7 @@ impl HttpModule for ConfiguredCompression {
         response: &mut pingora::http::ResponseHeader,
         end_of_stream: bool,
     ) -> pingora::Result<()> {
-        if !gzip_matches(&self.gzip, response) {
+        if !self.request_eligible || !gzip_matches(&self.gzip, response) {
             self.ready = false;
             return Ok(());
         }
@@ -1098,8 +1118,8 @@ async fn write_static_file(
     file: StaticFile,
     head: bool,
 ) -> pingora::Result<Option<Vec<(HeaderName, HeaderValue)>>> {
-    let validators = static_validator_headers(&file);
-    match static_precondition(session.req_header(), &file) {
+    let validators = static_validator_headers(files, &file);
+    match static_precondition(session.req_header(), &file, files.etag_enabled()) {
         StaticPrecondition::NotModified => {
             let mut headers = files.headers(304);
             headers.extend(validators);
@@ -1114,7 +1134,7 @@ async fn write_static_file(
         }
         StaticPrecondition::Proceed => {}
     }
-    let apply_range = if_range_matches(session.req_header(), &file);
+    let apply_range = if_range_matches(session.req_header(), &file, files.etag_enabled());
     let range = if apply_range {
         requested_range(session.req_header(), file.size)
     } else {
@@ -1148,7 +1168,7 @@ async fn write_static_file_with_status(
     let length = if file.size == 0 { 0 } else { end - start + 1 };
     let mut headers = files.headers(status);
     headers.extend_from_slice(extra_headers);
-    headers.extend(static_validator_headers(&file));
+    headers.extend(static_validator_headers(files, &file));
     let mut response = pingora::http::ResponseHeader::build(status, Some(headers.len() + 4))?;
     for (name, value) in headers {
         response.append_header(name, value)?;
@@ -1253,9 +1273,11 @@ enum StaticPrecondition {
 fn static_precondition(
     request: &pingora::http::RequestHeader,
     file: &StaticFile,
+    etag_enabled: bool,
 ) -> StaticPrecondition {
     if let Some(value) = request.headers.get(IF_MATCH) {
-        let matches = value.as_bytes() == b"*" || etag_list_matches(value, &file.etag, false);
+        let matches =
+            value.as_bytes() == b"*" || etag_enabled && etag_list_matches(value, &file.etag, false);
         if !matches {
             return StaticPrecondition::Failed;
         }
@@ -1270,7 +1292,7 @@ fn static_precondition(
     }
 
     if let Some(value) = request.headers.get(IF_NONE_MATCH) {
-        if value.as_bytes() == b"*" || etag_list_matches(value, &file.etag, true) {
+        if value.as_bytes() == b"*" || etag_enabled && etag_list_matches(value, &file.etag, true) {
             return StaticPrecondition::NotModified;
         }
     } else if request
@@ -1285,12 +1307,16 @@ fn static_precondition(
     StaticPrecondition::Proceed
 }
 
-fn if_range_matches(request: &pingora::http::RequestHeader, file: &StaticFile) -> bool {
+fn if_range_matches(
+    request: &pingora::http::RequestHeader,
+    file: &StaticFile,
+    etag_enabled: bool,
+) -> bool {
     let Some(value) = request.headers.get(IF_RANGE) else {
         return true;
     };
     if value.as_bytes().starts_with(b"\"") {
-        return value == file.etag;
+        return etag_enabled && value == file.etag;
     }
     value
         .to_str()
@@ -1322,15 +1348,20 @@ fn modified_after(modified: SystemTime, date: SystemTime) -> bool {
     modified > date
 }
 
-fn static_validator_headers(file: &StaticFile) -> Vec<(HeaderName, HeaderValue)> {
-    vec![
-        (ETAG, file.etag.clone()),
-        (
-            LAST_MODIFIED,
-            HeaderValue::from_str(&httpdate::fmt_http_date(file.modified))
-                .expect("HTTP date is a valid header value"),
-        ),
-    ]
+fn static_validator_headers(
+    files: &crate::http_action::StaticFilesPlan,
+    file: &StaticFile,
+) -> Vec<(HeaderName, HeaderValue)> {
+    let mut headers = Vec::with_capacity(usize::from(files.etag_enabled()) + 1);
+    if files.etag_enabled() {
+        headers.push((ETAG, file.etag.clone()));
+    }
+    headers.push((
+        LAST_MODIFIED,
+        HeaderValue::from_str(&httpdate::fmt_http_date(file.modified))
+            .expect("HTTP date is a valid header value"),
+    ));
+    headers
 }
 
 fn proxy_policy(ctx: &HttpRequestContext) -> &ProxyPolicyPlan {

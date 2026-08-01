@@ -66,11 +66,13 @@ pub struct ResponseCompressionCtx(CtxInner);
 
 enum CtxInner {
     HeaderPhase {
-        // Store the preferred list to compare with content-encoding
-        accept_encoding: Vec<Algorithm>,
+        accept_encoding: Vec<EncodingPreference>,
         encoding_levels: [u32; Algorithm::COUNT],
         decompress_enable: [bool; Algorithm::COUNT],
         preserve_etag: [bool; Algorithm::COUNT],
+        minimum_compression_bytes: usize,
+        content_type_filtering: bool,
+        vary_header: bool,
     },
     BodyPhase(Option<Box<dyn Encode + Send + Sync>>),
 }
@@ -87,7 +89,67 @@ impl ResponseCompressionCtx {
             encoding_levels: [compression_level; Algorithm::COUNT],
             decompress_enable: [decompress_enable; Algorithm::COUNT],
             preserve_etag: [preserve_etag; Algorithm::COUNT],
+            minimum_compression_bytes: 20,
+            content_type_filtering: true,
+            vary_header: true,
         })
+    }
+
+    /// Create a context that can only encode and decode the selected algorithm.
+    pub fn new_for_algorithm(
+        algorithm: Algorithm,
+        compression_level: u32,
+        decompress_enable: bool,
+        preserve_etag: bool,
+    ) -> Self {
+        let mut encoding_levels = [0; Algorithm::COUNT];
+        let mut decompress = [false; Algorithm::COUNT];
+        let mut preserve = [false; Algorithm::COUNT];
+        encoding_levels[algorithm.index()] = compression_level;
+        decompress[algorithm.index()] = decompress_enable;
+        preserve[algorithm.index()] = preserve_etag;
+        Self(CtxInner::HeaderPhase {
+            accept_encoding: Vec::new(),
+            encoding_levels,
+            decompress_enable: decompress,
+            preserve_etag: preserve,
+            minimum_compression_bytes: 20,
+            content_type_filtering: true,
+            vary_header: true,
+        })
+    }
+
+    /// Set the minimum known response length eligible for compression.
+    pub fn with_minimum_compression_bytes(mut self, minimum: usize) -> Self {
+        match &mut self.0 {
+            CtxInner::HeaderPhase {
+                minimum_compression_bytes,
+                ..
+            } => *minimum_compression_bytes = minimum,
+            CtxInner::BodyPhase(_) => unreachable!("new contexts start in HeaderPhase"),
+        }
+        self
+    }
+
+    /// Enable or disable Pingora's built-in content-type allowlist.
+    pub fn with_content_type_filtering(mut self, enabled: bool) -> Self {
+        match &mut self.0 {
+            CtxInner::HeaderPhase {
+                content_type_filtering,
+                ..
+            } => *content_type_filtering = enabled,
+            CtxInner::BodyPhase(_) => unreachable!("new contexts start in HeaderPhase"),
+        }
+        self
+    }
+
+    /// Enable or disable automatic `Vary: Accept-Encoding` emission.
+    pub fn with_vary_header(mut self, enabled: bool) -> Self {
+        match &mut self.0 {
+            CtxInner::HeaderPhase { vary_header, .. } => *vary_header = enabled,
+            CtxInner::BodyPhase(_) => unreachable!("new contexts start in HeaderPhase"),
+        }
+        self
     }
 
     /// Whether the encoder is enabled.
@@ -203,7 +265,7 @@ impl ResponseCompressionCtx {
             CtxInner::HeaderPhase {
                 accept_encoding, ..
             } => parse_accept_encoding(
-                req.headers.get(http::header::ACCEPT_ENCODING),
+                req.headers.get_all(http::header::ACCEPT_ENCODING).iter(),
                 accept_encoding,
             ),
             CtxInner::BodyPhase(_) => panic!("Wrong phase: BodyPhase"),
@@ -221,6 +283,9 @@ impl ResponseCompressionCtx {
                 preserve_etag,
                 accept_encoding,
                 encoding_levels: levels,
+                minimum_compression_bytes,
+                content_type_filtering,
+                vary_header,
             } => {
                 if resp.status.is_informational() {
                     if resp.status == http::status::StatusCode::SWITCHING_PROTOCOLS {
@@ -236,18 +301,28 @@ impl ResponseCompressionCtx {
                     return;
                 }
 
-                if depends_on_accept_encoding(
-                    resp,
-                    levels.iter().any(|level| *level != 0),
-                    decompress_enable,
-                ) {
+                if *vary_header
+                    && depends_on_accept_encoding(
+                        resp,
+                        levels.iter().any(|level| *level != 0),
+                        decompress_enable,
+                        *minimum_compression_bytes,
+                        *content_type_filtering,
+                    )
+                {
                     // The response depends on the Accept-Encoding header, make sure to indicate it
                     // in the Vary response header.
                     // https://www.rfc-editor.org/rfc/rfc9110#name-vary
                     add_vary_header(resp, &http::header::ACCEPT_ENCODING);
                 }
 
-                let action = decide_action(resp, accept_encoding);
+                let action = decide_action_with_config(
+                    resp,
+                    accept_encoding,
+                    levels,
+                    *minimum_compression_bytes,
+                    *content_type_filtering,
+                );
                 debug!("compression action: {action:?}");
                 let (encoder, preserve_etag) = match action {
                     Action::Noop => (None, false),
@@ -398,7 +473,7 @@ impl From<&str> for Algorithm {
             Algorithm::Dcb
         } else if coding == UniCase::ascii("dcz") {
             Algorithm::Dcz
-        } else if s.is_empty() {
+        } else if s == "*" {
             Algorithm::Any
         } else {
             Algorithm::Other
@@ -413,14 +488,31 @@ enum Action {
     Decompress(Algorithm),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EncodingPreference {
+    algorithm: Algorithm,
+    quality: u16,
+    order: usize,
+}
+
 // parse Accept-Encoding header and put it to the list
-fn parse_accept_encoding(accept_encoding: Option<&http::HeaderValue>, list: &mut Vec<Algorithm>) {
+fn parse_accept_encoding<'a>(
+    accept_encodings: impl IntoIterator<Item = &'a http::HeaderValue>,
+    list: &mut Vec<EncodingPreference>,
+) {
     // https://www.rfc-editor.org/rfc/rfc9110#name-accept-encoding
-    if let Some(ac) = accept_encoding {
+    list.clear();
+    let mut order = 0;
+    for ac in accept_encodings {
         // fast path
         if ac.as_bytes() == b"gzip" {
-            list.push(Algorithm::Gzip);
-            return;
+            list.push(EncodingPreference {
+                algorithm: Algorithm::Gzip,
+                quality: 1000,
+                order,
+            });
+            order += 1;
+            continue;
         }
         // properly parse AC header
         match sfv::Parser::parse_list(ac.as_bytes()) {
@@ -428,23 +520,54 @@ fn parse_accept_encoding(accept_encoding: Option<&http::HeaderValue>, list: &mut
                 for item in parsed {
                     if let sfv::ListEntry::Item(i) = item {
                         if let Some(s) = i.bare_item.as_token() {
-                            // TODO: support q value
                             let algorithm = Algorithm::from(s);
-                            // ignore algorithms that we don't understand ignore
+                            let Some(quality) = encoding_quality(&i.params) else {
+                                list.clear();
+                                return;
+                            };
                             if algorithm != Algorithm::Other {
-                                list.push(Algorithm::from(s));
+                                list.push(EncodingPreference {
+                                    algorithm,
+                                    quality,
+                                    order,
+                                });
                             }
                         }
                     }
+                    order += 1;
                 }
             }
             Err(e) => {
-                warn!("Failed to parse accept-encoding {ac:?}, {e}")
+                warn!("Failed to parse accept-encoding {ac:?}, {e}");
+                list.clear();
+                return;
             }
         }
-    } else {
-        // "If no Accept-Encoding header, any content coding is acceptable"
-        // keep the list empty
+    }
+}
+
+fn encoding_quality(params: &sfv::Parameters) -> Option<u16> {
+    let Some(quality) = params.get("q") else {
+        return Some(1000);
+    };
+    match quality {
+        sfv::BareItem::Integer(value) => match *value {
+            0 => Some(0),
+            1 => Some(1000),
+            _ => None,
+        },
+        sfv::BareItem::Decimal(value) => {
+            let scale = value.scale();
+            let mantissa = value.mantissa();
+            if mantissa < 0 || scale > 3 {
+                return None;
+            }
+            let quality = mantissa.checked_mul(10_i128.pow(3 - scale))?;
+            u16::try_from(quality)
+                .ok()
+                .filter(|quality| *quality <= 1000)
+        }
+        _ => None,
     }
 }
 
@@ -453,7 +576,7 @@ fn test_accept_encoding_req_header() {
     let mut header = RequestHeader::build("GET", b"/", None).unwrap();
     let mut ac_list = Vec::new();
     parse_accept_encoding(
-        header.headers.get(http::header::ACCEPT_ENCODING),
+        header.headers.get_all(http::header::ACCEPT_ENCODING).iter(),
         &mut ac_list,
     );
     assert!(ac_list.is_empty());
@@ -461,21 +584,33 @@ fn test_accept_encoding_req_header() {
     let mut ac_list = Vec::new();
     header.insert_header("accept-encoding", "gzip").unwrap();
     parse_accept_encoding(
-        header.headers.get(http::header::ACCEPT_ENCODING),
+        header.headers.get_all(http::header::ACCEPT_ENCODING).iter(),
         &mut ac_list,
     );
-    assert_eq!(ac_list[0], Algorithm::Gzip);
+    assert_eq!(ac_list[0].algorithm, Algorithm::Gzip);
 
     let mut ac_list = Vec::new();
     header
         .insert_header("accept-encoding", "what, br, gzip")
         .unwrap();
     parse_accept_encoding(
-        header.headers.get(http::header::ACCEPT_ENCODING),
+        header.headers.get_all(http::header::ACCEPT_ENCODING).iter(),
         &mut ac_list,
     );
-    assert_eq!(ac_list[0], Algorithm::Brotli);
-    assert_eq!(ac_list[1], Algorithm::Gzip);
+    assert_eq!(ac_list[0].algorithm, Algorithm::Brotli);
+    assert_eq!(ac_list[1].algorithm, Algorithm::Gzip);
+
+    let mut ac_list = Vec::new();
+    header
+        .insert_header("accept-encoding", "br, gzip;q=0.5, *;q=0")
+        .unwrap();
+    parse_accept_encoding(
+        header.headers.get_all(http::header::ACCEPT_ENCODING).iter(),
+        &mut ac_list,
+    );
+    assert_eq!(ac_list[0].quality, 1000);
+    assert_eq!(ac_list[1].quality, 500);
+    assert_eq!(ac_list[2].quality, 0);
 }
 
 // test whether the response depends on Accept-Encoding header
@@ -483,12 +618,15 @@ fn depends_on_accept_encoding(
     resp: &ResponseHeader,
     compress_enabled: bool,
     decompress_enabled: &[bool],
+    minimum_compression_bytes: usize,
+    content_type_filtering: bool,
 ) -> bool {
     use http::header::CONTENT_ENCODING;
 
     (decompress_enabled.iter().any(|enabled| *enabled)
         && resp.headers.get(CONTENT_ENCODING).is_some())
-        || (compress_enabled && compressible(resp))
+        || (compress_enabled
+            && compressible(resp, minimum_compression_bytes, content_type_filtering))
 }
 
 #[test]
@@ -499,28 +637,46 @@ fn test_decide_on_accept_encoding() {
     resp.insert_header("content-encoding", "gzip").unwrap();
 
     // enabled
-    assert!(depends_on_accept_encoding(&resp, false, &[true]));
+    assert!(depends_on_accept_encoding(&resp, false, &[true], 20, true));
 
     // decompress disabled => disabled
-    assert!(!depends_on_accept_encoding(&resp, false, &[false]));
+    assert!(!depends_on_accept_encoding(
+        &resp,
+        false,
+        &[false],
+        20,
+        true
+    ));
 
     // no content-encoding => disabled
     resp.remove_header("content-encoding");
-    assert!(!depends_on_accept_encoding(&resp, false, &[true]));
+    assert!(!depends_on_accept_encoding(&resp, false, &[true], 20, true));
 
     // compress enabled and compressible response => enabled
-    assert!(depends_on_accept_encoding(&resp, true, &[false]));
+    assert!(depends_on_accept_encoding(&resp, true, &[false], 20, true));
 
     // compress disabled and compressible response => disabled
-    assert!(!depends_on_accept_encoding(&resp, false, &[false]));
+    assert!(!depends_on_accept_encoding(
+        &resp,
+        false,
+        &[false],
+        20,
+        true
+    ));
 
     // compress enabled and not compressible response => disabled
     resp.insert_header("content-type", "text/html+zip").unwrap();
-    assert!(!depends_on_accept_encoding(&resp, true, &[false]));
+    assert!(!depends_on_accept_encoding(&resp, true, &[false], 20, true));
 }
 
 // filter response header to see if (de)compression is needed
-fn decide_action(resp: &ResponseHeader, accept_encoding: &[Algorithm]) -> Action {
+fn decide_action_with_config(
+    resp: &ResponseHeader,
+    accept_encoding: &[EncodingPreference],
+    levels: &[u32; Algorithm::COUNT],
+    minimum_compression_bytes: usize,
+    content_type_filtering: bool,
+) -> Action {
     use http::header::CONTENT_ENCODING;
 
     let content_encoding = if let Some(ce) = resp.headers.get(CONTENT_ENCODING) {
@@ -537,7 +693,7 @@ fn decide_action(resp: &ResponseHeader, accept_encoding: &[Algorithm]) -> Action
     };
 
     if let Some(ce) = content_encoding {
-        if accept_encoding.contains(&ce) {
+        if accepted_quality(ce, accept_encoding).is_some_and(|quality| quality > 0) {
             // downstream can accept this encoding, nothing to do
             Action::Noop
         } else {
@@ -548,16 +704,72 @@ fn decide_action(resp: &ResponseHeader, accept_encoding: &[Algorithm]) -> Action
             // TODO: we could also transcode it to a preferred encoding, e.g. br->gzip
             Action::Decompress(ce)
         }
-    } else if accept_encoding.is_empty() // both CE and AE are empty
-        || !compressible(resp) // the type is not compressible
-        || accept_encoding[0] == Algorithm::Any
-    {
+    } else if !compressible(resp, minimum_compression_bytes, content_type_filtering) {
         Action::Noop
     } else {
-        // try to compress with the first AC
-        // TODO: support to configure preferred encoding
-        Action::Compress(accept_encoding[0])
+        preferred_compressor(accept_encoding, levels).map_or(Action::Noop, Action::Compress)
     }
+}
+
+fn accepted_quality(algorithm: Algorithm, accept_encoding: &[EncodingPreference]) -> Option<u16> {
+    accept_encoding
+        .iter()
+        .rev()
+        .find(|preference| preference.algorithm == algorithm)
+        .or_else(|| {
+            accept_encoding
+                .iter()
+                .rev()
+                .find(|preference| preference.algorithm == Algorithm::Any)
+        })
+        .map(|preference| preference.quality)
+}
+
+fn preferred_compressor(
+    accept_encoding: &[EncodingPreference],
+    levels: &[u32; Algorithm::COUNT],
+) -> Option<Algorithm> {
+    let mut preferred = None;
+    for algorithm in [Algorithm::Gzip, Algorithm::Brotli, Algorithm::Zstd] {
+        if levels[algorithm.index()] == 0 {
+            continue;
+        }
+        let preference = accept_encoding
+            .iter()
+            .rev()
+            .find(|preference| preference.algorithm == algorithm)
+            .or_else(|| {
+                accept_encoding
+                    .iter()
+                    .rev()
+                    .find(|preference| preference.algorithm == Algorithm::Any)
+            });
+        let Some(preference) = preference.filter(|preference| preference.quality > 0) else {
+            continue;
+        };
+        if preferred.is_none_or(|(_, quality, order)| {
+            preference.quality > quality
+                || preference.quality == quality && preference.order < order
+        }) {
+            preferred = Some((algorithm, preference.quality, preference.order));
+        }
+    }
+    preferred.map(|(algorithm, _, _)| algorithm)
+}
+
+#[cfg(test)]
+fn decide_action(resp: &ResponseHeader, accept_encoding: &[Algorithm]) -> Action {
+    let preferences = accept_encoding
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(order, algorithm)| EncodingPreference {
+            algorithm,
+            quality: 1000,
+            order,
+        })
+        .collect::<Vec<_>>();
+    decide_action_with_config(resp, &preferences, &[6; Algorithm::COUNT], 20, true)
 }
 
 #[test]
@@ -654,6 +866,38 @@ fn test_decide_action() {
     assert_eq!(decide_action(&header, &[Dcb]), Decompress(Brotli));
 }
 
+#[test]
+fn test_weighted_accept_encoding_respects_enabled_algorithms_and_wildcards() {
+    use Action::{Compress, Noop};
+
+    let mut response = ResponseHeader::build(200, None).unwrap();
+    response.insert_header("content-length", "20").unwrap();
+    response
+        .insert_header("content-type", "image/custom")
+        .unwrap();
+    let mut gzip_only = [0; Algorithm::COUNT];
+    gzip_only[Algorithm::Gzip.index()] = 6;
+
+    let action = |values: &[&str]| {
+        let headers = values
+            .iter()
+            .map(|value| http::HeaderValue::from_str(value).unwrap())
+            .collect::<Vec<_>>();
+        let mut preferences = Vec::new();
+        parse_accept_encoding(headers.iter(), &mut preferences);
+        decide_action_with_config(&response, &preferences, &gzip_only, 20, false)
+    };
+
+    assert_eq!(action(&[]), Noop);
+    assert_eq!(action(&["br, gzip"]), Compress(Algorithm::Gzip));
+    assert_eq!(action(&["gzip;q=0"]), Noop);
+    assert_eq!(action(&["*"]), Compress(Algorithm::Gzip));
+    assert_eq!(action(&["*;q=1, gzip;q=0"]), Noop);
+    assert_eq!(action(&["*;q=1", "gzip;q=0"]), Noop);
+    assert_eq!(action(&["*;q=0", "gzip;q=0.5"]), Compress(Algorithm::Gzip));
+    assert_eq!(action(&["br;q=1, gzip;q=0.5"]), Compress(Algorithm::Gzip));
+}
+
 use once_cell::sync::Lazy;
 use regex::Regex;
 
@@ -665,23 +909,24 @@ static MIME_CHECK: Lazy<Regex> = Lazy::new(|| {
 });
 
 // check if the response mime type is compressible
-fn compressible(resp: &ResponseHeader) -> bool {
-    // arbitrary size limit, things to consider
-    // 1. too short body may have little redundancy to compress
-    // 2. gzip header and footer overhead
-    // 3. latency is the same as long as data fits in a TCP congestion window regardless of size
-    const MIN_COMPRESS_LEN: usize = 20;
-
+fn compressible(
+    resp: &ResponseHeader,
+    minimum_compression_bytes: usize,
+    content_type_filtering: bool,
+) -> bool {
     // check if response is too small to compress
     if let Some(cl) = resp.headers.get(http::header::CONTENT_LENGTH) {
         if let Some(cl_num) = std::str::from_utf8(cl.as_bytes())
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
         {
-            if cl_num < MIN_COMPRESS_LEN {
+            if cl_num < minimum_compression_bytes {
                 return false;
             }
         }
+    }
+    if !content_type_filtering {
+        return true;
     }
     // no Content-Length or large enough, check content-type next
     if let Some(ct) = resp.headers.get(http::header::CONTENT_TYPE) {

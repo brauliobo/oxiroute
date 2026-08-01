@@ -108,8 +108,8 @@
     {
       "id": "HN-04",
       "status": "partial",
-      "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": false },
-      "evidence": ["crates/oxiroute-server/tests/wire_tls_interop.rs#downstream_selects_exact_wildcard_and_default_certificates_by_sni", "crates/oxiroute-server/src/tls/certificate.rs"]
+      "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": true },
+      "evidence": ["crates/oxiroute-server/tests/wire_tls_interop.rs#downstream_selects_exact_wildcard_and_default_certificates_by_sni", "crates/oxiroute-server/src/tls/tests.rs#accepts_ip_sans_canonicalizes_ipv6_mapped_ipv4_and_uses_ips_only_as_the_default", "crates/oxiroute-import/tests/nginx_lower.rs#lowers_exact_ip_server_names_as_canonical_certificate_identities_without_reading_files"]
     },
     {
       "id": "HN-05",
@@ -180,14 +180,14 @@
     {
       "id": "HN-16",
       "status": "partial",
-      "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": false },
-      "evidence": ["crates/oxiroute-config/tests/http_routes.rs#validates_static_file_roots_indexes_and_spa_fallbacks_lexically", "crates/oxiroute-import/tests/nginx_lower.rs#lowers_static_index_behavior_into_canonical_static_routes", "crates/oxiroute-server/tests/http_proxy_routing.rs#host_shaped_static_policy_covers_root_alias_try_files_index_autoindex_mime_errors_and_ranges"]
+      "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": true },
+      "evidence": ["crates/oxiroute-config/tests/http_routes.rs#static_etag_policy_renders_exact_booleans_and_rejects_invalid_forms", "crates/oxiroute-import/tests/nginx_lower.rs#lowers_inherited_etag_off_for_actual_alias_try_files_and_headers_shape", "crates/oxiroute-server/tests/http_proxy_routing.rs#host_shaped_static_policy_covers_root_alias_try_files_index_autoindex_mime_errors_and_ranges"]
     },
     {
       "id": "HN-17",
       "status": "partial",
-      "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": false },
-      "evidence": ["crates/oxiroute-config/tests/http_routes.rs#validates_secret_backed_bearer_access_without_inline_tokens", "crates/oxiroute-server/tests/http_proxy_routing.rs#bearer_access_uses_the_configured_header_without_exposing_the_token", "coverage/nginx-directives.json"]
+      "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": true },
+      "evidence": ["crates/oxiroute-config/tests/http_routes.rs#validates_secret_backed_bearer_access_without_inline_tokens", "crates/oxiroute-server/tests/http_proxy_routing.rs#basic_access_verifies_apr1_for_known_and_unknown_users_without_exposing_credentials", "crates/oxiroute-import/tests/nginx_root.rs#sanitized_live_nginx_roots_enforce_security_overlays_and_unrelated_blockers"]
     },
     {
       "id": "HN-18",
@@ -210,8 +210,8 @@
     {
       "id": "HN-21",
       "status": "partial",
-      "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": false },
-      "evidence": ["crates/oxiroute-config/tests/canonical_foundation.rs#round_trips_the_complete_host_replacement_foundation", "crates/oxiroute-server/tests/http_proxy_routing.rs#configured_gzip_uses_pingora_streaming_only_for_exact_content_types"]
+      "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": true },
+      "evidence": ["crates/oxiroute-config/tests/canonical_foundation.rs#persisted_minimal_gzip_policy_retains_legacy_runtime_defaults", "crates/oxiroute-import/tests/nginx_lower.rs#lowers_actual_shaped_fifteen_type_level_nine_gzip_policy", "crates/oxiroute-server/tests/http_proxy_routing.rs#configured_gzip_honors_exact_types_defaults_and_accept_encoding"]
     },
     {
       "id": "HN-22",

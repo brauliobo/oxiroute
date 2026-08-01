@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ffi::{OsStr, OsString},
     fmt::Write as _,
     fs::File,
@@ -17,13 +17,17 @@ use std::{
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, header::AUTHORIZATION};
-use openssl::{memcmp, sha::sha256};
+use openssl::{
+    hash::{Hasher, MessageDigest},
+    memcmp,
+    sha::sha256,
+};
 use oxiroute_config::{
     AccessLogPolicy, HttpAccessPolicy, HttpCookieAttributePolicy, HttpCookiePathRewrite,
-    HttpGzipPolicy, HttpLiteralHeader, HttpProxyPolicy, HttpRedirectLocation,
-    HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpResponseHeaderMutation, HttpRetryTarget,
-    HttpRetryTrigger, HttpRouteAction, HttpRoutePolicy, HttpStaticPathMapping, HttpStaticTryFile,
-    HttpUpstreamHost,
+    HttpGzipMinimumVersion, HttpGzipPolicy, HttpLiteralHeader, HttpProxyPolicy,
+    HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
+    HttpResponseHeaderMutation, HttpRetryTarget, HttpRetryTrigger, HttpRouteAction,
+    HttpRoutePolicy, HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost,
 };
 use rustix::{
     fd::OwnedFd,
@@ -39,9 +43,17 @@ const MAX_ACCESS_TOKEN_BYTES: usize = 512;
 const MAX_ACCESS_TOKEN_FILE_BYTES: usize = MAX_ACCESS_TOKEN_BYTES + 2;
 const MAX_HTPASSWD_FILE_BYTES: usize = 1024 * 1024;
 const MAX_BASIC_CREDENTIAL_BYTES: usize = 2048;
-const MAX_CONCURRENT_BCRYPT_VERIFICATIONS: usize = 4;
+const MAX_BASIC_USERNAME_BYTES: usize = 256;
+const MAX_BASIC_HASH_BYTES: usize = 60;
+const MAX_CONCURRENT_BASIC_VERIFICATIONS: usize = 4;
 const MIN_BASIC_BCRYPT_COST: u32 = 4;
 const MAX_BASIC_BCRYPT_COST: u32 = 12;
+const APR1_PREFIX: &str = "$apr1$";
+const MAX_APR1_SALT_BYTES: usize = 8;
+const APR1_DIGEST_BYTES: usize = 22;
+const APR1_ROUNDS: usize = 1_000;
+const APR1_ALPHABET: &[u8; 64] =
+    b"./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 pub(crate) const MAX_STATIC_FILE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_AUTOINDEX_ENTRIES: usize = 10_000;
 const MAX_AUTOINDEX_BYTES: usize = 4 * 1024 * 1024;
@@ -59,6 +71,10 @@ pub(crate) struct HttpRoutePlan {
 pub(crate) struct HttpGzipPlan {
     pub(crate) level: u32,
     pub(crate) content_types: Box<[String]>,
+    pub(crate) min_length_bytes: usize,
+    pub(crate) min_http_version: HttpGzipMinimumVersion,
+    pub(crate) disable_on_via: bool,
+    pub(crate) vary: bool,
 }
 
 impl HttpGzipPlan {
@@ -66,6 +82,11 @@ impl HttpGzipPlan {
         Self {
             level: u32::from(policy.level),
             content_types: policy.content_types.clone().into_boxed_slice(),
+            min_length_bytes: usize::try_from(policy.min_length_bytes)
+                .expect("validated gzip length fits usize"),
+            min_http_version: policy.min_http_version,
+            disable_on_via: policy.disable_on_via,
+            vary: policy.vary,
         }
     }
 }
@@ -503,8 +524,26 @@ impl RouteAccess {
 
 pub(crate) struct BasicHtpasswdAccess {
     challenge: HeaderValue,
-    dummy_hash: String,
-    users: Box<[(String, String)]>,
+    dummy_hash: BasicPasswordHash,
+    users: Box<[([u8; 32], BasicPasswordHash)]>,
+}
+
+#[derive(Clone)]
+enum BasicPasswordHash {
+    Bcrypt(String),
+    Apr1(Apr1Hash),
+}
+
+#[derive(Clone)]
+struct Apr1Hash {
+    salt: Box<[u8]>,
+    digest: [u8; APR1_DIGEST_BYTES],
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BasicHashScheme {
+    Bcrypt(u32),
+    Apr1,
 }
 
 impl std::fmt::Debug for BasicHtpasswdAccess {
@@ -522,38 +561,37 @@ impl BasicHtpasswdAccess {
         let bytes = read_secret_file(path, MAX_HTPASSWD_FILE_BYTES)?;
         let text = std::str::from_utf8(&bytes).map_err(|_| AccessPreflightError)?;
         let mut users = Vec::new();
-        let mut file_cost = None;
+        let mut username_digests = HashSet::new();
+        let mut file_scheme = None;
         for line in text.lines() {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
             let (username, hash) = line.split_once(':').ok_or(AccessPreflightError)?;
-            let parts = hash
-                .parse::<bcrypt::HashParts>()
-                .map_err(|_| AccessPreflightError)?;
-            let cost = parts.get_cost();
             if username.is_empty()
-                || username.len() > 256
+                || username.len() > MAX_BASIC_USERNAME_BYTES
                 || username.bytes().any(|byte| byte.is_ascii_control())
-                || !matches!(hash.get(..4), Some("$2y$" | "$2b$" | "$2a$"))
-                || hash.len() != 60
-                || !(MIN_BASIC_BCRYPT_COST..=MAX_BASIC_BCRYPT_COST).contains(&cost)
-                || file_cost.is_some_and(|existing| existing != cost)
-                || users.iter().any(|(existing, _)| existing == username)
+                || hash.len() > MAX_BASIC_HASH_BYTES
             {
                 return Err(AccessPreflightError);
             }
-            file_cost = Some(cost);
-            users.push((username.to_owned(), hash.to_owned()));
+            let username_digest = sha256(username.as_bytes());
+            if !username_digests.insert(username_digest) {
+                return Err(AccessPreflightError);
+            }
+            let (parsed_hash, scheme) = BasicPasswordHash::parse(hash)?;
+            if file_scheme.is_some_and(|existing| existing != scheme) {
+                return Err(AccessPreflightError);
+            }
+            file_scheme = Some(scheme);
+            users.push((username_digest, parsed_hash));
         }
         if users.is_empty() {
             return Err(AccessPreflightError);
         }
-        let cost = file_cost.expect("nonempty bcrypt file has a cost");
-        let dummy_hash =
-            bcrypt::hash_with_salt(b"oxiroute-unknown-basic-user", cost, *b"OxiRouteDummy123")
-                .map_err(|_| AccessPreflightError)?
-                .to_string();
+        let dummy_hash = BasicPasswordHash::dummy(
+            file_scheme.expect("nonempty htpasswd file has a uniform hash scheme"),
+        )?;
         Ok(Self {
             challenge: HeaderValue::from_str(&format!(
                 "Basic realm=\"{realm}\", charset=\"UTF-8\""
@@ -591,40 +629,218 @@ impl BasicHtpasswdAccess {
         let Some(separator) = decoded.iter().position(|byte| *byte == b':') else {
             return false;
         };
+        if separator > MAX_BASIC_USERNAME_BYTES {
+            return false;
+        }
         let Ok(username) = std::str::from_utf8(&decoded[..separator]) else {
             return false;
         };
         let Ok(password) = std::str::from_utf8(&decoded[separator + 1..]) else {
             return false;
         };
-        let hash = self
-            .users
-            .iter()
-            .find(|(candidate, _)| candidate == username)
-            .map(|(_, hash)| hash.clone());
-        let known_user = hash.is_some();
-        let hash = hash.unwrap_or_else(|| self.dummy_hash.clone());
+        let username_digest = sha256(username.as_bytes());
+        let mut selected_index = self.users.len();
+        // Complete every comparison before selecting a hash so entry position does not alter scan work.
+        for (index, (candidate_digest, _)) in self.users.iter().enumerate() {
+            let matched = usize::from(memcmp::eq(&username_digest, candidate_digest));
+            let mask = 0usize.wrapping_sub(matched);
+            selected_index = (selected_index & !mask) | (index & mask);
+        }
+        let known_user = selected_index != self.users.len();
+        let hash = if known_user {
+            self.users[selected_index].1.clone()
+        } else {
+            self.dummy_hash.clone()
+        };
         let password = Zeroizing::new(password.to_owned());
-        let semaphore = bcrypt_semaphore();
+        let semaphore = basic_auth_semaphore();
         let Ok(permit) = semaphore.try_acquire_owned() else {
             return false;
         };
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            bcrypt::verify(password.as_str(), &hash)
+            hash.verify(password.as_bytes())
         })
         .await
         .ok()
-        .and_then(Result::ok)
         .is_some_and(|verified| known_user && verified)
     }
 }
 
-fn bcrypt_semaphore() -> Arc<tokio::sync::Semaphore> {
+impl BasicPasswordHash {
+    fn parse(hash: &str) -> Result<(Self, BasicHashScheme), AccessPreflightError> {
+        if matches!(hash.get(..4), Some("$2y$" | "$2b$" | "$2a$")) {
+            if hash.len() != MAX_BASIC_HASH_BYTES {
+                return Err(AccessPreflightError);
+            }
+            let parts = hash
+                .parse::<bcrypt::HashParts>()
+                .map_err(|_| AccessPreflightError)?;
+            let cost = parts.get_cost();
+            if !(MIN_BASIC_BCRYPT_COST..=MAX_BASIC_BCRYPT_COST).contains(&cost) {
+                return Err(AccessPreflightError);
+            }
+            return Ok((Self::Bcrypt(hash.to_owned()), BasicHashScheme::Bcrypt(cost)));
+        }
+
+        let apr1 = Apr1Hash::parse(hash)?;
+        Ok((Self::Apr1(apr1), BasicHashScheme::Apr1))
+    }
+
+    fn dummy(scheme: BasicHashScheme) -> Result<Self, AccessPreflightError> {
+        match scheme {
+            BasicHashScheme::Bcrypt(cost) => {
+                let hash = bcrypt::hash_with_salt(
+                    b"oxiroute-unknown-basic-user",
+                    cost,
+                    *b"OxiRouteDummy123",
+                )
+                .map_err(|_| AccessPreflightError)?
+                .to_string();
+                Ok(Self::Bcrypt(hash))
+            }
+            BasicHashScheme::Apr1 => Ok(Self::Apr1(Apr1Hash {
+                salt: Box::from(&b"OxiRoute"[..]),
+                digest: apr1_digest(b"oxiroute-unknown-basic-user", b"OxiRoute")
+                    .map_err(|_| AccessPreflightError)?,
+            })),
+        }
+    }
+
+    fn verify(&self, password: &[u8]) -> bool {
+        match self {
+            Self::Bcrypt(hash) => bcrypt::verify(password, hash).unwrap_or(false),
+            Self::Apr1(hash) => apr1_digest(password, &hash.salt)
+                .is_ok_and(|digest| memcmp::eq(&digest, &hash.digest)),
+        }
+    }
+}
+
+impl Apr1Hash {
+    fn parse(hash: &str) -> Result<Self, AccessPreflightError> {
+        let value = hash.strip_prefix(APR1_PREFIX).ok_or(AccessPreflightError)?;
+        let (salt, digest) = value.split_once('$').ok_or(AccessPreflightError)?;
+        if salt.is_empty()
+            || salt.len() > MAX_APR1_SALT_BYTES
+            || !salt.bytes().all(is_apr1_character)
+            || digest.len() != APR1_DIGEST_BYTES
+            || !digest.bytes().all(is_apr1_character)
+            || !matches!(digest.as_bytes().last(), Some(b'.' | b'/' | b'0' | b'1'))
+        {
+            return Err(AccessPreflightError);
+        }
+        let mut parsed_digest = [0; APR1_DIGEST_BYTES];
+        parsed_digest.copy_from_slice(digest.as_bytes());
+        Ok(Self {
+            salt: salt.as_bytes().into(),
+            digest: parsed_digest,
+        })
+    }
+}
+
+fn is_apr1_character(byte: u8) -> bool {
+    APR1_ALPHABET.contains(&byte)
+}
+
+fn apr1_digest(
+    password: &[u8],
+    salt: &[u8],
+) -> Result<[u8; APR1_DIGEST_BYTES], openssl::error::ErrorStack> {
+    let mut alternate = Hasher::new(MessageDigest::md5())?;
+    alternate.update(password)?;
+    alternate.update(salt)?;
+    alternate.update(password)?;
+    let alternate = alternate.finish()?;
+
+    let mut initial = Hasher::new(MessageDigest::md5())?;
+    initial.update(password)?;
+    initial.update(APR1_PREFIX.as_bytes())?;
+    initial.update(salt)?;
+    let mut remaining = password.len();
+    while remaining >= alternate.len() {
+        initial.update(&alternate)?;
+        remaining -= alternate.len();
+    }
+    initial.update(&alternate[..remaining])?;
+    let mut length = password.len();
+    while length != 0 {
+        if length & 1 == 0 {
+            initial.update(&password[..1])?;
+        } else {
+            initial.update(&[0])?;
+        }
+        length >>= 1;
+    }
+    let mut digest = initial.finish()?;
+
+    for round in 0..APR1_ROUNDS {
+        let mut hasher = Hasher::new(MessageDigest::md5())?;
+        if round & 1 == 0 {
+            hasher.update(&digest)?;
+        } else {
+            hasher.update(password)?;
+        }
+        if round % 3 != 0 {
+            hasher.update(salt)?;
+        }
+        if round % 7 != 0 {
+            hasher.update(password)?;
+        }
+        if round & 1 == 0 {
+            hasher.update(password)?;
+        } else {
+            hasher.update(&digest)?;
+        }
+        digest = hasher.finish()?;
+    }
+
+    Ok(apr1_encode(
+        digest
+            .as_ref()
+            .try_into()
+            .expect("OpenSSL MD5 digest is 16 bytes"),
+    ))
+}
+
+fn apr1_encode(digest: [u8; 16]) -> [u8; APR1_DIGEST_BYTES] {
+    let mut encoded = [0; APR1_DIGEST_BYTES];
+    let mut offset = 0;
+    for (first, second, third) in [(0, 6, 12), (1, 7, 13), (2, 8, 14), (3, 9, 15), (4, 10, 5)] {
+        offset = apr1_encode_group(
+            &mut encoded,
+            offset,
+            digest[first],
+            digest[second],
+            digest[third],
+            4,
+        );
+    }
+    apr1_encode_group(&mut encoded, offset, 0, 0, digest[11], 2);
+    encoded
+}
+
+fn apr1_encode_group(
+    output: &mut [u8; APR1_DIGEST_BYTES],
+    mut offset: usize,
+    first: u8,
+    second: u8,
+    third: u8,
+    count: usize,
+) -> usize {
+    let mut value = (u32::from(first) << 16) | (u32::from(second) << 8) | u32::from(third);
+    for _ in 0..count {
+        output[offset] = APR1_ALPHABET[(value & 0x3f) as usize];
+        offset += 1;
+        value >>= 6;
+    }
+    offset
+}
+
+fn basic_auth_semaphore() -> Arc<tokio::sync::Semaphore> {
     static SEMAPHORE: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
     Arc::clone(SEMAPHORE.get_or_init(|| {
         Arc::new(tokio::sync::Semaphore::new(
-            MAX_CONCURRENT_BCRYPT_VERIFICATIONS,
+            MAX_CONCURRENT_BASIC_VERIFICATIONS,
         ))
     }))
 }
@@ -728,6 +944,7 @@ pub(crate) struct StaticFilesPlan {
     mount_path: String,
     directory_redirects: bool,
     try_files: Box<[StaticTryFilePlan]>,
+    etag: bool,
     mime: HashMap<String, HeaderValue>,
     default_type: Option<HeaderValue>,
     headers: Box<[(HeaderName, HeaderValue, bool)]>,
@@ -797,6 +1014,7 @@ impl StaticFilesPlan {
             autoindex,
             autoindex_exact_size,
             autoindex_local_time,
+            etag,
             mime,
             headers,
             error_responses,
@@ -901,6 +1119,7 @@ impl StaticFilesPlan {
             mount_path: mount_path.to_owned(),
             directory_redirects: *directory_redirects,
             try_files,
+            etag: *etag,
             mime,
             default_type,
             headers: headers
@@ -1048,6 +1267,10 @@ impl StaticFilesPlan {
             .cloned()
             .or_else(|| self.default_type.clone())
             .unwrap_or_else(|| HeaderValue::from_static(builtin_content_type(name)))
+    }
+
+    pub(crate) fn etag_enabled(&self) -> bool {
+        self.etag
     }
 
     fn request_components(&self, request_path: &str) -> Result<Vec<OsString>, StaticServeError> {
@@ -1390,7 +1613,7 @@ fn read_secret_file(
     .map_err(|_| AccessPreflightError)?;
     let before = rustix_fs::fstat(&descriptor).map_err(|_| AccessPreflightError)?;
     if !FileType::from_raw_mode(before.st_mode).is_file()
-        || !matches!(before.st_mode & 0o7777, 0o400 | 0o600)
+        || !matches!(before.st_mode & 0o7777, 0o400 | 0o600 | 0o440 | 0o640)
     {
         return Err(AccessPreflightError);
     }

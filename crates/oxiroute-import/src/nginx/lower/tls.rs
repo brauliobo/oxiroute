@@ -438,7 +438,7 @@ impl Lowerer {
             return Err(vec![issue(
                 &server.origin,
                 E_SEMANTICS_NOT_REPRESENTABLE,
-                "TLS virtual server needs a canonical DNS server_name for certificate activation",
+                "TLS virtual server needs a canonical DNS or IP server_name for certificate activation",
             )]);
         }
         Ok(CertificateCandidate {

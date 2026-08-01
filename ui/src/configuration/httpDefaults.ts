@@ -57,6 +57,7 @@ export function defaultHttpAction(type: HttpRouteActionConfig['type']): HttpRout
         autoindex: false,
         autoindex_exact_size: true,
         autoindex_local_time: false,
+        etag: true,
         mime: { default_type: null, types: [] },
         headers: [],
         error_responses: [],

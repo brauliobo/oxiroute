@@ -234,6 +234,7 @@ describe('canonical HTTP route editors', () => {
       autoindex: false,
       autoindex_exact_size: true,
       autoindex_local_time: false,
+      etag: true,
       mime: { default_type: null, types: [] },
       headers: [],
       error_responses: [],

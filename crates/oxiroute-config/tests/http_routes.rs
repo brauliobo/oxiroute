@@ -111,6 +111,7 @@ fn applies_fixed_redirect_and_static_action_defaults() {
         routes[2]["action"]["index_files"],
         serde_json::json!(["index.html"])
     );
+    assert_eq!(routes[2]["action"]["etag"], true);
     assert_eq!(routes[2]["action"]["spa_fallback"], serde_json::Value::Null);
 }
 
@@ -708,6 +709,41 @@ fn validates_static_file_roots_indexes_and_spa_fallbacks_lexically() {
         ))
         .contains("unknown field `content_type`")
     );
+}
+
+#[test]
+fn static_etag_policy_renders_exact_booleans_and_rejects_invalid_forms() {
+    let route = r#"        {
+      path = { kind = "segment_prefix", value = "/assets" },
+      action = {
+        type = "static_files",
+        root_directory = "/srv/www",
+        etag = false,
+      },
+    },"#;
+    let loaded = load_lua(&config(
+        route,
+        r#"{ type = "socket", address = "127.0.0.1:3000" }"#,
+    ))
+    .expect("disabled static ETag policy");
+    let rendered = render_lua(&loaded).expect("render static ETag policy");
+    assert!(rendered.contains("etag = false"));
+    assert_eq!(
+        load_lua(&rendered).expect("reload static ETag policy"),
+        loaded
+    );
+
+    for value in [r#""off""#, "0", "{}"] {
+        let invalid = route.replace("false", value);
+        assert!(
+            error(&config(
+                &invalid,
+                r#"{ type = "socket", address = "127.0.0.1:3000" }"#,
+            ))
+            .contains("etag"),
+            "accepted static etag = {value}"
+        );
+    }
 }
 
 #[test]
