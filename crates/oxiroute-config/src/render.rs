@@ -9,21 +9,23 @@ use crate::{
         AccessLogPolicy, AlpnProtocol, CacheAuthorizationPolicy, CacheKeyComponent, CachePredicate,
         CachePurgeAuthorization, CacheSetCookiePolicy, CacheStaleTrigger, CacheStatusTtl,
         CacheStore, CacheSurrogateTags, CacheVaryPolicy, Certificate, CertificateSource, Config,
-        ConfigError, DnsResolutionPolicy, DownstreamTimeoutPolicy, ForwardAuditMode,
-        ForwardConnectPolicy, ForwardDestinationPolicy, ForwardHttpVersion, ForwardProxyAuth,
-        ForwardProxyService, ForwardResolverPolicy, HealthCheck, HealthCheckType,
-        HealthHttpVersion, HealthStartup, HttpAccessPolicy, HttpCachePolicy,
-        HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpGzipPolicy, HttpHostSelector,
-        HttpLiteralHeader, HttpMimeType, HttpPathSelector, HttpProxyPolicy, HttpRedirectLocation,
-        HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpResponseHeaderMutation,
-        HttpRetryBodySafety, HttpRetryMethodSafety, HttpRetryPolicy, HttpRetryTarget,
-        HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpSameSite, HttpService,
-        HttpStaticErrorResponse, HttpStaticMimePolicy, HttpStaticPathMapping, HttpStaticTryFile,
-        HttpUpstreamHost, HttpVersion, HttpVersionPolicy, L4Service, Listener, ListenerBind,
-        Management, Protocol, RtmpApplication, RtmpFanoutPolicy, RtmpPushTarget, RtmpRecorder,
-        RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis, RtmpRecorderTimezone,
-        RtmpService, Stats, TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamConnectionReuse,
-        UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls,
+        ConfigError, DnsResolutionPolicy, DownstreamTimeoutPolicy, ForwardAccessAction,
+        ForwardAccessMatcher, ForwardAccessPolicy, ForwardAccessRule, ForwardAuditMode,
+        ForwardConnectPolicy, ForwardDestinationPolicy, ForwardHeaderPolicy, ForwardHttpVersion,
+        ForwardProxyAuth, ForwardProxyService, ForwardResolverPolicy, ForwardViaPolicy,
+        ForwardedForPolicy, HealthCheck, HealthCheckType, HealthHttpVersion, HealthStartup,
+        HttpAccessPolicy, HttpCachePolicy, HttpCookieAttributePolicy, HttpCookiePathRewrite,
+        HttpGzipPolicy, HttpHostSelector, HttpLiteralHeader, HttpMimeType, HttpPathSelector,
+        HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
+        HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryMethodSafety, HttpRetryPolicy,
+        HttpRetryTarget, HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpRoutePolicy,
+        HttpSameSite, HttpService, HttpStaticErrorResponse, HttpStaticMimePolicy,
+        HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost, HttpVersion, HttpVersionPolicy,
+        L4Service, Listener, ListenerBind, Management, Protocol, RtmpApplication, RtmpFanoutPolicy,
+        RtmpPushTarget, RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart,
+        RtmpRecorderTimeBasis, RtmpRecorderTimezone, RtmpService, Stats, TlsProfile, TlsVersion,
+        UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer,
+        UpstreamTls,
     },
     validation::validate_config,
 };
@@ -1492,10 +1494,46 @@ impl Renderer {
                 );
                 self.end_table();
             }
+            Some(ForwardProxyAuth::BasicHtpasswdFile {
+                htpasswd_file_path,
+                realm,
+                credential_ttl_ms,
+                username_case_sensitive,
+            }) => {
+                self.begin_table_field("auth");
+                self.string_field("type", "basic_htpasswd_file");
+                self.string_field(
+                    "htpasswd_file_path",
+                    utf8_path(
+                        htpasswd_file_path,
+                        "forward proxy service",
+                        &service.name,
+                        "auth.htpasswd_file_path",
+                    )?,
+                );
+                self.string_field("realm", realm);
+                match credential_ttl_ms {
+                    Some(value) => self.integer_field("credential_ttl_ms", *value),
+                    None => self.nil_field("credential_ttl_ms"),
+                }
+                self.boolean_field("username_case_sensitive", *username_case_sensitive);
+                self.end_table();
+            }
             None => self.nil_field("auth"),
+        }
+        match &service.access_policy {
+            Some(policy) => {
+                self.begin_table_field("access_policy");
+                self.forward_access_policy(policy);
+                self.end_table();
+            }
+            None => self.nil_field("access_policy"),
         }
         self.begin_table_field("destination_policy");
         self.forward_destination_policy(&service.destination_policy);
+        self.end_table();
+        self.begin_table_field("header_policy");
+        self.forward_header_policy(service.header_policy);
         self.end_table();
         self.integer_field("connect_timeout_ms", service.connect_timeout_ms);
         self.integer_field("idle_timeout_ms", service.idle_timeout_ms);
@@ -1532,7 +1570,89 @@ impl Renderer {
         self.boolean_field("deny_private", policy.deny_private);
     }
 
+    fn forward_access_policy(&mut self, policy: &ForwardAccessPolicy) {
+        self.begin_table_field("rules");
+        for rule in &policy.rules {
+            self.begin_table_item();
+            self.forward_access_rule(rule);
+            self.end_table();
+        }
+        self.end_table();
+        self.string_field(
+            "default_action",
+            forward_access_action(policy.default_action),
+        );
+    }
+
+    fn forward_access_rule(&mut self, rule: &ForwardAccessRule) {
+        self.string_field("action", forward_access_action(rule.action));
+        self.begin_table_field("conditions");
+        for condition in &rule.conditions {
+            self.begin_table_item();
+            self.boolean_field("negated", condition.negated);
+            match &condition.matcher {
+                ForwardAccessMatcher::All => self.string_field("type", "all"),
+                ForwardAccessMatcher::Methods { methods } => {
+                    self.string_field("type", "methods");
+                    self.string_list_field("methods", methods);
+                }
+                ForwardAccessMatcher::SourceCidrs { cidrs } => {
+                    self.string_field("type", "source_cidrs");
+                    self.string_list_field("cidrs", cidrs);
+                }
+                ForwardAccessMatcher::DestinationPorts { ranges } => {
+                    self.string_field("type", "destination_ports");
+                    self.begin_table_field("ranges");
+                    for range in ranges {
+                        self.begin_table_item();
+                        self.integer_field("start", u64::from(range.start));
+                        self.integer_field("end", u64::from(range.end));
+                        self.end_table();
+                    }
+                    self.end_table();
+                }
+                ForwardAccessMatcher::Authenticated => {
+                    self.string_field("type", "authenticated");
+                }
+                ForwardAccessMatcher::DestinationLocal => {
+                    self.string_field("type", "destination_local");
+                }
+                ForwardAccessMatcher::DestinationLinkLocal => {
+                    self.string_field("type", "destination_link_local");
+                }
+                ForwardAccessMatcher::Manager => self.string_field("type", "manager"),
+            }
+            self.end_table();
+        }
+        self.end_table();
+    }
+
+    fn forward_header_policy(&mut self, policy: ForwardHeaderPolicy) {
+        self.string_field(
+            "forwarded_for",
+            match policy.forwarded_for {
+                ForwardedForPolicy::Preserve => "preserve",
+                ForwardedForPolicy::Delete => "delete",
+            },
+        );
+        self.string_field(
+            "via",
+            match policy.via {
+                ForwardViaPolicy::Preserve => "preserve",
+                ForwardViaPolicy::Delete => "delete",
+            },
+        );
+    }
+
     fn forward_resolver_policy(&mut self, policy: &ForwardResolverPolicy) {
+        self.string_list_field(
+            "nameservers",
+            &policy
+                .nameservers
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+        );
         self.integer_field("max_cache_entries", policy.max_cache_entries);
         self.integer_field("max_concurrent_queries", policy.max_concurrent_queries);
         self.integer_field("max_addresses_per_name", policy.max_addresses_per_name);
@@ -1633,7 +1753,7 @@ impl Renderer {
 
     fn begin_table_field(&mut self, name: &str) {
         self.indent();
-        self.output.push_str(name);
+        push_lua_field_name(&mut self.output, name);
         self.output.push_str(" = {\n");
         self.indent += 1;
     }
@@ -1762,7 +1882,7 @@ impl Renderer {
 
     fn field_name(&mut self, name: &str) {
         self.indent();
-        self.output.push_str(name);
+        push_lua_field_name(&mut self.output, name);
         self.output.push_str(" = ");
     }
 
@@ -1770,6 +1890,25 @@ impl Renderer {
         for _ in 0..self.indent {
             self.output.push_str("  ");
         }
+    }
+}
+
+fn push_lua_field_name(output: &mut String, name: &str) {
+    const KEYWORDS: &[&str] = &[
+        "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "goto", "if",
+        "in", "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while",
+    ];
+    let mut characters = name.chars();
+    let identifier = characters
+        .next()
+        .is_some_and(|character| character == '_' || character.is_ascii_alphabetic())
+        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric());
+    if identifier && !KEYWORDS.contains(&name) {
+        output.push_str(name);
+    } else {
+        output.push('[');
+        push_lua_string(output, name);
+        output.push(']');
     }
 }
 
@@ -1785,6 +1924,13 @@ fn utf8_path<'a>(
         field,
         detail: "path must be valid UTF-8",
     })
+}
+
+const fn forward_access_action(action: ForwardAccessAction) -> &'static str {
+    match action {
+        ForwardAccessAction::Allow => "allow",
+        ForwardAccessAction::Deny => "deny",
+    }
 }
 
 fn utf8_recording_root<'a>(

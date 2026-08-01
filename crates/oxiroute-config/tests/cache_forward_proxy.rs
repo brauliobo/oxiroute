@@ -196,6 +196,7 @@ fn applies_finite_forward_proxy_defaults() {
     assert_eq!(service["audit_mode"], "metadata");
     assert_eq!(service["resolver"]["max_cache_entries"], 4_096_u64);
     assert_eq!(service["resolver"]["max_concurrent_queries"], 256_u64);
+    assert_eq!(service["resolver"]["revalidate_on_connect"], true);
 }
 
 #[test]
@@ -226,6 +227,7 @@ fn validates_forward_destinations_connect_auth_and_finite_limits() {
         r#"{ name = "egress", destination_policy = { allow_cidrs = { "10.0.0.0/99" } } }"#,
         r#"{ name = "egress", max_connections = 0 }"#,
         r#"{ name = "egress", max_header_bytes = 0 }"#,
+        r#"{ name = "egress", max_header_bytes = 8191 }"#,
     ] {
         assert!(!error(&forward_config(service, "", "")).is_empty());
     }
@@ -259,11 +261,33 @@ fn enforces_forward_listener_version_transport_tls_and_exact_service_kind() {
     let no_tls_service = service.replace(" }", ", tls_required = false }");
     load_lua(&forward_config(&no_tls_service, h1, tls)).expect("Unix H1 forward listener");
 
+    let h1_tls = h1
+        .replace(
+            "type = \"unix\", path = \"/run/oxiroute/forward.sock\"",
+            "type = \"socket\", address = \"127.0.0.1:3129\"",
+        )
+        .replace(
+            "service = \"egress\",",
+            "service = \"egress\", tls_profile = \"forward-h1\",",
+        );
+    let h1_profile = tls
+        .replace("forward-h3", "forward-h1")
+        .replace("min_version = \"1.3\"", "min_version = \"1.2\"")
+        .replace("alpn = { \"h3\" }", "alpn = { \"http/1.1\" }");
+    assert!(
+        error(&forward_config(service, &h1_tls, &h1_profile))
+            .contains("does not support downstream TLS")
+    );
+
     for listener in [
         h3.replace("type = \"udp\"", "type = \"socket\""),
         h3.replace("tls_profile = \"forward-h3\",", ""),
         h3.replace("service = \"egress\"", "service = \"missing\""),
         h1.replace("protocol = \"forward_http1\"", "protocol = \"http\""),
+        h1.replace(
+            "service = \"egress\",",
+            "service = \"egress\", downstream_timeouts = { client_timeout_ms = 1 },",
+        ),
     ] {
         assert!(!error(&forward_config(service, &listener, tls)).is_empty());
     }

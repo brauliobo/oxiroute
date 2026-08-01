@@ -403,7 +403,7 @@ fn validate_access_policy(
     Ok(())
 }
 
-fn validate_realm(realm: &str) -> Result<(), &'static str> {
+pub(crate) fn validate_realm(realm: &str) -> Result<(), &'static str> {
     let valid = !realm.is_empty()
         && realm.len() <= MAX_HTTP_ACCESS_REALM_BYTES
         && realm.is_ascii()
