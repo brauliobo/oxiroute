@@ -1,4 +1,8 @@
-use std::{fmt, net::SocketAddr, path::PathBuf};
+use std::{
+    fmt,
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -1234,7 +1238,11 @@ pub struct ForwardProxyService {
     #[serde(default)]
     pub auth: Option<ForwardProxyAuth>,
     #[serde(default)]
+    pub access_policy: Option<ForwardAccessPolicy>,
+    #[serde(default)]
     pub destination_policy: ForwardDestinationPolicy,
+    #[serde(default)]
+    pub header_policy: ForwardHeaderPolicy,
     #[serde(default = "default_connect_timeout_ms")]
     pub connect_timeout_ms: u64,
     #[serde(default = "default_idle_timeout_ms")]
@@ -1282,7 +1290,95 @@ impl Default for ForwardConnectPolicy {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ForwardProxyAuth {
-    BearerTokenFile { token_file_path: PathBuf },
+    BearerTokenFile {
+        token_file_path: PathBuf,
+    },
+    BasicHtpasswdFile {
+        htpasswd_file_path: PathBuf,
+        realm: String,
+        #[serde(default)]
+        credential_ttl_ms: Option<u64>,
+        #[serde(default = "default_true")]
+        username_case_sensitive: bool,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ForwardAccessPolicy {
+    #[serde(default)]
+    pub rules: Vec<ForwardAccessRule>,
+    #[serde(default)]
+    pub default_action: ForwardAccessAction,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ForwardAccessRule {
+    pub action: ForwardAccessAction,
+    #[serde(default)]
+    pub conditions: Vec<ForwardAccessCondition>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardAccessAction {
+    Allow,
+    #[default]
+    Deny,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ForwardAccessCondition {
+    #[serde(default)]
+    pub negated: bool,
+    #[serde(flatten)]
+    pub matcher: ForwardAccessMatcher,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ForwardAccessMatcher {
+    All,
+    Methods { methods: Vec<String> },
+    SourceCidrs { cidrs: Vec<String> },
+    DestinationPorts { ranges: Vec<ForwardPortRange> },
+    Authenticated,
+    DestinationLocal,
+    DestinationLinkLocal,
+    Manager,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ForwardPortRange {
+    pub start: u16,
+    pub end: u16,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ForwardHeaderPolicy {
+    #[serde(default)]
+    pub forwarded_for: ForwardedForPolicy,
+    #[serde(default)]
+    pub via: ForwardViaPolicy,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardedForPolicy {
+    #[default]
+    Preserve,
+    Delete,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardViaPolicy {
+    #[default]
+    Preserve,
+    Delete,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1315,6 +1411,8 @@ impl Default for ForwardDestinationPolicy {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ForwardResolverPolicy {
+    #[serde(default)]
+    pub nameservers: Vec<IpAddr>,
     #[serde(default = "default_forward_resolver_cache_entries")]
     pub max_cache_entries: u64,
     #[serde(default = "default_forward_resolver_concurrent_queries")]
@@ -1334,6 +1432,7 @@ pub struct ForwardResolverPolicy {
 impl Default for ForwardResolverPolicy {
     fn default() -> Self {
         Self {
+            nameservers: Vec::new(),
             max_cache_entries: default_forward_resolver_cache_entries(),
             max_concurrent_queries: default_forward_resolver_concurrent_queries(),
             max_addresses_per_name: default_forward_resolver_max_addresses(),

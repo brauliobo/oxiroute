@@ -5,14 +5,18 @@ use std::{
 
 use crate::{
     defaults::{
+        MAX_FORWARD_ACCESS_CONDITIONS, MAX_FORWARD_ACCESS_MATCHERS, MAX_FORWARD_ACCESS_RULES,
         MAX_FORWARD_BODY_BYTES, MAX_FORWARD_CIDRS, MAX_FORWARD_CONNECT_PORTS,
         MAX_FORWARD_CONNECTIONS, MAX_FORWARD_DOMAINS, MAX_FORWARD_HEADER_BYTES,
-        MAX_FORWARD_PROXY_SERVICES, MAX_FORWARD_RESOLVER_ADDRESSES,
+        MAX_FORWARD_NAMESERVERS, MAX_FORWARD_PROXY_SERVICES, MAX_FORWARD_RESOLVER_ADDRESSES,
         MAX_FORWARD_RESOLVER_CACHE_ENTRIES, MAX_FORWARD_RESOLVER_CONCURRENT_QUERIES,
         MAX_FORWARD_TIMEOUT_MS,
     },
     lexical::{is_valid_certificate_dns_name, validate_file_path},
-    model::{ConfigError, ForwardHttpVersion, ForwardProxyAuth, ForwardProxyService},
+    model::{
+        ConfigError, ForwardAccessMatcher, ForwardHttpVersion, ForwardProxyAuth,
+        ForwardProxyService,
+    },
 };
 
 pub(crate) fn validate_forward_proxy_services(
@@ -51,16 +55,159 @@ pub(crate) fn validate_forward_proxy_services(
 
 fn validate_service(service: &mut ForwardProxyService) -> Result<(), ConfigError> {
     validate_versions_and_connect(service)?;
-    if let Some(ForwardProxyAuth::BearerTokenFile { token_file_path }) = &service.auth {
-        validate_file_path(
-            "forward proxy service",
-            &service.name,
-            "auth.token_file_path",
-            token_file_path,
-        )?;
+    if let Some(auth) = &service.auth {
+        match auth {
+            ForwardProxyAuth::BearerTokenFile { token_file_path } => validate_file_path(
+                "forward proxy service",
+                &service.name,
+                "auth.token_file_path",
+                token_file_path,
+            )?,
+            ForwardProxyAuth::BasicHtpasswdFile {
+                htpasswd_file_path,
+                realm,
+                credential_ttl_ms,
+                ..
+            } => {
+                validate_file_path(
+                    "forward proxy service",
+                    &service.name,
+                    "auth.htpasswd_file_path",
+                    htpasswd_file_path,
+                )?;
+                crate::http_validation::validate_realm(realm)
+                    .map_err(|detail| invalid(&service.name, "auth.realm", detail))?;
+                if credential_ttl_ms
+                    .is_some_and(|value| value == 0 || value > MAX_FORWARD_TIMEOUT_MS)
+                {
+                    return Err(invalid(
+                        &service.name,
+                        "auth.credential_ttl_ms",
+                        format!("must be null or between 1 and {MAX_FORWARD_TIMEOUT_MS}"),
+                    ));
+                }
+            }
+        }
     }
+    validate_access_policy(service)?;
     validate_destinations(service)?;
+    validate_resolver(service)?;
     validate_service_limits(service)
+}
+
+fn validate_access_policy(service: &mut ForwardProxyService) -> Result<(), ConfigError> {
+    let Some(policy) = &mut service.access_policy else {
+        return Ok(());
+    };
+    if policy.rules.len() > MAX_FORWARD_ACCESS_RULES {
+        return Err(invalid(
+            &service.name,
+            "access_policy.rules",
+            format!("must contain at most {MAX_FORWARD_ACCESS_RULES} rules"),
+        ));
+    }
+    for rule in &mut policy.rules {
+        if rule.conditions.len() > MAX_FORWARD_ACCESS_CONDITIONS {
+            return Err(invalid(
+                &service.name,
+                "access_policy.rules.conditions",
+                format!("must contain at most {MAX_FORWARD_ACCESS_CONDITIONS} conditions"),
+            ));
+        }
+        for condition in &mut rule.conditions {
+            match &mut condition.matcher {
+                ForwardAccessMatcher::All
+                | ForwardAccessMatcher::DestinationLocal
+                | ForwardAccessMatcher::DestinationLinkLocal
+                | ForwardAccessMatcher::Manager => {}
+                ForwardAccessMatcher::Authenticated => {
+                    if service.auth.is_none() {
+                        return Err(invalid(
+                            &service.name,
+                            "access_policy.rules.conditions",
+                            "authenticated conditions require an authentication provider",
+                        ));
+                    }
+                }
+                ForwardAccessMatcher::Methods { methods } => {
+                    if methods.is_empty() || methods.len() > MAX_FORWARD_ACCESS_MATCHERS {
+                        return Err(invalid(
+                            &service.name,
+                            "access_policy.rules.conditions.methods",
+                            "must contain 1..=256 methods",
+                        ));
+                    }
+                    let mut unique = HashSet::with_capacity(methods.len());
+                    for method in methods {
+                        if method.is_empty()
+                            || method.len() > 32
+                            || !method
+                                .bytes()
+                                .all(|byte| byte.is_ascii_uppercase() || byte == b'-')
+                            || !unique.insert(method.clone())
+                        {
+                            return Err(invalid(
+                                &service.name,
+                                "access_policy.rules.conditions.methods",
+                                "must contain unique canonical uppercase HTTP methods",
+                            ));
+                        }
+                    }
+                }
+                ForwardAccessMatcher::SourceCidrs { cidrs } => {
+                    validate_cidrs(&service.name, "access_policy.rules.conditions.cidrs", cidrs)?;
+                    if cidrs.is_empty() {
+                        return Err(invalid(
+                            &service.name,
+                            "access_policy.rules.conditions.cidrs",
+                            "must not be empty",
+                        ));
+                    }
+                }
+                ForwardAccessMatcher::DestinationPorts { ranges } => {
+                    if ranges.is_empty() || ranges.len() > MAX_FORWARD_ACCESS_MATCHERS {
+                        return Err(invalid(
+                            &service.name,
+                            "access_policy.rules.conditions.ranges",
+                            "must contain 1..=256 ranges",
+                        ));
+                    }
+                    for range in ranges {
+                        if range.start == 0 || range.start > range.end {
+                            return Err(invalid(
+                                &service.name,
+                                "access_policy.rules.conditions.ranges",
+                                "must contain ordered nonzero port ranges",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_resolver(service: &ForwardProxyService) -> Result<(), ConfigError> {
+    let nameservers = &service.resolver.nameservers;
+    if nameservers.len() > MAX_FORWARD_NAMESERVERS {
+        return Err(invalid(
+            &service.name,
+            "resolver.nameservers",
+            format!("must contain at most {MAX_FORWARD_NAMESERVERS} addresses"),
+        ));
+    }
+    let mut unique = HashSet::with_capacity(nameservers.len());
+    if nameservers.iter().any(|address| {
+        address.is_unspecified() || address.is_multicast() || !unique.insert(*address)
+    }) {
+        return Err(invalid(
+            &service.name,
+            "resolver.nameservers",
+            "must contain unique unicast addresses",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_versions_and_connect(service: &mut ForwardProxyService) -> Result<(), ConfigError> {
@@ -162,6 +309,13 @@ fn validate_service_limits(service: &ForwardProxyService) -> Result<(), ConfigEr
         service.max_header_bytes,
         MAX_FORWARD_HEADER_BYTES,
     )?;
+    if service.max_header_bytes < 8_192 {
+        return Err(invalid(
+            &service.name,
+            "max_header_bytes",
+            "must be at least 8192 bytes for the HTTP/1 parser",
+        ));
+    }
     validate_limit(
         service,
         "max_connections",

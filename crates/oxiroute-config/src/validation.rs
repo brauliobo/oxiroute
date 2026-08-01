@@ -686,6 +686,14 @@ fn validate_forward_listener(
         detail,
     };
 
+    if listener.downstream_timeouts.client_timeout_ms.is_some()
+        || listener.downstream_timeouts.keepalive_timeout_ms.is_some()
+    {
+        return Err(invalid(
+            "forward HTTP/1 currently accepts only the request-header downstream timeout".into(),
+        ));
+    }
+
     if !service.enabled_versions.contains(&version) {
         return Err(invalid(format!(
             "referenced service `{}` does not enable {version:?}",
@@ -705,6 +713,11 @@ fn validate_forward_listener(
     let Some(profile_name) = listener.tls_profile.as_deref() else {
         return Ok(());
     };
+    if version == ForwardHttpVersion::H1 {
+        return Err(invalid(
+            "forward_http1 does not support downstream TLS yet".into(),
+        ));
+    }
     let profile =
         tls_profiles
             .get(profile_name)

@@ -134,6 +134,10 @@ pub(crate) const MAX_FORWARD_BODY_BYTES: u64 = 1024 * 1024 * 1024;
 pub(crate) const MAX_FORWARD_RESOLVER_CACHE_ENTRIES: u64 = 1_000_000;
 pub(crate) const MAX_FORWARD_RESOLVER_CONCURRENT_QUERIES: u64 = 65_536;
 pub(crate) const MAX_FORWARD_RESOLVER_ADDRESSES: u64 = 256;
+pub(crate) const MAX_FORWARD_NAMESERVERS: usize = 8;
+pub(crate) const MAX_FORWARD_ACCESS_RULES: usize = 256;
+pub(crate) const MAX_FORWARD_ACCESS_CONDITIONS: usize = 64;
+pub(crate) const MAX_FORWARD_ACCESS_MATCHERS: usize = 256;
 
 pub(crate) const fn default_true() -> bool {
     true
