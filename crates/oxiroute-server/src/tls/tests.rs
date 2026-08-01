@@ -1,5 +1,7 @@
 #![allow(dead_code, unused_imports)]
 
+#[path = "../encoding.rs"]
+mod encoding;
 #[path = "mod.rs"]
 mod tls;
 

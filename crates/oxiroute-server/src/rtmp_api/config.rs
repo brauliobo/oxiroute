@@ -1,19 +1,11 @@
-use std::{
-    fs::File,
-    io::{self, Read as _},
-    path::Path,
-    str::FromStr,
-};
+use std::{io, path::Path, str::FromStr};
 
 use http::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE};
-use openssl::{memcmp, sha::sha256};
 use oxiroute_config::Config;
 use oxiroute_config_source::ConfigFormat;
 use pingora::protocols::http::ServerSession;
-use rustix::fs::{self as rustix_fs, FileType, Mode, OFlags};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use zeroize::Zeroizing;
 
 use super::{
     ApiResponse, MAX_CONFIG_REQUEST_BYTES, observability::candidate_topology,
@@ -27,11 +19,9 @@ use crate::{
         ValidatedConfigDraft,
     },
     runtime_plan,
+    secure_bearer::{HeaderCardinality, SecureBearerToken, SecureBearerTokenError, single_header},
 };
 
-const MIN_MANAGEMENT_TOKEN_BYTES: usize = 32;
-const MAX_MANAGEMENT_TOKEN_BYTES: usize = 512;
-const MAX_MANAGEMENT_TOKEN_FILE_BYTES: usize = MAX_MANAGEMENT_TOKEN_BYTES + 2;
 const IF_CONFIG_REVISION: &str = "if-config-revision";
 
 #[derive(Clone, Copy)]
@@ -44,7 +34,7 @@ pub(super) struct ConfigApiState {
     active_revision: ConfigRevision,
     coordinator: CanonicalConfigCoordinator,
     generations: Option<GenerationManager>,
-    token: ManagementToken,
+    token: SecureBearerToken,
 }
 
 impl ConfigApiState {
@@ -57,9 +47,7 @@ impl ConfigApiState {
             active_revision,
             coordinator,
             generations: None,
-            token: ManagementToken::new(token.as_bytes()).map_err(|error| {
-                io::Error::new(io::ErrorKind::PermissionDenied, error.to_string())
-            })?,
+            token: SecureBearerToken::new(token.as_bytes()).map_err(management_token_error)?,
         })
     }
 
@@ -72,9 +60,7 @@ impl ConfigApiState {
             active_revision,
             coordinator,
             generations: None,
-            token: ManagementToken::load(token_file).map_err(|error| {
-                io::Error::new(io::ErrorKind::PermissionDenied, error.to_string())
-            })?,
+            token: SecureBearerToken::load(token_file).map_err(management_token_error)?,
         })
     }
 
@@ -147,11 +133,10 @@ impl ConfigApiState {
     }
 
     pub(super) fn authorized(&self, session: &ServerSession) -> bool {
-        let mut values = session.req_header().headers.get_all(AUTHORIZATION).iter();
-        let Some(value) = values.next() else {
-            return false;
-        };
-        values.next().is_none() && self.token.authorizes(value.as_bytes())
+        matches!(
+            single_header(&session.req_header().headers, &AUTHORIZATION),
+            HeaderCardinality::Single(value) if self.token.authorizes(value.as_bytes())
+        )
     }
 
     fn config_response(&self) -> ApiResponse {
@@ -422,91 +407,27 @@ pub(super) fn match_route(path: &str) -> Option<Route> {
     }
 }
 
-struct ManagementToken {
-    digest: [u8; 32],
-}
-
-impl ManagementToken {
-    fn new(token: &[u8]) -> Result<Self, ManagementTokenError> {
-        validate_management_token(token)?;
-        Ok(Self {
-            digest: sha256(token),
-        })
-    }
-
-    fn load(path: &Path) -> Result<Self, ManagementTokenError> {
-        let descriptor = rustix_fs::open(
-            path,
-            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK | OFlags::NOFOLLOW,
-            Mode::empty(),
-        )
-        .map_err(|_| ManagementTokenError::Open)?;
-        let before = rustix_fs::fstat(&descriptor).map_err(|_| ManagementTokenError::Read)?;
-        if !FileType::from_raw_mode(before.st_mode).is_file() {
-            return Err(ManagementTokenError::NotRegular);
-        }
-        if !matches!(before.st_mode & 0o7777, 0o400 | 0o600) {
-            return Err(ManagementTokenError::InsecureMode);
-        }
-        let size = usize::try_from(before.st_size).map_err(|_| ManagementTokenError::TooLarge)?;
-        if size > MAX_MANAGEMENT_TOKEN_FILE_BYTES {
-            return Err(ManagementTokenError::TooLarge);
-        }
-
-        let mut file = File::from(descriptor);
-        let mut bytes = Zeroizing::new(Vec::with_capacity(size));
-        file.by_ref()
-            .take(
-                u64::try_from(MAX_MANAGEMENT_TOKEN_FILE_BYTES + 1)
-                    .expect("management token limit fits u64"),
-            )
-            .read_to_end(&mut bytes)
-            .map_err(|_| ManagementTokenError::Read)?;
-        if bytes.len() > MAX_MANAGEMENT_TOKEN_FILE_BYTES {
-            return Err(ManagementTokenError::TooLarge);
-        }
-        let after = rustix_fs::fstat(&file).map_err(|_| ManagementTokenError::Read)?;
-        if before.st_dev != after.st_dev
-            || before.st_ino != after.st_ino
-            || before.st_size != after.st_size
-            || before.st_mode != after.st_mode
-        {
-            return Err(ManagementTokenError::Unstable);
-        }
-        trim_one_line_ending(&mut bytes);
-        Self::new(&bytes)
-    }
-
-    fn authorizes(&self, authorization: &[u8]) -> bool {
-        let Some(candidate) = authorization.strip_prefix(b"Bearer ") else {
-            return false;
-        };
-        memcmp::eq(&self.digest, &sha256(candidate))
-    }
-}
-
 pub(crate) fn preflight_management_token(path: &Path) -> io::Result<()> {
-    ManagementToken::load(path)
+    SecureBearerToken::load(path)
         .map(drop)
-        .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error.to_string()))
+        .map_err(management_token_error)
 }
 
-#[derive(Debug, thiserror::Error)]
-enum ManagementTokenError {
-    #[error("management token file could not be securely opened")]
-    Open,
-    #[error("management token file must be a regular no-follow file")]
-    NotRegular,
-    #[error("management token file mode must be 0400 or 0600")]
-    InsecureMode,
-    #[error("management token file exceeds the supported size")]
-    TooLarge,
-    #[error("management token file could not be read")]
-    Read,
-    #[error("management token file changed while it was read")]
-    Unstable,
-    #[error("management token must be 32 to 512 visible ASCII bytes")]
-    InvalidToken,
+fn management_token_error(error: SecureBearerTokenError) -> io::Error {
+    let message = match error {
+        SecureBearerTokenError::Open => "management token file could not be securely opened",
+        SecureBearerTokenError::NotRegular => {
+            "management token file must be a regular no-follow file"
+        }
+        SecureBearerTokenError::InsecureMode => "management token file mode must be 0400 or 0600",
+        SecureBearerTokenError::TooLarge => "management token file exceeds the supported size",
+        SecureBearerTokenError::Read => "management token file could not be read",
+        SecureBearerTokenError::Unstable => "management token file changed while it was read",
+        SecureBearerTokenError::InvalidToken => {
+            "management token must be 32 to 512 visible ASCII bytes"
+        }
+    };
+    io::Error::new(io::ErrorKind::PermissionDenied, message)
 }
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]
@@ -674,24 +595,6 @@ fn require_json_content_type(session: &ServerSession) -> Result<(), ApiResponse>
             "Content-Type must be application/json",
         ))
     }
-}
-
-fn trim_one_line_ending(bytes: &mut Vec<u8>) {
-    if bytes.ends_with(b"\r\n") {
-        bytes.truncate(bytes.len() - 2);
-    } else if bytes.ends_with(b"\n") {
-        bytes.truncate(bytes.len() - 1);
-    }
-}
-
-fn validate_management_token(token: &[u8]) -> Result<(), ManagementTokenError> {
-    if !(MIN_MANAGEMENT_TOKEN_BYTES..=MAX_MANAGEMENT_TOKEN_BYTES).contains(&token.len())
-        || std::str::from_utf8(token).is_err()
-        || !token.iter().all(|byte| matches!(byte, 0x21..=0x7e))
-    {
-        return Err(ManagementTokenError::InvalidToken);
-    }
-    Ok(())
 }
 
 pub(crate) async fn read_config_body(session: &mut ServerSession) -> Result<Vec<u8>, ApiResponse> {

@@ -1,29 +1,20 @@
-use std::{
-    fs::File,
-    io::{self, Read as _},
-    path::Path,
-    sync::Arc,
-};
+use std::{io, path::Path, sync::Arc};
 
 use async_trait::async_trait;
 use http::{Response, header::AUTHORIZATION};
-use openssl::{memcmp, sha::sha256};
 use pingora::{apps::http_app::ServeHttp, protocols::http::ServerSession};
-use rustix::fs::{self as rustix_fs, FileType, Mode, OFlags};
 use serde::Deserialize;
-use zeroize::Zeroizing;
 
 use crate::{
-    ApiResponse, GenerationManager, RoundRobinPool, RuntimeMetrics, prometheus::render_prometheus,
+    ApiResponse, GenerationManager, RoundRobinPool, RuntimeMetrics,
+    prometheus::render_prometheus,
     rtmp_api::response::to_http_response,
+    secure_bearer::{HeaderCardinality, SecureBearerToken, single_header},
 };
 use oxiroute_rtmp::RtmpRegistry;
 
-const MIN_TOKEN_BYTES: usize = 32;
-const MAX_TOKEN_BYTES: usize = 512;
-
 pub struct HaproxyStatsApi {
-    admin_token: Option<AdminToken>,
+    admin_token: Option<SecureBearerToken>,
     generations: GenerationManager,
     metrics: RuntimeMetrics,
     pools: Vec<Arc<RoundRobinPool>>,
@@ -44,7 +35,10 @@ impl HaproxyStatsApi {
         admin_token_file: Option<&Path>,
     ) -> io::Result<Self> {
         Ok(Self {
-            admin_token: admin_token_file.map(AdminToken::load).transpose()?,
+            admin_token: admin_token_file
+                .map(SecureBearerToken::load)
+                .transpose()
+                .map_err(|_| token_error())?,
             generations,
             metrics,
             pools,
@@ -245,15 +239,17 @@ impl ServeHttp for HaproxyStatsApi {
         let request = session.req_header();
         let method = request.method.as_str().to_owned();
         let path = request.uri.path().to_owned();
-        let mut authorizations = request.headers.get_all(AUTHORIZATION).iter();
-        let authorization = authorizations.next().map(|value| value.as_bytes().to_vec());
-        if authorizations.next().is_some() {
-            return to_http_response(ApiResponse::error(
-                400,
-                "duplicate_authorization",
-                "multiple Authorization headers are not accepted",
-            ));
-        }
+        let authorization = match single_header(&request.headers, &AUTHORIZATION) {
+            HeaderCardinality::Missing => None,
+            HeaderCardinality::Single(value) => Some(value.as_bytes().to_vec()),
+            HeaderCardinality::Duplicate => {
+                return to_http_response(ApiResponse::error(
+                    400,
+                    "duplicate_authorization",
+                    "multiple Authorization headers are not accepted",
+                ));
+            }
+        };
         let mut revisions = request.headers.get_all("if-generation-revision").iter();
         let generation_revision = revisions
             .next()
@@ -317,68 +313,11 @@ struct StatsAdminTarget {
     action: String,
 }
 
-struct AdminToken {
-    digest: [u8; 32],
-}
-
 pub(crate) fn preflight_admin_token(path: Option<&Path>) -> io::Result<()> {
-    path.map(AdminToken::load).transpose().map(drop)
-}
-
-impl AdminToken {
-    fn load(path: &Path) -> io::Result<Self> {
-        let descriptor = rustix_fs::open(
-            path,
-            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK | OFlags::NOFOLLOW,
-            Mode::empty(),
-        )
-        .map_err(|_| token_error())?;
-        let before = rustix_fs::fstat(&descriptor).map_err(|_| token_error())?;
-        if !FileType::from_raw_mode(before.st_mode).is_file()
-            || !matches!(before.st_mode & 0o7777, 0o400 | 0o600)
-        {
-            return Err(token_error());
-        }
-        let size = usize::try_from(before.st_size).map_err(|_| token_error())?;
-        if size > MAX_TOKEN_BYTES + 2 {
-            return Err(token_error());
-        }
-        let mut bytes = Zeroizing::new(Vec::with_capacity(size));
-        let mut file = File::from(descriptor);
-        file.by_ref()
-            .take(u64::try_from(MAX_TOKEN_BYTES + 3).expect("token bound fits u64"))
-            .read_to_end(&mut bytes)
-            .map_err(|_| token_error())?;
-        let after = rustix_fs::fstat(&file).map_err(|_| token_error())?;
-        if before.st_dev != after.st_dev
-            || before.st_ino != after.st_ino
-            || before.st_size != after.st_size
-            || before.st_mode != after.st_mode
-        {
-            return Err(token_error());
-        }
-        while bytes
-            .last()
-            .is_some_and(|byte| matches!(byte, b'\n' | b'\r'))
-        {
-            bytes.pop();
-        }
-        if bytes.len() < MIN_TOKEN_BYTES
-            || bytes.len() > MAX_TOKEN_BYTES
-            || !bytes.iter().all(|byte| (0x21..=0x7e).contains(byte))
-        {
-            return Err(token_error());
-        }
-        Ok(Self {
-            digest: sha256(&bytes),
-        })
-    }
-
-    fn authorizes(&self, value: &[u8]) -> bool {
-        value
-            .strip_prefix(b"Bearer ")
-            .is_some_and(|candidate| memcmp::eq(&self.digest, &sha256(candidate)))
-    }
+    path.map(SecureBearerToken::load)
+        .transpose()
+        .map(drop)
+        .map_err(|_| token_error())
 }
 
 fn token_error() -> io::Error {

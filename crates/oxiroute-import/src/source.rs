@@ -1,7 +1,119 @@
 use std::{
+    fs::{File, Metadata},
+    io::{self, Read},
     path::{Path, PathBuf},
     sync::Arc,
 };
+
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+#[cfg(not(unix))]
+use std::time::SystemTime;
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct FileFingerprint {
+    length: u64,
+    #[cfg(not(unix))]
+    modified: Option<SystemTime>,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(unix)]
+    modified_seconds: i64,
+    #[cfg(unix)]
+    modified_nanoseconds: i64,
+    #[cfg(unix)]
+    changed_seconds: i64,
+    #[cfg(unix)]
+    changed_nanoseconds: i64,
+}
+
+impl FileFingerprint {
+    fn from_metadata(metadata: &Metadata) -> Self {
+        Self {
+            length: metadata.len(),
+            #[cfg(not(unix))]
+            modified: metadata.modified().ok(),
+            #[cfg(unix)]
+            device: metadata.dev(),
+            #[cfg(unix)]
+            inode: metadata.ino(),
+            #[cfg(unix)]
+            modified_seconds: metadata.mtime(),
+            #[cfg(unix)]
+            modified_nanoseconds: metadata.mtime_nsec(),
+            #[cfg(unix)]
+            changed_seconds: metadata.ctime(),
+            #[cfg(unix)]
+            changed_nanoseconds: metadata.ctime_nsec(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum StableReadFailure {
+    TooLarge,
+    Changed,
+    Io(io::Error),
+}
+
+pub(crate) struct StableFileSnapshot {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) fingerprint: FileFingerprint,
+}
+
+pub(crate) fn read_stable_file(
+    path: &Path,
+    max_bytes: usize,
+) -> Result<StableFileSnapshot, StableReadFailure> {
+    let mut file = File::open(path).map_err(StableReadFailure::Io)?;
+    let before = file.metadata().map_err(StableReadFailure::Io)?;
+    if !before.is_file() {
+        return Err(StableReadFailure::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "source is not a regular file",
+        )));
+    }
+    if before.len() > u64::try_from(max_bytes).unwrap_or(u64::MAX) {
+        return Err(StableReadFailure::TooLarge);
+    }
+
+    let mut bytes = Vec::with_capacity(usize::try_from(before.len()).unwrap_or(max_bytes));
+    file.by_ref()
+        .take(
+            u64::try_from(max_bytes)
+                .unwrap_or(u64::MAX)
+                .saturating_add(1),
+        )
+        .read_to_end(&mut bytes)
+        .map_err(StableReadFailure::Io)?;
+    if bytes.len() > max_bytes {
+        return Err(StableReadFailure::TooLarge);
+    }
+
+    let after = file.metadata().map_err(StableReadFailure::Io)?;
+    let before = FileFingerprint::from_metadata(&before);
+    let after = FileFingerprint::from_metadata(&after);
+    if before != after || after.length != u64::try_from(bytes.len()).unwrap_or(u64::MAX) {
+        return Err(StableReadFailure::Changed);
+    }
+    Ok(StableFileSnapshot {
+        bytes,
+        fingerprint: after,
+    })
+}
+
+pub(crate) fn stable_file_changed(
+    path: &Path,
+    max_bytes: usize,
+    expected_bytes: &[u8],
+    expected_fingerprint: &FileFingerprint,
+) -> bool {
+    read_stable_file(path, max_bytes).map_or(true, |snapshot| {
+        snapshot.bytes != expected_bytes || snapshot.fingerprint != *expected_fingerprint
+    })
+}
 
 /// Stable identity assigned to one source in an import operation.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -166,5 +278,42 @@ impl SourceFile {
     #[must_use]
     pub fn full_span(&self) -> Span {
         Span::new(self.id, ByteRange::new(0, self.len()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::{StableReadFailure, read_stable_file, stable_file_changed};
+
+    #[test]
+    fn stable_file_snapshot_enforces_bounds_and_detects_replacement() {
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("source.conf");
+        fs::write(&path, b"exact").expect("write source");
+
+        let snapshot = read_stable_file(&path, 5).expect("exact bound");
+        assert_eq!(snapshot.bytes, b"exact");
+        assert!(!stable_file_changed(
+            &path,
+            5,
+            &snapshot.bytes,
+            &snapshot.fingerprint,
+        ));
+        assert!(matches!(
+            read_stable_file(&path, 4),
+            Err(StableReadFailure::TooLarge)
+        ));
+
+        fs::write(&path, b"other").expect("replace source");
+        assert!(stable_file_changed(
+            &path,
+            5,
+            &snapshot.bytes,
+            &snapshot.fingerprint,
+        ));
     }
 }

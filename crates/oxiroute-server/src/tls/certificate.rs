@@ -12,6 +12,7 @@ use super::{
     MAX_CERTIFICATES_IN_CHAIN, MAX_PRIVATE_KEY_BYTES, TlsBuildError, certificate_identity_sans,
     certificate_is_ca_capable, pem_labels, read_bounded_stable,
 };
+use crate::encoding::lower_hex;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use openssl::{
@@ -1002,14 +1003,4 @@ fn metadata(
         },
         intermediate_count: intermediates.len(),
     })
-}
-
-fn lower_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut result = String::with_capacity(bytes.len() * 2);
-    for &byte in bytes {
-        result.push(HEX[(byte >> 4) as usize] as char);
-        result.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    result
 }
