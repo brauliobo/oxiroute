@@ -153,6 +153,7 @@ const columnX = [32, 258, 484, 710, 936]
 const kindStage: Record<TopologyNodeKind, number> = {
   listener: 0,
   forward_proxy_listener: 0,
+  forward_proxy_service: 1,
   rtmp_listener: 0,
   tls_profile: 1,
   certificate: 2,
@@ -165,6 +166,7 @@ const kindStage: Record<TopologyNodeKind, number> = {
 const kindLabels: Record<TopologyNodeKind, string> = {
   listener: 'Listener',
   forward_proxy_listener: 'Forward proxy listener',
+  forward_proxy_service: 'Forward proxy service',
   rtmp_listener: 'RTMP listener',
   tls_profile: 'TLS profile',
   certificate: 'Certificate',

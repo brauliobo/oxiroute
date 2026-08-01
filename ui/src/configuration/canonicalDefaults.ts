@@ -75,9 +75,10 @@ export function defaultForwardProxyService(): ForwardProxyServiceConfig {
     name: '',
     enabled_versions: ['h1'],
     allow_absolute_form: true,
-    tls_required: true,
+    tls_required: false,
     connect: { enabled: false, allowed_ports: [443] },
     auth: null,
+    access_policy: null,
     destination_policy: {
       allow_domains: [],
       deny_domains: [],
@@ -85,6 +86,7 @@ export function defaultForwardProxyService(): ForwardProxyServiceConfig {
       deny_cidrs: [],
       deny_private: true,
     },
+    header_policy: { forwarded_for: 'preserve', via: 'preserve' },
     connect_timeout_ms: 10_000,
     idle_timeout_ms: 300_000,
     lifetime_timeout_ms: 3_600_000,
@@ -92,6 +94,7 @@ export function defaultForwardProxyService(): ForwardProxyServiceConfig {
     max_header_bytes: 65_536,
     max_connections: 10_000,
     resolver: {
+      nameservers: [],
       max_cache_entries: 4_096,
       max_concurrent_queries: 256,
       max_addresses_per_name: 16,

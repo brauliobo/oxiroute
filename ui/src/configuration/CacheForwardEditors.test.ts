@@ -69,6 +69,13 @@ describe('cache and forward proxy editors', () => {
       max_request_body_bytes: 10_485_760,
       audit_mode: 'metadata',
     }))
+
+    await wrapper.get('[data-field="forward_proxy_services[].auth.type"] select').setValue('basic_htpasswd_file')
+    const ttl = wrapper.get('[data-field="forward_proxy_services[].auth.credential_ttl_ms"] input')
+    await ttl.setValue('250')
+    expect(service.auth).toEqual(expect.objectContaining({ credential_ttl_ms: 250 }))
+    await ttl.setValue('')
+    expect(service.auth).toEqual(expect.objectContaining({ credential_ttl_ms: null }))
   })
 
   it('normalizes an HTTP/3 forward listener to UDP and an exact H3 TLS profile', async () => {

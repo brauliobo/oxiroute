@@ -485,9 +485,33 @@ export interface ForwardConnectPolicyConfig {
   allowed_ports: number[]
 }
 
-export interface ForwardProxyAuthConfig {
-  type: 'bearer_token_file'
-  token_file_path: string
+export type ForwardProxyAuthConfig =
+  | { type: 'bearer_token_file'; token_file_path: string }
+  | {
+      type: 'basic_htpasswd_file'
+      htpasswd_file_path: string
+      realm: string
+      credential_ttl_ms: number | null
+      username_case_sensitive: boolean
+    }
+
+export interface ForwardPortRangeConfig { start: number; end: number }
+
+export type ForwardAccessMatcherConfig =
+  | { type: 'all' }
+  | { type: 'methods'; methods: string[] }
+  | { type: 'source_cidrs'; cidrs: string[] }
+  | { type: 'destination_ports'; ranges: ForwardPortRangeConfig[] }
+  | { type: 'authenticated' }
+  | { type: 'destination_local' }
+  | { type: 'destination_link_local' }
+  | { type: 'manager' }
+
+export type ForwardAccessConditionConfig = ForwardAccessMatcherConfig & { negated: boolean }
+
+export interface ForwardAccessPolicyConfig {
+  rules: Array<{ action: 'allow' | 'deny'; conditions: ForwardAccessConditionConfig[] }>
+  default_action: 'allow' | 'deny'
 }
 
 export interface ForwardDestinationPolicyConfig {
@@ -499,6 +523,7 @@ export interface ForwardDestinationPolicyConfig {
 }
 
 export interface ForwardResolverPolicyConfig {
+  nameservers: string[]
   max_cache_entries: number
   max_concurrent_queries: number
   max_addresses_per_name: number
@@ -515,7 +540,9 @@ export interface ForwardProxyServiceConfig {
   tls_required: boolean
   connect: ForwardConnectPolicyConfig
   auth: ForwardProxyAuthConfig | null
+  access_policy: ForwardAccessPolicyConfig | null
   destination_policy: ForwardDestinationPolicyConfig
+  header_policy: { forwarded_for: 'preserve' | 'delete'; via: 'preserve' | 'delete' }
   connect_timeout_ms: number
   idle_timeout_ms: number
   lifetime_timeout_ms: number
@@ -926,22 +953,49 @@ function isForwardProxyService(value: unknown): value is ForwardProxyServiceConf
     typeof value.allow_absolute_form === 'boolean' && typeof value.tls_required === 'boolean' &&
     isRecord(value.connect) && typeof value.connect.enabled === 'boolean' &&
     arrayOf(value.connect.allowed_ports, safeInteger) &&
-    (value.auth === null || (isRecord(value.auth) && value.auth.type === 'bearer_token_file' &&
-      typeof value.auth.token_file_path === 'string')) && isRecord(value.destination_policy) &&
+    (value.auth === null || isForwardProxyAuth(value.auth)) &&
+    (value.access_policy === null || isForwardAccessPolicy(value.access_policy)) &&
+    isRecord(value.destination_policy) &&
     arrayOf(value.destination_policy.allow_domains, isString) &&
     arrayOf(value.destination_policy.deny_domains, isString) &&
     arrayOf(value.destination_policy.allow_cidrs, isString) &&
     arrayOf(value.destination_policy.deny_cidrs, isString) &&
     typeof value.destination_policy.deny_private === 'boolean' &&
+    isRecord(value.header_policy) && ['preserve', 'delete'].includes(String(value.header_policy.forwarded_for)) &&
+    ['preserve', 'delete'].includes(String(value.header_policy.via)) &&
     safeInteger(value.connect_timeout_ms) && safeInteger(value.idle_timeout_ms) &&
     safeInteger(value.lifetime_timeout_ms) && nullableSafeInteger(value.max_request_body_bytes) &&
     safeInteger(value.max_header_bytes) && safeInteger(value.max_connections) &&
-    isRecord(value.resolver) && safeInteger(value.resolver.max_cache_entries) &&
+    isRecord(value.resolver) && arrayOf(value.resolver.nameservers, isString) &&
+    safeInteger(value.resolver.max_cache_entries) &&
     safeInteger(value.resolver.max_concurrent_queries) &&
     safeInteger(value.resolver.max_addresses_per_name) && safeInteger(value.resolver.min_ttl_ms) &&
     safeInteger(value.resolver.max_ttl_ms) && safeInteger(value.resolver.negative_ttl_ms) &&
     typeof value.resolver.revalidate_on_connect === 'boolean' &&
     ['off', 'metadata'].includes(String(value.audit_mode))
+}
+
+function isForwardProxyAuth(value: unknown): value is ForwardProxyAuthConfig {
+  return isRecord(value) && ((value.type === 'bearer_token_file' &&
+    typeof value.token_file_path === 'string') || (value.type === 'basic_htpasswd_file' &&
+    typeof value.htpasswd_file_path === 'string' && typeof value.realm === 'string' &&
+    nullableSafeInteger(value.credential_ttl_ms) && typeof value.username_case_sensitive === 'boolean'))
+}
+
+function isForwardAccessPolicy(value: unknown): value is ForwardAccessPolicyConfig {
+  return isRecord(value) && ['allow', 'deny'].includes(String(value.default_action)) &&
+    arrayOf(value.rules, (rule) => isRecord(rule) && ['allow', 'deny'].includes(String(rule.action)) &&
+      arrayOf(rule.conditions, (condition) => isRecord(condition) && typeof condition.negated === 'boolean' &&
+        isForwardAccessMatcher(condition)))
+}
+
+function isForwardAccessMatcher(value: unknown): value is ForwardAccessMatcherConfig {
+  if (!isRecord(value)) return false
+  if (['all', 'authenticated', 'destination_local', 'destination_link_local', 'manager'].includes(String(value.type))) return true
+  if (value.type === 'methods') return arrayOf(value.methods, isString)
+  if (value.type === 'source_cidrs') return arrayOf(value.cidrs, isString)
+  return value.type === 'destination_ports' && arrayOf(value.ranges, (range) => isRecord(range) &&
+    safeInteger(range.start) && safeInteger(range.end))
 }
 
 function isRtmpRecorder(value: unknown): value is RtmpRecorderConfig {
@@ -1165,12 +1219,31 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'forward_proxy_services[].auth', kind: 'object' },
   { path: 'forward_proxy_services[].auth.type', kind: 'enum' },
   { path: 'forward_proxy_services[].auth.token_file_path', kind: 'string' },
+  { path: 'forward_proxy_services[].auth.htpasswd_file_path', kind: 'string' },
+  { path: 'forward_proxy_services[].auth.realm', kind: 'string' },
+  { path: 'forward_proxy_services[].auth.credential_ttl_ms', kind: 'integer' },
+  { path: 'forward_proxy_services[].auth.username_case_sensitive', kind: 'boolean' },
+  { path: 'forward_proxy_services[].access_policy', kind: 'object' },
+  { path: 'forward_proxy_services[].access_policy.default_action', kind: 'enum' },
+  { path: 'forward_proxy_services[].access_policy.rules', kind: 'collection' },
+  { path: 'forward_proxy_services[].access_policy.rules[].action', kind: 'enum' },
+  { path: 'forward_proxy_services[].access_policy.rules[].conditions', kind: 'collection' },
+  { path: 'forward_proxy_services[].access_policy.rules[].conditions[].negated', kind: 'boolean' },
+  { path: 'forward_proxy_services[].access_policy.rules[].conditions[].type', kind: 'enum' },
+  { path: 'forward_proxy_services[].access_policy.rules[].conditions[].methods', kind: 'string_list' },
+  { path: 'forward_proxy_services[].access_policy.rules[].conditions[].cidrs', kind: 'string_list' },
+  { path: 'forward_proxy_services[].access_policy.rules[].conditions[].ranges', kind: 'collection' },
+  { path: 'forward_proxy_services[].access_policy.rules[].conditions[].ranges[].start', kind: 'integer' },
+  { path: 'forward_proxy_services[].access_policy.rules[].conditions[].ranges[].end', kind: 'integer' },
   { path: 'forward_proxy_services[].destination_policy', kind: 'object' },
   { path: 'forward_proxy_services[].destination_policy.allow_domains', kind: 'string_list' },
   { path: 'forward_proxy_services[].destination_policy.deny_domains', kind: 'string_list' },
   { path: 'forward_proxy_services[].destination_policy.allow_cidrs', kind: 'string_list' },
   { path: 'forward_proxy_services[].destination_policy.deny_cidrs', kind: 'string_list' },
   { path: 'forward_proxy_services[].destination_policy.deny_private', kind: 'boolean' },
+  { path: 'forward_proxy_services[].header_policy', kind: 'object' },
+  { path: 'forward_proxy_services[].header_policy.forwarded_for', kind: 'enum' },
+  { path: 'forward_proxy_services[].header_policy.via', kind: 'enum' },
   { path: 'forward_proxy_services[].connect_timeout_ms', kind: 'integer' },
   { path: 'forward_proxy_services[].idle_timeout_ms', kind: 'integer' },
   { path: 'forward_proxy_services[].lifetime_timeout_ms', kind: 'integer' },
@@ -1178,6 +1251,7 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'forward_proxy_services[].max_header_bytes', kind: 'integer' },
   { path: 'forward_proxy_services[].max_connections', kind: 'integer' },
   { path: 'forward_proxy_services[].resolver', kind: 'object' },
+  { path: 'forward_proxy_services[].resolver.nameservers', kind: 'string_list' },
   { path: 'forward_proxy_services[].resolver.max_cache_entries', kind: 'integer' },
   { path: 'forward_proxy_services[].resolver.max_concurrent_queries', kind: 'integer' },
   { path: 'forward_proxy_services[].resolver.max_addresses_per_name', kind: 'integer' },
