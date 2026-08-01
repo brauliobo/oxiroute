@@ -19,6 +19,8 @@ pub(crate) struct NginxSource {
     pub recording_root: Option<PathBuf>,
     #[serde(default)]
     pub default_error_server: Option<String>,
+    #[serde(default)]
+    pub x_accel_controls_absent: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]

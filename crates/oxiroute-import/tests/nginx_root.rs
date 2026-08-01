@@ -19,6 +19,32 @@ use oxiroute_import::{
 };
 
 #[test]
+fn audited_absence_of_x_accel_controls_allows_modern_nginx_proxy_defaults() {
+    let directory = tempfile::tempdir().expect("audited nginx root directory");
+    fs::write(
+        directory.path().join("nginx.conf"),
+        b"events {} http { access_log off; proxy_buffering off; upstream app { server 127.0.0.1:9000; } server { listen 127.0.0.1:8080 default_server; location / { proxy_pass http://app; } } }",
+    )
+    .expect("write audited nginx root");
+
+    let blocked = import_root(Path::new("nginx.conf"), directory.path());
+    assert!(blocked.has_errors());
+    assert!(blocked.candidate.config.is_none());
+
+    let report = import_root_with_options(
+        Path::new("nginx.conf"),
+        directory.path(),
+        &NginxImportOptions {
+            x_accel_controls_absent: true,
+            ..NginxImportOptions::default()
+        },
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let config = report.candidate.config.expect("audited proxy candidate");
+    assert!(config.http_services[0].routes[0].policy.request_buffering);
+}
+
+#[test]
 fn complete_root_merges_http_and_rtmp_and_externalizes_process_concerns() {
     let directory = tempfile::tempdir().expect("complete nginx root directory");
     fs::write(
@@ -329,6 +355,7 @@ fn duplicate_unresolved_and_misspelled_security_overlays_never_finalize() {
             default_access_log: None,
             recording_root: None,
             default_error_page: None,
+            x_accel_controls_absent: false,
         },
     );
     assert!(hostrouter.candidate.config.is_none());

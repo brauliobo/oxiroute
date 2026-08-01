@@ -211,6 +211,7 @@ fn import_nginx(
                 server: server.clone(),
             }
         }),
+        x_accel_controls_absent: source.x_accel_controls_absent,
         ..NginxImportOptions::default()
     };
     let report = import_root_with_options(&path, &root_prefix, &options);

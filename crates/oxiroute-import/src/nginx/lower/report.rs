@@ -53,7 +53,15 @@ pub fn import_http_fragment(root: &Path, root_prefix: &Path) -> ImportReport {
 }
 
 pub(super) fn lower_http(loaded: Report<SourceGraph>) -> ImportReport {
-    lower_http_with_mode(loaded, false, HashMap::new(), HashMap::new(), None, None)
+    lower_http_with_mode(
+        loaded,
+        false,
+        HashMap::new(),
+        HashMap::new(),
+        None,
+        None,
+        false,
+    )
 }
 
 pub(crate) fn lower_http_root_with_overlays(
@@ -62,6 +70,7 @@ pub(crate) fn lower_http_root_with_overlays(
     bearer_token_overlays: HashMap<Vec<u8>, std::path::PathBuf>,
     default_access_log_path: Option<std::path::PathBuf>,
     default_error_server: Option<String>,
+    x_accel_controls_absent: bool,
 ) -> ImportReport {
     lower_http_with_mode(
         loaded,
@@ -70,6 +79,7 @@ pub(crate) fn lower_http_root_with_overlays(
         bearer_token_overlays,
         default_access_log_path,
         default_error_server,
+        x_accel_controls_absent,
     )
 }
 
@@ -80,6 +90,7 @@ fn lower_http_with_mode(
     bearer_token_overlays: HashMap<Vec<u8>, std::path::PathBuf>,
     default_access_log_path: Option<std::path::PathBuf>,
     default_error_server: Option<String>,
+    x_accel_controls_absent: bool,
 ) -> ImportReport {
     let (graph, mut diagnostics) = loaded.into_parts();
     let resolved = if complete_root {
@@ -97,6 +108,7 @@ fn lower_http_with_mode(
         bearer_token_overlays,
         default_access_log_path,
         default_error_server,
+        x_accel_controls_absent,
     )
     .run()
 }
