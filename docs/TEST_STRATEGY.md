@@ -37,7 +37,9 @@ checked-in fuzz targets, real-browser test runner, or CI workflow.
   entries before memory or disk admission. The cache remains outside the server request path.
 - nginx, HAProxy, Squid, and Varnish parser tokens, ordered source/include graphs,
   inheritance/resolution, diagnostics, decision accounting, provenance, and conservative semantic
-  conversion. Squid identity/glob rechecks and Varnish typed-IR/invocation tests are foundation-only.
+  conversion. Squid additionally covers canonical direct-forward lowering, cross-format native
+  references, authenticated absolute-form/CONNECT daemon wires, and bounded tunnel flushing;
+  Varnish typed-IR/invocation tests remain foundation-only.
 
 Current property-style coverage includes deterministic rendering, revision behavior, and bounded
 parser/runtime cases. ACME state machines and renewal windows, UDP pseudo-sessions, and broader

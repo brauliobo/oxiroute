@@ -24,7 +24,7 @@ preview command. There is no import management API or UI workflow; standalone pr
 only for a fully finalized candidate, defaults to deterministic KDL, and accepts
 `--format kdl|lua|uci|hocon`.
 
-KDL, HOCON, and UCI roots may instead contain `nginx_server` and `haproxy_server` references. The
+KDL, HOCON, and UCI roots may instead contain `nginx_server`, `haproxy_server`, and `squid_server` references. The
 normal source resolver runs those references through the same complete import pipelines, composes
 only fully finalized candidates with inline canonical objects in source order, and lets the daemon
 watch/reconcile the effective result. This is runtime integration for strict source references, not
@@ -84,9 +84,11 @@ general activation of standalone import reports. Restricted Lua cannot declare n
   non-equivalent activation requirements. The exact Prometheus form emits canonical OxiRoute stats
   only when a uniquely matched operator migration overlay explicitly accepts different metric
   families and the broader OxiRoute stats routes.
-- Squid has a bounded source/include, parser, and typed semantic-report foundation. Final recheck
-  verifies source bytes, root/include path identities, and include-glob result sets; it emits no
-  canonical candidate and has no runtime integration.
+- Squid has a bounded source/include, parser, typed semantic report, and strict canonical lowering
+  path for direct authenticated HTTP/1 forwarding. Final recheck verifies source bytes,
+  root/include path identities, and include-glob result sets. The resulting candidate is integrated
+  with the daemon runtime; cache and refresh behavior is reported as externalized, and native
+  activation requires explicit `externalize_cache` acceptance when refresh rules are present.
 - Varnish has a bounded VCL source/include, parser, typed semantic-report, decision-ledger, and
   invocation-model foundation. It has no canonical lowering, runtime, or daemon integration.
 - Apache httpd import is not implemented.
@@ -97,8 +99,9 @@ error remains and that no fallback service or route is invented.
 Native references expose only the options defined by the source adapter. nginx accepts one path and
 optional `root_prefix`, `host_timezone`, `default_access_log_file`, `recording_root`, and
 `default_error_server`; HAProxy accepts one or more ordered paths plus optional `node_ip` and
-`gpu1_defined`. Relative paths resolve from the OxiRoute source directory. Shadow listener offsets
-and other standalone CLI-only overlays are not reference fields.
+`gpu1_defined`; Squid accepts one `path` and optional `externalize_cache`, which must be true when
+refresh rules are present. Relative paths resolve from the OxiRoute source directory.
+Shadow listener offsets and other standalone CLI-only overlays are not reference fields.
 
 Referenced files remain administrator-owned and read-only to OxiRoute, but they are intentionally
 read using the daemon account's filesystem access. nginx include expansion and HAProxy ordered roots
@@ -224,17 +227,29 @@ prefix behavior.
 
 ## Squid
 
-The first subset follows the explicit-forward-proxy milestone:
+The integrated first subset follows the explicit-forward-proxy milestone:
 
 - Listener/port declarations required for explicit HTTP proxying.
 - Direct upstream mode.
 - A documented subset of source, destination, method, and port ACLs.
 - Ordered allow/deny access rules.
 - Basic static authentication only when semantics match.
-- Access-log destination and basic timeout/limit settings.
+- Disabled access logging, header privacy, explicit DNS nameservers, and bounded canonical runtime
+  defaults.
 
-Caching, helpers, adaptation, interception, peers, SSL bump, and delay pools remain blocking
-until their independent implementations pass compatibility tests.
+`oxiroute import squid <root>` emits the same report/preview contract as the nginx and HAProxy
+commands. KDL, HOCON, and UCI sources can reference a root through `squid_server`; deterministic
+previews round-trip through every canonical format. A native source containing `refresh_pattern`
+must explicitly set `externalize_cache = true` before the direct, non-caching candidate can activate.
+
+Basic lowering preserves Squid's case-insensitive username default, explicit `casesensitive`, realm,
+helper file, and credential TTL. Other helper settings remain blocking. CONNECT port inference
+requires one exact unconditional `deny CONNECT !ports` guard before any rule that could allow
+CONNECT; conditional, ranged, reordered, or multiple guards fail closed.
+
+Cache storage and policy directives, helpers, adaptation, interception, peers, SSL bump, and delay
+pools remain blocking until their independent implementations pass compatibility tests. Parsed
+refresh rules may be externalized only through reviewed CLI import or that explicit native opt-in.
 
 ## Validation
 
