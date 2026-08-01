@@ -163,7 +163,7 @@ fn parse_duration_ms(value: &[u8]) -> Option<u64> {
             Some(b'h') => (&value[..value.len() - 1], 3_600_000),
             Some(b'd') => (&value[..value.len() - 1], 86_400_000),
             Some(b'w') => (&value[..value.len() - 1], 604_800_000),
-            Some(_) => (value, 1),
+            Some(_) => (value, 1_000),
             None => return None,
         }
     };
@@ -2195,6 +2195,13 @@ impl Lowerer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bare_nginx_time_uses_seconds() {
+        assert_eq!(parse_duration_ms(b"600"), Some(600_000));
+        assert_eq!(parse_duration_ms(b"600ms"), Some(600));
+        assert_eq!(parse_duration_ms(b"10m"), Some(600_000));
+    }
 
     #[test]
     fn bind_wide_gzip_equivalence_compares_every_canonical_field() {
