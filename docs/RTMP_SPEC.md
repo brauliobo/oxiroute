@@ -411,7 +411,9 @@ Publisher threads use `try_enqueue` and never wait for queue capacity or disk I/
 event would exceed the message or byte bound, the worker drops the queued events and triggering
 event, records one discontinuity, stops accepting, preserves the active partial, and transitions to
 `failed/queue_discontinuity`; it does not silently resume a corrupt FLV. Rotation waits for a video
-keyframe when video has appeared, or an audio boundary for audio-only output.
+keyframe when video has appeared, or an audio boundary for audio-only output. The worker closes the
+old FLV and starts the next segment before a dedicated finalizer synchronizes and publishes the old
+file, so durable storage latency does not stall media queue draining.
 
 Recorder open, quota, write, discontinuity, and codec failures are isolated to that recorder. They
 remain observable but do not fail live ingest, fanout, or sibling recorders.

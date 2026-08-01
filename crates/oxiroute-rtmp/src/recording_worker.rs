@@ -147,6 +147,7 @@ struct WorkerShared {
     finished_available: Condvar,
     shutdown_timeout: Duration,
     commit_cancellation: Mutex<Option<RecordingCommitCancellation>>,
+    pending_commit_cancellation: Mutex<Option<RecordingCommitCancellation>>,
     current_partial_exists: Mutex<Option<Arc<AtomicBool>>>,
     #[cfg(test)]
     panic_on_finish: AtomicBool,
@@ -267,6 +268,7 @@ impl RecorderWorker {
             finished_available: Condvar::new(),
             shutdown_timeout: config.shutdown_timeout,
             commit_cancellation: Mutex::new(None),
+            pending_commit_cancellation: Mutex::new(None),
             current_partial_exists: Mutex::new(None),
             #[cfg(test)]
             panic_on_finish: AtomicBool::new(false),
@@ -513,18 +515,27 @@ impl WorkerShared {
 
     fn cancel(&self) -> bool {
         self.cancelled.store(true, Ordering::Release);
-        let commit = self
+        let current = self
             .commit_cancellation
             .lock()
             .expect("recorder commit cancellation mutex poisoned")
             .clone();
-        if let Some(commit) = commit {
-            return commit.cancel();
+        let pending = self
+            .pending_commit_cancellation
+            .lock()
+            .expect("recorder pending commit cancellation mutex poisoned")
+            .clone();
+        let has_commit = current.is_some() || pending.is_some();
+        let commit_cancelled = current.is_some_and(|commit| commit.cancel())
+            | pending.is_some_and(|commit| commit.cancel());
+        if has_commit {
+            commit_cancelled
+        } else {
+            !matches!(
+                self.lock_status().phase,
+                RecorderWorkerPhase::Stopped | RecorderWorkerPhase::Failed(_)
+            )
         }
-        !matches!(
-            self.lock_status().phase,
-            RecorderWorkerPhase::Stopped | RecorderWorkerPhase::Failed(_)
-        )
     }
 
     fn record_discontinuity(&self, queue: &mut QueueState) {
@@ -747,6 +758,21 @@ struct WorkerContext {
     last_written_at_unix_seconds: u64,
     video_seen: bool,
     segment_headers: SegmentHeaders,
+    pending_finalization: Option<PendingFinalization>,
+}
+
+struct PendingFinalization {
+    thread: Option<JoinHandle<Result<RecordingCommit, WorkerError>>>,
+    partial_relative_name: String,
+    partial_exists: Arc<AtomicBool>,
+}
+
+impl Drop for PendingFinalization {
+    fn drop(&mut self) {
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 struct WorkerSetup {
@@ -783,6 +809,7 @@ fn run_worker(shared: &Arc<WorkerShared>, setup: WorkerSetup) {
         last_written_at_unix_seconds: 0,
         video_seen: false,
         segment_headers: SegmentHeaders::default(),
+        pending_finalization: None,
     };
 
     loop {
@@ -814,6 +841,7 @@ fn run_worker(shared: &Arc<WorkerShared>, setup: WorkerSetup) {
 
 impl WorkerContext {
     fn process(&mut self, queued: &QueuedMediaEvent) -> Result<(), WorkerError> {
+        self.poll_finalization()?;
         let event = &queued.event;
         self.latest_event_at_unix_seconds = queued.arrived_at_unix_seconds;
         if is_unsupported_video_event(event) {
@@ -853,7 +881,7 @@ impl WorkerContext {
         if self.segment.is_none() {
             self.open_segment(queued.arrived_at, queued.arrived_at_unix_seconds)?;
         } else if self.should_rotate(event, queued.arrived_at) {
-            self.finish_segment()?;
+            self.start_segment_finalization()?;
             self.segment_started_at = None;
             self.segment_started_at_unix_seconds = None;
             self.open_segment(queued.arrived_at, queued.arrived_at_unix_seconds)?;
@@ -973,9 +1001,9 @@ impl WorkerContext {
             .max_by_key(|(_, started_at)| *started_at))
     }
 
-    fn finish_segment(&mut self) -> Result<(), WorkerError> {
+    fn prepare_segment_finish(&mut self) -> Result<Option<PreparedSegment>, WorkerError> {
         let Some(segment) = self.segment.as_ref() else {
-            return Ok(());
+            return Ok(None);
         };
         segment.preserve();
         #[cfg(test)]
@@ -1004,12 +1032,111 @@ impl WorkerContext {
             .segment
             .take()
             .expect("segment remains owned through final-name rendering");
-        let RecordingCommit { relative_name, .. } = segment.finish(final_name)?;
-        #[cfg(test)]
-        assert!(
-            !self.shared.panic_after_finish.swap(false, Ordering::AcqRel),
-            "injected recorder post-finish panic"
-        );
+        segment.prepare_finish(final_name).map(Some)
+    }
+
+    fn start_segment_finalization(&mut self) -> Result<(), WorkerError> {
+        self.complete_pending_finalization(true)?;
+        let Some(segment) = self.prepare_segment_finish()? else {
+            return Ok(());
+        };
+        let cancellation = self
+            .shared
+            .commit_cancellation
+            .lock()
+            .expect("recorder commit cancellation mutex poisoned")
+            .take();
+        *self
+            .shared
+            .pending_commit_cancellation
+            .lock()
+            .expect("recorder pending commit cancellation mutex poisoned") = cancellation;
+        let partial_relative_name = segment.partial_relative_name.clone();
+        let partial_exists = Arc::clone(&segment.partial_exists);
+        let thread = thread::Builder::new()
+            .name("rtmp-recorder-finalizer".to_owned())
+            .spawn(move || segment.finish());
+        let Ok(thread) = thread else {
+            *self
+                .shared
+                .pending_commit_cancellation
+                .lock()
+                .expect("recorder pending commit cancellation mutex poisoned") = None;
+            return Err(WorkerError::new(RecorderFailure::Finalize));
+        };
+        self.pending_finalization = Some(PendingFinalization {
+            thread: Some(thread),
+            partial_relative_name,
+            partial_exists,
+        });
+        self.clear_current_segment_status();
+        Ok(())
+    }
+
+    fn poll_finalization(&mut self) -> Result<(), WorkerError> {
+        self.complete_pending_finalization(false)
+    }
+
+    fn complete_pending_finalization(&mut self, wait: bool) -> Result<(), WorkerError> {
+        let Some(pending) = self.pending_finalization.as_ref() else {
+            return Ok(());
+        };
+        if !wait
+            && !pending
+                .thread
+                .as_ref()
+                .expect("pending finalization retains its thread")
+                .is_finished()
+        {
+            return Ok(());
+        }
+        let mut pending = self
+            .pending_finalization
+            .take()
+            .expect("pending finalization was checked above");
+        let result = pending
+            .thread
+            .take()
+            .expect("pending finalization retains its thread")
+            .join();
+        *self
+            .shared
+            .pending_commit_cancellation
+            .lock()
+            .expect("recorder pending commit cancellation mutex poisoned") = None;
+        let result = result.map_err(|_| WorkerError {
+            kind: RecorderFailure::WorkerPanicked,
+            recoverable_partial_name: Some(pending.partial_relative_name.clone()),
+            published_but_not_durable_relative_name: None,
+        });
+        let commit = match result.and_then(|result| result) {
+            Ok(commit) => commit,
+            Err(error) => {
+                *self
+                    .shared
+                    .current_partial_exists
+                    .lock()
+                    .expect("recorder partial existence mutex poisoned") =
+                    Some(Arc::clone(&pending.partial_exists));
+                return Err(error);
+            }
+        };
+        self.record_completed_segment(commit);
+        Ok(())
+    }
+
+    fn finish_segment(&mut self) -> Result<(), WorkerError> {
+        self.complete_pending_finalization(true)?;
+        let Some(segment) = self.prepare_segment_finish()? else {
+            return Ok(());
+        };
+        let commit = segment.finish()?;
+        self.clear_current_segment_status();
+        self.record_completed_segment(commit);
+        Ok(())
+    }
+
+    fn clear_current_segment_status(&self) {
         *self
             .shared
             .current_partial_exists
@@ -1018,9 +1145,17 @@ impl WorkerContext {
         let mut status = self.shared.lock_status();
         status.current_relative_name = None;
         status.current_partial_name = None;
-        status.last_completed_relative_name = Some(relative_name);
+    }
+
+    fn record_completed_segment(&self, commit: RecordingCommit) {
+        #[cfg(test)]
+        assert!(
+            !self.shared.panic_after_finish.swap(false, Ordering::AcqRel),
+            "injected recorder post-finish panic"
+        );
+        let mut status = self.shared.lock_status();
+        status.last_completed_relative_name = Some(commit.relative_name);
         status.segments_completed = status.segments_completed.saturating_add(1);
-        Ok(())
     }
 
     fn preserve_segment(&self) {
@@ -1065,6 +1200,12 @@ struct Segment {
     muxer: FlvMuxer<CountedRecordingFile>,
     partial_relative_name: String,
     preserve_partial: Arc<AtomicBool>,
+    partial_exists: Arc<AtomicBool>,
+}
+
+struct PreparedSegment {
+    file: CountedRecordingFile,
+    partial_relative_name: String,
     partial_exists: Arc<AtomicBool>,
 }
 
@@ -1165,17 +1306,29 @@ impl Segment {
         self.preserve_partial.store(true, Ordering::Release);
     }
 
-    fn finish(self, final_name: String) -> Result<RecordingCommit, WorkerError> {
+    fn prepare_finish(self, final_name: String) -> Result<PreparedSegment, WorkerError> {
         self.preserve_partial.store(true, Ordering::Release);
         let mut file = self.muxer.close().map_err(|_| WorkerError {
             kind: RecorderFailure::Finalize,
-            recoverable_partial_name: Some(self.partial_relative_name),
+            recoverable_partial_name: Some(self.partial_relative_name.clone()),
             published_but_not_durable_relative_name: None,
         })?;
         file.inner
             .set_final_relative_name(final_name)
             .map_err(|error| WorkerError::finalization(&error))?;
-        file.commit()
+        file.inner.release_active_for_finalization();
+        Ok(PreparedSegment {
+            file,
+            partial_relative_name: self.partial_relative_name,
+            partial_exists: self.partial_exists,
+        })
+    }
+}
+
+impl PreparedSegment {
+    fn finish(self) -> Result<RecordingCommit, WorkerError> {
+        self.file
+            .commit()
             .map_err(|error| WorkerError::finalization(&error))
     }
 }
@@ -1274,5 +1427,101 @@ impl SegmentHeaders {
             .into_iter()
             .map(|header| header.event.clone())
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, sync::Arc, thread, time::Duration};
+
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::RecordingStoreLimits;
+
+    #[test]
+    fn rotation_drains_media_while_the_previous_segment_is_publishing() {
+        let root = tempdir().expect("recording root");
+        let store = RecordingStore::open(
+            root.path(),
+            RecordingStoreLimits {
+                max_bytes: Some(1024 * 1024),
+                max_files: Some(8),
+                max_active_recorders: 1,
+            },
+        )
+        .expect("recording store");
+        let worker = RecorderWorker::start(
+            store,
+            &RecordingPathPolicy::new(".flv", false).expect("path policy"),
+            b"camera",
+            1_721_619_000,
+            RecordingDateTime::from_unix_seconds(1_721_619_000).expect("start time"),
+            RecorderWorkerConfig {
+                max_queue_messages: 8,
+                max_queue_bytes: 1024,
+                rotation_interval: Some(Duration::from_millis(1)),
+                shutdown_timeout: Duration::from_secs(1),
+                video_codec: None,
+            },
+        )
+        .expect("recorder worker");
+        enqueue(
+            &worker,
+            MediaEvent::audio(0, Arc::<[u8]>::from(&b"\xaf\0\x12"[..])).unwrap(),
+        );
+        enqueue(
+            &worker,
+            MediaEvent::audio(0, Arc::<[u8]>::from(&b"\xaf\x01\x11"[..])).unwrap(),
+        );
+        wait_until(|| worker.status().events_processed == 2);
+        let gate = worker.install_publication_gate();
+
+        enqueue(
+            &worker,
+            MediaEvent::audio(1, Arc::<[u8]>::from(&b"\xaf\x01\x22"[..])).unwrap(),
+        );
+        assert!(gate.wait_before_claim(Duration::from_secs(1)));
+        wait_until(|| worker.status().segments_started == 2);
+        enqueue(
+            &worker,
+            MediaEvent::audio(1, Arc::<[u8]>::from(&b"\xaf\x01\x33"[..])).unwrap(),
+        );
+        wait_until(|| worker.status().events_processed == 4);
+        assert_eq!(worker.status().discontinuities, 0);
+
+        gate.allow_claim();
+        assert!(gate.wait_after_claim(Duration::from_secs(1)));
+        gate.allow_publication();
+        let status = match worker.shutdown() {
+            RecorderShutdown::Joined(status) => status,
+            RecorderShutdown::TimedOut(supervisor) => {
+                panic!("recorder shutdown timed out: {:?}", supervisor.status())
+            }
+        };
+        assert_eq!(status.segments_completed, 2);
+        assert_eq!(status.discontinuities, 0);
+        assert_eq!(
+            fs::read_dir(root.path())
+                .expect("recording entries")
+                .filter_map(Result::ok)
+                .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+                .count(),
+            2
+        );
+    }
+
+    fn enqueue(worker: &RecorderWorker, event: MediaEvent) {
+        assert_eq!(worker.try_enqueue(event), RecorderEnqueueResult::Queued);
+    }
+
+    fn wait_until(predicate: impl Fn() -> bool) {
+        for _ in 0..200 {
+            if predicate() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        panic!("recorder condition timeout");
     }
 }
