@@ -13,7 +13,7 @@ use std::{
 use bytes::{Buf as _, Bytes};
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf},
-    sync::mpsc,
+    sync::{Notify, mpsc},
     time::{Instant, sleep_until},
 };
 
@@ -156,39 +156,83 @@ impl BoundedTunnel {
         Ok(Self { limits })
     }
 
-    pub async fn relay<L, R>(&self, mut left: L, mut right: R) -> TunnelOutcome
+    pub async fn relay<L, R>(&self, left: L, right: R) -> TunnelOutcome
     where
         L: AsyncRead + AsyncWrite + Unpin,
         R: AsyncRead + AsyncWrite + Unpin,
     {
         let left_to_right = Arc::new(AtomicU64::new(0));
         let right_to_left = Arc::new(AtomicU64::new(0));
-        let (activity_tx, activity_rx) = mpsc::channel(1);
-        let (left_reader, left_writer) = tokio::io::split(&mut left);
-        let (right_reader, right_writer) = tokio::io::split(&mut right);
-        let left_pump = pump(
-            left_reader,
-            right_writer,
-            self.limits,
-            Arc::clone(&left_to_right),
-            activity_tx.clone(),
-        );
-        let right_pump = pump(
-            right_reader,
-            left_writer,
+        let (activity_tx, mut activity_rx) = mpsc::channel(1);
+        let left_limit = Arc::new(Notify::new());
+        let right_limit = Arc::new(Notify::new());
+        let mut left = LimitedIo::new(
+            left,
             self.limits,
             Arc::clone(&right_to_left),
-            activity_tx,
+            activity_tx.clone(),
+            Arc::clone(&right_limit),
         );
-        coordinate(
+        let mut right = LimitedIo::new(
+            right,
             self.limits,
-            left_pump,
-            right_pump,
-            left_to_right,
-            right_to_left,
-            activity_rx,
-        )
-        .await
+            Arc::clone(&left_to_right),
+            activity_tx,
+            Arc::clone(&left_limit),
+        );
+        let copy = tokio::io::copy_bidirectional_with_sizes(
+            &mut left,
+            &mut right,
+            self.limits.buffer_size,
+            self.limits.buffer_size,
+        );
+        tokio::pin!(copy);
+        let started = Instant::now();
+        let lifetime_deadline = started + self.limits.lifetime_timeout;
+        let mut idle_deadline = started + self.limits.idle_timeout;
+        loop {
+            tokio::select! {
+                result = &mut copy => {
+                    return match result {
+                        Ok(_) => TunnelOutcome::Ended {
+                            end: TunnelEnd::Eof,
+                            stats: load_stats(&left_to_right, &right_to_left),
+                        },
+                        Err(source) => TunnelOutcome::Io {
+                            stats: load_stats(&left_to_right, &right_to_left),
+                            source,
+                        },
+                    };
+                }
+                () = left_limit.notified() => {
+                    return TunnelOutcome::Ended {
+                        end: TunnelEnd::ByteLimitLeftToRight,
+                        stats: load_stats(&left_to_right, &right_to_left),
+                    };
+                }
+                () = right_limit.notified() => {
+                    return TunnelOutcome::Ended {
+                        end: TunnelEnd::ByteLimitRightToLeft,
+                        stats: load_stats(&left_to_right, &right_to_left),
+                    };
+                }
+                () = sleep_until(lifetime_deadline) => {
+                    return TunnelOutcome::Ended {
+                        end: TunnelEnd::LifetimeTimeout,
+                        stats: load_stats(&left_to_right, &right_to_left),
+                    };
+                }
+                () = sleep_until(idle_deadline) => {
+                    return TunnelOutcome::Ended {
+                        end: TunnelEnd::IdleTimeout,
+                        stats: load_stats(&left_to_right, &right_to_left),
+                    };
+                }
+                Some(()) = activity_rx.recv() => {
+                    idle_deadline = Instant::now() + self.limits.idle_timeout;
+                }
+            }
+        }
     }
 
     /// Relays an HTTP/3 request stream to a byte-stream upstream using DATA frames.
@@ -232,6 +276,88 @@ impl BoundedTunnel {
             activity_rx,
         )
         .await
+    }
+}
+
+struct LimitedIo<T> {
+    inner: T,
+    remaining: u64,
+    transferred: Arc<AtomicU64>,
+    activity: mpsc::Sender<()>,
+    limit: Arc<Notify>,
+}
+
+impl<T> LimitedIo<T> {
+    fn new(
+        inner: T,
+        limits: TunnelLimits,
+        transferred: Arc<AtomicU64>,
+        activity: mpsc::Sender<()>,
+        limit: Arc<Notify>,
+    ) -> Self {
+        Self {
+            inner,
+            remaining: limits.max_bytes_per_direction,
+            transferred,
+            activity,
+            limit,
+        }
+    }
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for LimitedIo<T> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(context, buffer)
+    }
+}
+
+impl<T: AsyncRead + AsyncWrite + Unpin> AsyncWrite for LimitedIo<T> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        if self.remaining == 0 {
+            return match Pin::new(&mut self.inner).poll_flush(context) {
+                Poll::Ready(Ok(())) => {
+                    self.limit.notify_one();
+                    Poll::Pending
+                }
+                Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+                Poll::Pending => Poll::Pending,
+            };
+        }
+        let length = usize::try_from(self.remaining)
+            .unwrap_or(usize::MAX)
+            .min(buffer.len());
+        let result = Pin::new(&mut self.inner).poll_write(context, &buffer[..length]);
+        if let Poll::Ready(Ok(written)) = result {
+            let written = u64::try_from(written).unwrap_or(u64::MAX);
+            self.remaining = self.remaining.saturating_sub(written);
+            self.transferred.fetch_add(written, Ordering::Relaxed);
+            if written > 0 {
+                let _ = self.activity.try_send(());
+            }
+            Poll::Ready(Ok(usize::try_from(written).unwrap_or(usize::MAX)))
+        } else {
+            result
+        }
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let result = Pin::new(&mut self.inner).poll_flush(context);
+        if matches!(result, Poll::Ready(Ok(()))) && self.remaining == 0 {
+            self.limit.notify_one();
+        }
+        result
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(context)
     }
 }
 
@@ -312,49 +438,6 @@ where
 enum PumpEnd {
     Eof,
     Limit,
-}
-
-async fn pump<R, W>(
-    mut reader: R,
-    mut writer: W,
-    limits: TunnelLimits,
-    transferred: Arc<AtomicU64>,
-    activity: mpsc::Sender<()>,
-) -> io::Result<PumpEnd>
-where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
-{
-    let mut buffer = vec![0; limits.buffer_size];
-    loop {
-        let current = transferred.load(Ordering::Relaxed);
-        if current == limits.max_bytes_per_direction {
-            return Ok(PumpEnd::Limit);
-        }
-        let remaining = limits.max_bytes_per_direction - current;
-        let read_limit = buffer
-            .len()
-            .min(usize::try_from(remaining).unwrap_or(usize::MAX));
-        let length = reader.read(&mut buffer[..read_limit]).await?;
-        if length == 0 {
-            writer.shutdown().await?;
-            return Ok(PumpEnd::Eof);
-        }
-        let mut written = 0;
-        while written < length {
-            let count = writer.write(&buffer[written..length]).await?;
-            if count == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::WriteZero,
-                    "tunnel endpoint accepted no bytes",
-                ));
-            }
-            written += count;
-            let count = u64::try_from(count).unwrap_or(remaining);
-            transferred.fetch_add(count, Ordering::Relaxed);
-            let _ = activity.try_send(());
-        }
-    }
 }
 
 async fn pump_h3_to_io<S, W>(
@@ -441,7 +524,10 @@ fn load_stats(left_to_right: &AtomicU64, right_to_left: &AtomicU64) -> TunnelSta
 
 #[cfg(test)]
 mod tests {
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, duplex};
+    use tokio::{
+        io::{AsyncReadExt as _, AsyncWriteExt as _, BufWriter, duplex},
+        time::timeout,
+    };
 
     use super::*;
 
@@ -459,6 +545,7 @@ mod tests {
     async fn tunnel_stops_exactly_at_direction_limit() {
         let (mut client, proxy_left) = duplex(64);
         let (proxy_right, mut server) = duplex(64);
+        let proxy_right = BufWriter::with_capacity(64, proxy_right);
         let tunnel = BoundedTunnel::new(TunnelLimits {
             max_bytes_per_direction: 4,
             idle_timeout: Duration::from_secs(1),
@@ -467,12 +554,15 @@ mod tests {
         })
         .unwrap();
         let relay = tokio::spawn(async move { tunnel.relay(proxy_left, proxy_right).await });
-        client.write_all(b"123456").await.unwrap();
+        client.write_all(b"1234").await.unwrap();
         let mut received = [0; 4];
         server.read_exact(&mut received).await.unwrap();
         assert_eq!(&received, b"1234");
         assert!(matches!(
-            relay.await.unwrap(),
+            timeout(Duration::from_millis(100), relay)
+                .await
+                .unwrap()
+                .unwrap(),
             TunnelOutcome::Ended {
                 end: TunnelEnd::ByteLimitLeftToRight,
                 stats: TunnelStats {
@@ -515,6 +605,40 @@ mod tests {
                     left_to_right: 7,
                     right_to_left: 8,
                 },
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn tunnel_flushes_each_direction_when_the_peer_awaits_more_input() {
+        let (mut client, proxy_left) = duplex(64);
+        let (proxy_right, mut server) = duplex(64);
+        let tunnel = BoundedTunnel::new(TunnelLimits {
+            max_bytes_per_direction: 64,
+            idle_timeout: Duration::from_secs(1),
+            lifetime_timeout: Duration::from_secs(2),
+            buffer_size: 16,
+        })
+        .unwrap();
+        let relay =
+            tokio::spawn(
+                async move { tunnel.relay(proxy_left, BufWriter::new(proxy_right)).await },
+            );
+
+        client.write_all(b"request").await.unwrap();
+        let mut request = [0; 7];
+        timeout(Duration::from_secs(1), server.read_exact(&mut request))
+            .await
+            .expect("buffered tunnel flush")
+            .unwrap();
+        assert_eq!(&request, b"request");
+        client.shutdown().await.unwrap();
+        server.shutdown().await.unwrap();
+        assert!(matches!(
+            relay.await.unwrap(),
+            TunnelOutcome::Ended {
+                end: TunnelEnd::Eof,
+                ..
             }
         ));
     }

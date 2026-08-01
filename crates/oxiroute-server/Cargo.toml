@@ -26,12 +26,18 @@ futures-util.workspace = true
 h2.workspace = true
 http.workspace = true
 httpdate.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+hickory-resolver.workspace = true
 log.workspace = true
+local-ip-address.workspace = true
 notify.workspace = true
 openssl.workspace = true
 oxiroute-config = { path = "../oxiroute-config" }
 oxiroute-config-source = { path = "../oxiroute-config-source" }
 oxiroute-import = { path = "../oxiroute-import" }
+oxiroute-forward-proxy = { path = "../oxiroute-forward-proxy" }
 oxiroute-rtmp = { path = "../oxiroute-rtmp" }
 pingora.workspace = true
 rustix.workspace = true
@@ -41,6 +47,7 @@ signal-hook.workspace = true
 thiserror.workspace = true
 time.workspace = true
 tokio.workspace = true
+tokio-openssl.workspace = true
 x509-parser.workspace = true
 zeroize.workspace = true
 

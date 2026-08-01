@@ -2,6 +2,7 @@ pub mod cli;
 pub mod config_coordinator;
 mod config_watcher;
 mod encoding;
+mod forward_proxy;
 mod generation;
 mod health;
 mod http_action;
@@ -24,6 +25,7 @@ mod upstream_peer;
 mod wire;
 
 pub use config_watcher::{ConfigWatcher, ConfigWatcherOptions, ConfigWatcherStatus};
+pub use forward_proxy::{ForwardConnectionLifecycle, ForwardHttp1ServicePlan, ForwardProxyBody};
 pub use generation::{
     GenerationAdmission, GenerationCandidate, GenerationError, GenerationManager,
     GenerationMutation, GenerationReference, GenerationRevision, GenerationStatus,

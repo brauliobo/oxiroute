@@ -741,8 +741,8 @@ fn find_pool(active: &RuntimeGeneration, name: &str) -> Option<Arc<crate::RoundR
 }
 
 fn active_reference_count(active: &RuntimeGeneration) -> u64 {
-    use crate::RuntimeReferenceKind::{Http1, Http2, Rtmp, Tcp, WebSocket};
-    [Http1, Http2, WebSocket, Tcp, Rtmp]
+    use crate::RuntimeReferenceKind::{ForwardHttp1, Http1, Http2, Rtmp, Tcp, WebSocket};
+    [ForwardHttp1, Http1, Http2, WebSocket, Tcp, Rtmp]
         .into_iter()
         .map(|kind| active.active_references(kind))
         .sum()

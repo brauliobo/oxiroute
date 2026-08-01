@@ -1,29 +1,36 @@
 use std::{
+    convert::Infallible,
     error::Error,
+    future::Future as _,
     io,
     panic::AssertUnwindSafe,
     path::{Path, PathBuf},
+    pin::Pin,
     process::ExitCode,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
+    task::{Context, Poll},
     thread::{self, JoinHandle},
     time::{Duration, SystemTime},
 };
 
 use async_trait::async_trait;
 use futures_util::FutureExt as _;
+use hyper::{server::conn::http1, service::service_fn};
+use hyper_util::rt::{TokioIo, TokioTimer};
 use log::{error, info, warn};
 use oxiroute_config::ListenerBind;
 use oxiroute_rtmp::{MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN, RtmpRegistry, RtmpServiceRuntime};
 use oxiroute_server::{
     CertbotWatcherConfig, CertbotWatcherSupervisor, ConfigWatcher, ConfigWatcherOptions,
-    GenerationManager, HaproxyStatsApi, HttpDownstreamPolicyApp, HttpListenerApp, HttpReverseProxy,
-    ListenerMetrics, ListenerReservation, MAX_HTTP_ATTEMPTS, MonitoredHttpApp, RtmpManagementApi,
-    RuntimeGeneration, RuntimeMetrics, RuntimeReferenceKind, ServiceKind, TcpRelayCore,
-    TlsProfilePlan, TopologySnapshot,
+    ConnectionGuard, ForwardConnectionLifecycle, ForwardHttp1ServicePlan, GenerationManager,
+    HaproxyStatsApi, HttpDownstreamPolicyApp, HttpListenerApp, HttpReverseProxy, ListenerMetrics,
+    ListenerReservation, MAX_HTTP_ATTEMPTS, MonitoredHttpApp, RtmpManagementApi, RuntimeGeneration,
+    RuntimeMetrics, RuntimeReferenceKind, ServiceKind, TcpRelayCore, TlsProfilePlan,
+    TopologySnapshot,
     cli::{Cli, Command, ConfigCommand, execute_offline},
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, ConfigRevision},
 };
@@ -46,8 +53,8 @@ use signal_hook::{
     iterator::Signals,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    time::{MissedTickBehavior, interval, timeout},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
+    time::{Instant, MissedTickBehavior, Sleep, interval, timeout},
 };
 
 const RTMP_READ_BUFFER_SIZE: usize = 16 * 1024;
@@ -331,6 +338,228 @@ struct TcpRelay {
     generation: Option<Arc<RuntimeGeneration>>,
     service: Arc<oxiroute_server::L4ServicePlan>,
     metrics: ListenerMetrics,
+}
+
+struct ForwardHttp1App {
+    generation: Arc<RuntimeGeneration>,
+    metrics: ListenerMetrics,
+    request_timeout: Option<Duration>,
+    service: Arc<ForwardHttp1ServicePlan>,
+}
+
+struct ForwardDownstream<S> {
+    idle: Pin<Box<Sleep>>,
+    idle_timeout: Duration,
+    inner: S,
+    metrics: ConnectionGuard,
+}
+
+impl<S> ForwardDownstream<S> {
+    fn new(inner: S, idle_timeout: Duration, metrics: ConnectionGuard) -> Self {
+        Self {
+            idle: Box::pin(tokio::time::sleep(idle_timeout)),
+            idle_timeout,
+            inner,
+            metrics,
+        }
+    }
+
+    fn reset_idle(&mut self) {
+        self.idle.as_mut().reset(Instant::now() + self.idle_timeout);
+    }
+
+    fn poll_idle(&mut self, context: &mut Context<'_>) -> io::Result<()> {
+        if self.idle.as_mut().poll(context).is_ready() {
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "forward downstream idle timeout",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for ForwardDownstream<S> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        if let Err(error) = this.poll_idle(context) {
+            return Poll::Ready(Err(error));
+        }
+        let before = buffer.filled().len();
+        let result = Pin::new(&mut this.inner).poll_read(context, buffer);
+        if let Poll::Ready(Ok(())) = &result {
+            let read = buffer.filled().len() - before;
+            if read > 0 {
+                if let Err(error) = this
+                    .metrics
+                    .record_bytes_received(u64::try_from(read).unwrap_or(u64::MAX))
+                {
+                    return Poll::Ready(Err(io::Error::other(error)));
+                }
+                this.reset_idle();
+            }
+        }
+        result
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for ForwardDownstream<S> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        if let Err(error) = this.poll_idle(context) {
+            return Poll::Ready(Err(error));
+        }
+        let result = Pin::new(&mut this.inner).poll_write(context, buffer);
+        if let Poll::Ready(Ok(written)) = result {
+            if written > 0 {
+                if let Err(error) = this
+                    .metrics
+                    .record_bytes_sent(u64::try_from(written).unwrap_or(u64::MAX))
+                {
+                    return Poll::Ready(Err(io::Error::other(error)));
+                }
+                this.reset_idle();
+            }
+            Poll::Ready(Ok(written))
+        } else {
+            result
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        if let Err(error) = this.poll_idle(context) {
+            return Poll::Ready(Err(error));
+        }
+        Pin::new(&mut this.inner).poll_flush(context)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(context)
+    }
+}
+
+impl ForwardHttp1App {
+    fn new(
+        service: Arc<ForwardHttp1ServicePlan>,
+        metrics: ListenerMetrics,
+        generation: Arc<RuntimeGeneration>,
+        request_timeout: Option<Duration>,
+    ) -> Self {
+        Self {
+            generation,
+            metrics,
+            request_timeout,
+            service,
+        }
+    }
+}
+
+#[async_trait]
+impl ServerApp for ForwardHttp1App {
+    fn accept_gate(&self) -> Option<AcceptGate> {
+        Some(self.generation.accept_gate())
+    }
+
+    fn accepting(&self) -> bool {
+        self.metrics.accepting() && self.generation.accepting()
+    }
+
+    fn admit_connection(&self) -> Option<ConnectionAdmission> {
+        let Some(service) = self.service.begin_connection() else {
+            warn!(
+                "rejected connection on forward service `{}`: service connection limit reached",
+                self.service.name()
+            );
+            return None;
+        };
+        let generation = self
+            .generation
+            .begin_reference(RuntimeReferenceKind::ForwardHttp1)?;
+        let connection = admit_connection(&self.metrics)?;
+        Some(Box::new((service, generation, connection)))
+    }
+
+    fn admit_owned_connection(&self) -> Option<ConnectionAdmission> {
+        let Some(service) = self.service.begin_connection() else {
+            warn!(
+                "rejected connection on forward service `{}`: service connection limit reached",
+                self.service.name()
+            );
+            return None;
+        };
+        let generation = self
+            .generation
+            .begin_owned_reference(RuntimeReferenceKind::ForwardHttp1);
+        let connection = admit_connection(&self.metrics)?;
+        Some(Box::new((service, generation, connection)))
+    }
+
+    async fn process_new(
+        self: &Arc<Self>,
+        downstream: Stream,
+        shutdown: &ShutdownWatch,
+    ) -> Option<Stream> {
+        let client_addr = downstream.get_socket_digest().and_then(|digest| {
+            digest
+                .peer_addr()
+                .and_then(|address| address.as_inet().copied())
+        });
+        let plan = Arc::clone(&self.service);
+        let request_shutdown = shutdown.clone();
+        let lifecycle = Arc::new(ForwardConnectionLifecycle::default());
+        let request_lifecycle = Arc::clone(&lifecycle);
+        let app = service_fn(move |request| {
+            let plan = Arc::clone(&plan);
+            let shutdown = request_shutdown.clone();
+            let lifecycle = Arc::clone(&request_lifecycle);
+            async move {
+                Ok::<_, Infallible>(plan.handle(request, client_addr, shutdown, lifecycle).await)
+            }
+        });
+        let mut builder = http1::Builder::new();
+        builder.max_buf_size(self.service.max_header_bytes());
+        let header_timeout = self
+            .request_timeout
+            .map_or(self.service.idle_timeout(), |timeout| {
+                timeout.min(self.service.idle_timeout())
+            });
+        builder
+            .timer(TokioTimer::new())
+            .header_read_timeout(header_timeout);
+        let downstream = ForwardDownstream::new(
+            downstream,
+            self.service.idle_timeout(),
+            self.metrics.traffic_accounting(),
+        );
+        let connection = builder
+            .serve_connection(TokioIo::new(downstream), app)
+            .with_upgrades();
+        tokio::pin!(connection);
+        let lifetime = tokio::time::sleep(self.service.lifetime_timeout());
+        tokio::pin!(lifetime);
+        let mut shutdown = shutdown.clone();
+        tokio::select! {
+            result = &mut connection => {
+                if let Err(error) = result {
+                    warn!("forward HTTP/1 connection failed: {error}");
+                }
+            }
+            () = &mut lifetime => {}
+            _ = shutdown.changed() => {}
+        }
+        lifecycle.wait_if_started().await;
+        None
+    }
 }
 
 impl TcpRelay {
@@ -1260,6 +1489,29 @@ fn serve_generation(
         let downstream_timeouts = spec.downstream_timeouts;
 
         match spec.kind {
+            ServiceKind::ForwardHttp1(forward_service) => {
+                let mut service = Service::new(
+                    service_name,
+                    ForwardHttp1App::new(
+                        forward_service,
+                        metrics.clone(),
+                        Arc::clone(generation),
+                        downstream_timeouts
+                            .request_timeout_ms
+                            .map(Duration::from_millis),
+                    ),
+                );
+                add_http_listener(
+                    &mut service,
+                    &listener_name,
+                    &listener_bind,
+                    listener_tls.as_deref(),
+                )?;
+                server.add_service(
+                    RuntimeListenerService::new(service, reservation, Some(metrics))
+                        .with_generation(Arc::clone(generation)),
+                );
+            }
             ServiceKind::Http(http_service) => {
                 let proxy = http_proxy(
                     &server.configuration,

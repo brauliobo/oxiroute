@@ -534,8 +534,11 @@ impl RouteAccess {
 pub(crate) struct BasicHtpasswdAccess {
     challenge: HeaderValue,
     dummy_hashes: Box<[BasicPasswordHash]>,
-    users: Box<[([u8; 32], BasicPasswordHash)]>,
+    username_case_sensitive: bool,
+    users: Box<[BasicUser]>,
 }
+
+type BasicUser = ([u8; 32], Arc<str>, BasicPasswordHash);
 
 #[derive(Clone)]
 enum BasicPasswordHash {
@@ -566,7 +569,15 @@ impl std::fmt::Debug for BasicHtpasswdAccess {
 }
 
 impl BasicHtpasswdAccess {
-    fn load(path: &Path, realm: &str) -> Result<Self, AccessPreflightError> {
+    pub(crate) fn load(path: &Path, realm: &str) -> Result<Self, AccessPreflightError> {
+        Self::load_with_username_case(path, realm, true)
+    }
+
+    pub(crate) fn load_with_username_case(
+        path: &Path,
+        realm: &str,
+        username_case_sensitive: bool,
+    ) -> Result<Self, AccessPreflightError> {
         let bytes = read_secret_file(path, MAX_HTPASSWD_FILE_BYTES)?;
         let text = std::str::from_utf8(&bytes).map_err(|_| AccessPreflightError)?;
         let mut users = Vec::new();
@@ -590,7 +601,7 @@ impl BasicHtpasswdAccess {
             }
             let (parsed_hash, scheme) = BasicPasswordHash::parse(hash)?;
             schemes.insert(scheme);
-            users.push((username_digest, parsed_hash));
+            users.push((username_digest, Arc::<str>::from(username), parsed_hash));
         }
         if users.is_empty() {
             return Err(AccessPreflightError);
@@ -606,6 +617,7 @@ impl BasicHtpasswdAccess {
             ))
             .expect("validated Basic realm"),
             dummy_hashes,
+            username_case_sensitive,
             users: users.into_boxed_slice(),
         })
     }
@@ -615,47 +627,49 @@ impl BasicHtpasswdAccess {
         let Some(value) = values.next() else {
             return false;
         };
-        let bytes = value.as_bytes();
-        let Some(encoded) = bytes.get(6..).filter(|_| {
+        if values.next().is_some() {
+            return false;
+        }
+        self.authenticate(value.as_bytes()).await.is_some()
+    }
+
+    pub(crate) async fn authenticate(&self, bytes: &[u8]) -> Option<Arc<str>> {
+        let encoded = bytes.get(6..).filter(|_| {
             bytes
                 .get(..5)
                 .is_some_and(|scheme| scheme.eq_ignore_ascii_case(b"basic"))
                 && bytes.get(5) == Some(&b' ')
-        }) else {
-            return false;
-        };
-        if values.next().is_some() || encoded.len() > MAX_BASIC_CREDENTIAL_BYTES * 2 {
-            return false;
+        })?;
+        if encoded.len() > MAX_BASIC_CREDENTIAL_BYTES * 2 {
+            return None;
         }
         let Ok(decoded) = STANDARD.decode(encoded) else {
-            return false;
+            return None;
         };
         let decoded = Zeroizing::new(decoded);
         if decoded.len() > MAX_BASIC_CREDENTIAL_BYTES {
-            return false;
+            return None;
         }
-        let Some(separator) = decoded.iter().position(|byte| *byte == b':') else {
-            return false;
-        };
+        let separator = decoded.iter().position(|byte| *byte == b':')?;
         if separator > MAX_BASIC_USERNAME_BYTES {
-            return false;
+            return None;
         }
         let Ok(username) = std::str::from_utf8(&decoded[..separator]) else {
-            return false;
+            return None;
         };
         let Ok(password) = std::str::from_utf8(&decoded[separator + 1..]) else {
-            return false;
+            return None;
         };
-        let username_digest = sha256(username.as_bytes());
+        let username_digest = basic_client_username_digest(username, self.username_case_sensitive);
         let mut selected_index = self.users.len();
         // Complete every comparison before selecting a hash so entry position does not alter scan work.
-        for (index, (candidate_digest, _)) in self.users.iter().enumerate() {
+        for (index, (candidate_digest, _, _)) in self.users.iter().enumerate() {
             let matched = usize::from(memcmp::eq(&username_digest, candidate_digest));
             let mask = 0usize.wrapping_sub(matched);
             selected_index = (selected_index & !mask) | (index & mask);
         }
         let known_user = selected_index != self.users.len();
-        let selected_hash = known_user.then(|| self.users[selected_index].1.clone());
+        let selected_hash = known_user.then(|| self.users[selected_index].2.clone());
         let hashes = self
             .dummy_hashes
             .iter()
@@ -670,9 +684,9 @@ impl BasicHtpasswdAccess {
         let password = Zeroizing::new(password.to_owned());
         let semaphore = basic_auth_semaphore();
         let Ok(permit) = semaphore.try_acquire_owned() else {
-            return false;
+            return None;
         };
-        tokio::task::spawn_blocking(move || {
+        let verified = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             hashes.iter().fold(false, |verified, hash| {
                 hash.verify(password.as_bytes()) || verified
@@ -680,7 +694,20 @@ impl BasicHtpasswdAccess {
         })
         .await
         .ok()
-        .is_some_and(|verified| known_user && verified)
+        .is_some_and(|verified| known_user && verified);
+        verified.then(|| Arc::clone(&self.users[selected_index].1))
+    }
+
+    pub(crate) fn challenge(&self) -> &HeaderValue {
+        &self.challenge
+    }
+}
+
+fn basic_client_username_digest(username: &str, case_sensitive: bool) -> [u8; 32] {
+    if case_sensitive {
+        sha256(username.as_bytes())
+    } else {
+        sha256(username.to_ascii_lowercase().as_bytes())
     }
 }
 
@@ -1803,6 +1830,26 @@ mod access_log_tests {
             );
             assert_eq!(access.authorizes(&headers).await, expected, "{credentials}");
         }
+
+        let insensitive = BasicHtpasswdAccess::load_with_username_case(&path, "private", false)
+            .expect("case-insensitive htpasswd");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Basic {}", STANDARD.encode(b"ALPHA:alpha-pass")))
+                .unwrap(),
+        );
+        assert!(insensitive.authorizes(&headers).await);
+
+        let uppercase_path = directory.path().join("uppercase.htpasswd");
+        std::fs::write(&uppercase_path, format!("ALPHA:$apr1$salt${apr1}\n"))
+            .expect("uppercase htpasswd file");
+        std::fs::set_permissions(&uppercase_path, std::fs::Permissions::from_mode(0o600))
+            .expect("uppercase htpasswd mode");
+        let uppercase =
+            BasicHtpasswdAccess::load_with_username_case(&uppercase_path, "private", false)
+                .expect("uppercase htpasswd");
+        assert!(!uppercase.authorizes(&headers).await);
     }
 
     #[test]
