@@ -62,7 +62,21 @@ const TARGETS: [&str; 27] = [
     "tls.identity",
 ];
 
-const ADDITIONAL_TARGETS: [&str; 4] = [
+const ADDITIONAL_TARGETS: [&str; 18] = [
+    "forward.access",
+    "forward.admission",
+    "forward.audit",
+    "forward.auth",
+    "forward.connect",
+    "forward.destination",
+    "forward.headers",
+    "forward.listener",
+    "forward.protocol",
+    "forward.request",
+    "forward.resolver",
+    "forward.service",
+    "forward.timeout",
+    "forward.tunnel",
     "rtmp.application",
     "rtmp.service",
     "tls.profile",
@@ -216,6 +230,7 @@ pub(crate) struct ComponentEntry {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ComponentStatus {
     Foundation,
+    Integrated,
 }
 
 #[derive(Debug, Deserialize)]

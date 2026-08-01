@@ -3,7 +3,7 @@
   "evidence": ["evidence.cache.foundation", "evidence.forward.foundation", "evidence.varnish.foundation"],
   "entries": [
     { "id": "component.cache-core", "status": "foundation", "gates": { "component": true, "canonical": false, "integrated_runtime": false, "failure": true, "tests": true } },
-    { "id": "component.forward-proxy-h1", "status": "foundation", "gates": { "component": true, "canonical": false, "integrated_runtime": false, "failure": false, "tests": true } },
+    { "id": "component.forward-proxy-h1", "status": "integrated", "gates": { "component": true, "canonical": true, "integrated_runtime": true, "failure": true, "tests": true } },
     { "id": "component.forward-proxy-h2", "status": "foundation", "gates": { "component": true, "canonical": false, "integrated_runtime": false, "failure": false, "tests": true } },
     { "id": "component.forward-proxy-h3", "status": "foundation", "gates": { "component": true, "canonical": false, "integrated_runtime": false, "failure": true, "tests": true } },
     { "id": "component.varnish-import", "status": "foundation", "gates": { "component": true, "canonical": false, "integrated_runtime": false, "failure": true, "tests": true } }

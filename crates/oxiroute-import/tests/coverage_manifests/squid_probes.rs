@@ -20,15 +20,15 @@ pub(crate) fn assert_hostrouter_squid_inventory() {
     assert!(fixture.is_file());
     assert_eq!(manifest.audit.expanded_directives, 35);
     assert_eq!(manifest.audit.access_rules, 9);
-    assert!(!manifest.audit.canonical_claim);
-    assert!(!manifest.audit.runtime_claim);
+    assert!(manifest.audit.canonical_claim);
+    assert!(manifest.audit.runtime_claim);
 
     let report = import(Path::new(&fixture));
     assert_eq!(report.source_graph.expanded_directives.len(), 35);
     assert_eq!(report.decision_ledger.decisions.len(), 35);
     assert_eq!(report.effective.access_rules.len(), 9);
-    assert!(report.config.is_none());
-    assert!(report.draft.listeners.is_empty());
+    assert!(report.config.is_some());
+    assert_eq!(report.draft.listeners.len(), 1);
     assert!(report.canonical_provenance.is_empty());
 
     let manifested = manifest
