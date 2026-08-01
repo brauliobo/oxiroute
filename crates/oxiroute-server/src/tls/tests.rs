@@ -1472,7 +1472,7 @@ fn rejects_expired_leaf_certificate() {
 }
 
 #[test]
-fn requires_declared_dns_names_to_exactly_match_valid_dns_sans() {
+fn requires_declared_dns_names_to_be_a_subset_of_valid_dns_sans() {
     let temp = TempDir::new().unwrap();
     let ca_key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
     let ca = build_certificate("SAN Root", None, &ca_key, &ca_key, &[], false, true, false);
@@ -1501,14 +1501,14 @@ fn requires_declared_dns_names_to_exactly_match_valid_dns_sans() {
         ["*.example.test", "www.example.test"]
     );
 
-    let error = CertificateGeneration::from_files(
+    let generation = CertificateGeneration::from_files(
         "missing-declaration",
         &["www.example.test".into()],
         &files.chain,
         &files.key,
     )
-    .unwrap_err();
-    assert!(matches!(error, TlsBuildError::DnsSanMismatch { .. }));
+    .unwrap();
+    assert_eq!(generation.metadata().dns_names, ["www.example.test"]);
 
     let no_san_key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
     let no_san = build_certificate(
@@ -1607,7 +1607,7 @@ fn accepts_ip_sans_canonicalizes_ipv6_mapped_ipv4_and_uses_ips_only_as_the_defau
 }
 
 #[test]
-fn rejects_dns_ip_san_type_mismatches_and_nonexact_identity_sets() {
+fn rejects_dns_ip_san_type_mismatches_and_missing_declared_identities() {
     let temp = TempDir::new().unwrap();
     let ca_key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
     let ca = build_certificate(
@@ -1667,23 +1667,27 @@ fn rejects_dns_ip_san_type_mismatches_and_nonexact_identity_sets() {
         TlsBuildError::InvalidDeclaredDnsNames { .. }
     ));
 
-    for declared in [
-        vec!["www.example.test".into()],
-        vec![
+    let subset = CertificateGeneration::from_files(
+        "identity-subset",
+        &["www.example.test".into()],
+        &mixed_files.chain,
+        &mixed_files.key,
+    )
+    .unwrap();
+    assert_eq!(subset.metadata().dns_names, ["www.example.test"]);
+
+    let error = CertificateGeneration::from_files(
+        "identity-set-mismatch",
+        &[
             "www.example.test".into(),
             "192.0.2.10".into(),
             "api.example.test".into(),
         ],
-    ] {
-        let error = CertificateGeneration::from_files(
-            "identity-set-mismatch",
-            &declared,
-            &mixed_files.chain,
-            &mixed_files.key,
-        )
-        .unwrap_err();
-        assert!(matches!(error, TlsBuildError::DnsSanMismatch { .. }));
-    }
+        &mixed_files.chain,
+        &mixed_files.key,
+    )
+    .unwrap_err();
+    assert!(matches!(error, TlsBuildError::DnsSanMismatch { .. }));
 
     let generation = CertificateGeneration::from_files(
         "mixed-identities",

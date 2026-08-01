@@ -5,7 +5,7 @@ use std::{
 
 use oxiroute_config::{AlpnProtocol, Certificate, CertificateSource, TlsProfile, TlsVersion};
 
-use crate::{E_INVALID_VALUE, E_SEMANTICS_NOT_REPRESENTABLE};
+use crate::{E_INVALID_VALUE, E_SEMANTICS_NOT_REPRESENTABLE, canonical::absolute_file_path};
 
 use crate::nginx::{
     DirectiveOrigin, EffectiveBind, EffectiveHttp, EffectiveServer, ListenEndpoint, OccurrenceId,
@@ -47,20 +47,6 @@ struct TlsListenPolicy<'a> {
     server: &'a EffectiveServer,
     tls: bool,
     h2: bool,
-}
-
-fn canonical_file_path(value: &[u8]) -> Option<PathBuf> {
-    let value = utf8(value)?;
-    let path = Path::new(value);
-    (value.len() <= 4096
-        && path.is_absolute()
-        && !value.as_bytes().contains(&0)
-        && !value.contains("//")
-        && !value.ends_with('/')
-        && !value
-            .split('/')
-            .any(|segment| segment == "." || segment == ".."))
-    .then(|| path.to_path_buf())
 }
 
 fn certificate_source(chain: PathBuf, key: PathBuf) -> CertificateSource {
@@ -352,8 +338,8 @@ impl Lowerer {
             ));
             return Err(issues);
         }
-        let chain = canonical_file_path(&chains[0].arguments[0]);
-        let key = canonical_file_path(&keys[0].arguments[0]);
+        let chain = absolute_file_path(&chains[0].arguments[0]);
+        let key = absolute_file_path(&keys[0].arguments[0]);
         if chain.is_none() {
             issues.push(issue(
                 chains[0].origins.last().unwrap_or(&server.origin),

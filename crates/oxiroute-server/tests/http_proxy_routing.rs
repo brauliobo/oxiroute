@@ -3000,7 +3000,7 @@ async fn configured_gzip_honors_exact_types_defaults_and_accept_encoding() {
                 min_length_bytes: 20,
                 min_http_version: HttpGzipMinimumVersion::Http11,
                 disable_on_via: true,
-                vary: false,
+                vary: true,
             }),
             None,
             DownstreamTimeoutPolicy::default(),
@@ -3013,7 +3013,7 @@ async fn configured_gzip_honors_exact_types_defaults_and_accept_encoding() {
         assert_eq!(compressed.header("content-encoding"), Some("gzip"));
         assert_eq!(compressed.body().get(..2), Some(&[0x1f, 0x8b][..]));
         assert!(compressed.body().len() < 512);
-        assert_eq!(compressed.header("vary"), None);
+        assert_eq!(compressed.header("vary"), Some("accept-encoding"));
 
         let concrete_type = proxy
             .request("GET /image HTTP/1.1\r\nHost: gzip.test\r\nAccept-Encoding: gzip\r\n")
@@ -3070,11 +3070,13 @@ async fn configured_gzip_honors_exact_types_defaults_and_accept_encoding() {
             .request("GET /old HTTP/1.0\r\nHost: gzip.test\r\nAccept-Encoding: gzip\r\n")
             .await;
         assert_eq!(old_http.header("content-encoding"), None);
+        assert_eq!(old_http.header("vary"), Some("accept-encoding"));
 
         let via = proxy
             .request("GET /via HTTP/1.1\r\nHost: gzip.test\r\nVia: 1.1 proxy\r\nAccept-Encoding: gzip\r\n")
             .await;
         assert_eq!(via.header("content-encoding"), None);
+        assert_eq!(via.header("vary"), Some("accept-encoding"));
 
         let short = proxy
             .request("GET /short HTTP/1.1\r\nHost: gzip.test\r\nAccept-Encoding: gzip\r\n")

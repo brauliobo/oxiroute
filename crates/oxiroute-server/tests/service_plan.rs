@@ -327,7 +327,7 @@ fn basic_auth_rejects_unsupported_htpasswd_hashes() {
 
 #[cfg(unix)]
 #[test]
-fn basic_auth_preflights_apr1_hashes_and_rejects_nonuniform_files() {
+fn basic_auth_preflights_apr1_and_mixed_scheme_files() {
     use std::os::unix::fs::PermissionsExt as _;
 
     let directory = TempDir::new().expect("htpasswd fixture");
@@ -411,10 +411,7 @@ fn basic_auth_preflights_apr1_hashes_and_rejects_nonuniform_files() {
         htpasswd_file_path: mixed_schemes,
         realm: "private".into(),
     });
-    assert!(matches!(
-        runtime_plan(&config),
-        Err(ServicePlanError::AccessPreflight { .. })
-    ));
+    runtime_plan(&config).expect("mixed-scheme htpasswd");
 }
 
 #[cfg(unix)]
@@ -446,7 +443,7 @@ fn basic_auth_preflights_a_large_multi_user_htpasswd_file() {
 
 #[cfg(unix)]
 #[test]
-fn basic_auth_rejects_symlinks_and_nonuniform_bcrypt_work() {
+fn basic_auth_rejects_symlinks_and_excessive_bcrypt_work() {
     use std::os::unix::fs::{PermissionsExt as _, symlink};
 
     let directory = TempDir::new().expect("htpasswd fixture");
@@ -499,10 +496,7 @@ fn basic_auth_rejects_symlinks_and_nonuniform_bcrypt_work() {
         htpasswd_file_path: mixed,
         realm: "private".into(),
     });
-    assert!(matches!(
-        runtime_plan(&config),
-        Err(ServicePlanError::AccessPreflight { .. })
-    ));
+    runtime_plan(&config).expect("mixed-cost bcrypt htpasswd");
 }
 
 #[test]

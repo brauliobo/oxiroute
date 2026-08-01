@@ -335,15 +335,15 @@ HAProxy directives:
   output bound. Hop-by-hop mutations remain forbidden except for the exact standard nginx WebSocket
   pair, which is bounds-checked but left under Pingora's upgrade ownership.
 - Basic access loads one bounded no-follow regular htpasswd file with mode `0400`, `0600`, `0440`,
-  or `0640` and
-  accepts either a uniform bcrypt `$2a$`/`$2b$`/`$2y$` file with one cost in the supported range or
-  a uniform Apache APR1 `$apr1$` file. Mixed schemes, mixed bcrypt costs, malformed salts/digests,
-  duplicate users, and unsupported hashes fail preparation. Verification is semaphore-bounded and
-  runs off the async executor for both schemes.
+  or `0640` and accepts bcrypt `$2a$`/`$2b$`/`$2y$` and Apache APR1 `$apr1$` entries. Mixed schemes
+  and bcrypt costs are supported; malformed salts/digests, duplicate users, excessive bcrypt costs,
+  and unsupported hashes fail preparation. Verification is semaphore-bounded, runs off the async
+  executor, and performs one check for every configured scheme/cost class.
   Cookie attribute rules are keyed by exact cookie name and set or clear Secure/HttpOnly and SameSite.
 - Static actions choose root or alias path mapping and support an ordered closed `try_files` list,
   index lookup, exact/human autoindex sizes, UTC/local autoindex timestamps, bounded MIME mappings,
-  literal headers, optional ETag emission, status-to-relative-file error responses, single byte
+  literal headers, optional nginx-format `mtime-size` ETag emission, status-to-relative-file error
+  responses, single byte
   ranges, and 416 responses. Disabling ETag suppresses generated tag matching and output, while
   `If-None-Match: *` still tests whether the selected representation exists and takes precedence
   over `If-Modified-Since`.
@@ -355,7 +355,9 @@ HAProxy directives:
   use those compatibility defaults: it materializes nginx's effective 20-byte, HTTP/1.1,
   `gzip_proxied off`, and `gzip_vary off` policy. Streaming compression emits gzip only, combines
   repeated `Accept-Encoding` fields, honors quality zero and wildcard rules, and applies an exact
-  coding before a wildcard. HTTP and RTMP access logs are either disabled or use the
+  coding before a wildcard. Compression is limited to nginx's 200, 403, and 404 response status
+  set; eligible representations still emit `Vary` when request version or `Via` policy suppresses
+  compression. HTTP and RTMP access logs are either disabled or use the
   implementation's fixed structured format at one validated absolute path; custom format strings
   are deliberately absent. HTTP JSONL logging uses a bounded asynchronous writer opened through
   descriptor-pinned ancestors. HTTP access events omit URI, query, Authorization, Cookie, and
