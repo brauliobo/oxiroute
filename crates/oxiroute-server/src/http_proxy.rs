@@ -208,7 +208,7 @@ impl ProxyHttp for HttpReverseProxy {
             }
         }
 
-        if !bounded_request_header_sources(session, &route)? {
+        if !bounded_request_header_sources(session, &route) {
             session.respond_error(431).await?;
             return Ok(true);
         }
@@ -1162,12 +1162,9 @@ fn proxy_route(ctx: &HttpRequestContext) -> &HttpRoutePlan {
     ctx.route.as_ref().expect("proxy route context")
 }
 
-fn bounded_request_header_sources(
-    session: &Session,
-    route: &HttpRoutePlan,
-) -> pingora::Result<bool> {
+fn bounded_request_header_sources(session: &Session, route: &HttpRoutePlan) -> bool {
     let HttpActionPlan::Proxy(proxy) = &route.action else {
-        return Ok(true);
+        return true;
     };
     for mutation in &proxy.policy.request_headers {
         let RequestHeaderMutationPlan::Set { value, .. } = mutation else {
@@ -1181,28 +1178,13 @@ fn bounded_request_header_sources(
                 if source_matches_exception(session, except_source_cidrs) {
                     continue;
                 }
-                let client_bytes = session
-                    .client_addr()
-                    .and_then(|address| address.as_inet())
-                    .map(|address| address.ip().to_string().len())
-                    .ok_or_else(|| Error::new_in(ErrorType::Custom("ClientIpUnavailable")))?;
-                let Ok(existing) = joined_header_values(
-                    session.req_header(),
-                    &HeaderName::from_static("x-forwarded-for"),
-                    *max_bytes,
-                ) else {
-                    return Ok(false);
-                };
-                let total = existing.as_ref().map_or(0, Vec::len)
-                    + usize::from(existing.is_some()) * 2
-                    + client_bytes;
-                if total > *max_bytes {
-                    return Ok(false);
+                if appended_x_forwarded_for(session, *max_bytes).is_err() {
+                    return false;
                 }
             }
             RequestHeaderValuePlan::IncomingHeader { name, max_bytes } => {
                 if joined_header_values(session.req_header(), name, *max_bytes).is_err() {
-                    return Ok(false);
+                    return false;
                 }
             }
             RequestHeaderValuePlan::Literal(_)
@@ -1214,7 +1196,7 @@ fn bounded_request_header_sources(
             | RequestHeaderValuePlan::SelectedUpstreamHost => {}
         }
     }
-    Ok(true)
+    true
 }
 
 fn content_length(headers: &http::HeaderMap) -> Result<Option<u64>, ()> {
@@ -2021,6 +2003,37 @@ mod tests {
             }],
             ..HttpProxyPolicy::default()
         });
+        let selector = Arc::new(
+            RoundRobinPool::new_named(
+                "unix-xff".into(),
+                [RuntimeEndpoint::Socket {
+                    address: "127.0.0.1:1".parse().unwrap(),
+                }],
+                UpstreamAlgorithm::RoundRobin,
+                false,
+            )
+            .unwrap(),
+        );
+        let route = HttpRoutePlan {
+            access: None,
+            action: HttpActionPlan::Proxy(crate::http_action::ProxyActionPlan {
+                pool: Arc::new(UpstreamPlan::with_policy(
+                    selector,
+                    None,
+                    None,
+                    None,
+                    UpstreamConnectionReuse::Safe,
+                )),
+                policy,
+            }),
+            policy: crate::http_action::RoutePolicyPlan::compile(
+                oxiroute_config::HttpRoutePolicy::default(),
+            ),
+            route_id: "unix-xff".into(),
+        };
+        let HttpActionPlan::Proxy(proxy) = &route.action else {
+            unreachable!()
+        };
         let RequestHeaderMutationPlan::Set {
             value:
                 RequestHeaderValuePlan::AppendedXForwardedFor {
@@ -2028,7 +2041,7 @@ mod tests {
                     ..
                 },
             ..
-        } = &policy.request_headers[0]
+        } = &proxy.policy.request_headers[0]
         else {
             panic!("compiled X-Forwarded-For mutation")
         };
@@ -2038,6 +2051,7 @@ mod tests {
         .await;
 
         assert!(!source_matches_exception(&session, except_source_cidrs));
+        assert!(bounded_request_header_sources(&session, &route));
         assert_eq!(
             appended_x_forwarded_for(&session, 128).unwrap(),
             Some(HeaderValue::from_static("trusted"))
@@ -2045,6 +2059,7 @@ mod tests {
 
         let (session, _client) =
             unix_request_session(b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n").await;
+        assert!(bounded_request_header_sources(&session, &route));
         assert_eq!(appended_x_forwarded_for(&session, 128).unwrap(), None);
     }
 
