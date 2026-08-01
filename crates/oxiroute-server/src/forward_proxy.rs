@@ -1145,9 +1145,13 @@ fn cidr_contains(network: &str, address: IpAddr) -> bool {
 
 fn source_cidrs_match(cidrs: &[String], client_addr: Option<SocketAddr>) -> bool {
     client_addr.is_some_and(|client_addr| {
-        cidrs
-            .iter()
-            .any(|network| cidr_contains(network, client_addr.ip()))
+        let address = match client_addr.ip() {
+            IpAddr::V6(address) => address
+                .to_ipv4_mapped()
+                .map_or(IpAddr::V6(address), IpAddr::V4),
+            IpAddr::V4(address) => IpAddr::V4(address),
+        };
+        cidrs.iter().any(|network| cidr_contains(network, address))
     })
 }
 
@@ -1165,5 +1169,17 @@ mod tests {
     #[test]
     fn missing_inet_peer_never_matches_source_cidrs() {
         assert!(!source_cidrs_match(&["0.0.0.0/0".into()], None));
+    }
+
+    #[test]
+    fn ipv4_mapped_peer_matches_ipv4_source_cidr() {
+        let client_addr = "[::ffff:127.0.0.1]:54321"
+            .parse()
+            .expect("mapped loopback address");
+
+        assert!(source_cidrs_match(
+            &["127.0.0.0/8".into()],
+            Some(client_addr)
+        ));
     }
 }
