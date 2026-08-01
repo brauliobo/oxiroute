@@ -1500,7 +1500,6 @@ fn blocks_implicit_nginx_proxy_defaults_and_unrepresented_tls_or_logging_policy(
     for omitted in [
         "proxy_http_version",
         "proxy_buffering",
-        "proxy_request_buffering",
         "proxy_ignore_headers",
     ] {
         let mut policies = vec![
@@ -1525,6 +1524,12 @@ fn blocks_implicit_nginx_proxy_defaults_and_unrepresented_tls_or_logging_policy(
         assert!(report.has_errors(), "omitted {omitted}");
         assert!(report.config.is_none(), "omitted {omitted}");
     }
+
+    let report = import_source(
+        "http { proxy_http_version 1.1; proxy_buffering off; proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset; upstream backend { server 127.0.0.1:8080; } server { listen 127.0.0.1:8080 default_server; server_name test.example; location / { proxy_pass http://backend; } } }",
+    );
+    let config = report.config.expect("nginx default request buffering");
+    assert!(config.http_services[0].routes[0].policy.request_buffering);
 
     for directive in [
         "access_log /var/log/nginx/access.log combined;",

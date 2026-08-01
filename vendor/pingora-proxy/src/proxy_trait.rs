@@ -133,6 +133,12 @@ pub trait ProxyHttp {
         Ok(())
     }
 
+    /// Return a bounded capacity when the complete request body must be read before connecting
+    /// upstream. The buffered body is replayed through the normal body-filter path.
+    fn request_body_buffer_limit(&self, _ctx: &Self::CTX) -> Option<usize> {
+        None
+    }
+
     /// This filter decides if the request is cacheable and what cache backend to use
     ///
     /// The caller can interact with `Session.cache` to enable caching.

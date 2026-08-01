@@ -814,6 +814,39 @@ where
             }
         }
 
+        if let Some(capacity) = self.inner.request_body_buffer_limit(&ctx) {
+            session
+                .downstream_session
+                .enable_retry_buffering_with_capacity(capacity);
+            loop {
+                match session.downstream_session.read_request_body().await {
+                    Ok(Some(_)) => {
+                        if session.downstream_session.retry_buffer_truncated() {
+                            return self
+                                .handle_error(
+                                    session,
+                                    &mut ctx,
+                                    Error::new_down(HTTPStatus(413)),
+                                    "Buffered request body exceeds its configured limit:",
+                                )
+                                .await;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(error) => {
+                        return self
+                            .handle_error(
+                                session,
+                                &mut ctx,
+                                error,
+                                "Failed to buffer request body:",
+                            )
+                            .await;
+                    }
+                }
+            }
+        }
+
         if let Some((reuse, err)) = self.proxy_cache(&mut session, &mut ctx).await {
             // cache hit
             return self.finish(session, &mut ctx, reuse, err).await;

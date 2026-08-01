@@ -1526,6 +1526,79 @@ async fn retries_a_request_body_when_connection_failure_happens_before_send() {
 }
 
 #[tokio::test]
+async fn request_buffering_reads_the_complete_body_before_connecting_upstream() {
+    timeout(TEST_TIMEOUT, async {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("buffered origin bind");
+        let address = listener.local_addr().expect("buffered origin address");
+        let mut buffered_route = route(None, "/", &[], "buffered");
+        buffered_route.policy.request_buffering = true;
+        let proxy = ProxyHarness::start(
+            vec![pool("buffered", &[address])],
+            vec![buffered_route],
+            1024,
+            1,
+        )
+        .await;
+        let mut client = TcpStream::connect(proxy.address)
+            .await
+            .expect("buffered client");
+        client
+            .write_all(
+                b"POST / HTTP/1.1\r\nHost: buffered.test\r\nContent-Length: 8\r\nConnection: close\r\n\r\npart",
+            )
+            .await
+            .expect("partial buffered request");
+
+        assert!(
+            timeout(Duration::from_millis(100), listener.accept())
+                .await
+                .is_err(),
+            "origin was contacted before the complete request body arrived"
+        );
+
+        client
+            .write_all(b"body")
+            .await
+            .expect("complete buffered request");
+        let (mut upstream, _) = listener.accept().await.expect("buffered origin accept");
+        let mut request = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        loop {
+            let read = upstream
+                .read(&mut chunk)
+                .await
+                .expect("buffered origin request");
+            assert_ne!(read, 0, "buffered origin request ended early");
+            request.extend_from_slice(&chunk[..read]);
+            if request
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .is_some_and(|header_end| request.len() >= header_end + 4 + 8)
+            {
+                break;
+            }
+        }
+        assert!(request.ends_with(b"partbody"), "request: {request:?}");
+        upstream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .await
+            .expect("buffered origin response");
+
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("buffered response");
+        assert!(response.ends_with(b"ok"), "response: {response:?}");
+        proxy.finish().await;
+    })
+    .await
+    .expect("request buffering test timed out");
+}
+
+#[tokio::test]
 async fn does_not_retry_after_an_upstream_connection_is_established() {
     timeout(TEST_TIMEOUT, async {
         let disconnecting = Origin::start_disconnecting().await;

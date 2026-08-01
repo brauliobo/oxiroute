@@ -622,6 +622,15 @@ impl Session {
         }
     }
 
+    pub fn enable_retry_buffering_with_capacity(&mut self, capacity: usize) {
+        match self {
+            Self::H1(s) => s.enable_retry_buffering_with_capacity(capacity),
+            Self::H2(s) => s.enable_retry_buffering_with_capacity(capacity),
+            Self::Subrequest(s) => s.enable_retry_buffering_with_capacity(capacity),
+            Self::Custom(s) => s.enable_retry_buffering_with_capacity(capacity),
+        }
+    }
+
     pub fn get_retry_buffer(&self) -> Option<Bytes> {
         match self {
             Self::H1(s) => s.get_retry_buffer(),
