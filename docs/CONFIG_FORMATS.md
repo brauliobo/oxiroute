@@ -17,8 +17,8 @@ The source pipeline has one semantics regardless of syntax:
    ambiguous constructs. Extract strict top-level native-server declarations.
 4. Expand generic root `templates` and exact object `use` markers. Objects merge recursively, arrays
    and scalars replace, local fields override templates, and cycles are rejected.
-5. Deserialize any inline fragment into `oxiroute_config::Config` and resolve each `nginx_server`
-   and `haproxy_server` through the existing complete native import pipeline.
+5. Deserialize any inline fragment into `oxiroute_config::Config` and resolve each `nginx_server`,
+   `haproxy_server`, and `squid_server` through the existing complete native import pipeline.
 6. Compose the inline fragment first and imported fragments in declaration order. Reject conflicting
    process-wide values, duplicate identities, dangling references, and every non-final native import.
 7. Apply schema defaults, normalize, validate, and render deterministic KDL. The SHA-256 of those KDL
@@ -113,11 +113,15 @@ haproxy_server "/etc/haproxy/haproxy.cfg" "/etc/haproxy/conf.d" {
   node_ip "10.0.0.11"
   gpu1_defined #false
 }
+
+squid_server "/etc/squid/squid.conf" {
+  externalize_cache #true
+}
 ```
 
-KDL permits repeated `nginx_server` and `haproxy_server` nodes. nginx takes exactly one positional
-path; HAProxy takes one or more ordered positional paths. Child options must be untyped scalar nodes,
-and properties are rejected.
+KDL permits repeated native server nodes. nginx and Squid take exactly one positional path; HAProxy
+takes one or more ordered positional paths. Child options must be untyped scalar nodes, and
+properties are rejected.
 
 HOCON uses a single object or an array of objects with these exact shapes:
 
@@ -131,10 +135,14 @@ haproxy_server = [{
   node_ip = "10.0.0.11"
   gpu1_defined = false
 }]
+squid_server = {
+  path = "squid.conf"
+  externalize_cache = true
+}
 ```
 
-UCI uses named source sections. `nginx_server` accepts scalar `option` entries; `haproxy_server`
-uses ordered `list path` entries and optional scalar preprocessing values:
+UCI uses named source sections. `nginx_server` and `squid_server` accept scalar `option` entries;
+`haproxy_server` uses ordered `list path` entries and optional scalar preprocessing values:
 
 ```uci
 config nginx_server 'web'
@@ -146,12 +154,17 @@ config haproxy_server 'edge'
   list path 'backend.cfg'
   option node_ip '10.0.0.11'
   option gpu1_defined '0'
+
+config squid_server 'proxy'
+  option path 'squid.conf'
+  option externalize_cache '1'
 ```
 
 nginx reference options are exactly `path`, `root_prefix`, `host_timezone`,
 `default_access_log_file`, `recording_root`, and `default_error_server`. HAProxy reference options are
 exactly ordered `paths`, optional `node_ip`, and `gpu1_defined`; true `gpu1_defined` requires
-`node_ip`. Relative paths, including an explicitly relative nginx `root_prefix`, resolve from the
+`node_ip`. Squid accepts `path` and `externalize_cache`; the latter is required when parsed refresh
+rules would otherwise be discarded by direct non-caching forwarding. Relative paths, including an explicitly relative nginx `root_prefix`, resolve from the
 OxiRoute source document directory. Unknown options, empty paths, native blockers, or an invalid
 composed namespace reject the complete OxiRoute source; partial native candidates are never
 activated.

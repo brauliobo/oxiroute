@@ -102,13 +102,17 @@ listener semantics must block the affected service.
 
 ## Milestone 3: explicit forward proxy
 
-- Dedicated HTTP/1 absolute-form parser and CONNECT tunnel with over-read preservation.
-- Default-deny ACL engine for identity, source, destination, method, port, and time.
-- DNS and resolved-IP egress policy to prevent open-proxy and SSRF behavior.
-- Static or mTLS proxy authentication first.
-- Squid importer for the independently implemented supported subset (a bounded source/parser/typed
-  semantic foundation exists, including root/include identity and glob-set rechecks; canonical
-  lowering and daemon runtime integration remain).
+- Dedicated HTTP/1 absolute-form parser and bounded CONNECT tunnel with over-read preservation
+  (integrated for the HTTP/1 daemon listener; broader conformance remains).
+- Ordered first-match ACL engine for identity, source, destination, method, and port (integrated for
+  the audited Squid subset; time and helper-backed predicates remain).
+- DNS and resolved-IP egress policy to prevent open-proxy and SSRF behavior (integrated with bounded
+  custom/system resolution and exact approved-address connection).
+- Static or mTLS proxy authentication first (Bearer and bounded bcrypt/APR1 htpasswd Basic are
+  integrated; mTLS remains).
+- Squid importer for the independently implemented supported subset (bounded source/parser/typed
+  semantics, canonical direct-forward lowering, CLI/native references, and daemon runtime are
+  integrated; cache/refresh semantics remain explicitly non-equivalent).
 - HTTP/2 CONNECT only after stream takeover semantics have dedicated conformance tests.
 
 Defer TLS interception, transparent proxying, ICAP/eCAP, NTLM/Negotiate helpers, cache

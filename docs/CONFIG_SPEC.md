@@ -57,9 +57,16 @@ return {
     {
       name = "web",
       bind = { type = "socket", address = "127.0.0.1:8443" },
-      protocol = "http", -- http | tcp | rtmp
+      protocol = "http", -- http | forward_http1 | tcp | rtmp
       service = "web",
       tls_profile = "public-tls",
+      max_connections = 10000,
+    },
+    {
+      name = "forward",
+      bind = { type = "socket", address = "127.0.0.1:3128" },
+      protocol = "forward_http1",
+      service = "forward",
       max_connections = 10000,
     },
     {
@@ -159,6 +166,32 @@ return {
       },
     },
   },
+  forward_proxy_services = {
+    {
+      name = "forward",
+      enabled_versions = { "h1" },
+      allow_absolute_form = true,
+      tls_required = false,
+      connect = { enabled = true, allowed_ports = { 443 } },
+      auth = {
+        type = "basic_htpasswd_file",
+        htpasswd_file_path = "/etc/oxiroute/proxy.htpasswd",
+        realm = "Private proxy",
+        username_case_sensitive = true,
+      },
+      access_policy = {
+        rules = {
+          { action = "allow", conditions = { { type = "authenticated" } } },
+          { action = "deny", conditions = { { type = "all" } } },
+        },
+        default_action = "deny",
+      },
+      destination_policy = { deny_private = true },
+      header_policy = { forwarded_for = "delete", via = "delete" },
+      resolver = {},
+      audit_mode = "off",
+    },
+  },
   rtmp_services = {
     {
       name = "live",
@@ -217,7 +250,7 @@ Current constraints:
   `0600`. GET and HEAD can never mutate pool state. Metric labels omit listener binds, upstream
   addresses, paths, stream keys, and token material.
 - Names MUST be unique within their certificate, TLS-profile, listener, pool, HTTP-service,
-  RTMP-service, or L4-service namespace.
+  forward-proxy-service, RTMP-service, or L4-service namespace.
 - Listener binds MUST be unique after normalization.
 - Names MUST contain non-whitespace text without surrounding whitespace or control characters.
 - A listener `bind` is exactly one tagged object: `{ type = "socket", address = "IP:port" }` or
@@ -228,12 +261,12 @@ Current constraints:
 - Unix paths MUST be valid UTF-8 absolute paths of at most 107 bytes. Repeated `/` separators are
   collapsed; a root-only path, trailing `/`, NUL, and `.` or `..` segments are rejected. Unix
   listeners and upstreams can start only on Unix platforms. A Unix listener cannot use TLS.
-- HTTP, RTMP, and TCP listeners MUST reference an existing same-kind service. An RTMP service MUST
-  contain between 1 and 256 unique applications, and one configuration accepts at most 64 RTMP
-  services.
-- `tls_profile` is optional and accepted only on HTTP listeners. Its named TLS profile and that
-  profile's named certificate MUST exist. TCP and RTMP listeners reject `tls_profile` rather than
-  implicitly changing protocol behavior.
+- HTTP, forward-HTTP/1, RTMP, and TCP listeners MUST reference an existing same-kind service. An
+  RTMP service MUST contain between 1 and 256 unique applications, and one configuration accepts at
+  most 64 RTMP services.
+- `tls_profile` is optional and accepted only on reverse HTTP listeners. Its named TLS profile and
+  that profile's named certificate MUST exist. Forward-HTTP/1, TCP, and RTMP listeners reject
+  `tls_profile` rather than implicitly changing protocol behavior.
 - `max_connections` omitted or set to `null` means unbounded admission. A configured limit MUST be
   positive and no greater than `9007199254740991` so the monitoring API and UI preserve it exactly.
   Excess accepted connections are closed immediately after TCP accept, before TLS handshakes or
@@ -267,6 +300,18 @@ Current constraints:
   When every eligible server is at capacity, `queue_timeout_ms` bounds the wait for a released slot;
   timeout and cancellation remove exactly one waiter.
 - HTTP services MUST contain at least one route. Route pool references MUST resolve.
+- Forward HTTP/1 services support absolute-form requests and CONNECT only when H1 is enabled.
+  CONNECT ports are explicit. Authentication is absent, Bearer-token-file, or Basic htpasswd-file;
+  Basic username handling either preserves the client spelling or lowercases the client username
+  before exact htpasswd lookup. An optional credential TTL caches a bounded, salted digest of each
+  externally validated username/password pair; cache misses securely reload and verify the current
+  file. Secret files are descriptor-safe regular files with restrictive ownership/modes. Ordered access
+  rules use method, source CIDR, destination-port, authenticated, local, link-local, manager, and
+  all matchers with optional negation. Destination domain/CIDR rules apply to the complete DNS
+  answer, deny rules override allow rules, and `deny_private` rejects non-public addresses. Resolver
+  cache/query/address/TTL limits, connection/body/header limits, connect/idle/lifetime deadlines,
+  header privacy, and metadata-only audit mode are explicit. H2/H3 labels fail preparation because
+  no integrated listener implements them.
 - Listener `downstream_timeouts` independently represents optional client, request-header, and HTTP
   keepalive deadlines from 1 through 86400000 milliseconds. Request and keepalive deadlines are
   accepted only on HTTP listener protocols. The HTTP runtime enforces all three through downstream
@@ -799,7 +844,7 @@ restricted Lua, UCI, or HOCON.
 - A successful UI save normalizes formatting and field order.
 - Comments, source formatting, Lua expressions, HOCON substitutions/merges, UCI record names,
   templates, and native-reference declarations do not round-trip through a typed save.
-- A root using `templates`, `nginx_server`, or `haproxy_server` is marked compositional. The backend
+- A root using `templates`, `nginx_server`, `haproxy_server`, or `squid_server` is marked compositional. The backend
   rejects typed replacement of that root with `E_COMPOSITIONAL_ROOT`; operators must edit the source
   graph directly or explicitly flatten it with `config compose` into a separately owned file.
 - The API MUST state that normalization will occur before accepting a save.
