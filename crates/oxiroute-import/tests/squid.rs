@@ -3,8 +3,7 @@
 use std::{ffi::OsString, fs, net::IpAddr, path::PathBuf, time::Duration};
 
 use oxiroute_import::{
-    DiagnosticStage, E_INCLUDE_CYCLE, E_SEMANTICS_NOT_REPRESENTABLE, E_UNSUPPORTED_FEATURE,
-    SourceFile, SourceId,
+    DiagnosticStage, E_INCLUDE_CYCLE, E_UNSUPPORTED_FEATURE, SourceFile, SourceId,
     squid::{
         AccessAction, AccessEvaluation, AclReferenceResolution, AclType, Activation,
         AuthenticationValue, BuiltinAcl, DecisionOutcome, DirectiveFamily, DirectiveResolution,
@@ -21,6 +20,85 @@ fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/squid")
         .join(name)
+}
+
+#[test]
+fn canonical_lowering_fails_closed_for_unrepresented_defaults_and_connect_ranges() {
+    let directory = tempdir().expect("fixture directory");
+    for (name, source, expected) in [
+        (
+            "implicit-defaults.conf",
+            "http_port 3128\nacl ssl_ports port 443\nhttp_access deny CONNECT !ssl_ports\nhttp_access allow all\n",
+            SemanticBlockerKind::ForwardedForPolicy,
+        ),
+        (
+            "connect-range.conf",
+            "http_port 3128\naccess_log none\nforwarded_for delete\nvia off\nacl ssl_ports port 443-444\nhttp_access deny CONNECT !ssl_ports\nhttp_access allow all\n",
+            SemanticBlockerKind::DestinationPortAcl,
+        ),
+        (
+            "connect-allow-before-guard.conf",
+            "http_port 3128\naccess_log none\nforwarded_for delete\nvia off\nacl ssl_ports port 443\nhttp_access allow localhost\nhttp_access deny CONNECT !ssl_ports\nhttp_access allow all\n",
+            SemanticBlockerKind::DestinationPortAcl,
+        ),
+        (
+            "active-log.conf",
+            "http_port 3128\naccess_log stdio:/tmp/access.log\nforwarded_for delete\nvia off\nacl ssl_ports port 443\nhttp_access deny CONNECT !ssl_ports\nhttp_access allow all\n",
+            SemanticBlockerKind::AccessLoggingPolicy,
+        ),
+        (
+            "dns-control.conf",
+            "http_port 3128\naccess_log none\nforwarded_for delete\nvia off\ndns_timeout 30 seconds\nacl ssl_ports port 443\nhttp_access deny CONNECT !ssl_ports\nhttp_access allow all\n",
+            SemanticBlockerKind::ResolverPolicy,
+        ),
+        (
+            "https-port.conf",
+            "http_port 3128\nhttps_port 3129\naccess_log none\nforwarded_for delete\nvia off\nacl ssl_ports port 443\nhttp_access deny CONNECT !ssl_ports\nhttp_access allow all\n",
+            SemanticBlockerKind::ForwardProxyListener,
+        ),
+        (
+            "unsupported-auth-setting.conf",
+            "http_port 3128\naccess_log none\nforwarded_for delete\nvia off\nacl ssl_ports port 443\nhttp_access deny CONNECT !ssl_ports\nauth_param basic program /usr/lib/squid/basic_ncsa_auth /tmp/users\nauth_param basic realm Private proxy\nauth_param basic credentialsttl 2 hours\nauth_param basic utf8 on\nacl authenticated proxy_auth REQUIRED\nhttp_access allow authenticated\nhttp_access deny all\n",
+            SemanticBlockerKind::ProxyAuthentication,
+        ),
+    ] {
+        let path = directory.path().join(name);
+        fs::write(&path, source).expect("Squid fixture");
+        let report = import(&path);
+        assert!(report.config.is_none(), "{name} unexpectedly finalized");
+        assert!(report.has_errors(), "{name} lacks a blocking diagnostic");
+        assert!(
+            report
+                .blocked_capabilities
+                .iter()
+                .any(|capability| capability.kind == expected),
+            "{name} lacks {expected:?}"
+        );
+    }
+}
+
+#[test]
+fn canonical_validation_failures_remain_blocking_diagnostics() {
+    let directory = tempdir().expect("fixture directory");
+    let path = directory.path().join("too-many-connect-ports.conf");
+    let ports = (1_u16..=65)
+        .map(|port| port.to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+    fs::write(
+        &path,
+        format!(
+            "http_port 3128\naccess_log none\nforwarded_for delete\nvia off\nacl ssl_ports port {ports}\nhttp_access deny CONNECT !ssl_ports\nhttp_access allow all\n"
+        ),
+    )
+    .expect("Squid fixture");
+
+    let report = import(&path);
+    assert!(report.config.is_none());
+    assert!(report.diagnostics.iter().any(|diagnostic| {
+        diagnostic.stage() == DiagnosticStage::Validate
+            && diagnostic.code() == oxiroute_import::E_SEMANTICS_NOT_REPRESENTABLE
+    }));
 }
 
 #[test]
@@ -161,16 +239,31 @@ fn assert_hostrouter_authentication(report: &oxiroute_import::squid::ImportRepor
 }
 
 #[test]
-fn hostrouter_report_uses_precise_missing_capabilities_without_placeholders() {
+fn hostrouter_report_lowers_to_a_complete_forward_proxy_candidate() {
     let report = import(&fixture("hostrouter-sanitized.conf"));
-    assert!(report.config.is_none());
-    assert!(report.draft.listeners.is_empty());
+    let config = report.config.as_ref().expect("finalized Squid candidate");
+    assert_eq!(config.listeners.len(), 1);
+    assert_eq!(config.forward_proxy_services.len(), 1);
+    assert_eq!(
+        config.forward_proxy_services[0].connect.allowed_ports,
+        [31_000]
+    );
+    assert!(config.forward_proxy_services[0].access_policy.is_some());
+    assert!(matches!(
+        config.forward_proxy_services[0].auth.as_ref(),
+        Some(oxiroute_config::ForwardProxyAuth::BasicHtpasswdFile {
+            username_case_sensitive: false,
+            ..
+        })
+    ));
     assert!(report.canonical_provenance.is_empty());
-    assert_eq!(hostrouter_blockers(&report), hostrouter_expected_blockers());
-    assert!(report.diagnostics.iter().all(|diagnostic| {
-        diagnostic.code() == E_SEMANTICS_NOT_REPRESENTABLE
-            && diagnostic.stage() == DiagnosticStage::Lower
-    }));
+    assert!(hostrouter_blockers(&report).is_empty());
+    assert_eq!(report.diagnostics.len(), 1);
+    assert_eq!(
+        report.diagnostics[0].severity(),
+        oxiroute_import::Severity::Warning
+    );
+    assert_eq!(report.diagnostics[0].code(), E_UNSUPPORTED_FEATURE);
     assert!(!report.diagnostics.iter().any(|diagnostic| {
         matches!(
             diagnostic.code(),
@@ -187,22 +280,6 @@ fn hostrouter_blockers(
         .iter()
         .map(|blocker| (blocker.kind, blocker.occurrences.len()))
         .collect()
-}
-
-fn hostrouter_expected_blockers() -> Vec<(SemanticBlockerKind, usize)> {
-    vec![
-        (SemanticBlockerKind::ForwardProxyListener, 1),
-        (SemanticBlockerKind::SourceAddressAcl, 2),
-        (SemanticBlockerKind::DestinationPortAcl, 11),
-        (SemanticBlockerKind::ProxyAuthenticationAcl, 1),
-        (SemanticBlockerKind::OrderedHttpAccess, 9),
-        (SemanticBlockerKind::RefreshPolicy, 3),
-        (SemanticBlockerKind::ProxyAuthentication, 3),
-        (SemanticBlockerKind::AccessLoggingPolicy, 1),
-        (SemanticBlockerKind::ResolverPolicy, 1),
-        (SemanticBlockerKind::ForwardedForPolicy, 1),
-        (SemanticBlockerKind::ViaPolicy, 1),
-    ]
 }
 
 fn hostrouter_behavior_matrix() -> Vec<(DirectiveSemantics, DirectiveResolution, Activation)> {
@@ -294,8 +371,8 @@ fn hostrouter_behavior_matrix() -> Vec<(DirectiveSemantics, DirectiveResolution,
     matrix.extend((0..3).map(|_| {
         (
             DirectiveSemantics::RefreshPattern,
-            DirectiveResolution::OrderedFirstMatch,
-            blocked(SemanticBlockerKind::RefreshPolicy),
+            DirectiveResolution::Externalized,
+            Activation::Externalized,
         )
     }));
     matrix
@@ -490,9 +567,11 @@ fn cache_peer_credentials_become_typed_secret_facts() {
     let typed_peer = format!("{peer:?}");
     assert!(!typed_peer.contains("synthetic-password"));
     assert!(!typed_peer.contains("synthetic-token"));
-    assert_eq!(
-        report.blocked_capabilities[0].kind,
-        SemanticBlockerKind::CachePeerHierarchy
+    assert!(
+        report
+            .blocked_capabilities
+            .iter()
+            .any(|blocked| blocked.kind == SemanticBlockerKind::CachePeerHierarchy)
     );
 }
 
@@ -533,17 +612,18 @@ fn cache_policy_and_storage_are_classified_without_placeholders() {
     assert_eq!(report.effective.storage.len(), 1);
     assert!(report.draft.listeners.is_empty());
     assert!(report.config.is_none());
-    assert_eq!(
-        report
-            .blocked_capabilities
-            .iter()
-            .map(|blocker| blocker.kind)
-            .collect::<Vec<_>>(),
-        [
-            SemanticBlockerKind::CachePolicy,
-            SemanticBlockerKind::StoragePolicy
-        ]
-    );
+    for kind in [
+        SemanticBlockerKind::ForwardProxyListener,
+        SemanticBlockerKind::CachePolicy,
+        SemanticBlockerKind::StoragePolicy,
+    ] {
+        assert!(
+            report
+                .blocked_capabilities
+                .iter()
+                .any(|blocked| blocked.kind == kind)
+        );
+    }
 }
 
 #[test]
@@ -618,7 +698,7 @@ fn lowering_adapter_receives_typed_ir_without_a_duplicate_schema() {
     }
 
     let report = import(&fixture("hostrouter-sanitized.conf"));
-    assert_eq!(report.lower_with(&CountAdapter), Ok((1, 35, 11)));
+    assert_eq!(report.lower_with(&CountAdapter), Ok((1, 35, 0)));
 }
 
 #[test]

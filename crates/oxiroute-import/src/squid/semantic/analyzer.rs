@@ -11,14 +11,14 @@ use super::super::{
 };
 use super::model::{
     AccessAction, AccessListKind, AccessPolicy, AccessRule, AclDefinition, AclMatcher,
-    AclReferenceResolution, AclTerm, AclType, Activation, AuthenticationParameter,
-    AuthenticationScheme, AuthenticationSetting, AuthenticationValue, BuiltinAcl, CacheDirective,
-    CachePeer, CachePeerType, Decision, DecisionLedger, DecisionOutcome, DirectiveFamily,
-    DirectiveOrigin, DirectiveResolution, DirectiveSemantics, DnsNameservers, EffectiveAcl,
-    EffectiveConfiguration, ForwardedForMode, LogDestination, LoggingDirective, NativeValue,
-    OpaqueDirective, PeerOption, PortDirective, PortKind, PortOption, PrivacyDirective,
-    ProcessDirective, ProxyAuthMatcher, RefreshOption, RefreshPattern, SecretFact, SecretKind,
-    SemanticBlockerKind, StorageDirective,
+    AclReferenceResolution, AclTerm, AclType, Activation, AuthenticationHelper,
+    AuthenticationParameter, AuthenticationRealm, AuthenticationScheme, AuthenticationSetting,
+    AuthenticationValue, BuiltinAcl, CacheDirective, CachePeer, CachePeerType, Decision,
+    DecisionLedger, DecisionOutcome, DirectiveFamily, DirectiveOrigin, DirectiveResolution,
+    DirectiveSemantics, DnsNameservers, EffectiveAcl, EffectiveConfiguration, ForwardedForMode,
+    LogDestination, LoggingDirective, NativeValue, OpaqueDirective, PeerOption, PortDirective,
+    PortKind, PortOption, PrivacyDirective, ProcessDirective, ProxyAuthMatcher, RefreshOption,
+    RefreshPattern, SecretFact, SecretKind, SemanticBlockerKind, StorageDirective,
 };
 
 #[must_use]
@@ -298,18 +298,15 @@ impl<'a> Analyzer<'a> {
             return;
         };
         let options = options.iter().map(parse_port_option).collect::<Vec<_>>();
-        let blocker = if options
-            .iter()
-            .any(|option| matches!(option, PortOption::Unsupported(_)))
-        {
+        let blocker = if options.is_empty() {
+            SemanticBlockerKind::ForwardProxyListener
+        } else {
             self.diagnostics.push(Self::diagnostic(
                 expanded,
                 E_UNSUPPORTED_FEATURE,
                 "Squid port contains an unsupported option",
             ));
             SemanticBlockerKind::UnsupportedPortOption
-        } else {
-            SemanticBlockerKind::ForwardProxyListener
         };
         self.effective.ports.push(PortDirective {
             origin: origin(expanded),
@@ -427,7 +424,7 @@ impl<'a> Analyzer<'a> {
             expanded,
             DirectiveFamily::Refresh,
             DirectiveSemantics::RefreshPattern,
-            Activation::Blocked(SemanticBlockerKind::RefreshPolicy),
+            Activation::Externalized,
         );
     }
 
@@ -1021,21 +1018,67 @@ impl<'a> Analyzer<'a> {
                             parameters: Vec::new(),
                             program: None,
                             realm: None,
+                            basic_program: None,
+                            realm_value: None,
                             credential_ttl: None,
+                            case_sensitive: None,
+                            unsupported_settings: false,
                         });
                     self.effective.authentication_schemes.len() - 1
                 });
             let scheme = &mut self.effective.authentication_schemes[index];
             scheme.parameters.push(parameter.origin.occurrence);
             match parameter.value {
-                AuthenticationValue::Helper(secret) => scheme.program = Some(secret),
-                AuthenticationValue::Realm(secret) => scheme.realm = Some(secret),
+                AuthenticationValue::Helper(secret) => {
+                    scheme.program = Some(secret);
+                    if parameter.setting == AuthenticationSetting::Program {
+                        let arguments = self
+                            .graph
+                            .expanded_directives
+                            .get(parameter.origin.occurrence.get())
+                            .map(|expanded| {
+                                expanded
+                                    .directive
+                                    .arguments
+                                    .iter()
+                                    .skip(2)
+                                    .map(|word| word.value.clone())
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        scheme.basic_program = Some(AuthenticationHelper { secret, arguments });
+                    }
+                }
+                AuthenticationValue::Realm(secret) => {
+                    scheme.realm = Some(secret);
+                    let value = self
+                        .graph
+                        .expanded_directives
+                        .get(parameter.origin.occurrence.get())
+                        .map(|expanded| {
+                            expanded
+                                .directive
+                                .arguments
+                                .iter()
+                                .skip(2)
+                                .map(|word| word.value.as_slice())
+                                .collect::<Vec<_>>()
+                                .join(&b' ')
+                        })
+                        .unwrap_or_default();
+                    scheme.realm_value = Some(AuthenticationRealm { secret, value });
+                }
                 AuthenticationValue::Duration(duration)
                     if parameter.setting == AuthenticationSetting::CredentialTtl =>
                 {
                     scheme.credential_ttl = Some(duration);
                 }
-                _ => {}
+                AuthenticationValue::Boolean(value)
+                    if parameter.setting == AuthenticationSetting::CaseSensitive =>
+                {
+                    scheme.case_sensitive = Some(value);
+                }
+                _ => scheme.unsupported_settings = true,
             }
         }
     }

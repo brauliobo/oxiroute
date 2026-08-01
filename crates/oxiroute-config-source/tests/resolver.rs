@@ -41,6 +41,59 @@ haproxy_server "frontend.cfg" "backend.cfg" {
 }
 
 #[test]
+fn concise_kdl_imports_a_complete_squid_forward_proxy_root() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../oxiroute-import/tests/fixtures/squid/hostrouter-sanitized.conf");
+    let source_path = root.parent().unwrap().join("host.kdl");
+    let source = format!("squid_server {root:?} {{ externalize_cache #true }}\n");
+    let resolved = resolve_source(&source_path, source.as_bytes()).expect("resolved Squid KDL");
+    assert_eq!(resolved.config.listeners.len(), 1);
+    assert_eq!(resolved.config.forward_proxy_services.len(), 1);
+    assert!(resolved.compositional);
+    assert_eq!(resolved.dependencies, [fs::canonicalize(root).unwrap()]);
+    resolve_source(&source_path, resolved.canonical_kdl.as_bytes())
+        .expect("rendered Squid candidate round trip");
+}
+
+#[test]
+fn hocon_and_uci_import_a_complete_squid_forward_proxy_root() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../oxiroute-import/tests/fixtures/squid/hostrouter-sanitized.conf");
+    for (extension, source) in [
+        (
+            "hocon",
+            format!("squid_server = {{ path = {root:?}, externalize_cache = true }}"),
+        ),
+        (
+            "uci",
+            format!(
+                "config oxiroute 'main'\n  option version '1'\nconfig squid_server 'proxy'\n  option path {root:?}\n  option externalize_cache '1'\n"
+            ),
+        ),
+    ] {
+        let source_path = root.parent().unwrap().join(format!("host.{extension}"));
+        let resolved = resolve_source(&source_path, source.as_bytes())
+            .unwrap_or_else(|error| panic!("resolved Squid {extension}: {error}"));
+        assert_eq!(resolved.config.listeners.len(), 1);
+        assert_eq!(resolved.config.forward_proxy_services.len(), 1);
+        assert!(resolved.compositional);
+        assert_eq!(resolved.dependencies, [fs::canonicalize(&root).unwrap()]);
+    }
+}
+
+#[test]
+fn native_squid_requires_explicit_cache_externalization() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../oxiroute-import/tests/fixtures/squid/hostrouter-sanitized.conf");
+    let source_path = root.parent().unwrap().join("host.kdl");
+    let source = format!("squid_server {root:?}\n");
+
+    let error = resolve_source(&source_path, source.as_bytes()).unwrap_err();
+    assert!(matches!(error, ConfigSourceError::NativeImport { .. }));
+    assert!(error.to_string().contains("E_UNSUPPORTED_FEATURE"));
+}
+
+#[test]
 fn kdl_native_nodes_are_repeated_but_their_shapes_remain_strict() {
     let invalid = [
         "nginx_server path=\"nginx.conf\"",

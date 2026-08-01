@@ -191,6 +191,56 @@ pub struct SecretFact {
     pub span: Span,
 }
 
+#[derive(Clone, Eq, PartialEq)]
+pub struct AuthenticationHelper {
+    pub secret: SecretFact,
+    pub arguments: Vec<Vec<u8>>,
+}
+
+impl std::fmt::Debug for AuthenticationHelper {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AuthenticationHelper")
+            .field("kind", &self.secret.kind)
+            .field("span", &self.secret.span)
+            .field("argument_count", &self.arguments.len())
+            .finish()
+    }
+}
+
+impl std::ops::Deref for AuthenticationHelper {
+    type Target = SecretFact;
+
+    fn deref(&self) -> &Self::Target {
+        &self.secret
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct AuthenticationRealm {
+    pub secret: SecretFact,
+    pub value: Vec<u8>,
+}
+
+impl std::fmt::Debug for AuthenticationRealm {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AuthenticationRealm")
+            .field("kind", &self.secret.kind)
+            .field("span", &self.secret.span)
+            .field("byte_count", &self.value.len())
+            .finish()
+    }
+}
+
+impl std::ops::Deref for AuthenticationRealm {
+    type Target = SecretFact;
+
+    fn deref(&self) -> &Self::Target {
+        &self.secret
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProxyAuthMatcher {
     Required,
@@ -480,7 +530,11 @@ pub struct AuthenticationScheme {
     pub parameters: Vec<OccurrenceId>,
     pub program: Option<SecretFact>,
     pub realm: Option<SecretFact>,
+    pub basic_program: Option<AuthenticationHelper>,
+    pub realm_value: Option<AuthenticationRealm>,
     pub credential_ttl: Option<Duration>,
+    pub case_sensitive: Option<bool>,
+    pub unsupported_settings: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -33,10 +33,19 @@ pub(crate) struct HaproxySource {
     pub gpu1_defined: bool,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SquidSource {
+    pub path: PathBuf,
+    #[serde(default)]
+    pub externalize_cache: bool,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum NativeDirective {
     Nginx(NginxSource),
     Haproxy(HaproxySource),
+    Squid(SquidSource),
 }
 
 fn default_root_prefix() -> PathBuf {
@@ -61,7 +70,28 @@ pub(crate) fn extract_directives(
             directives.push(NativeDirective::Haproxy(decode_haproxy(value, format)?));
         }
     }
+    if let Some(value) = root.remove("squid_server") {
+        for value in one_or_many(value, "squid_server", format)? {
+            directives.push(NativeDirective::Squid(decode_squid(value, format)?));
+        }
+    }
     Ok(directives)
+}
+
+pub(crate) fn decode_squid(
+    value: Value,
+    format: &'static str,
+) -> Result<SquidSource, ConfigSourceError> {
+    let source: SquidSource = serde_json::from_value(value).map_err(|error| {
+        ConfigSourceError::parse(format, format!("invalid squid_server: {error}"))
+    })?;
+    if source.path.as_os_str().is_empty() {
+        return Err(ConfigSourceError::parse(
+            format,
+            "squid_server path must not be empty",
+        ));
+    }
+    Ok(source)
 }
 
 pub(crate) fn decode_nginx(

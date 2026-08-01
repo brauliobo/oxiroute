@@ -6,7 +6,7 @@ use serde_json::{Map, Number, Value};
 
 use crate::ConfigSourceError;
 use crate::limits::{MAX_NODES, MAX_STRUCTURAL_DEPTH, check_string, validate_value};
-use crate::native::{NativeDirective, decode_haproxy, decode_nginx};
+use crate::native::{NativeDirective, decode_haproxy, decode_nginx, decode_squid};
 
 pub(crate) fn decode(source: &str) -> Result<Value, ConfigSourceError> {
     let document = KdlDocument::parse(source)
@@ -29,12 +29,36 @@ pub(crate) fn decode_with_directives(
         match node.name().value() {
             "nginx_server" => directives.push(decode_nginx_node(node, &mut nodes)?),
             "haproxy_server" => directives.push(decode_haproxy_node(node, &mut nodes)?),
+            "squid_server" => directives.push(decode_squid_node(node, &mut nodes)?),
             _ => generic_nodes.push(node.clone()),
         }
     }
     let value = Value::Object(decode_object(&generic_nodes, 0, &mut nodes)?);
     validate_value(&value)?;
     Ok((value, directives))
+}
+
+fn decode_squid_node(
+    node: &KdlNode,
+    count: &mut usize,
+) -> Result<NativeDirective, ConfigSourceError> {
+    increment_node_count(count)?;
+    let paths = directive_paths(node)?;
+    if paths.len() != 1 {
+        return Err(ConfigSourceError::parse(
+            "KDL 2",
+            "squid_server requires exactly one string path argument",
+        ));
+    }
+    let mut object = decode_option_children(node, count)?;
+    if object.contains_key("path") {
+        return Err(ConfigSourceError::parse(
+            "KDL 2",
+            "squid_server path must be a positional argument",
+        ));
+    }
+    object.insert("path".to_owned(), Value::String(paths[0].clone()));
+    decode_squid(Value::Object(object), "KDL 2").map(NativeDirective::Squid)
 }
 
 fn decode_nginx_node(

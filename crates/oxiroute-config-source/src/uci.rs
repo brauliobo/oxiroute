@@ -7,7 +7,7 @@ use crate::ConfigSourceError;
 use crate::limits::{
     MAX_STRUCTURAL_DEPTH, check_output, check_string, source_text, validate_value,
 };
-use crate::native::{NativeDirective, decode_haproxy, decode_nginx};
+use crate::native::{NativeDirective, decode_haproxy, decode_nginx, decode_squid};
 
 /// A parsed, ordered UCI document.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -269,6 +269,9 @@ pub(crate) fn decode_with_directives(
             "haproxy_server" => {
                 directives.push(NativeDirective::Haproxy(decode_haproxy_section(&section)?));
             }
+            "squid_server" => {
+                directives.push(NativeDirective::Squid(decode_squid_section(&section)?));
+            }
             section_type => {
                 return Err(ConfigSourceError::parse(
                     "UCI",
@@ -302,6 +305,48 @@ pub(crate) fn decode_with_directives(
         }
     }
     Ok((value, directives))
+}
+
+fn decode_squid_section(
+    section: &UciSection,
+) -> Result<crate::native::SquidSource, ConfigSourceError> {
+    let mut object = Map::new();
+    for entry in &section.entries {
+        match entry {
+            UciEntry::Option { name, value } if name == "path" => {
+                if object
+                    .insert(name.clone(), Value::String(value.clone()))
+                    .is_some()
+                {
+                    return Err(ConfigSourceError::parse(
+                        "UCI",
+                        format!("duplicate squid_server option `{name}`"),
+                    ));
+                }
+            }
+            UciEntry::Option { name, value } if name == "externalize_cache" => {
+                if object
+                    .insert(
+                        name.clone(),
+                        Value::Bool(parse_uci_bool(section, name, value)?),
+                    )
+                    .is_some()
+                {
+                    return Err(ConfigSourceError::parse(
+                        "UCI",
+                        format!("duplicate squid_server option `{name}`"),
+                    ));
+                }
+            }
+            UciEntry::Option { name, .. } | UciEntry::List { name, .. } => {
+                return Err(ConfigSourceError::parse(
+                    "UCI",
+                    format!("unknown squid_server entry `{name}`"),
+                ));
+            }
+        }
+    }
+    decode_squid(Value::Object(object), "UCI")
 }
 
 fn decode_main_section(section: &UciSection) -> Result<Map<String, Value>, ConfigSourceError> {
