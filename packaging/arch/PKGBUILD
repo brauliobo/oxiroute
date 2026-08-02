@@ -24,13 +24,13 @@ source=("oxiroute-${pkgver}.tar.gz::${url}/releases/download/v${pkgver}/oxiroute
         'oxiroute.lua'
         'README.md')
 sha256sums=('ac86f89591c14fc318b3258a561767b2622f9bb4911ca25ad4564e814974d39f'
-            '4013c417cabead75b1fd398bdcd4f368d3e333dc988bdeb41b9c75e448b92cd1'
+            'a001e8a52a941b68deb42cd3c1ba039699daf76a2508184b8c11e942864db77f'
             'ece087105e74910e9d4a6c3551082828378ac5c62fc15e97a755a3bc93020e72'
             '632c14735ddea0bf780abea05d3d288f9530ca41f201a37e428223d04acffe3a'
             'bf78e2cc42f96db9fc88a999b66e59c9048267346a00b6e8a23a6d523bed7886'
             '57e5cb6cf58a38b6c5efd99e0b5a9a36bac3fafba438059a8396b07e9b6e80a9'
             'f55a08f56ff139b566afac6b0c9cbbc4ed08f69a7e04810128bfb8c98a0f0564'
-            'd037a2cec83d0c0632d3ce577fe295aa50ab5df9d3cebaca5282350fb56e3414')
+            '39f53f1e62cf5597ff2ec2e24660874b9cea4fc92aa9d87858dec1795af179e5')
 
 prepare() {
   cd "oxiroute-${pkgver}"
@@ -42,7 +42,11 @@ build() {
   export CARGO_NET_OFFLINE=true
   export OPENSSL_NO_VENDOR=1
   export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=${srcdir}=/usr/src/debug/${pkgname}"
-  cargo build --frozen --release --package oxiroute --target "${_target}"
+  cargo build --frozen --release \
+    --package oxiroute \
+    --package oxiroute-supervisor-process \
+    --target "${_target}" \
+    --jobs 4
 }
 
 package() {
@@ -51,8 +55,13 @@ package() {
   install -Dm755 "target/${_target}/release/oxiroute" \
     "${pkgdir}/usr/bin/oxiroute"
   ln -s oxiroute "${pkgdir}/usr/bin/oxr"
+  install -d -m755 "${pkgdir}/usr/lib/oxiroute"
+  install -m755 "target/${_target}/release/oxiroute-worker-launcher" \
+    "${pkgdir}/usr/lib/oxiroute/oxiroute-worker-launcher"
   # Some Arch glibc crt objects overstate their ISA requirement; all compiled code targets baseline x86-64.
   objcopy --remove-section .note.gnu.property "${pkgdir}/usr/bin/oxiroute"
+  objcopy --remove-section .note.gnu.property \
+    "${pkgdir}/usr/lib/oxiroute/oxiroute-worker-launcher"
   install -Dm644 LICENSE \
     "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
 
