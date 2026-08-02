@@ -1,26 +1,42 @@
-use std::{io, os::fd::OwnedFd};
+use std::{fmt, io, os::fd::OwnedFd, sync::Arc};
 
 use oxiroute_supervision_unix::{DescriptorError, DescriptorManifest, DescriptorSet};
 use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
 use thiserror::Error;
 
 /// Stable manifest and original listener ownership retained by the master.
-#[derive(Debug)]
 pub struct StableListeners {
     manifest: DescriptorManifest,
     originals: Vec<OwnedFd>,
+    _lifetime_guard: Arc<dyn Send + Sync>,
+}
+
+impl fmt::Debug for StableListeners {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StableListeners")
+            .field("manifest", &self.manifest)
+            .field("originals", &self.originals)
+            .field("_lifetime_guard", &"retained")
+            .finish()
+    }
 }
 
 impl StableListeners {
-    /// Validates the original descriptors through temporary duplicates, then retains the originals.
+    /// Validates the original descriptors through temporary duplicates, then retains the originals
+    /// and their namespace lifetime owner.
     ///
     /// # Errors
     ///
     /// Returns an error when duplication fails or descriptors do not exactly satisfy the manifest.
-    pub fn new(
+    pub fn new<G>(
         manifest: DescriptorManifest,
         originals: Vec<OwnedFd>,
-    ) -> Result<Self, ListenerOwnershipError> {
+        lifetime_guard: Arc<G>,
+    ) -> Result<Self, ListenerOwnershipError>
+    where
+        G: Send + Sync + 'static,
+    {
         if originals.len() != manifest.slots().len() {
             return Err(DescriptorError::CardinalityMismatch {
                 expected: manifest.slots().len(),
@@ -45,6 +61,7 @@ impl StableListeners {
         Ok(Self {
             manifest,
             originals,
+            _lifetime_guard: lifetime_guard,
         })
     }
 

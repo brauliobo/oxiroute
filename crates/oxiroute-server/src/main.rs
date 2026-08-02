@@ -63,6 +63,8 @@ mod supervised;
 const RTMP_READ_BUFFER_SIZE: usize = 16 * 1024;
 const RTMP_PLAYBACK_DRAIN_INTERVAL: Duration = Duration::from_millis(10);
 const RTMP_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+const TEST_LISTENER_DUPLICATION_FAILURE_ENV: &str =
+    "OXIROUTE_INTERNAL_TEST_LISTENER_DUPLICATION_FAILURE";
 
 fn add_plain_listener<A>(
     service: &mut Service<A>,
@@ -146,33 +148,48 @@ where
         ready_notifier: ServiceReadyNotifier,
     ) {
         let shutdown_status = shutdown.clone();
+        let service_name = self.inner.name().to_owned();
+        let ready_notifier = ready_notifier.require_explicit();
         #[cfg(unix)]
-        let fds = self
-            .reservation
-            .duplicate_fds()
-            .expect("prepared listener descriptor can be duplicated");
+        let duplicated = if cfg!(target_os = "linux")
+            && std::env::var_os(TEST_LISTENER_DUPLICATION_FAILURE_ENV).is_some()
+        {
+            Err(io::Error::other("injected listener duplication failure"))
+        } else {
+            self.reservation.duplicate_fds()
+        };
+        #[cfg(unix)]
+        let fds = match duplicated {
+            Ok(fds) => fds,
+            Err(error) => {
+                if let Some(metrics) = &self.metrics {
+                    metrics.mark_failed();
+                }
+                if let Some(generation) = &self.generation {
+                    generation.mark_runtime_failed();
+                }
+                error!("listener service `{service_name}` descriptor duplication failed: {error}");
+                return;
+            }
+        };
         #[cfg(unix)]
         let fds = Some(Arc::new(tokio::sync::Mutex::new(fds)));
-        let service_name = self.inner.name().to_owned();
-        let result = AssertUnwindSafe(PingoraService::start_service(
+        let ready_metrics = self.metrics.clone();
+        let ready_notifier = ready_notifier.with_ready_callback(move || {
+            if let Some(metrics) = ready_metrics {
+                metrics.mark_listening();
+            }
+        });
+        let result = AssertUnwindSafe(PingoraService::start_service_with_ready_notifier(
             &mut self.inner,
             #[cfg(unix)]
             fds,
             shutdown,
             listeners_per_fd,
+            ready_notifier,
         ))
-        .catch_unwind();
-        futures_util::pin_mut!(result);
-        let result = tokio::select! {
-            result = &mut result => result,
-            () = tokio::time::sleep(Duration::from_millis(10)) => {
-                if let Some(metrics) = &self.metrics {
-                    metrics.mark_listening();
-                }
-                ready_notifier.notify_ready();
-                result.await
-            }
-        };
+        .catch_unwind()
+        .await;
         let unexpected = !*shutdown_status.borrow();
         if let Some(metrics) = &self.metrics {
             if result.is_ok() && !unexpected {
@@ -1387,7 +1404,7 @@ fn serve_generation(
         graceful_shutdown_timeout_seconds: Some(0),
         ..ServerConf::default()
     };
-    let mut server = Server::new_with_opt_and_conf(None, server_config);
+    let mut server = Server::new_with_opt_and_conf(None, server_config)?;
     server.bootstrap();
     server.add_service(GenerationRuntimeMarker {
         generation: Arc::clone(generation),
@@ -1426,7 +1443,7 @@ fn serve_generation(
         .map(|_| {
             generation
                 .reservations()
-                .get("@management")
+                .management()
                 .cloned()
                 .ok_or_else(|| io::Error::other("management listener was not reserved"))
         })
@@ -1483,7 +1500,7 @@ fn serve_generation(
             service.add_tcp(&bind.to_string());
             let reservation = generation
                 .reservations()
-                .get(&format!("@stats-{index}"))
+                .stats(index)
                 .cloned()
                 .expect("candidate reserved every statistics listener");
             server.add_service(
@@ -1518,7 +1535,7 @@ fn serve_generation(
             service.add_tcp(&page.bind.to_string());
             let reservation = generation
                 .reservations()
-                .get(&listener_name)
+                .stats_page(index)
                 .cloned()
                 .expect("candidate reserved every statistics page listener");
             server.add_service(
@@ -2164,6 +2181,25 @@ mod tests {
 
     struct ClosingApp;
 
+    struct PanickingService;
+
+    #[async_trait]
+    impl PingoraService for PanickingService {
+        async fn start_service_with_ready_notifier(
+            &mut self,
+            #[cfg(unix)] _fds: Option<pingora::server::ListenFds>,
+            _shutdown: ShutdownWatch,
+            _listeners_per_fd: usize,
+            _ready_notifier: ServiceReadyNotifier,
+        ) {
+            panic!("injected listener startup panic");
+        }
+
+        fn name(&self) -> &'static str {
+            "Panicking listener"
+        }
+    }
+
     #[async_trait]
     impl ServerApp for ClosingApp {
         async fn process_new(
@@ -2236,6 +2272,69 @@ mod tests {
             oxiroute_server::ListenerRuntimeState::Stopped
         );
         assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn listener_build_error_never_notifies_ready_and_marks_metrics_failed() {
+        let reservation = ListenerReservation::bind(
+            "reserved",
+            &ListenerBind::Socket {
+                address: "127.0.0.1:0".parse().expect("reservation address"),
+            },
+        )
+        .expect("listener reservation");
+        let bind = ListenerBind::Socket {
+            address: "127.0.0.1:0".parse().expect("metrics address"),
+        };
+        let runtime = RuntimeMetrics::new();
+        let metrics = runtime
+            .register_configured_listener("mismatch", "tcp", &bind, None)
+            .expect("listener metrics");
+        let mut service = Service::new("Listener build failure".into(), ClosingApp);
+        service.add_tcp("not-a-listener-address");
+        let mut service = RuntimeListenerService::new(service, reservation, Some(metrics));
+        let (_shutdown_tx, shutdown) = watch::channel(false);
+        let (ready_tx, ready) = watch::channel(false);
+
+        service
+            .start_service(None, shutdown, 1, ServiceReadyNotifier::new(ready_tx))
+            .await;
+
+        assert!(!*ready.borrow(), "failed listener build signaled readiness");
+        assert_eq!(
+            runtime.snapshot().expect("failed snapshot").listeners[0].state,
+            oxiroute_server::ListenerRuntimeState::Failed
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn listener_startup_panic_is_caught_without_notifying_ready() {
+        let bind = ListenerBind::Socket {
+            address: "127.0.0.1:0".parse().expect("reservation address"),
+        };
+        let reservation = ListenerReservation::bind("panic", &bind).expect("listener reservation");
+        let runtime = RuntimeMetrics::new();
+        let metrics = runtime
+            .register_configured_listener("panic", "tcp", &bind, None)
+            .expect("listener metrics");
+        let mut service = RuntimeListenerService::new(PanickingService, reservation, Some(metrics));
+        let (_shutdown_tx, shutdown) = watch::channel(false);
+        let (ready_tx, ready) = watch::channel(false);
+
+        service
+            .start_service(None, shutdown, 1, ServiceReadyNotifier::new(ready_tx))
+            .await;
+
+        assert!(
+            !*ready.borrow(),
+            "panicked listener startup signaled readiness"
+        );
+        assert_eq!(
+            runtime.snapshot().expect("failed snapshot").listeners[0].state,
+            oxiroute_server::ListenerRuntimeState::Failed
+        );
     }
 
     #[cfg(unix)]

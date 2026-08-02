@@ -43,6 +43,7 @@ fn forged_ready(mode: &str) -> Result<(), Box<dyn std::error::Error>> {
         "wrong-nonce" => payload[2] ^= 1,
         "wrong-generation" => generation = GenerationId(12),
         "wrong-protocol" => payload[..2].copy_from_slice(&(PROTOCOL + 1).to_be_bytes()),
+        "legacy-v1" => payload[..2].copy_from_slice(&1_u16.to_be_bytes()),
         "wrong-instance" => instance = InstanceToken(*b"different-worker"),
         _ => {}
     }
@@ -187,7 +188,7 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             raw_grandchild_send()?;
             Ok(ExitCode::SUCCESS)
         }
-        "wrong-nonce" | "wrong-generation" | "wrong-protocol" | "wrong-instance" => {
+        "wrong-nonce" | "wrong-generation" | "wrong-protocol" | "legacy-v1" | "wrong-instance" => {
             forged_ready(&mode)?;
             thread::sleep(Duration::from_secs(30));
             Ok(ExitCode::SUCCESS)

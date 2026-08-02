@@ -26,8 +26,14 @@ pub struct SlotId(pub u16);
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "role", content = "name")]
 pub enum DescriptorRole {
-    /// A network listener, optionally carrying a human-readable service name.
-    Listener(String),
+    /// A configured traffic listener.
+    Traffic(String),
+    /// The configuration-management listener.
+    Management,
+    /// One HAProxy-compatible statistics API listener.
+    Stats(u16),
+    /// One public statistics page listener.
+    StatsPage(u16),
     /// A state or snapshot file.
     State,
     /// A supervision control channel.
@@ -69,6 +75,8 @@ pub struct DescriptorSlot {
     pub kind: DescriptorKind,
     /// Optional exact listener bind address.
     pub bind: Option<BindIdentity>,
+    /// Optional filesystem Unix socket mode.
+    pub mode: Option<u16>,
 }
 
 /// Validated ordered descriptor requirements for one frame.
@@ -108,6 +116,17 @@ impl DescriptorManifest {
             if !compatible {
                 return Err(DescriptorError::IncompatibleBind { slot: slot.id });
             }
+            if slot.mode.is_some()
+                && !matches!(
+                    (slot.kind, slot.bind.as_ref()),
+                    (
+                        DescriptorKind::UnixListener,
+                        Some(BindIdentity::UnixPath(_))
+                    )
+                )
+            {
+                return Err(DescriptorError::IncompatibleMode { slot: slot.id });
+            }
         }
         Ok(Self { slots })
     }
@@ -135,7 +154,7 @@ impl From<DescriptorManifest> for Vec<DescriptorSlot> {
 
 #[derive(Debug)]
 struct DescriptorEntry {
-    role: DescriptorRole,
+    slot: DescriptorSlot,
     descriptor: Option<OwnedFd>,
 }
 
@@ -178,7 +197,7 @@ impl DescriptorSet {
                 (
                     slot.id,
                     DescriptorEntry {
-                        role: slot.role.clone(),
+                        slot: slot.clone(),
                         descriptor: Some(descriptor),
                     },
                 )
@@ -190,7 +209,13 @@ impl DescriptorSet {
     /// Returns the role assigned to a known slot.
     #[must_use]
     pub fn role(&self, slot: SlotId) -> Option<&DescriptorRole> {
-        self.entries.get(&slot).map(|entry| &entry.role)
+        self.entries.get(&slot).map(|entry| &entry.slot.role)
+    }
+
+    /// Returns the exact validated requirement assigned to a known slot.
+    #[must_use]
+    pub fn slot(&self, slot: SlotId) -> Option<&DescriptorSlot> {
+        self.entries.get(&slot).map(|entry| &entry.slot)
     }
 
     /// Takes ownership from one slot exactly once.
@@ -231,6 +256,9 @@ pub enum DescriptorError {
     /// Bind identity does not match the descriptor kind.
     #[error("descriptor slot {slot:?} has an incompatible bind identity")]
     IncompatibleBind { slot: SlotId },
+    /// Unix mode metadata is present on a non-filesystem-Unix listener.
+    #[error("descriptor slot {slot:?} has incompatible Unix mode metadata")]
+    IncompatibleMode { slot: SlotId },
     /// Received descriptor count differs from the manifest.
     #[error("manifest expects {expected} descriptors, but received {actual}")]
     CardinalityMismatch { expected: usize, actual: usize },
@@ -258,6 +286,16 @@ pub enum DescriptorError {
     /// Descriptor local bind does not match the expected identity.
     #[error("descriptor slot {slot:?} bind identity does not match")]
     BindMismatch { slot: SlotId },
+    /// Filesystem Unix socket mode does not match the manifest.
+    #[error("descriptor slot {slot:?} Unix mode does not match")]
+    ModeMismatch { slot: SlotId },
+    /// Filesystem Unix socket metadata could not be inspected.
+    #[error("descriptor slot {slot:?} Unix path inspection failed: {source}")]
+    InspectPath {
+        slot: SlotId,
+        #[source]
+        source: std::io::Error,
+    },
     /// Operating-system descriptor inspection failed.
     #[error("descriptor slot {slot:?} inspection failed: {source}")]
     Inspect {
@@ -339,6 +377,21 @@ fn validate_descriptor(
             };
             if !matches {
                 return Err(DescriptorError::BindMismatch { slot: slot.id });
+            }
+            if let (Some(BindIdentity::UnixPath(path)), Some(expected)) = (&slot.bind, slot.mode) {
+                use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};
+
+                let metadata = std::fs::symlink_metadata(path).map_err(|source| {
+                    DescriptorError::InspectPath {
+                        slot: slot.id,
+                        source,
+                    }
+                })?;
+                if !metadata.file_type().is_socket()
+                    || metadata.permissions().mode() & 0o7777 != u32::from(expected)
+                {
+                    return Err(DescriptorError::ModeMismatch { slot: slot.id });
+                }
             }
         }
         DescriptorKind::Opaque => unreachable!("opaque descriptors return before validation"),

@@ -60,14 +60,18 @@ pub mod listening;
 /// ```
 pub struct ServiceReadyNotifier {
     sender: watch::Sender<bool>,
+    notify_on_drop: bool,
+    notified: bool,
+    ready_callback: Option<Box<dyn FnOnce() + Send + 'static>>,
 }
 
 impl Drop for ServiceReadyNotifier {
     /// In the event that the notifier is dropped before notifying that the
-    /// service is ready, we opt to signal ready anyway
+    /// service is ready, legacy services signal ready unless explicit notification was required.
     fn drop(&mut self) {
-        // Ignore errors - if there are no receivers, that's fine
-        let _ = self.sender.send(true);
+        if self.notify_on_drop && !self.notified {
+            self.signal_ready();
+        }
     }
 }
 
@@ -76,15 +80,45 @@ impl ServiceReadyNotifier {
     /// You will not need to create one of these for normal usage, but being
     /// able to is useful for testing.
     pub fn new(sender: watch::Sender<bool>) -> Self {
-        Self { sender }
+        Self {
+            sender,
+            notify_on_drop: true,
+            notified: false,
+            ready_callback: None,
+        }
+    }
+
+    /// Requires the service to notify readiness explicitly.
+    #[must_use]
+    pub fn require_explicit(mut self) -> Self {
+        self.notify_on_drop = false;
+        self
+    }
+
+    /// Runs `callback` immediately before explicit readiness is published.
+    #[must_use]
+    pub fn with_ready_callback(mut self, callback: impl FnOnce() + Send + 'static) -> Self {
+        self.ready_callback = Some(Box::new(callback));
+        self
     }
 
     /// Notifies dependent services that this service is ready.
     ///
     /// Consumes the notifier to ensure ready is only signaled once.
-    pub fn notify_ready(self) {
-        // Dropping the notifier will signal that the service is ready
-        drop(self);
+    pub fn notify_ready(mut self) {
+        self.signal_ready();
+    }
+
+    fn signal_ready(&mut self) {
+        if self.notified {
+            return;
+        }
+        if let Some(callback) = self.ready_callback.take() {
+            callback();
+        }
+        self.notified = true;
+        // Ignore errors - if there are no receivers, that's fine.
+        let _ = self.sender.send(true);
     }
 }
 
@@ -350,15 +384,13 @@ where
         listeners_per_fd: usize,
         ready_notifier: ServiceReadyNotifier,
     ) {
-        // Signal ready immediately
-        ready_notifier.notify_ready();
-
-        S::start_service(
+        S::start_service_with_ready_notifier(
             self,
             #[cfg(unix)]
             fds,
             shutdown,
             listeners_per_fd,
+            ready_notifier.require_explicit(),
         )
         .await
     }
@@ -379,6 +411,28 @@ where
 /// The service interface
 #[async_trait]
 pub trait Service: Sync + Send {
+    /// Starts the service with control over when readiness is published.
+    ///
+    /// The default preserves legacy behavior by publishing readiness before entering
+    /// [`Self::start_service`]. Services with asynchronous initialization should override this
+    /// method and consume `ready_notifier` only after initialization succeeds.
+    async fn start_service_with_ready_notifier(
+        &mut self,
+        #[cfg(unix)] fds: Option<ListenFds>,
+        shutdown: ShutdownWatch,
+        listeners_per_fd: usize,
+        ready_notifier: ServiceReadyNotifier,
+    ) {
+        ready_notifier.notify_ready();
+        self.start_service(
+            #[cfg(unix)]
+            fds,
+            shutdown,
+            listeners_per_fd,
+        )
+        .await;
+    }
+
     /// Start the service without readiness notification.
     ///
     /// This is a simpler version of [`Self::start_service()`] for services that don't need
@@ -432,6 +486,25 @@ pub trait Service: Sync + Send {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_readiness_requires_notification_and_runs_callback_once() {
+        let (sender, receiver) = watch::channel(false);
+        drop(ServiceReadyNotifier::new(sender).require_explicit());
+        assert!(!*receiver.borrow());
+
+        let (sender, receiver) = watch::channel(false);
+        let callbacks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let callback_count = Arc::clone(&callbacks);
+        ServiceReadyNotifier::new(sender)
+            .require_explicit()
+            .with_ready_callback(move || {
+                callback_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            })
+            .notify_ready();
+        assert!(*receiver.borrow());
+        assert_eq!(callbacks.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
 
     #[test]
     fn test_service_handle_creation() {

@@ -248,7 +248,9 @@ impl ServerConf {
     }
 
     pub fn validate(self) -> Result<Self> {
-        // TODO: do the validation
+        if self.listener_tasks_per_fd == 0 {
+            return Error::e_explain(ReadError, "listener_tasks_per_fd must be greater than zero");
+        }
         Ok(self)
     }
 
@@ -348,5 +350,13 @@ version: 1
         assert_eq!(1, conf.version);
         assert_eq!(DEFAULT_MAX_RETRIES, conf.max_retries);
         assert_eq!("/tmp/pingora.pid", conf.pid_file);
+    }
+
+    #[test]
+    fn rejects_zero_listener_tasks_per_fd() {
+        let error = ServerConf::from_yaml("---\nlistener_tasks_per_fd: 0")
+            .expect_err("zero listener task count must be rejected");
+
+        assert!(error.to_string().contains("must be greater than zero"));
     }
 }

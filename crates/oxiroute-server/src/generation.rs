@@ -13,6 +13,8 @@ use oxiroute_config_source::ConfigFormat;
 use oxiroute_rtmp::{
     RtmpRecorderLifecycle, RtmpRecorderShutdown, RtmpRegistry, RtmpServiceRuntime,
 };
+#[cfg(target_os = "linux")]
+use oxiroute_supervision_unix::DescriptorSet;
 use pingora::apps::{AcceptGate, AcceptGateClose, AcceptOwnership};
 use serde::Serialize;
 
@@ -84,6 +86,67 @@ impl PreparedGeneration {
                 ListenerReservations::prepare_for_validation(&config, previous)
             }
         }?;
+        crate::stats::preflight_admin_token(
+            config
+                .stats
+                .as_ref()
+                .and_then(|stats| stats.admin_token_file.as_deref()),
+        )?;
+        if config.management.is_some() {
+            let token_file = std::env::var_os("OXIROUTE_MANAGEMENT_TOKEN_FILE")
+                .map(std::path::PathBuf::from)
+                .ok_or(GenerationError::ManagementToken)?;
+            crate::rtmp_api::preflight_management_token(&token_file)
+                .map_err(|_| GenerationError::ManagementToken)?;
+        }
+        if let Some(ui_dir) = config
+            .management
+            .as_ref()
+            .and_then(|management| management.ui_dir.as_deref())
+        {
+            crate::rtmp_api::UiAssets::load(ui_dir).map_err(|_| GenerationError::RuntimePrepare)?;
+        }
+        plan.tls
+            .check_certbot_watcher(crate::CertbotWatcherConfig::default())
+            .map_err(|_| GenerationError::RuntimePrepare)?;
+        let metrics = RuntimeMetrics::for_process(process);
+        metrics.register_upstream_pools(plan.pools.iter().cloned())?;
+        let rtmp_registry = Arc::new(RtmpRegistry::new(plan.rtmp_capabilities));
+        let mut rtmp_runtimes = HashMap::new();
+        for service in &plan.services {
+            let ServiceKind::Rtmp(service) = &service.kind else {
+                continue;
+            };
+            if !rtmp_runtimes.contains_key(service.service_id()) {
+                let runtime = service.runtime(Arc::clone(&rtmp_registry))?;
+                rtmp_runtimes.insert(service.service_id().to_owned(), runtime);
+            }
+        }
+        metrics.set_rtmp_recording_supported(plan.rtmp_recording_supported);
+        Ok(Self {
+            config,
+            metrics,
+            plan,
+            reservations,
+            revision: GenerationRevision {
+                disk: document.disk_revision,
+                candidate: document.candidate_revision,
+            },
+            rtmp_registry,
+            rtmp_runtimes,
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn prepare_adopted(
+        document: CanonicalConfigDocument,
+        descriptors: DescriptorSet,
+        process: ProcessRuntime,
+    ) -> Result<Self, GenerationError> {
+        let reservations = ListenerReservations::adopt(&document.normalized_config, descriptors)?;
+        let config = Arc::new(document.normalized_config);
+        let plan =
+            runtime_plan(&config).map_err(|source| GenerationError::Plan(Box::new(source)))?;
         crate::stats::preflight_admin_token(
             config
                 .stats
@@ -620,6 +683,71 @@ impl GenerationManager {
             ReservationPreparation::Activation,
         )
         .map(|prepared| Arc::new(RuntimeGeneration::activate(prepared)));
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.disk_revision = Some(disk_revision.clone());
+        match prepared {
+            Ok(generation) => {
+                let candidate = GenerationCandidate {
+                    generation,
+                    id: self.next_candidate_id.fetch_add(1, Ordering::Relaxed) + 1,
+                };
+                crate::operational_event::emit(
+                    "generation_prepare",
+                    "prepared",
+                    Some(&candidate.revision().candidate),
+                );
+                self.counters.prepares.fetch_add(1, Ordering::Relaxed);
+                state.candidate = Some(candidate.clone());
+                state.quarantined_revision = None;
+                state.last_failure = None;
+                Ok(candidate)
+            }
+            Err(error) => {
+                crate::operational_event::emit(
+                    "generation_prepare",
+                    "rejected",
+                    Some(&candidate_revision),
+                );
+                self.counters.failures.fetch_add(1, Ordering::Relaxed);
+                state.quarantined_revision = Some(candidate_revision);
+                state.last_failure = Some(error.code());
+                Err(error)
+            }
+        }
+    }
+
+    /// Fully prepares a candidate from listener descriptors exactly adopted for its config.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redacted preparation error. A failed candidate is released and active state is
+    /// unchanged.
+    #[cfg(target_os = "linux")]
+    pub fn prepare_adopted(
+        &self,
+        document: CanonicalConfigDocument,
+        descriptors: DescriptorSet,
+    ) -> Result<GenerationCandidate, GenerationError> {
+        let _operation = self
+            .operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .shutting_down
+        {
+            return Err(GenerationError::MutationInProgress);
+        }
+        let disk_revision = document.disk_revision.clone();
+        let candidate_revision = document.candidate_revision.clone();
+        let prepared =
+            PreparedGeneration::prepare_adopted(document, descriptors, self.process.clone())
+                .map(|prepared| Arc::new(RuntimeGeneration::activate(prepared)));
         let mut state = self
             .state
             .lock()

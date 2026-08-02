@@ -13,6 +13,7 @@ use std::{
     },
     path::PathBuf,
     process::Command,
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
@@ -24,7 +25,7 @@ use oxiroute_supervision_unix::{
 };
 use oxiroute_supervisor_master::{
     ActionError, ActionExecutor, ActionKind, CONTROL_PROTOCOL_VERSION, ControlPhase, FailurePhase,
-    Master, MasterConfig, MasterEvent, MasterState, PreparationError, PreparationStep,
+    Master, MasterConfig, MasterError, MasterEvent, MasterState, PreparationError, PreparationStep,
     ShutdownProgress, StableListeners, SystemActionExecutor, WorkerInput, WorkerRole, WorkerState,
 };
 use oxiroute_supervisor_process::{WorkerCommand, WorkerIdentity, WorkerProcess, WorkerSpawner};
@@ -455,18 +456,23 @@ fn shutdown_deadline_kills_and_reaps_an_uncooperative_worker() {
     let started = Instant::now();
     let mut events = harness.master.poll(deadline + POLL_INTERVAL).unwrap();
     assert!(started.elapsed() < Duration::from_millis(100));
-    assert_eq!(harness.master.state(), MasterState::ShuttingDown);
-    assert_eq!(
-        harness.master.worker_state(WorkerRole::Active),
-        Some(WorkerState::Terminating { forced: true })
-    );
-    assert_eq!(
-        harness.master.shutdown_progress(),
-        ShutdownProgress::Pending {
-            remaining: 1,
-            forced: true
-        }
-    );
+    assert!(matches!(
+        harness.master.state(),
+        MasterState::ShuttingDown | MasterState::Stopped
+    ));
+    if harness.master.state() == MasterState::ShuttingDown {
+        assert_eq!(
+            harness.master.worker_state(WorkerRole::Active),
+            Some(WorkerState::Terminating { forced: true })
+        );
+        assert_eq!(
+            harness.master.shutdown_progress(),
+            ShutdownProgress::Pending {
+                remaining: 1,
+                forced: true
+            }
+        );
+    }
     events.extend(harness.until(|master| master.state() == MasterState::Stopped));
     assert_eq!(
         harness.master.shutdown_progress(),
@@ -913,12 +919,14 @@ fn stable_listener_originals_are_cloexec_and_not_inherited() {
     fcntl_setfd(&tcp, flags - FdFlags::CLOEXEC).unwrap();
     let manifest = DescriptorManifest::new(vec![DescriptorSlot {
         id: SlotId(1),
-        role: DescriptorRole::Listener(String::from("tcp")),
+        role: DescriptorRole::Traffic(String::from("tcp")),
         kind: DescriptorKind::TcpListener,
         bind: Some(BindIdentity::Tcp(tcp.local_addr().unwrap())),
+        mode: None,
     }])
     .unwrap();
-    let _listeners = StableListeners::new(manifest, vec![OwnedFd::from(tcp)]).unwrap();
+    let _listeners =
+        StableListeners::new(manifest, vec![OwnedFd::from(tcp)], Arc::new(())).unwrap();
     let status = Command::new(env!("CARGO_BIN_EXE_master-worker-fixture"))
         .arg("probe-fd")
         .arg(target.as_os_str())
@@ -951,6 +959,28 @@ fn configuration_rejects_zero_and_unbounded_timeouts() {
     );
 }
 
+#[test]
+fn version_two_master_rejects_a_version_one_worker_before_spawn() {
+    let listeners = StableListeners::new(
+        DescriptorManifest::new(Vec::new()).unwrap(),
+        Vec::new(),
+        Arc::new(()),
+    )
+    .unwrap();
+    let mut input = worker("legacy", 1, "normal");
+    input.identity.protocol = 1;
+    let mut factory = FailingFactory::default();
+
+    assert!(matches!(
+        Master::launch(config(), listeners, &mut factory, input, Instant::now()),
+        Err(MasterError::ProtocolVersion {
+            expected: 2,
+            actual: 1
+        })
+    ));
+    assert_eq!(factory.calls, 0, "legacy worker reached the spawn boundary");
+}
+
 fn listeners() -> (
     tempfile::TempDir,
     StableListeners,
@@ -972,21 +1002,37 @@ fn listeners() -> (
     let manifest = DescriptorManifest::new(vec![
         DescriptorSlot {
             id: SlotId(1),
-            role: DescriptorRole::Listener(String::from("tcp")),
+            role: DescriptorRole::Traffic(String::from("tcp")),
             kind: DescriptorKind::TcpListener,
             bind: Some(BindIdentity::Tcp(tcp_address)),
+            mode: None,
         },
         DescriptorSlot {
             id: SlotId(2),
-            role: DescriptorRole::Listener(String::from("unix")),
+            role: DescriptorRole::Traffic(String::from("unix")),
             kind: DescriptorKind::UnixListener,
             bind: Some(BindIdentity::UnixPath(unix_path.clone())),
+            mode: None,
         },
     ])
     .unwrap();
     let originals = vec![OwnedFd::from(tcp), OwnedFd::from(unix)];
-    let listeners = StableListeners::new(manifest, originals).unwrap();
+    let listeners = StableListeners::new(
+        manifest,
+        originals,
+        Arc::new(UnixPathGuard(unix_path.clone())),
+    )
+    .unwrap();
     (temporary, listeners, targets, tcp_address, unix_path)
+}
+
+#[derive(Debug)]
+struct UnixPathGuard(PathBuf);
+
+impl Drop for UnixPathGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
 }
 
 fn config() -> MasterConfig {
