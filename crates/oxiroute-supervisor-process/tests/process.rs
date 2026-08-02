@@ -212,6 +212,34 @@ fn every_post_ready_frame_is_authenticated() {
 }
 
 #[test]
+fn nonblocking_receive_returns_when_no_frame_is_available() {
+    let mut worker = spawn("linger").unwrap();
+    let started = Instant::now();
+    assert!(worker.channel().try_receive().unwrap().is_none());
+    assert!(started.elapsed() < Duration::from_millis(100));
+    worker.kill().unwrap();
+}
+
+#[test]
+fn kill_request_is_nonblocking_and_reaping_remains_poll_driven() {
+    let mut worker = spawn("linger").unwrap();
+    let started = Instant::now();
+    worker.request_kill().unwrap();
+    assert!(started.elapsed() < Duration::from_millis(100));
+    assert!(worker.process_group_id().is_some());
+
+    let started = Instant::now();
+    loop {
+        if worker.poll_event().unwrap().is_some() {
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(2));
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(worker.process_group_id(), None);
+}
+
+#[test]
 fn channel_closes_when_direct_child_exits() {
     let mut worker = spawn("success").unwrap();
     assert!(matches!(

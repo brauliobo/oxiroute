@@ -2751,6 +2751,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxiroute-supervisor-master"
+version = "0.2.3"
+dependencies = [
+ "oxiroute-supervision",
+ "oxiroute-supervision-unix",
+ "oxiroute-supervisor-process",
+ "rustix",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "oxiroute-supervisor-process"
 version = "0.2.3"
 dependencies = [
