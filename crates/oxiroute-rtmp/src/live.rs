@@ -657,6 +657,28 @@ impl LiveHub {
             return Err(LiveHubError::PublisherAlreadyAttached { key });
         }
 
+        self.create_publisher(&mut state, key)
+    }
+
+    /// Replaces the current publisher incarnation for an exact stream key.
+    pub(crate) fn replace_publisher(&self, key: StreamKey) -> Result<PublisherLease, LiveHubError> {
+        let mut state = self.lock();
+        self.create_publisher(&mut state, key)
+    }
+
+    fn create_publisher(
+        &self,
+        state: &mut LiveHubState,
+        key: StreamKey,
+    ) -> Result<PublisherLease, LiveHubError> {
+        if !state.streams.contains_key(&key)
+            && state.streams.len() >= self.shared.limits.max_streams
+        {
+            return Err(LiveHubError::StreamLimitReached {
+                maximum: self.shared.limits.max_streams,
+            });
+        }
+
         let incarnation = PublisherIncarnation(
             state
                 .next_publisher_incarnation

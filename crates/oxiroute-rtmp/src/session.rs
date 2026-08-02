@@ -19,7 +19,10 @@ mod runtime;
 mod status;
 
 pub use playback::MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN;
-pub use runtime::{RtmpApplication, RtmpRecorderLifecycle, RtmpServiceRuntime, RtmpSessionPolicy};
+pub use runtime::{
+    RTMP_STALE_PUBLISHER_THRESHOLD_MS, RtmpApplication, RtmpRecorderLifecycle, RtmpServiceRuntime,
+    RtmpSessionPolicy,
+};
 pub use status::RtmpSessionError;
 
 use runtime::SessionRole;

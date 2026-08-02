@@ -53,8 +53,8 @@ pub use relay::{
 pub use rml_rtmp::sessions::StreamMetadata;
 pub use session::{
     MAX_INBOUND_CHUNK_SIZE, MAX_INBOUND_MESSAGE_SIZE, MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN,
-    RtmpApplication, RtmpRecorderLifecycle, RtmpServiceRuntime, RtmpSession, RtmpSessionError,
-    RtmpSessionPolicy,
+    RTMP_STALE_PUBLISHER_THRESHOLD_MS, RtmpApplication, RtmpRecorderLifecycle, RtmpServiceRuntime,
+    RtmpSession, RtmpSessionError, RtmpSessionPolicy,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

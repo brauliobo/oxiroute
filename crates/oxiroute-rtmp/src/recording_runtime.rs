@@ -219,6 +219,32 @@ pub(crate) struct RecorderCommandContext {
     pub at_unix_ms: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RecorderStartFailure {
+    RetryableCapacity,
+    Failed(RecorderErrorCode),
+}
+
+enum StartNewWorkerFailure {
+    WaitForReap,
+    Failed(RecorderStartFailure),
+}
+
+impl From<RecorderStartFailure> for StartNewWorkerFailure {
+    fn from(failure: RecorderStartFailure) -> Self {
+        Self::Failed(failure)
+    }
+}
+
+impl RecorderStartFailure {
+    const fn code(self) -> RecorderErrorCode {
+        match self {
+            Self::RetryableCapacity => RecorderErrorCode::OpenFailed,
+            Self::Failed(code) => code,
+        }
+    }
+}
+
 impl RecorderController {
     pub(crate) fn new(
         policy: RtmpRecorderPolicy,
@@ -252,6 +278,15 @@ impl RecorderController {
         self: &Arc<Self>,
         context: RecorderCommandContext,
     ) -> Result<(), RecorderErrorCode> {
+        self.start_with_reservation(context, None)
+            .map(|_| ())
+            .map_err(RecorderStartFailure::code)
+    }
+
+    pub(crate) fn start_continuous(
+        self: &Arc<Self>,
+        context: RecorderCommandContext,
+    ) -> Result<(), RecorderStartFailure> {
         self.start_with_reservation(context, None).map(|_| ())
     }
 
@@ -259,18 +294,22 @@ impl RecorderController {
         self: &Arc<Self>,
         context: RecorderCommandContext,
         reserved_event: Option<&MediaEvent>,
-    ) -> Result<bool, RecorderErrorCode> {
+    ) -> Result<bool, RecorderStartFailure> {
         self.observe_at(context.at_unix_ms);
         loop {
             let mut state = self.lock();
             if !state.active {
-                return Err(RecorderErrorCode::StalePublisher);
+                return Err(RecorderStartFailure::Failed(
+                    RecorderErrorCode::StalePublisher,
+                ));
             }
             if self.policy.start() == RtmpRecorderStart::Continuous {
                 state.restart_context = Some(context);
             }
             if state.bootstrap.unsupported_video {
-                return Err(RecorderErrorCode::UnsupportedCodec);
+                return Err(RecorderStartFailure::Failed(
+                    RecorderErrorCode::UnsupportedCodec,
+                ));
             }
             if let Some(worker) = state.worker.as_ref() {
                 let status = worker.status();
@@ -286,64 +325,11 @@ impl RecorderController {
                 }
             }
             let Some(worker) = state.worker.take() else {
-                let admission = self
-                    .reaper
-                    .queue
-                    .admission()
-                    .ok_or(RecorderErrorCode::BackendUnavailable)?;
-                let worker_generation = state
-                    .worker_generation
-                    .checked_add(1)
-                    .ok_or(RecorderErrorCode::BackendUnavailable)?;
-                let opened_at_unix_seconds = context.at_unix_ms / 1_000;
-                let opened_at_utc = RecordingDateTime::from_unix_seconds(opened_at_unix_seconds)
-                    .map_err(|_| RecorderErrorCode::OpenFailed)?;
-                let mut bootstrap = state
-                    .bootstrap
-                    .replay_events(self.policy.worker, reserved_event)
-                    .ok_or(RecorderErrorCode::QueueDiscontinuity)?;
-                let worker = match RecorderWorker::start(
-                    self.policy.store.clone(),
-                    &self.policy.path,
-                    &self.stream_name,
-                    opened_at_unix_seconds,
-                    opened_at_utc,
-                    self.policy.worker,
-                ) {
-                    Ok(worker) => worker,
-                    Err(crate::RecorderWorkerStartError::Capacity(
-                        crate::RecordingStoreError::ActiveRecorderLimit { .. },
-                    )) if state.stopping => {
-                        drop(admission);
-                        drop(
-                            self.state_changed
-                                .wait_while(state, |state| state.active && state.stopping)
-                                .expect(
-                                    "recorder controller mutex poisoned while waiting for reap",
-                                ),
-                        );
-                        continue;
-                    }
-                    Err(error) => {
-                        return Err(recorder_start_error_code(&error));
-                    }
-                };
-                enqueue_bootstrap_replay(
-                    &mut state.bootstrap,
-                    &worker,
-                    &mut bootstrap,
-                    context.at_unix_ms,
-                );
-                state.last_status = Some(accumulate_worker_status(
-                    self.completed_status(&state),
-                    worker.status(),
-                ));
-                state.stopping = false;
-                state.recovering = false;
-                state.restart_after = Instant::now();
-                state.worker_generation = worker_generation;
-                state.worker = Some(worker);
-                return Ok(bootstrap.reserved_event_fits);
+                match self.start_new_worker(state, context, reserved_event) {
+                    Ok(started) => return Ok(started),
+                    Err(StartNewWorkerFailure::WaitForReap) => continue,
+                    Err(StartNewWorkerFailure::Failed(failure)) => return Err(failure),
+                }
             };
             let worker_generation = state.worker_generation;
             state.last_status = Some(accumulate_worker_status(
@@ -360,6 +346,86 @@ impl RecorderController {
                 context.at_unix_ms,
             );
         }
+    }
+
+    fn start_new_worker(
+        self: &Arc<Self>,
+        mut state: MutexGuard<'_, ControllerState>,
+        context: RecorderCommandContext,
+        reserved_event: Option<&MediaEvent>,
+    ) -> Result<bool, StartNewWorkerFailure> {
+        let admission = self
+            .reaper
+            .queue
+            .admission()
+            .ok_or(RecorderStartFailure::Failed(
+                RecorderErrorCode::BackendUnavailable,
+            ))?;
+        let worker_generation =
+            state
+                .worker_generation
+                .checked_add(1)
+                .ok_or(RecorderStartFailure::Failed(
+                    RecorderErrorCode::BackendUnavailable,
+                ))?;
+        let opened_at_unix_seconds = context.at_unix_ms / 1_000;
+        let opened_at_utc = RecordingDateTime::from_unix_seconds(opened_at_unix_seconds)
+            .map_err(|_| RecorderStartFailure::Failed(RecorderErrorCode::OpenFailed))?;
+        let mut bootstrap = state
+            .bootstrap
+            .replay_events(self.policy.worker, reserved_event)
+            .ok_or(RecorderStartFailure::Failed(
+                RecorderErrorCode::QueueDiscontinuity,
+            ))?;
+        let worker = match RecorderWorker::start(
+            self.policy.store.clone(),
+            &self.policy.path,
+            &self.stream_name,
+            opened_at_unix_seconds,
+            opened_at_utc,
+            self.policy.worker,
+        ) {
+            Ok(worker) => worker,
+            Err(crate::RecorderWorkerStartError::Capacity(
+                crate::RecordingStoreError::ActiveRecorderLimit { .. },
+            )) if state.stopping => {
+                drop(admission);
+                drop(
+                    self.state_changed
+                        .wait_while(state, |state| state.active && state.stopping)
+                        .expect("recorder controller mutex poisoned while waiting for reap"),
+                );
+                return Err(StartNewWorkerFailure::WaitForReap);
+            }
+            Err(crate::RecorderWorkerStartError::Capacity(
+                crate::RecordingStoreError::ActiveRecorderLimit { .. },
+            )) => {
+                return Err(StartNewWorkerFailure::Failed(
+                    RecorderStartFailure::RetryableCapacity,
+                ));
+            }
+            Err(error) => {
+                return Err(StartNewWorkerFailure::Failed(RecorderStartFailure::Failed(
+                    recorder_start_error_code(&error),
+                )));
+            }
+        };
+        enqueue_bootstrap_replay(
+            &mut state.bootstrap,
+            &worker,
+            &mut bootstrap,
+            context.at_unix_ms,
+        );
+        state.last_status = Some(accumulate_worker_status(
+            self.completed_status(&state),
+            worker.status(),
+        ));
+        state.stopping = false;
+        state.recovering = false;
+        state.restart_after = Instant::now();
+        state.worker_generation = worker_generation;
+        state.worker = Some(worker);
+        Ok(bootstrap.reserved_event_fits)
     }
 
     pub(crate) fn stop(self: &Arc<Self>, context: RecorderCommandContext) -> bool {
