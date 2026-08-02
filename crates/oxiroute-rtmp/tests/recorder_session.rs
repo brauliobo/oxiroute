@@ -411,9 +411,8 @@ fn session_drop_hands_stalled_workers_to_the_bounded_runtime_reaper() {
     let (mut server, mut client) = fixture.publisher("camera");
     let ownership = OpenOptions::new()
         .read(true)
-        .write(true)
-        .open(fixture.root.path().join(".oxiroute-recording.lock"))
-        .expect("ownership lock");
+        .open(fixture.root.path())
+        .expect("recording root ownership");
     flock(&ownership, FlockOperation::LockExclusive).expect("stall storage admission");
     publish_audio(&mut client, &mut server, 0, 0x66, 1_721_657_969_100);
     thread::sleep(Duration::from_millis(20));

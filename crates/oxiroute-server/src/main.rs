@@ -1676,11 +1676,7 @@ mod tests {
         drop(listener);
         let config = recorder_runtime_config(listener_address, &recording_root);
         let (coordinator, manager, generation) = activate_test_generation(&path, &config);
-        let ownership = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(recording_root.join(".oxiroute-recording.lock"))
-            .expect("recording ownership lock");
+        let ownership = fs::File::open(&recording_root).expect("recording root ownership");
         flock(&ownership, FlockOperation::LockExclusive).expect("stall recording storage");
         publish_stalled_recorder(&generation);
         let (shutdown, _receiver) = tokio::sync::watch::channel(false);
@@ -1725,11 +1721,7 @@ mod tests {
         drop(listener);
         let config = recorder_runtime_config(listener_address, &recording_root);
         let (coordinator, manager, generation) = activate_test_generation(&path, &config);
-        let ownership = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(recording_root.join(".oxiroute-recording.lock"))
-            .expect("recording ownership lock");
+        let ownership = fs::File::open(&recording_root).expect("recording root ownership");
         flock(&ownership, FlockOperation::LockExclusive).expect("stall recording storage");
         let (shutdown, _receiver) = tokio::sync::watch::channel(false);
         let thread = thread::spawn(|| {});

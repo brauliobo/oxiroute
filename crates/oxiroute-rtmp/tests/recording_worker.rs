@@ -10,7 +10,8 @@ use oxiroute_rtmp::{
     LiveHub, LiveHubLimits, MediaEvent, RecorderEnqueueResult, RecorderFailure, RecorderShutdown,
     RecorderVideoCodec, RecorderWorker, RecorderWorkerConfig, RecorderWorkerPhase,
     RecorderWorkerStartError, RecordingDateTime, RecordingPathPolicy, RecordingSegmentNaming,
-    RecordingStore, RecordingStoreLimits, RecordingTimeBasis, RecordingTimezone, StreamKey,
+    RecordingStore, RecordingStoreError, RecordingStoreLimits, RecordingTimeBasis,
+    RecordingTimezone, StreamKey,
 };
 use rustix::fs::{FlockOperation, flock};
 use tempfile::tempdir;
@@ -128,7 +129,7 @@ fn every_rotation_gets_a_fresh_deterministic_extension_preserving_name() {
         RecordingStoreLimits {
             max_bytes: Some(1024 * 1024),
             max_files: Some(64),
-            max_active_recorders: 2,
+            max_active_recorders: 1,
         },
     )
     .expect("recording store");
@@ -145,6 +146,23 @@ fn every_rotation_gets_a_fresh_deterministic_extension_preserving_name() {
     enqueue(&worker, aac_header(0, 0x12));
     for timestamp in 0_u8..=20 {
         enqueue(&worker, audio(u32::from(timestamp), timestamp));
+        if timestamp == 0 {
+            continue;
+        }
+        let completed_sequence = timestamp - 1;
+        let completed_name = if completed_sequence == 0 {
+            "camera.flv".to_owned()
+        } else {
+            format!("camera-{completed_sequence:06}.flv")
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !temporary.path().join(&completed_name).is_file() {
+            assert!(
+                Instant::now() < deadline,
+                "segment publication timeout: {completed_name}"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
     }
 
     let status = shutdown(worker);
@@ -158,6 +176,98 @@ fn every_rotation_gets_a_fresh_deterministic_extension_preserving_name() {
                 .is_file()
         );
     }
+}
+
+#[test]
+fn recorder_capacity_is_held_for_the_worker_lifetime_across_rotations() {
+    let temporary = tempdir().expect("temporary directory");
+    let store = RecordingStore::open(
+        temporary.path(),
+        RecordingStoreLimits {
+            max_bytes: Some(1024 * 1024),
+            max_files: Some(16),
+            max_active_recorders: 1,
+        },
+    )
+    .expect("recording store");
+    let first = worker(&store, Some(Duration::from_millis(1)), 1024 * 1024);
+    assert_eq!(store.stats().active_recorders, 1);
+
+    let second = RecorderWorker::start(
+        store.clone(),
+        &RecordingPathPolicy::new(".flv", false).expect("path policy"),
+        b"second",
+        1_721_657_969,
+        RecordingDateTime::new(2024, 7, 22, 13, 26, 9).expect("recording date-time"),
+        RecorderWorkerConfig::default(),
+    );
+    assert!(matches!(
+        second,
+        Err(RecorderWorkerStartError::Capacity(
+            RecordingStoreError::ActiveRecorderLimit { maximum: 1 }
+        ))
+    ));
+
+    enqueue(&first, audio(0, 0x11));
+    enqueue(&first, audio(1, 0x22));
+    let status = shutdown(first);
+    assert_eq!(status.segments_completed, 2);
+    assert_eq!(store.stats().active_recorders, 0);
+
+    let replacement = worker(&store, None, 1024);
+    assert_eq!(store.stats().active_recorders, 1);
+    shutdown(replacement);
+    assert_eq!(store.stats().active_recorders, 0);
+}
+
+#[test]
+fn two_recorders_rotate_through_the_shared_root_finalizer() {
+    let temporary = tempdir().expect("temporary directory");
+    let store = RecordingStore::open(
+        temporary.path(),
+        RecordingStoreLimits {
+            max_bytes: Some(1024 * 1024),
+            max_files: Some(16),
+            max_active_recorders: 2,
+        },
+    )
+    .expect("recording store");
+    let path = RecordingPathPolicy::new(".flv", false).expect("path policy");
+    let config = RecorderWorkerConfig {
+        rotation_interval: Some(Duration::from_millis(1)),
+        ..RecorderWorkerConfig::default()
+    };
+    let first = RecorderWorker::start(
+        store.clone(),
+        &path,
+        b"camera",
+        1_721_657_969,
+        RecordingDateTime::new(2024, 7, 22, 13, 26, 9).expect("recording date-time"),
+        config,
+    )
+    .expect("first recorder");
+    let second = RecorderWorker::start(
+        store.clone(),
+        &path,
+        b"door",
+        1_721_657_969,
+        RecordingDateTime::new(2024, 7, 22, 13, 26, 9).expect("recording date-time"),
+        config,
+    )
+    .expect("second recorder");
+    assert_eq!(store.stats().active_recorders, 2);
+
+    for worker in [&first, &second] {
+        enqueue(worker, audio(0, 0x11));
+        enqueue(worker, audio(1, 0x22));
+    }
+    let first = shutdown(first);
+    let second = shutdown(second);
+
+    assert_eq!(first.segments_completed, 2);
+    assert_eq!(second.segments_completed, 2);
+    assert_eq!(store.stats().active_recorders, 0);
+    assert_eq!(recording_files(temporary.path()).len(), 4);
 }
 
 #[test]
@@ -554,9 +664,8 @@ fn shutdown_is_bounded_when_storage_admission_is_stalled() {
     let store = store(temporary.path());
     let ownership = OpenOptions::new()
         .read(true)
-        .write(true)
-        .open(temporary.path().join(".oxiroute-recording.lock"))
-        .expect("ownership lock");
+        .open(temporary.path())
+        .expect("recording root ownership");
     flock(&ownership, FlockOperation::LockExclusive).expect("stall storage admission");
     let worker = worker_with_shutdown_timeout(&store, Duration::from_millis(40));
     enqueue(&worker, audio(0, 0x11));
@@ -587,9 +696,8 @@ fn abrupt_drop_is_bounded_when_storage_is_stalled() {
     let store = store(temporary.path());
     let ownership = OpenOptions::new()
         .read(true)
-        .write(true)
-        .open(temporary.path().join(".oxiroute-recording.lock"))
-        .expect("ownership lock");
+        .open(temporary.path())
+        .expect("recording root ownership");
     flock(&ownership, FlockOperation::LockExclusive).expect("stall storage admission");
     let worker = worker_with_shutdown_timeout(&store, Duration::from_millis(40));
     enqueue(&worker, audio(0, 0x11));

@@ -94,6 +94,7 @@ pub(crate) struct RecorderController {
     stream_name: Arc<[u8]>,
     reaper: RecorderReaperHandle,
     state: Mutex<ControllerState>,
+    state_changed: Condvar,
     last_observed_at_unix_ms: AtomicU64,
 }
 
@@ -185,6 +186,7 @@ impl RecorderController {
                 worker_generation: 0,
                 last_status: None,
             }),
+            state_changed: Condvar::new(),
             last_observed_at_unix_ms: AtomicU64::new(at_unix_ms),
         }
     }
@@ -213,7 +215,7 @@ impl RecorderController {
                 }
             }
             let Some(worker) = state.worker.take() else {
-                let _admission = self
+                let admission = self
                     .reaper
                     .queue
                     .admission()
@@ -225,28 +227,46 @@ impl RecorderController {
                 let opened_at_unix_seconds = context.at_unix_ms / 1_000;
                 let opened_at_utc = RecordingDateTime::from_unix_seconds(opened_at_unix_seconds)
                     .map_err(|_| RecorderErrorCode::OpenFailed)?;
-                let worker = RecorderWorker::start(
+                let worker = match RecorderWorker::start(
                     self.policy.store.clone(),
                     &self.policy.path,
                     &self.stream_name,
                     opened_at_unix_seconds,
                     opened_at_utc,
                     self.policy.worker,
-                )
-                .map_err(|error| match error {
-                    crate::RecorderWorkerStartError::UnsupportedVideoCodec(_) => {
-                        RecorderErrorCode::UnsupportedCodec
+                ) {
+                    Ok(worker) => worker,
+                    Err(crate::RecorderWorkerStartError::Capacity(
+                        crate::RecordingStoreError::ActiveRecorderLimit { .. },
+                    )) if state.stopping => {
+                        drop(admission);
+                        drop(
+                            self.state_changed
+                                .wait_while(state, |state| state.active && state.stopping)
+                                .expect(
+                                    "recorder controller mutex poisoned while waiting for reap",
+                                ),
+                        );
+                        continue;
                     }
-                    crate::RecorderWorkerStartError::ThreadSpawn(_) => {
-                        RecorderErrorCode::BackendUnavailable
+                    Err(error) => {
+                        return Err(match error {
+                            crate::RecorderWorkerStartError::UnsupportedVideoCodec(_) => {
+                                RecorderErrorCode::UnsupportedCodec
+                            }
+                            crate::RecorderWorkerStartError::ThreadSpawn(_) => {
+                                RecorderErrorCode::BackendUnavailable
+                            }
+                            crate::RecorderWorkerStartError::Path(_)
+                            | crate::RecorderWorkerStartError::Capacity(_)
+                            | crate::RecorderWorkerStartError::InvalidQueueLimits
+                            | crate::RecorderWorkerStartError::InvalidRotationInterval
+                            | crate::RecorderWorkerStartError::InvalidShutdownTimeout => {
+                                RecorderErrorCode::OpenFailed
+                            }
+                        });
                     }
-                    crate::RecorderWorkerStartError::Path(_)
-                    | crate::RecorderWorkerStartError::InvalidQueueLimits
-                    | crate::RecorderWorkerStartError::InvalidRotationInterval
-                    | crate::RecorderWorkerStartError::InvalidShutdownTimeout => {
-                        RecorderErrorCode::OpenFailed
-                    }
-                })?;
+                };
                 for event in state.bootstrap.events() {
                     if worker.try_enqueue_at(event, Instant::now(), context.at_unix_ms)
                         != RecorderEnqueueResult::Queued
@@ -261,6 +281,8 @@ impl RecorderController {
                 return Ok(());
             };
             let worker_generation = state.worker_generation;
+            state.last_status = Some(worker.status());
+            state.stopping = true;
             drop(state);
             self.reaper.submit(
                 worker,
@@ -275,9 +297,10 @@ impl RecorderController {
     pub(crate) fn stop(self: &Arc<Self>, context: RecorderCommandContext) -> bool {
         self.observe_at(context.at_unix_ms);
         let mut state = self.lock();
+        let already_stopping = state.stopping;
         state.stopping = true;
         let Some(worker) = state.worker.take() else {
-            state.stopping = false;
+            state.stopping = already_stopping;
             return false;
         };
         let worker_generation = state.worker_generation;
@@ -325,6 +348,7 @@ impl RecorderController {
         let mut state = self.lock();
         state.active = false;
         state.stopping = true;
+        self.state_changed.notify_all();
         let Some(worker) = state.worker.take() else {
             state.stopping = false;
             return;
@@ -357,6 +381,8 @@ impl RecorderController {
         }
         state.last_status = Some(status);
         state.stopping = false;
+        drop(state);
+        self.state_changed.notify_all();
     }
 
     fn observe_at(&self, at_unix_ms: u64) {
@@ -1372,6 +1398,73 @@ mod tests {
     }
 
     #[test]
+    fn capacity_one_restart_waits_for_the_previous_worker_lease() {
+        let mut fixture = RecorderFixture::with_max_active(Duration::from_millis(40), 1);
+        let gate = fixture.prepare_publication();
+        assert!(fixture.controller.stop(recorder_context(1_100)));
+        assert!(gate.wait_before_claim(TEST_TIMEOUT));
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let mut restarts = Vec::new();
+        for _ in 0..2 {
+            let controller = Arc::clone(&fixture.controller);
+            let started_tx = started_tx.clone();
+            restarts.push(thread::spawn(move || {
+                started_tx
+                    .send(controller.start(recorder_context(1_200)))
+                    .expect("report replacement start");
+            }));
+        }
+        assert!(matches!(
+            started_rx.recv_timeout(Duration::from_millis(20)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        for _ in 0..2 {
+            started_rx
+                .recv_timeout(TEST_TIMEOUT)
+                .expect("replacement starts after prior lease is reaped")
+                .expect("start replacement recorder");
+        }
+        for restart in restarts {
+            restart.join().expect("replacement start thread");
+        }
+
+        fixture.controller.deactivate(1_300);
+        fixture.shutdown_owner(None);
+        wait_until(TEST_TIMEOUT, || fixture.reaper.queue.status().1 == 0);
+    }
+
+    #[test]
+    fn shutdown_wakes_a_capacity_one_restart_waiter() {
+        let mut fixture = RecorderFixture::with_max_active(Duration::from_millis(500), 1);
+        let gate = fixture.prepare_publication();
+        assert!(fixture.controller.stop(recorder_context(1_100)));
+        assert!(gate.wait_before_claim(TEST_TIMEOUT));
+
+        let controller = Arc::clone(&fixture.controller);
+        let (started_tx, started_rx) = mpsc::channel();
+        let restart = thread::spawn(move || {
+            started_tx
+                .send(controller.start(recorder_context(1_200)))
+                .expect("report replacement start");
+        });
+        assert!(matches!(
+            started_rx.recv_timeout(Duration::from_millis(20)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        let shutdown = fixture.initiate_shutdown_owner(Instant::now());
+        assert_eq!(
+            started_rx
+                .recv_timeout(TEST_TIMEOUT)
+                .expect("shutdown wakes replacement start"),
+            Err(RecorderErrorCode::BackendUnavailable)
+        );
+        restart.join().expect("replacement start thread");
+        assert!(shutdown.wait_until(Instant::now() + TEST_TIMEOUT));
+    }
+
+    #[test]
     fn reaper_panic_closes_intake_and_transfers_pending_cleanup() {
         let mut fixture = RecorderFixture::new(Duration::from_millis(500));
         let gate = fixture.prepare_publication();
@@ -1570,13 +1663,17 @@ mod tests {
 
     impl RecorderFixture {
         fn new(shutdown_timeout: Duration) -> Self {
+            Self::with_max_active(shutdown_timeout, 2)
+        }
+
+        fn with_max_active(shutdown_timeout: Duration, max_active_recorders: usize) -> Self {
             let root = tempdir().expect("recording root");
             let store = RecordingStore::open(
                 root.path(),
                 RecordingStoreLimits {
                     max_bytes: Some(1024 * 1024),
                     max_files: Some(8),
-                    max_active_recorders: 2,
+                    max_active_recorders,
                 },
             )
             .expect("recording store");

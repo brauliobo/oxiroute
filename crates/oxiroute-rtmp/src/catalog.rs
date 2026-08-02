@@ -1865,9 +1865,8 @@ mod tests {
         .expect("recording store");
         let ownership = OpenOptions::new()
             .read(true)
-            .write(true)
-            .open(root.path().join(".oxiroute-recording.lock"))
-            .expect("ownership lock");
+            .open(root.path())
+            .expect("recording root ownership");
         let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
             live_ingest: true,
             manual_recording: true,
@@ -1960,9 +1959,8 @@ mod tests {
         .expect("recording store");
         let ownership = OpenOptions::new()
             .read(true)
-            .write(true)
-            .open(root.path().join(".oxiroute-recording.lock"))
-            .expect("ownership lock");
+            .open(root.path())
+            .expect("recording root ownership");
         let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
             live_ingest: true,
             manual_recording: true,
@@ -2036,9 +2034,8 @@ mod tests {
         .expect("recording store");
         let ownership = OpenOptions::new()
             .read(true)
-            .write(true)
-            .open(root.path().join(".oxiroute-recording.lock"))
-            .expect("ownership lock");
+            .open(root.path())
+            .expect("recording root ownership");
         let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
             live_ingest: true,
             manual_recording: true,

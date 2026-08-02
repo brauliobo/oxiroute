@@ -733,7 +733,7 @@ fn recorder_planning_is_read_only_and_runtime_activation_opens_the_store() {
     service
         .runtime(Arc::new(RtmpRegistry::new(plan.rtmp_capabilities)))
         .expect("activated RTMP runtime");
-    assert!(root.path().join(".oxiroute-recording.lock").is_file());
+    assert!(!root.path().join(".oxiroute-recording.lock").exists());
 }
 
 #[cfg(unix)]

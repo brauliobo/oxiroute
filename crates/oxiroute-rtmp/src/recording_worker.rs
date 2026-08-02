@@ -10,9 +10,12 @@ use std::{
 };
 
 use crate::{
-    FlvMuxer, MediaEvent, MediaEventKind, RecordingCommit, RecordingDateTime, RecordingFile,
-    RecordingPathError, RecordingPathPolicy, RecordingStore, RecordingStoreError,
-    RecordingTimeBasis, recording_store::RecordingCommitCancellation,
+    FlvMuxer, MediaEvent, MediaEventKind, RecorderLease, RecordingCommit, RecordingDateTime,
+    RecordingFile, RecordingPathError, RecordingPathPolicy, RecordingStore, RecordingStoreError,
+    RecordingTimeBasis,
+    recording_store::{
+        FinalizerTicket, MAX_PENDING_FINALIZATIONS_PER_RECORDER, RecordingCommitCancellation,
+    },
 };
 
 const TIMESTAMP_HALF_RANGE: u32 = 1 << 31;
@@ -108,6 +111,8 @@ pub enum RecorderWorkerStartError {
     InvalidRotationInterval,
     #[error("recorder worker thread cannot be started")]
     ThreadSpawn(#[source] io::Error),
+    #[error("recorder capacity cannot be acquired")]
+    Capacity(#[source] RecordingStoreError),
     #[error("recorder shutdown timeout must be nonzero")]
     InvalidShutdownTimeout,
     #[error("recording does not support declared video codec {0:?}")]
@@ -147,7 +152,7 @@ struct WorkerShared {
     finished_available: Condvar,
     shutdown_timeout: Duration,
     commit_cancellation: Mutex<Option<RecordingCommitCancellation>>,
-    pending_commit_cancellation: Mutex<Option<RecordingCommitCancellation>>,
+    pending_finalizations: Mutex<Vec<Arc<PendingFinalizationState>>>,
     current_partial_exists: Mutex<Option<Arc<AtomicBool>>>,
     #[cfg(test)]
     panic_on_finish: AtomicBool,
@@ -228,12 +233,16 @@ impl RecorderWorker {
             })
             .transpose()?;
         path_policy.segment_filename(stream_name, opened_at_unix_seconds, opened_at_utc, 0)?;
+        let lease = store
+            .acquire_recorder()
+            .map_err(RecorderWorkerStartError::Capacity)?;
         let path_policy = path_policy.clone();
         let stream_name = Arc::<[u8]>::from(stream_name);
         let setup = WorkerSetup {
             store,
             path_policy,
             stream_name,
+            lease,
             rotation_interval: rotation_interval_ms
                 .map(|value| Duration::from_millis(value.into())),
         };
@@ -268,7 +277,7 @@ impl RecorderWorker {
             finished_available: Condvar::new(),
             shutdown_timeout: config.shutdown_timeout,
             commit_cancellation: Mutex::new(None),
-            pending_commit_cancellation: Mutex::new(None),
+            pending_finalizations: Mutex::new(Vec::new()),
             current_partial_exists: Mutex::new(None),
             #[cfg(test)]
             panic_on_finish: AtomicBool::new(false),
@@ -521,13 +530,15 @@ impl WorkerShared {
             .expect("recorder commit cancellation mutex poisoned")
             .clone();
         let pending = self
-            .pending_commit_cancellation
+            .pending_finalizations
             .lock()
-            .expect("recorder pending commit cancellation mutex poisoned")
+            .expect("recorder pending finalizations mutex poisoned")
             .clone();
-        let has_commit = current.is_some() || pending.is_some();
-        let commit_cancelled = current.is_some_and(|commit| commit.cancel())
-            | pending.is_some_and(|commit| commit.cancel());
+        let has_commit = current.is_some() || !pending.is_empty();
+        let mut commit_cancelled = current.is_some_and(|commit| commit.cancel());
+        for pending in pending {
+            commit_cancelled |= pending.cancel();
+        }
         if has_commit {
             commit_cancelled
         } else {
@@ -758,20 +769,116 @@ struct WorkerContext {
     last_written_at_unix_seconds: u64,
     video_seen: bool,
     segment_headers: SegmentHeaders,
-    pending_finalization: Option<PendingFinalization>,
+    pending_finalizations: VecDeque<PendingFinalization>,
+    _lease: RecorderLease,
 }
 
 struct PendingFinalization {
-    thread: Option<JoinHandle<Result<RecordingCommit, WorkerError>>>,
-    partial_relative_name: String,
+    state: Arc<PendingFinalizationState>,
     partial_exists: Arc<AtomicBool>,
+}
+
+struct PendingFinalizationState {
+    result: Mutex<Option<Result<RecordingCommit, WorkerError>>>,
+    available: Condvar,
+    cancellation: RecordingCommitCancellation,
+    ticket: Mutex<Option<FinalizerTicket>>,
+    cancel_requested: AtomicBool,
+    claimed: AtomicBool,
+    finished: AtomicBool,
+    partial_relative_name: String,
 }
 
 impl Drop for PendingFinalization {
     fn drop(&mut self) {
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+        self.state.wait_until_finished();
+    }
+}
+
+impl PendingFinalizationState {
+    fn cancel(&self) -> bool {
+        self.cancel_requested.store(true, Ordering::Release);
+        let commit_cancelled = self.cancellation.cancel();
+        let queued_cancelled = self.cancel_queued();
+        commit_cancelled || queued_cancelled
+    }
+
+    fn set_ticket(&self, ticket: FinalizerTicket) {
+        *self
+            .ticket
+            .lock()
+            .expect("recorder finalization ticket mutex poisoned") = Some(ticket);
+        if self.cancel_requested.load(Ordering::Acquire) {
+            self.cancel_queued();
         }
+    }
+
+    fn cancel_queued(&self) -> bool {
+        let removed = self
+            .ticket
+            .lock()
+            .expect("recorder finalization ticket mutex poisoned")
+            .as_ref()
+            .is_some_and(FinalizerTicket::cancel_queued);
+        if removed {
+            assert!(
+                self.try_claim(),
+                "removed finalization job was already claimed"
+            );
+            self.complete(Err(WorkerError {
+                kind: RecorderFailure::ShutdownTimedOut,
+                recoverable_partial_name: Some(self.partial_relative_name.clone()),
+                published_but_not_durable_relative_name: None,
+            }));
+        }
+        removed
+    }
+
+    fn try_claim(&self) -> bool {
+        self.claimed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    fn complete(&self, result: Result<RecordingCommit, WorkerError>) {
+        *self
+            .result
+            .lock()
+            .expect("recorder finalization result mutex poisoned") = Some(result);
+        self.finished.store(true, Ordering::Release);
+        self.available.notify_all();
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished.load(Ordering::Acquire)
+    }
+
+    fn wait_until_finished(&self) {
+        let result = self
+            .result
+            .lock()
+            .expect("recorder finalization result mutex poisoned");
+        drop(
+            self.available
+                .wait_while(result, |_| !self.is_finished())
+                .expect("recorder finalization result mutex poisoned while waiting"),
+        );
+    }
+
+    fn take_result(&self) -> Result<RecordingCommit, WorkerError> {
+        let mut result = self
+            .result
+            .lock()
+            .expect("recorder finalization result mutex poisoned");
+        while !self.is_finished() {
+            result = self
+                .available
+                .wait(result)
+                .expect("recorder finalization result mutex poisoned while waiting");
+        }
+        result
+            .take()
+            .expect("finished recorder finalization retains its result")
     }
 }
 
@@ -779,6 +886,7 @@ struct WorkerSetup {
     store: RecordingStore,
     path_policy: RecordingPathPolicy,
     stream_name: Arc<[u8]>,
+    lease: RecorderLease,
     rotation_interval: Option<Duration>,
 }
 
@@ -793,6 +901,7 @@ fn run_worker(shared: &Arc<WorkerShared>, setup: WorkerSetup) {
         store,
         path_policy,
         stream_name,
+        lease,
         rotation_interval,
     } = setup;
     let mut context = WorkerContext {
@@ -809,7 +918,8 @@ fn run_worker(shared: &Arc<WorkerShared>, setup: WorkerSetup) {
         last_written_at_unix_seconds: 0,
         video_seen: false,
         segment_headers: SegmentHeaders::default(),
-        pending_finalization: None,
+        pending_finalizations: VecDeque::new(),
+        _lease: lease,
     };
 
     loop {
@@ -833,6 +943,7 @@ fn run_worker(shared: &Arc<WorkerShared>, setup: WorkerSetup) {
         }
     }
     if let Err(failure) = context.finish_segment() {
+        context.preserve_segment();
         shared.fail(failure);
         return;
     }
@@ -1036,7 +1147,10 @@ impl WorkerContext {
     }
 
     fn start_segment_finalization(&mut self) -> Result<(), WorkerError> {
-        self.complete_pending_finalization(true)?;
+        self.poll_finalization()?;
+        if self.pending_finalizations.len() >= MAX_PENDING_FINALIZATIONS_PER_RECORDER {
+            return Err(WorkerError::new(RecorderFailure::Finalize));
+        }
         let Some(segment) = self.prepare_segment_finish()? else {
             return Ok(());
         };
@@ -1045,28 +1159,46 @@ impl WorkerContext {
             .commit_cancellation
             .lock()
             .expect("recorder commit cancellation mutex poisoned")
-            .take();
-        *self
-            .shared
-            .pending_commit_cancellation
-            .lock()
-            .expect("recorder pending commit cancellation mutex poisoned") = cancellation;
+            .take()
+            .expect("prepared segment retains commit cancellation");
         let partial_relative_name = segment.partial_relative_name.clone();
         let partial_exists = Arc::clone(&segment.partial_exists);
-        let thread = thread::Builder::new()
-            .name("rtmp-recorder-finalizer".to_owned())
-            .spawn(move || segment.finish());
-        let Ok(thread) = thread else {
-            *self
-                .shared
-                .pending_commit_cancellation
-                .lock()
-                .expect("recorder pending commit cancellation mutex poisoned") = None;
-            return Err(WorkerError::new(RecorderFailure::Finalize));
-        };
-        self.pending_finalization = Some(PendingFinalization {
-            thread: Some(thread),
-            partial_relative_name,
+        let state = Arc::new(PendingFinalizationState {
+            result: Mutex::new(None),
+            available: Condvar::new(),
+            cancellation,
+            ticket: Mutex::new(None),
+            cancel_requested: AtomicBool::new(false),
+            claimed: AtomicBool::new(false),
+            finished: AtomicBool::new(false),
+            partial_relative_name: partial_relative_name.clone(),
+        });
+        self.shared
+            .pending_finalizations
+            .lock()
+            .expect("recorder pending finalizations mutex poisoned")
+            .push(Arc::clone(&state));
+        if self.shared.cancelled.load(Ordering::Acquire) {
+            let _ = state.cancel();
+        }
+        let completion = Arc::clone(&state);
+        let panic_partial_relative_name = partial_relative_name.clone();
+        let ticket = self.store.submit_finalization(Box::new(move || {
+            if !completion.try_claim() {
+                return;
+            }
+            let result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| segment.finish()))
+                    .unwrap_or(Err(WorkerError {
+                        kind: RecorderFailure::WorkerPanicked,
+                        recoverable_partial_name: Some(panic_partial_relative_name),
+                        published_but_not_durable_relative_name: None,
+                    }));
+            completion.complete(result);
+        }));
+        state.set_ticket(ticket);
+        self.pending_finalizations.push_back(PendingFinalization {
+            state,
             partial_exists,
         });
         self.clear_current_segment_status();
@@ -1074,42 +1206,34 @@ impl WorkerContext {
     }
 
     fn poll_finalization(&mut self) -> Result<(), WorkerError> {
-        self.complete_pending_finalization(false)
+        while self
+            .pending_finalizations
+            .front()
+            .is_some_and(|pending| pending.state.is_finished())
+        {
+            self.complete_pending_finalization(false)?;
+        }
+        Ok(())
     }
 
     fn complete_pending_finalization(&mut self, wait: bool) -> Result<(), WorkerError> {
-        let Some(pending) = self.pending_finalization.as_ref() else {
+        let Some(pending) = self.pending_finalizations.front() else {
             return Ok(());
         };
-        if !wait
-            && !pending
-                .thread
-                .as_ref()
-                .expect("pending finalization retains its thread")
-                .is_finished()
-        {
+        if !wait && !pending.state.is_finished() {
             return Ok(());
         }
-        let mut pending = self
-            .pending_finalization
-            .take()
+        let pending = self
+            .pending_finalizations
+            .pop_front()
             .expect("pending finalization was checked above");
-        let result = pending
-            .thread
-            .take()
-            .expect("pending finalization retains its thread")
-            .join();
-        *self
-            .shared
-            .pending_commit_cancellation
+        let result = pending.state.take_result();
+        self.shared
+            .pending_finalizations
             .lock()
-            .expect("recorder pending commit cancellation mutex poisoned") = None;
-        let result = result.map_err(|_| WorkerError {
-            kind: RecorderFailure::WorkerPanicked,
-            recoverable_partial_name: Some(pending.partial_relative_name.clone()),
-            published_but_not_durable_relative_name: None,
-        });
-        let commit = match result.and_then(|result| result) {
+            .expect("recorder pending finalizations mutex poisoned")
+            .retain(|state| !Arc::ptr_eq(state, &pending.state));
+        let commit = match result {
             Ok(commit) => commit,
             Err(error) => {
                 *self
@@ -1126,13 +1250,13 @@ impl WorkerContext {
     }
 
     fn finish_segment(&mut self) -> Result<(), WorkerError> {
-        self.complete_pending_finalization(true)?;
-        let Some(segment) = self.prepare_segment_finish()? else {
-            return Ok(());
-        };
-        let commit = segment.finish()?;
-        self.clear_current_segment_status();
-        self.record_completed_segment(commit);
+        while !self.pending_finalizations.is_empty() {
+            self.complete_pending_finalization(true)?;
+        }
+        self.start_segment_finalization()?;
+        while !self.pending_finalizations.is_empty() {
+            self.complete_pending_finalization(true)?;
+        }
         Ok(())
     }
 
@@ -1316,7 +1440,6 @@ impl Segment {
         file.inner
             .set_final_relative_name(final_name)
             .map_err(|error| WorkerError::finalization(&error))?;
-        file.inner.release_active_for_finalization();
         Ok(PreparedSegment {
             file,
             partial_relative_name: self.partial_relative_name,
@@ -1452,7 +1575,7 @@ mod tests {
         )
         .expect("recording store");
         let worker = RecorderWorker::start(
-            store,
+            store.clone(),
             &RecordingPathPolicy::new(".flv", false).expect("path policy"),
             b"camera",
             1_721_619_000,
@@ -1483,6 +1606,7 @@ mod tests {
         );
         assert!(gate.wait_before_claim(Duration::from_secs(1)));
         wait_until(|| worker.status().segments_started == 2);
+        assert_eq!(store.stats().active_recorders, 1);
         enqueue(
             &worker,
             MediaEvent::audio(1, Arc::<[u8]>::from(&b"\xaf\x01\x33"[..])).unwrap(),
@@ -1501,6 +1625,7 @@ mod tests {
         };
         assert_eq!(status.segments_completed, 2);
         assert_eq!(status.discontinuities, 0);
+        assert_eq!(store.stats().active_recorders, 0);
         assert_eq!(
             fs::read_dir(root.path())
                 .expect("recording entries")
@@ -1511,8 +1636,276 @@ mod tests {
         );
     }
 
+    #[test]
+    fn ten_aligned_recorders_drain_media_while_root_finalization_is_serialized() {
+        let root = tempdir().expect("recording root");
+        let store = RecordingStore::open(
+            root.path(),
+            RecordingStoreLimits {
+                max_bytes: Some(16 * 1024 * 1024),
+                max_files: Some(40),
+                max_active_recorders: 10,
+            },
+        )
+        .expect("recording store");
+        let path = RecordingPathPolicy::new(".flv", false).expect("path policy");
+        let config = RecorderWorkerConfig {
+            max_queue_messages: 64,
+            max_queue_bytes: 1024 * 1024,
+            rotation_interval: Some(Duration::from_millis(1)),
+            shutdown_timeout: Duration::from_secs(2),
+            video_codec: None,
+        };
+        let workers: Vec<_> = (0..10)
+            .map(|index| {
+                RecorderWorker::start(
+                    store.clone(),
+                    &path,
+                    format!("camera-{index}").as_bytes(),
+                    1_721_619_000,
+                    RecordingDateTime::from_unix_seconds(1_721_619_000).expect("start time"),
+                    config,
+                )
+                .expect("recorder worker")
+            })
+            .collect();
+        for worker in &workers {
+            enqueue(
+                worker,
+                MediaEvent::audio(0, Arc::<[u8]>::from(&b"\xaf\x01\x11"[..])).unwrap(),
+            );
+            wait_until(|| worker.status().events_processed == 1);
+        }
+        let gate = workers[0].install_publication_gate();
+
+        enqueue(
+            &workers[0],
+            MediaEvent::audio(1, Arc::<[u8]>::from(&b"\xaf\x01\x22"[..])).unwrap(),
+        );
+        assert!(gate.wait_before_claim(Duration::from_secs(1)));
+        for worker in &workers[1..] {
+            enqueue(
+                worker,
+                MediaEvent::audio(1, Arc::<[u8]>::from(&b"\xaf\x01\x22"[..])).unwrap(),
+            );
+        }
+        for worker in &workers {
+            wait_until(|| worker.status().segments_started == 2);
+            enqueue_audio_burst(worker, 1, 16);
+        }
+        for worker in &workers {
+            wait_until(|| worker.status().events_processed == 18);
+            assert_eq!(worker.status().discontinuities, 0);
+        }
+        for worker in &workers {
+            enqueue(
+                worker,
+                MediaEvent::audio(2, Arc::<[u8]>::from(&b"\xaf\x01\x44"[..])).unwrap(),
+            );
+            wait_until(|| worker.status().segments_started == 3);
+            enqueue_audio_burst(worker, 2, 16);
+        }
+        for worker in &workers {
+            wait_until(|| worker.status().events_processed == 35);
+            assert_eq!(worker.status().discontinuities, 0);
+        }
+
+        gate.allow_claim();
+        assert!(gate.wait_after_claim(Duration::from_secs(1)));
+        gate.allow_publication();
+        for worker in workers {
+            let status = match worker.shutdown() {
+                RecorderShutdown::Joined(status) => status,
+                RecorderShutdown::TimedOut(supervisor) => {
+                    panic!("aligned recorder timed out: {:?}", supervisor.status())
+                }
+            };
+            assert_eq!(status.segments_completed, 3);
+            assert_eq!(status.discontinuities, 0);
+        }
+        assert_eq!(store.stats().active_recorders, 0);
+    }
+
+    #[test]
+    fn queued_finalization_cancels_without_waiting_for_the_busy_root_worker() {
+        let root = tempdir().expect("recording root");
+        let store = RecordingStore::open(
+            root.path(),
+            RecordingStoreLimits {
+                max_bytes: Some(1024 * 1024),
+                max_files: Some(12),
+                max_active_recorders: 2,
+            },
+        )
+        .expect("recording store");
+        let path = RecordingPathPolicy::new(".flv", false).expect("path policy");
+        let config = RecorderWorkerConfig {
+            max_queue_messages: 8,
+            max_queue_bytes: 1024,
+            rotation_interval: Some(Duration::from_millis(1)),
+            shutdown_timeout: Duration::from_millis(40),
+            video_codec: None,
+        };
+        let start = |name: &[u8]| {
+            RecorderWorker::start(
+                store.clone(),
+                &path,
+                name,
+                1_721_619_000,
+                RecordingDateTime::from_unix_seconds(1_721_619_000).expect("start time"),
+                config,
+            )
+            .expect("recorder worker")
+        };
+        let first = start(b"first");
+        let second = start(b"second");
+        for worker in [&first, &second] {
+            enqueue(
+                worker,
+                MediaEvent::audio(0, Arc::<[u8]>::from(&b"\xaf\x01\x11"[..])).unwrap(),
+            );
+            wait_until(|| worker.status().events_processed == 1);
+        }
+        let first_gate = first.install_publication_gate();
+
+        enqueue(
+            &first,
+            MediaEvent::audio(1, Arc::<[u8]>::from(&b"\xaf\x01\x22"[..])).unwrap(),
+        );
+        assert!(first_gate.wait_before_claim(Duration::from_secs(1)));
+        enqueue(
+            &second,
+            MediaEvent::audio(1, Arc::<[u8]>::from(&b"\xaf\x01\x33"[..])).unwrap(),
+        );
+        wait_until(|| second.status().segments_started == 2);
+
+        let shutdown = second.shutdown();
+        let supervisor = match shutdown {
+            RecorderShutdown::TimedOut(supervisor) => supervisor,
+            RecorderShutdown::Joined(status) => {
+                panic!("queued recorder unexpectedly joined before cancellation: {status:?}")
+            }
+        };
+        wait_until(|| supervisor.is_finished());
+        let status = supervisor.join();
+        assert_eq!(
+            status.phase,
+            RecorderWorkerPhase::Failed(RecorderFailure::ShutdownTimedOut)
+        );
+        assert_eq!(store.stats().active_recorders, 1);
+
+        first_gate.allow_claim();
+        assert!(first_gate.wait_after_claim(Duration::from_secs(1)));
+        first_gate.allow_publication();
+        assert!(matches!(first.shutdown(), RecorderShutdown::Joined(_)));
+        assert_eq!(store.stats().active_recorders, 0);
+        assert_eq!(
+            fs::read_dir(root.path())
+                .expect("recording entries")
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().ends_with(".partial"))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn third_unresolved_rotation_fails_explicitly_and_preserves_the_current_segment() {
+        let root = tempdir().expect("recording root");
+        let store = RecordingStore::open(
+            root.path(),
+            RecordingStoreLimits {
+                max_bytes: Some(1024 * 1024),
+                max_files: Some(8),
+                max_active_recorders: 1,
+            },
+        )
+        .expect("recording store");
+        let worker = RecorderWorker::start(
+            store,
+            &RecordingPathPolicy::new(".flv", false).expect("path policy"),
+            b"camera",
+            1_721_619_000,
+            RecordingDateTime::from_unix_seconds(1_721_619_000).expect("start time"),
+            RecorderWorkerConfig {
+                max_queue_messages: 8,
+                max_queue_bytes: 1024,
+                rotation_interval: Some(Duration::from_millis(1)),
+                shutdown_timeout: Duration::from_secs(1),
+                video_codec: None,
+            },
+        )
+        .expect("recorder worker");
+        enqueue(
+            &worker,
+            MediaEvent::audio(0, Arc::<[u8]>::from(&b"\xaf\x01\x11"[..])).unwrap(),
+        );
+        wait_until(|| worker.status().events_processed == 1);
+        let gate = worker.install_publication_gate();
+
+        for timestamp in 1..=3 {
+            enqueue(
+                &worker,
+                MediaEvent::audio(
+                    timestamp,
+                    Arc::<[u8]>::from(
+                        vec![
+                            0xaf,
+                            0x01,
+                            u8::try_from(timestamp).expect("small test timestamp"),
+                        ]
+                        .into_boxed_slice(),
+                    ),
+                )
+                .unwrap(),
+            );
+            if timestamp == 1 {
+                assert!(gate.wait_before_claim(Duration::from_secs(1)));
+            }
+        }
+        wait_until(|| {
+            matches!(
+                worker.status().phase,
+                RecorderWorkerPhase::Failed(RecorderFailure::Finalize)
+            )
+        });
+        let failed = worker.status();
+        assert_eq!(failed.discontinuities, 0);
+        let current = failed
+            .recoverable_partial_name
+            .expect("current segment remains recoverable");
+        assert!(root.path().join(current).is_file());
+
+        gate.allow_claim();
+        assert!(gate.wait_after_claim(Duration::from_secs(1)));
+        gate.allow_publication();
+        let status = match worker.shutdown() {
+            RecorderShutdown::Joined(status) => status,
+            RecorderShutdown::TimedOut(supervisor) => {
+                panic!("failed recorder did not join: {:?}", supervisor.status())
+            }
+        };
+        assert_eq!(
+            status.phase,
+            RecorderWorkerPhase::Failed(RecorderFailure::Finalize)
+        );
+    }
+
     fn enqueue(worker: &RecorderWorker, event: MediaEvent) {
         assert_eq!(worker.try_enqueue(event), RecorderEnqueueResult::Queued);
+    }
+
+    fn enqueue_audio_burst(worker: &RecorderWorker, timestamp_ms: u32, count: u8) {
+        for payload in 0..count {
+            enqueue(
+                worker,
+                MediaEvent::audio(
+                    timestamp_ms,
+                    Arc::<[u8]>::from(vec![0xaf, 0x01, payload].into_boxed_slice()),
+                )
+                .unwrap(),
+            );
+        }
     }
 
     fn wait_until(predicate: impl Fn() -> bool) {
