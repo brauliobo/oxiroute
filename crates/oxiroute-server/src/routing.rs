@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     error::Error,
     fmt, io,
     net::{IpAddr, SocketAddr},
@@ -965,6 +966,12 @@ struct PoolQueue {
     #[cfg(test)]
     lifetime_waiters: AtomicU64,
     timeouts: AtomicU64,
+    waiters: Mutex<VecDeque<Arc<PoolWaiter>>>,
+}
+
+#[derive(Debug)]
+struct PoolWaiter {
+    notify: Notify,
 }
 
 impl PoolQueue {
@@ -981,6 +988,7 @@ impl PoolQueue {
             #[cfg(test)]
             lifetime_waiters: AtomicU64::new(0),
             timeouts: AtomicU64::new(0),
+            waiters: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -989,6 +997,19 @@ impl PoolQueue {
         #[cfg(test)]
         self.notifications.fetch_add(1, Ordering::Relaxed);
         self.notify.notify_waiters();
+        self.notify_front();
+    }
+
+    fn notify_front(&self) {
+        let waiter = self
+            .waiters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .front()
+            .cloned();
+        if let Some(waiter) = waiter {
+            waiter.notify.notify_one();
+        }
     }
 }
 
@@ -1160,36 +1181,107 @@ impl Drop for LifetimeWaitGuard<'_> {
 struct QueueWaitGuard {
     completed: bool,
     queue: Arc<PoolQueue>,
+    waiter: Arc<PoolWaiter>,
+    waiting: bool,
 }
 
 impl QueueWaitGuard {
     fn new(queue: Arc<PoolQueue>) -> Self {
-        queue.queued.fetch_add(1, Ordering::Relaxed);
-        queue.queued_total.fetch_add(1, Ordering::Relaxed);
+        let waiter = Arc::new(PoolWaiter {
+            notify: Notify::new(),
+        });
+        queue
+            .waiters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push_back(Arc::clone(&waiter));
         Self {
             completed: false,
             queue,
+            waiter,
+            waiting: false,
         }
     }
 
+    fn is_front(&self) -> bool {
+        self.queue
+            .waiters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .front()
+            .is_some_and(|waiter| Arc::ptr_eq(waiter, &self.waiter))
+    }
+
+    fn mark_waiting(&mut self) {
+        if self.waiting {
+            return;
+        }
+        self.waiting = true;
+        self.queue.queued.fetch_add(1, Ordering::Relaxed);
+        self.queue.queued_total.fetch_add(1, Ordering::Relaxed);
+    }
+
     fn complete(&mut self) {
+        self.finish(false);
+    }
+
+    fn timeout(&mut self) {
+        self.finish(true);
+    }
+
+    fn finish(&mut self, timed_out: bool) {
+        let removed_front = self.remove();
+        if self.waiting {
+            decrement_queue_count(&self.queue.queued);
+        }
+        if timed_out {
+            self.queue.timeouts.fetch_add(1, Ordering::Relaxed);
+        }
         self.completed = true;
+        if removed_front {
+            self.queue.notify_front();
+        }
+    }
+
+    fn remove(&self) -> bool {
+        let mut waiters = self
+            .queue
+            .waiters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(index) = waiters
+            .iter()
+            .position(|waiter| Arc::ptr_eq(waiter, &self.waiter))
+        else {
+            return false;
+        };
+        let removed_front = index == 0;
+        waiters.remove(index);
+        removed_front
     }
 }
 
 impl Drop for QueueWaitGuard {
     fn drop(&mut self) {
-        let released =
-            self.queue
-                .queued
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |queued| {
-                    queued.checked_sub(1)
-                });
-        debug_assert!(released.is_ok(), "pool queue counter underflow");
-        if !self.completed {
+        if self.completed {
+            return;
+        }
+        let removed_front = self.remove();
+        if self.waiting {
+            decrement_queue_count(&self.queue.queued);
             self.queue.cancellations.fetch_add(1, Ordering::Relaxed);
         }
+        if removed_front {
+            self.queue.notify_front();
+        }
     }
+}
+
+fn decrement_queue_count(counter: &AtomicU64) {
+    let released = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |queued| {
+        queued.checked_sub(1)
+    });
+    debug_assert!(released.is_ok(), "pool queue counter underflow");
 }
 
 struct SelectionAttempt {
@@ -1408,43 +1500,69 @@ impl EndpointPool {
     }
 
     pub(crate) async fn select_wait_excluding(&self, excluded: &[String]) -> Option<EndpointLease> {
-        let first = self.select_server_excluding(excluded);
-        if let Some(lease) = first.lease {
-            return Some(lease);
-        }
-        let Some(queue_timeout) = self.queue_timeout.filter(|_| first.saturated) else {
-            if !first.pool_available {
+        self.select_wait_with(|| self.select_server_excluding(excluded))
+            .await
+    }
+
+    pub(crate) async fn select_server_wait(&self, name: &str) -> Option<EndpointLease> {
+        self.select_wait_with(|| self.select_named_server(name))
+            .await
+    }
+
+    async fn select_wait_with(
+        &self,
+        mut select: impl FnMut() -> SelectionAttempt,
+    ) -> Option<EndpointLease> {
+        let Some(queue_timeout) = self.queue_timeout else {
+            let attempt = select();
+            if attempt.lease.is_none() && !attempt.pool_available {
                 self.note_unavailable_selection();
             }
-            return None;
+            return attempt.lease;
         };
         let deadline = Instant::now() + queue_timeout;
         let mut waiting = QueueWaitGuard::new(Arc::clone(&self.queue));
         loop {
-            let generation = self.queue.generation.load(Ordering::Acquire);
-            let notified = self.queue.notify.notified();
+            let waiter = Arc::clone(&waiting.waiter);
+            let notified = waiter.notify.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            let attempt = self.select_server_excluding(excluded);
-            if let Some(lease) = attempt.lease {
-                waiting.complete();
-                return Some(lease);
-            }
-            if !attempt.pool_available || !attempt.saturated {
-                waiting.complete();
-                if !attempt.pool_available {
-                    self.note_unavailable_selection();
+            if waiting.is_front() {
+                let attempt = select();
+                if let Some(lease) = attempt.lease {
+                    waiting.complete();
+                    return Some(lease);
                 }
-                return None;
+                if !attempt.pool_available || !attempt.saturated {
+                    waiting.complete();
+                    if !attempt.pool_available {
+                        self.note_unavailable_selection();
+                    }
+                    return None;
+                }
             }
-            if self.queue.generation.load(Ordering::Acquire) != generation {
-                continue;
-            }
+            waiting.mark_waiting();
             if timeout_at(deadline, notified).await.is_err() {
-                waiting.complete();
-                self.queue.timeouts.fetch_add(1, Ordering::Relaxed);
+                waiting.timeout();
                 return None;
             }
+        }
+    }
+
+    fn select_named_server(&self, name: &str) -> SelectionAttempt {
+        let Some(server) = self.endpoints.iter().find(|server| server.name == name) else {
+            return SelectionAttempt {
+                lease: None,
+                pool_available: false,
+                saturated: false,
+            };
+        };
+        let pool_available = server.selectable();
+        let saturated = pool_available && !server.has_capacity();
+        SelectionAttempt {
+            lease: server.try_acquire(&self.queue),
+            pool_available,
+            saturated,
         }
     }
 
@@ -1972,6 +2090,16 @@ mod tests {
         .expect("lifetime waiter count");
     }
 
+    async fn wait_for_queued(pool: &EndpointPool, expected: u64) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while pool.health_snapshot().queued != expected {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("queued request count");
+    }
+
     #[test]
     fn administrative_drain_rejects_new_work_without_revoking_existing_leases() {
         let pool = RoundRobinPool::new_named_servers(
@@ -2168,6 +2296,151 @@ mod tests {
         assert_eq!(snapshot.queue_timeouts, 1);
         assert_eq!(snapshot.queue_cancellations, 0);
         assert_eq!(snapshot.endpoints[0].active_connections, 0);
+    }
+
+    #[tokio::test]
+    async fn queue_disabled_selection_ignores_a_transient_fifo_registration() {
+        let pool = RoundRobinPool::new_named_servers(
+            "immediate".into(),
+            [runtime_server("only", 3000, None)],
+            UpstreamAlgorithm::First,
+            None,
+            None,
+        )
+        .expect("immediate pool");
+        let _concurrent_front = QueueWaitGuard::new(Arc::clone(&pool.queue));
+
+        let acquired = pool
+            .select_wait()
+            .await
+            .expect("queue-disabled selection must attempt available capacity");
+
+        drop(acquired);
+        let snapshot = pool.health_snapshot();
+        assert_eq!(snapshot.queued, 0);
+        assert_eq!(snapshot.queued_total, 0);
+    }
+
+    #[tokio::test]
+    async fn fifo_queue_sends_the_oldest_waiter_to_whichever_endpoint_frees_first() {
+        let pool = Arc::new(
+            RoundRobinPool::new_named_servers(
+                "fifo".into(),
+                [
+                    runtime_server("primary", 3000, Some(1)),
+                    runtime_server("secondary", 3001, Some(1)),
+                ],
+                UpstreamAlgorithm::First,
+                None,
+                Some(Duration::from_secs(1)),
+            )
+            .expect("FIFO pool"),
+        );
+        let primary = pool.select().expect("primary capacity");
+        let secondary = pool.select().expect("secondary capacity");
+        let old_pool = Arc::clone(&pool);
+        let old = tokio::spawn(async move { old_pool.select_wait().await });
+        wait_for_queued(&pool, 1).await;
+        let new_pool = Arc::clone(&pool);
+        let new = tokio::spawn(async move { new_pool.select_wait().await });
+        wait_for_queued(&pool, 2).await;
+
+        drop(secondary);
+        let old = old
+            .await
+            .expect("old waiter task")
+            .expect("old waiter lease");
+        assert_eq!(old.server_name(), "secondary");
+        wait_for_queued(&pool, 1).await;
+        drop(primary);
+        let new = new
+            .await
+            .expect("new waiter task")
+            .expect("new waiter lease");
+        assert_eq!(new.server_name(), "primary");
+        drop((old, new));
+
+        let snapshot = pool.health_snapshot();
+        assert_eq!(snapshot.queued, 0);
+        assert_eq!(snapshot.queued_total, 2);
+        assert_eq!(snapshot.queue_timeouts, 0);
+        assert_eq!(snapshot.queue_cancellations, 0);
+    }
+
+    #[tokio::test]
+    async fn cancelling_the_fifo_head_advances_the_next_waiter_once() {
+        let pool = Arc::new(
+            RoundRobinPool::new_named_servers(
+                "fifo-cancel".into(),
+                [runtime_server("only", 3000, Some(1))],
+                UpstreamAlgorithm::First,
+                None,
+                Some(Duration::from_secs(1)),
+            )
+            .expect("FIFO cancellation pool"),
+        );
+        let held = pool.select().expect("held capacity");
+        let old_pool = Arc::clone(&pool);
+        let old = tokio::spawn(async move { old_pool.select_wait().await });
+        wait_for_queued(&pool, 1).await;
+        let new_pool = Arc::clone(&pool);
+        let new = tokio::spawn(async move { new_pool.select_wait().await });
+        wait_for_queued(&pool, 2).await;
+
+        old.abort();
+        assert!(old.await.expect_err("old waiter cancelled").is_cancelled());
+        wait_for_queued(&pool, 1).await;
+        drop(held);
+        let acquired = new
+            .await
+            .expect("new waiter task")
+            .expect("new waiter lease");
+        drop(acquired);
+
+        let snapshot = pool.health_snapshot();
+        assert_eq!(snapshot.queued, 0);
+        assert_eq!(snapshot.queued_total, 2);
+        assert_eq!(snapshot.queue_timeouts, 0);
+        assert_eq!(snapshot.queue_cancellations, 1);
+    }
+
+    #[tokio::test]
+    async fn timing_out_the_fifo_head_exposes_free_capacity_to_the_next_waiter() {
+        let pool = Arc::new(
+            RoundRobinPool::new_named_servers(
+                "fifo-timeout".into(),
+                [
+                    runtime_server("primary", 3000, Some(1)),
+                    runtime_server("secondary", 3001, Some(1)),
+                ],
+                UpstreamAlgorithm::First,
+                None,
+                Some(Duration::from_millis(100)),
+            )
+            .expect("FIFO timeout pool"),
+        );
+        let primary = pool.select().expect("primary capacity");
+        let old_pool = Arc::clone(&pool);
+        let old = tokio::spawn(async move { old_pool.select_server_wait("primary").await });
+        wait_for_queued(&pool, 1).await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        let new_pool = Arc::clone(&pool);
+        let new = tokio::spawn(async move { new_pool.select_wait().await });
+        wait_for_queued(&pool, 2).await;
+
+        assert!(old.await.expect("old waiter task").is_none());
+        let acquired = new
+            .await
+            .expect("new waiter task")
+            .expect("new waiter lease");
+        assert_eq!(acquired.server_name(), "secondary");
+        drop((primary, acquired));
+
+        let snapshot = pool.health_snapshot();
+        assert_eq!(snapshot.queued, 0);
+        assert_eq!(snapshot.queued_total, 2);
+        assert_eq!(snapshot.queue_timeouts, 1);
+        assert_eq!(snapshot.queue_cancellations, 0);
     }
 
     #[tokio::test]
