@@ -158,6 +158,8 @@ struct WorkerShared {
     panic_on_finish: AtomicBool,
     #[cfg(test)]
     panic_after_finish: AtomicBool,
+    #[cfg(test)]
+    fail_before_process: AtomicBool,
 }
 
 struct QueueState {
@@ -283,6 +285,8 @@ impl RecorderWorker {
             panic_on_finish: AtomicBool::new(false),
             #[cfg(test)]
             panic_after_finish: AtomicBool::new(false),
+            #[cfg(test)]
+            fail_before_process: AtomicBool::new(false),
         });
         let worker_shared = Arc::clone(&shared);
         let thread = thread::Builder::new()
@@ -380,6 +384,13 @@ impl RecorderWorker {
     pub(crate) fn panic_after_finish(&self) {
         self.shared
             .panic_after_finish
+            .store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_before_process(&self) {
+        self.shared
+            .fail_before_process
             .store(true, Ordering::Release);
     }
 
@@ -763,6 +774,7 @@ struct WorkerContext {
     next_segment_sequence: u64,
     rotation_interval: Option<Duration>,
     segment: Option<Segment>,
+    segment_final_name: Option<String>,
     segment_started_at: Option<Instant>,
     segment_started_at_unix_seconds: Option<u64>,
     latest_event_at_unix_seconds: u64,
@@ -912,6 +924,7 @@ fn run_worker(shared: &Arc<WorkerShared>, setup: WorkerSetup) {
         next_segment_sequence: 0,
         rotation_interval,
         segment: None,
+        segment_final_name: None,
         segment_started_at: None,
         segment_started_at_unix_seconds: None,
         latest_event_at_unix_seconds: 0,
@@ -925,6 +938,12 @@ fn run_worker(shared: &Arc<WorkerShared>, setup: WorkerSetup) {
     loop {
         match shared.next_event() {
             NextEvent::Event(event) => {
+                #[cfg(test)]
+                if shared.fail_before_process.swap(false, Ordering::AcqRel) {
+                    shared.record_failed_event();
+                    shared.fail(WorkerError::new(RecorderFailure::Open));
+                    return;
+                }
                 if let Err(failure) = context.process(&event) {
                     context.preserve_segment();
                     shared.record_failed_event();
@@ -1016,46 +1035,57 @@ impl WorkerContext {
         } else {
             None
         };
-        let (segment_name, segment, segment_started_at, segment_started_at_unix_seconds) =
-            if let Some((segment_name, started_at_unix_seconds)) = resume {
-                let segment = Segment::resume(
-                    &self.store,
-                    &segment_name,
-                    &headers,
-                    Arc::clone(&self.shared.bytes_written),
-                    &self.shared,
-                )?;
-                let elapsed = Duration::from_secs(
-                    arrived_at_unix_seconds.saturating_sub(started_at_unix_seconds),
-                );
-                (
-                    segment_name,
-                    segment,
-                    arrived_at.checked_sub(elapsed).unwrap_or(arrived_at),
-                    started_at_unix_seconds,
+        let (
+            segment_name,
+            segment,
+            segment_started_at,
+            segment_started_at_unix_seconds,
+            segment_sequence,
+        ) = if let Some((segment_name, started_at_unix_seconds, sequence)) = resume {
+            let segment = Segment::resume(
+                &self.store,
+                &segment_name,
+                &headers,
+                Arc::clone(&self.shared.bytes_written),
+                &self.shared,
+            )?;
+            let elapsed = Duration::from_secs(
+                arrived_at_unix_seconds.saturating_sub(started_at_unix_seconds),
+            );
+            (
+                segment_name,
+                segment,
+                arrived_at.checked_sub(elapsed).unwrap_or(arrived_at),
+                started_at_unix_seconds,
+                sequence,
+            )
+        } else {
+            let segment_name = self
+                .path_policy
+                .segment_filename(
+                    &self.stream_name,
+                    arrived_at_unix_seconds,
+                    RecordingDateTime::from_unix_seconds(arrived_at_unix_seconds)
+                        .map_err(|_| WorkerError::new(RecorderFailure::Open))?,
+                    self.next_segment_sequence,
                 )
-            } else {
-                let segment_name = self
-                    .path_policy
-                    .segment_filename(
-                        &self.stream_name,
-                        arrived_at_unix_seconds,
-                        RecordingDateTime::from_unix_seconds(arrived_at_unix_seconds)
-                            .map_err(|_| WorkerError::new(RecorderFailure::Open))?,
-                        self.next_segment_sequence,
-                    )
-                    .map_err(|_| WorkerError::new(RecorderFailure::Open))?;
-                let segment = Segment::open(
-                    &self.store,
-                    &segment_name,
-                    &headers,
-                    Arc::clone(&self.shared.bytes_written),
-                    &self.shared,
-                )?;
-                (segment_name, segment, arrived_at, arrived_at_unix_seconds)
-            };
-        let next_segment_sequence = self
-            .next_segment_sequence
+                .map_err(|_| WorkerError::new(RecorderFailure::Open))?;
+            let segment = Segment::open(
+                &self.store,
+                &segment_name,
+                &headers,
+                Arc::clone(&self.shared.bytes_written),
+                &self.shared,
+            )?;
+            (
+                segment_name,
+                segment,
+                arrived_at,
+                arrived_at_unix_seconds,
+                self.next_segment_sequence,
+            )
+        };
+        let next_segment_sequence = segment_sequence
             .checked_add(1)
             .ok_or_else(|| WorkerError::new(RecorderFailure::Open))?;
         if self.shared.discontinuity_requested.load(Ordering::Acquire) {
@@ -1065,6 +1095,7 @@ impl WorkerContext {
             return Err(WorkerError::new(RecorderFailure::ShutdownTimedOut));
         }
         self.segment = Some(segment);
+        self.segment_final_name = Some(segment_name.clone());
         *self
             .shared
             .current_partial_exists
@@ -1092,7 +1123,7 @@ impl WorkerContext {
     fn resumable_segment(
         &self,
         arrived_at_unix_seconds: u64,
-    ) -> Result<Option<(String, u64)>, WorkerError> {
+    ) -> Result<Option<(String, u64, u64)>, WorkerError> {
         let Some(interval) = self.rotation_interval else {
             return Ok(None);
         };
@@ -1103,13 +1134,15 @@ impl WorkerContext {
         Ok(names
             .into_iter()
             .filter_map(|name| {
-                let started_at = self
+                let (started_at, sequence, collision) = self
                     .path_policy
-                    .segment_start_from_filename(&self.stream_name, &name)?;
+                    .segment_identity_from_filename(&self.stream_name, &name)?;
                 let age = arrived_at_unix_seconds.checked_sub(started_at)?;
-                (Duration::from_secs(age) < interval).then_some((name, started_at))
+                (Duration::from_secs(age) < interval)
+                    .then_some((name, started_at, sequence, collision))
             })
-            .max_by_key(|(_, started_at)| *started_at))
+            .max_by_key(|(_, started_at, sequence, collision)| (*started_at, *sequence, *collision))
+            .map(|(name, started_at, sequence, _)| (name, started_at, sequence)))
     }
 
     fn prepare_segment_finish(&mut self) -> Result<Option<PreparedSegment>, WorkerError> {
@@ -1129,16 +1162,23 @@ impl WorkerContext {
                 .expect("an open segment retains its wall-clock start"),
             RecordingTimeBasis::SegmentEnd => self.last_written_at_unix_seconds,
         };
-        let final_name = self
-            .path_policy
-            .segment_filename(
-                &self.stream_name,
-                naming_time,
-                RecordingDateTime::from_unix_seconds(naming_time)
-                    .map_err(|_| WorkerError::new(RecorderFailure::Finalize))?,
-                sequence,
-            )
-            .map_err(|_| WorkerError::new(RecorderFailure::Finalize))?;
+        let opened_final_name = self
+            .segment_final_name
+            .take()
+            .expect("an open segment retains its exact final name");
+        let final_name = if self.path_policy.time_basis() == RecordingTimeBasis::SegmentStart {
+            opened_final_name
+        } else {
+            self.path_policy
+                .segment_filename(
+                    &self.stream_name,
+                    naming_time,
+                    RecordingDateTime::from_unix_seconds(naming_time)
+                        .map_err(|_| WorkerError::new(RecorderFailure::Finalize))?,
+                    sequence,
+                )
+                .map_err(|_| WorkerError::new(RecorderFailure::Finalize))?
+        };
         let segment = self
             .segment
             .take()

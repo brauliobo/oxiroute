@@ -436,6 +436,7 @@ struct MutableRecorder {
     segments_started: u64,
     segments_completed: u64,
     discontinuities: u64,
+    worker_generation: u64,
     control: Option<Arc<RecorderController>>,
 }
 
@@ -781,6 +782,7 @@ impl RtmpRegistry {
                         segments_started: 0,
                         segments_completed: 0,
                         discontinuities: 0,
+                        worker_generation: 0,
                         control: control.into_recorder_control(),
                     },
                 )
@@ -1484,9 +1486,21 @@ fn refresh_recorder_statuses(inner: &mut RegistryInner) {
 fn apply_runtime_status(recorder: &mut MutableRecorder, runtime: RecorderRuntimeStatus) -> bool {
     let before = recorder.snapshot();
     let Some(status) = runtime.status else {
-        return false;
+        recorder.events_dropped = runtime.recovery_events_dropped;
+        return recorder.snapshot() != before;
     };
+    let replacement_worker = runtime.worker_generation > recorder.worker_generation;
     apply_worker_details(recorder, &status);
+    if runtime.recovering {
+        if let (RecorderWorkerPhase::Failed(failure), Some(operation_id)) =
+            (status.phase, active_operation(recorder.phase))
+        {
+            recorder.phase = RecorderPhase::Failed {
+                operation_id,
+                code: recorder_error_code(failure),
+            };
+        }
+    }
     if !runtime.stopping {
         let operation_id = active_operation(recorder.phase);
         recorder.phase = match (status.phase, operation_id, recorder.phase) {
@@ -1507,14 +1521,23 @@ fn apply_runtime_status(recorder: &mut MutableRecorder, runtime: RecorderRuntime
             (RecorderWorkerPhase::Stopped, Some(_), RecorderPhase::Stopping { .. }) => {
                 RecorderPhase::Idle
             }
-            (
-                RecorderWorkerPhase::Starting | RecorderWorkerPhase::Recording,
-                _,
-                phase @ RecorderPhase::Failed { .. },
-            ) => phase,
+            (RecorderWorkerPhase::Starting, Some(operation_id), RecorderPhase::Failed { .. })
+                if replacement_worker =>
+            {
+                RecorderPhase::Starting { operation_id }
+            }
+            (RecorderWorkerPhase::Recording, Some(operation_id), RecorderPhase::Failed { .. })
+                if replacement_worker =>
+            {
+                RecorderPhase::Recording {
+                    operation_id,
+                    started_at_unix_ms: runtime.observed_at_unix_ms,
+                }
+            }
             _ => recorder.phase,
         };
     }
+    recorder.worker_generation = recorder.worker_generation.max(runtime.worker_generation);
     recorder.snapshot() != before
 }
 
@@ -1741,8 +1764,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        RecorderWorkerConfig, RecordingPathPolicy, RecordingStore, RecordingStoreLimits,
-        RtmpRecorderPolicy, RtmpRecorderStart,
+        RecorderFailure, RecorderWorkerConfig, RecordingPathPolicy, RecordingStore,
+        RecordingStoreLimits, RtmpRecorderPolicy, RtmpRecorderStart,
     };
 
     #[test]
@@ -2021,6 +2044,121 @@ mod tests {
     }
 
     #[test]
+    fn continuous_recorder_returns_from_failed_to_recording_in_one_publisher() {
+        let root = tempdir().expect("recording root");
+        let store = RecordingStore::open(
+            root.path(),
+            RecordingStoreLimits {
+                max_bytes: Some(1024 * 1024),
+                max_files: Some(8),
+                max_active_recorders: 1,
+            },
+        )
+        .expect("recording store");
+        let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
+            live_ingest: true,
+            manual_recording: true,
+        }));
+        let (reaper_owner, reaper) = registry.create_recorder_reaper(1);
+        let controller = test_controller_with_start(
+            &store,
+            &reaper,
+            "camera",
+            1024,
+            Duration::from_secs(1),
+            RtmpRecorderStart::Continuous,
+        );
+        let session_id = SessionId::new();
+        let registration = registry
+            .register_managed_publisher(
+                StreamKey::new("edge", "live", "camera"),
+                session_id,
+                vec![(
+                    RecorderDefinition::automatic(Some("archive".to_owned())),
+                    Arc::clone(&controller),
+                )],
+                Vec::new(),
+                1_000,
+            )
+            .expect("managed publisher");
+        let stream_id = registration.stream_id();
+        let recorder_id = registration.recorder_ids()[0];
+        registry.start_continuous_recording(stream_id, session_id, recorder_id, 1_000);
+
+        assert_continuous_catalog_recovery(
+            &registry,
+            &controller,
+            stream_id,
+            session_id,
+            recorder_id,
+        );
+        drop(registration);
+        drop(reaper_owner);
+    }
+
+    #[test]
+    fn continuous_start_failure_counts_media_dropped_before_a_worker_exists() {
+        let root = tempdir().expect("recording root");
+        let store = RecordingStore::open(
+            root.path(),
+            RecordingStoreLimits {
+                max_bytes: Some(1024 * 1024),
+                max_files: Some(8),
+                max_active_recorders: 1,
+            },
+        )
+        .expect("recording store");
+        let lease = store.acquire_recorder().expect("occupy recorder capacity");
+        let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
+            live_ingest: true,
+            manual_recording: true,
+        }));
+        let (reaper_owner, reaper) = registry.create_recorder_reaper(1);
+        let controller = test_controller_with_start(
+            &store,
+            &reaper,
+            "camera",
+            1024,
+            Duration::from_secs(1),
+            RtmpRecorderStart::Continuous,
+        );
+        let session_id = SessionId::new();
+        let registration = registry
+            .register_managed_publisher(
+                StreamKey::new("edge", "live", "camera"),
+                session_id,
+                vec![(
+                    RecorderDefinition::automatic(Some("archive".to_owned())),
+                    Arc::clone(&controller),
+                )],
+                Vec::new(),
+                1_000,
+            )
+            .expect("managed publisher");
+        let stream_id = registration.stream_id();
+        let recorder_id = registration.recorder_ids()[0];
+        registry.start_continuous_recording(stream_id, session_id, recorder_id, 1_000);
+
+        let event = crate::MediaEvent::audio(0, Arc::<[u8]>::from(&b"dropped"[..]))
+            .expect("recovery event");
+        let enqueue_result = controller.try_enqueue(event, 1_100);
+        assert_eq!(enqueue_result, RecorderEnqueueResult::Inactive);
+        assert!(controller.status().status.is_none());
+        registry.update_recorder_runtime(stream_id, session_id, recorder_id, enqueue_result, 1_100);
+
+        assert_eq!(
+            registry
+                .recorder_snapshot(stream_id, recorder_id)
+                .expect("failed recorder snapshot")
+                .events_dropped,
+            1
+        );
+        drop(lease);
+        drop(registration);
+        drop(reaper_owner);
+    }
+
+    #[test]
     fn proactive_shutdown_transitions_stalled_recording_from_stopping_to_failed() {
         let root = tempdir().expect("recording root");
         let store = RecordingStore::open(
@@ -2150,6 +2288,106 @@ mod tests {
         drop(registration);
     }
 
+    fn assert_continuous_catalog_recovery(
+        registry: &Arc<RtmpRegistry>,
+        controller: &Arc<RecorderController>,
+        stream_id: StreamId,
+        session_id: SessionId,
+        recorder_id: RecorderId,
+    ) {
+        controller.fail_before_process();
+        let failed_event =
+            crate::MediaEvent::audio(0, Arc::<[u8]>::from(&b"failure"[..])).expect("failed event");
+        assert_eq!(
+            controller.try_enqueue(failed_event, 1_100),
+            RecorderEnqueueResult::Queued
+        );
+        wait_until(Duration::from_secs(1), || {
+            controller.status().status.is_some_and(|status| {
+                status.phase == RecorderWorkerPhase::Failed(RecorderFailure::Open)
+            })
+        });
+        registry.update_recorder_runtime(
+            stream_id,
+            session_id,
+            recorder_id,
+            RecorderEnqueueResult::Inactive,
+            1_100,
+        );
+        assert!(matches!(
+            registry
+                .recorder_snapshot(stream_id, recorder_id)
+                .expect("failed recorder snapshot")
+                .phase,
+            RecorderPhase::Failed { .. }
+        ));
+        assert_stale_recording_status_does_not_hide_failure(
+            registry,
+            controller,
+            stream_id,
+            recorder_id,
+        );
+
+        let recovery_event = crate::MediaEvent::audio(1, Arc::<[u8]>::from(&b"recover"[..]))
+            .expect("recovery event");
+        assert_eq!(
+            controller.try_enqueue(recovery_event, 1_200),
+            RecorderEnqueueResult::Inactive
+        );
+        wait_until(Duration::from_secs(1), || {
+            let status = controller.status();
+            !status.stopping && status.recovering
+        });
+        thread::sleep(Duration::from_millis(20));
+        let continued_event = crate::MediaEvent::audio(2, Arc::<[u8]>::from(&b"continued"[..]))
+            .expect("continued event");
+        let enqueue_result = controller.try_enqueue(continued_event, 1_300);
+        assert_eq!(enqueue_result, RecorderEnqueueResult::Queued);
+        wait_until(Duration::from_secs(1), || {
+            controller
+                .status()
+                .status
+                .is_some_and(|status| status.phase == RecorderWorkerPhase::Recording)
+        });
+        registry.update_recorder_runtime(stream_id, session_id, recorder_id, enqueue_result, 1_300);
+        assert!(matches!(
+            registry
+                .recorder_snapshot(stream_id, recorder_id)
+                .expect("recovered recorder snapshot")
+                .phase,
+            RecorderPhase::Recording { .. }
+        ));
+
+        controller.deactivate(1_400);
+        wait_until(Duration::from_secs(1), || !controller.status().stopping);
+    }
+
+    fn assert_stale_recording_status_does_not_hide_failure(
+        registry: &RtmpRegistry,
+        controller: &RecorderController,
+        stream_id: StreamId,
+        recorder_id: RecorderId,
+    ) {
+        let mut stale_runtime = controller.status();
+        stale_runtime.stopping = false;
+        stale_runtime.recovering = false;
+        stale_runtime
+            .status
+            .as_mut()
+            .expect("failed runtime status")
+            .phase = RecorderWorkerPhase::Recording;
+        let mut inner = registry.lock();
+        let recorder = inner
+            .streams
+            .get_mut(&stream_id)
+            .expect("managed stream")
+            .recorders
+            .get_mut(&recorder_id)
+            .expect("managed recorder");
+        apply_runtime_status(recorder, stale_runtime);
+        assert!(matches!(recorder.phase, RecorderPhase::Failed { .. }));
+    }
+
     fn test_controller(
         store: &RecordingStore,
         reaper: &RecorderReaperHandle,
@@ -2157,10 +2395,28 @@ mod tests {
         max_queue_bytes: usize,
         shutdown_timeout: Duration,
     ) -> Arc<RecorderController> {
+        test_controller_with_start(
+            store,
+            reaper,
+            name,
+            max_queue_bytes,
+            shutdown_timeout,
+            RtmpRecorderStart::Manual,
+        )
+    }
+
+    fn test_controller_with_start(
+        store: &RecordingStore,
+        reaper: &RecorderReaperHandle,
+        name: &'static str,
+        max_queue_bytes: usize,
+        shutdown_timeout: Duration,
+        start: RtmpRecorderStart,
+    ) -> Arc<RecorderController> {
         Arc::new(RecorderController::new(
             RtmpRecorderPolicy::new(
                 "archive",
-                RtmpRecorderStart::Manual,
+                start,
                 store.clone(),
                 RecordingPathPolicy::new(".flv", false).expect("recording path policy"),
                 RecorderWorkerConfig {

@@ -396,8 +396,13 @@ A manual start moves `idle` or `failed` to `starting`; start is idempotent while
 or `recording`. A manual stop moves `recording` to `stopping`; stop is idempotent in `idle`,
 `failed`, or `stopping`. Start during `stopping` and stop during `starting` are conflicts. Worker
 status advances `starting` to `recording` after output opens, and successful asynchronous stop
-returns to `idle`. Continuous recorders are not manually controllable; after a failure they require
-a new publisher incarnation.
+returns to `idle`. Continuous recorders are not manually controllable. After a worker failure, the
+controller reaps the failed worker without blocking publisher media dispatch and starts a replacement
+within the same publisher incarnation after a bounded retry delay and subsequent media. When
+segment-start naming encodes the native Unix-second start, the replacement resumes the latest
+eligible published file inside the configured interval; otherwise it starts a new file for the
+current interval. Recorder counters remain cumulative across replacement workers, failure artifacts
+remain observable, and media skipped during recovery is counted as dropped.
 
 The store uses no-follow directory traversal, daemon-owned roots without group/other write bits,
 exclusive hidden partials, atomic no-replace publication, startup cleanup under an ownership lease
@@ -412,11 +417,12 @@ accounting is not.
 
 Publisher threads use `try_enqueue` and never wait for queue capacity or disk I/O. If adding one
 event would exceed the message or byte bound, the worker drops the queued events and triggering
-event, records one discontinuity, stops accepting, preserves the active partial, and transitions to
-`failed/queue_discontinuity`; it does not silently resume a corrupt FLV. Rotation waits for a video
-keyframe when video has appeared, or an audio boundary for audio-only output. The worker closes the
-old FLV and starts the next segment before a recording-root finalizer pool synchronizes and
-publishes the old file, so durable storage latency does not stall media queue draining. Each root
+event, records one discontinuity, stops accepting, and preserves the active partial; it does not
+silently extend that partial after a gap. The continuous controller reaps the failed worker and
+starts a clean replacement in the same publisher incarnation. Rotation waits for a video keyframe
+when video has appeared, or an audio boundary for audio-only output. The worker closes the old FLV
+and starts the next segment before a recording-root finalizer pool synchronizes and publishes the
+old file, so durable storage latency does not stall media queue draining. Each root
 uses one finalizer thread, permits at most two pending segments per recorder, and bounds the root
 queue accordingly. Aligned rotations therefore create neither an unbounded thread/filesystem-sync
 storm nor a media-worker wait at the following rotation; exhausting the bounded backlog fails
