@@ -2,11 +2,13 @@ use std::fmt::Write as _;
 
 use chrono::{Datelike as _, TimeZone as _, Timelike as _, Utc};
 use chrono_tz::Tz;
+use sha2::{Digest as _, Sha256};
 
 /// Maximum accepted byte length of a recording suffix template.
 pub const MAX_RECORDING_SUFFIX_TEMPLATE_BYTES: usize = 128;
 /// Maximum rendered byte length of one relative recording filename.
 pub const MAX_RECORDING_FILENAME_BYTES: usize = 255;
+const MAX_RECORDING_COLLISION_SUFFIX_BYTES: usize = 3;
 
 pub(crate) fn sequenced_recording_filename(name: &str, sequence: u64) -> Option<String> {
     if sequence == 0 {
@@ -298,42 +300,125 @@ impl RecordingPathPolicy {
         _fallback_utc: RecordingDateTime,
         sequence: u64,
     ) -> Result<String, RecordingPathError> {
-        let name = self.relative_filename_at(stream_name, at_unix_seconds)?;
-        if self.segment_naming == RecordingSegmentNaming::SafeUnique {
-            sequenced_recording_filename(&name, sequence)
-                .ok_or(RecordingPathError::FilenameTooLong { length: usize::MAX })
+        let base = self.relative_filename_at(stream_name, at_unix_seconds)?;
+        let sequence = if self.segment_naming == RecordingSegmentNaming::SafeUnique {
+            sequence
         } else {
-            Ok(name)
-        }
+            0
+        };
+        let mut escaped_stream = String::new();
+        percent_escape_into(stream_name, &mut escaped_stream);
+        let identity_length = escaped_stream
+            .len()
+            .saturating_add(usize::from(self.native_unique_seconds))
+            .saturating_add(
+                self.native_unique_seconds
+                    .then_some(at_unix_seconds)
+                    .map_or(0, |seconds| seconds.to_string().len()),
+            );
+        let extension_start = base
+            .rfind('.')
+            .filter(|extension_start| *extension_start >= identity_length);
+        bounded_segment_filename(&base, at_unix_seconds, sequence, extension_start)
+            .ok_or(RecordingPathError::FilenameTooLong { length: usize::MAX })
     }
 
     pub(crate) const fn time_basis(&self) -> RecordingTimeBasis {
         self.time_basis
     }
 
-    pub(crate) fn segment_start_from_filename(
+    pub(crate) fn segment_identity_from_filename(
         &self,
         stream_name: &[u8],
         filename: &str,
-    ) -> Option<u64> {
+    ) -> Option<(u64, u64, usize)> {
         if !self.native_unique_seconds || self.time_basis != RecordingTimeBasis::SegmentStart {
             return None;
+        }
+        if let Some(identity) = self.compact_segment_identity(stream_name, filename) {
+            return Some(identity);
         }
         let mut prefix = String::new();
         percent_escape_into(stream_name, &mut prefix);
         prefix.push('-');
-        let remainder = filename.strip_prefix(&prefix)?;
-        let seconds_length = remainder.bytes().take_while(u8::is_ascii_digit).count();
-        if seconds_length == 0 {
-            return None;
+        if let Some(remainder) = filename.strip_prefix(&prefix) {
+            let seconds_length = remainder.bytes().take_while(u8::is_ascii_digit).count();
+            for length in 1..=seconds_length {
+                let Ok(started_at) = remainder[..length].parse() else {
+                    continue;
+                };
+                let Ok(base) = self.relative_filename_at(stream_name, started_at) else {
+                    continue;
+                };
+                if let Some((sequence, collision)) = self.segment_variant_identity(&base, filename)
+                {
+                    return Some((started_at, sequence, collision));
+                }
+            }
         }
-        let started_at = remainder[..seconds_length].parse().ok()?;
-        (self
-            .relative_filename_at(stream_name, started_at)
-            .ok()?
-            .as_str()
-            == filename)
-            .then_some(started_at)
+        None
+    }
+
+    fn compact_segment_identity(
+        &self,
+        stream_name: &[u8],
+        filename: &str,
+    ) -> Option<(u64, u64, usize)> {
+        let collision_candidate = numeric_suffix(filename).and_then(|(candidate, collision)| {
+            usize::try_from(collision)
+                .ok()
+                .map(|collision| (candidate, collision))
+        });
+        std::iter::once((filename.to_owned(), 0))
+            .chain(collision_candidate)
+            .find_map(|(candidate, collision)| {
+                compact_identity_candidates(&candidate).find_map(|(started_at, sequence)| {
+                    if self.segment_naming != RecordingSegmentNaming::SafeUnique && sequence != 0 {
+                        return None;
+                    }
+                    let expected = self
+                        .segment_filename(
+                            stream_name,
+                            started_at,
+                            RecordingDateTime::from_unix_seconds(started_at).ok()?,
+                            sequence,
+                        )
+                        .ok()?;
+                    let expected = if collision == 0 {
+                        expected
+                    } else {
+                        collision_recording_filename(&expected, collision)?
+                    };
+                    (expected == filename).then_some((started_at, sequence, collision))
+                })
+            })
+    }
+
+    fn segment_variant_identity(&self, base: &str, filename: &str) -> Option<(u64, usize)> {
+        if filename == base {
+            return Some((0, 0));
+        }
+        if let Some((without_collision, suffix)) = numeric_suffix(filename) {
+            if let Ok(collision) = usize::try_from(suffix) {
+                if collision_recording_filename(base, collision)? == filename {
+                    return Some((0, collision));
+                }
+                if self.segment_naming == RecordingSegmentNaming::SafeUnique {
+                    if let Some((_, sequence)) = numeric_suffix(&without_collision) {
+                        let sequenced = sequenced_recording_filename(base, sequence)?;
+                        if collision_recording_filename(&sequenced, collision)? == filename {
+                            return Some((sequence, collision));
+                        }
+                    }
+                }
+            }
+            if self.segment_naming == RecordingSegmentNaming::SafeUnique
+                && sequenced_recording_filename(base, suffix)? == filename
+            {
+                return Some((suffix, 0));
+            }
+        }
+        None
     }
 
     fn render_suffix(&self, opened_at: RecordingDateTime) -> String {
@@ -473,4 +558,224 @@ fn insert_before_extension(name: &str, insertion: &str) -> Option<String> {
         return None;
     }
     Some(format!("{}{insertion}{extension}", &stem[..stem_end]))
+}
+
+fn bounded_segment_filename(
+    base: &str,
+    started_at: u64,
+    sequence: u64,
+    extension_start: Option<usize>,
+) -> Option<String> {
+    let insertion = (sequence != 0)
+        .then(|| format!("-{sequence:06}"))
+        .unwrap_or_default();
+    let maximum = MAX_RECORDING_FILENAME_BYTES.checked_sub(MAX_RECORDING_COLLISION_SUFFIX_BYTES)?;
+    if base.len().checked_add(insertion.len())? <= maximum {
+        return insert_before_extension(base, &insertion);
+    }
+
+    let (stem, extension) = extension_start.map_or((base, ""), |index| base.split_at(index));
+    let marker = format!(
+        "~{}~{started_at}~{sequence}",
+        recording_name_hash(base.as_bytes())
+    );
+    let maximum_prefix = maximum.checked_sub(marker.len() + extension.len())?;
+    let mut prefix_end = stem.len().min(maximum_prefix);
+    while !stem.is_char_boundary(prefix_end) {
+        prefix_end -= 1;
+    }
+    Some(format!("{}{marker}{extension}", &stem[..prefix_end]))
+}
+
+fn recording_name_hash(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest
+        .iter()
+        .fold(String::with_capacity(64), |mut hash, byte| {
+            write!(hash, "{byte:02X}").expect("writing to a String cannot fail");
+            hash
+        })
+}
+
+fn compact_identity_candidates(filename: &str) -> impl Iterator<Item = (u64, u64)> + '_ {
+    filename.match_indices('~').filter_map(|(marker_start, _)| {
+        let hash_start = marker_start.checked_add(1)?;
+        let hash_end = hash_start.checked_add(64)?;
+        let bytes = filename.as_bytes();
+        if bytes.get(hash_end) != Some(&b'~')
+            || !bytes
+                .get(hash_start..hash_end)?
+                .iter()
+                .all(u8::is_ascii_hexdigit)
+        {
+            return None;
+        }
+        let started_at_start = hash_end + 1;
+        let started_at_end = bytes[started_at_start..]
+            .iter()
+            .position(|byte| *byte == b'~')?
+            .checked_add(started_at_start)?;
+        let sequence_start = started_at_end + 1;
+        let sequence_length = bytes[sequence_start..]
+            .iter()
+            .take_while(|byte| byte.is_ascii_digit())
+            .count();
+        if sequence_length == 0 {
+            return None;
+        }
+        Some((
+            filename[started_at_start..started_at_end].parse().ok()?,
+            filename[sequence_start..sequence_start + sequence_length]
+                .parse()
+                .ok()?,
+        ))
+    })
+}
+
+fn numeric_suffix(name: &str) -> Option<(String, u64)> {
+    let extension_start = name.rfind('.').filter(|index| *index > 0);
+    let (stem, extension) = extension_start.map_or((name, ""), |index| name.split_at(index));
+    let (stem, suffix) = stem.rsplit_once('-')?;
+    if suffix.is_empty() || !suffix.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    Some((format!("{stem}{extension}"), suffix.parse().ok()?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_safe_sequence_and_collision_variants_for_resume() {
+        let policy = RecordingPathPolicy::new(".flv", true).expect("recording policy");
+
+        assert_eq!(
+            policy.segment_identity_from_filename(b"camera", "camera-100.flv"),
+            Some((100, 0, 0))
+        );
+        assert_eq!(
+            policy.segment_identity_from_filename(b"camera", "camera-100-2.flv"),
+            Some((100, 0, 2))
+        );
+        assert_eq!(
+            policy.segment_identity_from_filename(b"camera", "camera-100-000001.flv"),
+            Some((100, 1, 0))
+        );
+        assert_eq!(
+            policy.segment_identity_from_filename(b"camera", "camera-100-000001-2.flv"),
+            Some((100, 1, 2))
+        );
+    }
+
+    #[test]
+    fn recognizes_only_collision_variants_for_nginx_naming() {
+        let policy = RecordingPathPolicy::new(".flv", true)
+            .expect("recording policy")
+            .with_segment_policy(
+                RecordingTimezone::Utc,
+                RecordingTimeBasis::SegmentStart,
+                RecordingSegmentNaming::NginxCompatible,
+            );
+
+        assert_eq!(
+            policy.segment_identity_from_filename(b"camera", "camera-100-3.flv"),
+            Some((100, 0, 3))
+        );
+        assert_eq!(
+            policy.segment_identity_from_filename(b"camera", "camera-100-000001.flv"),
+            None
+        );
+    }
+
+    #[test]
+    fn preserves_identity_when_suffixing_a_maximum_length_filename() {
+        let policy = RecordingPathPolicy::new(".flv", true).expect("recording policy");
+        let stream_name = vec![b'a'; 247];
+        let base = policy
+            .relative_filename_at(&stream_name, 100)
+            .expect("maximum length base");
+        assert_eq!(base.len(), MAX_RECORDING_FILENAME_BYTES);
+
+        let sequenced = policy
+            .segment_filename(
+                &stream_name,
+                100,
+                RecordingDateTime::from_unix_seconds(100).expect("date time"),
+                1,
+            )
+            .expect("sequenced filename");
+        assert!(sequenced.len() <= MAX_RECORDING_FILENAME_BYTES - 3);
+        assert_eq!(
+            policy.segment_identity_from_filename(&stream_name, &sequenced),
+            Some((100, 1, 0))
+        );
+
+        let collided = collision_recording_filename(&sequenced, 15).expect("collision filename");
+        assert_eq!(collided.len(), MAX_RECORDING_FILENAME_BYTES);
+        assert_eq!(
+            policy.segment_identity_from_filename(&stream_name, &collided),
+            Some((100, 1, 15))
+        );
+    }
+
+    #[test]
+    fn compact_segment_identities_do_not_alias_streams_or_long_suffixes() {
+        let policy = RecordingPathPolicy::new(&format!("{}.flv", "x".repeat(70)), true)
+            .expect("recording policy");
+        let mut first_stream = vec![b'a'; 177];
+        let mut second_stream = first_stream.clone();
+        first_stream[80] = b'b';
+        second_stream[80] = b'c';
+        let opened_at = RecordingDateTime::from_unix_seconds(100).expect("date time");
+        let first = policy
+            .segment_filename(&first_stream, 100, opened_at, 1)
+            .expect("first filename");
+        let second = policy
+            .segment_filename(&second_stream, 100, opened_at, 1)
+            .expect("second filename");
+
+        assert_ne!(first, second);
+        assert_eq!(
+            policy.segment_identity_from_filename(&first_stream, &first),
+            Some((100, 1, 0))
+        );
+        assert_eq!(
+            policy.segment_identity_from_filename(&second_stream, &first),
+            None
+        );
+    }
+
+    #[test]
+    fn recognizes_native_seconds_before_a_digit_prefixed_suffix() {
+        let policy = RecordingPathPolicy::new("1.flv", true).expect("recording policy");
+        assert_eq!(
+            policy.segment_identity_from_filename(b"camera", "camera-1001.flv"),
+            Some((100, 0, 0))
+        );
+    }
+
+    #[test]
+    fn compact_identity_distinguishes_a_numeric_suffix_from_a_collision() {
+        let policy = RecordingPathPolicy::new("-2.flv", true).expect("recording policy");
+        let stream_name = vec![b'a'; 245];
+        let filename = policy
+            .segment_filename(
+                &stream_name,
+                100,
+                RecordingDateTime::from_unix_seconds(100).expect("date time"),
+                1,
+            )
+            .expect("compact filename");
+        assert_eq!(
+            policy.segment_identity_from_filename(&stream_name, &filename),
+            Some((100, 1, 0))
+        );
+
+        let collision = collision_recording_filename(&filename, 2).expect("collision filename");
+        assert_eq!(
+            policy.segment_identity_from_filename(&stream_name, &collision),
+            Some((100, 1, 2))
+        );
+    }
 }

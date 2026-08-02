@@ -17,6 +17,10 @@ use crate::{
 };
 
 const REAPER_POLL_INTERVAL: Duration = Duration::from_millis(2);
+#[cfg(test)]
+const CONTINUOUS_RESTART_DELAY: Duration = Duration::from_millis(10);
+#[cfg(not(test))]
+const CONTINUOUS_RESTART_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RtmpRecorderStart {
@@ -105,6 +109,11 @@ struct ControllerState {
     worker: Option<RecorderWorker>,
     worker_generation: u64,
     last_status: Option<RecorderWorkerStatus>,
+    completed_status: Option<RecorderWorkerStatus>,
+    restart_context: Option<RecorderCommandContext>,
+    restart_after: Instant,
+    recovering: bool,
+    recovery_events_dropped: u64,
 }
 
 #[derive(Default)]
@@ -114,6 +123,11 @@ struct RecorderBootstrap {
     avc: Option<MediaEvent>,
     keyframe: Option<MediaEvent>,
     unsupported_video: bool,
+}
+
+struct BootstrapReplay {
+    events: Vec<MediaEvent>,
+    reserved_event_fits: bool,
 }
 
 impl RecorderBootstrap {
@@ -149,12 +163,50 @@ impl RecorderBootstrap {
             .chain(self.keyframe.iter())
             .cloned()
     }
+
+    fn replay_events(
+        &self,
+        config: RecorderWorkerConfig,
+        reserved_event: Option<&MediaEvent>,
+    ) -> Option<BootstrapReplay> {
+        let events: Vec<_> = self.events().collect();
+        let replay_fits = media_events_fit(&events, config);
+        let reserved_event_fits = replay_fits
+            && reserved_event.is_none_or(|reserved| {
+                events
+                    .len()
+                    .checked_add(1)
+                    .is_some_and(|messages| messages <= config.max_queue_messages)
+                    && events
+                        .iter()
+                        .try_fold(reserved.payload_len(), |bytes, event| {
+                            bytes.checked_add(event.payload_len())
+                        })
+                        .is_some_and(|bytes| bytes <= config.max_queue_bytes)
+            });
+        if replay_fits {
+            return Some(BootstrapReplay {
+                events,
+                reserved_event_fits,
+            });
+        }
+        None
+    }
+
+    fn mark_recovery_gap(&mut self, kind: MediaEventKind, result: RecorderEnqueueResult) {
+        if kind != MediaEventKind::VideoKeyframe || result == RecorderEnqueueResult::Queued {
+            self.keyframe = None;
+        }
+    }
 }
 
 #[derive(Clone)]
 pub(crate) struct RecorderRuntimeStatus {
     pub status: Option<RecorderWorkerStatus>,
+    pub recovery_events_dropped: u64,
     pub stopping: bool,
+    pub recovering: bool,
+    pub worker_generation: u64,
     pub observed_at_unix_ms: u64,
 }
 
@@ -185,6 +237,11 @@ impl RecorderController {
                 worker: None,
                 worker_generation: 0,
                 last_status: None,
+                completed_status: None,
+                restart_context: None,
+                restart_after: Instant::now(),
+                recovering: false,
+                recovery_events_dropped: 0,
             }),
             state_changed: Condvar::new(),
             last_observed_at_unix_ms: AtomicU64::new(at_unix_ms),
@@ -195,11 +252,22 @@ impl RecorderController {
         self: &Arc<Self>,
         context: RecorderCommandContext,
     ) -> Result<(), RecorderErrorCode> {
+        self.start_with_reservation(context, None).map(|_| ())
+    }
+
+    fn start_with_reservation(
+        self: &Arc<Self>,
+        context: RecorderCommandContext,
+        reserved_event: Option<&MediaEvent>,
+    ) -> Result<bool, RecorderErrorCode> {
         self.observe_at(context.at_unix_ms);
         loop {
             let mut state = self.lock();
             if !state.active {
                 return Err(RecorderErrorCode::StalePublisher);
+            }
+            if self.policy.start() == RtmpRecorderStart::Continuous {
+                state.restart_context = Some(context);
             }
             if state.bootstrap.unsupported_video {
                 return Err(RecorderErrorCode::UnsupportedCodec);
@@ -210,8 +278,11 @@ impl RecorderController {
                     status.phase,
                     RecorderWorkerPhase::Failed(_) | RecorderWorkerPhase::Stopped
                 ) {
-                    state.last_status = Some(status);
-                    return Ok(());
+                    state.last_status = Some(accumulate_worker_status(
+                        self.completed_status(&state),
+                        status,
+                    ));
+                    return Ok(true);
                 }
             }
             let Some(worker) = state.worker.take() else {
@@ -227,6 +298,10 @@ impl RecorderController {
                 let opened_at_unix_seconds = context.at_unix_ms / 1_000;
                 let opened_at_utc = RecordingDateTime::from_unix_seconds(opened_at_unix_seconds)
                     .map_err(|_| RecorderErrorCode::OpenFailed)?;
+                let mut bootstrap = state
+                    .bootstrap
+                    .replay_events(self.policy.worker, reserved_event)
+                    .ok_or(RecorderErrorCode::QueueDiscontinuity)?;
                 let worker = match RecorderWorker::start(
                     self.policy.store.clone(),
                     &self.policy.path,
@@ -250,38 +325,31 @@ impl RecorderController {
                         continue;
                     }
                     Err(error) => {
-                        return Err(match error {
-                            crate::RecorderWorkerStartError::UnsupportedVideoCodec(_) => {
-                                RecorderErrorCode::UnsupportedCodec
-                            }
-                            crate::RecorderWorkerStartError::ThreadSpawn(_) => {
-                                RecorderErrorCode::BackendUnavailable
-                            }
-                            crate::RecorderWorkerStartError::Path(_)
-                            | crate::RecorderWorkerStartError::Capacity(_)
-                            | crate::RecorderWorkerStartError::InvalidQueueLimits
-                            | crate::RecorderWorkerStartError::InvalidRotationInterval
-                            | crate::RecorderWorkerStartError::InvalidShutdownTimeout => {
-                                RecorderErrorCode::OpenFailed
-                            }
-                        });
+                        return Err(recorder_start_error_code(&error));
                     }
                 };
-                for event in state.bootstrap.events() {
-                    if worker.try_enqueue_at(event, Instant::now(), context.at_unix_ms)
-                        != RecorderEnqueueResult::Queued
-                    {
-                        return Err(RecorderErrorCode::BackendUnavailable);
-                    }
-                }
-                state.last_status = Some(worker.status());
+                enqueue_bootstrap_replay(
+                    &mut state.bootstrap,
+                    &worker,
+                    &mut bootstrap,
+                    context.at_unix_ms,
+                );
+                state.last_status = Some(accumulate_worker_status(
+                    self.completed_status(&state),
+                    worker.status(),
+                ));
                 state.stopping = false;
+                state.recovering = false;
+                state.restart_after = Instant::now();
                 state.worker_generation = worker_generation;
                 state.worker = Some(worker);
-                return Ok(());
+                return Ok(bootstrap.reserved_event_fits);
             };
             let worker_generation = state.worker_generation;
-            state.last_status = Some(worker.status());
+            state.last_status = Some(accumulate_worker_status(
+                self.completed_status(&state),
+                worker.status(),
+            ));
             state.stopping = true;
             drop(state);
             self.reaper.submit(
@@ -297,6 +365,8 @@ impl RecorderController {
     pub(crate) fn stop(self: &Arc<Self>, context: RecorderCommandContext) -> bool {
         self.observe_at(context.at_unix_ms);
         let mut state = self.lock();
+        state.restart_context = None;
+        state.recovering = false;
         let already_stopping = state.stopping;
         state.stopping = true;
         let Some(worker) = state.worker.take() else {
@@ -304,7 +374,10 @@ impl RecorderController {
             return false;
         };
         let worker_generation = state.worker_generation;
-        state.last_status = Some(worker.status());
+        state.last_status = Some(accumulate_worker_status(
+            self.completed_status(&state),
+            worker.status(),
+        ));
         drop(state);
         self.reaper.submit(
             worker,
@@ -319,26 +392,130 @@ impl RecorderController {
         true
     }
 
-    pub(crate) fn try_enqueue(&self, event: MediaEvent, at_unix_ms: u64) -> RecorderEnqueueResult {
+    pub(crate) fn try_enqueue(
+        self: &Arc<Self>,
+        event: MediaEvent,
+        at_unix_ms: u64,
+    ) -> RecorderEnqueueResult {
         self.observe_at(at_unix_ms);
-        let mut state = self.lock();
-        state.bootstrap.update(&event);
-        let Some(worker) = state.worker.as_ref() else {
-            return RecorderEnqueueResult::Inactive;
-        };
-        let result = worker.try_enqueue_at(event, Instant::now(), at_unix_ms);
-        state.last_status = Some(worker.status());
-        result
+        loop {
+            let mut state = self.lock();
+            if state.worker.is_none() {
+                let kind = event.kind();
+                let replayed_event = matches!(
+                    kind,
+                    MediaEventKind::Metadata
+                        | MediaEventKind::AacSequenceHeader
+                        | MediaEventKind::AvcSequenceHeader
+                        | MediaEventKind::VideoKeyframe
+                );
+                if replayed_event {
+                    state.bootstrap.update(&event);
+                }
+                let restart = state
+                    .restart_context
+                    .filter(|_| {
+                        state.active && !state.stopping && Instant::now() >= state.restart_after
+                    })
+                    .map(|mut context| {
+                        context.at_unix_ms = at_unix_ms;
+                        context
+                    });
+                if let Some(context) = restart {
+                    drop(state);
+                    let reserved_event = (!replayed_event).then_some(&event);
+                    match self.start_with_reservation(context, reserved_event) {
+                        Ok(true) if replayed_event => return RecorderEnqueueResult::Queued,
+                        Ok(true) => continue,
+                        Ok(false) => {
+                            state = self.lock();
+                            record_recovery_drop(&mut state, &event);
+                            return RecorderEnqueueResult::Inactive;
+                        }
+                        Err(_) => {}
+                    }
+                    state = self.lock();
+                    state.recovering = true;
+                    state.restart_after = Instant::now() + CONTINUOUS_RESTART_DELAY;
+                }
+                record_recovery_drop(&mut state, &event);
+                return RecorderEnqueueResult::Inactive;
+            }
+            let kind = event.kind();
+            state.bootstrap.update(&event);
+            let worker = state
+                .worker
+                .as_ref()
+                .expect("checked recorder worker remains controller-owned");
+            let result = worker.try_enqueue_at(event, Instant::now(), at_unix_ms);
+            let status = worker.status();
+            let recover = self.policy.start() == RtmpRecorderStart::Continuous
+                && matches!(status.phase, RecorderWorkerPhase::Failed(_));
+            if result != RecorderEnqueueResult::Queued || recover {
+                state.bootstrap.mark_recovery_gap(kind, result);
+            }
+            state.last_status = Some(accumulate_worker_status(
+                self.completed_status(&state),
+                status,
+            ));
+            if !recover {
+                if self.policy.start() == RtmpRecorderStart::Continuous
+                    && result == RecorderEnqueueResult::Inactive
+                {
+                    state.recovering = true;
+                    state.recovery_events_dropped = state.recovery_events_dropped.saturating_add(1);
+                }
+                return result;
+            }
+            if Instant::now() < state.restart_after {
+                count_inactive_recovery_drop(&mut state, result);
+                return result;
+            }
+            let worker = state
+                .worker
+                .take()
+                .expect("failed recorder worker remains controller-owned");
+            let worker_generation = state.worker_generation;
+            if let Err(worker) =
+                self.reaper
+                    .try_submit(worker, worker_generation, Arc::downgrade(self), at_unix_ms)
+            {
+                state.worker = Some(worker);
+                state.recovering = true;
+                state.restart_after = Instant::now() + CONTINUOUS_RESTART_DELAY;
+                count_inactive_recovery_drop(&mut state, result);
+                return result;
+            }
+            state.stopping = true;
+            state.recovering = true;
+            state.restart_after = Instant::now() + CONTINUOUS_RESTART_DELAY;
+            count_inactive_recovery_drop(&mut state, result);
+            if let Some(context) = state.restart_context.as_mut() {
+                context.at_unix_ms = at_unix_ms;
+            }
+            return result;
+        }
     }
 
     pub(crate) fn status(&self) -> RecorderRuntimeStatus {
         let mut state = self.lock();
         if let Some(worker) = state.worker.as_ref() {
-            state.last_status = Some(worker.status());
+            state.last_status = Some(accumulate_worker_status(
+                self.completed_status(&state),
+                worker.status(),
+            ));
         }
         RecorderRuntimeStatus {
-            status: state.last_status.clone(),
+            status: state.last_status.clone().map(|mut status| {
+                status.events_dropped = status
+                    .events_dropped
+                    .saturating_add(state.recovery_events_dropped);
+                status
+            }),
+            recovery_events_dropped: state.recovery_events_dropped,
             stopping: state.stopping,
+            recovering: state.recovering,
+            worker_generation: state.worker_generation,
             observed_at_unix_ms: self.last_observed_at_unix_ms.load(Ordering::Acquire),
         }
     }
@@ -348,13 +525,18 @@ impl RecorderController {
         let mut state = self.lock();
         state.active = false;
         state.stopping = true;
+        state.restart_context = None;
+        state.recovering = false;
         self.state_changed.notify_all();
         let Some(worker) = state.worker.take() else {
             state.stopping = false;
             return;
         };
         let worker_generation = state.worker_generation;
-        state.last_status = Some(worker.status());
+        state.last_status = Some(accumulate_worker_status(
+            self.completed_status(&state),
+            worker.status(),
+        ));
         drop(state);
         self.reaper.submit(
             worker,
@@ -373,14 +555,24 @@ impl RecorderController {
         self.last_observed_at_unix_ms.load(Ordering::Acquire)
     }
 
-    fn finish_reap(&self, worker_generation: u64, status: RecorderWorkerStatus, at_unix_ms: u64) {
+    fn finish_reap(
+        self: &Arc<Self>,
+        worker_generation: u64,
+        status: RecorderWorkerStatus,
+        at_unix_ms: u64,
+    ) {
         self.observe_at(at_unix_ms);
         let mut state = self.lock();
         if state.worker_generation != worker_generation {
             return;
         }
-        state.last_status = Some(status);
+        let completed = accumulate_worker_status(self.completed_status(&state), status);
+        state.last_status = Some(completed.clone());
+        if self.policy.start() == RtmpRecorderStart::Continuous {
+            state.completed_status = Some(completed);
+        }
         state.stopping = false;
+        state.recovering = state.restart_context.is_some() && state.active;
         drop(state);
         self.state_changed.notify_all();
     }
@@ -388,6 +580,14 @@ impl RecorderController {
     fn observe_at(&self, at_unix_ms: u64) {
         self.last_observed_at_unix_ms
             .fetch_max(at_unix_ms, Ordering::AcqRel);
+    }
+
+    fn completed_status<'a>(&self, state: &'a ControllerState) -> Option<&'a RecorderWorkerStatus> {
+        if self.policy.start() == RtmpRecorderStart::Continuous {
+            state.completed_status.as_ref()
+        } else {
+            None
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, ControllerState> {
@@ -421,6 +621,15 @@ impl RecorderController {
             .as_ref()
             .expect("active recorder controller owns a worker")
             .panic_after_finish();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_before_process(&self) {
+        self.lock()
+            .worker
+            .as_ref()
+            .expect("active recorder controller owns a worker")
+            .fail_before_process();
     }
 }
 
@@ -654,6 +863,48 @@ impl RecorderReaperHandle {
                     .submit_task(*task, Some(Arc::clone(&self.queue)));
             }
         }
+    }
+
+    fn try_submit(
+        &self,
+        worker: RecorderWorker,
+        worker_generation: u64,
+        controller: Weak<RecorderController>,
+        completion_at_unix_ms: u64,
+    ) -> Result<(), RecorderWorker> {
+        let mut state = self
+            .queue
+            .state
+            .lock()
+            .expect("recorder reaper queue mutex poisoned");
+        if !state.accepting || state.failed || state.pending >= self.queue.capacity {
+            return Err(worker);
+        }
+        let supervisor = worker.into_supervisor();
+        let task = ReapTask {
+            deadline: Instant::now() + supervisor.shutdown_timeout(),
+            supervisor: Some(supervisor),
+            worker_generation,
+            controller,
+            completion: None,
+            completion_at_unix_ms,
+            cancelled: false,
+        };
+        state.pending += 1;
+        if let Err(error) = self.queue.sender.send(ReaperCommand::Reap(task)) {
+            state.accepting = false;
+            state.failed = true;
+            state.shutdown_deadline = Some(Instant::now());
+            drop(state);
+            self.queue.available.notify_all();
+            let ReaperCommand::Reap(mut task) = error.0 else {
+                unreachable!("reserved submission only sends reap commands");
+            };
+            task.deadline = Instant::now();
+            self.cleanup
+                .submit_task(task, Some(Arc::clone(&self.queue)));
+        }
+        Ok(())
     }
 }
 
@@ -1116,6 +1367,110 @@ pub(crate) fn recorder_error_code(failure: RecorderFailure) -> RecorderErrorCode
     }
 }
 
+fn recorder_start_error_code(error: &crate::RecorderWorkerStartError) -> RecorderErrorCode {
+    match error {
+        crate::RecorderWorkerStartError::UnsupportedVideoCodec(_) => {
+            RecorderErrorCode::UnsupportedCodec
+        }
+        crate::RecorderWorkerStartError::ThreadSpawn(_) => RecorderErrorCode::BackendUnavailable,
+        crate::RecorderWorkerStartError::Path(_)
+        | crate::RecorderWorkerStartError::Capacity(_)
+        | crate::RecorderWorkerStartError::InvalidQueueLimits
+        | crate::RecorderWorkerStartError::InvalidRotationInterval
+        | crate::RecorderWorkerStartError::InvalidShutdownTimeout => RecorderErrorCode::OpenFailed,
+    }
+}
+
+fn accumulate_worker_status(
+    completed: Option<&RecorderWorkerStatus>,
+    mut current: RecorderWorkerStatus,
+) -> RecorderWorkerStatus {
+    let Some(completed) = completed else {
+        return current;
+    };
+    current.events_enqueued = completed
+        .events_enqueued
+        .saturating_add(current.events_enqueued);
+    current.events_processed = completed
+        .events_processed
+        .saturating_add(current.events_processed);
+    current.events_dropped = completed
+        .events_dropped
+        .saturating_add(current.events_dropped);
+    current.bytes_written = completed
+        .bytes_written
+        .saturating_add(current.bytes_written);
+    current.segments_started = completed
+        .segments_started
+        .saturating_add(current.segments_started);
+    current.segments_completed = completed
+        .segments_completed
+        .saturating_add(current.segments_completed);
+    current.discontinuities = completed
+        .discontinuities
+        .saturating_add(current.discontinuities);
+    if current.last_completed_relative_name.is_none() {
+        current
+            .last_completed_relative_name
+            .clone_from(&completed.last_completed_relative_name);
+    }
+    if current.recoverable_partial_name.is_none() {
+        current
+            .recoverable_partial_name
+            .clone_from(&completed.recoverable_partial_name);
+    }
+    if current.published_but_not_durable_relative_name.is_none() {
+        current
+            .published_but_not_durable_relative_name
+            .clone_from(&completed.published_but_not_durable_relative_name);
+    }
+    current
+}
+
+fn media_events_fit(events: &[MediaEvent], config: RecorderWorkerConfig) -> bool {
+    events.len() <= config.max_queue_messages
+        && events
+            .iter()
+            .try_fold(0_usize, |bytes, event| {
+                bytes.checked_add(event.payload_len())
+            })
+            .is_some_and(|bytes| bytes <= config.max_queue_bytes)
+}
+
+fn enqueue_bootstrap_replay(
+    bootstrap: &mut RecorderBootstrap,
+    worker: &RecorderWorker,
+    replay: &mut BootstrapReplay,
+    at_unix_ms: u64,
+) {
+    for event in replay.events.drain(..) {
+        let kind = event.kind();
+        let result = worker.try_enqueue_at(event, Instant::now(), at_unix_ms);
+        if result != RecorderEnqueueResult::Queued {
+            bootstrap.mark_recovery_gap(kind, result);
+            replay.reserved_event_fits = false;
+            break;
+        }
+    }
+}
+
+fn record_recovery_drop(state: &mut ControllerState, event: &MediaEvent) {
+    let kind = event.kind();
+    state.bootstrap.update(event);
+    state
+        .bootstrap
+        .mark_recovery_gap(kind, RecorderEnqueueResult::Inactive);
+    if state.restart_context.is_some() {
+        state.recovery_events_dropped = state.recovery_events_dropped.saturating_add(1);
+    }
+}
+
+fn count_inactive_recovery_drop(state: &mut ControllerState, result: RecorderEnqueueResult) {
+    if result == RecorderEnqueueResult::Inactive {
+        state.recovery_events_dropped = state.recovery_events_dropped.saturating_add(1);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{fs, path::Path, sync::mpsc, thread};
@@ -1129,6 +1484,65 @@ mod tests {
     };
 
     const TEST_TIMEOUT: Duration = Duration::from_secs(1);
+
+    #[test]
+    fn recovery_bootstrap_discards_an_oversized_snapshot_without_blocking_start() {
+        let mut bootstrap = RecorderBootstrap::default();
+        bootstrap.update(
+            &MediaEvent::audio(0, Arc::<[u8]>::from(&b"\xaf\x00\x12"[..])).expect("AAC header"),
+        );
+        bootstrap.update(
+            &MediaEvent::video(0, Arc::<[u8]>::from(&b"\x17\x00\x00\x00\x00\x01"[..]))
+                .expect("AVC header"),
+        );
+
+        let config = RecorderWorkerConfig {
+            max_queue_messages: 2,
+            max_queue_bytes: 1024,
+            rotation_interval: None,
+            shutdown_timeout: Duration::from_secs(1),
+            video_codec: None,
+        };
+        let reserved =
+            MediaEvent::audio(1, Arc::<[u8]>::from(&b"current"[..])).expect("current audio");
+        let replay = bootstrap
+            .replay_events(config, Some(&reserved))
+            .expect("bootstrap fits without the reserved event");
+
+        assert_eq!(replay.events.len(), 2);
+        assert!(!replay.reserved_event_fits);
+        assert_eq!(bootstrap.events().count(), 2);
+
+        assert!(
+            bootstrap
+                .replay_events(
+                    RecorderWorkerConfig {
+                        max_queue_messages: 1,
+                        ..config
+                    },
+                    Some(&reserved)
+                )
+                .is_none()
+        );
+        assert_eq!(bootstrap.events().count(), 2);
+    }
+
+    #[test]
+    fn recovery_gap_rejects_a_stale_keyframe_but_keeps_a_new_one() {
+        let mut bootstrap = RecorderBootstrap::default();
+        let stale =
+            MediaEvent::video(0, Arc::<[u8]>::from(&b"\x17\x01stale"[..])).expect("stale keyframe");
+        bootstrap.update(&stale);
+        let audio = MediaEvent::audio(1, Arc::<[u8]>::from(&b"audio"[..])).expect("audio");
+        bootstrap.mark_recovery_gap(audio.kind(), RecorderEnqueueResult::Inactive);
+        assert!(bootstrap.keyframe.is_none());
+
+        let current = MediaEvent::video(2, Arc::<[u8]>::from(&b"\x17\x01current"[..]))
+            .expect("current keyframe");
+        bootstrap.update(&current);
+        bootstrap.mark_recovery_gap(current.kind(), RecorderEnqueueResult::Inactive);
+        assert_eq!(bootstrap.keyframe, Some(current));
+    }
 
     #[test]
     fn publication_claim_wins_over_process_deadline_cancellation() {
@@ -1465,6 +1879,98 @@ mod tests {
     }
 
     #[test]
+    fn continuous_recovery_resumes_the_existing_file_inside_the_interval() {
+        assert_continuous_recovery(50_000, "camera-1.flv");
+    }
+
+    #[test]
+    fn continuous_recovery_starts_the_current_file_after_the_interval() {
+        assert_continuous_recovery(62_000, "camera-62.flv");
+    }
+
+    #[test]
+    fn continuous_recovery_backs_off_while_the_reaper_is_saturated() {
+        let mut fixture = RecorderFixture::with_max_active(Duration::from_millis(500), 1);
+        fixture.controller.fail_before_process();
+        assert_eq!(
+            fixture.controller.try_enqueue(
+                MediaEvent::audio(0, Arc::<[u8]>::from(&b"failure"[..])).expect("failure audio"),
+                1_100,
+            ),
+            RecorderEnqueueResult::Queued
+        );
+        wait_until(TEST_TIMEOUT, || {
+            fixture.controller.status().status.is_some_and(|status| {
+                status.phase == RecorderWorkerPhase::Failed(RecorderFailure::Open)
+            })
+        });
+        fixture
+            .reaper
+            .queue
+            .state
+            .lock()
+            .expect("reaper state")
+            .pending = 1;
+
+        let worker_generation = fixture.controller.lock().worker_generation;
+        let started = Instant::now();
+        assert_eq!(
+            fixture.controller.try_enqueue(
+                MediaEvent::audio(1, Arc::<[u8]>::from(&b"saturated"[..]))
+                    .expect("saturated audio"),
+                1_200,
+            ),
+            RecorderEnqueueResult::Inactive
+        );
+        assert!(started.elapsed() < Duration::from_millis(20));
+        assert!(fixture.controller.lock().worker.is_some());
+        assert_eq!(
+            fixture.controller.try_enqueue(
+                MediaEvent::audio(2, Arc::<[u8]>::from(&b"backoff"[..])).expect("backoff audio"),
+                1_201,
+            ),
+            RecorderEnqueueResult::Inactive
+        );
+        assert_eq!(
+            fixture.controller.lock().worker_generation,
+            worker_generation
+        );
+
+        fixture
+            .reaper
+            .queue
+            .state
+            .lock()
+            .expect("reaper state")
+            .pending = 0;
+        fixture.reaper.queue.available.notify_all();
+        thread::sleep(CONTINUOUS_RESTART_DELAY);
+        assert_eq!(
+            fixture.controller.try_enqueue(
+                MediaEvent::audio(3, Arc::<[u8]>::from(&b"retry"[..])).expect("retry audio"),
+                1_300,
+            ),
+            RecorderEnqueueResult::Inactive
+        );
+        wait_until(TEST_TIMEOUT, || {
+            let status = fixture.controller.status();
+            !status.stopping && status.recovering
+        });
+        thread::sleep(CONTINUOUS_RESTART_DELAY);
+        assert_eq!(
+            fixture.controller.try_enqueue(
+                MediaEvent::audio(4, Arc::<[u8]>::from(&b"continued"[..]))
+                    .expect("continued audio"),
+                1_400,
+            ),
+            RecorderEnqueueResult::Queued
+        );
+        fixture.controller.deactivate(1_500);
+        wait_until(TEST_TIMEOUT, || fixture.reaper.queue.status().1 == 0);
+        fixture.shutdown_owner(None);
+    }
+
+    #[test]
     fn reaper_panic_closes_intake_and_transfers_pending_cleanup() {
         let mut fixture = RecorderFixture::new(Duration::from_millis(500));
         let gate = fixture.prepare_publication();
@@ -1667,6 +2173,15 @@ mod tests {
         }
 
         fn with_max_active(shutdown_timeout: Duration, max_active_recorders: usize) -> Self {
+            Self::with_recording_policy(shutdown_timeout, max_active_recorders, None, false)
+        }
+
+        fn with_recording_policy(
+            shutdown_timeout: Duration,
+            max_active_recorders: usize,
+            rotation_interval: Option<Duration>,
+            append_unix_seconds: bool,
+        ) -> Self {
             let root = tempdir().expect("recording root");
             let store = RecordingStore::open(
                 root.path(),
@@ -1687,11 +2202,12 @@ mod tests {
                     "archive",
                     RtmpRecorderStart::Continuous,
                     store,
-                    RecordingPathPolicy::new(".flv", false).expect("recording path policy"),
+                    RecordingPathPolicy::new(".flv", append_unix_seconds)
+                        .expect("recording path policy"),
                     RecorderWorkerConfig {
                         max_queue_messages: 4,
                         max_queue_bytes: 1024,
-                        rotation_interval: None,
+                        rotation_interval,
                         shutdown_timeout,
                         video_codec: None,
                     },
@@ -1752,6 +2268,136 @@ mod tests {
             operation_id: OperationId::new(),
             at_unix_ms,
         }
+    }
+
+    fn assert_continuous_recovery(recovery_at_unix_ms: u64, expected_file: &str) {
+        let mut fixture = RecorderFixture::with_recording_policy(
+            Duration::from_millis(500),
+            1,
+            Some(Duration::from_secs(60)),
+            true,
+        );
+        assert_eq!(
+            fixture.controller.try_enqueue(
+                MediaEvent::audio(0, Arc::<[u8]>::from(&b"first"[..])).expect("initial audio"),
+                1_050,
+            ),
+            RecorderEnqueueResult::Queued
+        );
+        wait_until(TEST_TIMEOUT, || {
+            fixture
+                .controller
+                .status()
+                .status
+                .is_some_and(|status| status.bytes_written > 13)
+        });
+        assert!(fixture.controller.stop(recorder_context(1_100)));
+        wait_until(TEST_TIMEOUT, || fixture.reaper.queue.status().1 == 0);
+        let initial_file = fixture.root.path().join("camera-1.flv");
+        let initial_size = fs::metadata(&initial_file)
+            .expect("initial interval file")
+            .len();
+
+        fixture
+            .controller
+            .start(recorder_context(1_200))
+            .expect("replacement recorder");
+        fixture.controller.fail_before_process();
+        assert_eq!(
+            fixture.controller.try_enqueue(
+                MediaEvent::audio(1, Arc::<[u8]>::from(&b"failure"[..])).expect("failure audio"),
+                1_250,
+            ),
+            RecorderEnqueueResult::Queued
+        );
+        wait_until(TEST_TIMEOUT, || {
+            fixture.controller.status().status.is_some_and(|status| {
+                status.phase == RecorderWorkerPhase::Failed(RecorderFailure::Open)
+            })
+        });
+
+        assert_eq!(
+            fixture.controller.try_enqueue(
+                MediaEvent::audio(2, Arc::<[u8]>::from(&b"recover"[..])).expect("recovery trigger"),
+                recovery_at_unix_ms,
+            ),
+            RecorderEnqueueResult::Inactive
+        );
+        wait_until(TEST_TIMEOUT, || {
+            let status = fixture.controller.status();
+            !status.stopping && status.recovering
+        });
+        let failed_generation = fixture.controller.lock().worker_generation;
+        assert_eq!(
+            fixture.controller.try_enqueue(
+                MediaEvent::audio(3, Arc::<[u8]>::from(&b"backoff"[..])).expect("backoff audio"),
+                recovery_at_unix_ms + 1,
+            ),
+            RecorderEnqueueResult::Inactive
+        );
+        assert_eq!(
+            fixture.controller.lock().worker_generation,
+            failed_generation,
+            "recovery restarted before its bounded delay"
+        );
+        thread::sleep(CONTINUOUS_RESTART_DELAY);
+        assert_eq!(
+            fixture.controller.try_enqueue(
+                MediaEvent::audio(4, Arc::<[u8]>::from(&b"continued"[..]))
+                    .expect("continued audio"),
+                recovery_at_unix_ms + 2,
+            ),
+            RecorderEnqueueResult::Queued
+        );
+        wait_until(TEST_TIMEOUT, || {
+            fixture.controller.status().status.is_some_and(|status| {
+                status.phase == RecorderWorkerPhase::Recording && status.bytes_written > 13
+            })
+        });
+
+        assert_recovery_output(
+            &mut fixture,
+            recovery_at_unix_ms,
+            expected_file,
+            &initial_file,
+            initial_size,
+        );
+    }
+
+    fn assert_recovery_output(
+        fixture: &mut RecorderFixture,
+        recovery_at_unix_ms: u64,
+        expected_file: &str,
+        initial_file: &Path,
+        initial_size: u64,
+    ) {
+        fixture.controller.deactivate(recovery_at_unix_ms + 3);
+        wait_until(TEST_TIMEOUT, || fixture.reaper.queue.status().1 == 0);
+        let recovered_status = fixture
+            .controller
+            .status()
+            .status
+            .expect("recovered recorder status");
+        assert!(recovered_status.events_dropped >= 3);
+        assert_eq!(recovered_status.segments_started, 2);
+        assert!(recovered_status.bytes_written > initial_size);
+        assert!(fixture.root.path().join(expected_file).is_file());
+        if expected_file == "camera-1.flv" {
+            assert!(
+                fs::metadata(initial_file)
+                    .expect("resumed interval file")
+                    .len()
+                    > initial_size
+            );
+        } else {
+            assert_eq!(
+                fs::metadata(initial_file)
+                    .expect("prior interval file")
+                    .len(),
+                initial_size
+            );
+        }
+        fixture.shutdown_owner(None);
     }
 
     fn partial_files(root: &Path) -> Vec<std::path::PathBuf> {

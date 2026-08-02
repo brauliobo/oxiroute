@@ -386,6 +386,76 @@ fn reconnect_within_interval_resumes_the_existing_nginx_named_segment() {
 }
 
 #[test]
+fn reconnect_within_interval_preserves_a_safe_sequence_variant_name() {
+    let temporary = tempdir().expect("temporary directory");
+    let store = store(temporary.path());
+    let path = RecordingPathPolicy::new(".flv", true).expect("path policy");
+    let config = RecorderWorkerConfig {
+        max_queue_messages: 32,
+        max_queue_bytes: 1024 * 1024,
+        rotation_interval: Some(Duration::from_secs(3_600)),
+        shutdown_timeout: Duration::from_secs(1),
+        video_codec: None,
+    };
+    let opened_at = 1_721_619_000;
+    let first = RecorderWorker::start(
+        store.clone(),
+        &path,
+        b"camera",
+        opened_at,
+        RecordingDateTime::from_unix_seconds(opened_at).expect("first start"),
+        config,
+    )
+    .expect("first worker");
+    enqueue(&first, aac_header(0, 0x12));
+    enqueue(&first, audio(0, 0x11));
+    let first_status = shutdown(first);
+    let base = first_status
+        .last_completed_relative_name
+        .expect("first segment name");
+    let sequence = format!(
+        "{}-000001.flv",
+        base.strip_suffix(".flv").expect("FLV suffix")
+    );
+    fs::rename(
+        temporary.path().join(&base),
+        temporary.path().join(&sequence),
+    )
+    .expect("sequence variant");
+    let first_length = fs::metadata(temporary.path().join(&sequence))
+        .expect("sequence segment")
+        .len();
+
+    let reconnected_at = opened_at + 120;
+    let second = RecorderWorker::start(
+        store,
+        &path,
+        b"camera",
+        reconnected_at,
+        RecordingDateTime::from_unix_seconds(reconnected_at).expect("reconnect start"),
+        config,
+    )
+    .expect("second worker");
+    enqueue(&second, aac_header(0, 0x13));
+    enqueue(&second, audio(0, 0x22));
+    enqueue(&second, audio(3_600_000, 0x33));
+    let second_status = shutdown(second);
+
+    assert_eq!(second_status.segments_completed, 2);
+    assert!(
+        fs::metadata(temporary.path().join(sequence))
+            .expect("resumed sequence segment")
+            .len()
+            > first_length
+    );
+    assert!(
+        recording_files(temporary.path())
+            .iter()
+            .any(|path| path.to_string_lossy().contains("-000002.flv"))
+    );
+}
+
+#[test]
 fn reconnect_after_interval_starts_a_new_nginx_named_segment() {
     let temporary = tempdir().expect("temporary directory");
     let store = store(temporary.path());
