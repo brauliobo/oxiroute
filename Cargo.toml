@@ -17,7 +17,7 @@ edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/brauliobo/oxiroute"
 rust-version = "1.87"
-version = "0.2.2"
+version = "0.2.3"
 
 [workspace.dependencies]
 arc-swap = "1.9"
