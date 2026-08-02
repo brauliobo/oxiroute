@@ -102,7 +102,7 @@ const topology: TopologySnapshot = {
     {
       nodeId: 'endpoint:3:web:14:127.0.0.1:3000',
       state: 'healthy',
-      metrics: { successfulChecks: '42', activeLeases: '3' },
+      metrics: { successfulChecks: '42', activeConnections: '3' },
     },
   ],
 }
@@ -147,7 +147,7 @@ describe('TopologyView', () => {
     expect(wrapper.text()).toContain('Socket / 0.0.0.0:443')
     expect(wrapper.text()).toContain('DNS / backend.example.test:3000')
     expect(wrapper.text()).toContain('7 active connections')
-    expect(wrapper.text()).toContain('3 active leases')
+    expect(wrapper.text()).toContain('3 active connections')
     expect(wrapper.find('.inspector').exists()).toBe(false)
   })
 
@@ -191,7 +191,7 @@ describe('TopologyView', () => {
 
     await wrapper.get('[data-node-id="endpoint:3:web:14:127.0.0.1:3000"]').trigger('click')
     expect(wrapper.get('.inspector-identity').text()).toContain('DNS / backend.example.test:3000')
-    expect(wrapper.get('.inspector-identity').text()).toContain('Active leases')
+    expect(wrapper.get('.inspector-identity').text()).toContain('Active connections')
 
     await wrapper.get('[data-node-id="http_service:3:web"]').trigger('click')
     expect(wrapper.get('.inspector-identity').text()).toContain('Request body limit')

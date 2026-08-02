@@ -113,9 +113,6 @@ section.topology-section(aria-labelledby="topology-heading" @keydown.esc="closeI
         div(v-if="selectedActiveConnections !== null")
           dt Active connections
           dd {{ formatCount(selectedActiveConnections) }}
-        div(v-if="selectedActiveLeases !== null")
-          dt Active leases
-          dd {{ formatCount(selectedActiveLeases) }}
       section.inspector-block(aria-labelledby="config-attributes-heading")
         h4#config-attributes-heading Redacted config attributes
         pre {{ attributesJson }}
@@ -279,8 +276,7 @@ const selectedConfiguredLimit = computed(() => {
   }
   return null
 })
-const selectedActiveConnections = computed(() => numericMetric(selectedOverlay.value, 'activeConnections'))
-const selectedActiveLeases = computed(() => decimalMetric(selectedOverlay.value, 'activeLeases'))
+const selectedActiveConnections = computed(() => decimalMetric(selectedOverlay.value, 'activeConnections'))
 const attributesJson = computed(() => redactedJson(selectedNode.value?.attributes ?? {}))
 const runtimeJson = computed(() => redactedJson(selectedOverlay.value?.metrics ?? {}))
 
@@ -317,19 +313,13 @@ function topologyIdentityLabel(node: TopologyNode): string {
 
 function runtimeCountLabel(nodeId: string): string {
   const overlay = overlayFor(nodeId)
-  const activeConnections = numericMetric(overlay, 'activeConnections')
-  if (activeConnections !== null) return `${formatCount(activeConnections)} active connections`
-  const activeLeases = decimalMetric(overlay, 'activeLeases')
-  return activeLeases === null ? '' : `${formatCount(activeLeases)} active leases`
-}
-
-function numericMetric(overlay: TopologyRuntimeOverlay | undefined, key: string): number | null {
-  const value = overlay?.metrics[key]
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null
+  const activeConnections = decimalMetric(overlay, 'activeConnections')
+  return activeConnections === null ? '' : `${formatCount(activeConnections)} active connections`
 }
 
 function decimalMetric(overlay: TopologyRuntimeOverlay | undefined, key: string): string | null {
   const value = overlay?.metrics[key]
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? String(value) : null
   return typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value) ? value : null
 }
 

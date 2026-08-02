@@ -157,7 +157,7 @@ describe('API contracts over HTTP', () => {
     await expect(fetchMonitoring()).rejects.toThrow('invalid response payload')
 
     const numericCounter = contractMonitoring()
-    numericCounter.upstreamPools[0]!.endpoints[0]!.activeLeases = 3 as unknown as string
+    numericCounter.upstreamPools[0]!.endpoints[0]!.activeConnections = 3 as unknown as string
     responseOverrides.set('GET /api/v1/monitoring', numericCounter)
     await expect(fetchMonitoring()).rejects.toThrow('invalid response payload')
 

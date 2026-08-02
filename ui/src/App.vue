@@ -1,11 +1,11 @@
 <template lang="pug">
-main.console-shell(:aria-busy="activeView === 'overview' && monitoring === null && refreshing")
+main.console-shell(:aria-busy="activeView !== 'configuration' && monitoring === null && refreshing")
   header.masthead
     .brand-block
       p.eyebrow Network control / telemetry
       h1 OxiRoute
-      p.deck {{ activeView === 'overview' ? 'Runtime observatory' : 'Canonical configuration' }}
-    .system-state(v-if="activeView === 'overview'" :class="{ alert: monitoringError && !monitoring, stale: isStale }" role="status" aria-live="polite")
+      p.deck {{ activeView === 'overview' ? 'Runtime observatory' : activeView === 'stats' ? 'HAProxy statistics' : 'Canonical configuration' }}
+    .system-state(v-if="activeView !== 'configuration'" :class="{ alert: monitoringError && !monitoring, stale: isStale }" role="status" aria-live="polite")
       span.state-light(aria-hidden="true")
       span {{ monitoringStatus }}
     .system-state.configuration-state(v-else role="status")
@@ -18,6 +18,11 @@ main.console-shell(:aria-busy="activeView === 'overview' && monitoring === null 
       :aria-current="activeView === 'overview' ? 'page' : undefined"
       @click="activateView('overview')"
     ) Overview
+    a(
+      href="#/stats"
+      :aria-current="activeView === 'stats' ? 'page' : undefined"
+      @click="activateView('stats')"
+    ) Statistics
     a(
       href="#/configuration"
       :aria-current="activeView === 'configuration' ? 'page' : undefined"
@@ -35,7 +40,7 @@ main.console-shell(:aria-busy="activeView === 'overview' && monitoring === null 
       button(type="submit" :disabled="managementTokenInput.length === 0")
         | {{ managementToken ? 'Replace token' : 'Unlock telemetry' }}
 
-  section.readout-bar(v-show="activeView === 'overview'" aria-label="Live monitoring summary")
+  section.readout-bar(v-show="activeView !== 'configuration'" aria-label="Live monitoring summary")
     .readout
       span.label Active connections
       strong {{ monitoring ? formatCount(monitoring.traffic.activeConnections) : '--' }}
@@ -47,20 +52,20 @@ main.console-shell(:aria-busy="activeView === 'overview' && monitoring === null 
       strong {{ monitoring ? formatPercent(memoryUsagePercent) : '--' }}
     .readout
       span.label Uptime
-      strong.mono {{ monitoring ? formatDuration(monitoring.uptimeMs) : '--' }}
+      strong.mono {{ monitoring ? formatTelemetryDuration(monitoring.uptimeMs) : '--' }}
     button.refresh-button(type="button" @click="refresh" :disabled="refreshing")
       | {{ refreshing ? 'Refreshing...' : 'Refresh now' }}
 
-  section.loading-state(v-if="activeView === 'overview' && !monitoring && refreshing" role="status" aria-live="polite")
+  section.loading-state(v-if="activeView !== 'configuration' && !monitoring && refreshing" role="status" aria-live="polite")
     span.loading-mark(aria-hidden="true")
     div
       strong Establishing telemetry
       p Waiting for the first monitoring sample from the control plane.
 
-  p.notice.error-notice(v-if="activeView === 'overview' && monitoringError && !monitoring" role="alert")
+  p.notice.error-notice(v-if="activeView !== 'configuration' && monitoringError && !monitoring" role="alert")
     strong Monitoring unavailable.
     |  {{ monitoringError }}
-  p.notice.stale-notice(v-else-if="activeView === 'overview' && monitoring && isStale" role="status" aria-live="polite")
+  p.notice.stale-notice(v-else-if="activeView !== 'configuration' && monitoring && isStale" role="status" aria-live="polite")
     strong Retaining the last valid sample.
     |  {{ staleMessage }}
   p.notice.error-notice(v-if="activeView === 'overview' && catalogError" role="alert")
@@ -81,6 +86,8 @@ main.console-shell(:aria-busy="activeView === 'overview' && monitoring === null 
   p.notice.capability-notice(v-if="activeView === 'overview' && catalog && !catalog.capabilities.manual_recording")
     strong Manual recording controls are unavailable.
     |  Continuous recorder state remains visible, but this runtime does not accept start or stop commands.
+
+  HaproxyStatsDashboard(v-if="activeView === 'stats' && monitoring" :monitoring="monitoring")
 
   TopologyView(v-if="activeView === 'overview' && topology" :topology="topology")
 
@@ -236,7 +243,7 @@ main.console-shell(:aria-busy="activeView === 'overview' && monitoring === null 
             li.endpoint-row(v-for="endpoint in pool.endpoints" :key="endpoint.address")
               code {{ endpoint.address }}
               span.health-state(:class="`health-${endpoint.state}`") {{ endpointHealthLabels[endpoint.state] }}
-              span.endpoint-leases Active leases: {{ formatCount(endpoint.activeLeases) }}
+              span.endpoint-leases Active connections: {{ formatCount(endpoint.activeConnections) }}
               span.endpoint-observation {{ endpoint.lastCheckedAtUnixMs === null ? 'No checks completed' : `Last checked ${formatSampleAge(endpoint.lastCheckedAtUnixMs)}` }}
               span.endpoint-checks Total checks: {{ formatCount(endpoint.successfulChecks) }} passed / {{ formatCount(endpoint.failedChecks) }} failed
               span.endpoint-streak Consecutive checks: {{ formatCount(endpoint.consecutiveSuccesses) }} passed / {{ formatCount(endpoint.consecutiveFailures) }} failed
@@ -309,7 +316,8 @@ main.console-shell(:aria-busy="activeView === 'overview' && monitoring === null 
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 
 import ConfigurationWorkspace from './ConfigurationWorkspace.vue'
-import { formatBytes, formatCount } from './formatters'
+import HaproxyStatsDashboard from './HaproxyStatsDashboard.vue'
+import { formatBytes, formatCount, formatTelemetryDuration } from './formatters'
 import RtmpRecorderPanel from './RtmpRecorderPanel.vue'
 import { recorderControlAction } from './recording'
 import { listenerStateLabels } from './runtimeStates'
@@ -360,7 +368,7 @@ const listenerProtocolLabels: Record<ListenerProtocol, string> = {
   forward_http3: 'Forward H3',
 }
 
-type AppView = 'overview' | 'configuration'
+type AppView = 'overview' | 'stats' | 'configuration'
 
 const activeView = ref<AppView>(viewFromHash())
 const managementToken = ref('')
@@ -435,12 +443,13 @@ function refresh(): Promise<void> {
 }
 
 function viewFromHash(): AppView {
-  return window.location.hash === '#/configuration' ? 'configuration' : 'overview'
+  if (window.location.hash === '#/configuration') return 'configuration'
+  return window.location.hash === '#/stats' ? 'stats' : 'overview'
 }
 
 function activateView(view: AppView): void {
   activeView.value = view
-  if (view === 'overview') {
+  if (view === 'overview' || view === 'stats') {
     startMonitoring()
   } else if (monitoringStarted) {
     stopMonitoring()
@@ -451,7 +460,7 @@ function setManagementToken(): void {
   if (!managementTokenInput.value) return
   managementToken.value = managementTokenInput.value
   managementTokenInput.value = ''
-  if (activeView.value === 'overview') void refresh()
+  if (activeView.value !== 'configuration') void refresh()
 }
 
 function syncViewFromHash(): void {
@@ -476,11 +485,11 @@ function stopMonitoring(): void {
 }
 
 async function refreshData(controller: AbortController): Promise<void> {
-  await Promise.all([
-    refreshMonitoring(controller),
-    refreshCatalog(controller),
-    refreshTopology(controller),
-  ])
+  const requests = [refreshMonitoring(controller)]
+  if (activeView.value === 'overview') {
+    requests.push(refreshCatalog(controller), refreshTopology(controller))
+  }
+  await Promise.all(requests)
 }
 
 async function refreshMonitoring(controller: AbortController): Promise<void> {
@@ -634,17 +643,6 @@ function formatOptionalPercent(value: number | null): string {
   return value === null ? 'Unavailable' : formatPercent(value)
 }
 
-function formatDuration(durationMs: number): string {
-  const totalSeconds = Math.max(0, Math.floor(durationMs / 1000))
-  const days = Math.floor(totalSeconds / 86_400)
-  const hours = Math.floor((totalSeconds % 86_400) / 3_600)
-  const minutes = Math.floor((totalSeconds % 3_600) / 60)
-  if (days > 0) return `${days}d ${hours}h`
-  if (hours > 0) return `${hours}h ${minutes}m`
-  if (minutes > 0) return `${minutes}m ${totalSeconds % 60}s`
-  return `${totalSeconds}s`
-}
-
 function formatSampleAge(sampledAt: number): string {
   const seconds = Math.max(0, Math.floor((currentUnixMs.value - sampledAt) / 1000))
   if (seconds < 2) return 'just now'
@@ -676,7 +674,7 @@ function formatAge(startedAt: number): string {
 
 onMounted(() => {
   window.addEventListener('hashchange', syncViewFromHash)
-  if (activeView.value === 'overview') startMonitoring()
+  if (activeView.value !== 'configuration') startMonitoring()
 })
 
 onUnmounted(() => {
@@ -1699,7 +1697,7 @@ h2 {
 
   .app-navigation {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(3, 1fr);
   }
 
   .management-auth {
