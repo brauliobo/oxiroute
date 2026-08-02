@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import App from './App.vue'
 import type { ConfigSnapshot } from './config'
-import { emptyConfigSnapshot, jsonResponse } from './test/contractFixtures'
+import { contractMonitoring, emptyConfigSnapshot, jsonResponse } from './test/contractFixtures'
 
 const bearerToken = 'test-only-navigation-token'
 
@@ -16,6 +16,23 @@ afterEach(() => {
 })
 
 describe('application navigation', () => {
+  it('opens the statistics route with only the monitoring request', async () => {
+    window.location.hash = '#/stats'
+    const fetch = vi.fn(() => Promise.resolve(jsonResponse(contractMonitoring())))
+    vi.stubGlobal('fetch', fetch)
+
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(wrapper.get('a[href="#/stats"]').attributes('aria-current')).toBe('page')
+    expect(wrapper.get('.haproxy-stats').text()).toContain('Statistics')
+    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(fetch).toHaveBeenCalledWith('/api/v1/monitoring', expect.objectContaining({ cache: 'no-store' }))
+    expect(wrapper.find('.monitoring-overview').exists()).toBe(false)
+    expect(wrapper.find('.topology-section').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('opens the configuration route without starting monitoring requests', async () => {
     window.location.hash = '#/configuration'
     const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify(snapshot))))

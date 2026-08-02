@@ -107,8 +107,12 @@ export interface RtmpCatalog {
 }
 
 export interface MonitoringProcess {
+  activeConnections: number
   administrativeState: AdministrativeState
   cpuPercent: number | null
+  maxConnections: number | null
+  rejectedConnections: string
+  retryAttempts: string
   residentMemoryBytes: number
   virtualMemoryBytes: number
   threadCount: number
@@ -221,10 +225,18 @@ export interface CertbotWatcherSnapshot {
 
 export type EndpointHealthState = 'unchecked' | 'unknown' | 'healthy' | 'unhealthy'
 export type HealthFailure = 'timeout' | 'connect_failed' | 'unexpected_status' | 'protocol_error'
+export type HealthOverride = 'auto' | 'up' | 'down'
 
 export interface MonitoringPoolEndpoint {
+  activeConnections: string
+  administrativeState: AdministrativeState
   address: string
-  activeLeases: string
+  checksEnabled: boolean
+  checksRunning: boolean
+  configuredMaxConnections: number | null
+  healthOverride: HealthOverride
+  maxConnections: number | null
+  name: string
   state: EndpointHealthState
   lastCheckedAtUnixMs: number | null
   lastTransitionAtUnixMs: number | null
@@ -241,6 +253,10 @@ export interface MonitoringPool {
   availableEndpoints: number
   totalEndpoints: number
   unavailableSelections: string
+  queued: number
+  queuedTotal: string
+  queueTimeouts: string
+  queueCancellations: string
   endpoints: MonitoringPoolEndpoint[]
 }
 
@@ -360,7 +376,7 @@ export interface TopologyRuntimeOverlay {
 }
 
 export interface TopologyRuntimeMetrics extends Record<string, unknown> {
-  activeConnections?: number
+  activeConnections?: number | string
   acceptedConnections?: string
   rejectedConnections?: string
   bytesReceived?: string
@@ -368,7 +384,11 @@ export interface TopologyRuntimeMetrics extends Record<string, unknown> {
   availableEndpoints?: number
   totalEndpoints?: number
   unavailableSelections?: string
-  activeLeases?: string
+  queued?: number
+  queuedTotal?: string
+  queueTimeouts?: string
+  queueCancellations?: string
+  maxConnections?: number | null
   lastCheckedAtUnixMs?: number | null
   lastTransitionAtUnixMs?: number | null
   successfulChecks?: string
@@ -711,7 +731,11 @@ function recorderPhase(value: unknown): boolean {
 }
 
 function monitoringProcess(value: unknown): boolean {
-  return isRecord(value) && (value.cpuPercent === null || finiteNumber(value.cpuPercent)) &&
+  return isRecord(value) && safeInteger(value.activeConnections) &&
+    ['ready', 'drain', 'maintenance'].includes(String(value.administrativeState)) &&
+    (value.cpuPercent === null || finiteNumber(value.cpuPercent)) &&
+    (value.maxConnections === null || safeInteger(value.maxConnections)) &&
+    decimalString(value.rejectedConnections) && decimalString(value.retryAttempts) &&
     safeInteger(value.residentMemoryBytes) && safeInteger(value.virtualMemoryBytes) &&
     safeInteger(value.threadCount) && safeInteger(value.openFileDescriptors)
 }
@@ -738,11 +762,19 @@ function monitoringListener(value: unknown): boolean {
 
 function monitoringPool(value: unknown): boolean {
   return isRecord(value) && typeof value.name === 'string' &&
-    ['round_robin', 'least_connections'].includes(String(value.algorithm)) &&
+    ['first', 'round_robin', 'least_connections'].includes(String(value.algorithm)) &&
     safeInteger(value.availableEndpoints) && safeInteger(value.totalEndpoints) &&
-    decimalString(value.unavailableSelections) && Array.isArray(value.endpoints) &&
+    decimalString(value.unavailableSelections) && safeInteger(value.queued) &&
+    decimalString(value.queuedTotal) && decimalString(value.queueTimeouts) &&
+    decimalString(value.queueCancellations) && Array.isArray(value.endpoints) &&
     value.endpoints.every((endpoint) => isRecord(endpoint) && typeof endpoint.address === 'string' &&
-      decimalString(endpoint.activeLeases) && ['unchecked', 'unknown', 'healthy', 'unhealthy'].includes(String(endpoint.state)) &&
+      typeof endpoint.name === 'string' && decimalString(endpoint.activeConnections) &&
+      ['ready', 'drain', 'maintenance'].includes(String(endpoint.administrativeState)) &&
+      typeof endpoint.checksEnabled === 'boolean' && typeof endpoint.checksRunning === 'boolean' &&
+      (endpoint.configuredMaxConnections === null || safeInteger(endpoint.configuredMaxConnections)) &&
+      ['auto', 'up', 'down'].includes(String(endpoint.healthOverride)) &&
+      (endpoint.maxConnections === null || safeInteger(endpoint.maxConnections)) &&
+      ['unchecked', 'unknown', 'healthy', 'unhealthy'].includes(String(endpoint.state)) &&
       nullableSafeInteger(endpoint.lastCheckedAtUnixMs) && nullableSafeInteger(endpoint.lastTransitionAtUnixMs) &&
       decimalString(endpoint.successfulChecks) && decimalString(endpoint.failedChecks) &&
       decimalString(endpoint.consecutiveSuccesses) && decimalString(endpoint.consecutiveFailures) &&
@@ -809,12 +841,15 @@ function topologyMetrics(value: unknown): boolean {
   if (!isRecord(value)) return false
   const decimalKeys = [
     'acceptedConnections', 'rejectedConnections', 'bytesReceived', 'bytesSent',
-    'unavailableSelections', 'activeLeases', 'successfulChecks', 'failedChecks',
-    'consecutiveSuccesses', 'consecutiveFailures',
+    'unavailableSelections', 'queuedTotal', 'queueTimeouts', 'queueCancellations',
+    'successfulChecks', 'failedChecks', 'consecutiveSuccesses', 'consecutiveFailures',
   ]
-  const numberKeys = ['activeConnections', 'availableEndpoints', 'totalEndpoints']
-  return decimalKeys.every((key) => value[key] === undefined || decimalString(value[key])) &&
+  const numberKeys = ['availableEndpoints', 'totalEndpoints', 'queued']
+  const activeConnections = value.activeConnections === undefined ||
+    decimalString(value.activeConnections) || safeInteger(value.activeConnections)
+  return activeConnections && decimalKeys.every((key) => value[key] === undefined || decimalString(value[key])) &&
     numberKeys.every((key) => value[key] === undefined || safeInteger(value[key])) &&
+    (value.maxConnections === undefined || value.maxConnections === null || safeInteger(value.maxConnections)) &&
     ['lastCheckedAtUnixMs', 'lastTransitionAtUnixMs']
       .every((key) => value[key] === undefined || nullableSafeInteger(value[key])) &&
     (value.lastFailure === undefined || value.lastFailure === null ||

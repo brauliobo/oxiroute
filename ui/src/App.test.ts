@@ -108,7 +108,7 @@ describe('monitoring dashboard', () => {
     expect(wrapper.get('.listener-section').text()).toContain('28 / Unbounded')
     expect(wrapper.get('.pool-section').text()).toContain('web-backends')
     expect(wrapper.get('.pool-section').text()).toContain('Least connections')
-    expect(wrapper.get('.pool-section').text()).toContain('Active leases: 3')
+    expect(wrapper.get('.pool-section').text()).toContain('Active connections: 3')
     expect(wrapper.get('.pool-section').text()).toContain('Degraded')
     expect(wrapper.get('.pool-section').text()).toContain('1 / 2 endpoints available')
     expect(wrapper.get('.pool-summary').text()).toContain(
