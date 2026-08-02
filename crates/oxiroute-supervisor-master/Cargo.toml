@@ -1,0 +1,33 @@
+[package]
+name = "oxiroute-supervisor-master"
+description = "Deterministic socket-owning master orchestration for supervised workers"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+oxiroute-supervision = { path = "../oxiroute-supervision" }
+oxiroute-supervision-unix = { path = "../oxiroute-supervision-unix" }
+oxiroute-supervisor-process = { path = "../oxiroute-supervisor-process" }
+rustix.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "master-worker-fixture"
+path = "tests/fixtures/worker.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "master-launcher-fixture"
+path = "tests/fixtures/launcher.rs"
+test = false
+bench = false

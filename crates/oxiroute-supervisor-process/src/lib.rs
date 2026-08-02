@@ -478,6 +478,30 @@ impl WorkerProcess {
         Ok(event)
     }
 
+    /// Requests graceful process-group termination without waiting or reaping.
+    ///
+    /// The launcher identity remains pinned until [`Self::poll_event`] or [`Self::wait_event`]
+    /// observes and reaps it. Repeated requests are harmless after exit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an operating-system signal error.
+    pub fn request_terminate(&mut self) -> io::Result<()> {
+        self.leader.signal_group(Signal::TERM)
+    }
+
+    /// Requests forced process-group termination without waiting or reaping.
+    ///
+    /// The launcher identity remains pinned until [`Self::poll_event`] or [`Self::wait_event`]
+    /// observes and reaps it. Repeated requests are harmless after exit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an operating-system signal error.
+    pub fn request_kill(&mut self) -> io::Result<()> {
+        self.leader.signal_group(Signal::KILL)
+    }
+
     /// Sends `SIGTERM` to the process group, then `SIGKILL` if it outlives `grace`.
     ///
     /// The unreaped launcher identity pins the numeric PGID throughout both signals. The launcher
@@ -552,6 +576,49 @@ impl AuthenticatedWorkerChannel<'_> {
                 descriptors,
             )
             .map_err(AuthenticatedChannelError::from)
+    }
+
+    /// Receives and authenticates one frame only when the channel is immediately readable.
+    ///
+    /// This method also checks direct-child status before polling. It is intended for explicit
+    /// event loops that enforce their own deadlines rather than blocking in [`Self::receive`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after child exit, for polling or transport failures, or for any PID, nonce,
+    /// instance, generation, or protocol mismatch. A rejected frame's descriptors are dropped.
+    pub fn try_receive(&mut self) -> Result<Option<AuthenticatedFrame>, AuthenticatedChannelError> {
+        self.ensure_child_alive()?;
+        let timeout = Timespec::try_from(Duration::ZERO).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "zero poll duration overflow")
+        })?;
+        let ready = {
+            let endpoint = self
+                .endpoint
+                .as_ref()
+                .ok_or(AuthenticatedChannelError::ChannelClosed)?;
+            let mut descriptors = [PollFd::new(endpoint, PollFlags::IN)];
+            poll(&mut descriptors, Some(&timeout)).map_err(io::Error::from)?
+        };
+        if ready == 0 {
+            return Ok(None);
+        }
+        let result = self
+            .endpoint
+            .as_mut()
+            .ok_or(AuthenticatedChannelError::ChannelClosed)?
+            .receive();
+        let frame = match result {
+            Ok(frame) => frame,
+            Err(error) => {
+                self.endpoint.take();
+                if let Some(status) = self.leader.refresh()? {
+                    return Err(AuthenticatedChannelError::WorkerGroupExited(status));
+                }
+                return Err(AuthenticatedChannelError::Transport(error));
+            }
+        };
+        authenticate_frame(frame, self.expected_pid, self.identity, self.nonce).map(Some)
     }
 
     /// Receives one frame while monitoring direct-child exit and authenticates every message.
