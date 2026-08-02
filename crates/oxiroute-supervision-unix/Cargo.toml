@@ -1,0 +1,27 @@
+[package]
+name = "oxiroute-supervision-unix"
+description = "Safe Unix transport and descriptor validation for oxiroute supervision"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+oxiroute-supervision = { path = "../oxiroute-supervision" }
+rustix.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "credential-sender-fixture"
+path = "tests/fixtures/credential_sender.rs"
+test = false
+bench = false
