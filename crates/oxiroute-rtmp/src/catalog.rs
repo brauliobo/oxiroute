@@ -12,7 +12,7 @@ use crate::{
     live::VideoCodecIdentifier,
     recording_runtime::{
         RecorderCommandContext, RecorderController, RecorderReaper, RecorderReaperHandle,
-        RecorderReaperOwner, RecorderRuntimeStatus, recorder_error_code,
+        RecorderReaperOwner, RecorderRuntimeStatus, RecorderStartFailure, recorder_error_code,
     },
     relay::{RtmpRelayController, RtmpRelayStatus},
 };
@@ -503,6 +503,7 @@ struct MutableStream {
     key: StreamKey,
     created_at_unix_ms: u64,
     publisher: Option<PublisherSnapshot>,
+    publisher_activity_at_unix_ms: u64,
     subscribers: HashSet<SessionId>,
     media: MediaSnapshot,
     media_sample_sequence: u64,
@@ -519,6 +520,7 @@ impl MutableStream {
             key,
             created_at_unix_ms: at_unix_ms,
             publisher: None,
+            publisher_activity_at_unix_ms: 0,
             subscribers: HashSet::new(),
             media: MediaSnapshot::default(),
             media_sample_sequence: 0,
@@ -564,6 +566,12 @@ struct RegistryInner {
 pub struct RtmpRegistry {
     capabilities: RtmpCapabilities,
     inner: Mutex<RegistryInner>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PublisherOwner {
+    stream_id: StreamId,
+    session_id: SessionId,
 }
 
 impl RtmpRegistry {
@@ -663,6 +671,40 @@ impl RtmpRegistry {
         })
     }
 
+    pub(crate) fn stale_publisher_owner(
+        &self,
+        key: &StreamKey,
+        now_unix_ms: u64,
+        threshold_unix_ms: u64,
+    ) -> Option<PublisherOwner> {
+        let inner = self.lock();
+        let stream_id = inner.streams_by_key.get(key).copied()?;
+        let stream = inner.streams.get(&stream_id)?;
+        let publisher = stream.publisher?;
+        if now_unix_ms.saturating_sub(stream.publisher_activity_at_unix_ms) < threshold_unix_ms {
+            return None;
+        }
+        Some(PublisherOwner {
+            stream_id,
+            session_id: publisher.session_id,
+        })
+    }
+
+    pub(crate) fn detach_expected_publisher(
+        &self,
+        owner: PublisherOwner,
+        at_unix_ms: u64,
+    ) -> Result<PublisherShutdown, CatalogError> {
+        let mut inner = self.lock();
+        detach_publisher_inner(
+            &mut inner,
+            owner.stream_id,
+            owner.session_id,
+            at_unix_ms,
+            self.capabilities,
+        )
+    }
+
     /// Registers a subscriber whose catalog entry is removed when the returned owner is dropped.
     ///
     /// # Errors
@@ -746,6 +788,7 @@ impl RtmpRegistry {
             session_id,
             attached_at_unix_ms: at_unix_ms,
         });
+        stream.publisher_activity_at_unix_ms = at_unix_ms;
         stream.media = MediaSnapshot::default();
         stream.media_sample_sequence = 0;
         stream.relays = relays
@@ -821,6 +864,7 @@ impl RtmpRegistry {
                 session_id: publisher_session_id,
             });
         }
+        stream.publisher_activity_at_unix_ms = stream.publisher_activity_at_unix_ms.max(at_unix_ms);
         if sequence <= stream.media_sample_sequence {
             return Ok(false);
         }
@@ -884,52 +928,14 @@ impl RtmpRegistry {
         session_id: SessionId,
         at_unix_ms: u64,
     ) -> Result<PublisherShutdown, CatalogError> {
-        let (recorder_controls, relay_controls) = {
-            let mut inner = self.lock();
-            let (remove, recorder_controls, relay_controls) = {
-                let stream = inner
-                    .streams
-                    .get_mut(&stream_id)
-                    .ok_or(CatalogError::StreamNotFound(stream_id))?;
-                if stream.publisher.map(|publisher| publisher.session_id) != Some(session_id) {
-                    return Err(CatalogError::PublisherMismatch {
-                        stream_id,
-                        session_id,
-                    });
-                }
-                stream.publisher = None;
-                stream.media = MediaSnapshot::default();
-                stream.media_sample_sequence = 0;
-                let recorder_controls = stream
-                    .recorders
-                    .values()
-                    .filter_map(|recorder| recorder.control.clone())
-                    .collect::<Vec<_>>();
-                let relay_controls = stream
-                    .relays
-                    .drain(..)
-                    .map(|relay| relay.control)
-                    .collect::<Vec<_>>();
-                stream.recorders.clear();
-                stream.recorder_order.clear();
-                stream.revision = stream.revision.saturating_add(1);
-                (
-                    stream.subscribers.is_empty(),
-                    recorder_controls,
-                    relay_controls,
-                )
-            };
-            if remove {
-                remove_stream(&mut inner, stream_id);
-            }
-            mark_mutation(&mut inner, at_unix_ms);
-            publish_snapshot_if_dirty(&mut inner, self.capabilities);
-            (recorder_controls, relay_controls)
-        };
-        Ok(PublisherShutdown {
-            recorder_controls,
-            relay_controls,
-        })
+        let mut inner = self.lock();
+        detach_publisher_inner(
+            &mut inner,
+            stream_id,
+            session_id,
+            at_unix_ms,
+            self.capabilities,
+        )
     }
 
     /// Detaches a subscriber.
@@ -1137,7 +1143,7 @@ impl RtmpRegistry {
             stream.revision = stream.revision.saturating_add(1);
             mark_mutation(&mut inner, at_unix_ms);
         }
-        let _ = self.execute_start(stream_id, recorder_id, at_unix_ms);
+        self.execute_continuous_start(stream_id, recorder_id, at_unix_ms);
     }
 
     pub(crate) fn update_recorder_runtime(
@@ -1302,6 +1308,25 @@ impl RtmpRegistry {
         self.recorder_snapshot(stream_id, recorder_id)
     }
 
+    fn execute_continuous_start(
+        &self,
+        stream_id: StreamId,
+        recorder_id: RecorderId,
+        at_unix_ms: u64,
+    ) {
+        let Ok((control, context)) = self.command_context(stream_id, recorder_id, at_unix_ms)
+        else {
+            return;
+        };
+        match control.start_continuous(context) {
+            Ok(()) => self.mark_recorder_started(context),
+            Err(RecorderStartFailure::RetryableCapacity) => {}
+            Err(RecorderStartFailure::Failed(code)) => {
+                self.fail_recorder(context, code);
+            }
+        }
+    }
+
     fn mark_recorder_started(&self, context: RecorderCommandContext) {
         let mut inner = self.lock();
         let Some(stream) = inner.streams.get_mut(&context.stream_id) else {
@@ -1442,6 +1467,58 @@ impl RtmpRegistry {
             }
         }
     }
+}
+
+fn detach_publisher_inner(
+    inner: &mut RegistryInner,
+    stream_id: StreamId,
+    session_id: SessionId,
+    at_unix_ms: u64,
+    capabilities: RtmpCapabilities,
+) -> Result<PublisherShutdown, CatalogError> {
+    let (remove, recorder_controls, relay_controls) = {
+        let stream = inner
+            .streams
+            .get_mut(&stream_id)
+            .ok_or(CatalogError::StreamNotFound(stream_id))?;
+        if stream.publisher.map(|publisher| publisher.session_id) != Some(session_id) {
+            return Err(CatalogError::PublisherMismatch {
+                stream_id,
+                session_id,
+            });
+        }
+        stream.publisher = None;
+        stream.publisher_activity_at_unix_ms = 0;
+        stream.media = MediaSnapshot::default();
+        stream.media_sample_sequence = 0;
+        let recorder_controls = stream
+            .recorders
+            .values()
+            .filter_map(|recorder| recorder.control.clone())
+            .collect::<Vec<_>>();
+        let relay_controls = stream
+            .relays
+            .drain(..)
+            .map(|relay| relay.control)
+            .collect::<Vec<_>>();
+        stream.recorders.clear();
+        stream.recorder_order.clear();
+        stream.revision = stream.revision.saturating_add(1);
+        (
+            stream.subscribers.is_empty(),
+            recorder_controls,
+            relay_controls,
+        )
+    };
+    if remove {
+        remove_stream(inner, stream_id);
+    }
+    mark_mutation(inner, at_unix_ms);
+    publish_snapshot_if_dirty(inner, capabilities);
+    Ok(PublisherShutdown {
+        recorder_controls,
+        relay_controls,
+    })
 }
 
 fn active_operation(phase: RecorderPhase) -> Option<OperationId> {
@@ -1767,6 +1844,60 @@ mod tests {
         RecorderFailure, RecorderWorkerConfig, RecordingPathPolicy, RecordingStore,
         RecordingStoreLimits, RtmpRecorderPolicy, RtmpRecorderStart,
     };
+
+    #[test]
+    fn publisher_activity_is_monotonic_across_metadata_and_wall_clock_rollback() {
+        let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
+            live_ingest: true,
+            manual_recording: false,
+        }));
+        let key = StreamKey::new("edge", "live", "camera");
+        let subscriber = SessionId::new();
+        let stream_id = registry
+            .attach_subscriber(key.clone(), subscriber, 1)
+            .expect("subscriber");
+        let publisher = SessionId::new();
+        registry
+            .attach_publisher(key.clone(), publisher, Vec::new(), 10_000)
+            .expect("publisher");
+        registry
+            .update_media_sample(stream_id, publisher, 1, MediaSnapshot::default(), 20_000)
+            .expect("metadata activity sample");
+        registry
+            .update_media_sample(stream_id, publisher, 2, MediaSnapshot::default(), 15_000)
+            .expect("wall-clock rollback sample");
+
+        assert!(
+            registry
+                .stale_publisher_owner(
+                    &key,
+                    20_000 + crate::RTMP_STALE_PUBLISHER_THRESHOLD_MS - 1,
+                    crate::RTMP_STALE_PUBLISHER_THRESHOLD_MS,
+                )
+                .is_none()
+        );
+        let owner = registry
+            .stale_publisher_owner(
+                &key,
+                20_000 + crate::RTMP_STALE_PUBLISHER_THRESHOLD_MS,
+                crate::RTMP_STALE_PUBLISHER_THRESHOLD_MS,
+            )
+            .expect("stale publisher");
+        let shutdown = registry
+            .detach_expected_publisher(owner, 20_000 + crate::RTMP_STALE_PUBLISHER_THRESHOLD_MS)
+            .expect("stale publisher detach");
+        shutdown.shutdown(20_000 + crate::RTMP_STALE_PUBLISHER_THRESHOLD_MS);
+
+        let snapshot = registry.snapshot();
+        let stream = snapshot
+            .streams
+            .iter()
+            .find(|stream| stream.id == stream_id)
+            .expect("subscriber keeps stream");
+        assert!(stream.publisher.is_none());
+        assert_eq!(stream.media, MediaSnapshot::default());
+        assert!(stream.recorders.is_empty());
+    }
 
     #[test]
     fn terminal_admission_rejects_new_recorder_start() {

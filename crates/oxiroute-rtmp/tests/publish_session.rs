@@ -2,15 +2,16 @@ use std::{collections::VecDeque, sync::Arc};
 
 use bytes::Bytes;
 use oxiroute_rtmp::{
-    LiveHub, LiveHubLimits, MAX_RTMP_QUERY_BYTES, MAX_RTMP_STREAM_NAME_BYTES, RtmpApplication,
-    RtmpCapabilities, RtmpRegistry, RtmpSession, RtmpSessionPolicy, StreamKey,
+    CatalogError, LiveHub, LiveHubError, LiveHubLimits, MAX_RTMP_QUERY_BYTES,
+    MAX_RTMP_STREAM_NAME_BYTES, MediaSnapshot, RTMP_STALE_PUBLISHER_THRESHOLD_MS, RtmpApplication,
+    RtmpCapabilities, RtmpRegistry, RtmpSession, RtmpSessionError, RtmpSessionPolicy, StreamKey,
     VideoCodecIdentifier,
 };
 use rml_rtmp::{
     handshake::{Handshake, HandshakeProcessResult, PeerType},
     sessions::{
         ClientSession, ClientSessionConfig, ClientSessionEvent, ClientSessionResult,
-        PublishRequestType,
+        PublishRequestType, StreamMetadata,
     },
     time::RtmpTimestamp,
 };
@@ -83,9 +84,25 @@ fn rejects_a_second_publisher_for_the_same_stream() {
     let mut second_server = session(Arc::clone(&registry), hub);
     let mut first_client = connect(&mut first_server, "broadcast");
     let mut second_client = connect(&mut second_server, "broadcast");
+    let attached_at = 2_100;
+    let media_at = attached_at + 100;
 
-    let first_events = request_publish(&mut first_client, &mut first_server, 2_100);
-    let second_events = request_publish(&mut second_client, &mut second_server, 2_200);
+    let first_events = request_publish(&mut first_client, &mut first_server, attached_at);
+    let first_media = first_client
+        .publish_audio_data(
+            Bytes::from_static(&[0xaf, 0x01, 0x44]),
+            RtmpTimestamp::new(1),
+            false,
+        )
+        .expect("first audio packet");
+    exchange(
+        &mut first_client,
+        &mut first_server,
+        vec![first_media],
+        media_at,
+    );
+    let fresh_duplicate_at = media_at + RTMP_STALE_PUBLISHER_THRESHOLD_MS - 1;
+    let second_events = request_publish(&mut second_client, &mut second_server, fresh_duplicate_at);
 
     assert!(
         first_events
@@ -107,10 +124,134 @@ fn rejects_a_second_publisher_for_the_same_stream() {
         first_server.session_id()
     );
 
-    first_server.close(2_300).expect("detach first publisher");
+    first_server
+        .close(fresh_duplicate_at + 1)
+        .expect("detach first publisher");
     second_server
-        .close(2_300)
+        .close(fresh_duplicate_at + 1)
         .expect("close rejected publisher session");
+    assert!(registry.snapshot().streams.is_empty());
+}
+
+#[test]
+fn stale_publisher_takeover_expires_the_old_role_without_clearing_the_new_owner() {
+    let registry = registry();
+    let hub = LiveHub::new(LiveHubLimits::default());
+    let mut first_server = session(Arc::clone(&registry), hub.clone());
+    let mut second_server = session(Arc::clone(&registry), hub.clone());
+    let mut first_client = connect(&mut first_server, "broadcast");
+    let mut second_client = connect(&mut second_server, "broadcast");
+    let attached_at = 2_100;
+    let metadata_at = attached_at + 100;
+
+    request_publish(&mut first_client, &mut first_server, attached_at);
+    let first_session_id = first_server.session_id();
+    let mut metadata = StreamMetadata::new();
+    metadata.encoder = Some("oxiroute-takeover-test".into());
+    let first_metadata = first_client
+        .publish_metadata(&metadata)
+        .expect("first metadata packet");
+    exchange(
+        &mut first_client,
+        &mut first_server,
+        vec![first_metadata],
+        metadata_at,
+    );
+
+    let takeover_at = metadata_at + RTMP_STALE_PUBLISHER_THRESHOLD_MS;
+    let second_events = request_publish(&mut second_client, &mut second_server, takeover_at);
+    assert!(
+        second_events
+            .iter()
+            .any(|event| matches!(event, ClientSessionEvent::PublishRequestAccepted))
+    );
+
+    let snapshot = registry.snapshot();
+    assert_eq!(snapshot.streams.len(), 1);
+    assert_eq!(
+        snapshot.streams[0]
+            .publisher
+            .expect("replacement publisher")
+            .session_id,
+        second_server.session_id()
+    );
+    assert_eq!(snapshot.streams[0].media, MediaSnapshot::default());
+    assert_eq!(hub.stats().publishers, 1);
+
+    let stale_media = first_client
+        .publish_audio_data(
+            Bytes::from_static(&[0xaf, 0x01, 0x55]),
+            RtmpTimestamp::new(2),
+            false,
+        )
+        .expect("stale audio packet");
+    let stale_packet = outbound_packets(vec![stale_media])
+        .pop_front()
+        .expect("stale audio wire packet");
+    assert!(matches!(
+        first_server.receive(&stale_packet, takeover_at + 1),
+        Err(RtmpSessionError::LiveHub(
+            LiveHubError::PublisherExpired { .. }
+        ))
+    ));
+    assert_eq!(
+        registry.snapshot().streams[0]
+            .publisher
+            .expect("replacement publisher remains")
+            .session_id,
+        second_server.session_id()
+    );
+
+    drop(first_server);
+    assert_eq!(
+        registry.snapshot().streams[0]
+            .publisher
+            .expect("replacement publisher survives stale cleanup")
+            .session_id,
+        second_server.session_id()
+    );
+    assert_ne!(first_session_id, second_server.session_id());
+    second_server
+        .close(takeover_at + 2)
+        .expect("replacement close");
+    assert!(registry.snapshot().streams.is_empty());
+}
+
+#[test]
+fn stale_publisher_close_cannot_clear_the_replacement_owner() {
+    let registry = registry();
+    let hub = LiveHub::new(LiveHubLimits::default());
+    let mut first_server = session(Arc::clone(&registry), hub.clone());
+    let mut second_server = session(Arc::clone(&registry), hub);
+    let mut first_client = connect(&mut first_server, "broadcast");
+    let mut second_client = connect(&mut second_server, "broadcast");
+    let attached_at = 3_100;
+    request_publish(&mut first_client, &mut first_server, attached_at);
+    let second_events = request_publish(
+        &mut second_client,
+        &mut second_server,
+        attached_at + RTMP_STALE_PUBLISHER_THRESHOLD_MS,
+    );
+    assert!(
+        second_events
+            .iter()
+            .any(|event| matches!(event, ClientSessionEvent::PublishRequestAccepted))
+    );
+
+    assert!(matches!(
+        first_server.close(attached_at + RTMP_STALE_PUBLISHER_THRESHOLD_MS + 1),
+        Err(CatalogError::PublisherMismatch { .. } | CatalogError::StreamNotFound(_))
+    ));
+    assert_eq!(
+        registry.snapshot().streams[0]
+            .publisher
+            .expect("replacement publisher remains")
+            .session_id,
+        second_server.session_id()
+    );
+    second_server
+        .close(attached_at + RTMP_STALE_PUBLISHER_THRESHOLD_MS + 2)
+        .expect("replacement close");
     assert!(registry.snapshot().streams.is_empty());
 }
 

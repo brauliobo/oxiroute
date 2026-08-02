@@ -8,10 +8,10 @@ use std::{
 
 use bytes::Bytes;
 use oxiroute_rtmp::{
-    CatalogError, LiveHub, LiveHubLimits, RecorderErrorCode, RecorderPhase, RecorderWorkerConfig,
-    RecordingPathPolicy, RecordingStore, RecordingStoreLimits, RtmpApplication, RtmpCapabilities,
-    RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry, RtmpServiceRuntime, RtmpSession,
-    RtmpSessionPolicy, SessionId, StreamKey,
+    CatalogError, LiveHub, LiveHubLimits, MediaSnapshot, RTMP_STALE_PUBLISHER_THRESHOLD_MS,
+    RecorderErrorCode, RecorderPhase, RecorderWorkerConfig, RecordingPathPolicy, RecordingStore,
+    RecordingStoreLimits, RtmpApplication, RtmpCapabilities, RtmpRecorderPolicy, RtmpRecorderStart,
+    RtmpRegistry, RtmpServiceRuntime, RtmpSession, RtmpSessionPolicy, SessionId, StreamKey,
 };
 use rml_rtmp::{
     handshake::{Handshake, HandshakeProcessResult, PeerType},
@@ -47,6 +47,179 @@ fn continuous_recorder_starts_records_and_disconnects_without_leaking_catalog_st
     assert!(fixture.registry.snapshot().streams.is_empty());
     wait_for_file(fixture.root.path(), "camera.flv");
     assert!(!fixture.root.path().join("camera?token=secret.flv").exists());
+}
+
+#[test]
+fn stale_takeover_resets_catalog_media_and_continuous_recorder_state() {
+    let fixture = Fixture::new(RtmpRecorderStart::Continuous, limits(), worker_config());
+    let (mut first_server, mut first_client) = fixture.publisher("camera");
+    let attached_at = 1_721_657_969_000;
+    let first_media_at = attached_at + 100;
+    publish_audio(
+        &mut first_client,
+        &mut first_server,
+        1,
+        0x11,
+        first_media_at,
+    );
+    wait_until(Duration::from_secs(2), || {
+        fixture.registry.snapshot().streams[0].recorders[0].bytes_written > 0
+    });
+    let first = fixture.registry.snapshot().streams[0].clone();
+    let first_recorder_id = first.recorders[0].id;
+    let takeover_at = first_media_at + RTMP_STALE_PUBLISHER_THRESHOLD_MS;
+
+    let mut second_server = fixture.runtime.session();
+    let mut second_client = connect(&mut second_server, "broadcast");
+    let request = second_client
+        .request_publishing("camera".into(), PublishRequestType::Live)
+        .expect("replacement publish request");
+    let events = exchange(
+        &mut second_client,
+        &mut second_server,
+        vec![request],
+        takeover_at,
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, ClientSessionEvent::PublishRequestAccepted))
+    );
+
+    wait_until(Duration::from_secs(2), || {
+        let snapshot = fixture.registry.snapshot();
+        snapshot.streams.first().is_some_and(|stream| {
+            stream
+                .publisher
+                .is_some_and(|publisher| publisher.session_id == second_server.session_id())
+                && stream.recorders.len() == 1
+                && stream.recorders[0].id != first_recorder_id
+                && matches!(stream.recorders[0].phase, RecorderPhase::Recording { .. })
+                && fixture.store.stats().active_recorders == 1
+        })
+    });
+    let replacement = fixture.registry.snapshot().streams[0].clone();
+    assert_eq!(replacement.media, MediaSnapshot::default());
+    assert_ne!(replacement.recorders[0].id, first_recorder_id);
+
+    drop(first_server);
+    assert_eq!(
+        fixture.registry.snapshot().streams[0]
+            .publisher
+            .expect("replacement publisher survives old drop")
+            .session_id,
+        second_server.session_id()
+    );
+
+    publish_audio(
+        &mut second_client,
+        &mut second_server,
+        2,
+        0x22,
+        takeover_at + 100,
+    );
+    wait_until(Duration::from_secs(2), || {
+        let snapshot = fixture.registry.snapshot();
+        snapshot.streams.first().is_some_and(|stream| {
+            stream.media.audio.payload_bytes_received == 3 && stream.recorders[0].bytes_written > 0
+        })
+    });
+    second_server
+        .close(takeover_at + 200)
+        .expect("replacement publisher close");
+    wait_until(Duration::from_secs(2), || {
+        fixture.store.stats().active_recorders == 0
+    });
+}
+
+#[test]
+fn stale_takeover_retries_continuous_recording_after_a_single_recorder_drains() {
+    let fixture = Fixture::new(
+        RtmpRecorderStart::Continuous,
+        RecordingStoreLimits {
+            max_active_recorders: 1,
+            ..limits()
+        },
+        worker_config(),
+    );
+    let (mut first_server, mut first_client) = fixture.publisher("camera");
+    let first_media_at = 1_721_657_969_100;
+    publish_audio(
+        &mut first_client,
+        &mut first_server,
+        1,
+        0x11,
+        first_media_at,
+    );
+    wait_until(Duration::from_secs(2), || {
+        fixture.registry.snapshot().streams[0].recorders[0].bytes_written > 0
+    });
+
+    let mut second_server = fixture.runtime.session();
+    let mut second_client = connect(&mut second_server, "broadcast");
+    let takeover_at = first_media_at + RTMP_STALE_PUBLISHER_THRESHOLD_MS;
+    let request = second_client
+        .request_publishing("camera".into(), PublishRequestType::Live)
+        .expect("replacement publish request");
+    let events = exchange(
+        &mut second_client,
+        &mut second_server,
+        vec![request],
+        takeover_at,
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, ClientSessionEvent::PublishRequestAccepted))
+    );
+    let replacement = fixture.registry.snapshot().streams[0].clone();
+    assert!(matches!(
+        replacement.recorders[0].phase,
+        RecorderPhase::Starting { .. } | RecorderPhase::Recording { .. }
+    ));
+    assert!(!matches!(
+        replacement.recorders[0].phase,
+        RecorderPhase::Failed { .. }
+    ));
+
+    publish_audio(
+        &mut second_client,
+        &mut second_server,
+        2,
+        0x22,
+        takeover_at + 100,
+    );
+    wait_until(Duration::from_secs(2), || {
+        let snapshot = fixture.registry.snapshot();
+        snapshot.streams.first().is_some_and(|stream| {
+            matches!(stream.recorders[0].phase, RecorderPhase::Recording { .. })
+                || fixture.store.stats().active_recorders == 0
+        })
+    });
+    if fixture.store.stats().active_recorders == 0 {
+        thread::sleep(Duration::from_millis(300));
+    }
+    publish_audio(
+        &mut second_client,
+        &mut second_server,
+        3,
+        0x33,
+        takeover_at + 200,
+    );
+    wait_until(Duration::from_secs(2), || {
+        let snapshot = fixture.registry.snapshot();
+        snapshot.streams.first().is_some_and(|stream| {
+            matches!(stream.recorders[0].phase, RecorderPhase::Recording { .. })
+                && stream.recorders[0].bytes_written > 0
+                && stream.media.audio.payload_bytes_received == 6
+        })
+    });
+    second_server
+        .close(takeover_at + 300)
+        .expect("replacement close");
+    wait_until(Duration::from_secs(2), || {
+        fixture.store.stats().active_recorders == 0
+    });
 }
 
 #[test]

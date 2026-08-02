@@ -5,8 +5,8 @@ use std::{
 };
 
 use crate::{
-    CatalogError, LiveHub, LiveHubError, RecorderDefinition, RtmpPushTarget, RtmpRecorderPolicy,
-    RtmpRecorderStart, RtmpRegistry, SessionId, StreamKey,
+    CatalogError, LiveHub, LiveHubError, PublisherLease, RecorderDefinition, RtmpPushTarget,
+    RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry, SessionId, StreamKey,
     recording_runtime::{
         RecorderController, RecorderReaperHandle, RecorderReaperOwner, RecorderShutdownControl,
         RtmpRecorderShutdown,
@@ -19,6 +19,8 @@ use super::{
     playback::PlaybackSession,
     publish::{PublishSession, PublisherOutputs},
 };
+
+pub const RTMP_STALE_PUBLISHER_THRESHOLD_MS: u64 = 30_000;
 
 #[derive(Clone)]
 pub struct RtmpApplication {
@@ -315,6 +317,39 @@ impl RtmpServiceRuntime {
         }
     }
 
+    fn acquire_publisher_lease(
+        &self,
+        hub: &LiveHub,
+        key: &StreamKey,
+        at_unix_ms: u64,
+    ) -> Result<PublisherLease, PublisherRoleError> {
+        match hub.attach_publisher(key.clone()) {
+            Ok(lease) => Ok(lease),
+            Err(error @ LiveHubError::PublisherAlreadyAttached { .. }) => {
+                let Some(owner) = self.registry.stale_publisher_owner(
+                    key,
+                    at_unix_ms,
+                    RTMP_STALE_PUBLISHER_THRESHOLD_MS,
+                ) else {
+                    return Err(PublisherRoleError::Hub(error));
+                };
+                let lease = hub
+                    .replace_publisher(key.clone())
+                    .map_err(PublisherRoleError::Hub)?;
+                let shutdown = match self.registry.detach_expected_publisher(owner, at_unix_ms) {
+                    Ok(shutdown) => shutdown,
+                    Err(error) => {
+                        drop(lease);
+                        return Err(PublisherRoleError::Catalog(error));
+                    }
+                };
+                shutdown.shutdown(at_unix_ms);
+                Ok(lease)
+            }
+            Err(error) => Err(PublisherRoleError::Hub(error)),
+        }
+    }
+
     pub(super) fn acquire_publisher_role(
         &self,
         key: StreamKey,
@@ -333,9 +368,7 @@ impl RtmpServiceRuntime {
             .and_then(RtmpApplication::hub)
             .unwrap_or_else(|| self.hub.clone());
         let _transaction = hub.lock_roles();
-        let lease = hub
-            .attach_publisher(key.clone())
-            .map_err(PublisherRoleError::Hub)?;
+        let lease = self.acquire_publisher_lease(&hub, &key, at_unix_ms)?;
         let policies = self
             .application(&key.application)
             .map_or(&[][..], RtmpApplication::recorder_policies);
@@ -543,7 +576,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{LiveHubLimits, RtmpCapabilities};
+    use crate::{LiveHubLimits, MediaEvent, RtmpCapabilities};
 
     #[test]
     fn publisher_reconnect_never_exposes_split_hub_and_catalog_ownership() {
@@ -584,6 +617,112 @@ mod tests {
         }
         writer.join().expect("publisher reconnect thread");
         assert_eq!(runtime.publisher_presence(&key), (false, false));
+    }
+
+    #[test]
+    fn concurrent_stale_takeover_never_exposes_split_hub_and_catalog_ownership() {
+        let runtime = RtmpServiceRuntime::new(
+            "live",
+            Arc::new(RtmpRegistry::new(RtmpCapabilities {
+                live_ingest: true,
+                manual_recording: false,
+            })),
+            LiveHub::new(LiveHubLimits::default()),
+            RtmpSessionPolicy::default(),
+        );
+        let key = StreamKey::new("live", "broadcast", "camera");
+        let incumbent = runtime
+            .acquire_publisher_role(key.clone(), SessionId::new(), 1)
+            .expect("incumbent publisher");
+        let barrier = Arc::new(Barrier::new(3));
+
+        let first_runtime = runtime.clone();
+        let first_key = key.clone();
+        let first_barrier = Arc::clone(&barrier);
+        let first = thread::spawn(move || {
+            first_barrier.wait();
+            first_runtime.acquire_publisher_role(
+                first_key,
+                SessionId::new(),
+                1 + RTMP_STALE_PUBLISHER_THRESHOLD_MS,
+            )
+        });
+        let second_runtime = runtime.clone();
+        let second_key = key.clone();
+        let second_barrier = Arc::clone(&barrier);
+        let second = thread::spawn(move || {
+            second_barrier.wait();
+            second_runtime.acquire_publisher_role(
+                second_key,
+                SessionId::new(),
+                1 + RTMP_STALE_PUBLISHER_THRESHOLD_MS,
+            )
+        });
+
+        barrier.wait();
+        for _ in 0..2_000 {
+            let presence = runtime.publisher_presence(&key);
+            assert_eq!(presence.0, presence.1);
+        }
+
+        let first_result = first.join().expect("first takeover thread");
+        let second_result = second.join().expect("second takeover thread");
+        let ((Ok(winner), Err(loser)) | (Err(loser), Ok(winner))) = (first_result, second_result)
+        else {
+            panic!("concurrent takeover did not produce one winner and one rejection")
+        };
+        assert!(matches!(
+            loser,
+            PublisherRoleError::Hub(LiveHubError::PublisherAlreadyAttached { .. })
+        ));
+        assert_eq!(runtime.publisher_presence(&key), (true, true));
+
+        drop(incumbent);
+        assert_eq!(runtime.publisher_presence(&key), (true, true));
+        drop(winner);
+        assert_eq!(runtime.publisher_presence(&key), (false, false));
+    }
+
+    #[test]
+    fn takeover_expires_the_old_hub_lease_before_expected_catalog_detach() {
+        let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
+            live_ingest: true,
+            manual_recording: false,
+        }));
+        let hub = LiveHub::new(LiveHubLimits::default());
+        let key = StreamKey::new("live", "broadcast", "camera");
+        let old_session_id = SessionId::new();
+        let old_lease = hub
+            .attach_publisher(key.clone())
+            .expect("old hub publisher");
+        registry
+            .attach_publisher(key.clone(), old_session_id, Vec::new(), 1)
+            .expect("old catalog publisher");
+        let owner = registry
+            .stale_publisher_owner(
+                &key,
+                1 + RTMP_STALE_PUBLISHER_THRESHOLD_MS,
+                RTMP_STALE_PUBLISHER_THRESHOLD_MS,
+            )
+            .expect("stale catalog owner");
+
+        let new_lease = hub
+            .replace_publisher(key.clone())
+            .expect("replacement hub publisher");
+        let event =
+            MediaEvent::audio(0, Arc::<[u8]>::from(&[0xaf, 0x01, 0x11][..])).expect("audio event");
+        assert!(matches!(
+            old_lease.publish(event.clone()),
+            Err(LiveHubError::PublisherExpired { .. })
+        ));
+
+        let shutdown = registry
+            .detach_expected_publisher(owner, 1 + RTMP_STALE_PUBLISHER_THRESHOLD_MS)
+            .expect("expected catalog detach");
+        shutdown.shutdown(1 + RTMP_STALE_PUBLISHER_THRESHOLD_MS);
+        new_lease.publish(event).expect("replacement media");
+        drop(old_lease);
+        assert!(hub.has_publisher(&key));
     }
 
     #[test]
