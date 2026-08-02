@@ -237,7 +237,7 @@ impl RuntimeMetadata {
     }
 }
 
-fn validate_stage_one_config(config: &Config) -> Result<(), &'static str> {
+pub(super) fn validate_stage_one_config(config: &Config) -> Result<(), &'static str> {
     if config.listeners.len() > MAX_DESCRIPTOR_COUNT {
         return Err("Stage 2 worker listener descriptor limit is 64");
     }
