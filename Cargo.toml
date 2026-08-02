@@ -7,6 +7,7 @@ members = [
     "crates/oxiroute-import",
     "crates/oxiroute-rtmp",
     "crates/oxiroute-server",
+    "crates/oxiroute-supervision",
     "vendor/pingora-proxy",
 ]
 exclude = ["vendor/pingora-core"]
