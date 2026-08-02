@@ -2,14 +2,16 @@ use std::{
     fs,
     io::{Seek, SeekFrom, Write},
     os::unix::fs::{PermissionsExt, symlink},
-    sync::{Arc, Barrier},
+    sync::{Arc, Barrier, mpsc},
     thread,
+    time::Duration,
 };
 
 use oxiroute_rtmp::{
     MAX_RECORDING_FILENAME_BYTES, RecordingQuotaScope, RecordingStore, RecordingStoreError,
     RecordingStoreLimits, RecordingStoreStats,
 };
+use rustix::fs::{FlockOperation, flock};
 use tempfile::tempdir;
 
 #[test]
@@ -172,31 +174,28 @@ fn omitted_storage_quotas_accept_existing_usage_and_new_growth() {
 }
 
 #[test]
-fn rejects_a_replaced_or_hard_linked_ownership_lock() {
+fn legacy_lock_entry_replacement_does_not_interrupt_the_pinned_store() {
     let temporary = tempdir().expect("temporary directory");
     let store = RecordingStore::open(temporary.path(), limits()).expect("recording store");
     let lock = temporary.path().join(".oxiroute-recording.lock");
     let alias = temporary.path().join("lock-alias");
-    fs::hard_link(&lock, &alias).expect("hard-linked ownership lock");
+    fs::write(&lock, b"legacy").expect("legacy lock entry");
+    fs::set_permissions(&lock, fs::Permissions::from_mode(0o600)).expect("legacy lock mode");
+    fs::hard_link(&lock, &alias).expect("hard-linked legacy lock");
 
-    assert!(matches!(
-        store.create("camera.flv"),
-        Err(RecordingStoreError::OwnershipOpen(_))
-    ));
+    let first = store.create("camera.flv").expect("first recording");
+    drop(first);
     fs::remove_file(&alias).expect("remove lock alias");
-    fs::remove_file(&lock).expect("remove ownership lock");
+    fs::remove_file(&lock).expect("remove legacy lock");
     fs::write(&lock, b"replacement").expect("replacement regular lock");
     fs::set_permissions(&lock, fs::Permissions::from_mode(0o600)).expect("replacement lock mode");
-    assert!(matches!(
-        store.create("camera.flv"),
-        Err(RecordingStoreError::OwnershipOpen(_))
-    ));
+    let second = store.create("camera.flv").expect("second recording");
+    drop(second);
     fs::remove_file(&lock).expect("remove replacement lock");
     symlink("lock-alias", &lock).expect("replacement lock symlink");
-    assert!(matches!(
-        store.create("camera.flv"),
-        Err(RecordingStoreError::OwnershipOpen(_))
-    ));
+    let third = store.create("camera.flv").expect("third recording");
+    drop(third);
+    assert_eq!(store.stats(), RecordingStoreStats::default());
 }
 
 #[test]
@@ -225,6 +224,7 @@ fn refuses_to_publish_when_the_owned_partial_name_is_replaced_by_a_symlink() {
             .file_type()
             .is_symlink()
     );
+    assert_eq!(store.stats(), RecordingStoreStats::default());
 }
 
 #[test]
@@ -255,6 +255,36 @@ fn cleans_only_exact_regular_owned_partial_names() {
             .is_symlink()
     );
     assert_eq!(store.stats().files, 3);
+}
+
+#[test]
+fn startup_scan_waits_for_exclusive_cross_process_cleanup() {
+    let temporary = tempdir().expect("temporary directory");
+    let partial = ".oxiroute-recording-0123456789abcdef0123456789abcdef.partial";
+    fs::write(temporary.path().join(partial), b"stale").expect("stale partial");
+    let ownership = fs::File::open(temporary.path()).expect("recording root ownership");
+    flock(&ownership, FlockOperation::LockExclusive).expect("exclusive cleanup ownership");
+    let root = temporary.path().to_owned();
+    let (opened_tx, opened_rx) = mpsc::channel();
+    let opener = thread::spawn(move || {
+        let store = RecordingStore::open(root, limits()).expect("recording store");
+        opened_tx.send(store.stats()).expect("report opened store");
+    });
+
+    assert!(matches!(
+        opened_rx.recv_timeout(Duration::from_millis(40)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    fs::remove_file(temporary.path().join(partial)).expect("exclusive stale cleanup");
+    flock(&ownership, FlockOperation::Unlock).expect("release cleanup ownership");
+
+    assert_eq!(
+        opened_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("store opens after cleanup"),
+        RecordingStoreStats::default()
+    );
+    opener.join().expect("store opener");
 }
 
 #[test]
@@ -303,11 +333,14 @@ fn independently_opened_stores_share_process_wide_quota_state() {
     };
     let first_store = RecordingStore::open(temporary.path(), limits).expect("first store");
     let second_store = RecordingStore::open(temporary.path(), limits).expect("second store");
+    let lease = first_store
+        .acquire_recorder()
+        .expect("first recorder lease");
     let mut recording = first_store.create("camera.flv").expect("first recording");
 
     assert_eq!(second_store.stats().active_recorders, 1);
     assert!(matches!(
-        second_store.create("other.flv"),
+        second_store.acquire_recorder(),
         Err(RecordingStoreError::ActiveRecorderLimit { maximum: 1 })
     ));
     recording.write_all(b"12345").expect("quota-sized data");
@@ -318,6 +351,8 @@ fn independently_opened_stores_share_process_wide_quota_state() {
         second_store.create("full.flv"),
         Err(RecordingStoreError::FileLimit { maximum: 1 })
     ));
+    drop(lease);
+    assert_eq!(second_store.stats().active_recorders, 0);
 }
 
 #[test]
@@ -344,7 +379,7 @@ fn documents_that_quota_accounting_is_process_scoped() {
 }
 
 #[test]
-fn enforces_active_file_and_growth_quotas_and_releases_aborted_partials() {
+fn enforces_recorder_file_and_growth_quotas_and_releases_aborted_partials() {
     let temporary = tempdir().expect("temporary directory");
     let store = RecordingStore::open(
         temporary.path(),
@@ -355,9 +390,10 @@ fn enforces_active_file_and_growth_quotas_and_releases_aborted_partials() {
         },
     )
     .expect("recording store");
+    let lease = store.acquire_recorder().expect("first recorder lease");
     let mut recording = store.create("camera.flv").expect("first partial");
     assert!(matches!(
-        store.create("other.flv"),
+        store.acquire_recorder(),
         Err(RecordingStoreError::ActiveRecorderLimit { maximum: 1 })
     ));
 
@@ -380,6 +416,8 @@ fn enforces_active_file_and_growth_quotas_and_releases_aborted_partials() {
     );
 
     drop(recording);
+    assert_eq!(store.stats().active_recorders, 1);
+    drop(lease);
     assert_eq!(store.stats(), RecordingStoreStats::default());
     assert!(recording_entries(temporary.path()).is_empty());
 }

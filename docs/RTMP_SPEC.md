@@ -400,10 +400,13 @@ returns to `idle`. Continuous recorders are not manually controllable; after a f
 a new publisher incarnation.
 
 The store uses no-follow directory traversal, daemon-owned roots without group/other write bits,
-exclusive hidden partials, atomic no-replace publication, startup cleanup under an ownership lock,
-and byte/file/active-recorder limits. Runtime-plan and config-API candidate validation use a
-read-only preflight; actual RTMP service activation opens and descriptor-pins the root and creates or
-validates the ownership lock. Existing files count toward quota. Equal limits for one normalized
+exclusive hidden partials, atomic no-replace publication, startup cleanup under an ownership lease
+on the descriptor-pinned root directory,
+and byte/file/active-recorder limits. One lease accounts for each recorder worker's full lifetime;
+segment files and pending finalizations do not consume additional recorder slots. Runtime-plan and
+config-API candidate validation use a
+read-only preflight; actual RTMP service activation opens and descriptor-pins the root. Existing
+files count toward quota. Equal limits for one normalized
 root share counters within one daemon process only; the lock protocol is cross-process, but quota
 accounting is not.
 
@@ -412,8 +415,12 @@ event would exceed the message or byte bound, the worker drops the queued events
 event, records one discontinuity, stops accepting, preserves the active partial, and transitions to
 `failed/queue_discontinuity`; it does not silently resume a corrupt FLV. Rotation waits for a video
 keyframe when video has appeared, or an audio boundary for audio-only output. The worker closes the
-old FLV and starts the next segment before a dedicated finalizer synchronizes and publishes the old
-file, so durable storage latency does not stall media queue draining.
+old FLV and starts the next segment before a recording-root finalizer pool synchronizes and
+publishes the old file, so durable storage latency does not stall media queue draining. Each root
+uses one finalizer thread, permits at most two pending segments per recorder, and bounds the root
+queue accordingly. Aligned rotations therefore create neither an unbounded thread/filesystem-sync
+storm nor a media-worker wait at the following rotation; exhausting the bounded backlog fails
+explicitly as finalization while preserving the current segment.
 
 Recorder open, quota, write, discontinuity, and codec failures are isolated to that recorder. They
 remain observable but do not fail live ingest, fanout, or sibling recorders.

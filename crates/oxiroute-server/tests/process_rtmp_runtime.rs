@@ -11,7 +11,7 @@ mod process_support;
 mod rtmp_support;
 
 use std::{
-    fs::{self, OpenOptions},
+    fs,
     net::SocketAddr,
     path::Path,
     time::{Duration, Instant},
@@ -439,11 +439,7 @@ async fn process_shutdown_waits_for_stalled_recorder_cleanup_without_exceeding_t
     let mut server = ServerProcess::start(&config, Some(TOKEN));
     server.wait_for_tcp(management_address).await;
     server.wait_for_tcp(rtmp_address).await;
-    let ownership = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(continuous_root.join(".oxiroute-recording.lock"))
-        .expect("recording ownership lock");
+    let ownership = fs::File::open(&continuous_root).expect("recording root ownership");
     flock(&ownership, FlockOperation::LockExclusive).expect("stall recording storage");
     let mut publisher = RtmpWireClient::connect(rtmp_address, "continuous").await;
     publisher.publish("camera").await;
@@ -489,11 +485,7 @@ async fn evicted_generation_keeps_recording_live_connections_until_final_shutdow
     server.wait_for_tcp(rtmp_address).await;
     let authorization = format!("Bearer {TOKEN}");
     let original_revision = active_revision(management_address, &authorization).await;
-    let ownership = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(manual_root.join(".oxiroute-recording.lock"))
-        .expect("recording ownership lock");
+    let ownership = fs::File::open(&manual_root).expect("recording root ownership");
     flock(&ownership, FlockOperation::LockExclusive).expect("stall second recorder");
     let mut stalled = RtmpWireClient::connect(rtmp_address, "manual").await;
     stalled.publish("blocked").await;

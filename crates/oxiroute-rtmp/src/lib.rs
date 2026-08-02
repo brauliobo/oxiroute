@@ -38,8 +38,8 @@ pub use recording_path::{
 };
 pub use recording_runtime::{RtmpRecorderPolicy, RtmpRecorderShutdown, RtmpRecorderStart};
 pub use recording_store::{
-    RecordingCommit, RecordingFile, RecordingQuotaScope, RecordingStore, RecordingStoreError,
-    RecordingStoreLimits, RecordingStoreStats,
+    RecorderLease, RecordingCommit, RecordingFile, RecordingQuotaScope, RecordingStore,
+    RecordingStoreError, RecordingStoreLimits, RecordingStoreStats,
 };
 pub use recording_worker::{
     RecorderEnqueueResult, RecorderFailure, RecorderShutdown, RecorderVideoCodec, RecorderWorker,

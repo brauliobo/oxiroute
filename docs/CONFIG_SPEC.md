@@ -851,8 +851,8 @@ MUST configure identical storage-byte, storage-file, and active-recorder limits.
 Runtime planning opens the existing root one component at a time without following symlinks and
 performs a read-only ownership/quota preflight. The root MUST be owned by the daemon user and MUST
 NOT be writable by group or other users. Candidate config validation neither creates the root nor
-creates a lock, probe, partial, or recording file. Actual RTMP service activation opens and pins the
-root, validates or creates the mode-`0600` single-link ownership lock, may clean exact abandoned
+creates a lease, probe, partial, or recording file. Actual RTMP service activation opens and pins the
+root, acquires ownership directly on that immutable directory descriptor, may clean exact abandoned
 partials only under exclusive ownership, and can still fail if the root changed after preflight.
 Errors identify the service/application/recorder but redact the root path.
 
