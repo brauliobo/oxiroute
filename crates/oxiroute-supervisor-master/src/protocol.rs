@@ -162,6 +162,16 @@ impl WorkerControl {
         decode_request(self.endpoint.receive()?)
     }
 
+    /// Decodes one bounded typed request only when the channel is immediately readable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for authentication, polling, framing, version, shape, or descriptor
+    /// validation failures.
+    pub fn try_receive(&mut self) -> Result<Option<ControlRequest>, ControlProtocolError> {
+        self.endpoint.try_receive()?.map(decode_request).transpose()
+    }
+
     /// Acknowledges a request using its exact correlation identity and phase.
     ///
     /// # Errors

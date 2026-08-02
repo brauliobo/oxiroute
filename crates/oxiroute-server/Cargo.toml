@@ -51,6 +51,12 @@ tokio-openssl.workspace = true
 x509-parser.workspace = true
 zeroize.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+oxiroute-supervision = { path = "../oxiroute-supervision" }
+oxiroute-supervision-unix = { path = "../oxiroute-supervision-unix" }
+oxiroute-supervisor-master = { path = "../oxiroute-supervisor-master" }
+oxiroute-supervisor-process = { path = "../oxiroute-supervisor-process" }
+
 [dev-dependencies]
 rml_rtmp.workspace = true
 rustls.workspace = true
@@ -63,6 +69,12 @@ tokio-tungstenite.workspace = true
 [[test]]
 name = "tls"
 path = "src/tls/tests.rs"
+
+[[bin]]
+name = "oxiroute-supervisor-launcher-fixture"
+path = "tests/fixtures/supervisor_launcher.rs"
+test = false
+bench = false
 
 [lints]
 workspace = true
