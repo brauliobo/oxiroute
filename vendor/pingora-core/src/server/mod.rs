@@ -385,6 +385,7 @@ impl Server {
         let service_runtime = Server::create_runtime(service.name(), threads, work_stealing);
         let service_name = service.name().to_string();
         service_runtime.get_handle().spawn(async move {
+            let mut ready_notifier = Some(ready_notifier);
             // Wait for all dependencies to be ready
             let mut time_waited_opt: Option<Duration> = None;
             for mut watch in dependency_watches {
@@ -395,6 +396,13 @@ impl Server {
                         "Service '{}' dependency channel closed before ready",
                         service_name
                     );
+                    drop(
+                        ready_notifier
+                            .take()
+                            .expect("service readiness notifier should exist")
+                            .require_explicit(),
+                    );
+                    return;
                 }
 
                 *time_waited_opt.get_or_insert_default() += start.elapsed().unwrap_or_default()
@@ -411,7 +419,7 @@ impl Server {
                     fds,
                     shutdown,
                     listeners_per_fd,
-                    ready_notifier,
+                    ready_notifier.expect("service readiness notifier should exist"),
                 )
                 .await;
             info!("service '{}' exited.", service_name);
@@ -426,7 +434,14 @@ impl Server {
     ///
     /// If a configuration file path is provided as part of `opt`, it will be ignored
     /// and a warning will be logged.
-    pub fn new_with_opt_and_conf(raw_opt: impl Into<Option<Opt>>, mut conf: ServerConf) -> Server {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the merged server configuration is invalid.
+    pub fn new_with_opt_and_conf(
+        raw_opt: impl Into<Option<Opt>>,
+        mut conf: ServerConf,
+    ) -> Result<Server> {
         let opt = raw_opt.into();
         if let Some(opts) = &opt {
             if let Some(c) = opts.conf.as_ref() {
@@ -434,6 +449,7 @@ impl Server {
             }
             conf.merge_with_opt(opts);
         }
+        let conf = conf.validate()?;
 
         let (tx, rx) = watch::channel(false);
 
@@ -444,7 +460,7 @@ impl Server {
             &execution_phase_watch,
         )));
 
-        Server {
+        Ok(Server {
             services: Default::default(),
             init_services: Default::default(),
             shutdown_watch: tx,
@@ -454,7 +470,7 @@ impl Server {
             options: opt,
             dependencies: Arc::new(Mutex::new(DependencyGraph::new())),
             bootstrap,
-        }
+        })
     }
 
     /// Create a new [`Server`].
@@ -824,5 +840,180 @@ impl Server {
         } else {
             Runtime::new_no_steal(threads, name)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::{
+        background::{background_service, BackgroundService},
+        Service,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct StartProbe {
+        name: &'static str,
+        starts: Arc<AtomicUsize>,
+    }
+
+    #[derive(Clone, Copy)]
+    enum BackgroundFailure {
+        Return,
+        Panic,
+    }
+
+    struct FailingBackground(BackgroundFailure);
+
+    #[async_trait]
+    impl BackgroundService for FailingBackground {
+        async fn start_with_ready_notifier(
+            &self,
+            _shutdown: ShutdownWatch,
+            _ready_notifier: ServiceReadyNotifier,
+        ) {
+            match self.0 {
+                BackgroundFailure::Return => {}
+                BackgroundFailure::Panic => panic!("injected background startup panic"),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Service for StartProbe {
+        async fn start_service(
+            &mut self,
+            #[cfg(unix)] _fds: Option<ListenFds>,
+            _shutdown: ShutdownWatch,
+            _listeners_per_fd: usize,
+        ) {
+            self.starts.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn name(&self) -> &str {
+            self.name
+        }
+    }
+
+    #[test]
+    fn dependency_failure_closes_readiness_through_the_chain() {
+        let starts = Arc::new(AtomicUsize::new(0));
+        let (failed_sender, failed_watch) = watch::channel(false);
+        drop(failed_sender);
+        let (middle_sender, middle_watch) = watch::channel(false);
+        let (leaf_sender, leaf_watch) = watch::channel(false);
+        let (_shutdown_sender, shutdown) = watch::channel(false);
+
+        let middle_runtime = Server::run_service(
+            Box::new(StartProbe {
+                name: "middle",
+                starts: Arc::clone(&starts),
+            }),
+            #[cfg(unix)]
+            None,
+            shutdown.clone(),
+            1,
+            true,
+            1,
+            ServiceReadyNotifier::new(middle_sender),
+            vec![failed_watch],
+        );
+        let leaf_runtime = Server::run_service(
+            Box::new(StartProbe {
+                name: "leaf",
+                starts: Arc::clone(&starts),
+            }),
+            #[cfg(unix)]
+            None,
+            shutdown,
+            1,
+            true,
+            1,
+            ServiceReadyNotifier::new(leaf_sender),
+            vec![middle_watch.clone()],
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while (middle_watch.has_changed().is_ok() || leaf_watch.has_changed().is_ok())
+            && std::time::Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        assert_eq!(starts.load(Ordering::Relaxed), 0);
+        assert!(!*middle_watch.borrow());
+        assert!(!*leaf_watch.borrow());
+        assert!(middle_watch.has_changed().is_err());
+        assert!(leaf_watch.has_changed().is_err());
+        middle_runtime.shutdown_timeout(Duration::from_secs(1));
+        leaf_runtime.shutdown_timeout(Duration::from_secs(1));
+    }
+
+    #[test]
+    fn server_rejects_zero_listener_tasks_per_fd() {
+        let configuration = ServerConf {
+            listener_tasks_per_fd: 0,
+            ..ServerConf::default()
+        };
+
+        assert!(Server::new_with_opt_and_conf(None, configuration).is_err());
+    }
+
+    fn assert_background_failure_does_not_start_dependent(failure: BackgroundFailure) {
+        let starts = Arc::new(AtomicUsize::new(0));
+        let (background_sender, background_watch) = watch::channel(false);
+        let (dependent_sender, dependent_watch) = watch::channel(false);
+        let (_shutdown_sender, shutdown) = watch::channel(false);
+
+        let background_runtime = Server::run_service(
+            Box::new(background_service("failing", FailingBackground(failure))),
+            #[cfg(unix)]
+            None,
+            shutdown.clone(),
+            1,
+            true,
+            1,
+            ServiceReadyNotifier::new(background_sender),
+            Vec::new(),
+        );
+        let dependent_runtime = Server::run_service(
+            Box::new(StartProbe {
+                name: "dependent",
+                starts: Arc::clone(&starts),
+            }),
+            #[cfg(unix)]
+            None,
+            shutdown,
+            1,
+            true,
+            1,
+            ServiceReadyNotifier::new(dependent_sender),
+            vec![background_watch.clone()],
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while (background_watch.has_changed().is_ok() || dependent_watch.has_changed().is_ok())
+            && std::time::Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        assert_eq!(starts.load(Ordering::Relaxed), 0);
+        assert!(!*background_watch.borrow());
+        assert!(!*dependent_watch.borrow());
+        assert!(background_watch.has_changed().is_err());
+        assert!(dependent_watch.has_changed().is_err());
+        background_runtime.shutdown_timeout(Duration::from_secs(1));
+        dependent_runtime.shutdown_timeout(Duration::from_secs(1));
+    }
+
+    #[test]
+    fn background_return_before_notification_does_not_start_dependent() {
+        assert_background_failure_does_not_start_dependent(BackgroundFailure::Return);
+    }
+
+    #[test]
+    fn background_panic_before_notification_does_not_start_dependent() {
+        assert_background_failure_does_not_start_dependent(BackgroundFailure::Panic);
     }
 }

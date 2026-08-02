@@ -20,7 +20,7 @@ use oxiroute_supervisor_process::{
 use thiserror::Error;
 
 /// Application protocol version used in the authenticated worker identity and every payload.
-pub const CONTROL_PROTOCOL_VERSION: u16 = 1;
+pub const CONTROL_PROTOCOL_VERSION: u16 = 2;
 /// Maximum binary manifest bytes accepted by either endpoint.
 pub const MAX_MANIFEST_BYTES: usize = 16 * 1024;
 
@@ -291,12 +291,21 @@ fn encode_manifest(
     for slot in manifest.slots() {
         encoder.u16(slot.id.0)?;
         match &slot.role {
-            DescriptorRole::Listener(name) => {
+            DescriptorRole::Traffic(name) => {
                 encoder.u8(1)?;
                 encoder.length_prefixed(name.as_bytes())?;
             }
-            DescriptorRole::State => encoder.u8(2)?,
-            DescriptorRole::Control => encoder.u8(3)?,
+            DescriptorRole::Management => encoder.u8(2)?,
+            DescriptorRole::Stats(index) => {
+                encoder.u8(3)?;
+                encoder.u16(*index)?;
+            }
+            DescriptorRole::StatsPage(index) => {
+                encoder.u8(4)?;
+                encoder.u16(*index)?;
+            }
+            DescriptorRole::State => encoder.u8(5)?,
+            DescriptorRole::Control => encoder.u8(6)?,
         }
         encoder.u8(match slot.kind {
             DescriptorKind::TcpListener => 1,
@@ -304,6 +313,13 @@ fn encode_manifest(
             DescriptorKind::Opaque => 3,
         })?;
         encode_bind(encoder, slot.bind.as_ref())?;
+        match slot.mode {
+            None => encoder.u8(0)?,
+            Some(mode) => {
+                encoder.u8(1)?;
+                encoder.u16(mode)?;
+            }
+        }
     }
     Ok(())
 }
@@ -364,13 +380,16 @@ fn decode_manifest(payload: &[u8]) -> Result<DescriptorManifest, ControlProtocol
     for _ in 0..slot_count {
         let id = SlotId(decoder.u16()?);
         let role = match decoder.u8()? {
-            1 => DescriptorRole::Listener(
+            1 => DescriptorRole::Traffic(
                 std::str::from_utf8(decoder.length_prefixed()?)
                     .map_err(|_| ControlProtocolError::InvalidPayload)?
                     .to_owned(),
             ),
-            2 => DescriptorRole::State,
-            3 => DescriptorRole::Control,
+            2 => DescriptorRole::Management,
+            3 => DescriptorRole::Stats(decoder.u16()?),
+            4 => DescriptorRole::StatsPage(decoder.u16()?),
+            5 => DescriptorRole::State,
+            6 => DescriptorRole::Control,
             _ => return Err(ControlProtocolError::InvalidPayload),
         };
         let kind = match decoder.u8()? {
@@ -380,11 +399,17 @@ fn decode_manifest(payload: &[u8]) -> Result<DescriptorManifest, ControlProtocol
             _ => return Err(ControlProtocolError::InvalidPayload),
         };
         let bind = decode_bind(&mut decoder)?;
+        let mode = match decoder.u8()? {
+            0 => None,
+            1 => Some(decoder.u16()?),
+            _ => return Err(ControlProtocolError::InvalidPayload),
+        };
         slots.push(DescriptorSlot {
             id,
             role,
             kind,
             bind,
+            mode,
         });
     }
     decoder.finish()?;
@@ -600,9 +625,10 @@ mod tests {
         let path = PathBuf::from(OsString::from_vec(b"/tmp/master-\xff.sock".to_vec()));
         let manifest = DescriptorManifest::new(vec![DescriptorSlot {
             id: SlotId(9),
-            role: DescriptorRole::Listener(String::from("unix")),
+            role: DescriptorRole::Traffic(String::from("unix")),
             kind: DescriptorKind::UnixListener,
             bind: Some(BindIdentity::UnixPath(path)),
+            mode: Some(0o660),
         }])
         .unwrap();
         let payload = encode_adopt_request(7, &manifest).unwrap();
@@ -613,9 +639,10 @@ mod tests {
     fn binary_manifest_rejects_oversize_before_append() {
         let manifest = DescriptorManifest::new(vec![DescriptorSlot {
             id: SlotId(1),
-            role: DescriptorRole::Listener("x".repeat(MAX_MANIFEST_BYTES)),
+            role: DescriptorRole::Traffic("x".repeat(MAX_MANIFEST_BYTES)),
             kind: DescriptorKind::Opaque,
             bind: None,
+            mode: None,
         }])
         .unwrap();
         assert!(matches!(
@@ -629,6 +656,17 @@ mod tests {
         assert!(matches!(
             decode_manifest(&u16::MAX.to_be_bytes()),
             Err(ControlProtocolError::InvalidPayload)
+        ));
+    }
+
+    #[test]
+    fn version_two_control_decoder_rejects_legacy_version_one_payload() {
+        assert!(matches!(
+            check_version(&1_u16.to_be_bytes()),
+            Err(ControlProtocolError::VersionMismatch {
+                expected: 2,
+                actual: 1
+            })
         ));
     }
 }

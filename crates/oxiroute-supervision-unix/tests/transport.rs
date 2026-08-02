@@ -156,15 +156,17 @@ fn transfers_tcp_and_unix_listeners_with_cloexec_and_consume_once_slots() {
     let manifest = DescriptorManifest::new(vec![
         DescriptorSlot {
             id: SlotId(11),
-            role: DescriptorRole::Listener(String::from("public café listener")),
+            role: DescriptorRole::Traffic(String::from("public café listener")),
             kind: DescriptorKind::TcpListener,
             bind: Some(BindIdentity::Tcp(tcp_address)),
+            mode: None,
         },
         DescriptorSlot {
             id: SlotId(12),
-            role: DescriptorRole::Listener(String::from("local admin socket")),
+            role: DescriptorRole::Traffic(String::from("local admin socket")),
             kind: DescriptorKind::UnixListener,
             bind: Some(BindIdentity::UnixPath(unix_path.clone())),
+            mode: None,
         },
     ])
     .unwrap();
@@ -202,7 +204,7 @@ fn transfers_tcp_and_unix_listeners_with_cloexec_and_consume_once_slots() {
     assert_eq!(set.remaining(), 2);
     assert_eq!(
         set.role(SlotId(11)),
-        Some(&DescriptorRole::Listener(String::from(
+        Some(&DescriptorRole::Traffic(String::from(
             "public café listener"
         )))
     );
@@ -242,9 +244,10 @@ fn listener_validation_sets_nonblocking_and_rejects_wrong_bind() {
     let duplicate = rustix::io::fcntl_dupfd_cloexec(&listener, 0).unwrap();
     let blocking_manifest = DescriptorManifest::new(vec![DescriptorSlot {
         id: SlotId(1),
-        role: DescriptorRole::Listener(String::from("blocking")),
+        role: DescriptorRole::Traffic(String::from("blocking")),
         kind: DescriptorKind::TcpListener,
         bind: None,
+        mode: None,
     }])
     .unwrap();
     let mut set = DescriptorSet::new(&blocking_manifest, vec![duplicate]).unwrap();
@@ -259,9 +262,10 @@ fn listener_validation_sets_nonblocking_and_rejects_wrong_bind() {
     let duplicate = rustix::io::fcntl_dupfd_cloexec(&listener, 0).unwrap();
     let wrong_bind = DescriptorManifest::new(vec![DescriptorSlot {
         id: SlotId(2),
-        role: DescriptorRole::Listener(String::from("wrong bind")),
+        role: DescriptorRole::Traffic(String::from("wrong bind")),
         kind: DescriptorKind::TcpListener,
         bind: Some(BindIdentity::Tcp("127.0.0.1:1".parse().unwrap())),
+        mode: None,
     }])
     .unwrap();
     assert!(matches!(
@@ -274,9 +278,10 @@ fn listener_validation_sets_nonblocking_and_rejects_wrong_bind() {
 fn listener_validation_checks_fstat_socket_type_and_listening_state() {
     let manifest = DescriptorManifest::new(vec![DescriptorSlot {
         id: SlotId(3),
-        role: DescriptorRole::Listener(String::from("shape checks")),
+        role: DescriptorRole::Traffic(String::from("shape checks")),
         kind: DescriptorKind::TcpListener,
         bind: None,
+        mode: None,
     }])
     .unwrap();
 
@@ -305,6 +310,31 @@ fn listener_validation_checks_fstat_socket_type_and_listening_state() {
         Err(DescriptorError::NotListening { .. })
     ));
     drop(client);
+}
+
+#[test]
+fn listener_validation_rejects_wrong_filesystem_unix_mode() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("mode.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let duplicate = rustix::io::fcntl_dupfd_cloexec(&listener, 0).unwrap();
+    let manifest = DescriptorManifest::new(vec![DescriptorSlot {
+        id: SlotId(4),
+        role: DescriptorRole::Traffic(String::from("mode")),
+        kind: DescriptorKind::UnixListener,
+        bind: Some(BindIdentity::UnixPath(path)),
+        mode: Some(0o640),
+    }])
+    .unwrap();
+
+    assert!(matches!(
+        DescriptorSet::new(&manifest, vec![duplicate]),
+        Err(DescriptorError::ModeMismatch { .. })
+    ));
 }
 
 #[test]
@@ -411,12 +441,14 @@ fn manifests_enforce_unique_slots_and_exact_cardinality() {
             role: DescriptorRole::State,
             kind: DescriptorKind::Opaque,
             bind: None,
+            mode: None,
         },
         DescriptorSlot {
             id: SlotId(1),
             role: DescriptorRole::Control,
             kind: DescriptorKind::Opaque,
             bind: None,
+            mode: None,
         },
     ];
     assert!(matches!(
@@ -429,6 +461,7 @@ fn manifests_enforce_unique_slots_and_exact_cardinality() {
         role: DescriptorRole::State,
         kind: DescriptorKind::Opaque,
         bind: None,
+        mode: None,
     }])
     .unwrap();
     assert!(matches!(

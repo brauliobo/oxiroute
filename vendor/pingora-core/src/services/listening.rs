@@ -29,7 +29,7 @@ use crate::protocols::Stream;
 #[cfg(unix)]
 use crate::server::ListenFds;
 use crate::server::ShutdownWatch;
-use crate::services::Service as ServiceTrait;
+use crate::services::{Service as ServiceTrait, ServiceReadyNotifier};
 
 use async_trait::async_trait;
 use log::{debug, error, info};
@@ -349,51 +349,112 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
 
         stack.cleanup();
     }
-}
 
-#[async_trait]
-impl<A: ServerApp + Send + Sync + 'static> ServiceTrait for Service<A> {
-    async fn start_service(
+    async fn start_listeners(
         &mut self,
         #[cfg(unix)] fds: Option<ListenFds>,
         shutdown: ShutdownWatch,
         listeners_per_fd: usize,
+        ready_notifier: Option<ServiceReadyNotifier>,
     ) {
+        if listeners_per_fd == 0 {
+            error!(
+                "Listening service '{}' requires at least one listener task per descriptor",
+                self.name
+            );
+            return;
+        }
         let runtime = current_handle();
-        let endpoints = self
+        let endpoints = match self
             .listeners
             .build(
                 #[cfg(unix)]
                 fds,
             )
             .await
-            .expect("Failed to build listeners");
+        {
+            Ok(endpoints) => endpoints,
+            Err(error) => {
+                error!("Failed to build listeners for '{}': {error}", self.name);
+                return;
+            }
+        };
+        if endpoints.is_empty() {
+            error!("Listening service '{}' has no endpoints", self.name);
+            return;
+        }
 
-        let app_logic = self
-            .app_logic
-            .take()
-            .expect("can only start_service() once");
+        let Some(app_logic) = self.app_logic.take() else {
+            error!(
+                "Listening service '{}' was started more than once",
+                self.name
+            );
+            return;
+        };
         let app_logic = Arc::new(app_logic);
 
         let mut handlers = Vec::new();
-
-        endpoints.into_iter().for_each(|endpoint| {
+        for endpoint in endpoints {
             for _ in 0..listeners_per_fd {
                 let shutdown = shutdown.clone();
                 let my_app_logic = app_logic.clone();
                 let endpoint = endpoint.clone();
 
-                let jh = runtime.spawn(async move {
+                handlers.push(runtime.spawn(async move {
                     Self::run_endpoint(my_app_logic, endpoint, shutdown).await;
-                });
-
-                handlers.push(jh);
+                }));
             }
-        });
+        }
+        if handlers.is_empty() {
+            error!(
+                "Listening service '{}' started no accept handlers",
+                self.name
+            );
+            return;
+        }
+        if let Some(ready_notifier) = ready_notifier {
+            ready_notifier.notify_ready();
+        }
 
         futures::future::join_all(handlers).await;
         self.listeners.cleanup();
         app_logic.cleanup().await;
+    }
+}
+
+#[async_trait]
+impl<A: ServerApp + Send + Sync + 'static> ServiceTrait for Service<A> {
+    async fn start_service_with_ready_notifier(
+        &mut self,
+        #[cfg(unix)] fds: Option<ListenFds>,
+        shutdown: ShutdownWatch,
+        listeners_per_fd: usize,
+        ready_notifier: ServiceReadyNotifier,
+    ) {
+        self.start_listeners(
+            #[cfg(unix)]
+            fds,
+            shutdown,
+            listeners_per_fd,
+            Some(ready_notifier),
+        )
+        .await;
+    }
+
+    async fn start_service(
+        &mut self,
+        #[cfg(unix)] fds: Option<ListenFds>,
+        shutdown: ShutdownWatch,
+        listeners_per_fd: usize,
+    ) {
+        self.start_listeners(
+            #[cfg(unix)]
+            fds,
+            shutdown,
+            listeners_per_fd,
+            None,
+        )
+        .await;
     }
 
     fn name(&self) -> &str {
@@ -416,5 +477,70 @@ impl Service<PrometheusServer> {
             "Prometheus metric HTTP".to_string(),
             PrometheusServer::new(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::apps::ServerApp;
+    use crate::protocols::Stream;
+
+    struct TestApp;
+
+    #[async_trait]
+    impl ServerApp for TestApp {
+        async fn process_new(
+            self: &Arc<Self>,
+            _session: Stream,
+            _shutdown: &ShutdownWatch,
+        ) -> Option<Stream> {
+            None
+        }
+    }
+
+    #[test]
+    fn zero_listener_tasks_never_publish_readiness() {
+        tokio_test::block_on(async {
+            let mut service = Service::new("zero listeners".into(), TestApp);
+            let (_shutdown_sender, shutdown) = tokio::sync::watch::channel(false);
+            let (ready_sender, ready_watch) = tokio::sync::watch::channel(false);
+
+            ServiceTrait::start_service_with_ready_notifier(
+                &mut service,
+                #[cfg(unix)]
+                None,
+                shutdown,
+                0,
+                ServiceReadyNotifier::new(ready_sender).require_explicit(),
+            )
+            .await;
+
+            assert!(!*ready_watch.borrow());
+            assert!(ready_watch.has_changed().is_err());
+        });
+    }
+
+    #[test]
+    fn empty_endpoints_never_publish_readiness_with_a_valid_multiplier() {
+        tokio_test::block_on(async {
+            let mut service = Service::new("empty endpoints".into(), TestApp);
+            let (_shutdown_sender, shutdown) = tokio::sync::watch::channel(false);
+            let (ready_sender, ready_watch) = tokio::sync::watch::channel(false);
+
+            ServiceTrait::start_service_with_ready_notifier(
+                &mut service,
+                #[cfg(unix)]
+                None,
+                shutdown,
+                1,
+                ServiceReadyNotifier::new(ready_sender).require_explicit(),
+            )
+            .await;
+
+            assert!(service.app_logic().is_some());
+            assert!(!*ready_watch.borrow());
+            assert!(ready_watch.has_changed().is_err());
+        });
     }
 }

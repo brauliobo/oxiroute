@@ -6,6 +6,13 @@ use std::{
 };
 
 use oxiroute_config::{Config, ListenerBind};
+#[cfg(target_os = "linux")]
+use oxiroute_supervision_unix::{
+    BindIdentity, DescriptorKind, DescriptorManifest, DescriptorRole, DescriptorSet,
+    DescriptorSlot, MAX_DESCRIPTOR_COUNT, SlotId,
+};
+#[cfg(target_os = "linux")]
+use oxiroute_supervisor_master::StableListeners;
 
 #[derive(Clone)]
 pub struct ListenerReservation {
@@ -63,7 +70,6 @@ impl PathIdentity {
 struct UnixSocketLease {
     _descriptor: rustix::fd::OwnedFd,
     marker_identity: PathIdentity,
-    committed: bool,
 }
 
 #[cfg(unix)]
@@ -142,21 +148,14 @@ impl UnixSocketLease {
                 path: marker_path,
                 socket: false,
             },
-            committed: false,
         })
-    }
-
-    fn commit(&mut self) {
-        self.committed = true;
     }
 }
 
 #[cfg(unix)]
 impl Drop for UnixSocketLease {
     fn drop(&mut self) {
-        if !self.committed {
-            self.marker_identity.remove_if_unchanged();
-        }
+        self.marker_identity.remove_if_unchanged();
     }
 }
 
@@ -289,7 +288,7 @@ impl ListenerReservation {
                             ),
                         )
                     })?;
-                    let mut lease = UnixSocketLease::acquire(path)?;
+                    let lease = UnixSocketLease::acquire(path)?;
                     remove_stale_unix_socket(path)?;
                     let listener = std::os::unix::net::UnixListener::bind(path).map_err(|source| {
                         io::Error::new(
@@ -317,7 +316,6 @@ impl ListenerReservation {
                             return Err(source);
                         }
                     }
-                    lease.commit();
                     (
                         ReservedSocket::Unix(listener),
                         Some(UnixSocketIdentity {
@@ -373,19 +371,61 @@ impl ListenerReservation {
     pub fn duplicate_fds(&self) -> io::Result<pingora::server::Fds> {
         use std::os::fd::IntoRawFd as _;
 
-        let fd = match &self.inner.socket {
-            ReservedSocket::Tcp(listener) => listener.try_clone()?.into_raw_fd(),
-            ReservedSocket::Unix(listener) => listener.try_clone()?.into_raw_fd(),
-        };
+        let fd = self.duplicate_owned_fd()?.into_raw_fd();
         let mut fds = pingora::server::Fds::new();
         fds.add(self.inner.bind_text.clone(), fd);
         Ok(fds)
     }
+
+    /// Creates one independently owned, close-on-exec duplicate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the operating system cannot duplicate the listener descriptor.
+    #[cfg(unix)]
+    pub fn duplicate_owned_fd(&self) -> io::Result<std::os::fd::OwnedFd> {
+        let descriptor = match &self.inner.socket {
+            ReservedSocket::Tcp(listener) => rustix::io::fcntl_dupfd_cloexec(listener, 0),
+            ReservedSocket::Unix(listener) => rustix::io::fcntl_dupfd_cloexec(listener, 0),
+        };
+        descriptor.map_err(io::Error::from)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn adopt(bind: ListenerBind, descriptor: std::os::fd::OwnedFd) -> Self {
+        let bind_text = match &bind {
+            ListenerBind::Socket { address } | ListenerBind::Udp { address } => address.to_string(),
+            ListenerBind::Unix { path, .. } => path.to_string_lossy().into_owned(),
+        };
+        let socket = match &bind {
+            ListenerBind::Socket { .. } => ReservedSocket::Tcp(descriptor.into()),
+            ListenerBind::Unix { .. } => ReservedSocket::Unix(descriptor.into()),
+            ListenerBind::Udp { .. } => {
+                unreachable!("UDP descriptors are rejected by the manifest")
+            }
+        };
+        Self {
+            inner: Arc::new(ReservationInner {
+                bind,
+                bind_text,
+                socket,
+                unix_socket: None,
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum ReservationKey {
+    Traffic(String),
+    Management,
+    Stats(usize),
+    StatsPage(usize),
 }
 
 #[derive(Clone, Default)]
 pub struct ListenerReservations {
-    by_name: HashMap<String, ListenerReservation>,
+    by_key: HashMap<ReservationKey, ListenerReservation>,
 }
 
 impl ListenerReservations {
@@ -410,7 +450,7 @@ impl ListenerReservations {
         previous: Option<&Self>,
         reuse_unix_path: bool,
     ) -> io::Result<Self> {
-        let mut by_name = HashMap::with_capacity(
+        let mut by_key = HashMap::with_capacity(
             config.listeners.len()
                 + usize::from(config.management.is_some())
                 + config
@@ -426,7 +466,7 @@ impl ListenerReservations {
                     || ListenerReservation::bind(&listener.name, &listener.bind),
                     Ok,
                 )?;
-            by_name.insert(listener.name.clone(), reservation);
+            by_key.insert(ReservationKey::Traffic(listener.name.clone()), reservation);
         }
         if let Some(management) = &config.management {
             let bind = ListenerBind::Socket {
@@ -436,7 +476,7 @@ impl ListenerReservations {
                 .and_then(|reservations| reservations.by_bind(&bind, reuse_unix_path))
                 .cloned()
                 .map_or_else(|| ListenerReservation::bind("management", &bind), Ok)?;
-            by_name.insert("@management".into(), reservation);
+            by_key.insert(ReservationKey::Management, reservation);
         }
         if let Some(stats) = &config.stats {
             for (index, address) in stats.binds.iter().enumerate() {
@@ -446,7 +486,7 @@ impl ListenerReservations {
                     .and_then(|reservations| reservations.by_bind(&bind, reuse_unix_path))
                     .cloned()
                     .map_or_else(|| ListenerReservation::bind(&name, &bind), Ok)?;
-                by_name.insert(name, reservation);
+                by_key.insert(ReservationKey::Stats(index), reservation);
             }
             for (index, page) in stats.pages.iter().enumerate() {
                 let name = format!("@stats-page-{index}");
@@ -455,19 +495,149 @@ impl ListenerReservations {
                     .and_then(|reservations| reservations.by_bind(&bind, reuse_unix_path))
                     .cloned()
                     .map_or_else(|| ListenerReservation::bind(&name, &bind), Ok)?;
-                by_name.insert(name, reservation);
+                by_key.insert(ReservationKey::StatsPage(index), reservation);
             }
         }
-        Ok(Self { by_name })
+        Ok(Self { by_key })
     }
 
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&ListenerReservation> {
-        self.by_name.get(name)
+        self.by_key
+            .get(&ReservationKey::Traffic(name.to_owned()))
+            .or_else(|| legacy_reservation_key(name).and_then(|key| self.by_key.get(&key)))
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn management(&self) -> Option<&ListenerReservation> {
+        self.by_key.get(&ReservationKey::Management)
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn stats(&self, index: usize) -> Option<&ListenerReservation> {
+        self.by_key.get(&ReservationKey::Stats(index))
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn stats_page(&self, index: usize) -> Option<&ListenerReservation> {
+        self.by_key.get(&ReservationKey::StatsPage(index))
+    }
+
+    /// Consumes these reservations into stable master listeners while retaining Unix namespace
+    /// ownership for the complete master lifetime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the config exceeds the worker descriptor limit, does not match this
+    /// reservation set, or listener ownership cannot be established.
+    #[cfg(target_os = "linux")]
+    pub fn into_stable_listeners(self, config: &Config) -> io::Result<StableListeners> {
+        let owner = Arc::new(self);
+        let (manifest, originals) = owner.export_descriptors(config)?;
+        StableListeners::new(manifest, originals, Arc::clone(&owner)).map_err(io::Error::other)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn export_descriptors(
+        &self,
+        config: &Config,
+    ) -> io::Result<(DescriptorManifest, Vec<std::os::fd::OwnedFd>)> {
+        let plan = descriptor_plan(config)?;
+        preflight_descriptor_capacity(&plan)?;
+        if self.by_key.len() != plan.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "reservation set contains {} entries, but config requires {}",
+                    self.by_key.len(),
+                    plan.len()
+                ),
+            ));
+        }
+        let mut ordered = Vec::with_capacity(plan.len());
+        for (key, slot) in &plan {
+            let reservation = self.by_key.get(key).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("reservation set is missing {key:?}"),
+                )
+            })?;
+            let expected_bind = listener_bind_from_slot(slot)?;
+            if !same_bind_identity(reservation.bind_config(), &expected_bind) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("reservation {key:?} bind or mode does not match config"),
+                ));
+            }
+            ordered.push(reservation);
+        }
+        let manifest = DescriptorManifest::new(
+            plan.iter()
+                .map(|(_, slot)| slot.clone())
+                .collect::<Vec<_>>(),
+        )
+        .map_err(io::Error::other)?;
+        let originals = ordered
+            .into_iter()
+            .map(ListenerReservation::duplicate_owned_fd)
+            .collect::<io::Result<Vec<_>>>()?;
+        Ok((manifest, originals))
+    }
+
+    /// Converts one exact manifest-bound worker descriptor set into listener reservations.
+    ///
+    /// Adopted Unix reservations intentionally carry no namespace lease or unlink ownership.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for descriptor limits, cardinality, slot, role, kind, bind, mode, or
+    /// consume-once mismatches.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn adopt(config: &Config, mut descriptors: DescriptorSet) -> io::Result<Self> {
+        let plan = descriptor_plan(config)?;
+        preflight_descriptor_capacity(&plan)?;
+        if descriptors.remaining() != plan.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "worker config expects {} listener descriptors, but adoption contains {}",
+                    plan.len(),
+                    descriptors.remaining()
+                ),
+            ));
+        }
+        for (_, expected) in &plan {
+            if descriptors.slot(expected.id) != Some(expected) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "listener descriptor slot {:?} does not match config",
+                        expected.id
+                    ),
+                ));
+            }
+        }
+
+        let mut by_key = HashMap::with_capacity(plan.len());
+        for (key, slot) in plan {
+            let descriptor = descriptors.take(slot.id).map_err(io::Error::other)?;
+            let bind = listener_bind_from_slot(&slot)?;
+            by_key.insert(key, ListenerReservation::adopt(bind, descriptor));
+        }
+        if descriptors.remaining() != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "listener adoption left unconsumed descriptor slots",
+            ));
+        }
+        Ok(Self { by_key })
     }
 
     fn by_bind(&self, bind: &ListenerBind, reuse_unix_path: bool) -> Option<&ListenerReservation> {
-        self.by_name.values().find(|reservation| {
+        self.by_key.values().find(|reservation| {
             same_bind_identity(reservation.bind_config(), bind)
                 || reuse_unix_path && same_unix_path(reservation.bind_config(), bind)
         })
@@ -475,12 +645,218 @@ impl ListenerReservations {
 
     #[must_use]
     pub fn len(&self) -> usize {
-        self.by_name.len()
+        self.by_key.len()
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.by_name.is_empty()
+        self.by_key.is_empty()
+    }
+}
+
+fn legacy_reservation_key(name: &str) -> Option<ReservationKey> {
+    if name == "@management" {
+        return Some(ReservationKey::Management);
+    }
+    if let Some(index) = name.strip_prefix("@stats-page-") {
+        let index = index.parse::<usize>().ok()?;
+        return (name == format!("@stats-page-{index}"))
+            .then_some(ReservationKey::StatsPage(index));
+    }
+    if let Some(index) = name.strip_prefix("@stats-") {
+        let index = index.parse::<usize>().ok()?;
+        return (name == format!("@stats-{index}")).then_some(ReservationKey::Stats(index));
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn descriptor_plan(config: &Config) -> io::Result<Vec<(ReservationKey, DescriptorSlot)>> {
+    let count = config.listeners.len()
+        + usize::from(config.management.is_some())
+        + config
+            .stats
+            .as_ref()
+            .map_or(0, |stats| stats.binds.len() + stats.pages.len());
+    if count > MAX_DESCRIPTOR_COUNT {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "worker configuration has {count} listener descriptors; maximum is {MAX_DESCRIPTOR_COUNT}"
+            ),
+        ));
+    }
+
+    let mut entries = Vec::with_capacity(count);
+    for listener in &config.listeners {
+        entries.push((
+            ReservationKey::Traffic(listener.name.clone()),
+            (
+                DescriptorRole::Traffic(listener.name.clone()),
+                listener.bind.clone(),
+            ),
+        ));
+    }
+    if let Some(management) = &config.management {
+        entries.push((
+            ReservationKey::Management,
+            (
+                DescriptorRole::Management,
+                ListenerBind::Socket {
+                    address: management.bind,
+                },
+            ),
+        ));
+    }
+    if let Some(stats) = &config.stats {
+        for (index, address) in stats.binds.iter().enumerate() {
+            entries.push((
+                ReservationKey::Stats(index),
+                (
+                    DescriptorRole::Stats(u16::try_from(index).expect("descriptor limit checked")),
+                    ListenerBind::Socket { address: *address },
+                ),
+            ));
+        }
+        for (index, page) in stats.pages.iter().enumerate() {
+            entries.push((
+                ReservationKey::StatsPage(index),
+                (
+                    DescriptorRole::StatsPage(
+                        u16::try_from(index).expect("descriptor limit checked"),
+                    ),
+                    ListenerBind::Socket { address: page.bind },
+                ),
+            ));
+        }
+    }
+
+    entries
+        .into_iter()
+        .enumerate()
+        .map(|(index, (key, (role, bind)))| {
+            Ok((
+                key,
+                descriptor_slot(
+                    SlotId(u16::try_from(index).expect("descriptor limit checked")),
+                    role,
+                    &bind,
+                )?,
+            ))
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+const DESCRIPTOR_HEADROOM: u64 = 32;
+
+#[cfg(target_os = "linux")]
+fn descriptor_capacity_required(
+    plan: &[(ReservationKey, DescriptorSlot)],
+    current_open: u64,
+) -> u64 {
+    let listeners = u64::try_from(plan.len()).unwrap_or(u64::MAX);
+    let unix_leases = u64::try_from(
+        plan.iter()
+            .filter(|(_, slot)| slot.kind == DescriptorKind::UnixListener)
+            .count(),
+    )
+    .unwrap_or(u64::MAX);
+    current_open
+        .saturating_add(DESCRIPTOR_HEADROOM)
+        .saturating_add(listeners.saturating_mul(3))
+        .saturating_add(unix_leases)
+}
+
+#[cfg(target_os = "linux")]
+fn current_open_descriptor_count() -> io::Result<u64> {
+    let entries = std::fs::read_dir("/proc/self/fd")?;
+    let mut count = 0_u64;
+    for entry in entries {
+        entry?;
+        count = count.saturating_add(1);
+    }
+    Ok(count)
+}
+
+#[cfg(target_os = "linux")]
+fn validate_descriptor_capacity(
+    plan: &[(ReservationKey, DescriptorSlot)],
+    current_open: u64,
+    soft_limit: Option<u64>,
+) -> io::Result<()> {
+    let required = descriptor_capacity_required(plan, current_open);
+    if soft_limit.is_none_or(|available| available >= required) {
+        return Ok(());
+    }
+    Err(io::Error::other(format!(
+        "listener descriptor transfer requires capacity for at least {required} open descriptors ({current_open} currently open), but the RLIMIT_NOFILE soft limit is {}",
+        soft_limit.expect("finite limit checked above")
+    )))
+}
+
+#[cfg(target_os = "linux")]
+fn preflight_descriptor_capacity(plan: &[(ReservationKey, DescriptorSlot)]) -> io::Result<()> {
+    let current_open = current_open_descriptor_count()?;
+    validate_descriptor_capacity(
+        plan,
+        current_open,
+        rustix::process::getrlimit(rustix::process::Resource::Nofile).current,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn descriptor_slot(
+    id: SlotId,
+    role: DescriptorRole,
+    bind: &ListenerBind,
+) -> io::Result<DescriptorSlot> {
+    let (kind, bind, mode) = match bind {
+        ListenerBind::Socket { address } => (
+            DescriptorKind::TcpListener,
+            Some(BindIdentity::Tcp(*address)),
+            None,
+        ),
+        ListenerBind::Unix { path, mode } => (
+            DescriptorKind::UnixListener,
+            Some(BindIdentity::UnixPath(path.clone())),
+            *mode,
+        ),
+        ListenerBind::Udp { address } => {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("worker cannot adopt UDP listener `{address}`"),
+            ));
+        }
+    };
+    Ok(DescriptorSlot {
+        id,
+        role,
+        kind,
+        bind,
+        mode,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn listener_bind_from_slot(slot: &DescriptorSlot) -> io::Result<ListenerBind> {
+    match (&slot.kind, &slot.bind) {
+        (DescriptorKind::TcpListener, Some(BindIdentity::Tcp(address))) => {
+            Ok(ListenerBind::Socket { address: *address })
+        }
+        (DescriptorKind::UnixListener, Some(BindIdentity::UnixPath(path))) => {
+            Ok(ListenerBind::Unix {
+                path: path.clone(),
+                mode: slot.mode,
+            })
+        }
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "listener descriptor slot {:?} has no supported bind",
+                slot.id
+            ),
+        )),
     }
 }
 
@@ -634,12 +1010,16 @@ mod tests {
             .expect("reordered reservations");
 
         assert!(Arc::ptr_eq(
-            &first.get("@stats-0").expect("first original").inner,
-            &second.get("@stats-1").expect("first reordered").inner,
+            &first.stats(0).expect("first original").inner,
+            &second.stats(1).expect("first reordered").inner,
         ));
         assert!(Arc::ptr_eq(
-            &first.get("@stats-1").expect("second original").inner,
-            &second.get("@stats-0").expect("second reordered").inner,
+            &first.get("@stats-0").expect("legacy first original").inner,
+            &first.stats(0).expect("typed first original").inner,
+        ));
+        assert!(Arc::ptr_eq(
+            &first.stats(1).expect("second original").inner,
+            &second.stats(0).expect("second reordered").inner,
         ));
     }
 
@@ -669,9 +1049,253 @@ mod tests {
 
         assert_eq!(first.len(), 1);
         assert!(Arc::ptr_eq(
-            &first.get("@stats-page-0").expect("first page").inner,
-            &second.get("@stats-page-0").expect("second page").inner,
+            &first.stats_page(0).expect("first page").inner,
+            &second.stats_page(0).expect("second page").inner,
         ));
+        assert!(Arc::ptr_eq(
+            &first.get("@stats-page-0").expect("legacy first page").inner,
+            &first.stats_page(0).expect("typed first page").inner,
+        ));
+    }
+
+    #[test]
+    fn traffic_name_cannot_collide_with_management_reservation() {
+        let traffic = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .expect("traffic temporary bind")
+            .local_addr()
+            .expect("traffic address");
+        let management = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .expect("management temporary bind")
+            .local_addr()
+            .expect("management address");
+        let mut config = config("@management", traffic);
+        config.management = Some(oxiroute_config::Management {
+            bind: management,
+            ui_dir: None,
+        });
+
+        let reservations = ListenerReservations::prepare(&config, None).expect("reservations");
+
+        assert_eq!(reservations.len(), 2);
+        assert_eq!(
+            reservations
+                .get("@management")
+                .expect("traffic reservation")
+                .bind_config(),
+            &ListenerBind::Socket { address: traffic }
+        );
+        assert_eq!(
+            reservations
+                .management()
+                .expect("management reservation")
+                .bind_config(),
+            &ListenerBind::Socket {
+                address: management
+            }
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn descriptor_export_is_canonical_typed_and_cloexec() {
+        use rustix::io::{FdFlags, fcntl_getfd};
+
+        let traffic = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .expect("traffic temporary bind")
+            .local_addr()
+            .expect("traffic address");
+        let management = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .expect("management temporary bind")
+            .local_addr()
+            .expect("management address");
+        let stats = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .expect("stats temporary bind")
+            .local_addr()
+            .expect("stats address");
+        let page = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .expect("page temporary bind")
+            .local_addr()
+            .expect("page address");
+        let mut config = config("@management", traffic);
+        config.management = Some(oxiroute_config::Management {
+            bind: management,
+            ui_dir: None,
+        });
+        config.stats = Some(oxiroute_config::Stats {
+            binds: vec![stats],
+            admin_token_file: None,
+            pages: vec![oxiroute_config::StatsPage {
+                bind: page,
+                uri_prefix: "/stats".into(),
+                refresh_ms: 1_000,
+                admin: oxiroute_config::StatsPageAdminPolicy::Disabled,
+                max_connections: None,
+                downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+            }],
+        });
+        let reservations = ListenerReservations::prepare(&config, None).expect("reservations");
+
+        let (manifest, originals) = reservations
+            .export_descriptors(&config)
+            .expect("descriptor export");
+
+        assert_eq!(originals.len(), 4);
+        assert_eq!(
+            manifest
+                .slots()
+                .iter()
+                .map(|slot| (slot.id, slot.role.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (SlotId(0), DescriptorRole::Traffic("@management".into())),
+                (SlotId(1), DescriptorRole::Management),
+                (SlotId(2), DescriptorRole::Stats(0)),
+                (SlotId(3), DescriptorRole::StatsPage(0)),
+            ]
+        );
+        assert!(originals.iter().all(|descriptor| {
+            fcntl_getfd(descriptor)
+                .expect("descriptor flags")
+                .contains(FdFlags::CLOEXEC)
+        }));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn descriptor_adoption_rejects_a_wrong_typed_slot() {
+        let address = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .expect("temporary bind")
+            .local_addr()
+            .expect("address");
+        let config = config("traffic", address);
+        let reservations = ListenerReservations::prepare(&config, None).expect("reservations");
+        let (manifest, originals) = reservations
+            .export_descriptors(&config)
+            .expect("descriptor export");
+        let mut wrong_slots = manifest.slots().to_vec();
+        wrong_slots[0].role = DescriptorRole::Management;
+        let wrong = DescriptorManifest::new(wrong_slots).expect("wrong typed manifest");
+        let set = DescriptorSet::new(&wrong, originals).expect("kernel-valid descriptor set");
+
+        let error = ListenerReservations::adopt(&config, set)
+            .err()
+            .expect("typed slot mismatch");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn descriptor_export_rejects_extra_keys_and_bind_mismatch() {
+        let address = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .expect("temporary bind")
+            .local_addr()
+            .expect("address");
+        let config = config("traffic", address);
+        let mut reservations = ListenerReservations::prepare(&config, None).expect("reservations");
+        let traffic = reservations.get("traffic").expect("traffic").clone();
+        reservations
+            .by_key
+            .insert(ReservationKey::Management, traffic);
+        let error = reservations
+            .export_descriptors(&config)
+            .expect_err("extra key must fail");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        drop(reservations);
+
+        let reservations = ListenerReservations::prepare(&config, None).expect("reservations");
+        let mut changed = config;
+        changed.listeners[0].bind = ListenerBind::Socket {
+            address: "127.0.0.1:1".parse().expect("changed address"),
+        };
+        let error = reservations
+            .export_descriptors(&changed)
+            .expect_err("bind mismatch must fail");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn worker_descriptor_limit_is_explicitly_sixty_four() {
+        let address = "127.0.0.1:8080".parse().expect("address");
+        let mut config = empty_config();
+        config.listeners = (0..=MAX_DESCRIPTOR_COUNT)
+            .map(|index| oxiroute_config::Listener {
+                name: format!("listener-{index}"),
+                bind: ListenerBind::Socket { address },
+                protocol: oxiroute_config::Protocol::Http,
+                service: Some("http".into()),
+                tls_profile: None,
+                max_connections: None,
+                downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+            })
+            .collect();
+
+        let error = descriptor_plan(&config).expect_err("65 descriptors must be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("maximum is 64"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn descriptor_capacity_calculation_includes_amplification_and_headroom() {
+        let mut config = config("tcp", "127.0.0.1:8080".parse().expect("address"));
+        config.listeners.push(oxiroute_config::Listener {
+            name: "unix".into(),
+            bind: ListenerBind::Unix {
+                path: PathBuf::from("/tmp/capacity.sock"),
+                mode: Some(0o600),
+            },
+            protocol: oxiroute_config::Protocol::Http,
+            service: Some("http".into()),
+            tls_profile: None,
+            max_connections: None,
+            downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        });
+        let plan = descriptor_plan(&config).expect("descriptor plan");
+
+        assert_eq!(descriptor_capacity_required(&plan, 11), 50);
+        assert!(validate_descriptor_capacity(&plan, 11, Some(50)).is_ok());
+        assert!(validate_descriptor_capacity(&plan, 11, None).is_ok());
+        let error = validate_descriptor_capacity(&plan, 11, Some(49))
+            .expect_err("low descriptor limit must fail");
+        assert!(error.to_string().contains("at least 50"));
+        assert!(error.to_string().contains("11 currently open"));
+        assert!(error.to_string().contains("soft limit is 49"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn adopted_unix_reservation_never_owns_master_namespace_cleanup() {
+        let directory = tempfile::tempdir().expect("Unix reservation directory");
+        let path = directory.path().join("adopted.sock");
+        let mut config = empty_config();
+        config.listeners.push(oxiroute_config::Listener {
+            name: "unix".into(),
+            bind: ListenerBind::Unix {
+                path: path.clone(),
+                mode: Some(0o600),
+            },
+            protocol: oxiroute_config::Protocol::Http,
+            service: Some("http".into()),
+            tls_profile: None,
+            max_connections: None,
+            downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        });
+        let master = ListenerReservations::prepare(&config, None).expect("master reservation");
+        let (manifest, originals) = master
+            .export_descriptors(&config)
+            .expect("descriptor export");
+        let set = DescriptorSet::new(&manifest, originals).expect("descriptor set");
+        let worker = ListenerReservations::adopt(&config, set).expect("worker adoption");
+        let marker = unix_socket_marker_path(&path).expect("marker path");
+
+        drop(worker);
+        assert!(path.exists(), "worker drop unlinked the master socket");
+        assert!(marker.exists(), "worker drop unlinked the master lease");
+
+        drop(master);
+        assert!(!path.exists(), "master drop retained the socket");
+        assert!(!marker.exists(), "master drop retained the lease marker");
     }
 
     #[cfg(unix)]
@@ -788,8 +1412,7 @@ mod tests {
 
         let directory = tempfile::tempdir().expect("Unix reservation directory");
         let path = directory.path().join("restrictive.sock");
-        let mut lease = UnixSocketLease::acquire(&path).expect("Unix namespace lease");
-        lease.commit();
+        let lease = UnixSocketLease::acquire(&path).expect("Unix namespace lease");
         drop(lease);
 
         let stale = std::os::unix::net::UnixListener::bind(&path).expect("stale Unix bind");

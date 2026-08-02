@@ -157,6 +157,22 @@ fn startup_rejects_nonce_generation_protocol_and_instance_mismatches() {
 }
 
 #[test]
+fn version_two_handshake_rejects_a_version_one_worker() {
+    let identity = WorkerIdentity {
+        instance: INSTANCE,
+        generation: GenerationId(11),
+        protocol: 2,
+    };
+    assert!(matches!(
+        spawner(HANDSHAKE_TIMEOUT).spawn(command("legacy-v1"), identity),
+        Err(SpawnError::ProtocolMismatch {
+            expected: 2,
+            actual: 1
+        })
+    ));
+}
+
+#[test]
 fn handshake_timeout_is_bounded_and_reaps_in_background() {
     let started = Instant::now();
     assert!(matches!(

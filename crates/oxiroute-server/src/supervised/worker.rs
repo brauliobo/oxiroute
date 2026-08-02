@@ -9,13 +9,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use oxiroute_config::Config;
+use oxiroute_config::{Config, Protocol};
 use oxiroute_server::{
     GenerationManager, RuntimeGeneration,
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, ConfigRevision},
 };
 use oxiroute_supervision::GenerationId;
-use oxiroute_supervision_unix::InstanceToken;
+use oxiroute_supervision_unix::{InstanceToken, MAX_DESCRIPTOR_COUNT};
 use oxiroute_supervisor_master::{
     CONTROL_PROTOCOL_VERSION, ControlOutcome, ControlPhase, WorkerControl,
 };
@@ -49,10 +49,6 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
         control.acknowledge(&adoption, ControlOutcome::Rejected(REJECT_INVALID_STATE))?;
         return Err("listener adoption omitted its descriptor set".into());
     };
-    if listeners.remaining() != 0 {
-        control.acknowledge(&adoption, ControlOutcome::Rejected(REJECT_UNSUPPORTED))?;
-        return Err("Stage 1 worker accepts only an empty listener manifest".into());
-    }
 
     let coordinator = CanonicalConfigCoordinator::new(&metadata.config_path)?;
     let document = match coordinator.load() {
@@ -70,9 +66,8 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
         control.acknowledge(&adoption, ControlOutcome::Rejected(REJECT_UNSUPPORTED))?;
         return Err(error.into());
     }
-
     let manager = GenerationManager::new();
-    let candidate = match manager.prepare(*document) {
+    let candidate = match manager.prepare_adopted(*document, listeners) {
         Ok(candidate) => candidate,
         Err(error) => {
             control.acknowledge(&adoption, ControlOutcome::Rejected(REJECT_CONFIG))?;
@@ -243,23 +238,29 @@ impl RuntimeMetadata {
 }
 
 fn validate_stage_one_config(config: &Config) -> Result<(), &'static str> {
-    if config.max_connections.is_some()
-        || config.management.is_some()
+    if config.listeners.len() > MAX_DESCRIPTOR_COUNT {
+        return Err("Stage 2 worker listener descriptor limit is 64");
+    }
+    if config.management.is_some()
         || config.stats.is_some()
         || !config.certificates.is_empty()
         || !config.tls_profiles.is_empty()
-        || !config.listeners.is_empty()
         || !config.cache_stores.is_empty()
         || !config.upstream_pools.is_empty()
-        || !config.http_services.is_empty()
         || !config.forward_proxy_services.is_empty()
         || !config.rtmp_services.is_empty()
         || !config.l4_services.is_empty()
     {
-        Err("Stage 1 worker supports only a marker-only canonical configuration")
-    } else {
-        Ok(())
+        return Err("Stage 2 worker configuration contains an unsupported service or subsystem");
     }
+    if config
+        .listeners
+        .iter()
+        .any(|listener| listener.protocol != Protocol::Http || listener.tls_profile.is_some())
+    {
+        return Err("Stage 2 worker supports only plaintext HTTP traffic listeners");
+    }
+    Ok(())
 }
 
 fn wait_for_generation_marker(
@@ -269,15 +270,22 @@ fn wait_for_generation_marker(
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if generation.runtime_failed() || process.is_finished() {
-            return Err(io::Error::other("generation marker failed during startup").into());
+            return Err(io::Error::other("generation listeners failed during startup").into());
         }
-        if generation.runtime_started() {
+        let snapshot = generation.metrics().snapshot()?;
+        if generation.runtime_started()
+            && snapshot.listeners.len() == generation.config().listeners.len()
+            && snapshot
+                .listeners
+                .iter()
+                .all(|listener| listener.state == oxiroute_server::ListenerRuntimeState::Listening)
+        {
             return Ok(());
         }
         if Instant::now() >= deadline {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
-                "generation marker did not start before its deadline",
+                "generation listeners did not become ready before their deadline",
             )
             .into());
         }
@@ -353,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_one_configuration_accepts_only_the_generation_marker() {
+    fn stage_two_configuration_accepts_marker_and_plain_http_listeners() {
         let mut config = Config {
             version: 1,
             max_connections: None,
@@ -369,6 +377,19 @@ mod tests {
             rtmp_services: Vec::new(),
             l4_services: Vec::new(),
         };
+        assert!(validate_stage_one_config(&config).is_ok());
+
+        config.listeners.push(oxiroute_config::Listener {
+            name: "http".into(),
+            bind: oxiroute_config::ListenerBind::Socket {
+                address: "127.0.0.1:8080".parse().expect("address"),
+            },
+            protocol: Protocol::Http,
+            service: Some("http".into()),
+            tls_profile: None,
+            max_connections: None,
+            downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+        });
         assert!(validate_stage_one_config(&config).is_ok());
 
         config.stats = Some(Stats {
