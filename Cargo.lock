@@ -2580,7 +2580,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -2627,7 +2627,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-cache"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bytes",
  "crc32fast",
@@ -2642,7 +2642,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-config"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "chrono-tz",
  "http",
@@ -2654,7 +2654,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-config-source"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "hocon-parser",
  "kdl",
@@ -2688,7 +2688,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-import"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "openssl",
  "oxiroute-config",
@@ -2705,7 +2705,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-rtmp"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bytes",
  "chrono",
