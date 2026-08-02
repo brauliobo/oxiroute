@@ -12,6 +12,7 @@ oxiroute-supervision = { path = "../oxiroute-supervision" }
 rustix.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

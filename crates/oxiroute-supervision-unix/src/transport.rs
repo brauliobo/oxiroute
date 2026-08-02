@@ -283,6 +283,15 @@ impl SeqpacketEndpoint {
         Ok((Self::new(first)?, Self::new(second)?))
     }
 
+    /// Adopts an already connected seqpacket descriptor and enables credential reception.
+    ///
+    /// # Errors
+    ///
+    /// Returns the operating-system error from enabling `SO_PASSCRED`.
+    pub fn from_owned_fd(fd: OwnedFd) -> Result<Self, TransportError> {
+        Self::new(fd)
+    }
+
     fn new(fd: OwnedFd) -> Result<Self, TransportError> {
         rustix::net::sockopt::set_socket_passcred(&fd, true)?;
         Ok(Self {
