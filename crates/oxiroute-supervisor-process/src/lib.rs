@@ -58,6 +58,9 @@ use rustix::{
 use thiserror::Error;
 use zeroize::Zeroizing;
 
+#[cfg(target_os = "linux")]
+pub mod launcher;
+
 const CHALLENGE: MessageType = MessageType(0xff00);
 const READY: MessageType = MessageType(0xff01);
 const AUTH_PREFIX_SIZE: usize = 34;
@@ -403,6 +406,22 @@ impl WorkerEndpoint {
     pub fn receive(&mut self) -> Result<AuthenticatedFrame, AuthenticatedChannelError> {
         let frame = self.endpoint.receive()?;
         authenticate_frame(frame, self.expected_parent_pid, self.identity, &self.nonce)
+    }
+
+    /// Receives and authenticates one parent frame only when the channel is immediately readable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for polling, transport, or authentication failures.
+    pub fn try_receive(&mut self) -> Result<Option<AuthenticatedFrame>, AuthenticatedChannelError> {
+        let timeout = Timespec::try_from(Duration::ZERO).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "zero poll duration overflow")
+        })?;
+        let mut descriptors = [PollFd::new(&self.endpoint, PollFlags::IN)];
+        if poll(&mut descriptors, Some(&timeout)).map_err(io::Error::from)? == 0 {
+            return Ok(None);
+        }
+        self.receive().map(Some)
     }
 }
 

@@ -7,6 +7,6 @@ fn main() -> ExitCode {
 
 #[cfg(not(target_os = "linux"))]
 fn main() -> ExitCode {
-    eprintln!("oxiroute worker launcher requires Linux");
+    eprintln!("supervised launcher fixture requires Linux");
     ExitCode::FAILURE
 }
