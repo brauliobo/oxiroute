@@ -1,5 +1,7 @@
 use std::{env, ffi::OsStr, os::unix::ffi::OsStrExt as _, process::ExitCode};
 
+#[allow(dead_code)]
+pub(crate) mod master;
 mod worker;
 
 pub(crate) const MARKER: &str = "--__oxiroute-worker-7f3c9d1e";
