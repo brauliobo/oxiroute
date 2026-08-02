@@ -229,9 +229,9 @@ impl ProxyHttp for HttpReverseProxy {
                 ctx.retry_delay_pending = false;
             }
             let selected = if let Some(server) = ctx.retry_server.take() {
-                pool.select_server_endpoint(&server)?
+                pool.select_server_endpoint(&server).await?
             } else {
-                pool.select_endpoint(&ctx.attempted_upstreams)?
+                pool.select_endpoint(&ctx.attempted_upstreams).await?
             };
             ctx.selected_upstream_host = selected_upstream_host(
                 selected.endpoint(),

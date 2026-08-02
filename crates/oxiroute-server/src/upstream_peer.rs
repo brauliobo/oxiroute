@@ -64,16 +64,30 @@ impl UpstreamPlan {
         self.tls.as_deref()
     }
 
-    pub(crate) fn select_endpoint(&self, excluded: &[String]) -> pingora::Result<SelectedEndpoint> {
-        self.selector
-            .select_connection_target_excluding(excluded)
+    pub(crate) async fn select_endpoint(
+        &self,
+        excluded: &[String],
+    ) -> pingora::Result<SelectedEndpoint> {
+        let lease = if self.connection_reuse == UpstreamConnectionReuse::Never {
+            self.selector.select_wait_excluding(excluded).await
+        } else {
+            self.selector.select_connection_target_excluding(excluded)
+        };
+        lease
             .map(SelectedEndpoint::new)
             .ok_or_else(|| Error::new_up(ErrorType::HTTPStatus(503)))
     }
 
-    pub(crate) fn select_server_endpoint(&self, name: &str) -> pingora::Result<SelectedEndpoint> {
-        self.selector
-            .select_server_connection_target(name)
+    pub(crate) async fn select_server_endpoint(
+        &self,
+        name: &str,
+    ) -> pingora::Result<SelectedEndpoint> {
+        let lease = if self.connection_reuse == UpstreamConnectionReuse::Never {
+            self.selector.select_server_wait(name).await
+        } else {
+            self.selector.select_server_connection_target(name)
+        };
+        lease
             .map(SelectedEndpoint::new)
             .ok_or_else(|| Error::new_up(ErrorType::HTTPStatus(503)))
     }

@@ -45,6 +45,7 @@ procedure are documented in `vendor/pingora-core/README.oxiroute.md`.
 | Single-endpoint pools | implemented |
 | Static round robin | implemented |
 | Static least connections | implemented with deterministic tie rotation and request/relay-scoped active leases |
+| Bounded upstream admission | implemented with pool-level FIFO capacity admission for L4 and nonreusable HTTP, including timeout and cancellation handoff; reusable HTTP retains connection/stream reuse-first admission |
 | Active TCP/HTTP health checks | implemented with configured startup eligibility, normal/fast/down completion-based schedules, consecutive transition thresholds, HTTP version/optional Host/exact status policy, and a shared 32-probe limit |
 | Weighted round robin | planned M2 |
 | Bounded connect-failure retries | implemented for pre-send connection failures on non-upgrade requests, safe refused-stream replays, distinct canonical endpoint identities, and at most three additional attempts |

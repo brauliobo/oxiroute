@@ -315,8 +315,12 @@ Current constraints:
   deterministic ties from the pool cursor. A capacity permit is acquired before connection
   preparation and, for reusable HTTP, remains held by the physical upstream socket through idle
   pooling and later requests. Nonreusable HTTP and L4 attempts release it at transport teardown.
-  When every eligible server is at capacity, `queue_timeout_ms` bounds the wait for a released slot;
-  timeout and cancellation remove exactly one waiter.
+  When every eligible server is at capacity, `queue_timeout_ms` bounds the wait for a released slot.
+  L4 and `connection_reuse = "never"` HTTP requests join one pool-level FIFO at scheduler admission;
+  only its head can claim whichever eligible server releases capacity next. Timeout and cancellation
+  remove exactly one waiter and advance the next head. Reusable HTTP retains the connector's
+  reuse-first capacity path, so this FIFO guarantee does not apply to requests sharing upstream
+  connections or HTTP/2 streams.
 - HTTP services MUST contain at least one route. Route pool references MUST resolve.
 - Forward HTTP/1 services support absolute-form requests and CONNECT only when H1 is enabled.
   CONNECT ports are explicit. Authentication is absent, Bearer-token-file, or Basic htpasswd-file;

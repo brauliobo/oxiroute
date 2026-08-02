@@ -605,6 +605,195 @@ async fn preread_one_kib_response_is_exact_and_keeps_upstream_reusable() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one wire regression covers FIFO admission across two saturated workers"
+)]
+async fn capped_first_pool_dispatches_queued_requests_fifo_to_the_next_available_worker() {
+    timeout(TEST_TIMEOUT, async {
+        let primary = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("primary worker bind");
+        let primary_address = primary.local_addr().expect("primary worker address");
+        let secondary = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("secondary worker bind");
+        let secondary_address = secondary.local_addr().expect("secondary worker address");
+        let (primary_seen_tx, primary_seen_rx) = oneshot::channel();
+        let (secondary_seen_tx, secondary_seen_rx) = oneshot::channel();
+        let (old_seen_tx, old_seen_rx) = oneshot::channel();
+        let (new_seen_tx, new_seen_rx) = oneshot::channel();
+        let (release_primary_tx, release_primary_rx) = oneshot::channel();
+        let (release_secondary_tx, release_secondary_rx) = oneshot::channel();
+        let (release_old_tx, release_old_rx) = oneshot::channel();
+        let primary_worker = tokio::spawn(async move {
+            let (mut held, _) = primary.accept().await.expect("primary held accept");
+            let request = read_request_head_bytes(&mut held)
+                .await
+                .expect("primary held request");
+            assert!(request.starts_with(b"GET /hold-primary HTTP/1.1\r\n"));
+            primary_seen_tx.send(()).expect("primary held signal");
+            release_primary_rx.await.expect("release primary worker");
+            held.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\nhold-primary",
+            )
+            .await
+            .expect("primary held response");
+            let (mut queued, _) = primary.accept().await.expect("primary queued accept");
+            let request = read_request_head_bytes(&mut queued)
+                .await
+                .expect("primary queued request");
+            assert!(request.starts_with(b"GET /new HTTP/1.1\r\n"));
+            new_seen_tx.send(()).expect("new request signal");
+            queued
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nnew")
+                .await
+                .expect("primary queued response");
+        });
+        let secondary_worker = tokio::spawn(async move {
+            let (mut held, _) = secondary.accept().await.expect("secondary held accept");
+            let request = read_request_head_bytes(&mut held)
+                .await
+                .expect("secondary held request");
+            assert!(request.starts_with(b"GET /hold-secondary HTTP/1.1\r\n"));
+            secondary_seen_tx.send(()).expect("secondary held signal");
+            release_secondary_rx
+                .await
+                .expect("release secondary worker");
+            held.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 14\r\nConnection: close\r\n\r\nhold-secondary",
+            )
+            .await
+            .expect("secondary held response");
+            let (mut queued, _) = secondary.accept().await.expect("secondary queued accept");
+            let request = read_request_head_bytes(&mut queued)
+                .await
+                .expect("secondary queued request");
+            assert!(request.starts_with(b"GET /old HTTP/1.1\r\n"));
+            old_seen_tx.send(()).expect("old request signal");
+            release_old_rx.await.expect("release old request");
+            queued
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nold")
+                .await
+                .expect("secondary queued response");
+        });
+        let proxy = Arc::new(
+            ProxyHarness::start(
+                vec![UpstreamPool {
+                    name: "workers".into(),
+                    servers: vec![
+                        UpstreamServer {
+                            name: "primary".into(),
+                            endpoint: socket_endpoint(primary_address),
+                            max_connections: Some(1),
+                            dns_resolution: DnsResolutionPolicy::OnConnect,
+                        },
+                        UpstreamServer {
+                            name: "secondary".into(),
+                            endpoint: socket_endpoint(secondary_address),
+                            max_connections: Some(1),
+                            dns_resolution: DnsResolutionPolicy::OnConnect,
+                        },
+                    ],
+                    endpoints: Vec::new(),
+                    algorithm: UpstreamAlgorithm::First,
+                    health_check: None,
+                    tls: None,
+                    http_versions: HttpVersionPolicy::default(),
+                    queue_timeout_ms: Some(1_000),
+                    connect_timeout_ms: None,
+                    server_timeout_ms: None,
+                    connection_reuse: oxiroute_config::UpstreamConnectionReuse::Never,
+                }],
+                vec![route(None, "/", &[], "workers")],
+                1024,
+                4,
+            )
+            .await,
+        );
+        let held_primary_proxy = Arc::clone(&proxy);
+        let held_primary = tokio::spawn(async move {
+            held_primary_proxy
+                .request("GET /hold-primary HTTP/1.1\r\nHost: workers.test\r\n")
+                .await
+        });
+        primary_seen_rx
+            .await
+            .expect("primary request reached worker");
+        let held_secondary_proxy = Arc::clone(&proxy);
+        let held_secondary = tokio::spawn(async move {
+            held_secondary_proxy
+                .request("GET /hold-secondary HTTP/1.1\r\nHost: workers.test\r\n")
+                .await
+        });
+        secondary_seen_rx
+            .await
+            .expect("secondary request reached worker");
+        assert_eq!(
+            proxy.pools[0]
+                .health_snapshot()
+                .endpoints
+                .iter()
+                .map(|endpoint| endpoint.active_connections)
+                .collect::<Vec<_>>(),
+            vec![1, 1],
+            "both held workers retain their capacity leases"
+        );
+
+        let old_proxy = Arc::clone(&proxy);
+        let old = tokio::spawn(async move {
+            old_proxy
+                .request("GET /old HTTP/1.1\r\nHost: workers.test\r\n")
+                .await
+        });
+        wait_for_queued_requests(&proxy.pools[0], 1).await;
+        let new_proxy = Arc::clone(&proxy);
+        let new = tokio::spawn(async move {
+            new_proxy
+                .request("GET /new HTTP/1.1\r\nHost: workers.test\r\n")
+                .await
+        });
+        wait_for_queued_requests(&proxy.pools[0], 2).await;
+
+        release_secondary_tx
+            .send(())
+            .expect("release secondary capacity");
+        assert_eq!(
+            held_secondary.await.expect("secondary held task").body,
+            b"hold-secondary"
+        );
+        timeout(Duration::from_secs(1), old_seen_rx)
+            .await
+            .expect("old request dispatch")
+            .expect("old request signal");
+        wait_for_queued_requests(&proxy.pools[0], 1).await;
+
+        release_primary_tx
+            .send(())
+            .expect("release primary capacity");
+        assert_eq!(
+            held_primary.await.expect("primary held task").body,
+            b"hold-primary"
+        );
+        timeout(Duration::from_secs(1), new_seen_rx)
+            .await
+            .expect("new request dispatch")
+            .expect("new request signal");
+        assert_eq!(new.await.expect("new request task").body, b"new");
+        release_old_tx.send(()).expect("release old response");
+        assert_eq!(old.await.expect("old request task").body, b"old");
+        wait_for_queued_requests(&proxy.pools[0], 0).await;
+        primary_worker.await.expect("primary worker task");
+        secondary_worker.await.expect("secondary worker task");
+        proxy.wait_for_no_active_leases().await;
+        let proxy = Arc::into_inner(proxy).expect("proxy harness owner");
+        proxy.finish().await;
+    })
+    .await
+    .expect("FIFO worker dispatch test timed out");
+}
+
+#[tokio::test]
 async fn maxconn_one_serializes_concurrent_h1_creation_and_reuses_the_physical_connection() {
     timeout(TEST_TIMEOUT, async {
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -4059,6 +4248,20 @@ async fn keepalive_request(address: SocketAddr, path: &str) -> RawResponse {
     read_framed_response(&mut stream)
         .await
         .expect("keepalive downstream response")
+}
+
+async fn wait_for_queued_requests(pool: &RoundRobinPool, expected: u64) {
+    let converged = timeout(Duration::from_millis(200), async {
+        while pool.health_snapshot().queued != expected {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert!(
+        converged.is_ok(),
+        "upstream queue count did not converge to {expected}: {:?}",
+        pool.health_snapshot()
+    );
 }
 
 fn pool(name: &str, endpoints: &[SocketAddr]) -> UpstreamPool {
