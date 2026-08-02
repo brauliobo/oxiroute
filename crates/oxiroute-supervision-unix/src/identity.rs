@@ -1,6 +1,7 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroize;
 
 /// Kernel-authenticated identity of the process at the other end of a Unix socket.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -62,5 +63,11 @@ impl SpawnHandshakeNonce {
 impl fmt::Debug for SpawnHandshakeNonce {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("SpawnHandshakeNonce([REDACTED])")
+    }
+}
+
+impl Drop for SpawnHandshakeNonce {
+    fn drop(&mut self) {
+        self.0.zeroize();
     }
 }

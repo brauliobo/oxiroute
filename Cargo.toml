@@ -7,6 +7,7 @@ members = [
     "crates/oxiroute-import",
     "crates/oxiroute-rtmp",
     "crates/oxiroute-server",
+    "crates/oxiroute-supervisor-process",
     "crates/oxiroute-supervision",
     "crates/oxiroute-supervision-unix",
     "vendor/pingora-proxy",
@@ -48,7 +49,7 @@ notify = "8.2"
 openssl = "0.10.81"
 pingora = { version = "0.8.0", features = ["lb", "openssl", "proxy"] }
 rml_rtmp = "=0.8.0"
-rustix = { version = "1.1", features = ["fs", "net", "process"] }
+rustix = { version = "1.1", features = ["event", "fs", "net", "process", "stdio"] }
 rustls = { version = "0.23.40", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2.2.0"
 serde = { version = "1", features = ["derive"] }

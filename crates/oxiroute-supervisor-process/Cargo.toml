@@ -1,6 +1,6 @@
 [package]
-name = "oxiroute-supervision-unix"
-description = "Safe Unix transport and descriptor validation for oxiroute supervision"
+name = "oxiroute-supervisor-process"
+description = "Safe authenticated worker process spawning for oxiroute supervision"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -8,21 +8,27 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+close_fds = "0.3.2"
 oxiroute-supervision = { path = "../oxiroute-supervision" }
+oxiroute-supervision-unix = { path = "../oxiroute-supervision-unix" }
 rustix.workspace = true
-serde.workspace = true
 thiserror.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 tempfile.workspace = true
 
 [lints]
 workspace = true
 
 [[bin]]
-name = "credential-sender-fixture"
-path = "tests/fixtures/credential_sender.rs"
+name = "oxiroute-worker-launcher"
+path = "src/bin/launcher.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "worker-process-fixture"
+path = "tests/fixtures/worker.rs"
 test = false
 bench = false
