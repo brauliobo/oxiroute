@@ -191,6 +191,10 @@ parsers, HTTP/1 forward-proxy target parsing, CONNECT over-read handling, TLS Cl
 inspection, PROXY protocol, and UDP pseudo-session input, each with allocation and execution
 bounds.
 
+The release workflow deliberately does not install `cargo-fuzz` or add a fuzzing dependency. This
+remains a follow-up until an isolated parser/protocol target can compile and run deterministically
+with Rust 1.87 without dependency churn.
+
 ### UI end-to-end
 
 - Vue component tests cover bearer unlock/re-lock, complete canonical-field editing, validation,
@@ -223,7 +227,8 @@ pnpm --dir ui test
 pnpm --dir ui build
 ```
 
-No checked-in CI workflow currently enforces that set. Representative focused gates are
+The checked-in Linux workflow at `.github/workflows/ci.yml` enforces that set and separately runs the
+coverage-manifest validation test. Representative focused gates are
 `cargo test -p oxiroute-config --test lua_config`,
 `cargo test -p oxiroute-import --test coverage_manifests`,
 `cargo test -p oxiroute-import --test nginx_rtmp`,
