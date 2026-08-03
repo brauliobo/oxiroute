@@ -62,6 +62,7 @@ mod supervised;
 
 const RTMP_READ_BUFFER_SIZE: usize = 16 * 1024;
 const RTMP_PLAYBACK_DRAIN_INTERVAL: Duration = Duration::from_millis(10);
+const RTMP_PUBLISHER_LIVENESS_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 const RTMP_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 const TEST_LISTENER_DUPLICATION_FAILURE_ENV: &str =
     "OXIROUTE_INTERNAL_TEST_LISTENER_DUPLICATION_FAILURE";
@@ -716,10 +717,24 @@ impl ServerApp for RtmpIngest {
         let mut shutdown = shutdown.clone();
         let mut playback_drain = interval(RTMP_PLAYBACK_DRAIN_INTERVAL);
         playback_drain.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut publisher_liveness = interval(RTMP_PUBLISHER_LIVENESS_CHECK_INTERVAL);
+        publisher_liveness.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         loop {
             let outbound = tokio::select! {
                 _ = shutdown.changed() => break,
+                _ = publisher_liveness.tick() => {
+                    let Some(now_unix_ms) = unix_time_ms() else {
+                        warn!("closing RTMP session because the system clock is invalid");
+                        break;
+                    };
+                    at_unix_ms = now_unix_ms;
+                    if session.is_publisher_stale(now_unix_ms) {
+                        warn!("closing stale RTMP publisher session after media inactivity");
+                        break;
+                    }
+                    Vec::new()
+                }
                 _ = playback_drain.tick(), if session.is_playback_active() => {
                     match session.drain_playback(MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN) {
                         Ok(outbound) => outbound,
