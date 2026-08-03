@@ -1,9 +1,66 @@
 mod support;
 
+use std::{future::pending, io};
+
 use bytes::Bytes;
 use http::{Method, Request, Response, StatusCode};
-use oxiroute_forward_proxy::{Decision, Protocol};
-use tokio::net::{TcpListener, TcpStream};
+use oxiroute_forward_proxy::{BoundedTunnel, Decision, H2TunnelStream, Protocol, TunnelLimits};
+use tokio::{
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    net::{TcpListener, TcpStream},
+};
+
+struct H2WireStream {
+    receive: h2::RecvStream,
+    send: h2::SendStream<Bytes>,
+}
+
+#[async_trait::async_trait]
+impl H2TunnelStream for H2WireStream {
+    async fn recv_data(&mut self) -> io::Result<Option<Bytes>> {
+        let data = self
+            .receive
+            .data()
+            .await
+            .transpose()
+            .map_err(io::Error::other)?;
+        if let Some(data) = &data {
+            self.receive
+                .flow_control()
+                .release_capacity(data.len())
+                .map_err(io::Error::other)?;
+        }
+        Ok(data)
+    }
+
+    async fn send_data(&mut self, mut data: Bytes, end: bool) -> io::Result<()> {
+        if data.is_empty() {
+            self.send.send_data(data, end).map_err(io::Error::other)?;
+            return Ok(());
+        }
+        while !data.is_empty() {
+            self.send.reserve_capacity(data.len());
+            let capacity = std::future::poll_fn(|context| self.send.poll_capacity(context))
+                .await
+                .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "H2 send closed"))?
+                .map_err(io::Error::other)?;
+            let length = capacity.min(data.len());
+            let chunk = data.split_to(length);
+            self.send
+                .send_data(chunk, data.is_empty() && end)
+                .map_err(io::Error::other)?;
+        }
+        Ok(())
+    }
+
+    async fn wait_closed(&mut self) -> io::Result<()> {
+        pending().await
+    }
+
+    async fn reset(&mut self) {
+        self.send.send_reset(h2::Reason::CANCEL);
+    }
+}
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
@@ -44,19 +101,53 @@ async fn h2_forward_and_connect_cross_real_frames() {
                         )
                         .body(())
                         .expect("H2 CONNECT response");
-                    let mut response_body = respond
+                    let response_body = respond
                         .send_response(response, false)
                         .expect("H2 CONNECT response frames");
-                    let mut request_body = request.into_body();
-                    let payload = request_body
-                        .data()
-                        .await
-                        .expect("H2 CONNECT payload frame")
-                        .expect("H2 CONNECT payload");
-                    assert_eq!(&payload[..], b"ping");
-                    response_body
-                        .send_data(Bytes::from_static(b"pong"), true)
-                        .expect("H2 CONNECT echo frame");
+                    let receive = request.into_body();
+                    let (proxy_upstream, mut origin) = tokio::io::duplex(64);
+                    let origin_task = tokio::spawn(async move {
+                        let mut payload = [0; 4];
+                        origin
+                            .read_exact(&mut payload)
+                            .await
+                            .expect("H2 CONNECT origin payload");
+                        assert_eq!(&payload, b"ping");
+                        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+                        origin
+                            .write_all(b"po")
+                            .await
+                            .expect("H2 CONNECT origin response");
+                        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+                        origin
+                            .write_all(b"ng")
+                            .await
+                            .expect("H2 CONNECT origin response");
+                        origin.shutdown().await.expect("H2 CONNECT origin shutdown");
+                    });
+                    let outcome = BoundedTunnel::new(TunnelLimits {
+                        max_bytes_per_direction: 64,
+                        idle_timeout: std::time::Duration::from_secs(1),
+                        lifetime_timeout: std::time::Duration::from_secs(2),
+                        buffer_size: 16,
+                    })
+                    .expect("H2 tunnel limits")
+                    .relay_h2(
+                        H2WireStream {
+                            receive,
+                            send: response_body,
+                        },
+                        proxy_upstream,
+                    )
+                    .await;
+                    origin_task.await.expect("H2 CONNECT origin task");
+                    assert!(matches!(
+                        outcome,
+                        oxiroute_forward_proxy::TunnelOutcome::Ended {
+                            end: oxiroute_forward_proxy::TunnelEnd::Eof,
+                            ..
+                        }
+                    ));
                 }
             }
         }
@@ -102,11 +193,15 @@ async fn h2_forward_and_connect_cross_real_frames() {
         "tunnel:example.com:443"
     );
     let mut response_body = response.into_body();
-    let echo = response_body
-        .data()
-        .await
-        .expect("H2 tunnel echo frame")
-        .expect("H2 tunnel echo");
+    let mut echo = Vec::new();
+    while echo.len() < 4 {
+        let data = response_body
+            .data()
+            .await
+            .expect("H2 tunnel echo frame")
+            .expect("H2 tunnel echo");
+        echo.extend_from_slice(&data);
+    }
     assert_eq!(&echo[..], b"pong");
 
     drop(client);

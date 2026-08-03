@@ -25,7 +25,10 @@ mod upstream_peer;
 mod wire;
 
 pub use config_watcher::{ConfigWatcher, ConfigWatcherOptions, ConfigWatcherStatus};
-pub use forward_proxy::{ForwardConnectionLifecycle, ForwardHttp1ServicePlan, ForwardProxyBody};
+pub use forward_proxy::{
+    ForwardConnectionLifecycle, ForwardHttp1ServicePlan, ForwardHttp2ServiceApp,
+    ForwardHttp2ServicePlan, ForwardProxyBody,
+};
 pub use generation::{
     GenerationAdmission, GenerationCandidate, GenerationError, GenerationManager,
     GenerationMutation, GenerationReference, GenerationRevision, GenerationStatus,
@@ -37,9 +40,8 @@ pub use http_server_app::{HttpDownstreamPolicyApp, HttpListenerApp, MonitoredHtt
 pub use l4_service::L4ServicePlan;
 pub use listener_reservation::{ListenerReservation, ListenerReservations};
 pub use monitoring::{
-    CacheSnapshot,
-    CertbotCertificateSnapshot, CertbotWatcherHealth, CertbotWatcherSnapshot, ConnectionGuard,
-    DirectFileCertificateSnapshot, DirectFileWatcherSnapshot, HostSnapshot,
+    CacheSnapshot, CertbotCertificateSnapshot, CertbotWatcherHealth, CertbotWatcherSnapshot,
+    ConnectionGuard, DirectFileCertificateSnapshot, DirectFileWatcherSnapshot, HostSnapshot,
     HttpOperationCountSnapshot, HttpOperationResult, HttpOperationSnapshot, LatencyBucketSnapshot,
     LatencySnapshot, ListenerMetrics, ListenerRuntimeState, ListenerSnapshot, MetricsError,
     OPERATION_LATENCY_BUCKETS_MS, ProcessConnectionGuard, ProcessRuntime, ProcessSnapshot,

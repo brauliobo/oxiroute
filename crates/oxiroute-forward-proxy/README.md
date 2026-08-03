@@ -1,7 +1,8 @@
 # OxiRoute forward proxy foundation
 
 This workspace crate defines explicit forward-proxy parsing, authorization, destination policy,
-request sanitization, and tunnel primitives. Its daemon runtime integration remains fail-closed.
+request sanitization, and bounded tunnel primitives. The daemon integrates HTTP/1.1 and HTTP/2
+classic CONNECT; HTTP/3 remains fail-closed until its separate listener path is available.
 
 ```sh
 cargo test -p oxiroute-forward-proxy --locked
@@ -13,7 +14,7 @@ cargo clippy -p oxiroute-forward-proxy --all-targets --all-features --locked -- 
 | Ingress | Forward request | Classic CONNECT | Wire evidence |
 | --- | --- | --- | --- |
 | HTTP/1.1 | Strict absolute-form URI; normalized origin-form output | Strict authority-form, including bracketed IPv6; upgraded bytes supported | Hyper HTTP/1 over TCP; CONNECT payload is sent with the headers and echoed after a real upgrade |
-| HTTP/2 | Absolute URI reconstructed from `:scheme`, `:authority`, and `:path` | Authority-form CONNECT | `h2` client/server over TCP; CONNECT payload is echoed in DATA frames |
+| HTTP/2 | Absolute URI reconstructed from `:scheme`, `:authority`, and `:path` | Authority-form CONNECT | `h2` client/server wire test and daemon TLS/ALPN test; CONNECT payload is relayed in DATA frames |
 | HTTP/3 | Absolute URI reconstructed from QPACK pseudo-fields | Authority-only RFC 9114 classic CONNECT with DATA-frame tunnel relay | Quinn QUIC with TLS, negotiated `h3` ALPN, real QPACK HEADERS, bidirectional DATA, FIN, reset, rejection, and limit tests |
 
 The selected Rust-1.87-compatible H3 stack is `h3 0.0.8`, `h3-quinn 0.0.10`, and Quinn 0.11. The
@@ -44,8 +45,9 @@ explicitly rejected and is not used as a TCP CONNECT substitute.
 - `OverreadIo` replays bytes consumed beyond H1 headers before touching the socket. This is required
   when CONNECT payload arrives in the same read as its request.
 - `BoundedTunnel` enforces finite per-direction bytes, idle time, lifetime, and buffer allocation.
-  `relay` handles byte streams and `relay_h3` applies the same coordinator and accounting to H3
-  DATA frames, including FIN half-close and reset cancellation.
+  `relay` handles byte streams, `relay_h2` applies bounded DATA-frame relay to HTTP/2 streams, and
+  `relay_h3` applies the same coordinator and accounting to H3 DATA frames, including FIN
+  half-close and reset cancellation.
   The runtime remains responsible for connection concurrency, aggregate bandwidth, audit logging,
   shutdown, and mapping typed failures to safe HTTP responses.
 
@@ -56,20 +58,19 @@ The existing runtime registers reverse HTTP traffic through `pingora::proxy::htt
 that reverse-proxy implementation:
 
 1. Add a distinct forward-proxy configuration/service kind and listener admission limits.
-2. Implement a dedicated `HttpServerApp` that passes framed requests to
-   `ForwardProxy::decide_request`. Preserve an exact raw H1 target through `IncomingRequest` only
-   when the HTTP stack cannot retain it. H3 malformed classic CONNECT shapes must reset the stream
-   with `H3_MESSAGE_ERROR` when `DecisionError::InvalidHttp3` is returned.
+2. Implement a dedicated `HttpServerApp` that applies the shared authorization and destination
+   policy path. HTTP/2 classic CONNECT uses Pingora's per-stream body operations and never takes
+   ownership of the shared H2 connection. H3 malformed classic CONNECT shapes must reset the
+   stream with `H3_MESSAGE_ERROR` when `DecisionError::InvalidHttp3` is returned.
 3. Inject production authentication, DNS, and destination policy implementations. Connect only an
    address from `ApprovedDestination.socket_addresses`, retaining that selected address for audit.
 4. For forwarding, create an upstream session from the approved address, use the normalized
    origin-form target and sanitized headers, and select upstream TLS from `ForwardScheme`.
-5. For H1 CONNECT, verify that Pingora can return the post-2xx underlying stream and its parser
-   over-read bytes without treating CONNECT as the reverse proxy's 101 Upgrade path. The current
-   public `ServerSession` API exposes raw H1 headers and body methods but does not expose a clear
-   successful-CONNECT stream takeover; this likely needs a focused Pingora-core API extension.
+5. For H1 CONNECT, preserve the post-2xx underlying stream and parser over-read bytes without
+   routing CONNECT through the reverse proxy's 101 Upgrade path.
 6. For H2 CONNECT, adapt Pingora's per-stream body read/write operations to the shared bounded
-   tunnel accounting. Never take ownership of the shared H2 connection.
+   tunnel accounting. The relay propagates DATA end-stream, upstream half-close, flow control,
+   byte limits, idle/lifetime timeouts, and stream reset cancellation.
 7. Register Quinn/H3 as a separate UDP listener because Pingora's current HTTP app path covers H1
    and H2 only. After a successful tunnel decision and upstream connection, send the 2xx response
    and pass the H3 request stream plus the connected upstream stream to `BoundedTunnel::relay_h3`.

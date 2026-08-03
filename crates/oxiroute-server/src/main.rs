@@ -27,8 +27,8 @@ use oxiroute_rtmp::{MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN, RtmpRegistry, RtmpServic
 use oxiroute_server::{
     CertbotWatcherConfig, CertbotWatcherSupervisor, ConfigWatcher, ConfigWatcherOptions,
     ConnectionGuard, FileWatcherConfig, FileWatcherSupervisor, ForwardConnectionLifecycle,
-    ForwardHttp1ServicePlan, GenerationManager, HaproxyStatsApi, HaproxyStatsPage,
-    HttpDownstreamPolicyApp, HttpListenerApp, HttpReverseProxy, ListenerMetrics,
+    ForwardHttp1ServicePlan, ForwardHttp2ServiceApp, GenerationManager, HaproxyStatsApi,
+    HaproxyStatsPage, HttpDownstreamPolicyApp, HttpListenerApp, HttpReverseProxy, ListenerMetrics,
     ListenerReservation, MAX_HTTP_ATTEMPTS, MonitoredHttpApp, RtmpManagementApi, RuntimeGeneration,
     RuntimeMetrics, RuntimeReferenceKind, ServiceKind, TcpRelayCore, TlsProfilePlan,
     TopologySnapshot,
@@ -374,6 +374,29 @@ struct ForwardHttp1App {
     service: Arc<ForwardHttp1ServicePlan>,
 }
 
+struct ForwardHttp2App<A> {
+    generation: Arc<RuntimeGeneration>,
+    inner: Arc<A>,
+    metrics: ListenerMetrics,
+    service: Arc<ForwardHttp1ServicePlan>,
+}
+
+impl<A> ForwardHttp2App<A> {
+    fn new(
+        service: Arc<ForwardHttp1ServicePlan>,
+        inner: A,
+        metrics: ListenerMetrics,
+        generation: Arc<RuntimeGeneration>,
+    ) -> Self {
+        Self {
+            generation,
+            inner: Arc::new(inner),
+            metrics,
+            service,
+        }
+    }
+}
+
 struct ForwardDownstream<S> {
     idle: Pin<Box<Sleep>>,
     idle_timeout: Duration,
@@ -586,6 +609,64 @@ impl ServerApp for ForwardHttp1App {
         }
         lifecycle.wait_if_started().await;
         None
+    }
+}
+
+#[async_trait]
+impl<A> ServerApp for ForwardHttp2App<A>
+where
+    A: ServerApp + Send + Sync + 'static,
+{
+    fn accept_gate(&self) -> Option<AcceptGate> {
+        Some(self.generation.accept_gate())
+    }
+
+    fn accepting(&self) -> bool {
+        self.metrics.accepting() && self.generation.accepting() && self.inner.accepting()
+    }
+
+    fn admit_connection(&self) -> Option<ConnectionAdmission> {
+        let Some(service) = self.service.begin_connection() else {
+            warn!(
+                "rejected connection on forward service `{}`: service connection limit reached",
+                self.service.name()
+            );
+            return None;
+        };
+        let generation = self
+            .generation
+            .begin_reference(RuntimeReferenceKind::Http2)?;
+        let connection = admit_connection(&self.metrics)?;
+        let inner = self.inner.admit_connection()?;
+        Some(Box::new((service, generation, connection, inner)))
+    }
+
+    fn admit_owned_connection(&self) -> Option<ConnectionAdmission> {
+        let Some(service) = self.service.begin_connection() else {
+            warn!(
+                "rejected connection on forward service `{}`: service connection limit reached",
+                self.service.name()
+            );
+            return None;
+        };
+        let generation = self
+            .generation
+            .begin_owned_reference(RuntimeReferenceKind::Http2);
+        let connection = admit_connection(&self.metrics)?;
+        let inner = self.inner.admit_owned_connection()?;
+        Some(Box::new((service, generation, connection, inner)))
+    }
+
+    async fn process_new(
+        self: &Arc<Self>,
+        downstream: Stream,
+        shutdown: &ShutdownWatch,
+    ) -> Option<Stream> {
+        self.inner.process_new(downstream, shutdown).await
+    }
+
+    async fn cleanup(&self) {
+        self.inner.cleanup().await;
     }
 }
 
@@ -1586,6 +1667,31 @@ fn serve_generation(
                             .map(Duration::from_millis),
                     ),
                 );
+                add_http_listener(
+                    &mut service,
+                    &listener_name,
+                    &listener_bind,
+                    listener_tls.as_deref(),
+                )?;
+                server.add_service(
+                    RuntimeListenerService::new(service, reservation, Some(metrics))
+                        .with_generation(Arc::clone(generation)),
+                );
+            }
+            ServiceKind::ForwardHttp2(forward_service) => {
+                let app = ForwardHttp2App::new(
+                    Arc::clone(&forward_service),
+                    HttpListenerApp::new(
+                        HttpDownstreamPolicyApp::new(
+                            ForwardHttp2ServiceApp::new(forward_service),
+                            downstream_timeouts,
+                        ),
+                        listener_tls.as_deref(),
+                    ),
+                    metrics.clone(),
+                    Arc::clone(generation),
+                );
+                let mut service = Service::new(service_name, app);
                 add_http_listener(
                     &mut service,
                     &listener_name,
