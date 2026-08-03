@@ -350,11 +350,11 @@ impl RecordingStore {
         Ok(Self { shared })
     }
 
-    /// Creates one exclusive hidden partial for a validated final relative name.
+    /// Creates one exclusive recording path for a validated final relative name.
     ///
     /// # Errors
     ///
-    /// Returns an error for an invalid name, exhausted quota, repeated partial-name collisions, or
+    /// Returns an error for an invalid name, exhausted quota, repeated final-name collisions, or
     /// an operating-system creation failure.
     pub fn create(&self, final_relative_name: &str) -> Result<RecordingFile, RecordingStoreError> {
         self.create_inner(final_relative_name, || false)
@@ -410,11 +410,17 @@ impl RecordingStore {
             });
         }
 
-        for _ in 0..MAX_NAME_ATTEMPTS {
-            let partial_name = partial_name();
+        for attempt in 0..MAX_NAME_ATTEMPTS {
+            let Some(relative_name) = (if attempt == 0 {
+                Some(final_relative_name.to_owned())
+            } else {
+                collision_recording_filename(final_relative_name, attempt)
+            }) else {
+                break;
+            };
             match rustix_fs::openat(
                 &self.shared.root,
-                partial_name.as_str(),
+                relative_name.as_str(),
                 OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
                 Mode::RUSR | Mode::WUSR,
             ) {
@@ -424,8 +430,8 @@ impl RecordingStore {
                         shared: Arc::clone(&self.shared),
                         _ownership: ownership,
                         file: Some(File::from(descriptor)),
-                        partial_name,
-                        final_relative_name: final_relative_name.to_owned(),
+                        partial_name: relative_name.clone(),
+                        final_relative_name: relative_name,
                         position: 0,
                         length: 0,
                         partial_exists: true,
@@ -451,7 +457,9 @@ impl RecordingStore {
             }
         }
 
-        Err(RecordingStoreError::PartialNameCollisions)
+        Err(RecordingStoreError::FinalNameCollisions {
+            partial_relative_name: final_relative_name.to_owned(),
+        })
     }
 
     #[must_use]
@@ -568,7 +576,7 @@ impl RecordingStore {
     }
 }
 
-/// Exclusive writable ownership of one hidden store partial.
+/// Exclusive writable ownership of one recording path.
 pub struct RecordingFile {
     shared: Arc<StoreShared>,
     _ownership: OwnedFd,
@@ -658,9 +666,6 @@ impl RecordingFile {
         final_relative_name: String,
     ) -> Result<(), RecordingStoreError> {
         validate_relative_name(&final_relative_name)?;
-        if self.resumed && self.final_relative_name != final_relative_name {
-            return Err(RecordingStoreError::InvalidRelativeName);
-        }
         self.final_relative_name = final_relative_name;
         Ok(())
     }
@@ -690,8 +695,8 @@ impl RecordingFile {
             .store(true, Ordering::Release);
     }
 
-    /// Flushes and synchronizes the partial, closes it, then atomically publishes it without
-    /// replacing an existing entry. A collision receives a bounded deterministic relative suffix.
+    /// Flushes and synchronizes the recording, then publishes any renamed target without replacing
+    /// an existing entry. A collision receives a bounded deterministic relative suffix.
     ///
     /// # Errors
     ///
@@ -727,15 +732,6 @@ impl RecordingFile {
                 partial_relative_name: self.partial_name.clone(),
             });
         }
-        if self.resumed {
-            self.commit.finish();
-            self.file_accounted = false;
-            return Ok(RecordingCommit {
-                relative_name: self.final_relative_name.clone(),
-                bytes: self.length,
-            });
-        }
-
         #[cfg(test)]
         self.commit.wait_before_publication();
         if !self.commit.begin_publication() {
@@ -743,11 +739,15 @@ impl RecordingFile {
         }
         #[cfg(test)]
         self.commit.wait_after_publication_claim();
-        let relative_name = match self.publish() {
-            Ok(relative_name) => relative_name,
-            Err(error) => {
-                self.commit.finish();
-                return Err(error);
+        let relative_name = if self.partial_name == self.final_relative_name {
+            self.final_relative_name.clone()
+        } else {
+            match self.publish() {
+                Ok(relative_name) => relative_name,
+                Err(error) => {
+                    self.commit.finish();
+                    return Err(error);
+                }
             }
         };
         self.partial_exists = false;
@@ -1495,13 +1495,6 @@ fn validate_relative_name(name: &str) -> Result<(), RecordingStoreError> {
     Ok(())
 }
 
-fn partial_name() -> String {
-    format!(
-        "{PARTIAL_PREFIX}{}{PARTIAL_SUFFIX}",
-        Uuid::new_v4().simple()
-    )
-}
-
 fn is_owned_partial(name: &[u8]) -> bool {
     let Some(token) = name
         .strip_prefix(PARTIAL_PREFIX.as_bytes())
@@ -1767,9 +1760,12 @@ mod tests {
             },
         )
         .expect("recording store");
-        let mut recording = store.create("camera.flv").expect("recording partial");
+        let mut recording = store.create("recording.flv").expect("recording");
         recording.write_all(b"recording").expect("recording data");
         let partial = recording.partial_relative_name().to_owned();
+        recording
+            .set_final_relative_name("camera.flv".to_owned())
+            .expect("final recording name");
         recording.fail_publication_unlinks();
 
         let error = recording.commit().expect_err("injected rollback failure");
@@ -1806,9 +1802,12 @@ mod tests {
     fn synchronizes_a_successful_publication_rollback_before_reporting_the_partial() {
         let root = tempdir().expect("recording root");
         let store = test_store(root.path());
-        let mut recording = store.create("camera.flv").expect("recording partial");
+        let mut recording = store.create("recording.flv").expect("recording");
         recording.write_all(b"recording").expect("recording data");
         let partial = recording.partial_relative_name().to_owned();
+        recording
+            .set_final_relative_name("camera.flv".to_owned())
+            .expect("final recording name");
         recording.fail_partial_unlink();
 
         let error = recording
@@ -1834,9 +1833,12 @@ mod tests {
     fn reports_conservative_names_when_rollback_directory_sync_fails() {
         let root = tempdir().expect("recording root");
         let store = test_store(root.path());
-        let mut recording = store.create("camera.flv").expect("recording partial");
+        let mut recording = store.create("recording.flv").expect("recording");
         recording.write_all(b"recording").expect("recording data");
         let partial = recording.partial_relative_name().to_owned();
+        recording
+            .set_final_relative_name("camera.flv".to_owned())
+            .expect("final recording name");
         recording.fail_partial_unlink_and_rollback_sync();
 
         let error = recording

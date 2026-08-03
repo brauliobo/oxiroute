@@ -494,22 +494,36 @@ async fn evicted_generation_keeps_recording_live_connections_until_final_shutdow
     publisher.publish("camera").await;
     publisher.publish_audio(1, &[0xaf, 0x00, 0x12]).await;
     publisher.publish_audio(2, &[0xaf, 0x01, 0x44]).await;
-    let initial_size = wait_for_partial_growth(&continuous_root, 0).await;
+    let initial_size = wait_for_recording_growth(&continuous_root, 0).await;
 
     config.max_connections = Some(64);
     write_config(&server.config_path, &config);
     wait_for_new_revision(management_address, &authorization, &original_revision).await;
     publisher.publish_audio(3, &[0xaf, 0x01, 0x55]).await;
-    let second_size = wait_for_partial_growth(&continuous_root, initial_size).await;
+    let second_size = wait_for_recording_growth(&continuous_root, initial_size).await;
     let second_revision = active_revision(management_address, &authorization).await;
     config.max_connections = Some(65);
     write_config(&server.config_path, &config);
     wait_for_new_revision(management_address, &authorization, &second_revision).await;
     publisher.publish_audio(4, &[0xaf, 0x01, 0x66]).await;
-    wait_for_partial_growth(&continuous_root, second_size).await;
+    wait_for_recording_growth(&continuous_root, second_size).await;
     publisher.close().await;
     let files = wait_for_recording_file_count(&continuous_root, 1).await;
-    let recording = fs::read(&files[0]).expect("finalized evicted generation recording");
+    let recording_path = files[0].clone();
+    let recording = timeout(WIRE_TIMEOUT, async {
+        loop {
+            let recording = fs::read(&recording_path).expect("evicted generation recording");
+            if recording
+                .windows(3)
+                .any(|bytes| bytes == [0xaf, 0x01, 0x66])
+            {
+                return recording;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("evicted generation recording did not drain");
     assert!(
         recording
             .windows(3)
@@ -920,17 +934,16 @@ async fn wait_for_file(path: &Path) {
     .unwrap_or_else(|_| panic!("recording did not finalize at {}", path.display()));
 }
 
-async fn wait_for_partial_growth(root: &Path, previous_size: u64) -> u64 {
+async fn wait_for_recording_growth(root: &Path, previous_size: u64) -> u64 {
     timeout(WIRE_TIMEOUT, async {
         loop {
             let size = fs::read_dir(root)
                 .expect("recording directory")
                 .filter_map(Result::ok)
                 .filter(|entry| {
-                    entry
-                        .file_name()
-                        .to_str()
-                        .is_some_and(|name| name.ends_with(".partial"))
+                    entry.file_name().to_str().is_some_and(|name| {
+                        name != ".oxiroute-recording.lock" && !name.starts_with('.')
+                    })
                 })
                 .filter_map(|entry| entry.metadata().ok())
                 .map(|metadata| metadata.len())
@@ -943,7 +956,7 @@ async fn wait_for_partial_growth(root: &Path, previous_size: u64) -> u64 {
         }
     })
     .await
-    .expect("recording partial did not grow")
+    .expect("recording did not grow")
 }
 
 async fn wait_for_recording_file_count(root: &Path, expected: usize) -> Vec<std::path::PathBuf> {

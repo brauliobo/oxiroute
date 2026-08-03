@@ -199,7 +199,7 @@ fn legacy_lock_entry_replacement_does_not_interrupt_the_pinned_store() {
 }
 
 #[test]
-fn refuses_to_publish_when_the_owned_partial_name_is_replaced_by_a_symlink() {
+fn refuses_to_publish_when_the_owned_recording_name_is_replaced_by_a_symlink() {
     let temporary = tempdir().expect("temporary directory");
     let root = temporary.path().join("recordings");
     let outside = temporary.path().join("outside");
@@ -208,18 +208,18 @@ fn refuses_to_publish_when_the_owned_partial_name_is_replaced_by_a_symlink() {
     let store = RecordingStore::open(&root, limits()).expect("recording store");
     let mut recording = store.create("camera.flv").expect("recording partial");
     recording.write_all(b"recording").expect("recording data");
-    let partial = only_partial(&root);
-    fs::remove_file(&partial).expect("remove owned partial name");
-    symlink(&outside, &partial).expect("replacement symlink");
+    let recording_path = root.join("camera.flv");
+    fs::remove_file(&recording_path).expect("remove owned recording name");
+    symlink(&outside, &recording_path).expect("replacement symlink");
 
     assert!(matches!(
         recording.commit(),
         Err(RecordingStoreError::PartialOwnershipLost { .. })
     ));
     assert_eq!(fs::read(&outside).expect("outside content"), b"untouched");
-    assert!(!root.join("camera.flv").exists());
+    assert!(!root.join("camera-1.flv").exists());
     assert!(
-        fs::symlink_metadata(partial)
+        fs::symlink_metadata(recording_path)
             .expect("replacement remains")
             .file_type()
             .is_symlink()
@@ -288,17 +288,15 @@ fn startup_scan_waits_for_exclusive_cross_process_cleanup() {
 }
 
 #[test]
-fn opening_a_second_store_never_cleans_an_active_writers_partial() {
+fn opening_a_second_store_never_cleans_an_active_writers_recording() {
     let temporary = tempdir().expect("temporary directory");
     let first_store = RecordingStore::open(temporary.path(), limits()).expect("first store");
-    let mut first = first_store
-        .create("camera.flv")
-        .expect("active recording partial");
+    let mut first = first_store.create("camera.flv").expect("active recording");
     first.write_all(b"first").expect("first data");
-    let active_partial = only_partial(temporary.path());
+    let active_recording = temporary.path().join("camera.flv");
 
     let second_store = RecordingStore::open(temporary.path(), limits()).expect("second store");
-    assert!(active_partial.exists(), "live writer lost its partial");
+    assert!(active_recording.exists(), "live writer lost its recording");
     let mut second = second_store
         .create("camera.flv")
         .expect("concurrent recording partial");
@@ -466,21 +464,16 @@ fn publishes_same_requested_name_without_overwrite_and_bounds_collision_names() 
 
     let mut first = store.create(&requested).expect("first partial");
     let mut second = store.create(&requested).expect("second partial");
-    let partials: Vec<_> = recording_entries(temporary.path())
-        .into_iter()
-        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".partial"))
-        .collect();
-    assert_eq!(partials.len(), 2);
-    assert_ne!(partials[0].file_name(), partials[1].file_name());
-    for partial in &partials {
-        let name = partial.file_name();
-        let name = name.to_str().expect("ASCII partial name");
-        assert!(name.starts_with(".oxiroute-recording-"));
-        assert!(name.ends_with(".partial"));
-        let metadata = partial.metadata().expect("partial metadata");
-        assert!(metadata.is_file());
-        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
-    }
+    assert!(temporary.path().join(&requested).is_file());
+    assert!(
+        temporary
+            .path()
+            .join(format!(
+                "{}-1",
+                "x".repeat(MAX_RECORDING_FILENAME_BYTES - 2)
+            ))
+            .is_file()
+    );
     first.write_all(b"first").expect("first data");
     second.write_all(b"second").expect("second data");
     let first = first.commit().expect("first publish");
@@ -547,17 +540,6 @@ fn limits() -> RecordingStoreLimits {
         max_files: Some(64),
         max_active_recorders: 8,
     }
-}
-
-fn only_partial(root: &std::path::Path) -> std::path::PathBuf {
-    recording_entries(root)
-        .into_iter()
-        .map(|entry| entry.path())
-        .find(|path| {
-            path.file_name()
-                .is_some_and(|name| name.to_string_lossy().ends_with(".partial"))
-        })
-        .expect("recording partial")
 }
 
 fn recording_entries(root: &std::path::Path) -> Vec<fs::DirEntry> {
