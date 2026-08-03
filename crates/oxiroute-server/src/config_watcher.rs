@@ -1,5 +1,6 @@
 use std::{
-    path::Path,
+    collections::HashSet,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -85,6 +86,14 @@ impl ConfigWatcher {
             notify::Config::default(),
         )?;
         watcher.watch(&parent, RecursiveMode::NonRecursive)?;
+        let mut watched_directories = HashSet::from([parent]);
+        if let ConfigLoadOutcome::Loaded(document) = coordinator.load() {
+            watch_dependency_parents(
+                &mut watcher,
+                &document.dependencies,
+                &mut watched_directories,
+            )?;
+        }
         let shutdown = Arc::new(AtomicBool::new(false));
         let counters = Arc::new(WatcherCounters::default());
         counters.running.store(true, Ordering::Release);
@@ -93,7 +102,8 @@ impl ConfigWatcher {
         let thread = thread::Builder::new()
             .name("oxiroute-config-watch".into())
             .spawn(move || {
-                let _watcher = watcher;
+                let mut watcher = watcher;
+                let mut watched_directories = watched_directories;
                 while !thread_shutdown.load(Ordering::Acquire) {
                     let event = events_rx
                         .recv_timeout(options.reconciliation_interval)
@@ -115,7 +125,19 @@ impl ConfigWatcher {
                             thread_counters.events.fetch_add(1, Ordering::Relaxed);
                         }
                     }
-                    reconcile(&coordinator, &generations, &thread_counters);
+                    if let Some(dependencies) =
+                        reconcile(&coordinator, &generations, &thread_counters)
+                    {
+                        if watch_dependency_parents(
+                            &mut watcher,
+                            &dependencies,
+                            &mut watched_directories,
+                        )
+                        .is_err()
+                        {
+                            thread_counters.rejected.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
                 }
                 thread_counters.running.store(false, Ordering::Release);
             })
@@ -165,14 +187,36 @@ fn handle_notify_event(wake: &mpsc::SyncSender<()>, event: notify::Result<notify
     }
 }
 
+fn watch_dependency_parents(
+    watcher: &mut RecommendedWatcher,
+    dependencies: &[PathBuf],
+    watched_directories: &mut HashSet<PathBuf>,
+) -> notify::Result<()> {
+    for dependency in dependencies {
+        let Some(parent) = dependency
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+        else {
+            continue;
+        };
+        let parent = parent.to_path_buf();
+        if !watched_directories.contains(&parent) {
+            watcher.watch(&parent, RecursiveMode::NonRecursive)?;
+            watched_directories.insert(parent);
+        }
+    }
+    Ok(())
+}
+
 fn reconcile(
     coordinator: &CanonicalConfigCoordinator,
     generations: &GenerationManager,
     counters: &WatcherCounters,
-) {
+) -> Option<Vec<PathBuf>> {
     counters.reconciliations.fetch_add(1, Ordering::Relaxed);
     match coordinator.load() {
         ConfigLoadOutcome::Loaded(document) => {
+            let dependencies = document.dependencies.clone();
             let status = generations.status();
             generations.observe_disk_revision(document.disk_revision.clone());
             let revision = &document.candidate_revision;
@@ -190,9 +234,11 @@ fn reconcile(
             {
                 counters.rejected.fetch_add(1, Ordering::Relaxed);
             }
+            Some(dependencies)
         }
         ConfigLoadOutcome::Rejected(_) => {
             counters.rejected.fetch_add(1, Ordering::Relaxed);
+            None
         }
     }
 }
@@ -386,6 +432,66 @@ mod tests {
 
         assert_eq!(fs::read(&path).unwrap(), root_bytes);
         assert!(watcher.status().reconciliations > 0);
+        watcher.shutdown();
+    }
+
+    #[test]
+    fn dependency_watch_reconciles_a_deleted_nginx_glob_without_waiting_for_periodic_interval() {
+        let directory = TempDir::new().expect("directory");
+        let native_directory = directory.path().join("native");
+        let sites_directory = native_directory.join("sites-enabled");
+        fs::create_dir_all(&sites_directory).expect("native directories");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener port");
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        fs::write(
+            native_directory.join("nginx.conf"),
+            b"events {} http { access_log off; include sites-enabled/*.conf; }",
+        )
+        .expect("nginx root");
+        let site = sites_directory.join("site.conf");
+        fs::write(
+            &site,
+            format!("server {{ listen 127.0.0.1:{port}; location / {{ return 200 ok; }} }}"),
+        )
+        .expect("nginx site");
+        let path = directory.path().join("oxiroute.kdl");
+        fs::write(
+            &path,
+            "version 1\nnginx_server \"native/nginx.conf\" { root_prefix \"native\" }\n",
+        )
+        .expect("root source");
+        let coordinator = CanonicalConfigCoordinator::new(&path).expect("coordinator");
+        let manager = GenerationManager::new();
+        let ConfigLoadOutcome::Loaded(initial) = coordinator.load() else {
+            panic!("initial load")
+        };
+        let initial_candidate_revision = initial.candidate_revision.clone();
+        let initial = manager.prepare(*initial).expect("initial prepare");
+        manager.activate(&initial).expect("initial activation");
+        let mut watcher = ConfigWatcher::start(
+            coordinator,
+            manager.clone(),
+            ConfigWatcherOptions {
+                debounce: Duration::from_millis(10),
+                max_debounce: Duration::from_millis(30),
+                reconciliation_interval: Duration::from_secs(30),
+            },
+        )
+        .expect("watcher");
+
+        fs::remove_file(site).expect("delete nginx site");
+        wait_until(|| {
+            manager
+                .status()
+                .candidate_revision
+                .as_ref()
+                .is_some_and(|revision| revision != &initial_candidate_revision)
+        });
+
+        let candidate = manager.candidate().expect("queued candidate");
+        assert!(candidate.generation().config().listeners.is_empty());
+        assert!(watcher.status().events > 0);
         watcher.shutdown();
     }
 

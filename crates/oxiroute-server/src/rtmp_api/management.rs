@@ -460,12 +460,22 @@ impl ManagementState {
             Ok(mutation) => mutation,
             Err(error) => return mutation_error(&error),
         };
-        let ConfigLoadOutcome::Loaded(document) = self.coordinator.load() else {
-            return ApiResponse::error(
-                422,
-                "config_rejected",
-                "persisted configuration is invalid",
-            );
+        let document = match self.coordinator.load() {
+            ConfigLoadOutcome::Loaded(document) => document,
+            ConfigLoadOutcome::Rejected(rejection) => {
+                return ApiResponse::json(
+                    422,
+                    &json!({
+                        "error": {
+                            "code": "config_rejected",
+                            "message": "persisted configuration is invalid",
+                        },
+                        "diskRevision": rejection.disk_revision,
+                        "activeRevision": self.generations.status().active_revision,
+                        "diagnostics": rejection.diagnostics,
+                    }),
+                );
+            }
         };
         match self.generations.prepare(*document) {
             Ok(candidate) => ApiResponse::json(

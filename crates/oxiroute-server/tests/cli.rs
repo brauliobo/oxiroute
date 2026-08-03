@@ -1,11 +1,12 @@
 use std::{
     fs,
     io::{Read as _, Write as _},
-    net::TcpListener,
+    net::{SocketAddr, TcpListener},
     os::unix::fs::PermissionsExt as _,
     path::Path,
-    process::Command,
+    process::{Child, Command, Output, Stdio},
     thread,
+    time::{Duration, Instant},
 };
 
 use tempfile::TempDir;
@@ -14,6 +15,7 @@ use oxiroute_config::Config;
 use oxiroute_config_source::{
     ConfigFormat, decode_value, render_config, resolve_source_with_format,
 };
+use serde_json::Value;
 
 const TOKEN: &str = "cdb85a91948758cfcb895216a3603c8fcd8aaf691f39f5fd82b5df15af14628e";
 
@@ -289,6 +291,70 @@ fn import_report_output_is_unchanged_by_preview_format() {
     assert_eq!(formatted_report.stderr, report.stderr);
 }
 
+#[test]
+fn generation_reload_cli_re_resolves_a_deleted_nginx_site() {
+    let server = NativeReloadServer::start(false);
+    let initial = server.generation_status();
+    assert_eq!(
+        server
+            .config()
+            .pointer("/config/listeners")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    fs::remove_file(&server.site_path).expect("delete nginx site");
+    let reload = server.run(&["generation", "reload"]);
+    assert!(reload.status.success(), "{}", output_text(&reload));
+    let candidate_revision = serde_json::from_slice::<Value>(&reload.stdout)
+        .expect("reload response")
+        .get("candidateRevision")
+        .and_then(Value::as_str)
+        .expect("candidate revision")
+        .to_owned();
+    let active = server.wait_for_active_change(
+        initial["generation"]["activeRevision"]
+            .as_str()
+            .expect("initial active revision"),
+    );
+
+    assert_eq!(active["generation"]["activeRevision"], candidate_revision);
+    assert_eq!(
+        active["generation"]["diskRevision"],
+        initial["generation"]["diskRevision"]
+    );
+    assert!(
+        server
+            .config()
+            .pointer("/config/listeners")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+    );
+}
+
+#[test]
+fn generation_reload_cli_keeps_the_old_generation_and_surfaces_native_failure() {
+    let server = NativeReloadServer::start(true);
+    let initial = server.generation_status();
+    let initial_revision = initial["generation"]["activeRevision"]
+        .as_str()
+        .expect("initial active revision")
+        .to_owned();
+
+    fs::remove_file(&server.site_path).expect("delete exact nginx include");
+    let reload = server.run(&["generation", "reload"]);
+
+    assert!(!reload.status.success());
+    assert!(String::from_utf8_lossy(&reload.stderr).contains("E_NATIVE_SOURCE"));
+    assert_eq!(
+        server.generation_status()["generation"]["activeRevision"],
+        initial_revision
+    );
+}
+
 fn empty_config() -> Config {
     Config {
         version: 1,
@@ -329,6 +395,144 @@ fn import_preview(args: &[&str], format_name: Option<&str>, format: ConfigFormat
 
 fn cli() -> Command {
     Command::new(env!("CARGO_BIN_EXE_oxiroute"))
+}
+
+struct NativeReloadServer {
+    child: Child,
+    endpoint: String,
+    token_path: std::path::PathBuf,
+    site_path: std::path::PathBuf,
+    _directory: TempDir,
+}
+
+impl NativeReloadServer {
+    fn start(exact_include: bool) -> Self {
+        let directory = TempDir::new().expect("native reload directory");
+        let native = directory.path().join("native");
+        let sites = native.join("sites-enabled");
+        fs::create_dir_all(&sites).expect("native directories");
+        let management = reserve_tcp_address();
+        let listener = reserve_tcp_address();
+        let token_path = directory.path().join("management.token");
+        fs::write(&token_path, TOKEN).expect("management token");
+        fs::set_permissions(&token_path, fs::Permissions::from_mode(0o600))
+            .expect("management token mode");
+        let config_path = directory.path().join("oxiroute.kdl");
+        fs::write(
+            &config_path,
+            format!(
+                "version 1\n(object)management {{ bind \"{management}\" }}\nnginx_server \"native/nginx.conf\" {{ root_prefix \"native\" }}\n"
+            ),
+        )
+        .expect("canonical source");
+        fs::write(
+            native.join("nginx.conf"),
+            format!(
+                "events {{}} http {{ access_log off; include sites-enabled/{}; }}",
+                if exact_include { "site.conf" } else { "*.conf" }
+            ),
+        )
+        .expect("nginx root");
+        let site_path = sites.join("site.conf");
+        fs::write(
+            &site_path,
+            format!("server {{ listen {listener}; location / {{ return 200 ok; }} }}"),
+        )
+        .expect("nginx site");
+        let child = Command::new(env!("CARGO_BIN_EXE_oxiroute"))
+            .env("OXIROUTE_MANAGEMENT_TOKEN_FILE", &token_path)
+            .arg("serve")
+            .arg(&config_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start oxiroute");
+        let server = Self {
+            child,
+            endpoint: format!("http://{management}"),
+            token_path,
+            site_path,
+            _directory: directory,
+        };
+        server.wait_for_startup();
+        server
+    }
+
+    fn run(&self, args: &[&str]) -> Output {
+        let mut command = cli();
+        command
+            .args([
+                "--endpoint",
+                &self.endpoint,
+                "--token-file",
+                self.token_path.to_str().expect("token path"),
+                "--output",
+                "json",
+            ])
+            .args(args)
+            .output()
+            .expect("oxiroute CLI")
+    }
+
+    fn generation_status(&self) -> Value {
+        let output = self.run(&["generation", "status"]);
+        assert!(output.status.success(), "{}", output_text(&output));
+        serde_json::from_slice(&output.stdout).expect("generation status")
+    }
+
+    fn config(&self) -> Value {
+        let output = self.run(&["config", "get"]);
+        assert!(output.status.success(), "{}", output_text(&output));
+        serde_json::from_slice(&output.stdout).expect("config response")
+    }
+
+    fn wait_for_startup(&self) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let output = self.run(&["generation", "status"]);
+            if output.status.success() {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "oxiroute did not start: {}",
+                output_text(&output)
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    fn wait_for_active_change(&self, previous: &str) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let status = self.generation_status();
+            if status["generation"]["activeRevision"].as_str() != Some(previous) {
+                return status;
+            }
+            assert!(Instant::now() < deadline, "generation did not activate");
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+}
+
+impl Drop for NativeReloadServer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn reserve_tcp_address() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("reserve address");
+    listener.local_addr().expect("reserved address")
+}
+
+fn output_text(output: &Output) -> String {
+    format!(
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
 }
 
 fn serve_once(status: u16, body: &'static str) -> String {
