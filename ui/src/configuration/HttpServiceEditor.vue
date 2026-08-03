@@ -11,6 +11,9 @@ header.form-heading
   label.field(data-field="http_services[].upstream_io_timeout_ms")
     span Upstream I/O timeout (ms)
     input(type="number" min="1" step="1" v-model.number="service.upstream_io_timeout_ms")
+  label.field.checkbox(data-field="http_services[].automatic_response_headers")
+    input(type="checkbox" v-model="service.automatic_response_headers")
+    span Generate Date and Connection response headers
 NullableLimitField(
   v-model="service.max_request_body_bytes"
   :default-value="10485760"

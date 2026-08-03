@@ -2933,6 +2933,7 @@ dependencies = [
  "daggy",
  "derivative",
  "flate2",
+ "foreign-types 0.3.2",
  "futures",
  "h2",
  "http",

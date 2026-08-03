@@ -21,6 +21,7 @@ use crate::{E_INVALID_VALUE, E_SEMANTICS_NOT_REPRESENTABLE, E_UNSUPPORTED_FEATUR
 use crate::nginx::{
     DirectiveOrigin, EffectiveBind, EffectiveHttp, EffectiveLocation, EffectiveServer,
     ListenEndpoint, LocationKind, OccurrenceId, ProxyPassScheme, ServerNameKind, StaticEndpoint,
+    semantic::certbot_host_condition,
 };
 
 use super::{
@@ -133,7 +134,7 @@ pub(super) fn canonical_dns_name(name: &str) -> bool {
         })
 }
 
-fn parse_size(value: &[u8]) -> Option<u64> {
+pub(super) fn parse_size(value: &[u8]) -> Option<u64> {
     parse_size_inner(value, false)
 }
 
@@ -154,7 +155,7 @@ fn parse_size_inner(value: &[u8], allow_zero: bool) -> Option<u64> {
     ((allow_zero || bytes > 0) && bytes <= 9_007_199_254_740_991).then_some(bytes)
 }
 
-fn parse_duration_ms(value: &[u8]) -> Option<u64> {
+pub(super) fn parse_duration_ms(value: &[u8]) -> Option<u64> {
     const MAX_CANONICAL_INTEGER: u64 = 9_007_199_254_740_991;
 
     if value.iter().all(u8::is_ascii_digit) {
@@ -435,6 +436,28 @@ impl Lowerer {
             all_origins.push(server.origin.clone());
             let mut has_local_catch_all = false;
             for location in &server.locations {
+                let synthetic_name = self
+                    .occurrence(location.origin.occurrence)
+                    .map(|occurrence| occurrence.directive.name.value.as_slice());
+                let location_hosts = if synthetic_name == Some(b"if") {
+                    let host = self
+                        .occurrence(location.origin.occurrence)
+                        .and_then(|occurrence| certbot_host_condition(&occurrence.directive))
+                        .and_then(|host| utf8(host).and_then(canonical_exact_host));
+                    let Some(host) = host else {
+                        issues.push(issue(
+                            &location.origin,
+                            E_INVALID_VALUE,
+                            "nginx host redirect condition is not a canonical exact host",
+                        ));
+                        continue;
+                    };
+                    vec![Some(HttpHostSelector::NormalizedHost { value: host })]
+                } else if synthetic_name == Some(b"return") && hosts.contains(&None) {
+                    vec![None]
+                } else {
+                    hosts.clone()
+                };
                 let top_level_catch_all = location.kind == LocationKind::Prefix
                     && location
                         .path
@@ -444,7 +467,7 @@ impl Lowerer {
                 match self.lower_location(
                     http,
                     location,
-                    &hosts,
+                    &location_hosts,
                     &service_name,
                     http_index,
                     routes.len(),
@@ -535,6 +558,7 @@ impl Lowerer {
             service: HttpService {
                 name: service_name,
                 routes,
+                automatic_response_headers: true,
                 upstream_io_timeout_ms: NGINX_DEFAULT_PROXY_TIMEOUT_MS,
                 max_request_body_bytes: Some(NGINX_DEFAULT_BODY_BYTES),
                 gzip,
@@ -1008,7 +1032,7 @@ impl Lowerer {
             }
             let mut header_origins = Vec::new();
             let headers = self.lower_literal_headers(location, &mut header_origins, &mut issues);
-            let action = Self::lower_return(
+            let action = self.lower_return(
                 &value,
                 &location.origin,
                 nginx_host_fallback,
@@ -1288,10 +1312,11 @@ impl Lowerer {
     }
 
     fn lower_return(
+        &self,
         value: &PolicyValue,
         fallback: &DirectiveOrigin,
         nginx_host_fallback: Option<&str>,
-        headers: Vec<HttpLiteralHeader>,
+        mut headers: Vec<HttpLiteralHeader>,
         issues: &mut Vec<LowerIssue>,
     ) -> Option<HttpRouteAction> {
         let origin = value.origins.last().unwrap_or(fallback);
@@ -1311,6 +1336,12 @@ impl Lowerer {
             ));
             return None;
         };
+        if matches!(status, 301 | 302 | 307 | 308) || (status == 404 && payload.is_empty()) {
+            if let Some(server) = self.default_error_server.as_deref() {
+                headers.extend(nginx_default_headers(server));
+                self.used_default_error_overlay.set(true);
+            }
+        }
         if matches!(status, 301 | 302 | 307 | 308) {
             if payload.is_empty() {
                 issues.push(issue(
@@ -1338,7 +1369,15 @@ impl Lowerer {
         }
         Some(HttpRouteAction::FixedResponse {
             status,
-            body: payload.into(),
+            body: if status == 404 && payload.is_empty() {
+                self.default_error_server
+                    .as_deref()
+                    .map_or_else(String::new, |server| {
+                        nginx_error_body(404, "Not Found", server)
+                    })
+            } else {
+                payload.into()
+            },
             headers,
         })
     }
@@ -1511,8 +1550,23 @@ impl Lowerer {
             self.lower_proxy_headers(location, proxy, nginx_host_fallback, issues);
         self.validate_response_controls(location, proxy, issues);
         let mut response_header_origins = Vec::new();
-        let response_headers =
+        let mut response_headers =
             self.lower_response_headers(location, &mut response_header_origins, issues);
+        if let Some(server) = self.default_error_server.as_deref() {
+            response_headers.extend([
+                HttpResponseHeaderMutation::Set {
+                    name: "server".into(),
+                    value: server.into(),
+                    always: true,
+                },
+                HttpResponseHeaderMutation::Set {
+                    name: "content-type".into(),
+                    value: "text/html".into(),
+                    always: true,
+                },
+            ]);
+            self.used_default_error_overlay.set(true);
+        }
         let response_cookie_path_rewrites = self.lower_cookie_rewrites(location, issues);
         let retry = self.lower_proxy_retry(location, pool.pool.servers.len(), issues);
         let timeouts = self.proxy_timeouts(location.origin.occurrence, &location.origin, issues);
@@ -1780,6 +1834,9 @@ impl Lowerer {
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>();
+        if self.default_error_server.is_some() {
+            hidden.retain(|name| !name.eq_ignore_ascii_case("server"));
+        }
         for policy in
             self.effective_list_policy_chain(location.origin.occurrence, b"proxy_hide_header")
         {
@@ -2276,23 +2333,31 @@ fn nginx_default_404(server: &str) -> HttpStaticErrorResponse {
     HttpStaticErrorResponse {
         statuses: vec![404],
         file: None,
-        body: Some(format!(
-            "<html>\r\n<head><title>404 Not Found</title></head>\r\n<body>\r\n<center><h1>404 Not Found</h1></center>\r\n<hr><center>{server}</center>\r\n</body>\r\n</html>\r\n"
-        )),
-        headers: vec![
-            HttpLiteralHeader {
-                name: "server".into(),
-                value: server.into(),
-                always: true,
-            },
-            HttpLiteralHeader {
-                name: "content-type".into(),
-                value: "text/html".into(),
-                always: true,
-            },
-        ],
+        body: Some(nginx_error_body(404, "Not Found", server)),
+        headers: nginx_default_headers(server),
         internal_redirect: None,
     }
+}
+
+fn nginx_error_body(status: u16, reason: &str, server: &str) -> String {
+    format!(
+        "<html>\r\n<head><title>{status} {reason}</title></head>\r\n<body>\r\n<center><h1>{status} {reason}</h1></center>\r\n<hr><center>{server}</center>\r\n</body>\r\n</html>\r\n"
+    )
+}
+
+fn nginx_default_headers(server: &str) -> Vec<HttpLiteralHeader> {
+    vec![
+        HttpLiteralHeader {
+            name: "server".into(),
+            value: server.into(),
+            always: true,
+        },
+        HttpLiteralHeader {
+            name: "content-type".into(),
+            value: "text/html".into(),
+            always: true,
+        },
+    ]
 }
 
 fn canonical_proxy_endpoint(

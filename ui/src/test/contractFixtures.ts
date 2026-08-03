@@ -455,6 +455,7 @@ export function contractConfigSnapshot(): ConfigSnapshot {
     default_certificate: 'forward',
     min_version: '1.3',
     alpn: ['h3'],
+    policy: { cipher_list: null, dh_parameters_path: null, session_cache: null, session_timeout_seconds: null, session_tickets: false, prefer_server_ciphers: true },
   }]
   snapshot.config.listeners = [{
     name: 'forward-h3',
@@ -505,6 +506,7 @@ export function contractConfigSnapshot(): ConfigSnapshot {
   }]
   snapshot.config.http_services = [{
     name: 'web',
+    automatic_response_headers: true,
     upstream_io_timeout_ms: 30_000,
     max_request_body_bytes: 10_485_760,
     gzip: null,

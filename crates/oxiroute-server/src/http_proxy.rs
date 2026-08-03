@@ -11,8 +11,8 @@ use http::{
     header::{
         ACCEPT_RANGES, ALLOW, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE,
         CONTENT_TYPE, ETAG, HOST, IF_MATCH, IF_MODIFIED_SINCE, IF_NONE_MATCH, IF_RANGE,
-        IF_UNMODIFIED_SINCE, LAST_MODIFIED, LOCATION, RANGE, SET_COOKIE, TRAILER,
-        TRANSFER_ENCODING, WWW_AUTHENTICATE,
+        IF_UNMODIFIED_SINCE, LAST_MODIFIED, LOCATION, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION,
+        RANGE, SERVER, SET_COOKIE, TE, TRAILER, TRANSFER_ENCODING, UPGRADE, WWW_AUTHENTICATE,
     },
     uri::Authority,
 };
@@ -26,7 +26,7 @@ use oxiroute_config::{
     HttpUpstreamHost, is_unambiguous_http_path,
 };
 use pingora::{
-    Error, ErrorType,
+    Error, ErrorSource, ErrorType,
     modules::http::{HttpModule, HttpModuleBuilder, HttpModules, Module},
     protocols::Digest,
     protocols::http::compression::{Algorithm, ResponseCompressionCtx},
@@ -221,6 +221,7 @@ impl ProxyHttp for HttpReverseProxy {
         session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<bool> {
+        session.set_automatic_response_headers(self.service.automatic_response_headers());
         let (authority, content_length, method, uri, upgrade) = {
             let request = session.req_header();
             let authority = request_authority(request);
@@ -465,16 +466,38 @@ impl ProxyHttp for HttpReverseProxy {
                 }
             }
         }
-        let error_code = match error.etype() {
-            ErrorType::HTTPStatus(code) => *code,
-            _ if error.esource() == &pingora::ErrorSource::Upstream => 502,
-            _ => 500,
-        };
-        if error_code > 0 {
-            let _ = session.respond_error(error_code).await;
+        let code = proxy_error_status(error);
+        let nginx_server = ctx.route.as_ref().and_then(|route| match &route.action {
+            HttpActionPlan::Proxy(proxy) => proxy.policy.nginx_error_server.clone(),
+            HttpActionPlan::Fixed(_) | HttpActionPlan::Redirect(_) | HttpActionPlan::Static(_) => {
+                None
+            }
+        });
+        if code == 502 && error.esource() == &ErrorSource::Upstream && nginx_server.is_some() {
+            let server = nginx_server.expect("checked nginx error server");
+            let headers = [
+                (SERVER, server.clone()),
+                (CONTENT_TYPE, HeaderValue::from_static("text/html")),
+            ];
+            let body = nginx_error_body(502, "Bad Gateway", &server);
+            if let Err(write_error) = write_local_response(
+                session,
+                code,
+                &headers,
+                body,
+                session.req_header().method == Method::HEAD,
+            )
+            .await
+            {
+                warn!("failed to send nginx proxy error response downstream: {write_error}");
+            }
+        } else if code > 0 {
+            if let Err(write_error) = session.respond_error(code).await {
+                warn!("failed to send error response downstream: {write_error}");
+            }
         }
         FailToProxy {
-            error_code,
+            error_code: code,
             can_reuse_downstream: false,
         }
     }
@@ -582,6 +605,11 @@ impl ProxyHttp for HttpReverseProxy {
         response: &mut pingora::http::ResponseHeader,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<()> {
+        let had_uncacheable_framing = response.headers.contains_key(TRANSFER_ENCODING)
+            || response.headers.contains_key(TRAILER);
+        if response.status != http::StatusCode::SWITCHING_PROTOCOLS {
+            remove_upstream_hop_by_hop_response_headers(response)?;
+        }
         if let Some(status) = ctx.response_status_override {
             response.set_status(status)?;
         }
@@ -627,7 +655,8 @@ impl ProxyHttp for HttpReverseProxy {
                         response_received_wall: SystemTime::now(),
                     },
                     complete,
-                    admissible: !response.headers.contains_key(TRANSFER_ENCODING)
+                    admissible: !had_uncacheable_framing
+                        && !response.headers.contains_key(TRANSFER_ENCODING)
                         && !response.headers.contains_key(TRAILER),
                 });
             }
@@ -1300,11 +1329,21 @@ async fn execute_route_action(
                 let mut headers = redirect.headers.to_vec();
                 headers.append(&mut status_headers);
                 headers.push((LOCATION, location));
+                let body = nginx_server_marker(&headers).map_or_else(Bytes::new, |server| {
+                    nginx_error_body(
+                        redirect.status,
+                        http::StatusCode::from_u16(redirect.status)
+                            .ok()
+                            .and_then(|status| status.canonical_reason())
+                            .unwrap_or("Redirect"),
+                        &server,
+                    )
+                });
                 write_local_response(
                     session,
                     redirect.status,
                     &headers,
-                    Bytes::new(),
+                    body,
                     *method == Method::HEAD,
                 )
                 .await?;
@@ -1453,6 +1492,43 @@ async fn execute_route_action(
             }
         }
     }
+}
+
+fn proxy_error_status(error: &Error) -> u16 {
+    match error.etype() {
+        ErrorType::HTTPStatus(code) => *code,
+        _ => match error.esource() {
+            ErrorSource::Upstream => 502,
+            ErrorSource::Downstream => match error.etype() {
+                ErrorType::WriteError | ErrorType::ReadError | ErrorType::ConnectionClosed => 0,
+                _ => 400,
+            },
+            ErrorSource::Internal | ErrorSource::Unset => 500,
+        },
+    }
+}
+
+fn nginx_server_marker(headers: &[(HeaderName, HeaderValue)]) -> Option<HeaderValue> {
+    let html = headers.iter().any(|(name, value)| {
+        name == CONTENT_TYPE && value.as_bytes().eq_ignore_ascii_case(b"text/html")
+    });
+    html.then(|| {
+        headers
+            .iter()
+            .rev()
+            .find(|(name, _)| name == SERVER)
+            .map(|(_, value)| value.clone())
+    })
+    .flatten()
+}
+
+fn nginx_error_body(status: u16, reason: &str, server: &HeaderValue) -> Bytes {
+    let server = server
+        .to_str()
+        .expect("validated nginx server marker is visible ASCII");
+    Bytes::from(format!(
+        "<html>\r\n<head><title>{status} {reason}</title></head>\r\n<body>\r\n<center><h1>{status} {reason}</h1></center>\r\n<hr><center>{server}</center>\r\n</body>\r\n</html>\r\n"
+    ))
 }
 
 fn internal_uri(path: &str, previous: &http::Uri) -> pingora::Result<http::Uri> {
@@ -2206,6 +2282,40 @@ fn bounded_header_value(value: &[u8], max_bytes: usize) -> pingora::Result<Heade
 
 fn dynamic_header_value(value: &str) -> pingora::Result<HeaderValue> {
     HeaderValue::from_str(value).map_err(|_| Error::new_in(ErrorType::InvalidHTTPHeader))
+}
+
+fn remove_upstream_hop_by_hop_response_headers(
+    response: &mut pingora::http::ResponseHeader,
+) -> pingora::Result<()> {
+    let mut connection_headers = Vec::new();
+    for value in response.headers.get_all(CONNECTION) {
+        let value = value
+            .to_str()
+            .map_err(|_| Error::new_up(ErrorType::InvalidHTTPHeader))?;
+        for token in value.split(',') {
+            connection_headers.push(
+                HeaderName::from_bytes(token.trim().as_bytes())
+                    .map_err(|_| Error::new_up(ErrorType::InvalidHTTPHeader))?,
+            );
+        }
+    }
+    for name in connection_headers {
+        response.remove_header(&name);
+    }
+    for name in [
+        CONNECTION,
+        HeaderName::from_static("keep-alive"),
+        PROXY_AUTHENTICATE,
+        PROXY_AUTHORIZATION,
+        HeaderName::from_static("proxy-connection"),
+        TE,
+        TRAILER,
+        TRANSFER_ENCODING,
+        UPGRADE,
+    ] {
+        response.remove_header(&name);
+    }
+    Ok(())
 }
 
 fn apply_response_policy(

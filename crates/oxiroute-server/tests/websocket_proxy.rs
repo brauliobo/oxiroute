@@ -250,6 +250,7 @@ fn websocket_config(proxy_address: SocketAddr, origin_address: SocketAddr) -> Co
                     },
                 },
             }],
+            automatic_response_headers: true,
             upstream_io_timeout_ms: 5_000,
             max_request_body_bytes: Some(8),
             gzip: None,

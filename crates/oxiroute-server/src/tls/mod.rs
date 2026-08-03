@@ -44,6 +44,7 @@ pub use upstream::{UpstreamTlsPlan, prepare_upstream_tls};
 
 pub const MAX_CERTIFICATE_CHAIN_BYTES: usize = 1024 * 1024;
 pub const MAX_PRIVATE_KEY_BYTES: usize = 256 * 1024;
+pub const MAX_DH_PARAMETERS_BYTES: usize = 64 * 1024;
 pub const MAX_CA_CERTIFICATE_BYTES: usize = 1024 * 1024;
 pub const MAX_CERTIFICATES_IN_CHAIN: usize = 16;
 
@@ -641,6 +642,15 @@ pub enum TlsBuildError {
         #[source]
         source: openssl::error::ErrorStack,
     },
+    #[error("failed to parse DH parameters `{path}` for TLS profile `{profile}`")]
+    TlsDhParameters {
+        profile: String,
+        path: PathBuf,
+        #[source]
+        source: openssl::error::ErrorStack,
+    },
+    #[error("TLS profile `{profile}` has runtime TLS policy values outside OpenSSL limits")]
+    InvalidTlsProfilePolicy { profile: String },
     #[error("upstream pool `{pool}` has invalid TLS server name `{server_name}`")]
     InvalidUpstreamServerName { pool: String, server_name: String },
     #[error("upstream pool `{pool}` has an invalid HTTP version range")]

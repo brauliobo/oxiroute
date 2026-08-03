@@ -182,6 +182,14 @@ export function useConfigurationNavigation(
           default_certificate: '',
           min_version: '1.2',
           alpn: ['http/1.1'],
+          policy: {
+            cipher_list: null,
+            dh_parameters_path: null,
+            session_cache: null,
+            session_timeout_seconds: null,
+            session_tickets: false,
+            prefer_server_ciphers: true,
+          },
         })
         break
       case 'listeners':
@@ -225,6 +233,7 @@ export function useConfigurationNavigation(
         draft.value.http_services.push({
           name: '',
           routes: [defaultHttpRoute()],
+          automatic_response_headers: true,
           upstream_io_timeout_ms: 30_000,
           max_request_body_bytes: 10_485_760,
           gzip: null,

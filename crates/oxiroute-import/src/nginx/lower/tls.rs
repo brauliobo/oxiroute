@@ -3,7 +3,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use oxiroute_config::{AlpnProtocol, Certificate, CertificateSource, TlsProfile, TlsVersion};
+use oxiroute_config::{
+    AlpnProtocol, Certificate, CertificateSource, TlsPolicy, TlsProfile, TlsSessionCache,
+    TlsVersion,
+};
 
 use crate::{E_INVALID_VALUE, E_SEMANTICS_NOT_REPRESENTABLE, canonical::absolute_file_path};
 
@@ -14,7 +17,10 @@ use crate::nginx::{
 
 use super::{
     LowerIssue, Lowerer,
-    listener::{canonical_exact_host, canonical_wildcard_host, matching_listen},
+    listener::{
+        canonical_exact_host, canonical_wildcard_host, matching_listen, parse_duration_ms,
+        parse_size,
+    },
     provenance::{issue, utf8},
 };
 
@@ -128,27 +134,29 @@ impl Lowerer {
 
         let mut certificates = Vec::new();
         let mut protocol_policy = None;
+        let mut tls_policy = None;
         let mut h2_policy = None;
         let mut default_certificate = None;
+        let mut origins = Vec::new();
         for policy in policies {
             let server = policy.server;
-            for directive in [
-                b"ssl_ciphers".as_slice(),
-                b"ssl_dhparam",
-                b"ssl_session_cache",
-                b"ssl_session_tickets",
-                b"ssl_session_timeout",
-            ] {
-                if let Some(value) = self.effective_policy(server.origin.occurrence, directive) {
-                    issues.push(issue(
-                        value.origins.last().unwrap_or(&server.origin),
-                        E_SEMANTICS_NOT_REPRESENTABLE,
-                        format!(
-                            "explicit {} policy is not represented by canonical TLS profiles",
-                            String::from_utf8_lossy(directive)
-                        ),
-                    ));
+            match self.tls_policy(server.origin.occurrence, &server.origin) {
+                Ok((policy, policy_origins)) => {
+                    origins.extend(policy_origins);
+                    if tls_policy
+                        .as_ref()
+                        .is_some_and(|current| current != &policy)
+                    {
+                        issues.push(issue(
+                            &server.origin,
+                            E_SEMANTICS_NOT_REPRESENTABLE,
+                            "virtual servers on one bind have mismatched TLS policies",
+                        ));
+                    } else {
+                        tls_policy = Some(policy);
+                    }
                 }
+                Err(policy_issues) => issues.extend(policy_issues),
             }
             let protocols = self.tls_versions(server.origin.occurrence, &server.origin);
             match protocols {
@@ -190,7 +198,6 @@ impl Lowerer {
         let default_certificate = default_certificate.expect("default server certificate");
         let mut canonical_certificates = Vec::new();
         let mut certificate_names = Vec::new();
-        let mut origins = Vec::new();
         for certificate in certificates {
             origins.push(certificate.origin.clone());
             if let Some(existing) = canonical_certificates
@@ -223,9 +230,110 @@ impl Lowerer {
                 } else {
                     vec![AlpnProtocol::Http11]
                 },
+                policy: tls_policy.expect("validated TLS policy"),
             },
             origins,
         }))
+    }
+
+    fn tls_policy(
+        &self,
+        scope: OccurrenceId,
+        fallback_origin: &DirectiveOrigin,
+    ) -> Result<(TlsPolicy, Vec<DirectiveOrigin>), Vec<LowerIssue>> {
+        let mut policy = TlsPolicy::default();
+        let mut origins = Vec::new();
+        let mut issues = Vec::new();
+
+        if let Some(value) = self.effective_policy(scope, b"ssl_ciphers") {
+            let origin = value.origins.last().unwrap_or(fallback_origin);
+            origins.extend(value.origins.clone());
+            match value.arguments.as_slice() {
+                [cipher_list] if utf8(cipher_list).is_some_and(|value| !value.is_empty()) => {
+                    policy.cipher_list = utf8(cipher_list).map(str::to_owned);
+                }
+                _ => issues.push(issue(
+                    origin,
+                    E_INVALID_VALUE,
+                    "ssl_ciphers must be one nonempty UTF-8 cipher string",
+                )),
+            }
+        }
+        if let Some(value) = self.effective_policy(scope, b"ssl_dhparam") {
+            let origin = value.origins.last().unwrap_or(fallback_origin);
+            origins.extend(value.origins.clone());
+            match value.arguments.as_slice() {
+                [path] if absolute_file_path(path).is_some() => {
+                    policy.dh_parameters_path = absolute_file_path(path);
+                }
+                _ => issues.push(issue(
+                    origin,
+                    E_INVALID_VALUE,
+                    "ssl_dhparam must be one canonical absolute file path",
+                )),
+            }
+        }
+        if let Some(value) = self.effective_policy(scope, b"ssl_session_cache") {
+            let origin = value.origins.last().unwrap_or(fallback_origin);
+            origins.extend(value.origins.clone());
+            match value.arguments.as_slice() {
+                [cache] if parse_shared_session_cache(cache).is_some() => {
+                    policy.session_cache = parse_shared_session_cache(cache);
+                }
+                _ => issues.push(issue(
+                    origin,
+                    E_SEMANTICS_NOT_REPRESENTABLE,
+                    "ssl_session_cache must use one shared:name:size cache",
+                )),
+            }
+        }
+        if let Some(value) = self.effective_policy(scope, b"ssl_session_timeout") {
+            let origin = value.origins.last().unwrap_or(fallback_origin);
+            origins.extend(value.origins.clone());
+            match value.arguments.as_slice() {
+                [timeout] if parse_session_timeout_seconds(timeout).is_some() => {
+                    policy.session_timeout_seconds = parse_session_timeout_seconds(timeout);
+                }
+                _ => issues.push(issue(
+                    origin,
+                    E_INVALID_VALUE,
+                    "ssl_session_timeout must be a positive whole-second nginx duration",
+                )),
+            }
+        }
+        for (directive, target) in [
+            (
+                b"ssl_session_tickets".as_slice(),
+                &mut policy.session_tickets,
+            ),
+            (
+                b"ssl_prefer_server_ciphers".as_slice(),
+                &mut policy.prefer_server_ciphers,
+            ),
+        ] {
+            if let Some(value) = self.effective_policy(scope, directive) {
+                let origin = value.origins.last().unwrap_or(fallback_origin);
+                origins.extend(value.origins.clone());
+                match value.arguments.as_slice() {
+                    [value] if value == b"on" => *target = true,
+                    [value] if value == b"off" => *target = false,
+                    _ => issues.push(issue(
+                        origin,
+                        E_INVALID_VALUE,
+                        format!(
+                            "{} must be `on` or `off`",
+                            String::from_utf8_lossy(directive)
+                        ),
+                    )),
+                }
+            }
+        }
+
+        if issues.is_empty() {
+            Ok((policy, origins))
+        } else {
+            Err(issues)
+        }
     }
 
     fn tls_listen_policies<'a>(
@@ -435,4 +543,27 @@ impl Lowerer {
             origin: server.origin.clone(),
         })
     }
+}
+
+fn parse_shared_session_cache(value: &[u8]) -> Option<TlsSessionCache> {
+    let value = value.strip_prefix(b"shared:")?;
+    let separator = value.iter().rposition(|byte| *byte == b':')?;
+    let name = utf8(&value[..separator])?;
+    if name.is_empty()
+        || name.len() > 255
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    {
+        return None;
+    }
+    Some(TlsSessionCache {
+        name: name.into(),
+        size_bytes: parse_size(&value[separator + 1..])?,
+    })
+}
+
+fn parse_session_timeout_seconds(value: &[u8]) -> Option<u64> {
+    let milliseconds = parse_duration_ms(value)?;
+    (milliseconds % 1_000 == 0).then_some(milliseconds / 1_000)
 }

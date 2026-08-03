@@ -10,9 +10,9 @@ use oxiroute_config::{
     HttpStaticMimePolicy, HttpStaticPathMapping, HttpUpstreamHost, HttpVersion, HttpVersionPolicy,
     L4Service, Listener, ListenerBind, Management, Protocol, RtmpApplication, RtmpRecorder,
     RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis, RtmpRecorderTimezone,
-    RtmpService, TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamConnectionReuse,
-    UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls, load_lua, render_lua,
-    validate_config,
+    RtmpService, TlsPolicy, TlsProfile, TlsSessionCache, TlsVersion, UpstreamAlgorithm,
+    UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls, load_lua,
+    render_lua, validate_config,
 };
 
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
@@ -62,6 +62,17 @@ fn test_tls_profiles() -> Vec<TlsProfile> {
             default_certificate: "certbot-certificate".into(),
             min_version: TlsVersion::Tls13,
             alpn: vec![AlpnProtocol::H2, AlpnProtocol::Http11],
+            policy: TlsPolicy {
+                cipher_list: Some("ECDHE-ECDSA-AES128-GCM-SHA256".into()),
+                dh_parameters_path: Some("/etc/oxiroute/dhparam.pem".into()),
+                session_cache: Some(TlsSessionCache {
+                    name: "le_nginx_SSL".into(),
+                    size_bytes: 10 * 1024 * 1024,
+                }),
+                session_timeout_seconds: Some(86_400),
+                session_tickets: false,
+                prefer_server_ciphers: false,
+            },
         },
         TlsProfile {
             name: "files-tls".into(),
@@ -69,6 +80,7 @@ fn test_tls_profiles() -> Vec<TlsProfile> {
             default_certificate: "files-certificate".into(),
             min_version: TlsVersion::Tls12,
             alpn: vec![AlpnProtocol::H2],
+            policy: TlsPolicy::default(),
         },
     ]
 }
@@ -402,6 +414,7 @@ fn test_http_services() -> Vec<HttpService> {
                     },
                 },
             ],
+            automatic_response_headers: true,
             upstream_io_timeout_ms: 30_000,
             max_request_body_bytes: Some(10 * 1024 * 1024),
             gzip: None,
@@ -432,6 +445,7 @@ fn test_http_services() -> Vec<HttpService> {
                     },
                 },
             }],
+            automatic_response_headers: false,
             upstream_io_timeout_ms: 30_000,
             max_request_body_bytes: None,
             gzip: None,
@@ -588,6 +602,14 @@ const RENDERED_FIELDS: &[&str] = &[
     "default_certificate",
     "min_version",
     "alpn",
+    "policy",
+    "cipher_list",
+    "dh_parameters_path",
+    "session_cache",
+    "size_bytes",
+    "session_timeout_seconds",
+    "session_tickets",
+    "prefer_server_ciphers",
     "protocol",
     "service",
     "tls_profile",
@@ -609,6 +631,7 @@ const RENDERED_FIELDS: &[&str] = &[
     "path",
     "port",
     "routes",
+    "automatic_response_headers",
     "upstream_io_timeout_ms",
     "max_request_body_bytes",
     "max_retries",
@@ -659,6 +682,36 @@ const RENDERED_FIELDS: &[&str] = &[
 ];
 
 #[test]
+fn automatic_response_headers_defaults_true_and_round_trips_both_values() {
+    let mut value = serde_json::to_value(complete_config()).expect("canonical JSON value");
+    value["http_services"][0]
+        .as_object_mut()
+        .expect("HTTP service object")
+        .remove("automatic_response_headers");
+    let mut config: Config = serde_json::from_value(value).expect("omitted header policy");
+    assert!(config.http_services[0].automatic_response_headers);
+
+    let default_source = render_lua(&config).expect("default header policy render");
+    assert!(default_source.contains("automatic_response_headers = true,"));
+    assert!(
+        load_lua(&default_source)
+            .expect("default header policy reload")
+            .http_services[0]
+            .automatic_response_headers
+    );
+
+    config.http_services[0].automatic_response_headers = false;
+    let disabled_source = render_lua(&config).expect("disabled header policy render");
+    assert!(disabled_source.contains("automatic_response_headers = false,"));
+    assert!(
+        !load_lua(&disabled_source)
+            .expect("disabled header policy reload")
+            .http_services[0]
+            .automatic_response_headers
+    );
+}
+
+#[test]
 fn exhaustively_round_trips_every_current_type_field_and_variant() {
     let (normalized, source) = normalized_round_trip(complete_config());
 
@@ -688,6 +741,14 @@ fn serializes_the_complete_canonical_model_for_typed_ui_data() {
     assert_eq!(value["certificates"][1]["source"]["type"], "certbot");
     assert_eq!(value["tls_profiles"][0]["min_version"], "1.3");
     assert_eq!(value["tls_profiles"][0]["alpn"][0], "h2");
+    assert_eq!(
+        value["tls_profiles"][0]["policy"]["session_cache"]["name"],
+        "le_nginx_SSL"
+    );
+    assert_eq!(
+        value["tls_profiles"][0]["policy"]["session_timeout_seconds"],
+        86_400
+    );
     assert_eq!(value["listeners"][2]["protocol"], "tcp");
     assert_eq!(value["listeners"][0]["bind"]["type"], "socket");
     assert_eq!(value["listeners"][3]["bind"]["type"], "unix");

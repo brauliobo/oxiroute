@@ -9,6 +9,7 @@ function service(): HttpServiceConfig {
   return {
     name: 'web',
     routes: [defaultHttpRoute()],
+    automatic_response_headers: true,
     upstream_io_timeout_ms: 30_000,
     max_request_body_bytes: 10_485_760,
     gzip: null,

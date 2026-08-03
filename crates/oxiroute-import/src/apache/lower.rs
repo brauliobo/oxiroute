@@ -6,9 +6,9 @@ use std::{
 use oxiroute_config::{
     AlpnProtocol, Certificate, CertificateSource, Config, DnsResolutionPolicy,
     DownstreamTimeoutPolicy, HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction,
-    HttpRoutePolicy, HttpService, HttpVersionPolicy, Listener, ListenerBind, Protocol, TlsProfile,
-    TlsVersion, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamPool, UpstreamServer,
-    UpstreamTls, validate_config,
+    HttpRoutePolicy, HttpService, HttpVersionPolicy, Listener, ListenerBind, Protocol, TlsPolicy,
+    TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamPool,
+    UpstreamServer, UpstreamTls, validate_config,
 };
 
 use crate::{
@@ -605,6 +605,7 @@ impl Lowerer {
                     default_certificate: "missing".into(),
                     min_version: TlsVersion::Tls12,
                     alpn: vec![AlpnProtocol::Http11],
+                    policy: TlsPolicy::default(),
                 },
                 origins,
             );
@@ -615,6 +616,7 @@ impl Lowerer {
             default_certificate,
             min_version: TlsVersion::Tls12,
             alpn: vec![AlpnProtocol::Http11],
+            policy: TlsPolicy::default(),
         };
         (certificates, profile, origins)
     }
@@ -671,6 +673,7 @@ impl Lowerer {
         self.draft.http_services.push(HttpService {
             name: service_name,
             routes,
+            automatic_response_headers: false,
             upstream_io_timeout_ms: 30_000,
             max_request_body_bytes: None,
             gzip: None,
@@ -678,6 +681,10 @@ impl Lowerer {
         });
         let service_path = format!("/http_services/{service_index}");
         self.record(service_path.clone(), listener_origins.to_vec());
+        self.record(
+            format!("{service_path}/automatic_response_headers"),
+            listener_origins.to_vec(),
+        );
         self.record(
             format!("{service_path}/upstream_io_timeout_ms"),
             listener_origins.to_vec(),

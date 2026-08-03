@@ -349,8 +349,66 @@ fn validate_tls_profiles(
                 profile: profile.name.clone(),
             });
         }
+        validate_tls_policy(profile)?;
     }
 
+    Ok(())
+}
+
+fn validate_tls_policy(profile: &TlsProfile) -> Result<(), ConfigError> {
+    if profile
+        .policy
+        .cipher_list
+        .as_ref()
+        .is_some_and(|value| value.is_empty() || value.as_bytes().contains(&0))
+    {
+        return Err(ConfigError::InvalidTlsProfilePolicy {
+            profile: profile.name.clone(),
+            field: "cipher_list",
+            detail: "must be nonempty and contain no NUL bytes",
+        });
+    }
+    if let Some(path) = &profile.policy.dh_parameters_path {
+        validate_file_path(
+            "TLS profile",
+            &profile.name,
+            "policy.dh_parameters_path",
+            path,
+        )?;
+    }
+    if let Some(cache) = &profile.policy.session_cache {
+        if cache.name.is_empty()
+            || cache.name.len() > 255
+            || !cache
+                .name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+        {
+            return Err(ConfigError::InvalidTlsProfilePolicy {
+                profile: profile.name.clone(),
+                field: "session_cache.name",
+                detail: "must be 1 through 255 ASCII letters, digits, `_`, `-`, or `.`",
+            });
+        }
+        if !(256..=u64::from(i32::MAX as u32) * 256).contains(&cache.size_bytes) {
+            return Err(ConfigError::InvalidTlsProfilePolicy {
+                profile: profile.name.clone(),
+                field: "session_cache.size_bytes",
+                detail: "must hold between 1 and i32::MAX estimated 256-byte sessions",
+            });
+        }
+    }
+    if profile
+        .policy
+        .session_timeout_seconds
+        .is_some_and(|seconds| seconds == 0 || seconds > u64::from(i32::MAX as u32))
+    {
+        return Err(ConfigError::InvalidTlsProfilePolicy {
+            profile: profile.name.clone(),
+            field: "session_timeout_seconds",
+            detail: "must be between 1 and i32::MAX seconds",
+        });
+    }
     Ok(())
 }
 

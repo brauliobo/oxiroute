@@ -255,6 +255,7 @@ impl Renderer {
             default_certificate,
             min_version,
             alpn,
+            policy,
         } = profile;
 
         self.string_field("name", name);
@@ -278,6 +279,35 @@ impl Renderer {
                 })
                 .collect::<Vec<_>>(),
         );
+        self.begin_table_field("policy");
+        match &policy.cipher_list {
+            Some(cipher_list) => self.string_field("cipher_list", cipher_list),
+            None => self.nil_field("cipher_list"),
+        }
+        match &policy.dh_parameters_path {
+            Some(path) => self.string_field(
+                "dh_parameters_path",
+                utf8_path(path, "TLS profile", name, "policy.dh_parameters_path")
+                    .expect("validated TLS DH parameters path"),
+            ),
+            None => self.nil_field("dh_parameters_path"),
+        }
+        match &policy.session_cache {
+            Some(cache) => {
+                self.begin_table_field("session_cache");
+                self.string_field("name", &cache.name);
+                self.integer_field("size_bytes", cache.size_bytes);
+                self.end_table();
+            }
+            None => self.nil_field("session_cache"),
+        }
+        match policy.session_timeout_seconds {
+            Some(seconds) => self.integer_field("session_timeout_seconds", seconds),
+            None => self.nil_field("session_timeout_seconds"),
+        }
+        self.boolean_field("session_tickets", policy.session_tickets);
+        self.boolean_field("prefer_server_ciphers", policy.prefer_server_ciphers);
+        self.end_table();
     }
 
     fn listener(&mut self, listener: &Listener) -> Result<(), ConfigError> {
@@ -749,6 +779,7 @@ impl Renderer {
         let HttpService {
             name,
             routes,
+            automatic_response_headers,
             upstream_io_timeout_ms,
             max_request_body_bytes,
             gzip,
@@ -763,6 +794,7 @@ impl Renderer {
             self.end_table();
         }
         self.end_table();
+        self.boolean_field("automatic_response_headers", *automatic_response_headers);
         self.integer_field("upstream_io_timeout_ms", upstream_io_timeout_ms);
         match max_request_body_bytes {
             Some(max_request_body_bytes) => {

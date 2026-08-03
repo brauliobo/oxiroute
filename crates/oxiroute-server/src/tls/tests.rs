@@ -17,6 +17,7 @@ use std::{
 use openssl::{
     asn1::{Asn1Integer, Asn1Time},
     bn::BigNum,
+    dh::Dh,
     dsa::Dsa,
     ec::{EcGroup, EcKey},
     hash::MessageDigest,
@@ -34,8 +35,8 @@ use openssl::{
 };
 use oxiroute_config::{
     AlpnProtocol, Certificate, CertificateSource, Config, HttpVersion, HttpVersionPolicy,
-    SelfSignedKeyType, TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool,
-    UpstreamTls,
+    SelfSignedKeyType, TlsPolicy, TlsProfile, TlsSessionCache, TlsVersion, UpstreamAlgorithm,
+    UpstreamEndpoint, UpstreamPool, UpstreamTls,
 };
 use pingora::{listeners::ALPN, upstreams::peer::HttpPeer};
 use tempfile::TempDir;
@@ -46,8 +47,8 @@ use tls::{
     CertbotWatcherConfig, CertbotWatcherError, CertbotWatcherMonitor, CertbotWatcherSupervisor,
     CertificateGeneration, CertificateMetadata, CertificatePublishError, CertificateValidity,
     FileReconcileError, FileReconcileOutcome, FileWatcherConfig, FileWatcherSupervisor,
-    MAX_CERTIFICATE_CHAIN_BYTES, MAX_PRIVATE_KEY_BYTES, TlsBuildError, TlsProfilePlan,
-    UpstreamTlsPlan, prepare_tls, prepare_upstream_tls,
+    MAX_CERTIFICATE_CHAIN_BYTES, MAX_DH_PARAMETERS_BYTES, MAX_PRIVATE_KEY_BYTES, TlsBuildError,
+    TlsProfilePlan, UpstreamTlsPlan, prepare_tls, prepare_upstream_tls,
 };
 
 struct IdentityFiles {
@@ -101,10 +102,77 @@ fn prepares_metadata_redacted_generation_and_callback_settings() {
     );
     let mut settings = profile.tls_settings().unwrap();
     assert!(settings.options().contains(SslOptions::NO_TICKET));
+    assert!(
+        settings
+            .options()
+            .contains(SslOptions::CIPHER_SERVER_PREFERENCE)
+    );
     assert_eq!(
         settings.set_session_cache_mode(SslSessionCacheMode::SERVER),
         SslSessionCacheMode::OFF
     );
+    assert_eq!(settings.set_session_timeout(1), 7_200);
+}
+
+#[test]
+fn applies_explicit_server_tls_policy_to_openssl_settings() {
+    let temp = TempDir::new().unwrap();
+    let files = write_identity(temp.path(), "primary", "www.example.test", false);
+    let dh_parameters_path = temp.path().join("dhparam.pem");
+    fs::write(
+        &dh_parameters_path,
+        Dh::get_2048_256().unwrap().params_to_pem().unwrap(),
+    )
+    .unwrap();
+    let mut config = config_with_identity(&files);
+    config.tls_profiles[0].policy = TlsPolicy {
+        cipher_list: Some("ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384".into()),
+        dh_parameters_path: Some(dh_parameters_path),
+        session_cache: Some(TlsSessionCache {
+            name: "le_nginx_SSL".into(),
+            size_bytes: 10 * 1024 * 1024,
+        }),
+        session_timeout_seconds: Some(86_400),
+        session_tickets: false,
+        prefer_server_ciphers: false,
+    };
+
+    let prepared = prepare_tls(&config).unwrap();
+    let profile = prepared.profiles().get("public").unwrap();
+    let mut settings = profile.tls_settings().unwrap();
+
+    assert_eq!(profile.policy(), &config.tls_profiles[0].policy);
+    assert_eq!(settings.set_session_cache_size(1), 40_960);
+    assert_eq!(
+        settings.set_session_cache_mode(SslSessionCacheMode::OFF),
+        SslSessionCacheMode::SERVER
+    );
+    assert_eq!(settings.set_session_timeout(1), 86_400);
+    assert!(settings.options().contains(SslOptions::NO_TICKET));
+    assert!(
+        !settings
+            .options()
+            .contains(SslOptions::CIPHER_SERVER_PREFERENCE)
+    );
+}
+
+#[test]
+fn rejects_oversized_dh_parameters_during_runtime_planning() {
+    let temp = TempDir::new().unwrap();
+    let files = write_identity(temp.path(), "primary", "www.example.test", false);
+    let dh_parameters_path = temp.path().join("oversized-dhparam.pem");
+    fs::write(&dh_parameters_path, vec![b'x'; MAX_DH_PARAMETERS_BYTES + 1]).unwrap();
+    let mut config = config_with_identity(&files);
+    config.tls_profiles[0].policy.dh_parameters_path = Some(dh_parameters_path);
+
+    assert!(matches!(
+        prepare_tls(&config),
+        Err(TlsBuildError::FileTooLarge {
+            kind: "DH parameters",
+            limit: MAX_DH_PARAMETERS_BYTES,
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -2478,6 +2546,7 @@ fn config_with_identity(files: &IdentityFiles) -> Config {
             default_certificate: "primary".into(),
             min_version: TlsVersion::Tls12,
             alpn: vec![AlpnProtocol::H2, AlpnProtocol::Http11],
+            policy: TlsPolicy::default(),
         }],
         listeners: Vec::new(),
         upstream_pools: Vec::new(),

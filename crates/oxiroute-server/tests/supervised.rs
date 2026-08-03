@@ -661,6 +661,7 @@ fn listeners_only_config(tcp_address: SocketAddr, unix_path: PathBuf) -> Config 
                     headers: Vec::new(),
                 },
             }],
+            automatic_response_headers: true,
             upstream_io_timeout_ms: 1_000,
             max_request_body_bytes: Some(1_024),
             gzip: None,

@@ -520,6 +520,7 @@ pub fn proxy_config(
             default_certificate: "downstream".into(),
             min_version: TlsVersion::Tls12,
             alpn: downstream_alpn,
+            policy: oxiroute_config::TlsPolicy::default(),
         }],
         listeners: vec![Listener {
             name: "wire".into(),
@@ -556,6 +557,7 @@ pub fn proxy_config(
                     policy: HttpProxyPolicy::default(),
                 },
             }],
+            automatic_response_headers: true,
             upstream_io_timeout_ms: 2_000,
             max_request_body_bytes: Some(64 * 1024),
             gzip: None,

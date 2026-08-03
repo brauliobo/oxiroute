@@ -28,6 +28,15 @@ use crate::{
         SslStream,
     },
 };
+
+#[cfg(feature = "openssl")]
+unsafe extern "C" {
+    // openssl-sys does not declare this exported OpenSSL function.
+    fn SSL_CTX_set_timeout(
+        context: *mut crate::tls::ssl_sys::SSL_CTX,
+        timeout_seconds: libc::c_long,
+    ) -> libc::c_long;
+}
 pub const TLS_CONF_ERR: ErrorType = ErrorType::Custom("TLSConfigError");
 
 pub(crate) struct Acceptor {
@@ -126,6 +135,22 @@ impl TlsSettings {
                         }
                     });
             }
+        }
+    }
+
+    /// Set the server session timeout in exact seconds, returning the previous timeout.
+    #[cfg(feature = "openssl")]
+    pub fn set_session_timeout(&mut self, timeout_seconds: i32) -> i64 {
+        use foreign_types::ForeignTypeRef as _;
+
+        let context = unsafe {
+            // SAFETY: the acceptor builder owns this live SSL_CTX for the duration of the call.
+            crate::tls::ssl::SslContextRef::from_ptr(self.accept_builder.as_ptr())
+        };
+        unsafe {
+            // SAFETY: `context` points to the builder's live SSL_CTX and the positive i32 timeout
+            // converts losslessly to every supported platform's c_long.
+            SSL_CTX_set_timeout(context.as_ptr(), libc::c_long::from(timeout_seconds)) as i64
         }
     }
 

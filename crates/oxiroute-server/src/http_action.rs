@@ -243,6 +243,7 @@ pub(crate) struct ProxyPolicyPlan {
     pub(crate) retry_delay: Duration,
     pub(crate) final_redispatch: bool,
     pub(crate) cache: Option<Arc<HttpCachePlan>>,
+    pub(crate) nginx_error_server: Option<HeaderValue>,
 }
 
 pub(crate) struct HttpCachePlan {
@@ -278,6 +279,37 @@ impl ProxyPolicyPlan {
         policy: &HttpProxyPolicy,
         cache: Option<Arc<HttpCachePlan>>,
     ) -> Self {
+        let nginx_content_type_marker = |mutation: &HttpResponseHeaderMutation| {
+            matches!(
+                mutation,
+                HttpResponseHeaderMutation::Set {
+                    name,
+                    value,
+                    always: true,
+                } if name.eq_ignore_ascii_case("content-type")
+                    && value.eq_ignore_ascii_case("text/html")
+            )
+        };
+        let nginx_error_server = policy
+            .response_headers
+            .iter()
+            .any(nginx_content_type_marker)
+            .then(|| {
+                policy.response_headers.iter().rev().find_map(|mutation| {
+                    let HttpResponseHeaderMutation::Set {
+                        name,
+                        value,
+                        always: true,
+                    } = mutation
+                    else {
+                        return None;
+                    };
+                    name.eq_ignore_ascii_case("server").then(|| {
+                        HeaderValue::from_str(value).expect("validated nginx server marker")
+                    })
+                })
+            })
+            .flatten();
         Self {
             upstream_host: policy.upstream_host.clone(),
             request_headers: policy
@@ -288,6 +320,9 @@ impl ProxyPolicyPlan {
             response_headers: policy
                 .response_headers
                 .iter()
+                .filter(|mutation| {
+                    nginx_error_server.is_none() || !nginx_content_type_marker(mutation)
+                })
                 .map(ResponseHeaderMutationPlan::compile)
                 .collect(),
             cookie_path_rewrites: policy
@@ -301,6 +336,7 @@ impl ProxyPolicyPlan {
             retry_delay: Duration::from_millis(policy.retry.delay_ms),
             final_redispatch: policy.retry.final_redispatch,
             cache,
+            nginx_error_server,
         }
     }
 

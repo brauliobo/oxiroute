@@ -9,8 +9,8 @@ use std::{
 
 use super::{
     CertificateIdentitySan, CertificateIdentitySans, MAX_CERTIFICATE_CHAIN_BYTES,
-    MAX_CERTIFICATES_IN_CHAIN, MAX_PRIVATE_KEY_BYTES, TlsBuildError, certificate_identity_sans,
-    certificate_is_ca_capable, pem_labels, read_bounded_stable,
+    MAX_CERTIFICATES_IN_CHAIN, MAX_DH_PARAMETERS_BYTES, MAX_PRIVATE_KEY_BYTES, TlsBuildError,
+    certificate_identity_sans, certificate_is_ca_capable, pem_labels, read_bounded_stable,
 };
 use crate::encoding::lower_hex;
 use arc_swap::ArcSwap;
@@ -18,11 +18,12 @@ use async_trait::async_trait;
 use openssl::{
     asn1::Asn1Time,
     bn::{BigNum, MsbOption},
+    dh::Dh,
     ec::{EcGroup, EcKey},
     error::ErrorStack,
     hash::MessageDigest,
     nid::Nid,
-    pkey::{Id, PKey, Private},
+    pkey::{Id, PKey, Params, Private},
     rsa::Rsa,
     sha::sha256,
     ssl::{NameType, SslAcceptor, SslMethod, SslOptions, SslSessionCacheMode, SslVersion},
@@ -34,7 +35,9 @@ use openssl::{
         verify::X509VerifyFlags,
     },
 };
-use oxiroute_config::{AlpnProtocol, SelfSignedKeyType, TlsProfile, TlsVersion};
+use oxiroute_config::{
+    AlpnProtocol, SelfSignedKeyType, TlsPolicy, TlsProfile, TlsSessionCache, TlsVersion,
+};
 use pingora::{
     listeners::{ALPN, TlsAccept, tls::TlsSettings},
     protocols::tls::TlsRef,
@@ -44,6 +47,8 @@ use x509_parser::parse_x509_certificate;
 
 const CERTIFICATE_FILE: &str = "certificate chain";
 const PRIVATE_KEY_FILE: &str = "private key";
+const DH_PARAMETERS_FILE: &str = "DH parameters";
+const ESTIMATED_SESSION_BYTES: u64 = 256;
 const MAX_DNS_NAMES: usize = 100;
 const MAX_SELF_SIGNED_VALIDITY_DAYS: u32 = 30;
 
@@ -645,6 +650,8 @@ pub struct TlsProfilePlan {
     name: String,
     min_version: TlsVersion,
     alpn: ALPN,
+    policy: TlsPolicy,
+    dh_parameters: Option<Dh<Params>>,
     selector: Arc<CertificateSelector>,
 }
 
@@ -654,11 +661,32 @@ impl TlsProfilePlan {
         active_generations: BTreeMap<String, Arc<ActiveCertificateGeneration>>,
     ) -> Result<Self, TlsBuildError> {
         let alpn = compile_alpn(&profile.name, &profile.alpn)?;
+        let dh_parameters = profile
+            .policy
+            .dh_parameters_path
+            .as_ref()
+            .map(|path| {
+                let pem = read_bounded_stable(
+                    &profile.name,
+                    DH_PARAMETERS_FILE,
+                    path,
+                    MAX_DH_PARAMETERS_BYTES,
+                    false,
+                )?;
+                Dh::params_from_pem(&pem).map_err(|source| TlsBuildError::TlsDhParameters {
+                    profile: profile.name.clone(),
+                    path: path.clone(),
+                    source,
+                })
+            })
+            .transpose()?;
         let selector = Arc::new(CertificateSelector::new(profile, active_generations)?);
         Ok(Self {
             name: profile.name.clone(),
             min_version: profile.min_version,
             alpn,
+            policy: profile.policy.clone(),
+            dh_parameters,
             selector,
         })
     }
@@ -676,6 +704,11 @@ impl TlsProfilePlan {
     #[must_use]
     pub const fn alpn(&self) -> &ALPN {
         &self.alpn
+    }
+
+    #[must_use]
+    pub const fn policy(&self) -> &TlsPolicy {
+        &self.policy
     }
 
     #[must_use]
@@ -728,8 +761,57 @@ impl TlsProfilePlan {
                 profile: self.name.clone(),
                 source,
             })?;
-        settings.set_session_cache_mode(SslSessionCacheMode::OFF);
-        settings.set_options(SslOptions::NO_TICKET);
+        if let Some(cipher_list) = &self.policy.cipher_list {
+            settings.set_cipher_list(cipher_list).map_err(|source| {
+                TlsBuildError::TlsProfileSettings {
+                    profile: self.name.clone(),
+                    source,
+                }
+            })?;
+        }
+        if let Some(dh_parameters) = &self.dh_parameters {
+            settings.set_tmp_dh(dh_parameters).map_err(|source| {
+                TlsBuildError::TlsProfileSettings {
+                    profile: self.name.clone(),
+                    source,
+                }
+            })?;
+        }
+        if let Some(cache) = &self.policy.session_cache {
+            let session_count =
+                i32::try_from(cache.size_bytes / ESTIMATED_SESSION_BYTES).map_err(|_| {
+                    TlsBuildError::InvalidTlsProfilePolicy {
+                        profile: self.name.clone(),
+                    }
+                })?;
+            settings
+                .set_session_id_context(&session_id_context(&self.name, cache))
+                .map_err(|source| TlsBuildError::TlsProfileSettings {
+                    profile: self.name.clone(),
+                    source,
+                })?;
+            settings.set_session_cache_size(session_count);
+            settings.set_session_cache_mode(SslSessionCacheMode::SERVER);
+        } else {
+            settings.set_session_cache_mode(SslSessionCacheMode::OFF);
+        }
+        if let Some(timeout) = self.policy.session_timeout_seconds {
+            let timeout =
+                i32::try_from(timeout).map_err(|_| TlsBuildError::InvalidTlsProfilePolicy {
+                    profile: self.name.clone(),
+                })?;
+            settings.set_session_timeout(timeout);
+        }
+        if self.policy.session_tickets {
+            settings.clear_options(SslOptions::NO_TICKET);
+        } else {
+            settings.set_options(SslOptions::NO_TICKET);
+        }
+        if self.policy.prefer_server_ciphers {
+            settings.set_options(SslOptions::CIPHER_SERVER_PREFERENCE);
+        } else {
+            settings.clear_options(SslOptions::CIPHER_SERVER_PREFERENCE);
+        }
         settings.set_alpn(self.alpn.clone());
         Ok(settings)
     }
@@ -742,10 +824,16 @@ impl fmt::Debug for TlsProfilePlan {
             .field("name", &self.name)
             .field("min_version", &self.min_version)
             .field("alpn", &self.alpn)
+            .field("policy", &self.policy)
+            .field("dh_parameters", &self.dh_parameters.is_some())
             .field("default_certificate", &self.selector.default_certificate)
             .field("certificates", &self.selector.active_generations.keys())
             .finish()
     }
+}
+
+fn session_id_context(profile: &str, cache: &TlsSessionCache) -> [u8; 32] {
+    sha256(format!("oxiroute-session-cache:{profile}:{}", cache.name).as_bytes())
 }
 
 struct CertificateSelector {

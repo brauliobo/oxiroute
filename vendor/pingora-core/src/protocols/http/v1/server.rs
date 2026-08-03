@@ -1063,6 +1063,10 @@ impl HttpSession {
         self.total_drain_timeout = timeout;
     }
 
+    pub(crate) fn set_automatic_response_headers(&mut self, enabled: bool) {
+        self.update_resp_headers = enabled;
+    }
+
     /// Get the total drain timeout.
     pub fn get_total_drain_timeout(&self) -> Option<Duration> {
         self.total_drain_timeout

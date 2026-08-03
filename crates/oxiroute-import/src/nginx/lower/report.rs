@@ -281,6 +281,10 @@ impl Lowerer {
         let service_path = format!("/http_services/{service_index}");
         self.record(service_path.clone(), candidate.origins.clone());
         self.record(
+            format!("{service_path}/automatic_response_headers"),
+            candidate.origins.clone(),
+        );
+        self.record(
             format!("{service_path}/upstream_io_timeout_ms"),
             candidate.origins.clone(),
         );

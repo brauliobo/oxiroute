@@ -48,6 +48,7 @@ function canonicalConfig(): CanonicalConfig {
         default_certificate: 'direct-public',
         min_version: '1.2',
         alpn: ['h2', 'http/1.1'],
+        policy: { cipher_list: null, dh_parameters_path: null, session_cache: null, session_timeout_seconds: null, session_tickets: false, prefer_server_ciphers: true },
       },
       {
         name: 'internal-sni',
@@ -55,6 +56,7 @@ function canonicalConfig(): CanonicalConfig {
         default_certificate: 'direct-public',
         min_version: '1.3',
         alpn: ['http/1.1'],
+        policy: { cipher_list: null, dh_parameters_path: null, session_cache: null, session_timeout_seconds: null, session_tickets: false, prefer_server_ciphers: true },
       },
     ],
     listeners: [
@@ -183,6 +185,7 @@ function canonicalConfig(): CanonicalConfig {
             },
           },
         ],
+        automatic_response_headers: true,
         upstream_io_timeout_ms: 30_000,
         max_request_body_bytes: 10_485_760,
         gzip: null,
@@ -771,6 +774,14 @@ describe('ConfigurationWorkspace', () => {
     await wrapper.get('[data-field="tls_profiles[].default_certificate"] select').setValue('direct-edge')
     await wrapper.get('[data-field="tls_profiles[].min_version"] select').setValue('1.3')
     await wrapper.get('[data-field="tls_profiles[].alpn"] select').setValue('h2')
+    await wrapper.get('[data-field="tls_profiles[].policy.cipher_list"] input').setValue('ECDHE-RSA-AES128-GCM-SHA256')
+    await wrapper.get('[data-field="tls_profiles[].policy.dh_parameters_path"] input').setValue('/etc/letsencrypt/ssl-dhparams.pem')
+    await wrapper.get('[data-field="tls_profiles[].policy.session_cache.name"] input').setValue('le_nginx_SSL')
+    await wrapper.get('[data-field="tls_profiles[].policy.session_cache.size_bytes"] input').setValue(10 * 1024 * 1024)
+    await wrapper.get('[data-field="tls_profiles[].policy.session_timeout_seconds"] input').setValue(86_400)
+    await wrapper.get('[data-field="tls_profiles[].policy.session_tickets"] input').setValue(true)
+    await wrapper.get('[data-field="tls_profiles[].policy.session_tickets"] input').setValue(false)
+    await wrapper.get('[data-field="tls_profiles[].policy.prefer_server_ciphers"] input').setValue(false)
 
     await selectObject('listeners:0')
     await wrapper.get('[data-field="listeners[].name"] input').setValue('edge-https')
@@ -821,6 +832,7 @@ describe('ConfigurationWorkspace', () => {
 
     await selectObject('http_services:0')
     await wrapper.get('[data-field="http_services[].name"] input').setValue('web-edge')
+    await wrapper.get('[data-field="http_services[].automatic_response_headers"] input').setValue(false)
     await wrapper.get('[data-field="http_services[].upstream_io_timeout_ms"] input').setValue(31_000)
     await wrapper.get('[data-field="http_services[].max_request_body_bytes"] select').setValue('unbounded')
     await wrapper.get('[data-field="http_services[].max_request_body_bytes"] select').setValue('bounded')
@@ -921,6 +933,14 @@ describe('ConfigurationWorkspace', () => {
       default_certificate: 'direct-edge',
       min_version: '1.3',
       alpn: ['h2'],
+      policy: {
+        cipher_list: 'ECDHE-RSA-AES128-GCM-SHA256',
+        dh_parameters_path: '/etc/letsencrypt/ssl-dhparams.pem',
+        session_cache: { name: 'le_nginx_SSL', size_bytes: 10 * 1024 * 1024 },
+        session_timeout_seconds: 86_400,
+        session_tickets: false,
+        prefer_server_ciphers: false,
+      },
     }))
     expect(submitted.upstream_pools[0]).toEqual(expect.objectContaining({
       name: 'origins-a',
@@ -934,6 +954,7 @@ describe('ConfigurationWorkspace', () => {
     }))
     expect(submitted.http_services[0]).toEqual(expect.objectContaining({
       name: 'web-edge',
+      automatic_response_headers: false,
       upstream_io_timeout_ms: 31_000,
       max_request_body_bytes: 20_000_000,
     }))
