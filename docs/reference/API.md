@@ -15,7 +15,7 @@ The current control plane is JSON over loopback HTTP. The base path for manageme
 | DNS | `POST /api/v1/servers/refresh-dns` | Management bearer token; validated target batch and explicit non-atomic outcomes |
 | Generation actions | `POST /api/v1/generations/reload|rollback|drain` | Management bearer token and active-generation revision |
 | TLS/process | `POST /api/v1/tls/reconcile`, `/process/drain`, `/process/shutdown` | Management bearer token and active-generation revision |
-| Events | `GET /api/v1/events?after={cursor}&limit={n}` | Management bearer token; bounded cursor polling |
+| Events | `GET /api/v1/events?after={cursor}&limit={n}`, `GET /api/v1/events/stream` | Management bearer token; bounded cursor polling or SSE |
 | RTMP | `GET /api/v1/rtmp/streams`, `/streams/{streamId}` | Management bearer token; redacted active catalog |
 | RTMP controls | `POST .../recorders/{recorderId}/start|stop` | Management bearer token; loopback management listener and exact-ID manual controls |
 | Statistics | `GET /ready`, `GET /metrics`, `GET /stats`, `POST /stats/admin` | Exact `GET /ready` and `GET /metrics` are public; restricted statistics reads/mutations use loopback plus the statistics token/revision |
@@ -25,9 +25,9 @@ recognized API probes are exact `GET /ready` and `GET /metrics`. Separately conf
 `stats.pages[]` listeners are public page-only contracts with their own loopback same-origin form
 policy; they are not remote management routes.
 
-Native import is intentionally CLI/offline or compositional-source only. There is no import API,
-import UI workflow, SSE route, or unbounded event stream in the current contract; bounded event
-polling is implemented.
+Native import is intentionally CLI/offline or compositional-source only. There is no import API or
+import UI workflow. Event SSE is bounded, bearer-authenticated, cursor-based, and backed only by
+the in-memory ring; it is not durable audit storage.
 
 ## Authentication
 

@@ -49,6 +49,7 @@ pub(super) enum Route<'a> {
     Tls,
     TlsReconcile,
     Events(Option<&'a str>),
+    EventStream(Option<&'a str>),
     ProcessDrain,
     ProcessShutdown,
 }
@@ -75,8 +76,24 @@ pub(super) fn match_route(path_and_query: &str) -> Option<Route<'_>> {
         "/api/v1/tls" => Some(Route::Tls),
         "/api/v1/tls/reconcile" => Some(Route::TlsReconcile),
         "/api/v1/events" => Some(Route::Events(query)),
+        "/api/v1/events/stream" => Some(Route::EventStream(query)),
         "/api/v1/process/drain" => Some(Route::ProcessDrain),
         "/api/v1/process/shutdown" => Some(Route::ProcessShutdown),
+        _ => None,
+    }
+}
+
+pub(super) struct EventStreamRoute<'a> {
+    pub(super) query: Option<&'a str>,
+}
+
+pub(super) fn event_stream_route(
+    path_and_query: &str,
+    accepts_event_stream: bool,
+) -> Option<EventStreamRoute<'_>> {
+    match match_route(path_and_query)? {
+        Route::Events(query) if accepts_event_stream => Some(EventStreamRoute { query }),
+        Route::EventStream(query) => Some(EventStreamRoute { query }),
         _ => None,
     }
 }
@@ -133,7 +150,8 @@ impl ManagementState {
                 | Route::Servers
                 | Route::Generations
                 | Route::Tls
-                | Route::Events(_),
+                | Route::Events(_)
+                | Route::EventStream(_),
                 _,
             ) => ApiResponse::method_not_allowed("GET"),
             (Route::ServerMaxConnections, _) => ApiResponse::method_not_allowed("PUT"),

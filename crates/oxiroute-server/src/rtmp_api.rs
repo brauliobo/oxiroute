@@ -8,6 +8,9 @@ mod streams;
 mod ui;
 
 pub(crate) use self::{config::preflight_management_token, ui::UiAssets};
-pub use self::{response::ApiResponse, service::RtmpManagementApi};
+pub use self::{
+    response::ApiResponse,
+    service::{RtmpManagementApi, RtmpManagementHttpApp},
+};
 
 pub const MAX_CONFIG_REQUEST_BYTES: usize = crate::config_coordinator::MAX_CANONICAL_CONFIG_BYTES;

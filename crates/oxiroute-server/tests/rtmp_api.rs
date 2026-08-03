@@ -8,6 +8,7 @@ mod http_support;
 mod rtmp_support;
 
 use std::{
+    fmt::Write as _,
     fs,
     net::{Ipv4Addr, SocketAddr},
     os::{
@@ -38,7 +39,6 @@ use oxiroute_server::{
     runtime_plan,
 };
 use pingora::{
-    apps::http_app::HttpServer,
     server::Fds,
     services::{Service as PingoraService, listening::Service as ListeningService},
 };
@@ -47,6 +47,8 @@ use tempfile::TempDir;
 
 use rtmp_support::RtmpSessionClient;
 use tokio::{
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    net::TcpStream,
     sync::{Mutex as TokioMutex, watch},
     task::JoinHandle,
 };
@@ -380,6 +382,82 @@ async fn config_routes_require_the_injected_bearer_token() {
     assert_eq!(
         harness
             .request("GET", "/api/v1/topology", None, None)
+            .await
+            .status,
+        200
+    );
+}
+
+#[tokio::test]
+async fn event_stream_requires_the_management_bearer_token() {
+    let harness = ManagementHarness::start(&editable_config()).await;
+
+    let missing = harness
+        .request_with("GET", "/api/v1/events/stream", None, None, None, None)
+        .await;
+    assert_eq!(missing.status, 401);
+    assert_eq!(missing.json()["error"]["code"], "unauthorized");
+    assert_eq!(missing.header("www-authenticate"), Some("Bearer"));
+
+    let wrong = harness
+        .request_with(
+            "GET",
+            "/api/v1/events/stream",
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            None,
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(wrong.status, 401);
+}
+
+#[tokio::test]
+async fn event_stream_sends_an_initial_cursor_without_replaying_old_events() {
+    let harness = ManagementHarness::start(&editable_config()).await;
+    let (mut stream, head) = harness.open_event_stream(None).await;
+
+    let head = String::from_utf8(head).expect("SSE response headers");
+    assert!(head.starts_with("HTTP/1.1 200"));
+    assert!(
+        head.to_ascii_lowercase()
+            .contains("content-type: text/event-stream")
+    );
+    assert!(
+        head.to_ascii_lowercase()
+            .contains("transfer-encoding: chunked")
+    );
+
+    let frame = read_chunk(&mut stream).await;
+    let frame = String::from_utf8(frame).expect("initial SSE frame");
+    assert!(frame.starts_with("event: ready\ndata: {\"cursor\":"));
+    assert!(frame.ends_with("}\n\n"));
+
+    drop(stream);
+}
+
+#[tokio::test]
+async fn event_stream_reconnects_from_last_event_id() {
+    let harness = ManagementHarness::start(&editable_config()).await;
+    let (mut stream, _) = harness.open_event_stream(Some(42)).await;
+
+    let frame = String::from_utf8(read_chunk(&mut stream).await).expect("reconnect SSE frame");
+    assert_eq!(frame, "event: ready\ndata: {\"cursor\":42}\n\n");
+
+    drop(stream);
+}
+
+#[tokio::test]
+async fn event_stream_client_cancellation_does_not_block_following_requests() {
+    let harness = ManagementHarness::start(&editable_config()).await;
+    let (mut stream, _) = harness.open_event_stream(None).await;
+    let _ = read_chunk(&mut stream).await;
+    drop(stream);
+    tokio::task::yield_now().await;
+
+    assert_eq!(
+        harness
+            .request("GET", "/api/v1/config", None, None)
             .await
             .status,
         200
@@ -1009,7 +1087,7 @@ impl ManagementHarness {
             .set_nonblocking(true)
             .expect("make management listener nonblocking");
         let address = listener.local_addr().expect("management listener address");
-        let http_server = HttpListenerApp::new(HttpServer::new_app(api), None);
+        let http_server = HttpListenerApp::new(api.into_http_app(), None);
         let mut service = ListeningService::new("OxiRoute management API test".into(), http_server);
         service.add_tcp(&address.to_string());
         let mut inherited = Fds::new();
@@ -1080,6 +1158,25 @@ impl ManagementHarness {
     async fn raw_request(&self, request: Vec<u8>) -> HttpResponse {
         raw_http_request(self.address, &request).await
     }
+
+    async fn open_event_stream(&self, last_event_id: Option<u64>) -> (TcpStream, Vec<u8>) {
+        let mut stream = TcpStream::connect(self.address)
+            .await
+            .expect("connect event stream");
+        let mut request = format!(
+            "GET /api/v1/events/stream HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {TEST_TOKEN}\r\nAccept: text/event-stream\r\nConnection: close\r\n"
+        );
+        if let Some(last_event_id) = last_event_id {
+            let _ = write!(request, "Last-Event-ID: {last_event_id}\r\n");
+        }
+        request.push_str("\r\n");
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .expect("write event stream request");
+        let head = read_response_head(&mut stream).await;
+        (stream, head)
+    }
 }
 
 impl Drop for ManagementHarness {
@@ -1087,4 +1184,45 @@ impl Drop for ManagementHarness {
         let _ = self.shutdown.send(true);
         self.task.abort();
     }
+}
+
+async fn read_response_head(stream: &mut TcpStream) -> Vec<u8> {
+    let mut head = Vec::new();
+    let mut byte = [0_u8; 1];
+    while !head.windows(4).any(|window| window == b"\r\n\r\n") {
+        stream
+            .read_exact(&mut byte)
+            .await
+            .expect("read event stream response headers");
+        head.push(byte[0]);
+    }
+    head
+}
+
+async fn read_chunk(stream: &mut TcpStream) -> Vec<u8> {
+    let mut line = Vec::new();
+    let mut byte = [0_u8; 1];
+    while !line.ends_with(b"\r\n") {
+        stream
+            .read_exact(&mut byte)
+            .await
+            .expect("read SSE chunk size");
+        line.push(byte[0]);
+    }
+    let size = usize::from_str_radix(
+        std::str::from_utf8(&line[..line.len() - 2])
+            .expect("SSE chunk size")
+            .trim(),
+        16,
+    )
+    .expect("SSE chunk length");
+    let mut body = vec![0_u8; size];
+    stream.read_exact(&mut body).await.expect("read SSE chunk");
+    let mut terminator = [0_u8; 2];
+    stream
+        .read_exact(&mut terminator)
+        .await
+        .expect("read SSE chunk terminator");
+    assert_eq!(terminator, *b"\r\n");
+    body
 }

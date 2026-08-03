@@ -1479,7 +1479,7 @@ fn serve_generation(
         .with_generation_manager(generation_manager.clone())
         .with_process_shutdown(process_shutdown);
         let app = ProcessAdmissionApp::new(
-            HttpListenerApp::new(HttpServer::new_app(management_api), None)
+            HttpListenerApp::new(management_api.into_http_app(), None)
                 .with_generation(Arc::clone(generation)),
             runtime_metrics.clone(),
             Arc::clone(generation),

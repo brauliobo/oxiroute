@@ -290,13 +290,28 @@ containing only `supported`, `recorderCount`, `manualRecorderCount`, and
 `continuousRecorderCount`. Recorder roots, suffix templates, quotas, relative output names, and
 stream query arguments are not included in active or candidate topology.
 
-## Events and planned event stream
+## Events and event stream
 
 `GET /api/v1/events` is implemented as bounded cursor polling over a 2,048-event in-memory ring.
 It returns `events`, `cursor`, `hasMore`, and `oldestCursor`; callers can page with `after` and
-`limit`. It is bearer-protected like every other recognized `/api/v1` route. No SSE route or
-durable event history is implemented. A future event stream will have an increasing daemon-local
-ID and include current revisions. Planned types include:
+`limit`. It is bearer-protected like every other recognized `/api/v1` route. `GET
+/api/v1/events/stream` adds a bounded SSE delivery over the same ring; `GET /api/v1/events` with
+`Accept: text/event-stream` is an equivalent negotiated form. Both forms require exactly one
+management bearer token.
+
+An SSE connection sends `event: ready` with `{"cursor":N}` before replay or live delivery. Without
+a cursor, `N` is the current ring cursor and only later events are delivered. A `Last-Event-ID`
+header takes precedence over `after={cursor}` and replays events with larger IDs. Operational event
+frames use the ring cursor as the SSE `id`, the allowlisted operational event name as `event`, and
+the existing typed JSON object as `data`. Idle connections receive `: heartbeat` every 15 seconds.
+If the requested cursor has fallen out of the ring, the server sends `event: resync_required` with
+`cursor`, `oldestCursor`, and `latestCursor`, then closes the stream; clients must reload status
+or config and reconnect without the stale cursor. Replay pages are limited to 64 events, each
+frame is bounded, and a client that cannot accept writes is closed after the bounded write timeout.
+Shutdown closes a live stream with `event: shutdown`. There is no durable event history.
+
+The event stream currently carries the existing generation and management operation events. Future
+types include:
 
 - `config.disk_changed`, `config.activated`, `config.rejected`
 - `runtime.listener_changed`, `runtime.pool_health_changed`
@@ -304,8 +319,10 @@ ID and include current revisions. Planned types include:
 - `certificate.expiring`, `certificate.renewed`, `certificate.failed`
 - `acme.challenge_started`, `acme.challenge_completed`
 
-Future clients will reconnect with `Last-Event-ID`. If history is unavailable, the server will emit
-a `resync_required` event and the client will reload status/config.
+Private keys, authorization values, cookies, and raw event strings are not serialized into event
+frames; unknown event values are represented as `unknown`. Adding UI or ACME event publishers
+requires extending the allowlists; actor identity, request correlation, durable audit retention,
+and remote management remain separate follow-up work.
 
 ## Vue and Pug frontend
 
