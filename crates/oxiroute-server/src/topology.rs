@@ -512,7 +512,7 @@ impl TopologyBuilder {
                 name: pool.name.clone(),
                 config_path: config_path.clone(),
                 attributes: json!({
-                    "algorithm": upstream_algorithm(pool.algorithm),
+                    "algorithm": upstream_algorithm(&pool.algorithm),
                     "healthCheck": pool.health_check.as_ref().map(health_check),
                     "tls": pool.tls.as_ref().map(upstream_tls),
                     "httpVersions": {
@@ -1026,9 +1026,10 @@ const fn alpn_protocol(protocol: AlpnProtocol) -> &'static str {
     }
 }
 
-const fn upstream_algorithm(algorithm: UpstreamAlgorithm) -> &'static str {
+const fn upstream_algorithm(algorithm: &UpstreamAlgorithm) -> &'static str {
     match algorithm {
         UpstreamAlgorithm::RoundRobin => "round_robin",
+        UpstreamAlgorithm::WeightedRoundRobin { .. } => "weighted_round_robin",
         UpstreamAlgorithm::LeastConnections => "least_connections",
         UpstreamAlgorithm::First => "first",
     }

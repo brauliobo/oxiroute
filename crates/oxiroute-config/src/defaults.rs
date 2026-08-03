@@ -62,6 +62,7 @@ pub(crate) const MAX_SERVER_NAME_BYTES: usize = 253;
 pub(crate) const MAX_UNIX_SOCKET_PATH_BYTES: usize = 107;
 pub(crate) const MAX_ENDPOINTS_PER_POOL: usize = 256;
 pub(crate) const MAX_TOTAL_ENDPOINTS: usize = 1_024;
+pub(crate) const MAX_UPSTREAM_WEIGHT: u16 = 100;
 pub(crate) const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 pub(crate) const MAX_HTTP_RETRIES: u8 = 3;
 pub(crate) const MAX_HTTP_METHODS_PER_ROUTE: usize = 16;

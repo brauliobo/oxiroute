@@ -572,14 +572,19 @@ impl Renderer {
         self.fallible_table_list_field("servers", servers, |renderer, server| {
             renderer.upstream_server(name, server)
         })?;
-        self.string_field(
-            "algorithm",
-            match algorithm {
-                UpstreamAlgorithm::RoundRobin => "round_robin",
-                UpstreamAlgorithm::LeastConnections => "least_connections",
-                UpstreamAlgorithm::First => "first",
-            },
-        );
+        match algorithm {
+            UpstreamAlgorithm::WeightedRoundRobin { weights } => {
+                self.begin_table_field("algorithm");
+                self.string_field("type", "weighted_round_robin");
+                self.integer_list_field("weights", weights);
+                self.end_table();
+            }
+            UpstreamAlgorithm::RoundRobin => self.string_field("algorithm", "round_robin"),
+            UpstreamAlgorithm::LeastConnections => {
+                self.string_field("algorithm", "least_connections");
+            }
+            UpstreamAlgorithm::First => self.string_field("algorithm", "first"),
+        }
         self.optional_table_field("health_check", health_check.as_ref(), Self::health_check);
         match tls {
             Some(tls) => {

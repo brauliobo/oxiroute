@@ -389,13 +389,89 @@ impl HttpVersion {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UpstreamAlgorithm {
-    #[default]
     RoundRobin,
+    WeightedRoundRobin { weights: Vec<u16> },
     LeastConnections,
     First,
+}
+
+impl Default for UpstreamAlgorithm {
+    fn default() -> Self {
+        Self::RoundRobin
+    }
+}
+
+impl Serialize for UpstreamAlgorithm {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::RoundRobin => serializer.serialize_str("round_robin"),
+            Self::LeastConnections => serializer.serialize_str("least_connections"),
+            Self::First => serializer.serialize_str("first"),
+            Self::WeightedRoundRobin { weights } => {
+                use serde::ser::SerializeStruct as _;
+
+                let mut algorithm = serializer.serialize_struct("UpstreamAlgorithm", 2)?;
+                algorithm.serialize_field("type", "weighted_round_robin")?;
+                algorithm.serialize_field("weights", weights)?;
+                algorithm.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for UpstreamAlgorithm {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+
+        let value = UpstreamAlgorithmRepr::deserialize(deserializer)?;
+        match value {
+            UpstreamAlgorithmRepr::Name(name) => match name.as_str() {
+                "round_robin" => Ok(Self::RoundRobin),
+                "least_connections" => Ok(Self::LeastConnections),
+                "first" => Ok(Self::First),
+                "weighted_round_robin" => Ok(Self::WeightedRoundRobin {
+                    weights: Vec::new(),
+                }),
+                _ => Err(D::Error::custom(format!(
+                    "unknown upstream algorithm `{name}`"
+                ))),
+            },
+            UpstreamAlgorithmRepr::Weighted(weighted) => {
+                if weighted.kind != "weighted_round_robin" {
+                    return Err(D::Error::custom(format!(
+                        "unknown upstream algorithm `{}`",
+                        weighted.kind
+                    )));
+                }
+                Ok(Self::WeightedRoundRobin {
+                    weights: weighted.weights,
+                })
+            }
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum UpstreamAlgorithmRepr {
+    Name(String),
+    Weighted(WeightedRoundRobinConfig),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WeightedRoundRobinConfig {
+    #[serde(rename = "type")]
+    kind: String,
+    weights: Vec<u16>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1654,6 +1730,8 @@ pub enum ConfigError {
         field: &'static str,
         detail: &'static str,
     },
+    #[error("upstream pool `{pool}` has invalid weighted round-robin weights: {detail}")]
+    InvalidUpstreamWeights { pool: String, detail: &'static str },
     #[error("upstream pool `{pool}` exposes the loopback management endpoint `{endpoint}`")]
     ManagementUpstreamEndpoint { pool: String, endpoint: SocketAddr },
     #[error("upstream pool `{pool}` has invalid DNS endpoint `{host}`")]

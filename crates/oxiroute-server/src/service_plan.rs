@@ -601,7 +601,7 @@ fn compile_pools(config: &Config) -> Result<CompiledPools, ServicePlanError> {
             RoundRobinPool::new_named_servers(
                 pool.name.clone(),
                 servers,
-                pool.algorithm,
+                pool.algorithm.clone(),
                 pool.health_check.as_ref().map(|health| health.startup),
                 pool.queue_timeout_ms.map(Duration::from_millis),
             )

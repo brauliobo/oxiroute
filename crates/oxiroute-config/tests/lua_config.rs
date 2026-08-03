@@ -2520,6 +2520,67 @@ fn rejects_empty_duplicate_and_zero_port_pool_endpoints() {
 }
 
 #[test]
+fn loads_and_round_trips_weighted_round_robin_policy() {
+    let config = load_lua(
+        r#"return {
+  version = 1,
+  listeners = {},
+  upstream_pools = {
+    {
+      name = "weighted",
+      servers = {
+        { name = "primary", endpoint = { type = "socket", address = "127.0.0.1:3000" } },
+        { name = "backup", endpoint = { type = "socket", address = "127.0.0.1:3001" } },
+      },
+      algorithm = { type = "weighted_round_robin", weights = { 3, 1 } },
+    },
+  },
+}"#,
+    )
+    .expect("weighted round-robin policy");
+    assert_eq!(
+        config.upstream_pools[0].algorithm,
+        UpstreamAlgorithm::WeightedRoundRobin {
+            weights: vec![3, 1]
+        }
+    );
+
+    let rendered = render_lua(&config).expect("weighted round-robin render");
+    assert!(rendered.contains("type = \"weighted_round_robin\""));
+    assert_eq!(
+        load_lua(&rendered).expect("weighted round-robin reload"),
+        config
+    );
+}
+
+#[test]
+fn rejects_weighted_round_robin_with_missing_zero_or_oversized_weights() {
+    let sources = [r"{ 3 }", r"{ 3, 0 }", r"{ 3, 101 }"];
+    for weights in sources {
+        let source = format!(
+            r#"return {{
+  version = 1,
+  listeners = {{}},
+  upstream_pools = {{
+    {{
+      name = "weighted",
+      servers = {{
+        {{ name = "primary", endpoint = {{ type = "socket", address = "127.0.0.1:3000" }} }},
+        {{ name = "backup", endpoint = {{ type = "socket", address = "127.0.0.1:3001" }} }},
+      }},
+      algorithm = {{ type = "weighted_round_robin", weights = {weights} }},
+    }},
+  }},
+}}"#
+        );
+        assert!(matches!(
+            load_lua(&source).expect_err("invalid weighted round-robin policy"),
+            ConfigError::InvalidUpstreamWeights { pool, .. } if pool == "weighted"
+        ));
+    }
+}
+
+#[test]
 fn rejects_excessive_upstream_endpoint_cardinality() {
     let endpoints = (10_000..10_257)
         .map(|port| format!(r#"{{ type = "socket", address = "127.0.0.1:{port}" }}"#))
