@@ -43,17 +43,15 @@ OXIROUTE_MANAGEMENT_TOKEN_FILE=/etc/oxiroute/management.token oxiroute status
 ## Release source
 
 `PKGBUILD` expects the checksum-pinned release asset
-`https://github.com/brauliobo/oxiroute/releases/download/v0.2.3/oxiroute-0.2.3.tar.gz`. The asset is a
-deterministic archive of Git-tracked files with the `oxiroute-0.2.3/` prefix and without this
+`https://github.com/brauliobo/oxiroute/releases/download/v0.3.0/oxiroute-0.3.0.tar.gz`. The asset is a
+deterministic archive of Git-tracked files with the `oxiroute-0.3.0/` prefix and without this
 `packaging/arch` directory. Excluding untracked and ignored files prevents local build or benchmark
 artifacts from entering a release. Excluding the AUR recipe avoids making the source checksum depend
 on the checksum recorded inside the recipe.
 
-The current v0.2.3 archive predates `crates/oxiroute-supervisor-process` and the related workspace
-supervisor crates, so it cannot build the staged launcher. Keep `pkgver=0.2.3`, the release URL, and
-the pinned archive checksum unchanged; do not point the recipe at a guessed or nonexistent release.
-Activate this recipe only after the next release archive includes those crates, then update the
-published version and archive checksum together and regenerate `.SRCINFO`.
+The v0.3.0 archive includes the supervised launcher and related workspace crates. Publish the release
+archive before using the recipe, then keep the source checksum synchronized with that exact asset and
+regenerate `.SRCINFO`.
 
 From this repository, `./build-local.sh` recreates an archive from the current worktree and verifies it
 against the PKGBUILD checksum. Until the next release archive is published, that generated archive
@@ -65,7 +63,7 @@ Examples:
 
 ```sh
 ./build-local.sh
-./build-local.sh /path/to/oxiroute-0.2.3.tar.gz --cleanbuild
+./build-local.sh /path/to/oxiroute-0.3.0.tar.gz --cleanbuild
 ```
 
 Build products and source archives are written below `.makepkg/`, which is ignored by Git. Cargo's
