@@ -12,6 +12,8 @@ retaining the existing direct `serve` entry point as the public default.
 - Add worker-side active-generation quiesce, drain, and rollback reactivation support.
 - Recover stale RTMP publisher ownership after 30 seconds without publisher media activity, while
   preserving recorder continuity and bounded retry behavior.
+- Write recorder segments directly to their final filenames and resume interrupted segments from
+  those same visible paths without creating hidden `.partial` files.
 - Stage the hardened worker launcher and Arch package integration for the future supervised serve
   activation gate.
 

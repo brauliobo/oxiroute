@@ -1060,7 +1060,7 @@ impl WorkerContext {
                 sequence,
             )
         } else {
-            let segment_name = self
+            let requested_name = self
                 .path_policy
                 .segment_filename(
                     &self.stream_name,
@@ -1072,11 +1072,12 @@ impl WorkerContext {
                 .map_err(|_| WorkerError::new(RecorderFailure::Open))?;
             let segment = Segment::open(
                 &self.store,
-                &segment_name,
+                &requested_name,
                 &headers,
                 Arc::clone(&self.shared.bytes_written),
                 &self.shared,
             )?;
+            let segment_name = segment.partial_relative_name.clone();
             (
                 segment_name,
                 segment,
@@ -1393,6 +1394,12 @@ impl Segment {
                     } else {
                         WorkerError::new(RecorderFailure::ShutdownTimedOut)
                     }
+                } else if matches!(
+                    error,
+                    RecordingStoreError::FinalNameCollisions { .. }
+                        | RecordingStoreError::PartialNameCollisions
+                ) {
+                    WorkerError::new(RecorderFailure::Publish)
                 } else {
                     WorkerError::new(RecorderFailure::Open)
                 }
@@ -1843,9 +1850,17 @@ mod tests {
             fs::read_dir(root.path())
                 .expect("recording entries")
                 .filter_map(Result::ok)
+                .filter(|entry| entry.path().is_file())
+                .count(),
+            4
+        );
+        assert_eq!(
+            fs::read_dir(root.path())
+                .expect("recording entries")
+                .filter_map(Result::ok)
                 .filter(|entry| entry.file_name().to_string_lossy().ends_with(".partial"))
                 .count(),
-            2
+            0
         );
     }
 

@@ -386,6 +386,92 @@ fn reconnect_within_interval_resumes_the_existing_nginx_named_segment() {
 }
 
 #[test]
+fn interrupted_segment_keeps_its_final_name_and_resumes_without_a_partial_file() {
+    let temporary = tempdir().expect("recording root");
+    let store = store(temporary.path());
+    let path = RecordingPathPolicy::new(".flv", true)
+        .expect("path policy")
+        .with_segment_policy(
+            RecordingTimezone::Utc,
+            RecordingTimeBasis::SegmentStart,
+            RecordingSegmentNaming::NginxCompatible,
+        );
+    let config = RecorderWorkerConfig {
+        max_queue_messages: 32,
+        max_queue_bytes: 8,
+        rotation_interval: Some(Duration::from_secs(3_600)),
+        shutdown_timeout: Duration::from_secs(1),
+        video_codec: None,
+    };
+    let opened_at = 1_721_619_000;
+    let first = RecorderWorker::start(
+        store.clone(),
+        &path,
+        b"camera",
+        opened_at,
+        RecordingDateTime::from_unix_seconds(opened_at).expect("first start"),
+        config,
+    )
+    .expect("first worker");
+    enqueue(&first, aac_header(0, 0x12));
+    enqueue(&first, audio(0, 0x11));
+    wait_for_recording(&first);
+    assert_eq!(
+        first.try_enqueue(
+            MediaEvent::audio(
+                1,
+                vec![0xaf, 0x01, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]
+            )
+            .expect("oversized audio")
+        ),
+        RecorderEnqueueResult::DroppedDiscontinuity
+    );
+    let first_status = shutdown(first);
+    assert_eq!(
+        first_status.phase,
+        RecorderWorkerPhase::Failed(RecorderFailure::Discontinuity)
+    );
+    let first_name = first_status
+        .recoverable_partial_name
+        .expect("interrupted final name");
+    let first_path = temporary.path().join(&first_name);
+    let first_length = fs::metadata(&first_path)
+        .expect("interrupted final path")
+        .len();
+    assert!(recording_files(temporary.path()).iter().all(|entry| {
+        entry
+            .extension()
+            .is_none_or(|extension| extension != "partial")
+    }));
+
+    let reconnected_at = opened_at + 120;
+    let second = RecorderWorker::start(
+        store,
+        &path,
+        b"camera",
+        reconnected_at,
+        RecordingDateTime::from_unix_seconds(reconnected_at).expect("reconnect start"),
+        config,
+    )
+    .expect("second worker");
+    enqueue(&second, aac_header(0, 0x13));
+    enqueue(&second, audio(0, 0x33));
+    let second_status = shutdown(second);
+
+    assert_eq!(
+        second_status.last_completed_relative_name.as_deref(),
+        Some(first_name.as_str())
+    );
+    assert!(fs::metadata(first_path).expect("resumed final path").len() > first_length);
+    assert_eq!(recording_files(temporary.path()).len(), 1);
+    assert!(recording_files(temporary.path()).iter().all(|entry| {
+        entry
+            .extension()
+            .is_none_or(|extension| extension != "partial")
+    }));
+}
+
+#[test]
 fn reconnect_within_interval_preserves_a_safe_sequence_variant_name() {
     let temporary = tempdir().expect("temporary directory");
     let store = store(temporary.path());
@@ -595,10 +681,10 @@ fn a_queue_drop_quarantines_the_active_segment_and_stops_continuation() {
     );
     assert_eq!(status.discontinuities, 1);
     assert_eq!(status.segments_completed, 0);
-    assert!(!temporary.path().join("camera.flv").exists());
     let partial = status
         .recoverable_partial_name
         .expect("quarantined discontinuous segment");
+    assert_eq!(partial, "camera.flv");
     assert!(temporary.path().join(partial).is_file());
 }
 
@@ -648,7 +734,7 @@ fn simulated_full_disk_fails_only_the_recorder_and_leaves_live_playback_healthy(
 }
 
 #[test]
-fn final_name_exhaustion_is_failed_and_exposes_a_recoverable_partial() {
+fn final_name_exhaustion_is_failed_without_creating_an_extra_recording() {
     let temporary = tempdir().expect("temporary directory");
     fs::write(temporary.path().join("camera.flv"), b"existing").expect("base collision");
     for suffix in 1..16 {
@@ -676,14 +762,12 @@ fn final_name_exhaustion_is_failed_and_exposes_a_recoverable_partial() {
         RecorderWorkerPhase::Failed(RecorderFailure::Publish)
     );
     assert_eq!(status.segments_completed, 0);
-    let partial = status
-        .recoverable_partial_name
-        .expect("recoverable failed partial");
-    assert!(temporary.path().join(partial).is_file());
+    assert_eq!(status.recoverable_partial_name, None);
+    assert_eq!(recording_files(temporary.path()).len(), 16);
 }
 
 #[test]
-fn segment_end_render_failure_preserves_and_reports_the_existing_partial() {
+fn segment_end_render_failure_preserves_and_reports_the_existing_recording() {
     let temporary = tempdir().expect("temporary directory");
     let store = store(temporary.path());
     let path = RecordingPathPolicy::new("-%Y.flv", false)
@@ -717,15 +801,11 @@ fn segment_end_render_failure_preserves_and_reports_the_existing_partial() {
         status.phase,
         RecorderWorkerPhase::Failed(RecorderFailure::Finalize)
     );
-    let partial = status
+    let recording = status
         .recoverable_partial_name
-        .expect("render failure preserves the segment partial");
-    assert!(temporary.path().join(partial).is_file());
-    assert!(
-        recording_files(temporary.path())
-            .iter()
-            .all(|path| path.extension().is_none_or(|extension| extension != "flv"))
-    );
+        .expect("render failure preserves the recording");
+    assert_eq!(recording, "camera-2024.flv");
+    assert!(temporary.path().join(recording).is_file());
 }
 
 #[test]

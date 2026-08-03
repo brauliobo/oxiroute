@@ -1730,7 +1730,7 @@ mod tests {
             .recoverable_partial_name
             .expect("deadline cancellation preserves the partial");
         assert!(fixture.root.path().join(partial).is_file());
-        assert!(!fixture.root.path().join("camera.flv").exists());
+        assert!(fixture.root.path().join("camera.flv").is_file());
         assert_eq!(fixture.reaper.queue.status(), (false, 0));
     }
 
@@ -1759,7 +1759,7 @@ mod tests {
             RecorderWorkerPhase::Failed(RecorderFailure::ShutdownTimedOut)
         );
         assert!(status.recoverable_partial_name.is_some());
-        assert!(!fixture.root.path().join("camera.flv").exists());
+        assert!(fixture.root.path().join("camera.flv").is_file());
     }
 
     #[test]
@@ -1795,7 +1795,7 @@ mod tests {
             .expect("rejected submission preserves the partial");
         wait_until(TEST_TIMEOUT, || fixture.reaper.queue.status().1 == 0);
         assert!(fixture.root.path().join(partial).is_file());
-        assert!(!fixture.root.path().join("camera.flv").exists());
+        assert!(fixture.root.path().join("camera.flv").is_file());
     }
 
     #[test]
@@ -2103,7 +2103,7 @@ mod tests {
             .recoverable_partial_name
             .expect("finish panic preserves the current partial");
         assert!(fixture.root.path().join(partial).is_file());
-        assert!(!fixture.root.path().join("camera.flv").exists());
+        assert!(fixture.root.path().join("camera.flv").is_file());
         fixture.shutdown_owner(None);
     }
 
