@@ -229,6 +229,20 @@ impl Renderer {
                     )?,
                 );
             }
+            CertificateSource::SelfSignedDevelopment {
+                validity_days,
+                key_type,
+            } => {
+                self.string_field("type", "self_signed_development");
+                self.integer_field("validity_days", validity_days);
+                self.string_field(
+                    "key_type",
+                    match key_type {
+                        crate::model::SelfSignedKeyType::EcdsaP256 => "ecdsa_p256",
+                        crate::model::SelfSignedKeyType::Rsa2048 => "rsa_2048",
+                    },
+                );
+            }
         }
         self.end_table();
         Ok(())

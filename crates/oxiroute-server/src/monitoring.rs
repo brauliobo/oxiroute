@@ -17,8 +17,8 @@ use serde::Serialize;
 use oxiroute_config::ListenerBind;
 
 use crate::{
-    AdministrativeState, CertbotReconciler, CertbotWatcherMonitor, PoolHealthSnapshot,
-    RoundRobinPool,
+    AdministrativeState, CertbotReconciler, CertbotWatcherMonitor, FileReconciler,
+    FileWatcherMonitor, PoolHealthSnapshot, RoundRobinPool,
 };
 
 #[derive(Debug)]
@@ -302,6 +302,7 @@ struct RuntimeMetricsInner {
     listeners: RwLock<HashMap<String, Arc<ListenerMetricsState>>>,
     upstream_pools: RwLock<Vec<Arc<RoundRobinPool>>>,
     certbot: RwLock<CertbotMonitoring>,
+    direct_files: RwLock<DirectFileMonitoring>,
     previous_cpu_sample: Mutex<Option<CpuSample>>,
     rtmp_recording_supported: AtomicBool,
 }
@@ -355,6 +356,12 @@ struct CertbotMonitoring {
     watcher: Option<CertbotWatcherMonitor>,
 }
 
+#[derive(Default)]
+struct DirectFileMonitoring {
+    reconcilers: Vec<Arc<FileReconciler>>,
+    watcher: Option<FileWatcherMonitor>,
+}
+
 impl RuntimeMetrics {
     #[must_use]
     pub fn new() -> Self {
@@ -375,6 +382,7 @@ impl RuntimeMetrics {
                 listeners: RwLock::new(HashMap::new()),
                 upstream_pools: RwLock::new(Vec::new()),
                 certbot: RwLock::new(CertbotMonitoring::default()),
+                direct_files: RwLock::new(DirectFileMonitoring::default()),
                 previous_cpu_sample: Mutex::new(None),
                 rtmp_recording_supported: AtomicBool::new(false),
             }),
@@ -425,6 +433,26 @@ impl RuntimeMetrics {
             .map_err(|_| MetricsError::StatePoisoned("Certbot monitoring"))?;
         certbot.reconcilers = reconcilers.into_iter().collect();
         certbot.watcher = watcher;
+        Ok(())
+    }
+
+    /// Registers the process-lifetime direct-file reconcilers and watcher monitor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the direct-file monitoring registry is poisoned.
+    pub fn register_direct_file_monitoring(
+        &self,
+        reconcilers: impl IntoIterator<Item = Arc<FileReconciler>>,
+        watcher: Option<FileWatcherMonitor>,
+    ) -> Result<(), MetricsError> {
+        let mut direct_files = self
+            .inner
+            .direct_files
+            .write()
+            .map_err(|_| MetricsError::StatePoisoned("direct-file monitoring"))?;
+        direct_files.reconcilers = reconcilers.into_iter().collect();
+        direct_files.watcher = watcher;
         Ok(())
     }
 
@@ -616,6 +644,8 @@ impl RuntimeMetrics {
         let upstream_pools = self.upstream_pool_snapshots()?;
         let (mut certbot_certificates, certbot_watcher) = self.certbot_snapshots()?;
         certbot_certificates.sort_unstable_by(|left, right| left.name.cmp(&right.name));
+        let (mut direct_file_certificates, direct_file_watcher) = self.direct_file_snapshots()?;
+        direct_file_certificates.sort_unstable_by(|left, right| left.name.cmp(&right.name));
         let mut previous_cpu_sample = self
             .inner
             .previous_cpu_sample
@@ -676,6 +706,8 @@ impl RuntimeMetrics {
             upstream_pools,
             certbot_certificates,
             certbot_watcher,
+            direct_file_certificates,
+            direct_file_watcher,
         };
         *previous_cpu_sample = Some(cpu);
         Ok(snapshot)
@@ -740,6 +772,58 @@ impl RuntimeMetrics {
                 CertbotWatcherHealth::Healthy
             };
             CertbotWatcherSnapshot {
+                health,
+                coalesced_events: status.coalesced_events,
+                ignored_access_events: status.ignored_access_events,
+                backend_errors: status.backend_errors,
+                watch_recoveries: status.watch_recoveries,
+                watch_refreshes: status.watch_refreshes,
+                rescans: status.rescans,
+                periodic_rescans: status.periodic_rescans,
+                reconciliation_failures: status.reconciliation_failures,
+            }
+        });
+        Ok((certificates, watcher))
+    }
+
+    fn direct_file_snapshots(
+        &self,
+    ) -> Result<
+        (
+            Vec<DirectFileCertificateSnapshot>,
+            Option<DirectFileWatcherSnapshot>,
+        ),
+        MetricsError,
+    > {
+        let direct_files = self
+            .inner
+            .direct_files
+            .read()
+            .map_err(|_| MetricsError::StatePoisoned("direct-file monitoring"))?;
+        let certificates = direct_files
+            .reconcilers
+            .iter()
+            .map(|reconciler| {
+                let status = reconciler.status();
+                DirectFileCertificateSnapshot {
+                    name: status.certificate,
+                    active_content_revision: status.active_content_revision,
+                    expires_at: status.not_after,
+                    last_outcome: status.last_outcome.map(str::to_owned),
+                    last_error_code: status.last_error_code.map(str::to_owned),
+                }
+            })
+            .collect();
+        let watcher = direct_files.watcher.as_ref().map(|watcher| {
+            let status = watcher.status();
+            let health = if !status.running {
+                CertbotWatcherHealth::Stopped
+            } else if status.degraded {
+                CertbotWatcherHealth::Degraded
+            } else {
+                CertbotWatcherHealth::Healthy
+            };
+            DirectFileWatcherSnapshot {
                 health,
                 coalesced_events: status.coalesced_events,
                 ignored_access_events: status.ignored_access_events,
@@ -1436,6 +1520,8 @@ pub struct RuntimeSnapshot {
     pub upstream_pools: Vec<PoolHealthSnapshot>,
     pub certbot_certificates: Vec<CertbotCertificateSnapshot>,
     pub certbot_watcher: Option<CertbotWatcherSnapshot>,
+    pub direct_file_certificates: Vec<DirectFileCertificateSnapshot>,
+    pub direct_file_watcher: Option<DirectFileWatcherSnapshot>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -1443,6 +1529,16 @@ pub struct RuntimeSnapshot {
 pub struct CertbotCertificateSnapshot {
     pub name: String,
     pub active_archive_revision: u64,
+    pub active_content_revision: String,
+    pub expires_at: String,
+    pub last_outcome: Option<String>,
+    pub last_error_code: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectFileCertificateSnapshot {
+    pub name: String,
     pub active_content_revision: String,
     pub expires_at: String,
     pub last_outcome: Option<String>,
@@ -1460,6 +1556,28 @@ pub enum CertbotWatcherHealth {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CertbotWatcherSnapshot {
+    pub health: CertbotWatcherHealth,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub coalesced_events: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub ignored_access_events: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub backend_errors: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub watch_recoveries: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub watch_refreshes: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub rescans: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub periodic_rescans: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub reconciliation_failures: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectFileWatcherSnapshot {
     pub health: CertbotWatcherHealth,
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub coalesced_events: u64,

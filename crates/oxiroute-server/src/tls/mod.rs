@@ -8,12 +8,16 @@ use std::{
 };
 
 use oxiroute_config::{CertificateSource, Config};
+#[cfg(unix)]
+use rustix::fs::{self as rustix_fs, Mode, OFlags};
 use zeroize::Zeroizing;
 
 mod certbot;
 mod certbot_reconcile;
 mod certbot_watcher;
 mod certificate;
+mod file_reconcile;
+mod file_watcher;
 mod upstream;
 
 pub use certbot::{CertbotCandidate, CertbotLineage};
@@ -28,6 +32,13 @@ pub use certbot_watcher::{
 pub use certificate::{
     ActiveCertificateGeneration, CertificateGeneration, CertificateMetadata,
     CertificatePublishError, CertificateValidity, TlsProfilePlan,
+};
+pub use file_reconcile::{
+    FileReconcileError, FileReconcileOutcome, FileReconciler, FileReconcilerStatus,
+};
+pub use file_watcher::{
+    FileWatcherConfig, FileWatcherError, FileWatcherMonitor, FileWatcherStatus,
+    FileWatcherSupervisor,
 };
 pub use upstream::{UpstreamTlsPlan, prepare_upstream_tls};
 
@@ -44,6 +55,7 @@ pub type TlsProfilePlanMap = BTreeMap<String, Arc<TlsProfilePlan>>;
 pub struct PreparedTls {
     certificates: CertificateIdentityMap,
     certbot_reconcilers: Vec<Arc<CertbotReconciler>>,
+    file_reconcilers: Vec<Arc<FileReconciler>>,
     profiles: TlsProfilePlanMap,
 }
 
@@ -56,6 +68,11 @@ impl PreparedTls {
     #[must_use]
     pub fn certbot_reconcilers(&self) -> &[Arc<CertbotReconciler>] {
         &self.certbot_reconcilers
+    }
+
+    #[must_use]
+    pub fn file_reconcilers(&self) -> &[Arc<FileReconciler>] {
+        &self.file_reconcilers
     }
 
     #[must_use]
@@ -91,6 +108,29 @@ impl PreparedTls {
     ) -> Result<(), CertbotWatcherError> {
         CertbotWatcherSupervisor::check_if_configured(&self.certbot_reconcilers, config)
     }
+
+    /// Checks that the direct-file notification backend can watch this snapshot without starting
+    /// a reconciliation worker.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when watcher configuration, directory setup, or backend installation fails.
+    pub fn check_file_watcher(&self, config: FileWatcherConfig) -> Result<(), FileWatcherError> {
+        FileWatcherSupervisor::check_if_configured(&self.file_reconcilers, config)
+    }
+
+    /// Starts the direct-file certificate watcher when at least one file identity is configured.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when watcher configuration, directory setup, backend installation, or
+    /// worker startup fails.
+    pub fn start_file_watcher(
+        &self,
+        config: FileWatcherConfig,
+    ) -> Result<Option<FileWatcherSupervisor>, FileWatcherError> {
+        FileWatcherSupervisor::start_if_configured(self.file_reconcilers.clone(), config)
+    }
 }
 
 impl std::fmt::Debug for PreparedTls {
@@ -99,6 +139,7 @@ impl std::fmt::Debug for PreparedTls {
             .debug_struct("PreparedTls")
             .field("certificates", &self.certificates)
             .field("certbot_reconcilers", &self.certbot_reconcilers)
+            .field("file_reconcilers", &self.file_reconcilers)
             .field("profiles", &self.profiles)
             .finish()
     }
@@ -113,12 +154,14 @@ impl std::fmt::Debug for PreparedTls {
 ///
 /// Returns a typed error when a file is unstable or invalid, OpenSSL rejects an identity, or a
 /// profile cannot be resolved.
+#[allow(clippy::too_many_lines)]
 pub fn prepare_tls(config: &Config) -> Result<PreparedTls, TlsBuildError> {
     let mut certificates = BTreeMap::new();
     let mut certbot_reconcilers = Vec::new();
+    let mut file_reconcilers = Vec::new();
     for certificate in &config.certificates {
         let name = certificate.name.clone();
-        let (generation, certbot) = match &certificate.source {
+        let (generation, certbot, direct_files) = match &certificate.source {
             CertificateSource::Files {
                 certificate_chain_path,
                 private_key_path,
@@ -130,6 +173,7 @@ pub fn prepare_tls(config: &Config) -> Result<PreparedTls, TlsBuildError> {
                     private_key_path,
                 )?,
                 None,
+                Some((certificate_chain_path.clone(), private_key_path.clone())),
             ),
             CertificateSource::Certbot {
                 live_directory_path,
@@ -141,8 +185,22 @@ pub fn prepare_tls(config: &Config) -> Result<PreparedTls, TlsBuildError> {
                 (
                     candidate.into_generation(),
                     Some((lineage, archive_revision)),
+                    None,
                 )
             }
+            CertificateSource::SelfSignedDevelopment {
+                validity_days,
+                key_type,
+            } => (
+                CertificateGeneration::self_signed_development(
+                    certificate.name.clone(),
+                    &certificate.dns_names,
+                    *validity_days,
+                    *key_type,
+                )?,
+                None,
+                None,
+            ),
         };
         let generation = Arc::new(generation);
         let active = Arc::new(ActiveCertificateGeneration::new(generation));
@@ -158,6 +216,14 @@ pub fn prepare_tls(config: &Config) -> Result<PreparedTls, TlsBuildError> {
                 name,
                 certificate.dns_names.clone(),
                 archive_revision,
+                active,
+            )));
+        } else if let Some((certificate_chain_path, private_key_path)) = direct_files {
+            file_reconcilers.push(Arc::new(FileReconciler::new(
+                certificate.name.clone(),
+                certificate.dns_names.clone(),
+                certificate_chain_path,
+                private_key_path,
                 active,
             )));
         }
@@ -194,6 +260,7 @@ pub fn prepare_tls(config: &Config) -> Result<PreparedTls, TlsBuildError> {
     Ok(PreparedTls {
         certificates,
         certbot_reconcilers,
+        file_reconcilers,
         profiles,
     })
 }
@@ -243,6 +310,22 @@ pub enum TlsBuildError {
         kind: &'static str,
         path: PathBuf,
     },
+    #[error("development certificate `{certificate}` validity is outside the supported bounds")]
+    InvalidSelfSignedValidity { certificate: String },
+    #[error("failed to generate the development certificate key for `{certificate}`")]
+    SelfSignedKeyGeneration {
+        certificate: String,
+        #[source]
+        source: openssl::error::ErrorStack,
+    },
+    #[error("failed to generate the development certificate for `{certificate}`")]
+    SelfSignedCertificateGeneration {
+        certificate: String,
+        #[source]
+        source: openssl::error::ErrorStack,
+    },
+    #[error("development certificate `{certificate}` is not self-signed")]
+    SelfSignedSignatureMismatch { certificate: String },
     #[error("{kind} file `{path}` for `{owner}` is empty")]
     EmptyFile {
         owner: String,
@@ -638,7 +721,7 @@ fn read_bounded_once(
     limit: usize,
     private_key: bool,
 ) -> Result<Zeroizing<Vec<u8>>, TlsBuildError> {
-    let mut file = File::open(path).map_err(|source| TlsBuildError::FileOpen {
+    let mut file = open_read_no_follow(path).map_err(|source| TlsBuildError::FileOpen {
         owner: owner.into(),
         kind,
         path: path.into(),
@@ -715,6 +798,24 @@ fn read_bounded_once(
         });
     }
     Ok(bytes)
+}
+
+fn open_read_no_follow(path: &Path) -> io::Result<File> {
+    #[cfg(unix)]
+    {
+        rustix_fs::open(
+            path,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map(File::from)
+        .map_err(Into::into)
+    }
+
+    #[cfg(not(unix))]
+    {
+        File::open(path)
+    }
 }
 
 pub(crate) fn certificate_is_ca_capable(

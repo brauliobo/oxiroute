@@ -109,6 +109,9 @@ impl PreparedGeneration {
         plan.tls
             .check_certbot_watcher(crate::CertbotWatcherConfig::default())
             .map_err(|_| GenerationError::RuntimePrepare)?;
+        plan.tls
+            .check_file_watcher(crate::FileWatcherConfig::default())
+            .map_err(|_| GenerationError::RuntimePrepare)?;
         let metrics = RuntimeMetrics::for_process(process);
         metrics.register_upstream_pools(plan.pools.iter().cloned())?;
         let rtmp_registry = Arc::new(RtmpRegistry::new(plan.rtmp_capabilities));
@@ -169,6 +172,9 @@ impl PreparedGeneration {
         }
         plan.tls
             .check_certbot_watcher(crate::CertbotWatcherConfig::default())
+            .map_err(|_| GenerationError::RuntimePrepare)?;
+        plan.tls
+            .check_file_watcher(crate::FileWatcherConfig::default())
             .map_err(|_| GenerationError::RuntimePrepare)?;
         let metrics = RuntimeMetrics::for_process(process);
         metrics.register_upstream_pools(plan.pools.iter().cloned())?;

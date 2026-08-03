@@ -28,8 +28,9 @@ use crate::defaults::{
     default_max_request_body_bytes, default_recorder_max_active_recorders,
     default_recorder_max_queue_bytes, default_recorder_max_queue_messages,
     default_recorder_shutdown_timeout_ms, default_recorder_suffix_template,
-    default_rtmp_fanout_policy, default_rtmp_outbound_chunk_size, default_true,
-    default_unhealthy_threshold, default_upstream_io_timeout_ms,
+    default_rtmp_fanout_policy, default_rtmp_outbound_chunk_size,
+    default_self_signed_validity_days, default_true, default_unhealthy_threshold,
+    default_upstream_io_timeout_ms,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -81,6 +82,21 @@ pub enum CertificateSource {
         live_directory_path: PathBuf,
         archive_directory_path: PathBuf,
     },
+    SelfSignedDevelopment {
+        #[serde(default = "default_self_signed_validity_days")]
+        validity_days: u32,
+        #[serde(default)]
+        key_type: SelfSignedKeyType,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SelfSignedKeyType {
+    #[default]
+    EcdsaP256,
+    #[serde(rename = "rsa_2048")]
+    Rsa2048,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1626,6 +1642,15 @@ pub enum ConfigError {
     DuplicateCertificatePaths { certificate: String },
     #[error("certificate `{certificate}` must use different Certbot live and archive directories")]
     DuplicateCertbotDirectories { certificate: String },
+    #[error(
+        "development certificate `{certificate}` validity_days must be between {min} and {max}, got {value}"
+    )]
+    InvalidSelfSignedValidityDays {
+        certificate: String,
+        value: u32,
+        min: u32,
+        max: u32,
+    },
     #[error("TLS profile `{profile}` references unknown certificate `{certificate}`")]
     UnknownTlsProfileCertificate {
         profile: String,

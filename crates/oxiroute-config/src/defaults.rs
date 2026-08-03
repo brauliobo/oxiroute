@@ -56,6 +56,8 @@ pub(crate) const MAX_HEALTH_HOST_BYTES: usize = 255;
 pub(crate) const MAX_HEALTH_PATH_BYTES: usize = 2_048;
 pub(crate) const MAX_CERTIFICATES: usize = 256;
 pub(crate) const MAX_CERTIFICATE_DNS_NAMES: usize = 100;
+pub(crate) const MIN_SELF_SIGNED_VALIDITY_DAYS: u32 = 1;
+pub(crate) const MAX_SELF_SIGNED_VALIDITY_DAYS: u32 = 30;
 pub(crate) const MAX_TLS_PROFILES: usize = 256;
 pub(crate) const MAX_FILE_PATH_BYTES: usize = 4_096;
 pub(crate) const MAX_SERVER_NAME_BYTES: usize = 253;
@@ -144,6 +146,10 @@ pub(crate) const MAX_FORWARD_ACCESS_MATCHERS: usize = 256;
 
 pub(crate) const fn default_true() -> bool {
     true
+}
+
+pub(crate) const fn default_self_signed_validity_days() -> u32 {
+    7
 }
 
 pub(crate) const fn default_upstream_io_timeout_ms() -> u64 {

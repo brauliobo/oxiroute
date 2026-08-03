@@ -1,7 +1,7 @@
 use oxiroute_config::{
     AlpnProtocol, CertificateSource, ConfigError, HealthCheckType, HttpVersion, ListenerBind,
-    Protocol, StatsPageAdminPolicy, TlsVersion, UpstreamAlgorithm, UpstreamEndpoint, load_lua,
-    render_lua,
+    Protocol, SelfSignedKeyType, StatsPageAdminPolicy, TlsVersion, UpstreamAlgorithm,
+    UpstreamEndpoint, load_lua, render_lua,
 };
 
 #[test]
@@ -453,6 +453,22 @@ fn with_certbot_source(live_directory_path: &str, archive_directory_path: &str) 
     )
 }
 
+fn with_self_signed_source(fields: &str) -> String {
+    changed(
+        r#"      source = {
+        type = "files",
+        certificate_chain_path = "/etc/oxiroute/web-chain.pem",
+        private_key_path = "/etc/oxiroute/web-key.pem",
+      },"#,
+        &format!(
+            r#"      source = {{
+        type = "self_signed_development",
+        {fields}
+      }},"#
+        ),
+    )
+}
+
 #[test]
 fn loads_the_canonical_configuration() {
     let config = load_lua(VALID_CONFIG).expect("valid canonical configuration");
@@ -526,6 +542,55 @@ fn loads_the_canonical_configuration() {
     assert!(config.rtmp_services[0].applications[0].live);
     assert!(config.rtmp_services[0].applications[0].idle_streams);
     assert!(config.rtmp_services[0].applications[0].recorders.is_empty());
+}
+
+#[test]
+fn self_signed_development_source_defaults_and_renders_explicitly() {
+    let config = load_lua(&with_self_signed_source("")).expect("default development source");
+    let CertificateSource::SelfSignedDevelopment {
+        validity_days,
+        key_type,
+    } = config.certificates[0].source
+    else {
+        panic!("development source");
+    };
+    assert_eq!(validity_days, 7);
+    assert_eq!(key_type, SelfSignedKeyType::EcdsaP256);
+
+    let rendered = render_lua(&config).expect("render development source");
+    assert!(rendered.contains("type = \"self_signed_development\""));
+    assert!(rendered.contains("validity_days = 7"));
+    assert!(rendered.contains("key_type = \"ecdsa_p256\""));
+    assert_eq!(
+        load_lua(&rendered).expect("reload development source"),
+        config
+    );
+}
+
+#[test]
+fn self_signed_development_source_accepts_key_type_and_rejects_unbounded_validity() {
+    let config = load_lua(&with_self_signed_source(
+        "validity_days = 14,\n        key_type = \"rsa_2048\",",
+    ))
+    .expect("bounded RSA development source");
+    assert!(matches!(
+        config.certificates[0].source,
+        CertificateSource::SelfSignedDevelopment {
+            validity_days: 14,
+            key_type: SelfSignedKeyType::Rsa2048,
+        }
+    ));
+
+    for validity_days in [0, 31] {
+        let error = load_lua(&with_self_signed_source(&format!(
+            "validity_days = {validity_days},"
+        )))
+        .expect_err("out-of-bounds development validity");
+        assert!(matches!(
+            error,
+            ConfigError::InvalidSelfSignedValidityDays { value, .. } if value == validity_days
+        ));
+    }
 }
 
 #[test]

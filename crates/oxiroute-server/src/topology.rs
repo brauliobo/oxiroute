@@ -1008,6 +1008,18 @@ fn certificate_source(source: &CertificateSource) -> Value {
             "liveDirectoryPath": live_directory_path,
             "archiveDirectoryPath": archive_directory_path,
         }),
+        CertificateSource::SelfSignedDevelopment {
+            validity_days,
+            key_type,
+        } => json!({
+            "type": "self_signed_development",
+            "developmentOnly": true,
+            "validityDays": validity_days,
+            "keyType": match key_type {
+                oxiroute_config::SelfSignedKeyType::EcdsaP256 => "ecdsa_p256",
+                oxiroute_config::SelfSignedKeyType::Rsa2048 => "rsa_2048",
+            },
+        }),
     }
 }
 

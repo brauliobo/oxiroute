@@ -17,17 +17,24 @@ use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use openssl::{
     asn1::Asn1Time,
+    bn::{BigNum, MsbOption},
+    ec::{EcGroup, EcKey},
     error::ErrorStack,
     hash::MessageDigest,
+    nid::Nid,
     pkey::{Id, PKey, Private},
+    rsa::Rsa,
     sha::sha256,
     ssl::{NameType, SslAcceptor, SslMethod, SslOptions, SslSessionCacheMode, SslVersion},
     stack::Stack,
     x509::{
-        X509, X509PurposeId, X509StoreContext, store::X509StoreBuilder, verify::X509VerifyFlags,
+        X509, X509NameBuilder, X509PurposeId, X509StoreContext,
+        extension::{BasicConstraints, ExtendedKeyUsage, KeyUsage, SubjectAlternativeName},
+        store::X509StoreBuilder,
+        verify::X509VerifyFlags,
     },
 };
-use oxiroute_config::{AlpnProtocol, TlsProfile, TlsVersion};
+use oxiroute_config::{AlpnProtocol, SelfSignedKeyType, TlsProfile, TlsVersion};
 use pingora::{
     listeners::{ALPN, TlsAccept, tls::TlsSettings},
     protocols::tls::TlsRef,
@@ -38,6 +45,7 @@ use x509_parser::parse_x509_certificate;
 const CERTIFICATE_FILE: &str = "certificate chain";
 const PRIVATE_KEY_FILE: &str = "private key";
 const MAX_DNS_NAMES: usize = 100;
+const MAX_SELF_SIGNED_VALIDITY_DAYS: u32 = 30;
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 enum CertificateIdentity {
@@ -115,6 +123,217 @@ impl CertificateGeneration {
             private_key_path,
             &key_pem,
         )
+    }
+
+    #[allow(clippy::too_many_lines)]
+    pub(super) fn self_signed_development(
+        name: impl Into<String>,
+        declared_dns_names: &[String],
+        validity_days: u32,
+        key_type: SelfSignedKeyType,
+    ) -> Result<Self, TlsBuildError> {
+        let name = name.into();
+        if validity_days == 0 || validity_days > MAX_SELF_SIGNED_VALIDITY_DAYS {
+            return Err(TlsBuildError::InvalidSelfSignedValidity { certificate: name });
+        }
+        let mut identities = normalize_declared_dns_names(&name, declared_dns_names)?;
+        identities.sort_unstable();
+        let private_key = generate_self_signed_key(&name, key_type)?;
+
+        let mut subject = X509NameBuilder::new().map_err(|source| {
+            TlsBuildError::SelfSignedCertificateGeneration {
+                certificate: name.clone(),
+                source,
+            }
+        })?;
+        subject
+            .append_entry_by_text("commonName", &identities[0].clone().into_string())
+            .map_err(|source| TlsBuildError::SelfSignedCertificateGeneration {
+                certificate: name.clone(),
+                source,
+            })?;
+        let subject = subject.build();
+
+        let mut serial =
+            BigNum::new().map_err(|source| TlsBuildError::SelfSignedCertificateGeneration {
+                certificate: name.clone(),
+                source,
+            })?;
+        serial.rand(128, MsbOption::ONE, false).map_err(|source| {
+            TlsBuildError::SelfSignedCertificateGeneration {
+                certificate: name.clone(),
+                source,
+            }
+        })?;
+        let serial = serial.to_asn1_integer().map_err(|source| {
+            TlsBuildError::SelfSignedCertificateGeneration {
+                certificate: name.clone(),
+                source,
+            }
+        })?;
+
+        let mut builder =
+            X509::builder().map_err(|source| TlsBuildError::SelfSignedCertificateGeneration {
+                certificate: name.clone(),
+                source,
+            })?;
+        builder.set_version(2).map_err(|source| {
+            TlsBuildError::SelfSignedCertificateGeneration {
+                certificate: name.clone(),
+                source,
+            }
+        })?;
+        builder.set_serial_number(&serial).map_err(|source| {
+            TlsBuildError::SelfSignedCertificateGeneration {
+                certificate: name.clone(),
+                source,
+            }
+        })?;
+        builder.set_subject_name(&subject).map_err(|source| {
+            TlsBuildError::SelfSignedCertificateGeneration {
+                certificate: name.clone(),
+                source,
+            }
+        })?;
+        builder.set_issuer_name(&subject).map_err(|source| {
+            TlsBuildError::SelfSignedCertificateGeneration {
+                certificate: name.clone(),
+                source,
+            }
+        })?;
+        builder.set_pubkey(&private_key).map_err(|source| {
+            TlsBuildError::SelfSignedCertificateGeneration {
+                certificate: name.clone(),
+                source,
+            }
+        })?;
+        let not_before = Asn1Time::days_from_now(0).map_err(|source| {
+            TlsBuildError::SelfSignedCertificateGeneration {
+                certificate: name.clone(),
+                source,
+            }
+        })?;
+        let not_after = Asn1Time::days_from_now(validity_days).map_err(|source| {
+            TlsBuildError::SelfSignedCertificateGeneration {
+                certificate: name.clone(),
+                source,
+            }
+        })?;
+        builder.set_not_before(&not_before).map_err(|source| {
+            TlsBuildError::SelfSignedCertificateGeneration {
+                certificate: name.clone(),
+                source,
+            }
+        })?;
+        builder.set_not_after(&not_after).map_err(|source| {
+            TlsBuildError::SelfSignedCertificateGeneration {
+                certificate: name.clone(),
+                source,
+            }
+        })?;
+
+        let san = {
+            let mut san = SubjectAlternativeName::new();
+            for identity in &identities {
+                match identity {
+                    CertificateIdentity::Dns(dns_name) => san.dns(dns_name),
+                    CertificateIdentity::Ip(ip) => san.ip(&ip.to_string()),
+                };
+            }
+            let context = builder.x509v3_context(None, None);
+            san.build(&context).map_err(|source| {
+                TlsBuildError::SelfSignedCertificateGeneration {
+                    certificate: name.clone(),
+                    source,
+                }
+            })?
+        };
+        builder.append_extension(san).map_err(|source| {
+            TlsBuildError::SelfSignedCertificateGeneration {
+                certificate: name.clone(),
+                source,
+            }
+        })?;
+        builder
+            .append_extension(
+                BasicConstraints::new()
+                    .critical()
+                    .build()
+                    .map_err(|source| TlsBuildError::SelfSignedCertificateGeneration {
+                        certificate: name.clone(),
+                        source,
+                    })?,
+            )
+            .map_err(|source| TlsBuildError::SelfSignedCertificateGeneration {
+                certificate: name.clone(),
+                source,
+            })?;
+        builder
+            .append_extension(
+                KeyUsage::new()
+                    .critical()
+                    .digital_signature()
+                    .key_encipherment()
+                    .build()
+                    .map_err(|source| TlsBuildError::SelfSignedCertificateGeneration {
+                        certificate: name.clone(),
+                        source,
+                    })?,
+            )
+            .map_err(|source| TlsBuildError::SelfSignedCertificateGeneration {
+                certificate: name.clone(),
+                source,
+            })?;
+        builder
+            .append_extension(
+                ExtendedKeyUsage::new()
+                    .server_auth()
+                    .build()
+                    .map_err(|source| TlsBuildError::SelfSignedCertificateGeneration {
+                        certificate: name.clone(),
+                        source,
+                    })?,
+            )
+            .map_err(|source| TlsBuildError::SelfSignedCertificateGeneration {
+                certificate: name.clone(),
+                source,
+            })?;
+        let leaf = {
+            builder
+                .sign(&private_key, MessageDigest::sha256())
+                .map_err(|source| TlsBuildError::SelfSignedCertificateGeneration {
+                    certificate: name.clone(),
+                    source,
+                })?;
+            builder.build()
+        };
+        let public_key =
+            leaf.public_key()
+                .map_err(|source| TlsBuildError::SelfSignedCertificateGeneration {
+                    certificate: name.clone(),
+                    source,
+                })?;
+        if !leaf.verify(&public_key).map_err(|source| {
+            TlsBuildError::SelfSignedCertificateGeneration {
+                certificate: name.clone(),
+                source,
+            }
+        })? {
+            return Err(TlsBuildError::SelfSignedSignatureMismatch { certificate: name });
+        }
+        validate_private_key(&name, &private_key)?;
+        validate_leaf_key_usage(&name, &leaf)?;
+        validate_current(&name, &leaf)?;
+        let dns_names = dns_names(&name, &leaf, declared_dns_names)?;
+        preflight(&name, &leaf, &[], &private_key)?;
+        let metadata = metadata(&name, &leaf, &[], dns_names)?;
+
+        Ok(Self {
+            leaf,
+            intermediates: Box::new([]),
+            private_key,
+            metadata,
+        })
     }
 
     pub(crate) fn from_pem(
@@ -224,6 +443,43 @@ impl CertificateGeneration {
             ssl_add_chain_cert(ssl, intermediate)?;
         }
         ssl_use_certificate(ssl, &self.leaf)
+    }
+}
+
+fn generate_self_signed_key(
+    name: &str,
+    key_type: SelfSignedKeyType,
+) -> Result<PKey<Private>, TlsBuildError> {
+    match key_type {
+        SelfSignedKeyType::EcdsaP256 => {
+            let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).map_err(|source| {
+                TlsBuildError::SelfSignedKeyGeneration {
+                    certificate: name.into(),
+                    source,
+                }
+            })?;
+            let key = EcKey::generate(&group).map_err(|source| {
+                TlsBuildError::SelfSignedKeyGeneration {
+                    certificate: name.into(),
+                    source,
+                }
+            })?;
+            PKey::from_ec_key(key).map_err(|source| TlsBuildError::SelfSignedKeyGeneration {
+                certificate: name.into(),
+                source,
+            })
+        }
+        SelfSignedKeyType::Rsa2048 => {
+            let key =
+                Rsa::generate(2048).map_err(|source| TlsBuildError::SelfSignedKeyGeneration {
+                    certificate: name.into(),
+                    source,
+                })?;
+            PKey::from_rsa(key).map_err(|source| TlsBuildError::SelfSignedKeyGeneration {
+                certificate: name.into(),
+                source,
+            })
+        }
     }
 }
 

@@ -612,27 +612,55 @@ impl ManagementState {
         let Ok(snapshot) = active.metrics().snapshot() else {
             return ApiResponse::error(503, "tls_status_unavailable", "TLS status is unavailable");
         };
-        let certificates = active
-            .config()
-            .certificates
-            .iter()
-            .map(|certificate| {
-                let source = match &certificate.source {
-                    CertificateSource::Files { .. } => "files",
-                    CertificateSource::Certbot { .. } => "certbot",
-                };
-                let status = snapshot
-                    .certbot_certificates
-                    .iter()
-                    .find(|status| status.name == certificate.name);
-                json!({
-                    "name": certificate.name,
-                    "dnsNames": certificate.dns_names,
-                    "source": source,
-                    "status": status,
+        let certificates =
+            active
+                .config()
+                .certificates
+                .iter()
+                .map(|certificate| {
+                    let (source, development_only, status) =
+                        match &certificate.source {
+                            CertificateSource::Files { .. } => (
+                                "files",
+                                false,
+                                snapshot
+                                    .direct_file_certificates
+                                    .iter()
+                                    .find(|status| status.name == certificate.name)
+                                    .map(|status| json!(status)),
+                            ),
+                            CertificateSource::Certbot { .. } => (
+                                "certbot",
+                                false,
+                                snapshot
+                                    .certbot_certificates
+                                    .iter()
+                                    .find(|status| status.name == certificate.name)
+                                    .map(|status| json!(status)),
+                            ),
+                            CertificateSource::SelfSignedDevelopment { .. } => (
+                                "self_signed_development",
+                                true,
+                                active.plan().tls.certificates().get(&certificate.name).map(
+                                    |active| {
+                                        let metadata = active.snapshot();
+                                        json!({
+                                            "activeContentRevision": metadata.metadata().revision,
+                                            "expiresAt": metadata.metadata().validity.not_after,
+                                        })
+                                    },
+                                ),
+                            ),
+                        };
+                    json!({
+                        "name": certificate.name,
+                        "dnsNames": certificate.dns_names,
+                        "source": source,
+                        "developmentOnly": development_only,
+                        "status": status,
+                    })
                 })
-            })
-            .collect::<Vec<_>>();
+                .collect::<Vec<_>>();
         ApiResponse::json(
             200,
             &json!({

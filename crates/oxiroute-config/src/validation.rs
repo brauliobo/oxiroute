@@ -16,8 +16,9 @@ use crate::{
         MAX_RTMP_APPLICATION_BYTES, MAX_RTMP_APPLICATIONS_PER_SERVICE, MAX_RTMP_FANOUT_QUEUE_BYTES,
         MAX_RTMP_FANOUT_QUEUE_MESSAGES, MAX_RTMP_OUTBOUND_CHUNK_SIZE, MAX_RTMP_PUSH_TARGETS,
         MAX_RTMP_RECORDERS_PER_APPLICATION, MAX_RTMP_RECORDING_ROOTS, MAX_RTMP_SERVICES,
-        MAX_RTMP_SUBSCRIBERS, MAX_SAFE_JSON_INTEGER, MAX_TLS_PROFILES, MAX_TOTAL_ENDPOINTS,
-        MAX_TOTAL_RTMP_RECORDERS, MAX_UPSTREAM_WEIGHT, MIN_HEALTH_INTERVAL_MS,
+        MAX_RTMP_SUBSCRIBERS, MAX_SAFE_JSON_INTEGER, MAX_SELF_SIGNED_VALIDITY_DAYS,
+        MAX_TLS_PROFILES, MAX_TOTAL_ENDPOINTS, MAX_TOTAL_RTMP_RECORDERS, MAX_UPSTREAM_WEIGHT,
+        MIN_HEALTH_INTERVAL_MS, MIN_SELF_SIGNED_VALIDITY_DAYS,
     },
     lexical::{
         authority_has_invalid_port, canonical_ip, is_unambiguous_http_path,
@@ -258,6 +259,18 @@ fn validate_certificates(certificates: &mut [Certificate]) -> Result<(), ConfigE
                 if live_directory_path == archive_directory_path {
                     return Err(ConfigError::DuplicateCertbotDirectories {
                         certificate: certificate.name.clone(),
+                    });
+                }
+            }
+            CertificateSource::SelfSignedDevelopment { validity_days, .. } => {
+                if !(MIN_SELF_SIGNED_VALIDITY_DAYS..=MAX_SELF_SIGNED_VALIDITY_DAYS)
+                    .contains(validity_days)
+                {
+                    return Err(ConfigError::InvalidSelfSignedValidityDays {
+                        certificate: certificate.name.clone(),
+                        value: *validity_days,
+                        min: MIN_SELF_SIGNED_VALIDITY_DAYS,
+                        max: MAX_SELF_SIGNED_VALIDITY_DAYS,
                     });
                 }
             }
