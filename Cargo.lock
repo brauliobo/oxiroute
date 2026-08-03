@@ -2590,7 +2590,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -2641,7 +2641,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-cache"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "crc32fast",
@@ -2656,7 +2656,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-config"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "chrono-tz",
  "http",
@@ -2668,7 +2668,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-config-source"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "hocon-parser",
  "kdl",
@@ -2702,7 +2702,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-import"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "openssl",
  "oxiroute-config",
@@ -2719,7 +2719,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-rtmp"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "chrono",
@@ -2734,7 +2734,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-supervision"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2743,7 +2743,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-supervision-unix"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "oxiroute-supervision",
  "rustix",
@@ -2756,7 +2756,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-supervisor-master"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "oxiroute-supervision",
  "oxiroute-supervision-unix",
@@ -2768,7 +2768,7 @@ dependencies = [
 
 [[package]]
 name = "oxiroute-supervisor-process"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "close_fds",
  "oxiroute-supervision",
