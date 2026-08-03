@@ -40,6 +40,13 @@ The client then uses the same environment variable and its default endpoint:
 OXIROUTE_MANAGEMENT_TOKEN_FILE=/etc/oxiroute/management.token oxiroute status
 ```
 
+With the authenticated management listener enabled, `systemctl reload oxiroute.service` runs
+`/usr/bin/oxiroute generation reload`. The command re-reads the canonical configuration and
+re-resolves imported native dependencies; it fails rather than performing a no-op when the
+management endpoint or token is unavailable. Candidate activation is asynchronous, so use
+`oxiroute generation status` to confirm the new generation is active. A rejected candidate leaves
+the current generation active and available for `oxiroute generation rollback`.
+
 ## Release source
 
 `PKGBUILD` expects the checksum-pinned release asset

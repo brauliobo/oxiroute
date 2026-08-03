@@ -11,6 +11,7 @@ Group=oxiroute
 WorkingDirectory=/var/lib/oxiroute
 EnvironmentFile=-/etc/oxiroute/oxiroute.env
 ExecStart=/usr/bin/oxiroute serve /etc/oxiroute/oxiroute.kdl
+ExecReload=/usr/bin/oxiroute generation reload
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=15s
