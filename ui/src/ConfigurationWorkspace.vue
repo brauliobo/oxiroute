@@ -401,9 +401,9 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
 
-import { ApiError, fetchConfig } from './api'
+import { ApiError, connectEventStream, fetchConfig, type EventStreamClient } from './api'
 import CacheStoreEditor from './configuration/CacheStoreEditor.vue'
 import CertificateEditor from './configuration/CertificateEditor.vue'
 import ForwardProxyServiceEditor from './configuration/ForwardProxyServiceEditor.vue'
@@ -447,6 +447,7 @@ const refreshError = ref<string | null>(null)
 const selectedKey = ref('general')
 const reviewOpen = ref(false)
 let loadController: AbortController | null = null
+let eventStream: EventStreamClient | null = null
 let reviewReturnFocus: HTMLElement | null = null
 
 const {
@@ -465,6 +466,7 @@ const {
   abortRequests,
   clearMessages,
   resetForSnapshot,
+  syncSnapshot,
   runValidation,
   writeCandidate,
 } = useConfigurationLifecycle({
@@ -553,13 +555,8 @@ async function loadSnapshot(preserveDirty: boolean): Promise<void> {
     if (controller.signal.aborted) return
     canonicalUnavailable.value = null
     refreshError.value = null
-    if (preserveDirty && snapshot.value && isDirty.value) {
-      activeRevision.value = next.activeRevision
-      diskDiagnostics.value = next.diagnostics
-      if (next.diskRevision !== diskRevision.value) staleRevision.value = next.diskRevision
-      return
-    }
-    applySnapshot(next)
+    applySnapshot(next, !preserveDirty)
+    ensureEventStream()
   } catch (error) {
     if (controller.signal.aborted) return
     if (error instanceof ApiError && error.status === 401) {
@@ -589,17 +586,35 @@ async function loadSnapshot(preserveDirty: boolean): Promise<void> {
   }
 }
 
-function applySnapshot(next: ConfigSnapshot): void {
-  snapshot.value = clone(next)
-  draft.value = clone(next.config)
-  diskRevision.value = next.diskRevision
-  activeRevision.value = next.activeRevision
-  diskDiagnostics.value = next.diagnostics
-  staleRevision.value = null
+function applySnapshot(next: ConfigSnapshot, force = false): void {
+  if (!syncSnapshot(next, force)) return
   canonicalUnavailable.value = null
   refreshError.value = null
-  resetForSnapshot()
   if (!selectionExists(selectedKey.value)) selectedKey.value = 'general'
+}
+
+function ensureEventStream(): void {
+  if (eventStream || !accessToken.value || !snapshot.value) return
+  const client = connectEventStream(accessToken.value, {
+    onEvent: (event) => {
+      if (event.revision !== null) void loadSnapshot(true)
+    },
+    onResyncRequired: async () => {
+      await loadSnapshot(true)
+    },
+    onError: (error) => {
+      if (error instanceof ApiError && error.status === 401) relockConfiguration()
+    },
+  })
+  eventStream = client
+  void client.closed.then(() => {
+    if (eventStream === client) eventStream = null
+  })
+}
+
+function stopEventStream(): void {
+  eventStream?.close()
+  eventStream = null
 }
 
 function checkDiskRevision(): void {
@@ -794,6 +809,7 @@ function clone<T>(value: T): T {
 }
 
 function relockConfiguration(): void {
+  stopEventStream()
   accessToken.value = null
   tokenInput.value = ''
   unlockError.value = 'Authorization expired or was rejected. Enter a valid bearer token to continue.'
@@ -829,10 +845,20 @@ function warnBeforeUnload(event: BeforeUnloadEvent): void {
 
 onMounted(() => {
   window.addEventListener('beforeunload', warnBeforeUnload)
+  ensureEventStream()
+})
+onActivated(() => {
+  ensureEventStream()
+})
+onDeactivated(() => {
+  stopEventStream()
+  loadController?.abort()
+  abortRequests()
 })
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', warnBeforeUnload)
   setSurroundingBackgroundInert(false)
+  stopEventStream()
   loadController?.abort()
   abortRequests()
 })
