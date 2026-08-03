@@ -98,6 +98,44 @@ pub fn render_prometheus(
             &[("listener", listener.name.as_str())],
             listener.bytes_sent,
         )?;
+        if let Some(http) = &listener.http_operations {
+            for outcome in &http.outcomes {
+                labels(
+                    &mut output,
+                    "oxiroute_http_requests_total",
+                    &[
+                        ("listener", listener.name.as_str()),
+                        ("result", outcome.result.as_str()),
+                    ],
+                    outcome.count,
+                )?;
+            }
+            render_latency_histogram(
+                &mut output,
+                "oxiroute_http_request_duration_milliseconds",
+                listener.name.as_str(),
+                &http.latency,
+            )?;
+        }
+        if let Some(tcp) = &listener.tcp_relays {
+            for outcome in &tcp.outcomes {
+                labels(
+                    &mut output,
+                    "oxiroute_tcp_relays_total",
+                    &[
+                        ("listener", listener.name.as_str()),
+                        ("result", outcome.result.as_str()),
+                    ],
+                    outcome.count,
+                )?;
+            }
+            render_latency_histogram(
+                &mut output,
+                "oxiroute_tcp_relay_duration_milliseconds",
+                listener.name.as_str(),
+                &tcp.latency,
+            )?;
+        }
     }
 
     for pool in &runtime.upstream_pools {
@@ -287,6 +325,35 @@ fn labels(
     writeln!(output, "}} {value}")
 }
 
+fn render_latency_histogram(
+    output: &mut String,
+    name: &str,
+    listener: &str,
+    latency: &crate::LatencySnapshot,
+) -> fmt::Result {
+    let bucket_name = format!("{name}_bucket");
+    let count_name = format!("{name}_count");
+    let sum_name = format!("{name}_sum");
+    for bucket in &latency.buckets {
+        let upper_bound = bucket
+            .upper_bound_ms
+            .map_or_else(|| "+Inf".to_owned(), |value| value.to_string());
+        labels(
+            output,
+            &bucket_name,
+            &[("listener", listener), ("le", upper_bound.as_str())],
+            bucket.count,
+        )?;
+    }
+    labels(
+        output,
+        &count_name,
+        &[("listener", listener)],
+        latency.count,
+    )?;
+    labels(output, &sum_name, &[("listener", listener)], latency.sum_ms)
+}
+
 fn escape_label(output: &mut String, value: &str) {
     for character in value.chars() {
         match character {
@@ -353,5 +420,56 @@ mod tests {
         assert!(output.contains("oxiroute_generation_activations_total"));
         assert!(!output.contains("192.0.2.10"));
         assert!(!output.contains("private-port"));
+    }
+
+    #[test]
+    fn exposition_contains_bounded_http_and_tcp_outcome_histograms() {
+        let metrics = RuntimeMetrics::new();
+        let listener = metrics
+            .register_listener("edge", "http", "socket:192.0.2.10:private-port", None)
+            .expect("listener");
+        listener
+            .record_http_operation(
+                crate::HttpOperationResult::Success,
+                std::time::Duration::from_millis(7),
+            )
+            .expect("HTTP result");
+        listener
+            .record_http_operation(
+                crate::HttpOperationResult::UpstreamError,
+                std::time::Duration::from_millis(65),
+            )
+            .expect("HTTP result");
+        listener
+            .record_tcp_relay(
+                crate::TcpRelayResult::IdleTimeout,
+                std::time::Duration::from_secs(2),
+            )
+            .expect("TCP result");
+        let registry = RtmpRegistry::new(RtmpCapabilities {
+            live_ingest: false,
+            manual_recording: false,
+        });
+
+        let output =
+            render_prometheus(&metrics, &registry, &GenerationManager::new()).expect("exposition");
+
+        assert!(
+            output.contains("oxiroute_http_requests_total{listener=\"edge\",result=\"success\"} 1")
+        );
+        assert!(output.contains(
+            "oxiroute_http_requests_total{listener=\"edge\",result=\"upstream_error\"} 1"
+        ));
+        assert!(output.contains(
+            "oxiroute_http_request_duration_milliseconds_bucket{listener=\"edge\",le=\"10\"} 1"
+        ));
+        assert!(
+            output
+                .contains("oxiroute_tcp_relays_total{listener=\"edge\",result=\"idle_timeout\"} 1")
+        );
+        assert!(output.contains(
+            "oxiroute_tcp_relay_duration_milliseconds_bucket{listener=\"edge\",le=\"5000\"} 1"
+        ));
+        assert!(!output.contains("/sensitive?token="));
     }
 }

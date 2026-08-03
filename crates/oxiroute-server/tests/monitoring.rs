@@ -1,7 +1,10 @@
 use std::thread;
 
 use oxiroute_config::ListenerBind;
-use oxiroute_server::{CertbotWatcherHealth, CertbotWatcherSnapshot, MetricsError, RuntimeMetrics};
+use oxiroute_server::{
+    CertbotWatcherHealth, CertbotWatcherSnapshot, HttpOperationResult, MetricsError,
+    RuntimeMetrics, TcpRelayResult,
+};
 
 #[test]
 fn connection_guard_accounts_for_traffic_and_decrements_active_count() {
@@ -190,8 +193,57 @@ fn snapshot_serializes_to_the_monitoring_contract() {
     assert_eq!(json["listeners"][0]["rejectedConnections"], "0");
     assert_eq!(json["listeners"][0]["bytesReceived"], u64::MAX.to_string());
     assert_eq!(json["listeners"][0]["bytesSent"], "0");
+    assert!(json["listeners"][0]["httpOperations"].is_null());
+    assert!(json["listeners"][0]["tcpRelays"].is_null());
     assert_eq!(json["certbotCertificates"], serde_json::json!([]));
     assert!(json["certbotWatcher"].is_null());
+}
+
+#[test]
+fn operation_snapshots_serialize_fixed_results_and_bounded_latency() {
+    let metrics = RuntimeMetrics::new();
+    let listener = metrics
+        .register_listener("edge", "http", "127.0.0.1:8080", None)
+        .expect("listener registration");
+    listener
+        .record_http_operation(
+            HttpOperationResult::ClientError,
+            std::time::Duration::from_millis(7),
+        )
+        .expect("HTTP operation");
+    listener
+        .record_tcp_relay(
+            TcpRelayResult::IdleTimeout,
+            std::time::Duration::from_millis(65),
+        )
+        .expect("TCP relay");
+
+    let json = serde_json::to_value(metrics.snapshot().expect("snapshot")).expect("JSON");
+
+    assert_eq!(
+        json["listeners"][0]["httpOperations"]["outcomes"][1]["result"],
+        "client_error"
+    );
+    assert_eq!(
+        json["listeners"][0]["httpOperations"]["outcomes"][1]["count"],
+        "1"
+    );
+    assert_eq!(
+        json["listeners"][0]["httpOperations"]["latency"]["count"],
+        "1"
+    );
+    assert_eq!(
+        json["listeners"][0]["httpOperations"]["latency"]["sumMs"],
+        "7"
+    );
+    assert_eq!(
+        json["listeners"][0]["tcpRelays"]["outcomes"][3]["result"],
+        "idle_timeout"
+    );
+    assert_eq!(
+        json["listeners"][0]["tcpRelays"]["latency"]["buckets"][5]["count"],
+        "1"
+    );
 }
 
 #[test]

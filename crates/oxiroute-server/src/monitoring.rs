@@ -6,7 +6,7 @@ use std::{
         Arc, Mutex, RwLock,
         atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
-    time::{Instant, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 #[cfg(target_os = "linux")]
@@ -123,6 +123,172 @@ impl Error for MetricsError {
             _ => None,
         }
     }
+}
+
+/// Fixed upper bounds for request and relay latency buckets, in milliseconds.
+pub const OPERATION_LATENCY_BUCKETS_MS: &[u64] = &[
+    1, 5, 10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 30_000, 60_000,
+];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HttpOperationResult {
+    Success,
+    ClientError,
+    ServerError,
+    UpstreamError,
+    Timeout,
+    Cancelled,
+    InternalError,
+}
+
+impl HttpOperationResult {
+    const ALL: [Self; 7] = [
+        Self::Success,
+        Self::ClientError,
+        Self::ServerError,
+        Self::UpstreamError,
+        Self::Timeout,
+        Self::Cancelled,
+        Self::InternalError,
+    ];
+
+    const fn index(self) -> usize {
+        match self {
+            Self::Success => 0,
+            Self::ClientError => 1,
+            Self::ServerError => 2,
+            Self::UpstreamError => 3,
+            Self::Timeout => 4,
+            Self::Cancelled => 5,
+            Self::InternalError => 6,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::ClientError => "client_error",
+            Self::ServerError => "server_error",
+            Self::UpstreamError => "upstream_error",
+            Self::Timeout => "timeout",
+            Self::Cancelled => "cancelled",
+            Self::InternalError => "internal_error",
+        }
+    }
+
+    #[must_use]
+    pub const fn from_status(status: Option<u16>) -> Self {
+        match status {
+            Some(200..=399) => Self::Success,
+            Some(400..=499) => Self::ClientError,
+            Some(500..=599) => Self::ServerError,
+            Some(_) => Self::InternalError,
+            None => Self::Cancelled,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TcpRelayResult {
+    Success,
+    ConnectError,
+    ConnectTimeout,
+    IdleTimeout,
+    LifetimeTimeout,
+    Cancelled,
+    IoError,
+    AccountingError,
+}
+
+impl TcpRelayResult {
+    const ALL: [Self; 8] = [
+        Self::Success,
+        Self::ConnectError,
+        Self::ConnectTimeout,
+        Self::IdleTimeout,
+        Self::LifetimeTimeout,
+        Self::Cancelled,
+        Self::IoError,
+        Self::AccountingError,
+    ];
+
+    const fn index(self) -> usize {
+        match self {
+            Self::Success => 0,
+            Self::ConnectError => 1,
+            Self::ConnectTimeout => 2,
+            Self::IdleTimeout => 3,
+            Self::LifetimeTimeout => 4,
+            Self::Cancelled => 5,
+            Self::IoError => 6,
+            Self::AccountingError => 7,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::ConnectError => "connect_error",
+            Self::ConnectTimeout => "connect_timeout",
+            Self::IdleTimeout => "idle_timeout",
+            Self::LifetimeTimeout => "lifetime_timeout",
+            Self::Cancelled => "cancelled",
+            Self::IoError => "io_error",
+            Self::AccountingError => "accounting_error",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LatencyBucketSnapshot {
+    pub upper_bound_ms: Option<u64>,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub count: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LatencySnapshot {
+    pub buckets: Box<[LatencyBucketSnapshot]>,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub count: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub sum_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpOperationCountSnapshot {
+    pub result: HttpOperationResult,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub count: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpOperationSnapshot {
+    pub outcomes: Box<[HttpOperationCountSnapshot]>,
+    pub latency: LatencySnapshot,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TcpRelayCountSnapshot {
+    pub result: TcpRelayResult,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub count: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TcpRelaySnapshot {
+    pub outcomes: Box<[TcpRelayCountSnapshot]>,
+    pub latency: LatencySnapshot,
 }
 
 #[derive(Clone)]
@@ -840,6 +1006,32 @@ impl ListenerMetrics {
     pub fn record_retry_attempt(&self) {
         self.process.retry_attempts.fetch_add(1, Ordering::Relaxed);
     }
+
+    /// Records one terminal reverse-proxy HTTP operation and its latency sample.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an operation counter or latency total would overflow.
+    pub fn record_http_operation(
+        &self,
+        result: HttpOperationResult,
+        duration: Duration,
+    ) -> Result<(), MetricsError> {
+        self.state.shared.record_http_operation(result, duration)
+    }
+
+    /// Records one terminal TCP relay and its latency sample.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an operation counter or latency total would overflow.
+    pub fn record_tcp_relay(
+        &self,
+        result: TcpRelayResult,
+        duration: Duration,
+    ) -> Result<(), MetricsError> {
+        self.state.shared.record_tcp_relay(result, duration)
+    }
 }
 
 pub struct ConnectionGuard {
@@ -874,6 +1066,19 @@ impl ConnectionGuard {
     /// Returns an error if the byte counter would overflow.
     pub fn record_bytes_sent(&self, bytes: u64) -> Result<(), MetricsError> {
         checked_atomic_add(&self.state.shared.bytes_sent, bytes, "listener.bytesSent")
+    }
+
+    /// Records one terminal TCP relay and its latency sample.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an operation counter or latency total would overflow.
+    pub fn record_tcp_relay(
+        &self,
+        result: TcpRelayResult,
+        duration: Duration,
+    ) -> Result<(), MetricsError> {
+        self.state.shared.record_tcp_relay(result, duration)
     }
 }
 
@@ -1000,6 +1205,104 @@ struct ListenerMetricsState {
     shared: Arc<SharedListenerMetricsState>,
 }
 
+const HTTP_RESULT_COUNT: usize = HttpOperationResult::ALL.len();
+const TCP_RESULT_COUNT: usize = TcpRelayResult::ALL.len();
+const LATENCY_BUCKET_COUNT: usize = OPERATION_LATENCY_BUCKETS_MS.len() + 1;
+
+struct OperationMetricsState {
+    http_results: [AtomicU64; HTTP_RESULT_COUNT],
+    http_latency_buckets: [AtomicU64; LATENCY_BUCKET_COUNT],
+    http_latency_count: AtomicU64,
+    http_latency_sum_ms: AtomicU64,
+    tcp_results: [AtomicU64; TCP_RESULT_COUNT],
+    tcp_latency_buckets: [AtomicU64; LATENCY_BUCKET_COUNT],
+    tcp_latency_count: AtomicU64,
+    tcp_latency_sum_ms: AtomicU64,
+}
+
+impl OperationMetricsState {
+    fn new() -> Self {
+        Self {
+            http_results: std::array::from_fn(|_| AtomicU64::new(0)),
+            http_latency_buckets: std::array::from_fn(|_| AtomicU64::new(0)),
+            http_latency_count: AtomicU64::new(0),
+            http_latency_sum_ms: AtomicU64::new(0),
+            tcp_results: std::array::from_fn(|_| AtomicU64::new(0)),
+            tcp_latency_buckets: std::array::from_fn(|_| AtomicU64::new(0)),
+            tcp_latency_count: AtomicU64::new(0),
+            tcp_latency_sum_ms: AtomicU64::new(0),
+        }
+    }
+
+    fn record_http_operation(
+        &self,
+        result: HttpOperationResult,
+        duration: Duration,
+    ) -> Result<(), MetricsError> {
+        checked_atomic_add(&self.http_results[result.index()], 1, "http.operations")?;
+        record_latency(
+            duration,
+            &self.http_latency_buckets,
+            &self.http_latency_count,
+            &self.http_latency_sum_ms,
+            "http.latency",
+        )
+    }
+
+    fn record_tcp_relay(
+        &self,
+        result: TcpRelayResult,
+        duration: Duration,
+    ) -> Result<(), MetricsError> {
+        checked_atomic_add(&self.tcp_results[result.index()], 1, "tcp.relays")?;
+        record_latency(
+            duration,
+            &self.tcp_latency_buckets,
+            &self.tcp_latency_count,
+            &self.tcp_latency_sum_ms,
+            "tcp.latency",
+        )
+    }
+
+    fn http_snapshot(&self) -> Option<HttpOperationSnapshot> {
+        let latency = latency_snapshot(
+            &self.http_latency_buckets,
+            &self.http_latency_count,
+            &self.http_latency_sum_ms,
+        );
+        (latency.count > 0).then(|| HttpOperationSnapshot {
+            outcomes: HttpOperationResult::ALL
+                .into_iter()
+                .zip(&self.http_results)
+                .map(|(result, count)| HttpOperationCountSnapshot {
+                    result,
+                    count: count.load(Ordering::Relaxed),
+                })
+                .collect(),
+            latency,
+        })
+    }
+
+    fn tcp_snapshot(&self) -> Option<TcpRelaySnapshot> {
+        let latency = latency_snapshot(
+            &self.tcp_latency_buckets,
+            &self.tcp_latency_count,
+            &self.tcp_latency_sum_ms,
+        );
+        (latency.count > 0).then(|| TcpRelaySnapshot {
+            outcomes: TcpRelayResult::ALL
+                .into_iter()
+                .zip(&self.tcp_results)
+                .map(|(result, count)| TcpRelayCountSnapshot {
+                    result,
+                    count: count.load(Ordering::Relaxed),
+                })
+                .collect(),
+            latency,
+        })
+    }
+}
+
 struct SharedListenerMetricsState {
     administrative_state: AtomicU8,
     limit: AtomicU64,
@@ -1008,6 +1311,7 @@ struct SharedListenerMetricsState {
     active_connections: AtomicU64,
     bytes_received: AtomicU64,
     bytes_sent: AtomicU64,
+    operations: OperationMetricsState,
 }
 
 impl ListenerMetricsState {
@@ -1043,6 +1347,8 @@ impl ListenerMetricsState {
             active_connections: self.shared.active_connections.load(Ordering::Relaxed),
             bytes_received: self.shared.bytes_received.load(Ordering::Relaxed),
             bytes_sent: self.shared.bytes_sent.load(Ordering::Relaxed),
+            http_operations: self.shared.operations.http_snapshot(),
+            tcp_relays: self.shared.operations.tcp_snapshot(),
         }
     }
 }
@@ -1057,6 +1363,7 @@ impl SharedListenerMetricsState {
             active_connections: AtomicU64::new(0),
             bytes_received: AtomicU64::new(0),
             bytes_sent: AtomicU64::new(0),
+            operations: OperationMetricsState::new(),
         }
     }
 
@@ -1066,6 +1373,22 @@ impl SharedListenerMetricsState {
 
     fn set_limit(&self, limit: Option<u64>) {
         self.limit.store(encode_limit(limit), Ordering::Release);
+    }
+
+    fn record_http_operation(
+        &self,
+        result: HttpOperationResult,
+        duration: Duration,
+    ) -> Result<(), MetricsError> {
+        self.operations.record_http_operation(result, duration)
+    }
+
+    fn record_tcp_relay(
+        &self,
+        result: TcpRelayResult,
+        duration: Duration,
+    ) -> Result<(), MetricsError> {
+        self.operations.record_tcp_relay(result, duration)
     }
 }
 
@@ -1215,6 +1538,8 @@ pub struct ListenerSnapshot {
     pub bytes_received: u64,
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub bytes_sent: u64,
+    pub http_operations: Option<HttpOperationSnapshot>,
+    pub tcp_relays: Option<TcpRelaySnapshot>,
 }
 
 fn validate_listener_field(field: &'static str, value: &str) -> Result<(), MetricsError> {
@@ -1235,6 +1560,46 @@ fn checked_atomic_add(
         })
         .map(|_| ())
         .map_err(|_| MetricsError::CounterOverflow(name))
+}
+
+fn record_latency(
+    duration: Duration,
+    buckets: &[AtomicU64; LATENCY_BUCKET_COUNT],
+    count: &AtomicU64,
+    sum_ms: &AtomicU64,
+    name: &'static str,
+) -> Result<(), MetricsError> {
+    let duration_ms = u64::try_from(duration.as_millis())
+        .map_err(|_| MetricsError::ValueOutOfRange("operation duration milliseconds"))?;
+    let bucket = OPERATION_LATENCY_BUCKETS_MS
+        .iter()
+        .position(|upper_bound| duration_ms <= *upper_bound)
+        .unwrap_or(OPERATION_LATENCY_BUCKETS_MS.len());
+    for bucket_count in buckets.iter().skip(bucket) {
+        checked_atomic_add(bucket_count, 1, name)?;
+    }
+    checked_atomic_add(count, 1, name)?;
+    checked_atomic_add(sum_ms, duration_ms, name)
+}
+
+fn latency_snapshot(
+    buckets: &[AtomicU64; LATENCY_BUCKET_COUNT],
+    count: &AtomicU64,
+    sum_ms: &AtomicU64,
+) -> LatencySnapshot {
+    let buckets = buckets
+        .iter()
+        .enumerate()
+        .map(|(index, count)| LatencyBucketSnapshot {
+            upper_bound_ms: OPERATION_LATENCY_BUCKETS_MS.get(index).copied(),
+            count: count.load(Ordering::Relaxed),
+        })
+        .collect();
+    LatencySnapshot {
+        buckets,
+        count: count.load(Ordering::Relaxed),
+        sum_ms: sum_ms.load(Ordering::Relaxed),
+    }
 }
 
 fn decrement_counter(counter: &AtomicU64) {
