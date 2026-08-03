@@ -20,6 +20,7 @@ use oxiroute_supervisor_master::{
     CONTROL_PROTOCOL_VERSION, ControlOutcome, ControlPhase, WorkerControl,
 };
 use oxiroute_supervisor_process::WorkerIdentity;
+use pingora::apps::AcceptGateClose;
 
 use crate::{GenerationProcess, shutdown_generation_processes};
 
@@ -30,6 +31,8 @@ const REJECT_REVISION: u8 = 3;
 const REJECT_RUNTIME: u8 = 4;
 const REJECT_UNSUPPORTED: u8 = 5;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+// Keep worker lifecycle work below the master's ten-second quiesce/drain deadlines.
+const LIFECYCLE_PHASE_TIMEOUT: Duration = Duration::from_secs(9);
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
 const TEST_RUNTIME_FAILURE_ENV: &str = "OXIROUTE_INTERNAL_TEST_RUNTIME_FAILURE";
 
@@ -93,6 +96,7 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
         }
     };
     let stop = Arc::new(AtomicBool::new(false));
+    let mut quiesced = None;
     let mut process = match GenerationProcess::start(
         Arc::clone(&generation),
         coordinator,
@@ -192,8 +196,17 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
                     Err("generation shutdown did not complete cleanly".into())
                 };
             }
-            ControlPhase::Quiesce | ControlPhase::Drain | ControlPhase::Reactivate => {
-                control.acknowledge(&request, phase_outcome(request.phase()))?;
+            ControlPhase::Quiesce => {
+                let outcome = quiesce_active(&manager, &mut quiesced);
+                control.acknowledge(&request, outcome)?;
+            }
+            ControlPhase::Drain => {
+                let outcome = drain_active(&manager);
+                control.acknowledge(&request, outcome)?;
+            }
+            ControlPhase::Reactivate => {
+                let outcome = reactivate_active(&mut quiesced);
+                control.acknowledge(&request, outcome)?;
             }
             ControlPhase::AdoptListeners | ControlPhase::Activate => {
                 control.acknowledge(&request, ControlOutcome::Rejected(REJECT_INVALID_STATE))?;
@@ -331,12 +344,39 @@ fn nibble(byte: u8) -> Result<u8, io::Error> {
     }
 }
 
-fn phase_outcome(phase: ControlPhase) -> ControlOutcome {
-    match phase {
-        ControlPhase::Quiesce | ControlPhase::Drain | ControlPhase::Reactivate => {
-            ControlOutcome::Rejected(REJECT_UNSUPPORTED)
-        }
-        _ => ControlOutcome::Accepted,
+fn quiesce_active(
+    manager: &GenerationManager,
+    quiesced: &mut Option<AcceptGateClose>,
+) -> ControlOutcome {
+    let Some(generation) = manager.active() else {
+        return ControlOutcome::Rejected(REJECT_RUNTIME);
+    };
+    let close = generation.accept_gate().close();
+    let complete = close.wait(LIFECYCLE_PHASE_TIMEOUT);
+    *quiesced = Some(close);
+    if complete {
+        ControlOutcome::Accepted
+    } else {
+        ControlOutcome::Rejected(REJECT_RUNTIME)
+    }
+}
+
+fn drain_active(manager: &GenerationManager) -> ControlOutcome {
+    let Some(generation) = manager.active() else {
+        return ControlOutcome::Rejected(REJECT_RUNTIME);
+    };
+    if generation.drain(LIFECYCLE_PHASE_TIMEOUT) {
+        ControlOutcome::Accepted
+    } else {
+        ControlOutcome::Rejected(REJECT_RUNTIME)
+    }
+}
+
+fn reactivate_active(quiesced: &mut Option<AcceptGateClose>) -> ControlOutcome {
+    if quiesced.take().is_some_and(AcceptGateClose::reopen) {
+        ControlOutcome::Accepted
+    } else {
+        ControlOutcome::Rejected(REJECT_RUNTIME)
     }
 }
 
@@ -347,17 +387,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn deferred_lifecycle_phases_are_explicitly_unsupported() {
-        for phase in [
-            ControlPhase::Quiesce,
-            ControlPhase::Drain,
-            ControlPhase::Reactivate,
-        ] {
-            assert!(matches!(
-                phase_outcome(phase),
-                ControlOutcome::Rejected(REJECT_UNSUPPORTED)
-            ));
-        }
+    fn deferred_lifecycle_phases_are_supported() {
+        let manager = GenerationManager::new();
+        let mut quiesced = None;
+
+        assert!(matches!(
+            quiesce_active(&manager, &mut quiesced),
+            ControlOutcome::Rejected(REJECT_RUNTIME)
+        ));
+        assert!(matches!(
+            drain_active(&manager),
+            ControlOutcome::Rejected(REJECT_RUNTIME)
+        ));
+        assert!(matches!(
+            reactivate_active(&mut quiesced),
+            ControlOutcome::Rejected(REJECT_RUNTIME)
+        ));
     }
 
     #[test]
