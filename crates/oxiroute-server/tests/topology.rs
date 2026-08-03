@@ -496,6 +496,7 @@ fn topology_config(temp: &TempDir) -> Config {
             default_certificate: "public".into(),
             min_version: TlsVersion::Tls12,
             alpn: vec![AlpnProtocol::H2, AlpnProtocol::Http11],
+            policy: oxiroute_config::TlsPolicy::default(),
         }],
         listeners: topology_listeners(),
         upstream_pools: vec![
@@ -567,6 +568,7 @@ fn topology_config(temp: &TempDir) -> Config {
                     },
                 },
             }],
+            automatic_response_headers: true,
             upstream_io_timeout_ms: 15_000,
             max_request_body_bytes: None,
             gzip: None,

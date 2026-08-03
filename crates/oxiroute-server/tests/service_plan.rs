@@ -900,6 +900,7 @@ fn compiles_and_retains_one_shared_listener_tls_profile() {
         default_certificate: "public".into(),
         min_version: TlsVersion::Tls12,
         alpn: vec![AlpnProtocol::H2, AlpnProtocol::Http11],
+        policy: oxiroute_config::TlsPolicy::default(),
     });
     config.listeners[0].tls_profile = Some("public".into());
     config.listeners[1].tls_profile = Some("public".into());
@@ -938,6 +939,7 @@ fn direct_file_status_reports_rotation_failures_without_secret_material() {
         default_certificate: "public".into(),
         min_version: TlsVersion::Tls12,
         alpn: vec![AlpnProtocol::Http11],
+        policy: oxiroute_config::TlsPolicy::default(),
     });
 
     let plan = runtime_plan(&config).expect("direct-file runtime plan");
@@ -1031,6 +1033,7 @@ fn prepares_certbot_reconcilers_with_the_profile_active_generation() {
         default_certificate: "public".into(),
         min_version: TlsVersion::Tls12,
         alpn: vec![AlpnProtocol::Http11],
+        policy: oxiroute_config::TlsPolicy::default(),
     });
     config.listeners[0].tls_profile = Some("public".into());
 
@@ -1560,6 +1563,7 @@ fn canonical_config() -> Config {
                     },
                 },
             }],
+            automatic_response_headers: true,
             upstream_io_timeout_ms: 15_000,
             max_request_body_bytes: Some(2 * 1024 * 1024),
             gzip: None,

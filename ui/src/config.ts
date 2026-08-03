@@ -74,6 +74,21 @@ export interface TlsProfileConfig {
   default_certificate: string
   min_version: TlsVersion
   alpn: AlpnProtocol[]
+  policy: TlsPolicyConfig
+}
+
+export interface TlsPolicyConfig {
+  cipher_list: string | null
+  dh_parameters_path: string | null
+  session_cache: TlsSessionCacheConfig | null
+  session_timeout_seconds: number | null
+  session_tickets: boolean
+  prefer_server_ciphers: boolean
+}
+
+export interface TlsSessionCacheConfig {
+  name: string
+  size_bytes: number
 }
 
 export interface SocketListenerBind {
@@ -443,6 +458,7 @@ export interface HttpRouteConfig {
 export interface HttpServiceConfig {
   name: string
   routes: HttpRouteConfig[]
+  automatic_response_headers: boolean
   upstream_io_timeout_ms: number
   max_request_body_bytes: number | null
   gzip: {
@@ -701,7 +717,13 @@ function isCertificate(value: unknown): value is CertificateConfig {
 function isTlsProfile(value: unknown): value is TlsProfileConfig {
   return isRecord(value) && typeof value.name === 'string' && arrayOf(value.certificates, isString) &&
     typeof value.default_certificate === 'string' && ['1.2', '1.3'].includes(String(value.min_version)) &&
-    arrayOf(value.alpn, (entry) => ['h3', 'h2', 'http/1.1'].includes(String(entry)))
+    arrayOf(value.alpn, (entry) => ['h3', 'h2', 'http/1.1'].includes(String(entry))) &&
+    isRecord(value.policy) && nullableString(value.policy.cipher_list) &&
+    nullableString(value.policy.dh_parameters_path) &&
+    (value.policy.session_cache === null || (isRecord(value.policy.session_cache) &&
+      typeof value.policy.session_cache.name === 'string' && safeInteger(value.policy.session_cache.size_bytes))) &&
+    nullableSafeInteger(value.policy.session_timeout_seconds) &&
+    typeof value.policy.session_tickets === 'boolean' && typeof value.policy.prefer_server_ciphers === 'boolean'
 }
 
 function isListener(value: unknown): value is ListenerConfig {
@@ -786,7 +808,8 @@ function isHttpService(value: unknown): value is HttpServiceConfig {
   return isRecord(value) && typeof value.name === 'string' && arrayOf(value.routes, (route) =>
     isRecord(route) && (route.host === null || isHttpHost(route.host)) && isHttpPath(route.path) &&
     arrayOf(route.methods, isString) && (route.access_policy === null || isHttpAccess(route.access_policy)) &&
-    isHttpRoutePolicy(route.policy) && isHttpAction(route.action)) && safeInteger(value.upstream_io_timeout_ms) &&
+    isHttpRoutePolicy(route.policy) && isHttpAction(route.action)) &&
+    typeof value.automatic_response_headers === 'boolean' && safeInteger(value.upstream_io_timeout_ms) &&
     nullableSafeInteger(value.max_request_body_bytes) &&
     (value.gzip === null || (isRecord(value.gzip) && safeInteger(value.gzip.level) &&
       arrayOf(value.gzip.content_types, isString) && safeInteger(value.gzip.min_length_bytes) &&
@@ -1098,6 +1121,15 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'tls_profiles[].default_certificate', kind: 'reference' },
   { path: 'tls_profiles[].min_version', kind: 'enum' },
   { path: 'tls_profiles[].alpn', kind: 'enum' },
+  { path: 'tls_profiles[].policy', kind: 'object' },
+  { path: 'tls_profiles[].policy.cipher_list', kind: 'string' },
+  { path: 'tls_profiles[].policy.dh_parameters_path', kind: 'string' },
+  { path: 'tls_profiles[].policy.session_cache', kind: 'object' },
+  { path: 'tls_profiles[].policy.session_cache.name', kind: 'string' },
+  { path: 'tls_profiles[].policy.session_cache.size_bytes', kind: 'integer' },
+  { path: 'tls_profiles[].policy.session_timeout_seconds', kind: 'integer' },
+  { path: 'tls_profiles[].policy.session_tickets', kind: 'boolean' },
+  { path: 'tls_profiles[].policy.prefer_server_ciphers', kind: 'boolean' },
   { path: 'listeners', kind: 'collection' },
   { path: 'listeners[].name', kind: 'string' },
   { path: 'listeners[].bind', kind: 'object' },
@@ -1249,6 +1281,7 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'http_services[].routes[].action.error_responses[].headers[].name', kind: 'string' },
   { path: 'http_services[].routes[].action.error_responses[].headers[].value', kind: 'string' },
   { path: 'http_services[].routes[].action.error_responses[].headers[].always', kind: 'boolean' },
+  { path: 'http_services[].automatic_response_headers', kind: 'boolean' },
   { path: 'http_services[].upstream_io_timeout_ms', kind: 'integer' },
   { path: 'http_services[].max_request_body_bytes', kind: 'integer' },
   { path: 'forward_proxy_services', kind: 'collection' },

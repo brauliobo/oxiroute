@@ -12,8 +12,8 @@ use crate::{
 };
 
 use super::{
-    ExpandedDirective, ExpandedOccurrence, IncludeCandidateStatus, OccurrenceId, Provenance,
-    SourceGraph, Word,
+    Directive, ExpandedDirective, ExpandedOccurrence, IncludeCandidateStatus, OccurrenceId,
+    Provenance, SourceGraph, Word,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -481,6 +481,10 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "server declarations, synthetic routes, and identity checks resolve in source order"
+    )]
     fn resolve_server(
         &mut self,
         directive: &ExpandedDirective,
@@ -555,8 +559,15 @@ impl<'a> Resolver<'a> {
                 b"types" => self.resolve_types(child),
                 b"if" => {
                     if self.resolve_supported_if(child) {
+                        declaration_order.push(ServerDeclaration::Location(child.occurrence));
                         locations.push(Self::synthetic_if_location(child));
                     }
+                }
+                b"return" => {
+                    declaration_order.push(ServerDeclaration::Location(child.occurrence));
+                    self.resolve_policy(child);
+                    self.reject_duplicate_scalar(child, &mut scalar_policies);
+                    locations.push(Self::synthetic_if_location(child));
                 }
                 name if is_server_policy(name) => {
                     self.resolve_policy(child);
@@ -998,10 +1009,7 @@ impl<'a> Resolver<'a> {
             .iter()
             .flat_map(|argument| argument.value.iter().copied())
             .collect::<Vec<_>>();
-        let certbot_host_redirect = condition
-            .windows(b"$host".len())
-            .any(|window| window == b"$host")
-            && condition.contains(&b'=');
+        let certbot_host_redirect = certbot_host_condition(&directive.directive).is_some();
         let redacted_authorization = condition
             .windows(b"$http_authorization".len())
             .any(|window| window == b"$http_authorization")
@@ -1444,6 +1452,16 @@ impl<'a> Resolver<'a> {
     }
 }
 
+pub(super) fn certbot_host_condition(directive: &Directive) -> Option<&[u8]> {
+    let [variable, operator, host] = directive.arguments.as_slice() else {
+        return None;
+    };
+    let variable = variable.value.strip_prefix(b"(").unwrap_or(&variable.value);
+    let host = host.value.strip_suffix(b")").unwrap_or(&host.value);
+    (variable == b"$host" && operator.value == b"=" && !host.is_empty() && !has_variable(host))
+        .then_some(host)
+}
+
 fn parse_listen_endpoint(value: &[u8]) -> Option<ListenEndpoint> {
     if let Some(path) = value.strip_prefix(b"unix:") {
         return unix_socket_path(path).map(|path| ListenEndpoint::Unix { path });
@@ -1744,6 +1762,12 @@ fn is_scalar_policy(name: &[u8]) -> bool {
             | b"auth_basic_user_file"
             | b"etag"
             | b"ssl_protocols"
+            | b"ssl_ciphers"
+            | b"ssl_dhparam"
+            | b"ssl_prefer_server_ciphers"
+            | b"ssl_session_cache"
+            | b"ssl_session_tickets"
+            | b"ssl_session_timeout"
             | b"http2"
             | b"gzip"
             | b"gzip_comp_level"

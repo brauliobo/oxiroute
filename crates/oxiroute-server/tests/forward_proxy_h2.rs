@@ -52,6 +52,7 @@ async fn daemon_accepts_tls_h2_connect_and_relays_stream_data() {
         default_certificate: "downstream".into(),
         min_version: TlsVersion::Tls12,
         alpn: vec![AlpnProtocol::H2],
+        policy: oxiroute_config::TlsPolicy::default(),
     });
     config.forward_proxy_services.push(ForwardProxyService {
         name: "forward".into(),

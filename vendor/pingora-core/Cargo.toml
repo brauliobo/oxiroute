@@ -47,6 +47,7 @@ boringssl = [
 connection_filter = []
 default = []
 openssl = [
+    "dep:foreign-types",
     "pingora-openssl",
     "openssl_derived",
 ]
@@ -120,6 +121,10 @@ default-features = false
 
 [dependencies.futures]
 version = "0.3"
+
+[dependencies.foreign-types]
+version = "0.3"
+optional = true
 
 [dependencies.h2]
 version = ">=0.4.11"

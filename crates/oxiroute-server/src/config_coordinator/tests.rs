@@ -116,6 +116,7 @@ fn normalizable_config() -> Config {
                 policy: HttpProxyPolicy::default(),
             },
         }],
+        automatic_response_headers: true,
         upstream_io_timeout_ms: 30_000,
         max_request_body_bytes: Some(10 * 1024 * 1024),
         gzip: None,

@@ -25,6 +25,27 @@ header.form-heading
       option(value="h2") HTTP/2 only
       option(value="h2,http/1.1") HTTP/2, then HTTP/1.1
       option(value="h3") HTTP/3 only
+  label.field(data-field="tls_profiles[].policy.cipher_list")
+    span OpenSSL cipher list
+    input(type="text" :value="profile.policy.cipher_list ?? ''" @input="setNullableText('cipher_list', $event)")
+  label.field(data-field="tls_profiles[].policy.dh_parameters_path")
+    span DH parameters path
+    input(type="text" :value="profile.policy.dh_parameters_path ?? ''" @input="setNullableText('dh_parameters_path', $event)")
+  label.field(data-field="tls_profiles[].policy.session_cache.name")
+    span Shared session cache name
+    input(type="text" :value="profile.policy.session_cache?.name ?? ''" @input="setSessionCacheName")
+  label.field(data-field="tls_profiles[].policy.session_cache.size_bytes")
+    span Session cache bytes
+    input(type="number" min="256" step="256" :disabled="profile.policy.session_cache === null" :value="profile.policy.session_cache?.size_bytes ?? 10485760" @input="setSessionCacheSize")
+  label.field(data-field="tls_profiles[].policy.session_timeout_seconds")
+    span Session timeout seconds
+    input(type="number" min="1" step="1" :value="profile.policy.session_timeout_seconds ?? ''" @input="setSessionTimeout")
+  label.checkbox-field(data-field="tls_profiles[].policy.session_tickets")
+    input(type="checkbox" v-model="profile.policy.session_tickets")
+    span Enable session tickets
+  label.checkbox-field(data-field="tls_profiles[].policy.prefer_server_ciphers")
+    input(type="checkbox" v-model="profile.policy.prefer_server_ciphers")
+    span Prefer server cipher order
 StringListField(
   v-model="profile.certificates"
   label="SNI certificates"
@@ -49,5 +70,27 @@ defineEmits<{ remove: [] }>()
 function setAlpnPolicy(event: Event): void {
   props.profile.alpn = (event.target as HTMLSelectElement).value.split(',') as AlpnProtocol[]
   if (props.profile.alpn.includes('h3')) props.profile.min_version = '1.3'
+}
+
+function setNullableText(field: 'cipher_list' | 'dh_parameters_path', event: Event): void {
+  props.profile.policy[field] = (event.target as HTMLInputElement).value || null
+}
+
+function setSessionCacheName(event: Event): void {
+  const name = (event.target as HTMLInputElement).value
+  props.profile.policy.session_cache = name
+    ? { name, size_bytes: props.profile.policy.session_cache?.size_bytes ?? 10 * 1024 * 1024 }
+    : null
+}
+
+function setSessionCacheSize(event: Event): void {
+  if (props.profile.policy.session_cache) {
+    props.profile.policy.session_cache.size_bytes = Number((event.target as HTMLInputElement).value)
+  }
+}
+
+function setSessionTimeout(event: Event): void {
+  const value = (event.target as HTMLInputElement).value
+  props.profile.policy.session_timeout_seconds = value ? Number(value) : null
 }
 </script>

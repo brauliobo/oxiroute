@@ -122,6 +122,7 @@ impl Lowerer<'_> {
             service: HttpService {
                 name: name.to_owned(),
                 routes: routes.into_iter().map(|route| route.route).collect(),
+                automatic_response_headers: false,
                 upstream_io_timeout_ms,
                 max_request_body_bytes: None,
                 gzip: None,
@@ -210,6 +211,7 @@ impl Lowerer<'_> {
             service: HttpService {
                 name: name.to_owned(),
                 routes: routes.into_iter().map(|route| route.route).collect(),
+                automatic_response_headers: false,
                 upstream_io_timeout_ms,
                 max_request_body_bytes: None,
                 gzip: None,
@@ -224,6 +226,10 @@ impl Lowerer<'_> {
         let service_index = self.draft.http_services.len();
         let service_path = CanonicalPath::indexed("http_services", service_index);
         self.record(service_path.clone(), candidate.sources.clone());
+        self.record(
+            service_path.field("automatic_response_headers"),
+            candidate.sources.clone(),
+        );
         self.record(
             service_path.field("upstream_io_timeout_ms"),
             candidate.sources.clone(),
@@ -458,6 +464,7 @@ impl Lowerer<'_> {
                     },
                     action,
                 }],
+                automatic_response_headers: false,
                 upstream_io_timeout_ms: 30_000,
                 max_request_body_bytes: None,
                 gzip: None,
@@ -536,6 +543,7 @@ impl Lowerer<'_> {
             service: HttpService {
                 name: name.into(),
                 routes,
+                automatic_response_headers: false,
                 upstream_io_timeout_ms,
                 max_request_body_bytes: None,
                 gzip: None,

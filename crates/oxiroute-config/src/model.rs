@@ -109,6 +109,45 @@ pub struct TlsProfile {
     pub min_version: TlsVersion,
     #[serde(default = "default_alpn")]
     pub alpn: Vec<AlpnProtocol>,
+    #[serde(default)]
+    pub policy: TlsPolicy,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TlsPolicy {
+    #[serde(default)]
+    pub cipher_list: Option<String>,
+    #[serde(default)]
+    pub dh_parameters_path: Option<PathBuf>,
+    #[serde(default)]
+    pub session_cache: Option<TlsSessionCache>,
+    #[serde(default)]
+    pub session_timeout_seconds: Option<u64>,
+    #[serde(default)]
+    pub session_tickets: bool,
+    #[serde(default = "default_true")]
+    pub prefer_server_ciphers: bool,
+}
+
+impl Default for TlsPolicy {
+    fn default() -> Self {
+        Self {
+            cipher_list: None,
+            dh_parameters_path: None,
+            session_cache: None,
+            session_timeout_seconds: None,
+            session_tickets: false,
+            prefer_server_ciphers: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TlsSessionCache {
+    pub name: String,
+    pub size_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -548,6 +587,8 @@ pub enum HealthCheckType {
 pub struct HttpService {
     pub name: String,
     pub routes: Vec<HttpRoute>,
+    #[serde(default = "default_true")]
+    pub automatic_response_headers: bool,
     #[serde(default = "default_upstream_io_timeout_ms")]
     pub upstream_io_timeout_ms: u64,
     /// Request body cap. Omitted configs default to 10 MiB; explicit null means unbounded.
@@ -1683,6 +1724,12 @@ pub enum ConfigError {
         "TLS profile `{profile}` has invalid ALPN policy; expected [http/1.1], [h2], [h2, http/1.1], or [h3]"
     )]
     InvalidTlsProfileAlpn { profile: String },
+    #[error("TLS profile `{profile}` has invalid `{field}` policy: {detail}")]
+    InvalidTlsProfilePolicy {
+        profile: String,
+        field: &'static str,
+        detail: &'static str,
+    },
     #[error("binds `{first_name}` ({first_bind}) and `{second_name}` ({second_bind}) overlap")]
     OverlappingBind {
         first_name: String,

@@ -4,10 +4,29 @@ use std::{fmt::Write as _, fs, path::Path};
 
 use oxiroute_config::{
     CertificateSource, HttpGzipMinimumVersion, HttpGzipPolicy, HttpHostSelector, HttpPathSelector,
-    HttpRouteAction, HttpUpstreamHost, ListenerBind, UpstreamConnectionReuse, validate_config,
+    HttpRouteAction, HttpUpstreamHost, ListenerBind, TlsPolicy, TlsSessionCache,
+    UpstreamConnectionReuse, render_lua, validate_config,
 };
 use oxiroute_import::{DiagnosticStage, nginx::import_http_fragment};
 use tempfile::TempDir;
+
+#[test]
+fn imported_http_services_enable_automatic_response_headers_in_canonical_rendering() {
+    let report = import_source(
+        "http { server { listen 127.0.0.1:8088 default_server; location / { return 200 ok; } } }",
+    );
+    let config = report.config.as_ref().expect("nginx HTTP config");
+
+    assert!(
+        config
+            .http_services
+            .iter()
+            .all(|service| service.automatic_response_headers)
+    );
+    let source = render_lua(config).expect("rendered nginx import");
+    assert!(source.contains("automatic_response_headers = true,"));
+    assert!(!source.contains("automatic_response_headers = false,"));
+}
 
 #[test]
 fn fully_explicit_proxy_fixture_finalizes_with_canonical_routes() {
@@ -440,6 +459,45 @@ fn lowers_certificate_paths_without_reading_operational_material() {
         !diagnostic.message().contains("certificate metadata")
             && !diagnostic.message().contains("private key material")
     }));
+}
+
+#[test]
+fn lowers_inherited_nginx_tls_policy_exactly() {
+    let report = import_source(
+        r#"http {
+          ssl_ciphers "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384";
+          ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+          ssl_session_cache shared:le_nginx_SSL:10m;
+          ssl_session_timeout 1440m;
+          ssl_session_tickets off;
+          ssl_prefer_server_ciphers off;
+          server {
+            listen 127.0.0.1:8443 ssl default_server;
+            server_name bhavapower.example;
+            ssl_certificate /definitely/missing/fullchain.pem;
+            ssl_certificate_key /definitely/missing/privkey.pem;
+            ssl_protocols TLSv1.2 TLSv1.3;
+            location / { return 204; }
+          }
+        }"#,
+    );
+
+    let config = report.config.expect("canonical nginx TLS policy");
+    assert!(report.blocked_services.is_empty());
+    assert_eq!(
+        config.tls_profiles[0].policy,
+        TlsPolicy {
+            cipher_list: Some("ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384".into()),
+            dh_parameters_path: Some("/etc/letsencrypt/ssl-dhparams.pem".into()),
+            session_cache: Some(TlsSessionCache {
+                name: "le_nginx_SSL".into(),
+                size_bytes: 10 * 1024 * 1024,
+            }),
+            session_timeout_seconds: Some(86_400),
+            session_tickets: false,
+            prefer_server_ciphers: false,
+        }
+    );
 }
 
 #[test]
@@ -1062,6 +1120,7 @@ fn lowers_global_gzip_and_log_semantics_but_blocks_mismatched_tls_policy() {
             ssl_certificate /etc/one-chain.pem;
             ssl_certificate_key /etc/one-key.pem;
             ssl_protocols TLSv1.2 TLSv1.3;
+            ssl_prefer_server_ciphers on;
             location / { proxy_pass http://backend; }
           }
           server {
@@ -1069,7 +1128,8 @@ fn lowers_global_gzip_and_log_semantics_but_blocks_mismatched_tls_policy() {
             server_name two.example;
             ssl_certificate /etc/two-chain.pem;
             ssl_certificate_key /etc/two-key.pem;
-            ssl_protocols TLSv1.3;
+            ssl_protocols TLSv1.2 TLSv1.3;
+            ssl_prefer_server_ciphers off;
             location / { proxy_pass http://backend; }
           }
         }",
@@ -1531,11 +1591,9 @@ fn blocks_implicit_nginx_proxy_defaults_and_unrepresented_tls_or_logging_policy(
 
     for directive in [
         "access_log /var/log/nginx/access.log combined;",
-        "ssl_ciphers HIGH;",
-        "ssl_dhparam /etc/nginx/dh.pem;",
-        "ssl_session_cache shared:SSL:1m;",
-        "ssl_session_tickets off;",
-        "ssl_session_timeout 5m;",
+        "ssl_session_cache off;",
+        "ssl_session_cache none;",
+        "ssl_session_cache builtin:1000;",
     ] {
         let source = format!(
             "http {{ proxy_http_version 1.1; proxy_buffering off; proxy_request_buffering off; proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset; upstream backend {{ server 127.0.0.1:8080; }} server {{ listen 127.0.0.1:8443 ssl default_server; server_name test.example; ssl_certificate /etc/test.pem; ssl_certificate_key /etc/test.key; ssl_protocols TLSv1.2 TLSv1.3; {directive} location / {{ proxy_pass http://backend; }} }} }}"
@@ -1584,6 +1642,37 @@ fn lowers_nginx_host_separately_from_http_host_with_server_name_fallback() {
             ..
         } if fallback == "fallback.example"
     )));
+}
+
+#[test]
+fn certbot_server_if_precedes_only_its_exact_host_return_fallback() {
+    let report = import_source(
+        r"http {
+          server {
+            listen 127.0.0.1:8080 default_server;
+            if ($host = llama.olery.com) {
+              return 301 https://$host$request_uri;
+            }
+            server_name llama.olery.com;
+            return 404;
+          }
+        }",
+    );
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let config = report.config.expect("Certbot server return routes");
+    let routes = &config.http_services[0].routes;
+    assert_eq!(routes.len(), 2);
+    assert!(matches!(
+        (&routes[0].host, &routes[0].action),
+        (
+            Some(HttpHostSelector::NormalizedHost { value }),
+            HttpRouteAction::Redirect { status: 301, .. }
+        ) if value == "llama.olery.com"
+    ));
+    assert!(matches!(
+        (&routes[1].host, &routes[1].action),
+        (None, HttpRouteAction::FixedResponse { status: 404, .. })
+    ));
 }
 
 #[test]

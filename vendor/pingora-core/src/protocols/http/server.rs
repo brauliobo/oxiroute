@@ -193,6 +193,15 @@ impl Session {
         }
     }
 
+    /// Enable or disable automatically generated downstream response headers.
+    pub fn set_automatic_response_headers(&mut self, enabled: bool) {
+        match self {
+            Self::H1(session) => session.set_automatic_response_headers(enabled),
+            Self::H2(session) => session.set_automatic_response_headers(enabled),
+            Self::Subrequest(_) | Self::Custom(_) => {}
+        }
+    }
+
     /// Write the response body to client
     pub async fn write_response_body(&mut self, data: Bytes, end: bool) -> Result<()> {
         if data.is_empty() && !end {

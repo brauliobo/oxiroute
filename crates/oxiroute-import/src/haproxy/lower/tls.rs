@@ -1,5 +1,5 @@
 use oxiroute_config::{
-    AlpnProtocol, Certificate, CertificateSource, Protocol, TlsProfile, TlsVersion,
+    AlpnProtocol, Certificate, CertificateSource, Protocol, TlsPolicy, TlsProfile, TlsVersion,
 };
 
 use super::Lowerer;
@@ -79,6 +79,7 @@ impl Lowerer<'_> {
                     TlsAlpn::Http11 => AlpnProtocol::Http11,
                 })
                 .collect(),
+            policy: TlsPolicy::default(),
         });
         self.record(
             CanonicalPath::indexed("tls_profiles", profile_index),

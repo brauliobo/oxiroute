@@ -722,6 +722,10 @@ return {
     assert_eq!(config.l4_services[0].lifetime_timeout_ms, None);
     assert_eq!(config.tls_profiles[0].min_version, TlsVersion::Tls12);
     assert_eq!(config.tls_profiles[0].alpn, [AlpnProtocol::Http11]);
+    assert_eq!(
+        config.tls_profiles[0].policy,
+        oxiroute_config::TlsPolicy::default()
+    );
     assert!(config.upstream_pools.iter().all(|pool| {
         pool.tls.is_none()
             && pool.http_versions.min == HttpVersion::Http11
@@ -1621,6 +1625,55 @@ fn accepts_only_the_supported_alpn_policies() {
             ConfigError::InvalidTlsProfileAlpn { profile } if profile == "web-tls"
         ));
     }
+}
+
+#[test]
+fn validates_tls_policy_bounds_and_paths() {
+    for (field, policy) in [
+        (
+            "cipher_list",
+            r#"{ cipher_list = "", session_tickets = false, prefer_server_ciphers = true }"#,
+        ),
+        (
+            "session_cache.name",
+            r#"{ session_cache = { name = "invalid:name", size_bytes = 10485760 }, session_tickets = false, prefer_server_ciphers = true }"#,
+        ),
+        (
+            "session_cache.size_bytes",
+            r#"{ session_cache = { name = "SSL", size_bytes = 255 }, session_tickets = false, prefer_server_ciphers = true }"#,
+        ),
+        (
+            "session_timeout_seconds",
+            r"{ session_timeout_seconds = 0, session_tickets = false, prefer_server_ciphers = true }",
+        ),
+    ] {
+        let source = changed(
+            "      alpn = { \"h2\", \"http/1.1\" },",
+            &format!("      alpn = {{ \"h2\", \"http/1.1\" }},\n      policy = {policy},"),
+        );
+        assert!(matches!(
+            error_from(&source),
+            ConfigError::InvalidTlsProfilePolicy {
+                profile,
+                field: invalid_field,
+                ..
+            } if profile == "web-tls" && invalid_field == field
+        ));
+    }
+
+    let source = changed(
+        "      alpn = { \"h2\", \"http/1.1\" },",
+        "      alpn = { \"h2\", \"http/1.1\" },\n      policy = { dh_parameters_path = \"relative.pem\", session_tickets = false, prefer_server_ciphers = true },",
+    );
+    assert!(matches!(
+        error_from(&source),
+        ConfigError::InvalidFilePath {
+            kind: "TLS profile",
+            name,
+            field: "policy.dh_parameters_path",
+            ..
+        } if name == "web-tls"
+    ));
 }
 
 #[test]

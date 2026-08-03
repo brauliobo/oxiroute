@@ -196,6 +196,7 @@ struct PreparedRtmpRecorder {
 #[derive(Debug)]
 pub struct HttpServicePlan {
     access_log: Option<Arc<AccessLog>>,
+    automatic_response_headers: bool,
     gzip: Option<Arc<HttpGzipPlan>>,
     max_request_body_bytes: Option<u64>,
     route_plans: HashMap<String, Arc<HttpRoutePlan>>,
@@ -213,6 +214,7 @@ impl HttpServicePlan {
     ) -> Self {
         Self {
             access_log: None,
+            automatic_response_headers: true,
             gzip: None,
             max_request_body_bytes,
             route_plans,
@@ -222,6 +224,7 @@ impl HttpServicePlan {
     }
 
     fn with_http_policy(
+        automatic_response_headers: bool,
         max_request_body_bytes: Option<u64>,
         route_plans: HashMap<String, Arc<HttpRoutePlan>>,
         upstream_io_timeout: Duration,
@@ -231,6 +234,7 @@ impl HttpServicePlan {
     ) -> Self {
         Self {
             access_log,
+            automatic_response_headers,
             gzip,
             max_request_body_bytes,
             route_plans,
@@ -273,6 +277,11 @@ impl HttpServicePlan {
     #[must_use]
     pub const fn max_request_body_bytes(&self) -> Option<u64> {
         self.max_request_body_bytes
+    }
+
+    #[must_use]
+    pub const fn automatic_response_headers(&self) -> bool {
+        self.automatic_response_headers
     }
 
     pub(crate) fn gzip(&self) -> Option<&Arc<HttpGzipPlan>> {
@@ -675,6 +684,7 @@ fn compile_http_services(
         http_services.insert(
             service.name.clone(),
             Arc::new(HttpServicePlan::with_http_policy(
+                service.automatic_response_headers,
                 service.max_request_body_bytes,
                 route_plans,
                 Duration::from_millis(service.upstream_io_timeout_ms),

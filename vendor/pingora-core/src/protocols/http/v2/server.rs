@@ -125,6 +125,7 @@ pub struct HttpSession {
     pub write_timeout: Option<Duration>,
     // How long to wait when draining (discarding) request body
     total_drain_timeout: Option<Duration>,
+    automatic_response_headers: bool,
 }
 
 impl HttpSession {
@@ -166,6 +167,7 @@ impl HttpSession {
                 digest,
                 write_timeout: None,
                 total_drain_timeout: None,
+                automatic_response_headers: true,
             }
         }))
     }
@@ -272,6 +274,10 @@ impl HttpSession {
         self.total_drain_timeout = timeout;
     }
 
+    pub(crate) fn set_automatic_response_headers(&mut self, enabled: bool) {
+        self.automatic_response_headers = enabled;
+    }
+
     /// Get the total drain timeout.
     pub fn get_total_drain_timeout(&self) -> Option<Duration> {
         self.total_drain_timeout
@@ -306,8 +312,9 @@ impl HttpSession {
             return Ok(());
         }
 
-        /* update headers */
-        header.insert_header(header::DATE, get_cached_date())?;
+        if self.automatic_response_headers {
+            header.insert_header(header::DATE, get_cached_date())?;
+        }
 
         // remove other h1 hop headers that cannot be present in H2
         // https://httpwg.org/specs/rfc7540.html#n-connection-specific-header-fields
@@ -660,6 +667,76 @@ mod test {
 
         assert_eq!(settings.max_header_list_size(), Some(1234));
         assert_eq!(settings.max_concurrent_streams(), Some(42));
+    }
+
+    #[tokio::test]
+    async fn disabled_automatic_headers_omit_date_and_still_remove_hop_headers() {
+        let (client, server) = duplex(65536);
+        let mut client = tokio::spawn(async move {
+            let (h2, connection) = h2::client::handshake(client).await.unwrap();
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            let request = Request::builder()
+                .method(Method::GET)
+                .uri("https://www.example.com/")
+                .body(())
+                .unwrap();
+            let (response, _) = h2
+                .ready()
+                .await
+                .unwrap()
+                .send_request(request, true)
+                .unwrap();
+            let response = response.await.unwrap();
+            for name in [
+                "date",
+                "connection",
+                "transfer-encoding",
+                "upgrade",
+                "keep-alive",
+                "proxy-connection",
+            ] {
+                assert!(response.headers().get(name).is_none(), "unexpected {name}");
+            }
+        });
+
+        let mut connection = handshake(Box::new(server), None).await.unwrap();
+        let session = HttpSession::from_h2_conn(&mut connection, Arc::new(Digest::default()))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut session = crate::protocols::http::server::Session::new_http2(session);
+        session.set_automatic_response_headers(false);
+        let mut response = ResponseHeader::build(200, None).unwrap();
+        for (name, value) in [
+            ("connection", "close"),
+            ("transfer-encoding", "chunked"),
+            ("upgrade", "websocket"),
+            ("keep-alive", "timeout=5"),
+            ("proxy-connection", "close"),
+        ] {
+            response.insert_header(name, value).unwrap();
+        }
+        session
+            .write_response_header(Box::new(response))
+            .await
+            .unwrap();
+        session
+            .write_response_body(Bytes::new(), true)
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(1), async {
+            tokio::select! {
+                result = &mut client => result.unwrap(),
+                accepted = connection.accept() => {
+                    assert!(accepted.is_none(), "unexpected second request: {accepted:?}");
+                    client.await.unwrap();
+                },
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

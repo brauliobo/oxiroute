@@ -6,7 +6,7 @@ use std::{
 
 use oxiroute_config::{
     HttpHostSelector, HttpPathSelector, HttpRouteAction, ListenerBind, Protocol, UpstreamAlgorithm,
-    UpstreamEndpoint, validate_config,
+    UpstreamEndpoint, render_lua, validate_config,
 };
 use oxiroute_import::{
     Diagnostic, DiagnosticStage, E_INVALID_VALUE, E_SEMANTICS_NOT_REPRESENTABLE, Report, Severity,
@@ -27,6 +27,26 @@ const SYNTHETIC_UNIX_DNS_LEASTCONN: &[u8] =
     include_bytes!("fixtures/haproxy/synthetic-unix-dns-leastconn.cfg");
 const PHOENIX: &[u8] = include_bytes!("fixtures/haproxy/phoenix-dormant.cfg");
 const MINIMAL: &[u8] = include_bytes!("fixtures/haproxy/minimal-representable.cfg");
+
+#[test]
+fn imported_http_services_disable_automatic_response_headers_in_canonical_rendering() {
+    let lowered = import_fixture("path-routing.cfg", routing_fixture().as_bytes());
+    let config = lowered
+        .value()
+        .config
+        .as_ref()
+        .expect("HAProxy HTTP config");
+
+    assert!(
+        config
+            .http_services
+            .iter()
+            .all(|service| !service.automatic_response_headers)
+    );
+    let source = render_lua(config).expect("rendered HAProxy import");
+    assert!(source.contains("automatic_response_headers = false,"));
+    assert!(!source.contains("automatic_response_headers = true,"));
+}
 
 #[test]
 fn hostrouter_active_report_finalizes_proxy_while_retaining_stats_requirements() {

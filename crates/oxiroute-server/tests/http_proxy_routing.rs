@@ -10,6 +10,7 @@ use std::{
     net::SocketAddr,
     os::fd::AsRawFd as _,
     os::unix::fs::symlink,
+    path::Path,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -27,6 +28,9 @@ use oxiroute_config::{
     HttpStaticErrorResponse, HttpStaticMimePolicy, HttpStaticPathMapping, HttpStaticTryFile,
     HttpUpstreamHost, HttpVersionPolicy, Listener, Protocol, UpstreamAlgorithm, UpstreamEndpoint,
     UpstreamPool, UpstreamServer,
+};
+use oxiroute_import::nginx::{
+    NginxDefaultErrorPageOverlay, NginxImportOptions, import_root_with_options,
 };
 use oxiroute_server::{
     HttpDownstreamPolicyApp, HttpReverseProxy, MAX_HTTP_ATTEMPTS, MonitoredHttpApp, RoundRobinPool,
@@ -54,6 +58,115 @@ use http_support::{
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 const NO_ORIGIN_CONTACT_WINDOW: Duration = Duration::from_millis(100);
+
+#[tokio::test]
+async fn imported_nginx_overlay_preserves_certbot_and_proxy_error_responses_on_wire() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = Origin::start("origin", 1).await;
+        let directory = tempfile::tempdir().expect("nginx source directory");
+        fs::write(
+            directory.path().join("nginx.conf"),
+            format!(
+                "events {{}} http {{ access_log off; proxy_buffering off; upstream app {{ server {}; }} server {{ listen 127.0.0.1:8080 default_server; if ($host = llama.olery.com) {{ return 301 https://$host$request_uri; }} server_name llama.olery.com; return 404; }} server {{ listen 127.0.0.1:8080; server_name proxy.test; location / {{ proxy_pass http://app; }} }} }}",
+                origin.address
+            ),
+        )
+        .expect("write nginx source");
+        let report = import_root_with_options(
+            Path::new("nginx.conf"),
+            directory.path(),
+            &NginxImportOptions {
+                default_error_page: Some(NginxDefaultErrorPageOverlay {
+                    server: "nginx/1.30.4".into(),
+                }),
+                x_accel_controls_absent: true,
+                ..NginxImportOptions::default()
+            },
+        );
+        assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+        assert!(report.candidate.operational_overlays.iter().any(|overlay| {
+            overlay.kind == oxiroute_import::OperationalOverlayKind::DefaultErrorPageMigration
+                && overlay.satisfied
+        }));
+        let mut config = report.candidate.config.expect("imported nginx config");
+        let service = config.http_services.remove(0);
+        let proxy = ProxyHarness::start(
+            config.upstream_pools,
+            service.routes,
+            service.max_request_body_bytes.unwrap_or(1024),
+            7,
+        )
+        .await;
+
+        let redirect_body = nginx_error_body_bytes(301, "Moved Permanently", "nginx/1.30.4");
+        assert_eq!(redirect_body.len(), 169);
+        let redirect = proxy
+            .request("GET /path?query=1 HTTP/1.1\r\nHost: llama.olery.com\r\n")
+            .await;
+        assert_eq!(redirect.status, 301);
+        assert_eq!(redirect.header("server"), Some("nginx/1.30.4"));
+        assert_eq!(redirect.header("content-type"), Some("text/html"));
+        assert_eq!(redirect.header("content-length"), Some("169"));
+        assert_eq!(
+            redirect.header("location"),
+            Some("https://llama.olery.com/path?query=1")
+        );
+        assert_eq!(redirect.body(), redirect_body);
+        let redirect_head = proxy
+            .request("HEAD /path HTTP/1.1\r\nHost: llama.olery.com\r\n")
+            .await;
+        assert_eq!(redirect_head.status, 301);
+        assert_eq!(redirect_head.header("content-length"), Some("169"));
+        assert!(redirect_head.body().is_empty());
+
+        let not_found_body = nginx_error_body_bytes(404, "Not Found", "nginx/1.30.4");
+        assert_eq!(not_found_body.len(), 153);
+        let not_found = proxy
+            .request("GET /unknown HTTP/1.1\r\nHost: unknown.test\r\n")
+            .await;
+        assert_eq!(not_found.status, 404);
+        assert_eq!(not_found.header("server"), Some("nginx/1.30.4"));
+        assert_eq!(not_found.header("content-type"), Some("text/html"));
+        assert_eq!(not_found.header("content-length"), Some("153"));
+        assert_eq!(not_found.body(), not_found_body);
+        let not_found_head = proxy
+            .request("HEAD /unknown HTTP/1.1\r\nHost: unknown.test\r\n")
+            .await;
+        assert_eq!(not_found_head.status, 404);
+        assert_eq!(not_found_head.header("content-length"), Some("153"));
+        assert!(not_found_head.body().is_empty());
+
+        let success = proxy
+            .request("GET / HTTP/1.1\r\nHost: proxy.test\r\n")
+            .await;
+        assert_eq!(success.status, 200);
+        assert_eq!(success.header("server"), Some("nginx/1.30.4"));
+        assert_eq!(success.header("content-type"), None);
+        assert_eq!(success.body(), b"origin");
+        origin.finish().await;
+
+        let bad_gateway_body = nginx_error_body_bytes(502, "Bad Gateway", "nginx/1.30.4");
+        assert_eq!(bad_gateway_body.len(), 157);
+        let bad_gateway = proxy
+            .request("GET / HTTP/1.1\r\nHost: proxy.test\r\n")
+            .await;
+        assert_eq!(bad_gateway.status, 502);
+        assert_eq!(bad_gateway.header("server"), Some("nginx/1.30.4"));
+        assert_eq!(bad_gateway.header("content-type"), Some("text/html"));
+        assert_eq!(bad_gateway.header("content-length"), Some("157"));
+        assert_eq!(bad_gateway.body(), bad_gateway_body);
+        let bad_gateway_head = proxy
+            .request("HEAD / HTTP/1.1\r\nHost: proxy.test\r\n")
+            .await;
+        assert_eq!(bad_gateway_head.status, 502);
+        assert_eq!(bad_gateway_head.header("content-length"), Some("157"));
+        assert!(bad_gateway_head.body().is_empty());
+
+        proxy.finish().await;
+    })
+    .await
+    .expect("imported nginx response test timed out");
+}
 
 #[tokio::test]
 async fn selects_routes_by_host_path_and_method_over_real_http_connections() {
@@ -3726,6 +3839,7 @@ async fn configured_gzip_honors_exact_types_defaults_and_accept_encoding() {
             vec![pool("origin", &[origin_address])],
             vec![route(None, "/", &[], "origin")],
             Some(1024),
+            true,
             100,
             0,
             false,
@@ -3847,6 +3961,7 @@ async fn persisted_gzip_defaults_allow_http_1_0_via_and_emit_vary() {
             vec![pool("origin", &[origin_address])],
             vec![route(None, "/", &[], "origin")],
             Some(1024),
+            true,
             100,
             0,
             false,
@@ -3903,6 +4018,7 @@ async fn structured_access_log_omits_authorization_cookies_and_query_tokens() {
             Vec::new(),
             vec![route],
             Some(1024),
+            true,
             100,
             0,
             false,
@@ -3959,6 +4075,134 @@ async fn structured_access_log_omits_authorization_cookies_and_query_tokens() {
 }
 
 #[tokio::test]
+async fn automatic_response_headers_follow_service_policy_on_h1_wire() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = Origin::start_without_connection_header("proxied", 1).await;
+        let fixed = HttpRoute {
+            host: None,
+            path: HttpPathSelector::Exact {
+                value: "/fixed".into(),
+            },
+            methods: Vec::new(),
+            access_policy: None,
+            policy: oxiroute_config::HttpRoutePolicy::default(),
+            action: HttpRouteAction::FixedResponse {
+                status: 200,
+                body: "fixed".into(),
+                headers: Vec::new(),
+            },
+        };
+        let disabled = ProxyHarness::start_with_features(
+            vec![pool("origin", &[origin.address])],
+            vec![fixed.clone(), route(None, "/", &[], "origin")],
+            Some(1024),
+            false,
+            100,
+            0,
+            false,
+            2,
+            None,
+            None,
+            DownstreamTimeoutPolicy::default(),
+        )
+        .await;
+
+        for (path, body) in [("/fixed", b"fixed".as_slice()), ("/proxied", b"proxied")] {
+            let response = disabled
+                .request(&format!("GET {path} HTTP/1.1\r\nHost: headers.test\r\n"))
+                .await;
+            assert_eq!(response.status, 200);
+            assert_eq!(response.body(), body);
+            assert_eq!(response.header("date"), None);
+            assert_eq!(
+                response.header("connection"),
+                None,
+                "{path}: {}",
+                response.text()
+            );
+        }
+        disabled.finish().await;
+        origin.finish().await;
+
+        let enabled = ProxyHarness::start_with_features(
+            Vec::new(),
+            vec![fixed],
+            Some(1024),
+            true,
+            100,
+            0,
+            false,
+            1,
+            None,
+            None,
+            DownstreamTimeoutPolicy::default(),
+        )
+        .await;
+        let response = enabled
+            .request("GET /fixed HTTP/1.1\r\nHost: headers.test\r\n")
+            .await;
+        assert!(response.header("date").is_some());
+        assert_eq!(response.header("connection"), Some("close"));
+        enabled.finish().await;
+    })
+    .await
+    .expect("automatic H1 response-header policy test timed out");
+}
+
+#[tokio::test]
+async fn proxied_response_strips_upstream_hop_by_hop_headers_on_h1_wire() {
+    timeout(TEST_TIMEOUT, async {
+        let origin_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("origin bind");
+        let origin_address = origin_listener.local_addr().expect("origin address");
+        let origin = tokio::spawn(async move {
+            let (mut stream, _) = origin_listener.accept().await.expect("origin accept");
+            read_request_head(&mut stream)
+                .await
+                .expect("origin request");
+            stream
+                .write_all(
+                    b"HTTP/1.1 202 Accepted\r\nContent-Length: 7\r\nConnection: close, X-Hop\r\nX-Hop: secret\r\nKeep-Alive: timeout=5\r\nProxy-Connection: keep-alive\r\nX-End-To-End: retained\r\n\r\nproxied",
+                )
+                .await
+                .expect("origin response");
+            stream.shutdown().await.expect("origin shutdown");
+        });
+        let proxy = ProxyHarness::start_with_features(
+            vec![pool("origin", &[origin_address])],
+            vec![route(None, "/", &[], "origin")],
+            Some(1024),
+            false,
+            100,
+            0,
+            false,
+            1,
+            None,
+            None,
+            DownstreamTimeoutPolicy::default(),
+        )
+        .await;
+
+        let response = proxy
+            .request("GET / HTTP/1.1\r\nHost: headers.test\r\n")
+            .await;
+        assert_eq!(response.status, 202);
+        assert_eq!(response.body(), b"proxied");
+        assert_eq!(response.header("content-length"), Some("7"));
+        assert_eq!(response.header("x-end-to-end"), Some("retained"));
+        for name in ["connection", "x-hop", "keep-alive", "proxy-connection"] {
+            assert_eq!(response.header(name), None, "{}", response.text());
+        }
+
+        proxy.finish().await;
+        origin.await.expect("origin task");
+    })
+    .await
+    .expect("hop-by-hop response-header test timed out");
+}
+
+#[tokio::test]
 async fn listener_client_and_request_header_timeout_close_a_stalled_request() {
     timeout(TEST_TIMEOUT, async {
         let route = HttpRoute {
@@ -3977,6 +4221,7 @@ async fn listener_client_and_request_header_timeout_close_a_stalled_request() {
             Vec::new(),
             vec![route],
             Some(1024),
+            true,
             100,
             0,
             false,
@@ -4032,6 +4277,7 @@ async fn listener_keepalive_timeout_closes_an_idle_reusable_connection() {
             Vec::new(),
             vec![route],
             Some(1024),
+            true,
             100,
             0,
             false,
@@ -4126,6 +4372,7 @@ impl ProxyHarness {
             upstream_pools,
             routes,
             Some(1024),
+            true,
             100,
             0,
             false,
@@ -4222,6 +4469,7 @@ impl ProxyHarness {
             upstream_pools,
             routes,
             max_request_body_bytes,
+            true,
             max_connections,
             max_retries,
             run_health_checks,
@@ -4241,6 +4489,7 @@ impl ProxyHarness {
         upstream_pools: Vec<UpstreamPool>,
         routes: Vec<HttpRoute>,
         max_request_body_bytes: Option<u64>,
+        automatic_response_headers: bool,
         max_connections: u64,
         max_retries: u8,
         run_health_checks: bool,
@@ -4253,6 +4502,7 @@ impl ProxyHarness {
             upstream_pools,
             routes,
             max_request_body_bytes,
+            automatic_response_headers,
             max_connections,
             max_retries,
             run_health_checks,
@@ -4273,6 +4523,7 @@ impl ProxyHarness {
         upstream_pools: Vec<UpstreamPool>,
         mut routes: Vec<HttpRoute>,
         max_request_body_bytes: Option<u64>,
+        automatic_response_headers: bool,
         max_connections: u64,
         max_retries: u8,
         run_health_checks: bool,
@@ -4303,6 +4554,7 @@ impl ProxyHarness {
             http_services: vec![HttpService {
                 name: "routing".into(),
                 routes,
+                automatic_response_headers,
                 upstream_io_timeout_ms: 1_000,
                 max_request_body_bytes,
                 gzip,
@@ -4470,13 +4722,34 @@ struct Origin {
 
 impl Origin {
     async fn start(name: &'static str, expected_requests: usize) -> Self {
-        Self::start_with_cache_control(name, expected_requests, None).await
+        Self::start_with_connection_header(name, expected_requests, true).await
+    }
+
+    async fn start_without_connection_header(name: &'static str, expected_requests: usize) -> Self {
+        Self::start_with_connection_header(name, expected_requests, false).await
     }
 
     async fn start_with_cache_control(
         name: &'static str,
         expected_requests: usize,
         cache_control: Option<&'static str>,
+    ) -> Self {
+        Self::start_with_options(name, expected_requests, cache_control, true).await
+    }
+
+    async fn start_with_connection_header(
+        name: &'static str,
+        expected_requests: usize,
+        connection_header: bool,
+    ) -> Self {
+        Self::start_with_options(name, expected_requests, None, connection_header).await
+    }
+
+    async fn start_with_options(
+        name: &'static str,
+        expected_requests: usize,
+        cache_control: Option<&'static str>,
+        connection_header: bool,
     ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
         let address = listener.local_addr().expect("origin address");
@@ -4492,9 +4765,14 @@ impl Origin {
                 let cache_header = cache_control
                     .map(|value| format!("Cache-Control: {value}\r\n"))
                     .unwrap_or_default();
+                let connection = if connection_header {
+                    "Connection: close\r\n"
+                } else {
+                    ""
+                };
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n{cache_header}Connection: close\r\n\r\n{name}",
-                    name.len()
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n{cache_header}{connection}\r\n{name}",
+                    name.len(),
                 );
                 stream
                     .write_all(response.as_bytes())
@@ -4974,4 +5252,11 @@ fn assert_origin_response(response: &RawResponse, origin: &str) {
         "expected response from {origin}, got: {}",
         response.text()
     );
+}
+
+fn nginx_error_body_bytes(status: u16, reason: &str, server: &str) -> Vec<u8> {
+    format!(
+        "<html>\r\n<head><title>{status} {reason}</title></head>\r\n<body>\r\n<center><h1>{status} {reason}</h1></center>\r\n<hr><center>{server}</center>\r\n</body>\r\n</html>\r\n"
+    )
+    .into_bytes()
 }

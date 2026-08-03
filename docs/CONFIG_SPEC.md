@@ -146,6 +146,7 @@ return {
   http_services = {
     {
       name = "web",
+      automatic_response_headers = true,
       upstream_io_timeout_ms = 30000,
       max_request_body_bytes = 10485760,
       routes = {
@@ -340,6 +341,9 @@ Current constraints:
   cache/query/address/TTL limits, connection/body/header limits, connect/idle/lifetime deadlines,
   header privacy, and metadata-only audit mode are explicit. H2/H3 labels fail preparation because
   no integrated listener implements them.
+- `automatic_response_headers` defaults to true. When enabled, the runtime generates downstream
+  HTTP/1 Date and Connection headers and HTTP/2 Date headers. When disabled, none of those headers
+  are generated; mandatory HTTP/2 hop-header removal still applies.
 - Listener `downstream_timeouts` independently represents optional client, request-header, and HTTP
   keepalive deadlines from 1 through 86400000 milliseconds. Request and keepalive deadlines are
   accepted only on HTTP listener protocols. The HTTP runtime enforces all three through downstream
@@ -492,6 +496,14 @@ tls_profiles = {
     default_certificate = "public-example",
     min_version = "1.2",
     alpn = { "h2", "http/1.1" },
+    policy = {
+      cipher_list = nil,
+      dh_parameters_path = nil,
+      session_cache = nil,
+      session_timeout_seconds = nil,
+      session_tickets = false,
+      prefer_server_ciphers = true,
+    },
   },
 }
 
@@ -520,6 +532,15 @@ The current certificate and profile rules are:
   content. The certificate chain is limited to 1 MiB and 16 certificates total; it MUST contain the
   leaf first and at least one ordered issuer. The private key is limited to 256 KiB and, on Unix,
   MUST have exactly mode `0400`, `0600`, `0440`, or `0640`.
+- TLS policy defaults preserve the runtime's Mozilla intermediate cipher and DH choices, disable
+  the server session cache and tickets, retain OpenSSL's default session timeout, and prefer server
+  cipher order. `cipher_list`, `dh_parameters_path`, `session_cache`, and
+  `session_timeout_seconds` override those defaults only when present.
+- A shared `session_cache` has a 1-through-255-byte ASCII `name` and an exact `size_bytes`. Runtime
+  planning estimates one session per 256 bytes, enables OpenSSL's bounded server cache, and derives
+  a distinct 32-byte session-id context from the profile and cache names. DH parameter files are
+  bounded to 64 KiB, read twice for stable identical content, parsed as PEM parameters, and applied
+  before the listener starts.
 - The chain file may contain only `CERTIFICATE` PEM blocks. The key file MUST contain exactly one
   unencrypted `PRIVATE KEY`, `RSA PRIVATE KEY`, or `EC PRIVATE KEY` block. Parsed keys MUST be RSA
   with at least 2048 bits or EC with at least 256 bits. When the leaf contains `KeyUsage`, it MUST

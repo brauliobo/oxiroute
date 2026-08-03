@@ -236,6 +236,96 @@
       "required_tests": ["decode", "validate", "failure", "interop"]
     },
     {
+      "id": "canonical.tls-profiles.policy",
+      "kind": "field",
+      "path": "tls_profiles[].policy",
+      "editability": "operator",
+      "normalization": ["default to legacy runtime TLS behavior"],
+      "validation": ["closed TLS policy object"],
+      "runtime": { "target": "tls.profile", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "render", "interop"]
+    },
+    {
+      "id": "canonical.tls-profiles.policy.cipher-list",
+      "kind": "field",
+      "path": "tls_profiles[].policy.cipher_list",
+      "editability": "operator",
+      "normalization": ["preserve exact OpenSSL cipher string"],
+      "validation": ["optional nonempty NUL-free string"],
+      "runtime": { "target": "tls.profile", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "interop"]
+    },
+    {
+      "id": "canonical.tls-profiles.policy.dh-parameters-path",
+      "kind": "field",
+      "path": "tls_profiles[].policy.dh_parameters_path",
+      "editability": "operator",
+      "normalization": ["UTF-8 absolute path"],
+      "validation": ["optional bounded lexical file path", "bounded stable PEM read"],
+      "runtime": { "target": "tls.profile", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "security", "interop"]
+    },
+    {
+      "id": "canonical.tls-profiles.policy.session-cache",
+      "kind": "field",
+      "path": "tls_profiles[].policy.session_cache",
+      "editability": "operator",
+      "normalization": ["null disables the server cache"],
+      "validation": ["optional shared cache object"],
+      "runtime": { "target": "tls.profile", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "interop"]
+    },
+    {
+      "id": "canonical.tls-profiles.policy.session-cache.name",
+      "kind": "field",
+      "path": "tls_profiles[].policy.session_cache.name",
+      "editability": "operator",
+      "normalization": ["identity"],
+      "validation": ["1 through 255 safe ASCII bytes"],
+      "runtime": { "target": "tls.profile", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "interop"]
+    },
+    {
+      "id": "canonical.tls-profiles.policy.session-cache.size-bytes",
+      "kind": "field",
+      "path": "tls_profiles[].policy.session_cache.size_bytes",
+      "editability": "operator",
+      "normalization": ["exact bytes"],
+      "validation": ["holds 1 through i32::MAX estimated 256-byte sessions"],
+      "runtime": { "target": "tls.profile", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "interop"]
+    },
+    {
+      "id": "canonical.tls-profiles.policy.session-timeout-seconds",
+      "kind": "field",
+      "path": "tls_profiles[].policy.session_timeout_seconds",
+      "editability": "operator",
+      "normalization": ["exact seconds"],
+      "validation": ["optional positive i32-bounded duration"],
+      "runtime": { "target": "tls.profile", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "interop"]
+    },
+    {
+      "id": "canonical.tls-profiles.policy.session-tickets",
+      "kind": "field",
+      "path": "tls_profiles[].policy.session_tickets",
+      "editability": "operator",
+      "normalization": ["default to false"],
+      "validation": ["boolean"],
+      "runtime": { "target": "tls.profile", "disposition": "lowered" },
+      "required_tests": ["decode", "render", "interop"]
+    },
+    {
+      "id": "canonical.tls-profiles.policy.prefer-server-ciphers",
+      "kind": "field",
+      "path": "tls_profiles[].policy.prefer_server_ciphers",
+      "editability": "operator",
+      "normalization": ["default to true"],
+      "validation": ["boolean"],
+      "runtime": { "target": "tls.profile", "disposition": "lowered" },
+      "required_tests": ["decode", "render", "interop"]
+    },
+    {
       "id": "canonical.config.listeners",
       "kind": "field",
       "path": "listeners[]",
@@ -659,6 +749,16 @@
     { "id": "canonical.http-services.routes.action.static.internal-index-redirects", "kind": "field", "path": "http_services[].routes[].action<static_files>.internal_index_redirects", "editability": "operator", "normalization": ["default false"], "validation": ["boolean internal route reselection"], "runtime": { "target": "http.router", "disposition": "lowered" }, "required_tests": ["decode", "validate", "render", "integration", "security"] },
     { "id": "canonical.http-services.routes.action.static.directory-redirects", "kind": "field", "path": "http_services[].routes[].action<static_files>.directory_redirects", "editability": "operator", "normalization": ["default false"], "validation": ["boolean trailing-slash redirect"], "runtime": { "target": "http.router", "disposition": "lowered" }, "required_tests": ["decode", "validate", "render", "integration"] },
     { "id": "canonical.http-services.routes.action.static.spa-fallback", "kind": "field", "path": "http_services[].routes[].action<static_files>.spa_fallback", "editability": "operator", "normalization": ["absence disables SPA fallback"], "validation": ["optional bounded relative component path"], "runtime": { "target": "http.router", "disposition": "lowered" }, "required_tests": ["decode", "validate", "failure", "integration", "security"] },
+    {
+      "id": "canonical.http-services.automatic-response-headers",
+      "kind": "field",
+      "path": "http_services[].automatic_response_headers",
+      "editability": "operator",
+      "normalization": ["default true"],
+      "validation": ["boolean automatic downstream response-header policy"],
+      "runtime": { "target": "http.proxy", "disposition": "lowered" },
+      "required_tests": ["decode", "render", "integration"]
+    },
     {
       "id": "canonical.http-services.upstream-io-timeout-ms",
       "kind": "field",
