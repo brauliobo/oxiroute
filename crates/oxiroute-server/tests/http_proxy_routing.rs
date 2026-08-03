@@ -3534,6 +3534,61 @@ async fn applies_host_header_cookie_and_request_response_header_policies() {
 }
 
 #[tokio::test]
+async fn proxy_cookie_attribute_policy_replaces_and_removes_selected_flags() {
+    timeout(TEST_TIMEOUT, async {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("cookie policy origin bind");
+        let origin_address = listener.local_addr().expect("cookie policy origin address");
+        let origin = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("cookie policy origin accept");
+            read_request_head_bytes(&mut stream)
+                .await
+                .expect("cookie policy origin request");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nSet-Cookie: session=one; Path=/; Secure; HttpOnly; SameSite=Strict\r\nSet-Cookie: other=two; Path=/\r\nConnection: close\r\n\r\nok",
+                )
+                .await
+                .expect("cookie policy origin response");
+        });
+        let mut proxy_route = route(None, "/", &[], "origin");
+        let HttpRouteAction::Proxy { policy, .. } = &mut proxy_route.action else {
+            unreachable!();
+        };
+        policy.retry.max_retries = 0;
+        policy.response_cookie_attributes = vec![HttpCookieAttributePolicy {
+            name: "session".into(),
+            secure: Some(false),
+            http_only: Some(false),
+            same_site: Some(HttpSameSite::Lax),
+        }];
+        let proxy = ProxyHarness::start(
+            vec![pool("origin", &[origin_address])],
+            vec![proxy_route],
+            1024,
+            1,
+        )
+        .await;
+
+        let response = proxy
+            .request("GET / HTTP/1.1\r\nHost: cookie-flags.test\r\n")
+            .await;
+        assert_eq!(response.status, 200, "response: {}", response.text());
+        let wire = response.text();
+        assert!(wire.contains("Set-Cookie: session=one; Path=/; SameSite=Lax"));
+        assert!(wire.contains("Set-Cookie: other=two; Path=/"));
+        assert!(!wire.contains("session=one; Path=/; Secure"));
+        assert!(!wire.contains("session=one; Path=/; HttpOnly"));
+
+        proxy.finish().await;
+        origin.await.expect("cookie policy origin task");
+    })
+    .await
+    .expect("cookie attribute policy test timed out");
+}
+
+#[tokio::test]
 async fn x_forwarded_for_source_exception_preserves_the_incoming_header() {
     timeout(TEST_TIMEOUT, async {
         let listener = TcpListener::bind("127.0.0.1:0")

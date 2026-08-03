@@ -4,7 +4,7 @@ use std::{fmt::Write as _, fs, path::Path};
 
 use oxiroute_config::{
     CertificateSource, HttpGzipMinimumVersion, HttpGzipPolicy, HttpHostSelector, HttpPathSelector,
-    HttpRouteAction, HttpUpstreamHost, ListenerBind, TlsPolicy, TlsSessionCache,
+    HttpRouteAction, HttpSameSite, HttpUpstreamHost, ListenerBind, TlsPolicy, TlsSessionCache,
     UpstreamConnectionReuse, render_lua, validate_config,
 };
 use oxiroute_import::{DiagnosticStage, nginx::import_http_fragment};
@@ -764,6 +764,38 @@ fn lowers_static_index_behavior_into_canonical_static_routes() {
 }
 
 #[test]
+fn lowers_effective_nginx_keepalive_timeout_into_listener_downstream_policy() {
+    let report = import_source(
+        r"http {
+          keepalive_timeout 65s;
+          server {
+            listen 127.0.0.1:8088 default_server;
+            location / { return 204; }
+          }
+        }",
+    );
+
+    assert!(!report.has_errors(), "{:?}", report.diagnostics);
+    assert_eq!(
+        report.config.as_ref().unwrap().listeners[0]
+            .downstream_timeouts
+            .keepalive_timeout_ms,
+        Some(65_000)
+    );
+    assert!(report.provenance.iter().any(|provenance| {
+        provenance.path == "/listeners/0/downstream_timeouts/keepalive_timeout_ms"
+    }));
+
+    for directive in ["keepalive_timeout 0;", "keepalive_timeout 65s 60s;"] {
+        let report = import_source(&format!(
+            "http {{ {directive} server {{ listen 127.0.0.1:8088 default_server; location / {{ return 204; }} }} }}"
+        ));
+        assert!(report.has_errors(), "accepted {directive}");
+        assert!(report.config.is_none(), "accepted {directive}");
+    }
+}
+
+#[test]
 fn lowers_inherited_etag_off_for_actual_alias_try_files_and_headers_shape() {
     let report = import_source(
         r#"http {
@@ -921,6 +953,74 @@ fn explicit_proxy_headers_cookie_rewrite_and_safe_retry_subset_finalize() {
         ]
     );
     assert_eq!(policy.response_cookie_path_rewrites.len(), 1);
+}
+
+#[test]
+fn lowers_exact_proxy_cookie_flags_and_records_attribute_provenance() {
+    let report = import_source(
+        r"http {
+          proxy_http_version 1.1;
+          proxy_buffering off;
+          proxy_request_buffering off;
+          proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+          proxy_cookie_flags session secure nohttponly samesite=lax;
+          upstream backend { server 127.0.0.1:8080; }
+          server {
+            listen 127.0.0.1:8088 default_server;
+            location / { proxy_pass http://backend; }
+          }
+        }",
+    );
+
+    assert!(!report.has_errors(), "{:?}", report.diagnostics);
+    let route = &report.config.as_ref().unwrap().http_services[0].routes[0];
+    let HttpRouteAction::Proxy { policy, .. } = &route.action else {
+        panic!("proxy route");
+    };
+    assert_eq!(
+        policy.response_cookie_attributes,
+        vec![oxiroute_config::HttpCookieAttributePolicy {
+            name: "session".into(),
+            secure: Some(true),
+            http_only: Some(false),
+            same_site: Some(HttpSameSite::Lax),
+        }]
+    );
+    let source_origin = report
+        .occurrence_ledger
+        .iter()
+        .find(|decision| decision.name.value == b"proxy_cookie_flags")
+        .expect("cookie flag decision")
+        .span;
+    let provenance = report
+        .provenance
+        .iter()
+        .find(|provenance| {
+            provenance.path
+                == "/http_services/0/routes/0/action/policy/response_cookie_attributes/0/name"
+        })
+        .expect("cookie attribute provenance");
+    assert!(
+        provenance
+            .origins
+            .iter()
+            .any(|origin| origin.span == source_origin)
+    );
+
+    for directive in [
+        "proxy_cookie_flags ~session secure;",
+        "proxy_cookie_flags $cookie_name secure;",
+        "proxy_cookie_flags session nosamesite;",
+        "proxy_cookie_flags session unknown;",
+        "proxy_cookie_flags session secure secure;",
+        "proxy_cookie_flags off;",
+    ] {
+        let report = import_source(&format!(
+            "http {{ proxy_http_version 1.1; proxy_buffering off; proxy_request_buffering off; proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset; {directive} upstream backend {{ server 127.0.0.1:8080; }} server {{ listen 127.0.0.1:8088 default_server; location / {{ proxy_pass http://backend; }} }} }}"
+        ));
+        assert!(report.has_errors(), "accepted {directive}");
+        assert!(report.config.is_none(), "accepted {directive}");
+    }
 }
 
 #[test]

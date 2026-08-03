@@ -35,6 +35,36 @@ fn parses_statement_and_block_directives_with_full_spans() {
 }
 
 #[test]
+fn parses_keepalive_and_cookie_flag_arguments_without_normalizing_them() {
+    let source = source(
+        "http { keepalive_timeout 65s; proxy_cookie_flags session secure httponly samesite=lax; }",
+    );
+    let report = parse(&source);
+    let directives = &report.value().directives[0]
+        .children
+        .as_ref()
+        .expect("http block");
+
+    assert!(report.diagnostics().is_empty());
+    assert_eq!(directives[0].name.value, b"keepalive_timeout");
+    assert_eq!(directives[0].arguments[0].value, b"65s");
+    assert_eq!(directives[1].name.value, b"proxy_cookie_flags");
+    assert_eq!(
+        directives[1]
+            .arguments
+            .iter()
+            .map(|argument| argument.value.as_slice())
+            .collect::<Vec<_>>(),
+        [
+            b"session".as_slice(),
+            b"secure".as_slice(),
+            b"httponly".as_slice(),
+            b"samesite=lax".as_slice(),
+        ]
+    );
+}
+
+#[test]
 fn semicolons_and_braces_define_directive_shape() {
     let source = source("empty {} statement value; outer { inner one; }");
     let report = parse(&source);

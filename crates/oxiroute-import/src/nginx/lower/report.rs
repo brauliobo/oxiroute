@@ -336,6 +336,7 @@ impl Lowerer {
                     "/action/policy/request_headers",
                     "/action/policy/response_headers",
                     "/action/policy/response_cookie_path_rewrites",
+                    "/action/policy/response_cookie_attributes",
                     "/action/policy/retry",
                     "/action/policy/retry/max_retries",
                     "/action/policy/retry/triggers",
@@ -366,6 +367,12 @@ impl Lowerer {
         let listener_path = format!("/listeners/{listener_index}");
         let listener = self.draft.listeners[listener_index].clone();
         let mut suffixes = vec!["", "/name", "/bind", "/bind/type", "/protocol", "/service"];
+        if listener.downstream_timeouts.keepalive_timeout_ms.is_some() {
+            suffixes.extend([
+                "/downstream_timeouts",
+                "/downstream_timeouts/keepalive_timeout_ms",
+            ]);
+        }
         match listener.bind {
             ListenerBind::Socket { .. } | ListenerBind::Udp { .. } => {
                 suffixes.push("/bind/address");
@@ -512,6 +519,20 @@ impl Lowerer {
             let path = format!("{policy_path}/response_cookie_path_rewrites/{index}");
             for suffix in ["", "/from", "/to"] {
                 self.record(format!("{path}{suffix}"), origins.to_vec());
+            }
+        }
+        for (index, attributes) in policy.response_cookie_attributes.iter().enumerate() {
+            let path = format!("{policy_path}/response_cookie_attributes/{index}");
+            self.record(path.clone(), origins.to_vec());
+            self.record(format!("{path}/name"), origins.to_vec());
+            if attributes.secure.is_some() {
+                self.record(format!("{path}/secure"), origins.to_vec());
+            }
+            if attributes.http_only.is_some() {
+                self.record(format!("{path}/http_only"), origins.to_vec());
+            }
+            if attributes.same_site.is_some() {
+                self.record(format!("{path}/same_site"), origins.to_vec());
             }
         }
         for index in 0..policy.retry.triggers.len() {

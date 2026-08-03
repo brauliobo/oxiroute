@@ -374,6 +374,7 @@ fn nginx_probe_source(id: &str, directory: &Path) -> String {
         | "directive.nginx.proxy-connect-timeout"
         | "directive.nginx.proxy-read-timeout"
         | "directive.nginx.proxy-send-timeout"
+        | "directive.nginx.keepalive-timeout.finite"
         | "directive.nginx.proxy-buffering.off"
         | "directive.nginx.proxy-request-buffering.off"
         | "directive.nginx.proxy-next-upstream.safe"
@@ -383,6 +384,7 @@ fn nginx_probe_source(id: &str, directory: &Path) -> String {
         | "directive.nginx.proxy-pass-header.classified"
         | "directive.nginx.proxy-ignore-headers.controls"
         | "directive.nginx.proxy-cookie-path.literal"
+        | "directive.nginx.proxy-cookie-flags.exact"
         | "directive.nginx.ssl-certificate"
         | "directive.nginx.ssl-certificate-key"
         | "directive.nginx.ssl-protocols" => render_nginx_fixture(standard_nginx_fixture()),
@@ -545,7 +547,7 @@ fn render_nginx_fixture(spec: NginxFixtureSpec<'_>) -> String {
     ))
     .expect("canonical private-key fixture path");
     format!(
-        "http {{\n  access_log off;\n  client_max_body_size 2m;\n  proxy_connect_timeout 15s;\n  proxy_read_timeout 15s;\n  proxy_send_timeout 15s;\n  proxy_http_version {};\n  proxy_buffering off;\n  proxy_request_buffering off;\n  proxy_next_upstream off;\n  proxy_next_upstream_tries 1;\n  proxy_set_header Host $http_host;\n  proxy_hide_header X-Powered-By;\n  proxy_pass_header Server;\n  proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;\n  proxy_cookie_path / /application;\n  auth_basic off;\n  {}\n  upstream app {{ server {}; }}\n  server {{\n    listen {};\n    server_name {};\n    ssl_certificate {};\n    ssl_certificate_key {};\n    ssl_protocols TLSv1.2 TLSv1.3;\n    {}\n    {} {{ proxy_pass {}; }}\n  }}\n}}\n",
+        "http {{\n  access_log off;\n  client_max_body_size 2m;\n  keepalive_timeout 15s;\n  proxy_connect_timeout 15s;\n  proxy_read_timeout 15s;\n  proxy_send_timeout 15s;\n  proxy_http_version {};\n  proxy_buffering off;\n  proxy_request_buffering off;\n  proxy_next_upstream off;\n  proxy_next_upstream_tries 1;\n  proxy_set_header Host $http_host;\n  proxy_hide_header X-Powered-By;\n  proxy_pass_header Server;\n  proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;\n  proxy_cookie_path / /application;\n  proxy_cookie_flags session secure httponly samesite=lax;\n  auth_basic off;\n  {}\n  upstream app {{ server {}; }}\n  server {{\n    listen {};\n    server_name {};\n    ssl_certificate {};\n    ssl_certificate_key {};\n    ssl_protocols TLSv1.2 TLSv1.3;\n    {}\n    {} {{ proxy_pass {}; }}\n  }}\n}}\n",
         spec.proxy_http_version,
         spec.extra_http,
         spec.upstream_server,
