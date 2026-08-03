@@ -159,6 +159,8 @@ fn stale_publisher_takeover_expires_the_old_role_without_clearing_the_new_owner(
     );
 
     let takeover_at = metadata_at + RTMP_STALE_PUBLISHER_THRESHOLD_MS;
+    assert!(!first_server.is_publisher_stale(takeover_at - 1));
+    assert!(first_server.is_publisher_stale(takeover_at));
     let second_events = request_publish(&mut second_client, &mut second_server, takeover_at);
     assert!(
         second_events

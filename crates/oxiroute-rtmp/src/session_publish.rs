@@ -15,7 +15,7 @@ use crate::{
 use super::{
     RtmpSession,
     identity::{self, StreamIdentity},
-    runtime::SessionRole,
+    runtime::{RTMP_STALE_PUBLISHER_THRESHOLD_MS, SessionRole},
     status::{self, PUBLISH_REJECTION_CODE, Rejection, RtmpSessionError},
 };
 
@@ -28,6 +28,7 @@ pub(super) struct PublishSession {
     session_id: SessionId,
     media: MediaSnapshot,
     media_sequence: u64,
+    last_media_activity_at_unix_ms: u64,
     recorders: Vec<(crate::RecorderId, Arc<RecorderController>)>,
     relays: Vec<Arc<RtmpRelayController>>,
 }
@@ -48,6 +49,7 @@ impl PublishSession {
         outputs: PublisherOutputs,
     ) -> Self {
         let PublisherOutputs { recorders, relays } = outputs;
+        let last_media_activity_at_unix_ms = registration.last_observed_at_unix_ms();
         Self {
             key,
             hub,
@@ -57,6 +59,7 @@ impl PublishSession {
             session_id,
             media: MediaSnapshot::default(),
             media_sequence: 0,
+            last_media_activity_at_unix_ms,
             recorders,
             relays,
         }
@@ -79,6 +82,7 @@ impl PublishSession {
         self.media.audio.flv_codec_id = metadata
             .audio_codec_id
             .and_then(|codec| u8::try_from(codec).ok());
+        self.last_media_activity_at_unix_ms = self.last_media_activity_at_unix_ms.max(at_unix_ms);
         self.publish_event(&MediaEvent::metadata(metadata)?, at_unix_ms)
     }
 
@@ -97,6 +101,7 @@ impl PublishSession {
             .saturating_add(data.len() as u64);
         self.media.audio.last_rtmp_timestamp_ms = Some(timestamp.value);
         self.media.audio.last_observed_at_unix_ms = Some(at_unix_ms);
+        self.last_media_activity_at_unix_ms = self.last_media_activity_at_unix_ms.max(at_unix_ms);
         self.publish_event(&event, at_unix_ms)
     }
 
@@ -118,7 +123,13 @@ impl PublishSession {
             .saturating_add(data.len() as u64);
         self.media.video.last_rtmp_timestamp_ms = Some(timestamp.value);
         self.media.video.last_observed_at_unix_ms = Some(at_unix_ms);
+        self.last_media_activity_at_unix_ms = self.last_media_activity_at_unix_ms.max(at_unix_ms);
         self.publish_event(&event, at_unix_ms)
+    }
+
+    pub(super) fn is_stale(&self, at_unix_ms: u64) -> bool {
+        at_unix_ms.saturating_sub(self.last_media_activity_at_unix_ms)
+            >= RTMP_STALE_PUBLISHER_THRESHOLD_MS
     }
 
     pub(super) fn observe_at(&mut self, at_unix_ms: u64) {

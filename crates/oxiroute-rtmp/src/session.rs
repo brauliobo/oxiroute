@@ -78,6 +78,16 @@ impl RtmpSession {
         matches!(self.role, Some(SessionRole::Playback(_)))
     }
 
+    /// Returns whether the active publisher has emitted no metadata or media for the stale
+    /// publisher threshold.
+    #[must_use]
+    pub fn is_publisher_stale(&self, at_unix_ms: u64) -> bool {
+        matches!(
+            &self.role,
+            Some(SessionRole::Publisher(publisher)) if publisher.is_stale(at_unix_ms)
+        )
+    }
+
     /// Processes arbitrary contiguous bytes from this connection in wire order.
     ///
     /// # Errors
