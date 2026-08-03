@@ -59,5 +59,10 @@ A capability should not move to `implemented` without the relevant:
 - reload/rotation or lifecycle coverage where applicable; and
 - independent protocol or interoperability evidence where applicable.
 
-There is currently no checked-in fuzz target, real-browser runner, or general CI test workflow. Treat
-those gaps as explicit residual risk rather than implying browser or platform coverage.
+There is currently no checked-in fuzz target or real-browser runner. The Linux workflow in
+`.github/workflows/ci.yml` enforces the Rust and UI gates plus coverage-manifest validation, but it
+does not imply browser or platform coverage.
+
+Fuzzing remains a documented follow-up. Do not add `cargo-fuzz` or a fuzzing dependency until an
+isolated parser/protocol target can compile and run deterministically with Rust 1.87; the release
+workflow deliberately does not claim that coverage yet.
