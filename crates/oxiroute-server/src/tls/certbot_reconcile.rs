@@ -334,7 +334,7 @@ impl PublicationGate {
         self.stopped.store(true, AtomicOrdering::Release);
     }
 
-    fn publish<T>(&self, publish: impl FnOnce() -> T) -> Option<T> {
+    pub(crate) fn publish<T>(&self, publish: impl FnOnce() -> T) -> Option<T> {
         let _publication = self
             .publication
             .lock()

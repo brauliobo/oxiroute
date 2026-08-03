@@ -23,8 +23,9 @@ use oxiroute_config::{
 };
 use oxiroute_rtmp::{RtmpCapabilities, RtmpRegistry, StreamKey};
 use oxiroute_server::{
-    CertbotWatcherConfig, CertbotWatcherSupervisor, RtmpManagementApi, RuntimeEndpoint,
-    RuntimeMetrics, ServiceKind, ServicePlanError, runtime_plan, service_specs,
+    CertbotWatcherConfig, CertbotWatcherSupervisor, FileWatcherConfig, FileWatcherSupervisor,
+    RtmpManagementApi, RuntimeEndpoint, RuntimeMetrics, ServiceKind, ServicePlanError,
+    runtime_plan, service_specs,
 };
 use serde_json::Value;
 use tempfile::TempDir;
@@ -878,6 +879,98 @@ fn compiles_and_retains_one_shared_listener_tls_profile() {
     assert!(first.tls_settings().is_ok());
     assert_eq!(plan.tls.certificates().len(), 1);
     assert_eq!(plan.tls.profiles().len(), 1);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn direct_file_status_reports_rotation_failures_without_secret_material() {
+    let temp = TempDir::new().expect("TLS temp directory");
+    let (chain, key) = write_test_identity(temp.path(), "direct-status-key.pem");
+    let mut config = canonical_config();
+    config.certificates.push(Certificate {
+        name: "public".into(),
+        dns_names: vec!["proxy.example.test".into()],
+        source: CertificateSource::Files {
+            certificate_chain_path: chain.clone(),
+            private_key_path: key.clone(),
+        },
+    });
+    config.tls_profiles.push(TlsProfile {
+        name: "public".into(),
+        certificates: vec!["public".into()],
+        default_certificate: "public".into(),
+        min_version: TlsVersion::Tls12,
+        alpn: vec![AlpnProtocol::Http11],
+    });
+
+    let plan = runtime_plan(&config).expect("direct-file runtime plan");
+    let [reconciler] = plan.tls.file_reconcilers() else {
+        panic!("one direct-file reconciler must be retained");
+    };
+    let initial_revision = reconciler.status().active_content_revision.clone();
+    let mut watcher = FileWatcherSupervisor::start(
+        vec![Arc::clone(reconciler)],
+        FileWatcherConfig {
+            rescan_interval: Duration::from_secs(30),
+            event_debounce: Duration::from_millis(10),
+            event_max_delay: Duration::from_millis(50),
+        },
+    )
+    .expect("direct-file watcher");
+    let metrics = RuntimeMetrics::new();
+    metrics
+        .register_direct_file_monitoring([Arc::clone(reconciler)], Some(watcher.monitor()))
+        .expect("direct-file monitoring");
+
+    let startup_deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while watcher.status().rescans == 0 && std::time::Instant::now() < startup_deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(watcher.status().rescans > 0);
+
+    fs::write(&chain, b"invalid direct-file candidate").expect("corrupt direct-file candidate");
+    let failure_deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let failed = loop {
+        let snapshot = metrics.snapshot().expect("direct-file failure snapshot");
+        if snapshot.direct_file_certificates[0]
+            .last_error_code
+            .as_deref()
+            == Some("invalid_candidate")
+            && snapshot
+                .direct_file_watcher
+                .as_ref()
+                .is_some_and(|watcher| {
+                    watcher.health == oxiroute_server::CertbotWatcherHealth::Degraded
+                })
+        {
+            break snapshot;
+        }
+        assert!(
+            std::time::Instant::now() < failure_deadline,
+            "direct-file watcher did not propagate the invalid candidate"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(
+        failed.direct_file_certificates[0].active_content_revision,
+        initial_revision
+    );
+    let api = RtmpManagementApi::new(
+        Arc::new(RtmpRegistry::new(RtmpCapabilities {
+            live_ingest: false,
+            manual_recording: false,
+        })),
+        metrics,
+        Arc::clone(&plan.topology),
+    );
+    let response = api.handle("GET", "/api/v1/monitoring", 100);
+    let serialized = String::from_utf8(response.body).expect("monitoring JSON");
+    assert!(!serialized.contains("proxy.example.test"));
+    assert!(!serialized.contains(&temp.path().display().to_string()));
+    assert!(!serialized.contains("BEGIN CERTIFICATE"));
+    assert!(!serialized.contains("PRIVATE KEY"));
+
+    watcher.shutdown();
 }
 
 #[cfg(unix)]

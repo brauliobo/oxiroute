@@ -26,11 +26,12 @@ use oxiroute_config::ListenerBind;
 use oxiroute_rtmp::{MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN, RtmpRegistry, RtmpServiceRuntime};
 use oxiroute_server::{
     CertbotWatcherConfig, CertbotWatcherSupervisor, ConfigWatcher, ConfigWatcherOptions,
-    ConnectionGuard, ForwardConnectionLifecycle, ForwardHttp1ServicePlan, GenerationManager,
-    HaproxyStatsApi, HaproxyStatsPage, HttpDownstreamPolicyApp, HttpListenerApp, HttpReverseProxy,
-    ListenerMetrics, ListenerReservation, MAX_HTTP_ATTEMPTS, MonitoredHttpApp, RtmpManagementApi,
-    RuntimeGeneration, RuntimeMetrics, RuntimeReferenceKind, ServiceKind, TcpRelayCore,
-    TlsProfilePlan, TopologySnapshot,
+    ConnectionGuard, FileWatcherConfig, FileWatcherSupervisor, ForwardConnectionLifecycle,
+    ForwardHttp1ServicePlan, GenerationManager, HaproxyStatsApi, HaproxyStatsPage,
+    HttpDownstreamPolicyApp, HttpListenerApp, HttpReverseProxy, ListenerMetrics,
+    ListenerReservation, MAX_HTTP_ATTEMPTS, MonitoredHttpApp, RtmpManagementApi, RuntimeGeneration,
+    RuntimeMetrics, RuntimeReferenceKind, ServiceKind, TcpRelayCore, TlsProfilePlan,
+    TopologySnapshot,
     cli::{Cli, Command, ConfigCommand, execute_offline},
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, ConfigRevision},
 };
@@ -1432,6 +1433,7 @@ fn serve_generation(
     let tls = &plan.tls;
     let topology = Arc::clone(&plan.topology);
     let certbot_reconcilers = tls.certbot_reconcilers().to_vec();
+    let direct_file_reconcilers = tls.file_reconcilers().to_vec();
     if let Some(supervisor) = health_supervisor {
         server.add_service(background_service("upstream health", supervisor));
     }
@@ -1661,6 +1663,13 @@ fn serve_generation(
             .as_ref()
             .map(CertbotWatcherSupervisor::monitor),
     )?;
+    let mut direct_file_watcher = tls.start_file_watcher(FileWatcherConfig::default())?;
+    runtime_metrics.register_direct_file_monitoring(
+        direct_file_reconcilers,
+        direct_file_watcher
+            .as_ref()
+            .map(FileWatcherSupervisor::monitor),
+    )?;
     setup
         .send(Ok(()))
         .map_err(|_| io::Error::other("generation setup receiver was dropped"))?;
@@ -1668,6 +1677,9 @@ fn serve_generation(
         shutdown_signal: Box::new(ChannelShutdownSignal { shutdown }),
     });
     if let Some(watcher) = &mut certbot_watcher {
+        watcher.shutdown();
+    }
+    if let Some(watcher) = &mut direct_file_watcher {
         watcher.shutdown();
     }
     Ok(())

@@ -12,7 +12,7 @@ use super::{
     response::system_time_ms, ui::UiAssets,
 };
 use crate::{
-    CertbotWatcherConfig, GenerationManager, RuntimePlan,
+    CertbotWatcherConfig, FileWatcherConfig, GenerationManager, RuntimePlan,
     config_coordinator::{
         CanonicalConfigCoordinator, ConfigConflict, ConfigDiagnostic, ConfigLoadOutcome,
         ConfigRevision, ConfigSaveFailure, ConfigSaveOutcome, ConfigValidationOutcome,
@@ -488,6 +488,8 @@ enum ConfigPreparationError {
     UiAssets,
     #[error("Certbot watcher prerequisites are unavailable")]
     CertbotWatcher,
+    #[error("direct-file watcher prerequisites are unavailable")]
+    DirectFileWatcher,
 }
 
 struct PreparedCandidate {
@@ -540,6 +542,9 @@ fn prepare_config(config: &Config) -> Result<RuntimePlan, ConfigPreparationError
     plan.tls
         .check_certbot_watcher(CertbotWatcherConfig::default())
         .map_err(|_| ConfigPreparationError::CertbotWatcher)?;
+    plan.tls
+        .check_file_watcher(FileWatcherConfig::default())
+        .map_err(|_| ConfigPreparationError::DirectFileWatcher)?;
     Ok(plan)
 }
 
@@ -565,6 +570,13 @@ fn preparation_diagnostic(error: ConfigPreparationError) -> Value {
             "stage": "validation",
             "path": "/config/certificates",
             "message": "the configured Certbot watcher prerequisites are unavailable",
+        }),
+        ConfigPreparationError::DirectFileWatcher => json!({
+            "code": "E_DIRECT_FILE_WATCHER",
+            "severity": "error",
+            "stage": "validation",
+            "path": "/config/certificates",
+            "message": "the configured direct-file watcher prerequisites are unavailable",
         }),
     }
 }

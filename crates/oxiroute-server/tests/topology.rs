@@ -8,9 +8,9 @@ use std::{fs, sync::Arc};
 use oxiroute_config::{
     AlpnProtocol, Certificate, CertificateSource, Config, HttpAccessPolicy, HttpHostSelector,
     HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction, HttpService, HttpVersionPolicy,
-    L4Service, Listener, ListenerBind, Protocol, RtmpApplication, RtmpService, Stats, StatsPage,
-    StatsPageAdminPolicy, TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamEndpoint,
-    UpstreamPool, UpstreamServer,
+    L4Service, Listener, ListenerBind, Protocol, RtmpApplication, RtmpService, SelfSignedKeyType,
+    Stats, StatsPage, StatsPageAdminPolicy, TlsProfile, TlsVersion, UpstreamAlgorithm,
+    UpstreamEndpoint, UpstreamPool, UpstreamServer,
 };
 use oxiroute_rtmp::{RtmpCapabilities, RtmpRegistry};
 use oxiroute_server::{
@@ -103,6 +103,35 @@ fn compiles_stable_redacted_nodes_and_typed_reference_edges() {
 
     assert_canonical_listener_service_and_endpoint_attributes(&plan);
     assert_private_key_redaction(&plan, &config);
+}
+
+#[test]
+fn topology_marks_self_signed_certificates_as_development_only() {
+    let temp = TempDir::new().expect("TLS temp directory");
+    let mut config = topology_config(&temp);
+    config.certificates[0].source = CertificateSource::SelfSignedDevelopment {
+        validity_days: 7,
+        key_type: SelfSignedKeyType::EcdsaP256,
+    };
+
+    let plan = runtime_plan(&config).expect("self-signed runtime plan");
+    let certificate = plan
+        .topology
+        .nodes()
+        .iter()
+        .find(|node| node.kind == TopologyNodeKind::Certificate)
+        .expect("certificate node");
+    assert_eq!(
+        certificate.attributes["source"],
+        json!({
+            "type": "self_signed_development",
+            "developmentOnly": true,
+            "validityDays": 7,
+            "keyType": "ecdsa_p256",
+        })
+    );
+    let serialized = serde_json::to_string(certificate).expect("certificate JSON");
+    assert!(!serialized.contains("PRIVATE KEY"));
 }
 
 fn assert_canonical_listener_service_and_endpoint_attributes(plan: &RuntimePlan) {
@@ -205,7 +234,9 @@ fn assert_private_key_redaction(plan: &RuntimePlan, config: &Config) {
         CertificateSource::Files {
             private_key_path, ..
         } => private_key_path,
-        CertificateSource::Certbot { .. } => unreachable!("test uses file identity"),
+        CertificateSource::Certbot { .. } | CertificateSource::SelfSignedDevelopment { .. } => {
+            unreachable!("test uses file identity")
+        }
     };
     let serialized = serde_json::to_string(certificate).expect("certificate JSON");
     assert!(!serialized.contains(private_key_path.to_str().expect("UTF-8 key path")));
@@ -295,7 +326,9 @@ fn serves_active_topology_with_name_joined_runtime_overlays() {
         CertificateSource::Files {
             private_key_path, ..
         } => private_key_path,
-        CertificateSource::Certbot { .. } => unreachable!("test uses file identity"),
+        CertificateSource::Certbot { .. } | CertificateSource::SelfSignedDevelopment { .. } => {
+            unreachable!("test uses file identity")
+        }
     };
     assert!(!body_text.contains(private_key_path.to_str().expect("UTF-8 key path")));
     assert_eq!(api.handle("POST", "/api/v1/topology", 100).status, 405);

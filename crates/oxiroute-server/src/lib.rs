@@ -38,11 +38,12 @@ pub use l4_service::L4ServicePlan;
 pub use listener_reservation::{ListenerReservation, ListenerReservations};
 pub use monitoring::{
     CertbotCertificateSnapshot, CertbotWatcherHealth, CertbotWatcherSnapshot, ConnectionGuard,
-    HostSnapshot, HttpOperationCountSnapshot, HttpOperationResult, HttpOperationSnapshot,
-    LatencyBucketSnapshot, LatencySnapshot, ListenerMetrics, ListenerRuntimeState,
-    ListenerSnapshot, MetricsError, OPERATION_LATENCY_BUCKETS_MS, ProcessConnectionGuard,
-    ProcessRuntime, ProcessSnapshot, RuntimeMetrics, RuntimeSnapshot, TcpRelayCountSnapshot,
-    TcpRelayResult, TcpRelaySnapshot, TrafficSnapshot,
+    DirectFileCertificateSnapshot, DirectFileWatcherSnapshot, HostSnapshot,
+    HttpOperationCountSnapshot, HttpOperationResult, HttpOperationSnapshot, LatencyBucketSnapshot,
+    LatencySnapshot, ListenerMetrics, ListenerRuntimeState, ListenerSnapshot, MetricsError,
+    OPERATION_LATENCY_BUCKETS_MS, ProcessConnectionGuard, ProcessRuntime, ProcessSnapshot,
+    RuntimeMetrics, RuntimeSnapshot, TcpRelayCountSnapshot, TcpRelayResult, TcpRelaySnapshot,
+    TrafficSnapshot,
 };
 pub use prometheus::{PrometheusError, render_prometheus};
 pub use routing::{
@@ -65,7 +66,10 @@ pub use tls::{
     CertbotReconcileError, CertbotReconcileOutcome, CertbotReconciler, CertbotReconcilerStatus,
     CertbotWatcherConfig, CertbotWatcherError, CertbotWatcherMonitor, CertbotWatcherStatus,
     CertbotWatcherSupervisor, CertificateGeneration, CertificateMetadata, CertificatePublishError,
-    CertificateValidity, PreparedTls, TlsBuildError, TlsProfilePlan, UpstreamTlsPlan,
+    CertificateValidity, FileReconcileError, FileReconcileOutcome, FileReconciler,
+    FileReconcilerStatus, FileWatcherConfig, FileWatcherError, FileWatcherMonitor,
+    FileWatcherStatus, FileWatcherSupervisor, PreparedTls, TlsBuildError, TlsProfilePlan,
+    UpstreamTlsPlan,
 };
 pub use topology::{
     TOPOLOGY_SCHEMA_VERSION, TopologyEdge, TopologyEdgeKind, TopologyNode, TopologyNodeKind,

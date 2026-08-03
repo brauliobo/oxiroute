@@ -34,7 +34,8 @@ use openssl::{
 };
 use oxiroute_config::{
     AlpnProtocol, Certificate, CertificateSource, Config, HttpVersion, HttpVersionPolicy,
-    TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, UpstreamTls,
+    SelfSignedKeyType, TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool,
+    UpstreamTls,
 };
 use pingora::{listeners::ALPN, upstreams::peer::HttpPeer};
 use tempfile::TempDir;
@@ -44,6 +45,7 @@ use tls::{
     CertbotReconcileError, CertbotReconcileOutcome, CertbotReconciler, CertbotReconcilerStatus,
     CertbotWatcherConfig, CertbotWatcherError, CertbotWatcherMonitor, CertbotWatcherSupervisor,
     CertificateGeneration, CertificateMetadata, CertificatePublishError, CertificateValidity,
+    FileReconcileError, FileReconcileOutcome, FileWatcherConfig, FileWatcherSupervisor,
     MAX_CERTIFICATE_CHAIN_BYTES, MAX_PRIVATE_KEY_BYTES, TlsBuildError, TlsProfilePlan,
     UpstreamTlsPlan, prepare_tls, prepare_upstream_tls,
 };
@@ -103,6 +105,142 @@ fn prepares_metadata_redacted_generation_and_callback_settings() {
         settings.set_session_cache_mode(SslSessionCacheMode::SERVER),
         SslSessionCacheMode::OFF
     );
+}
+
+#[test]
+fn generates_explicit_development_certificate_with_exact_sans_and_redacted_debug() {
+    let temp = TempDir::new().unwrap();
+    let files = write_identity(temp.path(), "unused", "unused.example.test", false);
+    let mut config = config_with_identity(&files);
+    config.certificates[0].dns_names = vec!["dev.example.test".into(), "*.dev.example.test".into()];
+    config.certificates[0].source = CertificateSource::SelfSignedDevelopment {
+        validity_days: 7,
+        key_type: SelfSignedKeyType::EcdsaP256,
+    };
+
+    let prepared = prepare_tls(&config).unwrap();
+    let active = prepared.certificates().get("primary").unwrap();
+    let generation = active.snapshot();
+    assert_eq!(
+        generation.metadata().dns_names,
+        ["*.dev.example.test", "dev.example.test"]
+    );
+    assert_eq!(generation.metadata().intermediate_count, 0);
+    assert_eq!(
+        prepared
+            .profiles()
+            .get("public")
+            .unwrap()
+            .selected_generation(Some("API.dev.example.test"))
+            .metadata()
+            .name,
+        "primary"
+    );
+    assert!(prepared.file_reconcilers().is_empty());
+    assert!(prepared.certbot_reconcilers().is_empty());
+
+    let debug = format!("{generation:?}");
+    assert!(!debug.contains("PRIVATE KEY"));
+    assert!(!debug.contains("private_key"));
+}
+
+#[test]
+fn direct_file_reconciliation_rotates_rolls_back_and_retains_invalid_candidates() {
+    let temp = TempDir::new().unwrap();
+    let initial = write_identity(temp.path(), "initial", "direct.example.test", false);
+    let replacement = write_identity(temp.path(), "replacement", "direct.example.test", false);
+    let mut config = config_with_identity(&initial);
+    config.certificates[0].dns_names = vec!["direct.example.test".into()];
+    let prepared = prepare_tls(&config).unwrap();
+    let [reconciler] = prepared.file_reconcilers() else {
+        panic!("one direct-file reconciler must be prepared");
+    };
+    let active = prepared.certificates().get("primary").unwrap();
+    let initial_generation = active.snapshot();
+    let initial_revision = initial_generation.metadata().revision.clone();
+    let initial_chain = fs::read(&initial.chain).unwrap();
+    let initial_key = fs::read(&initial.key).unwrap();
+
+    fs::copy(&replacement.chain, &initial.chain).unwrap();
+    write_private_key(&initial.key, &fs::read(&replacement.key).unwrap());
+    let activated = reconciler.reconcile().unwrap();
+    assert!(matches!(activated, FileReconcileOutcome::Activated));
+    let replacement_revision = active.snapshot().metadata().revision.clone();
+    assert_ne!(replacement_revision, initial_revision);
+    assert_eq!(reconciler.status().last_outcome, Some("activated"));
+
+    fs::write(&initial.chain, b"invalid replacement").unwrap();
+    let error = reconciler.reconcile().unwrap_err();
+    assert!(matches!(error, FileReconcileError::InvalidCandidate { .. }));
+    assert_eq!(active.snapshot().metadata().revision, replacement_revision);
+    assert_eq!(
+        reconciler.status().last_error_code,
+        Some("invalid_candidate")
+    );
+
+    fs::copy(&replacement.chain, &initial.chain).unwrap();
+    let unchanged = reconciler.reconcile().unwrap();
+    assert_eq!(unchanged, FileReconcileOutcome::Unchanged);
+    assert_eq!(reconciler.status().last_error_code, None);
+
+    fs::write(&initial.chain, initial_chain).unwrap();
+    write_private_key(&initial.key, &initial_key);
+    let rolled_back = reconciler.reconcile().unwrap();
+    assert_eq!(rolled_back, FileReconcileOutcome::Activated);
+    assert_eq!(active.snapshot().metadata().revision, initial_revision);
+    assert_eq!(reconciler.status().last_outcome, Some("activated"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn direct_file_watcher_publishes_rotation_and_reports_invalid_rollback() {
+    let temp = TempDir::new().unwrap();
+    let initial = write_identity(temp.path(), "watch-initial", "watch.example.test", false);
+    let replacement = write_identity(
+        temp.path(),
+        "watch-replacement",
+        "watch.example.test",
+        false,
+    );
+    let mut config = config_with_identity(&initial);
+    config.certificates[0].dns_names = vec!["watch.example.test".into()];
+    let prepared = prepare_tls(&config).unwrap();
+    let [reconciler] = prepared.file_reconcilers() else {
+        panic!("one direct-file reconciler must be prepared");
+    };
+    let active = prepared.certificates().get("primary").unwrap();
+    let initial_revision = active.snapshot().metadata().revision.clone();
+    let mut watcher = FileWatcherSupervisor::start(
+        vec![Arc::clone(reconciler)],
+        FileWatcherConfig {
+            rescan_interval: std::time::Duration::from_secs(30),
+            event_debounce: std::time::Duration::from_millis(10),
+            event_max_delay: std::time::Duration::from_millis(50),
+        },
+    )
+    .unwrap();
+
+    fs::copy(&replacement.chain, &initial.chain).unwrap();
+    write_private_key(&initial.key, &fs::read(&replacement.key).unwrap());
+    wait_for_condition("direct-file rotation", || {
+        active.snapshot().metadata().revision != initial_revision
+    });
+
+    fs::write(&initial.chain, b"invalid direct-file candidate").unwrap();
+    wait_for_condition("direct-file invalid candidate", || {
+        reconciler.status().last_error_code == Some("invalid_candidate")
+            && watcher.status().degraded
+    });
+    let active_after_failure = active.snapshot();
+    assert_ne!(active_after_failure.metadata().revision, initial_revision);
+    assert!(watcher.status().reconciliation_failures > 0);
+
+    fs::copy(&replacement.chain, &initial.chain).unwrap();
+    wait_for_condition("direct-file recovery", || {
+        reconciler.status().last_error_code.is_none() && !watcher.status().degraded
+    });
+    assert_eq!(reconciler.status().last_outcome, Some("unchanged"));
+    watcher.shutdown();
 }
 
 #[test]
@@ -259,6 +397,29 @@ fn rejects_private_key_mismatch_and_redacts_key_parse_errors() {
     assert!(matches!(error, TlsBuildError::PrivateKeyParse { .. }));
     assert!(!format!("{error:?}").contains("SUPER_SECRET_SENTINEL"));
     assert!(!error.to_string().contains("SUPER_SECRET_SENTINEL"));
+}
+
+#[cfg(unix)]
+#[test]
+fn direct_file_reads_reject_final_symlinks_without_following_them() {
+    use std::os::unix::fs::symlink;
+
+    let temp = TempDir::new().unwrap();
+    let files = write_identity(temp.path(), "nofollow", "nofollow.example.test", false);
+    let outside = TempDir::new().unwrap();
+    let outside_chain = outside.path().join("chain.pem");
+    fs::copy(&files.chain, &outside_chain).unwrap();
+    fs::remove_file(&files.chain).unwrap();
+    symlink(&outside_chain, &files.chain).unwrap();
+
+    let error = CertificateGeneration::from_files(
+        "nofollow",
+        &["nofollow.example.test".into()],
+        &files.chain,
+        &files.key,
+    )
+    .unwrap_err();
+    assert!(matches!(error, TlsBuildError::FileOpen { .. }));
 }
 
 #[test]
