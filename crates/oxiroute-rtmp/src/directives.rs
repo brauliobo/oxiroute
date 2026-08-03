@@ -1,10 +1,16 @@
 use std::net::IpAddr;
 
 use crate::{
-    DirectiveContext, DirectiveError, DirectiveSpec, RelayKind, RuntimeSupport, ValueKind,
+    DirectiveCompatibilityReport, DirectiveContext, DirectiveError, DirectiveForm, DirectiveSpec,
+    DirectiveStatus, DirectiveStatusCounts, RelayKind, RuntimeSupport, ValueKind,
 };
 
 use DirectiveContext::{Http, NginxMain, RtmpApplication, RtmpMain, RtmpRecorder, RtmpServer};
+use DirectiveStatus::{
+    Deprecated as StatusDeprecated, DisableOnly, Enforced, ParsedOnly,
+    PlatformLimited as StatusPlatformLimited, SourceBug as StatusSourceBug,
+    SourceNoOp as StatusSourceNoOp,
+};
 use RuntimeSupport::{Deprecated, ParsedNotEnforced, PlatformLimited, SourceBug, SourceNoOp};
 
 const N: &[DirectiveContext] = &[NginxMain];
@@ -25,6 +31,273 @@ const HLS_TYPES: &[&str] = &["live", "event"];
 const STAT_PARTS: &[&str] = &["all", "global", "live", "clients"];
 const CONTROL_PARTS: &[&str] = &["all", "record", "drop", "redirect"];
 
+const RTMP_FORMS: &[DirectiveForm] = &[DirectiveForm {
+    form: "canonical rtmp block",
+    contexts: N,
+    status: Enforced,
+}];
+const SERVER_FORMS: &[DirectiveForm] = &[DirectiveForm {
+    form: "canonical server block",
+    contexts: R,
+    status: Enforced,
+}];
+const LISTENER_FORMS: &[DirectiveForm] = &[
+    DirectiveForm {
+        form: "numeric socket address without options",
+        contexts: S,
+        status: Enforced,
+    },
+    DirectiveForm {
+        form: "socket address with a listen option",
+        contexts: S,
+        status: ParsedOnly,
+    },
+];
+const APPLICATION_FORMS: &[DirectiveForm] = &[
+    DirectiveForm {
+        form: "canonical named application block",
+        contexts: S,
+        status: Enforced,
+    },
+    DirectiveForm {
+        form: "invalid or unsupported application block",
+        contexts: S,
+        status: ParsedOnly,
+    },
+];
+const CHUNK_SIZE_FORMS: &[DirectiveForm] = &[
+    DirectiveForm {
+        form: "bounded outbound chunk size (1..=1048576)",
+        contexts: RS,
+        status: Enforced,
+    },
+    DirectiveForm {
+        form: "out-of-range outbound chunk size",
+        contexts: RS,
+        status: ParsedOnly,
+    },
+];
+const LIVE_FORMS: &[DirectiveForm] = &[
+    DirectiveForm {
+        form: "live on",
+        contexts: RSA,
+        status: Enforced,
+    },
+    DirectiveForm {
+        form: "live off",
+        contexts: RSA,
+        status: Enforced,
+    },
+];
+const IDLE_STREAMS_FORMS: &[DirectiveForm] = &[
+    DirectiveForm {
+        form: "idle_streams on",
+        contexts: RSA,
+        status: Enforced,
+    },
+    DirectiveForm {
+        form: "idle_streams off",
+        contexts: RSA,
+        status: Enforced,
+    },
+];
+const PUSH_FORMS: &[DirectiveForm] = &[
+    DirectiveForm {
+        form: "one canonical static target token",
+        contexts: A,
+        status: Enforced,
+    },
+    DirectiveForm {
+        form: "target token with nginx relay options",
+        contexts: A,
+        status: ParsedOnly,
+    },
+];
+const PULL_FORMS: &[DirectiveForm] = &[DirectiveForm {
+    form: "pull target",
+    contexts: A,
+    status: ParsedOnly,
+}];
+const RECORD_FORMS: &[DirectiveForm] = &[
+    DirectiveForm {
+        form: "record off",
+        contexts: RSAC,
+        status: DisableOnly,
+    },
+    DirectiveForm {
+        form: "record all with live on and secure path",
+        contexts: RSAC,
+        status: Enforced,
+    },
+    DirectiveForm {
+        form: "record all manual or manual all with live on and secure path",
+        contexts: RSAC,
+        status: Enforced,
+    },
+    DirectiveForm {
+        form: "other record bitmask",
+        contexts: RSAC,
+        status: ParsedOnly,
+    },
+];
+const RECORD_PATH_FORMS: &[DirectiveForm] = &[
+    DirectiveForm {
+        form: "secure absolute recording root when recording is enabled",
+        contexts: RSAC,
+        status: Enforced,
+    },
+    DirectiveForm {
+        form: "other registered recording path",
+        contexts: RSAC,
+        status: ParsedOnly,
+    },
+];
+const RECORD_SUFFIX_FORMS: &[DirectiveForm] = &[
+    DirectiveForm {
+        form: "bounded literal suffix on a canonical recorder",
+        contexts: RSAC,
+        status: Enforced,
+    },
+    DirectiveForm {
+        form: "strftime or unsafe suffix",
+        contexts: RSAC,
+        status: ParsedOnly,
+    },
+];
+const RECORD_UNIQUE_FORMS: &[DirectiveForm] = &[
+    DirectiveForm {
+        form: "record_unique on for a canonical recorder",
+        contexts: RSAC,
+        status: Enforced,
+    },
+    DirectiveForm {
+        form: "record_unique off for a canonical recorder",
+        contexts: RSAC,
+        status: Enforced,
+    },
+];
+const RECORD_INTERVAL_FORMS: &[DirectiveForm] = &[
+    DirectiveForm {
+        form: "bounded interval on continuous recording",
+        contexts: RSAC,
+        status: Enforced,
+    },
+    DirectiveForm {
+        form: "zero, overflow, or manual-recording interval",
+        contexts: RSAC,
+        status: ParsedOnly,
+    },
+];
+const RECORD_APPEND_FORMS: &[DirectiveForm] = &[
+    DirectiveForm {
+        form: "record_append off",
+        contexts: RSAC,
+        status: DisableOnly,
+    },
+    DirectiveForm {
+        form: "record_append on",
+        contexts: RSAC,
+        status: ParsedOnly,
+    },
+];
+const RECORD_LOCK_FORMS: &[DirectiveForm] = &[
+    DirectiveForm {
+        form: "record_lock off",
+        contexts: RSAC,
+        status: DisableOnly,
+    },
+    DirectiveForm {
+        form: "record_lock on",
+        contexts: RSAC,
+        status: StatusPlatformLimited,
+    },
+];
+const RECORD_MAX_SIZE_FORMS: &[DirectiveForm] = &[
+    DirectiveForm {
+        form: "record_max_size 0 on a canonical recorder",
+        contexts: RSAC,
+        status: Enforced,
+    },
+    DirectiveForm {
+        form: "nonzero record_max_size",
+        contexts: RSAC,
+        status: ParsedOnly,
+    },
+];
+const RECORD_MAX_FRAMES_FORMS: &[DirectiveForm] = &[
+    DirectiveForm {
+        form: "record_max_frames 0 on a canonical recorder",
+        contexts: RSAC,
+        status: Enforced,
+    },
+    DirectiveForm {
+        form: "nonzero record_max_frames",
+        contexts: RSAC,
+        status: ParsedOnly,
+    },
+];
+const RECORD_NOTIFY_FORMS: &[DirectiveForm] = &[
+    DirectiveForm {
+        form: "record_notify off",
+        contexts: RSAC,
+        status: DisableOnly,
+    },
+    DirectiveForm {
+        form: "record_notify on",
+        contexts: RSAC,
+        status: ParsedOnly,
+    },
+];
+const RECORDER_FORMS: &[DirectiveForm] = &[
+    DirectiveForm {
+        form: "canonical named recorder block",
+        contexts: A,
+        status: Enforced,
+    },
+    DirectiveForm {
+        form: "invalid or unsupported recorder block",
+        contexts: A,
+        status: ParsedOnly,
+    },
+];
+const ACCESS_LOG_FORMS: &[DirectiveForm] = &[
+    DirectiveForm {
+        form: "access_log off at rtmp scope",
+        contexts: R,
+        status: DisableOnly,
+    },
+    DirectiveForm {
+        form: "enabled or nested access logging",
+        contexts: RSA,
+        status: ParsedOnly,
+    },
+];
+const STREAM_BUCKETS_FORMS: &[DirectiveForm] = &[DirectiveForm {
+    form: "any registered stream_buckets integer",
+    contexts: RSA,
+    status: StatusSourceBug,
+}];
+const HLS_MUXDELAY_FORMS: &[DirectiveForm] = &[DirectiveForm {
+    form: "any registered hls_muxdelay duration",
+    contexts: RSA,
+    status: StatusSourceNoOp,
+}];
+const DEPRECATED_FORMS: &[DirectiveForm] = &[DirectiveForm {
+    form: "any registered so_keepalive flag",
+    contexts: RS,
+    status: StatusDeprecated,
+}];
+const PLATFORM_EXEC_FORMS: &[DirectiveForm] = &[DirectiveForm {
+    form: "any registered platform-owned value",
+    contexts: RSA,
+    status: StatusPlatformLimited,
+}];
+const PLATFORM_NGINX_FORMS: &[DirectiveForm] = &[DirectiveForm {
+    form: "any registered platform-owned value",
+    contexts: N,
+    status: StatusPlatformLimited,
+}];
+
 macro_rules! directive {
     ($name:literal, $contexts:expr, $min:literal, $max:expr, $kind:expr, $default:expr, $repeatable:literal) => {
         DirectiveSpec {
@@ -36,6 +309,7 @@ macro_rules! directive {
             default: $default,
             repeatable: $repeatable,
             runtime_support: ParsedNotEnforced,
+            runtime_forms: &[],
         }
     };
     ($name:literal, $contexts:expr, $min:literal, $max:expr, $kind:expr, $default:expr, $repeatable:literal, $support:expr) => {
@@ -48,15 +322,42 @@ macro_rules! directive {
             default: $default,
             repeatable: $repeatable,
             runtime_support: $support,
+            runtime_forms: &[],
+        }
+    };
+    ($name:literal, $contexts:expr, $min:literal, $max:expr, $kind:expr, $default:expr, $repeatable:literal; $forms:expr) => {
+        DirectiveSpec {
+            name: $name,
+            contexts: $contexts,
+            min_args: $min,
+            max_args: $max,
+            value_kind: $kind,
+            default: $default,
+            repeatable: $repeatable,
+            runtime_support: ParsedNotEnforced,
+            runtime_forms: $forms,
+        }
+    };
+    ($name:literal, $contexts:expr, $min:literal, $max:expr, $kind:expr, $default:expr, $repeatable:literal, $support:expr; $forms:expr) => {
+        DirectiveSpec {
+            name: $name,
+            contexts: $contexts,
+            min_args: $min,
+            max_args: $max,
+            value_kind: $kind,
+            default: $default,
+            repeatable: $repeatable,
+            runtime_support: $support,
+            runtime_forms: $forms,
         }
     };
 }
 
 static DIRECTIVES: [DirectiveSpec; 117] = [
     // Entry and core: 18
-    directive!("rtmp", N, 0, Some(0), ValueKind::Block, None, false),
-    directive!("server", R, 0, Some(0), ValueKind::Block, None, true),
-    directive!("listen", S, 1, Some(2), ValueKind::Listen, None, true),
+    directive!("rtmp", N, 0, Some(0), ValueKind::Block, None, false; RTMP_FORMS),
+    directive!("server", R, 0, Some(0), ValueKind::Block, None, true; SERVER_FORMS),
+    directive!("listen", S, 1, Some(2), ValueKind::Listen, None, true; LISTENER_FORMS),
     directive!(
         "application",
         S,
@@ -64,7 +365,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::NamedBlock,
         None,
-        true
+        true;
+        APPLICATION_FORMS
     ),
     directive!(
         "so_keepalive",
@@ -74,7 +376,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         ValueKind::Flag,
         Some("off"),
         false,
-        Deprecated
+        Deprecated;
+        DEPRECATED_FORMS
     ),
     directive!(
         "timeout",
@@ -128,7 +431,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::Integer,
         Some("4096"),
-        false
+        false;
+        CHUNK_SIZE_FORMS
     ),
     directive!(
         "max_message",
@@ -214,7 +518,7 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         false
     ),
     // Live: 11
-    directive!("live", RSA, 1, Some(1), ValueKind::Flag, Some("off"), false),
+    directive!("live", RSA, 1, Some(1), ValueKind::Flag, Some("off"), false; LIVE_FORMS),
     directive!(
         "stream_buckets",
         RSA,
@@ -223,7 +527,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         ValueKind::Integer,
         Some("1024"),
         false,
-        SourceBug
+        SourceBug;
+        STREAM_BUCKETS_FORMS
     ),
     directive!(
         "buffer",
@@ -259,7 +564,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::Flag,
         Some("on"),
-        false
+        false;
+        IDLE_STREAMS_FORMS
     ),
     directive!(
         "wait_video",
@@ -314,7 +620,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         None,
         ValueKind::RelayTarget(RelayKind::Push),
         None,
-        true
+        true;
+        PUSH_FORMS
     ),
     directive!(
         "pull",
@@ -323,7 +630,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         None,
         ValueKind::RelayTarget(RelayKind::Pull),
         None,
-        true
+        true;
+        PULL_FORMS
     ),
     directive!(
         "relay_buffer",
@@ -402,7 +710,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         ValueKind::Command,
         None,
         true,
-        PlatformLimited
+        PlatformLimited;
+        PLATFORM_EXEC_FORMS
     ),
     directive!(
         "respawn",
@@ -448,7 +757,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         None,
         ValueKind::Bitmask(RECORD_PARTS),
         Some("off"),
-        false
+        false;
+        RECORD_FORMS
     ),
     directive!(
         "record_path",
@@ -457,7 +767,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::Path,
         Some(""),
-        false
+        false;
+        RECORD_PATH_FORMS
     ),
     directive!(
         "record_suffix",
@@ -466,7 +777,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::Strings,
         Some(".flv"),
-        false
+        false;
+        RECORD_SUFFIX_FORMS
     ),
     directive!(
         "record_unique",
@@ -475,7 +787,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::Flag,
         Some("off"),
-        false
+        false;
+        RECORD_UNIQUE_FORMS
     ),
     directive!(
         "record_append",
@@ -484,7 +797,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::Flag,
         Some("off"),
-        false
+        false;
+        RECORD_APPEND_FORMS
     ),
     directive!(
         "record_lock",
@@ -494,7 +808,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         ValueKind::Flag,
         Some("off"),
         false,
-        PlatformLimited
+        PlatformLimited;
+        RECORD_LOCK_FORMS
     ),
     directive!(
         "record_max_size",
@@ -503,7 +818,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::Size,
         Some("0"),
-        false
+        false;
+        RECORD_MAX_SIZE_FORMS
     ),
     directive!(
         "record_max_frames",
@@ -512,7 +828,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::Size,
         Some("0"),
-        false
+        false;
+        RECORD_MAX_FRAMES_FORMS
     ),
     directive!(
         "record_interval",
@@ -521,7 +838,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::Duration,
         None,
-        false
+        false;
+        RECORD_INTERVAL_FORMS
     ),
     directive!(
         "record_notify",
@@ -530,9 +848,10 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::Flag,
         Some("off"),
-        false
+        false;
+        RECORD_NOTIFY_FORMS
     ),
-    directive!("recorder", A, 1, Some(1), ValueKind::NamedBlock, None, true),
+    directive!("recorder", A, 1, Some(1), ValueKind::NamedBlock, None, true; RECORDER_FORMS),
     // VOD and netcall: 5
     directive!("play", RSA, 1, None, ValueKind::Strings, None, true),
     directive!(
@@ -641,7 +960,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(2),
         ValueKind::AccessLog,
         Some("combined"),
-        true
+        true;
+        ACCESS_LOG_FORMS
     ),
     directive!(
         "log_format",
@@ -669,7 +989,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         ValueKind::Flag,
         Some("off"),
         false,
-        PlatformLimited
+        PlatformLimited;
+        PLATFORM_NGINX_FORMS
     ),
     directive!(
         "rtmp_auto_push_reconnect",
@@ -679,7 +1000,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         ValueKind::Duration,
         Some("100ms"),
         false,
-        PlatformLimited
+        PlatformLimited;
+        PLATFORM_NGINX_FORMS
     ),
     directive!(
         "rtmp_socket_dir",
@@ -689,7 +1011,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         ValueKind::Path,
         Some("/tmp"),
         false,
-        PlatformLimited
+        PlatformLimited;
+        PLATFORM_NGINX_FORMS
     ),
     // HLS: 22
     directive!("hls", RSA, 1, Some(1), ValueKind::Flag, Some("off"), false),
@@ -737,7 +1060,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         ValueKind::Duration,
         Some("700ms"),
         false,
-        SourceNoOp
+        SourceNoOp;
+        HLS_MUXDELAY_FORMS
     ),
     directive!(
         "hls_sync",
@@ -963,6 +1287,38 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
 #[must_use]
 pub fn directive_specs() -> &'static [DirectiveSpec] {
     &DIRECTIVES
+}
+
+#[must_use]
+pub fn directive_compatibility_report() -> DirectiveCompatibilityReport {
+    let mut directive_status = DirectiveStatusCounts::default();
+    let mut form_status = DirectiveStatusCounts::default();
+
+    for spec in &DIRECTIVES {
+        increment_status(&mut directive_status, spec.compatibility_status());
+        for form in spec.runtime_forms {
+            increment_status(&mut form_status, form.status);
+        }
+    }
+
+    DirectiveCompatibilityReport {
+        entries: &DIRECTIVES,
+        directive_status,
+        form_status,
+    }
+}
+
+fn increment_status(counts: &mut DirectiveStatusCounts, status: DirectiveStatus) {
+    match status {
+        DirectiveStatus::Enforced => counts.enforced += 1,
+        DirectiveStatus::Partial => counts.partial += 1,
+        DirectiveStatus::DisableOnly => counts.disable_only += 1,
+        DirectiveStatus::ParsedOnly => counts.parsed_only += 1,
+        DirectiveStatus::SourceNoOp => counts.source_no_op += 1,
+        DirectiveStatus::SourceBug => counts.source_bug += 1,
+        DirectiveStatus::Deprecated => counts.deprecated += 1,
+        DirectiveStatus::PlatformLimited => counts.platform_limited += 1,
+    }
 }
 
 /// Validates one directive after nginx tokenization.
