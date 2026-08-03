@@ -6,11 +6,12 @@ use crate::{
 };
 
 #[test]
-fn cache_forward_and_varnish_foundations_are_not_integrated_runtime_claims() {
+fn cache_memory_reverse_http_is_integrated_but_broader_cache_remains_foundational() {
     let manifest: ComponentManifest = read_manifest("components.json");
     assert_eq!(manifest.schema_version, 1);
     let expected = [
         "component.cache-core",
+        "component.cache-memory-reverse-http",
         "component.forward-proxy-h1",
         "component.forward-proxy-h2",
         "component.forward-proxy-h3",
@@ -28,7 +29,10 @@ fn cache_forward_and_varnish_foundations_are_not_integrated_runtime_claims() {
     for entry in &manifest.entries {
         assert!(entry.gates.component.0, "{} component gate", entry.id);
         assert!(entry.gates.tests.0, "{} tests gate", entry.id);
-        if entry.id == "component.forward-proxy-h1" {
+        if matches!(
+            entry.id.as_str(),
+            "component.cache-memory-reverse-http" | "component.forward-proxy-h1"
+        ) {
             assert_eq!(entry.status, ComponentStatus::Integrated);
             assert!(entry.gates.canonical.0, "{} canonical gate", entry.id);
             assert!(
@@ -74,6 +78,6 @@ fn cache_forward_and_varnish_foundations_are_not_integrated_runtime_claims() {
     assert!(root_workspace.contains("crates/oxiroute-cache"));
     assert!(root_workspace.contains("crates/oxiroute-forward-proxy"));
     let server = read_source("crates/oxiroute-server/Cargo.toml");
-    assert!(!server.contains("oxiroute-cache"));
+    assert!(server.contains("oxiroute-cache"));
     assert!(server.contains("oxiroute-forward-proxy"));
 }

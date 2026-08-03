@@ -22,6 +22,7 @@ use openssl::{
     memcmp,
     sha::sha256,
 };
+use oxiroute_cache::{Cache, CacheTimeline};
 use oxiroute_config::{
     AccessLogPolicy, HttpAccessPolicy, HttpCookieAttributePolicy, HttpCookiePathRewrite,
     HttpGzipMinimumVersion, HttpGzipPolicy, HttpLiteralHeader, HttpProxyPolicy,
@@ -241,10 +242,42 @@ pub(crate) struct ProxyPolicyPlan {
     pub(crate) retry_target: HttpRetryTarget,
     pub(crate) retry_delay: Duration,
     pub(crate) final_redispatch: bool,
+    pub(crate) cache: Option<Arc<HttpCachePlan>>,
+}
+
+pub(crate) struct HttpCachePlan {
+    pub(crate) cache: Arc<Cache>,
+    pub(crate) timeline: CacheTimeline,
+    pub(crate) methods: Box<[http::Method]>,
+    pub(crate) revalidate: bool,
+}
+
+impl std::fmt::Debug for HttpCachePlan {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HttpCachePlan")
+            .field("methods", &self.methods)
+            .field("revalidate", &self.revalidate)
+            .finish_non_exhaustive()
+    }
+}
+
+impl HttpCachePlan {
+    pub(crate) fn allows_method(&self, method: &http::Method) -> bool {
+        self.methods.iter().any(|allowed| allowed == method)
+    }
 }
 
 impl ProxyPolicyPlan {
+    #[cfg(test)]
     pub(crate) fn compile(policy: &HttpProxyPolicy) -> Self {
+        Self::compile_with_cache(policy, None)
+    }
+
+    pub(crate) fn compile_with_cache(
+        policy: &HttpProxyPolicy,
+        cache: Option<Arc<HttpCachePlan>>,
+    ) -> Self {
         Self {
             upstream_host: policy.upstream_host.clone(),
             request_headers: policy
@@ -267,6 +300,7 @@ impl ProxyPolicyPlan {
             retry_target: policy.retry.target,
             retry_delay: Duration::from_millis(policy.retry.delay_ms),
             final_redispatch: policy.retry.final_redispatch,
+            cache,
         }
     }
 

@@ -178,6 +178,22 @@
       ]
     },
     {
+      "id": "evidence.cache.memory-reverse-http",
+      "tests": [
+        "crates/oxiroute-server/tests/service_plan.rs#compiles_an_active_memory_cache_policy",
+        "crates/oxiroute-server/tests/service_plan.rs#rejects_persistent_cache_storage_at_runtime",
+        "crates/oxiroute-server/tests/service_plan.rs#rejects_advanced_authorized_cache_reuse_at_runtime",
+        "crates/oxiroute-server/tests/http_proxy_routing.rs#memory_cache_reuses_get_and_head_responses",
+        "crates/oxiroute-server/tests/http_proxy_routing.rs#cache_collapses_concurrent_misses_into_one_origin_request",
+        "crates/oxiroute-server/tests/http_proxy_routing.rs#memory_cache_revalidates_expired_responses_with_origin_validators",
+        "crates/oxiroute-server/tests/http_proxy_routing.rs#cache_policy_does_not_change_uncached_routes",
+        "crates/oxiroute-server/tests/http_proxy_routing.rs#no_store_origin_responses_are_not_admitted",
+        "crates/oxiroute-server/tests/http_proxy_routing.rs#set_cookie_origin_responses_are_not_admitted",
+        "crates/oxiroute-server/tests/http_proxy_routing.rs#failed_cache_fills_do_not_poison_later_requests",
+        "crates/oxiroute-server/tests/http_proxy_routing.rs#chunked_responses_are_forwarded_without_cache_admission"
+      ]
+    },
+    {
       "id": "evidence.forward-proxy",
       "tests": [
         "crates/oxiroute-forward-proxy/tests/h1_wire.rs#h1_absolute_form_crosses_a_real_http_connection",

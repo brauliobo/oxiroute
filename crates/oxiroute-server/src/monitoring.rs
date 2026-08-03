@@ -276,6 +276,40 @@ pub struct HttpOperationSnapshot {
     pub latency: LatencySnapshot,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CacheEvent {
+    Hit,
+    Miss,
+    Admission,
+    Eviction,
+}
+
+impl CacheEvent {
+    const ALL: [Self; 4] = [Self::Hit, Self::Miss, Self::Admission, Self::Eviction];
+
+    const fn index(self) -> usize {
+        match self {
+            Self::Hit => 0,
+            Self::Miss => 1,
+            Self::Admission => 2,
+            Self::Eviction => 3,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheSnapshot {
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub hits: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub misses: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub admissions: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub evictions: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TcpRelayCountSnapshot {
@@ -1104,6 +1138,10 @@ impl ListenerMetrics {
         self.state.shared.record_http_operation(result, duration)
     }
 
+    pub(crate) fn record_cache_event(&self, event: CacheEvent) -> Result<(), MetricsError> {
+        self.state.shared.record_cache_event(event)
+    }
+
     /// Records one terminal TCP relay and its latency sample.
     ///
     /// # Errors
@@ -1302,6 +1340,7 @@ struct OperationMetricsState {
     tcp_latency_buckets: [AtomicU64; LATENCY_BUCKET_COUNT],
     tcp_latency_count: AtomicU64,
     tcp_latency_sum_ms: AtomicU64,
+    cache_events: [AtomicU64; 4],
 }
 
 impl OperationMetricsState {
@@ -1315,6 +1354,7 @@ impl OperationMetricsState {
             tcp_latency_buckets: std::array::from_fn(|_| AtomicU64::new(0)),
             tcp_latency_count: AtomicU64::new(0),
             tcp_latency_sum_ms: AtomicU64::new(0),
+            cache_events: std::array::from_fn(|_| AtomicU64::new(0)),
         }
     }
 
@@ -1365,6 +1405,24 @@ impl OperationMetricsState {
                 .collect(),
             latency,
         })
+    }
+
+    fn record_cache_event(&self, event: CacheEvent) -> Result<(), MetricsError> {
+        checked_atomic_add(&self.cache_events[event.index()], 1, "http.cache")
+    }
+
+    fn cache_snapshot(&self) -> Option<CacheSnapshot> {
+        let values =
+            CacheEvent::ALL.map(|event| self.cache_events[event.index()].load(Ordering::Relaxed));
+        values
+            .iter()
+            .any(|value| *value > 0)
+            .then_some(CacheSnapshot {
+                hits: values[0],
+                misses: values[1],
+                admissions: values[2],
+                evictions: values[3],
+            })
     }
 
     fn tcp_snapshot(&self) -> Option<TcpRelaySnapshot> {
@@ -1433,6 +1491,7 @@ impl ListenerMetricsState {
             bytes_sent: self.shared.bytes_sent.load(Ordering::Relaxed),
             http_operations: self.shared.operations.http_snapshot(),
             tcp_relays: self.shared.operations.tcp_snapshot(),
+            cache: self.shared.operations.cache_snapshot(),
         }
     }
 }
@@ -1465,6 +1524,10 @@ impl SharedListenerMetricsState {
         duration: Duration,
     ) -> Result<(), MetricsError> {
         self.operations.record_http_operation(result, duration)
+    }
+
+    fn record_cache_event(&self, event: CacheEvent) -> Result<(), MetricsError> {
+        self.operations.record_cache_event(event)
     }
 
     fn record_tcp_relay(
@@ -1658,6 +1721,7 @@ pub struct ListenerSnapshot {
     pub bytes_sent: u64,
     pub http_operations: Option<HttpOperationSnapshot>,
     pub tcp_relays: Option<TcpRelaySnapshot>,
+    pub cache: Option<CacheSnapshot>,
 }
 
 fn validate_listener_field(field: &'static str, value: &str) -> Result<(), MetricsError> {

@@ -18,14 +18,15 @@ use std::{
 };
 
 use oxiroute_config::{
-    AccessLogPolicy, Config, DnsResolutionPolicy, DownstreamTimeoutPolicy, HealthCheck,
-    HealthCheckType, HttpAccessPolicy, HttpCookieAttributePolicy, HttpCookiePathRewrite,
-    HttpGzipMinimumVersion, HttpGzipPolicy, HttpLiteralHeader, HttpMimeType, HttpPathSelector,
-    HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
-    HttpResponseHeaderMutation, HttpRetryTarget, HttpRetryTrigger, HttpRoute, HttpRouteAction,
-    HttpSameSite, HttpService, HttpStaticErrorResponse, HttpStaticMimePolicy,
-    HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost, HttpVersionPolicy, Listener,
-    Protocol, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, UpstreamServer,
+    AccessLogPolicy, CacheKeyComponent, CacheStore, Config, DnsResolutionPolicy,
+    DownstreamTimeoutPolicy, HealthCheck, HealthCheckType, HttpAccessPolicy,
+    HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpGzipMinimumVersion, HttpGzipPolicy,
+    HttpLiteralHeader, HttpMimeType, HttpPathSelector, HttpProxyPolicy, HttpRedirectLocation,
+    HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpResponseHeaderMutation, HttpRetryTarget,
+    HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpSameSite, HttpService,
+    HttpStaticErrorResponse, HttpStaticMimePolicy, HttpStaticPathMapping, HttpStaticTryFile,
+    HttpUpstreamHost, HttpVersionPolicy, Listener, Protocol, UpstreamAlgorithm, UpstreamEndpoint,
+    UpstreamPool, UpstreamServer,
 };
 use oxiroute_server::{
     HttpDownstreamPolicyApp, HttpReverseProxy, MAX_HTTP_ATTEMPTS, MonitoredHttpApp, RoundRobinPool,
@@ -110,6 +111,359 @@ async fn selects_routes_by_host_path_and_method_over_real_http_connections() {
     })
     .await
     .expect("route selection test timed out");
+}
+
+#[tokio::test]
+async fn memory_cache_reuses_get_and_head_responses() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = Origin::start("cached", 1).await;
+        let proxy = ProxyHarness::start_with_memory_cache(
+            vec![pool("origin", &[origin.address])],
+            vec![cached_route(None, "/", "origin")],
+            3,
+        )
+        .await;
+
+        let first = proxy
+            .request("GET /item?variant=one HTTP/1.1\r\nHost: cache.test\r\n")
+            .await;
+        let second = proxy
+            .request("GET /item?variant=one HTTP/1.1\r\nHost: cache.test\r\n")
+            .await;
+        let head = proxy
+            .request("HEAD /item?variant=one HTTP/1.1\r\nHost: cache.test\r\n")
+            .await;
+
+        assert_origin_response(&first, "cached");
+        assert_origin_response(&second, "cached");
+        assert_eq!(head.status, 200, "response: {}", head.text());
+        assert!(head.body.is_empty());
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 1);
+
+        let cache = proxy
+            .metrics
+            .snapshot()
+            .expect("cache metrics snapshot")
+            .listeners[0]
+            .cache
+            .clone()
+            .expect("cache metrics");
+        assert_eq!(cache.hits, 2);
+        assert_eq!(cache.misses, 1);
+        assert_eq!(cache.admissions, 1);
+
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("memory cache reuse test timed out");
+}
+
+#[tokio::test]
+async fn cache_collapses_concurrent_misses_into_one_origin_request() {
+    timeout(TEST_TIMEOUT, async {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("blocked origin bind");
+        let address = listener.local_addr().expect("blocked origin address");
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let accepted_by_task = Arc::clone(&accepted);
+        let (started_tx, mut started_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let origin = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("blocked origin accept");
+            accepted_by_task.fetch_add(1, Ordering::SeqCst);
+            read_request_head(&mut stream)
+                .await
+                .expect("blocked origin request");
+            started_tx.send(()).expect("blocked origin started");
+            release_rx.await.expect("blocked origin release");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\ncached",
+                )
+                .await
+                .expect("blocked origin response");
+        });
+        let proxy = ProxyHarness::start_with_memory_cache(
+            vec![pool("origin", &[address])],
+            vec![cached_route(None, "/", "origin")],
+            2,
+        )
+        .await;
+
+        let (first_response, second_response) = {
+            let first = proxy.request("GET /shared HTTP/1.1\r\nHost: cache.test\r\n");
+            tokio::pin!(first);
+            tokio::select! {
+                _ = &mut started_rx => {}
+                response = &mut first => panic!(
+                    "leader completed before reaching origin: {}",
+                    response.text()
+                ),
+            }
+            let second = proxy.request("GET /shared HTTP/1.1\r\nHost: cache.test\r\n");
+            tokio::pin!(second);
+            tokio::select! {
+                () = sleep(Duration::from_millis(25)) => {}
+                response = &mut second => panic!(
+                    "follower completed before leader release: {}",
+                    response.text()
+                ),
+            }
+            release_tx.send(()).expect("release blocked origin");
+            tokio::join!(&mut first, &mut second)
+        };
+
+        assert_origin_response(&first_response, "cached");
+        assert_origin_response(&second_response, "cached");
+        assert_eq!(accepted.load(Ordering::SeqCst), 1);
+
+        proxy.finish().await;
+        origin.await.expect("blocked origin task");
+    })
+    .await
+    .expect("collapsed forwarding test timed out");
+}
+
+#[tokio::test]
+async fn memory_cache_revalidates_expired_responses_with_origin_validators() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = RevalidatingOrigin::start("fresh").await;
+        let proxy = ProxyHarness::start_with_memory_cache(
+            vec![pool("origin", &[origin.address])],
+            vec![cached_route(None, "/", "origin")],
+            2,
+        )
+        .await;
+
+        let first = proxy
+            .request("GET /fresh HTTP/1.1\r\nHost: cache.test\r\n")
+            .await;
+        let second = proxy
+            .request("GET /fresh HTTP/1.1\r\nHost: cache.test\r\n")
+            .await;
+
+        assert_origin_response(&first, "fresh");
+        assert_origin_response(&second, "fresh");
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 2);
+        assert_eq!(origin.conditional_requests.load(Ordering::SeqCst), 1);
+
+        let cache = proxy
+            .metrics
+            .snapshot()
+            .expect("cache metrics snapshot")
+            .listeners[0]
+            .cache
+            .clone()
+            .expect("cache metrics");
+        assert_eq!(cache.hits, 1);
+        assert_eq!(cache.misses, 2);
+        assert_eq!(cache.admissions, 2);
+
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("cache freshness test timed out");
+}
+
+#[tokio::test]
+async fn cache_policy_does_not_change_uncached_routes() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = Origin::start("uncached", 2).await;
+        let proxy = ProxyHarness::start_with_memory_cache(
+            vec![pool("origin", &[origin.address])],
+            vec![route(None, "/", &[], "origin")],
+            2,
+        )
+        .await;
+
+        assert_origin_response(
+            &proxy
+                .request("GET /uncached HTTP/1.1\r\nHost: cache.test\r\n")
+                .await,
+            "uncached",
+        );
+        assert_origin_response(
+            &proxy
+                .request("GET /uncached HTTP/1.1\r\nHost: cache.test\r\n")
+                .await,
+            "uncached",
+        );
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 2);
+        assert!(
+            proxy
+                .metrics
+                .snapshot()
+                .expect("cache metrics snapshot")
+                .listeners[0]
+                .cache
+                .is_none()
+        );
+
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("uncached route test timed out");
+}
+
+#[tokio::test]
+async fn no_store_origin_responses_are_not_admitted() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = Origin::start_with_cache_control("no-store", 2, Some("no-store")).await;
+        let proxy = ProxyHarness::start_with_memory_cache(
+            vec![pool("origin", &[origin.address])],
+            vec![cached_route(None, "/", "origin")],
+            2,
+        )
+        .await;
+
+        for _ in 0..2 {
+            assert_origin_response(
+                &proxy
+                    .request("GET /no-store HTTP/1.1\r\nHost: cache.test\r\n")
+                    .await,
+                "no-store",
+            );
+        }
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 2);
+        let cache = proxy
+            .metrics
+            .snapshot()
+            .expect("cache metrics snapshot")
+            .listeners[0]
+            .cache
+            .clone()
+            .expect("cache metrics");
+        assert_eq!(cache.admissions, 0);
+
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("no-store cache test timed out");
+}
+
+#[tokio::test]
+async fn set_cookie_origin_responses_are_not_admitted() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = Origin::start_with_set_cookie("cookie", 2).await;
+        let proxy = ProxyHarness::start_with_memory_cache(
+            vec![pool("origin", &[origin.address])],
+            vec![cached_route(None, "/", "origin")],
+            2,
+        )
+        .await;
+
+        for _ in 0..2 {
+            assert_origin_response(
+                &proxy
+                    .request("GET /cookie HTTP/1.1\r\nHost: cache.test\r\n")
+                    .await,
+                "cookie",
+            );
+        }
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 2);
+        let cache = proxy
+            .metrics
+            .snapshot()
+            .expect("cache metrics snapshot")
+            .listeners[0]
+            .cache
+            .clone()
+            .expect("cache metrics");
+        assert_eq!(cache.admissions, 0);
+
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("set-cookie cache test timed out");
+}
+
+#[tokio::test]
+async fn failed_cache_fills_do_not_poison_later_requests() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = Origin::start_fail_once("recovered").await;
+        let proxy = ProxyHarness::start_with_memory_cache(
+            vec![pool("origin", &[origin.address])],
+            vec![cached_route(None, "/", "origin")],
+            3,
+        )
+        .await;
+
+        let failed = proxy
+            .request("GET /recovered HTTP/1.1\r\nHost: cache.test\r\n")
+            .await;
+        assert_eq!(failed.status, 502, "response: {}", failed.text());
+        assert_origin_response(
+            &proxy
+                .request("GET /recovered HTTP/1.1\r\nHost: cache.test\r\n")
+                .await,
+            "recovered",
+        );
+        assert_origin_response(
+            &proxy
+                .request("GET /recovered HTTP/1.1\r\nHost: cache.test\r\n")
+                .await,
+            "recovered",
+        );
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 2);
+
+        let cache = proxy
+            .metrics
+            .snapshot()
+            .expect("cache metrics snapshot")
+            .listeners[0]
+            .cache
+            .clone()
+            .expect("cache metrics");
+        assert_eq!(cache.admissions, 1);
+        assert_eq!(cache.hits, 1);
+
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("failed cache fill test timed out");
+}
+
+#[tokio::test]
+async fn chunked_responses_are_forwarded_without_cache_admission() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = Origin::start_chunked("streaming", 2).await;
+        let proxy = ProxyHarness::start_with_memory_cache(
+            vec![pool("origin", &[origin.address])],
+            vec![cached_route(None, "/", "origin")],
+            2,
+        )
+        .await;
+
+        for _ in 0..2 {
+            let response = proxy
+                .request("GET /stream HTTP/1.1\r\nHost: cache.test\r\n")
+                .await;
+            assert_eq!(response.status, 200, "response: {}", response.text());
+            assert_eq!(response.body(), b"streaming");
+        }
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 2);
+        let cache = proxy
+            .metrics
+            .snapshot()
+            .expect("cache metrics snapshot")
+            .listeners[0]
+            .cache
+            .clone()
+            .expect("cache metrics");
+        assert_eq!(cache.admissions, 0);
+
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("streaming cache test timed out");
 }
 
 #[tokio::test]
@@ -3763,6 +4117,27 @@ impl ProxyHarness {
         .await
     }
 
+    async fn start_with_memory_cache(
+        upstream_pools: Vec<UpstreamPool>,
+        routes: Vec<HttpRoute>,
+        expected_connections: usize,
+    ) -> Self {
+        Self::start_with_features_and_cache(
+            upstream_pools,
+            routes,
+            Some(1024),
+            100,
+            0,
+            false,
+            expected_connections,
+            None,
+            None,
+            DownstreamTimeoutPolicy::default(),
+            vec![memory_cache_store("memory")],
+        )
+        .await
+    }
+
     async fn start_with_limit(
         upstream_pools: Vec<UpstreamPool>,
         routes: Vec<HttpRoute>,
@@ -3864,6 +4239,38 @@ impl ProxyHarness {
     )]
     async fn start_with_features(
         upstream_pools: Vec<UpstreamPool>,
+        routes: Vec<HttpRoute>,
+        max_request_body_bytes: Option<u64>,
+        max_connections: u64,
+        max_retries: u8,
+        run_health_checks: bool,
+        expected_connections: usize,
+        gzip: Option<HttpGzipPolicy>,
+        access_log: Option<AccessLogPolicy>,
+        downstream_timeouts: DownstreamTimeoutPolicy,
+    ) -> Self {
+        Self::start_with_features_and_cache(
+            upstream_pools,
+            routes,
+            max_request_body_bytes,
+            max_connections,
+            max_retries,
+            run_health_checks,
+            expected_connections,
+            gzip,
+            access_log,
+            downstream_timeouts,
+            Vec::new(),
+        )
+        .await
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "wire harness exposes canonical service policy"
+    )]
+    async fn start_with_features_and_cache(
+        upstream_pools: Vec<UpstreamPool>,
         mut routes: Vec<HttpRoute>,
         max_request_body_bytes: Option<u64>,
         max_connections: u64,
@@ -3873,6 +4280,7 @@ impl ProxyHarness {
         gzip: Option<HttpGzipPolicy>,
         access_log: Option<AccessLogPolicy>,
         downstream_timeouts: DownstreamTimeoutPolicy,
+        cache_stores: Vec<CacheStore>,
     ) -> Self {
         for route in &mut routes {
             if let HttpRouteAction::Proxy { policy, .. } = &mut route.action {
@@ -3900,6 +4308,7 @@ impl ProxyHarness {
                 gzip,
                 access_log,
             }],
+            cache_stores,
             ..empty_config()
         };
         let plan = runtime_plan(&config).expect("canonical HTTP service plan");
@@ -4061,6 +4470,48 @@ struct Origin {
 
 impl Origin {
     async fn start(name: &'static str, expected_requests: usize) -> Self {
+        Self::start_with_cache_control(name, expected_requests, None).await
+    }
+
+    async fn start_with_cache_control(
+        name: &'static str,
+        expected_requests: usize,
+        cache_control: Option<&'static str>,
+    ) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
+        let address = listener.local_addr().expect("origin address");
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let accepted_by_task = Arc::clone(&accepted);
+        let task = tokio::spawn(async move {
+            for _ in 0..expected_requests {
+                let (mut stream, _) = listener.accept().await.expect("origin accept");
+                accepted_by_task.fetch_add(1, Ordering::SeqCst);
+                read_request_head(&mut stream)
+                    .await
+                    .expect("origin request");
+                let cache_header = cache_control
+                    .map(|value| format!("Cache-Control: {value}\r\n"))
+                    .unwrap_or_default();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n{cache_header}Connection: close\r\n\r\n{name}",
+                    name.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("origin response");
+                stream.shutdown().await.expect("origin shutdown");
+            }
+        });
+
+        Self {
+            address,
+            accepted,
+            task: Some(task),
+        }
+    }
+
+    async fn start_with_set_cookie(name: &'static str, expected_requests: usize) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
         let address = listener.local_addr().expect("origin address");
         let accepted = Arc::new(AtomicUsize::new(0));
@@ -4073,8 +4524,78 @@ impl Origin {
                     .await
                     .expect("origin request");
                 let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nCache-Control: max-age=60\r\nSet-Cookie: session=secret\r\nConnection: close\r\n\r\n{name}",
+                    name.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("origin response");
+                stream.shutdown().await.expect("origin shutdown");
+            }
+        });
+
+        Self {
+            address,
+            accepted,
+            task: Some(task),
+        }
+    }
+
+    async fn start_fail_once(name: &'static str) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
+        let address = listener.local_addr().expect("origin address");
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let accepted_by_task = Arc::clone(&accepted);
+        let task = tokio::spawn(async move {
+            for attempt in 0..2 {
+                let (mut stream, _) = listener.accept().await.expect("origin accept");
+                accepted_by_task.fetch_add(1, Ordering::SeqCst);
+                read_request_head(&mut stream)
+                    .await
+                    .expect("origin request");
+                if attempt == 0 {
+                    continue;
+                }
+                let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{name}",
                     name.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("origin response");
+                stream.shutdown().await.expect("origin shutdown");
+            }
+        });
+
+        Self {
+            address,
+            accepted,
+            task: Some(task),
+        }
+    }
+
+    async fn start_chunked(name: &'static str, expected_requests: usize) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
+        let address = listener.local_addr().expect("origin address");
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let accepted_by_task = Arc::clone(&accepted);
+        let task = tokio::spawn(async move {
+            for _ in 0..expected_requests {
+                let (mut stream, _) = listener.accept().await.expect("origin accept");
+                accepted_by_task.fetch_add(1, Ordering::SeqCst);
+                read_request_head(&mut stream)
+                    .await
+                    .expect("origin request");
+                let first = &name.as_bytes()[..name.len().min(6)];
+                let second = &name.as_bytes()[name.len().min(6)..];
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nCache-Control: max-age=60\r\nConnection: close\r\n\r\n{:x}\r\n{}\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+                    first.len(),
+                    String::from_utf8_lossy(first),
+                    second.len(),
+                    String::from_utf8_lossy(second),
                 );
                 stream
                     .write_all(response.as_bytes())
@@ -4181,6 +4702,75 @@ impl Origin {
 }
 
 impl Drop for Origin {
+    fn drop(&mut self) {
+        if let Some(task) = &self.task {
+            task.abort();
+        }
+    }
+}
+
+struct RevalidatingOrigin {
+    address: SocketAddr,
+    accepted: Arc<AtomicUsize>,
+    conditional_requests: Arc<AtomicUsize>,
+    task: Option<JoinHandle<()>>,
+}
+
+impl RevalidatingOrigin {
+    async fn start(name: &'static str) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
+        let address = listener.local_addr().expect("origin address");
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let accepted_by_task = Arc::clone(&accepted);
+        let conditional_requests = Arc::new(AtomicUsize::new(0));
+        let conditional_by_task = Arc::clone(&conditional_requests);
+        let task = tokio::spawn(async move {
+            for request_number in 0..2 {
+                let (mut stream, _) = listener.accept().await.expect("origin accept");
+                accepted_by_task.fetch_add(1, Ordering::SeqCst);
+                let request = read_request_head_bytes(&mut stream)
+                    .await
+                    .expect("origin request");
+                let conditional = request
+                    .windows(b"If-None-Match: \"v1\"".len())
+                    .any(|window| window.eq_ignore_ascii_case(b"If-None-Match: \"v1\""));
+                if conditional {
+                    conditional_by_task.fetch_add(1, Ordering::SeqCst);
+                }
+                let response = if request_number == 1 && conditional {
+                    "HTTP/1.1 304 Not Modified\r\nETag: \"v1\"\r\nCache-Control: max-age=0\r\nConnection: close\r\n\r\n".to_owned()
+                } else {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nETag: \"v1\"\r\nCache-Control: max-age=0\r\nConnection: close\r\n\r\n{name}",
+                        name.len()
+                    )
+                };
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("origin response");
+                stream.shutdown().await.expect("origin shutdown");
+            }
+        });
+
+        Self {
+            address,
+            accepted,
+            conditional_requests,
+            task: Some(task),
+        }
+    }
+
+    async fn finish(mut self) {
+        self.task
+            .take()
+            .expect("origin task")
+            .await
+            .expect("origin task completed");
+    }
+}
+
+impl Drop for RevalidatingOrigin {
     fn drop(&mut self) {
         if let Some(task) = &self.task {
             task.abort();
@@ -4311,6 +4901,54 @@ fn endpoint_pool(
         server_timeout_ms: None,
         connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
     }
+}
+
+fn memory_cache_store(name: &str) -> CacheStore {
+    CacheStore::Memory {
+        name: name.into(),
+        max_bytes: 1024 * 1024,
+        max_entries: 128,
+        max_object_bytes: 64 * 1024,
+        max_header_bytes: 8 * 1024,
+        max_key_bytes: 4 * 1024,
+        max_tag_bytes: 256,
+        max_tags_per_object: 64,
+        max_in_flight_fills: 16,
+        max_followers_per_fill: 16,
+    }
+}
+
+fn cached_route(host: Option<&str>, path: &str, pool: &str) -> HttpRoute {
+    let mut route = route(host, path, &["GET", "HEAD"], pool);
+    let HttpRouteAction::Proxy { policy, .. } = &mut route.action else {
+        unreachable!("cached route is a proxy route");
+    };
+    policy.cache = Some(Box::new(oxiroute_config::HttpCachePolicy {
+        store: "memory".into(),
+        methods: vec!["GET".into(), "HEAD".into()],
+        key_components: vec![
+            CacheKeyComponent::Scheme,
+            CacheKeyComponent::NormalizedHost,
+            CacheKeyComponent::PathAndQuery,
+        ],
+        use_origin_cache_control: true,
+        default_ttl_ms: 60_000,
+        status_ttls: Vec::new(),
+        grace_ms: 30_000,
+        keep_ms: 300_000,
+        revalidate: true,
+        collapsed_forwarding: true,
+        stale_on: Vec::new(),
+        bypass_request: Vec::new(),
+        no_store_request: Vec::new(),
+        no_store_response: Vec::new(),
+        set_cookie_policy: oxiroute_config::CacheSetCookiePolicy::default(),
+        authorization_policy: oxiroute_config::CacheAuthorizationPolicy::default(),
+        vary_policy: oxiroute_config::CacheVaryPolicy::default(),
+        surrogate_tags: None,
+        purge_authorization: None,
+    }));
+    route
 }
 
 fn route(host: Option<&str>, path: &str, methods: &[&str], pool: &str) -> HttpRoute {

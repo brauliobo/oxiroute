@@ -37,6 +37,7 @@ pub use http_server_app::{HttpDownstreamPolicyApp, HttpListenerApp, MonitoredHtt
 pub use l4_service::L4ServicePlan;
 pub use listener_reservation::{ListenerReservation, ListenerReservations};
 pub use monitoring::{
+    CacheSnapshot,
     CertbotCertificateSnapshot, CertbotWatcherHealth, CertbotWatcherSnapshot, ConnectionGuard,
     DirectFileCertificateSnapshot, DirectFileWatcherSnapshot, HostSnapshot,
     HttpOperationCountSnapshot, HttpOperationResult, HttpOperationSnapshot, LatencyBucketSnapshot,

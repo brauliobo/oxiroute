@@ -7,15 +7,20 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use http::{
-    HeaderName, HeaderValue, Method,
+    HeaderMap, HeaderName, HeaderValue, Method, StatusCode,
     header::{
         ACCEPT_RANGES, ALLOW, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE,
         CONTENT_TYPE, ETAG, HOST, IF_MATCH, IF_MODIFIED_SINCE, IF_NONE_MATCH, IF_RANGE,
-        IF_UNMODIFIED_SINCE, LAST_MODIFIED, LOCATION, RANGE, SET_COOKIE, WWW_AUTHENTICATE,
+        IF_UNMODIFIED_SINCE, LAST_MODIFIED, LOCATION, RANGE, SET_COOKIE, TRAILER,
+        TRANSFER_ENCODING, WWW_AUTHENTICATE,
     },
     uri::Authority,
 };
 use log::warn;
+use oxiroute_cache::{
+    CacheControl, CacheError, CacheKey, CacheResponse, CachedResponse, FillGuard, FillJoin,
+    FillOutcome, Lookup, RequestKeyInput, ResponseTiming, StoreOutcome, Validators,
+};
 use oxiroute_config::{
     HttpGzipMinimumVersion, HttpRedirectLocation, HttpRetryTarget, HttpRetryTrigger, HttpSameSite,
     HttpUpstreamHost, is_unambiguous_http_path,
@@ -25,7 +30,7 @@ use pingora::{
     modules::http::{HttpModule, HttpModuleBuilder, HttpModules, Module},
     protocols::Digest,
     protocols::http::compression::{Algorithm, ResponseCompressionCtx},
-    proxy::{PreparedUpstreamRequest, ProxyHttp, Session},
+    proxy::{FailToProxy, PreparedUpstreamRequest, ProxyHttp, Session},
     upstreams::peer::HttpPeer,
 };
 
@@ -33,10 +38,11 @@ use crate::{
     GenerationReference, HttpOperationResult, HttpServicePlan, ListenerMetrics, RuntimeEndpoint,
     RuntimeGeneration, RuntimeReferenceKind,
     http_action::{
-        HttpActionPlan, HttpGzipPlan, HttpRoutePlan, ProxyPolicyPlan, RequestHeaderMutationPlan,
-        RequestHeaderValuePlan, ResponseHeaderMutationPlan, StaticErrorTarget, StaticFile,
-        StaticServeError, StaticTarget,
+        HttpActionPlan, HttpCachePlan, HttpGzipPlan, HttpRoutePlan, ProxyPolicyPlan,
+        RequestHeaderMutationPlan, RequestHeaderValuePlan, ResponseHeaderMutationPlan,
+        StaticErrorTarget, StaticFile, StaticServeError, StaticTarget,
     },
+    monitoring::CacheEvent,
     upstream_peer::{
         SelectedEndpoint, UpstreamPlan, enforce_http_version, validate_tls_connection,
     },
@@ -66,6 +72,10 @@ impl HttpReverseProxy {
     }
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "retry and cache state are independent protocol decisions"
+)]
 pub struct HttpRequestContext {
     listener: ListenerMetrics,
     observed_received: u64,
@@ -85,6 +95,63 @@ pub struct HttpRequestContext {
     started_at: Instant,
     operation_result: Option<HttpOperationResult>,
     websocket_reference: Option<GenerationReference>,
+    cache_plan: Option<Arc<HttpCachePlan>>,
+    cache_request: Option<CacheRequestKey>,
+    cache_fill: Option<FillGuard>,
+    cache_revalidation: Option<CacheRevalidation>,
+    cache_capture: Option<CacheCapture>,
+    cache_response_handled: bool,
+}
+
+struct CacheRequestKey {
+    method: Method,
+    scheme: &'static str,
+    authority: String,
+    path: String,
+    query: Option<String>,
+    headers: HeaderMap,
+    request_started: oxiroute_cache::MonoTime,
+}
+
+impl CacheRequestKey {
+    fn input(&self) -> RequestKeyInput<'_> {
+        RequestKeyInput {
+            method: &self.method,
+            scheme: self.scheme,
+            authority: &self.authority,
+            path: &self.path,
+            query: self.query.as_deref(),
+            headers: &self.headers,
+        }
+    }
+
+    fn representation_input(&self) -> RequestKeyInput<'_> {
+        RequestKeyInput {
+            method: &Method::GET,
+            scheme: self.scheme,
+            authority: &self.authority,
+            path: &self.path,
+            query: self.query.as_deref(),
+            headers: &self.headers,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct CacheRevalidation {
+    key: CacheKey,
+    response: CachedResponse,
+    validators: Validators,
+    stale_if_error: bool,
+}
+
+struct CacheCapture {
+    status: StatusCode,
+    headers: HeaderMap,
+    body: Vec<u8>,
+    timing: ResponseTiming,
+    complete: bool,
+    admissible: bool,
 }
 
 impl HttpRequestContext {
@@ -140,6 +207,12 @@ impl ProxyHttp for HttpReverseProxy {
             started_at: Instant::now(),
             operation_result: None,
             websocket_reference: None,
+            cache_plan: None,
+            cache_request: None,
+            cache_fill: None,
+            cache_revalidation: None,
+            cache_capture: None,
+            cache_response_handled: false,
         }
     }
 
@@ -213,6 +286,21 @@ impl ProxyHttp for HttpReverseProxy {
         if !bounded_request_header_sources(session, &route) {
             session.respond_error(431).await?;
             return Ok(true);
+        }
+        if let Some(proxy) = match &route.action {
+            HttpActionPlan::Proxy(proxy) => Some(proxy),
+            HttpActionPlan::Fixed(_) | HttpActionPlan::Redirect(_) | HttpActionPlan::Static(_) => {
+                None
+            }
+        } {
+            if let Some(cache) = &proxy.policy.cache {
+                if cache.allows_method(&method)
+                    && !upgrade
+                    && cache_request_filter(session, ctx, Arc::clone(cache), &method, &uri).await?
+                {
+                    return Ok(true);
+                }
+            }
         }
         execute_route_action(&self.service, session, ctx, route, &method, uri).await
     }
@@ -340,6 +428,57 @@ impl ProxyHttp for HttpReverseProxy {
         error
     }
 
+    async fn fail_to_proxy(
+        &self,
+        session: &mut Session,
+        error: &Error,
+        ctx: &mut Self::CTX,
+    ) -> FailToProxy {
+        if ctx.cache_response_handled {
+            return FailToProxy {
+                error_code: session
+                    .response_written()
+                    .map_or(0, |response| response.status.as_u16()),
+                can_reuse_downstream: false,
+            };
+        }
+        if error.esource() == &pingora::ErrorSource::Upstream {
+            if let Some(revalidation) = ctx.cache_revalidation.as_ref() {
+                if revalidation.stale_if_error {
+                    let stale = ctx
+                        .cache_plan
+                        .as_ref()
+                        .and_then(|plan| plan.cache.stale_if_error(&revalidation.key));
+                    if let Some(stale) = stale {
+                        if write_cached_response(session, &stale).await.is_ok() {
+                            if let Some(fill) = ctx.cache_fill.take() {
+                                let _ = fill.complete_without_store();
+                            }
+                            ctx.cache_response_handled = true;
+                            record_cache_event(&ctx.listener, CacheEvent::Hit);
+                            return FailToProxy {
+                                error_code: stale.status.as_u16(),
+                                can_reuse_downstream: false,
+                            };
+                        }
+                    }
+                }
+            }
+        }
+        let error_code = match error.etype() {
+            ErrorType::HTTPStatus(code) => *code,
+            _ if error.esource() == &pingora::ErrorSource::Upstream => 502,
+            _ => 500,
+        };
+        if error_code > 0 {
+            let _ = session.respond_error(error_code).await;
+        }
+        FailToProxy {
+            error_code,
+            can_reuse_downstream: false,
+        }
+    }
+
     async fn request_body_filter(
         &self,
         session: &mut Session,
@@ -385,6 +524,20 @@ impl ProxyHttp for HttpReverseProxy {
         if upstream_request.version == http::Version::HTTP_10 {
             upstream_request.set_version(http::Version::HTTP_11);
         }
+        if ctx
+            .cache_request
+            .as_ref()
+            .is_some_and(|request| request.method == Method::HEAD)
+        {
+            upstream_request.method = Method::GET;
+        }
+        if let Some(cache) = ctx.cache_plan.as_ref() {
+            if cache.revalidate {
+                if let Some(revalidation) = ctx.cache_revalidation.as_ref() {
+                    revalidation.validators.apply(&mut upstream_request.headers);
+                }
+            }
+        }
         if let Some(host) = &ctx.selected_upstream_host {
             upstream_request.insert_header(HOST, host.clone())?;
         } else {
@@ -425,7 +578,7 @@ impl ProxyHttp for HttpReverseProxy {
 
     async fn upstream_response_filter(
         &self,
-        _session: &mut Session,
+        session: &mut Session,
         response: &mut pingora::http::ResponseHeader,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<()> {
@@ -435,7 +588,51 @@ impl ProxyHttp for HttpReverseProxy {
         for (name, value) in &ctx.response_header_overrides {
             response.append_header(name.clone(), value.clone())?;
         }
-        apply_response_policy(response, proxy_policy(ctx))
+        apply_response_policy(response, proxy_policy(ctx))?;
+        if let Some(revalidation) = ctx.cache_revalidation.clone() {
+            if response.status == StatusCode::NOT_MODIFIED {
+                return finish_cache_revalidation(session, ctx, revalidation, response).await;
+            }
+            if response.status.is_server_error() && revalidation.stale_if_error {
+                if let Some(stale) = ctx
+                    .cache_plan
+                    .as_ref()
+                    .and_then(|plan| plan.cache.stale_if_error(&revalidation.key))
+                {
+                    return finish_cache_stale_response(session, ctx, stale).await;
+                }
+            }
+        }
+        if let Some(cache_request) = &ctx.cache_request {
+            let status = response.status;
+            if !status.is_informational() && status != StatusCode::SWITCHING_PROTOCOLS {
+                let complete = status == StatusCode::NO_CONTENT
+                    || status == StatusCode::RESET_CONTENT
+                    || response
+                        .headers
+                        .get(CONTENT_LENGTH)
+                        .is_some_and(|value| value.as_bytes() == b"0");
+                ctx.cache_capture = Some(CacheCapture {
+                    status,
+                    headers: cache_response_headers(&response.headers),
+                    body: Vec::new(),
+                    timing: ResponseTiming {
+                        request_started: cache_request.request_started,
+                        response_received: ctx
+                            .cache_plan
+                            .as_ref()
+                            .expect("cache request has a plan")
+                            .cache
+                            .now(),
+                        response_received_wall: SystemTime::now(),
+                    },
+                    complete,
+                    admissible: !response.headers.contains_key(TRANSFER_ENCODING)
+                        && !response.headers.contains_key(TRAILER),
+                });
+            }
+        }
+        Ok(())
     }
 
     async fn connected_to_upstream(
@@ -470,12 +667,53 @@ impl ProxyHttp for HttpReverseProxy {
         Ok(None)
     }
 
+    fn upstream_response_body_filter(
+        &self,
+        session: &mut Session,
+        body: &mut Option<Bytes>,
+        end_of_stream: bool,
+        ctx: &mut Self::CTX,
+    ) -> pingora::Result<Option<Duration>> {
+        if let Some(capture) = ctx.cache_capture.as_mut() {
+            if session.was_upgraded() {
+                capture.admissible = false;
+            }
+            if capture.admissible {
+                if let Some(data) = body.as_ref() {
+                    let limit = ctx
+                        .cache_plan
+                        .as_ref()
+                        .expect("cache capture has a plan")
+                        .cache
+                        .config()
+                        .max_body_bytes;
+                    if capture.body.len().saturating_add(data.len()) > limit {
+                        capture.admissible = false;
+                        capture.body.clear();
+                    } else {
+                        capture.body.extend_from_slice(data);
+                    }
+                }
+            }
+            if end_of_stream {
+                capture.complete = true;
+            }
+        }
+        Ok(None)
+    }
+
     async fn logging(
         &self,
         session: &mut Session,
         error: Option<&pingora::Error>,
         ctx: &mut Self::CTX,
     ) {
+        if error.is_none() {
+            finish_cache_fill(ctx);
+        } else {
+            ctx.cache_capture = None;
+            complete_cache_fill_without_store(ctx);
+        }
         let response_status = session
             .response_written()
             .map(|response| response.status.as_u16());
@@ -487,7 +725,10 @@ impl ProxyHttp for HttpReverseProxy {
             );
         }
         if ctx.operation_result.is_none() {
-            let result = classify_http_result(error, response_status);
+            let result = classify_http_result(
+                (!ctx.cache_response_handled).then_some(error).flatten(),
+                response_status,
+            );
             ctx.operation_result = Some(result);
             if let Err(metric_error) = ctx
                 .listener
@@ -519,6 +760,364 @@ impl ProxyHttp for HttpReverseProxy {
                 warn!("HTTP access log write failed: {error}");
             }
         }
+    }
+}
+
+async fn finish_cache_revalidation(
+    session: &mut Session,
+    ctx: &mut HttpRequestContext,
+    revalidation: CacheRevalidation,
+    response: &pingora::http::ResponseHeader,
+) -> pingora::Result<()> {
+    let plan = ctx
+        .cache_plan
+        .as_ref()
+        .expect("revalidation has a cache plan")
+        .clone();
+    let request = ctx
+        .cache_request
+        .as_ref()
+        .expect("revalidation has a cache request");
+    let timing = ResponseTiming {
+        request_started: request.request_started,
+        response_received: plan.cache.now(),
+        response_received_wall: SystemTime::now(),
+    };
+    let not_modified_headers = cache_response_headers(&response.headers);
+    let stored = plan.cache.prepare_not_modified_with_timeline(
+        request.representation_input(),
+        &revalidation.key,
+        &not_modified_headers,
+        timing,
+        &plan.timeline,
+    );
+    let mut admitted = false;
+    if let Some(fill) = ctx.cache_fill.take() {
+        match stored {
+            Ok(entry) => match fill.store(entry) {
+                Ok(StoreOutcome::Stored { evicted }) => {
+                    admitted = true;
+                    record_cache_event(&ctx.listener, CacheEvent::Admission);
+                    for _ in 0..evicted {
+                        record_cache_event(&ctx.listener, CacheEvent::Eviction);
+                    }
+                }
+                Ok(StoreOutcome::GenerationLost) | Err(_) => {}
+            },
+            Err(_) => {
+                let _ = fill.complete_without_store();
+            }
+        }
+    }
+    let cached = if admitted {
+        match plan.cache.lookup(request.input()) {
+            Ok(Lookup::Hit { response, .. }) => response,
+            _ => revalidation.response,
+        }
+    } else {
+        revalidation.response
+    };
+    finish_cache_response(session, ctx, cached).await
+}
+
+async fn finish_cache_stale_response(
+    session: &mut Session,
+    ctx: &mut HttpRequestContext,
+    response: CachedResponse,
+) -> pingora::Result<()> {
+    if let Some(fill) = ctx.cache_fill.take() {
+        let _ = fill.complete_without_store();
+    }
+    finish_cache_response(session, ctx, response).await
+}
+
+async fn finish_cache_response(
+    session: &mut Session,
+    ctx: &mut HttpRequestContext,
+    response: CachedResponse,
+) -> pingora::Result<()> {
+    ctx.cache_revalidation = None;
+    ctx.cache_capture = None;
+    ctx.cache_response_handled = true;
+    record_cache_event(&ctx.listener, CacheEvent::Hit);
+    write_cached_response(session, &response).await?;
+    Err(Error::new_in(ErrorType::InternalError))
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "cache lookup and collapsed-fill transitions are one request state machine"
+)]
+async fn cache_request_filter(
+    session: &mut Session,
+    ctx: &mut HttpRequestContext,
+    cache: Arc<HttpCachePlan>,
+    method: &Method,
+    uri: &http::Uri,
+) -> pingora::Result<bool> {
+    let Some(authority) = ctx.authority.as_ref() else {
+        return Ok(false);
+    };
+    let headers = session.req_header().headers.clone();
+    let only_if_cached = CacheControl::parse(&headers)
+        .ok()
+        .is_some_and(|control| control.only_if_cached);
+    let scheme = if session
+        .digest()
+        .and_then(|digest| digest.ssl_digest.as_ref())
+        .is_some()
+    {
+        "https"
+    } else {
+        "http"
+    };
+    let request = CacheRequestKey {
+        method: method.clone(),
+        scheme,
+        authority: authority.as_str().to_owned(),
+        path: uri.path().to_owned(),
+        query: uri.query().map(str::to_owned),
+        headers,
+        request_started: cache.cache.now(),
+    };
+    let mut waits = 0;
+    loop {
+        let lookup = match cache.cache.lookup(request.input()) {
+            Ok(lookup) => lookup,
+            Err(error) => {
+                if !matches!(error, CacheError::InvalidRequest(_)) {
+                    warn!("cache lookup bypassed after validation failure: {error}");
+                }
+                return Ok(false);
+            }
+        };
+        match lookup {
+            Lookup::Bypass { .. } => return Ok(false),
+            Lookup::Hit { response, .. } => {
+                record_cache_event(&ctx.listener, CacheEvent::Hit);
+                ctx.cache_response_handled = true;
+                write_cached_response(session, &response).await?;
+                return Ok(true);
+            }
+            Lookup::Miss {
+                only_if_cached: miss_only_if_cached,
+                base,
+                ..
+            } => {
+                record_cache_event(&ctx.listener, CacheEvent::Miss);
+                if only_if_cached || miss_only_if_cached {
+                    session.respond_error(504).await?;
+                    return Ok(true);
+                }
+                match cache.cache.begin_fill(base) {
+                    Ok(FillJoin::Leader(fill)) => {
+                        ctx.cache_plan = Some(Arc::clone(&cache));
+                        ctx.cache_request = Some(request);
+                        ctx.cache_fill = Some(fill);
+                        return Ok(false);
+                    }
+                    Ok(FillJoin::Follower(waiter)) => {
+                        if !wait_for_fill(waiter, &mut waits).await {
+                            return Ok(false);
+                        }
+                    }
+                    Ok(FillJoin::AtCapacity) | Err(_) => return Ok(false),
+                }
+            }
+            Lookup::Revalidate {
+                response,
+                validators,
+                stale_if_error,
+                ..
+            } => {
+                record_cache_event(&ctx.listener, CacheEvent::Miss);
+                if only_if_cached {
+                    session.respond_error(504).await?;
+                    return Ok(true);
+                }
+                let base = response.key.base().clone();
+                match cache.cache.begin_fill(base) {
+                    Ok(FillJoin::Leader(fill)) => {
+                        ctx.cache_plan = Some(Arc::clone(&cache));
+                        ctx.cache_request = Some(request);
+                        ctx.cache_revalidation = Some(CacheRevalidation {
+                            key: response.key.clone(),
+                            response,
+                            validators,
+                            stale_if_error,
+                        });
+                        ctx.cache_fill = Some(fill);
+                        return Ok(false);
+                    }
+                    Ok(FillJoin::Follower(waiter)) => {
+                        if !wait_for_fill(waiter, &mut waits).await {
+                            return Ok(false);
+                        }
+                    }
+                    Ok(FillJoin::AtCapacity) | Err(_) => return Ok(false),
+                }
+            }
+        }
+    }
+}
+
+async fn wait_for_fill(waiter: oxiroute_cache::FillWaiter, waits: &mut usize) -> bool {
+    *waits = waits.saturating_add(1);
+    if *waits > 2 {
+        return false;
+    }
+    match waiter.wait().await {
+        FillOutcome::Stored => true,
+        FillOutcome::NotStored
+        | FillOutcome::Cancelled
+        | FillOutcome::Purged
+        | FillOutcome::Filling => *waits < 2,
+    }
+}
+
+fn finish_cache_fill(ctx: &mut HttpRequestContext) {
+    let Some(capture) = ctx.cache_capture.take() else {
+        complete_cache_fill_without_store(ctx);
+        return;
+    };
+    let Some(fill) = ctx.cache_fill.take() else {
+        return;
+    };
+    let Some(plan) = ctx.cache_plan.as_ref() else {
+        let _ = fill.complete_without_store();
+        return;
+    };
+    let Some(request) = ctx.cache_request.as_ref() else {
+        let _ = fill.complete_without_store();
+        return;
+    };
+    let CacheCapture {
+        status,
+        headers,
+        body,
+        timing,
+        complete,
+        admissible,
+    } = capture;
+    if !complete || !admissible || !response_representation_valid(status, &headers, body.len()) {
+        let _ = fill.complete_without_store();
+        return;
+    }
+    let prepared = plan.cache.prepare_with_timeline(
+        request.representation_input(),
+        CacheResponse {
+            status,
+            headers: &headers,
+            body: Bytes::from(body),
+            timing,
+            tags: &[],
+        },
+        &plan.timeline,
+    );
+    let Ok(entry) = prepared else {
+        let _ = fill.complete_without_store();
+        return;
+    };
+    match fill.store(entry) {
+        Ok(StoreOutcome::Stored { evicted }) => {
+            record_cache_event(&ctx.listener, CacheEvent::Admission);
+            for _ in 0..evicted {
+                record_cache_event(&ctx.listener, CacheEvent::Eviction);
+            }
+        }
+        Ok(StoreOutcome::GenerationLost) | Err(_) => {}
+    }
+}
+
+fn complete_cache_fill_without_store(ctx: &mut HttpRequestContext) {
+    if let Some(fill) = ctx.cache_fill.take() {
+        let _ = fill.complete_without_store();
+    }
+}
+
+fn response_representation_valid(status: StatusCode, headers: &HeaderMap, body_len: usize) -> bool {
+    if status.is_informational()
+        || status == StatusCode::SWITCHING_PROTOCOLS
+        || status == StatusCode::NOT_MODIFIED
+    {
+        return false;
+    }
+    if matches!(status, StatusCode::NO_CONTENT | StatusCode::RESET_CONTENT) && body_len != 0 {
+        return false;
+    }
+    let mut lengths = headers.get_all(CONTENT_LENGTH).iter();
+    let Some(length) = lengths.next() else {
+        return true;
+    };
+    lengths.next().is_none()
+        && length
+            .to_str()
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            == Some(body_len)
+}
+
+fn cache_response_headers(headers: &HeaderMap) -> HeaderMap {
+    let connection_headers = headers
+        .get(CONNECTION)
+        .and_then(|value| value.to_str().ok())
+        .into_iter()
+        .flat_map(|value| value.split(','))
+        .filter_map(|value| HeaderName::from_bytes(value.trim().as_bytes()).ok())
+        .collect::<Vec<_>>();
+    let mut sanitized = headers.clone();
+    for name in [
+        CONNECTION,
+        HeaderName::from_static("keep-alive"),
+        HeaderName::from_static("proxy-authenticate"),
+        HeaderName::from_static("proxy-authorization"),
+        HeaderName::from_static("te"),
+        HeaderName::from_static("trailer"),
+        HeaderName::from_static("transfer-encoding"),
+        HeaderName::from_static("upgrade"),
+    ] {
+        sanitized.remove(name);
+    }
+    for name in connection_headers {
+        sanitized.remove(name);
+    }
+    sanitized
+}
+
+async fn write_cached_response(
+    session: &mut Session,
+    response: &CachedResponse,
+) -> pingora::Result<()> {
+    let body_forbidden = matches!(
+        response.status,
+        StatusCode::NO_CONTENT | StatusCode::RESET_CONTENT | StatusCode::NOT_MODIFIED
+    );
+    let mut header = pingora::http::ResponseHeader::build(
+        response.status,
+        Some(response.headers.len().saturating_add(1)),
+    )?;
+    for (name, value) in &response.headers {
+        header.append_header(name.clone(), value.clone())?;
+    }
+    if body_forbidden {
+        header.remove_header(&CONTENT_LENGTH);
+    } else {
+        header.insert_header(CONTENT_LENGTH, response.body.len().to_string())?;
+    }
+    let head = session.req_header().method == Method::HEAD;
+    let end = head || body_forbidden || response.body.is_empty();
+    session.write_response_header(Box::new(header), end).await?;
+    if !end {
+        session
+            .write_response_body(Some(response.body.clone()), true)
+            .await?;
+    }
+    Ok(())
+}
+
+fn record_cache_event(listener: &ListenerMetrics, event: CacheEvent) {
+    if let Err(error) = listener.record_cache_event(event) {
+        warn!("could not account for cache metrics: {error}");
     }
 }
 
@@ -1466,6 +2065,9 @@ fn apply_request_header_mutations(
 
 fn upstream_request_requires_mutation(session: &Session, ctx: &HttpRequestContext) -> bool {
     let request = session.req_header();
+    if ctx.cache_request.is_some() {
+        return true;
+    }
     if request.version == http::Version::HTTP_10 {
         return true;
     }
