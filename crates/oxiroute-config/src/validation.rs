@@ -17,7 +17,7 @@ use crate::{
         MAX_RTMP_FANOUT_QUEUE_MESSAGES, MAX_RTMP_OUTBOUND_CHUNK_SIZE, MAX_RTMP_PUSH_TARGETS,
         MAX_RTMP_RECORDERS_PER_APPLICATION, MAX_RTMP_RECORDING_ROOTS, MAX_RTMP_SERVICES,
         MAX_RTMP_SUBSCRIBERS, MAX_SAFE_JSON_INTEGER, MAX_TLS_PROFILES, MAX_TOTAL_ENDPOINTS,
-        MAX_TOTAL_RTMP_RECORDERS, MIN_HEALTH_INTERVAL_MS,
+        MAX_TOTAL_RTMP_RECORDERS, MAX_UPSTREAM_WEIGHT, MIN_HEALTH_INTERVAL_MS,
     },
     lexical::{
         authority_has_invalid_port, canonical_ip, is_unambiguous_http_path,
@@ -30,7 +30,8 @@ use crate::{
         AccessLogPolicy, AlpnProtocol, Certificate, CertificateSource, Config, ConfigError,
         DnsResolutionPolicy, ForwardHttpVersion, ForwardProxyService, HealthCheck, HealthCheckType,
         HttpVersion, L4Service, Listener, ListenerBind, Management, Protocol, RtmpRecorder,
-        RtmpService, Stats, StatsPage, TlsProfile, TlsVersion, UpstreamEndpoint, UpstreamPool,
+        RtmpService, Stats, StatsPage, TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamEndpoint,
+        UpstreamPool,
     },
 };
 
@@ -1187,6 +1188,7 @@ fn validate_upstream_pool_definition(
     management_bind: Option<SocketAddr>,
 ) -> Result<(), ConfigError> {
     validate_upstream_servers(pool, management_bind)?;
+    validate_upstream_algorithm(pool)?;
     let has_unix_endpoint = pool
         .servers
         .iter()
@@ -1239,6 +1241,28 @@ fn validate_upstream_pool_definition(
         });
     }
     validate_upstream_pool_timeouts(pool)
+}
+
+fn validate_upstream_algorithm(pool: &UpstreamPool) -> Result<(), ConfigError> {
+    let UpstreamAlgorithm::WeightedRoundRobin { weights } = &pool.algorithm else {
+        return Ok(());
+    };
+    if weights.len() != pool.servers.len() {
+        return Err(ConfigError::InvalidUpstreamWeights {
+            pool: pool.name.clone(),
+            detail: "must contain exactly one weight per server",
+        });
+    }
+    if weights
+        .iter()
+        .any(|weight| !(1..=MAX_UPSTREAM_WEIGHT).contains(weight))
+    {
+        return Err(ConfigError::InvalidUpstreamWeights {
+            pool: pool.name.clone(),
+            detail: "each weight must be between 1 and 100",
+        });
+    }
+    Ok(())
 }
 
 fn validate_upstream_servers(
