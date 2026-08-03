@@ -117,6 +117,32 @@ pub fn render_prometheus(
                 &http.latency,
             )?;
         }
+        if let Some(cache) = &listener.cache {
+            labels(
+                &mut output,
+                "oxiroute_http_cache_hits_total",
+                &[("listener", listener.name.as_str())],
+                cache.hits,
+            )?;
+            labels(
+                &mut output,
+                "oxiroute_http_cache_misses_total",
+                &[("listener", listener.name.as_str())],
+                cache.misses,
+            )?;
+            labels(
+                &mut output,
+                "oxiroute_http_cache_admissions_total",
+                &[("listener", listener.name.as_str())],
+                cache.admissions,
+            )?;
+            labels(
+                &mut output,
+                "oxiroute_http_cache_evictions_total",
+                &[("listener", listener.name.as_str())],
+                cache.evictions,
+            )?;
+        }
         if let Some(tcp) = &listener.tcp_relays {
             for outcome in &tcp.outcomes {
                 labels(

@@ -13,13 +13,13 @@ use std::{
 use http::{Method, Uri, uri::Authority};
 use openssl::x509::X509;
 use oxiroute_config::{
-    AccessLogPolicy, AlpnProtocol, Certificate, CertificateSource, Config, ConfigError,
-    DnsResolutionPolicy, HealthCheck, HealthCheckType, HealthHttpVersion, HttpAccessPolicy,
-    HttpHostSelector, HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction, HttpService,
-    HttpVersionPolicy, L4Service, Listener, ListenerBind, Protocol, RtmpApplication,
-    RtmpPushTarget, RtmpRecorderStart, RtmpService, Stats, StatsPage, StatsPageAdminPolicy,
-    TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, UpstreamServer,
-    UpstreamTls, load_lua,
+    AccessLogPolicy, AlpnProtocol, CacheAuthorizationPolicy, CacheStore, Certificate,
+    CertificateSource, Config, ConfigError, DnsResolutionPolicy, HealthCheck, HealthCheckType,
+    HealthHttpVersion, HttpAccessPolicy, HttpHostSelector, HttpPathSelector, HttpProxyPolicy,
+    HttpRoute, HttpRouteAction, HttpService, HttpVersionPolicy, L4Service, Listener, ListenerBind,
+    Protocol, RtmpApplication, RtmpPushTarget, RtmpRecorderStart, RtmpService, Stats, StatsPage,
+    StatsPageAdminPolicy, TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamEndpoint,
+    UpstreamPool, UpstreamServer, UpstreamTls, load_lua,
 };
 use oxiroute_rtmp::{RtmpCapabilities, RtmpRegistry, StreamKey};
 use oxiroute_server::{
@@ -252,8 +252,58 @@ fn whitebeast_hostrouter_and_phoenix_pool_shapes_compile_with_named_policy() {
 }
 
 #[test]
-fn rejects_an_active_cache_policy_instead_of_silently_ignoring_it() {
-    let config = load_lua(
+fn compiles_an_active_memory_cache_policy() {
+    let config = active_memory_cache_config();
+    runtime_plan(&config).expect("active memory cache runtime");
+}
+
+#[test]
+fn rejects_persistent_cache_storage_at_runtime() {
+    let mut config = active_memory_cache_config();
+    config.cache_stores[0] = CacheStore::Disk {
+        name: "memory".into(),
+        root_directory: PathBuf::from("/var/cache/oxiroute"),
+        max_bytes: 1_048_576,
+        max_files: 128,
+        max_object_bytes: 65_536,
+        max_header_bytes: 8_192,
+        max_key_bytes: 4_096,
+        max_tag_bytes: 256,
+        max_tags_per_object: 64,
+        max_in_flight_fills: 16,
+        max_followers_per_fill: 16,
+    };
+
+    assert!(matches!(
+        runtime_plan(&config),
+        Err(ServicePlanError::CacheRuntimeUnavailable { service, route })
+            if service == "web" && route == 0
+    ));
+}
+
+#[test]
+fn rejects_advanced_authorized_cache_reuse_at_runtime() {
+    let mut config = active_memory_cache_config();
+    let HttpRouteAction::Proxy { policy, .. } = &mut config.http_services[0].routes[0].action
+    else {
+        panic!("active cache route is not a proxy");
+    };
+    policy
+        .cache
+        .as_mut()
+        .expect("cache policy")
+        .authorization_policy = CacheAuthorizationPolicy::Cache;
+
+    assert!(matches!(
+        runtime_plan(&config),
+        Err(ServicePlanError::RuntimePolicyUnavailable {
+            policy: "http_services[].routes[].action.policy.cache.authorization_policy"
+        })
+    ));
+}
+
+fn active_memory_cache_config() -> Config {
+    load_lua(
         r#"
 return {
   version = 1,
@@ -299,20 +349,7 @@ return {
 
 "#,
     )
-    .expect("canonical cache configuration");
-
-    let error = match runtime_plan(&config) {
-        Ok(_) => panic!("inactive cache runtime must fail closed"),
-        Err(error) => error,
-    };
-
-    assert!(matches!(
-        error,
-        ServicePlanError::CacheRuntimeUnavailable {
-            service,
-            route: 0
-        } if service == "web"
-    ));
+    .expect("canonical cache configuration")
 }
 
 #[test]

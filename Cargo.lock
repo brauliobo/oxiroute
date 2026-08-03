@@ -2611,6 +2611,7 @@ dependencies = [
  "log",
  "notify",
  "openssl",
+ "oxiroute-cache",
  "oxiroute-config",
  "oxiroute-config-source",
  "oxiroute-forward-proxy",

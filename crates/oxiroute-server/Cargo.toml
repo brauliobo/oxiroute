@@ -36,6 +36,7 @@ notify.workspace = true
 openssl.workspace = true
 oxiroute-config = { path = "../oxiroute-config" }
 oxiroute-config-source = { path = "../oxiroute-config-source" }
+oxiroute-cache = { path = "../oxiroute-cache" }
 oxiroute-import = { path = "../oxiroute-import" }
 oxiroute-forward-proxy = { path = "../oxiroute-forward-proxy" }
 oxiroute-rtmp = { path = "../oxiroute-rtmp" }

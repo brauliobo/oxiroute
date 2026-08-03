@@ -7,20 +7,25 @@ use std::{
 };
 
 use crate::{
-    CertbotReconciler, ForwardHttp1ServicePlan, HealthBuildError, HealthSupervisor, L4ServicePlan,
-    PoolError, PreparedTls, RelayPolicy, RoundRobinPool, Route, RouteError, RouteTable,
-    RuntimeEndpoint, TlsBuildError, TlsProfilePlan, TopologySnapshot, health,
+    CertbotReconciler, ForwardHttp1ServicePlan, ForwardHttp2ServicePlan, HealthBuildError,
+    HealthSupervisor, L4ServicePlan, PoolError, PreparedTls, RelayPolicy, RoundRobinPool, Route,
+    RouteError, RouteTable, RuntimeEndpoint, TlsBuildError, TlsProfilePlan, TopologySnapshot,
+    health,
     http_action::{
-        AccessLog, FixedResponsePlan, HttpActionPlan, HttpGzipPlan, HttpRoutePlan, ProxyActionPlan,
-        ProxyPolicyPlan, RedirectPlan, RouteAccess, RoutePolicyPlan, StaticFilesPlan,
+        AccessLog, FixedResponsePlan, HttpActionPlan, HttpCachePlan, HttpGzipPlan, HttpRoutePlan,
+        ProxyActionPlan, ProxyPolicyPlan, RedirectPlan, RouteAccess, RoutePolicyPlan,
+        StaticFilesPlan,
     },
     routing::RuntimeServer,
     upstream_peer::UpstreamPlan,
 };
 use http::{Method, Uri, uri::Authority};
+use oxiroute_cache::{Cache, CacheConfig, CacheTimeline};
 use oxiroute_config::{
-    AccessLogPolicy, Config, DnsResolutionPolicy, HttpProxyPolicy, HttpRoute as ConfigHttpRoute,
-    HttpRouteAction, ListenerBind, Protocol, RtmpRecorderStart as ConfigRecorderStart,
+    AccessLogPolicy, CacheAuthorizationPolicy, CacheKeyComponent, CacheSetCookiePolicy, CacheStore,
+    CacheVaryPolicy, Config, DnsResolutionPolicy, HttpCachePolicy, HttpProxyPolicy,
+    HttpRoute as ConfigHttpRoute, HttpRouteAction, ListenerBind, Protocol,
+    RtmpRecorderStart as ConfigRecorderStart,
 };
 use oxiroute_rtmp::{
     LiveHub, LiveHubLimits, RecorderWorkerConfig, RecordingPathPolicy, RecordingSegmentNaming,
@@ -43,6 +48,7 @@ pub struct ServiceSpec {
 #[derive(Clone, Debug)]
 pub enum ServiceKind {
     ForwardHttp1(Arc<ForwardHttp1ServicePlan>),
+    ForwardHttp2(Arc<ForwardHttp2ServicePlan>),
     Http(Arc<HttpServicePlan>),
     Rtmp(Arc<RtmpServicePlan>),
     Tcp(Arc<L4ServicePlan>),
@@ -53,6 +59,7 @@ impl ServiceKind {
     pub const fn protocol(&self) -> &'static str {
         match self {
             Self::ForwardHttp1(_) => "forward_http1",
+            Self::ForwardHttp2(_) => "forward_http2",
             Self::Http(_) => "http",
             Self::Rtmp(_) => "rtmp",
             Self::Tcp(_) => "tcp",
@@ -469,7 +476,10 @@ pub fn runtime_plan(config: &Config) -> Result<RuntimePlan, ServicePlanError> {
         (!pools.health_groups.is_empty()).then(|| HealthSupervisor::new(pools.health_groups));
     let mut active_rtmp_services = services.iter().filter_map(|service| match &service.kind {
         ServiceKind::Rtmp(service) => Some(service.as_ref()),
-        ServiceKind::ForwardHttp1(_) | ServiceKind::Http(_) | ServiceKind::Tcp(_) => None,
+        ServiceKind::ForwardHttp1(_)
+        | ServiceKind::ForwardHttp2(_)
+        | ServiceKind::Http(_)
+        | ServiceKind::Tcp(_) => None,
     });
     let rtmp_capabilities = RtmpCapabilities {
         live_ingest: active_rtmp_services.clone().next().is_some(),
@@ -645,12 +655,20 @@ fn compile_http_services(
     pools: &Arc<HashMap<String, Arc<UpstreamPlan>>>,
 ) -> Result<HashMap<String, Arc<HttpServicePlan>>, ServicePlanError> {
     let mut http_services = HashMap::with_capacity(config.http_services.len());
+    let mut memory_caches = HashMap::new();
     for service in &config.http_services {
         let mut routes = Vec::with_capacity(service.routes.len());
         let mut route_plans = HashMap::with_capacity(service.routes.len());
         for (route_index, route) in service.routes.iter().enumerate() {
-            let (compiled_route, plan) =
-                compile_http_route(&service.name, route_index, route, pools)?;
+            let (compiled_route, plan) = compile_http_route(
+                &service.name,
+                route_index,
+                route,
+                pools,
+                &config.cache_stores,
+                &mut memory_caches,
+                service.gzip.is_some(),
+            )?;
             routes.push(compiled_route);
             route_plans.insert(route_index.to_string(), plan);
         }
@@ -682,6 +700,9 @@ fn compile_http_route(
     route_index: usize,
     route: &ConfigHttpRoute,
     pools: &Arc<HashMap<String, Arc<UpstreamPlan>>>,
+    cache_stores: &[CacheStore],
+    memory_caches: &mut HashMap<String, Arc<Cache>>,
+    has_gzip: bool,
 ) -> Result<(Route, Arc<HttpRoutePlan>), ServicePlanError> {
     let methods = if route.methods.is_empty() {
         None
@@ -715,7 +736,17 @@ fn compile_http_route(
         HttpRouteAction::Proxy {
             upstream_pool,
             policy,
-        } => compile_proxy_action(service, route_index, upstream_pool, policy, pools)?,
+        } => compile_proxy_action(
+            service,
+            route_index,
+            upstream_pool,
+            policy,
+            route.access_policy.is_some(),
+            pools,
+            cache_stores,
+            memory_caches,
+            has_gzip,
+        )?,
         HttpRouteAction::FixedResponse {
             status,
             body,
@@ -808,19 +839,21 @@ fn reject_unimplemented_runtime_policies(config: &Config) -> Result<(), ServiceP
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "proxy compilation carries route errors and shared cache-generation state"
+)]
 fn compile_proxy_action(
     service: &str,
     route: usize,
     upstream_pool: &str,
     policy: &HttpProxyPolicy,
+    has_access_policy: bool,
     pools: &HashMap<String, Arc<UpstreamPlan>>,
+    cache_stores: &[CacheStore],
+    memory_caches: &mut HashMap<String, Arc<Cache>>,
+    has_gzip: bool,
 ) -> Result<HttpActionPlan, ServicePlanError> {
-    if policy.cache.is_some() {
-        return Err(ServicePlanError::CacheRuntimeUnavailable {
-            service: service.into(),
-            route,
-        });
-    }
     let pool = pools
         .get(upstream_pool)
         .ok_or_else(|| ServicePlanError::UnknownHttpPool {
@@ -828,10 +861,188 @@ fn compile_proxy_action(
             route,
             pool: upstream_pool.into(),
         })?;
+    let cache = compile_cache_policy(
+        service,
+        route,
+        policy.cache.as_deref(),
+        has_access_policy,
+        &policy.request_headers,
+        cache_stores,
+        memory_caches,
+        has_gzip,
+    )?;
     Ok(HttpActionPlan::Proxy(ProxyActionPlan {
         pool: Arc::clone(pool),
-        policy: ProxyPolicyPlan::compile(policy),
+        policy: ProxyPolicyPlan::compile_with_cache(policy, cache),
     }))
+}
+
+#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "supported cache policy checks and runtime construction stay fail-closed together"
+)]
+fn compile_cache_policy(
+    service: &str,
+    route: usize,
+    policy: Option<&HttpCachePolicy>,
+    has_access_policy: bool,
+    request_headers: &[oxiroute_config::HttpRequestHeaderMutation],
+    stores: &[CacheStore],
+    memory_caches: &mut HashMap<String, Arc<Cache>>,
+    has_gzip: bool,
+) -> Result<Option<Arc<HttpCachePlan>>, ServicePlanError> {
+    let Some(policy) = policy else {
+        return Ok(None);
+    };
+    let unavailable = |name| ServicePlanError::RuntimePolicyUnavailable { policy: name };
+    if has_access_policy {
+        return Err(unavailable(
+            "http_services[].routes[].access_policy_with_cache",
+        ));
+    }
+    if has_gzip {
+        return Err(unavailable("http_services[].gzip_with_cache"));
+    }
+    if !request_headers.is_empty() {
+        return Err(unavailable(
+            "http_services[].routes[].action.policy.request_headers_with_cache",
+        ));
+    }
+    if policy.key_components.as_slice()
+        != [
+            CacheKeyComponent::Scheme,
+            CacheKeyComponent::NormalizedHost,
+            CacheKeyComponent::PathAndQuery,
+        ]
+    {
+        return Err(unavailable(
+            "http_services[].routes[].action.policy.cache.key_components",
+        ));
+    }
+    if !policy.bypass_request.is_empty() {
+        return Err(unavailable(
+            "http_services[].routes[].action.policy.cache.bypass_request",
+        ));
+    }
+    if !policy.no_store_request.is_empty() {
+        return Err(unavailable(
+            "http_services[].routes[].action.policy.cache.no_store_request",
+        ));
+    }
+    if !policy.no_store_response.is_empty() {
+        return Err(unavailable(
+            "http_services[].routes[].action.policy.cache.no_store_response",
+        ));
+    }
+    if policy.set_cookie_policy != CacheSetCookiePolicy::Bypass {
+        return Err(unavailable(
+            "http_services[].routes[].action.policy.cache.set_cookie_policy",
+        ));
+    }
+    if policy.authorization_policy != CacheAuthorizationPolicy::Bypass {
+        return Err(unavailable(
+            "http_services[].routes[].action.policy.cache.authorization_policy",
+        ));
+    }
+    if policy.vary_policy != CacheVaryPolicy::Respect {
+        return Err(unavailable(
+            "http_services[].routes[].action.policy.cache.vary_policy",
+        ));
+    }
+    if !policy.stale_on.is_empty() {
+        return Err(unavailable(
+            "http_services[].routes[].action.policy.cache.stale_on",
+        ));
+    }
+    if !policy.collapsed_forwarding {
+        return Err(unavailable(
+            "http_services[].routes[].action.policy.cache.collapsed_forwarding",
+        ));
+    }
+    if policy.surrogate_tags.is_some() {
+        return Err(unavailable(
+            "http_services[].routes[].action.policy.cache.surrogate_tags",
+        ));
+    }
+    if policy.purge_authorization.is_some() {
+        return Err(unavailable(
+            "http_services[].routes[].action.policy.cache.purge_authorization",
+        ));
+    }
+    let cache = if let Some(cache) = memory_caches.get(&policy.store) {
+        Arc::clone(cache)
+    } else {
+        let store = stores.iter().find(|store| match store {
+            CacheStore::Memory { name, .. } | CacheStore::Disk { name, .. } => {
+                name == &policy.store
+            }
+        });
+        let Some(CacheStore::Memory {
+            max_bytes,
+            max_entries,
+            max_object_bytes,
+            max_header_bytes,
+            max_key_bytes,
+            max_tag_bytes,
+            max_tags_per_object,
+            max_in_flight_fills,
+            max_followers_per_fill,
+            ..
+        }) = store
+        else {
+            return Err(ServicePlanError::CacheRuntimeUnavailable {
+                service: service.into(),
+                route,
+            });
+        };
+        let to_usize = |value: u64| usize::try_from(value).map_err(|_| unavailable("cache bounds"));
+        let cache_config = CacheConfig {
+            max_entries: to_usize(*max_entries)?,
+            max_total_bytes: to_usize(*max_bytes)?,
+            max_object_bytes: to_usize(*max_object_bytes)?,
+            max_header_bytes: to_usize(*max_header_bytes)?,
+            max_header_fields: 256,
+            max_body_bytes: to_usize(*max_object_bytes)?,
+            max_key_bytes: to_usize(*max_key_bytes)?,
+            max_vary_fields: 32,
+            max_tags_per_entry: to_usize(*max_tags_per_object)?,
+            max_tag_bytes: to_usize(*max_tag_bytes)?,
+            max_in_flight: to_usize(*max_in_flight_fills)?,
+            max_followers_per_fill: to_usize(*max_followers_per_fill)?,
+            max_heuristic_freshness: Duration::from_secs(24 * 60 * 60),
+        };
+        let cache = Arc::new(
+            Cache::new(cache_config)
+                .map_err(|_| unavailable("http_services[].routes[].action.policy.cache.memory"))?,
+        );
+        memory_caches.insert(policy.store.clone(), Arc::clone(&cache));
+        cache
+    };
+    let timeline = CacheTimeline::new(
+        policy.use_origin_cache_control,
+        Duration::from_millis(policy.default_ttl_ms),
+        policy.status_ttls.iter().map(|status_ttl| {
+            (
+                http::StatusCode::from_u16(status_ttl.status).expect("validated cache status TTL"),
+                Duration::from_millis(status_ttl.ttl_ms),
+            )
+        }),
+        Duration::from_millis(policy.grace_ms),
+        Duration::from_millis(policy.keep_ms),
+    )
+    .map_err(|_| unavailable("http_services[].routes[].action.policy.cache.timeline"))?;
+    let methods = policy
+        .methods
+        .iter()
+        .map(|method| method.parse::<Method>().expect("validated cache method"))
+        .collect();
+    Ok(Some(Arc::new(HttpCachePlan {
+        cache,
+        timeline,
+        methods,
+        revalidate: policy.revalidate,
+    })))
 }
 
 fn compile_l4_services(
@@ -1110,7 +1321,7 @@ fn compile_listener(
     tls_profiles: &crate::tls::TlsProfilePlanMap,
 ) -> Result<ServiceSpec, ServicePlanError> {
     let tls = match (listener.protocol, listener.tls_profile.as_deref()) {
-        (Protocol::Http | Protocol::ForwardHttp1, Some(profile)) => {
+        (Protocol::Http | Protocol::ForwardHttp1 | Protocol::ForwardHttp2, Some(profile)) => {
             Some(Arc::clone(tls_profiles.get(profile).ok_or_else(|| {
                 ServicePlanError::UnknownListenerTlsProfile {
                     listener: listener.name.clone(),
@@ -1118,7 +1329,14 @@ fn compile_listener(
                 }
             })?))
         }
-        (Protocol::Http | Protocol::ForwardHttp1 | Protocol::Tcp | Protocol::Rtmp, None) => None,
+        (
+            Protocol::Http
+            | Protocol::ForwardHttp1
+            | Protocol::ForwardHttp2
+            | Protocol::Tcp
+            | Protocol::Rtmp,
+            None,
+        ) => None,
         (protocol @ (Protocol::Tcp | Protocol::Rtmp), Some(profile)) => {
             return Err(ServicePlanError::UnexpectedListenerTlsProfile {
                 listener: listener.name.clone(),
@@ -1126,14 +1344,21 @@ fn compile_listener(
                 profile: profile.into(),
             });
         }
-        (Protocol::ForwardHttp2 | Protocol::ForwardHttp3, _) => {
+        (Protocol::ForwardHttp3, _) => {
             return Err(ServicePlanError::ForwardProxyRuntimeUnavailable {
                 listener: listener.name.clone(),
             });
         }
     };
     let kind = match (listener.protocol, listener.service.as_deref()) {
-        (Protocol::Http | Protocol::ForwardHttp1 | Protocol::Rtmp | Protocol::Tcp, None) => {
+        (
+            Protocol::Http
+            | Protocol::ForwardHttp1
+            | Protocol::ForwardHttp2
+            | Protocol::Rtmp
+            | Protocol::Tcp,
+            None,
+        ) => {
             return Err(ServicePlanError::MissingListenerService {
                 listener: listener.name.clone(),
             });
@@ -1148,6 +1373,14 @@ fn compile_listener(
         }
         (Protocol::ForwardHttp1, Some(service)) => {
             ServiceKind::ForwardHttp1(Arc::clone(forward_services.get(service).ok_or_else(
+                || ServicePlanError::UnknownForwardProxyService {
+                    listener: listener.name.clone(),
+                    service: service.into(),
+                },
+            )?))
+        }
+        (Protocol::ForwardHttp2, Some(service)) => {
+            ServiceKind::ForwardHttp2(Arc::clone(forward_services.get(service).ok_or_else(
                 || ServicePlanError::UnknownForwardProxyService {
                     listener: listener.name.clone(),
                     service: service.into(),
@@ -1170,7 +1403,7 @@ fn compile_listener(
                 }
             })?))
         }
-        (Protocol::ForwardHttp2 | Protocol::ForwardHttp3, _) => {
+        (Protocol::ForwardHttp3, _) => {
             return Err(ServicePlanError::ForwardProxyRuntimeUnavailable {
                 listener: listener.name.clone(),
             });
