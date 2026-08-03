@@ -8,6 +8,11 @@ explicitly public `/ready` and `/metrics` probes uses the Bearer token loaded fr
 CLI opens token and configuration files as bounded, regular, no-follow files. Token bytes are
 zeroized after use and token files must have mode `0400` or `0600`.
 
+This CLI table describes current command ownership, not broad product compatibility. `Supported`
+means the current runtime owns the operation; it does not promote a foundation or partial protocol
+to stable parity. Native import remains an offline or compositional-source adapter, and the current
+management listener stays loopback-only.
+
 The management listener is configuration-owned and is restricted to a loopback address. Configure
 it as `127.0.0.1:9900` to use the client default. `--output json` emits one JSON value on stdout;
 diagnostics use stderr. Exit categories are stable: `2` usage, `3` local input/token, `4` transport,

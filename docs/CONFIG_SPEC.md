@@ -13,6 +13,12 @@ cross-reference validation, runtime preparation, and immutable generation compil
 evaluates code: it runs as a constrained data language in a fresh state with no standard libraries,
 then the state is destroyed. KDL, HOCON, and UCI are declarative parsers and do not execute source.
 
+Format status is explicit: KDL 2.0 is the current canonical default; restricted Lua is a supported
+legacy/compatibility adapter; HOCON and UCI are supported declarative adapters; templates and native
+server references are available only in the declarative pipeline. None of these adapters implies
+that every modeled field is an active runtime capability: cache policies, for example, remain a
+foundation until request-path ownership is integrated.
+
 ## Current Schema
 
 The daemon currently accepts the following canonical object families. KDL is the recommended
@@ -447,8 +453,10 @@ The server runtime enforces aggregate/listener admission, Unix modes, downstream
 policies, nginx suffix routing, bounded headers/auth/cookies, static extensions, gzip and HTTP
 logging, named-server capacity and bounded queue waits, pool deadlines/reuse, startup/on-connect DNS,
 all three balancing algorithms, and the extended health policy. Buffering-on and active cache
-policies fail startup. RTMP relay/fanout controls and recorder naming choices still require runtime
-compilation. Importers remain outside this server-runtime boundary.
+policies fail startup. RTMP relay/fanout controls and canonical named-recorder policies compile into
+the current runtime; unsupported native RTMP semantics and enhanced codecs remain blocked. Importers
+remain separate adapters, except that finalized nginx/HAProxy/Squid references can be composed by
+the declarative source resolver where documented.
 
 ### Downstream certificates and TLS profiles
 
@@ -907,8 +915,14 @@ restricted Lua, UCI, or HOCON.
 
 ## Diagnostics
 
-Diagnostics contain stable code, severity, stage, source range, include/import stack,
-related ranges, explanation, and suggested resolution. Initial code families:
+Offline native import reports retain rich evidence: stable code, severity, stage, source range,
+include/import stack, related ranges, explanation, and suggested resolution. The management
+configuration API intentionally returns a compact redacted diagnostic shape containing only
+`code`, `severity`, `stage`, and `message`; native-reference failures crossing that boundary expose
+the importer name and diagnostic-code counts rather than source paths, source text, rejected values,
+or operating-system errors. Use the offline report for source-level migration detail.
+
+Initial code families:
 
 - `E_SYNTAX`, `E_UNKNOWN_FIELD`, `E_INVALID_VALUE`, `E_DUPLICATE_IDENTITY`
 - `E_DUPLICATE_BIND`, `E_UNRESOLVED_REFERENCE`, `E_INCLUDE_CYCLE`

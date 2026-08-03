@@ -3,9 +3,10 @@
 ## Deployment boundary
 
 The control plane shares the daemon but remains logically separate from traffic listeners. The
-current schema requires a loopback bind. Configuration routes require a bearer token loaded at
-startup; monitoring, topology, RTMP visibility, and capability-gated recorder routes are currently
-loopback-only but unauthenticated. There is no remote management mode or permissive CORS default.
+current schema requires a loopback bind. Every recognized management/API route requires exactly one
+bearer token loaded at startup, except exact `GET /ready` and `GET /metrics`. UI assets are
+read-only static responses, and separately configured HAProxy-compatible statistics pages have
+their own page-only contract. There is no remote management mode or permissive CORS default.
 
 ## API conventions
 
@@ -18,32 +19,46 @@ loopback-only but unauthenticated. There is no remote management mode or permiss
 - Configuration writes use one raw `If-Config-Revision` header containing the current 64-hex disk
   revision. `If-Match` is not accepted as an alias.
 
-Implemented endpoints:
+Implemented and recognized endpoints:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/v1/config` | Typed config, source format/composition metadata, disk/candidate/active revisions, format-preserving preview, and diagnostics. |
+| `GET` | `/api/v1/config` | Typed config, source format/composition metadata, disk/candidate/active revisions, format-preserving preview, and compact redacted diagnostics. |
 | `POST` | `/api/v1/config/validate` | Validate a typed draft without writing or activating it. |
 | `PUT` | `/api/v1/config` | Preflight and revision-checked durable canonical save; changed generations are queued for watcher-driven activation. |
 | `GET` | `/api/v1/topology` | Active redacted configuration graph with runtime health overlays. |
 | `GET` | `/api/v1/monitoring` | Runtime process, host load, listener traffic, pool/endpoint health, and RTMP activity snapshot. |
+| `GET` | `/api/v1/status` | Active generation, disk/candidate revisions, degradation, and listener status. |
+| `GET` | `/api/v1/listeners`, `/api/v1/pools`, `/api/v1/servers` | Active operational inventory. |
+| `POST` | `/api/v1/listeners/administrative-state`, `/api/v1/pools/administrative-state` | Revision-checked listener or pool admission state changes. |
+| `POST` | `/api/v1/servers/administrative-state`, `/api/v1/servers/health-override`, `/api/v1/servers/checks` | Revision-checked server state, observed-health override, or probe enablement changes. |
+| `PUT` | `/api/v1/servers/max-connections` | Revision-checked server capacity override or reset. |
+| `POST` | `/api/v1/servers/refresh-dns` | Resolve every prevalidated target and report explicit non-atomic per-server outcomes. |
+| `GET` | `/api/v1/generations` | Active, previous, candidate, and quarantined generation state. |
+| `POST` | `/api/v1/generations/reload`, `/api/v1/generations/rollback`, `/api/v1/generations/drain` | Revision-checked generation preparation, rollback, and drain operations. |
+| `GET` | `/api/v1/tls` | Redacted certificate and Certbot watcher status. |
+| `POST` | `/api/v1/tls/reconcile` | Revision-checked reconciliation of externally owned Certbot lineages. |
+| `GET` | `/api/v1/events?after={cursor}&limit={n}` | Bounded cursor polling over the in-memory operational event ring. |
+| `POST` | `/api/v1/process/drain`, `/api/v1/process/shutdown` | Revision-checked process drain or shutdown requests. |
 | `GET` | `/api/v1/rtmp/streams` | Active RTMP catalog and runtime capabilities. |
 | `GET` | `/api/v1/rtmp/streams/{streamId}` | One exact-ID active stream snapshot. |
 | `POST` | `/api/v1/rtmp/streams/{streamId}/recorders/{recorderId}/start` | Request one exact-ID manual recorder start. |
 | `POST` | `/api/v1/rtmp/streams/{streamId}/recorders/{recorderId}/stop` | Request one exact-ID manual recorder stop. |
-| `GET` | `/api/v1/status` | Active generation and listener status. |
-| `GET` | `/api/v1/listeners`, `/api/v1/pools`, `/api/v1/servers` | Active operational inventory. |
-| `POST` | `/api/v1/servers/refresh-dns` | Resolve every prevalidated target and report explicit non-atomic per-server outcomes. |
-| `GET` | `/api/v1/generations` | Active, previous, candidate, and quarantined generation state. |
-| `POST` | `/api/v1/generations/reload`, `/api/v1/generations/rollback`, `/api/v1/generations/drain` | Revision-checked generation operations. |
 
-Native import routes and unbounded event streaming are not implemented. Recorder routes control
-configured `start = "manual"` workers in the active publisher incarnation.
+Every `/api/v1/...` route in this table requires the management bearer token. The only public
+recognized API probes are exact `GET /ready` and `GET /metrics`; wrong methods and unknown paths do
+not create an authentication bypass.
+
+Native import routes and unbounded event streaming are not implemented. Bounded event polling is
+implemented and is not an SSE contract. Recorder routes control configured `start = "manual"`
+workers in the active publisher incarnation and use the same bearer authorization as other
+recognized management routes.
 `capabilities.manual_recording` is true when the active config contains at least one manual
 recorder; continuous-only recording does not set that capability.
 
 The statistics listener additionally serves public `GET /metrics` and `GET /ready`. Authenticated
-`GET /stats` renders the local server table. `POST /stats/admin` accepts one JSON
+`GET /stats` renders the local server table. `GET /api/v1/status` on that listener is also
+authenticated. `POST /stats/admin` accepts one JSON
 `{pool, server, action}` target plus `If-Generation-Revision`; `GET` and `HEAD` return `405` and can
 never mutate state.
 
@@ -80,11 +95,11 @@ to 514 bytes so a maximum-size token may include one line ending. One trailing L
 the remaining token MUST be 32 through 512 visible ASCII bytes (`0x21` through `0x7e`). Other
 whitespace is part of the token or makes it invalid.
 
-Each authenticated request requires exactly one `Authorization: Bearer <token>` header. Duplicate
+Each recognized non-public API request requires exactly one `Authorization: Bearer <token>` header. Duplicate
 authorization returns `400 duplicate_authorization`; missing, malformed, or incorrect authorization
 returns `401` with `WWW-Authenticate: Bearer`.
-The token is hashed after startup loading and compared in constant time. Non-configuration routes do
-not currently apply this authentication check.
+The token is hashed after startup loading and compared in constant time. Non-configuration routes
+apply the same authentication check; only exact `GET /ready` and `GET /metrics` bypass it.
 
 ### Configuration routes
 
@@ -163,10 +178,12 @@ Configuration request failures use these statuses:
 
 Exact paths are required; trailing slashes and repeated separators return `404`.
 
-The certificate inventory/renewal endpoints and certificate UI are planned, not implemented by
-the current TLS slice. Lua-configured direct-file identities are prepared at startup and configured
-Certbot identities are watched and atomically reconciled. The management API cannot add, replace,
-or renew them directly.
+Full certificate inventory, issuance, renewal, and certificate UI workflows are planned, not
+implemented by the current TLS slice. The current authenticated `GET /api/v1/tls` status route and
+`POST /api/v1/tls/reconcile` operation expose and reconcile externally owned Certbot lineages.
+Lua-configured direct-file identities are prepared at startup and configured Certbot identities are
+watched and atomically reconciled. The management API cannot add, replace, or renew certificate
+material directly.
 
 The implemented monitoring snapshot contains daemon uptime, process CPU/RSS/virtual memory,
 threads, open file descriptors, host load averages and memory, aggregate/listener connection and
@@ -248,8 +265,9 @@ RTMP counts protocol bytes, TCP relay totals retain every completed transfer inc
 traffic before a failure, and HTTP uses Pingora's application counters. Pingora's HTTP/1 sent
 counter includes serialized response
 headers, while its received counter covers request bodies; callers MUST NOT interpret these values
-as protocol-independent billable octets. Prometheus exposition, latency/error series, history, and
-cross-platform host samplers remain separate work.
+as protocol-independent billable octets. Prometheus exposition is implemented for the current
+metric families; latency/error series, historical storage, and cross-platform host samplers remain
+separate work.
 
 `GET /api/v1/topology` returns schema version `1` and the active validated runtime generation as
 immutable `nodes` and typed reference `edges`. Stable IDs are derived from canonical entity identity,
@@ -272,10 +290,13 @@ containing only `supported`, `recorderCount`, `manualRecorderCount`, and
 `continuousRecorderCount`. Recorder roots, suffix templates, quotas, relative output names, and
 stream query arguments are not included in active or candidate topology.
 
-## Planned event stream
+## Events and planned event stream
 
-No SSE route or event history is implemented. A future event stream will have an increasing
-daemon-local ID and include current revisions. Planned types include:
+`GET /api/v1/events` is implemented as bounded cursor polling over a 2,048-event in-memory ring.
+It returns `events`, `cursor`, `hasMore`, and `oldestCursor`; callers can page with `after` and
+`limit`. It is bearer-protected like every other recognized `/api/v1` route. No SSE route or
+durable event history is implemented. A future event stream will have an increasing daemon-local
+ID and include current revisions. Planned types include:
 
 - `config.disk_changed`, `config.activated`, `config.rejected`
 - `runtime.listener_changed`, `runtime.pool_health_changed`
@@ -316,9 +337,9 @@ candidate topology for review, and saves with `If-Config-Revision` when the root
 non-compositional. It consumes `configPreview` and `configFormat` for KDL, Lua, HOCON, and UCI, and
 uses `compositional` plus `dependencyCount` to make compositional roots inspectable and
 server-validatable but read-only. It preserves dirty drafts across refresh failures and `409`
-conflicts. The pending-save copy still says restart is required even though the backend now watches
-and activates prepared generations; operators should use generation status as authoritative. Certificate
-lifecycle management, imports, and event views remain planned.
+ conflicts. The save response distinguishes pending activation from restart-required Unix listener
+ changes; generation status is authoritative for publication completion. The UI does not yet provide
+ SSE or durable event history. Certificate lifecycle management and imports remain planned views.
 
 ## File-change behavior
 
@@ -337,9 +358,10 @@ lifecycle management, imports, and event views remain planned.
 - Management and traffic listener configuration are separate.
 - Configuration routes require the file-backed bearer token described above. The current UI does
   not use cookies or persist the token.
-- Recorder-control routes remain loopback-only and unauthenticated; unlike config routes, they do
-  not consume the bearer token. They MUST gain authentication and audit records before any future
-  remote management mode exposes them.
+- Recognized management/API routes, including recorder-control routes, require the bearer token
+  except exact `GET /ready` and `GET /metrics`. The management listener remains loopback-only;
+  recorder controls MUST gain explicit audit records before any future remote management mode
+  exposes them.
 - A future remote mode will require authenticated users, short sessions, audit records, TLS, and
   CSRF protection if cookie authentication is introduced.
 - Certificate private-key bytes, ACME account keys, and DNS credentials never enter frontend state.

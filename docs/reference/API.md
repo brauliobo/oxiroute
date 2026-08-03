@@ -9,16 +9,25 @@ The current control plane is JSON over loopback HTTP. The base path for manageme
 | Group | Routes | Auth/current role |
 | --- | --- | --- |
 | Configuration | `GET /api/v1/config`, `POST /api/v1/config/validate`, `PUT /api/v1/config` | Management bearer token; typed drafts, preflight, revision-safe write |
-| Runtime | `GET /api/v1/status`, `/listeners`, `/pools`, `/servers`, `/generations` | Loopback and route-specific bearer rules |
-| Observability | `GET /api/v1/monitoring`, `/topology` | Loopback management view; returns redacted active state |
-| RTMP | `GET /api/v1/rtmp/streams`, `/streams/{streamId}` | Loopback catalog; exact recorder controls are POST routes |
-| RTMP controls | `POST .../recorders/{recorderId}/start|stop` | Loopback-only current control boundary |
-| Generation actions | `POST /api/v1/generations/reload|rollback|drain` | Revision-checked management operation |
-| DNS | `POST /api/v1/servers/refresh-dns` | Validated target batch; explicit non-atomic outcomes |
-| Statistics | `GET /ready`, `GET /metrics`, `GET /stats`, `POST /stats/admin` | Public probes; restricted reads/mutations as configured |
+| Observability | `GET /api/v1/monitoring`, `/topology`, `/status` | Management bearer token; redacted active state |
+| Inventory | `GET /api/v1/listeners`, `/pools`, `/servers`, `/generations`, `/tls` | Management bearer token |
+| Listener/pool/server actions | `POST /api/v1/listeners/administrative-state`, `/pools/administrative-state`, `/servers/administrative-state`, `/servers/health-override`, `/servers/checks`; `PUT /api/v1/servers/max-connections` | Management bearer token and active-generation revision |
+| DNS | `POST /api/v1/servers/refresh-dns` | Management bearer token; validated target batch and explicit non-atomic outcomes |
+| Generation actions | `POST /api/v1/generations/reload|rollback|drain` | Management bearer token and active-generation revision |
+| TLS/process | `POST /api/v1/tls/reconcile`, `/process/drain`, `/process/shutdown` | Management bearer token and active-generation revision |
+| Events | `GET /api/v1/events?after={cursor}&limit={n}` | Management bearer token; bounded cursor polling |
+| RTMP | `GET /api/v1/rtmp/streams`, `/streams/{streamId}` | Management bearer token; redacted active catalog |
+| RTMP controls | `POST .../recorders/{recorderId}/start|stop` | Management bearer token; loopback management listener and exact-ID manual controls |
+| Statistics | `GET /ready`, `GET /metrics`, `GET /stats`, `POST /stats/admin` | Exact `GET /ready` and `GET /metrics` are public; restricted statistics reads/mutations use loopback plus the statistics token/revision |
 
-Native import is intentionally CLI/offline only. There is no import API, UI workflow, or unbounded
-event stream in the current contract.
+Every recognized `/api/v1` route requires exactly one management Bearer token. The only public
+recognized API probes are exact `GET /ready` and `GET /metrics`. Separately configured
+`stats.pages[]` listeners are public page-only contracts with their own loopback same-origin form
+policy; they are not remote management routes.
+
+Native import is intentionally CLI/offline or compositional-source only. There is no import API,
+import UI workflow, SSE route, or unbounded event stream in the current contract; bounded event
+polling is implemented.
 
 ## Authentication
 
@@ -26,8 +35,9 @@ Authenticated routes require exactly one `Authorization: Bearer <token>` header.
 from a restrictive regular file, hashed at startup, and compared without exposing its bytes in
 responses. Configuration `PUT` also requires one raw `If-Config-Revision` header.
 
-Recorder control currently has a separate loopback-only boundary and does not consume the management
-token. This is not a remote-management authorization model.
+Recorder control is served on the authenticated loopback management listener and consumes the same
+management token as the other recognized `/api/v1` routes. This is not a remote-management
+authorization model.
 
 ## Configuration Write Flow
 
@@ -51,7 +61,8 @@ revision returns `409` and does not perform a last-writer-wins write.
 
 ```sh
 TOKEN=$(tr -d '\r\n' < /tmp/oxiroute-management.token)
-curl -s http://127.0.0.1:9080/api/v1/monitoring | jq '.listeners, .upstreamPools'
+curl -s -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:9080/api/v1/monitoring | jq '.listeners, .upstreamPools'
 curl -s -H "Authorization: Bearer $TOKEN" \
   http://127.0.0.1:9080/api/v1/config | jq '{diskRevision, activeRevision, configFormat, compositional}'
 ```

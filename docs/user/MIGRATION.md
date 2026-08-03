@@ -37,10 +37,12 @@ oxiroute import nginx /etc/nginx/nginx.conf \
   --output preview
 ```
 
-The complete-root path retains process/events/module/error-log deployment requirements. The strict
-HTTP fragment API is intentionally narrower than a complete nginx installation. Variables, regex
-locations, rewrites, module-specific policy, and non-equivalent TLS or cache behavior block affected
-services instead of disappearing.
+The complete-root path retains process/events/module/error-log deployment requirements and can
+compose the strict nginx-RTMP listener/application/recording subset in the same candidate. The
+strict HTTP fragment API is intentionally narrower than a complete nginx installation. Variables,
+regex locations, rewrites, module-specific policy, and non-equivalent TLS or cache behavior block
+affected services instead of disappearing. Supported named RTMP recorder blocks retain their names;
+unsupported recorder fields remain blocking.
 
 ## HAProxy
 
@@ -94,7 +96,9 @@ oxiroute config compose --format hocon edge.kdl legacy.lua
 
 KDL, HOCON, and UCI may instead declare strict `nginx_server`, `haproxy_server`, or `squid_server`
 references. Those roots remain compositional: the browser can inspect and validate them, but typed
-save refuses to flatten them accidentally.
+save refuses to flatten them accidentally. A KDL/HOCON/UCI `nginx_server` reference re-resolves the
+complete HTTP+RTMP source graph during watcher reconciliation; it is native-source integration, not
+an import management API or UI workflow.
 
 ## Cutover Checklist
 

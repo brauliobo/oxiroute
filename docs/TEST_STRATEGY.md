@@ -75,8 +75,10 @@ parser round-trip properties remain planned.
   restart-required Unix mode changes, including candidates with other edits, that leave the active
   generation and socket untouched; reservation tests cover namespace leases, connect-refused stale
   sockets, fail-closed restrictive sockets, concurrent ownership, and unsafe writable parents.
-- Management API monitoring/topology/RTMP/config response shapes and real HTTP behavior, including
-  decimal-string cumulative counters and complete top-level/listener topology state parsing.
+- Management API route authentication, monitoring/topology/RTMP/config response shapes, bounded
+  event polling, generation/TLS/process operations, and real HTTP behavior, including
+  decimal-string cumulative counters and complete top-level/listener topology state parsing. Exact
+  `GET /ready` and `GET /metrics` public-probe behavior is tested separately.
 - Continuous recording start/media/finalization, manual exact-ID start/stop, read-only candidate
   root preflight versus activation open, redacted relative recorder observability, and topology root
   omission.
@@ -84,8 +86,11 @@ parser round-trip properties remain planned.
   nullable capacities, transport-qualified binds, pool algorithms, active leases, and
   non-overlapping polling.
 
-UDP behavior, live generation reload/drain, canonical parent-directory watching, SSE reconnect,
-client authentication, and managed ACME are planned integration gates rather than current tests.
+UDP behavior, active-traffic generation reload/drain breadth, richer native dependency watching,
+SSE reconnect, downstream client certificate authentication, and managed ACME are planned
+integration gates rather than current complete release evidence. Canonical watcher activation,
+route authentication, bounded event polling, and fixed RTMP assembled-message rejection are current
+tested paths.
 
 ### Import conformance
 
@@ -134,10 +139,11 @@ share named upstream pools across routes/listeners, lower the bounded static-ind
 rerunning nginx location selection, and carry only semantic first-wins host claims into routes.
 
 nginx-RTMP conformance tests cover deterministic include inheritance, strict listener/application
-lowering, continuous and all-media manual recording, native defaults, no import-time root access,
-path/suffix/interval boundaries, provenance, one terminal decision per occurrence, and fail-closed
-blocking of partial masks, local-time suffixes, recorder blocks, global policy, and unsupported
-service behavior. Synthetic fixtures remain implementation evidence only.
+lowering, continuous and all-media manual recording, supported named recorder blocks, native
+defaults, complete-root HTTP+RTMP composition, no import-time root access, path/suffix/interval
+boundaries, provenance, one terminal decision per occurrence, and fail-closed blocking of partial
+masks, local-time suffixes, unsupported recorder fields, global policy, and unsupported service
+behavior. Synthetic fixtures remain implementation evidence only.
 
 ### Protocol conformance and interoperability
 
@@ -173,8 +179,10 @@ Current Unix TLS/H2/gRPC coverage includes:
   is refused by OxiRoute's pre-handshake TLS 1.2/cipher policy without decrypted origin bytes;
   TLS 1.2 remains a positive control.
 
-Reload/watch activation, ACME, client authentication, H2 breadth, and gRPC streaming/cancellation
-remain release gates rather than implemented coverage.
+Active-traffic reload/drain breadth, ACME, downstream client authentication, H2 breadth, and gRPC
+streaming/cancellation remain release gates rather than complete coverage. The canonical watcher,
+live generation activation, and bounded event polling paths are implemented but do not by themselves
+close those broader gates.
 
 ### Planned fuzzing
 

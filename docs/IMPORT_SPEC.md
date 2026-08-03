@@ -22,7 +22,8 @@ security, TLS, listener, or upstream semantics cannot be represented.
 Import is implemented in `oxiroute-import` and exposed by the daemon binary as an offline report or
 preview command. There is no import management API or UI workflow; standalone preview is emitted
 only for a fully finalized candidate, defaults to deterministic KDL, and accepts
-`--format kdl|lua|uci|hocon`.
+`--format kdl|lua|uci|hocon`. The complete nginx root command includes the strict nginx-RTMP
+subset when that root contains an `rtmp` block.
 
 KDL, HOCON, and UCI roots may instead contain `nginx_server`, `haproxy_server`, and `squid_server` references. The
 normal source resolver runs those references through the same complete import pipelines, composes
@@ -51,9 +52,12 @@ general activation of standalone import reports. Restricted Lua cannot declare n
   effective inheritance, a terminal occurrence ledger, provenance, blocked-service reporting, and
   strict conditional canonical finalization for an exact listener/application/recording subset,
   including outbound chunk size, disabled access logging, bounded suffixes tied to an explicit
-  host IANA timezone overlay, and static RTMP push targets whose application is literal or `$name`.
-  Import never accesses a configured recording root. Most directive families remain blocking, and
-  the daemon still has no import integration.
+  host IANA timezone overlay, static RTMP push targets whose application is literal or `$name`,
+  and supported named `recorder` blocks. Import never accesses a configured recording root. Most
+  directive families remain blocking. The complete nginx-root path composes the finalized HTTP and
+  RTMP candidates, and KDL/HOCON/UCI `nginx_server` references feed that result into the normal
+  canonical resolver and watcher-driven generation path. There is no separate management import
+  API, import UI, or dedicated `import rtmp` daemon command.
 - HAProxy has ordered `-f` file/directory loading, byte-preserving lexing/parsing, defaults and
   frontend/backend/listen resolution, a terminal decision ledger, stable diagnostics, provenance,
   and conservative canonical lowering.
@@ -183,6 +187,9 @@ and the inheritable `live`, `idle_streams`, and exact recording policy below:
   fields; nginx calendar fields lower with the uniquely consumed host IANA timezone overlay, segment-start time
   basis, and compatible naming.
 - `record_unique on|off` and a continuous-only `record_interval` of 1 through 2147483647 ms.
+- Named `recorder <name>` blocks whose effective policy is within the same exact subset. Canonical
+  recorder names are retained and become independently controllable only when their canonical
+  `start` mode is `manual`.
 - Canonical recorder queue/shutdown/storage defaults where nginx has no exact equivalent.
 
 The importer resolves these scalar policies across `rtmp`, `server`, `application`, and include
@@ -192,11 +199,12 @@ but no placeholder is invented for a blocked server.
 
 Blocking forms include listen options, overlapping sockets, duplicate scalar/application identities,
 missing or insecure paths, recording without `live on`, bare `record manual`, partial
- audio/video/keyframe masks, manual intervals, unsupported suffix fields, `record_append`,
-`record_lock`, size/frame/notify policy, named `recorder {}` blocks, global RTMP policy, access,
- dynamic push/pull, callbacks, exec, VOD, HLS/DASH, file logs, stats, and native control behavior. This strict
-subset is not full nginx-RTMP compatibility and is not an audited-host claim unless the authoritative
-coverage manifest maps an audited fixture.
+audio/video/keyframe masks, manual intervals, unsupported suffix fields, enabled `record_append`,
+enabled `record_lock`, nonzero size/frame limits, enabled notify policy, named recorder blocks with
+unsupported effective fields, global RTMP policy, access, dynamic push/pull, callbacks, exec, VOD,
+HLS/DASH, file logs, stats, and native control behavior. This strict subset is not full nginx-RTMP
+compatibility and is not an audited-host claim unless the authoritative coverage manifest maps an
+audited fixture.
 
 ## HAProxy
 

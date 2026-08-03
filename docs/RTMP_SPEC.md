@@ -18,6 +18,13 @@ Parsing a directive MUST NOT mark its runtime behavior supported. Each normalize
 has one status: `enforced`, `parsed_not_enforced`, `source_no_op`, `source_bug`,
 `deprecated`, or `platform_limited`.
 
+The current runtime contract is intentionally narrower than the directive inventory. Bounded live
+publish/play, fanout, static push relay, canonical named continuous/manual recorders, and legacy
+AVC/AAC FLV output are partial product capabilities. The live adapter enforces a fixed 1 MiB
+inbound chunk ceiling and fixed 8 MiB assembled inbound-message ceiling; the nginx `max_message`
+directive is parsed and classified but does not configure that ceiling. HLS, DASH, VOD, callbacks,
+exec, broad access/control behavior, and full nginx-RTMP parity remain planned or unsupported.
+
 ## Context abbreviations and common values
 
 | Code | Context |
@@ -166,8 +173,12 @@ allowlists and resource limits. It does not reproduce reference pointer/filter d
 `all` means audio and video. `off` wins if combined. `keyframes` records video keyframes;
 `manual` requires control API start. The strict lowerer maps only `record all`, `record all manual`,
 `record manual all`, and `record off`; narrower bitmasks and bare `record manual` block finalization.
-Explicit `record_append`, locking, size/frame bounds, notify, named recorder blocks, and other
-recorder forms remain unsupported.
+Canonical configuration and the live runtime support named recorder definitions, including
+continuous and manual modes, exact-ID manual controls, bounded storage, and isolated worker
+failures. Native `recorder <name>` blocks are also lowered when their effective policy is inside
+the strict subset below. Explicit append/lock, nonzero per-file size/frame bounds, notify, and
+other recorder forms remain unsupported; a named block with one of those forms is blocked rather
+than silently approximated.
 
 The native `record_unique` form appends segment-start Unix seconds and is not collision-free when
 multiple segments start in one second. OxiRoute preserves that suffix and then uses exclusive partial creation
@@ -202,6 +213,8 @@ The finalizable subset is intentionally narrow:
 - Default `.flv` or a separator-free suffix of at most 128 bytes containing only literals and `%%`.
 - `record_unique on|off` and, for continuous recording only, `record_interval` from 1 through
   2147483647 milliseconds.
+- Named `recorder <name>` blocks with the same exact recording policy. Their names and provenance
+  are retained in the canonical recorder list.
 - Canonical finite queue, shutdown, storage, file, and active-recorder defaults for imported
   recorders.
 
@@ -209,9 +222,12 @@ Any applicable unsupported directive blocks its server; any blocking error preve
 config, although other safe servers may remain visible in the draft. Blockers include global RTMP
 policy, listen options, overlapping listeners, duplicate scalar/application identities, non-live
 recording, missing/insecure paths, local-time suffix formats, manual intervals, partial recording
-bitmasks, push/pull, access, notify, exec, VOD, HLS/DASH, logging/stat/control behavior, append/lock,
-size/frame limits, and named `recorder {}` blocks. The importer remains a Rust library with no daemon
-CLI, management API, UI, watcher, or activation integration.
+bitmasks, push/pull, access, notify, exec, VOD, HLS/DASH, logging/stat/control behavior, enabled
+append/lock, nonzero size/frame limits, and named `recorder {}` blocks with unsupported effective
+fields. The `import_rtmp` entry point remains a Rust library without a separate `import rtmp`
+command, import API, or import UI. Complete nginx-root import does integrate the strict RTMP result:
+the CLI can report/preview it, and KDL/HOCON/UCI `nginx_server` references can compose it into the
+canonical resolver and watcher-driven generation path.
 
 ### VOD and netcall: 5
 
@@ -367,7 +383,9 @@ described below are implemented, not evidence that every listed component exists
 
 1. Listener and optional PROXY protocol.
 2. RTMP version-3 simple/complex handshake state machine.
-3. Incremental chunk decoder/encoder for formats 0-3, CSID forms, extended timestamps, reassembly, size limits, ACK, bandwidth, and ping.
+3. Incremental chunk decoder/encoder for formats 0-3, CSID forms, extended timestamps, reassembly,
+   fixed inbound chunk/message limits, ACK, bandwidth, and ping. The current message ceiling is
+   fixed by the session adapter rather than configured per native directive.
 4. Bounded AMF0 codec and command decoder.
 5. Ordered command middleware for connect, createStream, publish, play, closeStream, and deleteStream.
 6. Application stream registry with one publisher, subscribers, cached metadata/AAC/AVC headers, and keyframe state.
@@ -460,10 +478,11 @@ implemented for the subset above; per-directive lowering and fixture completenes
 
 Status: partial. A pinned `rml_rtmp` 0.8.0 adapter now provides simple/complex handshakes, chunk
 transport, connect/createStream/live-publish/play command handling, duplicate-publisher rejection,
-bounded media fanout, media observations, and lifecycle cleanup. The listener caps requested inbound
-chunks at 1 MiB. Manual FFmpeg publishing and native publish/play wire tests pass. Configurable
-assembled-message limits, checked-in process-level FFmpeg consume acceptance, exhaustive chunk
-fixtures, and OBS acceptance remain before this slice is complete.
+bounds for inbound chunks and assembled messages, bounded media fanout, media observations, and
+lifecycle cleanup. The listener caps requested inbound chunks at 1 MiB and assembled inbound
+messages at 8 MiB. Manual FFmpeg publishing and native publish/play wire tests pass. Configurable
+`max_message`, checked-in process-level FFmpeg consume acceptance, exhaustive chunk fixtures, and
+OBS acceptance remain before this slice is complete.
 
 - Simple and both Adobe complex handshake schemes.
 - Fragmented I/O, chunk formats 0-3, all CSID header widths, extended timestamps, and interleaving.
@@ -475,10 +494,11 @@ fixtures, and OBS acceptance remain before this slice is complete.
 
 ### Slice 2: operational parity
 
-Status: partial. Canonical continuous/manual recording, live-session dispatch, catalog completion,
-storage, rotation, observability, and exact-ID controls are integrated for legacy AVC/AAC FLV.
-Access, notify, push/pull, VOD, stats-page parity, authenticated remote controls, logs, enhanced
-codec recording, and broad nginx-RTMP lowering remain.
+Status: partial. Canonical continuous/manual recording, named recorders, live-session dispatch,
+catalog completion, storage, rotation, observability, and exact-ID bearer-protected controls are
+integrated for legacy AVC/AAC FLV. Static push relay is integrated separately. Access, notify,
+pull, VOD, stats-page parity, enhanced codec recording, RTMP access logs, and broad nginx-RTMP
+lowering remain.
 
 ### Slice 3: media/process parity
 
@@ -490,8 +510,9 @@ media, crash, and resource-exhaustion tests.
 - Handshake, chunk, AMF, metadata, and URL/token parsers are size/depth/time bounded.
 - RTMP names cannot escape recording, VOD, HLS, DASH, or key roots.
 - Callbacks and relay targets obey outbound-origin and resolved-address policy.
-- Recorder control routes remain loopback-only and unauthenticated; they do not use the bearer token
-  that protects config routes. A future remote mode MUST authenticate and audit them before exposure.
+- Recognized management/API routes, including recorder controls, require the management bearer
+  token except exact `GET /ready` and `GET /metrics`. The management listener remains loopback-only;
+  a future remote mode MUST add explicit authorization and audit policy before exposure.
 - Exec is disabled until an isolated allowlisted worker exists.
 - Per-listener, application, publisher, subscriber, message, queue, and segment limits are explicit.
 - Malformed publisher input cannot produce unbounded subscriber memory or unsafe media files.

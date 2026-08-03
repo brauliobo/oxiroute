@@ -6,6 +6,13 @@ the same strict `oxiroute_config::Config` model before runtime preparation. Lua 
 existing deployments, but generic templates and native-server references are available only in the
 declarative KDL/HOCON/UCI pipeline.
 
+| Format | Current status | Contract |
+| --- | --- | --- |
+| KDL 2.0 | stable/default | Canonical authoring, `serve`, composition, previews, and effective revisions. |
+| Restricted Lua | partial adapter | Supported text-only compatibility source and renderer; not the canonical format and does not support generic templates or native references. |
+| HOCON | stable adapter | Declarative source and renderer with bounded substitutions and native references; no environment discovery or include execution. |
+| OpenWrt UCI | stable adapter | Declarative reversible mapping and renderer; no shell execution, anonymous sections, or unsupported list forms. |
+
 ## Source pipeline
 
 The source pipeline has one semantics regardless of syntax:

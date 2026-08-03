@@ -90,6 +90,12 @@ deadline. Tests send SIGTERM and reserve force-kill only as a bounded test clean
 traffic listeners report `listening`; otherwise it returns 503. `GET /api/v1/status` reports the
 build version, disk/candidate/active/previous revisions, degradation, and listener states.
 
+Every recognized `/api/v1` route, including monitoring, topology, RTMP, listener/pool/server,
+generation, TLS, process, configuration, and event routes, requires exactly one management Bearer
+token. The only public recognized API probes are exact `GET /ready` and `GET /metrics`. Event
+operations use bounded cursor polling at `/api/v1/events`; there is no unbounded stream or SSE
+endpoint.
+
 `GET /metrics` exports process, listener, pool, server, queue, health, retry, certificate, RTMP
 relay/recording, and generation families in Prometheus text format. `/stats` provides a compact
 read-only HAProxy-oriented pool/server view. `/metrics` and `/ready` are public on a configured
