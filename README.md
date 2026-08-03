@@ -5,7 +5,7 @@ services from one typed configuration. It is built on [Cloudflare Pingora](https
 and is designed around explicit behavior, bounded inputs, observable runtime state, and safe
 configuration changes.
 
-**Current release:** `0.3.0`<br>
+**Current release line:** `0.3.0` (pre-alpha; `v0.2.3` is the latest repository tag)<br>
 **Project status:** pre-alpha; read the [compatibility matrix](docs/COMPATIBILITY.md) before using it
 for production traffic.<br>
 **Website:** [brauliobo.github.io/oxiroute](https://brauliobo.github.io/oxiroute/)
@@ -43,14 +43,18 @@ goal. These are the current building blocks:
   backpressure, and connect/idle/lifetime limits.
 - **Configuration control plane:** KDL 2.0 by default, plus restricted Lua, HOCON, and UCI source
   adapters; typed validation; deterministic previews; templates and strict native references; and
-  revision-checked configuration writes.
+  revision-checked configuration writes. KDL is the canonical current format; restricted Lua is a
+  supported compatibility adapter, not the canonical format.
 - **Runtime observability:** loopback management API, topology graph, monitoring snapshots, Prometheus
-  metrics, readiness, HAProxy-oriented statistics, and a responsive Vue 3/Pug dashboard.
+  metrics, readiness, bounded event polling, redacted HTTP JSONL access logs, HAProxy-oriented
+  statistics, and a responsive Vue 3/Pug dashboard.
 - **RTMP live path:** publish/play, simple and complex handshakes, bounded fanout, keyframe gating,
-  stream inventory, legacy AVC/AAC FLV recording, continuous/manual recorder policies, and exact-ID
+  stream inventory, legacy AVC/AAC FLV recording, named continuous/manual recorder policies, a
+  fixed 8 MiB inbound assembled-message ceiling, static push relay, and exact-ID bearer-protected
   local controls.
 - **Native migration:** bounded nginx, HAProxy, and Squid import/report/preview paths, with source
-  provenance and blocking diagnostics rather than silent lossy conversion.
+  provenance and blocking diagnostics rather than silent lossy conversion. Complete nginx roots
+  can compose the strict nginx-RTMP subset into the canonical runtime through native references.
 - **Supervision foundations:** platform-neutral replacement state machines and a staged Linux master,
   worker, and launcher path. The default public entry point remains direct `oxiroute serve` while the
   supervised production path is gated.
@@ -113,12 +117,14 @@ The example exposes:
 
 ```sh
 curl -i http://127.0.0.1:8080/healthz
-curl -s http://127.0.0.1:9080/api/v1/monitoring | jq .
+TOKEN=$(tr -d '\r\n' < /tmp/oxiroute-management.token)
+curl -s -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:9080/api/v1/monitoring | jq .
 ```
 
-Open `http://127.0.0.1:9080/` to view the Runtime Observatory. Monitoring and topology are
-loopback-only; configuration routes require the bearer token entered in the UI. The browser retains
-that token in page memory only.
+Open `http://127.0.0.1:9080/` to view the Runtime Observatory. Recognized management/API routes
+require the bearer token except exact `GET /ready` and `GET /metrics`; the browser retains that
+token in page memory only.
 
 ## The Configuration Model
 
@@ -154,21 +160,26 @@ Use these labels consistently in issues, docs, and deployment decisions:
 
 | Label | Meaning |
 | --- | --- |
-| `implemented` | The behavior is present with tests in this repository. |
+| `stable` | The behavior is part of the current narrow release contract with implementation and required evidence. |
 | `partial` | A narrow path is present, but the compatibility or production gate is incomplete. |
+| `foundation` | Tested component code exists, but it is not an active daemon capability. |
 | `planned` | A product goal or roadmap item; do not configure it in the current daemon. |
-| `out of scope` | It belongs to the kernel, a separate privileged helper, or another product boundary. |
+| `research` | An evaluated possibility requiring a product or design decision. |
+| `not-planned` | Deliberately excluded from the current product plan. |
+| `out-of-scope` | It belongs to the kernel, a separate privileged helper, or another product boundary. |
 
 The important current exclusions are:
 
-- No HTTP/3 daemon listener, UDP relay, or complete forward-proxy HTTP/2/HTTP/3 runtime.
+- No HTTP/3 daemon listener, UDP relay, or complete forward-proxy HTTP/2/HTTP/3 runtime. The
+  forward HTTP/2/HTTP/3 crates are foundations, not active listener capabilities.
 - No active cache request path; the cache crate is a tested foundation only.
 - No managed ACME issuance, certificate upload API, or certificate management UI. External Certbot
   lineage reconciliation is implemented.
 - No complete nginx, HAProxy, Squid, Varnish, or nginx-RTMP compatibility. Importers finalize only
-  audited, representable subsets and fail closed for blocking semantics.
-- No remote multi-user management mode. Management binds are loopback-only, and RTMP recorder
-  controls remain loopback-only and unauthenticated in this pre-alpha slice.
+  audited, representable subsets and fail closed for blocking semantics; strict nginx-RTMP results
+  are integrated through complete-root import and native references where documented.
+- No remote multi-user management mode. Recognized management/API routes require bearer
+  authentication except exact `GET /ready` and `GET /metrics`; management binds are loopback-only.
 - No firewall, NAT, transparent interception, source spoofing, or arbitrary packet forwarding.
 
 See [COMPATIBILITY.md](docs/COMPATIBILITY.md) for the capability-by-capability matrix and

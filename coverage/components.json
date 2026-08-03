@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "evidence": ["evidence.cache.foundation", "evidence.forward.foundation", "evidence.varnish.foundation"],
+  "evidence": ["evidence.cache.foundation", "evidence.forward-proxy", "evidence.varnish.foundation"],
   "entries": [
     { "id": "component.cache-core", "status": "foundation", "gates": { "component": true, "canonical": false, "integrated_runtime": false, "failure": true, "tests": true } },
     { "id": "component.forward-proxy-h1", "status": "integrated", "gates": { "component": true, "canonical": true, "integrated_runtime": true, "failure": true, "tests": true } },

@@ -4,7 +4,21 @@
 
 This is the normative product specification. `MUST`, `MUST NOT`, `SHOULD`, and `MAY`
 have their usual requirements meanings. A roadmap item is not a current capability; the
-README and `COMPATIBILITY.md` are the sources of truth for implemented behavior.
+README and `COMPATIBILITY.md` are the sources of truth for current capability status.
+
+Capability labels in the current release contract are deliberately separate:
+
+- `stable`: part of the current supported contract with implementation and the required
+  repository evidence for that narrow behavior. This does not imply complete upstream parity or
+  a 1.0 release guarantee.
+- `partial`: an integrated path exists, but compatibility breadth, failure evidence, or production
+  gates are incomplete.
+- `foundation`: a component or protocol foundation is tested, but it is not an active daemon
+  capability.
+- `planned`: committed future implementation work with no complete current runtime path.
+- `research`: an evaluated possibility that still needs a product or design decision.
+- `not-planned`: deliberately excluded from the product plan for the current boundary.
+- `out-of-scope`: belongs to the kernel, a separate privileged helper, or another product boundary.
 
 ## Vision
 
@@ -22,7 +36,8 @@ firewalling, NAT, routing, or conntrack.
 2. Support HTTP/1, HTTP/2, and HTTP/3 in explicitly reported downstream and upstream modes.
 3. Reach functional coverage across maintained Squid feature families, tracked by a public compatibility matrix.
 4. Import useful nginx, HAProxy, Apache virtual-host, and Squid configurations with blocking diagnostics for semantic gaps.
-5. Provide a restricted Lua data format as the canonical human-editable configuration.
+5. Provide KDL 2.0 as the canonical human-editable configuration, while retaining restricted Lua
+   as a supported compatibility adapter.
 6. Proxy opaque TCP streams and UDP datagrams so application protocols do not require dedicated modules.
 7. Provide load balancing, health checking, limits, and observability consistently across supported transports.
 8. Provide a Vue 3 control plane using build-time Pug templates that reflects disk and active runtime state.
@@ -141,7 +156,7 @@ complete Squid parity while such entries remain.
 
 ### Control plane and UI
 
-- The first release MUST bind management to loopback by default.
+- The current release MUST bind management to loopback by default.
 - API writes MUST use content-hash optimistic concurrency.
 - Vue MUST receive typed JSON; it MUST NOT generate Lua fragments in the browser.
 - Pug MUST be used only as a build-time Vue SFC template preprocessor.
@@ -167,6 +182,29 @@ complete Squid parity while such entries remain.
 
 ## Release definition
 
-Version 0.1 is the scope in Roadmap Milestone 1. Broader goals above remain specifications,
-not blockers for the first useful release. This distinction is required to prevent a
-multi-year parity effort from delaying a safe basic proxy.
+The package currently declares version `0.3.0`; `v0.2.3` is the latest repository tag and there is
+no `v0.3.0` tag. The current release line is pre-alpha, not a 1.0 stability claim. The
+compatibility matrix records the supported narrow paths for this working release line, while the
+roadmap records work that is not yet available.
+
+The current contract is:
+
+- `stable`: KDL 2.0 default authoring and deterministic rendering, strict typed configuration,
+  loopback management exposure, bearer protection for recognized management/API routes, public
+  readiness and metrics probes, bounded event polling, and external Certbot lineage
+  reconciliation.
+- `partial`: reverse HTTP and TCP, HTTP/1 forward proxying, RTMP live/recording/relay slices,
+  structured access logs, native nginx/HAProxy/Squid import subsets, and the Vue control plane.
+- `foundation`: standalone cache, forward HTTP/2 and HTTP/3 protocol components, Varnish semantic
+  analysis, and supervised replacement components that are not the default direct `serve` path.
+- `planned`: UDP relay, active cache integration, managed ACME issuance, HTTP/3 daemon listeners,
+  SSE, and broader protocol/import compatibility.
+- `research`: remote administration, DNS-01/TLS-ALPN-01 policy, external key providers, and
+  transparent interception through a separate privileged helper.
+- `not-planned`: unrestricted Lua and runtime user-provided templates.
+- `out-of-scope`: firewalling, NAT, packet forwarding, source spoofing, and other kernel-owned
+  network functions.
+
+Broader goals above remain specifications, not current capability claims. A feature moves to
+`stable` only when its implementation, failure behavior, observability, reload/rotation behavior,
+and interoperability evidence meet the applicable release gate.

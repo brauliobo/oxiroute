@@ -6,7 +6,7 @@
     "value": "1.1.4+git.6c7719d",
     "documentation": "docs/RTMP_SPEC.md"
   },
-  "evidence": ["evidence.nginx-rtmp.registry", "evidence.nginx-rtmp.import"],
+  "evidence": ["evidence.nginx-rtmp.registry", "evidence.nginx-rtmp.import", "evidence.rtmp.session-policy"],
   "entries": [
     { "id": "directive.nginx-rtmp.rtmp", "key": "rtmp", "contexts": ["nginx_main"], "min_args": 0, "max_args": 0, "value_kind": "block", "default": null, "repeatable": false, "runtime_status": "parsed_not_enforced", "disposition": "classified", "target": "rtmp.directive_registry", "required_tests": ["parse", "validation", "failure", "differential"] },
     { "id": "directive.nginx-rtmp.server", "key": "server", "contexts": ["rtmp_main"], "min_args": 0, "max_args": 0, "value_kind": "block", "default": null, "repeatable": true, "runtime_status": "parsed_not_enforced", "disposition": "classified", "target": "rtmp.directive_registry", "required_tests": ["parse", "validation", "failure", "differential"] },

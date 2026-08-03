@@ -6,11 +6,12 @@ recording roots, and management tokens are administrator-owned inputs.
 ## Management Exposure
 
 - The management listener is loopback-only in the current schema.
-- Configuration routes require a file-backed bearer token loaded at startup.
+- Every recognized management/API route requires the file-backed bearer token loaded at startup,
+  except exact `GET /ready` and `GET /metrics` probes.
 - The UI keeps that token in page memory and does not persist it.
-- Monitoring, topology, and recorder-control routes have narrower current authentication rules than
-  configuration writes. Recorder controls remain loopback-only and unauthenticated in this pre-alpha
-  slice; do not expose the listener remotely.
+- Monitoring, topology, RTMP, generation, TLS, process, event, and recorder-control routes use the
+  same bearer boundary as configuration writes. The management listener remains loopback-only; do
+  not expose it remotely.
 - Public statistics binds expose only `/ready` and `/metrics` without the statistics token. Restricted
   statistics reads and mutations require loopback plus the configured token and revision.
 

@@ -9,12 +9,23 @@ the UI edits the same model through a revisioned API.
 The priorities are safe reloads, correct protocol behavior, diagnostics, and observable
 limits. Feature count comes after those invariants.
 
+The package currently declares `0.3.0`; `v0.2.3` is the latest repository tag and no `v0.3.0`
+tag is asserted. This roadmap describes the current pre-alpha working release line, not a 1.0
+commitment.
+
+Roadmap status is not current support. `stable` means part of the current narrow release
+contract; `partial` means an integrated slice still has compatibility or production gates;
+`foundation` means tested code that is not active in the daemon; `planned` means committed future
+work; `research` needs a product or design decision; `not-planned` is a deliberate exclusion; and
+`out-of-scope` belongs to another product boundary.
+
 ## Milestone 0: executable skeleton
 
-Status: implemented.
+Status: foundation. The skeleton is implemented and tested, but it is not a release boundary.
 
 - Rust 1.87 workspace using Edition 2024 language semantics and resolver v3.
-- Restricted, text-only Lua configuration with no standard libraries.
+- KDL 2.0 as the default configuration format, plus restricted, text-only Lua compatibility
+  configuration with no standard libraries.
 - Source, memory, and instruction limits.
 - Strict config decoding and validation.
 - Static HTTP reverse proxy through Pingora.
@@ -40,26 +51,36 @@ Status: partial. The annotations below identify landed slices; Milestone 1 is no
 - Tagged socket/DNS/Unix upstreams with round-robin and least-connections selection, plus active
   TCP/HTTP health checks for non-Unix pools (implemented; Unix transports require Unix).
 - Request/connection limits, structured access logs, and Prometheus metrics (limits are
-  implemented; structured access logs and Prometheus exposition remain).
+  implemented; HTTP structured JSONL access logs and Prometheus exposition are implemented for
+  the current narrow surface, while protocol breadth and richer log contracts remain partial).
 - Prepare-then-activate configuration reload; invalid candidates leave the prior generation active
-  (complete candidate preflight and durable revision-checked save are implemented, but changed
-  saves require process restart and are not activated live).
-- Parent-directory file watcher with content-hash revisions (not implemented for the canonical
-  config; the Certbot lineage watcher is separate).
+  (complete candidate preflight, durable revision-checked save, parent-directory watching,
+  periodic reconciliation, and in-process generation activation are implemented; broader
+  active-traffic drain evidence remains a gate).
+- Parent-directory file watcher with content-hash revisions (implemented for the canonical root,
+  including periodic re-resolution of native references; direct watches for every resolved native
+  dependency and richer dependency registration remain planned).
 - ACME HTTP-01 certificate issuance, renewal scheduling, and zero-downtime activation (managed ACME
   remains absent; external Certbot lineage rotation is implemented).
 - Imported PEM and generated self-signed certificates for development and bootstrap use (strict
   imported-PEM startup preparation and the atomic callback-publication seam are implemented;
   file reload/API activation and self-signed generation remain).
-- Loopback-only management API by default (monitoring/topology/RTMP plus bearer-authenticated config
-  read, validation, preview, and durable write are implemented; SSE is absent).
+- Loopback-only management API by default (recognized `/api/v1` routes use the bearer token;
+  exact `GET /ready` and `GET /metrics` are the public probes; monitoring, topology, RTMP,
+  generation, TLS, process, listener, pool, server, config, and bounded event routes are
+  implemented or partial as documented; SSE remains planned).
 - Minimal Vue 3 SPA using build-time Pug SFC templates (implemented).
 - UI for listeners, upstreams, validation diagnostics, active revision, and basic metrics (the
   complete current canonical-field workspace and runtime observatory are implemented; certificate,
   import, and event workflows remain).
 
-Explicitly exclude UDP, forward proxying, caching, HTTP/3, native config importers,
-transparent interception, firewall management, and remote multi-user administration.
+The original Milestone 1 boundary explicitly excluded UDP, forward proxying, caching, HTTP/3,
+native config importers, transparent interception, firewall management, and remote multi-user
+administration. The current `0.3.0` working release has partial HTTP/1 forward proxying and
+bounded nginx, HAProxy, Squid, and nginx-RTMP import paths; that progress does not promote those
+subsets to complete compatibility or make foundations active capabilities. UDP, active cache,
+HTTP/3 daemon listeners, transparent interception, firewall management, and remote multi-user
+administration remain outside the current release contract.
 
 Release gates:
 
@@ -70,12 +91,16 @@ Release gates:
   verification/version-policy, gRPC trailer, and per-identity certificate-generation publication
   wire tests (implemented for the current narrow slice).
 - Invalid reload and listener-bind failure tests.
-- API revision-conflict and explicit external-file-change detection tests (implemented; no watcher
-  or SSE reconnect path exists).
+- API revision-conflict and explicit external-file-change detection tests (implemented; the
+  canonical watcher and bounded event polling exist, while SSE reconnect remains planned).
 - ACME staging-directory issuance, renewal, failed-challenge, and rollback tests.
 - No root requirement and no outbound destination inferred from request input.
 
 ## Milestone 2: import and layer-4 breadth
+
+Status: partial. Strict nginx, HAProxy, Squid, and nginx-RTMP subsets are implemented, including
+complete-root nginx HTTP+RTMP composition through canonical native references; Apache, UDP, PROXY,
+and broader importer semantics remain future work.
 
 Audited migration cases and implementation progress are tracked in
 [`HOST_CONFIG_COVERAGE.md`](HOST_CONFIG_COVERAGE.md). A case is complete only after canonical,
@@ -83,9 +108,11 @@ runtime, failure-path, test, and native-lowering coverage all land.
 
 - Canonical listener, HTTP service, route, upstream pool, TLS profile, certificate, and L4 service
   model (implemented for the current strict subset; importer provenance and broader policy remain).
-- nginx importer for a static HTTP and stream subset (the explicit HTTP-fragment API conditionally
-  finalizes a strict proxy/fixed/redirect subset, but complete nginx files, static index semantics,
-  stream lowering, audited candidates, and daemon integration remain blocked).
+- nginx importer for a static HTTP and nginx-RTMP subset (the explicit HTTP-fragment API
+  conditionally finalizes a strict proxy/fixed/redirect subset; `import_root` composes complete
+  nginx HTTP and RTMP roots, and KDL/HOCON/UCI native references can resolve the finalized result
+  into a watched runtime generation; stream lowering, broader semantics, and audited candidates
+  remain partial or blocked).
 - HAProxy importer for static HTTP/TCP frontends and backends (ordered roots, semantic resolution,
   strict socket/DNS/Unix transport lowering, HTTP balancing/routing/retry/health policy, and the
   audited live hostrouter candidate now finalize; broader ACLs, redispatch interval forms,
@@ -103,6 +130,9 @@ Imports are not successful when behavior is ignored. Unsupported routing, TLS, A
 listener semantics must block the affected service.
 
 ## Milestone 3: explicit forward proxy
+
+Status: partial. The HTTP/1 daemon path is integrated; standalone HTTP/2 and HTTP/3 components are
+foundations and do not represent daemon listener support.
 
 - Dedicated HTTP/1 absolute-form parser and bounded CONNECT tunnel with over-read preservation
   (integrated for the HTTP/1 daemon listener; broader conformance remains).
@@ -122,6 +152,10 @@ peer protocols, and broad Squid helper compatibility.
 
 ## Milestone 4: cache and HTTP/3
 
+Status: foundation; active integration is planned. The cache and forward-proxy protocol components
+have tests, but neither active cache request-path ownership nor a QUIC listener is part of the
+current daemon contract.
+
 - Production cache storage designed as a separate component with recovery, eviction, and
   cache-bound prepared-entry admission tests (the standalone foundation exists; request-path
   integration remains).
@@ -134,6 +168,9 @@ never degrade silently to another HTTP version.
 
 ## Future kernel integration
 
+Status: out-of-scope for the ordinary daemon; research only for a separately approved privileged
+helper.
+
 If transparent traffic handling becomes necessary, build a separate privileged Linux
 helper with a narrow API and explicit nftables/policy-routing ownership. Keep it optional
 and out of the proxy process. Do not generate or reconcile arbitrary firewall rules from
@@ -141,20 +178,27 @@ the main daemon.
 
 ## RTMP workstream
 
+Status: partial. The current contract is bounded live publish/play, fanout, static push relay, and
+legacy AVC/AAC FLV recording. Canonical named recorders, exact-ID manual controls, and fixed
+inbound assembled-message protection are implemented; nginx-RTMP directive breadth and parity
+remain incomplete.
+
 RTMP proceeds in independently releasable slices rather than waiting for HTTP/Squid parity:
 
 1. Register and validate all 117 active nginx-rtmp directives with lossless raw values and
    runtime-support status (registry/context validation implemented; deterministic includes,
    inheritance, occurrence accounting, provenance, and canonical finalization implemented for a
-   strict listener/application/recording subset; broad lowering remains).
+   strict listener/application/recording subset, including supported named recorder blocks;
+   broad lowering remains).
 2. Implement handshake, chunk transport, AMF0 connect/createStream, live publish/play,
-   metadata/codec headers, keyframe gating, and bounded fanout (narrow live listener path
-   implemented; broader conformance remains).
+   metadata/codec headers, keyframe gating, and bounded fanout (narrow live listener path and
+   fixed 8 MiB assembled-message ceiling are implemented; configurable nginx `max_message`,
+   broader conformance, and exhaustive chunk coverage remain).
 3. Add access, callbacks, push/pull relay, FLV recording, VOD, statistics, control, and logging
-   (canonical continuous/manual legacy AVC/AAC FLV recording, session dispatch, storage, bounded
-   workers/reaping, observability, and exact-ID controls are integrated; enhanced codec recording,
-   access, callbacks, relay, VOD, statistics parity, authenticated remote control, and logging
-   remain).
+   (canonical continuous/manual legacy AVC/AAC FLV recording, canonical named recorders, session
+   dispatch, storage, bounded workers/reaping, observability, and exact-ID bearer-protected
+   controls are integrated; enhanced codec recording, pull/callback breadth, VOD, statistics
+   parity, and RTMP access-log parity remain).
 4. Add HLS, MPEG-DASH, isolated exec workers, limits, and multi-worker equivalents.
 
 Each remaining slice will begin with protocol/configuration failures and differential fixtures
