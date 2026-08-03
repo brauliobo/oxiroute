@@ -97,6 +97,15 @@ async fn relays_bidirectional_traffic_and_accounts_for_it() {
         assert_eq!(snapshot.traffic.bytes_received, 14);
         assert_eq!(snapshot.traffic.bytes_sent, 15);
         assert_eq!(snapshot.traffic.active_connections, 0);
+        assert_eq!(
+            snapshot.listeners[0]
+                .tcp_relays
+                .as_ref()
+                .expect("TCP metrics")
+                .outcomes[0]
+                .count,
+            1
+        );
     })
     .await
     .expect("bidirectional relay timed out");
@@ -424,7 +433,7 @@ async fn connect_failure_releases_the_selected_lease() {
     let unavailable = listener.local_addr().expect("unavailable address");
     drop(listener);
     let (_client, downstream) = downstream_pair().await;
-    let (_runtime_metrics, connection) = connection_metrics();
+    let (runtime_metrics, connection) = connection_metrics();
     let (pool, relay) = relay_core_with_algorithm(
         unavailable.into(),
         policy(None, None),
@@ -438,6 +447,18 @@ async fn connect_failure_releases_the_selected_lease() {
         .expect_err("unavailable upstream must fail");
     assert!(matches!(failure.kind, RelayFailureKind::Connect(_)));
     assert_eq!(pool.health_snapshot().endpoints[0].active_connections, 0);
+    assert_eq!(
+        runtime_metrics
+            .snapshot()
+            .expect("TCP metrics snapshot")
+            .listeners[0]
+            .tcp_relays
+            .as_ref()
+            .expect("TCP metrics")
+            .outcomes[1]
+            .count,
+        1
+    );
 }
 
 #[tokio::test]

@@ -38,9 +38,11 @@ pub use l4_service::L4ServicePlan;
 pub use listener_reservation::{ListenerReservation, ListenerReservations};
 pub use monitoring::{
     CertbotCertificateSnapshot, CertbotWatcherHealth, CertbotWatcherSnapshot, ConnectionGuard,
-    HostSnapshot, ListenerMetrics, ListenerRuntimeState, ListenerSnapshot, MetricsError,
-    ProcessConnectionGuard, ProcessRuntime, ProcessSnapshot, RuntimeMetrics, RuntimeSnapshot,
-    TrafficSnapshot,
+    HostSnapshot, HttpOperationCountSnapshot, HttpOperationResult, HttpOperationSnapshot,
+    LatencyBucketSnapshot, LatencySnapshot, ListenerMetrics, ListenerRuntimeState,
+    ListenerSnapshot, MetricsError, OPERATION_LATENCY_BUCKETS_MS, ProcessConnectionGuard,
+    ProcessRuntime, ProcessSnapshot, RuntimeMetrics, RuntimeSnapshot, TcpRelayCountSnapshot,
+    TcpRelayResult, TcpRelaySnapshot, TrafficSnapshot,
 };
 pub use prometheus::{PrometheusError, render_prometheus};
 pub use routing::{

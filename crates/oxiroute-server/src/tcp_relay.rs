@@ -1,5 +1,6 @@
 use std::{error::Error, fmt, future::pending, io, time::Duration};
 
+use log::warn;
 use pingora::{protocols::Stream, server::ShutdownWatch};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, split},
@@ -10,7 +11,7 @@ use tokio::{
 #[cfg(unix)]
 use tokio::net::UnixStream;
 
-use crate::{ConnectionGuard, EndpointLease, MetricsError, RuntimeEndpoint};
+use crate::{ConnectionGuard, EndpointLease, MetricsError, RuntimeEndpoint, TcpRelayResult};
 
 /// Memory used for each direction of a relayed connection.
 pub const RELAY_BUFFER_SIZE: usize = 16 * 1024;
@@ -151,6 +152,20 @@ impl Error for RelayFailure {
     }
 }
 
+impl TcpRelayResult {
+    pub(crate) const fn from_failure_kind(kind: &RelayFailureKind) -> Self {
+        match kind {
+            RelayFailureKind::Connect(_) => Self::ConnectError,
+            RelayFailureKind::ConnectTimeout(_) => Self::ConnectTimeout,
+            RelayFailureKind::IdleTimeout(_) => Self::IdleTimeout,
+            RelayFailureKind::LifetimeTimeout(_) => Self::LifetimeTimeout,
+            RelayFailureKind::Cancelled => Self::Cancelled,
+            RelayFailureKind::Io { .. } => Self::IoError,
+            RelayFailureKind::Accounting(_) => Self::AccountingError,
+        }
+    }
+}
+
 /// Selected upstream lease and policy for a raw TCP relay.
 pub struct TcpRelayCore {
     upstream: EndpointLease,
@@ -175,34 +190,46 @@ impl TcpRelayCore {
         connection: &ConnectionGuard,
         mut shutdown: ShutdownWatch,
     ) -> Result<RelayStats, RelayFailure> {
+        let started_at = Instant::now();
         let upstream = tokio::select! {
             biased;
-            () = wait_for_shutdown(&mut shutdown) => {
-                return Err(failure(RelayFailureKind::Cancelled, RelayStats::default()));
-            }
+            () = wait_for_shutdown(&mut shutdown) => Err(failure(RelayFailureKind::Cancelled, RelayStats::default())),
             result = timeout(
                 self.policy.connect,
                 connect_upstream(&self.upstream),
             ) => {
                 match result {
-                    Ok(Ok(upstream)) => upstream,
+                    Ok(Ok(upstream)) => Ok(upstream),
                     Ok(Err(source)) => {
-                        return Err(failure(
+                        Err(failure(
                             RelayFailureKind::Connect(source),
                             RelayStats::default(),
-                        ));
+                        ))
                     }
                     Err(_) => {
-                        return Err(failure(
+                        Err(failure(
                             RelayFailureKind::ConnectTimeout(self.policy.connect),
                             RelayStats::default(),
-                        ));
+                        ))
                     }
                 }
             }
         };
 
-        relay_streams(downstream, upstream, connection, shutdown, self.policy).await
+        let result = match upstream {
+            Ok(upstream) => {
+                relay_streams(downstream, upstream, connection, shutdown, self.policy).await
+            }
+            Err(failure) => Err(failure),
+        };
+        let category = result.as_ref().map_or_else(
+            |failure| TcpRelayResult::from_failure_kind(&failure.kind),
+            |_| TcpRelayResult::Success,
+        );
+        if let Err(error) = connection.record_tcp_relay(category, started_at.elapsed()) {
+            warn!("could not account for TCP relay metrics: {error}");
+        }
+        result
     }
 }
 
@@ -389,6 +416,24 @@ mod tests {
         let (_accepted, _) = listener.accept().await.expect("second address accept");
 
         assert_eq!(connection.peer_addr().expect("connected peer"), second);
+    }
+
+    #[test]
+    fn relay_failures_use_bounded_result_categories() {
+        assert_eq!(
+            TcpRelayResult::from_failure_kind(&RelayFailureKind::Connect(io::Error::other("down"))),
+            TcpRelayResult::ConnectError
+        );
+        assert_eq!(
+            TcpRelayResult::from_failure_kind(&RelayFailureKind::IdleTimeout(Duration::from_secs(
+                1
+            ))),
+            TcpRelayResult::IdleTimeout
+        );
+        assert_eq!(
+            TcpRelayResult::from_failure_kind(&RelayFailureKind::Cancelled),
+            TcpRelayResult::Cancelled
+        );
     }
 }
 

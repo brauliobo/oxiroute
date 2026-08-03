@@ -30,8 +30,8 @@ use pingora::{
 };
 
 use crate::{
-    GenerationReference, HttpServicePlan, ListenerMetrics, RuntimeEndpoint, RuntimeGeneration,
-    RuntimeReferenceKind,
+    GenerationReference, HttpOperationResult, HttpServicePlan, ListenerMetrics, RuntimeEndpoint,
+    RuntimeGeneration, RuntimeReferenceKind,
     http_action::{
         HttpActionPlan, HttpGzipPlan, HttpRoutePlan, ProxyPolicyPlan, RequestHeaderMutationPlan,
         RequestHeaderValuePlan, ResponseHeaderMutationPlan, StaticErrorTarget, StaticFile,
@@ -83,6 +83,7 @@ pub struct HttpRequestContext {
     response_status_override: Option<u16>,
     response_header_overrides: Vec<(HeaderName, HeaderValue)>,
     started_at: Instant,
+    operation_result: Option<HttpOperationResult>,
     websocket_reference: Option<GenerationReference>,
 }
 
@@ -137,6 +138,7 @@ impl ProxyHttp for HttpReverseProxy {
             response_status_override: None,
             response_header_overrides: Vec::new(),
             started_at: Instant::now(),
+            operation_result: None,
             websocket_reference: None,
         }
     }
@@ -474,12 +476,25 @@ impl ProxyHttp for HttpReverseProxy {
         error: Option<&pingora::Error>,
         ctx: &mut Self::CTX,
     ) {
+        let response_status = session
+            .response_written()
+            .map(|response| response.status.as_u16());
         if let Some(error) = error {
             warn!(
                 "HTTP request failed with {:?} from {:?}",
                 error.etype(),
                 error.esource()
             );
+        }
+        if ctx.operation_result.is_none() {
+            let result = classify_http_result(error, response_status);
+            ctx.operation_result = Some(result);
+            if let Err(metric_error) = ctx
+                .listener
+                .record_http_operation(result, ctx.started_at.elapsed())
+            {
+                warn!("could not account for HTTP operation metrics: {metric_error}");
+            }
         }
         ctx.observe(session);
         ctx.release_lease();
@@ -494,7 +509,7 @@ impl ProxyHttp for HttpReverseProxy {
                 "route": ctx.route.as_ref().map(|route| route.route_id.as_str()),
                 "host": ctx.authority.as_ref().and_then(normalized_host),
                 "method": request.method.as_str(),
-                "status": session.response_written().map(|response| response.status.as_u16()),
+                "status": response_status,
                 "bytesReceived": session.body_bytes_read().to_string(),
                 "bytesSent": session.body_bytes_sent().to_string(),
                 "durationMs": ctx.started_at.elapsed().as_millis().to_string(),
@@ -1819,6 +1834,34 @@ fn observe_counter(listener: &ListenerMetrics, current: usize, observed: &mut u6
     }
 }
 
+fn classify_http_result(
+    error: Option<&Error>,
+    response_status: Option<u16>,
+) -> HttpOperationResult {
+    let Some(error) = error else {
+        return HttpOperationResult::from_status(response_status);
+    };
+    if matches!(
+        error.etype(),
+        ErrorType::ConnectTimedout
+            | ErrorType::TLSHandshakeTimedout
+            | ErrorType::ReadTimedout
+            | ErrorType::WriteTimedout
+    ) {
+        return HttpOperationResult::Timeout;
+    }
+    if matches!(error.etype(), ErrorType::ConnectionClosed) {
+        return HttpOperationResult::Cancelled;
+    }
+    if matches!(error.esource(), pingora::ErrorSource::Upstream) {
+        return HttpOperationResult::UpstreamError;
+    }
+    if let ErrorType::HTTPStatus(status) = error.etype() {
+        return HttpOperationResult::from_status(Some(*status));
+    }
+    HttpOperationResult::InternalError
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -1869,6 +1912,35 @@ mod tests {
         encoded.insert_header(CONTENT_TYPE, "text/html").unwrap();
         encoded.insert_header(CONTENT_ENCODING, "br").unwrap();
         assert!(!gzip_matches(&gzip, &encoded));
+    }
+
+    #[test]
+    fn http_terminal_results_use_bounded_categories() {
+        use crate::HttpOperationResult;
+
+        assert_eq!(
+            classify_http_result(None, Some(204)),
+            HttpOperationResult::Success
+        );
+        assert_eq!(
+            classify_http_result(None, Some(404)),
+            HttpOperationResult::ClientError
+        );
+        assert_eq!(
+            classify_http_result(None, Some(503)),
+            HttpOperationResult::ServerError
+        );
+
+        let upstream = Error::new_up(ErrorType::ConnectRefused);
+        assert_eq!(
+            classify_http_result(Some(&upstream), None),
+            HttpOperationResult::UpstreamError
+        );
+        let timeout = Error::new_up(ErrorType::ReadTimedout);
+        assert_eq!(
+            classify_http_result(Some(&timeout), None),
+            HttpOperationResult::Timeout
+        );
     }
 
     #[test]
