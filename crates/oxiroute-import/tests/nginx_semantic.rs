@@ -386,6 +386,35 @@ fn duplicate_scalar_directives_are_blocking_before_lowering() {
 }
 
 #[test]
+fn registers_keepalive_and_proxy_cookie_flag_policies_in_their_supported_contexts() {
+    let resolved = resolve_source(
+        br"
+            http {
+                keepalive_timeout 65s;
+                proxy_cookie_flags session secure httponly samesite=lax;
+                upstream backend { server 127.0.0.1:8080; }
+                server {
+                    listen 127.0.0.1:8088 default_server;
+                    location / { proxy_pass http://backend; }
+                }
+            }
+        ",
+        &[],
+    );
+
+    assert!(
+        resolved.diagnostics().is_empty(),
+        "{:?}",
+        resolved.diagnostics()
+    );
+    for name in [b"keepalive_timeout".as_slice(), b"proxy_cookie_flags"] {
+        assert!(resolved.value().decisions.iter().any(|decision| {
+            decision.name.value == name && decision.disposition == OccurrenceDisposition::Resolved
+        }));
+    }
+}
+
+#[test]
 fn overlapping_listens_block_while_protocol_options_are_reconciled() {
     let overlapping = resolve_source(
         br"http {

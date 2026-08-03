@@ -6,13 +6,14 @@ use std::{
 
 use oxiroute_config::{
     AccessLogPolicy, DnsResolutionPolicy, DownstreamTimeoutPolicy, HttpAccessPolicy,
-    HttpCookiePathRewrite, HttpGzipMinimumVersion, HttpGzipPolicy, HttpHostSelector,
-    HttpLiteralHeader, HttpMimeType, HttpPathSelector, HttpProxyPolicy, HttpRedirectLocation,
-    HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpResponseHeaderMutation, HttpRetryPolicy,
-    HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpService,
-    HttpStaticErrorResponse, HttpStaticMimePolicy, HttpStaticPathMapping, HttpStaticTryFile,
-    HttpUpstreamHost, HttpVersionPolicy, Listener, ListenerBind, Protocol, UpstreamConnectionReuse,
-    UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls, canonicalize_http_path,
+    HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpGzipMinimumVersion, HttpGzipPolicy,
+    HttpHostSelector, HttpLiteralHeader, HttpMimeType, HttpPathSelector, HttpProxyPolicy,
+    HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
+    HttpResponseHeaderMutation, HttpRetryPolicy, HttpRetryTrigger, HttpRoute, HttpRouteAction,
+    HttpRoutePolicy, HttpSameSite, HttpService, HttpStaticErrorResponse, HttpStaticMimePolicy,
+    HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost, HttpVersionPolicy, Listener,
+    ListenerBind, Protocol, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool,
+    UpstreamServer, UpstreamTls, canonicalize_http_path,
 };
 
 use crate::canonical::absolute_file_path;
@@ -412,6 +413,8 @@ impl Lowerer {
         let mut pool_names = HashSet::new();
         let mut route_origins = Vec::new();
         let mut all_origins = Vec::new();
+        let (downstream_timeouts, downstream_timeout_origins) =
+            self.lower_downstream_timeouts(bind, servers, issues);
         for server in servers {
             if !Self::server_participates(bind, server) {
                 continue;
@@ -534,6 +537,7 @@ impl Lowerer {
             all_origins.extend(tls.origins);
         }
         all_origins.extend(gzip_origins.all());
+        all_origins.extend(downstream_timeout_origins);
         let access_log = if uses_default_access_log {
             self.used_default_access_log_overlay = true;
             Some(AccessLogPolicy::File {
@@ -553,7 +557,7 @@ impl Lowerer {
                 service: Some(service_name.clone()),
                 tls_profile: tls_profile.as_ref().map(|profile| profile.name.clone()),
                 max_connections: None,
-                downstream_timeouts: DownstreamTimeoutPolicy::default(),
+                downstream_timeouts,
             },
             service: HttpService {
                 name: service_name,
@@ -608,6 +612,94 @@ impl Lowerer {
         } else {
             Err(issues)
         }
+    }
+
+    fn lower_downstream_timeouts(
+        &self,
+        bind: &EffectiveBind,
+        servers: &[&EffectiveServer],
+        issues: &mut Vec<LowerIssue>,
+    ) -> (DownstreamTimeoutPolicy, Vec<DirectiveOrigin>) {
+        let mut values = Vec::new();
+        let mut origins = Vec::new();
+        let mut invalid = false;
+        for server in servers
+            .iter()
+            .copied()
+            .filter(|server| Self::server_participates(bind, server))
+        {
+            let Some(policy) =
+                self.effective_policy(server.origin.occurrence, b"keepalive_timeout")
+            else {
+                values.push(None);
+                continue;
+            };
+            origins.extend(policy.origins.clone());
+            let origin = policy.origins.last().unwrap_or(&server.origin);
+            let value = match policy.arguments.as_slice() {
+                [timeout] => {
+                    if let Some(milliseconds) = parse_duration_ms(timeout) {
+                        Some(milliseconds)
+                    } else {
+                        invalid = true;
+                        issues.push(issue(
+                            origin,
+                            E_INVALID_VALUE,
+                            "keepalive_timeout must be a positive finite nginx duration",
+                        ));
+                        None
+                    }
+                }
+                [_, _] => {
+                    invalid = true;
+                    issues.push(issue(
+                        origin,
+                        E_SEMANTICS_NOT_REPRESENTABLE,
+                        "keepalive_timeout header timeout is not represented by the canonical listener policy",
+                    ));
+                    None
+                }
+                _ => {
+                    invalid = true;
+                    issues.push(issue(
+                        origin,
+                        E_INVALID_VALUE,
+                        "keepalive_timeout requires one positive finite timeout",
+                    ));
+                    None
+                }
+            };
+            values.push(value);
+        }
+
+        let distinct = values.iter().copied().collect::<HashSet<_>>();
+        if !invalid && distinct.len() > 1 {
+            let origin = origins.first().or_else(|| {
+                servers
+                    .iter()
+                    .find(|server| Self::server_participates(bind, server))
+                    .map(|server| &server.origin)
+            });
+            if let Some(origin) = origin {
+                issues.push(issue(
+                    origin,
+                    E_SEMANTICS_NOT_REPRESENTABLE,
+                    "virtual servers on one nginx bind have different effective keepalive_timeout policies",
+                ));
+            }
+            invalid = true;
+        }
+
+        (
+            DownstreamTimeoutPolicy {
+                client_timeout_ms: None,
+                request_timeout_ms: None,
+                keepalive_timeout_ms: (!invalid)
+                    .then(|| distinct.into_iter().next().flatten())
+                    .flatten(),
+            },
+            origins,
+        )
     }
 
     #[expect(
@@ -1568,6 +1660,7 @@ impl Lowerer {
             self.used_default_error_overlay.set(true);
         }
         let response_cookie_path_rewrites = self.lower_cookie_rewrites(location, issues);
+        let response_cookie_attributes = self.lower_cookie_attributes(location, issues);
         let retry = self.lower_proxy_retry(location, pool.pool.servers.len(), issues);
         let timeouts = self.proxy_timeouts(location.origin.occurrence, &location.origin, issues);
         if !issues.is_empty() {
@@ -1588,6 +1681,7 @@ impl Lowerer {
             b"proxy_pass_header".as_slice(),
             b"proxy_ignore_headers".as_slice(),
             b"proxy_cookie_path".as_slice(),
+            b"proxy_cookie_flags".as_slice(),
             b"proxy_next_upstream".as_slice(),
             b"proxy_next_upstream_tries".as_slice(),
         ] {
@@ -1617,7 +1711,7 @@ impl Lowerer {
                 request_headers,
                 response_headers,
                 response_cookie_path_rewrites,
-                response_cookie_attributes: Vec::new(),
+                response_cookie_attributes,
                 retry,
                 cache: None,
             },
@@ -1949,6 +2043,104 @@ impl Lowerer {
                 Some(HttpCookiePathRewrite { from: from.into(), to: to.into() })
             })
             .collect()
+    }
+
+    fn lower_cookie_attributes(
+        &self,
+        location: &EffectiveLocation,
+        issues: &mut Vec<LowerIssue>,
+    ) -> Vec<HttpCookieAttributePolicy> {
+        let mut attributes = Vec::new();
+        let mut names = HashSet::new();
+        for policy in
+            self.effective_list_policy_chain(location.origin.occurrence, b"proxy_cookie_flags")
+        {
+            let origin = policy.origins.last().unwrap_or(&location.origin);
+            let Some((name, flags)) = policy.arguments.split_first() else {
+                continue;
+            };
+            let Some(name) = utf8(name) else {
+                issues.push(issue(
+                    origin,
+                    E_INVALID_VALUE,
+                    "proxy_cookie_flags cookie name is not UTF-8",
+                ));
+                continue;
+            };
+            if name.is_empty() || name.starts_with('~') || name.contains('$') {
+                issues.push(issue(
+                    origin,
+                    E_SEMANTICS_NOT_REPRESENTABLE,
+                    "proxy_cookie_flags requires an exact static cookie name",
+                ));
+                continue;
+            }
+
+            let mut secure = None;
+            let mut http_only = None;
+            let mut same_site = None;
+            let mut valid = true;
+            for flag in flags {
+                match flag.as_slice() {
+                    b"secure" if secure.is_none() => secure = Some(true),
+                    b"nosecure" if secure.is_none() => secure = Some(false),
+                    b"httponly" if http_only.is_none() => http_only = Some(true),
+                    b"nohttponly" if http_only.is_none() => http_only = Some(false),
+                    b"samesite=strict" if same_site.is_none() => {
+                        same_site = Some(HttpSameSite::Strict);
+                    }
+                    b"samesite=lax" if same_site.is_none() => {
+                        same_site = Some(HttpSameSite::Lax);
+                    }
+                    b"samesite=none" if same_site.is_none() => {
+                        same_site = Some(HttpSameSite::None);
+                    }
+                    b"secure" | b"nosecure" | b"httponly" | b"nohttponly" | b"samesite=strict"
+                    | b"samesite=lax" | b"samesite=none" => {
+                        valid = false;
+                        issues.push(issue(
+                            origin,
+                            E_SEMANTICS_NOT_REPRESENTABLE,
+                            "proxy_cookie_flags repeats or conflicts on one cookie attribute",
+                        ));
+                    }
+                    _ => {
+                        valid = false;
+                        issues.push(issue(
+                            origin,
+                            E_SEMANTICS_NOT_REPRESENTABLE,
+                            "proxy_cookie_flags flag is outside the canonical secure, HttpOnly, and SameSite subset",
+                        ));
+                    }
+                }
+            }
+            if flags.is_empty() {
+                valid = false;
+                issues.push(issue(
+                    origin,
+                    E_INVALID_VALUE,
+                    "proxy_cookie_flags requires at least one cookie attribute flag",
+                ));
+            }
+            if !valid {
+                continue;
+            }
+            if !names.insert(name.to_owned()) {
+                issues.push(issue(
+                    origin,
+                    E_SEMANTICS_NOT_REPRESENTABLE,
+                    "proxy_cookie_flags defines more than one policy for a cookie name",
+                ));
+                continue;
+            }
+            attributes.push(HttpCookieAttributePolicy {
+                name: name.to_owned(),
+                secure,
+                http_only,
+                same_site,
+            });
+        }
+        attributes
     }
 
     fn lower_proxy_retry(

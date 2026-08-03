@@ -329,10 +329,13 @@ fn renders_every_proxy_policy_variant_and_field() {
                 { operation = "set", name = "X-Frame", value = "same-origin" },
                 { operation = "remove", name = "X-Remove" },
               },
-              response_cookie_path_rewrites = {
-                { from = "/", to = "/application" },
-              },
-              retry = {
+               response_cookie_path_rewrites = {
+                 { from = "/", to = "/application" },
+               },
+               response_cookie_attributes = {
+                 { name = "session", secure = true, http_only = false, same_site = "lax" },
+               },
+               retry = {
                 max_retries = 2,
                 triggers = { "connect_timeout", "refused_stream" },
                 method_safety = "get_head",
@@ -358,6 +361,7 @@ fn renders_every_proxy_policy_variant_and_field() {
         "request_headers",
         "response_headers",
         "response_cookie_path_rewrites",
+        "response_cookie_attributes",
         "retry",
         "max_retries",
         "triggers",
@@ -445,8 +449,12 @@ fn enforces_header_and_cookie_policy_bounds() {
         .map(|index| format!(r#"{{ from = "/{index}", to = "/target/{index}" }}"#))
         .collect::<Vec<_>>()
         .join(", ");
+    let cookie_attributes = (0..16)
+        .map(|index| format!(r#"{{ name = "cookie-{index}", secure = true }}"#))
+        .collect::<Vec<_>>()
+        .join(", ");
     let policy = format!(
-        "              request_headers = {{ {request_headers} }},\n              response_headers = {{ {response_headers} }},\n              response_cookie_path_rewrites = {{ {rewrites} }},"
+        "              request_headers = {{ {request_headers} }},\n              response_headers = {{ {response_headers} }},\n              response_cookie_path_rewrites = {{ {rewrites} }},\n              response_cookie_attributes = {{ {cookie_attributes} }},"
     );
     load_lua(&config(&proxy_route("", &policy), endpoint)).expect("collection boundaries");
 
@@ -459,6 +467,9 @@ fn enforces_header_and_cookie_policy_bounds() {
         ),
         format!(
             "              response_cookie_path_rewrites = {{ {rewrites}, {{ from = \"/16\", to = \"/target/16\" }} }},"
+        ),
+        format!(
+            "              response_cookie_attributes = {{ {cookie_attributes}, {{ name = \"cookie-16\", secure = true }} }},"
         ),
     ] {
         assert!(error(&config(&proxy_route("", &policy), endpoint)).contains("at most"));
