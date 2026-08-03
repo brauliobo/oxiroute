@@ -1,0 +1,51 @@
+# Security Boundaries
+
+The safest deployment assumes that configuration files, native references, certificate paths,
+recording roots, and management tokens are administrator-owned inputs.
+
+## Management Exposure
+
+- The management listener is loopback-only in the current schema.
+- Configuration routes require a file-backed bearer token loaded at startup.
+- The UI keeps that token in page memory and does not persist it.
+- Monitoring, topology, and recorder-control routes have narrower current authentication rules than
+  configuration writes. Recorder controls remain loopback-only and unauthenticated in this pre-alpha
+  slice; do not expose the listener remotely.
+- Public statistics binds expose only `/ready` and `/metrics` without the statistics token. Restricted
+  statistics reads and mutations require loopback plus the configured token and revision.
+
+## Secret Files
+
+Management and statistics token files must be regular no-follow files with restrictive modes. Create
+them with a restrictive umask and grant only the daemon/client identities that need them:
+
+```sh
+umask 077
+openssl rand -hex 32 > /etc/oxiroute/management.token
+chmod 600 /etc/oxiroute/management.token
+```
+
+Do not put tokens in source control, URLs, screenshots, Remotion props, support bundles, or process
+arguments.
+
+## Configuration Trust
+
+KDL, HOCON, and UCI are bounded declarative formats. Lua is text-only and runs without standard
+libraries, filesystem, process, network, package, dynamic-load, or debug facilities. Native
+references are an explicit exception: they read named nginx, HAProxy, or Squid source graphs with
+the daemon's filesystem permissions. They do not invoke a shell or native binary.
+
+## Network Policy
+
+The forward-proxy path resolves destinations and applies policy to the complete answer to prevent
+DNS-based bypasses. Private and special-use destinations are denied by default where configured.
+Opaque TCP relay is not a firewall, NAT, transparent interceptor, or source-spoofing facility.
+
+## Redaction
+
+Management responses and topology omit private keys, credentials, token material, recording roots,
+and stream query arguments. Access logs use a fixed redacted JSONL shape. Keep external diagnostics
+and imported source reports under the same access controls as the original configuration.
+
+Read [API_UI_SPEC.md](../API_UI_SPEC.md), [CONFIG_FORMATS.md](../CONFIG_FORMATS.md), and the
+[packaging notes](../../packaging/arch/README.md) for exact file ownership and deployment rules.

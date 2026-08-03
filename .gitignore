@@ -7,3 +7,5 @@
 *.tmp
 /ui/dist/
 /ui/node_modules/
+/remotion/node_modules/
+/remotion/out/

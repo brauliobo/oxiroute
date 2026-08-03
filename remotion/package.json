@@ -1,0 +1,24 @@
+{
+  "name": "oxiroute-dashboard-recordings",
+  "private": true,
+  "version": "0.3.0",
+  "type": "module",
+  "packageManager": "pnpm@11.3.0",
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "render:overview": "remotion render src/index.ts AdminOverview ../website/assets/admin-overview.gif --codec=gif --every-nth-frame=2 --number-of-gif-loops=0 --overwrite",
+    "render:configuration": "remotion render src/index.ts AdminConfiguration ../website/assets/admin-configuration.gif --codec=gif --every-nth-frame=2 --number-of-gif-loops=0 --overwrite",
+    "render": "pnpm run render:overview && pnpm run render:configuration"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.505",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "remotion": "4.0.505"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "typescript": "5.9.3"
+  }
+}

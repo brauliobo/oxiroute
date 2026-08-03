@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0b0d0a">
+    <meta name="description" content="OxiRoute is a bounded Rust proxy runtime and control plane for HTTP, TCP, and RTMP services.">
+    <title>OxiRoute | A routeable control plane</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <div class="site-frame">
+      <header class="site-header">
+        <a class="wordmark" href="#top" aria-label="OxiRoute home">
+          <span class="wordmark-mark" aria-hidden="true">OX</span>
+          <span>OxiRoute</span>
+        </a>
+        <nav class="site-nav" aria-label="Primary navigation">
+          <a href="#choose">Choose a path</a>
+          <a href="#capabilities">Capabilities</a>
+          <a href="#dashboard">Dashboard</a>
+          <a href="#docs">Docs</a>
+        </nav>
+        <a class="header-link" href="https://github.com/brauliobo/oxiroute">GitHub <span aria-hidden="true">-></span></a>
+      </header>
+
+      <main id="main">
+        <section class="hero" id="top" aria-labelledby="hero-title">
+          <div class="hero-copy">
+            <p class="eyebrow"><span class="signal-dot" aria-hidden="true">&#8203;</span> Rust proxy runtime / v0.3.0 pre-alpha</p>
+            <h1 id="hero-title">Make the route visible before it carries traffic.</h1>
+            <p class="hero-lede">OxiRoute turns HTTP, TCP, and RTMP publishing into typed plans, observable generations, and bounded operations. It is a control plane for the behavior you can explain, not a promise to replace every network appliance.</p>
+            <div class="hero-actions">
+              <a class="button button-primary" href="#quickstart">Run the local example <span aria-hidden="true">-></span></a>
+              <a class="button button-quiet" href="#docs">Browse the docs</a>
+            </div>
+            <div class="hero-facts" aria-label="Project facts">
+              <div><strong>Typed</strong><span>one canonical model</span></div>
+              <div><strong>Bounded</strong><span>limits are part of the plan</span></div>
+              <div><strong>Observable</strong><span>state before cutover</span></div>
+            </div>
+          </div>
+          <div class="hero-console" aria-label="Illustration of a prepared runtime generation">
+            <div class="console-bar"><span>generation / active</span><span class="mono">rev 0f4d...a92c</span></div>
+            <div class="console-body">
+              <div class="console-status"><span class="status-chip status-implemented">ACTIVE</span><span>all traffic surfaces ready</span></div>
+              <div class="console-route">
+                <div class="route-node route-client"><span class="node-icon">01</span><strong>listener</strong><small>127.0.0.1:8080</small></div>
+                <span class="route-line" aria-hidden="true">&#8203;</span>
+                <div class="route-node route-service"><span class="node-icon">02</span><strong>web / route</strong><small>segment prefix /</small></div>
+                <span class="route-line" aria-hidden="true">&#8203;</span>
+                <div class="route-node route-origin"><span class="node-icon">03</span><strong>pool / web</strong><small>1 of 1 healthy</small></div>
+              </div>
+              <div class="console-metrics">
+                <div class="console-metric"><span>admitted</span><strong>1,248</strong></div>
+                <div class="console-metric"><span>health</span><strong class="lime">healthy</strong></div>
+                <div class="console-metric"><span>reload</span><strong class="violet">prepared</strong></div>
+              </div>
+              <div class="console-log"><span class="log-time">09:41:08</span><span>candidate prepared without touching active listeners</span></div>
+              <div class="console-log"><span class="log-time">09:41:09</span><span>accept gate swapped; previous generation draining</span></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section section-quickstart" id="quickstart" aria-labelledby="quickstart-title">
+          <div class="section-intro">
+            <p class="eyebrow">Start with one request</p>
+            <h2 id="quickstart-title">A short path from origin to evidence.</h2>
+            <p>Build the UI, start the checked-in example, and inspect the same route from the command line and the browser.</p>
+          </div>
+          <div class="quickstart-grid">
+            <ol class="step-list">
+              <li><span class="step-number">01</span><div><strong>Start an origin</strong><p>Answer <code>GET /healthz</code> on <code>127.0.0.1:3000</code>.</p></div></li>
+              <li><span class="step-number">02</span><div><strong>Build and serve</strong><p>Use <code>cargo run -p oxiroute -- serve oxiroute.example.kdl</code>.</p></div></li>
+              <li><span class="step-number">03</span><div><strong>Check the path</strong><p>Open the UI or curl the HTTP listener on <code>127.0.0.1:8080</code>.</p></div></li>
+            </ol>
+            <div class="code-card">
+              <div class="code-card-header"><span>terminal</span><button class="copy-button" type="button" data-copy="quickstart-command">Copy</button></div>
+              <pre id="quickstart-command"><code><span class="code-muted"># terminal A</span>
+<span class="code-muted"># start the health origin from the guide</span>
+<span class="code-key">python3</span> /path/to/health-origin.py
+
+<span class="code-muted"># terminal B</span>
+<span class="code-key">pnpm</span> --dir ui build
+<span class="code-key">umask</span> 077
+<span class="code-key">openssl</span> rand -hex 32 > /tmp/oxiroute-management.token
+<span class="code-key">OXIROUTE_MANAGEMENT_TOKEN_FILE</span>=/tmp/oxiroute-management.token \
+  cargo run -p oxiroute -- serve oxiroute.example.kdl
+
+<span class="code-key">curl</span> -i http://127.0.0.1:8080/healthz</code></pre>
+              <p class="code-note">The full Python origin and verification steps live in the <a href="https://github.com/brauliobo/oxiroute/blob/main/docs/user/GETTING_STARTED.md">getting started guide</a>.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="choose" aria-labelledby="choose-title">
+          <div class="section-intro split-intro">
+            <div><p class="eyebrow">Choose your route</p><h2 id="choose-title">The docs meet you where the work starts.</h2></div>
+            <p>OxiRoute spans runtime traffic, migration evidence, and source code. Pick one lens first; the other layers stay one click away.</p>
+          </div>
+          <div class="tabset role-tabset" data-tabset="roles">
+            <div class="tab-list" role="tablist" aria-label="Reader role">
+              <button class="tab-button is-active" type="button" role="tab" aria-selected="true" aria-controls="role-operator" id="tab-operator" data-tab="role-operator">I operate traffic</button>
+              <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="role-migrator" id="tab-migrator" data-tab="role-migrator">I am migrating a proxy</button>
+              <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="role-developer" id="tab-developer" data-tab="role-developer">I am changing code</button>
+            </div>
+            <article class="tab-panel is-active" role="tabpanel" id="role-operator" aria-labelledby="tab-operator" data-panel>
+              <div class="path-panel-copy"><p class="eyebrow">Operator path</p><h3>See, validate, then change.</h3><p>Start with the local example, use the dashboard to separate active state from disk state, and use revision-aware CLI actions for drains and generations.</p><a class="text-link" href="https://github.com/brauliobo/oxiroute/blob/main/docs/user/OPERATING.md">Open operating guide <span aria-hidden="true">-></span></a></div>
+              <div class="path-panel-list"><span>01 / <strong>Getting started</strong></span><span>02 / <strong>Dashboard</strong></span><span>03 / <strong>Operations</strong></span><span>04 / <strong>Security</strong></span></div>
+            </article>
+            <article class="tab-panel" role="tabpanel" id="role-migrator" aria-labelledby="tab-migrator" data-panel hidden>
+              <div class="path-panel-copy"><p class="eyebrow">Migration path</p><h3>Evidence before equivalence.</h3><p>Run a report, resolve blockers, render only finalized candidates, and keep the original source untouched. Import is an adapter, not a silent compatibility claim.</p><a class="text-link" href="https://github.com/brauliobo/oxiroute/blob/main/docs/user/MIGRATION.md">Open migration guide <span aria-hidden="true">-></span></a></div>
+              <div class="path-panel-list"><span>01 / <strong>nginx</strong></span><span>02 / <strong>HAProxy</strong></span><span>03 / <strong>Squid</strong></span><span>04 / <strong>Shadow validate</strong></span></div>
+            </article>
+            <article class="tab-panel" role="tabpanel" id="role-developer" aria-labelledby="tab-developer" data-panel hidden>
+              <div class="path-panel-copy"><p class="eyebrow">Developer path</p><h3>Change the owner, not the symptom.</h3><p>Trace source resolution into a prepared generation, add the smallest failing test, and update the user-facing capability boundary with the code.</p><a class="text-link" href="https://github.com/brauliobo/oxiroute/blob/main/docs/developer/README.md">Open developer guide <span aria-hidden="true">-></span></a></div>
+              <div class="path-panel-list"><span>01 / <strong>Architecture</strong></span><span>02 / <strong>Test layers</strong></span><span>03 / <strong>Docs contract</strong></span><span>04 / <strong>Release path</strong></span></div>
+            </article>
+          </div>
+        </section>
+
+        <section class="section section-capabilities" id="capabilities" aria-labelledby="capabilities-title">
+          <div class="section-intro split-intro">
+            <div><p class="eyebrow">What is in the runtime</p><h2 id="capabilities-title">Five layers. One status vocabulary.</h2></div>
+            <p>Open a layer for the useful path, the concrete example, and the boundary that keeps the claim honest.</p>
+          </div>
+          <div class="tabset capability-tabset" data-tabset="capabilities">
+            <div class="tab-list tab-list-wrap" role="tablist" aria-label="Capability layer">
+              <button class="tab-button is-active" type="button" role="tab" aria-selected="true" aria-controls="cap-traffic" id="tab-traffic" data-tab="cap-traffic">Traffic</button>
+              <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="cap-control" id="tab-control" data-tab="cap-control">Control plane</button>
+              <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="cap-media" id="tab-media" data-tab="cap-media">RTMP media</button>
+              <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="cap-migration" id="tab-migration" data-tab="cap-migration">Migration</button>
+              <button class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="cap-supervision" id="tab-supervision" data-tab="cap-supervision">Supervision</button>
+            </div>
+            <article class="tab-panel is-active" role="tabpanel" id="cap-traffic" aria-labelledby="tab-traffic" data-panel>
+              <div class="capability-heading"><div><span class="status-chip status-partial">PARTIAL</span><h3>Route HTTP and opaque TCP without hiding the policy.</h3></div><span class="panel-index">01</span></div>
+              <div class="feature-grid">
+                <div class="feature-card"><span class="feature-icon">H1</span><h4>Reverse HTTP</h4><p>Deterministic host/path/method routing, WebSocket upgrades, request limits, retries, and health-aware pools.</p></div>
+                <div class="feature-card"><span class="feature-icon">L4</span><h4>TCP relay</h4><p>Opaque bytes, half-close, backpressure, socket/DNS/Unix endpoints, and bounded connection lifetimes.</p></div>
+                <div class="feature-card"><span class="feature-icon">TLS</span><h4>Explicit TLS</h4><p>Exact, wildcard, and default SNI selection with verified upstream TLS, SNI, custom CA, and ALPN policy.</p></div>
+              </div>
+              <div class="boundary-strip"><strong>Not implied:</strong> HTTP/3 daemon listeners, UDP relay, weighted balancing, passive ejection, and cache request-path integration.</div>
+            </article>
+            <article class="tab-panel" role="tabpanel" id="cap-control" aria-labelledby="tab-control" data-panel hidden>
+              <div class="capability-heading"><div><span class="status-chip status-implemented">IMPLEMENTED</span><h3>Inspect the generation before editing the source.</h3></div><span class="panel-index">02</span></div>
+              <div class="feature-grid">
+                <div class="feature-card"><span class="feature-icon">API</span><h4>Loopback management</h4><p>Typed JSON for status, monitoring, topology, configuration validation, revision-safe saves, and generation actions.</p></div>
+                <div class="feature-card"><span class="feature-icon">UI</span><h4>Runtime observatory</h4><p>Vue 3 and build-time Pug expose process, listener, pool, endpoint, topology, and RTMP state with stale/error labels.</p></div>
+                <div class="feature-card"><span class="feature-icon">REV</span><h4>Prepare then activate</h4><p>Complete candidates publish behind a readiness gate. A failed candidate leaves the active generation unchanged.</p></div>
+              </div>
+              <div class="boundary-strip"><strong>Security boundary:</strong> configuration writes need the bearer token and disk revision. The management schema remains loopback-only.</div>
+            </article>
+            <article class="tab-panel" role="tabpanel" id="cap-media" aria-labelledby="tab-media" data-panel hidden>
+              <div class="capability-heading"><div><span class="status-chip status-partial">PARTIAL</span><h3>Publish, fan out, and record the media you can explain.</h3></div><span class="panel-index">03</span></div>
+              <div class="feature-grid">
+                <div class="feature-card"><span class="feature-icon">RTMP</span><h4>Live sessions</h4><p>Simple/complex handshakes, publish/play roles, duplicate-publisher rejection, metadata, and keyframe gating.</p></div>
+                <div class="feature-card"><span class="feature-icon">REC</span><h4>Bounded recorders</h4><p>Continuous/manual policies, safe names, rotation, quotas, nonblocking queues, and atomic publication.</p></div>
+                <div class="feature-card"><span class="feature-icon">OBS</span><h4>Exact snapshots</h4><p>Stream, publisher, viewer, codec, relay, recorder phase, and redacted relative-file observability.</p></div>
+              </div>
+              <div class="boundary-strip"><strong>Current codec boundary:</strong> legacy AVC/AAC FLV recording is supported; enhanced AVC, HEVC, and AV1 remain observable but not recordable.</div>
+            </article>
+            <article class="tab-panel" role="tabpanel" id="cap-migration" aria-labelledby="tab-migration" data-panel hidden>
+              <div class="capability-heading"><div><span class="status-chip status-partial">PARTIAL</span><h3>Import the shape, retain the reason, block the gap.</h3></div><span class="panel-index">04</span></div>
+              <div class="feature-grid">
+                <div class="feature-card"><span class="feature-icon">NGX</span><h4>nginx</h4><p>Bounded include graphs, HTTP/RTMP subset lowering, provenance, and diagnostics for non-equivalent behavior.</p></div>
+                <div class="feature-card"><span class="feature-icon">HAP</span><h4>HAProxy</h4><p>Ordered roots, preprocessing fingerprints, HTTP/TCP subset lowering, stats-page boundaries, and source maps.</p></div>
+                <div class="feature-card"><span class="feature-icon">SQD</span><h4>Squid</h4><p>Direct-forward subset with ACL ordering, Basic auth, resolved destination policy, and explicit cache externalization.</p></div>
+              </div>
+              <div class="boundary-strip"><strong>Cutover rule:</strong> `report` is evidence, `preview` is a finalized candidate, and neither command rewrites the native source tree.</div>
+            </article>
+            <article class="tab-panel" role="tabpanel" id="cap-supervision" aria-labelledby="tab-supervision" data-panel hidden>
+              <div class="capability-heading"><div><span class="status-chip status-planned">STAGED</span><h3>Make replacement a protocol, not a best-effort restart.</h3></div><span class="panel-index">05</span></div>
+              <div class="feature-grid">
+                <div class="feature-card"><span class="feature-icon">FSM</span><h4>Deterministic states</h4><p>Platform-neutral lifecycle and replacement state machines carry bounded identities, revisions, and outcomes.</p></div>
+                <div class="feature-card"><span class="feature-icon">UNX</span><h4>Unix transport</h4><p>Descriptor validation, credential transport, and safe ownership boundaries support the Linux path.</p></div>
+                <div class="feature-card"><span class="feature-icon">M/W</span><h4>Master and worker</h4><p>Cross-process listener ownership and authenticated replacement are staged for a future production gate.</p></div>
+              </div>
+              <div class="boundary-strip"><strong>Default today:</strong> the public production entry point remains direct `oxiroute serve`; the supervised path is not silently selected.</div>
+            </article>
+          </div>
+        </section>
+
+        <section class="section section-dashboard" id="dashboard" aria-labelledby="dashboard-title">
+          <div class="section-intro split-intro">
+            <div><p class="eyebrow">See the control plane</p><h2 id="dashboard-title">A dashboard that keeps live state and source state apart.</h2></div>
+            <p>The admin UI is for inspection and review, not magic. Every panel labels whether it is showing an active generation, a disk revision, or a candidate that is not active.</p>
+          </div>
+          <div class="media-grid">
+            <figure class="media-card media-card-wide">
+              <div class="media-frame"><img src="assets/admin-overview.gif" alt="Animated OxiRoute overview showing traffic, host pressure, pool health, and an active RTMP stream"></div>
+              <figcaption><span class="eyebrow">01 / Runtime observatory</span><strong>Watch the route breathe.</strong><span>Traffic, health, topology, and RTMP inventory refresh as one bounded snapshot.</span></figcaption>
+            </figure>
+            <figure class="media-card">
+              <div class="media-frame"><img src="assets/admin-configuration.gif" alt="Animated OxiRoute configuration workspace showing revisions, typed fields, validation, and a preview review step"></div>
+              <figcaption><span class="eyebrow">02 / Configuration workspace</span><strong>Review before publish.</strong><span>Draft, validate, inspect the preview, then save against the disk revision.</span></figcaption>
+            </figure>
+            <div class="media-notes">
+              <div class="note-card"><span class="note-number">A</span><div><strong>Stale is a state.</strong><p>Transient refresh errors retain the last valid sample and say so. Zero is not a substitute for missing evidence.</p></div></div>
+              <div class="note-card"><span class="note-number">B</span><div><strong>Redaction is a feature.</strong><p>Topology and recorder views omit private keys, roots, token paths, and stream query arguments.</p></div></div>
+              <div class="note-card"><span class="note-number">C</span><div><strong>Controls are capability-gated.</strong><p>Manual recording controls only appear when a live publisher, manual recorder, and supported codec make the action valid.</p></div></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section section-model" id="model" aria-labelledby="model-title">
+          <div class="section-intro"><p class="eyebrow">The operating model</p><h2 id="model-title">Source to generation, in four moves.</h2></div>
+          <div class="model-grid">
+            <article class="model-card"><span class="model-number">01</span><h3>Resolve</h3><p>Decode bounded KDL, Lua, HOCON, UCI, or explicitly named native references into one typed model.</p><code>source -> canonical</code></article>
+            <article class="model-card"><span class="model-number">02</span><h3>Prepare</h3><p>Validate routes, pools, identities, credentials, stores, assets, and listener reservations before publication.</p><code>canonical -> candidate</code></article>
+            <article class="model-card"><span class="model-number">03</span><h3>Publish</h3><p>Open the candidate behind an accept gate only after readiness; keep the previous generation for drain or rollback.</p><code>candidate -> active</code></article>
+            <article class="model-card"><span class="model-number">04</span><h3>Explain</h3><p>Expose revisions, health, counters, topology, diagnostics, and stable outcomes through CLI, API, and UI.</p><code>active -> evidence</code></article>
+          </div>
+          <div class="details-grid">
+            <details open><summary>Why not edit listeners in place?</summary><p>A complete generation gives routing, TLS, health, capacity, recording, and listener identity one consistent snapshot. Invalid changes can be rejected without leaving half of the old plan and half of the new one.</p></details>
+            <details><summary>Why are counters sometimes strings?</summary><p>Cumulative values can exceed JavaScript's safe integer range. The API returns exact decimal strings for those counters so the UI and automation do not silently round evidence.</p></details>
+            <details><summary>Why does an import report block?</summary><p>Native behavior that changes routing, security, TLS, listener, or upstream semantics must be represented or the affected service cannot be claimed equivalent. The importer keeps the reason rather than inventing a fallback.</p></details>
+          </div>
+        </section>
+
+        <section class="section section-boundaries" id="boundaries" aria-labelledby="boundaries-title">
+          <div class="section-intro split-intro">
+            <div><p class="eyebrow">Read this before deploying</p><h2 id="boundaries-title">The boundary is part of the product.</h2></div>
+            <p>OxiRoute is intentionally smaller than the list of projects it can study. Current support is explicit so a migration does not confuse parsing with runtime parity.</p>
+          </div>
+          <div class="status-table-wrap">
+            <table class="status-table">
+              <caption>Current capability status</caption>
+              <thead><tr><th scope="col">Surface</th><th scope="col">Status</th><th scope="col">Meaning now</th></tr></thead>
+              <tbody>
+                <tr><th scope="row">HTTP reverse proxy</th><td><span class="status-chip status-partial">PARTIAL</span></td><td>Strong HTTP/1 slice plus tested TLS/H2/WebSocket/gRPC paths; broader conformance remains.</td></tr>
+                <tr><th scope="row">TCP relay</th><td><span class="status-chip status-partial">PARTIAL</span></td><td>Opaque socket/DNS/Unix relays with bounded lifecycle and health behavior; UDP is not included.</td></tr>
+                <tr><th scope="row">Management UI/API</th><td><span class="status-chip status-partial">PARTIAL</span></td><td>Loopback observability and revisioned config control; certificate/import/event views remain incomplete.</td></tr>
+                <tr><th scope="row">RTMP live/recording</th><td><span class="status-chip status-partial">PARTIAL</span></td><td>Live publish/play, fanout, catalog, and legacy AVC/AAC FLV recording are integrated.</td></tr>
+                <tr><th scope="row">Native imports</th><td><span class="status-chip status-partial">PARTIAL</span></td><td>Strict subsets of nginx, HAProxy, and Squid can report and sometimes finalize; no full parity.</td></tr>
+                <tr><th scope="row">Cache / HTTP/3 / UDP</th><td><span class="status-chip status-planned">PLANNED</span></td><td>Foundations or roadmap work exist, but these are not active daemon capabilities.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="exclusion-grid">
+            <details><summary>Not a firewall or NAT engine</summary><p>Transparent interception, DNAT, SNAT, MASQUERADE, policy routing, conntrack, ICMP, and arbitrary IP protocols belong to kernel or separate privileged systems.</p></details>
+            <details><summary>Not a drop-in Squid/nginx/HAProxy replacement</summary><p>Import is conservative and product-specific. Unsupported ACL, cache, rewrite, process, or module behavior blocks rather than disappearing.</p></details>
+            <details><summary>Not remote multi-user administration</summary><p>Management is loopback-only in the current schema. Recorder controls have an even narrower pre-alpha boundary and must not be exposed remotely.</p></details>
+          </div>
+        </section>
+
+        <section class="section section-docs" id="docs" aria-labelledby="docs-title">
+          <div class="section-intro split-intro">
+            <div><p class="eyebrow">Go deeper</p><h2 id="docs-title">A map, not a wall of Markdown.</h2></div>
+            <p>Use the website for orientation, then open versioned repository pages for exact contracts and commands.</p>
+          </div>
+          <div class="doc-grid">
+            <a class="doc-card doc-card-primary" href="https://github.com/brauliobo/oxiroute/blob/main/docs/user/GETTING_STARTED.md"><span class="doc-kicker">For operators</span><strong>Getting started</strong><span>Build, serve, verify, and open the UI.</span><span class="doc-arrow" aria-hidden="true">-></span></a>
+            <a class="doc-card" href="https://github.com/brauliobo/oxiroute/blob/main/docs/user/OPERATING.md"><span class="doc-kicker">For operators</span><strong>Operations</strong><span>Generations, drains, pool state, metrics, and recovery.</span><span class="doc-arrow" aria-hidden="true">-></span></a>
+            <a class="doc-card" href="https://github.com/brauliobo/oxiroute/blob/main/docs/user/MIGRATION.md"><span class="doc-kicker">For migrators</span><strong>Migration</strong><span>Reports, previews, provenance, and cutover rules.</span><span class="doc-arrow" aria-hidden="true">-></span></a>
+            <a class="doc-card" href="https://github.com/brauliobo/oxiroute/blob/main/docs/reference/API.md"><span class="doc-kicker">For integrators</span><strong>API reference</strong><span>Routes, revisions, response shapes, and auth boundaries.</span><span class="doc-arrow" aria-hidden="true">-></span></a>
+            <a class="doc-card" href="https://github.com/brauliobo/oxiroute/blob/main/docs/developer/ARCHITECTURE.md"><span class="doc-kicker">For developers</span><strong>Architecture</strong><span>Source resolution, generations, data plane, and control plane.</span><span class="doc-arrow" aria-hidden="true">-></span></a>
+            <a class="doc-card" href="https://github.com/brauliobo/oxiroute/blob/main/docs/COMPATIBILITY.md"><span class="doc-kicker">For everyone</span><strong>Compatibility matrix</strong><span>Implemented, partial, planned, and out-of-scope behavior.</span><span class="doc-arrow" aria-hidden="true">-></span></a>
+          </div>
+          <div class="reference-band"><span class="eyebrow">Normative sources</span><div><a href="https://github.com/brauliobo/oxiroute/blob/main/docs/CONFIG_SPEC.md">Configuration</a><a href="https://github.com/brauliobo/oxiroute/blob/main/docs/API_UI_SPEC.md">API/UI</a><a href="https://github.com/brauliobo/oxiroute/blob/main/docs/RTMP_SPEC.md">RTMP</a><a href="https://github.com/brauliobo/oxiroute/blob/main/docs/TEST_STRATEGY.md">Testing</a><a href="https://github.com/brauliobo/oxiroute/blob/main/docs/ROADMAP.md">Roadmap</a></div></div>
+        </section>
+      </main>
+
+      <footer class="site-footer">
+        <div><a class="wordmark" href="#top"><span class="wordmark-mark" aria-hidden="true">OX</span><span>OxiRoute</span></a><p>Route the behavior you can explain.</p></div>
+        <div class="footer-links"><a href="https://github.com/brauliobo/oxiroute">GitHub</a><a href="https://github.com/brauliobo/oxiroute/issues">Issues</a><a href="https://github.com/brauliobo/oxiroute/blob/main/LICENSE">Apache-2.0</a></div>
+        <p class="footer-note">Pre-alpha / v0.3.0 / static site</p>
+      </footer>
+    </div>
+    <script src="script.js"></script>
+  </body>
+</html>

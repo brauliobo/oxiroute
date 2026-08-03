@@ -1,0 +1,114 @@
+# Operating OxiRoute
+
+This page is the task-oriented layer over [OPERATIONS.md](../OPERATIONS.md) and the complete
+[management CLI matrix](../MANAGEMENT_CLI.md).
+
+## Establish Baseline
+
+```sh
+export OXIROUTE_ENDPOINT=http://127.0.0.1:9900
+export OXIROUTE_MANAGEMENT_TOKEN_FILE=/etc/oxiroute/management.token
+
+oxiroute ready
+oxiroute status
+oxiroute generation status
+oxiroute listener list
+oxiroute pool list
+```
+
+`ready` is the cheap admission check. `status` reports build and generation revisions. Use
+`monitoring` for host/process/load and traffic evidence:
+
+```sh
+oxiroute --output json monitoring > /tmp/oxiroute-monitoring.json
+oxiroute --output json topology > /tmp/oxiroute-topology.json
+oxiroute metrics
+```
+
+## Drain Before Maintenance
+
+Drain rejects new admissions while existing work retains its generation reference. It does not
+pretend to own per-session cancellation handles.
+
+```sh
+oxiroute listener drain web
+oxiroute server drain --pool web endpoint-1
+oxiroute generation drain --timeout-ms 5000
+```
+
+Restore admission explicitly:
+
+```sh
+oxiroute server ready --pool web endpoint-1
+oxiroute listener ready web
+```
+
+For the same server name in several pools, repeat `--pool`; the client sends one prevalidated batch:
+
+```sh
+oxiroute server drain --pool public-v4 --pool public-v6 origin-a
+```
+
+## Reload And Roll Back
+
+Candidate preparation validates the complete runtime plan before publication. A rejected candidate
+leaves the active generation unchanged. The runtime exposes the distinction between disk, candidate,
+active, previous, and quarantined generations:
+
+```sh
+oxiroute config validate /etc/oxiroute/oxiroute.kdl
+oxiroute generation reload
+oxiroute generation status
+oxiroute generation rollback
+```
+
+The file watcher observes rename-based replacements through the parent directory and periodically
+reconciles effective revisions, including strict native references. Use generation status as the
+authority for completion; a durable configuration save may first report `saved_pending_activation`.
+
+Changing the mode of an active Unix listener is valid but `restartRequired` and is not published as a
+live rebind.
+
+## Manage Pool State
+
+Observed health and administrative state are separate. Prefer drain or maintenance for traffic
+admission and use a health override only when you intentionally want to change selection eligibility:
+
+```sh
+oxiroute server show --pool web endpoint-1
+oxiroute server maintenance --pool web endpoint-1
+oxiroute server check --pool web endpoint-1 disable
+oxiroute server set-health --pool web endpoint-1 down
+oxiroute server set-health --pool web endpoint-1 auto
+oxiroute server max-connections set --pool web endpoint-1 200
+oxiroute server max-connections reset --pool web endpoint-1
+oxiroute server refresh-dns --pool web endpoint-1
+```
+
+DNS refresh is explicitly non-atomic because resolution is external. Inspect every returned outcome
+before treating a partial result as a successful rollout.
+
+## Events And Shutdown
+
+The CLI exposes bounded cursor polling over the in-memory event ring:
+
+```sh
+oxiroute events list --after 0 --limit 100
+oxiroute events follow --after 0 --limit 100 --interval-ms 1000
+oxiroute shutdown
+```
+
+Events are not durable audit history. A future SSE/event contract is still a separate product slice.
+Signals and authenticated shutdown share one bounded process shutdown path.
+
+## Public And Restricted Endpoints
+
+On a configured statistics bind:
+
+- `GET /ready` is public and returns `200` only for an active, non-degraded generation with listening
+  traffic listeners.
+- `GET /metrics` is public for Prometheus scraping.
+- `/stats` and `/api/v1/status` require a loopback peer and the statistics bearer token.
+- Management configuration routes require the management bearer token.
+
+Read [SECURITY.md](SECURITY.md) before changing binds, token file ownership, or service permissions.
