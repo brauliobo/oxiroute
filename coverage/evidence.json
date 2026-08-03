@@ -106,6 +106,17 @@
       ]
     },
     {
+      "id": "evidence.apache.import",
+      "tests": [
+        "crates/oxiroute-import/tests/apache.rs#imports_an_included_static_virtual_host_with_provenance",
+        "crates/oxiroute-import/tests/apache.rs#lowers_static_balancer_members_to_one_round_robin_pool",
+        "crates/oxiroute-import/tests/apache.rs#lowers_tls_paths_as_value_bearing_certificate_material",
+        "crates/oxiroute-import/tests/apache.rs#unsupported_rewrite_blocks_finalization",
+        "crates/oxiroute-import/tests/apache.rs#missing_root_is_reported_without_a_candidate",
+        "crates/oxiroute-config-source/tests/resolver.rs#native_apache_imports_from_kdl_hocon_and_uci"
+      ]
+    },
+    {
       "id": "evidence.balance.least-connections",
       "tests": [
         "crates/oxiroute-import/tests/haproxy_lower.rs#audited_shape_unix_frontend_and_dns_leastconn_backend_finalizes_without_resolution",

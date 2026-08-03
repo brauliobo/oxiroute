@@ -130,7 +130,7 @@ save then re-reads and compares the authoritative disk bytes, writes mode
 
 Typed saves preserve the root's selected syntax but normalize it to deterministic output. They are
 allowed only when the authoritative root is non-compositional. If `templates`, `nginx_server`,
-`haproxy_server`, or `squid_server` contributed to the loaded source, `PUT` returns `422` with
+`haproxy_server`, `squid_server`, or `apache_server` contributed to the loaded source, `PUT` returns `422` with
 `E_COMPOSITIONAL_ROOT`; it never destroys those declarations by replacing them with a flattened
 typed object. `config compose` is the explicit operator-controlled flattening path.
 

@@ -5,7 +5,7 @@
 //! `(array)` nodes are explicit containers, and array children are named `-`. The decoder accepts
 //! KDL 2 only. UCI uses named `config json` records rooted at `root`; each non-root record has a
 //! `parent` plus either `key` or `index`, and every record has a `kind` and optional scalar `value`.
-//! Source resolution additionally recognizes strict native nginx and `HAProxy` directives without
+//! Source resolution additionally recognizes strict native nginx, `HAProxy`, and Apache directives without
 //! changing these generic reversible mappings.
 
 mod error;

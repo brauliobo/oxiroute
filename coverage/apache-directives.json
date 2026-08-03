@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "product": "apache",
+  "reference": {
+    "kind": "git_checkout",
+    "value": "2.4.62",
+    "documentation": "docs/UPSTREAM_ANALYSIS.md"
+  },
+  "evidence": ["evidence.apache.import"],
+  "entries": [
+    { "id": "directive.apache.include.path", "key": "Include", "form": "static path or glob", "contexts": ["root"], "disposition": "classified", "target": "apache.source_graph", "required_tests": ["parse", "resolve", "failure"] },
+    { "id": "directive.apache.include-optional.path", "key": "IncludeOptional", "form": "static optional path or glob", "contexts": ["root"], "disposition": "classified", "target": "apache.source_graph", "required_tests": ["parse", "resolve", "failure"] },
+    { "id": "directive.apache.listen.static", "key": "Listen", "form": "one explicit IP socket address", "contexts": ["root"], "disposition": "lowered", "target": "listener.plan", "required_tests": ["parse", "resolve", "failure", "integration"] },
+    { "id": "directive.apache.virtual-host.static", "key": "VirtualHost", "form": "one explicit IP socket address and flat child block", "contexts": ["root"], "disposition": "classified", "target": "http.router", "required_tests": ["parse", "resolve", "failure", "integration"] },
+    { "id": "directive.apache.server-name.exact", "key": "ServerName", "form": "one exact canonical host name", "contexts": ["virtual_host"], "disposition": "lowered", "target": "http.router", "required_tests": ["parse", "resolve", "failure", "integration"] },
+    { "id": "directive.apache.server-alias.exact", "key": "ServerAlias", "form": "one or more exact canonical host names", "contexts": ["virtual_host"], "disposition": "lowered", "target": "http.router", "required_tests": ["parse", "resolve", "failure", "integration"] },
+    { "id": "directive.apache.proxy-pass.http", "key": "ProxyPass", "form": "static HTTP destination with raw path prefix", "contexts": ["virtual_host"], "disposition": "lowered", "target": "http.proxy", "required_tests": ["parse", "resolve", "failure", "integration"] },
+    { "id": "directive.apache.proxy-pass.https", "key": "ProxyPass", "form": "static HTTPS DNS destination with derived SNI", "contexts": ["virtual_host"], "disposition": "lowered", "target": "tls.identity", "required_tests": ["parse", "resolve", "failure", "integration", "security"] },
+    { "id": "directive.apache.proxy-pass.balancer", "key": "ProxyPass", "form": "static balancer reference", "contexts": ["virtual_host"], "disposition": "lowered", "target": "upstream.pool", "required_tests": ["parse", "resolve", "failure", "integration"] },
+    { "id": "directive.apache.proxy-pass-match.dynamic", "key": "ProxyPassMatch", "form": "regular-expression destination", "contexts": ["virtual_host"], "disposition": "blocked", "target": "import.blocking_diagnostic", "required_tests": ["parse", "resolve", "failure", "security"] },
+    { "id": "directive.apache.proxy-preserve-host.exact", "key": "ProxyPreserveHost", "form": "one explicit on or off policy", "contexts": ["virtual_host"], "disposition": "lowered", "target": "http.proxy", "required_tests": ["parse", "resolve", "failure", "integration"] },
+    { "id": "directive.apache.load-module.supported", "key": "LoadModule", "form": "audited static module and library path", "contexts": ["root"], "disposition": "externalized", "target": "deployment", "required_tests": ["parse", "resolve", "failure", "security"] },
+    { "id": "directive.apache.load-module.unsupported", "key": "LoadModule", "form": "module outside the audited capability profile", "contexts": ["root"], "disposition": "blocked", "target": "import.blocking_diagnostic", "required_tests": ["parse", "resolve", "failure"] },
+    { "id": "directive.apache.proxy.block", "key": "Proxy", "form": "static balancer:// named block", "contexts": ["root"], "disposition": "classified", "target": "upstream.pool", "required_tests": ["parse", "resolve", "failure"] },
+    { "id": "directive.apache.balancer-member.static", "key": "BalancerMember", "form": "static HTTP or HTTPS member without unequal-weight options", "contexts": ["proxy"], "disposition": "lowered", "target": "upstream.pool", "required_tests": ["parse", "resolve", "failure", "integration"] },
+    { "id": "directive.apache.proxy-set.byrequests", "key": "ProxySet", "form": "lbmethod=byrequests", "contexts": ["proxy"], "disposition": "lowered", "target": "upstream.pool", "required_tests": ["parse", "resolve", "failure", "integration"] },
+    { "id": "directive.apache.rewrite-engine.off", "key": "RewriteEngine", "form": "explicit off source no-op", "contexts": ["virtual_host"], "disposition": "classified", "target": "apache.source_graph", "required_tests": ["parse", "resolve", "failure"] },
+    { "id": "directive.apache.rewrite.dynamic", "key": "RewriteRule", "form": "rewrite behavior outside the static subset", "contexts": ["virtual_host"], "disposition": "blocked", "target": "import.blocking_diagnostic", "required_tests": ["parse", "resolve", "failure", "security"] },
+    { "id": "directive.apache.directory.merge", "key": "Directory", "form": "directory policy that changes flat route merging", "contexts": ["virtual_host"], "disposition": "blocked", "target": "import.blocking_diagnostic", "required_tests": ["parse", "resolve", "failure"] },
+    { "id": "directive.apache.conditional.dynamic", "key": "IfModule", "form": "conditional module configuration", "contexts": ["virtual_host"], "disposition": "blocked", "target": "import.blocking_diagnostic", "required_tests": ["parse", "resolve", "failure"] },
+    { "id": "directive.apache.balancer-persist.dynamic", "key": "BalancerPersist", "form": "runtime balancer-manager state", "contexts": ["proxy"], "disposition": "blocked", "target": "import.blocking_diagnostic", "required_tests": ["parse", "resolve", "failure", "security"] }
+  ]
+}

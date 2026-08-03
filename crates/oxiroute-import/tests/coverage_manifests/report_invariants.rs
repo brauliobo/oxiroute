@@ -6,6 +6,7 @@ use std::{
 
 use oxiroute_import::{
     CanonicalProvenance, Diagnostic, Report, Severity, SourceFile, SourceId,
+    apache::{ApacheImportReport, import_root as import_apache},
     haproxy::{
         BlockingReason, CanonicalCandidate as HaproxyCandidate, Configuration, DecisionOutcome,
         EffectiveConfiguration, LoadedSource, import_parsed as import_haproxy, parse_sources,
@@ -30,6 +31,11 @@ fn native_import_reports_obey_finalization_and_accounting_invariants() {
     assert!(!representable.has_errors());
     assert!(representable.blocked_services.is_empty());
     assert!(representable.config.is_some());
+
+    let apache = import_apache_fixture();
+    assert_apache_import_report_invariants(&apache);
+    assert!(!apache.has_errors(), "{:?}", apache.diagnostics);
+    assert!(apache.candidate.config.is_some());
 
     let partial = import_nginx_fixture("hostrouter-partial.conf");
     assert_import_report_invariants(&partial);
@@ -76,6 +82,17 @@ fn native_import_reports_obey_finalization_and_accounting_invariants() {
         );
         assert_unique_provenance_paths(&lowered.value().provenance, name);
     }
+}
+
+fn import_apache_fixture() -> ApacheImportReport {
+    let directory = TempDir::new().expect("create Apache fixture directory");
+    let root = directory.path().join("httpd.conf");
+    fs::write(
+        &root,
+        b"Listen 127.0.0.1:18080\n<VirtualHost 127.0.0.1:18080>\n  ServerName app.example\n  ProxyPass / http://127.0.0.1:3000/\n</VirtualHost>\n",
+    )
+    .expect("write Apache fixture");
+    import_apache(&root)
 }
 
 pub(crate) fn parse_haproxy_source(name: &str, contents: &[u8]) -> Report<Configuration> {
@@ -199,6 +216,52 @@ pub(crate) fn assert_rtmp_import_report_invariants(report: &RtmpImportReport) {
         assert!(report.config.is_none());
     }
     assert_unique_provenance_paths(&report.provenance, "nginx-RTMP import report");
+}
+
+pub(crate) fn assert_apache_import_report_invariants(report: &ApacheImportReport) {
+    let manifest: DirectiveManifest<DirectiveForm> = read_manifest("apache-directives.json");
+    assert_eq!(
+        report.occurrence_ledger.len(),
+        report.source_graph.expanded_occurrences.len(),
+        "Apache ledger must account for every expanded occurrence"
+    );
+    assert_eq!(
+        report
+            .occurrence_ledger
+            .iter()
+            .map(|decision| decision.occurrence)
+            .collect::<HashSet<_>>()
+            .len(),
+        report.occurrence_ledger.len(),
+        "Apache ledger occurrence IDs must be unique"
+    );
+    for decision in &report.occurrence_ledger {
+        assert!(
+            manifest.entries.iter().any(|entry| {
+                entry
+                    .key
+                    .eq_ignore_ascii_case(&String::from_utf8_lossy(&decision.name.value))
+            }),
+            "parsed Apache directive `{}` has no coverage classification",
+            String::from_utf8_lossy(&decision.name.value)
+        );
+        if let oxiroute_import::apache::OccurrenceDisposition::Blocking(code) = decision.disposition
+        {
+            assert!(report.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code() == code
+                    && diagnostic.severity() == Severity::Error
+                    && diagnostic.primary_span().is_some()
+            }));
+        }
+    }
+    assert_unique_provenance_paths(&report.candidate.provenance, "Apache import report");
+    if report.candidate.config.is_some() {
+        assert!(!report.has_errors());
+        assert!(report.blocked_virtual_hosts.is_empty());
+    }
+    if report.has_errors() || !report.blocked_virtual_hosts.is_empty() {
+        assert!(report.candidate.config.is_none());
+    }
 }
 
 pub(crate) fn assert_haproxy_report_invariants(

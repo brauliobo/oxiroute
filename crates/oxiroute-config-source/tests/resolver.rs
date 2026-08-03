@@ -56,6 +56,36 @@ fn concise_kdl_imports_a_complete_squid_forward_proxy_root() {
 }
 
 #[test]
+fn native_apache_imports_from_kdl_hocon_and_uci() {
+    let directory = tempdir().expect("temporary Apache source");
+    let root = directory.path().join("httpd.conf");
+    fs::write(
+        &root,
+        b"Listen 127.0.0.1:18080\n<VirtualHost 127.0.0.1:18080>\n  ServerName app.example.test\n  ProxyPass / http://127.0.0.1:9000/\n</VirtualHost>\n",
+    )
+    .expect("Apache source");
+    let path = root.to_str().expect("UTF-8 Apache path");
+    let quoted = serde_json::to_string(path).expect("quoted Apache path");
+
+    for (extension, source) in [
+        ("kdl", format!("apache_server {quoted}\n")),
+        ("hocon", format!("apache_server = {{ path = {quoted} }}")),
+        (
+            "uci",
+            format!("config apache_server 'site'\n  option path '{path}'\n"),
+        ),
+    ] {
+        let source_path = directory.path().join(format!("host.{extension}"));
+        let resolved = resolve_source(&source_path, source.as_bytes())
+            .unwrap_or_else(|error| panic!("resolved Apache {extension}: {error}"));
+        assert_eq!(resolved.config.listeners.len(), 1, "{extension}");
+        assert_eq!(resolved.config.http_services.len(), 1, "{extension}");
+        assert!(resolved.compositional, "{extension}");
+        assert_eq!(resolved.dependencies, [fs::canonicalize(&root).unwrap()]);
+    }
+}
+
+#[test]
 fn hocon_and_uci_import_a_complete_squid_forward_proxy_root() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../oxiroute-import/tests/fixtures/squid/hostrouter-sanitized.conf");
@@ -101,6 +131,8 @@ fn kdl_native_nodes_are_repeated_but_their_shapes_remain_strict() {
         "nginx_server \"nginx.conf\" { root_prefix \"/\"; root_prefix \"/tmp\"; }",
         "nginx_server \"nginx.conf\" { root_prefix \"/\" { nested \"bad\" } }",
         "haproxy_server 1",
+        "apache_server path=\"httpd.conf\"",
+        "apache_server \"httpd.conf\" { path \"other.conf\" }",
     ];
     for source in invalid {
         assert!(

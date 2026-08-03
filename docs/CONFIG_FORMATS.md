@@ -25,7 +25,7 @@ The source pipeline has one semantics regardless of syntax:
 4. Expand generic root `templates` and exact object `use` markers. Objects merge recursively, arrays
    and scalars replace, local fields override templates, and cycles are rejected.
 5. Deserialize any inline fragment into `oxiroute_config::Config` and resolve each `nginx_server`,
-   `haproxy_server`, and `squid_server` through the existing complete native import pipeline.
+   `haproxy_server`, `squid_server`, and `apache_server` through the existing complete native import pipeline.
 6. Compose the inline fragment first and imported fragments in declaration order. Reject conflicting
    process-wide values, duplicate identities, dangling references, and every non-final native import.
 7. Apply schema defaults, normalize, validate, and render deterministic KDL. The SHA-256 of those KDL
@@ -124,10 +124,12 @@ haproxy_server "/etc/haproxy/haproxy.cfg" "/etc/haproxy/conf.d" {
 squid_server "/etc/squid/squid.conf" {
   externalize_cache #true
 }
+
+apache_server "/etc/httpd/conf/httpd.conf"
 ```
 
-KDL permits repeated native server nodes. nginx and Squid take exactly one positional path; HAProxy
-takes one or more ordered positional paths. Child options must be untyped scalar nodes, and
+KDL permits repeated native server nodes. nginx, Squid, and Apache take exactly one positional path;
+HAProxy takes one or more ordered positional paths. Child options must be untyped scalar nodes, and
 properties are rejected.
 
 HOCON uses a single object or an array of objects with these exact shapes:
@@ -146,9 +148,12 @@ squid_server = {
   path = "squid.conf"
   externalize_cache = true
 }
+apache_server = {
+  path = "httpd.conf"
+}
 ```
 
-UCI uses named source sections. `nginx_server` and `squid_server` accept scalar `option` entries;
+UCI uses named source sections. `nginx_server`, `squid_server`, and `apache_server` accept scalar `option` entries;
 `haproxy_server` uses ordered `list path` entries and optional scalar preprocessing values:
 
 ```uci
@@ -165,10 +170,14 @@ config haproxy_server 'edge'
 config squid_server 'proxy'
   option path 'squid.conf'
   option externalize_cache '1'
+
+config apache_server 'web'
+  option path 'httpd.conf'
 ```
 
 nginx reference options are exactly `path`, `root_prefix`, `host_timezone`,
-`default_access_log_file`, `recording_root`, and `default_error_server`. HAProxy reference options are
+`default_access_log_file`, `recording_root`, and `default_error_server`. Apache reference options are
+exactly `path`. HAProxy reference options are
 exactly ordered `paths`, optional `node_ip`, and `gpu1_defined`; true `gpu1_defined` requires
 `node_ip`. Squid accepts `path` and `externalize_cache`; the latter is required when parsed refresh
 rules would otherwise be discarded by direct non-caching forwarding. Relative paths, including an explicitly relative nginx `root_prefix`, resolve from the

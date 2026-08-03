@@ -236,16 +236,25 @@ fn import_previews_default_to_kdl_and_round_trip_every_format() {
         .join("../oxiroute-import/tests/fixtures/haproxy/minimal-representable.cfg");
     let squid_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../oxiroute-import/tests/fixtures/squid/hostrouter-sanitized.conf");
+    let apache_path = directory.path().join("httpd.conf");
+    fs::write(
+        &apache_path,
+        b"Listen 127.0.0.1:18081\n<VirtualHost 127.0.0.1:18081>\n  ServerName proxy.example\n  ProxyPass / http://127.0.0.1:8080/\n</VirtualHost>\n",
+    )
+    .expect("Apache source");
     let nginx_args = ["import", "nginx", nginx_path.to_str().unwrap()];
     let haproxy_args = ["import", "haproxy", haproxy_path.to_str().unwrap()];
     let squid_args = ["import", "squid", squid_path.to_str().unwrap()];
+    let apache_args = ["import", "apache", apache_path.to_str().unwrap()];
 
     let default_nginx = import_preview(&nginx_args, None, ConfigFormat::Kdl);
     let default_haproxy = import_preview(&haproxy_args, None, ConfigFormat::Kdl);
     let default_squid = import_preview(&squid_args, None, ConfigFormat::Kdl);
+    let default_apache = import_preview(&apache_args, None, ConfigFormat::Kdl);
     assert_eq!(default_nginx.listeners.len(), 1);
     assert_eq!(default_haproxy.listeners.len(), 1);
     assert_eq!(default_squid.listeners.len(), 1);
+    assert_eq!(default_apache.listeners.len(), 1);
 
     for (name, format) in [
         ("kdl", ConfigFormat::Kdl),
@@ -267,6 +276,11 @@ fn import_previews_default_to_kdl_and_round_trip_every_format() {
             import_preview(&squid_args, Some(name), format),
             default_squid,
             "Squid {name} preview"
+        );
+        assert_eq!(
+            import_preview(&apache_args, Some(name), format),
+            default_apache,
+            "Apache {name} preview"
         );
     }
 }

@@ -32,7 +32,7 @@ const TEST_CATEGORIES: [&str; 14] = [
     "validation",
 ];
 
-const TARGETS: [&str; 27] = [
+const TARGETS: [&str; 28] = [
     "config.loader",
     "deployment",
     "health.probe",
@@ -58,6 +58,7 @@ const TARGETS: [&str; 27] = [
     "rtmp.listener",
     "rtmp.recorder",
     "schema",
+    "apache.source_graph",
     "squid.semantic_ir",
     "tls.identity",
 ];
@@ -348,6 +349,7 @@ enum RtmpRuntimeStatus {
 fn directive_manifests_are_versioned_and_cover_registered_forms() {
     let nginx: DirectiveManifest<DirectiveForm> = read_manifest("nginx-directives.json");
     let haproxy: DirectiveManifest<DirectiveForm> = read_manifest("haproxy-directives.json");
+    let apache: DirectiveManifest<DirectiveForm> = read_manifest("apache-directives.json");
     let squid: SquidDirectiveManifest = read_manifest("squid-directives.json");
 
     validate_reference(
@@ -364,8 +366,16 @@ fn directive_manifests_are_versioned_and_cover_registered_forms() {
         "ca686e3",
         "docs/UPSTREAM_ANALYSIS.md",
     );
+    validate_reference(
+        &apache,
+        "apache",
+        "git_checkout",
+        "2.4.62",
+        "docs/UPSTREAM_ANALYSIS.md",
+    );
     validate_directive_forms(&nginx.entries);
     validate_directive_forms(&haproxy.entries);
+    validate_directive_forms(&apache.entries);
     assert_eq!(squid.schema_version, 1);
     assert_eq!(squid.product, "squid");
     assert_eq!(squid.reference.kind, "git_checkout");
@@ -427,6 +437,7 @@ fn all_manifest_ids_are_globally_unique() {
     let canonical: CanonicalManifest = read_manifest("canonical.json");
     let nginx: DirectiveManifest<DirectiveForm> = read_manifest("nginx-directives.json");
     let haproxy: DirectiveManifest<DirectiveForm> = read_manifest("haproxy-directives.json");
+    let apache: DirectiveManifest<DirectiveForm> = read_manifest("apache-directives.json");
     let rtmp: RtmpDirectiveManifest = read_manifest("nginx-rtmp-directives.json");
     let squid: SquidDirectiveManifest = read_manifest("squid-directives.json");
     let components: ComponentManifest = read_manifest("components.json");
@@ -440,6 +451,7 @@ fn all_manifest_ids_are_globally_unique() {
             .map(|entry| entry.id.as_str())
             .chain(nginx.entries.iter().map(|entry| entry.id.as_str()))
             .chain(haproxy.entries.iter().map(|entry| entry.id.as_str()))
+            .chain(apache.entries.iter().map(|entry| entry.id.as_str()))
             .chain(rtmp.entries.iter().map(|entry| entry.id.as_str()))
             .chain(rtmp.import_forms.iter().map(|entry| entry.id.as_str()))
             .chain(squid.entries.iter().map(|entry| entry.id.as_str()))
@@ -453,6 +465,7 @@ fn manifest_evidence_resolves_to_current_test_functions() {
     let canonical: CanonicalManifest = read_manifest("canonical.json");
     let nginx: DirectiveManifest<DirectiveForm> = read_manifest("nginx-directives.json");
     let haproxy: DirectiveManifest<DirectiveForm> = read_manifest("haproxy-directives.json");
+    let apache: DirectiveManifest<DirectiveForm> = read_manifest("apache-directives.json");
     let rtmp: RtmpDirectiveManifest = read_manifest("nginx-rtmp-directives.json");
     let squid: SquidDirectiveManifest = read_manifest("squid-directives.json");
     let components: ComponentManifest = read_manifest("components.json");
@@ -464,6 +477,7 @@ fn manifest_evidence_resolves_to_current_test_functions() {
         canonical.evidence,
         nginx.evidence,
         haproxy.evidence,
+        apache.evidence,
         rtmp.evidence,
         squid.evidence,
         components.evidence,

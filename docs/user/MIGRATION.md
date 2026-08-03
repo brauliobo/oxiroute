@@ -83,6 +83,28 @@ If refresh rules are present, explicit `externalize_cache` acceptance is require
 candidate can activate. CONNECT, ACL ordering, bounded DNS, and Basic authentication have dedicated
 policy constraints; full Squid parity is not claimed.
 
+## Apache httpd
+
+The Apache importer accepts a deliberately narrow static reverse-proxy subset. Start with a report:
+
+```sh
+oxiroute import apache /etc/httpd/conf/httpd.conf --output report
+```
+
+Preview a finalized candidate on a shadow port range:
+
+```sh
+oxiroute import apache /etc/httpd/conf/httpd.conf \
+  --shadow-port-offset 10000 \
+  --output preview
+```
+
+`Listen`, exact `VirtualHost` names, static `ProxyPass`, equal-weight `balancer://` pools, bounded
+`Include`/`IncludeOptional`, and TLS certificate/key paths are covered. Rewrites, `ProxyPassMatch`,
+`ProxyPassReverse`, directory/location merges, dynamic balancer state, and unsupported modules are
+blocking. Apache source references use `apache_server "..."` in KDL or the equivalent HOCON/UCI
+object and remain read-only compositional inputs.
+
 ## Composition And Native References
 
 Use `config compose` to flatten finalized inputs into one typed file. It is an explicit lossy boundary:
@@ -94,11 +116,12 @@ oxiroute config compose edge.kdl legacy.lua openwrt.uci site.conf
 oxiroute config compose --format hocon edge.kdl legacy.lua
 ```
 
-KDL, HOCON, and UCI may instead declare strict `nginx_server`, `haproxy_server`, or `squid_server`
+KDL, HOCON, and UCI may instead declare strict `nginx_server`, `haproxy_server`, `squid_server`, or
+`apache_server`
 references. Those roots remain compositional: the browser can inspect and validate them, but typed
-save refuses to flatten them accidentally. A KDL/HOCON/UCI `nginx_server` reference re-resolves the
-complete HTTP+RTMP source graph during watcher reconciliation; it is native-source integration, not
-an import management API or UI workflow.
+save refuses to flatten them accidentally. A KDL/HOCON/UCI native reference re-resolves its complete
+source graph during watcher reconciliation; it is native-source integration, not an import management
+API or UI workflow.
 
 ## Cutover Checklist
 

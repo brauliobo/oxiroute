@@ -7,7 +7,7 @@ use crate::ConfigSourceError;
 use crate::limits::{
     MAX_STRUCTURAL_DEPTH, check_output, check_string, source_text, validate_value,
 };
-use crate::native::{NativeDirective, decode_haproxy, decode_nginx, decode_squid};
+use crate::native::{NativeDirective, decode_apache, decode_haproxy, decode_nginx, decode_squid};
 
 /// A parsed, ordered UCI document.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -272,6 +272,9 @@ pub(crate) fn decode_with_directives(
             "squid_server" => {
                 directives.push(NativeDirective::Squid(decode_squid_section(&section)?));
             }
+            "apache_server" => {
+                directives.push(NativeDirective::Apache(decode_apache_section(&section)?));
+            }
             section_type => {
                 return Err(ConfigSourceError::parse(
                     "UCI",
@@ -347,6 +350,39 @@ fn decode_squid_section(
         }
     }
     decode_squid(Value::Object(object), "UCI")
+}
+
+fn decode_apache_section(
+    section: &UciSection,
+) -> Result<crate::native::ApacheSource, ConfigSourceError> {
+    let mut object = Map::new();
+    for entry in &section.entries {
+        let UciEntry::Option { name, value } = entry else {
+            return Err(ConfigSourceError::parse(
+                "UCI",
+                format!(
+                    "apache_server `{}` accepts only option entries",
+                    section.name
+                ),
+            ));
+        };
+        if name != "path" {
+            return Err(ConfigSourceError::parse(
+                "UCI",
+                format!("unknown apache_server option `{name}`"),
+            ));
+        }
+        if object
+            .insert(name.clone(), Value::String(value.clone()))
+            .is_some()
+        {
+            return Err(ConfigSourceError::parse(
+                "UCI",
+                "duplicate apache_server option `path`",
+            ));
+        }
+    }
+    decode_apache(Value::Object(object), "UCI")
 }
 
 fn decode_main_section(section: &UciSection) -> Result<Map<String, Value>, ConfigSourceError> {

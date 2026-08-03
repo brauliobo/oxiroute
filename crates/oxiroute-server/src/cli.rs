@@ -182,6 +182,18 @@ pub enum ImportCommand {
         #[arg(long, value_enum, default_value_t = ImportOutput::Report)]
         output: ImportOutput,
     },
+    Apache {
+        #[arg(value_name = "CONFIG")]
+        config: PathBuf,
+        /// Shift imported IP socket listeners for side-by-side validation.
+        #[arg(long, value_name = "PORTS", value_parser = clap::value_parser!(u16).range(1..))]
+        shadow_port_offset: Option<u16>,
+        /// Render preview output in this canonical configuration format.
+        #[arg(long, value_enum, default_value_t = ComposeFormat::Kdl)]
+        format: ComposeFormat,
+        #[arg(long, value_enum, default_value_t = ImportOutput::Report)]
+        output: ImportOutput,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
@@ -567,6 +579,20 @@ pub fn execute_offline(command: &Command) -> Result<Option<String>, Box<dyn Erro
             (*format).into(),
             *output,
         )?)),
+        Command::Import {
+            command:
+                ImportCommand::Apache {
+                    config,
+                    shadow_port_offset,
+                    format,
+                    output,
+                },
+        } => Ok(Some(import_apache(
+            config,
+            *shadow_port_offset,
+            (*format).into(),
+            *output,
+        )?)),
         _ => Ok(None),
     }
 }
@@ -739,6 +765,55 @@ fn import_squid(
                 result,
                 "blocked capabilities: {}",
                 report.blocked_capabilities.len()
+            )?;
+            Ok(result)
+        }
+    }
+}
+
+fn import_apache(
+    path: &Path,
+    shadow_port_offset: Option<u16>,
+    format: ConfigFormat,
+    output: ImportOutput,
+) -> Result<String, Box<dyn Error>> {
+    let report = oxiroute_import::apache::import_root(path);
+    match output {
+        ImportOutput::Preview => preview_with_shadow_listener_offset(
+            report.candidate.config.as_ref(),
+            shadow_port_offset,
+            format,
+        ),
+        ImportOutput::Report => {
+            if shadow_port_offset.is_some() {
+                return Err("--shadow-port-offset requires --output preview".into());
+            }
+            let mut result = report_header("apache", &report.diagnostics);
+            writeln!(
+                result,
+                "source files: {}",
+                report.source_graph.sources.len()
+            )?;
+            writeln!(
+                result,
+                "include edges: {}",
+                report.source_graph.includes.len()
+            )?;
+            writeln!(
+                result,
+                "blocked virtual hosts: {}",
+                report.blocked_virtual_hosts.len()
+            )?;
+            writeln!(result, "finalized: {}", report.candidate.config.is_some())?;
+            writeln!(
+                result,
+                "deployment requirements: {}",
+                report.candidate.deployment_requirements.len()
+            )?;
+            writeln!(
+                result,
+                "activation requirements: {}",
+                report.candidate.activation_requirements.len()
             )?;
             Ok(result)
         }
