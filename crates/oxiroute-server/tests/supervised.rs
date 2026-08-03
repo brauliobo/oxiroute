@@ -23,8 +23,8 @@ use oxiroute_server::{
 use oxiroute_supervision::{GenerationId, InstanceId};
 use oxiroute_supervision_unix::InstanceToken;
 use oxiroute_supervisor_master::{
-    CONTROL_PROTOCOL_VERSION, Master, MasterConfig, MasterState, ShutdownProgress, WorkerInput,
-    WorkerRole,
+    CONTROL_PROTOCOL_VERSION, Master, MasterConfig, MasterEvent, MasterState, ShutdownProgress,
+    WorkerInput, WorkerRole,
 };
 use oxiroute_supervisor_process::{WorkerCommand, WorkerIdentity, WorkerSpawner};
 use rustix::fs::OFlags;
@@ -109,9 +109,9 @@ impl Harness {
         let master = Master::launch(
             MasterConfig::new(
                 Duration::from_secs(10),
-                Duration::from_secs(1),
                 Duration::from_secs(10),
-                Duration::from_secs(1),
+                Duration::from_secs(10),
+                Duration::from_secs(10),
                 Duration::from_secs(6),
             )
             .expect("master deadlines"),
@@ -337,6 +337,170 @@ fn supervised_worker_serves_tcp_and_unix_http_from_transferred_descriptors() {
         !marker.exists(),
         "master did not clean up its namespace marker"
     );
+}
+
+#[test]
+fn supervised_worker_replaces_a_same_manifest_generation() {
+    let directory = tempfile::tempdir().expect("supervised fixture directory");
+    let tcp_address = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .expect("temporary TCP bind")
+        .local_addr()
+        .expect("TCP address");
+    let unix_path = directory.path().join("replacement.sock");
+    let initial = listeners_only_config(tcp_address, unix_path.clone());
+    let path = directory.path().join("oxiroute.kdl");
+    fs::write(
+        &path,
+        render_config(ConfigFormat::Kdl, &initial).expect("render initial config"),
+    )
+    .expect("write initial config");
+    let mut harness = Harness::launch_at(&path, canonical_revision(&path), false);
+    harness.poll_until(MasterState::Running);
+
+    let mut updated = initial;
+    let HttpRouteAction::FixedResponse { body, .. } =
+        &mut updated.http_services[0].routes[0].action
+    else {
+        panic!("fixture route is not a fixed response");
+    };
+    *body = "stage-3".into();
+    fs::write(
+        &path,
+        render_config(ConfigFormat::Kdl, &updated).expect("render replacement config"),
+    )
+    .expect("write replacement config");
+
+    let revision = canonical_revision(&path);
+    let identity = WorkerIdentity {
+        instance: InstanceToken([0x52; 16]),
+        generation: GenerationId(2),
+        protocol: CONTROL_PROTOCOL_VERSION,
+    };
+    let command = WorkerCommand::new(env!("CARGO_BIN_EXE_oxiroute"))
+        .expect("real oxiroute worker")
+        .arg(MARKER)
+        .arg(identity.generation.to_string())
+        .arg(encode_token([0x52; 16]))
+        .arg(&path)
+        .arg(revision);
+    let mut factory = WorkerSpawner::new(
+        env!("CARGO_BIN_EXE_oxiroute-supervisor-launcher-fixture"),
+        Duration::from_secs(5),
+    )
+    .expect("production launcher implementation");
+    harness
+        .master
+        .replace(
+            &mut factory,
+            WorkerInput {
+                instance_id: InstanceId::new("oxiroute-stage-2-candidate")
+                    .expect("candidate identity"),
+                identity,
+                command,
+            },
+            Instant::now(),
+        )
+        .expect("start replacement");
+
+    let started = Instant::now();
+    let mut committed = false;
+    while !committed || harness.master.state() != MasterState::Running {
+        let events = harness.master.poll(Instant::now()).expect("master poll");
+        committed |= events
+            .iter()
+            .any(|event| matches!(event, MasterEvent::ReplacementCommitted { .. }));
+        assert!(started.elapsed() < TEST_TIMEOUT, "replacement timed out");
+        thread::sleep(POLL_INTERVAL);
+    }
+    let mut stream = TcpStream::connect(tcp_address).expect("replacement TCP connection");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("TCP read timeout");
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .expect("write replacement request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("read replacement response");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.ends_with("stage-3"), "{response}");
+
+    assert!(matches!(
+        harness.master.shutdown(Instant::now()).expect("shutdown"),
+        ShutdownProgress::Pending { .. }
+    ));
+    harness.poll_until(MasterState::Stopped);
+    harness.verify_reaped();
+}
+
+#[test]
+fn supervised_worker_reactivates_after_a_replacement_rejection() {
+    let directory = tempfile::tempdir().expect("supervised fixture directory");
+    let tcp_address = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .expect("temporary TCP bind")
+        .local_addr()
+        .expect("TCP address");
+    let unix_path = directory.path().join("rollback.sock");
+    let config = listeners_only_config(tcp_address, unix_path);
+    let path = directory.path().join("oxiroute.kdl");
+    fs::write(
+        &path,
+        render_config(ConfigFormat::Kdl, &config).expect("render rollback config"),
+    )
+    .expect("write rollback config");
+    let mut harness = Harness::launch_at(&path, canonical_revision(&path), false);
+    harness.poll_until(MasterState::Running);
+
+    let identity = WorkerIdentity {
+        instance: InstanceToken([0x53; 16]),
+        generation: GenerationId(2),
+        protocol: CONTROL_PROTOCOL_VERSION,
+    };
+    let command = WorkerCommand::new(env!("CARGO_BIN_EXE_oxiroute"))
+        .expect("real oxiroute worker")
+        .arg(MARKER)
+        .arg(identity.generation.to_string())
+        .arg(encode_token([0x53; 16]))
+        .arg(&path)
+        .arg("0".repeat(64));
+    let mut factory = WorkerSpawner::new(
+        env!("CARGO_BIN_EXE_oxiroute-supervisor-launcher-fixture"),
+        Duration::from_secs(5),
+    )
+    .expect("production launcher implementation");
+    harness
+        .master
+        .replace(
+            &mut factory,
+            WorkerInput {
+                instance_id: InstanceId::new("oxiroute-stage-2-rollback")
+                    .expect("candidate identity"),
+                identity,
+                command,
+            },
+            Instant::now(),
+        )
+        .expect("start rejected replacement");
+
+    let started = Instant::now();
+    let mut rolled_back = false;
+    while !rolled_back || harness.master.state() != MasterState::Running {
+        let events = harness.master.poll(Instant::now()).expect("master poll");
+        rolled_back |= events
+            .iter()
+            .any(|event| matches!(event, MasterEvent::RollbackCompleted { .. }));
+        assert!(started.elapsed() < TEST_TIMEOUT, "rollback timed out");
+        thread::sleep(POLL_INTERVAL);
+    }
+    assert_fixed_response(TcpStream::connect(tcp_address).expect("rollback TCP connection"));
+
+    assert!(matches!(
+        harness.master.shutdown(Instant::now()).expect("shutdown"),
+        ShutdownProgress::Pending { .. }
+    ));
+    harness.poll_until(MasterState::Stopped);
+    harness.verify_reaped();
 }
 
 #[test]
