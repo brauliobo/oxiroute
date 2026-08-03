@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use oxiroute_rtmp::{
-    DirectiveContext, DirectiveError, RelayKind, RuntimeSupport, ValueKind, directive_specs,
-    validate_directive,
+    DirectiveContext, DirectiveError, DirectiveStatus, RelayKind, RuntimeSupport, ValueKind,
+    directive_compatibility_report, directive_specs, validate_directive,
 };
 
 const EXPECTED_DIRECTIVES: [&str; 117] = [
@@ -150,6 +150,217 @@ fn records_reference_quirks_without_claiming_runtime_enforcement() {
 }
 
 #[test]
+fn reports_truthful_key_and_form_statuses() {
+    let report = directive_compatibility_report();
+    let explicit_form_count = report
+        .entries
+        .iter()
+        .map(|spec| spec.runtime_forms.len())
+        .sum::<usize>();
+
+    assert_eq!(report.entries.len(), 117);
+    assert_eq!(report.directive_status.total(), 117);
+    assert_eq!(report.form_status.total(), explicit_form_count);
+    assert_eq!(report.directive_status.enforced, 5);
+    assert!(report.directive_status.enforced < report.entries.len());
+    assert!(report.directive_status.partial > 0);
+    assert!(report.form_status.enforced > 0);
+    assert!(report.form_status.disable_only > 0);
+    assert!(report.form_status.parsed_only > 0);
+    assert!(report.form_status.source_no_op > 0);
+    assert!(report.form_status.source_bug > 0);
+    assert!(report.form_status.deprecated > 0);
+    assert!(report.form_status.platform_limited > 0);
+    for spec in report.entries {
+        for form in spec.runtime_forms {
+            assert_ne!(form.status, DirectiveStatus::Partial);
+            assert!(
+                form.contexts
+                    .iter()
+                    .all(|context| spec.contexts.contains(context)),
+                "{} form {} escapes the directive context set",
+                spec.name,
+                form.form
+            );
+        }
+    }
+}
+
+#[test]
+fn reports_enforced_live_push_recording_chunk_and_listener_forms() {
+    assert_form_status("live", "live on", DirectiveStatus::Enforced);
+    assert_form_status("live", "live off", DirectiveStatus::Enforced);
+    assert_form_status(
+        "push",
+        "one canonical static target token",
+        DirectiveStatus::Enforced,
+    );
+    assert_form_status(
+        "record",
+        "record all with live on and secure path",
+        DirectiveStatus::Enforced,
+    );
+    assert_form_status(
+        "record",
+        "record all manual or manual all with live on and secure path",
+        DirectiveStatus::Enforced,
+    );
+    assert_form_status(
+        "record_path",
+        "secure absolute recording root when recording is enabled",
+        DirectiveStatus::Enforced,
+    );
+    assert_form_status(
+        "record_suffix",
+        "bounded literal suffix on a canonical recorder",
+        DirectiveStatus::Enforced,
+    );
+    assert_form_status(
+        "chunk_size",
+        "bounded outbound chunk size (1..=1048576)",
+        DirectiveStatus::Enforced,
+    );
+    assert_form_status(
+        "listen",
+        "numeric socket address without options",
+        DirectiveStatus::Enforced,
+    );
+}
+
+#[test]
+fn reports_unsupported_forms_without_promoting_their_directives() {
+    assert_form_status(
+        "push",
+        "target token with nginx relay options",
+        DirectiveStatus::ParsedOnly,
+    );
+    assert_form_status("record", "record off", DirectiveStatus::DisableOnly);
+    assert_form_status(
+        "record",
+        "other record bitmask",
+        DirectiveStatus::ParsedOnly,
+    );
+    assert_form_status(
+        "record_append",
+        "record_append off",
+        DirectiveStatus::DisableOnly,
+    );
+    assert_form_status(
+        "record_append",
+        "record_append on",
+        DirectiveStatus::ParsedOnly,
+    );
+    assert_form_status(
+        "chunk_size",
+        "out-of-range outbound chunk size",
+        DirectiveStatus::ParsedOnly,
+    );
+    assert_form_status(
+        "listen",
+        "socket address with a listen option",
+        DirectiveStatus::ParsedOnly,
+    );
+
+    assert_eq!(
+        spec("push").compatibility_status(),
+        DirectiveStatus::Partial
+    );
+    assert_eq!(
+        spec("record").compatibility_status(),
+        DirectiveStatus::Partial
+    );
+    assert_eq!(
+        spec("chunk_size").compatibility_status(),
+        DirectiveStatus::Partial
+    );
+    assert_eq!(
+        spec("listen").compatibility_status(),
+        DirectiveStatus::Partial
+    );
+}
+
+#[test]
+fn classifies_non_enforced_source_and_platform_forms() {
+    assert_eq!(
+        spec("stream_buckets").compatibility_status(),
+        DirectiveStatus::SourceBug
+    );
+    assert_eq!(
+        spec("hls_muxdelay").compatibility_status(),
+        DirectiveStatus::SourceNoOp
+    );
+    assert_eq!(
+        spec("so_keepalive").compatibility_status(),
+        DirectiveStatus::Deprecated
+    );
+    assert_eq!(
+        spec("rtmp_auto_push").compatibility_status(),
+        DirectiveStatus::PlatformLimited
+    );
+    assert_eq!(
+        spec("max_streams").compatibility_status(),
+        DirectiveStatus::ParsedOnly
+    );
+}
+
+#[test]
+fn validates_live_push_recording_chunk_and_listener_forms() {
+    assert!(validate_directive("live", DirectiveContext::RtmpApplication, &["on"]).is_ok());
+    assert!(
+        validate_directive(
+            "push",
+            DirectiveContext::RtmpApplication,
+            &["rtmp://origin/live"]
+        )
+        .is_ok()
+    );
+    assert!(validate_directive("record", DirectiveContext::RtmpApplication, &["all"]).is_ok());
+    assert!(
+        validate_directive(
+            "record",
+            DirectiveContext::RtmpApplication,
+            &["all", "manual"]
+        )
+        .is_ok()
+    );
+    assert!(validate_directive("chunk_size", DirectiveContext::RtmpServer, &["1048576"]).is_ok());
+    assert!(validate_directive("listen", DirectiveContext::RtmpServer, &["1935"]).is_ok());
+
+    assert!(matches!(
+        validate_directive("live", DirectiveContext::RtmpApplication, &["maybe"]),
+        Err(DirectiveError::InvalidValue { .. })
+    ));
+    assert!(matches!(
+        validate_directive(
+            "push",
+            DirectiveContext::RtmpApplication,
+            &["rtmp://origin/live", "unexpected=1"]
+        ),
+        Err(DirectiveError::InvalidValue { .. })
+    ));
+    assert!(matches!(
+        validate_directive(
+            "record",
+            DirectiveContext::RtmpApplication,
+            &["all", "unexpected"]
+        ),
+        Err(DirectiveError::InvalidValue { .. })
+    ));
+    assert!(matches!(
+        validate_directive(
+            "chunk_size",
+            DirectiveContext::RtmpServer,
+            &["not-a-number"]
+        ),
+        Err(DirectiveError::InvalidValue { .. })
+    ));
+    assert!(matches!(
+        validate_directive("listen", DirectiveContext::RtmpServer, &[""]),
+        Err(DirectiveError::InvalidValue { .. })
+    ));
+}
+
+#[test]
 fn unsupported_runtime_families_remain_explicitly_parsed_not_enforced() {
     for name in [
         "allow",
@@ -265,4 +476,15 @@ fn spec(name: &str) -> &'static oxiroute_rtmp::DirectiveSpec {
         .iter()
         .find(|spec| spec.name == name)
         .expect("registered directive")
+}
+
+fn assert_form_status(name: &str, form: &str, expected: DirectiveStatus) {
+    assert_eq!(
+        spec(name)
+            .runtime_form(form)
+            .unwrap_or_else(|| panic!("missing runtime form {name}: {form}"))
+            .status,
+        expected,
+        "unexpected status for {name} form {form}"
+    );
 }

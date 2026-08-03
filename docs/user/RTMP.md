@@ -95,4 +95,6 @@ is in progress, or an observed codec is not recordable.
   administration and cross-process quota coordination are not.
 - HLS, DASH, VOD, callbacks, broad access/control parity, isolated exec, and complete directive
   lowering remain future slices.
-- An RTMP parser accepting a directive does not mean the runtime enforces that directive.
+- An RTMP parser accepting a directive does not mean the runtime enforces that directive. The
+  compatibility registry reports enforced and disable-only forms separately from parsed-only,
+  source-no-op, source-bug, deprecated, and platform-limited forms.

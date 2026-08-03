@@ -69,7 +69,7 @@ procedure are documented in `vendor/pingora-core/README.oxiroute.md`.
 
 | Capability | Status |
 | --- | --- |
-| All 117 nginx-rtmp directive keys/value grammars | partial: tokenizer, registry, and contextual value validation cover all keys; deterministic includes, inheritance, occurrence accounting, provenance, and finalization exist only for a strict listener/application/recording subset |
+| All 117 nginx-rtmp directive keys/value grammars | partial: tokenizer, registry, and contextual value validation cover all keys; the registry report distinguishes enforced, disable-only, parsed-only, source-no-op, source-bug, deprecated, and platform-limited forms; deterministic includes, inheritance, occurrence accounting, provenance, and finalization exist only for a strict listener/application/recording subset |
 | RTMP simple/complex handshake | stable on the live listener through the pinned `rml_rtmp` state machine; the standalone simple-response primitive remains covered independently |
 | Chunk formats 0-3 and extended timestamps | partial: `rml_rtmp` transport is active with a 1 MiB inbound chunk limit, a fixed 8 MiB assembled inbound-message limit, and configured outbound chunk size announced on wire; per-configuration `max_message` and exhaustive fragmentation/interleaving tests remain |
 | AMF0 connect/createStream/publish/play | partial: configured live publish/play, stop, and delete are active; VOD and multi-message-stream roles remain absent |
@@ -93,9 +93,10 @@ the inbound chunk-size ceiling, a fixed 8 MiB assembled-message allocation ceili
 fanout/drain/write policies. The nginx `max_message` directive remains parsed and classified but
 does not configure that runtime ceiling.
 
-The directive registry reports each key as enforced, parsed-not-enforced, source-no-op,
-source-bug, deprecated, or platform-limited. “All keys parsed” is not advertised as full
-nginx-rtmp semantic compatibility.
+The directive registry retains a backward-compatible key-level classification and adds explicit
+form-level reporting for the narrow lowered subset. Its report distinguishes enforced,
+disable-only, parsed-only, source-no-op, source-bug, deprecated, and platform-limited forms.
+“All keys parsed” is not advertised as full nginx-rtmp semantic compatibility.
 
 ## Certificates
 

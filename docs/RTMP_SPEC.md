@@ -18,6 +18,16 @@ Parsing a directive MUST NOT mark its runtime behavior supported. Each normalize
 has one status: `enforced`, `parsed_not_enforced`, `source_no_op`, `source_bug`,
 `deprecated`, or `platform_limited`.
 
+The registry keeps the existing key-level `runtime_support` value for consumers that only need
+the broad classification, and exposes `runtime_forms` for keys with a narrower lowered subset.
+The compatibility report derives its counts from those same entries. A form is `enforced` only
+when its documented normalized behavior reaches the current runtime; `disable_only` means that
+an explicit disabling form is exact but the enabling behavior is not; `parsed_only` means that
+the grammar is accepted without runtime lowering; `partial` is reserved for a key whose forms
+have mixed outcomes. `source_no_op`, `source_bug`, `deprecated`, and `platform_limited` remain
+non-enforced classifications. Consequently, the report may identify enforced forms without
+claiming that all 117 directive keys are enforced.
+
 The current runtime contract is intentionally narrower than the directive inventory. Bounded live
 publish/play, fanout, static push relay, canonical named continuous/manual recorders, and legacy
 AVC/AAC FLV output are partial product capabilities. The live adapter enforces a fixed 1 MiB
