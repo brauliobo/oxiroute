@@ -27,8 +27,8 @@ pub use target::{
     parse_connect_authority,
 };
 pub use tunnel::{
-    BoundedTunnel, OverreadIo, TunnelConfigError, TunnelEnd, TunnelLimits, TunnelOutcome,
-    TunnelStats,
+    BoundedTunnel, H2TunnelStream, OverreadIo, TunnelConfigError, TunnelEnd, TunnelLimits,
+    TunnelOutcome, TunnelStats,
 };
 
 /// ALPN identifier required by RFC 9114 HTTP/3 connections.

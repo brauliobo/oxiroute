@@ -10,6 +10,7 @@ use std::{
     time::Duration,
 };
 
+use async_trait::async_trait;
 use bytes::{Buf as _, Bytes};
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf},
@@ -24,6 +25,22 @@ const MAX_TUNNEL_BUFFER_SIZE: usize = 1024 * 1024;
 pub struct OverreadIo<S> {
     prefix: Bytes,
     inner: S,
+}
+
+/// The per-stream operations required to relay a classic HTTP/2 CONNECT tunnel.
+///
+/// Implementations must release protocol receive capacity after frame bytes are read and before
+/// returning them. `wait_closed` is used after the request half closes to observe a stream reset
+/// while the upstream continues sending data.
+#[async_trait]
+pub trait H2TunnelStream: Send {
+    async fn recv_data(&mut self) -> io::Result<Option<Bytes>>;
+
+    async fn send_data(&mut self, data: Bytes, end: bool) -> io::Result<()>;
+
+    async fn wait_closed(&mut self) -> io::Result<()>;
+
+    async fn reset(&mut self);
 }
 
 impl<S> OverreadIo<S> {
@@ -276,6 +293,391 @@ impl BoundedTunnel {
             activity_rx,
         )
         .await
+    }
+
+    /// Relays an HTTP/2 classic CONNECT stream to a byte-stream upstream using DATA frames.
+    ///
+    /// The stream adapter owns only one HTTP/2 stream, never the connection. Request DATA is
+    /// consumed before upstream writes, response DATA is bounded by downstream flow control, and
+    /// `END_STREAM` is propagated as a half-close in each direction.
+    #[allow(clippy::too_many_lines)]
+    pub async fn relay_h2<S, R>(&self, mut downstream: S, mut upstream: R) -> TunnelOutcome
+    where
+        S: H2TunnelStream,
+        R: AsyncRead + AsyncWrite + Unpin,
+    {
+        let left_to_right = Arc::new(AtomicU64::new(0));
+        let right_to_left = Arc::new(AtomicU64::new(0));
+        let mut buffer = vec![0; self.limits.buffer_size];
+        let started = Instant::now();
+        let lifetime_deadline = started + self.limits.lifetime_timeout;
+        let mut idle_deadline = started + self.limits.idle_timeout;
+        let mut downstream_open = true;
+        let mut upstream_read_open = true;
+        let mut upstream_write_open = true;
+        let mut response_open = true;
+
+        loop {
+            if !response_open && !upstream_write_open {
+                return TunnelOutcome::Ended {
+                    end: TunnelEnd::Eof,
+                    stats: load_stats(&left_to_right, &right_to_left),
+                };
+            }
+
+            let right_to_left_current = right_to_left.load(Ordering::Relaxed);
+            if right_to_left_current >= self.limits.max_bytes_per_direction {
+                return h2_ended(
+                    &mut downstream,
+                    TunnelEnd::ByteLimitRightToLeft,
+                    load_stats(&left_to_right, &right_to_left),
+                )
+                .await;
+            }
+            let read_limit = buffer.len().min(
+                usize::try_from(self.limits.max_bytes_per_direction - right_to_left_current)
+                    .unwrap_or(usize::MAX),
+            );
+
+            if downstream_open {
+                tokio::select! {
+                    () = sleep_until(lifetime_deadline) => {
+                        return h2_ended(
+                            &mut downstream,
+                            TunnelEnd::LifetimeTimeout,
+                            load_stats(&left_to_right, &right_to_left),
+                        ).await;
+                    }
+                    () = sleep_until(idle_deadline) => {
+                        return h2_ended(
+                            &mut downstream,
+                            TunnelEnd::IdleTimeout,
+                            load_stats(&left_to_right, &right_to_left),
+                        ).await;
+                    }
+                    result = downstream.recv_data() => {
+                        let data = match result {
+                            Ok(Some(data)) => data,
+                            Ok(None) => {
+                                downstream_open = false;
+                                if upstream_write_open {
+                                    match shutdown_with_deadlines(
+                                        &mut upstream,
+                                        lifetime_deadline,
+                                        idle_deadline,
+                                    ).await {
+                                        Ok(()) => upstream_write_open = false,
+                                        Err(error) => {
+                                            return h2_operation_failure(
+                                                &mut downstream,
+                                                error,
+                                                load_stats(&left_to_right, &right_to_left),
+                                            ).await;
+                                        }
+                                    }
+                                }
+                                continue;
+                            }
+                            Err(source) => {
+                                return h2_io(
+                                    &mut downstream,
+                                    load_stats(&left_to_right, &right_to_left),
+                                    source,
+                                ).await;
+                            }
+                        };
+                        let left_to_right_current = left_to_right.load(Ordering::Relaxed);
+                        if left_to_right_current >= self.limits.max_bytes_per_direction {
+                            return h2_ended(
+                                &mut downstream,
+                                TunnelEnd::ByteLimitLeftToRight,
+                                load_stats(&left_to_right, &right_to_left),
+                            ).await;
+                        }
+                        let allowed = data.len().min(
+                            usize::try_from(
+                                self.limits.max_bytes_per_direction - left_to_right_current,
+                            )
+                            .unwrap_or(usize::MAX),
+                        );
+                        if allowed > 0 {
+                            if let Err(error) = write_with_deadlines(
+                                &mut upstream,
+                                &data[..allowed],
+                                lifetime_deadline,
+                                idle_deadline,
+                            )
+                            .await
+                            {
+                                return h2_operation_failure(
+                                    &mut downstream,
+                                    error,
+                                    load_stats(&left_to_right, &right_to_left),
+                                )
+                                .await;
+                            }
+                            left_to_right.fetch_add(
+                                u64::try_from(allowed).unwrap_or(u64::MAX),
+                                Ordering::Relaxed,
+                            );
+                            idle_deadline = Instant::now() + self.limits.idle_timeout;
+                        }
+                        if allowed < data.len()
+                            || left_to_right.load(Ordering::Relaxed)
+                                >= self.limits.max_bytes_per_direction
+                        {
+                            return h2_ended(
+                                &mut downstream,
+                                TunnelEnd::ByteLimitLeftToRight,
+                                load_stats(&left_to_right, &right_to_left),
+                            )
+                            .await;
+                        }
+                    }
+                    result = upstream.read(&mut buffer[..read_limit]), if upstream_read_open => {
+                        match relay_h2_upstream_read(
+                            &mut downstream,
+                            result,
+                            &buffer,
+                            &right_to_left,
+                            self.limits.max_bytes_per_direction,
+                            lifetime_deadline,
+                            self.limits.idle_timeout,
+                            &mut idle_deadline,
+                        ).await {
+                            Ok(H2UpstreamEvent::Continue) => {}
+                            Ok(H2UpstreamEvent::Eof) => {
+                                upstream_read_open = false;
+                                response_open = false;
+                            }
+                            Ok(H2UpstreamEvent::Limit) => {
+                                return h2_ended(
+                                    &mut downstream,
+                                    TunnelEnd::ByteLimitRightToLeft,
+                                    load_stats(&left_to_right, &right_to_left),
+                                ).await;
+                            }
+                            Err(error) => {
+                                return h2_operation_failure(
+                                    &mut downstream,
+                                    error,
+                                    load_stats(&left_to_right, &right_to_left),
+                                ).await;
+                            }
+                        }
+                    }
+                }
+            } else {
+                tokio::select! {
+                    () = sleep_until(lifetime_deadline) => {
+                        return h2_ended(
+                            &mut downstream,
+                            TunnelEnd::LifetimeTimeout,
+                            load_stats(&left_to_right, &right_to_left),
+                        ).await;
+                    }
+                    () = sleep_until(idle_deadline) => {
+                        return h2_ended(
+                            &mut downstream,
+                            TunnelEnd::IdleTimeout,
+                            load_stats(&left_to_right, &right_to_left),
+                        ).await;
+                    }
+                    result = downstream.wait_closed() => {
+                        let source = match result {
+                            Ok(()) => io::Error::new(
+                                io::ErrorKind::BrokenPipe,
+                                "HTTP/2 stream was reset",
+                            ),
+                            Err(source) => source,
+                        };
+                        return h2_io(
+                            &mut downstream,
+                            load_stats(&left_to_right, &right_to_left),
+                            source,
+                        ).await;
+                    }
+                    result = upstream.read(&mut buffer[..read_limit]), if upstream_read_open => {
+                        match relay_h2_upstream_read(
+                            &mut downstream,
+                            result,
+                            &buffer,
+                            &right_to_left,
+                            self.limits.max_bytes_per_direction,
+                            lifetime_deadline,
+                            self.limits.idle_timeout,
+                            &mut idle_deadline,
+                        ).await {
+                            Ok(H2UpstreamEvent::Continue) => {}
+                            Ok(H2UpstreamEvent::Eof) => {
+                                upstream_read_open = false;
+                                response_open = false;
+                            }
+                            Ok(H2UpstreamEvent::Limit) => {
+                                return h2_ended(
+                                    &mut downstream,
+                                    TunnelEnd::ByteLimitRightToLeft,
+                                    load_stats(&left_to_right, &right_to_left),
+                                ).await;
+                            }
+                            Err(error) => {
+                                return h2_operation_failure(
+                                    &mut downstream,
+                                    error,
+                                    load_stats(&left_to_right, &right_to_left),
+                                ).await;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+enum OperationError {
+    End(TunnelEnd),
+    Io(io::Error),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum H2UpstreamEvent {
+    Continue,
+    Eof,
+    Limit,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn relay_h2_upstream_read<S>(
+    downstream: &mut S,
+    result: io::Result<usize>,
+    buffer: &[u8],
+    transferred: &AtomicU64,
+    limit: u64,
+    lifetime_deadline: Instant,
+    idle_timeout: Duration,
+    idle_deadline: &mut Instant,
+) -> Result<H2UpstreamEvent, OperationError>
+where
+    S: H2TunnelStream,
+{
+    let length = result.map_err(OperationError::Io)?;
+    if length == 0 {
+        send_with_deadlines(
+            downstream,
+            Bytes::new(),
+            true,
+            lifetime_deadline,
+            *idle_deadline,
+        )
+        .await?;
+        return Ok(H2UpstreamEvent::Eof);
+    }
+    let current = transferred.load(Ordering::Relaxed);
+    let allowed = length.min(usize::try_from(limit - current).unwrap_or(usize::MAX));
+    let end = allowed < length || current + u64::try_from(allowed).unwrap_or(u64::MAX) >= limit;
+    send_with_deadlines(
+        downstream,
+        Bytes::copy_from_slice(&buffer[..allowed]),
+        end,
+        lifetime_deadline,
+        *idle_deadline,
+    )
+    .await?;
+    transferred.fetch_add(
+        u64::try_from(allowed).unwrap_or(u64::MAX),
+        Ordering::Relaxed,
+    );
+    *idle_deadline = Instant::now() + idle_timeout;
+    if end {
+        Ok(H2UpstreamEvent::Limit)
+    } else {
+        Ok(H2UpstreamEvent::Continue)
+    }
+}
+
+async fn write_with_deadlines<R>(
+    writer: &mut R,
+    data: &[u8],
+    lifetime_deadline: Instant,
+    idle_deadline: Instant,
+) -> Result<(), OperationError>
+where
+    R: AsyncWrite + Unpin,
+{
+    let write = writer.write_all(data);
+    tokio::pin!(write);
+    tokio::select! {
+        () = sleep_until(lifetime_deadline) => Err(OperationError::End(TunnelEnd::LifetimeTimeout)),
+        () = sleep_until(idle_deadline) => Err(OperationError::End(TunnelEnd::IdleTimeout)),
+        result = &mut write => result.map_err(OperationError::Io),
+    }
+}
+
+async fn shutdown_with_deadlines<R>(
+    writer: &mut R,
+    lifetime_deadline: Instant,
+    idle_deadline: Instant,
+) -> Result<(), OperationError>
+where
+    R: AsyncWrite + Unpin,
+{
+    let shutdown = writer.shutdown();
+    tokio::pin!(shutdown);
+    tokio::select! {
+        () = sleep_until(lifetime_deadline) => Err(OperationError::End(TunnelEnd::LifetimeTimeout)),
+        () = sleep_until(idle_deadline) => Err(OperationError::End(TunnelEnd::IdleTimeout)),
+        result = &mut shutdown => result.map_err(OperationError::Io),
+    }
+}
+
+async fn send_with_deadlines<S>(
+    downstream: &mut S,
+    data: Bytes,
+    end: bool,
+    lifetime_deadline: Instant,
+    idle_deadline: Instant,
+) -> Result<(), OperationError>
+where
+    S: H2TunnelStream,
+{
+    let send = downstream.send_data(data, end);
+    tokio::pin!(send);
+    tokio::select! {
+        () = sleep_until(lifetime_deadline) => Err(OperationError::End(TunnelEnd::LifetimeTimeout)),
+        () = sleep_until(idle_deadline) => Err(OperationError::End(TunnelEnd::IdleTimeout)),
+        result = &mut send => result.map_err(OperationError::Io),
+    }
+}
+
+async fn h2_ended<S>(downstream: &mut S, end: TunnelEnd, stats: TunnelStats) -> TunnelOutcome
+where
+    S: H2TunnelStream,
+{
+    downstream.reset().await;
+    TunnelOutcome::Ended { end, stats }
+}
+
+async fn h2_io<S>(downstream: &mut S, stats: TunnelStats, source: io::Error) -> TunnelOutcome
+where
+    S: H2TunnelStream,
+{
+    downstream.reset().await;
+    TunnelOutcome::Io { stats, source }
+}
+
+async fn h2_operation_failure<S>(
+    downstream: &mut S,
+    error: OperationError,
+    stats: TunnelStats,
+) -> TunnelOutcome
+where
+    S: H2TunnelStream,
+{
+    match error {
+        OperationError::End(end) => h2_ended(downstream, end, stats).await,
+        OperationError::Io(source) => h2_io(downstream, stats, source).await,
     }
 }
 
