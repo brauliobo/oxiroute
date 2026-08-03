@@ -1829,15 +1829,17 @@ impl Response {
         if (200..300).contains(&self.status) {
             Ok(self)
         } else {
-            let code = serde_json::from_slice::<Value>(&self.body)
-                .ok()
-                .and_then(|value| {
-                    value
-                        .pointer("/error/code")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                })
-                .unwrap_or_else(|| format!("http_{}", self.status));
+            let value = serde_json::from_slice::<Value>(&self.body).ok();
+            let code = value
+                .as_ref()
+                .and_then(|value| value.pointer("/error/code"))
+                .and_then(Value::as_str)
+                .map_or_else(|| format!("http_{}", self.status), str::to_owned);
+            let code = value
+                .as_ref()
+                .and_then(|value| value.pointer("/diagnostics/0/code"))
+                .and_then(Value::as_str)
+                .map_or(code.clone(), |diagnostic| format!("{code}: {diagnostic}"));
             Err(CliError::Status(self.status, code))
         }
     }
@@ -2164,6 +2166,22 @@ mod tests {
             CliError::Status(409, "conflict".into()).exit_code(),
             EXIT_CONFLICT
         );
+    }
+
+    #[test]
+    fn response_errors_surface_redacted_diagnostic_codes() {
+        let response = Response {
+            status: 422,
+            content_type: "application/json".into(),
+            body: br#"{"error":{"code":"config_rejected"},"diagnostics":[{"code":"E_NATIVE_SOURCE"}]}"#
+                .to_vec(),
+        };
+
+        let Err(CliError::Status(status, code)) = response.into_result() else {
+            panic!("expected failed response")
+        };
+        assert_eq!(status, 422);
+        assert_eq!(code, "config_rejected: E_NATIVE_SOURCE");
     }
 
     #[test]
