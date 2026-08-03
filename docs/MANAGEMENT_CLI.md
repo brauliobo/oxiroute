@@ -46,7 +46,7 @@ Status meanings:
 | Config | diff | Supported | `oxiroute config diff FILE`; local structural JSON comparison against normalized active config. |
 | Config | validate | Supported | `oxiroute config validate FILE` |
 | Config | apply | Supported | `oxiroute config apply FILE`; uses the current disk revision as a precondition. |
-| Config | native import | Config generation | `oxiroute import nginx|haproxy ...`; import remains an offline evidence-producing operation. |
+| Config | native import | Config generation | `oxiroute import nginx|haproxy|squid|apache ...`; import remains an offline evidence-producing operation. |
 | Listener | list/show | Supported | `oxiroute listener list|show NAME` |
 | Listener | ready/drain/maintenance | Supported | Admission state; existing connections are not revoked. |
 | Listener | capacity visibility | Supported | List/show includes configured maximum and active/rejected counters. |

@@ -41,11 +41,18 @@ pub(crate) struct SquidSource {
     pub externalize_cache: bool,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ApacheSource {
+    pub path: PathBuf,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum NativeDirective {
     Nginx(NginxSource),
     Haproxy(HaproxySource),
     Squid(SquidSource),
+    Apache(ApacheSource),
 }
 
 fn default_root_prefix() -> PathBuf {
@@ -75,6 +82,11 @@ pub(crate) fn extract_directives(
             directives.push(NativeDirective::Squid(decode_squid(value, format)?));
         }
     }
+    if let Some(value) = root.remove("apache_server") {
+        for value in one_or_many(value, "apache_server", format)? {
+            directives.push(NativeDirective::Apache(decode_apache(value, format)?));
+        }
+    }
     Ok(directives)
 }
 
@@ -89,6 +101,22 @@ pub(crate) fn decode_squid(
         return Err(ConfigSourceError::parse(
             format,
             "squid_server path must not be empty",
+        ));
+    }
+    Ok(source)
+}
+
+pub(crate) fn decode_apache(
+    value: Value,
+    format: &'static str,
+) -> Result<ApacheSource, ConfigSourceError> {
+    let source: ApacheSource = serde_json::from_value(value).map_err(|error| {
+        ConfigSourceError::parse(format, format!("invalid apache_server: {error}"))
+    })?;
+    if source.path.as_os_str().is_empty() {
+        return Err(ConfigSourceError::parse(
+            format,
+            "apache_server path must not be empty",
         ));
     }
     Ok(source)

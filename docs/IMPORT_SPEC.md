@@ -25,7 +25,7 @@ only for a fully finalized candidate, defaults to deterministic KDL, and accepts
 `--format kdl|lua|uci|hocon`. The complete nginx root command includes the strict nginx-RTMP
 subset when that root contains an `rtmp` block.
 
-KDL, HOCON, and UCI roots may instead contain `nginx_server`, `haproxy_server`, and `squid_server` references. The
+KDL, HOCON, and UCI roots may instead contain `nginx_server`, `haproxy_server`, `squid_server`, and `apache_server` references. The
 normal source resolver runs those references through the same complete import pipelines, composes
 only fully finalized candidates with inline canonical objects in source order, and lets the daemon
 watch/reconcile the effective result. This is runtime integration for strict source references, not
@@ -105,7 +105,13 @@ general activation of standalone import reports. Restricted Lua cannot declare n
   activation requires explicit `externalize_cache` acceptance when refresh rules are present.
 - Varnish has a bounded VCL source/include, parser, typed semantic-report, decision-ledger, and
   invocation-model foundation. It has no canonical lowering, runtime, or daemon integration.
-- Apache httpd import is not implemented.
+- Apache httpd has a bounded byte-preserving source/include graph, parser, semantic resolver,
+  occurrence ledger, source-aware provenance, and strict canonical lowering for explicit IP
+  listeners, exact virtual-host names, static HTTP/HTTPS ProxyPass destinations, equal-weight
+  `balancer://` pools, and certificate/key path references. Include expansion is deterministic and
+  rechecked before finalization. Unsupported rewrites, regex proxying, directory/location merges,
+  ProxyPassReverse response rewriting, dynamic balancer state, and unsupported modules block the
+  affected candidate instead of disappearing.
 
 Coverage manifests and importer tests enforce that a candidate cannot finalize while any blocking
 error remains and that no fallback service or route is invented.
@@ -114,7 +120,8 @@ Native references expose only the options defined by the source adapter. nginx a
 optional `root_prefix`, `host_timezone`, `default_access_log_file`, `recording_root`, and
 `default_error_server`; HAProxy accepts one or more ordered paths plus optional `node_ip` and
 `gpu1_defined`; Squid accepts one `path` and optional `externalize_cache`, which must be true when
-refresh rules are present. Relative paths resolve from the OxiRoute source directory.
+refresh rules are present; Apache accepts one `path` to a complete httpd root. Relative paths
+resolve from the OxiRoute source directory.
 Shadow listener offsets and other standalone CLI-only overlays are not reference fields.
 
 Referenced files remain administrator-owned and read-only to OxiRoute, but they are intentionally
@@ -239,13 +246,15 @@ Target support:
 
 - `Listen`, `<VirtualHost>`, `ServerName`, and exact `ServerAlias`.
 - `SSLEngine`, certificate file, and key file directives.
-- Static `ProxyPass`, `ProxyPassReverse`, `balancer://`, and `BalancerMember`.
+- Static HTTP/HTTPS `ProxyPass`, `balancer://`, and `BalancerMember`.
 - Equal-weight `byrequests`.
 - `Include` and `IncludeOptional` ordering.
+- Audited `LoadModule` deployment requirements.
 
 Blockers:
 
-- `ProxyPassMatch`, `RewriteRule [P]`, complex `<Location>`/directory merges, and balancer-manager state.
+- `ProxyPassMatch`, `ProxyPassReverse`, rewrites, complex `<Location>`/directory merges, and
+  balancer-manager state.
 - Generic TCP/UDP because stock httpd does not provide equivalent listeners.
 
 The first matching `ProxyPass` behavior MUST not be converted into nginx-style longest

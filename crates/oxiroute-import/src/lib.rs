@@ -1,5 +1,6 @@
 //! Shared primitives for parsing native configuration sources.
 
+pub mod apache;
 mod candidate;
 mod canonical;
 mod diagnostic;

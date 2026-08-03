@@ -159,6 +159,7 @@ fn import_native(
         NativeDirective::Nginx(source) => import_nginx(source, parent, dependencies),
         NativeDirective::Haproxy(source) => import_haproxy(source, parent, dependencies),
         NativeDirective::Squid(source) => import_squid(source, parent, dependencies),
+        NativeDirective::Apache(source) => import_apache(source, parent, dependencies),
     }
 }
 
@@ -183,6 +184,29 @@ fn import_squid(
     let config = report.config.clone().ok_or_else(|| {
         failed_native_import(
             "squid",
+            report
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.code().as_str()),
+        )
+    })?;
+    for source in &report.source_graph.sources {
+        dependencies.push(source.canonical_path.clone())?;
+    }
+    Ok(config)
+}
+
+#[cfg(unix)]
+fn import_apache(
+    source: &crate::native::ApacheSource,
+    parent: &Path,
+    dependencies: &mut Dependencies,
+) -> Result<Config, ConfigSourceError> {
+    let path = resolve_path(parent, &source.path);
+    let report = oxiroute_import::apache::import_root(&path);
+    let config = report.candidate.config.clone().ok_or_else(|| {
+        failed_native_import(
+            "Apache",
             report
                 .diagnostics
                 .iter()

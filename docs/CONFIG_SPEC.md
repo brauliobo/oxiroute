@@ -883,7 +883,7 @@ restricted Lua, UCI, or HOCON.
 - A successful UI save normalizes formatting and field order.
 - Comments, source formatting, Lua expressions, HOCON substitutions/merges, UCI record names,
   templates, and native-reference declarations do not round-trip through a typed save.
-- A root using `templates`, `nginx_server`, `haproxy_server`, or `squid_server` is marked compositional. The backend
+- A root using `templates`, `nginx_server`, `haproxy_server`, `squid_server`, or `apache_server` is marked compositional. The backend
   rejects typed replacement of that root with `E_COMPOSITIONAL_ROOT`; operators must edit the source
   graph directly or explicitly flatten it with `config compose` into a separately owned file.
 - The API MUST state that normalization will occur before accepting a save.
