@@ -536,12 +536,12 @@ describe('ConfigurationWorkspace', () => {
     await unlockConfiguration(wrapper, refreshedToken)
     expect((wrapper.get('[data-field="version"] input').element as HTMLInputElement).value).toBe('2')
     expect(wrapper.get('.revision-board').text()).toContain('Unsaved changes')
-    expect(fetch).toHaveBeenLastCalledWith(
+    expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/v1/config')).toContainEqual([
       '/api/v1/config',
       expect.objectContaining({
         headers: { Authorization: `Bearer ${refreshedToken}` },
       }),
-    )
+    ])
   })
 
   it('shows capability-unavailable without creating a fake editable config', async () => {

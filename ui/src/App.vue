@@ -324,11 +324,13 @@ import { listenerStateLabels } from './runtimeStates'
 import TopologyView from './TopologyView.vue'
 import {
   ApiError,
+  connectEventStream,
   fetchMonitoring,
   fetchRtmpCatalog,
   fetchTopology,
   setRecording,
   type EndpointHealthState,
+  type EventStreamClient,
   type HealthFailure,
   type MonitoringPool,
   type MonitoringSnapshot,
@@ -385,6 +387,7 @@ const currentUnixMs = ref(Date.now())
 let refreshTimer: number | undefined
 let activeController: AbortController | undefined
 let activeRefresh: Promise<void> | null = null
+let eventStream: EventStreamClient | null = null
 let monitoringStarted = false
 
 const totalTrafficBytes = computed(
@@ -460,7 +463,11 @@ function setManagementToken(): void {
   if (!managementTokenInput.value) return
   managementToken.value = managementTokenInput.value
   managementTokenInput.value = ''
-  if (activeView.value !== 'configuration') void refresh()
+  if (activeView.value !== 'configuration') {
+    stopEventStream()
+    startEventStream()
+    void refresh()
+  }
 }
 
 function syncViewFromHash(): void {
@@ -470,11 +477,13 @@ function syncViewFromHash(): void {
 function startMonitoring(): void {
   if (monitoringStarted) return
   monitoringStarted = true
+  startEventStream()
   void refresh()
   refreshTimer = window.setInterval(() => void refresh(), REFRESH_INTERVAL_MS)
 }
 
 function stopMonitoring(): void {
+  stopEventStream()
   if (refreshTimer !== undefined) window.clearInterval(refreshTimer)
   refreshTimer = undefined
   monitoringStarted = false
@@ -482,6 +491,27 @@ function stopMonitoring(): void {
   activeController = undefined
   activeRefresh = null
   refreshing.value = false
+}
+
+function startEventStream(): void {
+  if (eventStream || !managementToken.value || !monitoringStarted) return
+  const client = connectEventStream(managementToken.value, {
+    onEvent: () => {
+      void refresh()
+    },
+    onResyncRequired: async () => {
+      await refresh()
+    },
+  })
+  eventStream = client
+  void client.closed.then(() => {
+    if (eventStream === client) eventStream = null
+  })
+}
+
+function stopEventStream(): void {
+  eventStream?.close()
+  eventStream = null
 }
 
 async function refreshData(controller: AbortController): Promise<void> {

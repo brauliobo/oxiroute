@@ -45,7 +45,8 @@ describe('application navigation', () => {
     expect(wrapper.get('.config-workspace').text()).toContain('Configuration workspace')
     expect(fetch).not.toHaveBeenCalled()
     await unlockConfiguration(wrapper)
-    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(fetch.mock.calls.filter((call) => String((call as unknown as [RequestInfo | URL])[0]) === '/api/v1/config'))
+      .toHaveLength(1)
     expect(fetch).toHaveBeenCalledWith('/api/v1/config', expect.objectContaining({
       cache: 'no-store',
       headers: { Authorization: `Bearer ${bearerToken}` },

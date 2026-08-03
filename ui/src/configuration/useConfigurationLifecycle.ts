@@ -104,6 +104,25 @@ export function useConfigurationLifecycle(options: ConfigurationLifecycleOptions
     attemptDiagnostics.value = null
   }
 
+  function syncSnapshot(next: ConfigSnapshot, force = false): boolean {
+    if (!force && options.snapshot.value && isDirty.value) {
+      options.activeRevision.value = next.activeRevision
+      options.diskDiagnostics.value = next.diagnostics
+      if (next.diskRevision !== options.diskRevision.value) {
+        options.staleRevision.value = next.diskRevision
+      }
+      return false
+    }
+    options.snapshot.value = clone(next)
+    options.draft.value = clone(next.config)
+    options.diskRevision.value = next.diskRevision
+    options.activeRevision.value = next.activeRevision
+    options.diskDiagnostics.value = next.diagnostics
+    options.staleRevision.value = null
+    resetForSnapshot()
+    return true
+  }
+
   async function runValidation(): Promise<void> {
     const token = options.accessToken.value
     if (!options.draft.value || !token) return
@@ -315,6 +334,7 @@ export function useConfigurationLifecycle(options: ConfigurationLifecycleOptions
     abortRequests,
     clearMessages,
     resetForSnapshot,
+    syncSnapshot,
     runValidation,
     writeCandidate,
   }
