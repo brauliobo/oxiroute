@@ -48,7 +48,7 @@ pub use routing::{
     HealthFailure, HealthOverride, PoolAdminError, PoolError, PoolHealthSnapshot, RoundRobinPool,
     Route, RouteError, RouteTable, RuntimeEndpoint,
 };
-pub use rtmp_api::{ApiResponse, RtmpManagementApi};
+pub use rtmp_api::{ApiResponse, RtmpManagementApi, RtmpManagementHttpApp};
 pub use service_plan::{
     HttpServicePlan, RtmpServicePlan, RuntimePlan, ServiceKind, ServicePlanError, ServiceSpec,
     runtime_plan, service_specs,

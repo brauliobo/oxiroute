@@ -93,8 +93,9 @@ build version, disk/candidate/active/previous revisions, degradation, and listen
 Every recognized `/api/v1` route, including monitoring, topology, RTMP, listener/pool/server,
 generation, TLS, process, configuration, and event routes, requires exactly one management Bearer
 token. The only public recognized API probes are exact `GET /ready` and `GET /metrics`. Event
-operations use bounded cursor polling at `/api/v1/events`; there is no unbounded stream or SSE
-endpoint.
+operations use bounded cursor polling at `/api/v1/events` or authenticated bounded SSE at
+`/api/v1/events/stream` (also negotiated on `/api/v1/events` with `Accept: text/event-stream`).
+There is no unbounded event queue or durable event history.
 
 `GET /metrics` exports process, listener, pool, server, queue, health, retry, certificate, RTMP
 relay/recording, and generation families in Prometheus text format. `/stats` provides a compact
