@@ -82,12 +82,42 @@ pub enum CertificateSource {
         live_directory_path: PathBuf,
         archive_directory_path: PathBuf,
     },
+    AcmeManaged {
+        directory_url: String,
+        state_root: PathBuf,
+        #[serde(default)]
+        contacts: Vec<String>,
+        terms_agreed: bool,
+        #[serde(default)]
+        challenge: AcmeChallengeType,
+        #[serde(default)]
+        key_type: AcmeKeyType,
+        allowed_dns_suffixes: Vec<String>,
+    },
     SelfSignedDevelopment {
         #[serde(default = "default_self_signed_validity_days")]
         validity_days: u32,
         #[serde(default)]
         key_type: SelfSignedKeyType,
     },
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AcmeChallengeType {
+    #[default]
+    Http01,
+    Dns01,
+    TlsAlpn01,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AcmeKeyType {
+    #[default]
+    EcdsaP256,
+    #[serde(rename = "rsa_2048")]
+    Rsa2048,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -1683,6 +1713,29 @@ pub enum ConfigError {
     DuplicateCertificatePaths { certificate: String },
     #[error("certificate `{certificate}` must use different Certbot live and archive directories")]
     DuplicateCertbotDirectories { certificate: String },
+    #[error("managed ACME certificate `{certificate}` has an invalid HTTPS directory URL")]
+    InvalidAcmeDirectoryUrl { certificate: String },
+    #[error("managed ACME certificate `{certificate}` must explicitly agree to directory terms")]
+    AcmeTermsNotAgreed { certificate: String },
+    #[error("managed ACME certificate `{certificate}` uses an unsupported challenge type")]
+    UnsupportedAcmeChallenge { certificate: String },
+    #[error("managed ACME certificate `{certificate}` has invalid contacts")]
+    InvalidAcmeContacts { certificate: String },
+    #[error(
+        "managed ACME certificate `{certificate}` must configure between one and sixteen DNS suffixes"
+    )]
+    InvalidAcmeDnsSuffixes { certificate: String },
+    #[error("managed ACME certificate `{certificate}` contains a wildcard or IP identifier")]
+    AcmeIdentifierUnsupported { certificate: String },
+    #[error("managed ACME certificate `{certificate}` name must be a path-safe slug")]
+    InvalidAcmeCertificateName { certificate: String },
+    #[error(
+        "managed ACME certificate `{certificate}` DNS name `{dns_name}` is outside its suffix policy"
+    )]
+    AcmeIdentifierOutsidePolicy {
+        certificate: String,
+        dns_name: String,
+    },
     #[error(
         "development certificate `{certificate}` validity_days must be between {min} and {max}, got {value}"
     )]

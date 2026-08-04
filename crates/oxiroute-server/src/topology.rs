@@ -1008,6 +1008,31 @@ fn certificate_source(source: &CertificateSource) -> Value {
             "liveDirectoryPath": live_directory_path,
             "archiveDirectoryPath": archive_directory_path,
         }),
+        CertificateSource::AcmeManaged {
+            directory_url,
+            state_root,
+            contacts,
+            terms_agreed,
+            challenge,
+            key_type,
+            allowed_dns_suffixes,
+        } => json!({
+            "type": "acme_managed",
+            "directoryUrl": directory_url,
+            "stateRoot": state_root,
+            "contactCount": contacts.len(),
+            "termsAgreed": terms_agreed,
+            "challenge": match challenge {
+                oxiroute_config::AcmeChallengeType::Http01 => "http01",
+                oxiroute_config::AcmeChallengeType::Dns01 => "dns01",
+                oxiroute_config::AcmeChallengeType::TlsAlpn01 => "tls_alpn01",
+            },
+            "keyType": match key_type {
+                oxiroute_config::AcmeKeyType::EcdsaP256 => "ecdsa_p256",
+                oxiroute_config::AcmeKeyType::Rsa2048 => "rsa_2048",
+            },
+            "allowedDnsSuffixCount": allowed_dns_suffixes.len(),
+        }),
         CertificateSource::SelfSignedDevelopment {
             validity_days,
             key_type,

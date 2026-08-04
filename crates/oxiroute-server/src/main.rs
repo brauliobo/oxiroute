@@ -25,15 +25,16 @@ use log::{error, info, warn};
 use oxiroute_config::ListenerBind;
 use oxiroute_rtmp::{MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN, RtmpRegistry, RtmpServiceRuntime};
 use oxiroute_server::{
-    CertbotWatcherConfig, CertbotWatcherSupervisor, ConfigWatcher, ConfigWatcherOptions,
-    ConnectionGuard, FileWatcherConfig, FileWatcherSupervisor, ForwardConnectionLifecycle,
-    ForwardHttp1ServicePlan, ForwardHttp2ServiceApp, GenerationManager, HaproxyStatsApi,
-    HaproxyStatsPage, HttpDownstreamPolicyApp, HttpListenerApp, HttpReverseProxy, ListenerMetrics,
-    ListenerReservation, MAX_HTTP_ATTEMPTS, MonitoredHttpApp, RtmpManagementApi, RuntimeGeneration,
-    RuntimeMetrics, RuntimeReferenceKind, ServiceKind, TcpRelayCore, TlsProfilePlan,
-    TopologySnapshot,
+    AcmeManagedReconciler, CertbotWatcherConfig, CertbotWatcherSupervisor, ConfigWatcher,
+    ConfigWatcherOptions, ConnectionGuard, FileWatcherConfig, FileWatcherSupervisor,
+    ForwardConnectionLifecycle, ForwardHttp1ServicePlan, ForwardHttp2ServiceApp, GenerationManager,
+    HaproxyStatsApi, HaproxyStatsPage, HttpDownstreamPolicyApp, HttpListenerApp, HttpReverseProxy,
+    ListenerMetrics, ListenerReservation, MAX_HTTP_ATTEMPTS, MonitoredHttpApp, RtmpManagementApi,
+    RuntimeGeneration, RuntimeMetrics, RuntimeReferenceKind, ServiceKind, TcpRelayCore,
+    TlsProfilePlan, TopologySnapshot,
     cli::{Cli, Command, ConfigCommand, execute_offline},
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, ConfigRevision},
+    emit_certificate,
 };
 use pingora::{
     apps::http_app::HttpServer,
@@ -372,6 +373,7 @@ struct ForwardHttp1App {
     metrics: ListenerMetrics,
     request_timeout: Option<Duration>,
     service: Arc<ForwardHttp1ServicePlan>,
+    challenge_store: oxiroute_acme::ChallengeStore,
 }
 
 struct ForwardHttp2App<A> {
@@ -504,12 +506,14 @@ impl ForwardHttp1App {
         metrics: ListenerMetrics,
         generation: Arc<RuntimeGeneration>,
         request_timeout: Option<Duration>,
+        challenge_store: oxiroute_acme::ChallengeStore,
     ) -> Self {
         Self {
             generation,
             metrics,
             request_timeout,
             service,
+            challenge_store,
         }
     }
 }
@@ -568,12 +572,19 @@ impl ServerApp for ForwardHttp1App {
         let request_shutdown = shutdown.clone();
         let lifecycle = Arc::new(ForwardConnectionLifecycle::default());
         let request_lifecycle = Arc::clone(&lifecycle);
+        let challenge_store = self.challenge_store.clone();
         let app = service_fn(move |request| {
             let plan = Arc::clone(&plan);
             let shutdown = request_shutdown.clone();
             let lifecycle = Arc::clone(&request_lifecycle);
+            let challenge_store = challenge_store.clone();
             async move {
-                Ok::<_, Infallible>(plan.handle(request, client_addr, shutdown, lifecycle).await)
+                let response = match oxiroute_server::challenge_response(&request, &challenge_store)
+                {
+                    Some(response) => response,
+                    None => plan.handle(request, client_addr, shutdown, lifecycle).await,
+                };
+                Ok::<_, Infallible>(response)
             }
         });
         let mut builder = http1::Builder::new();
@@ -972,6 +983,84 @@ struct GenerationProcess {
     generation: Arc<RuntimeGeneration>,
     shutdown: tokio::sync::watch::Sender<bool>,
     thread: JoinHandle<()>,
+}
+
+const ACME_RENEWAL_SCAN_INTERVAL: Duration = Duration::from_secs(12 * 60 * 60);
+const ACME_INITIAL_SCAN_DELAY: Duration = Duration::from_secs(10);
+
+struct AcmeManagedSupervisor {
+    stop: mpsc::Sender<()>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl AcmeManagedSupervisor {
+    fn start(reconcilers: Vec<Arc<AcmeManagedReconciler>>) -> io::Result<Self> {
+        let (stop, stop_rx) = mpsc::channel();
+        let thread = thread::Builder::new()
+            .name("oxiroute-acme-renewal".into())
+            .spawn(move || {
+                if stop_rx.recv_timeout(ACME_INITIAL_SCAN_DELAY).is_ok() {
+                    return;
+                }
+                loop {
+                    let now = SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .ok()
+                        .map_or(0, |duration| duration.as_secs());
+                    for reconciler in &reconcilers {
+                        if !reconciler.renewal_due(now) {
+                            continue;
+                        }
+                        let certificate = reconciler.status().certificate;
+                        emit_certificate("certificate_renewal", "requested", &certificate);
+                        match reconciler.renew_now() {
+                            Ok(outcome) => {
+                                emit_certificate(
+                                    if outcome == oxiroute_server::AcmeManagedOutcome::Activated {
+                                        "certificate_activated"
+                                    } else {
+                                        "certificate_renewal"
+                                    },
+                                    if outcome == oxiroute_server::AcmeManagedOutcome::Activated {
+                                        "activated"
+                                    } else {
+                                        "applied"
+                                    },
+                                    &certificate,
+                                );
+                                info!(
+                                    "managed ACME renewal for `{}` completed with {}",
+                                    certificate,
+                                    outcome.code()
+                                );
+                            }
+                            Err(error) => {
+                                emit_certificate("certificate_renewal", "failed", &certificate);
+                                warn!(
+                                    "managed ACME renewal for `{}` failed: {}",
+                                    certificate,
+                                    error.code()
+                                );
+                            }
+                        }
+                    }
+                    if stop_rx.recv_timeout(ACME_RENEWAL_SCAN_INTERVAL).is_ok() {
+                        break;
+                    }
+                }
+            })?;
+        Ok(Self {
+            stop,
+            thread: Some(thread),
+        })
+    }
+
+    fn shutdown(mut self) {
+        let _ = self.stop.send(());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1512,7 +1601,9 @@ fn serve_generation(
     let health_supervisor = plan.health_supervisor.clone();
     let pools = plan.pools.clone();
     let tls = &plan.tls;
+    let challenge_store = tls.challenge_store().clone();
     let topology = Arc::clone(&plan.topology);
+    let acme_reconcilers = tls.acme_reconcilers().to_vec();
     let certbot_reconcilers = tls.certbot_reconcilers().to_vec();
     let direct_file_reconcilers = tls.file_reconcilers().to_vec();
     if let Some(supervisor) = health_supervisor {
@@ -1665,6 +1756,7 @@ fn serve_generation(
                         downstream_timeouts
                             .request_timeout_ms
                             .map(Duration::from_millis),
+                        challenge_store.clone(),
                     ),
                 );
                 add_http_listener(
@@ -1707,6 +1799,7 @@ fn serve_generation(
                 let proxy = http_proxy(
                     &server.configuration,
                     HttpReverseProxy::new(http_service, metrics.clone())
+                        .with_challenge_store(challenge_store.clone())
                         .with_generation(Arc::clone(generation)),
                 );
                 let app = MonitoredHttpApp::new(
@@ -1763,6 +1856,7 @@ fn serve_generation(
     }
 
     let mut certbot_watcher = tls.start_certbot_watcher(CertbotWatcherConfig::default())?;
+    runtime_metrics.register_acme_managed_monitoring(acme_reconcilers.clone())?;
     runtime_metrics.register_certbot_monitoring(
         certbot_reconcilers,
         certbot_watcher
@@ -1779,9 +1873,11 @@ fn serve_generation(
     setup
         .send(Ok(()))
         .map_err(|_| io::Error::other("generation setup receiver was dropped"))?;
+    let acme_supervisor = AcmeManagedSupervisor::start(acme_reconcilers)?;
     server.run(RunArgs {
         shutdown_signal: Box::new(ChannelShutdownSignal { shutdown }),
     });
+    acme_supervisor.shutdown();
     if let Some(watcher) = &mut certbot_watcher {
         watcher.shutdown();
     }

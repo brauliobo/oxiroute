@@ -19,6 +19,8 @@ pub(crate) struct OperationalEvent {
     pub event: EventName,
     pub outcome: EventOutcome,
     pub revision: Option<ConfigRevision>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub certificate: Option<String>,
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -32,6 +34,8 @@ pub(crate) enum EventName {
     ListenerAdministrativeState,
     PoolAdministrativeState,
     ServerUpdate,
+    CertificateRenewal,
+    CertificateActivation,
     Unknown,
 }
 
@@ -46,6 +50,8 @@ impl EventName {
             "listener_administrative_state" => Self::ListenerAdministrativeState,
             "pool_administrative_state" => Self::PoolAdministrativeState,
             "server_update" => Self::ServerUpdate,
+            "certificate_renewal" => Self::CertificateRenewal,
+            "certificate_activated" => Self::CertificateActivation,
             _ => Self::Unknown,
         }
     }
@@ -60,6 +66,8 @@ impl EventName {
             Self::ListenerAdministrativeState => "listener_administrative_state",
             Self::PoolAdministrativeState => "pool_administrative_state",
             Self::ServerUpdate => "server_update",
+            Self::CertificateRenewal => "certificate_renewal",
+            Self::CertificateActivation => "certificate_activated",
             Self::Unknown => "unknown",
         }
     }
@@ -74,6 +82,7 @@ pub(crate) enum EventOutcome {
     Quarantined,
     Requested,
     Applied,
+    Failed,
     Unknown,
 }
 
@@ -86,6 +95,7 @@ impl EventOutcome {
             "quarantined" => Self::Quarantined,
             "requested" => Self::Requested,
             "applied" => Self::Applied,
+            "failed" => Self::Failed,
             _ => Self::Unknown,
         }
     }
@@ -117,11 +127,24 @@ fn notifications() -> &'static Notify {
 }
 
 pub(crate) fn emit(event: &str, outcome: &str, revision: Option<&ConfigRevision>) {
+    emit_inner(event, outcome, revision, None);
+}
+
+pub fn emit_certificate(event: &str, outcome: &str, certificate: &str) {
+    emit_inner(event, outcome, None, Some(certificate));
+}
+
+fn emit_inner(
+    event: &str,
+    outcome: &str,
+    revision: Option<&ConfigRevision>,
+    certificate: Option<&str>,
+) {
     let mut state = log()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     state.next_cursor = state.next_cursor.saturating_add(1);
-    let value = OperationalEvent::new(
+    let mut value = OperationalEvent::new(
         state.next_cursor,
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -131,6 +154,7 @@ pub(crate) fn emit(event: &str, outcome: &str, revision: Option<&ConfigRevision>
         outcome,
         revision,
     );
+    value.certificate = certificate.map(str::to_owned);
     if state.events.len() == EVENT_CAPACITY {
         state.events.pop_front();
     }
@@ -205,6 +229,7 @@ impl OperationalEvent {
             event: EventName::parse(event),
             outcome: EventOutcome::parse(outcome),
             revision: revision.cloned(),
+            certificate: None,
         }
     }
 }

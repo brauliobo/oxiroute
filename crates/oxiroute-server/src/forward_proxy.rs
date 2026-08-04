@@ -12,7 +12,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     task::{Context, Poll},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
@@ -29,6 +29,7 @@ use openssl::{
     sha::Sha256,
     ssl::{SslConnector, SslMethod, SslVerifyMode},
 };
+use oxiroute_acme::ChallengeStore;
 use oxiroute_config::{
     ForwardAccessAction, ForwardAccessCondition, ForwardAccessMatcher, ForwardAccessPolicy,
     ForwardAuditMode, ForwardHeaderPolicy, ForwardProxyAuth, ForwardProxyService, ForwardViaPolicy,
@@ -63,6 +64,30 @@ use crate::{
 type BoxError = Box<dyn Error + Send + Sync>;
 pub type ForwardProxyBody = BoxBody<Bytes, BoxError>;
 const MAX_BASIC_CREDENTIAL_CACHE_ENTRIES: usize = 4_096;
+
+pub fn challenge_response(
+    request: &Request<Incoming>,
+    store: &ChallengeStore,
+) -> Option<Response<ForwardProxyBody>> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    let response = store.route(request.method().as_str(), request.uri().path(), now)?;
+    let body = if request.method() == Method::HEAD {
+        Bytes::new()
+    } else {
+        Bytes::from(response.body)
+    };
+    let body = Full::new(body)
+        .map_err(|never| -> BoxError { match never {} })
+        .boxed();
+    Response::builder()
+        .status(response.status)
+        .header(header::CONTENT_TYPE, response.content_type)
+        .header(header::CACHE_CONTROL, response.cache_control)
+        .body(body)
+        .ok()
+}
 
 #[derive(Default)]
 pub struct ForwardConnectionLifecycle {

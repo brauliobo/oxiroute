@@ -34,9 +34,9 @@ use openssl::{
     },
 };
 use oxiroute_config::{
-    AlpnProtocol, Certificate, CertificateSource, Config, HttpVersion, HttpVersionPolicy,
-    SelfSignedKeyType, TlsPolicy, TlsProfile, TlsSessionCache, TlsVersion, UpstreamAlgorithm,
-    UpstreamEndpoint, UpstreamPool, UpstreamTls,
+    AcmeChallengeType, AcmeKeyType, AlpnProtocol, Certificate, CertificateSource, Config,
+    HttpVersion, HttpVersionPolicy, SelfSignedKeyType, TlsPolicy, TlsProfile, TlsSessionCache,
+    TlsVersion, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, UpstreamTls,
 };
 use pingora::{listeners::ALPN, upstreams::peer::HttpPeer};
 use tempfile::TempDir;
@@ -210,6 +210,38 @@ fn generates_explicit_development_certificate_with_exact_sans_and_redacted_debug
     let debug = format!("{generation:?}");
     assert!(!debug.contains("PRIVATE KEY"));
     assert!(!debug.contains("private_key"));
+}
+
+#[test]
+fn managed_acme_without_a_current_revision_uses_a_bootstrap_and_is_due() {
+    let temp = TempDir::new().unwrap();
+    let files = write_identity(temp.path(), "unused", "www.example.test", false);
+    let mut config = config_with_identity(&files);
+    config.certificates[0].source = CertificateSource::AcmeManaged {
+        directory_url: "https://acme.example.test/directory".into(),
+        state_root: temp.path().join("acme-state"),
+        contacts: vec!["mailto:ops@example.test".into()],
+        terms_agreed: true,
+        challenge: AcmeChallengeType::Http01,
+        key_type: AcmeKeyType::EcdsaP256,
+        allowed_dns_suffixes: vec!["example.test".into()],
+    };
+
+    let prepared = prepare_tls(&config).unwrap();
+    let [reconciler] = prepared.acme_reconcilers() else {
+        panic!("one managed ACME reconciler must be prepared");
+    };
+    let status = reconciler.status();
+    assert_eq!(status.disk_revision, "bootstrap");
+    assert_eq!(status.next_action_unix_seconds, Some(0));
+    assert!(reconciler.renewal_due(1));
+    assert_eq!(
+        prepared.certificates()["primary"]
+            .snapshot()
+            .metadata()
+            .name,
+        "primary"
+    );
 }
 
 #[test]

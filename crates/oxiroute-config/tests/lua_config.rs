@@ -1,7 +1,7 @@
 use oxiroute_config::{
-    AlpnProtocol, CertificateSource, ConfigError, HealthCheckType, HttpVersion, ListenerBind,
-    Protocol, SelfSignedKeyType, StatsPageAdminPolicy, TlsVersion, UpstreamAlgorithm,
-    UpstreamEndpoint, load_lua, render_lua,
+    AcmeChallengeType, AcmeKeyType, AlpnProtocol, CertificateSource, ConfigError, HealthCheckType,
+    HttpVersion, ListenerBind, Protocol, SelfSignedKeyType, StatsPageAdminPolicy, TlsVersion,
+    UpstreamAlgorithm, UpstreamEndpoint, load_lua, render_lua,
 };
 
 #[test]
@@ -469,6 +469,30 @@ fn with_self_signed_source(fields: &str) -> String {
     )
 }
 
+fn with_acme_source(fields: &str) -> String {
+    changed(
+        r#"      source = {
+        type = "files",
+        certificate_chain_path = "/etc/oxiroute/web-chain.pem",
+        private_key_path = "/etc/oxiroute/web-key.pem",
+      },"#,
+        &format!(
+            r#"      source = {{
+        type = "acme_managed",
+        directory_url = "https://acme.example.test/directory",
+        state_root = "/var/lib/oxiroute/acme",
+        terms_agreed = true,
+        allowed_dns_suffixes = {{ "example.test" }},
+        {fields}
+      }},"#
+        ),
+    )
+    .replace(
+        "      dns_names = { \"WWW.EXAMPLE.TEST\", \"*.EXAMPLE.TEST\" },",
+        "      dns_names = { \"WWW.EXAMPLE.TEST\" },",
+    )
+}
+
 #[test]
 fn loads_the_canonical_configuration() {
     let config = load_lua(VALID_CONFIG).expect("valid canonical configuration");
@@ -590,6 +614,55 @@ fn self_signed_development_source_accepts_key_type_and_rejects_unbounded_validit
             error,
             ConfigError::InvalidSelfSignedValidityDays { value, .. } if value == validity_days
         ));
+    }
+}
+
+#[test]
+fn managed_acme_source_round_trips_and_rejects_unsafe_policy_values() {
+    let config = load_lua(&with_acme_source(
+        "contacts = { \"mailto:ops@example.test\" },\n        challenge = \"http01\",\n        key_type = \"rsa_2048\",",
+    ))
+    .expect("managed ACME source");
+    assert!(matches!(
+        config.certificates[0].source,
+        CertificateSource::AcmeManaged {
+            challenge: AcmeChallengeType::Http01,
+            key_type: AcmeKeyType::Rsa2048,
+            ..
+        }
+    ));
+    let rendered = render_lua(&config).expect("render managed ACME source");
+    assert!(rendered.contains("type = \"acme_managed\""));
+    assert_eq!(
+        load_lua(&rendered).expect("reload managed ACME source"),
+        config
+    );
+
+    for (field, value) in [
+        ("directory_url", "directory_url = \"https://\""),
+        (
+            "directory_url",
+            "directory_url = \"http://acme.example.test/directory\"",
+        ),
+        ("challenge", "challenge = \"dns01\""),
+        (
+            "allowed_dns_suffixes",
+            "allowed_dns_suffixes = { \"other.test\" }",
+        ),
+    ] {
+        let error = load_lua(&with_acme_source(value)).expect_err("invalid managed ACME source");
+        assert!(
+            matches!(
+                (field, &error),
+                ("directory_url", ConfigError::InvalidAcmeDirectoryUrl { .. })
+                    | ("challenge", ConfigError::UnsupportedAcmeChallenge { .. })
+                    | (
+                        "allowed_dns_suffixes",
+                        ConfigError::AcmeIdentifierOutsidePolicy { .. }
+                    )
+            ),
+            "unexpected error for {field}: {error:?}"
+        );
     }
 }
 

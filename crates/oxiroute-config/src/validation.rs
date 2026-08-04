@@ -1,13 +1,14 @@
 use std::{
     collections::{HashMap, HashSet},
     net::{IpAddr, SocketAddr},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
-use http::uri::PathAndQuery;
+use http::{Uri, uri::PathAndQuery};
 
 use crate::{
     defaults::{
+        MAX_ACME_CONTACTS, MAX_ACME_DIRECTORY_URL_BYTES, MAX_ACME_DNS_SUFFIXES,
         MAX_CERTIFICATE_DNS_NAMES, MAX_CERTIFICATES, MAX_ENDPOINTS_PER_POOL, MAX_HEALTH_HOST_BYTES,
         MAX_HEALTH_INTERVAL_MS, MAX_HEALTH_PATH_BYTES, MAX_HEALTH_THRESHOLD, MAX_HEALTH_TIMEOUT_MS,
         MAX_HTTP_TIMEOUT_MS, MAX_RECORDER_ACTIVE_RECORDERS, MAX_RECORDER_QUEUE_BYTES,
@@ -174,6 +175,7 @@ fn validate_config_names(config: &Config) -> Result<(), ConfigError> {
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn validate_certificates(certificates: &mut [Certificate]) -> Result<(), ConfigError> {
     validate_names(
         "certificate",
@@ -262,6 +264,25 @@ fn validate_certificates(certificates: &mut [Certificate]) -> Result<(), ConfigE
                     });
                 }
             }
+            CertificateSource::AcmeManaged {
+                directory_url,
+                state_root,
+                contacts,
+                terms_agreed,
+                challenge,
+                allowed_dns_suffixes,
+                ..
+            } => {
+                validate_acme_source(
+                    certificate,
+                    directory_url,
+                    state_root,
+                    contacts,
+                    *terms_agreed,
+                    *challenge,
+                    allowed_dns_suffixes,
+                )?;
+            }
             CertificateSource::SelfSignedDevelopment { validity_days, .. } => {
                 if !(MIN_SELF_SIGNED_VALIDITY_DAYS..=MAX_SELF_SIGNED_VALIDITY_DAYS)
                     .contains(validity_days)
@@ -277,6 +298,110 @@ fn validate_certificates(certificates: &mut [Certificate]) -> Result<(), ConfigE
         }
     }
 
+    Ok(())
+}
+
+fn validate_acme_source(
+    certificate: &Certificate,
+    directory_url: &str,
+    state_root: &Path,
+    contacts: &[String],
+    terms_agreed: bool,
+    challenge: crate::model::AcmeChallengeType,
+    allowed_dns_suffixes: &[String],
+) -> Result<(), ConfigError> {
+    if !certificate
+        .name
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        || certificate.name == "."
+        || certificate.name == ".."
+        || certificate.name.len() > 128
+    {
+        return Err(ConfigError::InvalidAcmeCertificateName {
+            certificate: certificate.name.clone(),
+        });
+    }
+    let parsed_directory_url = directory_url.parse::<Uri>().ok();
+    if directory_url.len() > MAX_ACME_DIRECTORY_URL_BYTES
+        || !directory_url.is_ascii()
+        || !directory_url.starts_with("https://")
+        || directory_url.contains('@')
+        || directory_url.contains('#')
+        || parsed_directory_url.as_ref().is_none_or(|url| {
+            url.scheme_str() != Some("https")
+                || url
+                    .authority()
+                    .is_none_or(|authority| authority.host().is_empty())
+        })
+    {
+        return Err(ConfigError::InvalidAcmeDirectoryUrl {
+            certificate: certificate.name.clone(),
+        });
+    }
+    validate_directory_path(
+        "certificate",
+        &certificate.name,
+        "source.state_root",
+        state_root,
+    )?;
+    if !terms_agreed {
+        return Err(ConfigError::AcmeTermsNotAgreed {
+            certificate: certificate.name.clone(),
+        });
+    }
+    if !matches!(challenge, crate::model::AcmeChallengeType::Http01) {
+        return Err(ConfigError::UnsupportedAcmeChallenge {
+            certificate: certificate.name.clone(),
+        });
+    }
+    if contacts.len() > MAX_ACME_CONTACTS
+        || contacts.iter().any(|contact| {
+            contact.is_empty()
+                || contact.len() > 320
+                || !contact.is_ascii()
+                || !contact.starts_with("mailto:")
+        })
+    {
+        return Err(ConfigError::InvalidAcmeContacts {
+            certificate: certificate.name.clone(),
+        });
+    }
+    if allowed_dns_suffixes.is_empty() || allowed_dns_suffixes.len() > MAX_ACME_DNS_SUFFIXES {
+        return Err(ConfigError::InvalidAcmeDnsSuffixes {
+            certificate: certificate.name.clone(),
+        });
+    }
+    let mut suffixes = HashSet::with_capacity(allowed_dns_suffixes.len());
+    for suffix in allowed_dns_suffixes {
+        let suffix = suffix.trim().to_ascii_lowercase();
+        if suffix.is_empty()
+            || suffix.starts_with("*.")
+            || suffix.parse::<IpAddr>().is_ok()
+            || !is_valid_certificate_dns_name(&suffix)
+            || !suffixes.insert(suffix)
+        {
+            return Err(ConfigError::InvalidAcmeDnsSuffixes {
+                certificate: certificate.name.clone(),
+            });
+        }
+    }
+    for dns_name in &certificate.dns_names {
+        if dns_name.starts_with("*.") || dns_name.parse::<IpAddr>().is_ok() {
+            return Err(ConfigError::AcmeIdentifierUnsupported {
+                certificate: certificate.name.clone(),
+            });
+        }
+        if !suffixes
+            .iter()
+            .any(|suffix| dns_name == suffix || dns_name.ends_with(&format!(".{suffix}")))
+        {
+            return Err(ConfigError::AcmeIdentifierOutsidePolicy {
+                certificate: certificate.name.clone(),
+                dns_name: dns_name.clone(),
+            });
+        }
+    }
     Ok(())
 }
 

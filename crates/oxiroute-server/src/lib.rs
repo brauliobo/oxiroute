@@ -27,7 +27,7 @@ mod wire;
 pub use config_watcher::{ConfigWatcher, ConfigWatcherOptions, ConfigWatcherStatus};
 pub use forward_proxy::{
     ForwardConnectionLifecycle, ForwardHttp1ServicePlan, ForwardHttp2ServiceApp,
-    ForwardHttp2ServicePlan, ForwardProxyBody,
+    ForwardHttp2ServicePlan, ForwardProxyBody, challenge_response,
 };
 pub use generation::{
     GenerationAdmission, GenerationCandidate, GenerationError, GenerationManager,
@@ -40,14 +40,15 @@ pub use http_server_app::{HttpDownstreamPolicyApp, HttpListenerApp, MonitoredHtt
 pub use l4_service::L4ServicePlan;
 pub use listener_reservation::{ListenerReservation, ListenerReservations};
 pub use monitoring::{
-    CacheSnapshot, CertbotCertificateSnapshot, CertbotWatcherHealth, CertbotWatcherSnapshot,
-    ConnectionGuard, DirectFileCertificateSnapshot, DirectFileWatcherSnapshot, HostSnapshot,
-    HttpOperationCountSnapshot, HttpOperationResult, HttpOperationSnapshot, LatencyBucketSnapshot,
-    LatencySnapshot, ListenerMetrics, ListenerRuntimeState, ListenerSnapshot, MetricsError,
-    OPERATION_LATENCY_BUCKETS_MS, ProcessConnectionGuard, ProcessRuntime, ProcessSnapshot,
-    RuntimeMetrics, RuntimeSnapshot, TcpRelayCountSnapshot, TcpRelayResult, TcpRelaySnapshot,
-    TrafficSnapshot,
+    AcmeManagedCertificateSnapshot, CacheSnapshot, CertbotCertificateSnapshot,
+    CertbotWatcherHealth, CertbotWatcherSnapshot, ConnectionGuard, DirectFileCertificateSnapshot,
+    DirectFileWatcherSnapshot, HostSnapshot, HttpOperationCountSnapshot, HttpOperationResult,
+    HttpOperationSnapshot, LatencyBucketSnapshot, LatencySnapshot, ListenerMetrics,
+    ListenerRuntimeState, ListenerSnapshot, MetricsError, OPERATION_LATENCY_BUCKETS_MS,
+    ProcessConnectionGuard, ProcessRuntime, ProcessSnapshot, RuntimeMetrics, RuntimeSnapshot,
+    TcpRelayCountSnapshot, TcpRelayResult, TcpRelaySnapshot, TrafficSnapshot,
 };
+pub use operational_event::emit_certificate;
 pub use prometheus::{PrometheusError, render_prometheus};
 pub use routing::{
     AdministrativeState, EndpointHealthSnapshot, EndpointHealthState, EndpointLease, EndpointPool,
@@ -65,12 +66,13 @@ pub use tcp_relay::{
     RelayStats, TcpRelayCore, relay_streams,
 };
 pub use tls::{
-    ActiveCertificateGeneration, CertbotActivationDirection, CertbotCandidate, CertbotLineage,
-    CertbotReconcileError, CertbotReconcileOutcome, CertbotReconciler, CertbotReconcilerStatus,
-    CertbotWatcherConfig, CertbotWatcherError, CertbotWatcherMonitor, CertbotWatcherStatus,
-    CertbotWatcherSupervisor, CertificateGeneration, CertificateMetadata, CertificatePublishError,
-    CertificateValidity, FileReconcileError, FileReconcileOutcome, FileReconciler,
-    FileReconcilerStatus, FileWatcherConfig, FileWatcherError, FileWatcherMonitor,
+    AcmeManagedError, AcmeManagedOutcome, AcmeManagedPolicy, AcmeManagedReconciler,
+    AcmeManagedStatus, ActiveCertificateGeneration, CertbotActivationDirection, CertbotCandidate,
+    CertbotLineage, CertbotReconcileError, CertbotReconcileOutcome, CertbotReconciler,
+    CertbotReconcilerStatus, CertbotWatcherConfig, CertbotWatcherError, CertbotWatcherMonitor,
+    CertbotWatcherStatus, CertbotWatcherSupervisor, CertificateGeneration, CertificateMetadata,
+    CertificatePublishError, CertificateValidity, FileReconcileError, FileReconcileOutcome,
+    FileReconciler, FileReconcilerStatus, FileWatcherConfig, FileWatcherError, FileWatcherMonitor,
     FileWatcherStatus, FileWatcherSupervisor, PreparedTls, TlsBuildError, TlsProfilePlan,
     UpstreamTlsPlan,
 };

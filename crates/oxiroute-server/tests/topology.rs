@@ -237,6 +237,7 @@ fn assert_private_key_redaction(plan: &RuntimePlan, config: &Config) {
         CertificateSource::Certbot { .. } | CertificateSource::SelfSignedDevelopment { .. } => {
             unreachable!("test uses file identity")
         }
+        CertificateSource::AcmeManaged { .. } => unreachable!("test uses file identity"),
     };
     let serialized = serde_json::to_string(certificate).expect("certificate JSON");
     assert!(!serialized.contains(private_key_path.to_str().expect("UTF-8 key path")));
@@ -329,6 +330,7 @@ fn serves_active_topology_with_name_joined_runtime_overlays() {
         CertificateSource::Certbot { .. } | CertificateSource::SelfSignedDevelopment { .. } => {
             unreachable!("test uses file identity")
         }
+        CertificateSource::AcmeManaged { .. } => unreachable!("test uses file identity"),
     };
     assert!(!body_text.contains(private_key_path.to_str().expect("UTF-8 key path")));
     assert_eq!(api.handle("POST", "/api/v1/topology", 100).status, 405);
