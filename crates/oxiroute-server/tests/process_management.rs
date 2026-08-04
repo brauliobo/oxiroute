@@ -1433,7 +1433,11 @@ fn built_process_fails_before_runtime_when_a_tcp_listener_cannot_bind() {
     let failure = run_to_failure(&config_path, None);
 
     assert!(!failure.status.success());
-    assert!(output_text(&failure).contains("candidate listener reservation failed"));
+    let output = output_text(&failure);
+    assert!(
+        output.contains("listener `live` could not bind socket"),
+        "unexpected listener failure: {output}"
+    );
 }
 
 #[cfg(unix)]
@@ -1643,6 +1647,8 @@ fn recording_candidate(active: &Config, root: &Path) -> Config {
         name: "recording-wire".into(),
         outbound_chunk_size: 4_096,
         access_log: None,
+        outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
+        callbacks: oxiroute_config::RtmpCallbackConfig::default(),
         applications: vec![RtmpApplication {
             name: "live".into(),
             live: true,
@@ -1651,6 +1657,9 @@ fn recording_candidate(active: &Config, root: &Path) -> Config {
             play: oxiroute_config::RtmpAccessPolicy::default(),
             limits: oxiroute_config::RtmpSessionCeilings::default(),
             push_targets: Vec::new(),
+            pull_targets: Vec::new(),
+            relay: oxiroute_config::RtmpRelayPolicy::default(),
+            callbacks: oxiroute_config::RtmpCallbackConfig::default(),
             fanout: oxiroute_config::RtmpFanoutPolicy::default(),
             vod: None,
             recorders: vec![rtmp_recorder_with_queue_bytes(
@@ -1679,6 +1688,8 @@ fn rtmp_listener_config(bind: ListenerBind) -> Config {
             name: "live".into(),
             outbound_chunk_size: 4_096,
             access_log: None,
+            outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
+            callbacks: oxiroute_config::RtmpCallbackConfig::default(),
             applications: vec![RtmpApplication {
                 name: "live".into(),
                 live: true,
@@ -1687,6 +1698,9 @@ fn rtmp_listener_config(bind: ListenerBind) -> Config {
                 play: oxiroute_config::RtmpAccessPolicy::default(),
                 limits: oxiroute_config::RtmpSessionCeilings::default(),
                 push_targets: Vec::new(),
+                pull_targets: Vec::new(),
+                relay: oxiroute_config::RtmpRelayPolicy::default(),
+                callbacks: oxiroute_config::RtmpCallbackConfig::default(),
                 fanout: oxiroute_config::RtmpFanoutPolicy::default(),
                 vod: None,
                 recorders: Vec::new(),

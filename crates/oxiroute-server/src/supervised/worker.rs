@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use oxiroute_config::{Config, Protocol};
+use oxiroute_config::{Config, ListenerBind, Protocol};
 use oxiroute_server::{
     GenerationManager, RuntimeGeneration,
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, ConfigRevision},
@@ -251,27 +251,35 @@ impl RuntimeMetadata {
 }
 
 pub(super) fn validate_stage_one_config(config: &Config) -> Result<(), &'static str> {
-    if config.listeners.len() > MAX_DESCRIPTOR_COUNT {
-        return Err("Stage 2 worker listener descriptor limit is 64");
+    if config.management.is_some() {
+        return Err("Stage 2 worker management API is not connected to the master");
     }
-    if config.management.is_some()
-        || config.stats.is_some()
-        || !config.certificates.is_empty()
-        || !config.tls_profiles.is_empty()
-        || !config.cache_stores.is_empty()
-        || !config.upstream_pools.is_empty()
-        || !config.forward_proxy_services.is_empty()
-        || !config.rtmp_services.is_empty()
-        || !config.l4_services.is_empty()
-    {
-        return Err("Stage 2 worker configuration contains an unsupported service or subsystem");
+    let descriptor_count = config
+        .listeners
+        .len()
+        .saturating_add(usize::from(config.management.is_some()))
+        .saturating_add(
+            config
+                .stats
+                .as_ref()
+                .map_or(0, |stats| stats.binds.len() + stats.pages.len()),
+        );
+    if descriptor_count > MAX_DESCRIPTOR_COUNT {
+        return Err("Stage 2 worker listener descriptor limit is 64");
     }
     if config
         .listeners
         .iter()
-        .any(|listener| listener.protocol != Protocol::Http || listener.tls_profile.is_some())
+        .any(|listener| matches!(&listener.bind, ListenerBind::Udp { .. }))
     {
-        return Err("Stage 2 worker supports only plaintext HTTP traffic listeners");
+        return Err("Stage 2 worker cannot adopt UDP listener descriptors");
+    }
+    if config
+        .listeners
+        .iter()
+        .any(|listener| listener.protocol == Protocol::ForwardHttp3)
+    {
+        return Err("Stage 2 worker does not support HTTP/3 listener descriptors");
     }
     Ok(())
 }
@@ -280,6 +288,7 @@ fn wait_for_generation_marker(
     generation: &RuntimeGeneration,
     process: &GenerationProcess,
 ) -> Result<(), Box<dyn Error>> {
+    let expected_listener_count = config_listener_count(generation.config());
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if generation.runtime_failed() || process.is_finished() {
@@ -287,7 +296,7 @@ fn wait_for_generation_marker(
         }
         let snapshot = generation.metrics().snapshot()?;
         if generation.runtime_started()
-            && snapshot.listeners.len() == generation.config().listeners.len()
+            && snapshot.listeners.len() == expected_listener_count
             && snapshot
                 .listeners
                 .iter()
@@ -304,6 +313,12 @@ fn wait_for_generation_marker(
         }
         thread::sleep(POLL_INTERVAL);
     }
+}
+
+fn config_listener_count(config: &Config) -> usize {
+    config.listeners.len().saturating_add(
+        config.stats.as_ref().map_or(0, |stats| stats.pages.len()),
+    )
 }
 
 fn parse_ascii(
@@ -406,7 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_two_configuration_accepts_marker_and_plain_http_listeners() {
+    fn stage_two_configuration_accepts_stream_listeners_and_statistics() {
         let mut config = Config {
             version: 1,
             max_connections: None,
@@ -423,6 +438,16 @@ mod tests {
             l4_services: Vec::new(),
         };
         assert!(validate_stage_one_config(&config).is_ok());
+
+        config.management = Some(oxiroute_config::Management {
+            bind: "127.0.0.1:9900".parse().expect("management address"),
+            ui_dir: None,
+        });
+        assert_eq!(
+            validate_stage_one_config(&config),
+            Err("Stage 2 worker management API is not connected to the master")
+        );
+        config.management = None;
 
         config.listeners.push(oxiroute_config::Listener {
             name: "http".into(),
@@ -442,6 +467,14 @@ mod tests {
             admin_token_file: None,
             pages: Vec::new(),
         });
-        assert!(validate_stage_one_config(&config).is_err());
+        assert!(validate_stage_one_config(&config).is_ok());
+
+        config.listeners[0].bind = oxiroute_config::ListenerBind::Udp {
+            address: "127.0.0.1:8080".parse().expect("UDP address"),
+        };
+        assert_eq!(
+            validate_stage_one_config(&config),
+            Err("Stage 2 worker cannot adopt UDP listener descriptors")
+        );
     }
 }

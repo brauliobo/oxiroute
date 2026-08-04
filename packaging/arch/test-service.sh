@@ -22,7 +22,7 @@ done <"${unit}"
   printf 'unexpected ExecStart in %s: %s\n' "${unit}" "${exec_start}" >&2
   exit 1
 }
-[[ "${exec_reload}" == 'ExecReload=/usr/bin/oxiroute generation reload' ]] || {
+[[ "${exec_reload}" == 'ExecReload=/bin/kill -HUP $MAINPID' ]] || {
   printf 'unexpected ExecReload in %s: %s\n' "${unit}" "${exec_reload}" >&2
   exit 1
 }

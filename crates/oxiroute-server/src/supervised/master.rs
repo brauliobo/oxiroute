@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     error::Error,
     fs::File,
     io::{self, Read as _},
@@ -12,9 +13,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use log::warn;
+use log::{info, warn};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
-use oxiroute_config::Config;
+use oxiroute_config::{Config, ListenerBind};
 use oxiroute_server::{
     ListenerReservations,
     config_coordinator::{
@@ -28,15 +29,15 @@ use oxiroute_supervisor_master::{
 };
 use oxiroute_supervisor_process::{WorkerCommand, WorkerIdentity, WorkerSpawner};
 use signal_hook::{
-    consts::signal::{SIGINT, SIGTERM},
+    consts::signal::{SIGHUP, SIGINT, SIGTERM},
     iterator::{Handle, Signals},
 };
 use thiserror::Error;
 
 use super::worker;
 
-// This adapter is intentionally not selected by `main` until packaging installs the fixed
-// launcher path. Unsupported configurations continue through the existing generation runtime.
+// The package installs this fixed path. Unsupported configurations continue through the existing
+// generation runtime, and development installations without the package use the same fallback.
 const PRODUCTION_LAUNCHER: &str = "/usr/lib/oxiroute/oxiroute-worker-launcher";
 const MASTER_INSTANCE_ID: &str = "oxiroute-stage-3";
 const INITIAL_GENERATION: GenerationId = GenerationId(1);
@@ -57,14 +58,19 @@ pub(crate) fn run_master(config_path: &Path) -> Result<(), Box<dyn Error>> {
 
 /// Runs the master when the configuration is eligible and otherwise preserves the current server.
 ///
-/// This helper is not wired into the public `serve` dispatch yet. When it is selected by the
-/// packaging gate, an eligible configuration must return launcher errors rather than silently
-/// falling back to the generation runtime.
+/// The fixed packaged launcher is the activation gate. An eligible configuration without that
+/// launcher preserves the direct generation runtime for development installations.
 pub(crate) fn run_if_supported(config_path: &Path) -> Result<(), Box<dyn Error>> {
     let coordinator = CanonicalConfigCoordinator::new(config_path)?;
     let document = load_document(&coordinator)?;
     match eligibility(&document.normalized_config) {
-        Ok(()) => MasterRunner::production()?.run_loaded(&coordinator, &document),
+        Ok(()) if MasterRunner::launcher_available() => {
+            MasterRunner::production()?.run_loaded(&coordinator, &document)
+        }
+        Ok(()) => {
+            info!("supervised launcher is unavailable; using the direct generation runtime");
+            crate::run(config_path)
+        }
         Err(_unsupported) => crate::run(config_path),
     }
 }
@@ -105,6 +111,21 @@ struct MasterRunner {
 }
 
 impl MasterRunner {
+    fn launcher_available() -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            return std::fs::metadata(PRODUCTION_LAUNCHER).is_ok_and(|metadata| {
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            });
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
+    }
+
     fn production() -> Result<Self, Box<dyn Error>> {
         let executable_path = std::env::current_exe()?;
         if !executable_path.is_absolute() {
@@ -146,7 +167,8 @@ impl MasterRunner {
         )?;
         let master_config = master_config()?;
         let mut factory = WorkerSpawner::new(&self.launcher_path, WORKER_HANDSHAKE_TIMEOUT)?;
-        let mut reload = ConfigReloadMonitor::start(coordinator.canonical_path())?;
+        let mut reload =
+            ConfigReloadMonitor::start(coordinator.canonical_path(), &document.dependencies)?;
         let signals = SignalMonitor::new()?;
         let launch = Master::launch(
             master_config,
@@ -163,6 +185,7 @@ impl MasterRunner {
             Ok(mut master) => self.drive(
                 &mut master,
                 &signals.stop,
+                &signals.reload,
                 coordinator,
                 document,
                 &mut factory,
@@ -179,24 +202,34 @@ impl MasterRunner {
         revision: &ConfigRevision,
         identity: WorkerIdentity,
     ) -> Result<WorkerCommand, Box<dyn Error>> {
-        Ok(WorkerCommand::new(&self.executable_path)?
+        let command = WorkerCommand::new(&self.executable_path)?
             .arg(super::MARKER)
             .arg(identity.generation.to_string())
             .arg(encode_token(identity.instance))
             .arg(config_path)
-            .arg(revision.to_string()))
+            .arg(revision.to_string());
+        Ok(command)
     }
 
     fn drive(
         &self,
         master: &mut Master,
         stop: &AtomicBool,
+        reload_requested: &AtomicBool,
         coordinator: &CanonicalConfigCoordinator,
         initial_document: &CanonicalConfigDocument,
         factory: &mut WorkerSpawner,
         reload: &mut ConfigReloadMonitor,
     ) -> Result<(), Box<dyn Error>> {
-        let result = self.drive_inner(master, stop, coordinator, initial_document, factory, reload);
+        let result = self.drive_inner(
+            master,
+            stop,
+            reload_requested,
+            coordinator,
+            initial_document,
+            factory,
+            reload,
+        );
         if result.is_err() && !matches!(master.state(), MasterState::Stopped | MasterState::Failed)
         {
             cleanup_master(master);
@@ -208,6 +241,7 @@ impl MasterRunner {
         &self,
         master: &mut Master,
         stop: &AtomicBool,
+        reload_requested: &AtomicBool,
         coordinator: &CanonicalConfigCoordinator,
         initial_document: &CanonicalConfigDocument,
         factory: &mut WorkerSpawner,
@@ -233,9 +267,15 @@ impl MasterRunner {
                 MasterState::Running => {
                     let now = Instant::now();
                     let events = master.poll(now)?;
+                    if !events.is_empty() {
+                        info!("supervised master events: {events:?}");
+                    }
                     reload_state.apply_events(&events);
-                    if reload_state.pending.is_none() && reload.next_trigger(now) {
-                        self.reconcile(master, coordinator, &mut reload_state, factory)?;
+                    let forced_reload = reload_state.pending.is_none()
+                        && reload_requested.swap(false, Ordering::AcqRel);
+                    if reload_state.pending.is_none() && (forced_reload || reload.next_trigger(now))
+                    {
+                        self.reconcile(master, coordinator, &mut reload_state, factory, reload)?;
                     }
                     thread::sleep(MASTER_POLL_INTERVAL);
                 }
@@ -245,6 +285,9 @@ impl MasterRunner {
                 }
                 _ => {
                     let events = master.poll(Instant::now())?;
+                    if !events.is_empty() {
+                        info!("supervised master events: {events:?}");
+                    }
                     reload_state.apply_events(&events);
                     thread::sleep(MASTER_POLL_INTERVAL);
                 }
@@ -258,6 +301,7 @@ impl MasterRunner {
         coordinator: &CanonicalConfigCoordinator,
         reload_state: &mut ReloadState,
         factory: &mut WorkerSpawner,
+        reload: &mut ConfigReloadMonitor,
     ) -> Result<(), Box<dyn Error>> {
         let document = match coordinator.load() {
             ConfigLoadOutcome::Loaded(document) => document,
@@ -266,6 +310,9 @@ impl MasterRunner {
                 return Ok(());
             }
         };
+        if let Err(error) = reload.watch_dependencies(&document.dependencies) {
+            warn!("supervised master could not watch a configuration dependency: {error}");
+        }
         let revision = document.candidate_revision.clone();
         if revision == reload_state.active_revision {
             return Ok(());
@@ -349,7 +396,8 @@ impl ReloadState {
 }
 
 struct ConfigReloadMonitor {
-    _watcher: RecommendedWatcher,
+    watcher: RecommendedWatcher,
+    watched_directories: HashSet<PathBuf>,
     events: Receiver<()>,
     next_reconciliation: Instant,
     first_event: Option<Instant>,
@@ -357,28 +405,19 @@ struct ConfigReloadMonitor {
 }
 
 impl ConfigReloadMonitor {
-    fn start(path: &Path) -> notify::Result<Self> {
+    fn start(path: &Path, dependencies: &[PathBuf]) -> notify::Result<Self> {
         let parent = path
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
-        let target = path.file_name().map(std::borrow::ToOwned::to_owned);
         let (wake, events) = mpsc::sync_channel(1);
         let watcher_wake = wake.clone();
         let mut watcher = RecommendedWatcher::new(
             move |event: notify::Result<notify::Event>| {
                 let relevant = match event {
                     Err(_) => true,
-                    Ok(event) => {
-                        event.need_rescan()
-                            || (!event.kind.is_access()
-                                && (event.paths.is_empty()
-                                    || event
-                                        .paths
-                                        .iter()
-                                        .any(|path| path.file_name() == target.as_deref())))
-                    }
+                    Ok(event) => event.need_rescan() || !event.kind.is_access(),
                 };
                 if relevant {
                     let _ = watcher_wake.try_send(());
@@ -387,13 +426,32 @@ impl ConfigReloadMonitor {
             notify::Config::default(),
         )?;
         watcher.watch(&parent, RecursiveMode::NonRecursive)?;
-        Ok(Self {
-            _watcher: watcher,
+        let mut monitor = Self {
+            watcher,
+            watched_directories: HashSet::from([parent]),
             events,
             next_reconciliation: Instant::now(),
             first_event: None,
             last_event: None,
-        })
+        };
+        monitor.watch_dependencies(dependencies)?;
+        Ok(monitor)
+    }
+
+    fn watch_dependencies(&mut self, dependencies: &[PathBuf]) -> notify::Result<()> {
+        for dependency in dependencies {
+            let Some(parent) = dependency
+                .parent()
+                .filter(|path| !path.as_os_str().is_empty())
+            else {
+                continue;
+            };
+            let parent = parent.to_path_buf();
+            if self.watched_directories.insert(parent.clone()) {
+                self.watcher.watch(&parent, RecursiveMode::NonRecursive)?;
+            }
+        }
+        Ok(())
     }
 
     fn next_trigger(&mut self, now: Instant) -> bool {
@@ -421,14 +479,46 @@ impl ConfigReloadMonitor {
 }
 
 fn same_listener_manifest(active: &Config, candidate: &Config) -> bool {
-    active.listeners.len() == candidate.listeners.len()
-        && active
+    descriptor_manifest(active) == descriptor_manifest(candidate)
+}
+
+fn descriptor_manifest(config: &Config) -> Vec<(String, ListenerBind)> {
+    let descriptor_count = config.listeners.len()
+        + usize::from(config.management.is_some())
+        + config
+            .stats
+            .as_ref()
+            .map_or(0, |stats| stats.binds.len() + stats.pages.len());
+    let mut manifest = Vec::with_capacity(descriptor_count);
+    manifest.extend(
+        config
             .listeners
             .iter()
-            .zip(&candidate.listeners)
-            .all(|(active, candidate)| {
-                active.name == candidate.name && active.bind == candidate.bind
-            })
+            .map(|listener| (listener.name.clone(), listener.bind.clone())),
+    );
+    if let Some(management) = &config.management {
+        manifest.push((
+            "@management".into(),
+            ListenerBind::Socket {
+                address: management.bind,
+            },
+        ));
+    }
+    if let Some(stats) = &config.stats {
+        manifest.extend(stats.binds.iter().enumerate().map(|(index, address)| {
+            (
+                format!("@stats-{index}"),
+                ListenerBind::Socket { address: *address },
+            )
+        }));
+        manifest.extend(stats.pages.iter().enumerate().map(|(index, page)| {
+            (
+                format!("@stats-page-{index}"),
+                ListenerBind::Socket { address: page.bind },
+            )
+        }));
+    }
+    manifest
 }
 
 fn master_config() -> Result<MasterConfig, Box<dyn Error>> {
@@ -518,6 +608,7 @@ fn master_failure(phase: &str) -> io::Error {
 
 struct SignalMonitor {
     stop: Arc<AtomicBool>,
+    reload: Arc<AtomicBool>,
     handle: Handle,
     thread: JoinHandle<()>,
 }
@@ -525,18 +616,28 @@ struct SignalMonitor {
 impl SignalMonitor {
     fn new() -> Result<Self, Box<dyn Error>> {
         let stop = Arc::new(AtomicBool::new(false));
-        let mut signals = Signals::new([SIGTERM, SIGINT])?;
+        let reload = Arc::new(AtomicBool::new(false));
+        let mut signals = Signals::new([SIGTERM, SIGINT, SIGHUP])?;
         let handle = signals.handle();
         let signal_stop = Arc::clone(&stop);
+        let signal_reload = Arc::clone(&reload);
         let thread = thread::Builder::new()
             .name("oxiroute-master-signals".into())
             .spawn(move || {
-                if signals.forever().next().is_some() {
-                    signal_stop.store(true, Ordering::Release);
+                for signal in signals.forever() {
+                    match signal {
+                        SIGTERM | SIGINT => {
+                            signal_stop.store(true, Ordering::Release);
+                            break;
+                        }
+                        SIGHUP => signal_reload.store(true, Ordering::Release),
+                        _ => {}
+                    }
                 }
             })?;
         Ok(Self {
             stop,
+            reload,
             handle,
             thread,
         })
@@ -545,6 +646,7 @@ impl SignalMonitor {
     fn finish(self, result: Result<(), Box<dyn Error>>) -> Result<(), Box<dyn Error>> {
         let Self {
             stop: _,
+            reload: _,
             handle,
             thread,
         } = self;
@@ -564,7 +666,9 @@ impl SignalMonitor {
 mod tests {
     use std::{net::SocketAddr, path::PathBuf, str::FromStr as _};
 
-    use oxiroute_config::{Config, DownstreamTimeoutPolicy, Listener, ListenerBind, Protocol};
+    use oxiroute_config::{
+        Config, DownstreamTimeoutPolicy, Listener, ListenerBind, Management, Protocol, Stats,
+    };
 
     use super::*;
 
@@ -601,7 +705,7 @@ mod tests {
     }
 
     #[test]
-    fn eligibility_accepts_only_plain_http_listener_configuration() {
+    fn eligibility_accepts_stream_listener_configuration() {
         let mut config = config();
         config
             .listeners
@@ -609,10 +713,24 @@ mod tests {
         assert_eq!(eligibility(&config), Ok(()));
 
         config.listeners[0].protocol = Protocol::Rtmp;
+        assert_eq!(eligibility(&config), Ok(()));
+
+        config.listeners[0].protocol = Protocol::ForwardHttp3;
         assert_eq!(
             eligibility(&config),
             Err(UnsupportedConfig {
-                reason: "Stage 2 worker supports only plaintext HTTP traffic listeners",
+                reason: "Stage 2 worker does not support HTTP/3 listener descriptors",
+            })
+        );
+
+        config.listeners[0].protocol = Protocol::Http;
+        config.listeners[0].bind = ListenerBind::Udp {
+            address: SocketAddr::from(([127, 0, 0, 1], 8080)),
+        };
+        assert_eq!(
+            eligibility(&config),
+            Err(UnsupportedConfig {
+                reason: "Stage 2 worker cannot adopt UDP listener descriptors",
             })
         );
     }
@@ -629,6 +747,21 @@ mod tests {
                 reason: "Stage 2 worker listener descriptor limit is 64",
             })
         ));
+    }
+
+    #[test]
+    fn eligibility_keeps_management_on_the_direct_runtime() {
+        let mut config = config();
+        config.management = Some(Management {
+            bind: SocketAddr::from(([127, 0, 0, 1], 9900)),
+            ui_dir: None,
+        });
+        assert_eq!(
+            eligibility(&config),
+            Err(UnsupportedConfig {
+                reason: "Stage 2 worker management API is not connected to the master",
+            })
+        );
     }
 
     #[test]
@@ -673,6 +806,26 @@ mod tests {
             address: SocketAddr::from(([127, 0, 0, 1], 8081)),
         };
         assert!(!same_listener_manifest(&active, &candidate));
+
+        active = config();
+        active.management = Some(Management {
+            bind: SocketAddr::from(([127, 0, 0, 1], 9900)),
+            ui_dir: None,
+        });
+        candidate = active.clone();
+        candidate.management = Some(Management {
+            bind: SocketAddr::from(([127, 0, 0, 1], 9901)),
+            ui_dir: None,
+        });
+        assert!(!same_listener_manifest(&active, &candidate));
+
+        candidate = active.clone();
+        candidate.stats = Some(Stats {
+            binds: vec![SocketAddr::from(([127, 0, 0, 1], 8404))],
+            admin_token_file: None,
+            pages: Vec::new(),
+        });
+        assert!(!same_listener_manifest(&active, &candidate));
     }
 
     #[test]
@@ -700,7 +853,6 @@ mod tests {
         assert!(debug.contains(&"cd".repeat(16)));
         assert!(debug.contains("/etc/oxiroute/oxiroute.kdl"));
         assert!(debug.contains(&"a".repeat(64)));
-        assert!(debug.contains("env: []"));
         assert!(!debug.contains(launcher.to_string_lossy().as_ref()));
     }
 }

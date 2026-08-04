@@ -18,14 +18,14 @@ fails, a systemd drop-in keeps the service on Lua instead of silently starting t
 The shipped secret-free examples are root-owned and world-readable so the dynamic service account can
 read them on filesystems without POSIX ACL support. Tighten them as described below when adding secrets.
 
-The launcher is staged for the future supervised master at
-`/usr/lib/oxiroute/oxiroute-worker-launcher`; installing it does not activate supervised mode. The
-service keeps the current direct `oxiroute serve /etc/oxiroute/oxiroute.kdl` entry point, while
-supervised-mode dispatch remains behind a future runtime activation gate for an explicitly supported
-configuration set. Do not add a service override to select supervised mode until that gate is wired
-and documented.
+The launcher at `/usr/lib/oxiroute/oxiroute-worker-launcher` activates the supervised master for
+configurations whose listener descriptors are supported by the authenticated stream-transfer
+contract. UDP, HTTP/3, and authenticated management configurations remain on the direct generation
+runtime; the service's packaged statistics-only configuration uses the supervised path. Management
+generation mutations are not yet master-coordinated, so the direct path is required for them.
 
-To enable the authenticated management client, create the restrictive default token file:
+To enable the authenticated management client on the direct generation runtime, create the
+restrictive default token file:
 
 ```sh
 umask 077
@@ -57,12 +57,14 @@ The daemon still needs `OXIROUTE_MANAGEMENT_TOKEN_FILE` in its systemd environme
 management listener is configured; uncomment the packaged assignment before starting the service.
 The CLI's default-path discovery is a client convenience and does not change that startup gate.
 
-With the authenticated management listener enabled, `systemctl reload oxiroute.service` runs
-`/usr/bin/oxiroute generation reload`. The command re-reads the canonical configuration and
-re-resolves imported native dependencies; it fails rather than performing a no-op when the
-management endpoint or token is unavailable. Candidate activation is asynchronous, so use
-`oxiroute generation status` to confirm the new generation is active. A rejected candidate leaves
-the current generation active and available for `oxiroute generation rollback`.
+`systemctl reload oxiroute.service` sends `SIGHUP` to the active runtime. On the supervised path, the
+master re-reads the canonical configuration, watches and re-resolves imported native dependencies,
+and performs an authenticated replacement when the listener descriptor manifest is unchanged. On
+the direct path, the existing generation watcher is woken to apply the same configuration update.
+Candidate activation is asynchronous, so use `oxiroute generation status` to confirm the new
+generation is active. A rejected candidate leaves the current generation active and available for
+`oxiroute generation rollback`. Listener bind or descriptor-topology changes require a service
+restart; they are not silently applied by reload.
 
 ## Release source
 

@@ -2,9 +2,8 @@ use std::{
     collections::HashSet,
     path::{Path, PathBuf},
     sync::{
-        Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc,
+        mpsc, Arc,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -13,9 +12,9 @@ use std::{
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 
 use crate::{
-    GenerationManager,
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome},
     listener_reservation::unix_listener_mode_change_requires_restart,
+    GenerationManager,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -107,6 +106,14 @@ impl ConfigWatcher {
             .spawn(move || {
                 let mut watcher = watcher;
                 let mut watched_paths = watched_paths;
+                if let Some(dependencies) = reconcile(&coordinator, &generations, &thread_counters)
+                {
+                    if rebuild_watches(&mut watcher, &parent, &dependencies, &mut watched_paths)
+                        .is_err()
+                    {
+                        thread_counters.rejected.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
                 while !thread_shutdown.load(Ordering::Acquire) {
                     let event = events_rx
                         .recv_timeout(options.reconciliation_interval)
@@ -159,9 +166,13 @@ impl ConfigWatcher {
         }
     }
 
+    pub fn wake(&self) {
+        let _ = self.wake.try_send(());
+    }
+
     pub fn shutdown(&mut self) {
         self.shutdown.store(true, Ordering::Release);
-        let _ = self.wake.try_send(());
+        self.wake();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -279,13 +290,13 @@ mod tests {
     use std::{fs, sync::mpsc::TryRecvError, time::Instant};
 
     use notify::{
-        Event, EventKind,
         event::{
             AccessKind, AccessMode, CreateKind, DataChange, Flag, ModifyKind, RemoveKind,
             RenameMode,
         },
+        Event, EventKind,
     };
-    use oxiroute_config::{Config, render_lua};
+    use oxiroute_config::{render_lua, Config};
     use tempfile::TempDir;
 
     use super::*;

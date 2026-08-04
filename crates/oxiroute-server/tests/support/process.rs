@@ -169,8 +169,13 @@ impl Drop for ServerProcess {
 }
 
 pub fn write_config(path: &Path, config: &Config) {
-    fs::write(path, render_lua(config).expect("render process config"))
-        .expect("write process config");
+    let temporary = path.with_extension("tmp");
+    fs::write(
+        &temporary,
+        render_lua(config).expect("render process config"),
+    )
+    .expect("write process config");
+    fs::rename(temporary, path).expect("install process config");
 }
 
 pub fn write_token(directory: &Path, token: &str, mode: u32) -> PathBuf {
