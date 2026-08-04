@@ -1,7 +1,12 @@
+mod challenge;
 mod clock;
 mod protocol;
 mod state;
 
+pub use challenge::{
+    ChallengeHttpResponse, ChallengeLease, ChallengeRecord, ChallengeStore, ChallengeStoreError,
+    MAX_CHALLENGE_TTL_SECONDS, MAX_CHALLENGES,
+};
 pub use clock::{Clock, FakeClock, SystemClock, renewal_due, stable_renewal_time};
 pub use protocol::{
     Account, AccountKey, AccountKeyAlgorithm, AccountRequest, AcmeClient, AcmeError, AcmeTransport,
