@@ -11,7 +11,9 @@ use tokio::{
 #[cfg(unix)]
 use tokio::net::UnixStream;
 
-use crate::{ConnectionGuard, EndpointLease, MetricsError, RuntimeEndpoint, TcpRelayResult};
+use crate::{
+    ConnectionGuard, EndpointLease, HealthFailure, MetricsError, RuntimeEndpoint, TcpRelayResult,
+};
 
 /// Memory used for each direction of a relayed connection.
 pub const RELAY_BUFFER_SIZE: usize = 16 * 1024;
@@ -222,6 +224,22 @@ impl TcpRelayCore {
             }
             Err(failure) => Err(failure),
         };
+        if let Err(failure) = &result {
+            match &failure.kind {
+                RelayFailureKind::Connect(_) => {
+                    self.upstream
+                        .record_passive_failure(HealthFailure::ConnectFailed);
+                }
+                RelayFailureKind::ConnectTimeout(_) => {
+                    self.upstream.record_passive_failure(HealthFailure::Timeout);
+                }
+                RelayFailureKind::IdleTimeout(_)
+                | RelayFailureKind::LifetimeTimeout(_)
+                | RelayFailureKind::Cancelled
+                | RelayFailureKind::Io { .. }
+                | RelayFailureKind::Accounting(_) => {}
+            }
+        }
         let category = result.as_ref().map_or_else(
             |failure| TcpRelayResult::from_failure_kind(&failure.kind),
             |_| TcpRelayResult::Success,
