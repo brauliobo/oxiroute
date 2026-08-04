@@ -13,8 +13,9 @@ use crate::{
 };
 
 use super::{
-    BlockedRtmpService, BlockedService, DirectiveOrigin, ExpandedDirective, NginxValue,
-    OccurrenceDecision, OccurrenceDisposition, OccurrenceId, Provenance, SourceGraph, Word, load,
+    BlockedRtmpService, BlockedService, BlockedStreamService, DirectiveOrigin, ExpandedDirective,
+    NginxValue, OccurrenceDecision, OccurrenceDisposition, OccurrenceId, Provenance, SourceGraph,
+    Word, load,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -23,9 +24,11 @@ pub struct NginxImportReport {
     pub root_occurrence_ledger: Vec<RootOccurrenceDecision>,
     pub http_occurrence_ledger: Vec<OccurrenceDecision>,
     pub rtmp_occurrence_ledger: Vec<OccurrenceDecision>,
+    pub stream_occurrence_ledger: Vec<OccurrenceDecision>,
     pub diagnostics: Vec<Diagnostic>,
     pub blocked_http_services: Vec<BlockedService>,
     pub blocked_rtmp_services: Vec<BlockedRtmpService>,
+    pub blocked_stream_services: Vec<BlockedStreamService>,
     pub candidate: CanonicalCandidate<DirectiveOrigin>,
 }
 
@@ -43,6 +46,7 @@ pub struct RootOccurrenceDecision {
 pub enum RootOccurrenceDisposition {
     Http,
     Rtmp,
+    Stream,
     Deployment(Vec<DeploymentRequirementKind>),
     Activation(Vec<ActivationRequirementKind>),
     OperationalOverlay(Vec<OperationalOverlayKind>),
@@ -204,9 +208,11 @@ pub fn import_root_with_options(
             .as_ref()
             .map(|overlay| overlay.path.as_path()),
     );
+    let stream = super::stream_lower::lower_stream_root(Report::new(graph.clone(), Vec::new()));
 
     diagnostics.extend(http.diagnostics.iter().cloned());
     diagnostics.extend(rtmp.diagnostics.iter().cloned());
+    diagnostics.extend(stream.diagnostics.iter().cloned());
     let mut deployment_requirements = Vec::new();
     let mut activation_requirements = Vec::<ActivationRequirement<DirectiveOrigin>>::new();
     let mut operational_overlays = Vec::new();
@@ -261,8 +267,12 @@ pub fn import_root_with_options(
     reject_unsatisfied_overlays(&operational_overlays, &mut diagnostics);
 
     let http_listener_count = http.draft.listeners.len();
+    let rtmp_listener_count = rtmp.draft.listeners.len();
+    let http_pool_count = http.draft.upstream_pools.len();
+    let http_l4_count = http.draft.l4_services.len();
     let mut draft = http.draft.clone();
     merge_draft(&mut draft, rtmp.draft.clone());
+    merge_draft(&mut draft, stream.draft.clone());
     let mut provenance = http.provenance.clone();
     provenance.extend(
         rtmp.provenance
@@ -270,22 +280,33 @@ pub fn import_root_with_options(
             .cloned()
             .map(|entry| rebase_listener_provenance(entry, http_listener_count)),
     );
+    provenance.extend(stream.provenance.iter().cloned().map(|entry| {
+        rebase_stream_provenance(
+            entry,
+            http_listener_count + rtmp_listener_count,
+            http_pool_count,
+            http_l4_count,
+        )
+    }));
 
     deduplicate_diagnostics(&mut diagnostics);
     let blocked_http_services = http.blocked_services;
     let blocked_rtmp_services = rtmp.blocked_services;
+    let blocked_stream_services = stream.blocked_services;
     let config = finalize(
         &draft,
         &provenance,
         &mut diagnostics,
         blocked_http_services.is_empty()
             && blocked_rtmp_services.is_empty()
+            && blocked_stream_services.is_empty()
             && operational_overlays.iter().all(|overlay| overlay.satisfied),
     );
     let root_occurrence_ledger = root_occurrence_ledger(
         &graph,
         &http.occurrence_ledger,
         &rtmp.occurrence_ledger,
+        &stream.occurrence_ledger,
         &deployment_requirements,
         &activation_requirements,
         &operational_overlays,
@@ -297,9 +318,11 @@ pub fn import_root_with_options(
         root_occurrence_ledger,
         http_occurrence_ledger: http.occurrence_ledger,
         rtmp_occurrence_ledger: rtmp.occurrence_ledger,
+        stream_occurrence_ledger: stream.occurrence_ledger,
         diagnostics,
         blocked_http_services,
         blocked_rtmp_services,
+        blocked_stream_services,
         candidate: CanonicalCandidate {
             draft,
             provenance,
@@ -393,10 +416,15 @@ fn append_default_error_page_overlay(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "root occurrence dispositions reconcile all importer ledgers and evidence"
+)]
 fn root_occurrence_ledger(
     graph: &SourceGraph,
     http: &[OccurrenceDecision],
     rtmp: &[OccurrenceDecision],
+    stream: &[OccurrenceDecision],
     deployment: &[DeploymentRequirement<DirectiveOrigin>],
     activation: &[ActivationRequirement<DirectiveOrigin>],
     overlays: &[OperationalOverlayRequirement<DirectiveOrigin>],
@@ -414,13 +442,19 @@ fn root_occurrence_ledger(
                 .iter()
                 .find(|decision| decision.occurrence == occurrence.id)
                 .map(|decision| decision.disposition);
-            let mut disposition = match (http_disposition, rtmp_disposition) {
-                (Some(OccurrenceDisposition::Blocking(code)), _)
-                | (_, Some(OccurrenceDisposition::Blocking(code))) => {
+            let stream_disposition = stream
+                .iter()
+                .find(|decision| decision.occurrence == occurrence.id)
+                .map(|decision| decision.disposition);
+            let mut disposition = match (http_disposition, rtmp_disposition, stream_disposition) {
+                (Some(OccurrenceDisposition::Blocking(code)), _, _)
+                | (_, Some(OccurrenceDisposition::Blocking(code)), _)
+                | (_, _, Some(OccurrenceDisposition::Blocking(code))) => {
                     RootOccurrenceDisposition::Blocking(code)
                 }
-                (Some(OccurrenceDisposition::Resolved), _) => RootOccurrenceDisposition::Http,
-                (_, Some(OccurrenceDisposition::Resolved)) => RootOccurrenceDisposition::Rtmp,
+                (Some(OccurrenceDisposition::Resolved), _, _) => RootOccurrenceDisposition::Http,
+                (_, Some(OccurrenceDisposition::Resolved), _) => RootOccurrenceDisposition::Rtmp,
+                (_, _, Some(OccurrenceDisposition::Resolved)) => RootOccurrenceDisposition::Stream,
                 _ => RootOccurrenceDisposition::Structural,
             };
             let deployment_kinds = deployment
@@ -695,7 +729,7 @@ fn scan_root(
             overlay_origins,
         );
         match directive.directive.name.value.as_slice() {
-            b"http" | b"rtmp" | b"include" => {}
+            b"http" | b"rtmp" | b"stream" | b"include" => {}
             b"events" => scan_events(directive, requirements, diagnostics),
             b"user" => {
                 push_requirement(
@@ -1056,6 +1090,33 @@ fn rebase_listener_provenance(
         return provenance;
     };
     provenance.path = format!("/listeners/{}{}", index + offset, &remainder[split..]);
+    provenance
+}
+
+fn rebase_stream_provenance(
+    provenance: CanonicalProvenance<DirectiveOrigin>,
+    listener_offset: usize,
+    pool_offset: usize,
+    l4_offset: usize,
+) -> CanonicalProvenance<DirectiveOrigin> {
+    let provenance = rebase_indexed_provenance(provenance, "/listeners/", listener_offset);
+    let provenance = rebase_indexed_provenance(provenance, "/upstream_pools/", pool_offset);
+    rebase_indexed_provenance(provenance, "/l4_services/", l4_offset)
+}
+
+fn rebase_indexed_provenance(
+    mut provenance: CanonicalProvenance<DirectiveOrigin>,
+    prefix: &str,
+    offset: usize,
+) -> CanonicalProvenance<DirectiveOrigin> {
+    let Some(remainder) = provenance.path.strip_prefix(prefix) else {
+        return provenance;
+    };
+    let split = remainder.find('/').unwrap_or(remainder.len());
+    let Ok(index) = remainder[..split].parse::<usize>() else {
+        return provenance;
+    };
+    provenance.path = format!("{prefix}{}{}", index + offset, &remainder[split..]);
     provenance
 }
 

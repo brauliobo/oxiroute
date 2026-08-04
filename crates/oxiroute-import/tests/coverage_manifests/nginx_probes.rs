@@ -2,7 +2,10 @@ use std::{collections::BTreeSet, fs, path::Path};
 
 use oxiroute_import::{
     DiagnosticStage,
-    nginx::{ImportReport as NginxImportReport, OccurrenceDisposition, import_http_fragment},
+    nginx::{
+        ImportReport as NginxImportReport, OccurrenceDisposition, StreamImportReport,
+        import_http_fragment, import_stream_fragment,
+    },
 };
 use tempfile::TempDir;
 
@@ -28,6 +31,12 @@ fn nginx_manifest_forms_execute_parser_semantic_and_lowering_decisions() {
     let manifested = manifest
         .entries
         .iter()
+        .filter(|entry| {
+            !entry
+                .contexts
+                .iter()
+                .any(|context| context.starts_with("stream"))
+        })
         .map(|entry| entry.key.clone())
         .collect::<BTreeSet<_>>();
     assert_set_equality(
@@ -35,8 +44,39 @@ fn nginx_manifest_forms_execute_parser_semantic_and_lowering_decisions() {
         &registered,
         &manifested,
     );
+    let stream_registration = import_nginx_stream_registration_fixture();
+    let stream_registered = stream_registration
+        .occurrence_ledger
+        .iter()
+        .map(|decision| String::from_utf8_lossy(&decision.name.value).into_owned())
+        .collect::<BTreeSet<_>>();
+    let stream_manifested = manifest
+        .entries
+        .iter()
+        .filter(|entry| {
+            entry
+                .contexts
+                .iter()
+                .any(|context| context.starts_with("stream"))
+        })
+        .map(|entry| entry.key.clone())
+        .collect::<BTreeSet<_>>();
+    assert_set_equality(
+        "nginx stream parser/semantic registrations",
+        &stream_registered,
+        &stream_manifested,
+    );
 
     for entry in &manifest.entries {
+        if entry
+            .contexts
+            .iter()
+            .any(|context| context.starts_with("stream"))
+        {
+            let report = import_nginx_stream_probe(entry);
+            assert_stream_probe(entry, &report, "primary form");
+            continue;
+        }
         let report = import_nginx_probe(entry);
         assert_nginx_probe(entry, &report, "primary form");
     }
@@ -51,6 +91,11 @@ fn nginx_manifest_contexts_and_cross_directive_requirements_are_executable() {
     let manifest: DirectiveManifest<DirectiveForm> = read_manifest("nginx-directives.json");
     for entry in &manifest.entries {
         for context in &entry.contexts {
+            if context.starts_with("stream") {
+                let report = import_nginx_stream_context_probe(entry, context);
+                assert_stream_probe(entry, &report, context);
+                continue;
+            }
             let report = import_nginx_context_probe(entry, context);
             assert_nginx_probe(entry, &report, context);
         }
@@ -256,10 +301,76 @@ fn import_nginx_context_probe(entry: &DirectiveForm, context: &str) -> NginxImpo
     import_http_fragment(Path::new("nginx.conf"), directory.path())
 }
 
+fn import_nginx_stream_probe(entry: &DirectiveForm) -> StreamImportReport {
+    let directory = TempDir::new().expect("create nginx stream directive probe directory");
+    let source = nginx_stream_probe_source(entry.id.as_str());
+    fs::write(directory.path().join("nginx.conf"), source)
+        .expect("write nginx stream directive probe");
+    import_stream_fragment(Path::new("nginx.conf"), directory.path())
+}
+
+fn import_nginx_stream_context_probe(
+    entry: &DirectiveForm,
+    _context: &str,
+) -> StreamImportReport {
+    import_nginx_stream_probe(entry)
+}
+
 fn import_nginx_source(source: String) -> NginxImportReport {
     let directory = TempDir::new().expect("create nginx source probe directory");
     fs::write(directory.path().join("nginx.conf"), source).expect("write nginx source probe");
     import_http_fragment(Path::new("nginx.conf"), directory.path())
+}
+
+fn assert_stream_probe(entry: &DirectiveForm, report: &StreamImportReport, label: &str) {
+    let decisions = report
+        .occurrence_ledger
+        .iter()
+        .filter(|decision| decision.name.value == entry.key.as_bytes())
+        .collect::<Vec<_>>();
+    assert!(
+        !decisions.is_empty(),
+        "{} was not parsed ({label})",
+        entry.id
+    );
+    match entry.disposition {
+        Disposition::Lowered => {
+            assert!(
+                report.config.is_some(),
+                "{} did not finalize its exact stream lowering probe ({label}): {:?}",
+                entry.id,
+                report.diagnostics
+            );
+            assert!(
+                decisions.iter().any(|decision| matches!(
+                    decision.disposition,
+                    OccurrenceDisposition::Resolved | OccurrenceDisposition::Structural
+                )),
+                "{} has no resolved stream lowering decision ({label})",
+                entry.id
+            );
+        }
+        Disposition::Classified => assert!(
+            decisions.iter().any(|decision| matches!(
+                decision.disposition,
+                OccurrenceDisposition::Resolved | OccurrenceDisposition::Structural
+            )),
+            "{} was not explicitly classified ({label})",
+            entry.id
+        ),
+        Disposition::Blocked => assert!(
+            decisions
+                .iter()
+                .any(|decision| matches!(decision.disposition, OccurrenceDisposition::Blocking(_)))
+                || report
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.stage() == DiagnosticStage::Lower),
+            "{} has no stream semantic or lowering blocker ({label})",
+            entry.id
+        ),
+        Disposition::Externalized => panic!("stream form cannot be externalized: {}", entry.id),
+    }
 }
 
 fn nginx_context_probe_source(entry: &DirectiveForm, context: &str, directory: &Path) -> String {
@@ -274,6 +385,44 @@ fn nginx_context_probe_source(entry: &DirectiveForm, context: &str, directory: &
         return source;
     }
     move_nginx_directive(source, &entry.key, context)
+}
+
+fn import_nginx_stream_registration_fixture() -> StreamImportReport {
+    let directory = TempDir::new().expect("create nginx stream registration fixture directory");
+    fs::write(
+        directory.path().join("nginx.conf"),
+        "stream { proxy_connect_timeout 15s; proxy_timeout 30s; upstream app { server 127.0.0.1:3000; } server { listen 15432; proxy_pass app; } server { listen 15433 udp; ssl_preread on; server_name app.example; proxy_pass $backend; } }",
+    )
+    .expect("write nginx stream registration fixture");
+    import_stream_fragment(Path::new("nginx.conf"), directory.path())
+}
+
+fn nginx_stream_probe_source(id: &str) -> String {
+    match id {
+        "directive.nginx.stream.proxy-connect-timeout" => {
+            stream_fixture("proxy_connect_timeout 15s;", "", "")
+        }
+        "directive.nginx.stream.proxy-timeout" => stream_fixture("proxy_timeout 30s;", "", ""),
+        "directive.nginx.stream.listen.udp" => stream_fixture("", "listen 15433 udp;", ""),
+        "directive.nginx.stream.proxy-pass.variable" => {
+            stream_fixture("", "", "proxy_pass $backend;")
+        }
+        "directive.nginx.stream.ssl-preread" => stream_fixture("", "ssl_preread on;", ""),
+        "directive.nginx.stream.server-name" => stream_fixture("", "server_name app.example;", ""),
+        "directive.nginx.stream.block"
+        | "directive.nginx.stream.upstream.named-block"
+        | "directive.nginx.stream.upstream-server.static"
+        | "directive.nginx.stream.server.block"
+        | "directive.nginx.stream.listen.static"
+        | "directive.nginx.stream.proxy-pass.static" => stream_fixture("", "", ""),
+        id => panic!("nginx stream form has no executable probe: {id}"),
+    }
+}
+
+fn stream_fixture(stream_directive: &str, server_directive: &str, proxy_directive: &str) -> String {
+    format!(
+        "stream {{ {stream_directive} upstream app {{ server 127.0.0.1:3000; }} server {{ listen 15432; {server_directive} proxy_pass app; {proxy_directive} }} }}"
+    )
 }
 
 fn move_nginx_directive(mut source: String, key: &str, context: &str) -> String {
