@@ -21,6 +21,27 @@ bootstrap generation marked immediately due; bootstrap material is never persist
 A TLS callback snapshots the active generation for each new handshake; existing connections retain
 their selected generation and downstream session resumption is disabled.
 
+## Implemented managed ACME slice
+
+The current implementation covers the first HTTP-01 release boundary:
+
+- ACME v2 directory discovery, configured-origin enforcement, account registration, persisted account
+  state, JWS requests, bounded response/request sizes, and one `badNonce` retry.
+- Exact DNS identifier normalization and order matching, strict account/order/authorization state
+  handling, bounded polling with deterministic jitter, and integer or HTTP-date `Retry-After` support.
+- Owner-only state roots with a process lock, atomic revision pointers, zeroized private-key buffers,
+  redacted job records, and atomic certificate material publication.
+- In-memory one-day bootstrap certificates, HTTP-01 challenge leases with ownership-safe cleanup,
+  exact SAN/key/chain/TLS validation, deterministic renewal scheduling, persisted retry state, and
+  immediate or supervised renewal operations.
+- Authenticated TLS inventory and renewal API responses with bounded categorical outcomes. Existing
+  certificate generations remain active when validation or publication fails.
+
+The implementation does not yet fetch or apply ACME Renewal Information responses, support account
+rollover, revocation/deletion/pause operations, DNS-01/TLS-ALPN-01, durable audit history, or a
+separate job-history retention policy. Those remain future contract work and must not be inferred from
+the current status fields.
+
 ## Certificate sources
 
 ### ACME managed
@@ -83,7 +104,7 @@ Otherwise the local renewal policy applies.
 
 ## Challenge types
 
-### HTTP-01: planned first release
+### HTTP-01: implemented first release
 
 - OxiRoute will own an explicit port-80 HTTP listener or an explicitly delegated challenge route.
 - `/.well-known/acme-challenge/<token>` is matched before redirects and normal routes.
@@ -171,40 +192,46 @@ Planned initial key policies:
 - New leaf key per renewal by default.
 - Separate ACME account and leaf keys.
 
-## Planned validation before activation
+## Current validation before activation
 
-The candidate MUST pass all checks:
+The current managed candidate MUST pass these checks:
 
 - Private key matches leaf certificate.
 - Leaf and chain parse without trailing unrelated private material.
-- Returned SANs exactly equal the normalized requested identifier set and cover every configured listener reference using standard hostname rules.
-- Current time is within validity with configurable clock-skew allowance.
+- Returned DNS SANs exactly equal the normalized requested identifier set.
+- Current time is within certificate validity.
 - Basic constraints and key usages permit TLS server use.
 - Chain ordering is coherent and accepted by the selected TLS backend.
 - Signature/key type is supported by the active build.
-- Certificate is not known revoked when a configured revocation source can be checked.
 
 Failure leaves the previous revision active and records a redacted diagnostic.
 
-## Planned renewal policy
+The current managed path additionally requires the returned DNS SAN set to equal the configured set,
+rejects non-DNS SAN entries and oversized chains, records issuer and serial fingerprints, and relies
+on the existing TLS backend parser for key matching, usage, validity, and chain checks. Revocation
+status checks and configurable clock-skew policy are not yet implemented.
 
-- The scheduler will evaluate every managed certificate at startup and at least every 12 hours.
-- Use the CA-provided suggested renewal window when available; persist the selected stable random time and server retry guidance.
-- Otherwise renew when remaining lifetime is at most one third of original lifetime, or one half for certificates whose original lifetime is shorter than 10 days.
-- Select and persist a stable random time within the renewal window to avoid synchronized fleets.
-- An operator may request early renewal, but duplicate concurrent jobs coalesce by certificate name.
-- Repeated transient failures back off with jitter while ensuring attempts become more frequent near expiry.
-- Ordinary authorization failures continue bounded scheduled attempts; only explicit operator pause or demonstrably invalid local configuration suspends attempts.
-- Emit escalating warnings at 30, 14, 7, 3, and 1 day when no valid replacement is active.
-- Expiry MUST NOT silently replace a certificate with self-signed material.
+## Current renewal policy
 
-## Planned zero-downtime installation
+- The scheduler evaluates every managed certificate immediately at startup and then at its next
+  persisted action, capped at a 12-hour scan interval.
+- The local policy renews when remaining lifetime enters the one-third window, or the one-half window
+  for certificates shorter than 10 days, using a stable deterministic time within that window.
+- Failed jobs persist a retry time and attempt number with deterministic jitter, doubling from five
+  minutes up to twelve hours. A successful publication resets the retry state.
+- An operator may request early renewal, and duplicate concurrent jobs are rejected by certificate
+  name. Expiry never silently replaces a certificate with self-signed material.
+- The directory's Renewal Information endpoint is recorded when advertised but is not yet fetched or
+  applied to scheduling; the local policy remains authoritative until that work is implemented.
+- Warning thresholds, explicit pause/resume, and escalating expiry events remain future work.
 
-Future challenge authenticators will only provision and clean authorization material. The
-OxiRoute activator will validate and publish Pingora TLS generations. The planned first release
-will have one built-in HTTP-01 authenticator and one internal activator; it will not discover
-general web-server installers or maintain server-configuration checkpoints. The existing Certbot
-watcher already uses the generation-publication seam but is not an ACME authenticator or scheduler.
+## Current zero-downtime installation
+
+Challenge authenticators only provision and clean authorization material. The OxiRoute activator
+validates and publishes Pingora TLS generations. The current release has one built-in HTTP-01
+authenticator and one internal activator; it does not discover general web-server installers or
+maintain server-configuration checkpoints. The existing Certbot watcher uses the same
+generation-publication seam but is not an ACME authenticator or scheduler.
 
 1. Complete issuance into a private revision directory.
 2. Validate certificate, key, chain, names, and TLS backend loading.
@@ -225,7 +252,7 @@ certificate revision differ visibly; the old active certificate remains.
 - Account key rollover and account deactivation are administrative operations with audit records.
 - Old private-key revisions use configurable retention and secure deletion where the filesystem can provide meaningful guarantees.
 
-## Planned API and UI behavior
+## Current API and UI behavior
 
 Inventory fields:
 
@@ -240,18 +267,25 @@ Actions:
 - Renew now, pause/resume automatic renewal, revoke, and delete when unreferenced.
 - Display challenge progress and cleanup failures.
 
-Production issuance requires an explicit confirmation in the UI until the certificate
-configuration has completed a successful staging or dry validation path.
+The current API exposes the configured directory, key type, suffix policy, disk/active revisions,
+expiry, next action, job status, retry attempt, last success, and redacted outcome/error. Production
+confirmation, staging/dry-validation gating, revocation, deletion, and certificate job-history views
+remain future UI work.
 
 ## Observability
 
-Planned metrics include:
+Implemented metrics include:
 
-- Certificate seconds until expiry and active revision age.
-- ACME jobs by operation/result/directory class.
-- Challenge attempts and duration by type/result.
-- Renewal scheduler due/overdue counts.
-- Activation and rollback results.
+- Certificate presence and seconds until expiry.
+- Renewal due state and the last bounded job result or error code.
+
+The current bounded monitoring snapshot intentionally exposes only stable revision, expiry, scheduler,
+and categorical outcome/error fields. Retry counters and job phases are available through the
+authenticated TLS inventory; they are not added to the shared monitoring snapshot until its broader
+wire contract is versioned.
+
+Future metrics include active revision age, per-operation and directory-class totals, challenge
+attempt duration, retry counters, activation/rollback outcomes, and durable audit records.
 
 Metric labels MUST not include unbounded token, order URL, serial, or full domain-set data.
 Audit events identify the certificate by configured stable name.

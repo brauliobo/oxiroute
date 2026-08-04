@@ -596,6 +596,9 @@ export interface TlsManagedCertificateStatus {
   notAfterUnixSeconds: number | null
   nextActionUnixSeconds: number | null
   notAfter: string
+  jobStatus: 'queued' | 'running' | 'waiting_for_challenge' | 'finalizing' | 'succeeded' | 'failed' | 'cancelled' | null
+  retryAttempt: number
+  lastSuccessUnixSeconds: number | null
   lastOutcome: string | null
   lastErrorCode: string | null
 }
@@ -1458,6 +1461,8 @@ function tlsManagedCertificateStatus(value: unknown): value is Record<string, un
     typeof value.diskRevision === 'string' && typeof value.activeRevision === 'string' &&
     nullableSafeInteger(value.notBeforeUnixSeconds) && nullableSafeInteger(value.notAfterUnixSeconds) &&
     nullableSafeInteger(value.nextActionUnixSeconds) && typeof value.notAfter === 'string' &&
+    (value.jobStatus === null || ['queued', 'running', 'waiting_for_challenge', 'finalizing', 'succeeded', 'failed', 'cancelled'].includes(String(value.jobStatus))) &&
+    safeInteger(value.retryAttempt) && nullableSafeInteger(value.lastSuccessUnixSeconds) &&
     nullableString(value.lastOutcome) && nullableString(value.lastErrorCode)
 }
 
@@ -1498,6 +1503,9 @@ function normalizeTlsManagedStatus(value: Record<string, unknown>): TlsManagedCe
     notAfterUnixSeconds: value.notAfterUnixSeconds as number | null,
     nextActionUnixSeconds: value.nextActionUnixSeconds as number | null,
     notAfter: value.notAfter as string,
+    jobStatus: value.jobStatus as TlsManagedCertificateStatus['jobStatus'],
+    retryAttempt: value.retryAttempt as number,
+    lastSuccessUnixSeconds: value.lastSuccessUnixSeconds as number | null,
     lastOutcome: value.lastOutcome as string | null,
     lastErrorCode: value.lastErrorCode as string | null,
   }
