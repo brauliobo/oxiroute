@@ -181,6 +181,14 @@ fn validate_route_policy(
             "must be null or a positive exact JSON integer",
         ));
     }
+    if policy.response_buffering && policy.max_request_body_bytes.is_none() {
+        return Err(invalid_route(
+            service,
+            route_index,
+            "policy.response_buffering",
+            "requires a positive policy.max_request_body_bytes limit",
+        ));
+    }
     if policy
         .max_request_body_bytes
         .is_some_and(|value| value > MAX_SAFE_JSON_INTEGER)

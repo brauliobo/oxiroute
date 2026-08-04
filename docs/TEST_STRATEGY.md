@@ -45,7 +45,8 @@ checked-in fuzz targets, real-browser test runner, or CI workflow.
   inheritance/resolution, diagnostics, decision accounting, provenance, and conservative semantic
   conversion. Squid additionally covers canonical direct-forward lowering, cross-format native
   references, authenticated absolute-form/CONNECT daemon wires, and bounded tunnel flushing;
-  Varnish typed-IR/invocation tests remain foundation-only.
+  Varnish exact canonical lowering, native-reference evidence, report, preview, and fail-closed
+  invocation tests cover the finalized subset.
 
 Current property-style coverage includes deterministic rendering, revision behavior, and bounded
 parser/runtime cases. ACME state machines and renewal windows, UDP pseudo-sessions, and broader
@@ -55,6 +56,9 @@ parser round-trip properties remain planned.
 
 - Loopback-only upstreams and ephemeral ports; no root or Internet dependency.
 - HTTP methods, bodies, trailers, hop-by-hop fields, upgrades, gRPC, and negotiated versions.
+- Reverse HTTP lifecycle coverage includes bounded response buffering, rejection of chunked and
+  oversized buffered responses, total deadline cancellation, early-response request draining,
+  single outcome accounting, and replay-safe refused-stream retry gates.
 - HTTP retry target exclusion, budgets through three, delayed same-server attempts, immediate final
   redispatch, the 64-attempt Pingora bound, budget exhaustion, pre-send connection retries for
   methods and bodies that have not reached an upstream, and no-replay gates after bodies, unsafe

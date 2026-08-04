@@ -33,8 +33,8 @@ use oxiroute_import::nginx::{
     NginxDefaultErrorPageOverlay, NginxImportOptions, import_root_with_options,
 };
 use oxiroute_server::{
-    HttpDownstreamPolicyApp, HttpReverseProxy, MAX_HTTP_ATTEMPTS, MonitoredHttpApp, RoundRobinPool,
-    RuntimeMetrics, ServiceKind, runtime_plan,
+    HttpDownstreamPolicyApp, HttpOperationResult, HttpReverseProxy, MAX_HTTP_ATTEMPTS,
+    MonitoredHttpApp, RoundRobinPool, RuntimeMetrics, ServiceKind, runtime_plan,
 };
 use pingora::{
     apps::ServerApp,
@@ -2506,6 +2506,253 @@ async fn request_buffering_reads_the_complete_body_before_connecting_upstream() 
     })
     .await
     .expect("request buffering test timed out");
+}
+
+#[tokio::test]
+async fn response_buffering_holds_a_bounded_content_length_body_until_end_of_stream() {
+    timeout(TEST_TIMEOUT, async {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("response buffer origin bind");
+        let address = listener
+            .local_addr()
+            .expect("response buffer origin address");
+        let origin = tokio::spawn(async move {
+            let (mut stream, _) = listener
+                .accept()
+                .await
+                .expect("response buffer origin accept");
+            read_request_head_bytes(&mut stream)
+                .await
+                .expect("response buffer origin request");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nabc")
+                .await
+                .expect("response buffer first chunk");
+            sleep(Duration::from_millis(100)).await;
+            stream
+                .write_all(b"def")
+                .await
+                .expect("response buffer final chunk");
+        });
+        let mut buffered_route = route(None, "/", &[], "buffered-response");
+        buffered_route.policy.max_request_body_bytes = Some(6);
+        buffered_route.policy.response_buffering = true;
+        let proxy = ProxyHarness::start(
+            vec![pool("buffered-response", &[address])],
+            vec![buffered_route],
+            6,
+            1,
+        )
+        .await;
+        let mut client = TcpStream::connect(proxy.address)
+            .await
+            .expect("response buffer client");
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: buffered.test\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("response buffer request");
+        let response_head = read_response_head(&mut client)
+            .await
+            .expect("response buffer response head");
+        assert!(
+            response_head.starts_with(b"HTTP/1.1 200"),
+            "response: {:?}",
+            String::from_utf8_lossy(&response_head)
+        );
+        let mut body = [0; 6];
+        assert!(
+            timeout(Duration::from_millis(50), client.read(&mut body))
+                .await
+                .is_err(),
+            "buffered response body became visible before the origin completed"
+        );
+        client
+            .read_exact(&mut body)
+            .await
+            .expect("buffered response body");
+        assert_eq!(&body, b"abcdef");
+
+        proxy.finish().await;
+        origin.await.expect("response buffer origin task");
+    })
+    .await
+    .expect("response buffering test timed out");
+}
+
+#[tokio::test]
+async fn response_buffering_rejects_unbounded_and_oversized_bodies() {
+    timeout(TEST_TIMEOUT, async {
+        let chunked = Origin::start_chunked("abcdef", 1).await;
+        let mut chunked_route = route(None, "/", &[], "chunked-response");
+        chunked_route.policy.max_request_body_bytes = Some(6);
+        chunked_route.policy.response_buffering = true;
+        let chunked_proxy = ProxyHarness::start(
+            vec![pool("chunked-response", &[chunked.address])],
+            vec![chunked_route],
+            6,
+            1,
+        )
+        .await;
+        let chunked_response = chunked_proxy
+            .request("GET / HTTP/1.1\r\nHost: chunked.test\r\n")
+            .await;
+        assert_eq!(chunked_response.status, 502);
+        chunked_proxy.finish().await;
+        chunked.finish().await;
+
+        let oversized = Origin::start_status(200, "1234567").await;
+        let mut oversized_route = route(None, "/", &[], "oversized-response");
+        oversized_route.policy.max_request_body_bytes = Some(6);
+        oversized_route.policy.response_buffering = true;
+        let oversized_proxy = ProxyHarness::start(
+            vec![pool("oversized-response", &[oversized.address])],
+            vec![oversized_route],
+            6,
+            1,
+        )
+        .await;
+        let oversized_response = oversized_proxy
+            .request("GET / HTTP/1.1\r\nHost: oversized.test\r\n")
+            .await;
+        assert_eq!(oversized_response.status, 502);
+        oversized_proxy.finish().await;
+        oversized.finish().await;
+    })
+    .await
+    .expect("response buffering rejection test timed out");
+}
+
+#[tokio::test]
+async fn total_request_deadline_cancels_a_silent_upstream_once() {
+    timeout(TEST_TIMEOUT, async {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("deadline origin bind");
+        let address = listener.local_addr().expect("deadline origin address");
+        let origin = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("deadline origin accept");
+            read_request_head_bytes(&mut stream)
+                .await
+                .expect("deadline origin request");
+            sleep(Duration::from_secs(2)).await;
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await;
+        });
+        let proxy = ProxyHarness::start_with_features(
+            vec![pool("deadline", &[address])],
+            vec![route(None, "/", &[], "deadline")],
+            Some(1024),
+            true,
+            100,
+            0,
+            false,
+            1,
+            None,
+            None,
+            DownstreamTimeoutPolicy {
+                client_timeout_ms: Some(1_000),
+                request_timeout_ms: Some(75),
+                keepalive_timeout_ms: None,
+            },
+        )
+        .await;
+        let mut client = TcpStream::connect(proxy.address)
+            .await
+            .expect("deadline client");
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: deadline.test\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("deadline request");
+        let mut response = Vec::new();
+        timeout(
+            Duration::from_millis(300),
+            client.read_to_end(&mut response),
+        )
+        .await
+        .expect("total request deadline did not close the client")
+        .expect("deadline client read");
+        assert!(
+            response.is_empty(),
+            "unexpected late response: {response:?}"
+        );
+
+        let snapshot = proxy.metrics.snapshot().expect("deadline metrics snapshot");
+        let operations = snapshot.listeners[0]
+            .http_operations
+            .as_ref()
+            .expect("HTTP operation metrics");
+        assert_eq!(
+            operations
+                .outcomes
+                .iter()
+                .find(|outcome| outcome.result == HttpOperationResult::Timeout)
+                .map_or(0, |outcome| outcome.count),
+            1
+        );
+        assert_eq!(operations.latency.count, 1);
+
+        proxy.finish().await;
+        origin.abort();
+        let _ = origin.await;
+    })
+    .await
+    .expect("total request deadline test timed out");
+}
+
+#[tokio::test]
+async fn early_response_drains_a_remaining_request_body_before_h1_reuse() {
+    timeout(TEST_TIMEOUT, async {
+        let route = HttpRoute {
+            host: None,
+            path: HttpPathSelector::SegmentPrefix { value: "/".into() },
+            methods: Vec::new(),
+            access_policy: None,
+            policy: oxiroute_config::HttpRoutePolicy::default(),
+            action: HttpRouteAction::FixedResponse {
+                status: 200,
+                body: "ok".into(),
+                headers: Vec::new(),
+            },
+        };
+        let proxy = ProxyHarness::start(
+            Vec::new(),
+            vec![route],
+            1024,
+            1,
+        )
+        .await;
+        let mut client = TcpStream::connect(proxy.address)
+            .await
+            .expect("drain client");
+        client
+            .write_all(
+                b"POST /first HTTP/1.1\r\nHost: drain.test\r\nContent-Length: 4\r\nConnection: keep-alive\r\n\r\nab",
+            )
+            .await
+            .expect("partial request body");
+        let first = read_framed_response(&mut client)
+            .await
+            .expect("early response");
+        assert_eq!(first.status, 200);
+        assert_eq!(first.body(), b"ok");
+
+        client
+            .write_all(b"cdGET /second HTTP/1.1\r\nHost: drain.test\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("remaining body and second request");
+        let second = timeout(Duration::from_secs(1), read_framed_response(&mut client))
+            .await
+            .expect("drained H1 connection did not accept the next request")
+            .expect("second response");
+        assert_eq!(second.status, 200);
+        assert_eq!(second.body(), b"ok");
+
+        proxy.finish().await;
+    })
+    .await
+    .expect("request drain test timed out");
 }
 
 #[tokio::test]

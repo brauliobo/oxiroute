@@ -7,16 +7,16 @@ use std::{
     os::unix::ffi::OsStringExt as _,
     path::{Component, Path},
     sync::{
-        Arc, Mutex, OnceLock,
         mpsc::{self, SyncSender, TrySendError},
+        Arc, Mutex, OnceLock,
     },
     thread::JoinHandle,
     time::Duration,
 };
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use bytes::Bytes;
-use http::{HeaderMap, HeaderName, HeaderValue, Method, header::AUTHORIZATION};
+use http::{header::AUTHORIZATION, HeaderMap, HeaderName, HeaderValue, Method};
 use openssl::{
     hash::{Hasher, MessageDigest},
     memcmp,
@@ -192,6 +192,7 @@ impl Drop for AccessLog {
 pub(crate) struct RoutePolicyPlan {
     pub(crate) max_request_body_bytes: Option<u64>,
     pub(crate) request_buffering: bool,
+    pub(crate) response_buffering: bool,
     pub(crate) connect_timeout: std::time::Duration,
     pub(crate) read_timeout: std::time::Duration,
     pub(crate) write_timeout: std::time::Duration,
@@ -202,6 +203,7 @@ impl RoutePolicyPlan {
         Self {
             max_request_body_bytes: policy.max_request_body_bytes,
             request_buffering: policy.request_buffering,
+            response_buffering: policy.response_buffering,
             connect_timeout: std::time::Duration::from_millis(policy.connect_timeout_ms),
             read_timeout: std::time::Duration::from_millis(policy.read_timeout_ms),
             write_timeout: std::time::Duration::from_millis(policy.write_timeout_ms),
@@ -215,6 +217,13 @@ impl RoutePolicyPlan {
 
     pub(crate) fn request_body_buffer_limit(self) -> Option<usize> {
         self.request_buffering
+            .then_some(self.max_request_body_bytes)
+            .flatten()
+            .and_then(|limit| usize::try_from(limit).ok())
+    }
+
+    pub(crate) fn response_body_buffer_limit(self) -> Option<usize> {
+        self.response_buffering
             .then_some(self.max_request_body_bytes)
             .flatten()
             .and_then(|limit| usize::try_from(limit).ok())
@@ -2223,7 +2232,7 @@ fn trim_one_line_ending(bytes: &mut Vec<u8>) {
 
 #[cfg(test)]
 mod access_log_tests {
-    use std::os::unix::fs::{PermissionsExt as _, symlink};
+    use std::os::unix::fs::{symlink, PermissionsExt as _};
 
     use super::*;
 

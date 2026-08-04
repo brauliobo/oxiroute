@@ -200,7 +200,7 @@
       "id": "HN-20",
       "status": "partial",
       "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": false },
-      "evidence": ["crates/oxiroute-server/tests/service_plan.rs#request_buffering_compiles_and_response_buffering_fails_closed", "crates/oxiroute-server/tests/http_proxy_routing.rs#request_buffering_reads_the_complete_body_before_connecting_upstream"]
+      "evidence": ["crates/oxiroute-server/tests/service_plan.rs#bounded_buffering_policies_compile_and_unbounded_buffering_fails_closed", "crates/oxiroute-server/tests/http_proxy_routing.rs#request_buffering_reads_the_complete_body_before_connecting_upstream"]
     },
     {
       "id": "HN-21",

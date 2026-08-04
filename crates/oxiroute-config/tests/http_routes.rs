@@ -81,6 +81,24 @@ fn applies_the_explicit_safe_proxy_defaults() {
 }
 
 #[test]
+fn rejects_unbounded_response_buffering() {
+    let source = config(
+        &proxy_route(
+            "          policy = { max_request_body_bytes = null, response_buffering = true },",
+            "",
+        ),
+        r#"{ type = "socket", address = "127.0.0.1:3000" }"#,
+    );
+    assert!(matches!(
+        load_lua(&source).expect_err("unbounded response buffering"),
+        ConfigError::InvalidHttpRoute {
+            field: "policy.response_buffering",
+            ..
+        }
+    ));
+}
+
+#[test]
 fn applies_fixed_redirect_and_static_action_defaults() {
     let routes = r#"        {
           path = { kind = "exact", value = "/fixed" },
