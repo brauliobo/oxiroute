@@ -5,6 +5,7 @@ mod encoding;
 mod forward_proxy;
 mod generation;
 mod health;
+mod http3;
 mod http_action;
 mod http_proxy;
 mod http_server_app;
@@ -36,6 +37,7 @@ pub use generation::{
     PreparedGeneration, RuntimeGeneration, RuntimeReferenceKind,
 };
 pub use health::{HealthBuildError, HealthSupervisor};
+pub use http3::Http3Runtime;
 pub use http_proxy::{HttpRequestContext, HttpReverseProxy};
 pub use http_server_app::{HttpDownstreamPolicyApp, HttpListenerApp, MonitoredHttpApp};
 pub use l4_service::L4ServicePlan;

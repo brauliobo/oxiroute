@@ -27,9 +27,9 @@ Its `allow_connect_method_proxying` option permits CONNECT in the normal HTTP fl
 does not create a byte tunnel. A production explicit proxy needs a dedicated parser and
 stream-takeover path that preserves bytes read beyond the CONNECT headers.
 
-Pingora currently has no HTTP/3 implementation. HTTP/3 therefore requires a separately
-tested QUIC/H3 frontend or an upstream Pingora capability; it must not be represented as
-an option that silently falls back to HTTP/2.
+Pingora currently has no HTTP/3 implementation. The active forward HTTP/3 path therefore uses a
+separately tested QUIC/H3 frontend; reverse HTTP/3 still requires a separately selected service
+model or an upstream Pingora capability. Neither path may silently fall back to HTTP/2.
 
 Pingora's included memory cache is not a production persistent Squid-style store.
 Persistent cache indexing, eviction, recovery, collapsed forwarding, purge, and disk

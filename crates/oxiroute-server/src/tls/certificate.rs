@@ -40,6 +40,7 @@ use oxiroute_config::{
 };
 use pingora::{
     listeners::{ALPN, TlsAccept, tls::TlsSettings},
+    protocols::tls::CustomALPN,
     protocols::tls::TlsRef,
     tls::ext::{ssl_add_chain_cert, ssl_use_certificate, ssl_use_private_key},
 };
@@ -448,6 +449,31 @@ impl CertificateGeneration {
             ssl_add_chain_cert(ssl, intermediate)?;
         }
         ssl_use_certificate(ssl, &self.leaf)
+    }
+
+    pub(crate) fn quic_certified_key(&self) -> Result<rustls::sign::CertifiedKey, String> {
+        let certificates = std::iter::once(&self.leaf)
+            .chain(self.intermediates.iter())
+            .map(|certificate| {
+                certificate
+                    .to_der()
+                    .map(rustls::pki_types::CertificateDer::from)
+                    .map_err(|error| format!("certificate DER encoding failed: {error}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let private_key = self
+            .private_key
+            .private_key_to_pkcs8()
+            .map_err(|error| format!("private key DER encoding failed: {error}"))?;
+        let private_key = rustls::pki_types::PrivateKeyDer::Pkcs8(
+            rustls::pki_types::PrivatePkcs8KeyDer::from(private_key),
+        );
+        rustls::sign::CertifiedKey::from_der(
+            certificates,
+            private_key,
+            &rustls::crypto::ring::default_provider(),
+        )
+        .map_err(|error| format!("QUIC certificate and key are unusable: {error}"))
     }
 }
 
@@ -939,6 +965,7 @@ fn compile_alpn(profile: &str, protocols: &[AlpnProtocol]) -> Result<ALPN, TlsBu
         [AlpnProtocol::Http11] => Ok(ALPN::H1),
         [AlpnProtocol::H2] => Ok(ALPN::H2),
         [AlpnProtocol::H2, AlpnProtocol::Http11] => Ok(ALPN::H2H1),
+        [AlpnProtocol::H3] => Ok(ALPN::Custom(CustomALPN::new(b"h3".to_vec()))),
         _ => Err(TlsBuildError::InvalidProfileAlpn {
             profile: profile.into(),
         }),

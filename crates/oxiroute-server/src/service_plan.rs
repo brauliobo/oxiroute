@@ -54,6 +54,7 @@ pub struct ServiceSpec {
 pub enum ServiceKind {
     ForwardHttp1(Arc<ForwardHttp1ServicePlan>),
     ForwardHttp2(Arc<ForwardHttp2ServicePlan>),
+    ForwardHttp3(Arc<ForwardHttp1ServicePlan>),
     Http(Arc<HttpServicePlan>),
     Rtmp(Arc<RtmpServicePlan>),
     Tcp(Arc<L4ServicePlan>),
@@ -66,6 +67,7 @@ impl ServiceKind {
         match self {
             Self::ForwardHttp1(_) => "forward_http1",
             Self::ForwardHttp2(_) => "forward_http2",
+            Self::ForwardHttp3(_) => "forward_http3",
             Self::Http(_) => "http",
             Self::Rtmp(_) => "rtmp",
             Self::Tcp(_) => "tcp",
@@ -509,6 +511,7 @@ pub fn runtime_plan_with_passive_failure_policy(
         ServiceKind::Rtmp(service) => Some(service.as_ref()),
         ServiceKind::ForwardHttp1(_)
         | ServiceKind::ForwardHttp2(_)
+        | ServiceKind::ForwardHttp3(_)
         | ServiceKind::Http(_)
         | ServiceKind::Tcp(_)
         | ServiceKind::Udp(_) => None,
@@ -1461,7 +1464,13 @@ fn compile_listener(
     tls_profiles: &crate::tls::TlsProfilePlanMap,
 ) -> Result<ServiceSpec, ServicePlanError> {
     let tls = match (listener.protocol, listener.tls_profile.as_deref()) {
-        (Protocol::Http | Protocol::ForwardHttp1 | Protocol::ForwardHttp2, Some(profile)) => {
+        (
+            Protocol::Http
+                | Protocol::ForwardHttp1
+                | Protocol::ForwardHttp2
+                | Protocol::ForwardHttp3,
+            Some(profile),
+        ) => {
             Some(Arc::clone(tls_profiles.get(profile).ok_or_else(|| {
                 ServicePlanError::UnknownListenerTlsProfile {
                     listener: listener.name.clone(),
@@ -1473,6 +1482,7 @@ fn compile_listener(
             Protocol::Http
             | Protocol::ForwardHttp1
             | Protocol::ForwardHttp2
+            | Protocol::ForwardHttp3
             | Protocol::Tcp
             | Protocol::Udp
             | Protocol::Rtmp,
@@ -1485,17 +1495,13 @@ fn compile_listener(
                 profile: profile.into(),
             });
         }
-        (Protocol::ForwardHttp3, _) => {
-            return Err(ServicePlanError::ForwardProxyRuntimeUnavailable {
-                listener: listener.name.clone(),
-            });
-        }
     };
     let kind = match (listener.protocol, listener.service.as_deref()) {
         (
             Protocol::Http
             | Protocol::ForwardHttp1
             | Protocol::ForwardHttp2
+            | Protocol::ForwardHttp3
             | Protocol::Rtmp
             | Protocol::Tcp
             | Protocol::Udp,
@@ -1537,6 +1543,14 @@ fn compile_listener(
                 }
             })?))
         }
+        (Protocol::ForwardHttp3, Some(service)) => {
+            ServiceKind::ForwardHttp3(Arc::clone(forward_services.get(service).ok_or_else(
+                || ServicePlanError::UnknownForwardProxyService {
+                    listener: listener.name.clone(),
+                    service: service.into(),
+                },
+            )?))
+        }
         (Protocol::Udp, Some(service)) => {
             ServiceKind::Udp(Arc::clone(l4_services.get(service).ok_or_else(|| {
                 ServicePlanError::UnknownUdpService {
@@ -1552,11 +1566,6 @@ fn compile_listener(
                     service: service.into(),
                 }
             })?))
-        }
-        (Protocol::ForwardHttp3, _) => {
-            return Err(ServicePlanError::ForwardProxyRuntimeUnavailable {
-                listener: listener.name.clone(),
-            });
         }
     };
     Ok(ServiceSpec {

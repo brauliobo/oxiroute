@@ -151,7 +151,9 @@ behavior. Synthetic fixtures remain implementation evidence only.
 ### Protocol conformance and interoperability
 
 - HTTP semantics use standards-derived tests and independent clients/servers.
-- HTTP/2 versions are asserted from negotiation and wire behavior; HTTP/3 remains planned.
+- HTTP/2 versions are asserted from negotiation and wire behavior; the active `forward_http3`
+  listener is asserted through independent QUIC/H3 process-level wire tests, while reverse H3
+  remains planned.
 - TLS tests use independent OpenSSL/rustls clients where applicable.
 - gRPC and WebSocket behavior use independent implementations. Forward proxy/CONNECT and PROXY
   protocol conformance remain planned.

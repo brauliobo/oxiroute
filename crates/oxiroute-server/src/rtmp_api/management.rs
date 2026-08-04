@@ -924,11 +924,22 @@ fn find_pool(active: &RuntimeGeneration, name: &str) -> Option<Arc<crate::RoundR
 }
 
 fn active_reference_count(active: &RuntimeGeneration) -> u64 {
-    use crate::RuntimeReferenceKind::{ForwardHttp1, Http1, Http2, Rtmp, Tcp, WebSocket};
-    [ForwardHttp1, Http1, Http2, WebSocket, Tcp, Rtmp]
-        .into_iter()
-        .map(|kind| active.active_references(kind))
-        .sum()
+    use crate::RuntimeReferenceKind::{
+        ForwardHttp1, ForwardHttp3, Http1, Http2, Rtmp, Tcp, Udp, WebSocket,
+    };
+    [
+        ForwardHttp1,
+        ForwardHttp3,
+        Http1,
+        Http2,
+        WebSocket,
+        Tcp,
+        Rtmp,
+        Udp,
+    ]
+    .into_iter()
+    .map(|kind| active.active_references(kind))
+    .sum()
 }
 
 fn mutation_response(operation: &str, changed: usize) -> ApiResponse {

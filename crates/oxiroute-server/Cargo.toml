@@ -24,6 +24,8 @@ clap.workspace = true
 env_logger.workspace = true
 futures-util.workspace = true
 h2.workspace = true
+h3.workspace = true
+h3-quinn.workspace = true
 http.workspace = true
 httpdate.workspace = true
 http-body-util.workspace = true
@@ -42,7 +44,9 @@ oxiroute-import = { path = "../oxiroute-import" }
 oxiroute-forward-proxy = { path = "../oxiroute-forward-proxy" }
 oxiroute-rtmp = { path = "../oxiroute-rtmp" }
 pingora.workspace = true
+quinn.workspace = true
 rustix.workspace = true
+rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 signal-hook.workspace = true

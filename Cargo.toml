@@ -36,6 +36,8 @@ clap = { version = "4.5", features = ["derive", "env"] }
 env_logger = "0.11"
 futures-util = "0.3"
 h2 = "0.4.15"
+h3 = { version = "0.0.8", features = ["i-implement-a-third-party-backend-and-opt-into-breaking-changes"] }
+h3-quinn = "0.0.10"
 hocon-parser = { version = "=1.11.0", features = ["serde"] }
 http = "1"
 httpdate = "1"
@@ -50,6 +52,7 @@ mlua = { version = "0.11", features = ["lua54", "serialize", "vendored"] }
 notify = "8.2"
 openssl = "0.10.81"
 pingora = { version = "0.8.0", features = ["lb", "openssl", "proxy"] }
+quinn = { version = "0.11.9", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rml_rtmp = "=0.8.0"
 rustix = { version = "1.1", features = ["event", "fs", "net", "process", "stdio"] }
 rustls = { version = "0.23.40", default-features = false, features = ["ring", "std", "tls12"] }
