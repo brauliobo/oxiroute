@@ -5,6 +5,12 @@ pub(super) struct StreamIdentity {
     query: Option<String>,
 }
 
+pub(super) struct VodIdentity {
+    source: String,
+    path: String,
+    query: Option<String>,
+}
+
 impl StreamIdentity {
     pub(super) fn parse(
         service_id: &str,
@@ -33,4 +39,55 @@ pub(super) fn validate_application(application: &str) -> Result<(), RtmpStreamPa
 
 pub(super) fn matches(key: &StreamKey, application: &str, protocol_name: &str) -> bool {
     RtmpStreamPath::matches_key(key, application, protocol_name)
+}
+
+impl VodIdentity {
+    pub(super) fn parse(protocol_name: &str) -> Option<Self> {
+        let (name, query) = match protocol_name.split_once('?') {
+            Some((name, query)) if !query.is_empty() => (name, Some(query.to_owned())),
+            Some(_) => return None,
+            None => (protocol_name, None),
+        };
+        let (source, path) = name.split_once('/')?;
+        if !valid_component(source) || path.is_empty() || path.starts_with('/') {
+            return None;
+        }
+        if path.len() > crate::MAX_VOD_PATH_BYTES
+            || path.contains("//")
+            || path.contains(['\\', '?', '#', '%'])
+            || path.split('/').any(|component| {
+                component.is_empty()
+                    || component == "."
+                    || component == ".."
+                    || component.chars().any(char::is_control)
+            })
+        {
+            return None;
+        }
+        Some(Self {
+            source: source.to_owned(),
+            path: path.to_owned(),
+            query,
+        })
+    }
+
+    pub(super) fn source(&self) -> &str {
+        &self.source
+    }
+
+    pub(super) fn path(&self) -> &str {
+        &self.path
+    }
+
+    pub(super) fn query(&self) -> Option<&str> {
+        self.query.as_deref()
+    }
+}
+
+fn valid_component(value: &str) -> bool {
+    !value.is_empty()
+        && value != "."
+        && value != ".."
+        && !value.contains(['/', '\\', '?', '#', '%'])
+        && !value.chars().any(char::is_control)
 }

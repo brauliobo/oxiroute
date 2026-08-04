@@ -24,7 +24,7 @@ use std::{
 use oxiroute_config::{
     Certificate, CertificateSource, Config, Listener, Management, Protocol, RtmpAccessPolicy,
     RtmpApplication, RtmpRecorderStart, RtmpService, RtmpSessionCeilings, RtmpTokenPolicy,
-    RtmpTokenSource, render_lua,
+    RtmpTokenSource, RtmpVodPolicy, RtmpVodSource, render_lua,
 };
 use oxiroute_rtmp::{
     LiveHub, LiveHubLimits, MediaSnapshot, RtmpApplication as RuntimeRtmpApplication,
@@ -78,6 +78,69 @@ fn reports_truthful_empty_capabilities_when_ingest_is_disabled() {
     assert_eq!(body["capabilities"]["live_ingest"], false);
     assert_eq!(body["capabilities"]["manual_recording"], false);
     assert_eq!(body["streams"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn serves_configured_vod_bytes_with_ranges_and_management_authentication() {
+    let root = TempDir::new().expect("VOD root");
+    let bytes = b"test-vod-bytes";
+    fs::write(root.path().join("clip.flv"), bytes).expect("VOD object");
+    let mut active = empty_config();
+    active.rtmp_services = vec![RtmpService {
+        name: "vod-service".into(),
+        outbound_chunk_size: 4_096,
+        access_log: None,
+        applications: vec![RtmpApplication {
+            name: "vod-app".into(),
+            live: false,
+            idle_streams: true,
+            publish: RtmpAccessPolicy::default(),
+            play: RtmpAccessPolicy::default(),
+            limits: RtmpSessionCeilings::default(),
+            push_targets: Vec::new(),
+            fanout: oxiroute_config::RtmpFanoutPolicy::default(),
+            vod: Some(RtmpVodPolicy {
+                sources: vec![RtmpVodSource::Local {
+                    name: "disk".into(),
+                    root_directory: root.path().to_path_buf(),
+                }],
+                max_sessions: 2,
+                max_file_bytes: 1024,
+                max_duration_ms: 60_000,
+            }),
+            recorders: Vec::new(),
+        }],
+    }];
+    let harness = ManagementHarness::start(&active).await;
+    let path = "/api/v1/rtmp/vod/vod-service/vod-app/disk/clip.flv";
+
+    let unauthorized = harness
+        .request_with("GET", path, None, None, None, None)
+        .await;
+    assert_eq!(unauthorized.status, 401);
+
+    let response = harness.request("GET", path, None, None).await;
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body, bytes);
+    assert_eq!(
+        response.headers.get("accept-ranges").map(String::as_str),
+        Some("bytes")
+    );
+
+    let ranged = harness
+        .raw_request(
+            format!(
+                "GET {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {TEST_TOKEN}\r\nRange: bytes=5-8\r\nConnection: close\r\n\r\n"
+            )
+            .into_bytes(),
+        )
+        .await;
+    assert_eq!(ranged.status, 206);
+    assert_eq!(ranged.body, &bytes[5..=8]);
+    assert_eq!(
+        ranged.headers.get("content-range").map(String::as_str),
+        Some("bytes 5-8/14")
+    );
 }
 
 #[test]
@@ -629,6 +692,7 @@ async fn config_api_redacts_rtmp_token_secrets_from_typed_and_rendered_views() {
             limits: RtmpSessionCeilings::default(),
             push_targets: Vec::new(),
             fanout: oxiroute_config::RtmpFanoutPolicy::default(),
+            vod: None,
             recorders: Vec::new(),
         }],
     }];
@@ -1100,6 +1164,7 @@ fn candidate_config(active: &Config, listener_name: &str) -> Config {
             limits: oxiroute_config::RtmpSessionCeilings::default(),
             push_targets: Vec::new(),
             fanout: oxiroute_config::RtmpFanoutPolicy::default(),
+            vod: None,
             recorders: Vec::new(),
         }],
     });
@@ -1137,7 +1202,8 @@ impl ManagementHarness {
         metrics.set_rtmp_recording_supported(plan.rtmp_recording_supported);
         let api = RtmpManagementApi::new(empty_registry(), metrics, Arc::clone(&plan.topology))
             .with_config_coordinator(coordinator, active_revision.clone(), TEST_TOKEN)
-            .expect("injected management token");
+            .expect("injected management token")
+            .with_vod_catalog(Arc::clone(&plan.rtmp_vod_catalog));
 
         let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .expect("reserve management listener");

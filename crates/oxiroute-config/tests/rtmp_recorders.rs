@@ -70,6 +70,60 @@ fn first_recorder(source: &str) -> serde_json::Value {
         .clone()
 }
 
+fn first_vod(source: &str) -> serde_json::Value {
+    let config = load_lua(source).expect("configuration with VOD");
+    serde_json::to_value(config).expect("serialized configuration")["rtmp_services"][0]
+        ["applications"][0]["vod"]
+        .clone()
+}
+
+#[test]
+fn loads_bounded_local_and_http_vod_sources() {
+    let source = config(&service(
+        "live",
+        r#"        {
+          name = "camera",
+          live = true,
+          vod = {
+            max_sessions = 4,
+            max_file_bytes = 1048576,
+            max_duration_ms = 60000,
+            sources = {
+              { type = "local", name = "archive", root_directory = "/var/lib/oxiroute/vod" },
+              { type = "http", name = "origin", origin = "https://media.example.test/library" },
+            },
+          },
+          recorders = {},
+        },"#,
+    ));
+    let vod = first_vod(&source);
+    assert_eq!(vod["max_sessions"], 4);
+    assert_eq!(vod["max_file_bytes"], 1_048_576);
+    assert_eq!(vod["max_duration_ms"], 60_000);
+    assert_eq!(vod["sources"][0]["type"], "local");
+    assert_eq!(vod["sources"][0]["root_directory"], "/var/lib/oxiroute/vod");
+    assert_eq!(vod["sources"][1]["type"], "http");
+}
+
+#[test]
+fn rejects_unsafe_vod_origins_and_source_names() {
+    let origin = config(&service(
+        "live",
+        r#"        {
+          name = "camera",
+          live = true,
+          vod = {
+            sources = {
+              { type = "http", name = "bad/name", origin = "file:///tmp/vod" },
+            },
+          },
+          recorders = {},
+        },"#,
+    ));
+    let message = error(&origin);
+    assert!(message.contains("vod.sources[].name") || message.contains("vod.sources[].origin"));
+}
+
 #[test]
 fn defaults_storage_quotas_to_unbounded() {
     let recorder = first_recorder(&one_recorder_source(

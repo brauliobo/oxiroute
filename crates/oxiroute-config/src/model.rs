@@ -29,6 +29,7 @@ use crate::defaults::{
     default_recorder_max_queue_bytes, default_recorder_max_queue_messages,
     default_recorder_shutdown_timeout_ms, default_recorder_suffix_template,
     default_rtmp_fanout_policy, default_rtmp_outbound_chunk_size, default_rtmp_session_ceilings,
+    default_rtmp_vod_duration_ms, default_rtmp_vod_file_bytes, default_rtmp_vod_sessions,
     default_self_signed_validity_days, default_true, default_udp_max_datagram_bytes,
     default_udp_max_queue_bytes, default_udp_max_queue_datagrams, default_udp_max_session_bytes,
     default_udp_max_sessions, default_unhealthy_threshold, default_upstream_io_timeout_ms,
@@ -1296,6 +1297,8 @@ pub struct RtmpApplication {
     #[serde(default = "default_rtmp_fanout_policy")]
     pub fanout: RtmpFanoutPolicy,
     #[serde(default)]
+    pub vod: Option<RtmpVodPolicy>,
+    #[serde(default)]
     pub recorders: Vec<RtmpRecorder>,
 }
 
@@ -1386,6 +1389,43 @@ impl Default for RtmpFanoutPolicy {
     fn default() -> Self {
         default_rtmp_fanout_policy()
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RtmpVodPolicy {
+    #[serde(default)]
+    pub sources: Vec<RtmpVodSource>,
+    #[serde(default = "default_rtmp_vod_sessions")]
+    pub max_sessions: u64,
+    #[serde(default = "default_rtmp_vod_file_bytes")]
+    pub max_file_bytes: u64,
+    #[serde(default = "default_rtmp_vod_duration_ms")]
+    pub max_duration_ms: u64,
+}
+
+impl Default for RtmpVodPolicy {
+    fn default() -> Self {
+        Self {
+            sources: Vec::new(),
+            max_sessions: default_rtmp_vod_sessions(),
+            max_file_bytes: default_rtmp_vod_file_bytes(),
+            max_duration_ms: default_rtmp_vod_duration_ms(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RtmpVodSource {
+    Local {
+        name: String,
+        root_directory: PathBuf,
+    },
+    Http {
+        name: String,
+        origin: String,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1495,6 +1535,9 @@ pub enum RtmpRecorderTimeBasis {
 pub enum RtmpRecorderSegmentNaming {
     #[default]
     SafeUnique,
+    NginxCompatible,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RtmpRecordMask {
@@ -1517,8 +1560,6 @@ impl Default for RtmpRecordMask {
             keyframes: false,
         }
     }
-}
-    NginxCompatible,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]

@@ -1652,6 +1652,7 @@ fn recording_candidate(active: &Config, root: &Path) -> Config {
             limits: oxiroute_config::RtmpSessionCeilings::default(),
             push_targets: Vec::new(),
             fanout: oxiroute_config::RtmpFanoutPolicy::default(),
+            vod: None,
             recorders: vec![rtmp_recorder_with_queue_bytes(
                 "archive",
                 RtmpRecorderStart::Continuous,
@@ -1687,6 +1688,7 @@ fn rtmp_listener_config(bind: ListenerBind) -> Config {
                 limits: oxiroute_config::RtmpSessionCeilings::default(),
                 push_targets: Vec::new(),
                 fanout: oxiroute_config::RtmpFanoutPolicy::default(),
+                vod: None,
                 recorders: Vec::new(),
             }],
         }],

@@ -11,7 +11,7 @@ use crate::{
 
 use super::{
     RtmpSession,
-    identity::{self, StreamIdentity},
+    identity::{self, StreamIdentity, VodIdentity},
     runtime::{SessionOperation, SessionRole, drop_role, release_role},
     status::{self, PLAY_NOT_FOUND_CODE, PLAY_REJECTION_CODE, Rejection, RtmpSessionError},
 };
@@ -95,6 +95,58 @@ pub(super) fn handle_request(
     protocol_stream_id: u32,
     at_unix_ms: u64,
 ) -> Result<Vec<ServerSessionResult>, RtmpSessionError> {
+    if let Some(vod_identity) = VodIdentity::parse(protocol_name) {
+        if session.runtime.application(application).is_none() {
+            return session.reject_request(
+                request_id,
+                Rejection::new(PLAY_NOT_FOUND_CODE, "RTMP application is not configured"),
+            );
+        }
+        if let Err(error) = session.runtime.authorize(
+            application,
+            SessionOperation::Play,
+            session.peer_addr(),
+            vod_identity.query(),
+        ) {
+            return session.reject_request(
+                request_id,
+                status::authorization(SessionOperation::Play, error),
+            );
+        }
+        if session.role.is_some() {
+            return session.reject_request(
+                request_id,
+                Rejection::new(
+                    PLAY_REJECTION_CODE,
+                    "this connection already has an active media role",
+                ),
+            );
+        }
+        let stream_name = protocol_name
+            .split('?')
+            .next()
+            .unwrap_or(protocol_name)
+            .to_owned();
+        let role = match session.runtime.acquire_vod_playback(
+            application,
+            vod_identity.source(),
+            vod_identity.path(),
+            stream_name,
+            protocol_stream_id,
+        ) {
+            Ok(role) => role,
+            Err(error) => {
+                let rejection = status::playback_role(error)?;
+                return session.reject_request(request_id, rejection);
+            }
+        };
+        let accepted = match session.protocol_mut().accept_request(request_id) {
+            Ok(results) => results,
+            Err(error) => return Err(error.into()),
+        };
+        session.role = Some(SessionRole::VodPlayback(role));
+        return Ok(accepted);
+    }
     let identity =
         match StreamIdentity::parse(session.runtime.service_id(), application, protocol_name) {
             Ok(identity) => identity,
@@ -164,6 +216,9 @@ pub(super) fn drain(
     session: &mut RtmpSession,
     maximum_events: usize,
 ) -> Result<Vec<Vec<u8>>, RtmpSessionError> {
+    if matches!(&session.role, Some(SessionRole::VodPlayback(_))) {
+        return session.drain_vod_playback(maximum_events);
+    }
     let Some(SessionRole::Playback(playback)) = &session.role else {
         return Err(RtmpSessionError::NoActivePlayback);
     };
@@ -180,7 +235,7 @@ pub(super) fn drain(
         .collect()
 }
 
-fn serialize_event(
+pub(super) fn serialize_event(
     protocol: &mut ServerSession,
     stream_id: u32,
     event: &MediaEvent,

@@ -18,6 +18,7 @@ The current control plane is JSON over loopback HTTP. The base path for manageme
 | Events | `GET /api/v1/events?after={cursor}&limit={n}`, `GET /api/v1/events/stream` | Management bearer token; bounded cursor polling or SSE |
 | RTMP | `GET /api/v1/rtmp/streams`, `/streams/{streamId}` | Management bearer token; redacted active catalog |
 | RTMP controls | `POST .../recorders/{recorderId}/start|stop` | Management bearer token; loopback management listener and exact-ID manual controls |
+| RTMP VOD | `GET /api/v1/rtmp/vod/{service}/{application}/{source}/{path}` | Management bearer token; one contiguous byte range and bounded source/session policy |
 | Statistics | `GET /ready`, `GET /metrics`, `GET /stats`, `POST /stats/admin` | Exact `GET /ready` and `GET /metrics` are public; restricted statistics reads/mutations use loopback plus the statistics token/revision |
 
 Every recognized `/api/v1` route requires exactly one management Bearer token. The only public

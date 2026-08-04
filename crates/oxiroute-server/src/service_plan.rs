@@ -30,11 +30,12 @@ use oxiroute_config::{
 };
 use oxiroute_rtmp::{
     LiveHub, LiveHubLimits, RecorderMediaMask, RecorderWorkerConfig, RecordingPathPolicy,
-    RecordingStore, RecordingStoreLimits, RecordingTimeBasis, RecordingTimezone, RtmpAccessAction,
-    RtmpAccessPolicy as RuntimeRtmpAccessPolicy, RtmpAccessRule,
-    RtmpApplication as RuntimeRtmpApplication, RtmpCapabilities, RtmpNetwork, RtmpPushApplication,
-    RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry, RtmpRelayConfig,
-    RtmpServiceRuntime, RtmpSessionCeilings, RtmpSessionPolicy, RtmpTokenPolicy,
+    RecordingSegmentNaming, RecordingStore, RecordingStoreLimits, RecordingTimeBasis,
+    RecordingTimezone, RtmpAccessAction, RtmpAccessPolicy as RuntimeRtmpAccessPolicy,
+    RtmpAccessRule, RtmpApplication as RuntimeRtmpApplication, RtmpCapabilities, RtmpNetwork,
+    RtmpOutboundPolicy, RtmpPushApplication, RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart,
+    RtmpRegistry, RtmpRelayConfig, RtmpServiceRuntime, RtmpSessionCeilings, RtmpSessionPolicy,
+    RtmpTokenPolicy, VodApplication, VodCatalog, VodLimits, VodSourceDefinition,
 };
 
 static DISK_BACKEND_REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Weak<DiskBackend>>>> =
@@ -81,6 +82,7 @@ pub struct RtmpServicePlan {
     outbound_chunk_size: u32,
     hub: LiveHub,
     applications: Vec<PreparedRtmpApplication>,
+    vod_catalog: Arc<VodCatalog>,
 }
 
 impl std::fmt::Debug for RtmpServicePlan {
@@ -149,6 +151,7 @@ impl RtmpServicePlan {
                         application.push_targets.clone(),
                         recorders,
                     )
+                    .with_vod(application.vod.clone())
                     .with_authorization(
                         application.publish_policy.clone(),
                         application.play_policy.clone(),
@@ -162,6 +165,19 @@ impl RtmpServicePlan {
             self.hub.clone(),
             RtmpSessionPolicy::with_outbound_chunk_size(applications, self.outbound_chunk_size),
         ))
+    }
+
+    #[must_use]
+    pub fn vod_catalog(&self) -> Arc<VodCatalog> {
+        Arc::clone(&self.vod_catalog)
+    }
+
+    #[must_use]
+    pub fn vod_applications(&self) -> Vec<Arc<VodApplication>> {
+        self.applications
+            .iter()
+            .filter_map(|application| application.vod.clone())
+            .collect()
     }
 
     #[must_use]
@@ -197,6 +213,7 @@ struct PreparedRtmpApplication {
     session_limits: RtmpSessionCeilings,
     hub: LiveHub,
     push_targets: Vec<RtmpPushTarget>,
+    vod: Option<Arc<VodApplication>>,
     recorders: Vec<PreparedRtmpRecorder>,
 }
 
@@ -412,6 +429,14 @@ pub enum ServicePlanError {
         application: String,
         target: usize,
     },
+    #[error(
+        "RTMP VOD source `{source_name}` in application `{application}` of service `{service}` failed secure preflight"
+    )]
+    RtmpVodPreflight {
+        service: String,
+        application: String,
+        source_name: String,
+    },
     #[error("listener `{listener}` references unknown TLS profile `{profile}`")]
     UnknownListenerTlsProfile { listener: String, profile: String },
     #[error("{protocol:?} listener `{listener}` must not use TLS profile `{profile}`")]
@@ -452,6 +477,7 @@ pub struct RuntimePlan {
     pub pools: Vec<Arc<RoundRobinPool>>,
     pub rtmp_capabilities: RtmpCapabilities,
     pub rtmp_recording_supported: bool,
+    pub rtmp_vod_catalog: Arc<VodCatalog>,
     pub tls: PreparedTls,
     pub topology: Arc<TopologySnapshot>,
 }
@@ -531,6 +557,11 @@ pub fn runtime_plan_with_passive_failure_policy(
             .any(RtmpServicePlan::manual_recording),
     };
     let rtmp_recording_supported = active_rtmp_services.any(RtmpServicePlan::recording_supported);
+    let rtmp_vod_catalog = VodCatalog::from_applications(
+        rtmp_services
+            .values()
+            .flat_map(|service| service.vod_applications()),
+    );
     Ok(RuntimePlan {
         max_connections: config.max_connections,
         services,
@@ -538,6 +569,7 @@ pub fn runtime_plan_with_passive_failure_policy(
         pools: pools.ordered,
         rtmp_capabilities,
         rtmp_recording_supported,
+        rtmp_vod_catalog,
         tls,
         topology,
     })
@@ -1284,6 +1316,7 @@ fn compile_rtmp_services(
                 max_queue_messages,
                 max_queue_bytes,
             )?;
+            let vod = compile_rtmp_vod(&service.name, application)?;
             let mut prepared_recorders = Vec::with_capacity(application.recorders.len());
             for recorder in &application.recorders {
                 prepared_recorders.push(compile_rtmp_recorder(
@@ -1302,12 +1335,18 @@ fn compile_rtmp_services(
                 session_limits,
                 hub,
                 push_targets,
+                vod,
                 recorders: prepared_recorders,
             });
         }
         let service_hub = prepared_applications.first().map_or_else(
             || LiveHub::new(LiveHubLimits::default()),
             |application| application.hub.clone(),
+        );
+        let vod_catalog = VodCatalog::from_applications(
+            prepared_applications
+                .iter()
+                .filter_map(|application| application.vod.clone()),
         );
         services.insert(
             service.name.clone(),
@@ -1316,10 +1355,67 @@ fn compile_rtmp_services(
                 outbound_chunk_size: service.outbound_chunk_size,
                 hub: service_hub,
                 applications: prepared_applications,
+                vod_catalog,
             }),
         );
     }
     Ok(services)
+}
+
+fn compile_rtmp_vod(
+    service: &str,
+    application: &oxiroute_config::RtmpApplication,
+) -> Result<Option<Arc<VodApplication>>, ServicePlanError> {
+    let Some(policy) = &application.vod else {
+        return Ok(None);
+    };
+    let sources = policy
+        .sources
+        .iter()
+        .map(|source| match source {
+            oxiroute_config::RtmpVodSource::Local {
+                name,
+                root_directory,
+            } => VodSourceDefinition::Local {
+                name: name.clone(),
+                root_directory: root_directory.clone(),
+            },
+            oxiroute_config::RtmpVodSource::Http { name, origin } => VodSourceDefinition::Http {
+                name: name.clone(),
+                origin: origin.clone(),
+            },
+        })
+        .collect::<Vec<_>>();
+    let limits = VodLimits {
+        max_sessions: usize::try_from(policy.max_sessions).map_err(|_| {
+            ServicePlanError::RuntimePolicyUnavailable {
+                policy: "rtmp_services[].applications[].vod.max_sessions",
+            }
+        })?,
+        max_file_bytes: policy.max_file_bytes,
+        max_duration: Duration::from_millis(policy.max_duration_ms),
+    };
+    VodApplication::new(
+        service,
+        &application.name,
+        limits,
+        sources,
+        &RtmpOutboundPolicy::default(),
+    )
+    .map(Arc::new)
+    .map(Some)
+    .map_err(|_| ServicePlanError::RtmpVodPreflight {
+        service: service.to_owned(),
+        application: application.name.clone(),
+        source_name: policy
+            .sources
+            .first()
+            .map(|source| match source {
+                oxiroute_config::RtmpVodSource::Local { name, .. }
+                | oxiroute_config::RtmpVodSource::Http { name, .. } => name.clone(),
+            })
+            .unwrap_or_else(|| "unknown".into()),
+    })
 }
 
 fn compile_rtmp_access_policy(

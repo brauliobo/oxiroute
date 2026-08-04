@@ -902,6 +902,7 @@ fn excludes_unreferenced_rtmp_services_from_active_capabilities() {
             limits: oxiroute_config::RtmpSessionCeilings::default(),
             push_targets: Vec::new(),
             fanout: oxiroute_config::RtmpFanoutPolicy::default(),
+            vod: None,
             recorders: vec![recorder(
                 "manual-orphan",
                 RtmpRecorderStart::Manual,
@@ -1672,6 +1673,7 @@ fn canonical_config() -> Config {
                 limits: oxiroute_config::RtmpSessionCeilings::default(),
                 push_targets: Vec::new(),
                 fanout: oxiroute_config::RtmpFanoutPolicy::default(),
+                vod: None,
                 recorders: Vec::new(),
             }],
         }],

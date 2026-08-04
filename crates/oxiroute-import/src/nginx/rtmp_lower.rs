@@ -427,6 +427,7 @@ impl Lowerer {
                 max_queue_messages_per_subscriber: 256,
                 max_queue_bytes_per_subscriber: 8 * 1024 * 1024,
             },
+            vod: None,
             recorders,
         }
     }
@@ -471,18 +472,18 @@ impl Lowerer {
                 RtmpRecordMode::Manual => RtmpRecorderStart::Manual,
             },
             root_directory: self.recording_root.as_ref().map_or_else(
-            record_mask: recorder.record_mask,
                 || recorder.root_directory.clone(),
-            append: recorder.append,
-            lock: recorder.lock,
-            max_size: recorder.max_size,
-            max_frames: recorder.max_frames,
-            notify: recorder.notify,
                 |root| {
                     self.used_recording_root_overlay = true;
                     root.clone()
                 },
             ),
+            record_mask: recorder.record_mask,
+            append: recorder.append,
+            lock: recorder.lock,
+            max_size: recorder.max_size,
+            max_frames: recorder.max_frames,
+            notify: recorder.notify,
             suffix_template: recorder.suffix_template.clone(),
             append_unix_seconds: recorder.append_unix_seconds,
             timezone: RtmpRecorderTimezone::Iana(

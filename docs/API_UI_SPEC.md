@@ -45,6 +45,7 @@ Implemented and recognized endpoints:
 | `GET` | `/api/v1/rtmp/streams/{streamId}` | One exact-ID active stream snapshot. |
 | `POST` | `/api/v1/rtmp/streams/{streamId}/recorders/{recorderId}/start` | Request one exact-ID manual recorder start. |
 | `POST` | `/api/v1/rtmp/streams/{streamId}/recorders/{recorderId}/stop` | Request one exact-ID manual recorder stop. |
+| `GET` | `/api/v1/rtmp/vod/{service}/{application}/{source}/{path}` | Read one bounded local/HTTP VOD object; one contiguous `Range` is accepted. |
 
 Every `/api/v1/...` route in this table requires the management bearer token. The only public
 recognized API probes are exact `GET /ready` and `GET /metrics`; wrong methods and unknown paths do

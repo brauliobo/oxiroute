@@ -137,6 +137,15 @@ pub(crate) const DEFAULT_RTMP_APPLICATION_VIEWERS: u64 = 1_024;
 pub(crate) const MAX_RTMP_SUBSCRIBERS: u64 = 1_000_000;
 pub(crate) const MAX_RTMP_FANOUT_QUEUE_MESSAGES: u64 = 65_536;
 pub(crate) const MAX_RTMP_FANOUT_QUEUE_BYTES: u64 = 1_024 * 1_024 * 1_024;
+pub(crate) const MAX_RTMP_VOD_SOURCES: usize = 16;
+pub(crate) const MAX_RTMP_VOD_SOURCE_NAME_BYTES: usize = 128;
+pub(crate) const MAX_RTMP_VOD_ORIGIN_BYTES: usize = 2_048;
+pub(crate) const MAX_RTMP_VOD_SESSIONS: u64 = 1_024;
+pub(crate) const MAX_RTMP_VOD_FILE_BYTES: u64 = 1024 * 1024 * 1024;
+pub(crate) const MAX_RTMP_VOD_DURATION_MS: u64 = 86_400_000;
+pub(crate) const DEFAULT_RTMP_VOD_SESSIONS: u64 = 64;
+pub(crate) const DEFAULT_RTMP_VOD_FILE_BYTES: u64 = 64 * 1024 * 1024;
+pub(crate) const DEFAULT_RTMP_VOD_DURATION_MS: u64 = 21_600_000;
 pub(crate) const MAX_CACHE_STORES: usize = 64;
 pub(crate) const MAX_CACHE_STORE_BYTES: u64 = 1024 * 1024 * 1024 * 1024 * 1024;
 pub(crate) const MAX_CACHE_ENTRIES: u64 = 10_000_000;
@@ -252,6 +261,18 @@ pub(crate) const fn default_rtmp_session_ceilings() -> RtmpSessionCeilings {
         max_publishers: DEFAULT_RTMP_APPLICATION_PUBLISHERS,
         max_viewers: DEFAULT_RTMP_APPLICATION_VIEWERS,
     }
+}
+
+pub(crate) const fn default_rtmp_vod_sessions() -> u64 {
+    DEFAULT_RTMP_VOD_SESSIONS
+}
+
+pub(crate) const fn default_rtmp_vod_file_bytes() -> u64 {
+    DEFAULT_RTMP_VOD_FILE_BYTES
+}
+
+pub(crate) const fn default_rtmp_vod_duration_ms() -> u64 {
+    DEFAULT_RTMP_VOD_DURATION_MS
 }
 
 pub(crate) fn default_alpn() -> Vec<AlpnProtocol> {

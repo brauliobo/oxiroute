@@ -14,6 +14,7 @@ use super::{
     response::{system_time_ms, to_http_response},
     streams::{self, Route as StreamRoute},
     ui::UiAssets,
+    vod::{self, Route as VodRoute},
 };
 use crate::{
     GenerationManager, RuntimeMetrics, TopologySnapshot,
@@ -24,9 +25,9 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use http::{
     Response,
-    header::{ACCEPT, AUTHORIZATION, CACHE_CONTROL, HeaderName, TRANSFER_ENCODING},
+    header::{ACCEPT, AUTHORIZATION, CACHE_CONTROL, HeaderName, RANGE, TRANSFER_ENCODING},
 };
-use oxiroute_rtmp::RtmpRegistry;
+use oxiroute_rtmp::{RtmpRegistry, VodCatalog, VodError, VodRange};
 use pingora::{
     apps::{HttpPersistentSettings, HttpServerApp, ReusedHttpStream, http_app::ServeHttp},
     http::ResponseHeader,
@@ -45,6 +46,7 @@ enum ApiRoute<'a> {
     Config(ConfigRoute),
     Observability(ObservabilityRoute),
     Stream(StreamRoute<'a>),
+    Vod,
 }
 
 pub struct RtmpManagementApi {
@@ -56,6 +58,7 @@ pub struct RtmpManagementApi {
     registry: Arc<RtmpRegistry>,
     topology: Arc<TopologySnapshot>,
     ui: Option<UiAssets>,
+    vod_catalog: Option<Arc<VodCatalog>>,
 }
 
 pub struct RtmpManagementHttpApp {
@@ -78,6 +81,7 @@ impl RtmpManagementApi {
             registry,
             topology,
             ui: None,
+            vod_catalog: None,
         }
     }
 
@@ -101,12 +105,19 @@ impl RtmpManagementApi {
             registry,
             topology,
             ui: Some(UiAssets::load(directory.as_ref())?),
+            vod_catalog: None,
         })
     }
 
     #[must_use]
     pub fn into_http_app(self) -> RtmpManagementHttpApp {
         RtmpManagementHttpApp { api: self }
+    }
+
+    #[must_use]
+    pub fn with_vod_catalog(mut self, catalog: Arc<VodCatalog>) -> Self {
+        self.vod_catalog = Some(catalog);
+        self
     }
 
     #[must_use]
@@ -200,6 +211,7 @@ impl RtmpManagementApi {
             ApiRoute::Stream(route) => {
                 streams::handle(route, method, self.registry.as_ref(), now_unix_ms)
             }
+            ApiRoute::Vod => ApiResponse::method_not_allowed("GET"),
         }
     }
 
@@ -207,6 +219,58 @@ impl RtmpManagementApi {
         match system_time_ms() {
             Ok(now_unix_ms) => self.handle(method, path, now_unix_ms),
             Err(response) => response,
+        }
+    }
+
+    async fn vod_response(
+        &self,
+        method: &str,
+        route: VodRoute<'_>,
+        range: Option<&str>,
+    ) -> ApiResponse {
+        if method != "GET" {
+            return ApiResponse::method_not_allowed("GET");
+        }
+        let catalog = self
+            .generations
+            .as_ref()
+            .and_then(|generations| generations.active())
+            .map(|generation| Arc::clone(&generation.plan().rtmp_vod_catalog))
+            .or_else(|| self.vod_catalog.clone());
+        let Some(catalog) = catalog else {
+            return ApiResponse::error(503, "vod_unavailable", "VOD is not active");
+        };
+        let service = route.service.to_owned();
+        let application = route.application.to_owned();
+        let source = route.source.to_owned();
+        let path = route.path.to_owned();
+        let content_type = vod_content_type(&path);
+        let object = match tokio::task::spawn_blocking(move || {
+            catalog.open(&service, &application, &source, &path)
+        })
+        .await
+        {
+            Ok(Ok(object)) => object,
+            Ok(Err(error)) => return vod_error_response(error, None),
+            Err(_) => return ApiResponse::error(503, "vod_unavailable", "VOD worker failed"),
+        };
+        let size = object.len();
+        let requested = match range {
+            Some(range) => match VodRange::parse(Some(range), size) {
+                Ok(range) => range,
+                Err(error) => return vod_error_response(error, Some(size)),
+            },
+            None => None,
+        };
+        match requested {
+            Some(range) => match object.range(range) {
+                Ok(body) => ApiResponse::bytes(206, body, content_type).with_range(Some(format!(
+                    "bytes {}-{}/{}",
+                    range.start, range.end, size
+                ))),
+                Err(error) => vod_error_response(error, Some(size)),
+            },
+            None => ApiResponse::bytes(200, object.bytes().to_vec(), content_type).with_range(None),
         }
     }
 
@@ -272,6 +336,13 @@ impl RtmpManagementApi {
                 return config.handle_http(route, &method, session).await;
             }
             return self.handle_at_system_time(&method, &path);
+        }
+        if let Some(route) = vod::match_route(&path) {
+            let range = match single_range_header(session) {
+                Ok(range) => range,
+                Err(response) => return response,
+            };
+            return self.vod_response(&method, route, range.as_deref()).await;
         }
         if method != "GET" && streams::match_route(&path).is_some() {
             let route = streams::match_route(&path).expect("matched stream route");
@@ -658,6 +729,59 @@ fn match_api_route(path: &str) -> Option<ApiRoute<'_>> {
         .map(ApiRoute::Config)
         .or_else(|| observability::match_route(path).map(ApiRoute::Observability))
         .or_else(|| streams::match_route(path).map(ApiRoute::Stream))
+        .or_else(|| vod::match_route(path).map(|_| ApiRoute::Vod))
+}
+
+fn single_range_header(session: &ServerSession) -> Result<Option<String>, ApiResponse> {
+    let mut values = session.req_header().headers.get_all(RANGE).iter();
+    match (values.next(), values.next()) {
+        (None, _) => Ok(None),
+        (Some(_), Some(_)) => Err(ApiResponse::error(
+            400,
+            "invalid_range",
+            "Range must be specified once",
+        )),
+        (Some(value), None) => value
+            .to_str()
+            .map(str::to_owned)
+            .map(Some)
+            .map_err(|_| ApiResponse::error(400, "invalid_range", "Range is invalid")),
+    }
+}
+
+fn vod_error_response(error: VodError, size: Option<u64>) -> ApiResponse {
+    let (status, code, message) = match error {
+        VodError::SourceNotFound | VodError::NotFound => {
+            (404, "vod_not_found", "VOD object was not found")
+        }
+        VodError::InvalidPath => (400, "invalid_vod_path", "VOD path is invalid"),
+        VodError::InvalidRange => (416, "invalid_range", "the requested byte range is invalid"),
+        VodError::SessionLimit => (429, "vod_session_limit", "VOD session limit reached"),
+        VodError::TooLarge => (
+            413,
+            "vod_too_large",
+            "VOD object exceeds its configured size bound",
+        ),
+        VodError::OriginDenied => (502, "vod_origin_denied", "VOD origin is not allowed"),
+        VodError::RootOpen | VodError::Fetch => {
+            (502, "vod_fetch_failed", "VOD object could not be fetched")
+        }
+        VodError::InvalidFlv | VodError::InvalidMedia => {
+            (422, "invalid_vod_media", "VOD object is not valid media")
+        }
+    };
+    let content_range = (status == 416).then(|| format!("bytes */{}", size.unwrap_or(0)));
+    ApiResponse::error(status, code, message).with_range(content_range)
+}
+
+fn vod_content_type(path: &str) -> &'static str {
+    if path.ends_with(".mp4") {
+        "video/mp4"
+    } else if path.ends_with(".m4v") {
+        "video/x-m4v"
+    } else {
+        "video/x-flv"
+    }
 }
 
 #[cfg(test)]

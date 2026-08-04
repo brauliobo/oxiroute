@@ -1,11 +1,12 @@
-use std::{collections::VecDeque, net::IpAddr, sync::Arc};
+use std::{collections::VecDeque, fs, net::IpAddr, sync::Arc, thread, time::Duration};
 
 use bytes::Bytes;
 use oxiroute_rtmp::{
     LiveHub, LiveHubLimits, MAX_RTMP_APPLICATION_BYTES, MAX_RTMP_STREAM_NAME_BYTES,
     RtmpAccessAction, RtmpAccessPolicy, RtmpAccessRule, RtmpApplication, RtmpCapabilities,
-    RtmpNetwork, RtmpRegistry, RtmpServiceRuntime, RtmpSession, RtmpSessionCeilings,
-    RtmpSessionError, RtmpSessionPolicy, RtmpTokenPolicy, StreamMetadata,
+    RtmpNetwork, RtmpOutboundPolicy, RtmpRegistry, RtmpServiceRuntime, RtmpSession,
+    RtmpSessionCeilings, RtmpSessionError, RtmpSessionPolicy, RtmpTokenPolicy, StreamMetadata,
+    VodApplication, VodLimits, VodSourceDefinition,
 };
 use rml_rtmp::{
     handshake::{Handshake, HandshakeProcessResult, PeerType},
@@ -108,6 +109,73 @@ fn idle_viewer_receives_metadata_headers_and_keyframe_in_wire_order() {
     let stopped = registry.snapshot();
     assert_eq!(stopped.streams[0].subscriber_count, 0);
     assert!(stopped.streams[0].publisher.is_some());
+}
+
+#[test]
+fn vod_playback_emits_flv_media_and_completes() {
+    let directory = tempfile::tempdir().expect("VOD directory");
+    fs::write(directory.path().join("movie.flv"), test_flv()).expect("VOD object");
+    let vod = Arc::new(
+        VodApplication::new(
+            "edge",
+            "vod",
+            VodLimits {
+                max_sessions: 1,
+                max_file_bytes: 1024,
+                max_duration: Duration::from_secs(60),
+            },
+            [VodSourceDefinition::Local {
+                name: "archive".into(),
+                root_directory: directory.path().to_path_buf(),
+            }],
+            &RtmpOutboundPolicy {
+                deny_private: false,
+                ..RtmpOutboundPolicy::default()
+            },
+        )
+        .expect("VOD application"),
+    );
+    let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
+        live_ingest: true,
+        manual_recording: false,
+    }));
+    let application = RtmpApplication::new("vod", false, false).with_vod(Some(vod));
+    let runtime = RtmpServiceRuntime::new(
+        "edge",
+        Arc::clone(&registry),
+        LiveHub::new(LiveHubLimits::default()),
+        RtmpSessionPolicy::new([application]),
+    );
+    let mut server = runtime.session();
+    let mut client = connect(&mut server, "vod");
+    let play = client
+        .request_playback("archive/movie.flv".into())
+        .expect("VOD play request");
+    let accepted = exchange(&mut client, &mut server, vec![play], 9_000);
+    assert!(
+        accepted
+            .iter()
+            .any(|event| matches!(event, ClientSessionEvent::PlaybackRequestAccepted))
+    );
+
+    let mut received = Vec::new();
+    let mut completed = false;
+    for _ in 0..100 {
+        let packets = server.drain_playback(32).expect("VOD playback drain");
+        if packets.is_empty() {
+            thread::sleep(Duration::from_millis(1));
+            continue;
+        }
+        let (_, events) = feed_server_packets(&mut client, packets);
+        completed |= has_status(&events, "NetStream.Play.Complete");
+        received.extend(events);
+        if completed {
+            break;
+        }
+    }
+    assert!(completed, "VOD playback did not complete");
+    assert_eq!(event_labels(&received), ["audio", "video", "status"]);
+    assert!(registry.snapshot().streams.is_empty());
 }
 
 #[test]
@@ -824,4 +892,30 @@ fn has_status(events: &[ClientSessionEvent], expected: &str) -> bool {
         }),
         _ => false,
     })
+}
+
+fn test_flv() -> Vec<u8> {
+    let mut bytes = b"FLV\x01\x05\x00\x00\x00\x09\x00\x00\x00\x00".to_vec();
+    append_flv_tag(&mut bytes, 8, 0, &[0xaf, 0x00, 0x12]);
+    append_flv_tag(&mut bytes, 9, 10, &[0x17, 0x01, 0x00, 0x00, 0x00, 0xaa]);
+    bytes
+}
+
+fn append_flv_tag(bytes: &mut Vec<u8>, tag_type: u8, timestamp: u32, payload: &[u8]) {
+    let size = u32::try_from(payload.len()).expect("test FLV payload size");
+    bytes.push(tag_type);
+    bytes.extend_from_slice(&[
+        (size >> 16) as u8,
+        (size >> 8) as u8,
+        size as u8,
+        (timestamp >> 16) as u8,
+        (timestamp >> 8) as u8,
+        timestamp as u8,
+        (timestamp >> 24) as u8,
+        0,
+        0,
+        0,
+    ]);
+    bytes.extend_from_slice(payload);
+    bytes.extend_from_slice(&(size + 11).to_be_bytes());
 }

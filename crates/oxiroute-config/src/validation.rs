@@ -22,6 +22,8 @@ use crate::{
         MAX_RTMP_FANOUT_QUEUE_MESSAGES, MAX_RTMP_OUTBOUND_CHUNK_SIZE, MAX_RTMP_PUSH_TARGETS,
         MAX_RTMP_RECORDERS_PER_APPLICATION, MAX_RTMP_RECORDING_ROOTS, MAX_RTMP_SERVICES,
         MAX_RTMP_SUBSCRIBERS, MAX_RTMP_TOKEN_BYTES, MAX_RTMP_TOKEN_PARAMETER_BYTES,
+        MAX_RTMP_VOD_DURATION_MS, MAX_RTMP_VOD_FILE_BYTES, MAX_RTMP_VOD_ORIGIN_BYTES,
+        MAX_RTMP_VOD_SESSIONS, MAX_RTMP_VOD_SOURCE_NAME_BYTES, MAX_RTMP_VOD_SOURCES,
         MAX_SAFE_JSON_INTEGER, MAX_SELF_SIGNED_VALIDITY_DAYS, MAX_TLS_PROFILES,
         MAX_TOTAL_ENDPOINTS, MAX_TOTAL_RTMP_RECORDERS, MAX_UDP_DATAGRAM_BYTES, MAX_UDP_QUEUE_BYTES,
         MAX_UDP_QUEUE_DATAGRAMS, MAX_UDP_SESSION_BYTES, MAX_UDP_SESSIONS, MAX_UPSTREAM_WEIGHT,
@@ -29,17 +31,18 @@ use crate::{
     },
     lexical::{
         authority_has_invalid_port, canonical_ip, is_unambiguous_http_path,
-        is_valid_certificate_dns_name, is_valid_dns_name, normalize_listener_binds,
-        normalize_recording_root, normalize_upstream_endpoint, normalize_upstream_endpoints,
-        normalize_upstream_server_names, validate_directory_path, validate_file_path,
-        validate_recording_suffix_template,
+        is_valid_certificate_dns_name, is_valid_dns_name, normalize_absolute_directory,
+        normalize_listener_binds, normalize_recording_root, normalize_upstream_endpoint,
+        normalize_upstream_endpoints, normalize_upstream_server_names, validate_directory_path,
+        validate_file_path, validate_recording_suffix_template,
     },
     model::{
         AccessLogPolicy, AlpnProtocol, Certificate, CertificateSource, Config, ConfigError,
         DnsResolutionPolicy, ForwardHttpVersion, ForwardProxyService, HealthCheck, HealthCheckType,
         HttpVersion, L4Service, Listener, ListenerBind, Management, Protocol, RtmpAccessPolicy,
-        RtmpRecorder, RtmpService, RtmpSessionCeilings, RtmpTokenSource, Stats, StatsPage,
-        TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool,
+        RtmpRecorder, RtmpService, RtmpSessionCeilings, RtmpTokenSource, RtmpVodSource, Stats,
+        StatsPage, TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm, UpstreamEndpoint,
+        UpstreamPool,
     },
 };
 
@@ -1179,6 +1182,7 @@ fn validate_rtmp_application(
     service: &str,
     application: &mut crate::model::RtmpApplication,
 ) -> Result<(), ConfigError> {
+    validate_rtmp_vod(service, application)?;
     let invalid = |field, detail| ConfigError::InvalidRtmpApplicationPolicy {
         service: service.into(),
         application: application.name.clone(),
@@ -1247,6 +1251,137 @@ fn validate_rtmp_application(
         ));
     }
     Ok(())
+}
+
+fn validate_rtmp_vod(
+    service: &str,
+    application: &mut crate::model::RtmpApplication,
+) -> Result<(), ConfigError> {
+    let Some(vod) = &mut application.vod else {
+        return Ok(());
+    };
+    let invalid = |field, detail| ConfigError::InvalidRtmpApplicationPolicy {
+        service: service.into(),
+        application: application.name.clone(),
+        field,
+        detail,
+    };
+    if vod.sources.is_empty() || vod.sources.len() > MAX_RTMP_VOD_SOURCES {
+        return Err(invalid(
+            "vod.sources",
+            "must contain between 1 and 16 sources",
+        ));
+    }
+    if vod.max_sessions == 0 || vod.max_sessions > MAX_RTMP_VOD_SESSIONS {
+        return Err(invalid("vod.max_sessions", "must be between 1 and 1024"));
+    }
+    if vod.max_file_bytes == 0 || vod.max_file_bytes > MAX_RTMP_VOD_FILE_BYTES {
+        return Err(invalid(
+            "vod.max_file_bytes",
+            "must be between 1 and 1073741824",
+        ));
+    }
+    if vod.max_duration_ms == 0 || vod.max_duration_ms > MAX_RTMP_VOD_DURATION_MS {
+        return Err(invalid(
+            "vod.max_duration_ms",
+            "must be between 1 and 86400000",
+        ));
+    }
+    let mut names = HashSet::with_capacity(vod.sources.len());
+    for source in &mut vod.sources {
+        let name = match source {
+            RtmpVodSource::Local { name, .. } | RtmpVodSource::Http { name, .. } => name,
+        };
+        if name.is_empty()
+            || name.len() > MAX_RTMP_VOD_SOURCE_NAME_BYTES
+            || !valid_rtmp_vod_component(name)
+            || !name.bytes().all(|byte| byte.is_ascii_graphic())
+            || !names.insert(name.clone())
+        {
+            return Err(invalid(
+                "vod.sources[].name",
+                "must be unique and one nonempty path component of at most 128 bytes",
+            ));
+        }
+        match source {
+            RtmpVodSource::Local { root_directory, .. } => {
+                validate_directory_path(
+                    "RTMP VOD",
+                    &application.name,
+                    "vod.sources[].root_directory",
+                    root_directory,
+                )
+                .map_err(|_| {
+                    invalid(
+                        "vod.sources[].root_directory",
+                        "must be an absolute directory path",
+                    )
+                })?;
+                normalize_absolute_directory(root_directory)
+                    .map_err(|detail| invalid("vod.sources[].root_directory", detail))?;
+            }
+            RtmpVodSource::Http { origin, .. } => {
+                validate_rtmp_vod_origin(origin, &invalid)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_rtmp_vod_origin(
+    origin: &str,
+    invalid: &impl Fn(&'static str, &'static str) -> ConfigError,
+) -> Result<(), ConfigError> {
+    if origin.len() > MAX_RTMP_VOD_ORIGIN_BYTES {
+        return Err(invalid(
+            "vod.sources[].origin",
+            "must not exceed 2048 bytes",
+        ));
+    }
+    let uri = origin.parse::<Uri>().map_err(|_| {
+        invalid(
+            "vod.sources[].origin",
+            "must be an absolute HTTP or HTTPS origin",
+        )
+    })?;
+    let has_query = uri
+        .path_and_query()
+        .is_some_and(|path_and_query| path_and_query.query().is_some());
+    if !matches!(uri.scheme_str(), Some("http" | "https"))
+        || uri.authority().is_none()
+        || has_query
+        || origin.contains('#')
+        || uri
+            .authority()
+            .is_some_and(|authority| authority.as_str().contains('@'))
+        || uri.path().contains("..")
+        || uri.path().contains('%')
+    {
+        return Err(invalid(
+            "vod.sources[].origin",
+            "must be an HTTP or HTTPS origin without credentials, query, fragment, traversal, or encoded bytes",
+        ));
+    }
+    let authority = uri.authority().expect("absolute URI authority was checked");
+    let host = authority.host();
+    if host.is_empty()
+        || (!is_valid_dns_name(host) && host.parse::<IpAddr>().is_err())
+        || authority.port_u16().is_some_and(|port| port == 0)
+    {
+        return Err(invalid(
+            "vod.sources[].origin",
+            "must contain a valid IP address or DNS host and nonzero port",
+        ));
+    }
+    Ok(())
+}
+
+fn valid_rtmp_vod_component(value: &str) -> bool {
+    !value.is_empty()
+        && value != "."
+        && value != ".."
+        && !value.contains(['/', '\\', '?', '#', '%'])
+        && !value.chars().any(char::is_control)
 }
 
 fn validate_rtmp_access_policy(
@@ -1413,6 +1548,7 @@ fn validate_rtmp_recorder(
     normalize_recording_root(&mut recorder.root_directory)
         .map_err(|detail| invalid("root_directory", detail))?;
     validate_recording_suffix_template(&recorder.suffix_template)
+        .map_err(|detail| invalid("suffix_template", detail))?;
     if !recorder.record_mask.audio && !recorder.record_mask.video {
         return Err(invalid("record_mask", "must enable audio or video"));
     }
@@ -1422,7 +1558,6 @@ fn validate_rtmp_recorder(
             "requires record_mask.video = true",
         ));
     }
-        .map_err(|detail| invalid("suffix_template", detail))?;
     if let crate::model::RtmpRecorderTimezone::Iana(name) = &recorder.timezone {
         let parsed = name.parse::<chrono_tz::Tz>();
         if name.len() > 64 || parsed.is_err() || name.eq_ignore_ascii_case("utc") {
@@ -1470,24 +1605,24 @@ fn validate_rtmp_recorder(
             "must be null or between 1 and 1000000",
             &invalid,
         )?;
-    if let Some(max_size) = recorder.max_size {
-        validate_rtmp_recorder_limit(
-            max_size,
-            MAX_RECORDER_FILE_BYTES,
-            "max_size",
-            "must be null or between 1 and 1099511627776",
-            &invalid,
-        )?;
-    }
-    if let Some(max_frames) = recorder.max_frames {
-        validate_rtmp_recorder_limit(
-            max_frames,
-            MAX_RECORDER_FRAME_COUNT,
-            "max_frames",
-            "must be null or between 1 and 1000000000",
-            &invalid,
-        )?;
-    }
+        if let Some(max_size) = recorder.max_size {
+            validate_rtmp_recorder_limit(
+                max_size,
+                MAX_RECORDER_FILE_BYTES,
+                "max_size",
+                "must be null or between 1 and 1099511627776",
+                &invalid,
+            )?;
+        }
+        if let Some(max_frames) = recorder.max_frames {
+            validate_rtmp_recorder_limit(
+                max_frames,
+                MAX_RECORDER_FRAME_COUNT,
+                "max_frames",
+                "must be null or between 1 and 1000000000",
+                &invalid,
+            )?;
+        }
     }
     validate_rtmp_recorder_limit(
         recorder.max_active_recorders,
