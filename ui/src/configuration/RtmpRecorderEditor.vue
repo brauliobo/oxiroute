@@ -15,12 +15,52 @@ article.route-card.recorder-card
     label.field(data-field="rtmp_services[].applications[].recorders[].root_directory")
       span Recording root directory
       input(type="text" v-model="recorder.root_directory" required placeholder="/var/lib/oxiroute/recordings")
+  fieldset.object-block(data-field="rtmp_services[].applications[].recorders[].record_mask")
+    legend Media selection
+    .field-grid
+      label.enable-row.compact-enable(data-field="rtmp_services[].applications[].recorders[].record_mask.audio")
+        input(type="checkbox" v-model="recorder.record_mask.audio")
+        span Include audio
+      label.enable-row.compact-enable(data-field="rtmp_services[].applications[].recorders[].record_mask.video")
+        input(type="checkbox" v-model="recorder.record_mask.video")
+        span Include video
+      label.enable-row.compact-enable(data-field="rtmp_services[].applications[].recorders[].record_mask.keyframes")
+        input(type="checkbox" v-model="recorder.record_mask.keyframes")
+        span Keep keyframes only
     label.field(data-field="rtmp_services[].applications[].recorders[].suffix_template")
       span File suffix template
       input(type="text" v-model="recorder.suffix_template" required placeholder="-%Y-%m-%dT%H-%M-%S.flv")
     label.enable-row.compact-enable(data-field="rtmp_services[].applications[].recorders[].append_unix_seconds")
       input(type="checkbox" v-model="recorder.append_unix_seconds")
       span Append Unix seconds to file names
+    label.enable-row.compact-enable(data-field="rtmp_services[].applications[].recorders[].append")
+      input(type="checkbox" v-model="recorder.append")
+      span Resume a valid existing segment
+    label.enable-row.compact-enable(data-field="rtmp_services[].applications[].recorders[].lock")
+      input(type="checkbox" v-model="recorder.lock")
+      span Lock the active file
+    label.enable-row.compact-enable(data-field="rtmp_services[].applications[].recorders[].notify")
+      input(type="checkbox" v-model="recorder.notify")
+      span Retain recorder notifications
+  .field-grid
+    NullableLimitField(
+      v-model="recorder.max_size"
+      :default-value="10_737_418_240"
+      field-path="rtmp_services[].applications[].recorders[].max_size"
+      legend="Recording size"
+      input-label="Maximum recording bytes"
+      :max="1_099_511_627_776"
+      unbounded-label="No recording size limit"
+    )
+    NullableLimitField(
+      v-model="recorder.max_frames"
+      :default-value="10_000_000"
+      field-path="rtmp_services[].applications[].recorders[].max_frames"
+      legend="Recording frames"
+      input-label="Maximum recording frames"
+      :max="1_000_000_000"
+      unbounded-label="No recording frame limit"
+    )
     label.field(data-field="rtmp_services[].applications[].recorders[].timezone")
       span Filename timezone
       input(type="text" v-model="recorder.timezone" required placeholder="America/Bahia")

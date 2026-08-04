@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    fs,
     net::ToSocketAddrs,
     path::PathBuf,
     sync::{Arc, Mutex, OnceLock, Weak},
@@ -32,10 +33,12 @@ use oxiroute_rtmp::{
     LiveHub, LiveHubLimits, RecorderMediaMask, RecorderWorkerConfig, RecordingPathPolicy,
     RecordingSegmentNaming, RecordingStore, RecordingStoreLimits, RecordingTimeBasis,
     RecordingTimezone, RtmpAccessAction, RtmpAccessPolicy as RuntimeRtmpAccessPolicy,
-    RtmpAccessRule, RtmpApplication as RuntimeRtmpApplication, RtmpCapabilities, RtmpNetwork,
-    RtmpOutboundPolicy, RtmpPushApplication, RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart,
-    RtmpRegistry, RtmpRelayConfig, RtmpServiceRuntime, RtmpSessionCeilings, RtmpSessionPolicy,
-    RtmpTokenPolicy, VodApplication, VodCatalog, VodLimits, VodSourceDefinition,
+    RtmpAccessRule, RtmpApplication as RuntimeRtmpApplication, RtmpCallbackEndpoint,
+    RtmpCallbackMethod, RtmpCallbackPolicy, RtmpCapabilities, RtmpClientOptions, RtmpCredential,
+    RtmpNetwork, RtmpOutboundPolicy, RtmpPullTarget, RtmpPushApplication, RtmpPushTarget,
+    RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry, RtmpRelayConfig, RtmpRtmpsMode,
+    RtmpServiceRuntime, RtmpSessionCeilings, RtmpSessionPolicy, RtmpTokenPolicy, RtmpTransport,
+    VodApplication, VodCatalog, VodLimits, VodSourceDefinition,
 };
 
 static DISK_BACKEND_REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Weak<DiskBackend>>>> =
@@ -81,6 +84,7 @@ pub struct RtmpServicePlan {
     service_id: String,
     outbound_chunk_size: u32,
     hub: LiveHub,
+    callbacks: RtmpCallbackPolicy,
     applications: Vec<PreparedRtmpApplication>,
     vod_catalog: Arc<VodCatalog>,
 }
@@ -151,7 +155,9 @@ impl RtmpServicePlan {
                         application.push_targets.clone(),
                         recorders,
                     )
+                    .with_pull_targets(application.pull_targets.clone())
                     .with_vod(application.vod.clone())
+                    .with_callbacks(application.callbacks.clone())
                     .with_authorization(
                         application.publish_policy.clone(),
                         application.play_policy.clone(),
@@ -164,7 +170,8 @@ impl RtmpServicePlan {
             registry,
             self.hub.clone(),
             RtmpSessionPolicy::with_outbound_chunk_size(applications, self.outbound_chunk_size),
-        ))
+        )
+        .with_callbacks(self.callbacks.clone()))
     }
 
     #[must_use]
@@ -213,6 +220,8 @@ struct PreparedRtmpApplication {
     session_limits: RtmpSessionCeilings,
     hub: LiveHub,
     push_targets: Vec<RtmpPushTarget>,
+    pull_targets: Vec<RtmpPullTarget>,
+    callbacks: RtmpCallbackPolicy,
     vod: Option<Arc<VodApplication>>,
     recorders: Vec<PreparedRtmpRecorder>,
 }
@@ -430,12 +439,26 @@ pub enum ServicePlanError {
         target: usize,
     },
     #[error(
+        "RTMP pull target {target} in application `{application}` of service `{service}` cannot be resolved safely"
+    )]
+    RtmpPullResolution {
+        service: String,
+        application: String,
+        target: usize,
+    },
+    #[error(
         "RTMP VOD source `{source_name}` in application `{application}` of service `{service}` failed secure preflight"
     )]
     RtmpVodPreflight {
         service: String,
         application: String,
         source_name: String,
+    },
+    #[error("RTMP callback `{field}` in {scope} of service `{service}` failed secure preflight")]
+    RtmpCallbackPreflight {
+        service: String,
+        scope: String,
+        field: &'static str,
     },
     #[error("listener `{listener}` references unknown TLS profile `{profile}`")]
     UnknownListenerTlsProfile { listener: String, profile: String },
@@ -508,10 +531,10 @@ pub fn runtime_plan_with_passive_failure_policy(
     config: &Config,
     passive_policy: PassiveFailurePolicy,
 ) -> Result<RuntimePlan, ServicePlanError> {
+    reject_unimplemented_runtime_policies(config)?;
     let mut config = config.clone();
     oxiroute_config::validate_config(&mut config)
         .map_err(|source| ServicePlanError::InvalidConfig(Box::new(source)))?;
-    reject_unimplemented_runtime_policies(&config)?;
     let tls = crate::tls::prepare_tls(&config)
         .map_err(|source| ServicePlanError::Tls(Box::new(source)))?;
     let pools = compile_pools(&config, passive_policy)?;
@@ -899,14 +922,14 @@ fn reject_unimplemented_runtime_policies(config: &Config) -> Result<(), ServiceP
     let unavailable = |policy| ServicePlanError::RuntimePolicyUnavailable { policy };
     for service in &config.http_services {
         for route in &service.routes {
+            if route.policy.response_buffering && route.policy.max_request_body_bytes.is_none() {
+                return Err(unavailable(
+                    "http_services[].routes[].policy.unbounded_response_buffering",
+                ));
+            }
             if route.policy.request_buffering && route.policy.max_request_body_bytes.is_none() {
                 return Err(unavailable(
                     "http_services[].routes[].policy.unbounded_request_buffering",
-                ));
-            }
-            if route.policy.response_buffering {
-                return Err(unavailable(
-                    "http_services[].routes[].policy.response_buffering",
                 ));
             }
         }
@@ -1277,9 +1300,12 @@ fn compile_rtmp_services(
     let mut preflighted_roots = HashSet::new();
     let mut services = HashMap::with_capacity(config.rtmp_services.len());
     for service in &config.rtmp_services {
+        let outbound_policy = compile_rtmp_outbound_policy(&service.outbound_policy);
+        let callbacks =
+            compile_rtmp_callbacks(&service.name, None, &service.callbacks, &outbound_policy)?;
         let mut prepared_applications = Vec::with_capacity(service.applications.len());
         for application in &service.applications {
-            let (hub, max_queue_messages, max_queue_bytes) = compile_rtmp_fanout(application)?;
+            let (hub, _, _) = compile_rtmp_fanout(application)?;
             let publish_policy = compile_rtmp_access_policy(
                 &service.name,
                 &application.name,
@@ -1313,10 +1339,23 @@ fn compile_rtmp_services(
                 &service.name,
                 application,
                 &listener_addresses,
-                max_queue_messages,
-                max_queue_bytes,
+                &outbound_policy,
+                &application.relay,
             )?;
-            let vod = compile_rtmp_vod(&service.name, application)?;
+            let pull_targets = compile_rtmp_pull_targets(
+                &service.name,
+                application,
+                &listener_addresses,
+                &outbound_policy,
+                &application.relay,
+            )?;
+            let callbacks = compile_rtmp_callbacks(
+                &service.name,
+                Some(&application.name),
+                &application.callbacks,
+                &outbound_policy,
+            )?;
+            let vod = compile_rtmp_vod(&service.name, application, &outbound_policy)?;
             let mut prepared_recorders = Vec::with_capacity(application.recorders.len());
             for recorder in &application.recorders {
                 prepared_recorders.push(compile_rtmp_recorder(
@@ -1335,6 +1374,8 @@ fn compile_rtmp_services(
                 session_limits,
                 hub,
                 push_targets,
+                pull_targets,
+                callbacks,
                 vod,
                 recorders: prepared_recorders,
             });
@@ -1354,68 +1395,13 @@ fn compile_rtmp_services(
                 service_id: service.name.clone(),
                 outbound_chunk_size: service.outbound_chunk_size,
                 hub: service_hub,
+                callbacks,
                 applications: prepared_applications,
                 vod_catalog,
             }),
         );
     }
     Ok(services)
-}
-
-fn compile_rtmp_vod(
-    service: &str,
-    application: &oxiroute_config::RtmpApplication,
-) -> Result<Option<Arc<VodApplication>>, ServicePlanError> {
-    let Some(policy) = &application.vod else {
-        return Ok(None);
-    };
-    let sources = policy
-        .sources
-        .iter()
-        .map(|source| match source {
-            oxiroute_config::RtmpVodSource::Local {
-                name,
-                root_directory,
-            } => VodSourceDefinition::Local {
-                name: name.clone(),
-                root_directory: root_directory.clone(),
-            },
-            oxiroute_config::RtmpVodSource::Http { name, origin } => VodSourceDefinition::Http {
-                name: name.clone(),
-                origin: origin.clone(),
-            },
-        })
-        .collect::<Vec<_>>();
-    let limits = VodLimits {
-        max_sessions: usize::try_from(policy.max_sessions).map_err(|_| {
-            ServicePlanError::RuntimePolicyUnavailable {
-                policy: "rtmp_services[].applications[].vod.max_sessions",
-            }
-        })?,
-        max_file_bytes: policy.max_file_bytes,
-        max_duration: Duration::from_millis(policy.max_duration_ms),
-    };
-    VodApplication::new(
-        service,
-        &application.name,
-        limits,
-        sources,
-        &RtmpOutboundPolicy::default(),
-    )
-    .map(Arc::new)
-    .map(Some)
-    .map_err(|_| ServicePlanError::RtmpVodPreflight {
-        service: service.to_owned(),
-        application: application.name.clone(),
-        source_name: policy
-            .sources
-            .first()
-            .map(|source| match source {
-                oxiroute_config::RtmpVodSource::Local { name, .. }
-                | oxiroute_config::RtmpVodSource::Http { name, .. } => name.clone(),
-            })
-            .unwrap_or_else(|| "unknown".into()),
-    })
 }
 
 fn compile_rtmp_access_policy(
@@ -1486,8 +1472,8 @@ fn compile_rtmp_push_targets(
     service: &str,
     application: &oxiroute_config::RtmpApplication,
     listener_addresses: &[std::net::SocketAddr],
-    max_queue_messages: usize,
-    max_queue_bytes: usize,
+    outbound_policy: &RtmpOutboundPolicy,
+    relay: &oxiroute_config::RtmpRelayPolicy,
 ) -> Result<Vec<RtmpPushTarget>, ServicePlanError> {
     application
         .push_targets
@@ -1509,6 +1495,11 @@ fn compile_rtmp_push_targets(
             }
             addresses.sort_unstable();
             addresses.dedup();
+            let transport = compile_rtmp_transport(target.scheme);
+            outbound_policy
+                .validate_resolved(target.host.as_str(), &addresses)
+                .and_then(|()| outbound_policy.validate_transport(transport))
+                .map_err(|_| resolution())?;
             if addresses.iter().any(|destination| {
                 listener_addresses
                     .iter()
@@ -1522,19 +1513,252 @@ fn compile_rtmp_push_targets(
             }
             Ok(RtmpPushTarget {
                 address: addresses[0],
+                host: target.host.clone(),
+                transport,
                 application: if target.application == "$name" {
                     RtmpPushApplication::StreamName
                 } else {
                     RtmpPushApplication::Exact(target.application.clone())
                 },
+                stream_name: target.stream_name.clone(),
+                options: compile_rtmp_client_options(
+                    target.tc_url.clone(),
+                    target.flash_version.clone(),
+                    target.credentials.as_ref(),
+                    resolution,
+                )?,
                 config: RtmpRelayConfig {
-                    max_queue_messages,
-                    max_queue_bytes,
-                    ..RtmpRelayConfig::default()
+                    max_queue_messages: usize::try_from(relay.max_queue_messages)
+                        .map_err(|_| resolution())?,
+                    max_queue_bytes: usize::try_from(relay.max_queue_bytes)
+                        .map_err(|_| resolution())?,
+                    buffer_duration: Duration::from_millis(relay.buffer_ms),
+                    connect_timeout: Duration::from_millis(relay.connect_timeout_ms),
+                    handshake_timeout: Duration::from_millis(relay.handshake_timeout_ms),
+                    reconnect_interval: Duration::from_millis(relay.push_reconnect_ms),
+                    max_chain_depth: outbound_policy.max_chain_depth,
                 },
             })
         })
         .collect()
+}
+
+fn compile_rtmp_pull_targets(
+    service: &str,
+    application: &oxiroute_config::RtmpApplication,
+    listener_addresses: &[std::net::SocketAddr],
+    outbound_policy: &RtmpOutboundPolicy,
+    relay: &oxiroute_config::RtmpRelayPolicy,
+) -> Result<Vec<RtmpPullTarget>, ServicePlanError> {
+    application
+        .pull_targets
+        .iter()
+        .enumerate()
+        .map(|(target_index, target)| {
+            let resolution = || ServicePlanError::RtmpPullResolution {
+                service: service.to_owned(),
+                application: application.name.clone(),
+                target: target_index,
+            };
+            let mut addresses: Vec<_> = (target.host.as_str(), target.port)
+                .to_socket_addrs()
+                .map_err(|_| resolution())?
+                .take(33)
+                .collect();
+            if addresses.is_empty() || addresses.len() > 32 {
+                return Err(resolution());
+            }
+            addresses.sort_unstable();
+            addresses.dedup();
+            let transport = compile_rtmp_transport(target.scheme);
+            outbound_policy
+                .validate_resolved(target.host.as_str(), &addresses)
+                .and_then(|()| outbound_policy.validate_transport(transport))
+                .map_err(|_| resolution())?;
+            if addresses.iter().any(|destination| {
+                listener_addresses
+                    .iter()
+                    .any(|listener| socket_listener_contains(*listener, *destination))
+            }) {
+                return Err(resolution());
+            }
+            Ok(RtmpPullTarget {
+                address: addresses[0],
+                host: target.host.clone(),
+                transport,
+                source_application: target.application.clone(),
+                source_stream_name: target.stream_name.clone(),
+                local_application: application.name.clone(),
+                local_stream_name: target.stream_name.clone(),
+                options: compile_rtmp_client_options(
+                    target.tc_url.clone(),
+                    target.flash_version.clone(),
+                    target.credentials.as_ref(),
+                    resolution,
+                )?,
+                config: RtmpRelayConfig {
+                    max_queue_messages: usize::try_from(relay.max_queue_messages)
+                        .map_err(|_| resolution())?,
+                    max_queue_bytes: usize::try_from(relay.max_queue_bytes)
+                        .map_err(|_| resolution())?,
+                    buffer_duration: Duration::from_millis(relay.buffer_ms),
+                    connect_timeout: Duration::from_millis(relay.connect_timeout_ms),
+                    handshake_timeout: Duration::from_millis(relay.handshake_timeout_ms),
+                    reconnect_interval: Duration::from_millis(relay.pull_reconnect_ms),
+                    max_chain_depth: outbound_policy.max_chain_depth,
+                },
+            })
+        })
+        .collect()
+}
+
+fn compile_rtmp_outbound_policy(
+    policy: &oxiroute_config::RtmpOutboundPolicy,
+) -> RtmpOutboundPolicy {
+    RtmpOutboundPolicy {
+        allow_domains: policy.allow_domains.clone(),
+        deny_domains: policy.deny_domains.clone(),
+        allow_cidrs: policy.allow_cidrs.clone(),
+        deny_cidrs: policy.deny_cidrs.clone(),
+        deny_private: policy.deny_private,
+        rtmps: match policy.rtmps {
+            oxiroute_config::RtmpRtmpsPolicy::Disabled => RtmpRtmpsMode::Disabled,
+            oxiroute_config::RtmpRtmpsPolicy::Allowed => RtmpRtmpsMode::Allowed,
+            oxiroute_config::RtmpRtmpsPolicy::Required => RtmpRtmpsMode::Required,
+        },
+        max_chain_depth: policy.max_chain_depth,
+    }
+}
+
+fn compile_rtmp_callbacks(
+    service: &str,
+    application: Option<&str>,
+    callbacks: &oxiroute_config::RtmpCallbackConfig,
+    outbound_policy: &RtmpOutboundPolicy,
+) -> Result<RtmpCallbackPolicy, ServicePlanError> {
+    let scope = application.map_or_else(
+        || "service".to_owned(),
+        |name| format!("application `{name}`"),
+    );
+    let endpoint = |field: &'static str,
+                    value: &Option<String>|
+     -> Result<Option<RtmpCallbackEndpoint>, ServicePlanError> {
+        value
+            .as_deref()
+            .map(|value| {
+                RtmpCallbackEndpoint::parse(value, outbound_policy).map_err(|_| {
+                    ServicePlanError::RtmpCallbackPreflight {
+                        service: service.to_owned(),
+                        scope: scope.clone(),
+                        field,
+                    }
+                })
+            })
+            .transpose()
+    };
+    Ok(RtmpCallbackPolicy {
+        on_connect: endpoint("callbacks.on_connect", &callbacks.on_connect)?,
+        on_disconnect: endpoint("callbacks.on_disconnect", &callbacks.on_disconnect)?,
+        on_publish: endpoint("callbacks.on_publish", &callbacks.on_publish)?,
+        on_publish_done: endpoint("callbacks.on_publish_done", &callbacks.on_publish_done)?,
+        on_play: endpoint("callbacks.on_play", &callbacks.on_play)?,
+        on_play_done: endpoint("callbacks.on_play_done", &callbacks.on_play_done)?,
+        on_done: endpoint("callbacks.on_done", &callbacks.on_done)?,
+        on_update: endpoint("callbacks.on_update", &callbacks.on_update)?,
+        method: match callbacks.notify_method {
+            oxiroute_config::RtmpNotifyMethod::Get => RtmpCallbackMethod::Get,
+            oxiroute_config::RtmpNotifyMethod::Post => RtmpCallbackMethod::Post,
+        },
+        timeout: Duration::from_millis(callbacks.timeout_ms),
+        update_timeout: Duration::from_millis(callbacks.notify_update_timeout_ms),
+        update_strict: callbacks.notify_update_strict,
+        relay_redirect: callbacks.notify_relay_redirect,
+    })
+}
+
+fn compile_rtmp_transport(transport: oxiroute_config::RtmpTransport) -> RtmpTransport {
+    match transport {
+        oxiroute_config::RtmpTransport::Rtmp => RtmpTransport::Rtmp,
+        oxiroute_config::RtmpTransport::Rtmps => RtmpTransport::Rtmps,
+    }
+}
+
+fn compile_rtmp_client_options(
+    tc_url: Option<String>,
+    flash_version: Option<String>,
+    credentials: Option<&oxiroute_config::RtmpCredentialReference>,
+    resolution: impl Fn() -> ServicePlanError,
+) -> Result<RtmpClientOptions, ServicePlanError> {
+    let credential = credentials
+        .map(|reference| {
+            let secret = fs::read(&reference.secret_file).map_err(|_| resolution())?;
+            if secret.is_empty()
+                || secret.len() > 4 * 1_024
+                || secret.iter().any(u8::is_ascii_control)
+                || std::str::from_utf8(&secret).is_err()
+            {
+                return Err(resolution());
+            }
+            Ok(RtmpCredential::new(reference.username.clone(), secret))
+        })
+        .transpose()?;
+    Ok(RtmpClientOptions {
+        flash_version: flash_version.unwrap_or_else(|| RtmpClientOptions::default().flash_version),
+        playback_buffer_ms: 2_000,
+        tc_url,
+        credential,
+    })
+}
+
+fn compile_rtmp_vod(
+    service: &str,
+    application: &oxiroute_config::RtmpApplication,
+    outbound_policy: &RtmpOutboundPolicy,
+) -> Result<Option<Arc<VodApplication>>, ServicePlanError> {
+    let Some(policy) = &application.vod else {
+        return Ok(None);
+    };
+    let sources = policy
+        .sources
+        .iter()
+        .map(|source| match source {
+            oxiroute_config::RtmpVodSource::Local {
+                name,
+                root_directory,
+            } => VodSourceDefinition::Local {
+                name: name.clone(),
+                root_directory: root_directory.clone(),
+            },
+            oxiroute_config::RtmpVodSource::Http { name, origin } => VodSourceDefinition::Http {
+                name: name.clone(),
+                origin: origin.clone(),
+            },
+        })
+        .collect::<Vec<_>>();
+    let limits = VodLimits {
+        max_sessions: usize::try_from(policy.max_sessions).map_err(|_| {
+            ServicePlanError::RuntimePolicyUnavailable {
+                policy: "rtmp_services[].applications[].vod.max_sessions",
+            }
+        })?,
+        max_file_bytes: policy.max_file_bytes,
+        max_duration: Duration::from_millis(policy.max_duration_ms),
+    };
+    VodApplication::new(service, &application.name, limits, sources, outbound_policy)
+        .map(Arc::new)
+        .map(Some)
+        .map_err(|_| ServicePlanError::RtmpVodPreflight {
+            service: service.to_owned(),
+            application: application.name.clone(),
+            source_name: policy
+                .sources
+                .first()
+                .map(|source| match source {
+                    oxiroute_config::RtmpVodSource::Local { name, .. }
+                    | oxiroute_config::RtmpVodSource::Http { name, .. } => name.clone(),
+                })
+                .unwrap_or_else(|| "unknown".into()),
+        })
 }
 
 fn compile_rtmp_recorder(

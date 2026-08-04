@@ -378,7 +378,7 @@ return {
 }
 
 #[test]
-fn request_buffering_compiles_and_response_buffering_fails_closed() {
+fn bounded_buffering_policies_compile_and_unbounded_buffering_fails_closed() {
     let mut config = canonical_config();
     config.http_services[0].routes[0].policy.request_buffering = true;
 
@@ -386,21 +386,19 @@ fn request_buffering_compiles_and_response_buffering_fails_closed() {
 
     config.http_services[0].routes[0].policy.response_buffering = true;
 
-    let error = match runtime_plan(&config) {
-        Ok(_) => panic!("response buffering must not be silently ignored"),
-        Err(error) => error,
-    };
-    assert!(matches!(
-        error,
-        ServicePlanError::RuntimePolicyUnavailable {
-            policy: "http_services[].routes[].policy.response_buffering"
-        }
-    ));
+    runtime_plan(&config).expect("bounded response buffering has an active runtime");
 
-    config.http_services[0].routes[0].policy.response_buffering = false;
     config.http_services[0].routes[0]
         .policy
         .max_request_body_bytes = None;
+    assert!(matches!(
+        runtime_plan(&config),
+        Err(ServicePlanError::RuntimePolicyUnavailable {
+            policy: "http_services[].routes[].policy.unbounded_response_buffering"
+        })
+    ));
+
+    config.http_services[0].routes[0].policy.response_buffering = false;
     assert!(matches!(
         runtime_plan(&config),
         Err(ServicePlanError::RuntimePolicyUnavailable {
@@ -800,12 +798,18 @@ fn compiles_chunk_disabled_access_log_and_application_fanout_policy() {
 #[test]
 fn resolves_absent_push_port_without_connecting_and_rejects_direct_listener_loops() {
     let mut config = canonical_config();
+    config.rtmp_services[0].outbound_policy.deny_private = false;
     config.rtmp_services[0].applications[0]
         .push_targets
         .push(RtmpPushTarget {
             host: "127.0.0.1".into(),
             port: 1_936,
             application: "$name".into(),
+            scheme: oxiroute_config::RtmpTransport::Rtmp,
+            stream_name: None,
+            tc_url: None,
+            flash_version: None,
+            credentials: None,
         });
     service_specs(&config).expect("absent push destination is a runtime concern");
 
@@ -893,6 +897,8 @@ fn excludes_unreferenced_rtmp_services_from_active_capabilities() {
         name: "orphan".into(),
         outbound_chunk_size: 4_096,
         access_log: None,
+        outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
+        callbacks: oxiroute_config::RtmpCallbackConfig::default(),
         applications: vec![RtmpApplication {
             name: "unused".into(),
             live: true,
@@ -901,6 +907,9 @@ fn excludes_unreferenced_rtmp_services_from_active_capabilities() {
             play: oxiroute_config::RtmpAccessPolicy::default(),
             limits: oxiroute_config::RtmpSessionCeilings::default(),
             push_targets: Vec::new(),
+            pull_targets: Vec::new(),
+            relay: oxiroute_config::RtmpRelayPolicy::default(),
+            callbacks: oxiroute_config::RtmpCallbackConfig::default(),
             fanout: oxiroute_config::RtmpFanoutPolicy::default(),
             vod: None,
             recorders: vec![recorder(
@@ -1664,6 +1673,8 @@ fn canonical_config() -> Config {
             name: "live".into(),
             outbound_chunk_size: 4_096,
             access_log: None,
+            outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
+            callbacks: oxiroute_config::RtmpCallbackConfig::default(),
             applications: vec![RtmpApplication {
                 name: "live".into(),
                 live: true,
@@ -1672,6 +1683,9 @@ fn canonical_config() -> Config {
                 play: oxiroute_config::RtmpAccessPolicy::default(),
                 limits: oxiroute_config::RtmpSessionCeilings::default(),
                 push_targets: Vec::new(),
+                pull_targets: Vec::new(),
+                relay: oxiroute_config::RtmpRelayPolicy::default(),
+                callbacks: oxiroute_config::RtmpCallbackConfig::default(),
                 fanout: oxiroute_config::RtmpFanoutPolicy::default(),
                 vod: None,
                 recorders: Vec::new(),

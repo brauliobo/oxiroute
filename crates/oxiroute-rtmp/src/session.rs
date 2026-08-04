@@ -5,7 +5,10 @@ use rml_rtmp::{
     sessions::{ServerSession, ServerSessionConfig, ServerSessionEvent, ServerSessionResult},
 };
 
-use crate::{CatalogError, LiveHub, RtmpRegistry, SessionId};
+use crate::{
+    CatalogError, LiveHub, RtmpCallbackContext, RtmpCallbackError, RtmpCallbackEvent,
+    RtmpCallbackPolicy, RtmpRegistry, SessionId,
+};
 
 #[path = "session_identity.rs"]
 mod identity;
@@ -47,6 +50,8 @@ pub struct RtmpSession {
     role: Option<SessionRole>,
     peer_addr: Option<IpAddr>,
     connection_lease: Option<runtime::ApplicationSessionLease>,
+    connected_application: Option<Arc<str>>,
+    last_callback_update_at_unix_ms: u64,
 }
 
 impl RtmpSession {
@@ -71,6 +76,8 @@ impl RtmpSession {
             role: None,
             peer_addr,
             connection_lease: None,
+            connected_application: None,
+            last_callback_update_at_unix_ms: 0,
         }
     }
 
@@ -118,7 +125,7 @@ impl RtmpSession {
         bytes: &[u8],
         at_unix_ms: u64,
     ) -> Result<Vec<Vec<u8>>, RtmpSessionError> {
-        self.observe_role_at(at_unix_ms);
+        self.observe_role_at(at_unix_ms)?;
         if self.protocol.is_some() {
             return self.receive_session_bytes(bytes, at_unix_ms);
         }
@@ -185,7 +192,22 @@ impl RtmpSession {
     ///
     /// Returns an error if the catalog no longer contains the role owned by this session.
     pub fn close(&mut self, at_unix_ms: u64) -> Result<(), CatalogError> {
-        self.detach_role(at_unix_ms)
+        let result = self.detach_role(at_unix_ms);
+        if let Some(application) = self.connected_application.take() {
+            let context = self.callback_context(&application, None, None);
+            let _ = self
+                .runtime
+                .callbacks()
+                .notify(RtmpCallbackEvent::Disconnect, &context);
+            if let Some(callbacks) = self
+                .runtime
+                .application(&application)
+                .map(|application| application.callbacks().clone())
+            {
+                let _ = callbacks.notify(RtmpCallbackEvent::Disconnect, &context);
+            }
+        }
+        result
     }
 
     fn receive_session_bytes(
@@ -333,6 +355,12 @@ impl RtmpSession {
                 Rejection::new(CONNECT_REJECTION_CODE, "RTMP application is not configured"),
             )
         } else {
+            let context = self.callback_context(application, None, None);
+            if let Err(error) =
+                self.authorize_callbacks(application, RtmpCallbackEvent::Connect, &context)
+            {
+                return self.reject_request(request_id, status::connection_callback(error));
+            }
             let connection_lease = match self.runtime.acquire_connection(application) {
                 Ok(lease) => lease,
                 Err(error) => {
@@ -344,6 +372,7 @@ impl RtmpSession {
                 Err(error) => return Err(error.into()),
             };
             self.connection_lease = Some(connection_lease);
+            self.connected_application = Some(Arc::from(application));
             Ok(accepted)
         }
     }
@@ -359,15 +388,123 @@ impl RtmpSession {
     }
 
     fn detach_role(&mut self, at_unix_ms: u64) -> Result<(), CatalogError> {
-        self.role
-            .take()
-            .map_or(Ok(()), |mut role| role.release(at_unix_ms))
+        self.role.take().map_or(Ok(()), |mut role| {
+            let result = role.release(at_unix_ms);
+            self.notify_role_callbacks(&role);
+            result
+        })
     }
 
-    fn observe_role_at(&mut self, at_unix_ms: u64) {
-        if let Some(role) = &mut self.role {
-            role.observe_at(at_unix_ms);
+    fn observe_role_at(&mut self, at_unix_ms: u64) -> Result<(), RtmpSessionError> {
+        let identity = self
+            .role
+            .as_ref()
+            .map(|role| (role.identity().0.to_owned(), role.identity().1.to_owned()));
+        if let Some((application, stream_name)) = identity {
+            if let Some(role) = &mut self.role {
+                role.observe_at(at_unix_ms);
+            }
+            let service_policy = self.runtime.callbacks().clone();
+            let application_policy = self
+                .runtime
+                .application(&application)
+                .map(|app| app.callbacks().clone());
+            let interval_ms = [Some(&service_policy), application_policy.as_ref()]
+                .into_iter()
+                .flatten()
+                .filter(|policy| policy.has_update())
+                .map(|policy| u64::try_from(policy.update_timeout.as_millis()).unwrap_or(u64::MAX))
+                .min()
+                .unwrap_or(0);
+            if interval_ms > 0
+                && at_unix_ms.saturating_sub(self.last_callback_update_at_unix_ms) >= interval_ms
+            {
+                self.last_callback_update_at_unix_ms = at_unix_ms;
+                let context = self.callback_context(&application, Some(&stream_name), None);
+                Self::update_callbacks(&context, &service_policy, application_policy.as_ref())?;
+            }
         }
+        Ok(())
+    }
+
+    fn callback_context(
+        &self,
+        application: &str,
+        stream_name: Option<&str>,
+        query: Option<&str>,
+    ) -> RtmpCallbackContext {
+        RtmpCallbackContext {
+            service_id: Arc::from(self.runtime.service_id()),
+            application: Arc::from(application),
+            stream_name: stream_name.map(Arc::from),
+            query: query.map(Arc::from),
+            client_addr: self.peer_addr,
+            session_id: Arc::from(self.session_id.to_string()),
+        }
+    }
+
+    fn notify_role_callbacks(&self, role: &SessionRole) {
+        let (application, stream_name) = role.identity();
+        let context = self.callback_context(application, Some(stream_name), None);
+        let event = match role {
+            SessionRole::Publisher(_) => RtmpCallbackEvent::PublishDone,
+            SessionRole::Playback(_) | SessionRole::VodPlayback(_) => RtmpCallbackEvent::PlayDone,
+        };
+        self.notify_callbacks(application, event, &context);
+        self.notify_callbacks(application, RtmpCallbackEvent::Done, &context);
+    }
+
+    fn authorize_callbacks(
+        &self,
+        application: &str,
+        event: RtmpCallbackEvent,
+        context: &RtmpCallbackContext,
+    ) -> Result<(), RtmpCallbackError> {
+        self.runtime.callbacks().authorize(event, context)?;
+        if let Some(callbacks) = self
+            .runtime
+            .application(application)
+            .map(RtmpApplication::callbacks)
+        {
+            callbacks.authorize(event, context)?;
+        }
+        Ok(())
+    }
+
+    fn notify_callbacks(
+        &self,
+        application: &str,
+        event: RtmpCallbackEvent,
+        context: &RtmpCallbackContext,
+    ) {
+        let _ = self.runtime.callbacks().notify(event, context);
+        if let Some(callbacks) = self
+            .runtime
+            .application(application)
+            .map(RtmpApplication::callbacks)
+        {
+            let _ = callbacks.notify(event, context);
+        }
+    }
+
+    fn update_callbacks(
+        context: &RtmpCallbackContext,
+        service_policy: &RtmpCallbackPolicy,
+        application_policy: Option<&RtmpCallbackPolicy>,
+    ) -> Result<(), RtmpSessionError> {
+        for policy in [Some(service_policy), application_policy]
+            .into_iter()
+            .flatten()
+        {
+            if policy.has_update() {
+                if let Err(error) = policy.update(context) {
+                    if policy.update_strict {
+                        return Err(error.into());
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     fn publisher_matches(&self, application: &str, protocol_name: &str) -> bool {
@@ -409,6 +546,23 @@ impl RtmpSession {
 impl Drop for RtmpSession {
     fn drop(&mut self) {
         // Recorder controllers must submit their workers before the session releases its reaper.
+        if let Some(role) = self.role.as_ref() {
+            self.notify_role_callbacks(role);
+        }
+        if let Some(application) = self.connected_application.as_deref() {
+            let context = self.callback_context(application, None, None);
+            let _ = self
+                .runtime
+                .callbacks()
+                .notify(RtmpCallbackEvent::Disconnect, &context);
+            if let Some(callbacks) = self
+                .runtime
+                .application(application)
+                .map(|application| application.callbacks().clone())
+            {
+                let _ = callbacks.notify(RtmpCallbackEvent::Disconnect, &context);
+            }
+        }
         self.role.take();
     }
 }

@@ -204,6 +204,7 @@ const fn relay_phase(phase: oxiroute_rtmp::RtmpRelayPhase) -> &'static str {
     match phase {
         oxiroute_rtmp::RtmpRelayPhase::Connecting => "connecting",
         oxiroute_rtmp::RtmpRelayPhase::Publishing => "publishing",
+        oxiroute_rtmp::RtmpRelayPhase::Pulling => "pulling",
         oxiroute_rtmp::RtmpRelayPhase::Backoff => "backoff",
         oxiroute_rtmp::RtmpRelayPhase::Stopped => "stopped",
     }
@@ -211,10 +212,12 @@ const fn relay_phase(phase: oxiroute_rtmp::RtmpRelayPhase) -> &'static str {
 
 const fn relay_failure(failure: oxiroute_rtmp::RtmpRelayFailure) -> &'static str {
     match failure {
+        oxiroute_rtmp::RtmpRelayFailure::Policy => "policy",
         oxiroute_rtmp::RtmpRelayFailure::Connect => "connect",
         oxiroute_rtmp::RtmpRelayFailure::Handshake => "handshake",
         oxiroute_rtmp::RtmpRelayFailure::Session => "session",
         oxiroute_rtmp::RtmpRelayFailure::Transport => "transport",
+        oxiroute_rtmp::RtmpRelayFailure::Source => "source",
         oxiroute_rtmp::RtmpRelayFailure::Thread => "thread",
     }
 }
@@ -270,6 +273,7 @@ const fn notification_name(notification: oxiroute_rtmp::RecorderNotification) ->
         oxiroute_rtmp::RecorderNotification::Failed => "failed",
     }
 }
+
 fn phase_json(phase: RecorderPhase) -> Value {
     match phase {
         RecorderPhase::Idle => json!({ "state": "idle" }),

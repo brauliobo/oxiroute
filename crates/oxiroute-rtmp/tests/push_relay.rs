@@ -29,13 +29,19 @@ fn unavailable_push_retries_recovers_bootstraps_and_stays_isolated_in_a_bounded_
     let source_registry = Arc::new(RtmpRegistry::new(capabilities()));
     let target = RtmpPushTarget {
         address,
+        host: "127.0.0.1".into(),
+        transport: oxiroute_rtmp::RtmpTransport::Rtmp,
         application: RtmpPushApplication::StreamName,
+        stream_name: None,
+        options: oxiroute_rtmp::RtmpClientOptions::default(),
         config: RtmpRelayConfig {
             max_queue_messages: 4,
             max_queue_bytes: 64,
             connect_timeout: Duration::from_millis(20),
             handshake_timeout: Duration::from_secs(1),
             reconnect_interval: Duration::from_millis(30),
+            buffer_duration: Duration::from_secs(5),
+            max_chain_depth: 4,
         },
     };
     let source = RtmpServiceRuntime::new(

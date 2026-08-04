@@ -42,6 +42,8 @@ pub enum RtmpSessionError {
     MissingMetadata,
     #[error("RTMP playback drain requires an active live playback role")]
     NoActivePlayback,
+    #[error("RTMP callback failed: {0}")]
+    Callback(#[from] crate::RtmpCallbackError),
     #[error("RTMP VOD playback failed: {0}")]
     Vod(#[from] VodError),
 }
@@ -111,6 +113,39 @@ pub(super) fn authorization(
         },
         description,
     )
+}
+
+pub(super) fn connection_callback(error: crate::RtmpCallbackError) -> Rejection {
+    Rejection::new(CONNECT_REJECTION_CODE, callback_description(error))
+}
+
+pub(super) fn callback(
+    operation: super::runtime::SessionOperation,
+    error: crate::RtmpCallbackError,
+) -> Rejection {
+    Rejection::new(
+        match operation {
+            super::runtime::SessionOperation::Publish => PUBLISH_REJECTION_CODE,
+            super::runtime::SessionOperation::Play => PLAY_REJECTION_CODE,
+        },
+        callback_description(error),
+    )
+}
+
+const fn callback_description(error: crate::RtmpCallbackError) -> &'static str {
+    match error {
+        crate::RtmpCallbackError::Redirect => "RTMP callback requested a redirect",
+        crate::RtmpCallbackError::Rejected(_) => "RTMP callback rejected the request",
+        crate::RtmpCallbackError::InvalidUrl
+        | crate::RtmpCallbackError::Resolution
+        | crate::RtmpCallbackError::AddressPolicy
+        | crate::RtmpCallbackError::Connect
+        | crate::RtmpCallbackError::Tls
+        | crate::RtmpCallbackError::Write
+        | crate::RtmpCallbackError::Read
+        | crate::RtmpCallbackError::Response
+        | crate::RtmpCallbackError::FormTooLarge => "RTMP callback is unavailable",
+    }
 }
 
 pub(super) fn publish_path(error: RtmpStreamPathError) -> Rejection {

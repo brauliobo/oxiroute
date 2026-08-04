@@ -12,22 +12,23 @@ use crate::{
         ConfigError, DnsResolutionPolicy, DownstreamTimeoutPolicy, ForwardAccessAction,
         ForwardAccessMatcher, ForwardAccessPolicy, ForwardAccessRule, ForwardAuditMode,
         ForwardConnectPolicy, ForwardDestinationPolicy, ForwardHeaderPolicy, ForwardHttpVersion,
-        ForwardProxyAuth, ForwardProxyService, ForwardResolverPolicy, ForwardViaPolicy,
-        ForwardedForPolicy, HealthCheck, HealthCheckType, HealthHttpVersion, HealthStartup,
-        HttpAccessPolicy, HttpCachePolicy, HttpCookieAttributePolicy, HttpCookiePathRewrite,
-        HttpGzipPolicy, HttpHostSelector, HttpLiteralHeader, HttpMimeType, HttpPathSelector,
-        HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
-        HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryMethodSafety, HttpRetryPolicy,
-        HttpRetryTarget, HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpRoutePolicy,
-        HttpSameSite, HttpService, HttpStaticErrorResponse, HttpStaticMimePolicy,
-        HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost, HttpVersion, HttpVersionPolicy,
-        L4Service, Listener, ListenerBind, Management, Protocol, RtmpAccessPolicy, RtmpAccessRule,
-        RtmpAclAction, RtmpApplication, RtmpFanoutPolicy, RtmpPushTarget, RtmpRecorder,
-        RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis, RtmpRecorderTimezone,
-        RtmpService, RtmpSessionCeilings, RtmpTokenPolicy, RtmpTokenSource, RtmpVodPolicy,
-        RtmpVodSource, Stats, StatsPage, StatsPageAdminPolicy, TlsProfile, TlsVersion, UdpPolicy,
-        UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer,
-        UpstreamTls,
+        ForwardProxyAuth, ForwardProxyService, ForwardResolverPolicy, ForwardTimeRange,
+        ForwardViaPolicy, ForwardWeekday, ForwardedForPolicy, HealthCheck, HealthCheckType,
+        HealthHttpVersion, HealthStartup, HttpAccessPolicy, HttpCachePolicy,
+        HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpGzipPolicy, HttpHostSelector,
+        HttpLiteralHeader, HttpMimeType, HttpPathSelector, HttpProxyPolicy, HttpRedirectLocation,
+        HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpResponseHeaderMutation,
+        HttpRetryBodySafety, HttpRetryMethodSafety, HttpRetryPolicy, HttpRetryTarget,
+        HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpSameSite, HttpService,
+        HttpStaticErrorResponse, HttpStaticMimePolicy, HttpStaticPathMapping, HttpStaticTryFile,
+        HttpUpstreamHost, HttpVersion, HttpVersionPolicy, L4Service, Listener, ListenerBind,
+        Management, Protocol, RtmpAccessPolicy, RtmpAccessRule, RtmpAclAction, RtmpApplication,
+        RtmpCallbackConfig, RtmpFanoutPolicy, RtmpNotifyMethod, RtmpPullTarget, RtmpPushTarget,
+        RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis,
+        RtmpRecorderTimezone, RtmpRelayPolicy, RtmpRtmpsPolicy, RtmpService, RtmpSessionCeilings,
+        RtmpTokenPolicy, RtmpTokenSource, RtmpTransport, RtmpVodPolicy, RtmpVodSource, Stats,
+        StatsPage, StatsPageAdminPolicy, TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm,
+        UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls,
     },
     validation::validate_config,
 };
@@ -502,11 +503,19 @@ impl Renderer {
             name,
             outbound_chunk_size,
             access_log,
+            outbound_policy,
+            callbacks,
             applications,
         } = service;
         self.string_field("name", name);
         self.integer_field("outbound_chunk_size", outbound_chunk_size);
         self.access_log_field("access_log", access_log.as_ref(), "RTMP service", name)?;
+        self.begin_table_field("outbound_policy");
+        self.rtmp_outbound_policy(outbound_policy);
+        self.end_table();
+        self.begin_table_field("callbacks");
+        self.rtmp_callbacks(callbacks);
+        self.end_table();
         self.fallible_table_list_field("applications", applications, |renderer, application| {
             renderer.rtmp_application(name, application)
         })?;
@@ -526,6 +535,9 @@ impl Renderer {
             play,
             limits,
             push_targets,
+            pull_targets,
+            relay,
+            callbacks,
             fanout,
             vod,
             recorders,
@@ -543,6 +555,13 @@ impl Renderer {
         self.rtmp_session_ceilings(limits);
         self.end_table();
         self.table_list_or_nil_field("push_targets", push_targets, Self::rtmp_push_target);
+        self.table_list_or_nil_field("pull_targets", pull_targets, Self::rtmp_pull_target);
+        self.begin_table_field("relay");
+        self.rtmp_relay_policy(relay);
+        self.end_table();
+        self.begin_table_field("callbacks");
+        self.rtmp_callbacks(callbacks);
+        self.end_table();
         self.begin_table_field("fanout");
         self.rtmp_fanout(fanout);
         self.end_table();
@@ -587,6 +606,105 @@ impl Renderer {
         self.string_field("host", &target.host);
         self.integer_field("port", target.port);
         self.string_field("application", &target.application);
+        self.string_field(
+            "scheme",
+            match target.scheme {
+                RtmpTransport::Rtmp => "rtmp",
+                RtmpTransport::Rtmps => "rtmps",
+            },
+        );
+        self.optional_string_field("stream_name", target.stream_name.as_deref());
+        self.optional_string_field("tc_url", target.tc_url.as_deref());
+        self.optional_string_field("flash_version", target.flash_version.as_deref());
+        self.optional_table_field(
+            "credentials",
+            target.credentials.as_ref(),
+            Self::rtmp_credentials,
+        );
+    }
+
+    fn rtmp_pull_target(&mut self, target: &RtmpPullTarget) {
+        self.string_field("host", &target.host);
+        self.integer_field("port", target.port);
+        self.string_field("application", &target.application);
+        self.string_field("stream_name", &target.stream_name);
+        self.string_field(
+            "scheme",
+            match target.scheme {
+                RtmpTransport::Rtmp => "rtmp",
+                RtmpTransport::Rtmps => "rtmps",
+            },
+        );
+        self.optional_string_field("tc_url", target.tc_url.as_deref());
+        self.optional_string_field("flash_version", target.flash_version.as_deref());
+        self.optional_table_field(
+            "credentials",
+            target.credentials.as_ref(),
+            Self::rtmp_credentials,
+        );
+    }
+
+    fn rtmp_credentials(&mut self, credentials: &crate::model::RtmpCredentialReference) {
+        self.string_field("username", &credentials.username);
+        self.string_field(
+            "secret_file",
+            credentials
+                .secret_file
+                .to_str()
+                .expect("validated RTMP credential path is UTF-8"),
+        );
+    }
+
+    fn rtmp_outbound_policy(&mut self, policy: &crate::model::RtmpOutboundPolicy) {
+        self.string_list_field("allow_domains", &policy.allow_domains);
+        self.string_list_field("deny_domains", &policy.deny_domains);
+        self.string_list_field("allow_cidrs", &policy.allow_cidrs);
+        self.string_list_field("deny_cidrs", &policy.deny_cidrs);
+        self.boolean_field("deny_private", policy.deny_private);
+        self.string_field(
+            "rtmps",
+            match policy.rtmps {
+                RtmpRtmpsPolicy::Disabled => "disabled",
+                RtmpRtmpsPolicy::Allowed => "allowed",
+                RtmpRtmpsPolicy::Required => "required",
+            },
+        );
+        self.integer_field("max_chain_depth", policy.max_chain_depth);
+    }
+
+    fn rtmp_relay_policy(&mut self, policy: &RtmpRelayPolicy) {
+        self.integer_field("max_queue_messages", policy.max_queue_messages);
+        self.integer_field("max_queue_bytes", policy.max_queue_bytes);
+        self.integer_field("buffer_ms", policy.buffer_ms);
+        self.integer_field("push_reconnect_ms", policy.push_reconnect_ms);
+        self.integer_field("pull_reconnect_ms", policy.pull_reconnect_ms);
+        self.integer_field("connect_timeout_ms", policy.connect_timeout_ms);
+        self.integer_field("handshake_timeout_ms", policy.handshake_timeout_ms);
+    }
+
+    fn rtmp_callbacks(&mut self, callbacks: &RtmpCallbackConfig) {
+        self.optional_string_field("on_connect", callbacks.on_connect.as_deref());
+        self.optional_string_field("on_disconnect", callbacks.on_disconnect.as_deref());
+        self.optional_string_field("on_publish", callbacks.on_publish.as_deref());
+        self.optional_string_field("on_publish_done", callbacks.on_publish_done.as_deref());
+        self.optional_string_field("on_play", callbacks.on_play.as_deref());
+        self.optional_string_field("on_play_done", callbacks.on_play_done.as_deref());
+        self.optional_string_field("on_done", callbacks.on_done.as_deref());
+        self.optional_string_field("on_update", callbacks.on_update.as_deref());
+        self.string_field(
+            "notify_method",
+            match callbacks.notify_method {
+                RtmpNotifyMethod::Get => "get",
+                RtmpNotifyMethod::Post => "post",
+            },
+        );
+        self.integer_field("timeout_ms", callbacks.timeout_ms);
+        self.integer_field(
+            "notify_update_timeout_ms",
+            callbacks.notify_update_timeout_ms,
+        );
+        self.boolean_field("notify_update_strict", callbacks.notify_update_strict);
+        self.boolean_field("notify_relay_redirect", callbacks.notify_relay_redirect);
     }
 
     fn rtmp_fanout(&mut self, policy: &RtmpFanoutPolicy) {
@@ -671,11 +789,17 @@ impl Renderer {
                 RtmpRecorderStart::Manual => "manual",
             },
         );
+        self.string_field(
+            "root_directory",
+            utf8_recording_root(root_directory, service_name, application_name, name)?,
+        );
         self.begin_table_field("record_mask");
         self.boolean_field("audio", record_mask.audio);
         self.boolean_field("video", record_mask.video);
         self.boolean_field("keyframes", record_mask.keyframes);
         self.end_table();
+        self.string_field("suffix_template", suffix_template);
+        self.boolean_field("append_unix_seconds", *append_unix_seconds);
         self.boolean_field("append", *append);
         self.boolean_field("lock", *lock);
         match max_size {
@@ -687,12 +811,6 @@ impl Renderer {
             None => self.null_field("max_frames"),
         }
         self.boolean_field("notify", *notify);
-        self.string_field(
-            "root_directory",
-            utf8_recording_root(root_directory, service_name, application_name, name)?,
-        );
-        self.string_field("suffix_template", suffix_template);
-        self.boolean_field("append_unix_seconds", *append_unix_seconds);
         self.string_field(
             "timezone",
             match timezone {
@@ -1693,6 +1811,44 @@ impl Renderer {
         self.begin_table_field("connect");
         self.forward_connect_policy(&service.connect);
         self.end_table();
+        self.forward_proxy_auth(service)?;
+        match &service.access_policy {
+            Some(policy) => {
+                self.begin_table_field("access_policy");
+                self.forward_access_policy(policy);
+                self.end_table();
+            }
+            None => self.nil_field("access_policy"),
+        }
+        self.begin_table_field("destination_policy");
+        self.forward_destination_policy(&service.destination_policy);
+        self.end_table();
+        self.begin_table_field("header_policy");
+        self.forward_header_policy(service.header_policy);
+        self.end_table();
+        self.integer_field("connect_timeout_ms", service.connect_timeout_ms);
+        self.integer_field("idle_timeout_ms", service.idle_timeout_ms);
+        self.integer_field("lifetime_timeout_ms", service.lifetime_timeout_ms);
+        match service.max_request_body_bytes {
+            Some(value) => self.integer_field("max_request_body_bytes", value),
+            None => self.null_field("max_request_body_bytes"),
+        }
+        self.integer_field("max_header_bytes", service.max_header_bytes);
+        self.integer_field("max_connections", service.max_connections);
+        self.begin_table_field("resolver");
+        self.forward_resolver_policy(&service.resolver);
+        self.end_table();
+        self.string_field(
+            "audit_mode",
+            match service.audit_mode {
+                ForwardAuditMode::Off => "off",
+                ForwardAuditMode::Metadata => "metadata",
+            },
+        );
+        Ok(())
+    }
+
+    fn forward_proxy_auth(&mut self, service: &ForwardProxyService) -> Result<(), ConfigError> {
         match &service.auth {
             Some(ForwardProxyAuth::BearerTokenFile { token_file_path }) => {
                 self.begin_table_field("auth");
@@ -1733,41 +1889,24 @@ impl Renderer {
                 self.boolean_field("username_case_sensitive", *username_case_sensitive);
                 self.end_table();
             }
-            None => self.nil_field("auth"),
-        }
-        match &service.access_policy {
-            Some(policy) => {
-                self.begin_table_field("access_policy");
-                self.forward_access_policy(policy);
+            Some(ForwardProxyAuth::MutualTls {
+                client_ca_file_path,
+            }) => {
+                self.begin_table_field("auth");
+                self.string_field("type", "mutual_tls");
+                self.string_field(
+                    "client_ca_file_path",
+                    utf8_path(
+                        client_ca_file_path,
+                        "forward proxy service",
+                        &service.name,
+                        "auth.client_ca_file_path",
+                    )?,
+                );
                 self.end_table();
             }
-            None => self.nil_field("access_policy"),
+            None => self.nil_field("auth"),
         }
-        self.begin_table_field("destination_policy");
-        self.forward_destination_policy(&service.destination_policy);
-        self.end_table();
-        self.begin_table_field("header_policy");
-        self.forward_header_policy(service.header_policy);
-        self.end_table();
-        self.integer_field("connect_timeout_ms", service.connect_timeout_ms);
-        self.integer_field("idle_timeout_ms", service.idle_timeout_ms);
-        self.integer_field("lifetime_timeout_ms", service.lifetime_timeout_ms);
-        match service.max_request_body_bytes {
-            Some(value) => self.integer_field("max_request_body_bytes", value),
-            None => self.null_field("max_request_body_bytes"),
-        }
-        self.integer_field("max_header_bytes", service.max_header_bytes);
-        self.integer_field("max_connections", service.max_connections);
-        self.begin_table_field("resolver");
-        self.forward_resolver_policy(&service.resolver);
-        self.end_table();
-        self.string_field(
-            "audit_mode",
-            match service.audit_mode {
-                ForwardAuditMode::Off => "off",
-                ForwardAuditMode::Metadata => "metadata",
-            },
-        );
         Ok(())
     }
 
@@ -1782,6 +1921,35 @@ impl Renderer {
         self.string_list_field("allow_cidrs", &policy.allow_cidrs);
         self.string_list_field("deny_cidrs", &policy.deny_cidrs);
         self.boolean_field("deny_private", policy.deny_private);
+        self.forward_time_ranges("allow_times", &policy.allow_times);
+        self.forward_time_ranges("deny_times", &policy.deny_times);
+    }
+
+    fn forward_time_ranges(&mut self, name: &str, ranges: &[ForwardTimeRange]) {
+        self.begin_table_field(name);
+        for range in ranges {
+            self.begin_table_item();
+            self.string_list_field(
+                "days",
+                &range
+                    .days
+                    .iter()
+                    .map(|day| match day {
+                        ForwardWeekday::Monday => "monday",
+                        ForwardWeekday::Tuesday => "tuesday",
+                        ForwardWeekday::Wednesday => "wednesday",
+                        ForwardWeekday::Thursday => "thursday",
+                        ForwardWeekday::Friday => "friday",
+                        ForwardWeekday::Saturday => "saturday",
+                        ForwardWeekday::Sunday => "sunday",
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            self.string_field("start", &range.start);
+            self.string_field("end", &range.end);
+            self.end_table();
+        }
+        self.end_table();
     }
 
     fn forward_access_policy(&mut self, policy: &ForwardAccessPolicy) {

@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     io::{self, Read, Write},
-    net::{SocketAddr, TcpStream},
+    net::SocketAddr,
     sync::{
         Arc, Condvar, Mutex, MutexGuard, OnceLock,
         mpsc::{self, SyncSender, TrySendError},
@@ -20,7 +20,11 @@ use rml_rtmp::{
     time::RtmpTimestamp,
 };
 
-use crate::{MediaEvent, MediaEventKind, VideoCodec};
+use crate::{
+    LiveHub, MediaEvent, MediaEventKind, MediaSnapshot, RtmpClientOptions, RtmpRegistry,
+    RtmpTransport, SessionId, StreamKey, VideoCodec,
+    client::{self, RtmpStream},
+};
 
 const HANDSHAKE_RESPONSE_BYTES: usize = 3_073;
 const RELAY_READ_BUFFER_BYTES: usize = 16 * 1_024;
@@ -31,14 +35,21 @@ pub const MAX_QUEUED_RTMP_RELAYS: usize = 64;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RtmpDestination {
     pub address: SocketAddr,
+    pub host: String,
+    pub transport: RtmpTransport,
     pub application: String,
     pub stream_name: String,
+    pub options: RtmpClientOptions,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RtmpPushTarget {
     pub address: SocketAddr,
+    pub host: String,
+    pub transport: RtmpTransport,
     pub application: RtmpPushApplication,
+    pub stream_name: Option<String>,
+    pub options: RtmpClientOptions,
     pub config: RtmpRelayConfig,
 }
 
@@ -47,13 +58,32 @@ impl RtmpPushTarget {
     pub fn expand(&self, stream_name: &str) -> RtmpDestination {
         RtmpDestination {
             address: self.address,
+            host: self.host.clone(),
+            transport: self.transport,
             application: match &self.application {
                 RtmpPushApplication::Exact(application) => application.clone(),
                 RtmpPushApplication::StreamName => stream_name.to_owned(),
             },
-            stream_name: stream_name.to_owned(),
+            stream_name: self
+                .stream_name
+                .as_deref()
+                .map_or_else(|| stream_name.to_owned(), ToOwned::to_owned),
+            options: self.options.clone(),
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RtmpPullTarget {
+    pub address: SocketAddr,
+    pub host: String,
+    pub transport: RtmpTransport,
+    pub source_application: String,
+    pub source_stream_name: String,
+    pub local_application: String,
+    pub local_stream_name: String,
+    pub options: RtmpClientOptions,
+    pub config: RtmpRelayConfig,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -66,9 +96,11 @@ pub enum RtmpPushApplication {
 pub struct RtmpRelayConfig {
     pub max_queue_messages: usize,
     pub max_queue_bytes: usize,
+    pub buffer_duration: Duration,
     pub connect_timeout: Duration,
     pub handshake_timeout: Duration,
     pub reconnect_interval: Duration,
+    pub max_chain_depth: u8,
 }
 
 impl Default for RtmpRelayConfig {
@@ -76,9 +108,11 @@ impl Default for RtmpRelayConfig {
         Self {
             max_queue_messages: 256,
             max_queue_bytes: 8 * 1_024 * 1_024,
+            buffer_duration: Duration::from_secs(5),
             connect_timeout: Duration::from_millis(500),
             handshake_timeout: Duration::from_secs(2),
             reconnect_interval: Duration::from_secs(3),
+            max_chain_depth: 4,
         }
     }
 }
@@ -87,16 +121,19 @@ impl Default for RtmpRelayConfig {
 pub enum RtmpRelayPhase {
     Connecting,
     Publishing,
+    Pulling,
     Backoff,
     Stopped,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RtmpRelayFailure {
+    Policy,
     Connect,
     Handshake,
     Session,
     Transport,
+    Source,
     Thread,
 }
 
@@ -132,6 +169,7 @@ struct RelayState {
     waiting_for_keyframe: bool,
     queue: VecDeque<MediaEvent>,
     queue_bytes: usize,
+    queue_started_at: Option<Instant>,
     cache: RelayCache,
     phase: RtmpRelayPhase,
     last_failure: Option<RtmpRelayFailure>,
@@ -163,6 +201,7 @@ impl RtmpRelayController {
                 waiting_for_keyframe: false,
                 queue: VecDeque::new(),
                 queue_bytes: 0,
+                queue_started_at: None,
                 cache: RelayCache::default(),
                 phase: RtmpRelayPhase::Connecting,
                 last_failure: None,
@@ -200,6 +239,7 @@ impl RtmpRelayController {
             state.events_dropped = state.events_dropped.saturating_add(discarded);
             state.queue.clear();
             state.queue_bytes = 0;
+            state.queue_started_at = None;
             state.waiting_for_keyframe = true;
         }
         if state.waiting_for_keyframe {
@@ -213,6 +253,7 @@ impl RtmpRelayController {
                     state.queue_bytes += cached.payload_len();
                     state.queue.push_back(cached);
                 }
+                state.queue_started_at = (!state.queue.is_empty()).then(Instant::now);
                 state.waiting_for_keyframe = false;
                 drop(state);
                 self.shared.available.notify_one();
@@ -233,6 +274,7 @@ impl RtmpRelayController {
                 .saturating_add(1);
             state.queue.clear();
             state.queue_bytes = 0;
+            state.queue_started_at = None;
             state.waiting_for_keyframe = !state.cache.video_headers.is_empty();
             if event.kind() == MediaEventKind::VideoKeyframe {
                 let bootstrap = state.cache.bootstrap();
@@ -241,6 +283,7 @@ impl RtmpRelayController {
                         state.queue_bytes += cached.payload_len();
                         state.queue.push_back(cached);
                     }
+                    state.queue_started_at = (!state.queue.is_empty()).then(Instant::now);
                     state.waiting_for_keyframe = false;
                 }
             }
@@ -249,6 +292,9 @@ impl RtmpRelayController {
         }
 
         state.queue_bytes = queue_bytes.expect("bounded relay queue byte sum was checked");
+        if state.queue.is_empty() {
+            state.queue_started_at = Some(Instant::now());
+        }
         state.queue.push_back(event);
         state.events_enqueued = state.events_enqueued.saturating_add(1);
         drop(state);
@@ -281,6 +327,7 @@ impl RtmpRelayController {
             state.events_dropped = state.events_dropped.saturating_add(discarded);
             state.queue.clear();
             state.queue_bytes = 0;
+            state.queue_started_at = None;
         }
         self.shared.available.notify_all();
     }
@@ -290,6 +337,436 @@ impl Drop for RtmpRelayController {
     fn drop(&mut self) {
         self.deactivate();
     }
+}
+
+pub(crate) struct RtmpPullController {
+    shared: Arc<PullShared>,
+}
+
+struct PullShared {
+    service_id: Arc<str>,
+    target: RtmpPullTarget,
+    registry: Arc<RtmpRegistry>,
+    hub: LiveHub,
+    state: Mutex<PullState>,
+    available: Condvar,
+}
+
+struct PullState {
+    accepting: bool,
+    phase: RtmpRelayPhase,
+    last_failure: Option<RtmpRelayFailure>,
+    connection_attempts: u64,
+    connections: u64,
+    reconnects: u64,
+    events_received: u64,
+    payload_bytes_received: u64,
+}
+
+impl RtmpPullController {
+    pub(crate) fn start(
+        service_id: Arc<str>,
+        target: RtmpPullTarget,
+        registry: Arc<RtmpRegistry>,
+        hub: LiveHub,
+    ) -> Arc<Self> {
+        let shared = Arc::new(PullShared {
+            service_id,
+            target,
+            registry,
+            hub,
+            state: Mutex::new(PullState {
+                accepting: true,
+                phase: RtmpRelayPhase::Connecting,
+                last_failure: None,
+                connection_attempts: 0,
+                connections: 0,
+                reconnects: 0,
+                events_received: 0,
+                payload_bytes_received: 0,
+            }),
+            available: Condvar::new(),
+        });
+        let controller = Arc::new(Self { shared });
+        if pull_executor()
+            .admit(Arc::clone(&controller.shared))
+            .is_err()
+        {
+            let mut state = controller.shared.lock();
+            state.accepting = false;
+            state.phase = RtmpRelayPhase::Stopped;
+            state.last_failure = Some(RtmpRelayFailure::Thread);
+        }
+        controller
+    }
+
+    pub(crate) fn deactivate(&self) {
+        let mut state = self.shared.lock();
+        state.accepting = false;
+        drop(state);
+        self.shared.available.notify_all();
+    }
+}
+
+impl Drop for RtmpPullController {
+    fn drop(&mut self) {
+        self.deactivate();
+    }
+}
+
+impl PullShared {
+    fn lock(&self) -> MutexGuard<'_, PullState> {
+        self.state.lock().expect("RTMP pull state mutex poisoned")
+    }
+
+    fn is_accepting(&self) -> bool {
+        self.lock().accepting
+    }
+
+    fn wait_backoff(&self) -> bool {
+        let state = self.lock();
+        let (state, _) = self
+            .available
+            .wait_timeout_while(state, self.target.config.reconnect_interval, |state| {
+                state.accepting
+            })
+            .expect("RTMP pull state mutex poisoned during backoff");
+        state.accepting
+    }
+
+    fn record_failure(&self, failure: RtmpRelayFailure) {
+        let mut state = self.lock();
+        state.last_failure = Some(failure);
+        state.phase = RtmpRelayPhase::Backoff;
+    }
+
+    fn set_phase(&self, phase: RtmpRelayPhase) {
+        self.lock().phase = phase;
+    }
+}
+
+struct PullExecutor {
+    sender: SyncSender<Arc<PullShared>>,
+}
+
+impl PullExecutor {
+    fn new() -> Self {
+        let (sender, receiver) = mpsc::sync_channel::<Arc<PullShared>>(MAX_QUEUED_RTMP_RELAYS);
+        let receiver = Arc::new(Mutex::new(receiver));
+        for index in 0..RTMP_RELAY_WORKER_THREADS {
+            let receiver = Arc::clone(&receiver);
+            thread::Builder::new()
+                .name(format!("rtmp-pull-worker-{index}"))
+                .spawn(move || {
+                    loop {
+                        let task = receiver
+                            .lock()
+                            .expect("RTMP pull executor mutex poisoned")
+                            .recv();
+                        let Ok(shared) = task else {
+                            return;
+                        };
+                        run_pull(&shared);
+                    }
+                })
+                .expect("shared RTMP pull worker must start");
+        }
+        Self { sender }
+    }
+
+    fn admit(&self, shared: Arc<PullShared>) -> Result<(), ()> {
+        self.sender.try_send(shared).map_err(|error| match error {
+            TrySendError::Full(_) | TrySendError::Disconnected(_) => (),
+        })
+    }
+}
+
+fn pull_executor() -> &'static PullExecutor {
+    static EXECUTOR: OnceLock<PullExecutor> = OnceLock::new();
+    EXECUTOR.get_or_init(PullExecutor::new)
+}
+
+#[allow(
+    clippy::manual_let_else,
+    clippy::single_match_else,
+    clippy::too_many_lines,
+    reason = "the pull worker keeps connection, RTMP session, and publisher-incarnation cleanup in one bounded loop"
+)]
+fn run_pull(shared: &PullShared) {
+    while shared.is_accepting() {
+        {
+            let mut state = shared.lock();
+            state.phase = RtmpRelayPhase::Connecting;
+            state.connection_attempts = state.connection_attempts.saturating_add(1);
+        }
+        let Ok(mut stream) = client::connect_stream(
+            &shared.target.host,
+            shared.target.address,
+            shared.target.transport,
+            shared.target.config.connect_timeout,
+            shared.target.config.handshake_timeout,
+        ) else {
+            shared.record_failure(RtmpRelayFailure::Connect);
+            if !shared.wait_backoff() {
+                break;
+            }
+            continue;
+        };
+        if establish_transport(&mut stream, shared.target.config.handshake_timeout).is_err() {
+            shared.record_failure(RtmpRelayFailure::Handshake);
+            if !shared.wait_backoff() {
+                break;
+            }
+            continue;
+        }
+        let mut session = match establish_pull_session(
+            &mut stream,
+            &shared.target,
+            shared.target.config.handshake_timeout,
+        ) {
+            Ok(session) => session,
+            Err(failure) => {
+                shared.record_failure(failure);
+                if !shared.wait_backoff() {
+                    break;
+                }
+                continue;
+            }
+        };
+        let now = unix_time_ms();
+        let key = StreamKey::new(
+            shared.service_id.as_ref(),
+            &shared.target.local_application,
+            &shared.target.local_stream_name,
+        );
+        let publisher_session_id = SessionId::new();
+        let (lease, mut registration) = {
+            let _transaction = shared.hub.lock_roles();
+            let lease = match shared.hub.attach_publisher(key.clone()) {
+                Ok(lease) => lease,
+                Err(_) => {
+                    shared.record_failure(RtmpRelayFailure::Source);
+                    if !shared.wait_backoff() {
+                        break;
+                    }
+                    continue;
+                }
+            };
+            let registration =
+                match shared
+                    .registry
+                    .register_publisher(key, publisher_session_id, Vec::new(), now)
+                {
+                    Ok(registration) => registration,
+                    Err(_) => {
+                        drop(lease);
+                        shared.record_failure(RtmpRelayFailure::Source);
+                        if !shared.wait_backoff() {
+                            break;
+                        }
+                        continue;
+                    }
+                };
+            (lease, registration)
+        };
+        {
+            let mut state = shared.lock();
+            state.connections = state.connections.saturating_add(1);
+            state.reconnects = state.connections.saturating_sub(1);
+            state.phase = RtmpRelayPhase::Pulling;
+            state.last_failure = None;
+        }
+
+        let stream_id = registration.stream_id();
+        let mut media = MediaSnapshot::default();
+        let mut sequence = 0_u64;
+        let mut failed = None;
+        let mut buffer = [0; RELAY_READ_BUFFER_BYTES];
+        while failed.is_none() && shared.is_accepting() {
+            let count = match stream.read(&mut buffer) {
+                Ok(0) => {
+                    failed = Some(RtmpRelayFailure::Transport);
+                    continue;
+                }
+                Ok(count) => count,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    continue;
+                }
+                Err(_) => {
+                    failed = Some(RtmpRelayFailure::Transport);
+                    continue;
+                }
+            };
+            let results = match session.handle_input(&buffer[..count]) {
+                Ok(results) => results,
+                Err(_) => {
+                    failed = Some(RtmpRelayFailure::Session);
+                    continue;
+                }
+            };
+            for result in results {
+                match result {
+                    ClientSessionResult::OutboundResponse(packet) => {
+                        if stream.write_all(&packet.bytes).is_err() {
+                            failed = Some(RtmpRelayFailure::Transport);
+                            break;
+                        }
+                    }
+                    ClientSessionResult::RaisedEvent(event) => {
+                        let Some(event) = pull_media_event(event) else {
+                            continue;
+                        };
+                        sequence = sequence.saturating_add(1);
+                        update_media_snapshot(&mut media, &event);
+                        if lease.publish(event.clone()).is_err()
+                            || shared
+                                .registry
+                                .update_media_sample(
+                                    stream_id,
+                                    publisher_session_id,
+                                    sequence,
+                                    media,
+                                    unix_time_ms(),
+                                )
+                                .is_err()
+                        {
+                            failed = Some(RtmpRelayFailure::Source);
+                            break;
+                        }
+                        let mut state = shared.lock();
+                        state.events_received = state.events_received.saturating_add(1);
+                        state.payload_bytes_received = state
+                            .payload_bytes_received
+                            .saturating_add(event.payload_len() as u64);
+                    }
+                    ClientSessionResult::UnhandleableMessageReceived(_) => {}
+                }
+            }
+            if stream.flush().is_err() {
+                failed = Some(RtmpRelayFailure::Transport);
+            }
+        }
+        let at_unix_ms = unix_time_ms();
+        let _ = registration.release(at_unix_ms);
+        drop(lease);
+        if shared.is_accepting() {
+            if let Some(failure) = failed {
+                shared.record_failure(failure);
+                if !shared.wait_backoff() {
+                    break;
+                }
+            }
+        }
+    }
+    shared.set_phase(RtmpRelayPhase::Stopped);
+}
+
+fn establish_pull_session(
+    stream: &mut RtmpStream,
+    target: &RtmpPullTarget,
+    timeout: Duration,
+) -> Result<ClientSession, RtmpRelayFailure> {
+    let mut config = ClientSessionConfig::new();
+    config.flash_version.clone_from(&target.options.flash_version);
+    config.playback_buffer_length_ms = target.options.playback_buffer_ms;
+    config.tc_url = Some(target.options.tc_url.clone().unwrap_or_else(|| {
+        format!(
+            "{}://{}/{}",
+            match target.transport {
+                RtmpTransport::Rtmp => "rtmp",
+                RtmpTransport::Rtmps => "rtmps",
+            },
+            target.host,
+            target.source_application
+        )
+    }));
+    apply_credentials(&mut config, &target.options)?;
+    let (mut session, initial) =
+        ClientSession::new(config).map_err(|_| RtmpRelayFailure::Session)?;
+    write_results(stream, initial)?;
+    let connect = session
+        .request_connection(target.source_application.clone())
+        .map_err(|_| RtmpRelayFailure::Session)?;
+    await_event(stream, &mut session, vec![connect], timeout, |event| {
+        matches!(event, ClientSessionEvent::ConnectionRequestAccepted)
+    })?;
+    let play = session
+        .request_playback(target.source_stream_name.clone())
+        .map_err(|_| RtmpRelayFailure::Session)?;
+    await_event(stream, &mut session, vec![play], timeout, |event| {
+        matches!(event, ClientSessionEvent::PlaybackRequestAccepted)
+    })?;
+    Ok(session)
+}
+
+fn pull_media_event(event: ClientSessionEvent) -> Option<MediaEvent> {
+    match event {
+        ClientSessionEvent::StreamMetadataReceived { metadata } => {
+            MediaEvent::metadata(metadata).ok()
+        }
+        ClientSessionEvent::AudioDataReceived { timestamp, data } => {
+            MediaEvent::audio(timestamp.value, Arc::<[u8]>::from(data.as_ref())).ok()
+        }
+        ClientSessionEvent::VideoDataReceived { timestamp, data } => {
+            MediaEvent::video(timestamp.value, Arc::<[u8]>::from(data.as_ref())).ok()
+        }
+        ClientSessionEvent::ConnectionRequestAccepted
+        | ClientSessionEvent::ConnectionRequestRejected { .. }
+        | ClientSessionEvent::PlaybackRequestAccepted
+        | ClientSessionEvent::PublishRequestAccepted
+        | ClientSessionEvent::UnhandleableAmf0Command { .. }
+        | ClientSessionEvent::UnknownTransactionResultReceived { .. }
+        | ClientSessionEvent::UnhandleableOnStatusCode { .. }
+        | ClientSessionEvent::AcknowledgementReceived { .. }
+        | ClientSessionEvent::PingResponseReceived { .. } => None,
+    }
+}
+
+fn update_media_snapshot(media: &mut MediaSnapshot, event: &MediaEvent) {
+    match event.kind() {
+        MediaEventKind::Metadata => {
+            if let Some(metadata) = event.stream_metadata() {
+                media.audio.flv_codec_id = metadata
+                    .audio_codec_id
+                    .and_then(|value| u8::try_from(value).ok());
+                media.video.flv_codec_id = metadata
+                    .video_codec_id
+                    .and_then(|value| u8::try_from(value).ok());
+            }
+        }
+        MediaEventKind::Audio | MediaEventKind::AacSequenceHeader => {
+            media.audio.payload_bytes_received = media
+                .audio
+                .payload_bytes_received
+                .saturating_add(event.payload_len() as u64);
+            media.audio.last_rtmp_timestamp_ms = Some(event.timestamp_ms());
+        }
+        MediaEventKind::AvcSequenceHeader
+        | MediaEventKind::HevcSequenceHeader
+        | MediaEventKind::Av1SequenceHeader
+        | MediaEventKind::VideoKeyframe
+        | MediaEventKind::VideoInterframe
+        | MediaEventKind::VideoDisposable => {
+            media.video.payload_bytes_received = media
+                .video
+                .payload_bytes_received
+                .saturating_add(event.payload_len() as u64);
+            media.video.last_rtmp_timestamp_ms = Some(event.timestamp_ms());
+        }
+    }
+}
+
+fn unix_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            duration.as_millis().try_into().unwrap_or(u64::MAX)
+        })
 }
 
 impl RelayShared {
@@ -331,8 +808,23 @@ impl RelayShared {
             })
             .expect("RTMP relay state mutex poisoned while waiting")
             .0;
+        if state
+            .queue_started_at
+            .is_some_and(|started| started.elapsed() >= self.config.buffer_duration)
+        {
+            let discarded = u64::try_from(state.queue.len()).unwrap_or(u64::MAX);
+            state.events_dropped = state.events_dropped.saturating_add(discarded);
+            state.queue.clear();
+            state.queue_bytes = 0;
+            state.queue_started_at = None;
+            state.waiting_for_keyframe = !state.cache.video_headers.is_empty();
+            return None;
+        }
         let event = state.queue.pop_front()?;
         state.queue_bytes -= event.payload_len();
+        if state.queue.is_empty() {
+            state.queue_started_at = None;
+        }
         Some(event)
     }
 
@@ -342,6 +834,7 @@ impl RelayShared {
         state.events_dropped = state.events_dropped.saturating_add(discarded);
         state.queue.clear();
         state.queue_bytes = 0;
+        state.queue_started_at = None;
         state.cache.bootstrap()
     }
 
@@ -453,9 +946,13 @@ fn run_relay(shared: &RelayShared) {
             state.phase = RtmpRelayPhase::Connecting;
             state.connection_attempts = state.connection_attempts.saturating_add(1);
         }
-        let Ok(mut stream) =
-            TcpStream::connect_timeout(&shared.destination.address, shared.config.connect_timeout)
-        else {
+        let Ok(mut stream) = client::connect_stream(
+            &shared.destination.host,
+            shared.destination.address,
+            shared.destination.transport,
+            shared.config.connect_timeout,
+            shared.config.handshake_timeout,
+        ) else {
             shared.record_failure(RtmpRelayFailure::Connect);
             if !shared.wait_backoff() {
                 break;
@@ -469,7 +966,11 @@ fn run_relay(shared: &RelayShared) {
             }
             continue;
         }
-        let mut session = match establish_publish_session(&mut stream, &shared.destination) {
+        let mut session = match establish_publish_session(
+            &mut stream,
+            &shared.destination,
+            shared.config.handshake_timeout,
+        ) {
             Ok(session) => session,
             Err(failure) => {
                 shared.record_failure(failure);
@@ -519,7 +1020,7 @@ fn run_relay(shared: &RelayShared) {
     shared.set_phase(RtmpRelayPhase::Stopped);
 }
 
-fn establish_transport(stream: &mut TcpStream, timeout: Duration) -> io::Result<()> {
+fn establish_transport(stream: &mut RtmpStream, timeout: Duration) -> io::Result<()> {
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
     stream.set_nodelay(true)?;
@@ -547,28 +1048,40 @@ fn establish_transport(stream: &mut TcpStream, timeout: Duration) -> io::Result<
 }
 
 fn establish_publish_session(
-    stream: &mut TcpStream,
+    stream: &mut RtmpStream,
     destination: &RtmpDestination,
+    timeout: Duration,
 ) -> Result<ClientSession, RtmpRelayFailure> {
     let mut config = ClientSessionConfig::new();
     config.chunk_size = 4_096;
-    config.tc_url = Some(format!(
-        "rtmp://{}/{}",
-        destination.address, destination.application
-    ));
+    config.playback_buffer_length_ms = destination.options.playback_buffer_ms;
+    config.flash_version
+        .clone_from(&destination.options.flash_version);
+    config.tc_url = Some(destination.options.tc_url.clone().unwrap_or_else(|| {
+        format!(
+            "{}://{}/{}",
+            match destination.transport {
+                RtmpTransport::Rtmp => "rtmp",
+                RtmpTransport::Rtmps => "rtmps",
+            },
+            destination.host,
+            destination.application
+        )
+    }));
+    apply_credentials(&mut config, &destination.options)?;
     let (mut session, initial) =
         ClientSession::new(config).map_err(|_| RtmpRelayFailure::Session)?;
     write_results(stream, initial)?;
     let connect = session
         .request_connection(destination.application.clone())
         .map_err(|_| RtmpRelayFailure::Session)?;
-    await_event(stream, &mut session, vec![connect], |event| {
+    await_event(stream, &mut session, vec![connect], timeout, |event| {
         matches!(event, ClientSessionEvent::ConnectionRequestAccepted)
     })?;
     let publish = session
         .request_publishing(destination.stream_name.clone(), PublishRequestType::Live)
         .map_err(|_| RtmpRelayFailure::Session)?;
-    await_event(stream, &mut session, vec![publish], |event| {
+    await_event(stream, &mut session, vec![publish], timeout, |event| {
         matches!(event, ClientSessionEvent::PublishRequestAccepted)
     })?;
     stream
@@ -577,14 +1090,29 @@ fn establish_publish_session(
     Ok(session)
 }
 
+fn apply_credentials(
+    config: &mut ClientSessionConfig,
+    options: &RtmpClientOptions,
+) -> Result<(), RtmpRelayFailure> {
+    let Some(credential) = &options.credential else {
+        return Ok(());
+    };
+    config.username = Some(credential.username().to_owned());
+    config.password = Some(
+        String::from_utf8(credential.secret().to_vec()).map_err(|_| RtmpRelayFailure::Session)?,
+    );
+    Ok(())
+}
+
 fn await_event(
-    stream: &mut TcpStream,
+    stream: &mut RtmpStream,
     session: &mut ClientSession,
     initial: Vec<ClientSessionResult>,
+    timeout: Duration,
     predicate: impl Fn(&ClientSessionEvent) -> bool,
 ) -> Result<(), RtmpRelayFailure> {
     write_results(stream, initial)?;
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + timeout;
     let mut buffer = [0; RELAY_READ_BUFFER_BYTES];
     while Instant::now() < deadline {
         let count = stream
@@ -614,7 +1142,7 @@ fn await_event(
 }
 
 fn process_peer_input(
-    stream: &mut TcpStream,
+    stream: &mut RtmpStream,
     session: &mut ClientSession,
 ) -> Result<(), RtmpRelayFailure> {
     let mut buffer = [0; RELAY_READ_BUFFER_BYTES];
@@ -639,7 +1167,7 @@ fn process_peer_input(
 }
 
 fn publish_event(
-    stream: &mut TcpStream,
+    stream: &mut RtmpStream,
     session: &mut ClientSession,
     event: &MediaEvent,
 ) -> Result<(), RtmpRelayFailure> {
@@ -670,7 +1198,7 @@ fn publish_event(
 }
 
 fn write_results(
-    stream: &mut TcpStream,
+    stream: &mut RtmpStream,
     results: Vec<ClientSessionResult>,
 ) -> Result<(), RtmpRelayFailure> {
     write_packets(
@@ -684,7 +1212,7 @@ fn write_results(
 }
 
 fn write_packets(
-    stream: &mut TcpStream,
+    stream: &mut RtmpStream,
     packets: impl IntoIterator<Item = Vec<u8>>,
 ) -> Result<(), RtmpRelayFailure> {
     for packet in packets {
@@ -705,12 +1233,17 @@ mod tests {
             shared: Arc::new(RelayShared {
                 destination: RtmpDestination {
                     address: "127.0.0.1:1935".parse().expect("destination"),
+                    host: "127.0.0.1".into(),
+                    transport: RtmpTransport::Rtmp,
                     application: "live".into(),
                     stream_name: "camera".into(),
+                    options: RtmpClientOptions::default(),
                 },
                 config: RtmpRelayConfig {
                     max_queue_messages: 4,
                     max_queue_bytes: 128,
+                    buffer_duration: Duration::from_secs(5),
+                    max_chain_depth: 4,
                     ..RtmpRelayConfig::default()
                 },
                 state: Mutex::new(RelayState {
@@ -718,6 +1251,7 @@ mod tests {
                     waiting_for_keyframe: false,
                     queue: VecDeque::new(),
                     queue_bytes: 0,
+                    queue_started_at: None,
                     cache: RelayCache::default(),
                     phase: RtmpRelayPhase::Publishing,
                     last_failure: None,
@@ -756,6 +1290,50 @@ mod tests {
         assert_eq!(state.queue.len(), 2);
         assert_eq!(state.queue[0].payload(), [0x17, 0x00, 0, 0, 0, 0x02]);
         assert_eq!(state.queue[1].payload(), [0x17, 0x01, 0, 0, 0, 0x55]);
+    }
+
+    #[test]
+    fn relay_queue_expires_after_the_configured_buffer_window() {
+        let controller = RtmpRelayController {
+            shared: Arc::new(RelayShared {
+                destination: RtmpDestination {
+                    address: "127.0.0.1:1935".parse().expect("destination"),
+                    host: "127.0.0.1".into(),
+                    transport: RtmpTransport::Rtmp,
+                    application: "live".into(),
+                    stream_name: "camera".into(),
+                    options: RtmpClientOptions::default(),
+                },
+                config: RtmpRelayConfig {
+                    buffer_duration: Duration::from_millis(1),
+                    ..RtmpRelayConfig::default()
+                },
+                state: Mutex::new(RelayState {
+                    accepting: true,
+                    waiting_for_keyframe: false,
+                    queue: VecDeque::new(),
+                    queue_bytes: 0,
+                    queue_started_at: None,
+                    cache: RelayCache::default(),
+                    phase: RtmpRelayPhase::Publishing,
+                    last_failure: None,
+                    connection_attempts: 0,
+                    connections: 0,
+                    reconnects: 0,
+                    events_enqueued: 0,
+                    events_sent: 0,
+                    events_dropped: 0,
+                    payload_bytes_sent: 0,
+                }),
+                available: Condvar::new(),
+            }),
+        };
+        controller.try_enqueue(video(0, &[0x17, 0x01, 0, 0, 0, 0x01]));
+        thread::sleep(Duration::from_millis(5));
+        assert!(controller.shared.next_event().is_none());
+        let state = controller.shared.lock();
+        assert_eq!(state.queue_bytes, 0);
+        assert!(state.events_dropped > 0);
     }
 
     fn video(timestamp: u32, payload: &[u8]) -> MediaEvent {

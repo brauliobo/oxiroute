@@ -8,7 +8,7 @@ use rml_rtmp::{
 
 use crate::{
     CatalogError, LiveHub, MediaEvent, MediaSnapshot, PublisherLease, PublisherRegistration,
-    RtmpRegistry, SessionId, StreamId, StreamKey, VideoCodecIdentifier,
+    RtmpCallbackEvent, RtmpRegistry, SessionId, StreamId, StreamKey, VideoCodecIdentifier,
     recording_runtime::RecorderController, relay::RtmpRelayController,
 };
 
@@ -74,6 +74,14 @@ impl PublishSession {
 
     pub(super) fn matches(&self, application: &str, protocol_name: &str) -> bool {
         identity::matches(&self.key, application, protocol_name)
+    }
+
+    pub(super) fn application(&self) -> &str {
+        &self.key.application
+    }
+
+    pub(super) fn stream_name(&self) -> &str {
+        &self.key.name
     }
 
     pub(super) fn handle_metadata(
@@ -283,6 +291,16 @@ pub(super) fn handle_request(
                 PUBLISH_REJECTION_CODE,
                 "this connection already has an active media role",
             ),
+        );
+    }
+    let context =
+        session.callback_context(application, Some(identity.stream_name()), identity.query());
+    if let Err(error) =
+        session.authorize_callbacks(application, RtmpCallbackEvent::Publish, &context)
+    {
+        return session.reject_request(
+            request_id,
+            status::callback(SessionOperation::Publish, error),
         );
     }
 

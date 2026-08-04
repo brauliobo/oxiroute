@@ -30,10 +30,10 @@ claiming that all 117 directive keys are enforced.
 
 The current runtime contract is intentionally narrower than the directive inventory. Bounded live
 publish/play, ordered application network ACLs, stream-query tokens, per-application session
-ceilings, fanout, static push relay, canonical named continuous/manual recorders, and legacy
-AVC/AAC FLV output are partial product capabilities. The live adapter enforces a fixed 1 MiB
+ceilings, fanout, bounded push/pull relay, bounded HTTP notify callbacks, canonical named
+continuous/manual recorders, and legacy AVC/AAC FLV output are partial product capabilities. The live adapter enforces a fixed 1 MiB
 inbound chunk ceiling and fixed 8 MiB assembled inbound-message ceiling; the nginx `max_message`
-directive is parsed and classified but does not configure that ceiling. HLS, DASH, VOD, callbacks,
+directive is parsed and classified but does not configure that ceiling. HLS, DASH, VOD,
 exec, broad control behavior, and full nginx-RTMP parity remain planned or unsupported.
 
 ## Context abbreviations and common values
@@ -278,10 +278,13 @@ HTTPS behavior under a distinct option.
 | `notify_update_strict` | R,S,A | flag | off |
 | `notify_relay_redirect` | R,S,A | flag | off |
 
-Reference callbacks use plain HTTP/1.0; 2xx succeeds, 3xx may rename or relay, other results
-fail. Common form fields are `app`, `flashver`, `swfurl`, `tcurl`, `pageurl`, `addr`,
-`clientid`, plus event fields and original stream query arguments. `notify_method` has a
-reference cross-application scope quirk that is diagnosed rather than accidentally shared.
+Canonical callback policies use bounded HTTP/1.1 GET or POST requests over HTTP or HTTPS. Every
+resolved address is checked against the service outbound policy and the selected address is pinned
+for the callback endpoint. 2xx succeeds; non-2xx responses fail authorization or are recorded as a
+non-strict notification failure. `on_connect`, `on_publish`, and `on_play` are authorization
+callbacks. Done and disconnect callbacks run during role/connection teardown. `on_update` is
+bounded by `notify_update_timeout`; zero disables updates and strict mode closes the session on an
+update failure. Callback URLs, queries, and secrets are redacted from debug/error output.
 
 ### Logging, limits, and auto-push: 6
 
@@ -463,6 +466,7 @@ explicitly as finalization while preserving the current segment.
 
 Recorder open, quota, write, discontinuity, and codec failures are isolated to that recorder. They
 remain observable but do not fail live ingest, fanout, or sibling recorders.
+
 The recorder mask is applied before queue admission. Audio, video, or keyframes-only video may be
 selected, but at least one audio/video track is required. `append` resumes the exact existing FLV
 segment only after descriptor, ownership, lock, and FLV-tail checks; `lock` holds an exclusive
@@ -470,6 +474,19 @@ advisory lock for the active segment. `max_size` and `max_frames` are per-segmen
 bound rotates at the next safe audio boundary or video keyframe; if no safe boundary arrives, the
 worker drops over-limit non-keyframes rather than exceeding the bound. `notify` retains the latest
 bounded lifecycle outcome in the recorder status.
+
+Applications may also declare named VOD sources. A VOD RTMP play name has the form
+`source/relative/path.flv`; it is admitted only when the application has a configured source and a
+viewer lease is available. Local objects are opened from a pinned no-follow root. HTTP objects are
+fetched by a dedicated bounded worker after origin policy and DNS-answer validation. The worker
+owns the VOD lease through playback, parses only bounded FLV audio/video tags, and emits
+`NetStream.Play.Complete` after the bounded duration or object ends. A failed source does not block
+the listener or other viewers.
+
+The authenticated management API exposes the same source as
+`GET /api/v1/rtmp/vod/{service}/{application}/{source}/{path}`. It supports one contiguous byte
+range, rejects multiple ranges and chunked upstream responses, and never exposes source roots or
+origin credentials.
 
 Stop and disconnect transfer workers to a reaper with a bounded pending-task count. Submission
 backpressures when that bound is full, but waits outside registry and recorder-controller locks, so
@@ -517,10 +534,10 @@ OBS acceptance remain before this slice is complete.
 ### Slice 2: operational parity
 
 Status: partial. Canonical continuous/manual recording, named recorders, live-session dispatch,
-catalog completion, storage, rotation, observability, and exact-ID bearer-protected controls are
-integrated for legacy AVC/AAC FLV. Static push relay is integrated separately. Access, notify,
-pull, VOD, stats-page parity, enhanced codec recording, RTMP access logs, and broad nginx-RTMP
-lowering remain.
+catalog completion, storage, rotation, observability, exact-ID bearer-protected controls, access and
+notify policy, pull relay, and bounded local/HTTP VOD are integrated for legacy AVC/AAC FLV. Static
+push relay is integrated separately. Stats-page parity, enhanced codec recording, RTMP access logs,
+and broad nginx-RTMP lowering remain.
 
 ### Slice 3: media/process parity
 

@@ -28,6 +28,10 @@ impl StreamIdentity {
         self.key
     }
 
+    pub(super) fn stream_name(&self) -> &str {
+        &self.key.name
+    }
+
     pub(super) fn query(&self) -> Option<&str> {
         self.query.as_deref()
     }

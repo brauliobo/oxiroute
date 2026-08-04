@@ -6,14 +6,14 @@ use std::{
 };
 
 use crate::{
-    CatalogError, LiveHub, LiveHubError, PublisherLease, RecorderDefinition, RtmpPushTarget,
-    RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry, SessionId, StreamKey, VodApplication,
-    VodError,
+    CatalogError, LiveHub, LiveHubError, PublisherLease, RecorderDefinition, RtmpCallbackPolicy,
+    RtmpPullTarget, RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry, SessionId,
+    StreamKey, VodApplication, VodError,
     recording_runtime::{
         RecorderController, RecorderReaperHandle, RecorderReaperOwner, RecorderShutdownControl,
         RtmpRecorderShutdown,
     },
-    relay::RtmpRelayController,
+    relay::{RtmpPullController, RtmpRelayController},
 };
 use rml_rtmp::messages::Amf0Limits;
 
@@ -390,8 +390,10 @@ pub struct RtmpApplication {
     session_limits: RtmpSessionCeilings,
     admission: Arc<ApplicationAdmission>,
     hub: Option<LiveHub>,
-    vod: Option<Arc<VodApplication>>,
     push_targets: Arc<Vec<RtmpPushTarget>>,
+    pull_targets: Arc<Vec<RtmpPullTarget>>,
+    callbacks: Arc<RtmpCallbackPolicy>,
+    vod: Option<Arc<VodApplication>>,
     recorders: Arc<Vec<RtmpRecorderPolicy>>,
 }
 
@@ -408,8 +410,10 @@ impl RtmpApplication {
             session_limits,
             admission: Arc::new(ApplicationAdmission::new(session_limits)),
             hub: None,
-            vod: None,
             push_targets: Arc::new(Vec::new()),
+            pull_targets: Arc::new(Vec::new()),
+            callbacks: Arc::new(RtmpCallbackPolicy::default()),
+            vod: None,
             recorders: Arc::new(Vec::new()),
         }
     }
@@ -431,8 +435,10 @@ impl RtmpApplication {
             session_limits,
             admission: Arc::new(ApplicationAdmission::new(session_limits)),
             hub: None,
-            vod: None,
             push_targets: Arc::new(Vec::new()),
+            pull_targets: Arc::new(Vec::new()),
+            callbacks: Arc::new(RtmpCallbackPolicy::default()),
+            vod: None,
             recorders: Arc::new(recorders.into_iter().collect()),
         }
     }
@@ -456,16 +462,12 @@ impl RtmpApplication {
             session_limits,
             admission: Arc::new(ApplicationAdmission::new(session_limits)),
             hub: Some(hub),
-            vod: None,
             push_targets: Arc::new(push_targets.into_iter().collect()),
+            pull_targets: Arc::new(Vec::new()),
+            callbacks: Arc::new(RtmpCallbackPolicy::default()),
+            vod: None,
             recorders: Arc::new(recorders.into_iter().collect()),
         }
-    }
-
-    #[must_use]
-    pub fn with_vod(mut self, vod: Option<Arc<VodApplication>>) -> Self {
-        self.vod = vod;
-        self
     }
 
     #[must_use]
@@ -479,6 +481,27 @@ impl RtmpApplication {
         self.play_policy = play_policy;
         self.session_limits = session_limits;
         self.admission = Arc::new(ApplicationAdmission::new(session_limits));
+        self
+    }
+
+    #[must_use]
+    pub fn with_pull_targets(
+        mut self,
+        pull_targets: impl IntoIterator<Item = RtmpPullTarget>,
+    ) -> Self {
+        self.pull_targets = Arc::new(pull_targets.into_iter().collect());
+        self
+    }
+
+    #[must_use]
+    pub fn with_vod(mut self, vod: Option<Arc<VodApplication>>) -> Self {
+        self.vod = vod;
+        self
+    }
+
+    #[must_use]
+    pub fn with_callbacks(mut self, callbacks: RtmpCallbackPolicy) -> Self {
+        self.callbacks = Arc::new(callbacks);
         self
     }
 
@@ -505,6 +528,16 @@ impl RtmpApplication {
     #[must_use]
     pub fn push_targets(&self) -> &[RtmpPushTarget] {
         &self.push_targets
+    }
+
+    #[must_use]
+    pub fn pull_targets(&self) -> &[RtmpPullTarget] {
+        &self.pull_targets
+    }
+
+    #[must_use]
+    pub fn callbacks(&self) -> &RtmpCallbackPolicy {
+        &self.callbacks
     }
 
     #[must_use]
@@ -611,6 +644,8 @@ pub struct RtmpServiceRuntime {
     default_admission: Arc<ApplicationAdmission>,
     recorder_reaper: Option<RecorderReaperHandle>,
     recorder_reaper_owner: Option<Arc<RecorderReaperOwner>>,
+    pull_controllers: Arc<Vec<Arc<RtmpPullController>>>,
+    callbacks: Arc<RtmpCallbackPolicy>,
 }
 
 /// Cheap, generation-independent ownership of one recorder shutdown lifecycle.
@@ -653,6 +688,7 @@ impl RtmpServiceRuntime {
         hub: LiveHub,
         policy: RtmpSessionPolicy,
     ) -> Self {
+        let service_id = service_id.into();
         let max_recorders_per_stream = policy
             .applications
             .values()
@@ -668,16 +704,38 @@ impl RtmpServiceRuntime {
         });
         let (recorder_reaper_owner, recorder_reaper) =
             recorder_runtime.map_or((None, None), |(owner, handle)| (Some(owner), Some(handle)));
+        let pull_controllers = policy
+            .applications
+            .values()
+            .flat_map(|application| {
+                application.pull_targets.iter().cloned().map(|target| {
+                    RtmpPullController::start(
+                        Arc::clone(&service_id),
+                        target,
+                        Arc::clone(&registry),
+                        application.hub().unwrap_or_else(|| hub.clone()),
+                    )
+                })
+            })
+            .collect();
         Self {
             admission_open: Arc::new(Mutex::new(true)),
-            service_id: service_id.into(),
+            service_id,
             registry,
             hub,
             policy,
             default_admission: Arc::new(ApplicationAdmission::new(RtmpSessionCeilings::default())),
             recorder_reaper,
             recorder_reaper_owner,
+            pull_controllers: Arc::new(pull_controllers),
+            callbacks: Arc::new(RtmpCallbackPolicy::default()),
         }
+    }
+
+    #[must_use]
+    pub fn with_callbacks(mut self, callbacks: RtmpCallbackPolicy) -> Self {
+        self.callbacks = Arc::new(callbacks);
+        self
     }
 
     #[must_use]
@@ -715,6 +773,9 @@ impl RtmpServiceRuntime {
         }
         *admission_open = false;
         self.registry.close_admission();
+        for controller in self.pull_controllers.iter() {
+            controller.deactivate();
+        }
     }
 
     #[must_use]
@@ -756,6 +817,10 @@ impl RtmpServiceRuntime {
         self.policy.application(name)
     }
 
+    pub(super) fn callbacks(&self) -> &RtmpCallbackPolicy {
+        &self.callbacks
+    }
+
     pub(super) fn authorize(
         &self,
         application: &str,
@@ -794,6 +859,8 @@ impl RtmpServiceRuntime {
             default_admission: Arc::clone(&self.default_admission),
             recorder_reaper: self.recorder_reaper.clone(),
             recorder_reaper_owner: self.recorder_reaper_owner.clone(),
+            pull_controllers: Arc::clone(&self.pull_controllers),
+            callbacks: Arc::clone(&self.callbacks),
         }
     }
 
@@ -1044,6 +1111,14 @@ pub(super) enum SessionRole {
 }
 
 impl SessionRole {
+    pub(super) fn identity(&self) -> (&str, &str) {
+        match self {
+            Self::Publisher(publisher) => (publisher.application(), publisher.stream_name()),
+            Self::Playback(playback) => (playback.application(), playback.stream_name()),
+            Self::VodPlayback(playback) => (playback.application(), playback.stream_name()),
+        }
+    }
+
     pub(super) fn observe_at(&mut self, at_unix_ms: u64) {
         match self {
             Self::Publisher(publisher) => publisher.observe_at(at_unix_ms),

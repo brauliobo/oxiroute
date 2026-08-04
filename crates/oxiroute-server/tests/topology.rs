@@ -580,6 +580,8 @@ fn topology_config(temp: &TempDir) -> Config {
             name: "live".into(),
             outbound_chunk_size: 4_096,
             access_log: None,
+            outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
+            callbacks: oxiroute_config::RtmpCallbackConfig::default(),
             applications: vec![RtmpApplication {
                 name: "live".into(),
                 live: true,
@@ -588,6 +590,9 @@ fn topology_config(temp: &TempDir) -> Config {
                 play: oxiroute_config::RtmpAccessPolicy::default(),
                 limits: oxiroute_config::RtmpSessionCeilings::default(),
                 push_targets: Vec::new(),
+                pull_targets: Vec::new(),
+                relay: oxiroute_config::RtmpRelayPolicy::default(),
+                callbacks: oxiroute_config::RtmpCallbackConfig::default(),
                 fanout: oxiroute_config::RtmpFanoutPolicy::default(),
                 vod: None,
                 recorders: Vec::new(),
