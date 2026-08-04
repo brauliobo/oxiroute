@@ -40,7 +40,7 @@ use oxiroute_server::{
 use pingora::{
     apps::http_app::HttpServer,
     apps::{AcceptGate, ConnectionAdmission, ServerApp},
-    protocols::{GetSocketDigest as _, Stream},
+    protocols::Stream,
     proxy::http_proxy,
     server::{
         RunArgs, Server, ShutdownSignal, ShutdownSignalWatch, ShutdownWatch,
@@ -1889,9 +1889,8 @@ fn serve_generation(
                     metrics,
                     shutdown.clone(),
                 )
-                .map_err(|error| {
+                .inspect_err(|_| {
                     generation.mark_runtime_failed();
-                    error
                 })?;
                 http3_runtimes.push(runtime);
             }
@@ -1904,9 +1903,8 @@ fn serve_generation(
                     metrics,
                     shutdown.clone(),
                 )
-                .map_err(|error| {
+                .inspect_err(|_| {
                     generation.mark_runtime_failed();
-                    error
                 })?;
                 udp_runtimes.push(runtime);
             }
@@ -2225,9 +2223,9 @@ mod tests {
                     name: "live".into(),
                     live: true,
                     idle_streams: true,
-                    publish: Default::default(),
-                    play: Default::default(),
-                    limits: Default::default(),
+                    publish: oxiroute_config::RtmpAccessPolicy::default(),
+                    play: oxiroute_config::RtmpAccessPolicy::default(),
+                    limits: oxiroute_config::RtmpSessionCeilings::default(),
                     push_targets: Vec::new(),
                     fanout: oxiroute_config::RtmpFanoutPolicy::default(),
                     recorders: vec![RtmpRecorder {

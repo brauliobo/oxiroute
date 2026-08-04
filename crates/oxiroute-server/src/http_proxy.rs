@@ -1313,7 +1313,7 @@ fn response_surrogate_tags(headers: &HeaderMap, name: &HeaderName) -> Vec<Bytes>
         .flat_map(|value| {
             value
                 .as_bytes()
-                .split(|byte| byte.is_ascii_whitespace())
+                .split(u8::is_ascii_whitespace)
                 .filter(|tag| !tag.is_empty())
                 .map(Bytes::copy_from_slice)
         })

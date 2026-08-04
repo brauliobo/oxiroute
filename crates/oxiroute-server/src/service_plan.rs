@@ -1131,10 +1131,9 @@ fn compile_cache_policy(
                     max_disk_files: to_usize(*max_files)?,
                     max_record_bytes: to_usize(*max_bytes)?,
                 };
-                let backend =
-                    open_shared_disk_backend(root_directory, disk_config).map_err(|_| {
-                        unavailable("http_services[].routes[].action.policy.cache.disk")
-                    })?;
+                let backend = open_shared_disk_backend(root_directory, disk_config).map_err(|()| {
+                    unavailable("http_services[].routes[].action.policy.cache.disk")
+                })?;
                 Arc::new(HttpCacheBackend::Disk(backend))
             }
         };
@@ -1226,7 +1225,7 @@ fn compile_l4_services(
                     lifetime: service.lifetime_timeout_ms.map(Duration::from_millis),
                 },
                 Arc::clone(pool.selector()),
-                service.udp.clone().unwrap_or_else(UdpPolicy::default),
+                service.udp.unwrap_or_else(UdpPolicy::default),
             )),
         );
     }
@@ -1534,6 +1533,7 @@ fn socket_listener_contains(
         || listener.ip().is_unspecified() && listener.is_ipv4() == destination.is_ipv4()
 }
 
+#[allow(clippy::too_many_lines)]
 fn compile_listener(
     listener: &oxiroute_config::Listener,
     http_services: &HashMap<String, Arc<HttpServicePlan>>,
