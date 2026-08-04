@@ -14,6 +14,10 @@ mod rtmp_lower;
 mod rtmp_semantic;
 #[cfg(unix)]
 mod semantic;
+#[cfg(unix)]
+mod stream_lower;
+#[cfg(unix)]
+mod stream_semantic;
 
 use crate::DiagnosticCode;
 
@@ -51,6 +55,14 @@ pub use semantic::{
     EffectiveUpstream, EffectiveUpstreamServer, HttpDeclaration, HttpResolution, ListenEndpoint,
     LocationKind, NginxValue, OccurrenceDecision, OccurrenceDisposition, ProxyPassScheme,
     ServerDeclaration, ServerNameKind, StaticEndpoint, UpstreamReference, resolve_http_fragment,
+};
+#[cfg(unix)]
+pub use stream_lower::{BlockedStreamService, StreamImportReport, import_stream_fragment};
+#[cfg(unix)]
+pub use stream_semantic::{
+    EffectiveStream, EffectiveStreamListen, EffectiveStreamProxyPass, EffectiveStreamServer,
+    EffectiveStreamUpstream, EffectiveStreamUpstreamServer, StreamDeclaration, StreamDestination,
+    StreamResolution, resolve_stream_fragment,
 };
 
 /// Syntax errors produced while reading nginx source.
