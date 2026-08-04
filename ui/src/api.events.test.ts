@@ -59,6 +59,28 @@ describe('operational event stream client', () => {
     expect(parseEventStreamFrame('event: generation_activate\nid: 8\ndata: {"cursor":7}\n\n')).toBeNull()
   })
 
+  it('keeps the certificate identity for redacted certificate job events', () => {
+    const message = parseEventStreamFrame([
+      'id: 12',
+      'event: certificate_renewal',
+      'data: {"cursor":12,"timestampUnixMs":null,"event":"certificate_renewal",',
+      'data: "outcome":"failed","revision":null,"certificate":"edge-example"}',
+      '',
+    ].join('\n'))
+
+    expect(message).toEqual({
+      type: 'operational',
+      event: {
+        cursor: 12,
+        timestampUnixMs: null,
+        event: 'certificate_renewal',
+        outcome: 'failed',
+        revision: null,
+        certificate: 'edge-example',
+      },
+    })
+  })
+
   it('reconnects with the last event id after a bounded stream interruption', async () => {
     const fetch = vi.fn()
       .mockResolvedValueOnce(eventResponse([
