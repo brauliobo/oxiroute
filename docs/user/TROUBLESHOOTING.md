@@ -48,6 +48,11 @@ Management token failures usually come from the token file rather than the HTTP 
 - token bytes must be visible ASCII, 32 to 512 bytes after one trailing line ending is removed;
 - every authenticated request must contain exactly one bearer header.
 
+The CLI checks `--token-file`, `OXIROUTE_MANAGEMENT_TOKEN_FILE`, the bounded assignment in the
+packaged environment file, and then `/etc/oxiroute/management.token`. `ready`, `metrics`, and offline
+commands do not read a token. Other commands fail locally with a missing/unreadable token-file error
+when no usable path is available; check the selected file as the daemon or operator identity.
+
 Check permissions as the daemon user. Never paste a token into logs or issue it in a shell command
 that will be captured by process inspection.
 

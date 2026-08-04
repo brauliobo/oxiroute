@@ -4,9 +4,18 @@
 is its short alias. Management commands default to `OXIROUTE_ENDPOINT`, or
 `http://127.0.0.1:9900` when the variable is unset. Every management API operation except the
 explicitly public `/ready` and `/metrics` probes uses the Bearer token loaded from `--token-file` or
-`OXIROUTE_MANAGEMENT_TOKEN_FILE`; token contents are never included in output or diagnostics. The
+`OXIROUTE_MANAGEMENT_TOKEN_FILE`; when neither is supplied, the client reads the plain
+`OXIROUTE_MANAGEMENT_TOKEN_FILE=/path` assignment from the packaged `/etc/oxiroute/oxiroute.env`
+and then checks `/etc/oxiroute/management.token`. The explicit option wins over the environment,
+the environment wins over the package assignment and built-in default, and an absent default does
+not affect public commands. The package file is read as a bounded assignment only; it is never
+executed or interpreted as shell. Token contents are never included in output or diagnostics. The
 CLI opens token and configuration files as bounded, regular, no-follow files. Token bytes are
 zeroized after use and token files must have mode `0400` or `0600`.
+
+An authenticated command without a discovered token reports a local missing/unreadable token-file
+error. A configured or discovered token file is still rejected when it is inaccessible, non-regular,
+symlinked, oversized, incorrectly permissioned, unstable while read, or contains an invalid token.
 
 This CLI table describes current command ownership, not broad product compatibility. `Supported`
 means the current runtime owns the operation; it does not promote a foundation or partial protocol
