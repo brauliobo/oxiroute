@@ -2,8 +2,8 @@ use std::{
     collections::BTreeSet,
     io,
     sync::{
-        Arc, Mutex, TryLockError,
         atomic::{AtomicU64, Ordering},
+        Arc, Mutex, TryLockError,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -13,17 +13,17 @@ use openssl::{
     x509::X509,
 };
 use oxiroute_acme::{
-    Account, AccountKey, AccountKeyAlgorithm, AcmeClient, AcmeError, AcmeStateError, AcmeTransport,
-    AuthorizationStatus, CertificateMaterial, ChallengeRecord, ChallengeStore, ChallengeStoreError,
-    JobState, JobStatus, LeafKeyAlgorithm, MAX_JOB_BYTES, OriginPolicy, PollPolicy,
-    RedactedOutcome, RevisionMetadata, RevisionStore, SecretBytes, StateStore, SystemAcmeTransport,
-    SystemClock, renewal_due, stable_renewal_time,
+    renewal_due, stable_renewal_time, Account, AccountKey, AccountKeyAlgorithm, AcmeClient,
+    AcmeError, AcmeStateError, AcmeTransport, AuthorizationStatus, CertificateMaterial,
+    ChallengeRecord, ChallengeStore, ChallengeStoreError, JobState, JobStatus, LeafKeyAlgorithm,
+    OriginPolicy, PollPolicy, RedactedOutcome, RevisionMetadata, RevisionStore, SecretBytes,
+    StateStore, SystemAcmeTransport, SystemClock, MAX_JOB_BYTES,
 };
 use oxiroute_config::{AcmeKeyType, SelfSignedKeyType};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ActiveCertificateGeneration, CertificateGeneration, MAX_CERTIFICATE_CHAIN_BYTES, TlsBuildError,
+    ActiveCertificateGeneration, CertificateGeneration, TlsBuildError, MAX_CERTIFICATE_CHAIN_BYTES,
 };
 
 static NEXT_JOB_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -1107,7 +1107,7 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
-    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use openssl::{
         asn1::Asn1Time,
         bn::{BigNum, MsbOption},
@@ -1116,11 +1116,11 @@ mod tests {
         nid::Nid,
         pkey::{PKey, Private},
         x509::{
-            X509, X509NameBuilder, X509Req,
             extension::{
                 AuthorityKeyIdentifier, BasicConstraints, ExtendedKeyUsage, KeyUsage,
                 SubjectAlternativeName, SubjectKeyIdentifier,
             },
+            X509NameBuilder, X509Req, X509,
         },
     };
     use oxiroute_acme::{
@@ -1256,13 +1256,11 @@ mod tests {
             fs::read_to_string(temp.path().join("state/certificates/managed/renewal.json"))
                 .expect("renewal schedule");
         assert!(renewal.contains("proxy.example.test"));
-        assert!(
-            requests
-                .lock()
-                .expect("request log")
-                .iter()
-                .all(|url| url.starts_with("https://acme.test/"))
-        );
+        assert!(requests
+            .lock()
+            .expect("request log")
+            .iter()
+            .all(|url| url.starts_with("https://acme.test/")));
     }
 
     #[test]

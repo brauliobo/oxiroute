@@ -3,9 +3,9 @@ use std::{
     fmt, io,
     path::{Path, PathBuf},
     sync::{
-        Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
+        Arc,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -13,7 +13,7 @@ use std::{
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 
-use super::{FileReconciler, certbot_reconcile::PublicationGate};
+use super::{certbot_reconcile::PublicationGate, FileReconciler};
 
 pub use super::certbot_watcher::CertbotWatcherConfig as FileWatcherConfig;
 
@@ -47,7 +47,9 @@ pub enum FileWatcherError {
     RescanIntervalTooShort,
     #[error("direct-file watcher debounce must be nonzero and no greater than max delay")]
     InvalidEventDebounce,
-    #[error("direct-file watcher event max delay must be no greater than periodic rescan interval")]
+    #[error(
+        "direct-file watcher event max delay must be no greater than periodic rescan interval"
+    )]
     InvalidEventMaxDelay,
     #[error("failed to resolve direct-file watcher directory `{path}`")]
     Directory {

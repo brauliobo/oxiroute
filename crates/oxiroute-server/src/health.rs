@@ -4,21 +4,21 @@ use std::{
 };
 
 use async_trait::async_trait;
-use futures_util::{StreamExt, stream};
+use futures_util::{stream, StreamExt};
 use log::info;
 use oxiroute_config::{
-    HealthCheck as HealthCheckConfig, HealthCheckType, HealthHttpVersion,
-    validate_health_check_config,
+    validate_health_check_config, HealthCheck as HealthCheckConfig, HealthCheckType,
+    HealthHttpVersion,
 };
 use pingora::{
-    ErrorType,
     http::RequestHeader,
     lb::{
-        Backend,
         health_check::{HealthCheck, HttpHealthCheck, TcpHealthCheck},
+        Backend,
     },
     server::ShutdownWatch,
-    services::{ServiceReadyNotifier, background::BackgroundService},
+    services::{background::BackgroundService, ServiceReadyNotifier},
+    ErrorType,
 };
 use tokio::{
     sync::{Mutex, Semaphore},
@@ -311,8 +311,8 @@ fn unix_time_ms() -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use std::sync::{
-        Mutex as StdMutex,
         atomic::{AtomicUsize, Ordering},
+        Mutex as StdMutex,
     };
 
     use super::*;

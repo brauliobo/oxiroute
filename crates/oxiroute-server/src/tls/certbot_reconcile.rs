@@ -2,8 +2,8 @@ use std::{
     cmp::Ordering,
     fmt,
     sync::{
-        Arc, Mutex,
         atomic::{AtomicBool, Ordering as AtomicOrdering},
+        Arc, Mutex,
     },
 };
 

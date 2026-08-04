@@ -3,8 +3,8 @@ use std::{
     future::pending,
     io,
     sync::{
-        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -17,7 +17,7 @@ use tokio::{
     runtime::Builder,
     sync::{mpsc, watch},
     task::JoinSet,
-    time::{Instant, Sleep, sleep, timeout},
+    time::{sleep, timeout, Instant, Sleep},
 };
 
 use crate::{
@@ -577,8 +577,8 @@ mod tests {
     use oxiroute_config_source::ConfigFormat;
 
     use crate::{
-        GenerationManager, RuntimeReferenceKind, ServiceKind,
         config_coordinator::{CanonicalConfigDocument, ConfigRevision},
+        GenerationManager, RuntimeReferenceKind, ServiceKind,
     };
 
     use super::*;

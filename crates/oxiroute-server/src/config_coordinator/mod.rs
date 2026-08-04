@@ -6,8 +6,8 @@ use std::{
 };
 
 use openssl::sha::sha256;
-use oxiroute_config::{Config, compose_configs};
-use oxiroute_config_source::{ConfigFormat, ConfigSourceError, render_config, resolve_source};
+use oxiroute_config::{compose_configs, Config};
+use oxiroute_config_source::{render_config, resolve_source, ConfigFormat, ConfigSourceError};
 use serde::Serialize;
 
 mod storage;

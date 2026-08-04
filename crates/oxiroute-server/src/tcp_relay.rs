@@ -3,9 +3,9 @@ use std::{error::Error, fmt, future::pending, io, time::Duration};
 use log::warn;
 use pingora::{protocols::Stream, server::ShutdownWatch};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, split},
+    io::{split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
-    time::{Instant, sleep_until, timeout},
+    time::{sleep_until, timeout, Instant},
 };
 
 #[cfg(unix)]

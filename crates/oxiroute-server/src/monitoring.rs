@@ -1,10 +1,10 @@
 use std::{
-    collections::{HashMap, hash_map::Entry},
+    collections::{hash_map::Entry, HashMap},
     error::Error,
     fmt, io,
     sync::{
+        atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
         Arc, Mutex, RwLock,
-        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
     time::{Duration, Instant, SystemTime},
 };
@@ -1602,7 +1602,11 @@ const fn encode_limit(limit: Option<u64>) -> u64 {
 }
 
 const fn decode_limit(limit: u64) -> Option<u64> {
-    if limit == 0 { None } else { Some(limit) }
+    if limit == 0 {
+        None
+    } else {
+        Some(limit)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]

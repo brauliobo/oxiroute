@@ -15,8 +15,8 @@ use rustix::{
 use zeroize::Zeroizing;
 
 use super::{
-    MAX_CERTIFICATE_CHAIN_BYTES, MAX_PRIVATE_KEY_BYTES, TlsBuildError,
-    certificate::CertificateGeneration, pem_labels,
+    certificate::CertificateGeneration, pem_labels, TlsBuildError, MAX_CERTIFICATE_CHAIN_BYTES,
+    MAX_PRIVATE_KEY_BYTES,
 };
 
 const CERTBOT_CERTIFICATE_FILE: &str = "Certbot certificate";
