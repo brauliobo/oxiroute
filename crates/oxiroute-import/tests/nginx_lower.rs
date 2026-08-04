@@ -85,6 +85,57 @@ fn fully_explicit_proxy_fixture_finalizes_with_canonical_routes() {
 }
 
 #[test]
+fn lowers_proxy_pass_uri_replacement_and_accepts_explicit_expires_off() {
+    let report = import_source(
+        r#"http {
+          expires off;
+          proxy_http_version 1.1;
+          proxy_buffering off;
+          proxy_request_buffering off;
+          proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+          upstream backend { server 127.0.0.1:8080; }
+          server {
+            listen 127.0.0.1:8088 default_server;
+            location /api/ { proxy_pass http://backend/v1/; }
+            location / { return 404; }
+          }
+        }"#,
+    );
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let config = report.config.as_ref().expect("rewritten proxy config");
+    let route = config.http_services[0]
+        .routes
+        .iter()
+        .find(|route| {
+            route.path
+                == HttpPathSelector::RawPrefix {
+                    value: "/api/".into(),
+                }
+        })
+        .expect("rewritten proxy route");
+    let HttpRouteAction::Proxy { policy, .. } = &route.action else {
+        panic!("rewritten proxy action");
+    };
+    let rewrite = policy
+        .upstream_path_rewrite
+        .as_ref()
+        .expect("canonical upstream path rewrite");
+    assert_eq!(rewrite.from, "/api/");
+    assert_eq!(rewrite.to, "/v1/");
+    assert!(report.provenance.iter().any(|entry| {
+        entry
+            .path
+            .ends_with("/action/policy/upstream_path_rewrite/to")
+    }));
+    assert!(
+        render_lua(config)
+            .expect("rendered rewritten proxy config")
+            .contains("upstream_path_rewrite")
+    );
+}
+
+#[test]
 fn lowers_non_root_nginx_raw_prefixes() {
     let report = import_source(
         r"http {

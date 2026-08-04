@@ -8,7 +8,8 @@ use http::header::{HeaderName, HeaderValue};
 use oxiroute_config::{
     AccessLogPolicy, DnsResolutionPolicy, DownstreamTimeoutPolicy, HttpAccessPolicy,
     HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpGzipMinimumVersion, HttpGzipPolicy,
-    HttpHostSelector, HttpLiteralHeader, HttpMimeType, HttpPathSelector, HttpProxyPolicy,
+    HttpHostSelector, HttpLiteralHeader, HttpMimeType, HttpPathSelector, HttpProxyPathRewrite,
+    HttpProxyPolicy,
     HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
     HttpResponseHeaderMutation, HttpRetryPolicy, HttpRetryTrigger, HttpRoute, HttpRouteAction,
     HttpRoutePolicy, HttpSameSite, HttpService, HttpStaticErrorResponse, HttpStaticMimePolicy,
@@ -1617,13 +1618,46 @@ impl Lowerer {
                 "nginx proxy error_page handling is not represented for generated proxy errors",
             ));
         }
-        if proxy.replacement_uri.is_some() {
-            issues.push(issue(
-                &proxy.origin,
-                E_SEMANTICS_NOT_REPRESENTABLE,
-                "proxy_pass URI replacement is not represented by canonical routes",
-            ));
-        }
+        let upstream_path_rewrite = if let Some(replacement) = proxy.replacement_uri.as_deref() {
+            let Some(from) = location.path.as_ref().and_then(|path| utf8(&path.value)) else {
+                issues.push(issue(
+                    &proxy.origin,
+                    E_SEMANTICS_NOT_REPRESENTABLE,
+                    "proxy_pass URI replacement requires a canonical location path",
+                ));
+                return None;
+            };
+            let Some(to) = utf8(replacement) else {
+                issues.push(issue(
+                    &proxy.origin,
+                    E_INVALID_VALUE,
+                    "proxy_pass URI replacement is not UTF-8",
+                ));
+                return None;
+            };
+            let valid = to.starts_with('/')
+                && to
+                    .parse::<http::uri::PathAndQuery>()
+                    .is_ok_and(|parsed| parsed.query().is_none() && parsed.path() == to);
+            let Some(to) = valid
+                .then(|| canonicalize_http_path(to))
+                .flatten()
+                .map(std::borrow::Cow::into_owned)
+            else {
+                issues.push(issue(
+                    &proxy.origin,
+                    E_SEMANTICS_NOT_REPRESENTABLE,
+                    "proxy_pass URI replacement must be a canonical absolute path",
+                ));
+                return None;
+            };
+            Some(HttpProxyPathRewrite {
+                from: from.into(),
+                to,
+            })
+        } else {
+            None
+        };
         let upstream_tls = match self.validate_proxy_origin(http, proxy, downstream_tls) {
             Ok(tls) => tls,
             Err(origin_issues) => {
@@ -1715,6 +1749,7 @@ impl Lowerer {
             pool,
             policy: HttpProxyPolicy {
                 upstream_host,
+                upstream_path_rewrite,
                 request_headers,
                 response_headers,
                 response_cookie_path_rewrites,

@@ -68,6 +68,7 @@ export function defaultHttpAction(type: HttpRouteActionConfig['type']): HttpRout
 export function defaultHttpProxyPolicy(): HttpProxyPolicyConfig {
   return {
     upstream_host: defaultUpstreamHost('preserve_incoming'),
+    upstream_path_rewrite: null,
     request_headers: [],
     response_headers: [],
     response_cookie_path_rewrites: [],

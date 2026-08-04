@@ -23,8 +23,8 @@ use oxiroute_cache::{
     StoreOutcome, Validators,
 };
 use oxiroute_config::{
-    is_unambiguous_http_path, HttpGzipMinimumVersion, HttpRedirectLocation, HttpRetryTarget,
-    HttpRetryTrigger, HttpSameSite, HttpUpstreamHost,
+    is_unambiguous_http_path, HttpGzipMinimumVersion, HttpProxyPathRewrite, HttpRedirectLocation,
+    HttpRetryTarget, HttpRetryTrigger, HttpSameSite, HttpUpstreamHost,
 };
 use pingora::{
     modules::http::{HttpModule, HttpModuleBuilder, HttpModules, Module},
@@ -708,6 +708,9 @@ impl ProxyHttp for HttpReverseProxy {
         result?;
         if upstream_request.version == http::Version::HTTP_10 {
             upstream_request.set_version(http::Version::HTTP_11);
+        }
+        if let Some(rewrite) = &proxy_policy(ctx).upstream_path_rewrite {
+            rewrite_upstream_path(&mut upstream_request.uri, rewrite)?;
         }
         if ctx
             .cache_request
@@ -2049,6 +2052,23 @@ fn internal_uri(path: &str, previous: &http::Uri) -> pingora::Result<http::Uri> 
         .map_err(|_| Error::new_in(ErrorType::InvalidHTTPHeader))
 }
 
+pub(crate) fn rewrite_upstream_path(
+    uri: &mut http::Uri,
+    rewrite: &HttpProxyPathRewrite,
+) -> pingora::Result<()> {
+    let Some(suffix) = uri.path().strip_prefix(&rewrite.from) else {
+        return Err(Error::new_in(ErrorType::InvalidHTTPHeader));
+    };
+    let path = format!("{}{}", rewrite.to, suffix);
+    let path_and_query = uri
+        .query()
+        .map_or_else(|| path.clone(), |query| format!("{path}?{query}"));
+    *uri = path_and_query
+        .parse()
+        .map_err(|_| Error::new_in(ErrorType::InvalidHTTPHeader))?;
+    Ok(())
+}
+
 fn internal_location(path: &str, previous: &http::Uri) -> pingora::Result<HeaderValue> {
     let uri = internal_uri(path, previous)?;
     HeaderValue::from_str(
@@ -2654,7 +2674,7 @@ fn apply_request_header_mutations(
 
 fn upstream_request_requires_mutation(session: &Session, ctx: &HttpRequestContext) -> bool {
     let request = session.req_header();
-    if ctx.cache_request.is_some() {
+    if ctx.cache_request.is_some() || proxy_policy(ctx).upstream_path_rewrite.is_some() {
         return true;
     }
     if request.version == http::Version::HTTP_10 {
@@ -3114,7 +3134,7 @@ mod tests {
     };
 
     use oxiroute_config::{
-        HttpProxyPolicy, HttpRequestHeaderMutation, HttpRequestHeaderValue,
+        HttpProxyPathRewrite, HttpProxyPolicy, HttpRequestHeaderMutation, HttpRequestHeaderValue,
         HttpResponseHeaderMutation, HttpRetryPolicy, UpstreamAlgorithm, UpstreamConnectionReuse,
     };
     use pingora::{protocols::Stream, proxy::Session, upstreams::peer::Peer};
@@ -3122,6 +3142,23 @@ mod tests {
     use tokio::net::{TcpListener, TcpStream};
 
     use super::*;
+
+    #[test]
+    fn upstream_path_rewrite_preserves_the_query() {
+        let mut uri = "/api/items?id=7".parse().expect("request URI");
+        rewrite_upstream_path(
+            &mut uri,
+            &HttpProxyPathRewrite {
+                from: "/api/".into(),
+                to: "/v1/".into(),
+            },
+        )
+        .expect("rewritten request URI");
+        assert_eq!(
+            uri.path_and_query().map(|value| value.as_str()),
+            Some("/v1/items?id=7")
+        );
+    }
 
     #[test]
     fn nginx_gzip_status_eligibility_is_exact() {

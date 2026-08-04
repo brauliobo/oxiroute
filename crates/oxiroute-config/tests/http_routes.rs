@@ -64,6 +64,7 @@ fn applies_the_explicit_safe_proxy_defaults() {
     assert_eq!(route["action"]["upstream_pool"], "web");
     let policy = &route["action"]["policy"];
     assert_eq!(policy["upstream_host"]["type"], "preserve_incoming");
+    assert_eq!(policy["upstream_path_rewrite"], serde_json::Value::Null);
     assert_eq!(policy["request_headers"], serde_json::json!([]));
     assert_eq!(policy["response_headers"], serde_json::json!([]));
     assert_eq!(
@@ -335,7 +336,8 @@ fn renders_every_proxy_policy_variant_and_field() {
             realm = "private-api",
           },"#,
         r#"              upstream_host = { type = "endpoint", unix_fallback = "fallback.internal:8080" },
-              request_headers = {
+              upstream_path_rewrite = { from = "/", to = "/application/" },
+               request_headers = {
                 { operation = "set", name = "X-Literal", value = { type = "literal", value = "edge" } },
                 { operation = "set", name = "X-Authority", value = { type = "incoming_authority" } },
                 { operation = "set", name = "X-Host", value = { type = "normalized_host" } },
@@ -375,6 +377,7 @@ fn renders_every_proxy_policy_variant_and_field() {
         "action",
         "policy",
         "upstream_host",
+        "upstream_path_rewrite",
         "unix_fallback",
         "request_headers",
         "response_headers",
@@ -389,6 +392,28 @@ fn renders_every_proxy_policy_variant_and_field() {
         assert!(rendered.contains(&format!("{field} =")), "missing {field}");
     }
     assert_eq!(load_lua(&rendered).expect("proxy reload"), loaded);
+}
+
+#[test]
+fn validates_proxy_path_rewrite_as_two_canonical_absolute_paths() {
+    let endpoint = r#"{ type = "socket", address = "127.0.0.1:3000" }"#;
+    let valid = proxy_route(
+        "",
+        r#"              upstream_path_rewrite = { from = "/api/", to = "/v1/" },"#,
+    );
+    load_lua(&config(&valid, endpoint)).expect("valid upstream path rewrite");
+
+    for rewrite in [
+        r#"{ from = "api/", to = "/v1/" }"#,
+        r#"{ from = "/api/", to = "/v1/?query=1" }"#,
+        r#"{ from = "/api/../", to = "/v1/" }"#,
+    ] {
+        let route = proxy_route(
+            "",
+            &format!("              upstream_path_rewrite = {rewrite},"),
+        );
+        assert!(error(&config(&route, endpoint)).contains("upstream_path_rewrite"));
+    }
 }
 
 #[test]

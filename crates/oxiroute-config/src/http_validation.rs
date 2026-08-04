@@ -13,7 +13,8 @@ use crate::{
         MAX_HTTP_FIXED_RESPONSE_BODY_BYTES, MAX_HTTP_GZIP_TYPES, MAX_HTTP_HEADER_MUTATIONS,
         MAX_HTTP_HEADER_NAME_BYTES, MAX_HTTP_HEADER_VALUE_BYTES, MAX_HTTP_LITERAL_HEADERS,
         MAX_HTTP_METHOD_BYTES, MAX_HTTP_METHODS_PER_ROUTE, MAX_HTTP_MIME_TYPE_BYTES,
-        MAX_HTTP_REDIRECT_LOCATION_BYTES, MAX_HTTP_RETRIES, MAX_HTTP_STATIC_ERROR_RESPONSES,
+        MAX_HTTP_PROXY_PATH_BYTES, MAX_HTTP_REDIRECT_LOCATION_BYTES, MAX_HTTP_RETRIES,
+        MAX_HTTP_STATIC_ERROR_RESPONSES,
         MAX_HTTP_STATIC_ERROR_STATUSES, MAX_HTTP_STATIC_FALLBACK_BYTES,
         MAX_HTTP_STATIC_INDEX_BYTES, MAX_HTTP_STATIC_INDEX_FILES, MAX_HTTP_STATIC_MIME_TYPES,
         MAX_HTTP_STATIC_TRY_FILES, MAX_HTTP_TIMEOUT_MS, MAX_SAFE_JSON_INTEGER,
@@ -26,10 +27,10 @@ use crate::{
     model::{
         AccessLogPolicy, ConfigError, HttpAccessPolicy, HttpCookieAttributePolicy,
         HttpCookiePathRewrite, HttpHostSelector, HttpLiteralHeader, HttpPathSelector,
-        HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
-        HttpResponseHeaderMutation, HttpRetryPolicy, HttpRetryTrigger, HttpRoute, HttpRouteAction,
-        HttpService, HttpStaticErrorResponse, HttpStaticMimePolicy, HttpStaticTryFile,
-        HttpUpstreamHost, UpstreamEndpoint, UpstreamPool,
+        HttpProxyPathRewrite, HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation,
+        HttpRequestHeaderValue, HttpResponseHeaderMutation, HttpRetryPolicy, HttpRetryTrigger,
+        HttpRoute, HttpRouteAction, HttpService, HttpStaticErrorResponse, HttpStaticMimePolicy,
+        HttpStaticTryFile, HttpUpstreamHost, UpstreamEndpoint, UpstreamPool,
     },
 };
 
@@ -533,12 +534,54 @@ fn validate_proxy_policy(
         }
     }
     validate_request_mutations(service, route_index, &mut policy.request_headers)?;
+    validate_proxy_path_rewrite(service, route_index, &mut policy.upstream_path_rewrite)?;
     validate_response_mutations(service, route_index, &mut policy.response_headers)?;
     validate_cookie_rewrites(service, route_index, &policy.response_cookie_path_rewrites)?;
     validate_cookie_attributes(service, route_index, &mut policy.response_cookie_attributes)?;
     validate_retry(service, route_index, &mut policy.retry)?;
     if let Some(cache) = &mut policy.cache {
         crate::cache_validation::validate_cache_policy(service, route_index, cache, cache_stores)?;
+    }
+    Ok(())
+}
+
+fn validate_proxy_path_rewrite(
+    service: &str,
+    route_index: usize,
+    rewrite: &mut Option<HttpProxyPathRewrite>,
+) -> Result<(), ConfigError> {
+    let Some(rewrite) = rewrite else {
+        return Ok(());
+    };
+    for path in [&mut rewrite.from, &mut rewrite.to] {
+        if path.len() > MAX_HTTP_PROXY_PATH_BYTES || !path.starts_with('/') {
+            return Err(invalid_route(
+                service,
+                route_index,
+                "action.policy.upstream_path_rewrite",
+                "must be an absolute path of at most 1024 bytes",
+            ));
+        }
+        let valid = path
+            .parse::<PathAndQuery>()
+            .is_ok_and(|parsed| parsed.query().is_none() && parsed.path() == path);
+        if !valid {
+            return Err(invalid_route(
+                service,
+                route_index,
+                "action.policy.upstream_path_rewrite",
+                "must be an absolute path without query or fragment",
+            ));
+        }
+        let Some(canonical) = canonicalize_http_path(path) else {
+            return Err(invalid_route(
+                service,
+                route_index,
+                "action.policy.upstream_path_rewrite",
+                "must have one unambiguous path interpretation",
+            ));
+        };
+        *path = canonical.into_owned();
     }
     Ok(())
 }

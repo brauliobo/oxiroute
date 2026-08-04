@@ -59,6 +59,7 @@ return {
             upstream_pool = "web",
             policy = {
               upstream_host = { type = "preserve_incoming" },
+              upstream_path_rewrite = nil,
               request_headers = nil,
               response_headers = nil,
               response_cookie_path_rewrites = nil,

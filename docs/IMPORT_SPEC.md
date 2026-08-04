@@ -178,7 +178,7 @@ semantics cannot be safely round-tripped.
 The public `import_http_fragment` entry point intentionally remains fragment-only. Use `import_root`
 for a complete process/events/http/rtmp root. Target support beyond the current strict subset includes:
 
-- `http`, `server`, `listen`, `server_name`, ordinary prefix/exact `location`, static `proxy_pass`.
+- `http`, `server`, `listen`, `server_name`, ordinary prefix/exact `location`, static `proxy_pass` with URI-prefix replacement, and static root/alias actions.
 - `upstream` with static `server` entries.
 - Basic certificate/key/protocol directives.
 - `stream` TCP and UDP listeners with static upstreams.

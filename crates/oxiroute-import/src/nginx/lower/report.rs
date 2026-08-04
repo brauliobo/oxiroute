@@ -333,6 +333,9 @@ impl Lowerer {
                     "/action/policy",
                     "/action/policy/upstream_host",
                     "/action/policy/upstream_host/type",
+                    "/action/policy/upstream_path_rewrite",
+                    "/action/policy/upstream_path_rewrite/from",
+                    "/action/policy/upstream_path_rewrite/to",
                     "/action/policy/request_headers",
                     "/action/policy/response_headers",
                     "/action/policy/response_cookie_path_rewrites",
@@ -525,6 +528,15 @@ impl Lowerer {
                 format!("{policy_path}/upstream_host/value"),
                 origins.to_vec(),
             ),
+        }
+        if policy.upstream_path_rewrite.is_some() {
+            for suffix in [
+                "/upstream_path_rewrite",
+                "/upstream_path_rewrite/from",
+                "/upstream_path_rewrite/to",
+            ] {
+                self.record(format!("{policy_path}{suffix}"), origins.to_vec());
+            }
         }
         for (index, mutation) in policy.request_headers.iter().enumerate() {
             let path = format!("{policy_path}/request_headers/{index}");

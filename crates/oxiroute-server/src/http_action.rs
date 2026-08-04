@@ -29,8 +29,8 @@ use oxiroute_cache::{
 };
 use oxiroute_config::{
     AccessLogPolicy, HttpAccessPolicy, HttpCookieAttributePolicy, HttpCookiePathRewrite,
-    HttpGzipMinimumVersion, HttpGzipPolicy, HttpLiteralHeader, HttpProxyPolicy,
-    HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
+    HttpGzipMinimumVersion, HttpGzipPolicy, HttpLiteralHeader, HttpProxyPathRewrite,
+    HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
     HttpResponseHeaderMutation, HttpRetryTarget, HttpRetryTrigger, HttpRouteAction,
     HttpRoutePolicy, HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost,
 };
@@ -247,6 +247,7 @@ pub(crate) struct ProxyActionPlan {
 #[derive(Debug)]
 pub(crate) struct ProxyPolicyPlan {
     pub(crate) upstream_host: HttpUpstreamHost,
+    pub(crate) upstream_path_rewrite: Option<HttpProxyPathRewrite>,
     pub(crate) request_headers: Box<[RequestHeaderMutationPlan]>,
     pub(crate) response_headers: Box<[ResponseHeaderMutationPlan]>,
     pub(crate) cookie_path_rewrites: Box<[HttpCookiePathRewrite]>,
@@ -648,6 +649,7 @@ impl ProxyPolicyPlan {
             .flatten();
         Self {
             upstream_host: policy.upstream_host.clone(),
+            upstream_path_rewrite: policy.upstream_path_rewrite.clone(),
             request_headers: policy
                 .request_headers
                 .iter()

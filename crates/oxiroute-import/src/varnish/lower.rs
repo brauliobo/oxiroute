@@ -1142,6 +1142,7 @@ impl<'a> Lowerer<'a> {
                 upstream_pool: pool_name,
                 policy: HttpProxyPolicy {
                     upstream_host: HttpUpstreamHost::PreserveIncoming,
+                    upstream_path_rewrite: None,
                     request_headers,
                     response_headers,
                     response_cookie_path_rewrites: Vec::new(),
