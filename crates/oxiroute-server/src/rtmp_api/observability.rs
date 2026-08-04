@@ -4,8 +4,8 @@ use serde_json::{Value, json};
 
 use super::ApiResponse;
 use crate::{
-    GenerationManager, RuntimeMetrics, RuntimeSnapshot, TOPOLOGY_SCHEMA_VERSION, TopologySnapshot,
-    render_prometheus,
+    GenerationManager, RuntimeMetrics, RuntimeSnapshot, TOPOLOGY_SCHEMA_VERSION, TopologyNodeKind,
+    TopologySnapshot, render_prometheus,
 };
 
 #[derive(Clone, Copy)]
@@ -44,13 +44,14 @@ pub(super) fn handle(
         Route::Monitoring => monitoring_response(metrics, registry),
         Route::Metrics => metrics_response(metrics, registry, generations),
         Route::Readiness => readiness_response(metrics, generations),
-        Route::Status => status_response(metrics, generations),
+        Route::Status => status_response(metrics, generations, topology),
     }
 }
 
 fn status_response(
     metrics: &RuntimeMetrics,
     generations: Option<&GenerationManager>,
+    topology: &TopologySnapshot,
 ) -> ApiResponse {
     let listeners = match metrics.snapshot() {
         Ok(runtime) => runtime.listeners,
@@ -63,6 +64,17 @@ fn status_response(
         }
     };
     let generation = generations.map(GenerationManager::status);
+    let tls_profiles = topology
+        .nodes()
+        .iter()
+        .filter(|node| node.kind == TopologyNodeKind::TlsProfile)
+        .map(|node| {
+            json!({
+                "name": node.name,
+                "clientAuth": node.attributes["clientAuth"],
+            })
+        })
+        .collect::<Vec<_>>();
     ApiResponse::json(
         200,
         &json!({
@@ -75,6 +87,7 @@ fn status_response(
             "degraded": generation.as_ref().is_none_or(|status| status.degraded),
             "audit": crate::operational_event::audit_status(),
             "listeners": listeners,
+            "tlsProfiles": tls_profiles,
         }),
     )
 }

@@ -104,7 +104,7 @@ describe('cache and forward proxy editors', () => {
           default_certificate: 'forward',
           min_version: '1.3',
           alpn: ['h3'],
-          policy: { cipher_list: null, dh_parameters_path: null, session_cache: null, session_timeout_seconds: null, session_tickets: false, prefer_server_ciphers: true },
+          policy: { cipher_list: null, dh_parameters_path: null, client_auth: { mode: 'disabled', ca_certificate_path: null, allowed_dns_names: [] }, session_cache: null, session_timeout_seconds: null, session_tickets: false, prefer_server_ciphers: true },
         }],
       },
     })
@@ -126,7 +126,7 @@ describe('cache and forward proxy editors', () => {
       default_certificate: 'forward',
       min_version: '1.2' as const,
       alpn: ['http/1.1' as const],
-      policy: { cipher_list: null, dh_parameters_path: null, session_cache: null, session_timeout_seconds: null, session_tickets: false, prefer_server_ciphers: true },
+      policy: { cipher_list: null, dh_parameters_path: null, client_auth: { mode: 'disabled' as const, ca_certificate_path: null, allowed_dns_names: [] }, session_cache: null, session_timeout_seconds: null, session_tickets: false, prefer_server_ciphers: true },
     }
     const wrapper = mount(TlsProfileEditor, {
       props: { profile, certificateNames: ['forward'] },
