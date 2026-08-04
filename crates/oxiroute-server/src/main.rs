@@ -23,7 +23,9 @@ use hyper::{server::conn::http1, service::service_fn};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use log::{error, info, warn};
 use oxiroute_config::ListenerBind;
-use oxiroute_rtmp::{MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN, RtmpRegistry, RtmpServiceRuntime};
+use oxiroute_rtmp::{
+    MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN, RtmpRegistry, RtmpServiceRuntime, VodCatalog,
+};
 use oxiroute_server::{
     AcmeManagedReconciler, CertbotWatcherConfig, CertbotWatcherSupervisor, ConfigWatcher,
     ConfigWatcherOptions, ConnectionGuard, FileWatcherConfig, FileWatcherSupervisor,
@@ -51,7 +53,7 @@ use pingora::{
     },
 };
 use signal_hook::{
-    consts::signal::{SIGINT, SIGTERM},
+    consts::signal::{SIGHUP, SIGINT, SIGTERM},
     iterator::Signals,
 };
 use tokio::{
@@ -926,6 +928,7 @@ async fn write_rtmp_packets(
 
 fn build_management_api(
     registry: Arc<RtmpRegistry>,
+    vod_catalog: Arc<VodCatalog>,
     metrics: RuntimeMetrics,
     topology: Arc<TopologySnapshot>,
     coordinator: CanonicalConfigCoordinator,
@@ -938,7 +941,8 @@ fn build_management_api(
     } else {
         Ok(RtmpManagementApi::new(registry, metrics, topology))
     }?;
-    api.with_config_coordinator_from_token_file(coordinator, active_revision, token_file)
+    api.with_vod_catalog(vod_catalog)
+        .with_config_coordinator_from_token_file(coordinator, active_revision, token_file)
 }
 
 fn main() -> ExitCode {
@@ -951,7 +955,16 @@ fn main() -> ExitCode {
 
     let cli = Cli::parse_process();
     let result = match cli.command() {
-        Command::Serve { config } => run(config),
+        Command::Serve { config } => {
+            #[cfg(target_os = "linux")]
+            {
+                supervised::master::run_if_supported(config)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                run(config)
+            }
+        }
         Command::Import { .. }
         | Command::Version
         | Command::Config {
@@ -1415,14 +1428,23 @@ where
 #[allow(clippy::too_many_lines)]
 fn run(config_path: &Path) -> Result<(), Box<dyn Error>> {
     let stop_supervisor = Arc::new(AtomicBool::new(false));
-    let mut signals = Signals::new([SIGTERM, SIGINT])?;
+    let reload_requested = Arc::new(AtomicBool::new(false));
+    let mut signals = Signals::new([SIGTERM, SIGINT, SIGHUP])?;
     let signal_handle = signals.handle();
     let signal_stop = Arc::clone(&stop_supervisor);
+    let signal_reload = Arc::clone(&reload_requested);
     let signal_thread = thread::Builder::new()
         .name("oxiroute-signals".into())
         .spawn(move || {
-            if signals.forever().next().is_some() {
-                signal_stop.store(true, Ordering::Release);
+            for signal in signals.forever() {
+                match signal {
+                    SIGTERM | SIGINT => {
+                        signal_stop.store(true, Ordering::Release);
+                        break;
+                    }
+                    SIGHUP => signal_reload.store(true, Ordering::Release),
+                    _ => {}
+                }
             }
         })?;
     let config_coordinator = CanonicalConfigCoordinator::new(config_path)?;
@@ -1554,6 +1576,9 @@ fn run(config_path: &Path) -> Result<(), Box<dyn Error>> {
         return Err(io::Error::other("generation supervisor terminated before startup").into());
     }
     while !stop_supervisor.load(Ordering::Acquire) {
+        if reload_requested.swap(false, Ordering::AcqRel) {
+            config_watcher.wake();
+        }
         thread::sleep(Duration::from_millis(20));
     }
     signal_handle.close();
@@ -1662,6 +1687,7 @@ fn serve_generation(
     if let Some(management) = &config.management {
         let management_api = build_management_api(
             Arc::clone(&rtmp_registry),
+            Arc::clone(&plan.rtmp_vod_catalog),
             runtime_metrics.clone(),
             Arc::clone(&topology),
             config_coordinator.clone(),
@@ -1671,7 +1697,6 @@ fn serve_generation(
                 .expect("management token path was required above"),
             management.ui_dir.as_deref(),
         )?
-        .with_vod_catalog(Arc::clone(&plan.rtmp_vod_catalog))
         .with_generation_manager(generation_manager.clone())
         .with_process_shutdown(process_shutdown);
         let app = ProcessAdmissionApp::new(
@@ -2219,6 +2244,8 @@ mod tests {
                 name: "live".into(),
                 outbound_chunk_size: 4_096,
                 access_log: None,
+                outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
+                callbacks: oxiroute_config::RtmpCallbackConfig::default(),
                 applications: vec![RtmpApplication {
                     name: "live".into(),
                     live: true,
@@ -2227,14 +2254,23 @@ mod tests {
                     play: oxiroute_config::RtmpAccessPolicy::default(),
                     limits: oxiroute_config::RtmpSessionCeilings::default(),
                     push_targets: Vec::new(),
+                    pull_targets: Vec::new(),
+                    relay: oxiroute_config::RtmpRelayPolicy::default(),
+                    callbacks: oxiroute_config::RtmpCallbackConfig::default(),
                     fanout: oxiroute_config::RtmpFanoutPolicy::default(),
                     vod: None,
                     recorders: vec![RtmpRecorder {
                         name: "archive".into(),
                         start: RtmpRecorderStart::Continuous,
                         root_directory: recording_root.to_path_buf(),
+                        record_mask: oxiroute_config::RtmpRecordMask::default(),
                         suffix_template: ".flv".into(),
                         append_unix_seconds: false,
+                        append: false,
+                        lock: false,
+                        max_size: None,
+                        max_frames: None,
+                        notify: false,
                         timezone: oxiroute_config::RtmpRecorderTimezone::default(),
                         time_basis: oxiroute_config::RtmpRecorderTimeBasis::default(),
                         segment_naming: oxiroute_config::RtmpRecorderSegmentNaming::default(),
