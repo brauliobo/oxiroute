@@ -276,6 +276,34 @@ impl StateStore {
         serde_json::from_slice(&bytes).map_err(AcmeStateError::Json)
     }
 
+    /// Persists one redacted lifecycle job document under the bounded jobs namespace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the job identity or serialized state is unsafe or cannot be committed
+    /// atomically.
+    pub fn write_job(&self, job: &JobState) -> Result<(), AcmeStateError> {
+        validate_slug(&job.id)?;
+        validate_slug(&job.certificate)?;
+        if job.operation.is_empty()
+            || job.operation.len() > MAX_SLUG_BYTES
+            || !is_safe_component(&job.operation)
+        {
+            return Err(AcmeStateError::UnsafePath);
+        }
+        self.write_json(&format!("jobs/{}.json", job.id), job)
+    }
+
+    /// Loads one redacted lifecycle job document from the jobs namespace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the job identity is unsafe, missing, oversized, or malformed.
+    pub fn read_job(&self, id: &str) -> Result<JobState, AcmeStateError> {
+        validate_slug(id)?;
+        self.read_json(&format!("jobs/{id}.json"), MAX_JOB_BYTES)
+    }
+
     fn write_atomic(&self, relative: &str, bytes: &[u8], mode: u32) -> Result<(), AcmeStateError> {
         if bytes.len() > MAX_STATE_FILE_BYTES {
             return Err(AcmeStateError::FileTooLarge {
@@ -819,6 +847,30 @@ mod tests {
                 .join("state/certificates/edge/revisions/00000001/cert.pem")
                 .is_file()
         );
+    }
+
+    #[test]
+    fn job_state_is_durable_and_contains_only_redacted_outcomes() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let state = StateStore::open(directory.path().join("state")).expect("state");
+        let job = JobState {
+            id: "job-1".into(),
+            certificate: "edge".into(),
+            operation: "renew".into(),
+            status: JobStatus::Failed,
+            created_at_unix_seconds: 1,
+            updated_at_unix_seconds: 2,
+            attempt: 1,
+            next_action_unix_seconds: Some(3),
+            disk_revision: None,
+            active_revision: Some("old".into()),
+            last_outcome: Some(RedactedOutcome::new("transport_failed", "retry scheduled")),
+        };
+        state.write_job(&job).expect("write job");
+        assert_eq!(state.read_job("job-1").expect("read job"), job);
+        let json =
+            fs::read_to_string(directory.path().join("state/jobs/job-1.json")).expect("job JSON");
+        assert!(!json.contains("private"));
     }
 
     #[test]
