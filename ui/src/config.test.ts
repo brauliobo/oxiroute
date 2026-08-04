@@ -288,6 +288,12 @@ const currentCanonicalFields = [
   'l4_services[].connect_timeout_ms',
   'l4_services[].idle_timeout_ms',
   'l4_services[].lifetime_timeout_ms',
+  'l4_services[].udp',
+  'l4_services[].udp.max_datagram_bytes',
+  'l4_services[].udp.max_sessions',
+  'l4_services[].udp.max_session_bytes',
+  'l4_services[].udp.max_queue_datagrams',
+  'l4_services[].udp.max_queue_bytes',
 ]
 
 describe('canonical field registry', () => {

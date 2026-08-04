@@ -238,6 +238,7 @@ function canonicalConfig(): CanonicalConfig {
         connect_timeout_ms: 10_000,
         idle_timeout_ms: 300_000,
         lifetime_timeout_ms: 3_600_000,
+        udp: null,
       },
     ],
   }
@@ -1053,6 +1054,7 @@ describe('ConfigurationWorkspace', () => {
       connect_timeout_ms: 11_000,
       idle_timeout_ms: 301_000,
       lifetime_timeout_ms: 3_601_000,
+      udp: null,
     })
   })
 

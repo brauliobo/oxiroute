@@ -644,6 +644,15 @@ export interface L4ServiceConfig {
   connect_timeout_ms: number
   idle_timeout_ms: number
   lifetime_timeout_ms: number | null
+  udp: UdpPolicyConfig | null
+}
+
+export interface UdpPolicyConfig {
+  max_datagram_bytes: number
+  max_sessions: number
+  max_session_bytes: number
+  max_queue_datagrams: number
+  max_queue_bytes: number
 }
 
 export interface CanonicalConfig {
@@ -1159,7 +1168,16 @@ function isRtmpRecorder(value: unknown): value is RtmpRecorderConfig {
 function isL4Service(value: unknown): value is L4ServiceConfig {
   return isRecord(value) && typeof value.name === 'string' && typeof value.upstream_pool === 'string' &&
     safeInteger(value.connect_timeout_ms) && safeInteger(value.idle_timeout_ms) &&
-    nullableSafeInteger(value.lifetime_timeout_ms)
+    nullableSafeInteger(value.lifetime_timeout_ms) &&
+    (value.udp === null || isUdpPolicy(value.udp))
+}
+
+function isUdpPolicy(value: unknown): value is UdpPolicyConfig {
+  return isRecord(value) && integerInRange(value.max_datagram_bytes, 1, 65_507) &&
+    integerInRange(value.max_sessions, 1, 100_000) &&
+    integerInRange(value.max_session_bytes, 1, 1_073_741_824) &&
+    integerInRange(value.max_queue_datagrams, 1, 4_096) &&
+    integerInRange(value.max_queue_bytes, 1, 16_777_216)
 }
 
 export type CanonicalFieldKind =
@@ -1479,6 +1497,12 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'l4_services[].connect_timeout_ms', kind: 'integer' },
   { path: 'l4_services[].idle_timeout_ms', kind: 'integer' },
   { path: 'l4_services[].lifetime_timeout_ms', kind: 'integer' },
+  { path: 'l4_services[].udp', kind: 'object' },
+  { path: 'l4_services[].udp.max_datagram_bytes', kind: 'integer' },
+  { path: 'l4_services[].udp.max_sessions', kind: 'integer' },
+  { path: 'l4_services[].udp.max_session_bytes', kind: 'integer' },
+  { path: 'l4_services[].udp.max_queue_datagrams', kind: 'integer' },
+  { path: 'l4_services[].udp.max_queue_bytes', kind: 'integer' },
   { path: 'max_connections', kind: 'integer' },
   { path: 'listeners[].bind.mode', kind: 'integer' },
   { path: 'listeners[].downstream_timeouts', kind: 'object' },
