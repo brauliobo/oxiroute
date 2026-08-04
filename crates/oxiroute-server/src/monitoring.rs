@@ -921,7 +921,7 @@ impl RuntimeMetrics {
                     not_after_unix_seconds: status.not_after_unix_seconds,
                     next_action_unix_seconds: status.next_action_unix_seconds,
                     last_outcome: status.last_outcome.map(str::to_owned),
-                    last_error_code: status.last_error_code.map(str::to_owned),
+                    last_error_code: status.last_error_code,
                 }
             })
             .collect())

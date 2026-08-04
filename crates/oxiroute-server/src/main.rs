@@ -986,7 +986,6 @@ struct GenerationProcess {
 }
 
 const ACME_RENEWAL_SCAN_INTERVAL: Duration = Duration::from_secs(12 * 60 * 60);
-const ACME_INITIAL_SCAN_DELAY: Duration = Duration::from_secs(10);
 
 struct AcmeManagedSupervisor {
     stop: mpsc::Sender<()>,
@@ -999,9 +998,6 @@ impl AcmeManagedSupervisor {
         let thread = thread::Builder::new()
             .name("oxiroute-acme-renewal".into())
             .spawn(move || {
-                if stop_rx.recv_timeout(ACME_INITIAL_SCAN_DELAY).is_ok() {
-                    return;
-                }
                 loop {
                     let now = SystemTime::now()
                         .duration_since(SystemTime::UNIX_EPOCH)
@@ -1044,7 +1040,10 @@ impl AcmeManagedSupervisor {
                             }
                         }
                     }
-                    if stop_rx.recv_timeout(ACME_RENEWAL_SCAN_INTERVAL).is_ok() {
+                    if stop_rx
+                        .recv_timeout(acme_scan_delay(&reconcilers, now))
+                        .is_ok()
+                    {
                         break;
                     }
                 }
@@ -1061,6 +1060,18 @@ impl AcmeManagedSupervisor {
             let _ = thread.join();
         }
     }
+}
+
+fn acme_scan_delay(reconcilers: &[Arc<AcmeManagedReconciler>], now: u64) -> Duration {
+    reconcilers
+        .iter()
+        .filter_map(|reconciler| {
+            let next = reconciler.status().next_action_unix_seconds?;
+            (next > now).then(|| Duration::from_secs(next - now))
+        })
+        .min()
+        .unwrap_or(ACME_RENEWAL_SCAN_INTERVAL)
+        .min(ACME_RENEWAL_SCAN_INTERVAL)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
