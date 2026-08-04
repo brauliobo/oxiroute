@@ -106,6 +106,18 @@ fn canonical_validation_failures_remain_blocking_diagnostics() {
         diagnostic.stage() == DiagnosticStage::Validate
             && diagnostic.code() == oxiroute_import::E_SEMANTICS_NOT_REPRESENTABLE
     }));
+    let diagnostic = report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.stage() == DiagnosticStage::Validate)
+        .expect("validation blocker");
+    assert_eq!(
+        diagnostic
+            .primary_span()
+            .expect("validation origin")
+            .source(),
+        SourceId::new(0)
+    );
 }
 
 #[test]
@@ -270,8 +282,8 @@ fn hostrouter_report_lowers_to_a_complete_forward_proxy_candidate() {
         .map(|entry| entry.path.as_str())
         .collect::<HashSet<_>>();
     for path in [
-        "/listeners/0/tls_profile",
-        "/listeners/0/downstream_timeouts/keepalive_timeout_ms",
+        "/listeners",
+        "/forward_proxy_services/0",
         "/forward_proxy_services/0/enabled_versions/0",
         "/forward_proxy_services/0/connect/allowed_ports/0",
         "/forward_proxy_services/0/auth/htpasswd_file_path",
@@ -281,6 +293,9 @@ fn hostrouter_report_lowers_to_a_complete_forward_proxy_candidate() {
     ] {
         assert!(paths.contains(path), "missing Squid provenance path {path}");
     }
+    assert!(!paths.contains("/listeners/0/tls_profile"));
+    assert!(!paths.contains("/listeners/0/downstream_timeouts/keepalive_timeout_ms"));
+    assert!(!paths.contains("/forward_proxy_services/0/auth/username_case_sensitive"));
     assert_squid_origin(
         &report,
         "/listeners/0",
@@ -346,6 +361,42 @@ fn canonical_provenance_retains_include_file_and_stack_for_finalized_fields() {
         "/forward_proxy_services/0/access_policy/rules/0",
         &included,
         6,
+        1,
+    );
+}
+
+#[test]
+fn canonical_provenance_retains_glob_file_and_stack_for_finalized_fields() {
+    let directory = tempdir().expect("Squid fixture directory");
+    let includes = directory.path().join("conf.d");
+    fs::create_dir(&includes).expect("include directory");
+    let base = includes.join("10-base.conf");
+    fs::write(
+        &base,
+        b"http_port 3128\n\
+          access_log none\n\
+          forwarded_for delete\n\
+          via off\n\
+          acl ssl_ports port 443\n\
+          http_access deny CONNECT !ssl_ports\n",
+    )
+    .expect("base glob source");
+    let policy = includes.join("20-policy.conf");
+    fs::write(&policy, b"http_access allow all\n").expect("policy glob source");
+    let root = directory.path().join("squid.conf");
+    fs::write(&root, b"include conf.d/*.conf\n").expect("glob root source");
+
+    let report = import(&root);
+    assert!(report.config.is_some(), "{:#?}", report.diagnostics);
+    assert_eq!(report.source_graph.sources.len(), 3);
+    assert_eq!(report.source_graph.includes[0].targets.len(), 2);
+    assert_squid_provenance_paths_are_unique(&report);
+    assert_squid_origin(&report, "/listeners/0", &base, 1, 1);
+    assert_squid_origin(
+        &report,
+        "/forward_proxy_services/0/access_policy/rules/1",
+        &policy,
+        1,
         1,
     );
 }

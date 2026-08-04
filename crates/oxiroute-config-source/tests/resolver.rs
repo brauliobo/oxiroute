@@ -112,6 +112,40 @@ fn hocon_and_uci_import_a_complete_squid_forward_proxy_root() {
 }
 
 #[test]
+fn native_squid_references_resolve_the_same_candidate_shape() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../oxiroute-import/tests/fixtures/squid/hostrouter-sanitized.conf");
+    let sources = [
+        (
+            "kdl",
+            format!("squid_server {root:?} {{ externalize_cache #true }}\n"),
+        ),
+        (
+            "hocon",
+            format!("squid_server = {{ path = {root:?}, externalize_cache = true }}"),
+        ),
+        (
+            "uci",
+            format!(
+                "config oxiroute 'main'\n  option version '1'\nconfig squid_server 'proxy'\n  option path {root:?}\n  option externalize_cache '1'\n"
+            ),
+        ),
+    ];
+    let mut resolved = sources.iter().map(|(extension, source)| {
+        resolve_source(
+            &root.parent().unwrap().join(format!("native.{extension}")),
+            source.as_bytes(),
+        )
+        .unwrap_or_else(|error| panic!("resolved Squid {extension}: {error}"))
+    });
+    let first = resolved.next().expect("KDL candidate");
+    for candidate in resolved {
+        assert_eq!(candidate.config, first.config);
+        assert_eq!(candidate.dependencies, first.dependencies);
+    }
+}
+
+#[test]
 fn native_squid_requires_explicit_cache_externalization() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../oxiroute-import/tests/fixtures/squid/hostrouter-sanitized.conf");

@@ -377,7 +377,7 @@
       "id": "SQ-01",
       "status": "partial",
       "gates": { "canonical": false, "runtime": false, "failure": true, "tests": true, "native_lowering": false },
-      "evidence": ["coverage/host-inventory.json#hostrouter.squid.present", "crates/oxiroute-import/src/squid/loader.rs", "crates/oxiroute-import/tests/squid.rs#hostrouter_sanitized_shape_classifies_every_reachable_directive"]
+      "evidence": ["coverage/host-inventory.json#hostrouter.squid.present", "crates/oxiroute-import/src/squid/loader.rs", "crates/oxiroute-import/tests/squid.rs#hostrouter_sanitized_shape_classifies_every_reachable_directive", "crates/oxiroute-import/tests/squid.rs#canonical_provenance_retains_include_file_and_stack_for_finalized_fields", "crates/oxiroute-import/tests/squid.rs#canonical_provenance_retains_glob_file_and_stack_for_finalized_fields", "crates/oxiroute-config-source/tests/resolver.rs#native_squid_references_resolve_the_same_candidate_shape"]
     },
     {
       "id": "HV-01",
