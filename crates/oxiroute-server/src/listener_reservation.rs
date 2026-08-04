@@ -254,6 +254,7 @@ impl ListenerReservation {
     /// # Errors
     ///
     /// Returns an error when the socket cannot be bound securely or the transport is unsupported.
+    #[allow(clippy::too_many_lines)]
     pub fn bind(listener_name: &str, bind: &ListenerBind) -> io::Result<Self> {
         #[cfg(unix)]
         {
