@@ -1,0 +1,1569 @@
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    fmt,
+    net::IpAddr,
+    sync::Arc,
+};
+
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use openssl::{
+    bn::BigNumContext,
+    ec::{EcGroup, EcKey, PointConversionForm},
+    ecdsa::EcdsaSig,
+    error::ErrorStack,
+    hash::MessageDigest,
+    nid::Nid,
+    pkey::{Id, PKey, Private},
+    rsa::Rsa,
+    sign::Signer,
+    stack::Stack,
+    x509::{X509NameBuilder, X509Req, X509ReqBuilder, extension::SubjectAlternativeName},
+};
+use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
+
+use crate::{Clock, SecretBytes};
+
+pub const MAX_ACME_BODY_BYTES: usize = 2 * 1024 * 1024;
+pub const MAX_ACME_URL_BYTES: usize = 2_048;
+pub const MAX_NONCES: usize = 32;
+pub const MAX_IDENTIFIERS: usize = 100;
+pub const MAX_POLL_ATTEMPTS: usize = 64;
+pub const MAX_POLL_DELAY_SECONDS: u64 = 300;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HttpRequest {
+    pub method: String,
+    pub url: String,
+    pub headers: BTreeMap<String, String>,
+    pub body: Vec<u8>,
+}
+
+impl HttpRequest {
+    fn new(method: &str, url: &str, body: Vec<u8>) -> Self {
+        Self {
+            method: method.into(),
+            url: url.into(),
+            headers: BTreeMap::new(),
+            body,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HttpResponse {
+    pub status: u16,
+    pub url: String,
+    pub headers: BTreeMap<String, String>,
+    pub body: Vec<u8>,
+}
+
+impl HttpResponse {
+    #[must_use]
+    pub fn new(status: u16, url: impl Into<String>, body: Vec<u8>) -> Self {
+        Self {
+            status,
+            url: url.into(),
+            headers: BTreeMap::new(),
+            body,
+        }
+    }
+
+    #[must_use]
+    pub fn with_header(mut self, name: &str, value: &str) -> Self {
+        self.headers.insert(name.to_ascii_lowercase(), value.into());
+        self
+    }
+
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .get(&name.to_ascii_lowercase())
+            .map(String::as_str)
+    }
+}
+
+pub trait AcmeTransport: Send + Sync {
+    /// Sends one bounded ACME request without following redirects.
+    ///
+    /// # Errors
+    ///
+    /// Returns a transport error when the injected transport cannot produce a response.
+    fn request(&self, request: HttpRequest) -> Result<HttpResponse, TransportError>;
+}
+
+#[derive(Debug, thiserror::Error, Eq, PartialEq)]
+#[error("ACME transport request failed")]
+pub struct TransportError;
+
+#[derive(Debug, thiserror::Error)]
+pub enum AcmeError {
+    #[error("ACME directory URL is invalid or not HTTPS")]
+    InvalidDirectoryUrl,
+    #[error("ACME endpoint is outside the configured outbound origin policy")]
+    EndpointOutsidePolicy,
+    #[error("ACME endpoint uses an untrusted redirect")]
+    UntrustedRedirect,
+    #[error("ACME private or local origin requires an explicit development allowlist")]
+    PrivateOriginRequiresAllowlist,
+    #[error("ACME response exceeds the {limit}-byte bound")]
+    ResponseTooLarge { limit: usize },
+    #[error("ACME transport failed")]
+    Transport(#[source] TransportError),
+    #[error("ACME response returned unexpected HTTP status {status}")]
+    UnexpectedStatus { status: u16 },
+    #[error("ACME response is malformed")]
+    MalformedResponse,
+    #[error("ACME response is missing a required field")]
+    MissingField,
+    #[error("ACME problem type `{problem_type}` was returned")]
+    Problem { problem_type: String },
+    #[error("ACME replay nonce is missing")]
+    MissingNonce,
+    #[error("ACME replay nonce pool is exhausted")]
+    NoncePoolExhausted,
+    #[error("ACME returned badNonce after its one permitted retry")]
+    BadNonceRetryExhausted,
+    #[error("ACME account registration is ambiguous and was not replayed")]
+    AccountRegistrationAmbiguous,
+    #[error("ACME account contact policy is invalid")]
+    InvalidAccountRequest,
+    #[error("ACME terms of service must be explicitly agreed")]
+    TermsNotAgreed,
+    #[error("ACME directory requires external account binding")]
+    ExternalAccountBindingRequired,
+    #[error("ACME identifier set is invalid or unsupported")]
+    UnsupportedIdentifier,
+    #[error("ACME authorization has no supported HTTP-01 challenge")]
+    UnsupportedChallenge,
+    #[error("ACME polling exceeded its bounded deadline")]
+    PollTimeout,
+    #[error("ACME retry guidance is invalid")]
+    InvalidRetryAfter,
+    #[error("ACME account key could not be generated or used")]
+    Key(#[source] ErrorStack),
+    #[error("ACME JWS signature could not be created")]
+    Signature(#[source] ErrorStack),
+    #[error("ACME CSR could not be created")]
+    Csr(#[source] ErrorStack),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OriginPolicy {
+    allowed_origins: BTreeSet<String>,
+}
+
+impl OriginPolicy {
+    /// Creates a policy for a public HTTPS directory origin.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed, non-HTTPS, or local origins.
+    pub fn strict(directory_url: &str) -> Result<Self, AcmeError> {
+        let origin = origin_of(directory_url)?;
+        if is_private_origin(&origin) {
+            return Err(AcmeError::PrivateOriginRequiresAllowlist);
+        }
+        Ok(Self {
+            allowed_origins: [origin].into_iter().collect(),
+        })
+    }
+
+    /// Creates an explicitly allowlisted policy for deterministic local or private tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed or non-HTTPS URLs.
+    pub fn development_allowlist(directory_url: &str) -> Result<Self, AcmeError> {
+        Ok(Self {
+            allowed_origins: [origin_of(directory_url)?].into_iter().collect(),
+        })
+    }
+
+    /// Adds one advertised HTTPS origin to the explicit outbound allowlist.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed or non-HTTPS URLs.
+    pub fn allow_origin(mut self, url: &str) -> Result<Self, AcmeError> {
+        self.allowed_origins.insert(origin_of(url)?);
+        Ok(self)
+    }
+
+    fn permits(&self, url: &str) -> Result<(), AcmeError> {
+        if url.len() > MAX_ACME_URL_BYTES || !self.allowed_origins.contains(&origin_of(url)?) {
+            return Err(AcmeError::EndpointOutsidePolicy);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DirectoryDocument {
+    pub new_nonce: String,
+    pub new_account: String,
+    pub new_order: String,
+    pub revoke_certificate: Option<String>,
+    pub key_change: Option<String>,
+    pub renewal_info: Option<String>,
+    pub terms_of_service: Option<String>,
+    pub external_account_required: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Directory {
+    pub url: String,
+    pub document: DirectoryDocument,
+}
+
+impl Directory {
+    /// Fetches and validates an ACME v2 directory through an injected transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an untrusted origin, redirect, oversized body, malformed document, or
+    /// transport failure.
+    pub fn fetch<T: AcmeTransport>(
+        transport: &T,
+        url: &str,
+        policy: &OriginPolicy,
+    ) -> Result<Self, AcmeError> {
+        policy.permits(url)?;
+        let request = HttpRequest::new("GET", url, Vec::new());
+        let response = transport.request(request).map_err(AcmeError::Transport)?;
+        validate_response_url(url, &response, policy)?;
+        if response.status / 100 == 3 {
+            return Err(AcmeError::UntrustedRedirect);
+        }
+        if response.status != 200 {
+            return Err(problem_or_status(&response));
+        }
+        let value = bounded_json(&response.body, MAX_ACME_BODY_BYTES)?;
+        let document = DirectoryDocument {
+            new_nonce: required_string(&value, "newNonce")?,
+            new_account: required_string(&value, "newAccount")?,
+            new_order: required_string(&value, "newOrder")?,
+            revoke_certificate: optional_string(&value, "revokeCert")?,
+            key_change: optional_string(&value, "keyChange")?,
+            renewal_info: optional_string(&value, "renewalInfo")?,
+            terms_of_service: value
+                .get("meta")
+                .and_then(|meta| meta.get("termsOfService"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            external_account_required: value
+                .get("meta")
+                .and_then(|meta| meta.get("externalAccountRequired"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        };
+        for endpoint in [
+            Some(document.new_nonce.as_str()),
+            Some(document.new_account.as_str()),
+            Some(document.new_order.as_str()),
+            document.revoke_certificate.as_deref(),
+            document.key_change.as_deref(),
+            document.renewal_info.as_deref(),
+            document.terms_of_service.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            policy.permits(endpoint)?;
+        }
+        Ok(Self {
+            url: url.into(),
+            document,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AccountKeyAlgorithm {
+    EcdsaP256,
+    Rsa2048,
+}
+
+#[derive(Clone)]
+pub struct AccountKey {
+    private_key_pem: SecretBytes,
+    algorithm: AccountKeyAlgorithm,
+    jwk: BTreeMap<String, String>,
+}
+
+impl fmt::Debug for AccountKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AccountKey")
+            .field("algorithm", &self.algorithm)
+            .field("thumbprint", &self.thumbprint())
+            .field("private_key", &"REDACTED")
+            .finish_non_exhaustive()
+    }
+}
+
+impl AccountKey {
+    /// Generates an ACME account key with the selected maintained-library algorithm.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when OpenSSL cannot generate or serialize the key.
+    pub fn generate(algorithm: AccountKeyAlgorithm) -> Result<Self, AcmeError> {
+        let private_key = match algorithm {
+            AccountKeyAlgorithm::EcdsaP256 => {
+                let group =
+                    EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).map_err(AcmeError::Key)?;
+                PKey::from_ec_key(EcKey::generate(&group).map_err(AcmeError::Key)?)
+                    .map_err(AcmeError::Key)?
+            }
+            AccountKeyAlgorithm::Rsa2048 => {
+                PKey::from_rsa(Rsa::generate(2_048).map_err(AcmeError::Key)?)
+                    .map_err(AcmeError::Key)?
+            }
+        };
+        let private_key_pem = private_key
+            .private_key_to_pem_pkcs8()
+            .map_err(AcmeError::Key)?;
+        let jwk = public_jwk(&private_key, algorithm)?;
+        Ok(Self {
+            private_key_pem: SecretBytes::new(private_key_pem),
+            algorithm,
+            jwk,
+        })
+    }
+
+    /// Loads an unencrypted account key from owner-protected PEM bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the key is unsupported, weak, malformed, or cannot produce its JWK.
+    pub fn from_pem(private_key_pem: SecretBytes) -> Result<Self, AcmeError> {
+        let key = PKey::private_key_from_pem(private_key_pem.as_bytes()).map_err(AcmeError::Key)?;
+        let algorithm = match key.id() {
+            Id::EC if key.bits() >= 256 => AccountKeyAlgorithm::EcdsaP256,
+            Id::RSA | Id::RSA_PSS if key.bits() >= 2_048 => AccountKeyAlgorithm::Rsa2048,
+            _ => return Err(AcmeError::MalformedResponse),
+        };
+        Ok(Self {
+            jwk: public_jwk(&key, algorithm)?,
+            private_key_pem,
+            algorithm,
+        })
+    }
+
+    #[must_use]
+    pub const fn algorithm(&self) -> AccountKeyAlgorithm {
+        self.algorithm
+    }
+
+    #[must_use]
+    pub fn private_key_pem(&self) -> &SecretBytes {
+        &self.private_key_pem
+    }
+
+    #[must_use]
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the fixed string-valued JWK representation cannot be serialized.
+    pub fn thumbprint(&self) -> String {
+        let bytes = serde_json::to_vec(&self.jwk).expect("string-valued JWK serializes");
+        URL_SAFE_NO_PAD.encode(Sha256::digest(&bytes))
+    }
+
+    #[must_use]
+    pub fn key_authorization(&self, token: &str) -> String {
+        format!("{token}.{}", self.thumbprint())
+    }
+
+    fn protected_algorithm(&self) -> &'static str {
+        match self.algorithm {
+            AccountKeyAlgorithm::EcdsaP256 => "ES256",
+            AccountKeyAlgorithm::Rsa2048 => "RS256",
+        }
+    }
+
+    fn jwk(&self) -> &BTreeMap<String, String> {
+        &self.jwk
+    }
+
+    fn sign(&self, input: &[u8]) -> Result<Vec<u8>, AcmeError> {
+        let key =
+            PKey::private_key_from_pem(self.private_key_pem.as_bytes()).map_err(AcmeError::Key)?;
+        let digest = MessageDigest::sha256();
+        let mut signer = Signer::new(digest, &key).map_err(AcmeError::Signature)?;
+        signer.update(input).map_err(AcmeError::Signature)?;
+        let signature = signer.sign_to_vec().map_err(AcmeError::Signature)?;
+        if self.algorithm != AccountKeyAlgorithm::EcdsaP256 {
+            return Ok(signature);
+        }
+        let signature = EcdsaSig::from_der(&signature).map_err(AcmeError::Signature)?;
+        let mut raw = Vec::with_capacity(64);
+        raw.extend(
+            signature
+                .r()
+                .to_vec_padded(32)
+                .map_err(AcmeError::Signature)?,
+        );
+        raw.extend(
+            signature
+                .s()
+                .to_vec_padded(32)
+                .map_err(AcmeError::Signature)?,
+        );
+        Ok(raw)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AccountRequest {
+    pub contacts: Vec<String>,
+    pub terms_agreed: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Account {
+    pub url: String,
+    pub status: String,
+    pub contacts: Vec<String>,
+    pub terms_agreed: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CertificateRequest {
+    pub identifiers: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Order {
+    pub url: String,
+    pub status: String,
+    pub authorizations: Vec<String>,
+    pub finalize: Option<String>,
+    pub certificate: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AuthorizationStatus {
+    Pending,
+    Processing,
+    Valid,
+    Invalid,
+    Deactivated,
+    Expired,
+    Revoked,
+}
+
+impl AuthorizationStatus {
+    fn parse(value: &str) -> Result<Self, AcmeError> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "processing" => Ok(Self::Processing),
+            "valid" => Ok(Self::Valid),
+            "invalid" => Ok(Self::Invalid),
+            "deactivated" => Ok(Self::Deactivated),
+            "expired" => Ok(Self::Expired),
+            "revoked" => Ok(Self::Revoked),
+            _ => Err(AcmeError::MalformedResponse),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Authorization {
+    pub url: String,
+    pub identifier: String,
+    pub status: AuthorizationStatus,
+    pub challenge: Option<Http01Challenge>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Http01Challenge {
+    pub authorization_url: String,
+    pub challenge_url: String,
+    pub token: String,
+    pub key_authorization: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PollPolicy {
+    pub max_attempts: usize,
+    pub deadline_unix_seconds: u64,
+    pub initial_delay_seconds: u64,
+    pub max_delay_seconds: u64,
+}
+
+impl Default for PollPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: MAX_POLL_ATTEMPTS,
+            deadline_unix_seconds: u64::MAX,
+            initial_delay_seconds: 1,
+            max_delay_seconds: MAX_POLL_DELAY_SECONDS,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct AcmeClient<T> {
+    transport: T,
+    directory: Directory,
+    key: AccountKey,
+    policy: OriginPolicy,
+    clock: Arc<dyn Clock>,
+    nonces: VecDeque<String>,
+    account: Option<Account>,
+}
+
+impl<T> fmt::Debug for AcmeClient<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AcmeClient")
+            .field("directory", &self.directory.url)
+            .field("account", &self.account)
+            .field("nonce_count", &self.nonces.len())
+            .field("key", &self.key)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T: AcmeTransport> AcmeClient<T> {
+    /// Fetches a directory and constructs a client with an injected clock and transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when directory validation or key setup fails.
+    pub fn new(
+        transport: T,
+        directory_url: &str,
+        policy: OriginPolicy,
+        key: AccountKey,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Self, AcmeError> {
+        let directory = Directory::fetch(&transport, directory_url, &policy)?;
+        Ok(Self {
+            transport,
+            directory,
+            key,
+            policy,
+            clock,
+            nonces: VecDeque::new(),
+            account: None,
+        })
+    }
+
+    #[must_use]
+    pub const fn directory(&self) -> &Directory {
+        &self.directory
+    }
+
+    #[must_use]
+    pub const fn account(&self) -> Option<&Account> {
+        self.account.as_ref()
+    }
+
+    /// Registers an account once, refusing ambiguous replay after a transport failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when terms, contacts, external account binding, or the ACME response is
+    /// invalid. A transport error is returned as an ambiguous result and is not retried.
+    pub fn register_account(&mut self, request: &AccountRequest) -> Result<Account, AcmeError> {
+        validate_account_request(request)?;
+        if self.directory.document.external_account_required {
+            return Err(AcmeError::ExternalAccountBindingRequired);
+        }
+        if self.directory.document.terms_of_service.is_some() && !request.terms_agreed {
+            return Err(AcmeError::TermsNotAgreed);
+        }
+        let payload = json!({
+            "termsOfServiceAgreed": request.terms_agreed,
+            "contact": request.contacts,
+        });
+        let account_url = self.directory.document.new_account.clone();
+        let response = self
+            .signed_request(&account_url, &payload, ProtectedKey::Jwk)
+            .map_err(|error| match error {
+                AcmeError::Transport(_) => AcmeError::AccountRegistrationAmbiguous,
+                other => other,
+            })?;
+        if response.status != 201 {
+            return Err(problem_or_status(&response));
+        }
+        let url = response
+            .header("location")
+            .ok_or(AcmeError::MissingField)?
+            .to_owned();
+        self.policy.permits(&url)?;
+        let value = bounded_json(&response.body, MAX_ACME_BODY_BYTES)?;
+        let account = Account {
+            url,
+            status: required_string(&value, "status")?,
+            contacts: string_array(&value, "contact")?,
+            terms_agreed: value
+                .get("termsOfServiceAgreed")
+                .and_then(Value::as_bool)
+                .unwrap_or(request.terms_agreed),
+        };
+        self.account = Some(account.clone());
+        Ok(account)
+    }
+
+    /// Creates an order for exactly the normalized configured DNS identifier set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsupported identifiers, endpoint policy violations, or malformed ACME
+    /// order responses.
+    pub fn create_order(&mut self, request: &CertificateRequest) -> Result<Order, AcmeError> {
+        let identifiers = normalize_identifiers(&request.identifiers)?;
+        let payload = json!({
+            "identifiers": identifiers.iter().map(|value| json!({ "type": "dns", "value": value })).collect::<Vec<_>>(),
+        });
+        let order_url = self.directory.document.new_order.clone();
+        let response = self.signed_account_request(&order_url, &payload)?;
+        if response.status != 201 {
+            return Err(problem_or_status(&response));
+        }
+        parse_order(&response, &self.policy)
+    }
+
+    /// Loads an authorization and selects its exact HTTP-01 challenge.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the authorization is malformed, outside policy, or lacks HTTP-01.
+    pub fn authorization(&mut self, url: &str) -> Result<Authorization, AcmeError> {
+        self.authorization_response(url)
+            .map(|(authorization, _)| authorization)
+    }
+
+    fn authorization_response(
+        &mut self,
+        url: &str,
+    ) -> Result<(Authorization, HttpResponse), AcmeError> {
+        let response = self.post_as_get(url)?;
+        if response.status != 200 {
+            return Err(problem_or_status(&response));
+        }
+        let authorization = parse_authorization(&response, url, &self.key, &self.policy)?;
+        Ok((authorization, response))
+    }
+
+    /// Notifies the CA that an HTTP-01 challenge is provisioned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed challenge URL or ACME failure.
+    pub fn respond_to_challenge(&mut self, challenge: &Http01Challenge) -> Result<(), AcmeError> {
+        let response = self.signed_account_request(&challenge.challenge_url, &json!({}))?;
+        if response.status != 200 {
+            return Err(problem_or_status(&response));
+        }
+        Ok(())
+    }
+
+    /// Polls an authorization with bounded attempts, deadline, backoff, and Retry-After support.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a terminal invalid state, malformed response, invalid retry guidance,
+    /// transport failure, or bounded timeout occurs.
+    pub fn poll_authorization(
+        &mut self,
+        url: &str,
+        poll: &PollPolicy,
+    ) -> Result<Authorization, AcmeError> {
+        let mut delay = poll.initial_delay_seconds.min(poll.max_delay_seconds);
+        for attempt in 0..poll.max_attempts.min(MAX_POLL_ATTEMPTS) {
+            if self.clock.now_unix_seconds() > poll.deadline_unix_seconds {
+                return Err(AcmeError::PollTimeout);
+            }
+            let (authorization, response) = self.authorization_response(url)?;
+            match authorization.status {
+                AuthorizationStatus::Invalid
+                | AuthorizationStatus::Deactivated
+                | AuthorizationStatus::Expired
+                | AuthorizationStatus::Revoked
+                | AuthorizationStatus::Valid => return Ok(authorization),
+                AuthorizationStatus::Pending | AuthorizationStatus::Processing => {}
+            }
+            if attempt + 1 == poll.max_attempts.min(MAX_POLL_ATTEMPTS) {
+                return Err(AcmeError::PollTimeout);
+            }
+            let effective_delay = retry_after(&response)?.unwrap_or(delay);
+            if self
+                .clock
+                .now_unix_seconds()
+                .saturating_add(effective_delay)
+                > poll.deadline_unix_seconds
+            {
+                return Err(AcmeError::PollTimeout);
+            }
+            self.clock.sleep_seconds(effective_delay);
+            delay = effective_delay
+                .saturating_mul(2)
+                .min(poll.max_delay_seconds);
+        }
+        Err(AcmeError::PollTimeout)
+    }
+
+    /// Finalizes an order with a DER CSR and returns its next server state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an absent finalize URL, policy violation, or malformed response.
+    pub fn finalize_order(&mut self, order: &Order, csr_der: &[u8]) -> Result<Order, AcmeError> {
+        let finalize = order.finalize.as_deref().ok_or(AcmeError::MissingField)?;
+        let payload = json!({ "csr": URL_SAFE_NO_PAD.encode(csr_der) });
+        let response = self.signed_account_request(finalize, &payload)?;
+        if response.status != 200 {
+            return Err(problem_or_status(&response));
+        }
+        parse_order(&response, &self.policy)
+    }
+
+    /// Polls an order until it is valid or reaches a terminal invalid state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when polling exceeds its bounds or the order response is invalid.
+    pub fn poll_order(&mut self, url: &str, poll: &PollPolicy) -> Result<Order, AcmeError> {
+        let mut delay = poll.initial_delay_seconds.min(poll.max_delay_seconds);
+        for attempt in 0..poll.max_attempts.min(MAX_POLL_ATTEMPTS) {
+            if self.clock.now_unix_seconds() > poll.deadline_unix_seconds {
+                return Err(AcmeError::PollTimeout);
+            }
+            let response = self.post_as_get(url)?;
+            if response.status != 200 {
+                return Err(problem_or_status(&response));
+            }
+            let order = parse_order(&response, &self.policy)?;
+            if order.status == "valid" || order.status == "invalid" {
+                return Ok(order);
+            }
+            let effective_delay = retry_after(&response)?.unwrap_or(delay);
+            if attempt + 1 == poll.max_attempts.min(MAX_POLL_ATTEMPTS)
+                || self
+                    .clock
+                    .now_unix_seconds()
+                    .saturating_add(effective_delay)
+                    > poll.deadline_unix_seconds
+            {
+                return Err(AcmeError::PollTimeout);
+            }
+            self.clock.sleep_seconds(effective_delay);
+            delay = effective_delay
+                .saturating_mul(2)
+                .min(poll.max_delay_seconds);
+        }
+        Err(AcmeError::PollTimeout)
+    }
+
+    /// Downloads the final certificate chain as bounded opaque PEM bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for endpoint policy violations, ACME failures, redirects, or oversized
+    /// certificate material.
+    pub fn download_certificate(&mut self, url: &str) -> Result<Vec<u8>, AcmeError> {
+        let response = self.post_as_get(url)?;
+        if response.status != 200 {
+            return Err(problem_or_status(&response));
+        }
+        if response.body.len() > MAX_ACME_BODY_BYTES {
+            return Err(AcmeError::ResponseTooLarge {
+                limit: MAX_ACME_BODY_BYTES,
+            });
+        }
+        Ok(response.body)
+    }
+
+    fn signed_account_request(
+        &mut self,
+        url: &str,
+        payload: &Value,
+    ) -> Result<HttpResponse, AcmeError> {
+        let account_url = self
+            .account
+            .as_ref()
+            .ok_or(AcmeError::MissingField)?
+            .url
+            .clone();
+        self.signed_request(url, payload, ProtectedKey::Kid(&account_url))
+    }
+
+    fn post_as_get(&mut self, url: &str) -> Result<HttpResponse, AcmeError> {
+        self.signed_account_request(url, &Value::Null)
+    }
+
+    fn signed_request(
+        &mut self,
+        url: &str,
+        payload: &Value,
+        protected_key: ProtectedKey<'_>,
+    ) -> Result<HttpResponse, AcmeError> {
+        self.policy.permits(url)?;
+        let mut retried_bad_nonce = false;
+        loop {
+            let nonce = self.take_nonce()?;
+            let body = self.jws(url, nonce, payload, protected_key)?;
+            let mut request = HttpRequest::new("POST", url, body);
+            request
+                .headers
+                .insert("content-type".into(), "application/jose+json".into());
+            let response = self
+                .transport
+                .request(request)
+                .map_err(AcmeError::Transport)?;
+            self.record_nonce(&response)?;
+            validate_response_url(url, &response, &self.policy)?;
+            if is_bad_nonce(&response) {
+                if retried_bad_nonce {
+                    return Err(AcmeError::BadNonceRetryExhausted);
+                }
+                retried_bad_nonce = true;
+                continue;
+            }
+            return Ok(response);
+        }
+    }
+
+    fn jws(
+        &self,
+        url: &str,
+        nonce: String,
+        payload: &Value,
+        protected_key: ProtectedKey<'_>,
+    ) -> Result<Vec<u8>, AcmeError> {
+        let mut protected = BTreeMap::new();
+        protected.insert("alg", Value::String(self.key.protected_algorithm().into()));
+        protected.insert("nonce", Value::String(nonce));
+        protected.insert("url", Value::String(url.into()));
+        match protected_key {
+            ProtectedKey::Jwk => {
+                protected.insert(
+                    "jwk",
+                    serde_json::to_value(self.key.jwk())
+                        .map_err(|_| AcmeError::MalformedResponse)?,
+                );
+            }
+            ProtectedKey::Kid(kid) => {
+                protected.insert("kid", Value::String(kid.into()));
+            }
+        }
+        let protected = URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&protected).map_err(|_| AcmeError::MalformedResponse)?);
+        let payload = if payload.is_null() {
+            String::new()
+        } else {
+            URL_SAFE_NO_PAD
+                .encode(serde_json::to_vec(payload).map_err(|_| AcmeError::MalformedResponse)?)
+        };
+        let signing_input = format!("{protected}.{payload}");
+        let signature = URL_SAFE_NO_PAD.encode(self.key.sign(signing_input.as_bytes())?);
+        serde_json::to_vec(&json!({
+            "protected": protected,
+            "payload": payload,
+            "signature": signature,
+        }))
+        .map_err(|_| AcmeError::MalformedResponse)
+    }
+
+    fn take_nonce(&mut self) -> Result<String, AcmeError> {
+        if let Some(nonce) = self.nonces.pop_front() {
+            return Ok(nonce);
+        }
+        let response = self
+            .transport
+            .request(HttpRequest::new(
+                "HEAD",
+                &self.directory.document.new_nonce,
+                Vec::new(),
+            ))
+            .map_err(AcmeError::Transport)?;
+        validate_response_url(&self.directory.document.new_nonce, &response, &self.policy)?;
+        if response.status != 200 && response.status != 204 {
+            return Err(problem_or_status(&response));
+        }
+        let nonce = response
+            .header("replay-nonce")
+            .ok_or(AcmeError::MissingNonce)?
+            .to_owned();
+        validate_nonce(&nonce)?;
+        Ok(nonce)
+    }
+
+    fn record_nonce(&mut self, response: &HttpResponse) -> Result<(), AcmeError> {
+        let Some(nonce) = response.header("replay-nonce") else {
+            return Ok(());
+        };
+        validate_nonce(nonce)?;
+        if self.nonces.len() == MAX_NONCES {
+            self.nonces.pop_front();
+        }
+        self.nonces.push_back(nonce.into());
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ProtectedKey<'a> {
+    Jwk,
+    Kid(&'a str),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LeafKeyAlgorithm {
+    EcdsaP256,
+    Rsa2048,
+}
+
+#[derive(Clone)]
+pub struct LeafCsr {
+    pub private_key_pem: SecretBytes,
+    pub csr_der: Vec<u8>,
+    pub csr_pem: Vec<u8>,
+}
+
+impl fmt::Debug for LeafCsr {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LeafCsr")
+            .field("private_key", &"REDACTED")
+            .field("csr_der_bytes", &self.csr_der.len())
+            .field("csr_pem_bytes", &self.csr_pem.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Generates a new leaf key and an exact-SAN PKCS#10 request.
+///
+/// # Errors
+///
+/// Returns an error when identifiers are unsupported or OpenSSL rejects key, SAN, or CSR creation.
+pub fn generate_leaf_csr(
+    identifiers: &[String],
+    algorithm: LeafKeyAlgorithm,
+) -> Result<LeafCsr, AcmeError> {
+    let identifiers = normalize_identifiers(identifiers)?;
+    let key = match algorithm {
+        LeafKeyAlgorithm::EcdsaP256 => {
+            let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).map_err(AcmeError::Csr)?;
+            PKey::from_ec_key(EcKey::generate(&group).map_err(AcmeError::Csr)?)
+                .map_err(AcmeError::Csr)?
+        }
+        LeafKeyAlgorithm::Rsa2048 => {
+            PKey::from_rsa(Rsa::generate(2_048).map_err(AcmeError::Csr)?).map_err(AcmeError::Csr)?
+        }
+    };
+    let private_key_pem = SecretBytes::new(key.private_key_to_pem_pkcs8().map_err(AcmeError::Csr)?);
+    let mut subject = X509NameBuilder::new().map_err(AcmeError::Csr)?;
+    subject
+        .append_entry_by_text("commonName", &identifiers[0])
+        .map_err(AcmeError::Csr)?;
+    let subject = subject.build();
+    let mut builder = X509ReqBuilder::new().map_err(AcmeError::Csr)?;
+    builder.set_version(0).map_err(AcmeError::Csr)?;
+    builder.set_subject_name(&subject).map_err(AcmeError::Csr)?;
+    builder.set_pubkey(&key).map_err(AcmeError::Csr)?;
+    let mut san = SubjectAlternativeName::new();
+    for identifier in &identifiers {
+        san.dns(identifier);
+    }
+    let context = builder.x509v3_context(None);
+    let extension = san.build(&context).map_err(AcmeError::Csr)?;
+    let mut extensions = Stack::new().map_err(AcmeError::Csr)?;
+    extensions.push(extension).map_err(AcmeError::Csr)?;
+    builder
+        .add_extensions(&extensions)
+        .map_err(AcmeError::Csr)?;
+    builder
+        .sign(&key, MessageDigest::sha256())
+        .map_err(AcmeError::Csr)?;
+    let csr: X509Req = builder.build();
+    Ok(LeafCsr {
+        private_key_pem,
+        csr_der: csr.to_der().map_err(AcmeError::Csr)?,
+        csr_pem: csr.to_pem().map_err(AcmeError::Csr)?,
+    })
+}
+
+fn public_jwk(
+    key: &PKey<Private>,
+    algorithm: AccountKeyAlgorithm,
+) -> Result<BTreeMap<String, String>, AcmeError> {
+    match algorithm {
+        AccountKeyAlgorithm::EcdsaP256 => {
+            let ec = key.ec_key().map_err(AcmeError::Key)?;
+            let mut context = BigNumContext::new().map_err(AcmeError::Key)?;
+            let public = ec
+                .public_key()
+                .to_bytes(ec.group(), PointConversionForm::UNCOMPRESSED, &mut context)
+                .map_err(AcmeError::Key)?;
+            if public.len() != 65 || public[0] != 4 {
+                return Err(AcmeError::MalformedResponse);
+            }
+            Ok([
+                ("crv".into(), "P-256".into()),
+                ("kty".into(), "EC".into()),
+                ("x".into(), URL_SAFE_NO_PAD.encode(&public[1..33])),
+                ("y".into(), URL_SAFE_NO_PAD.encode(&public[33..65])),
+            ]
+            .into_iter()
+            .collect())
+        }
+        AccountKeyAlgorithm::Rsa2048 => {
+            let rsa = key.rsa().map_err(AcmeError::Key)?;
+            Ok([
+                ("e".into(), URL_SAFE_NO_PAD.encode(rsa.e().to_vec())),
+                ("kty".into(), "RSA".into()),
+                ("n".into(), URL_SAFE_NO_PAD.encode(rsa.n().to_vec())),
+            ]
+            .into_iter()
+            .collect())
+        }
+    }
+}
+
+fn validate_account_request(request: &AccountRequest) -> Result<(), AcmeError> {
+    if request.contacts.len() > 8
+        || request.contacts.iter().any(|contact| {
+            contact.is_empty()
+                || contact.len() > 320
+                || !contact.is_ascii()
+                || !contact.starts_with("mailto:")
+        })
+    {
+        return Err(AcmeError::InvalidAccountRequest);
+    }
+    Ok(())
+}
+
+fn normalize_identifiers(identifiers: &[String]) -> Result<Vec<String>, AcmeError> {
+    if identifiers.is_empty() || identifiers.len() > MAX_IDENTIFIERS {
+        return Err(AcmeError::UnsupportedIdentifier);
+    }
+    let mut normalized = BTreeSet::new();
+    for identifier in identifiers {
+        let mut identifier = identifier.trim().to_ascii_lowercase();
+        if identifier.is_empty()
+            || identifier.len() > 253
+            || identifier.starts_with("*.")
+            || identifier.parse::<IpAddr>().is_ok()
+            || !valid_dns_name(&identifier)
+        {
+            return Err(AcmeError::UnsupportedIdentifier);
+        }
+        if identifier.ends_with('.') {
+            identifier.pop();
+        }
+        normalized.insert(identifier);
+    }
+    if normalized.len() != identifiers.len() {
+        return Err(AcmeError::UnsupportedIdentifier);
+    }
+    Ok(normalized.into_iter().collect())
+}
+
+fn valid_dns_name(value: &str) -> bool {
+    value.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+    })
+}
+
+fn parse_order(response: &HttpResponse, policy: &OriginPolicy) -> Result<Order, AcmeError> {
+    let value = bounded_json(&response.body, MAX_ACME_BODY_BYTES)?;
+    let url = response
+        .header("location")
+        .map_or_else(|| response.url.clone(), str::to_owned);
+    policy.permits(&url)?;
+    let authorizations = value
+        .get("authorizations")
+        .and_then(Value::as_array)
+        .ok_or(AcmeError::MissingField)?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or(AcmeError::MalformedResponse)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if authorizations.len() > MAX_IDENTIFIERS {
+        return Err(AcmeError::MalformedResponse);
+    }
+    let finalize = optional_string(&value, "finalize")?;
+    let certificate = optional_string(&value, "certificate")?;
+    for endpoint in authorizations
+        .iter()
+        .chain(finalize.iter())
+        .chain(certificate.iter())
+    {
+        policy.permits(endpoint)?;
+    }
+    Ok(Order {
+        url,
+        status: required_string(&value, "status")?,
+        authorizations,
+        finalize,
+        certificate,
+    })
+}
+
+fn parse_authorization(
+    response: &HttpResponse,
+    url: &str,
+    key: &AccountKey,
+    policy: &OriginPolicy,
+) -> Result<Authorization, AcmeError> {
+    let value = bounded_json(&response.body, MAX_ACME_BODY_BYTES)?;
+    let identifier = value
+        .get("identifier")
+        .and_then(|value| value.get("value"))
+        .and_then(Value::as_str)
+        .ok_or(AcmeError::MissingField)?
+        .to_ascii_lowercase();
+    normalize_identifiers(std::slice::from_ref(&identifier))?;
+    let status = AuthorizationStatus::parse(&required_string(&value, "status")?)?;
+    let challenges = value
+        .get("challenges")
+        .and_then(Value::as_array)
+        .ok_or(AcmeError::MissingField)?;
+    let challenge = challenges
+        .iter()
+        .find(|challenge| challenge.get("type").and_then(Value::as_str) == Some("http-01"));
+    let challenge = challenge
+        .map(|challenge| {
+            let challenge_url = challenge
+                .get("url")
+                .and_then(Value::as_str)
+                .ok_or(AcmeError::MissingField)?
+                .to_owned();
+            policy.permits(&challenge_url)?;
+            let token = challenge
+                .get("token")
+                .and_then(Value::as_str)
+                .ok_or(AcmeError::MissingField)?
+                .to_owned();
+            validate_token(&token)?;
+            Ok(Http01Challenge {
+                authorization_url: url.into(),
+                challenge_url,
+                token: token.clone(),
+                key_authorization: key.key_authorization(&token),
+            })
+        })
+        .transpose()?;
+    if challenge.is_none()
+        && matches!(
+            status,
+            AuthorizationStatus::Pending | AuthorizationStatus::Processing
+        )
+    {
+        return Err(AcmeError::UnsupportedChallenge);
+    }
+    Ok(Authorization {
+        url: url.into(),
+        identifier,
+        status,
+        challenge,
+    })
+}
+
+fn validate_token(token: &str) -> Result<(), AcmeError> {
+    if token.is_empty()
+        || token.len() > 256
+        || !token
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(AcmeError::MalformedResponse);
+    }
+    Ok(())
+}
+
+fn validate_nonce(nonce: &str) -> Result<(), AcmeError> {
+    if nonce.is_empty()
+        || nonce.len() > 256
+        || !nonce.is_ascii()
+        || nonce.bytes().any(|byte| byte <= b' ')
+    {
+        return Err(AcmeError::MalformedResponse);
+    }
+    Ok(())
+}
+
+fn bounded_json(bytes: &[u8], limit: usize) -> Result<Value, AcmeError> {
+    if bytes.len() > limit {
+        return Err(AcmeError::ResponseTooLarge { limit });
+    }
+    serde_json::from_slice(bytes).map_err(|_| AcmeError::MalformedResponse)
+}
+
+fn required_string(value: &Value, name: &str) -> Result<String, AcmeError> {
+    value
+        .get(name)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= MAX_ACME_URL_BYTES)
+        .map(str::to_owned)
+        .ok_or(AcmeError::MissingField)
+}
+
+fn optional_string(value: &Value, name: &str) -> Result<Option<String>, AcmeError> {
+    match value.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_str()
+            .filter(|value| !value.is_empty() && value.len() <= MAX_ACME_URL_BYTES)
+            .map(str::to_owned)
+            .map(Some)
+            .ok_or(AcmeError::MalformedResponse),
+    }
+}
+
+fn string_array(value: &Value, name: &str) -> Result<Vec<String>, AcmeError> {
+    value
+        .get(name)
+        .and_then(Value::as_array)
+        .ok_or(AcmeError::MissingField)?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or(AcmeError::MalformedResponse)
+        })
+        .collect()
+}
+
+fn problem_or_status(response: &HttpResponse) -> AcmeError {
+    parse_json_body(&response.body)
+        .and_then(|value| value.get("type").and_then(Value::as_str).map(str::to_owned))
+        .map_or(
+            AcmeError::UnexpectedStatus {
+                status: response.status,
+            },
+            |problem_type| AcmeError::Problem { problem_type },
+        )
+}
+
+fn is_bad_nonce(response: &HttpResponse) -> bool {
+    response.status == 400
+        && parse_json_body(&response.body)
+            .and_then(|value| value.get("type").and_then(Value::as_str).map(str::to_owned))
+            .is_some_and(|problem_type| problem_type.ends_with("badNonce"))
+}
+
+fn parse_json_body(body: &[u8]) -> Option<Value> {
+    (body.len() <= MAX_ACME_BODY_BYTES)
+        .then(|| serde_json::from_slice::<Value>(body).ok())
+        .flatten()
+}
+
+fn retry_after(response: &HttpResponse) -> Result<Option<u64>, AcmeError> {
+    let Some(value) = response.header("retry-after") else {
+        return Ok(None);
+    };
+    let seconds = value
+        .parse::<u64>()
+        .map_err(|_| AcmeError::InvalidRetryAfter)?;
+    if seconds > MAX_POLL_DELAY_SECONDS {
+        return Err(AcmeError::InvalidRetryAfter);
+    }
+    Ok(Some(seconds))
+}
+
+fn validate_response_url(
+    requested_url: &str,
+    response: &HttpResponse,
+    policy: &OriginPolicy,
+) -> Result<(), AcmeError> {
+    if response.url.is_empty() {
+        return Err(AcmeError::MalformedResponse);
+    }
+    if origin_of(requested_url)? != origin_of(&response.url)? {
+        return Err(AcmeError::UntrustedRedirect);
+    }
+    policy.permits(requested_url)?;
+    policy.permits(&response.url)?;
+    Ok(())
+}
+
+fn origin_of(url: &str) -> Result<String, AcmeError> {
+    if url.len() > MAX_ACME_URL_BYTES || !url.starts_with("https://") {
+        return Err(AcmeError::InvalidDirectoryUrl);
+    }
+    let rest = &url[8..];
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    if authority.is_empty() || authority.contains('@') || authority.bytes().any(|byte| byte <= b' ')
+    {
+        return Err(AcmeError::InvalidDirectoryUrl);
+    }
+    let (host, port) = if authority.starts_with('[') {
+        let end = authority.find(']').ok_or(AcmeError::InvalidDirectoryUrl)?;
+        let port = authority[end + 1..].strip_prefix(':');
+        if end + 1 < authority.len() && port.is_none() {
+            return Err(AcmeError::InvalidDirectoryUrl);
+        }
+        (&authority[1..end], port)
+    } else {
+        if authority.matches(':').count() > 1 {
+            return Err(AcmeError::InvalidDirectoryUrl);
+        }
+        authority
+            .rsplit_once(':')
+            .map_or((authority, None), |(host, port)| (host, Some(port)))
+    };
+    if host.is_empty() || host.len() > 253 || host.eq_ignore_ascii_case("localhost") {
+        return Err(AcmeError::InvalidDirectoryUrl);
+    }
+    if let Some(port) = port {
+        if port.is_empty() || port.parse::<u16>().is_err() {
+            return Err(AcmeError::InvalidDirectoryUrl);
+        }
+    }
+    Ok(format!("https://{}", authority.to_ascii_lowercase()))
+}
+
+fn is_private_origin(origin: &str) -> bool {
+    let authority = origin.strip_prefix("https://").unwrap_or_default();
+    let host = authority
+        .strip_prefix('[')
+        .and_then(|value| value.split(']').next())
+        .or_else(|| authority.split(':').next())
+        .unwrap_or_default();
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(address)) => {
+            address.is_loopback()
+                || address.is_private()
+                || address.is_link_local()
+                || address.is_unspecified()
+        }
+        Ok(IpAddr::V6(address)) => {
+            address.is_loopback()
+                || address.is_unspecified()
+                || address.is_unique_local()
+                || address.is_unicast_link_local()
+        }
+        Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Mutex},
+    };
+
+    use crate::FakeClock;
+
+    use super::*;
+
+    #[derive(Clone)]
+    struct ScriptedTransport {
+        responses: Arc<Mutex<VecDeque<HttpResponse>>>,
+        requests: Arc<Mutex<Vec<HttpRequest>>>,
+    }
+
+    impl ScriptedTransport {
+        fn new(responses: impl IntoIterator<Item = HttpResponse>) -> Self {
+            Self {
+                responses: Arc::new(Mutex::new(responses.into_iter().collect())),
+                requests: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn requests(&self) -> Vec<HttpRequest> {
+            self.requests.lock().expect("requests lock").clone()
+        }
+    }
+
+    impl AcmeTransport for ScriptedTransport {
+        fn request(&self, request: HttpRequest) -> Result<HttpResponse, TransportError> {
+            self.requests.lock().expect("requests lock").push(request);
+            self.responses
+                .lock()
+                .expect("responses lock")
+                .pop_front()
+                .ok_or(TransportError)
+        }
+    }
+
+    fn directory(url: &str) -> HttpResponse {
+        HttpResponse::new(
+            200,
+            url,
+            br#"{"newNonce":"https://acme.test/acme/new-nonce","newAccount":"https://acme.test/acme/new-account","newOrder":"https://acme.test/acme/new-order","meta":{"termsOfService":"https://acme.test/terms"}}"#.to_vec(),
+        )
+    }
+
+    fn account() -> HttpResponse {
+        HttpResponse::new(
+            201,
+            "https://acme.test/acme/new-account",
+            br#"{"status":"valid","contact":["mailto:ops@example.test"],"termsOfServiceAgreed":true}"#.to_vec(),
+        )
+        .with_header("location", "https://acme.test/acme/acct/1")
+        .with_header("replay-nonce", "nonce-account")
+    }
+
+    fn order() -> HttpResponse {
+        HttpResponse::new(
+            201,
+            "https://acme.test/acme/new-order",
+            br#"{"status":"pending","authorizations":["https://acme.test/acme/authz/1"],"finalize":"https://acme.test/acme/order/1/finalize"}"#.to_vec(),
+        )
+        .with_header("location", "https://acme.test/acme/order/1")
+        .with_header("replay-nonce", "nonce-order")
+    }
+
+    #[test]
+    fn rejects_private_origins_without_explicit_allowlist() {
+        assert!(matches!(
+            OriginPolicy::strict("https://127.0.0.1:14000/directory"),
+            Err(AcmeError::PrivateOriginRequiresAllowlist)
+        ));
+        assert!(OriginPolicy::development_allowlist("https://127.0.0.1:14000/directory").is_ok());
+    }
+
+    #[test]
+    fn directory_rejects_cross_origin_redirects_and_advertised_endpoints() {
+        let transport = ScriptedTransport::new([HttpResponse::new(
+            302,
+            "https://evil.test/directory",
+            Vec::new(),
+        )]);
+        let policy = OriginPolicy::strict("https://acme.test/directory").expect("policy");
+        assert!(matches!(
+            Directory::fetch(&transport, "https://acme.test/directory", &policy),
+            Err(AcmeError::UntrustedRedirect)
+        ));
+    }
+
+    #[test]
+    fn bad_nonce_is_retried_exactly_once_with_a_fresh_nonce() {
+        let responses = [
+            directory("https://acme.test/directory"),
+            HttpResponse::new(204, "https://acme.test/acme/new-nonce", Vec::new())
+                .with_header("replay-nonce", "nonce-one"),
+            HttpResponse::new(
+                400,
+                "https://acme.test/acme/new-account",
+                br#"{"type":"urn:ietf:params:acme:error:badNonce"}"#.to_vec(),
+            )
+            .with_header("replay-nonce", "nonce-two"),
+            account(),
+        ];
+        let transport = ScriptedTransport::new(responses);
+        let policy = OriginPolicy::strict("https://acme.test/directory").expect("policy");
+        let key = AccountKey::generate(AccountKeyAlgorithm::EcdsaP256).expect("key");
+        let clock = Arc::new(FakeClock::new(100));
+        let mut client = AcmeClient::new(
+            transport.clone(),
+            "https://acme.test/directory",
+            policy,
+            key,
+            clock,
+        )
+        .expect("client");
+        let account = client
+            .register_account(&AccountRequest {
+                contacts: vec!["mailto:ops@example.test".into()],
+                terms_agreed: true,
+            })
+            .expect("account");
+        assert_eq!(account.url, "https://acme.test/acme/acct/1");
+        assert_eq!(
+            transport
+                .requests()
+                .iter()
+                .filter(|request| request.method == "POST")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn full_http01_order_path_is_bounded_and_exact() {
+        let responses = [
+            directory("https://acme.test/directory"),
+            HttpResponse::new(204, "https://acme.test/acme/new-nonce", Vec::new())
+                .with_header("replay-nonce", "nonce-account"),
+            account(),
+            order(),
+            HttpResponse::new(
+                200,
+                "https://acme.test/acme/authz/1",
+                br#"{"status":"pending","identifier":{"type":"dns","value":"example.test"},"challenges":[{"type":"http-01","url":"https://acme.test/acme/challenge/1","token":"abc_DEF-123"}]}"#.to_vec(),
+            )
+            .with_header("replay-nonce", "nonce-authz"),
+            HttpResponse::new(200, "https://acme.test/acme/challenge/1", br#"{"status":"processing"}"#.to_vec())
+                .with_header("replay-nonce", "nonce-respond"),
+            HttpResponse::new(
+                200,
+                "https://acme.test/acme/authz/1",
+                br#"{"status":"valid","identifier":{"type":"dns","value":"example.test"},"challenges":[]}"#.to_vec(),
+            )
+            .with_header("replay-nonce", "nonce-valid"),
+        ];
+        let transport = ScriptedTransport::new(responses);
+        let policy = OriginPolicy::strict("https://acme.test/directory").expect("policy");
+        let key = AccountKey::generate(AccountKeyAlgorithm::EcdsaP256).expect("key");
+        let clock = Arc::new(FakeClock::new(100));
+        let mut client =
+            AcmeClient::new(transport, "https://acme.test/directory", policy, key, clock)
+                .expect("client");
+        client
+            .register_account(&AccountRequest {
+                contacts: vec!["mailto:ops@example.test".into()],
+                terms_agreed: true,
+            })
+            .expect("account");
+        let order = client
+            .create_order(&CertificateRequest {
+                identifiers: vec!["EXAMPLE.TEST".into()],
+            })
+            .expect("order");
+        let challenge = client
+            .authorization(&order.authorizations[0])
+            .expect("challenge")
+            .challenge
+            .expect("HTTP-01");
+        assert_eq!(challenge.key_authorization.split('.').count(), 2);
+        client.respond_to_challenge(&challenge).expect("respond");
+        let authorization = client
+            .poll_authorization(
+                &challenge.authorization_url,
+                &PollPolicy {
+                    max_attempts: 2,
+                    deadline_unix_seconds: 110,
+                    initial_delay_seconds: 1,
+                    max_delay_seconds: 1,
+                },
+            )
+            .expect("valid authorization");
+        assert_eq!(authorization.status, AuthorizationStatus::Valid);
+    }
+
+    #[test]
+    fn csr_contains_exact_sans_and_private_debug_is_redacted() {
+        let csr = generate_leaf_csr(
+            &["example.test".into(), "www.example.test".into()],
+            LeafKeyAlgorithm::EcdsaP256,
+        )
+        .expect("CSR");
+        let request = X509Req::from_der(&csr.csr_der).expect("DER CSR");
+        let public = request.public_key().expect("public key");
+        assert!(request.verify(&public).expect("verify CSR"));
+        assert!(format!("{csr:?}").contains("REDACTED"));
+        assert!(!format!("{csr:?}").contains("BEGIN PRIVATE KEY"));
+    }
+}

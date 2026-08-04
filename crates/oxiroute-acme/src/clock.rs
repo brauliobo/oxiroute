@@ -6,6 +6,10 @@ use std::sync::{
 /// Supplies Unix seconds to the lifecycle without coupling it to wall-clock reads.
 pub trait Clock: Send + Sync {
     fn now_unix_seconds(&self) -> u64;
+
+    fn sleep_seconds(&self, seconds: u64) {
+        std::thread::sleep(std::time::Duration::from_secs(seconds));
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -45,6 +49,10 @@ impl FakeClock {
 impl Clock for FakeClock {
     fn now_unix_seconds(&self) -> u64 {
         self.now.load(Ordering::Acquire)
+    }
+
+    fn sleep_seconds(&self, seconds: u64) {
+        self.advance(seconds);
     }
 }
 

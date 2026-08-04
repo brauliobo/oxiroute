@@ -1,7 +1,14 @@
 mod clock;
+mod protocol;
 mod state;
 
 pub use clock::{Clock, FakeClock, SystemClock, renewal_due, stable_renewal_time};
+pub use protocol::{
+    Account, AccountKey, AccountKeyAlgorithm, AccountRequest, AcmeClient, AcmeError, AcmeTransport,
+    Authorization, AuthorizationStatus, CertificateRequest, Directory, DirectoryDocument,
+    Http01Challenge, HttpRequest, HttpResponse, LeafCsr, LeafKeyAlgorithm, Order, OriginPolicy,
+    PollPolicy, TransportError, generate_leaf_csr,
+};
 pub use state::{
     AcmeStateError, CertificateMaterial, JobState, JobStatus, MAX_CERTIFICATE_BYTES, MAX_JOB_BYTES,
     MAX_STATE_FILE_BYTES, RedactedOutcome, RevisionMetadata, RevisionStore, SecretBytes,

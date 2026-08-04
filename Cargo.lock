@@ -2644,6 +2644,8 @@ dependencies = [
 name = "oxiroute-acme"
 version = "0.3.0"
 dependencies = [
+ "base64",
+ "openssl",
  "rustix",
  "serde",
  "serde_json",
