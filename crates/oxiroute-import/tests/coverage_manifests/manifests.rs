@@ -199,9 +199,59 @@ pub(crate) struct SquidDirectiveManifest {
     pub(crate) schema_version: u32,
     pub(crate) product: String,
     pub(crate) reference: ReferencePin,
+    pub(crate) registry_version: u32,
+    pub(crate) target_version: String,
+    pub(crate) profile: SquidProfile,
+    pub(crate) parity: CapabilityStatus,
+    pub(crate) complete_parity: bool,
     pub(crate) evidence: Vec<String>,
     pub(crate) audit: SquidAudit,
-    pub(crate) entries: Vec<DirectiveForm>,
+    pub(crate) families: Vec<SquidFamilyManifest>,
+    pub(crate) entries: Vec<SquidDirectiveForm>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SquidProfile {
+    pub(crate) id: String,
+    pub(crate) version: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SquidFamilyManifest {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) status: CapabilityStatus,
+    pub(crate) rationale: String,
+    pub(crate) current_evidence: Vec<String>,
+    pub(crate) required_tests: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SquidDirectiveForm {
+    pub(crate) id: String,
+    pub(crate) key: String,
+    pub(crate) family: String,
+    pub(crate) form: String,
+    pub(crate) contexts: Vec<String>,
+    pub(crate) status: CapabilityStatus,
+    pub(crate) rationale: String,
+    pub(crate) current_evidence: Vec<String>,
+    pub(crate) disposition: Disposition,
+    pub(crate) target: String,
+    pub(crate) required_tests: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CapabilityStatus {
+    Compatible,
+    Partial,
+    Unsupported,
+    Obsolete,
+    NotPlanned,
 }
 
 #[derive(Debug, Deserialize)]
@@ -212,6 +262,7 @@ pub(crate) struct SquidAudit {
     pub(crate) access_rules: usize,
     pub(crate) canonical_claim: bool,
     pub(crate) runtime_claim: bool,
+    pub(crate) complete_parity_claim: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -379,13 +430,26 @@ fn directive_manifests_are_versioned_and_cover_registered_forms() {
     validate_directive_forms(&nginx.entries);
     validate_directive_forms(&haproxy.entries);
     validate_directive_forms(&apache.entries);
-    assert_eq!(squid.schema_version, 1);
+    assert_eq!(squid.schema_version, 2);
     assert_eq!(squid.product, "squid");
     assert_eq!(squid.reference.kind, "git_checkout");
     assert_eq!(squid.reference.value, "6f4c814");
     assert_eq!(squid.reference.documentation, "docs/UPSTREAM_ANALYSIS.md");
     assert!(workspace_path(&squid.reference.documentation).is_file());
-    validate_directive_forms(&squid.entries);
+    assert_eq!(squid.registry_version, 1);
+    assert_eq!(squid.target_version, "6f4c814");
+    assert_eq!(squid.profile.id, "squid-forward-http1");
+    assert_eq!(squid.profile.version, 1);
+    assert_eq!(squid.parity, CapabilityStatus::Partial);
+    assert!(!squid.complete_parity);
+    assert!(!squid.audit.complete_parity_claim);
+    assert!(!squid.families.is_empty());
+    assert_unique_ids(
+        "Squid family ID",
+        squid.families.iter().map(|family| family.id.as_str()),
+    );
+    validate_squid_families(&squid.families);
+    validate_squid_directive_forms(&squid.families, &squid.entries);
 }
 
 #[test]
@@ -585,6 +649,93 @@ fn validate_directive_forms(entries: &[DirectiveForm]) {
         assert_nonempty_unique(&entry.contexts, &entry.id, "contexts");
         validate_terminal_target(&entry.id, entry.disposition, &entry.target);
         validate_test_categories(&entry.id, &entry.required_tests);
+    }
+}
+
+fn validate_squid_families(families: &[SquidFamilyManifest]) {
+    for family in families {
+        assert!(!family.id.is_empty());
+        assert!(!family.name.is_empty(), "{} has an empty name", family.id);
+        assert!(
+            !family.rationale.is_empty(),
+            "{} has no rationale",
+            family.id
+        );
+        assert_nonempty_unique(
+            &family.current_evidence,
+            &family.id,
+            "current evidence references",
+        );
+        validate_test_categories(&family.id, &family.required_tests);
+    }
+}
+
+fn validate_squid_directive_forms(
+    families: &[SquidFamilyManifest],
+    entries: &[SquidDirectiveForm],
+) {
+    let family_ids = families
+        .iter()
+        .map(|family| family.id.as_str())
+        .collect::<BTreeSet<_>>();
+    for entry in entries {
+        assert!(!entry.id.is_empty());
+        assert!(!entry.key.is_empty(), "{} has an empty key", entry.id);
+        assert!(!entry.family.is_empty(), "{} has no family", entry.id);
+        assert!(!entry.form.is_empty(), "{} has an empty form", entry.id);
+        assert!(
+            family_ids.contains(entry.family.as_str()),
+            "{} references an absent family {}",
+            entry.id,
+            entry.family
+        );
+        assert_nonempty_unique(&entry.contexts, &entry.id, "contexts");
+        assert!(!entry.rationale.is_empty(), "{} has no rationale", entry.id);
+        assert_nonempty_unique(
+            &entry.current_evidence,
+            &entry.id,
+            "current evidence references",
+        );
+        validate_terminal_target(&entry.id, entry.disposition, &entry.target);
+        validate_test_categories(&entry.id, &entry.required_tests);
+        if entry.status == CapabilityStatus::Compatible {
+            assert!(
+                entry
+                    .required_tests
+                    .iter()
+                    .any(|test| test == "integration"),
+                "{} compatible form lacks runtime integration coverage",
+                entry.id
+            );
+            assert!(
+                entry.required_tests.iter().any(|test| test == "failure"),
+                "{} compatible form lacks failure coverage",
+                entry.id
+            );
+            assert!(
+                matches!(
+                    entry.disposition,
+                    Disposition::Lowered | Disposition::Classified
+                ),
+                "{} compatible form is not lowered or classified",
+                entry.id
+            );
+        }
+        if matches!(
+            entry.status,
+            CapabilityStatus::Unsupported
+                | CapabilityStatus::Obsolete
+                | CapabilityStatus::NotPlanned
+        ) {
+            assert!(
+                matches!(
+                    entry.disposition,
+                    Disposition::Blocked | Disposition::Externalized
+                ),
+                "{} open form is not blocked or externalized",
+                entry.id
+            );
+        }
     }
 }
 

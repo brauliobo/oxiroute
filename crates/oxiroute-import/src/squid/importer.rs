@@ -25,7 +25,8 @@ use super::{
     AuthenticationScheme, AuthenticationSetting, BuiltinAcl, DecisionLedger, DecisionOutcome,
     DirectiveOrigin, EffectiveAcl, EffectiveConfiguration, ForwardedForMode, LogDestination,
     OccurrenceId, PortEndpoint, PortKind, PrivacyDirective, ProxyAuthMatcher, RootSelection,
-    SemanticBlockerKind, SourceGraph, analyze, load, load_selected,
+    SemanticBlockerKind, SourceGraph, SquidCapabilityReport, analyze, load, load_selected,
+    squid_capability_report,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -41,6 +42,7 @@ pub struct ImportReport {
     pub source_graph: SourceGraph,
     pub effective: EffectiveConfiguration,
     pub decision_ledger: DecisionLedger,
+    pub capabilities: SquidCapabilityReport,
     pub blocked_capabilities: Vec<BlockedCapability>,
     pub draft: CanonicalDraft,
     pub canonical_provenance: Vec<CanonicalProvenance<DirectiveOrigin>>,
@@ -255,6 +257,7 @@ fn import_graph(graph: SourceGraph, mut diagnostics: Vec<Diagnostic>) -> ImportR
         source_graph: graph,
         effective,
         decision_ledger,
+        capabilities: squid_capability_report(),
         blocked_capabilities,
         draft,
         canonical_provenance,

@@ -285,18 +285,23 @@ The integrated first subset follows the explicit-forward-proxy milestone:
   defaults.
 
 `oxiroute import squid <root>` emits the same report/preview contract as the nginx and HAProxy
-commands. KDL, HOCON, and UCI sources can reference a root through `squid_server`; deterministic
-previews round-trip through every canonical format. A native source containing `refresh_pattern`
-must explicitly set `externalize_cache = true` before the direct, non-caching candidate can activate.
+commands. Its report additionally contains a machine-readable `capabilities` registry for Squid
+checkout `6f4c814`, including family/directive status, rationale, current evidence, required test
+categories, and the explicit `completeParity: false` boundary. KDL, HOCON, and UCI sources can
+reference a root through `squid_server`; deterministic previews round-trip through every canonical
+format. A native source containing `refresh_pattern` must explicitly set `externalize_cache = true`
+before the direct, non-caching candidate can activate.
 
 Basic lowering preserves Squid's case-insensitive username default, explicit `casesensitive`, realm,
 helper file, and credential TTL. Other helper settings remain blocking. CONNECT port inference
 requires one exact unconditional `deny CONNECT !ports` guard before any rule that could allow
 CONNECT; conditional, ranged, reordered, or multiple guards fail closed.
 
-Cache storage and policy directives, helpers, adaptation, interception, peers, SSL bump, and delay
-pools remain blocking until their independent implementations pass compatibility tests. Parsed
-refresh rules may be externalized only through reviewed CLI import or that explicit native opt-in.
+Cache storage and policy directives, helpers, adaptation, interception, peers, SSL bump, delay
+pools, and legacy protocols remain unsupported or not planned in the registry and blocking in the
+importer. Parsed refresh rules may be externalized only through reviewed CLI import or that explicit
+native opt-in. A form is `compatible` only when its runtime and failure-path tests are listed in the
+registry; parsing or typed classification alone never promotes a form.
 
 ## Validation
 
