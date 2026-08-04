@@ -81,66 +81,60 @@ fn reports_truthful_empty_capabilities_when_ingest_is_disabled() {
 }
 
 #[tokio::test]
-async fn serves_configured_vod_bytes_with_ranges_and_management_authentication() {
-    let root = TempDir::new().expect("VOD root");
-    let bytes = b"test-vod-bytes";
-    fs::write(root.path().join("clip.flv"), bytes).expect("VOD object");
-    let mut active = empty_config();
-    active.rtmp_services = vec![RtmpService {
-        name: "vod-service".into(),
-        outbound_chunk_size: 4_096,
-        access_log: None,
-        applications: vec![RtmpApplication {
-            name: "vod-app".into(),
-            live: false,
-            idle_streams: true,
-            publish: RtmpAccessPolicy::default(),
-            play: RtmpAccessPolicy::default(),
-            limits: RtmpSessionCeilings::default(),
-            push_targets: Vec::new(),
-            fanout: oxiroute_config::RtmpFanoutPolicy::default(),
-            vod: Some(RtmpVodPolicy {
-                sources: vec![RtmpVodSource::Local {
-                    name: "disk".into(),
-                    root_directory: root.path().to_path_buf(),
-                }],
-                max_sessions: 2,
-                max_file_bytes: 1024,
-                max_duration_ms: 60_000,
-            }),
-            recorders: Vec::new(),
+async fn serves_authenticated_vod_objects_and_single_ranges() {
+    let directory = TempDir::new().expect("VOD directory");
+    fs::write(directory.path().join("movie.flv"), b"0123456789").expect("VOD object");
+    let mut config = candidate_config(&empty_config(), "live");
+    config.rtmp_services[0].applications[0].vod = Some(RtmpVodPolicy {
+        sources: vec![RtmpVodSource::Local {
+            name: "archive".into(),
+            root_directory: directory.path().to_path_buf(),
         }],
-    }];
-    let harness = ManagementHarness::start(&active).await;
-    let path = "/api/v1/rtmp/vod/vod-service/vod-app/disk/clip.flv";
+        max_sessions: 2,
+        max_file_bytes: 1_024,
+        max_duration_ms: 60_000,
+    });
+    let harness = ManagementHarness::start(&config).await;
+    let path = "/api/v1/rtmp/vod/live/broadcast/archive/movie.flv";
 
     let unauthorized = harness
         .request_with("GET", path, None, None, None, None)
         .await;
     assert_eq!(unauthorized.status, 401);
 
-    let response = harness.request("GET", path, None, None).await;
-    assert_eq!(response.status, 200);
-    assert_eq!(response.body, bytes);
-    assert_eq!(
-        response.headers.get("accept-ranges").map(String::as_str),
-        Some("bytes")
-    );
+    let full = harness.request("GET", path, None, None).await;
+    assert_eq!(full.status, 200);
+    assert_eq!(full.body(), b"0123456789");
+    assert_eq!(full.header("accept-ranges"), Some("bytes"));
+    assert_eq!(full.header("content-range"), None);
+    assert_eq!(full.header("content-type"), Some("video/x-flv"));
 
-    let ranged = harness
-        .raw_request(
-            format!(
-                "GET {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {TEST_TOKEN}\r\nRange: bytes=5-8\r\nConnection: close\r\n\r\n"
-            )
-            .into_bytes(),
-        )
-        .await;
+    let authorization = format!("Bearer {TEST_TOKEN}");
+    let ranged = http_request(
+        harness.address,
+        "GET",
+        path,
+        &[("Authorization", authorization.as_str()), ("Range", "bytes=2-5")],
+        &[],
+    )
+    .await;
     assert_eq!(ranged.status, 206);
-    assert_eq!(ranged.body, &bytes[5..=8]);
-    assert_eq!(
-        ranged.headers.get("content-range").map(String::as_str),
-        Some("bytes 5-8/14")
-    );
+    assert_eq!(ranged.body(), b"2345");
+    assert_eq!(ranged.header("content-range"), Some("bytes 2-5/10"));
+
+    let multiple = http_request(
+        harness.address,
+        "GET",
+        path,
+        &[
+            ("Authorization", authorization.as_str()),
+            ("Range", "bytes=0-1,4-5"),
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(multiple.status, 416);
+    assert_eq!(multiple.header("content-range"), Some("bytes */10"));
 }
 
 #[test]
@@ -303,7 +297,11 @@ fn relay_state_and_counters_are_observable_without_stream_queries() {
             LiveHub::new(LiveHubLimits::default()),
             [RtmpPushTarget {
                 address: destination,
+                host: destination.ip().to_string(),
+                transport: oxiroute_rtmp::RtmpTransport::Rtmp,
                 application: RtmpPushApplication::StreamName,
+                stream_name: None,
+                options: oxiroute_rtmp::RtmpClientOptions::default(),
                 config: RtmpRelayConfig {
                     connect_timeout: Duration::from_millis(10),
                     reconnect_interval: Duration::from_millis(20),
@@ -404,6 +402,8 @@ async fn config_routes_require_the_injected_bearer_token() {
         ("GET", "/api/v1/config"),
         ("POST", "/api/v1/config/validate"),
         ("PUT", "/api/v1/config"),
+        ("GET", "/api/v1/audit"),
+        ("GET", "/api/v1/audit/status"),
     ] {
         let response = harness
             .request_with(method, path, None, None, None, None)
@@ -429,13 +429,9 @@ async fn config_routes_require_the_injected_bearer_token() {
         .await;
     assert_eq!(wrong.status, 401);
 
-    assert_eq!(
-        harness
-            .request("GET", "/api/v1/config", None, None)
-            .await
-            .status,
-        200
-    );
+    let authorized = harness.request("GET", "/api/v1/config", None, None).await;
+    assert_eq!(authorized.status, 200);
+    assert!(authorized.headers.contains_key("x-correlation-id"));
     assert_eq!(
         harness
             .request_with("GET", "/api/v1/topology", None, None, None, None)
@@ -491,6 +487,7 @@ async fn event_stream_sends_an_initial_cursor_without_replaying_old_events() {
         head.to_ascii_lowercase()
             .contains("transfer-encoding: chunked")
     );
+    assert!(head.to_ascii_lowercase().contains("x-correlation-id: op-"));
 
     let frame = read_chunk(&mut stream).await;
     let frame = String::from_utf8(frame).expect("initial SSE frame");
@@ -676,6 +673,8 @@ async fn config_api_redacts_rtmp_token_secrets_from_typed_and_rendered_views() {
         name: "live".into(),
         outbound_chunk_size: 4_096,
         access_log: None,
+        outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
+        callbacks: oxiroute_config::RtmpCallbackConfig::default(),
         applications: vec![RtmpApplication {
             name: "broadcast".into(),
             live: true,
@@ -691,6 +690,9 @@ async fn config_api_redacts_rtmp_token_secrets_from_typed_and_rendered_views() {
             play: RtmpAccessPolicy::default(),
             limits: RtmpSessionCeilings::default(),
             push_targets: Vec::new(),
+            pull_targets: Vec::new(),
+            relay: oxiroute_config::RtmpRelayPolicy::default(),
+            callbacks: oxiroute_config::RtmpCallbackConfig::default(),
             fanout: oxiroute_config::RtmpFanoutPolicy::default(),
             vod: None,
             recorders: Vec::new(),
@@ -1155,6 +1157,8 @@ fn candidate_config(active: &Config, listener_name: &str) -> Config {
         name: "live".into(),
         outbound_chunk_size: 4_096,
         access_log: None,
+        outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
+        callbacks: oxiroute_config::RtmpCallbackConfig::default(),
         applications: vec![RtmpApplication {
             name: "broadcast".into(),
             live: true,
@@ -1163,6 +1167,9 @@ fn candidate_config(active: &Config, listener_name: &str) -> Config {
             play: oxiroute_config::RtmpAccessPolicy::default(),
             limits: oxiroute_config::RtmpSessionCeilings::default(),
             push_targets: Vec::new(),
+            pull_targets: Vec::new(),
+            relay: oxiroute_config::RtmpRelayPolicy::default(),
+            callbacks: oxiroute_config::RtmpCallbackConfig::default(),
             fanout: oxiroute_config::RtmpFanoutPolicy::default(),
             vod: None,
             recorders: Vec::new(),

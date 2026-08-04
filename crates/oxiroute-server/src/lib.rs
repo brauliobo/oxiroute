@@ -11,6 +11,7 @@ mod http_proxy;
 mod http_server_app;
 mod l4_service;
 mod listener_reservation;
+mod logging;
 mod monitoring;
 mod operational_event;
 mod prometheus;
@@ -28,8 +29,9 @@ mod wire;
 
 pub use config_watcher::{ConfigWatcher, ConfigWatcherOptions, ConfigWatcherStatus};
 pub use forward_proxy::{
+    challenge_response, ForwardAccessMetricsSnapshot, ForwardAccessResult,
     ForwardConnectionLifecycle, ForwardHttp1ServicePlan, ForwardHttp2ServiceApp,
-    ForwardHttp2ServicePlan, ForwardProxyBody, challenge_response,
+    ForwardHttp2ServicePlan, ForwardProxyBody,
 };
 pub use generation::{
     GenerationAdmission, GenerationCandidate, GenerationError, GenerationManager,
@@ -37,9 +39,9 @@ pub use generation::{
     PreparedGeneration, RuntimeGeneration, RuntimeReferenceKind,
 };
 pub use health::{HealthBuildError, HealthSupervisor};
+pub use http3::Http3Runtime;
 pub use http_proxy::{HttpRequestContext, HttpReverseProxy};
 pub use http_server_app::{HttpDownstreamPolicyApp, HttpListenerApp, MonitoredHttpApp};
-pub use http3::Http3Runtime;
 pub use l4_service::L4ServicePlan;
 pub use listener_reservation::{ListenerReservation, ListenerReservations};
 pub use monitoring::{
@@ -47,12 +49,12 @@ pub use monitoring::{
     CertbotWatcherHealth, CertbotWatcherSnapshot, ConnectionGuard, DirectFileCertificateSnapshot,
     DirectFileWatcherSnapshot, HostSnapshot, HttpOperationCountSnapshot, HttpOperationResult,
     HttpOperationSnapshot, LatencyBucketSnapshot, LatencySnapshot, ListenerMetrics,
-    ListenerRuntimeState, ListenerSnapshot, MetricsError, OPERATION_LATENCY_BUCKETS_MS,
-    ProcessConnectionGuard, ProcessRuntime, ProcessSnapshot, RuntimeMetrics, RuntimeSnapshot,
-    TcpRelayCountSnapshot, TcpRelayResult, TcpRelaySnapshot, TrafficSnapshot,
+    ListenerRuntimeState, ListenerSnapshot, MetricsError, ProcessConnectionGuard, ProcessRuntime,
+    ProcessSnapshot, RuntimeMetrics, RuntimeSnapshot, TcpRelayCountSnapshot, TcpRelayResult,
+    TcpRelaySnapshot, TrafficSnapshot, OPERATION_LATENCY_BUCKETS_MS,
 };
 pub use operational_event::emit_certificate;
-pub use prometheus::{PrometheusError, render_prometheus};
+pub use prometheus::{render_prometheus, PrometheusError};
 pub use routing::{
     AdministrativeState, EndpointHealthSnapshot, EndpointHealthState, EndpointLease, EndpointPool,
     HealthFailure, HealthOverride, PassiveFailurePolicy, PoolAdminError, PoolError,
@@ -60,13 +62,13 @@ pub use routing::{
 };
 pub use rtmp_api::{ApiResponse, RtmpManagementApi, RtmpManagementHttpApp};
 pub use service_plan::{
-    HttpServicePlan, RtmpServicePlan, RuntimePlan, ServiceKind, ServicePlanError, ServiceSpec,
-    runtime_plan, runtime_plan_with_passive_failure_policy, service_specs,
+    runtime_plan, runtime_plan_with_passive_failure_policy, service_specs, HttpServicePlan,
+    RtmpServicePlan, RuntimePlan, ServiceKind, ServicePlanError, ServiceSpec,
 };
 pub use stats::{HaproxyStatsApi, HaproxyStatsPage};
 pub use tcp_relay::{
-    RELAY_BUFFER_SIZE, RelayDirection, RelayFailure, RelayFailureKind, RelayOperation, RelayPolicy,
-    RelayStats, TcpRelayCore, relay_streams,
+    relay_streams, RelayDirection, RelayFailure, RelayFailureKind, RelayOperation, RelayPolicy,
+    RelayStats, TcpRelayCore, RELAY_BUFFER_SIZE,
 };
 pub use tls::{
     AcmeManagedError, AcmeManagedOutcome, AcmeManagedPolicy, AcmeManagedReconciler,
@@ -80,8 +82,8 @@ pub use tls::{
     UpstreamTlsPlan,
 };
 pub use topology::{
-    TOPOLOGY_SCHEMA_VERSION, TopologyEdge, TopologyEdgeKind, TopologyNode, TopologyNodeKind,
-    TopologySnapshot,
+    TopologyEdge, TopologyEdgeKind, TopologyNode, TopologyNodeKind, TopologySnapshot,
+    TOPOLOGY_SCHEMA_VERSION,
 };
 pub use udp_relay::UdpRuntime;
 

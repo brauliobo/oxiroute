@@ -22,6 +22,7 @@ pub fn render_prometheus(
     let runtime = metrics.snapshot()?;
     let rtmp = registry.snapshot();
     let generation = generations.status();
+    let audit = crate::operational_event::audit_metrics();
     let mut output = String::with_capacity(16 * 1024);
 
     metric(
@@ -443,6 +444,48 @@ pub fn render_prometheus(
         "oxiroute_generation_degraded",
         u8::from(generation.degraded),
     )?;
+    labels(
+        &mut output,
+        "oxiroute_audit_component_state",
+        &[("state", audit.status.state.as_str())],
+        1,
+    )?;
+    sample(
+        &mut output,
+        "oxiroute_audit_persistent",
+        u8::from(audit.status.persistent),
+    )?;
+    sample(
+        &mut output,
+        "oxiroute_audit_degraded",
+        u8::from(audit.status.degraded),
+    )?;
+    sample(
+        &mut output,
+        "oxiroute_audit_records",
+        audit.status.record_count,
+    )?;
+    sample(&mut output, "oxiroute_audit_bytes", audit.status.bytes)?;
+    sample(
+        &mut output,
+        "oxiroute_audit_write_failures_total",
+        audit.status.write_failures,
+    )?;
+    sample(
+        &mut output,
+        "oxiroute_audit_corrupt_records_total",
+        audit.status.corrupt_records,
+    )?;
+    for category in crate::operational_event::AuditCategory::ALL {
+        for result in crate::operational_event::AuditResult::ALL {
+            labels(
+                &mut output,
+                "oxiroute_audit_operations_total",
+                &[("category", category.as_str()), ("result", result.as_str())],
+                audit.operation_counts[category.index()][result.index()],
+            )?;
+        }
+    }
     Ok(output)
 }
 
@@ -576,6 +619,10 @@ mod tests {
         assert!(output.contains("oxiroute_process_uptime_seconds"));
         assert!(output.contains("listener=\"public\\\"edge\""));
         assert!(output.contains("oxiroute_generation_activations_total"));
+        assert!(output.contains("oxiroute_audit_component_state{state=\"memory\"} 1"));
+        assert!(output.contains(
+            "oxiroute_audit_operations_total{category=\"reload\",result=\"requested\"} 0"
+        ));
         assert!(!output.contains("192.0.2.10"));
         assert!(!output.contains("private-port"));
     }
@@ -621,10 +668,8 @@ mod tests {
         assert!(output.contains(
             "oxiroute_http_request_duration_milliseconds_bucket{listener=\"edge\",le=\"10\"} 1"
         ));
-        assert!(
-            output
-                .contains("oxiroute_tcp_relays_total{listener=\"edge\",result=\"idle_timeout\"} 1")
-        );
+        assert!(output
+            .contains("oxiroute_tcp_relays_total{listener=\"edge\",result=\"idle_timeout\"} 1"));
         assert!(output.contains(
             "oxiroute_tcp_relay_duration_milliseconds_bucket{listener=\"edge\",le=\"5000\"} 1"
         ));

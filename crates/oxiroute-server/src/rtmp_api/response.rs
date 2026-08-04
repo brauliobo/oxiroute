@@ -13,6 +13,7 @@ pub struct ApiResponse {
     pub allow: Option<&'static str>,
     pub content_type: &'static str,
     pub www_authenticate: Option<&'static str>,
+    pub correlation_id: Option<String>,
     pub content_range: Option<String>,
     pub accept_ranges: bool,
 }
@@ -25,6 +26,7 @@ impl ApiResponse {
             allow: None,
             content_type,
             www_authenticate: None,
+            correlation_id: None,
             content_range: None,
             accept_ranges: false,
         }
@@ -62,6 +64,11 @@ impl ApiResponse {
         );
         response.www_authenticate = Some("Bearer");
         response
+    }
+
+    pub(crate) fn with_correlation(mut self, correlation_id: String) -> Self {
+        self.correlation_id = Some(correlation_id);
+        self
     }
 
     pub(crate) fn with_range(mut self, content_range: Option<String>) -> Self {
@@ -111,6 +118,12 @@ pub(crate) fn to_http_response(response: ApiResponse) -> Response<Vec<u8>> {
             .headers_mut()
             .insert(WWW_AUTHENTICATE, HeaderValue::from_static(challenge));
     }
+    if let Some(correlation_id) = response.correlation_id {
+        result.headers_mut().insert(
+            HeaderName::from_static("x-correlation-id"),
+            HeaderValue::from_str(&correlation_id).expect("validated correlation ID is a header"),
+        );
+    }
     if let Some(content_range) = response.content_range {
         result.headers_mut().insert(
             HeaderName::from_static("content-range"),
@@ -124,4 +137,19 @@ pub(crate) fn to_http_response(response: ApiResponse) -> Response<Vec<u8>> {
         );
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ApiResponse, to_http_response};
+
+    #[test]
+    fn correlation_id_is_written_as_a_response_header() {
+        let response = to_http_response(
+            ApiResponse::json(200, &serde_json::json!({ "ok": true }))
+                .with_correlation("request-42".into()),
+        );
+
+        assert_eq!(response.headers()["x-correlation-id"], "request-42");
+    }
 }

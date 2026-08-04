@@ -19,13 +19,14 @@ use super::{
 use crate::{
     GenerationManager, RuntimeMetrics, TopologySnapshot,
     config_coordinator::{CanonicalConfigCoordinator, ConfigRevision},
+    operational_event::{self, AuditCategory, AuditContext, AuditLimits, AuditResult, AuditStore},
     secure_bearer::{HeaderCardinality, single_header},
 };
 use async_trait::async_trait;
 use bytes::Bytes;
 use http::{
     Response,
-    header::{ACCEPT, AUTHORIZATION, CACHE_CONTROL, HeaderName, RANGE, TRANSFER_ENCODING},
+    header::{ACCEPT, AUTHORIZATION, CACHE_CONTROL, HeaderName, TRANSFER_ENCODING},
 };
 use oxiroute_rtmp::{RtmpRegistry, VodCatalog, VodError, VodRange};
 use pingora::{
@@ -41,12 +42,13 @@ const EVENT_STREAM_FRAME_LIMIT: usize = 16 * 1024;
 const EVENT_STREAM_HEARTBEAT: Duration = Duration::from_secs(15);
 const EVENT_STREAM_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const LAST_EVENT_ID: HeaderName = HeaderName::from_static("last-event-id");
+const CORRELATION_ID: HeaderName = HeaderName::from_static("x-correlation-id");
 
 enum ApiRoute<'a> {
     Config(ConfigRoute),
     Observability(ObservabilityRoute),
     Stream(StreamRoute<'a>),
-    Vod,
+    Vod(VodRoute<'a>),
 }
 
 pub struct RtmpManagementApi {
@@ -58,6 +60,7 @@ pub struct RtmpManagementApi {
     registry: Arc<RtmpRegistry>,
     topology: Arc<TopologySnapshot>,
     ui: Option<UiAssets>,
+    audit: Arc<AuditStore>,
     vod_catalog: Option<Arc<VodCatalog>>,
 }
 
@@ -81,6 +84,7 @@ impl RtmpManagementApi {
             registry,
             topology,
             ui: None,
+            audit: Arc::new(AuditStore::memory(AuditLimits::default())),
             vod_catalog: None,
         }
     }
@@ -105,6 +109,7 @@ impl RtmpManagementApi {
             registry,
             topology,
             ui: Some(UiAssets::load(directory.as_ref())?),
+            audit: Arc::new(AuditStore::memory(AuditLimits::default())),
             vod_catalog: None,
         })
     }
@@ -130,6 +135,7 @@ impl RtmpManagementApi {
                 coordinator.clone(),
                 generations.clone(),
                 self.metrics.clone(),
+                Arc::clone(&self.audit),
             ));
         }
         self.generations = Some(generations);
@@ -156,7 +162,20 @@ impl RtmpManagementApi {
         token: &str,
     ) -> io::Result<Self> {
         self.coordinator = Some(coordinator.clone());
-        self.config = Some(ConfigApiState::new(coordinator, active_revision, token)?);
+        self.audit = operational_event::configure_audit_store(None);
+        self.config = Some(ConfigApiState::new(
+            coordinator.clone(),
+            active_revision,
+            token,
+        )?);
+        if let Some(generations) = &self.generations {
+            self.management = Some(ManagementState::new(
+                coordinator,
+                generations.clone(),
+                self.metrics.clone(),
+                Arc::clone(&self.audit),
+            ));
+        }
         Ok(self)
     }
 
@@ -172,28 +191,39 @@ impl RtmpManagementApi {
         token_file: &Path,
     ) -> io::Result<Self> {
         self.coordinator = Some(coordinator.clone());
+        self.audit = operational_event::configure_audit_store(Some(token_file));
         self.config = Some(ConfigApiState::from_token_file(
-            coordinator,
+            coordinator.clone(),
             active_revision,
             token_file,
         )?);
+        if let Some(generations) = &self.generations {
+            self.management = Some(ManagementState::new(
+                coordinator,
+                generations.clone(),
+                self.metrics.clone(),
+                Arc::clone(&self.audit),
+            ));
+        }
         Ok(self)
     }
 
     #[must_use]
     pub fn handle(&self, method: &str, path: &str, now_unix_ms: u64) -> ApiResponse {
+        let context = AuditContext::generated();
         if let Some(response) = self.ui.as_ref().and_then(|ui| ui.response(path)) {
-            return if method == "GET" {
+            let response = if method == "GET" {
                 response
             } else {
                 ApiResponse::method_not_allowed("GET")
             };
+            return response.with_correlation(context.correlation_id);
         }
 
         let Some(route) = match_api_route(path) else {
-            return ApiResponse::route_not_found();
+            return ApiResponse::route_not_found().with_correlation(context.correlation_id);
         };
-        match route {
+        let response = match route {
             ApiRoute::Config(route) => self
                 .config
                 .as_ref()
@@ -211,8 +241,9 @@ impl RtmpManagementApi {
             ApiRoute::Stream(route) => {
                 streams::handle(route, method, self.registry.as_ref(), now_unix_ms)
             }
-            ApiRoute::Vod => ApiResponse::method_not_allowed("GET"),
-        }
+            ApiRoute::Vod(_) => ApiResponse::method_not_allowed("GET"),
+        };
+        response.with_correlation(context.correlation_id)
     }
 
     fn handle_at_system_time(&self, method: &str, path: &str) -> ApiResponse {
@@ -222,13 +253,8 @@ impl RtmpManagementApi {
         }
     }
 
-    async fn vod_response(
-        &self,
-        method: &str,
-        route: VodRoute<'_>,
-        range: Option<&str>,
-    ) -> ApiResponse {
-        if method != "GET" {
+    async fn vod_response(&self, route: VodRoute<'_>, session: &ServerSession) -> ApiResponse {
+        if session.req_header().method.as_str() != "GET" {
             return ApiResponse::method_not_allowed("GET");
         }
         let catalog = self
@@ -244,34 +270,48 @@ impl RtmpManagementApi {
         let application = route.application.to_owned();
         let source = route.source.to_owned();
         let path = route.path.to_owned();
-        let content_type = vod_content_type(&path);
+        let content_path = path.clone();
         let object = match tokio::task::spawn_blocking(move || {
             catalog.open(&service, &application, &source, &path)
         })
         .await
         {
             Ok(Ok(object)) => object,
-            Ok(Err(error)) => return vod_error_response(error, None),
+            Ok(Err(error)) => return vod_error_response(error),
             Err(_) => return ApiResponse::error(503, "vod_unavailable", "VOD worker failed"),
         };
-        let size = object.len();
-        let requested = match range {
-            Some(range) => match VodRange::parse(Some(range), size) {
-                Ok(range) => range,
-                Err(error) => return vod_error_response(error, Some(size)),
-            },
-            None => None,
+        let total = object.len();
+        let range_header = session
+            .req_header()
+            .headers
+            .get("range")
+            .and_then(|value| value.to_str().ok());
+        let range = match VodRange::parse(range_header, total) {
+            Ok(range) => range,
+            Err(VodError::InvalidRange) => {
+                return ApiResponse::error(416, "invalid_range", "the requested byte range is invalid")
+                    .with_range(Some(format!("bytes */{total}")));
+            }
+            Err(error) => return vod_error_response(error),
         };
-        match requested {
+        let body = match range {
             Some(range) => match object.range(range) {
-                Ok(body) => ApiResponse::bytes(206, body, content_type).with_range(Some(format!(
-                    "bytes {}-{}/{}",
-                    range.start, range.end, size
-                ))),
-                Err(error) => vod_error_response(error, Some(size)),
+                Ok(body) => body,
+                Err(error) => return vod_error_response(error),
             },
-            None => ApiResponse::bytes(200, object.bytes().to_vec(), content_type).with_range(None),
-        }
+            None => Vec::new(),
+        };
+        let content_range = if range_header.is_some() {
+            range.map(|range| format!("bytes {}-{}/{}", range.start, range.end, total))
+        } else {
+            None
+        };
+        ApiResponse::bytes(
+            if range_header.is_some() { 206 } else { 200 },
+            body,
+            vod_content_type(&content_path),
+        )
+        .with_range(content_range)
     }
 
     fn authentication_error(
@@ -320,29 +360,35 @@ impl RtmpManagementApi {
             )
         };
 
+        let context = match request_context(session) {
+            Ok(context) => context,
+            Err(response) => {
+                return response.with_correlation(AuditContext::generated().correlation_id);
+            }
+        };
         if let Some(response) = self.authentication_error(&method, &path, &path_and_query, session)
         {
-            return response;
+            self.audit_api_operation(&method, &path, &context, &response);
+            return response.with_correlation(context.correlation_id);
         }
         if let Some(route) = management::match_route(&path_and_query) {
             if let (Some(config), Some(management)) = (&self.config, &self.management) {
                 let _ = config;
-                return management.handle(route, &method, session).await;
+                let response = management.handle(route, &method, session).await;
+                self.audit_api_operation(&method, &path, &context, &response);
+                return response.with_correlation(context.correlation_id);
             }
-            return ApiResponse::route_not_found();
+            return ApiResponse::route_not_found().with_correlation(context.correlation_id);
         }
         if let Some(route) = config::match_route(&path) {
             if let Some(config) = &self.config {
-                return config.handle_http(route, &method, session).await;
+                let response = config.handle_http(route, &method, session).await;
+                self.audit_api_operation(&method, &path, &context, &response);
+                return response.with_correlation(context.correlation_id);
             }
-            return self.handle_at_system_time(&method, &path);
-        }
-        if let Some(route) = vod::match_route(&path) {
-            let range = match single_range_header(session) {
-                Ok(range) => range,
-                Err(response) => return response,
-            };
-            return self.vod_response(&method, route, range.as_deref()).await;
+            return self
+                .handle_at_system_time(&method, &path)
+                .with_correlation(context.correlation_id);
         }
         if method != "GET" && streams::match_route(&path).is_some() {
             let route = streams::match_route(&path).expect("matched stream route");
@@ -351,7 +397,8 @@ impl RtmpManagementApi {
                     503,
                     "generation_unavailable",
                     "generation state is unavailable",
-                );
+                )
+                .with_correlation(context.correlation_id);
             };
             let mut revisions = session
                 .req_header()
@@ -367,7 +414,8 @@ impl RtmpManagementApi {
                     428,
                     "precondition_required",
                     "If-Generation-Revision is required",
-                );
+                )
+                .with_correlation(context.correlation_id);
             };
             let mutation = match generations.begin_mutation(revision) {
                 Ok(mutation) => mutation,
@@ -376,22 +424,48 @@ impl RtmpManagementApi {
                         409,
                         error.code(),
                         "the active generation revision changed",
-                    );
+                    )
+                    .with_correlation(context.correlation_id);
                 }
             };
             match system_time_ms() {
                 Ok(now_unix_ms) => {
-                    return streams::handle(
+                    let response = streams::handle(
                         route,
                         &method,
                         mutation.generation().registry(),
                         now_unix_ms,
                     );
+                    self.audit_api_operation(&method, &path, &context, &response);
+                    return response.with_correlation(context.correlation_id);
                 }
-                Err(response) => return response,
+                Err(response) => {
+                    return response.with_correlation(context.correlation_id);
+                }
             }
         }
-        self.handle_at_system_time(&method, &path)
+        let response = self.handle_at_system_time(&method, &path);
+        self.audit_api_operation(&method, &path, &context, &response);
+        response.with_correlation(context.correlation_id)
+    }
+
+    fn audit_api_operation(
+        &self,
+        method: &str,
+        path: &str,
+        context: &AuditContext,
+        response: &ApiResponse,
+    ) {
+        let Some((operation, category)) = audited_api_operation(method, path) else {
+            return;
+        };
+        operational_event::emit_api_operation(
+            operation,
+            category,
+            audit_result_for_status(response.status),
+            None,
+            context,
+        );
     }
 }
 
@@ -401,6 +475,7 @@ impl RtmpManagementHttpApp {
         session: &mut ServerSession,
         cursor: EventStreamCursor,
         shutdown: &ShutdownWatch,
+        context: &AuditContext,
     ) {
         let mut shutdown = shutdown.clone();
         session.set_keepalive(None);
@@ -419,6 +494,9 @@ impl RtmpManagementHttpApp {
         header
             .insert_header("x-content-type-options", "nosniff")
             .expect("valid SSE content protection");
+        header
+            .insert_header("x-correlation-id", context.correlation_id.as_str())
+            .expect("valid SSE correlation ID");
         if session
             .write_response_header(Box::new(header))
             .await
@@ -629,6 +707,108 @@ fn request_parts(session: &ServerSession) -> (String, String, String) {
     )
 }
 
+fn request_context(session: &ServerSession) -> Result<AuditContext, ApiResponse> {
+    match single_header(&session.req_header().headers, &CORRELATION_ID) {
+        HeaderCardinality::Missing => {
+            let mut context = AuditContext::generated();
+            context.actor = "management_bearer".into();
+            context.source = "management_api".into();
+            Ok(context)
+        }
+        HeaderCardinality::Duplicate => Err(ApiResponse::error(
+            400,
+            "duplicate_correlation_id",
+            "multiple correlation IDs are not accepted",
+        )),
+        HeaderCardinality::Single(value) => value
+            .to_str()
+            .ok()
+            .and_then(AuditContext::from_external)
+            .ok_or_else(|| {
+                ApiResponse::error(
+                    400,
+                    "invalid_correlation_id",
+                    "correlation ID must be 1 to 64 safe ASCII characters",
+                )
+            }),
+    }
+}
+
+fn audited_api_operation(method: &str, path: &str) -> Option<(&'static str, AuditCategory)> {
+    if method == "GET" {
+        return None;
+    }
+    let (operation, category) = match path {
+        "/api/v1/config" => ("configuration_reload", AuditCategory::Reload),
+        "/api/v1/generations/reload" => ("generation_reload", AuditCategory::Reload),
+        "/api/v1/generations/rollback" => ("generation_rollback", AuditCategory::Reload),
+        "/api/v1/generations/drain" => ("generation_drain", AuditCategory::Reload),
+        "/api/v1/tls/reconcile" => ("certificate_reconcile", AuditCategory::Certificate),
+        "/api/v1/tls/renew" => ("certificate_renew", AuditCategory::Certificate),
+        "/api/v1/process/drain" => ("process_drain", AuditCategory::Control),
+        "/api/v1/process/shutdown" => ("process_shutdown", AuditCategory::Control),
+        "/api/v1/listeners/administrative-state" => ("listener_control", AuditCategory::Control),
+        "/api/v1/pools/administrative-state" => ("pool_control", AuditCategory::Control),
+        "/api/v1/servers/administrative-state" => ("server_control", AuditCategory::Control),
+        "/api/v1/servers/health-override" => ("server_control", AuditCategory::Control),
+        "/api/v1/servers/checks" => ("server_control", AuditCategory::Control),
+        "/api/v1/servers/max-connections" => ("server_control", AuditCategory::Control),
+        "/api/v1/servers/refresh-dns" => ("server_dns_refresh", AuditCategory::Control),
+        _ => return None,
+    };
+    Some((operation, category))
+}
+
+fn vod_error_response(error: VodError) -> ApiResponse {
+    match error {
+        VodError::SourceNotFound | VodError::NotFound => {
+            ApiResponse::error(404, "vod_not_found", "the VOD object does not exist")
+        }
+        VodError::InvalidPath | VodError::InvalidRange => {
+            ApiResponse::error(400, "vod_invalid_path", "the VOD path or range is invalid")
+        }
+        VodError::SessionLimit => {
+            ApiResponse::error(429, "vod_session_limit", "the VOD session limit is reached")
+        }
+        VodError::TooLarge => ApiResponse::error(
+            413,
+            "vod_too_large",
+            "the VOD object exceeds its configured bound",
+        ),
+        VodError::RootOpen | VodError::OriginDenied | VodError::Fetch => ApiResponse::error(
+            503,
+            "vod_source_unavailable",
+            "the VOD source is unavailable",
+        ),
+        VodError::InvalidFlv | VodError::InvalidMedia => ApiResponse::error(
+            422,
+            "vod_invalid_media",
+            "the VOD object is not valid media",
+        ),
+    }
+}
+
+fn vod_content_type(path: &str) -> &'static str {
+    if path.ends_with(".mp4") {
+        "video/mp4"
+    } else if path.ends_with(".m4v") {
+        "video/x-m4v"
+    } else {
+        "video/x-flv"
+    }
+}
+
+const fn audit_result_for_status(status: u16) -> AuditResult {
+    match status {
+        202 => AuditResult::Requested,
+        207 => AuditResult::Partial,
+        200..=299 => AuditResult::Succeeded,
+        409 => AuditResult::Conflict,
+        400..=499 => AuditResult::Rejected,
+        _ => AuditResult::Failed,
+    }
+}
+
 async fn write_buffered_response(session: &mut ServerSession, response: ApiResponse) -> bool {
     let (parts, body) = to_http_response(response).into_parts();
     let response_header: ResponseHeader = parts.into();
@@ -683,11 +863,30 @@ impl HttpServerApp for RtmpManagementHttpApp {
             management::event_stream_route(&path_and_query, accepts_event_stream(&session));
         if method == "GET" {
             if let Some(stream_route) = stream_route {
+                let context = match request_context(&session) {
+                    Ok(context) => context,
+                    Err(response) => {
+                        if write_buffered_response(
+                            &mut session,
+                            response.with_correlation(AuditContext::generated().correlation_id),
+                        )
+                        .await
+                        {
+                            return finish_http_session(session).await;
+                        }
+                        return None;
+                    }
+                };
                 if let Some(response) =
                     self.api
                         .authentication_error(&method, &path, &path_and_query, &session)
                 {
-                    if write_buffered_response(&mut session, response).await {
+                    if write_buffered_response(
+                        &mut session,
+                        response.with_correlation(context.correlation_id.clone()),
+                    )
+                    .await
+                    {
                         return finish_http_session(session).await;
                     }
                     return None;
@@ -695,7 +894,12 @@ impl HttpServerApp for RtmpManagementHttpApp {
                 let last_event_id = match last_event_id(&session) {
                     Ok(last_event_id) => last_event_id,
                     Err(response) => {
-                        if write_buffered_response(&mut session, response).await {
+                        if write_buffered_response(
+                            &mut session,
+                            response.with_correlation(context.correlation_id.clone()),
+                        )
+                        .await
+                        {
                             return finish_http_session(session).await;
                         }
                         return None;
@@ -705,13 +909,60 @@ impl HttpServerApp for RtmpManagementHttpApp {
                     match parse_event_stream_cursor(stream_route.query, last_event_id.as_deref()) {
                         Ok(cursor) => cursor,
                         Err(response) => {
-                            if write_buffered_response(&mut session, response).await {
+                            if write_buffered_response(
+                                &mut session,
+                                response.with_correlation(context.correlation_id.clone()),
+                            )
+                            .await
+                            {
                                 return finish_http_session(session).await;
                             }
                             return None;
                         }
                     };
-                self.stream_events(&mut session, cursor, shutdown).await;
+                self.stream_events(&mut session, cursor, shutdown, &context)
+                    .await;
+                return finish_http_session(session).await;
+            }
+            if let Some(route) = vod::match_route(&path) {
+                let context = match request_context(&session) {
+                    Ok(context) => context,
+                    Err(response) => {
+                        if write_buffered_response(
+                            &mut session,
+                            response.with_correlation(AuditContext::generated().correlation_id),
+                        )
+                        .await
+                        {
+                            return finish_http_session(session).await;
+                        }
+                        return None;
+                    }
+                };
+                if let Some(response) =
+                    self.api
+                        .authentication_error(&method, &path, &path_and_query, &session)
+                {
+                    if write_buffered_response(
+                        &mut session,
+                        response.with_correlation(context.correlation_id.clone()),
+                    )
+                    .await
+                    {
+                        return finish_http_session(session).await;
+                    }
+                    return None;
+                }
+                let response = self
+                    .api
+                    .vod_response(route, &session)
+                    .await
+                    .with_correlation(context.correlation_id.clone());
+                self.api
+                    .audit_api_operation(&method, &path, &context, &response);
+                if !write_buffered_response(&mut session, response).await {
+                    return None;
+                }
                 return finish_http_session(session).await;
             }
         }
@@ -729,59 +980,7 @@ fn match_api_route(path: &str) -> Option<ApiRoute<'_>> {
         .map(ApiRoute::Config)
         .or_else(|| observability::match_route(path).map(ApiRoute::Observability))
         .or_else(|| streams::match_route(path).map(ApiRoute::Stream))
-        .or_else(|| vod::match_route(path).map(|_| ApiRoute::Vod))
-}
-
-fn single_range_header(session: &ServerSession) -> Result<Option<String>, ApiResponse> {
-    let mut values = session.req_header().headers.get_all(RANGE).iter();
-    match (values.next(), values.next()) {
-        (None, _) => Ok(None),
-        (Some(_), Some(_)) => Err(ApiResponse::error(
-            400,
-            "invalid_range",
-            "Range must be specified once",
-        )),
-        (Some(value), None) => value
-            .to_str()
-            .map(str::to_owned)
-            .map(Some)
-            .map_err(|_| ApiResponse::error(400, "invalid_range", "Range is invalid")),
-    }
-}
-
-fn vod_error_response(error: VodError, size: Option<u64>) -> ApiResponse {
-    let (status, code, message) = match error {
-        VodError::SourceNotFound | VodError::NotFound => {
-            (404, "vod_not_found", "VOD object was not found")
-        }
-        VodError::InvalidPath => (400, "invalid_vod_path", "VOD path is invalid"),
-        VodError::InvalidRange => (416, "invalid_range", "the requested byte range is invalid"),
-        VodError::SessionLimit => (429, "vod_session_limit", "VOD session limit reached"),
-        VodError::TooLarge => (
-            413,
-            "vod_too_large",
-            "VOD object exceeds its configured size bound",
-        ),
-        VodError::OriginDenied => (502, "vod_origin_denied", "VOD origin is not allowed"),
-        VodError::RootOpen | VodError::Fetch => {
-            (502, "vod_fetch_failed", "VOD object could not be fetched")
-        }
-        VodError::InvalidFlv | VodError::InvalidMedia => {
-            (422, "invalid_vod_media", "VOD object is not valid media")
-        }
-    };
-    let content_range = (status == 416).then(|| format!("bytes */{}", size.unwrap_or(0)));
-    ApiResponse::error(status, code, message).with_range(content_range)
-}
-
-fn vod_content_type(path: &str) -> &'static str {
-    if path.ends_with(".mp4") {
-        "video/mp4"
-    } else if path.ends_with(".m4v") {
-        "video/x-m4v"
-    } else {
-        "video/x-flv"
-    }
+        .or_else(|| vod::match_route(path).map(ApiRoute::Vod))
 }
 
 #[cfg(test)]
@@ -811,6 +1010,10 @@ mod tests {
             outcome: crate::operational_event::EventOutcome::Prepared,
             revision: None,
             certificate: None,
+            correlation_id: None,
+            actor: None,
+            source: None,
+            operation: None,
         };
         let frame = operational_frame(&event);
 
@@ -830,6 +1033,10 @@ mod tests {
             outcome: crate::operational_event::EventOutcome::Unknown,
             revision: None,
             certificate: None,
+            correlation_id: None,
+            actor: None,
+            source: None,
+            operation: None,
         };
         let frame = operational_frame(&event);
         let frame = String::from_utf8(frame).expect("SSE frame");
