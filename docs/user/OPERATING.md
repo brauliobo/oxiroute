@@ -102,7 +102,18 @@ oxiroute events follow --after 0 --limit 100 --interval-ms 1000
 oxiroute shutdown
 ```
 
-Events are not durable audit history. A future SSE/event contract is still a separate product slice.
+Events are live bounded operational delivery and are not durable audit history. Query durable,
+redacted control history separately with the authenticated API:
+
+```sh
+curl -s -H "Authorization: Bearer $TOKEN" \
+  'http://127.0.0.1:9900/api/v1/audit?after=0&limit=100' | jq '.records'
+curl -s -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:9900/api/v1/audit/status | jq '.audit'
+```
+
+Audit writes are bounded by retention and size limits. A persistence failure is reported as audit
+component degradation and does not fail the underlying control operation.
 Signals and authenticated shutdown share one bounded process shutdown path.
 
 ## Public And Restricted Endpoints

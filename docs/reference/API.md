@@ -15,6 +15,7 @@ The current control plane is JSON over loopback HTTP. The base path for manageme
 | DNS | `POST /api/v1/servers/refresh-dns` | Management bearer token; validated target batch and explicit non-atomic outcomes |
 | Generation actions | `POST /api/v1/generations/reload|rollback|drain` | Management bearer token and active-generation revision |
 | TLS/process | `POST /api/v1/tls/reconcile`, `/process/drain`, `/process/shutdown` | Management bearer token and active-generation revision |
+| Audit | `GET /api/v1/audit?after={cursor}&limit={n}`, `GET /api/v1/audit/status` | Management bearer token; durable redacted history and persistence status |
 | Events | `GET /api/v1/events?after={cursor}&limit={n}`, `GET /api/v1/events/stream` | Management bearer token; bounded cursor polling or SSE |
 | RTMP | `GET /api/v1/rtmp/streams`, `/streams/{streamId}` | Management bearer token; redacted active catalog |
 | RTMP controls | `POST .../recorders/{recorderId}/start|stop` | Management bearer token; loopback management listener and exact-ID manual controls |
@@ -28,7 +29,8 @@ policy; they are not remote management routes.
 
 Native import is intentionally CLI/offline or compositional-source only. There is no import API or
 import UI workflow. Event SSE is bounded, bearer-authenticated, cursor-based, and backed only by
-the in-memory ring; it is not durable audit storage.
+the in-memory ring; it is not durable audit storage. Audit history is queried separately through
+`/api/v1/audit` and never serves as an SSE fallback.
 
 ## Authentication
 
@@ -56,6 +58,8 @@ revision returns `409` and does not perform a last-writer-wins write.
 - Timestamps use RFC 3339 or explicitly named Unix-millisecond fields.
 - Topology is an active-generation graph with stable IDs, canonical config paths, and runtime overlays.
 - Sensitive paths and secret material are omitted or redacted.
+- Management responses return `X-Correlation-ID`; a valid caller-supplied value is retained within
+  the 64-byte safe-character bound, otherwise the service generates one.
 - A `503` sampling or canonical-state error is not replaced with fabricated zeroes.
 
 ## Example Calls

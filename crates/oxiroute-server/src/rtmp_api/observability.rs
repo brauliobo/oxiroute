@@ -73,6 +73,7 @@ fn status_response(
             "activeRevision": generation.as_ref().and_then(|status| status.active_revision.as_ref()),
             "previousRevision": generation.as_ref().and_then(|status| status.previous_revision.as_ref()),
             "degraded": generation.as_ref().is_none_or(|status| status.degraded),
+            "audit": crate::operational_event::audit_status(),
             "listeners": listeners,
         }),
     )
@@ -338,6 +339,7 @@ const fn relay_phase(phase: oxiroute_rtmp::RtmpRelayPhase) -> &'static str {
     match phase {
         oxiroute_rtmp::RtmpRelayPhase::Connecting => "connecting",
         oxiroute_rtmp::RtmpRelayPhase::Publishing => "publishing",
+        oxiroute_rtmp::RtmpRelayPhase::Pulling => "pulling",
         oxiroute_rtmp::RtmpRelayPhase::Backoff => "backoff",
         oxiroute_rtmp::RtmpRelayPhase::Stopped => "stopped",
     }
@@ -345,10 +347,12 @@ const fn relay_phase(phase: oxiroute_rtmp::RtmpRelayPhase) -> &'static str {
 
 const fn relay_failure(failure: oxiroute_rtmp::RtmpRelayFailure) -> &'static str {
     match failure {
+        oxiroute_rtmp::RtmpRelayFailure::Policy => "policy",
         oxiroute_rtmp::RtmpRelayFailure::Connect => "connect",
         oxiroute_rtmp::RtmpRelayFailure::Handshake => "handshake",
         oxiroute_rtmp::RtmpRelayFailure::Session => "session",
         oxiroute_rtmp::RtmpRelayFailure::Transport => "transport",
+        oxiroute_rtmp::RtmpRelayFailure::Source => "source",
         oxiroute_rtmp::RtmpRelayFailure::Thread => "thread",
     }
 }

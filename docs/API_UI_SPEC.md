@@ -16,6 +16,8 @@ their own page-only contract. There is no remote management mode or permissive C
   fields explicitly suffixed `UnixMs` or `_unix_ms` use Unix-millisecond numbers.
 - Stable machine-readable error codes plus human-readable details.
 - Secret values are write-only references or redacted placeholders.
+- Management responses include a bounded `X-Correlation-ID`; clients may provide one to correlate
+  the request, audit record, and operational event.
 - Configuration writes use one raw `If-Config-Revision` header containing the current 64-hex disk
   revision. `If-Match` is not accepted as an alias.
 
@@ -39,6 +41,8 @@ Implemented and recognized endpoints:
 | `GET` | `/api/v1/tls` | Redacted certificate, managed ACME, and Certbot watcher status. |
 | `POST` | `/api/v1/tls/reconcile` | Revision-checked reconciliation of externally owned Certbot lineages. |
 | `POST` | `/api/v1/tls/renew` | Revision-checked immediate renewal of one managed ACME certificate. |
+| `GET` | `/api/v1/audit?after={cursor}&limit={n}&category={category}&result={result}` | Authenticated durable redacted control-operation history with bounded cursor pagination and filters. |
+| `GET` | `/api/v1/audit/status` | Authenticated audit persistence, retention, corruption, and degradation status. |
 | `GET` | `/api/v1/events?after={cursor}&limit={n}` | Bounded cursor polling over the in-memory operational event ring. |
 | `POST` | `/api/v1/process/drain`, `/api/v1/process/shutdown` | Revision-checked process drain or shutdown requests. |
 | `GET` | `/api/v1/rtmp/streams` | Active RTMP catalog and runtime capabilities. |
@@ -133,7 +137,7 @@ save then re-reads and compares the authoritative disk bytes, writes mode
 
 Typed saves preserve the root's selected syntax but normalize it to deterministic output. They are
 allowed only when the authoritative root is non-compositional. If `templates`, `nginx_server`,
-`haproxy_server`, `squid_server`, or `apache_server` contributed to the loaded source, `PUT` returns `422` with
+`haproxy_server`, `squid_server`, `apache_server`, or `varnish_server` contributed to the loaded source, `PUT` returns `422` with
 `E_COMPOSITIONAL_ROOT`; it never destroys those declarations by replacing them with a flattened
 typed object. `config compose` is the explicit operator-controlled flattening path.
 
@@ -316,7 +320,25 @@ If the requested cursor has fallen out of the ring, the server sends `event: res
 `cursor`, `oldestCursor`, and `latestCursor`, then closes the stream; clients must reload status
 or config and reconnect without the stale cursor. Replay pages are limited to 64 events, each
 frame is bounded, and a client that cannot accept writes is closed after the bounded write timeout.
-Shutdown closes a live stream with `event: shutdown`. There is no durable event history.
+Shutdown closes a live stream with `event: shutdown`. The SSE ring remains non-durable and is never
+used as an audit persistence fallback.
+
+## Durable audit history
+
+`GET /api/v1/audit` reads a separate newline-delimited audit store. Records contain only a bounded
+record ID, Unix-millisecond timestamp, correlation ID, actor/source category, stable operation name,
+category, result, and optional configuration revision. Request bodies, bearer values, cookies,
+certificate material, endpoint addresses, and arbitrary query strings are not persisted.
+
+The store is initialized under the management token directory as `audit/`, or under the explicit
+`OXIROUTE_AUDIT_DIR` path. Directories are descriptor-relative and mode `0700`; audit files are mode
+`0600`. Retention, record, file, total-size, and rotated-file limits are bounded by the corresponding
+`OXIROUTE_AUDIT_MAX_*` environment variables. Corrupt lines are skipped and reported as degraded;
+control operations continue without treating audit persistence failure as an operation failure.
+
+The endpoint accepts `after`, `limit` (1-1000), `category` (`reload`, `import`, `certificate`, or
+`control`), and `result` (`requested`, `succeeded`, `failed`, `rejected`, `conflict`, `partial`, or
+`degraded`). `GET /api/v1/audit/status` exposes the current persistence mode and bounded counters.
 
 The event stream currently carries the existing generation and management operation events. Future
 types include:
@@ -329,8 +351,7 @@ types include:
 
 Private keys, authorization values, cookies, and raw event strings are not serialized into event
 frames; unknown event values are represented as `unknown`. Adding UI or ACME event publishers
-requires extending the allowlists; actor identity, request correlation, durable audit retention,
-and remote management remain separate follow-up work.
+requires extending the allowlists; audit records remain a separate durable control-history contract.
 
 ## Vue and Pug frontend
 

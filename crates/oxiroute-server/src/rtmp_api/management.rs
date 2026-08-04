@@ -13,6 +13,7 @@ use super::{ApiResponse, config::read_config_body};
 use crate::{
     AdministrativeState, GenerationManager, HealthOverride, RuntimeGeneration, RuntimeMetrics,
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome},
+    operational_event::{AuditCategory, AuditResult, AuditStore},
 };
 
 const MAX_BATCH_TARGETS: usize = 256;
@@ -27,6 +28,7 @@ pub(super) struct ManagementState {
     coordinator: CanonicalConfigCoordinator,
     generations: GenerationManager,
     metrics: RuntimeMetrics,
+    audit: Arc<AuditStore>,
     process_shutdown: Option<Arc<AtomicBool>>,
 }
 
@@ -49,6 +51,8 @@ pub(super) enum Route<'a> {
     Tls,
     TlsReconcile,
     TlsRenew,
+    Audit(Option<&'a str>),
+    AuditStatus,
     Events(Option<&'a str>),
     EventStream(Option<&'a str>),
     ProcessDrain,
@@ -77,6 +81,8 @@ pub(super) fn match_route(path_and_query: &str) -> Option<Route<'_>> {
         "/api/v1/tls" => Some(Route::Tls),
         "/api/v1/tls/reconcile" => Some(Route::TlsReconcile),
         "/api/v1/tls/renew" => Some(Route::TlsRenew),
+        "/api/v1/audit" => Some(Route::Audit(query)),
+        "/api/v1/audit/status" => Some(Route::AuditStatus),
         "/api/v1/events" => Some(Route::Events(query)),
         "/api/v1/events/stream" => Some(Route::EventStream(query)),
         "/api/v1/process/drain" => Some(Route::ProcessDrain),
@@ -105,11 +111,13 @@ impl ManagementState {
         coordinator: CanonicalConfigCoordinator,
         generations: GenerationManager,
         metrics: RuntimeMetrics,
+        audit: Arc<AuditStore>,
     ) -> Self {
         Self {
             coordinator,
             generations,
             metrics,
+            audit,
             process_shutdown: None,
         }
     }
@@ -144,6 +152,8 @@ impl ManagementState {
             (Route::Tls, "GET") => self.tls(),
             (Route::TlsReconcile, "POST") => self.tls_reconcile(session).await,
             (Route::TlsRenew, "POST") => self.tls_renew(session).await,
+            (Route::Audit(query), "GET") => self.audit(query),
+            (Route::AuditStatus, "GET") => self.audit_status(),
             (Route::Events(query), "GET") => Self::events(query),
             (Route::ProcessDrain, "POST") => self.process_drain(session).await,
             (Route::ProcessShutdown, "POST") => self.process_shutdown(session).await,
@@ -154,6 +164,8 @@ impl ManagementState {
                 | Route::Generations
                 | Route::Tls
                 | Route::TlsRenew
+                | Route::Audit(_)
+                | Route::AuditStatus
                 | Route::Events(_)
                 | Route::EventStream(_),
                 _,
@@ -863,6 +875,82 @@ impl ManagementState {
         }
     }
 
+    fn audit_status(&self) -> ApiResponse {
+        ApiResponse::json(200, &json!({ "audit": self.audit.status() }))
+    }
+
+    fn audit(&self, query: Option<&str>) -> ApiResponse {
+        let mut after = 0_u64;
+        let mut limit = 100_usize;
+        let mut category = None;
+        let mut result = None;
+        if let Some(query) = query {
+            for pair in query.split('&') {
+                let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+                match name {
+                    "after" => match value.parse() {
+                        Ok(value) => after = value,
+                        Err(_) => {
+                            return ApiResponse::error(
+                                400,
+                                "invalid_cursor",
+                                "audit cursor is invalid",
+                            );
+                        }
+                    },
+                    "limit" => match value.parse::<usize>() {
+                        Ok(value) if (1..=MAX_EVENT_LIMIT).contains(&value) => limit = value,
+                        _ => {
+                            return ApiResponse::error(
+                                400,
+                                "invalid_limit",
+                                "audit limit must be between 1 and 1000",
+                            );
+                        }
+                    },
+                    "category" => match AuditCategory::parse(value) {
+                        Some(value) => category = Some(value),
+                        None => {
+                            return ApiResponse::error(
+                                400,
+                                "invalid_category",
+                                "audit category is invalid",
+                            );
+                        }
+                    },
+                    "result" => match AuditResult::parse(value) {
+                        Some(value) => result = Some(value),
+                        None => {
+                            return ApiResponse::error(
+                                400,
+                                "invalid_result",
+                                "audit result is invalid",
+                            );
+                        }
+                    },
+                    _ => {
+                        return ApiResponse::error(
+                            400,
+                            "invalid_query",
+                            "audit query parameter is invalid",
+                        );
+                    }
+                }
+            }
+        }
+        let page = self.audit.page(after, limit, category, result);
+        ApiResponse::json(
+            200,
+            &json!({
+                "records": page.records,
+                "cursor": page.cursor,
+                "hasMore": page.has_more,
+                "oldestCursor": page.oldest_cursor,
+                "latestCursor": page.latest_cursor,
+            }),
+        )
+    }
+
     fn events(query: Option<&str>) -> ApiResponse {
         let mut after = 0_u64;
         let mut limit = 100_usize;
@@ -971,6 +1059,23 @@ async fn body<T: for<'de> Deserialize<'de>>(session: &mut ServerSession) -> Resu
     let bytes = read_config_body(session).await?;
     serde_json::from_slice(&bytes)
         .map_err(|_| ApiResponse::error(400, "invalid_json", "request body is invalid JSON"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Route, match_route};
+
+    #[test]
+    fn audit_routes_preserve_query_filters_and_status_is_distinct() {
+        assert!(matches!(
+            match_route("/api/v1/audit?after=4&limit=2&category=reload"),
+            Some(Route::Audit(Some("after=4&limit=2&category=reload")))
+        ));
+        assert!(matches!(
+            match_route("/api/v1/audit/status"),
+            Some(Route::AuditStatus)
+        ));
+    }
 }
 
 #[derive(Deserialize)]
