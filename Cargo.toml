@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/oxiroute-cache",
+    "crates/oxiroute-acme",
     "crates/oxiroute-config",
     "crates/oxiroute-config-source",
     "crates/oxiroute-forward-proxy",
