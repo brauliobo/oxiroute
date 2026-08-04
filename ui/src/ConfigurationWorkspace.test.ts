@@ -49,7 +49,7 @@ function canonicalConfig(): CanonicalConfig {
         default_certificate: 'direct-public',
         min_version: '1.2',
         alpn: ['h2', 'http/1.1'],
-        policy: { cipher_list: null, dh_parameters_path: null, session_cache: null, session_timeout_seconds: null, session_tickets: false, prefer_server_ciphers: true },
+         policy: { cipher_list: null, dh_parameters_path: null, client_auth: { mode: 'disabled', ca_certificate_path: null, allowed_dns_names: [] }, session_cache: null, session_timeout_seconds: null, session_tickets: false, prefer_server_ciphers: true },
       },
       {
         name: 'internal-sni',
@@ -57,7 +57,7 @@ function canonicalConfig(): CanonicalConfig {
         default_certificate: 'direct-public',
         min_version: '1.3',
         alpn: ['http/1.1'],
-        policy: { cipher_list: null, dh_parameters_path: null, session_cache: null, session_timeout_seconds: null, session_tickets: false, prefer_server_ciphers: true },
+         policy: { cipher_list: null, dh_parameters_path: null, client_auth: { mode: 'disabled', ca_certificate_path: null, allowed_dns_names: [] }, session_cache: null, session_timeout_seconds: null, session_tickets: false, prefer_server_ciphers: true },
       },
     ],
     listeners: [
@@ -774,6 +774,10 @@ describe('ConfigurationWorkspace', () => {
     await wrapper.get('[data-field="certificates[].source.directory_url"] input').setValue('https://acme.test/directory')
     await wrapper.get('[data-field="certificates[].source.state_root"] input').setValue('/var/lib/oxiroute/acme')
     await wrapper.get('[data-field="certificates[].source.terms_agreed"] input').setValue(true)
+    await wrapper.get('[data-field="certificates[].source.challenge"] select').setValue('dns01')
+    await wrapper.get('[data-field="certificates[].source.dns01.provider"] input').setValue('fake')
+    await wrapper.get('[data-field="certificates[].source.dns01.credential_file"] input').setValue('/etc/oxiroute/dns-credentials')
+    await wrapper.get('[data-field="certificates[].source.dns01.timeout_seconds"] input').setValue(30)
     await wrapper.get('[data-field="certificates[].source.allowed_dns_suffixes"] .add-row').trigger('click')
     await wrapper.get('[data-field="certificates[].source.allowed_dns_suffixes"] input').setValue('example.test')
     await sourceType.setValue('self_signed_development')
@@ -809,6 +813,11 @@ describe('ConfigurationWorkspace', () => {
     await wrapper.get('[data-field="tls_profiles[].policy.session_tickets"] input').setValue(true)
     await wrapper.get('[data-field="tls_profiles[].policy.session_tickets"] input').setValue(false)
     await wrapper.get('[data-field="tls_profiles[].policy.prefer_server_ciphers"] input').setValue(false)
+    await wrapper.get('[data-field="tls_profiles[].policy.client_auth.mode"] select').setValue('optional')
+    await wrapper.get('[data-field="tls_profiles[].policy.client_auth.ca_certificate_path"] input').setValue('/etc/oxiroute/client-ca.pem')
+    const allowedClientSans = wrapper.get('[data-field="tls_profiles[].policy.client_auth.allowed_dns_names"]')
+    await findButtonIn(allowedClientSans, 'Add exact DNS or IP SAN').trigger('click')
+    await allowedClientSans.find('input').setValue('client.example.test')
 
     await selectObject('listeners:0')
     await wrapper.get('[data-field="listeners[].name"] input').setValue('edge-https')
@@ -961,9 +970,14 @@ describe('ConfigurationWorkspace', () => {
       min_version: '1.3',
       alpn: ['h2'],
       policy: {
-        cipher_list: 'ECDHE-RSA-AES128-GCM-SHA256',
-        dh_parameters_path: '/etc/letsencrypt/ssl-dhparams.pem',
-        session_cache: { name: 'le_nginx_SSL', size_bytes: 10 * 1024 * 1024 },
+         cipher_list: 'ECDHE-RSA-AES128-GCM-SHA256',
+         dh_parameters_path: '/etc/letsencrypt/ssl-dhparams.pem',
+         client_auth: {
+           mode: 'optional',
+           ca_certificate_path: '/etc/oxiroute/client-ca.pem',
+           allowed_dns_names: ['client.example.test'],
+         },
+         session_cache: { name: 'le_nginx_SSL', size_bytes: 10 * 1024 * 1024 },
         session_timeout_seconds: 86_400,
         session_tickets: false,
         prefer_server_ciphers: false,

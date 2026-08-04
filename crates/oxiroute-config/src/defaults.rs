@@ -26,6 +26,14 @@ const DEFAULT_RTMP_PULL_RECONNECT_MS: u64 = 3_000;
 const DEFAULT_RTMP_RELAY_CONNECT_TIMEOUT_MS: u64 = 500;
 const DEFAULT_RTMP_RELAY_HANDSHAKE_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_RTMP_MAX_CHAIN_DEPTH: u8 = 4;
+const DEFAULT_RTMP_HLS_SEGMENT_DURATION_MS: u64 = 2_000;
+const DEFAULT_RTMP_HLS_MAX_SEGMENT_DURATION_MS: u64 = 10_000;
+const DEFAULT_RTMP_HLS_PLAYLIST_LENGTH_MS: u64 = 30_000;
+const DEFAULT_RTMP_HLS_MAX_SEGMENT_BYTES: u64 = 8 * 1024 * 1024;
+const DEFAULT_RTMP_HLS_MAX_QUEUE_MESSAGES: u64 = 256;
+const DEFAULT_RTMP_HLS_MAX_STORAGE_BYTES: u64 = 512 * 1024 * 1024;
+const DEFAULT_RTMP_HLS_MAX_STORAGE_FILES: u64 = 10_000;
+const DEFAULT_RTMP_HLS_MAX_ACTIVE_STREAMS: u64 = 1_024;
 const DEFAULT_RECORDER_MAX_QUEUE_MESSAGES: u64 = 256;
 const DEFAULT_RECORDER_MAX_QUEUE_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_RECORDER_SHUTDOWN_TIMEOUT_MS: u64 = 5_000;
@@ -58,6 +66,8 @@ const DEFAULT_UDP_MAX_SESSIONS: u64 = 4_096;
 const DEFAULT_UDP_MAX_SESSION_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_UDP_MAX_QUEUE_DATAGRAMS: u64 = 64;
 const DEFAULT_UDP_MAX_QUEUE_BYTES: u64 = 1024 * 1024;
+const DEFAULT_ACME_DNS01_TIMEOUT_SECONDS: u64 = 300;
+const DEFAULT_PROXY_PROTOCOL_TIMEOUT_MS: u64 = 5_000;
 
 pub(crate) const MIN_HEALTH_INTERVAL_MS: u64 = 1_000;
 pub(crate) const MAX_HEALTH_INTERVAL_MS: u64 = 86_400_000;
@@ -70,6 +80,8 @@ pub(crate) const MAX_CERTIFICATE_DNS_NAMES: usize = 100;
 pub(crate) const MAX_ACME_CONTACTS: usize = 8;
 pub(crate) const MAX_ACME_DNS_SUFFIXES: usize = 16;
 pub(crate) const MAX_ACME_DIRECTORY_URL_BYTES: usize = 2_048;
+pub(crate) const MAX_ACME_DNS01_PROVIDER_BYTES: usize = 64;
+pub(crate) const MAX_ACME_DNS01_TIMEOUT_SECONDS: u64 = 600;
 pub(crate) const MIN_SELF_SIGNED_VALIDITY_DAYS: u32 = 1;
 pub(crate) const MAX_SELF_SIGNED_VALIDITY_DAYS: u32 = 30;
 pub(crate) const MAX_TLS_PROFILES: usize = 256;
@@ -90,6 +102,7 @@ pub(crate) const MAX_HTTP_HEADER_NAME_BYTES: usize = 64;
 pub(crate) const MAX_HTTP_HEADER_VALUE_BYTES: usize = 8 * 1024;
 pub(crate) const MAX_HTTP_COOKIE_PATH_REWRITES: usize = 16;
 pub(crate) const MAX_HTTP_COOKIE_PATH_BYTES: usize = 1024;
+pub(crate) const MAX_HTTP_PROXY_PATH_BYTES: usize = 1024;
 pub(crate) const MAX_HTTP_FIXED_RESPONSE_BODY_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_HTTP_REDIRECT_LOCATION_BYTES: usize = 2048;
 pub(crate) const MAX_STATS_PAGE_URI_BYTES: usize = 2048;
@@ -107,6 +120,7 @@ pub(crate) const MAX_HTTP_FILE_EXTENSION_BYTES: usize = 32;
 pub(crate) const MAX_HTTP_COOKIE_ATTRIBUTE_RULES: usize = 16;
 pub(crate) const MAX_HTTP_GZIP_TYPES: usize = 64;
 pub(crate) const MAX_HTTP_TIMEOUT_MS: u64 = 86_400_000;
+pub(crate) const MAX_PROXY_PROTOCOL_TIMEOUT_MS: u64 = 86_400_000;
 pub(crate) const MAX_UDP_DATAGRAM_BYTES: u64 = 65_507;
 pub(crate) const MAX_UDP_SESSIONS: u64 = 100_000;
 pub(crate) const MAX_UDP_SESSION_BYTES: u64 = 1024 * 1024 * 1024;
@@ -117,6 +131,18 @@ pub(crate) const MAX_RTMP_APPLICATIONS_PER_SERVICE: usize = 256;
 pub(crate) const MAX_RTMP_RECORDERS_PER_APPLICATION: usize = 8;
 pub(crate) const MAX_TOTAL_RTMP_RECORDERS: usize = 256;
 pub(crate) const MAX_RTMP_RECORDING_ROOTS: usize = 64;
+pub(crate) const MAX_RTMP_HLS_OUTPUTS: usize = 64;
+pub(crate) const MAX_RTMP_HLS_VARIANTS: usize = 16;
+pub(crate) const MAX_RTMP_HLS_NAME_BYTES: usize = 128;
+pub(crate) const MAX_RTMP_HLS_SEGMENT_DURATION_MS: u64 = 120_000;
+pub(crate) const MAX_RTMP_HLS_PLAYLIST_LENGTH_MS: u64 = 86_400_000;
+pub(crate) const MAX_RTMP_HLS_SEGMENT_BYTES: u64 = 64 * 1024 * 1024;
+pub(crate) const MAX_RTMP_HLS_QUEUE_MESSAGES: u64 = 65_536;
+pub(crate) const MAX_RTMP_HLS_STORAGE_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
+pub(crate) const MAX_RTMP_HLS_STORAGE_FILES: u64 = 1_000_000;
+pub(crate) const MAX_RTMP_HLS_ACTIVE_STREAMS: u64 = 100_000;
+pub(crate) const MAX_RTMP_HLS_KEY_URL_PREFIX_BYTES: usize = 512;
+pub(crate) const MAX_RTMP_HLS_KEY_ROTATION_SEGMENTS: u64 = 100_000;
 pub(crate) const MAX_RECORDING_SUFFIX_TEMPLATE_BYTES: usize = 128;
 pub(crate) const MAX_RECORDER_ROTATION_INTERVAL_MS: u64 = (1 << 31) - 1;
 pub(crate) const MAX_RECORDER_QUEUE_MESSAGES: u64 = 65_536;
@@ -201,6 +227,38 @@ pub(crate) const fn default_true() -> bool {
     true
 }
 
+pub(crate) const fn default_rtmp_hls_segment_duration_ms() -> u64 {
+    DEFAULT_RTMP_HLS_SEGMENT_DURATION_MS
+}
+
+pub(crate) const fn default_rtmp_hls_max_segment_duration_ms() -> u64 {
+    DEFAULT_RTMP_HLS_MAX_SEGMENT_DURATION_MS
+}
+
+pub(crate) const fn default_rtmp_hls_playlist_length_ms() -> u64 {
+    DEFAULT_RTMP_HLS_PLAYLIST_LENGTH_MS
+}
+
+pub(crate) const fn default_rtmp_hls_max_segment_bytes() -> u64 {
+    DEFAULT_RTMP_HLS_MAX_SEGMENT_BYTES
+}
+
+pub(crate) const fn default_rtmp_hls_max_queue_messages() -> u64 {
+    DEFAULT_RTMP_HLS_MAX_QUEUE_MESSAGES
+}
+
+pub(crate) const fn default_rtmp_hls_max_storage_bytes() -> u64 {
+    DEFAULT_RTMP_HLS_MAX_STORAGE_BYTES
+}
+
+pub(crate) const fn default_rtmp_hls_max_storage_files() -> u64 {
+    DEFAULT_RTMP_HLS_MAX_STORAGE_FILES
+}
+
+pub(crate) const fn default_rtmp_hls_max_active_streams() -> u64 {
+    DEFAULT_RTMP_HLS_MAX_ACTIVE_STREAMS
+}
+
 pub(crate) const fn default_self_signed_validity_days() -> u32 {
     7
 }
@@ -240,6 +298,14 @@ pub(crate) const fn default_udp_max_queue_datagrams() -> u64 {
 
 pub(crate) const fn default_udp_max_queue_bytes() -> u64 {
     DEFAULT_UDP_MAX_QUEUE_BYTES
+}
+
+pub(crate) const fn default_acme_dns01_timeout_seconds() -> u64 {
+    DEFAULT_ACME_DNS01_TIMEOUT_SECONDS
+}
+
+pub(crate) const fn default_proxy_protocol_timeout_ms() -> u64 {
+    DEFAULT_PROXY_PROTOCOL_TIMEOUT_MS
 }
 
 pub(crate) const fn default_health_interval_ms() -> u64 {

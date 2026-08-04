@@ -175,6 +175,8 @@ describe('local management workspaces', () => {
         status: {
           certificate: 'managed-edge',
           directoryUrl: 'https://acme.example.test/directory',
+          challenge: 'dns01',
+          dnsProvider: 'fake',
           keyType: 'ecdsa_p256',
           allowedDnsSuffixes: ['example.test'],
           diskRevision: 'disk',

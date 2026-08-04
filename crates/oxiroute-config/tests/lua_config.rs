@@ -667,6 +667,7 @@ fn managed_acme_source_round_trips_and_rejects_unsafe_policy_values() {
         CertificateSource::AcmeManaged {
             challenge: AcmeChallengeType::Http01,
             key_type: AcmeKeyType::Rsa2048,
+            dns01: None,
             ..
         }
     ));
@@ -683,7 +684,7 @@ fn managed_acme_source_round_trips_and_rejects_unsafe_policy_values() {
             "directory_url",
             "directory_url = \"http://acme.example.test/directory\"",
         ),
-        ("challenge", "challenge = \"dns01\""),
+        ("challenge", "challenge = \"tls_alpn01\""),
         (
             "allowed_dns_suffixes",
             "allowed_dns_suffixes = { \"other.test\" }",
@@ -703,6 +704,31 @@ fn managed_acme_source_round_trips_and_rejects_unsafe_policy_values() {
             "unexpected error for {field}: {error:?}"
         );
     }
+
+    let dns_config = with_acme_source(
+        "contacts = { \"mailto:ops@example.test\" },\n        challenge = \"dns01\",\n        key_type = \"ecdsa_p256\",\n        dns01 = { provider = \"fake\", credential_file = \"/etc/oxiroute/dns-credentials\", timeout_seconds = 30 },",
+    )
+    .replace(
+        "      dns_names = { \"WWW.EXAMPLE.TEST\" },",
+        "      dns_names = { \"*.EXAMPLE.TEST\" },",
+    );
+    let dns_config = load_lua(&dns_config).expect("managed DNS-01 source");
+    assert!(matches!(
+        &dns_config.certificates[0].source,
+        CertificateSource::AcmeManaged {
+            challenge: AcmeChallengeType::Dns01,
+            dns01: Some(dns01),
+            ..
+        } if dns01.provider == "fake"
+            && dns01.credential_file
+                == std::path::PathBuf::from("/etc/oxiroute/dns-credentials")
+            && dns01.timeout_seconds == 30
+    ));
+    assert_eq!(
+        load_lua(&render_lua(&dns_config).expect("render DNS-01 source"))
+            .expect("reload DNS-01 source"),
+        dns_config
+    );
 }
 
 #[test]

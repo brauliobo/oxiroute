@@ -67,6 +67,12 @@ section.certificates-workspace(aria-labelledby="certificates-heading" :aria-busy
               span.label Directory
               code {{ certificate.status.directoryUrl }}
             .fact(v-if="isManaged(certificate.status)")
+              span.label Challenge
+              strong {{ certificate.status.challenge }}
+            .fact(v-if="isManaged(certificate.status) && certificate.status.dnsProvider")
+              span.label DNS provider
+              strong {{ certificate.status.dnsProvider }}
+            .fact(v-if="isManaged(certificate.status)")
               span.label Key policy
               strong {{ certificate.status.keyType }}
             .fact(v-if="isManaged(certificate.status)")

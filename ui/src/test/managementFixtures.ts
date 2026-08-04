@@ -70,6 +70,8 @@ export function managementTlsInventory(): TlsInventory {
       status: {
         certificate: 'managed-edge',
         directoryUrl: 'https://acme.example.test/directory',
+        challenge: 'http01',
+        dnsProvider: null,
         keyType: 'ecdsa_p256',
         allowedDnsSuffixes: ['example.test'],
         diskRevision: 'acme-disk',

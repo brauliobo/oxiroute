@@ -5,7 +5,7 @@ use std::{
     sync::Arc,
 };
 
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use openssl::{
     bn::BigNumContext,
     ec::{EcGroup, EcKey, PointConversionForm},
@@ -17,13 +17,13 @@ use openssl::{
     rsa::Rsa,
     sign::Signer,
     stack::Stack,
-    x509::{X509NameBuilder, X509Req, X509ReqBuilder, extension::SubjectAlternativeName},
+    x509::{extension::SubjectAlternativeName, X509NameBuilder, X509Req, X509ReqBuilder},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
 
-use crate::{Clock, SecretBytes};
+use crate::{Clock, Dns01Challenge, SecretBytes};
 
 pub const MAX_ACME_BODY_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_ACME_URL_BYTES: usize = 2_048;
@@ -140,7 +140,7 @@ pub enum AcmeError {
     OrderIdentifiersMismatch,
     #[error("ACME order returned an unsupported state: {status}")]
     InvalidOrderState { status: String },
-    #[error("ACME authorization has no supported HTTP-01 challenge")]
+    #[error("ACME authorization has no supported challenge")]
     UnsupportedChallenge,
     #[error("ACME polling exceeded its bounded deadline")]
     PollTimeout,
@@ -453,6 +453,12 @@ pub struct Order {
     pub certificate: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChallengeType {
+    Http01,
+    Dns01,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AuthorizationStatus {
     Pending,
@@ -485,6 +491,7 @@ pub struct Authorization {
     pub identifier: String,
     pub status: AuthorizationStatus,
     pub challenge: Option<Http01Challenge>,
+    pub dns01_challenge: Option<Dns01Challenge>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -677,19 +684,36 @@ impl<T: AcmeTransport> AcmeClient<T> {
     ///
     /// Returns an error when the authorization is malformed, outside policy, or lacks HTTP-01.
     pub fn authorization(&mut self, url: &str) -> Result<Authorization, AcmeError> {
-        self.authorization_response(url)
+        self.authorization_response(url, ChallengeType::Http01)
+            .map(|(authorization, _)| authorization)
+    }
+
+    /// Loads an authorization and selects its exact challenge type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the authorization is malformed, outside policy, or lacks the selected
+    /// challenge type while it is still pending.
+    pub fn authorization_for(
+        &mut self,
+        url: &str,
+        challenge_type: ChallengeType,
+    ) -> Result<Authorization, AcmeError> {
+        self.authorization_response(url, challenge_type)
             .map(|(authorization, _)| authorization)
     }
 
     fn authorization_response(
         &mut self,
         url: &str,
+        challenge_type: ChallengeType,
     ) -> Result<(Authorization, HttpResponse), AcmeError> {
         let response = self.post_as_get(url)?;
         if response.status != 200 {
             return Err(problem_or_status(&response));
         }
-        let authorization = parse_authorization(&response, url, &self.key, &self.policy)?;
+        let authorization =
+            parse_authorization(&response, url, &self.key, &self.policy, challenge_type)?;
         Ok((authorization, response))
     }
 
@@ -700,6 +724,22 @@ impl<T: AcmeTransport> AcmeClient<T> {
     /// Returns an error for a malformed challenge URL or ACME failure.
     pub fn respond_to_challenge(&mut self, challenge: &Http01Challenge) -> Result<(), AcmeError> {
         let response = self.signed_account_request(&challenge.challenge_url, &json!({}))?;
+        if response.status != 200 {
+            return Err(problem_or_status(&response));
+        }
+        Ok(())
+    }
+
+    /// Notifies the CA that a DNS-01 TXT record is provisioned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed challenge URL or ACME failure.
+    pub fn respond_to_dns01_challenge(
+        &mut self,
+        challenge: &Dns01Challenge,
+    ) -> Result<(), AcmeError> {
+        let response = self.signed_account_request(challenge.challenge_url(), &json!({}))?;
         if response.status != 200 {
             return Err(problem_or_status(&response));
         }
@@ -717,12 +757,28 @@ impl<T: AcmeTransport> AcmeClient<T> {
         url: &str,
         poll: &PollPolicy,
     ) -> Result<Authorization, AcmeError> {
+        self.poll_authorization_for(url, poll, ChallengeType::Http01)
+    }
+
+    /// Polls an authorization for a selected challenge type with bounded attempts, deadline,
+    /// backoff, and Retry-After support.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a terminal invalid state, malformed response, invalid retry guidance,
+    /// transport failure, or bounded timeout occurs.
+    pub fn poll_authorization_for(
+        &mut self,
+        url: &str,
+        poll: &PollPolicy,
+        challenge_type: ChallengeType,
+    ) -> Result<Authorization, AcmeError> {
         let (max_attempts, mut delay, max_delay) = bounded_poll_policy(poll);
         for attempt in 0..max_attempts {
             if self.clock.now_unix_seconds() > poll.deadline_unix_seconds {
                 return Err(AcmeError::PollTimeout);
             }
-            let (authorization, response) = self.authorization_response(url)?;
+            let (authorization, response) = self.authorization_response(url, challenge_type)?;
             match authorization.status {
                 AuthorizationStatus::Invalid
                 | AuthorizationStatus::Deactivated
@@ -1127,17 +1183,16 @@ fn normalize_identifiers(identifiers: &[String]) -> Result<Vec<String>, AcmeErro
     }
     let mut normalized = BTreeSet::new();
     for identifier in identifiers {
-        let mut identifier = identifier.trim().to_ascii_lowercase();
-        if identifier.is_empty()
-            || identifier.len() > 253
-            || identifier.starts_with("*.")
-            || identifier.parse::<IpAddr>().is_ok()
-            || !valid_dns_name(&identifier)
-        {
+        let identifier = identifier.trim().to_ascii_lowercase();
+        if identifier.is_empty() || identifier.len() > 253 || identifier.parse::<IpAddr>().is_ok() {
             return Err(AcmeError::UnsupportedIdentifier);
         }
-        if identifier.ends_with('.') {
-            identifier.pop();
+        let dns_name = identifier.strip_prefix("*.").unwrap_or(&identifier);
+        if identifier.contains('*') && !identifier.starts_with("*.") {
+            return Err(AcmeError::UnsupportedIdentifier);
+        }
+        if !valid_dns_name(dns_name) || dns_name.parse::<IpAddr>().is_ok() {
+            return Err(AcmeError::UnsupportedIdentifier);
         }
         normalized.insert(identifier);
     }
@@ -1223,6 +1278,7 @@ fn parse_authorization(
     url: &str,
     key: &AccountKey,
     policy: &OriginPolicy,
+    challenge_type: ChallengeType,
 ) -> Result<Authorization, AcmeError> {
     let value = bounded_json(&response.body, MAX_ACME_BODY_BYTES)?;
     let identifier = value
@@ -1237,10 +1293,10 @@ fn parse_authorization(
         .get("challenges")
         .and_then(Value::as_array)
         .ok_or(AcmeError::MissingField)?;
-    let challenge = challenges
+    let http01_challenge = challenges
         .iter()
         .find(|challenge| challenge.get("type").and_then(Value::as_str) == Some("http-01"));
-    let challenge = challenge
+    let challenge = http01_challenge
         .map(|challenge| {
             let challenge_url = challenge
                 .get("url")
@@ -1262,7 +1318,35 @@ fn parse_authorization(
             })
         })
         .transpose()?;
-    if challenge.is_none()
+    let dns01_challenge = challenges
+        .iter()
+        .find(|challenge| challenge.get("type").and_then(Value::as_str) == Some("dns-01"))
+        .map(|challenge| {
+            let challenge_url = challenge
+                .get("url")
+                .and_then(Value::as_str)
+                .ok_or(AcmeError::MissingField)?
+                .to_owned();
+            policy.permits(&challenge_url)?;
+            let token = challenge
+                .get("token")
+                .and_then(Value::as_str)
+                .ok_or(AcmeError::MissingField)?
+                .to_owned();
+            validate_token(&token)?;
+            let dns_name = identifier.strip_prefix("*.").unwrap_or(&identifier);
+            let record_name = format!("_acme-challenge.{dns_name}");
+            let key_authorization = key.key_authorization(&token);
+            let record_value = URL_SAFE_NO_PAD.encode(Sha256::digest(key_authorization.as_bytes()));
+            Dns01Challenge::new(&identifier, challenge_url, record_name, record_value)
+                .map_err(|_| AcmeError::MalformedResponse)
+        })
+        .transpose()?;
+    let selected = match challenge_type {
+        ChallengeType::Http01 => challenge.is_some(),
+        ChallengeType::Dns01 => dns01_challenge.is_some(),
+    };
+    if !selected
         && matches!(
             status,
             AuthorizationStatus::Pending | AuthorizationStatus::Processing
@@ -1275,6 +1359,7 @@ fn parse_authorization(
         identifier,
         status,
         challenge,
+        dns01_challenge,
     })
 }
 
@@ -1794,6 +1879,31 @@ mod tests {
             )
             .expect("valid authorization");
         assert_eq!(authorization.status, AuthorizationStatus::Valid);
+    }
+
+    #[test]
+    fn dns01_authorization_derives_the_wildcard_txt_record() {
+        let key = AccountKey::generate(AccountKeyAlgorithm::EcdsaP256).expect("key");
+        let policy = OriginPolicy::strict("https://acme.test/directory").expect("policy");
+        let response = HttpResponse::new(
+            200,
+            "https://acme.test/acme/authz/1",
+            br#"{"status":"pending","identifier":{"type":"dns","value":"*.EXAMPLE.TEST"},"challenges":[{"type":"dns-01","url":"https://acme.test/acme/challenge/1","token":"token-1"}]}"#.to_vec(),
+        );
+        let authorization = parse_authorization(
+            &response,
+            "https://acme.test/acme/authz/1",
+            &key,
+            &policy,
+            ChallengeType::Dns01,
+        )
+        .expect("DNS-01 authorization");
+        let challenge = authorization.dns01_challenge.expect("DNS-01 challenge");
+        let expected_value =
+            URL_SAFE_NO_PAD.encode(Sha256::digest(key.key_authorization("token-1").as_bytes()));
+        assert_eq!(challenge.identifier(), "*.example.test");
+        assert_eq!(challenge.record_name(), "_acme-challenge.example.test");
+        assert_eq!(challenge.record_value(), expected_value);
     }
 
     #[test]

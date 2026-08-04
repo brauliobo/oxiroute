@@ -22,7 +22,7 @@ fieldset.object-block(data-field="certificates[].source")
     select(:value="certificate.source.type" @change="changeSource")
       option(value="files") Direct files
       option(value="certbot") Certbot lineage
-      option(value="acme_managed") Managed ACME HTTP-01
+      option(value="acme_managed") Managed ACME
       option(value="self_signed_development") Development self-signed
   .field-grid(v-if="certificate.source.type === 'files'")
     label.field(data-field="certificates[].source.certificate_chain_path")
@@ -56,8 +56,9 @@ fieldset.object-block(data-field="certificates[].source")
       input(type="checkbox" v-model="certificate.source.terms_agreed")
     label.field(data-field="certificates[].source.challenge")
       span Challenge
-      select(v-model="certificate.source.challenge")
+      select(:value="certificate.source.challenge" @change="changeAcmeChallenge")
         option(value="http01") HTTP-01
+        option(value="dns01") DNS-01
     label.field(data-field="certificates[].source.key_type")
       span Leaf key type
       select(v-model="certificate.source.key_type")
@@ -69,6 +70,16 @@ fieldset.object-block(data-field="certificates[].source")
       item-label="DNS suffix"
       field-path="certificates[].source.allowed_dns_suffixes"
     )
+    .field-grid(v-if="certificate.source.challenge === 'dns01' && certificate.source.dns01")
+      label.field(data-field="certificates[].source.dns01.provider")
+        span DNS provider
+        input(type="text" v-model="certificate.source.dns01.provider")
+      label.field(data-field="certificates[].source.dns01.credential_file")
+        span Credential file
+        input(type="text" v-model="certificate.source.dns01.credential_file")
+      label.field(data-field="certificates[].source.dns01.timeout_seconds")
+        span Provider timeout (seconds)
+        input(type="number" min="1" max="600" step="1" v-model.number="certificate.source.dns01.timeout_seconds")
   .field-grid(v-else)
     label.field(data-field="certificates[].source.validity_days")
       span Validity days
@@ -101,10 +112,26 @@ function changeSource(event: Event): void {
           challenge: 'http01',
           key_type: 'ecdsa_p256',
           allowed_dns_suffixes: [],
+          dns01: null,
         }
     : sourceType === 'self_signed_development'
       ? { type: 'self_signed_development', validity_days: 7, key_type: 'ecdsa_p256' }
       : { type: 'files', certificate_chain_path: '', private_key_path: '' }
+}
+
+function changeAcmeChallenge(event: Event): void {
+  if (props.certificate.source.type !== 'acme_managed') return
+  const challenge = (event.target as HTMLSelectElement).value as typeof props.certificate.source.challenge
+  props.certificate.source.challenge = challenge
+  if (challenge === 'dns01' && props.certificate.source.dns01 === null) {
+    props.certificate.source.dns01 = {
+      provider: '',
+      credential_file: '',
+      timeout_seconds: 300,
+    }
+  } else if (challenge !== 'dns01') {
+    props.certificate.source.dns01 = null
+  }
 }
 
 function setSelfSignedValidity(event: Event): void {

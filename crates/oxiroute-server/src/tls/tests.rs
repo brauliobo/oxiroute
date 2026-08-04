@@ -24,7 +24,7 @@ use openssl::{
     nid::Nid,
     pkey::{PKey, Private},
     rsa::Rsa,
-    ssl::{Ssl, SslContextBuilder, SslMethod, SslOptions, SslSessionCacheMode},
+    ssl::{Ssl, SslContextBuilder, SslMethod, SslOptions, SslSessionCacheMode, SslVerifyMode},
     x509::{
         X509, X509NameBuilder,
         extension::{
@@ -35,8 +35,9 @@ use openssl::{
 };
 use oxiroute_config::{
     AcmeChallengeType, AcmeKeyType, AlpnProtocol, Certificate, CertificateSource, Config,
-    HttpVersion, HttpVersionPolicy, SelfSignedKeyType, TlsPolicy, TlsProfile, TlsSessionCache,
-    TlsVersion, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, UpstreamTls,
+    HttpVersion, HttpVersionPolicy, SelfSignedKeyType, TlsClientAuthMode, TlsClientAuthPolicy,
+    TlsPolicy, TlsProfile, TlsSessionCache, TlsVersion, UpstreamAlgorithm, UpstreamEndpoint,
+    UpstreamPool, UpstreamTls,
 };
 use pingora::{listeners::ALPN, upstreams::peer::HttpPeer};
 use tempfile::TempDir;
@@ -47,8 +48,9 @@ use tls::{
     CertbotWatcherConfig, CertbotWatcherError, CertbotWatcherMonitor, CertbotWatcherSupervisor,
     CertificateGeneration, CertificateMetadata, CertificatePublishError, CertificateValidity,
     FileReconcileError, FileReconcileOutcome, FileWatcherConfig, FileWatcherSupervisor,
-    MAX_CERTIFICATE_CHAIN_BYTES, MAX_DH_PARAMETERS_BYTES, MAX_PRIVATE_KEY_BYTES, TlsBuildError,
-    TlsProfilePlan, UpstreamTlsPlan, prepare_tls, prepare_upstream_tls,
+    MAX_CA_CERTIFICATE_BYTES, MAX_CERTIFICATE_CHAIN_BYTES, MAX_DH_PARAMETERS_BYTES,
+    MAX_PRIVATE_KEY_BYTES, TlsBuildError, TlsProfilePlan, UpstreamTlsPlan, prepare_tls,
+    prepare_upstream_tls,
 };
 
 struct IdentityFiles {
@@ -128,6 +130,7 @@ fn applies_explicit_server_tls_policy_to_openssl_settings() {
     config.tls_profiles[0].policy = TlsPolicy {
         cipher_list: Some("ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384".into()),
         dh_parameters_path: Some(dh_parameters_path),
+        client_auth: TlsClientAuthPolicy::default(),
         session_cache: Some(TlsSessionCache {
             name: "le_nginx_SSL".into(),
             size_bytes: 10 * 1024 * 1024,
@@ -154,6 +157,83 @@ fn applies_explicit_server_tls_policy_to_openssl_settings() {
             .options()
             .contains(SslOptions::CIPHER_SERVER_PREFERENCE)
     );
+}
+
+#[test]
+fn downstream_client_auth_defaults_to_disabled_and_is_reported_as_configured_policy() {
+    let temp = TempDir::new().unwrap();
+    let files = write_identity(temp.path(), "primary", "www.example.test", false);
+    let config = config_with_identity(&files);
+
+    let prepared = prepare_tls(&config).unwrap();
+    let profile = prepared.profiles().get("public").unwrap();
+    assert_eq!(profile.client_auth_mode(), TlsClientAuthMode::Disabled);
+    assert!(!profile.client_auth_ca_configured());
+    assert_eq!(profile.client_auth_allowed_dns_name_count(), 0);
+    assert_eq!(profile.tls_settings().unwrap().verify_mode(), SslVerifyMode::NONE);
+}
+
+#[test]
+fn client_auth_ca_is_loaded_once_into_an_immutable_profile_snapshot() {
+    let temp = TempDir::new().unwrap();
+    let files = write_identity(temp.path(), "primary", "www.example.test", false);
+    let mut config = config_with_identity(&files);
+    config.tls_profiles[0].policy.client_auth = TlsClientAuthPolicy {
+        mode: TlsClientAuthMode::Required,
+        ca_certificate_path: Some(files.ca.clone()),
+        allowed_dns_names: vec!["client.example.test".into()],
+    };
+
+    let prepared = prepare_tls(&config).unwrap();
+    let profile = prepared.profiles().get("public").unwrap();
+    assert_eq!(profile.client_auth_mode(), TlsClientAuthMode::Required);
+    assert!(profile.client_auth_ca_configured());
+    assert_eq!(profile.client_auth_allowed_dns_name_count(), 1);
+    assert_eq!(
+        profile.tls_settings().unwrap().verify_mode(),
+        SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT
+    );
+
+    fs::write(&files.ca, b"not a CA bundle").unwrap();
+    assert!(profile.tls_settings().is_ok());
+    assert!(matches!(
+        prepare_tls(&config),
+        Err(TlsBuildError::ClientCaParse { .. })
+            | Err(TlsBuildError::InvalidPem { .. })
+    ));
+}
+
+#[test]
+fn client_auth_rejects_oversized_and_non_ca_bundles_before_listener_start() {
+    let temp = TempDir::new().unwrap();
+    let files = write_identity(temp.path(), "primary", "www.example.test", false);
+    let mut config = config_with_identity(&files);
+    config.tls_profiles[0].policy.client_auth = TlsClientAuthPolicy {
+        mode: TlsClientAuthMode::Required,
+        ca_certificate_path: Some(files.ca.clone()),
+        allowed_dns_names: Vec::new(),
+    };
+
+    fs::write(&files.ca, vec![b'x'; MAX_CA_CERTIFICATE_BYTES + 1]).unwrap();
+    assert!(matches!(
+        prepare_tls(&config),
+        Err(TlsBuildError::FileTooLarge {
+            kind: "client CA bundle",
+            limit: MAX_CA_CERTIFICATE_BYTES,
+            ..
+        })
+    ));
+
+    let files = write_identity(temp.path(), "non-ca", "www.example.test", false);
+    config.certificates[0].source = CertificateSource::Files {
+        certificate_chain_path: files.chain.clone(),
+        private_key_path: files.key.clone(),
+    };
+    config.tls_profiles[0].policy.client_auth.ca_certificate_path = Some(files.chain);
+    assert!(matches!(
+        prepare_tls(&config),
+        Err(TlsBuildError::NonCaClientCertificate { index: 0, .. })
+    ));
 }
 
 #[test]
@@ -225,6 +305,7 @@ fn managed_acme_without_a_current_revision_uses_a_bootstrap_and_is_due() {
         challenge: AcmeChallengeType::Http01,
         key_type: AcmeKeyType::EcdsaP256,
         allowed_dns_suffixes: vec!["example.test".into()],
+        dns01: None,
     };
 
     let prepared = prepare_tls(&config).unwrap();
