@@ -727,6 +727,7 @@ fn handoff_runtime_config(
             connect_timeout_ms: 1_000,
             idle_timeout_ms: 10_000,
             lifetime_timeout_ms: None,
+            udp: None,
         }],
         ..empty_config()
     }

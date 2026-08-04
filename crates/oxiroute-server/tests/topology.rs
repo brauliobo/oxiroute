@@ -595,6 +595,7 @@ fn topology_config(temp: &TempDir) -> Config {
             connect_timeout_ms: 5_000,
             idle_timeout_ms: 120_000,
             lifetime_timeout_ms: Some(600_000),
+            udp: None,
         }],
         ..empty_config()
     }
