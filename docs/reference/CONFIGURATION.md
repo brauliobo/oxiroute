@@ -45,13 +45,16 @@ version 1
           type "proxy"
           upstream_pool "web"
           (object)policy {
-            request_buffering #false
-            response_buffering #false
           }
         }
         (object)path {
           kind "segment_prefix"
           value "/"
+        }
+        (object)policy {
+          max_request_body_bytes 10485760
+          request_buffering #false
+          response_buffering #false
         }
       }
     }

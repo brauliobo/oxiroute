@@ -1,15 +1,15 @@
 use std::{
     net::SocketAddr,
     sync::{
-        Arc,
         atomic::{AtomicU64, Ordering},
+        Arc,
     },
     time::Duration,
 };
 
 use http::Version;
 use oxiroute_config::{HttpVersion, UpstreamConnectionReuse};
-use pingora::{Error, ErrorType, protocols::Digest, upstreams::peer::HttpPeer};
+use pingora::{protocols::Digest, upstreams::peer::HttpPeer, Error, ErrorType};
 use tokio::time::Instant;
 
 use crate::routing::EndpointObservation;
@@ -375,10 +375,10 @@ mod tests {
         UpstreamTls,
     };
     use pingora::{
-        ErrorSource,
         listeners::ALPN,
-        protocols::{Digest, tls::SslDigest},
+        protocols::{tls::SslDigest, Digest},
         upstreams::peer::Peer,
+        ErrorSource,
     };
 
     use super::*;

@@ -9,8 +9,8 @@ use pingora::{
         ServerApp,
     },
     protocols::{
-        ALPN, Stream,
-        http::{ServerSession, v2::server::H2Options},
+        http::{v2::server::H2Options, ServerSession},
+        Stream, ALPN,
     },
     server::ShutdownWatch,
 };
@@ -180,7 +180,6 @@ where
 
 pub struct HttpDownstreamPolicyApp<A> {
     inner: Arc<A>,
-    client_timeout: Option<Duration>,
     request_timeout: Option<Duration>,
     write_timeout: Option<Duration>,
     keepalive_timeout: Option<Duration>,
@@ -192,7 +191,6 @@ impl<A> HttpDownstreamPolicyApp<A> {
         let client_timeout = policy.client_timeout_ms.map(Duration::from_millis);
         Self {
             inner: Arc::new(inner),
-            client_timeout,
             request_timeout: policy
                 .request_timeout_ms
                 .map(Duration::from_millis)
@@ -213,8 +211,13 @@ where
         mut session: ServerSession,
         shutdown: &ShutdownWatch,
     ) -> Option<ReusedHttpStream> {
-        session.set_read_timeout(self.client_timeout);
-        session.set_write_timeout(self.write_timeout);
+        let write_timeout = match (self.request_timeout, self.write_timeout) {
+            (Some(request), Some(write)) => Some(request.min(write)),
+            (request, None) => request,
+            (None, write) => write,
+        };
+        session.set_read_timeout(self.request_timeout);
+        session.set_write_timeout(write_timeout);
         session.set_request_header_timeout(self.request_timeout);
         session.set_idle_keepalive_timeout(self.keepalive_timeout);
         if self.keepalive_timeout.is_some() {
@@ -239,8 +242,8 @@ where
 #[cfg(test)]
 mod tests {
     use std::sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
+        Arc,
     };
 
     use pingora::{apps::ServerApp, protocols::Stream, server::ShutdownWatch};
