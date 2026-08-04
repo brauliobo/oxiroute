@@ -3616,11 +3616,7 @@ mod tests {
             RoundRobinPool::from_endpoints_with_policy(
                 [first.clone(), second.clone()],
                 UpstreamAlgorithm::RoundRobin,
-                PassiveFailurePolicy::new(
-                    1,
-                    Duration::from_secs(60),
-                    Duration::from_secs(60),
-                ),
+                PassiveFailurePolicy::new(1, Duration::from_secs(60), Duration::from_secs(60)),
             )
             .expect("passive selector"),
         );

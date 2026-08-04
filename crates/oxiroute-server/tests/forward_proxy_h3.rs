@@ -7,13 +7,7 @@ mod process_support;
 #[path = "support/mod.rs"]
 mod support;
 
-use std::{
-    fs,
-    io::Cursor,
-    net::Ipv4Addr,
-    sync::Arc,
-    time::Duration,
-};
+use std::{fs, io::Cursor, net::Ipv4Addr, sync::Arc, time::Duration};
 
 use bytes::{Buf as _, Bytes};
 use h3::client::RequestStream;
