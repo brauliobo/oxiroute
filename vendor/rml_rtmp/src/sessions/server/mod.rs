@@ -15,7 +15,7 @@ use self::outstanding_requests::OutstandingRequest;
 use self::session_state::SessionState;
 use bytes::Bytes;
 use chunk_io::{ChunkDeserializer, ChunkSerializer, Packet};
-use messages::{PeerBandwidthLimitType, RtmpMessage, UserControlEventType};
+use messages::{Amf0Limits, PeerBandwidthLimitType, RtmpMessage, UserControlEventType};
 use rml_amf0::Amf0Value;
 use sessions::StreamMetadata;
 use std::collections::HashMap;
@@ -60,6 +60,7 @@ pub struct ServerSession {
     peer_window_ack_size: Option<u32>,
     bytes_received: u64,
     bytes_received_since_last_ack: u32,
+    amf0_limits: Amf0Limits,
 }
 
 impl ServerSession {
@@ -70,6 +71,14 @@ impl ServerSession {
     /// stream id 0 (as well as other important initial information
     pub fn new(
         config: ServerSessionConfig,
+    ) -> Result<(ServerSession, Vec<ServerSessionResult>), ServerSessionError> {
+        Self::new_with_amf0_limits(config, Amf0Limits::default())
+    }
+
+    /// Creates a server session with explicit bounds for inbound AMF0 values.
+    pub fn new_with_amf0_limits(
+        config: ServerSessionConfig,
+        amf0_limits: Amf0Limits,
     ) -> Result<(ServerSession, Vec<ServerSessionResult>), ServerSessionError> {
         let mut session = ServerSession {
             start_time: SystemTime::now(),
@@ -89,6 +98,7 @@ impl ServerSession {
             peer_window_ack_size: None,
             bytes_received: 0,
             bytes_received_since_last_ack: 0,
+            amf0_limits,
         };
 
         let mut results = Vec::with_capacity(4);
@@ -173,7 +183,7 @@ impl ServerSession {
             match self.deserializer.get_next_message(bytes_to_process)? {
                 None => break,
                 Some(payload) => {
-                    let message = payload.to_rtmp_message()?;
+                    let message = payload.to_rtmp_message_with_limits(&self.amf0_limits)?;
 
                     let mut message_results = match message {
                         RtmpMessage::Abort { stream_id } => self.handle_abort_message(stream_id)?,
@@ -537,7 +547,7 @@ impl ServerSession {
         self.outstanding_requests.insert(request_number, request);
 
         let event = ServerSessionEvent::ConnectionRequested {
-            app_name: app_name,
+            app_name,
             request_id: request_number,
         };
 
@@ -1146,7 +1156,7 @@ impl ServerSession {
 
         let message = RtmpMessage::Amf0Command {
             command_name: "_result".to_string(),
-            transaction_id: transaction_id,
+            transaction_id,
             command_object: Amf0Value::Object(command_object_properties),
             additional_arguments: vec![Amf0Value::Object(additional_properties)],
         };

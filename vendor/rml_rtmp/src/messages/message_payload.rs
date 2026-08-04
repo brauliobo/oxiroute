@@ -1,5 +1,6 @@
 use super::types;
 use bytes::Bytes;
+use messages::Amf0Limits;
 use messages::RtmpMessage;
 use messages::{MessageDeserializationError, MessageSerializationError};
 use std::fmt;
@@ -46,6 +47,19 @@ impl MessagePayload {
     /// seen are deserialized as amf0.  So far this has not caused any issues.
     pub fn to_rtmp_message(&self) -> Result<RtmpMessage, MessageDeserializationError> {
         match self.type_id {
+            15 => types::amf0_data::deserialize(self.data.clone()),
+            18 => types::amf0_data::deserialize(self.data.clone()),
+            20 => types::amf0_command::deserialize(self.data.clone()),
+            _ => self.to_rtmp_message_with_limits(&Amf0Limits::default()),
+        }
+    }
+
+    /// Deserializes a message while applying explicit AMF0 admission bounds.
+    pub fn to_rtmp_message_with_limits(
+        &self,
+        amf0_limits: &Amf0Limits,
+    ) -> Result<RtmpMessage, MessageDeserializationError> {
+        match self.type_id {
             1 => types::set_chunk_size::deserialize(self.data.clone()),
             2 => types::abort::deserialize(self.data.clone()),
             3 => types::acknowledgement::deserialize(self.data.clone()),
@@ -54,20 +68,20 @@ impl MessagePayload {
             6 => types::set_peer_bandwidth::deserialize(self.data.clone()),
             8 => types::audio_data::deserialize(self.data.clone()),
             9 => types::video_data::deserialize(self.data.clone()),
-            18 => types::amf0_data::deserialize(self.data.clone()),
-            20 => types::amf0_command::deserialize(self.data.clone()),
+            18 => types::amf0_data::deserialize_with_limits(self.data.clone(), amf0_limits),
+            20 => types::amf0_command::deserialize_with_limits(self.data.clone(), amf0_limits),
 
             // For some reason Flash players (like wowza's test player) send messages
             // that are flagged as amf3 encoded, but in reality they are amf0 encoded
-            15 => types::amf0_data::deserialize(self.data.clone()),
+            15 => types::amf0_data::deserialize_with_limits(self.data.clone(), amf0_limits),
 
             17 => {
                 // Fake amf3 commands usually seem to have a 0 in front of the amf0 data.
                 if self.data.len() > 0 && self.data[0] == 0x00 {
                     let slice = self.data.slice(1..);
-                    types::amf0_command::deserialize(slice)
+                    types::amf0_command::deserialize_with_limits(slice, amf0_limits)
                 } else {
-                    types::amf0_command::deserialize(self.data.clone())
+                    types::amf0_command::deserialize_with_limits(self.data.clone(), amf0_limits)
                 }
             }
 

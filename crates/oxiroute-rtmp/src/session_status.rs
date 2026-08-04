@@ -1,9 +1,6 @@
 use crate::{CatalogError, LiveHubError, MediaEventError, RtmpStreamPathError};
 
-use super::{
-    MAX_INBOUND_CHUNK_SIZE,
-    runtime::{PlaybackRoleError, PublisherRoleError},
-};
+use super::runtime::{PlaybackRoleError, PublisherRoleError};
 
 pub(super) const CONNECT_REJECTION_CODE: &str = "NetConnection.Connect.Rejected";
 pub(super) const PUBLISH_REJECTION_CODE: &str = "NetStream.Publish.BadName";
@@ -34,7 +31,7 @@ pub enum RtmpSessionError {
     LiveHub(#[from] LiveHubError),
     #[error("RTMP media event is invalid: {0}")]
     MediaEvent(#[from] MediaEventError),
-    #[error("client chunk size {0} exceeds the {MAX_INBOUND_CHUNK_SIZE}-byte limit")]
+    #[error("client chunk size {0} exceeds the configured inbound limit")]
     InboundChunkTooLarge(u32),
     #[error("RTMP media sample sequence exhausted")]
     MediaSequenceExhausted,

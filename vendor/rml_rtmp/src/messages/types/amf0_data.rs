@@ -1,10 +1,9 @@
 use bytes::Bytes;
 use rml_amf0;
 use rml_amf0::Amf0Value;
-use std::io::Cursor;
 
 use messages::RtmpMessage;
-use messages::{MessageDeserializationError, MessageSerializationError};
+use messages::{Amf0Limits, MessageDeserializationError, MessageSerializationError};
 
 pub fn serialize(values: Vec<Amf0Value>) -> Result<Bytes, MessageSerializationError> {
     let bytes = rml_amf0::serialize(&values)?;
@@ -13,8 +12,14 @@ pub fn serialize(values: Vec<Amf0Value>) -> Result<Bytes, MessageSerializationEr
 }
 
 pub fn deserialize(data: Bytes) -> Result<RtmpMessage, MessageDeserializationError> {
-    let mut cursor = Cursor::new(data);
-    let values = rml_amf0::deserialize(&mut cursor)?;
+    deserialize_with_limits(data, &Amf0Limits::default())
+}
+
+pub fn deserialize_with_limits(
+    data: Bytes,
+    limits: &Amf0Limits,
+) -> Result<RtmpMessage, MessageDeserializationError> {
+    let values = super::super::amf0::deserialize(data.as_ref(), limits)?;
 
     Ok(RtmpMessage::Amf0Data { values })
 }
