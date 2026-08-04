@@ -9,7 +9,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::defaults::{
     MAX_CERTIFICATE_DNS_NAMES, MAX_CERTIFICATES, MAX_ENDPOINTS_PER_POOL,
     MAX_RTMP_APPLICATIONS_PER_SERVICE, MAX_RTMP_RECORDERS_PER_APPLICATION,
-    MAX_RTMP_RECORDING_ROOTS, MAX_RTMP_SERVICES, MAX_SOURCE_BYTES, MAX_TLS_PROFILES,
+    MAX_RTMP_HLS_OUTPUTS, MAX_RTMP_RECORDING_ROOTS, MAX_RTMP_SERVICES, MAX_SOURCE_BYTES,
+    MAX_TLS_PROFILES,
     MAX_TOTAL_ENDPOINTS, MAX_TOTAL_RTMP_RECORDERS, default_alpn, default_cache_grace_ms,
     default_cache_keep_ms, default_cache_key_components, default_cache_max_bytes,
     default_cache_max_entries, default_cache_max_followers_per_fill,
@@ -35,7 +36,12 @@ use crate::defaults::{
     default_rtmp_relay_handshake_timeout_ms, default_rtmp_relay_policy,
     default_rtmp_relay_queue_bytes, default_rtmp_relay_queue_messages,
     default_rtmp_session_ceilings, default_rtmp_vod_duration_ms, default_rtmp_vod_file_bytes,
-    default_rtmp_vod_sessions, default_self_signed_validity_days, default_true,
+    default_rtmp_vod_sessions, default_rtmp_hls_max_active_streams,
+    default_rtmp_hls_max_queue_messages, default_rtmp_hls_max_segment_bytes,
+    default_rtmp_hls_max_segment_duration_ms, default_rtmp_hls_max_storage_bytes,
+    default_rtmp_hls_max_storage_files, default_rtmp_hls_playlist_length_ms,
+    default_rtmp_hls_segment_duration_ms, default_acme_dns01_timeout_seconds,
+    default_proxy_protocol_timeout_ms, default_self_signed_validity_days, default_true,
     default_udp_max_datagram_bytes, default_udp_max_queue_bytes, default_udp_max_queue_datagrams,
     default_udp_max_session_bytes, default_udp_max_sessions, default_unhealthy_threshold,
     default_upstream_io_timeout_ms,
@@ -101,6 +107,8 @@ pub enum CertificateSource {
         #[serde(default)]
         key_type: AcmeKeyType,
         allowed_dns_suffixes: Vec<String>,
+        #[serde(default)]
+        dns01: Option<AcmeDns01Config>,
     },
     SelfSignedDevelopment {
         #[serde(default = "default_self_signed_validity_days")]
@@ -117,6 +125,15 @@ pub enum AcmeChallengeType {
     Http01,
     Dns01,
     TlsAlpn01,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AcmeDns01Config {
+    pub provider: String,
+    pub credential_file: PathBuf,
+    #[serde(default = "default_acme_dns01_timeout_seconds")]
+    pub timeout_seconds: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -159,6 +176,8 @@ pub struct TlsPolicy {
     #[serde(default)]
     pub dh_parameters_path: Option<PathBuf>,
     #[serde(default)]
+    pub client_auth: TlsClientAuthPolicy,
+    #[serde(default)]
     pub session_cache: Option<TlsSessionCache>,
     #[serde(default)]
     pub session_timeout_seconds: Option<u64>,
@@ -173,11 +192,53 @@ impl Default for TlsPolicy {
         Self {
             cipher_list: None,
             dh_parameters_path: None,
+            client_auth: TlsClientAuthPolicy::default(),
             session_cache: None,
             session_timeout_seconds: None,
             session_tickets: false,
             prefer_server_ciphers: true,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TlsClientAuthMode {
+    #[default]
+    Disabled,
+    Optional,
+    Required,
+}
+
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TlsClientAuthPolicy {
+    #[serde(default)]
+    pub mode: TlsClientAuthMode,
+    #[serde(default)]
+    pub ca_certificate_path: Option<PathBuf>,
+    #[serde(default)]
+    pub allowed_dns_names: Vec<String>,
+}
+
+impl Default for TlsClientAuthPolicy {
+    fn default() -> Self {
+        Self {
+            mode: TlsClientAuthMode::Disabled,
+            ca_certificate_path: None,
+            allowed_dns_names: Vec::new(),
+        }
+    }
+}
+
+impl fmt::Debug for TlsClientAuthPolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TlsClientAuthPolicy")
+            .field("mode", &self.mode)
+            .field("ca_certificate_configured", &self.ca_certificate_path.is_some())
+            .field("allowed_dns_name_count", &self.allowed_dns_names.len())
+            .finish()
     }
 }
 
@@ -262,6 +323,9 @@ pub struct Listener {
     pub service: Option<String>,
     #[serde(default)]
     pub tls_profile: Option<String>,
+    /// Optional PROXY protocol header accepted before application data.
+    #[serde(default)]
+    pub proxy_protocol: Option<ProxyProtocolPolicy>,
     /// Concurrent connection cap. Omitted or explicit null means unbounded.
     #[serde(default)]
     pub max_connections: Option<u64>,
@@ -317,6 +381,24 @@ pub enum Protocol {
     ForwardHttp1,
     ForwardHttp2,
     ForwardHttp3,
+    Http3,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ProxyProtocolVersion {
+    V1,
+    V2,
+    #[default]
+    Auto,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(deny_unknown_fields)]
+pub struct ProxyProtocolPolicy {
+    pub version: ProxyProtocolVersion,
+    #[serde(default = "default_proxy_protocol_timeout_ms")]
+    pub timeout_ms: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -925,6 +1007,8 @@ pub struct HttpProxyPolicy {
     #[serde(default)]
     pub upstream_host: HttpUpstreamHost,
     #[serde(default)]
+    pub upstream_path_rewrite: Option<HttpProxyPathRewrite>,
+    #[serde(default)]
     pub request_headers: Vec<HttpRequestHeaderMutation>,
     #[serde(default)]
     pub response_headers: Vec<HttpResponseHeaderMutation>,
@@ -1190,6 +1274,13 @@ pub struct HttpCookiePathRewrite {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+pub struct HttpProxyPathRewrite {
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct HttpRetryPolicy {
     #[serde(default)]
     pub max_retries: u8,
@@ -1314,6 +1405,10 @@ pub struct RtmpApplication {
     pub fanout: RtmpFanoutPolicy,
     #[serde(default)]
     pub vod: Option<RtmpVodPolicy>,
+    #[serde(default)]
+    pub hls: Option<RtmpHlsPolicy>,
+    #[serde(default)]
+    pub dash: Option<RtmpDashPolicy>,
     #[serde(default)]
     pub recorders: Vec<RtmpRecorder>,
 }
@@ -1634,6 +1729,91 @@ pub enum RtmpVodSource {
     },
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RtmpHlsPolicy {
+    pub root_directory: PathBuf,
+    #[serde(default = "default_rtmp_hls_segment_duration_ms")]
+    pub segment_duration_ms: u64,
+    #[serde(default = "default_rtmp_hls_max_segment_duration_ms")]
+    pub max_segment_duration_ms: u64,
+    #[serde(default = "default_rtmp_hls_playlist_length_ms")]
+    pub playlist_length_ms: u64,
+    #[serde(default)]
+    pub fragment_naming: RtmpHlsFragmentNaming,
+    #[serde(default)]
+    pub nested: bool,
+    #[serde(default = "default_true")]
+    pub cleanup: bool,
+    #[serde(default)]
+    pub variants: Vec<RtmpHlsVariant>,
+    #[serde(default)]
+    pub keys: Option<RtmpHlsKeyPolicy>,
+    #[serde(default = "default_rtmp_hls_max_segment_bytes")]
+    pub max_segment_bytes: u64,
+    #[serde(default = "default_rtmp_hls_max_queue_messages")]
+    pub max_queue_messages: u64,
+    #[serde(default = "default_rtmp_hls_max_storage_bytes")]
+    pub max_storage_bytes: u64,
+    #[serde(default = "default_rtmp_hls_max_storage_files")]
+    pub max_storage_files: u64,
+    #[serde(default = "default_rtmp_hls_max_active_streams")]
+    pub max_active_streams: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RtmpHlsFragmentNaming {
+    #[default]
+    Sequential,
+    Timestamp,
+    System,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RtmpHlsVariant {
+    pub name: String,
+    pub bandwidth: u64,
+    #[serde(default)]
+    pub codecs: Option<String>,
+    #[serde(default)]
+    pub width: Option<u32>,
+    #[serde(default)]
+    pub height: Option<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RtmpHlsKeyPolicy {
+    #[serde(default = "default_rtmp_hls_key_rotation_segments")]
+    pub rotation_segments: u64,
+    #[serde(default)]
+    pub url_prefix: String,
+}
+
+fn default_rtmp_hls_key_rotation_segments() -> u64 {
+    5
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RtmpDashPolicy {
+    pub root_directory: PathBuf,
+    #[serde(default = "default_rtmp_dash_segment_duration_ms")]
+    pub segment_duration_ms: u64,
+    #[serde(default = "default_rtmp_hls_playlist_length_ms")]
+    pub playlist_length_ms: u64,
+    #[serde(default)]
+    pub nested: bool,
+    #[serde(default = "default_true")]
+    pub cleanup: bool,
+}
+
+fn default_rtmp_dash_segment_duration_ms() -> u64 {
+    5_000
+}
+
 impl Default for RtmpFanoutPolicy {
     fn default() -> Self {
         default_rtmp_fanout_policy()
@@ -1782,42 +1962,126 @@ pub enum RtmpRecorderStart {
     Manual,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ForwardProxyService {
     pub name: String,
-    #[serde(default = "default_forward_http_versions")]
     pub enabled_versions: Vec<ForwardHttpVersion>,
-    #[serde(default = "default_true")]
     pub allow_absolute_form: bool,
-    #[serde(default = "default_true")]
     pub tls_required: bool,
-    #[serde(default)]
     pub connect: ForwardConnectPolicy,
-    #[serde(default)]
     pub auth: Option<ForwardProxyAuth>,
-    #[serde(default)]
     pub access_policy: Option<ForwardAccessPolicy>,
-    #[serde(default)]
     pub destination_policy: ForwardDestinationPolicy,
-    #[serde(default)]
     pub header_policy: ForwardHeaderPolicy,
-    #[serde(default = "default_connect_timeout_ms")]
     pub connect_timeout_ms: u64,
-    #[serde(default = "default_idle_timeout_ms")]
     pub idle_timeout_ms: u64,
-    #[serde(default = "default_forward_lifetime_timeout_ms")]
     pub lifetime_timeout_ms: u64,
-    #[serde(default = "default_max_request_body_bytes")]
     pub max_request_body_bytes: Option<u64>,
-    #[serde(default = "default_forward_max_header_bytes")]
     pub max_header_bytes: u64,
-    #[serde(default = "default_forward_max_connections")]
     pub max_connections: u64,
-    #[serde(default)]
     pub resolver: ForwardResolverPolicy,
-    #[serde(default)]
     pub audit_mode: ForwardAuditMode,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ForwardProxyServiceWire {
+    name: String,
+    #[serde(default = "default_forward_http_versions")]
+    enabled_versions: Vec<ForwardHttpVersion>,
+    #[serde(default = "default_true")]
+    allow_absolute_form: bool,
+    #[serde(default = "default_true")]
+    tls_required: bool,
+    #[serde(default)]
+    connect: ForwardConnectPolicy,
+    #[serde(default)]
+    auth: Option<ForwardProxyAuth>,
+    #[serde(default)]
+    access_policy: Option<ForwardAccessPolicy>,
+    #[serde(default)]
+    destination_policy: ForwardDestinationPolicy,
+    #[serde(default)]
+    header_policy: ForwardHeaderPolicy,
+    #[serde(default)]
+    cache: Option<Box<HttpCachePolicy>>,
+    #[serde(default = "default_connect_timeout_ms")]
+    connect_timeout_ms: u64,
+    #[serde(default = "default_idle_timeout_ms")]
+    idle_timeout_ms: u64,
+    #[serde(default = "default_forward_lifetime_timeout_ms")]
+    lifetime_timeout_ms: u64,
+    #[serde(default = "default_max_request_body_bytes")]
+    max_request_body_bytes: Option<u64>,
+    #[serde(default = "default_forward_max_header_bytes")]
+    max_header_bytes: u64,
+    #[serde(default = "default_forward_max_connections")]
+    max_connections: u64,
+    #[serde(default)]
+    resolver: ForwardResolverPolicy,
+    #[serde(default)]
+    audit_mode: ForwardAuditMode,
+}
+
+impl<'de> Deserialize<'de> for ForwardProxyService {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = ForwardProxyServiceWire::deserialize(deserializer)?;
+        let mut header_policy = wire.header_policy;
+        header_policy.cache = wire.cache;
+        Ok(Self {
+            name: wire.name,
+            enabled_versions: wire.enabled_versions,
+            allow_absolute_form: wire.allow_absolute_form,
+            tls_required: wire.tls_required,
+            connect: wire.connect,
+            auth: wire.auth,
+            access_policy: wire.access_policy,
+            destination_policy: wire.destination_policy,
+            header_policy,
+            connect_timeout_ms: wire.connect_timeout_ms,
+            idle_timeout_ms: wire.idle_timeout_ms,
+            lifetime_timeout_ms: wire.lifetime_timeout_ms,
+            max_request_body_bytes: wire.max_request_body_bytes,
+            max_header_bytes: wire.max_header_bytes,
+            max_connections: wire.max_connections,
+            resolver: wire.resolver,
+            audit_mode: wire.audit_mode,
+        })
+    }
+}
+
+impl Serialize for ForwardProxyService {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut header_policy = self.header_policy.clone();
+        let cache = header_policy.cache.take();
+        ForwardProxyServiceWire {
+            name: self.name.clone(),
+            enabled_versions: self.enabled_versions.clone(),
+            allow_absolute_form: self.allow_absolute_form,
+            tls_required: self.tls_required,
+            connect: self.connect.clone(),
+            auth: self.auth.clone(),
+            access_policy: self.access_policy.clone(),
+            destination_policy: self.destination_policy.clone(),
+            header_policy,
+            cache,
+            connect_timeout_ms: self.connect_timeout_ms,
+            idle_timeout_ms: self.idle_timeout_ms,
+            lifetime_timeout_ms: self.lifetime_timeout_ms,
+            max_request_body_bytes: self.max_request_body_bytes,
+            max_header_bytes: self.max_header_bytes,
+            max_connections: self.max_connections,
+            resolver: self.resolver.clone(),
+            audit_mode: self.audit_mode,
+        }
+        .serialize(serializer)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
@@ -1919,13 +2183,15 @@ pub struct ForwardPortRange {
     pub end: u16,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ForwardHeaderPolicy {
     #[serde(default)]
     pub forwarded_for: ForwardedForPolicy,
     #[serde(default)]
     pub via: ForwardViaPolicy,
+    #[serde(skip)]
+    pub cache: Option<Box<HttpCachePolicy>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -2052,6 +2318,9 @@ pub struct L4Service {
     pub idle_timeout_ms: u64,
     #[serde(default)]
     pub lifetime_timeout_ms: Option<u64>,
+    /// Optional PROXY protocol header sent to the selected upstream.
+    #[serde(default)]
+    pub proxy_protocol: Option<ProxyProtocolPolicy>,
     /// Optional bounded policy used when this service is attached to a UDP listener.
     #[serde(default)]
     pub udp: Option<UdpPolicy>,
@@ -2143,13 +2412,24 @@ pub enum ConfigError {
     AcmeTermsNotAgreed { certificate: String },
     #[error("managed ACME certificate `{certificate}` uses an unsupported challenge type")]
     UnsupportedAcmeChallenge { certificate: String },
+    #[error("managed ACME certificate `{certificate}` wildcard `{dns_name}` requires DNS-01")]
+    AcmeWildcardRequiresDns01 {
+        certificate: String,
+        dns_name: String,
+    },
+    #[error("managed ACME certificate `{certificate}` has an invalid DNS-01 provider")]
+    InvalidAcmeDns01Provider { certificate: String },
+    #[error("managed ACME certificate `{certificate}` has an invalid DNS-01 credential file")]
+    InvalidAcmeDns01Credentials { certificate: String },
+    #[error("managed ACME certificate `{certificate}` has an invalid DNS-01 timeout")]
+    InvalidAcmeDns01Timeout { certificate: String },
     #[error("managed ACME certificate `{certificate}` has invalid contacts")]
     InvalidAcmeContacts { certificate: String },
     #[error(
         "managed ACME certificate `{certificate}` must configure between one and sixteen DNS suffixes"
     )]
     InvalidAcmeDnsSuffixes { certificate: String },
-    #[error("managed ACME certificate `{certificate}` contains a wildcard or IP identifier")]
+    #[error("managed ACME certificate `{certificate}` contains an IP identifier")]
     AcmeIdentifierUnsupported { certificate: String },
     #[error("managed ACME certificate `{certificate}` name must be a path-safe slug")]
     InvalidAcmeCertificateName { certificate: String },
@@ -2207,6 +2487,12 @@ pub enum ConfigError {
         field: &'static str,
         detail: &'static str,
     },
+    #[error("TLS profile `{profile}` has invalid client-auth DNS name `{dns_name}`")]
+    InvalidTlsClientAuthDnsName { profile: String, dns_name: String },
+    #[error("TLS profile `{profile}` contains duplicate client-auth DNS name `{dns_name}`")]
+    DuplicateTlsClientAuthDnsName { profile: String, dns_name: String },
+    #[error("TLS profile `{profile}` exceeds the 100-client-auth-DNS-name limit")]
+    TooManyTlsClientAuthDnsNames { profile: String },
     #[error("binds `{first_name}` ({first_bind}) and `{second_name}` ({second_bind}) overlap")]
     OverlappingBind {
         first_name: String,
@@ -2346,6 +2632,18 @@ pub enum ConfigError {
     TooManyTotalRtmpRecorders,
     #[error("configuration exceeds the {MAX_RTMP_RECORDING_ROOTS}-recording-root limit")]
     TooManyRtmpRecordingRoots,
+    #[error("configuration exceeds the {MAX_RTMP_HLS_OUTPUTS}-HLS-output limit")]
+    TooManyRtmpHlsOutputs,
+    #[error("configuration exceeds the {MAX_RTMP_HLS_OUTPUTS}-HLS-root limit")]
+    TooManyRtmpHlsRoots,
+    #[error(
+        "RTMP HLS outputs `{first_output}` and `{second_output}` use shared media root `{root_directory}` and must use identical storage limits"
+    )]
+    RtmpHlsStorageLimitsMismatch {
+        root_directory: String,
+        first_output: String,
+        second_output: String,
+    },
     #[error(
         "RTMP recorder `{recorder}` in application `{application}` of service `{service}` requires `live = true`"
     )]
@@ -2378,6 +2676,13 @@ pub enum ConfigError {
         application: String,
         field: &'static str,
         detail: &'static str,
+    },
+    #[error(
+        "RTMP application `{application}` in service `{service}` requests DASH output, but no supported DASH muxer is available"
+    )]
+    UnsupportedRtmpDash {
+        service: String,
+        application: String,
     },
     #[error(
         "RTMP application `{application}` in service `{service}` has duplicate {operation} ACL rule `{network}`"
@@ -2452,6 +2757,13 @@ pub enum ConfigError {
     #[error("L4 service `{service}` has invalid UDP policy `{field}`: {detail}")]
     InvalidL4UdpPolicy {
         service: String,
+        field: &'static str,
+        detail: &'static str,
+    },
+    #[error("{kind} `{name}` has invalid PROXY protocol `{field}`: {detail}")]
+    InvalidProxyProtocolPolicy {
+        kind: &'static str,
+        name: String,
         field: &'static str,
         detail: &'static str,
     },

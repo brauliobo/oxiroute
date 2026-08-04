@@ -1,8 +1,9 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
 };
 
+use crate::cache_validation::CacheStoreBounds;
 use crate::{
     defaults::{
         MAX_FORWARD_ACCESS_CONDITIONS, MAX_FORWARD_ACCESS_MATCHERS, MAX_FORWARD_ACCESS_RULES,
@@ -14,6 +15,7 @@ use crate::{
     },
     lexical::{is_valid_certificate_dns_name, validate_file_path},
     model::{
+        CacheAuthorizationPolicy, CacheKeyComponent, CacheSetCookiePolicy, CacheVaryPolicy,
         ConfigError, ForwardAccessMatcher, ForwardHttpVersion, ForwardProxyAuth,
         ForwardProxyService, ForwardTimeRange, ForwardWeekday,
     },
@@ -21,6 +23,7 @@ use crate::{
 
 pub(crate) fn validate_forward_proxy_services(
     services: &mut [ForwardProxyService],
+    cache_stores: &HashMap<String, CacheStoreBounds>,
 ) -> Result<(), ConfigError> {
     if services.len() > MAX_FORWARD_PROXY_SERVICES {
         return Err(invalid(
@@ -48,12 +51,15 @@ pub(crate) fn validate_forward_proxy_services(
                 name: service.name.clone(),
             });
         }
-        validate_service(service)?;
+        validate_service(service, cache_stores)?;
     }
     Ok(())
 }
 
-fn validate_service(service: &mut ForwardProxyService) -> Result<(), ConfigError> {
+fn validate_service(
+    service: &mut ForwardProxyService,
+    cache_stores: &HashMap<String, CacheStoreBounds>,
+) -> Result<(), ConfigError> {
     validate_versions_and_connect(service)?;
     if let Some(auth) = &service.auth {
         match auth {
@@ -106,8 +112,92 @@ fn validate_service(service: &mut ForwardProxyService) -> Result<(), ConfigError
     }
     validate_access_policy(service)?;
     validate_destinations(service)?;
+    validate_cache_policy(service, cache_stores)?;
     validate_resolver(service)?;
     validate_service_limits(service)
+}
+
+fn validate_cache_policy(
+    service: &mut ForwardProxyService,
+    cache_stores: &HashMap<String, CacheStoreBounds>,
+) -> Result<(), ConfigError> {
+    let Some(policy) = service.header_policy.cache.as_mut() else {
+        return Ok(());
+    };
+    if !service.allow_absolute_form {
+        return Err(invalid(
+            &service.name,
+            "cache",
+            "requires allow_absolute_form = true",
+        ));
+    }
+    if !service.enabled_versions.contains(&ForwardHttpVersion::H1) {
+        return Err(invalid(
+            &service.name,
+            "cache",
+            "requires forward HTTP/1 to be enabled",
+        ));
+    }
+    crate::cache_validation::validate_cache_policy(&service.name, 0, policy, cache_stores)?;
+
+    let expected_key = [
+        CacheKeyComponent::Scheme,
+        CacheKeyComponent::NormalizedHost,
+        CacheKeyComponent::PathAndQuery,
+    ];
+    if policy.key_components != expected_key {
+        return Err(invalid(
+            &service.name,
+            "cache.key_components",
+            "forward cache requires scheme, normalized_host, and path_and_query",
+        ));
+    }
+    if !policy.bypass_request.is_empty()
+        || !policy.no_store_request.is_empty()
+        || !policy.no_store_response.is_empty()
+    {
+        return Err(invalid(
+            &service.name,
+            "cache",
+            "request and response predicates are not supported by the forward cache",
+        ));
+    }
+    if policy.set_cookie_policy != CacheSetCookiePolicy::Bypass {
+        return Err(invalid(
+            &service.name,
+            "cache.set_cookie_policy",
+            "must be bypass for the forward cache",
+        ));
+    }
+    if policy.authorization_policy != CacheAuthorizationPolicy::Bypass {
+        return Err(invalid(
+            &service.name,
+            "cache.authorization_policy",
+            "must be bypass so authenticated responses require explicit shared permission",
+        ));
+    }
+    if policy.vary_policy != CacheVaryPolicy::Respect {
+        return Err(invalid(
+            &service.name,
+            "cache.vary_policy",
+            "must respect origin Vary fields",
+        ));
+    }
+    if !policy.stale_on.is_empty() {
+        return Err(invalid(
+            &service.name,
+            "cache.stale_on",
+            "forward cache uses canonical freshness and revalidation windows",
+        ));
+    }
+    if !policy.collapsed_forwarding {
+        return Err(invalid(
+            &service.name,
+            "cache.collapsed_forwarding",
+            "must remain enabled for bounded forward fills",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_access_policy(service: &mut ForwardProxyService) -> Result<(), ConfigError> {

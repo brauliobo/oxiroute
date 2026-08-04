@@ -16,7 +16,8 @@ use crate::{
         ForwardViaPolicy, ForwardWeekday, ForwardedForPolicy, HealthCheck, HealthCheckType,
         HealthHttpVersion, HealthStartup, HttpAccessPolicy, HttpCachePolicy,
         HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpGzipPolicy, HttpHostSelector,
-        HttpLiteralHeader, HttpMimeType, HttpPathSelector, HttpProxyPolicy, HttpRedirectLocation,
+        HttpLiteralHeader, HttpMimeType, HttpPathSelector, HttpProxyPathRewrite, HttpProxyPolicy,
+        HttpRedirectLocation,
         HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpResponseHeaderMutation,
         HttpRetryBodySafety, HttpRetryMethodSafety, HttpRetryPolicy, HttpRetryTarget,
         HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpSameSite, HttpService,
@@ -24,11 +25,14 @@ use crate::{
         HttpUpstreamHost, HttpVersion, HttpVersionPolicy, L4Service, Listener, ListenerBind,
         Management, Protocol, RtmpAccessPolicy, RtmpAccessRule, RtmpAclAction, RtmpApplication,
         RtmpCallbackConfig, RtmpFanoutPolicy, RtmpNotifyMethod, RtmpPullTarget, RtmpPushTarget,
-        RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis,
-        RtmpRecorderTimezone, RtmpRelayPolicy, RtmpRtmpsPolicy, RtmpService, RtmpSessionCeilings,
-        RtmpTokenPolicy, RtmpTokenSource, RtmpTransport, RtmpVodPolicy, RtmpVodSource, Stats,
+         RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis,
+         RtmpRecorderTimezone, RtmpRelayPolicy, RtmpRtmpsPolicy, RtmpService, RtmpSessionCeilings,
+         RtmpTokenPolicy, RtmpTokenSource, RtmpTransport, RtmpVodPolicy, RtmpVodSource,
+         RtmpHlsFragmentNaming, RtmpHlsKeyPolicy, RtmpHlsPolicy, RtmpHlsVariant, RtmpDashPolicy,
+         Stats,
         StatsPage, StatsPageAdminPolicy, TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm,
         UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls,
+        ProxyProtocolPolicy, ProxyProtocolVersion,
     },
     validation::validate_config,
 };
@@ -241,6 +245,7 @@ impl Renderer {
                 challenge,
                 key_type,
                 allowed_dns_suffixes,
+                dns01,
             } => {
                 self.string_field("type", "acme_managed");
                 self.string_field("directory_url", directory_url);
@@ -266,6 +271,24 @@ impl Renderer {
                     },
                 );
                 self.string_list_field("allowed_dns_suffixes", allowed_dns_suffixes);
+                match dns01 {
+                    Some(dns01) => {
+                        self.begin_table_field("dns01");
+                        self.string_field("provider", &dns01.provider);
+                        self.string_field(
+                            "credential_file",
+                            utf8_path(
+                                &dns01.credential_file,
+                                "certificate",
+                                name,
+                                "source.dns01.credential_file",
+                            )?,
+                        );
+                        self.integer_field("timeout_seconds", dns01.timeout_seconds);
+                        self.end_table();
+                    }
+                    None => self.nil_field("dns01"),
+                }
             }
             CertificateSource::SelfSignedDevelopment {
                 validity_days,
@@ -345,6 +368,30 @@ impl Renderer {
         }
         self.boolean_field("session_tickets", policy.session_tickets);
         self.boolean_field("prefer_server_ciphers", policy.prefer_server_ciphers);
+        self.begin_table_field("client_auth");
+        self.string_field(
+            "mode",
+            match policy.client_auth.mode {
+                crate::model::TlsClientAuthMode::Disabled => "disabled",
+                crate::model::TlsClientAuthMode::Optional => "optional",
+                crate::model::TlsClientAuthMode::Required => "required",
+            },
+        );
+        match &policy.client_auth.ca_certificate_path {
+            Some(path) => self.string_field(
+                "ca_certificate_path",
+                utf8_path(
+                    path,
+                    "TLS profile",
+                    name,
+                    "policy.client_auth.ca_certificate_path",
+                )
+                .expect("validated TLS client CA path"),
+            ),
+            None => self.nil_field("ca_certificate_path"),
+        }
+        self.string_list_field("allowed_dns_names", &policy.client_auth.allowed_dns_names);
+        self.end_table();
         self.end_table();
     }
 
@@ -355,6 +402,7 @@ impl Renderer {
             protocol,
             service,
             tls_profile,
+            proxy_protocol,
             max_connections,
             downstream_timeouts,
         } = listener;
@@ -390,10 +438,16 @@ impl Renderer {
                 Protocol::ForwardHttp1 => "forward_http1",
                 Protocol::ForwardHttp2 => "forward_http2",
                 Protocol::ForwardHttp3 => "forward_http3",
+                Protocol::Http3 => "http3",
             },
         );
         self.optional_string_field("service", service.as_deref());
         self.optional_string_field("tls_profile", tls_profile.as_deref());
+        self.optional_table_field(
+            "proxy_protocol",
+            proxy_protocol.as_ref(),
+            Self::proxy_protocol,
+        );
         match max_connections {
             Some(max_connections) => self.integer_field("max_connections", max_connections),
             None => self.null_field("max_connections"),
@@ -408,6 +462,18 @@ impl Renderer {
         self.optional_integer_field("client_timeout_ms", policy.client_timeout_ms);
         self.optional_integer_field("request_timeout_ms", policy.request_timeout_ms);
         self.optional_integer_field("keepalive_timeout_ms", policy.keepalive_timeout_ms);
+    }
+
+    fn proxy_protocol(&mut self, policy: &ProxyProtocolPolicy) {
+        self.string_field(
+            "version",
+            match policy.version {
+                ProxyProtocolVersion::V1 => "v1",
+                ProxyProtocolVersion::V2 => "v2",
+                ProxyProtocolVersion::Auto => "auto",
+            },
+        );
+        self.integer_field("timeout_ms", policy.timeout_ms);
     }
 
     fn cache_store(&mut self, store: &CacheStore) -> Result<(), ConfigError> {
@@ -540,6 +606,8 @@ impl Renderer {
             callbacks,
             fanout,
             vod,
+            hls,
+            dash,
             recorders,
         } = application;
         self.string_field("name", name);
@@ -566,6 +634,8 @@ impl Renderer {
         self.rtmp_fanout(fanout);
         self.end_table();
         self.optional_table_field("vod", vod.as_ref(), Self::rtmp_vod_policy);
+        self.fallible_optional_table_field("hls", hls.as_ref(), Self::rtmp_hls_policy)?;
+        self.fallible_optional_table_field("dash", dash.as_ref(), Self::rtmp_dash_policy)?;
         self.fallible_table_list_field("recorders", recorders, |renderer, recorder| {
             renderer.rtmp_recorder(service_name, name, recorder)
         })?;
@@ -600,6 +670,67 @@ impl Renderer {
                 self.string_field("origin", origin);
             }
         }
+    }
+
+    fn rtmp_hls_policy(&mut self, policy: &RtmpHlsPolicy) -> Result<(), ConfigError> {
+        self.string_field(
+            "root_directory",
+            utf8_path(&policy.root_directory, "RTMP HLS", "hls", "root_directory")?,
+        );
+        self.integer_field("segment_duration_ms", policy.segment_duration_ms);
+        self.integer_field("max_segment_duration_ms", policy.max_segment_duration_ms);
+        self.integer_field("playlist_length_ms", policy.playlist_length_ms);
+        self.string_field(
+            "fragment_naming",
+            match policy.fragment_naming {
+                RtmpHlsFragmentNaming::Sequential => "sequential",
+                RtmpHlsFragmentNaming::Timestamp => "timestamp",
+                RtmpHlsFragmentNaming::System => "system",
+            },
+        );
+        self.boolean_field("nested", policy.nested);
+        self.boolean_field("cleanup", policy.cleanup);
+        self.fallible_table_list_field("variants", &policy.variants, Self::rtmp_hls_variant)?;
+        self.fallible_optional_table_field("keys", policy.keys.as_ref(), Self::rtmp_hls_keys)?;
+        self.integer_field("max_segment_bytes", policy.max_segment_bytes);
+        self.integer_field("max_queue_messages", policy.max_queue_messages);
+        self.integer_field("max_storage_bytes", policy.max_storage_bytes);
+        self.integer_field("max_storage_files", policy.max_storage_files);
+        self.integer_field("max_active_streams", policy.max_active_streams);
+        Ok(())
+    }
+
+    fn rtmp_hls_variant(&mut self, variant: &RtmpHlsVariant) -> Result<(), ConfigError> {
+        self.string_field("name", &variant.name);
+        self.integer_field("bandwidth", variant.bandwidth);
+        self.optional_string_field("codecs", variant.codecs.as_deref());
+        match variant.width {
+            Some(width) => self.integer_field("width", width),
+            None => self.null_field("width"),
+        }
+        match variant.height {
+            Some(height) => self.integer_field("height", height),
+            None => self.null_field("height"),
+        }
+        Ok(())
+    }
+
+    fn rtmp_hls_keys(&mut self, keys: &RtmpHlsKeyPolicy) -> Result<(), ConfigError> {
+        self.integer_field("rotation_segments", keys.rotation_segments);
+        self.string_field("url_prefix", &keys.url_prefix);
+        Ok(())
+    }
+
+    fn rtmp_dash_policy(&mut self, policy: &RtmpDashPolicy) -> Result<(), ConfigError> {
+        self.string_field(
+            "root_directory",
+            utf8_path(&policy.root_directory, "RTMP DASH", "dash", "root_directory")?,
+        );
+        self.integer_field("segment_duration_ms", policy.segment_duration_ms);
+        self.integer_field("playlist_length_ms", policy.playlist_length_ms);
+        self.boolean_field("nested", policy.nested);
+        self.boolean_field("cleanup", policy.cleanup);
+        Ok(())
     }
 
     fn rtmp_push_target(&mut self, target: &RtmpPushTarget) {
@@ -1429,6 +1560,7 @@ impl Renderer {
     ) -> Result<(), ConfigError> {
         let HttpProxyPolicy {
             upstream_host,
+            upstream_path_rewrite,
             request_headers,
             response_headers,
             response_cookie_path_rewrites,
@@ -1439,6 +1571,14 @@ impl Renderer {
         self.begin_table_field("upstream_host");
         self.http_upstream_host(upstream_host);
         self.end_table();
+        match upstream_path_rewrite {
+            Some(rewrite) => {
+                self.begin_table_field("upstream_path_rewrite");
+                self.http_proxy_path_rewrite(rewrite);
+                self.end_table();
+            }
+            None => self.nil_field("upstream_path_rewrite"),
+        }
         self.table_list_or_nil_field(
             "request_headers",
             request_headers,
@@ -1483,6 +1623,11 @@ impl Renderer {
             Some(HttpSameSite::None) => self.string_field("same_site", "none"),
             None => self.nil_field("same_site"),
         }
+    }
+
+    fn http_proxy_path_rewrite(&mut self, rewrite: &HttpProxyPathRewrite) {
+        self.string_field("from", &rewrite.from);
+        self.string_field("to", &rewrite.to);
     }
 
     fn http_cache_policy(
@@ -1824,8 +1969,16 @@ impl Renderer {
         self.forward_destination_policy(&service.destination_policy);
         self.end_table();
         self.begin_table_field("header_policy");
-        self.forward_header_policy(service.header_policy);
+        self.forward_header_policy(&service.header_policy);
         self.end_table();
+        match service.header_policy.cache.as_deref() {
+            Some(cache) => {
+                self.begin_table_field("cache");
+                self.http_cache_policy(&service.name, 0, cache)?;
+                self.end_table();
+            }
+            None => self.nil_field("cache"),
+        }
         self.integer_field("connect_timeout_ms", service.connect_timeout_ms);
         self.integer_field("idle_timeout_ms", service.idle_timeout_ms);
         self.integer_field("lifetime_timeout_ms", service.lifetime_timeout_ms);
@@ -2009,7 +2162,7 @@ impl Renderer {
         self.end_table();
     }
 
-    fn forward_header_policy(&mut self, policy: ForwardHeaderPolicy) {
+    fn forward_header_policy(&mut self, policy: &ForwardHeaderPolicy) {
         self.string_field(
             "forwarded_for",
             match policy.forwarded_for {
@@ -2051,6 +2204,7 @@ impl Renderer {
             connect_timeout_ms,
             idle_timeout_ms,
             lifetime_timeout_ms,
+            proxy_protocol,
             udp,
         } = service;
 
@@ -2062,6 +2216,11 @@ impl Renderer {
             Some(timeout) => self.integer_field("lifetime_timeout_ms", timeout),
             None => self.nil_field("lifetime_timeout_ms"),
         }
+        self.optional_table_field(
+            "proxy_protocol",
+            proxy_protocol.as_ref(),
+            Self::proxy_protocol,
+        );
         self.optional_table_field("udp", udp.as_ref(), Self::udp_policy);
     }
 

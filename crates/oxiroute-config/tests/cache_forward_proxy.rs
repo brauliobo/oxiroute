@@ -217,6 +217,52 @@ fn applies_finite_forward_proxy_defaults() {
 }
 
 #[test]
+fn renders_and_validates_forward_cache_policy() {
+    let source = r#"return {
+  version = 1,
+  listeners = {},
+  cache_stores = {{ name = "memory", type = "memory" }},
+  forward_proxy_services = {
+    {
+      name = "egress",
+      cache = {
+        store = "memory",
+        default_ttl_ms = 120000,
+      },
+    },
+  },
+}"#;
+    let config = load_lua(source).expect("forward cache policy");
+    let value = serde_json::to_value(&config).expect("serialized forward cache policy");
+    assert_eq!(
+        value["forward_proxy_services"][0]["cache"]["store"],
+        "memory"
+    );
+    assert_eq!(
+        value["forward_proxy_services"][0]["cache"]["default_ttl_ms"],
+        120000_u64
+    );
+
+    let rendered = render_lua(&config).expect("rendered forward cache policy");
+    assert_eq!(load_lua(&rendered).expect("forward cache reload"), config);
+
+    for service in [
+        r#"{ name = "egress", allow_absolute_form = false, cache = { store = "memory" } }"#,
+        r#"{ name = "egress", enabled_versions = { "h2" }, cache = { store = "memory" } }"#,
+        r#"{ name = "egress", cache = { store = "memory", key_components = { { type = "scheme" }, { type = "header", name = "X-Tenant" } } } }"#,
+        r#"{ name = "egress", cache = { store = "memory", authorization_policy = "cache" } }"#,
+    ] {
+        let invalid = format!(
+            "return {{ version = 1, listeners = {{}}, cache_stores = {{{{ name = \"memory\", type = \"memory\" }}}}, forward_proxy_services = {{{service}}} }}"
+        );
+        assert!(
+            !error(&invalid).is_empty(),
+            "accepted invalid forward cache: {service}"
+        );
+    }
+}
+
+#[test]
 fn validates_forward_destinations_connect_auth_and_finite_limits() {
     let service = r#"{
       name = "egress",

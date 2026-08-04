@@ -30,15 +30,17 @@ use oxiroute_config::{
     UdpPolicy,
 };
 use oxiroute_rtmp::{
-    LiveHub, LiveHubLimits, RecorderMediaMask, RecorderWorkerConfig, RecordingPathPolicy,
-    RecordingSegmentNaming, RecordingStore, RecordingStoreLimits, RecordingTimeBasis,
-    RecordingTimezone, RtmpAccessAction, RtmpAccessPolicy as RuntimeRtmpAccessPolicy,
-    RtmpAccessRule, RtmpApplication as RuntimeRtmpApplication, RtmpCallbackEndpoint,
-    RtmpCallbackMethod, RtmpCallbackPolicy, RtmpCapabilities, RtmpClientOptions, RtmpCredential,
-    RtmpNetwork, RtmpOutboundPolicy, RtmpPullTarget, RtmpPushApplication, RtmpPushTarget,
-    RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry, RtmpRelayConfig, RtmpRtmpsMode,
-    RtmpServiceRuntime, RtmpSessionCeilings, RtmpSessionPolicy, RtmpTokenPolicy, RtmpTransport,
-    VodApplication, VodCatalog, VodLimits, VodSourceDefinition,
+    HlsFragmentNaming, HlsKeyConfig, HlsOutputConfig, HlsVariant, LiveHub, LiveHubLimits,
+    MediaApplication, MediaCatalog, MediaStore, MediaStoreLimits, RecorderMediaMask,
+    RecorderWorkerConfig, RecordingPathPolicy, RecordingSegmentNaming, RecordingStore,
+    RecordingStoreLimits, RecordingTimeBasis, RecordingTimezone, RtmpAccessAction,
+    RtmpAccessPolicy as RuntimeRtmpAccessPolicy, RtmpAccessRule,
+    RtmpApplication as RuntimeRtmpApplication, RtmpCallbackEndpoint, RtmpCallbackMethod,
+    RtmpCallbackPolicy, RtmpCapabilities, RtmpClientOptions, RtmpCredential, RtmpNetwork,
+    RtmpOutboundPolicy, RtmpPullTarget, RtmpPushApplication, RtmpPushTarget, RtmpRecorderPolicy,
+    RtmpRecorderStart, RtmpRegistry, RtmpRelayConfig, RtmpRtmpsMode, RtmpServiceRuntime,
+    RtmpSessionCeilings, RtmpSessionPolicy, RtmpTokenPolicy, RtmpTransport, VodApplication,
+    VodCatalog, VodLimits, VodSourceDefinition,
 };
 
 static DISK_BACKEND_REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Weak<DiskBackend>>>> =
@@ -50,6 +52,7 @@ pub struct ServiceSpec {
     pub bind: ListenerBind,
     pub max_connections: Option<u64>,
     pub downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy,
+    pub proxy_protocol: Option<oxiroute_config::ProxyProtocolPolicy>,
     pub kind: ServiceKind,
     pub tls: Option<Arc<TlsProfilePlan>>,
 }
@@ -59,6 +62,7 @@ pub enum ServiceKind {
     ForwardHttp1(Arc<ForwardHttp1ServicePlan>),
     ForwardHttp2(Arc<ForwardHttp2ServicePlan>),
     ForwardHttp3(Arc<ForwardHttp1ServicePlan>),
+    Http3(Arc<HttpServicePlan>),
     Http(Arc<HttpServicePlan>),
     Rtmp(Arc<RtmpServicePlan>),
     Tcp(Arc<L4ServicePlan>),
@@ -72,6 +76,7 @@ impl ServiceKind {
             Self::ForwardHttp1(_) => "forward_http1",
             Self::ForwardHttp2(_) => "forward_http2",
             Self::ForwardHttp3(_) => "forward_http3",
+            Self::Http3(_) => "http3",
             Self::Http(_) => "http",
             Self::Rtmp(_) => "rtmp",
             Self::Tcp(_) => "tcp",
@@ -87,6 +92,7 @@ pub struct RtmpServicePlan {
     callbacks: RtmpCallbackPolicy,
     applications: Vec<PreparedRtmpApplication>,
     vod_catalog: Arc<VodCatalog>,
+    media_catalog: Arc<MediaCatalog>,
 }
 
 impl std::fmt::Debug for RtmpServicePlan {
@@ -157,6 +163,7 @@ impl RtmpServicePlan {
                     )
                     .with_pull_targets(application.pull_targets.clone())
                     .with_vod(application.vod.clone())
+                    .with_media(application.media.clone())
                     .with_callbacks(application.callbacks.clone())
                     .with_authorization(
                         application.publish_policy.clone(),
@@ -177,6 +184,11 @@ impl RtmpServicePlan {
     #[must_use]
     pub fn vod_catalog(&self) -> Arc<VodCatalog> {
         Arc::clone(&self.vod_catalog)
+    }
+
+    #[must_use]
+    pub fn media_catalog(&self) -> Arc<MediaCatalog> {
+        Arc::clone(&self.media_catalog)
     }
 
     #[must_use]
@@ -223,6 +235,7 @@ struct PreparedRtmpApplication {
     pull_targets: Vec<RtmpPullTarget>,
     callbacks: RtmpCallbackPolicy,
     vod: Option<Arc<VodApplication>>,
+    media: Option<Arc<MediaApplication>>,
     recorders: Vec<PreparedRtmpRecorder>,
 }
 
@@ -423,6 +436,10 @@ pub enum ServicePlanError {
         recorder: String,
     },
     #[error(
+        "RTMP HLS output in application `{application}` of service `{service}` failed media-root preflight"
+    )]
+    HlsPreflight { service: String, application: String },
+    #[error(
         "RTMP push target {target} in application `{application}` of service `{service}` cannot be resolved safely"
     )]
     RtmpPushResolution {
@@ -501,6 +518,7 @@ pub struct RuntimePlan {
     pub rtmp_capabilities: RtmpCapabilities,
     pub rtmp_recording_supported: bool,
     pub rtmp_vod_catalog: Arc<VodCatalog>,
+    pub rtmp_media_catalog: Arc<MediaCatalog>,
     pub tls: PreparedTls,
     pub topology: Arc<TopologySnapshot>,
 }
@@ -569,6 +587,7 @@ pub fn runtime_plan_with_passive_failure_policy(
         ServiceKind::ForwardHttp1(_)
         | ServiceKind::ForwardHttp2(_)
         | ServiceKind::ForwardHttp3(_)
+        | ServiceKind::Http3(_)
         | ServiceKind::Http(_)
         | ServiceKind::Tcp(_)
         | ServiceKind::Udp(_) => None,
@@ -585,6 +604,11 @@ pub fn runtime_plan_with_passive_failure_policy(
             .values()
             .flat_map(|service| service.vod_applications()),
     );
+    let rtmp_media_catalog = MediaCatalog::merge(
+        rtmp_services
+            .values()
+            .map(|service| service.media_catalog()),
+    );
     Ok(RuntimePlan {
         max_connections: config.max_connections,
         services,
@@ -593,6 +617,7 @@ pub fn runtime_plan_with_passive_failure_policy(
         rtmp_capabilities,
         rtmp_recording_supported,
         rtmp_vod_catalog,
+        rtmp_media_catalog: Arc::new(rtmp_media_catalog),
         tls,
         topology,
     })
@@ -601,16 +626,28 @@ pub fn runtime_plan_with_passive_failure_policy(
 fn compile_forward_proxy_services(
     config: &Config,
 ) -> Result<HashMap<String, Arc<ForwardHttp1ServicePlan>>, ServicePlanError> {
+    let mut cache_backends = HashMap::new();
     config
         .forward_proxy_services
         .iter()
         .map(|service| {
-            let plan = ForwardHttp1ServicePlan::compile(service).map_err(|source| {
-                ServicePlanError::ForwardProxyPreflight {
-                    service: service.name.clone(),
-                    source,
-                }
-            })?;
+            let cache = compile_cache_policy(
+                &service.name,
+                0,
+                service.header_policy.cache.as_deref(),
+                false,
+                &[],
+                &config.cache_stores,
+                &mut cache_backends,
+                false,
+            )?;
+            let plan =
+                ForwardHttp1ServicePlan::compile_with_cache(service, cache).map_err(|source| {
+                    ServicePlanError::ForwardProxyPreflight {
+                        service: service.name.clone(),
+                        source,
+                    }
+                })?;
             Ok((service.name.clone(), Arc::new(plan)))
         })
         .collect()
@@ -1278,6 +1315,7 @@ fn compile_l4_services(
                     lifetime: service.lifetime_timeout_ms.map(Duration::from_millis),
                 },
                 Arc::clone(pool.selector()),
+                service.proxy_protocol,
                 service.udp.unwrap_or_else(UdpPolicy::default),
             )),
         );
@@ -1298,6 +1336,7 @@ fn compile_rtmp_services(
         })
         .collect();
     let mut preflighted_roots = HashSet::new();
+    let mut media_stores = HashMap::<PathBuf, Arc<MediaStore>>::new();
     let mut services = HashMap::with_capacity(config.rtmp_services.len());
     for service in &config.rtmp_services {
         let outbound_policy = compile_rtmp_outbound_policy(&service.outbound_policy);
@@ -1356,6 +1395,11 @@ fn compile_rtmp_services(
                 &outbound_policy,
             )?;
             let vod = compile_rtmp_vod(&service.name, application, &outbound_policy)?;
+            let media = compile_rtmp_hls(
+                &service.name,
+                application,
+                &mut media_stores,
+            )?;
             let mut prepared_recorders = Vec::with_capacity(application.recorders.len());
             for recorder in &application.recorders {
                 prepared_recorders.push(compile_rtmp_recorder(
@@ -1377,6 +1421,7 @@ fn compile_rtmp_services(
                 pull_targets,
                 callbacks,
                 vod,
+                media,
                 recorders: prepared_recorders,
             });
         }
@@ -1389,6 +1434,13 @@ fn compile_rtmp_services(
                 .iter()
                 .filter_map(|application| application.vod.clone()),
         );
+        let media_catalog = MediaCatalog::from_applications(
+            prepared_applications.iter().filter_map(|application| {
+                application.media.clone().map(|media| {
+                    (service.name.clone(), application.name.clone(), media)
+                })
+            }),
+        );
         services.insert(
             service.name.clone(),
             Arc::new(RtmpServicePlan {
@@ -1398,6 +1450,7 @@ fn compile_rtmp_services(
                 callbacks,
                 applications: prepared_applications,
                 vod_catalog,
+                media_catalog: Arc::new(media_catalog),
             }),
         );
     }
@@ -1761,6 +1814,66 @@ fn compile_rtmp_vod(
         })
 }
 
+fn compile_rtmp_hls(
+    service: &str,
+    application: &oxiroute_config::RtmpApplication,
+    stores: &mut HashMap<PathBuf, Arc<MediaStore>>,
+) -> Result<Option<Arc<MediaApplication>>, ServicePlanError> {
+    let Some(policy) = &application.hls else {
+        return Ok(None);
+    };
+    let invalid = || ServicePlanError::HlsPreflight {
+        service: service.to_owned(),
+        application: application.name.clone(),
+    };
+    let limits = MediaStoreLimits {
+        max_bytes: policy.max_storage_bytes,
+        max_files: usize::try_from(policy.max_storage_files).map_err(|_| invalid())?,
+        max_active_streams: usize::try_from(policy.max_active_streams).map_err(|_| invalid())?,
+        max_file_bytes: usize::try_from(policy.max_segment_bytes).map_err(|_| invalid())?,
+    };
+    let store = if let Some(store) = stores.get(&policy.root_directory) {
+        Arc::clone(store)
+    } else {
+        let store = Arc::new(MediaStore::open(&policy.root_directory, limits).map_err(|_| invalid())?);
+        stores.insert(policy.root_directory.clone(), Arc::clone(&store));
+        store
+    };
+    let variants = policy
+        .variants
+        .iter()
+        .map(|variant| HlsVariant {
+            name: variant.name.clone(),
+            bandwidth: variant.bandwidth,
+            codecs: variant.codecs.clone(),
+            width: variant.width,
+            height: variant.height,
+        })
+        .collect();
+    let keys = policy.keys.as_ref().map(|keys| HlsKeyConfig {
+        rotation_segments: usize::try_from(keys.rotation_segments).expect("validated HLS key rotation fits usize"),
+        url_prefix: keys.url_prefix.clone(),
+    });
+    let config = HlsOutputConfig {
+        store,
+        segment_duration: Duration::from_millis(policy.segment_duration_ms),
+        max_segment_duration: Duration::from_millis(policy.max_segment_duration_ms),
+        playlist_length: Duration::from_millis(policy.playlist_length_ms),
+        naming: match policy.fragment_naming {
+            oxiroute_config::RtmpHlsFragmentNaming::Sequential => HlsFragmentNaming::Sequential,
+            oxiroute_config::RtmpHlsFragmentNaming::Timestamp => HlsFragmentNaming::Timestamp,
+            oxiroute_config::RtmpHlsFragmentNaming::System => HlsFragmentNaming::System,
+        },
+        nested: policy.nested,
+        cleanup: policy.cleanup,
+        variants,
+        keys,
+        max_segment_bytes: usize::try_from(policy.max_segment_bytes).map_err(|_| invalid())?,
+        max_queue_messages: usize::try_from(policy.max_queue_messages).map_err(|_| invalid())?,
+    };
+    Ok(Some(Arc::new(MediaApplication::new(Some(Arc::new(config))))))
+}
+
 fn compile_rtmp_recorder(
     service: &str,
     application: &str,
@@ -1875,7 +1988,8 @@ fn compile_listener(
             Protocol::Http
             | Protocol::ForwardHttp1
             | Protocol::ForwardHttp2
-            | Protocol::ForwardHttp3,
+            | Protocol::ForwardHttp3
+            | Protocol::Http3,
             Some(profile),
         ) => Some(Arc::clone(tls_profiles.get(profile).ok_or_else(|| {
             ServicePlanError::UnknownListenerTlsProfile {
@@ -1888,6 +2002,7 @@ fn compile_listener(
             | Protocol::ForwardHttp1
             | Protocol::ForwardHttp2
             | Protocol::ForwardHttp3
+            | Protocol::Http3
             | Protocol::Tcp
             | Protocol::Udp
             | Protocol::Rtmp,
@@ -1907,6 +2022,7 @@ fn compile_listener(
             | Protocol::ForwardHttp1
             | Protocol::ForwardHttp2
             | Protocol::ForwardHttp3
+            | Protocol::Http3
             | Protocol::Rtmp
             | Protocol::Tcp
             | Protocol::Udp,
@@ -1918,6 +2034,14 @@ fn compile_listener(
         }
         (Protocol::Http, Some(service)) => {
             ServiceKind::Http(Arc::clone(http_services.get(service).ok_or_else(|| {
+                ServicePlanError::UnknownHttpService {
+                    listener: listener.name.clone(),
+                    service: service.into(),
+                }
+            })?))
+        }
+        (Protocol::Http3, Some(service)) => {
+            ServiceKind::Http3(Arc::clone(http_services.get(service).ok_or_else(|| {
                 ServicePlanError::UnknownHttpService {
                     listener: listener.name.clone(),
                     service: service.into(),
@@ -1978,6 +2102,7 @@ fn compile_listener(
         bind: listener.bind.clone(),
         max_connections: listener.max_connections,
         downstream_timeouts: listener.downstream_timeouts,
+        proxy_protocol: listener.proxy_protocol,
         kind,
         tls,
     })

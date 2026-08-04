@@ -8,10 +8,12 @@ use http::{Uri, uri::PathAndQuery};
 
 use crate::{
     defaults::{
-        MAX_ACME_CONTACTS, MAX_ACME_DIRECTORY_URL_BYTES, MAX_ACME_DNS_SUFFIXES,
+        MAX_ACME_CONTACTS, MAX_ACME_DIRECTORY_URL_BYTES, MAX_ACME_DNS01_PROVIDER_BYTES,
+        MAX_ACME_DNS01_TIMEOUT_SECONDS, MAX_ACME_DNS_SUFFIXES,
         MAX_CERTIFICATE_DNS_NAMES, MAX_CERTIFICATES, MAX_ENDPOINTS_PER_POOL, MAX_HEALTH_HOST_BYTES,
         MAX_HEALTH_INTERVAL_MS, MAX_HEALTH_PATH_BYTES, MAX_HEALTH_THRESHOLD, MAX_HEALTH_TIMEOUT_MS,
-        MAX_HTTP_TIMEOUT_MS, MAX_RECORDER_ACTIVE_RECORDERS, MAX_RECORDER_FILE_BYTES,
+        MAX_HTTP_TIMEOUT_MS, MAX_PROXY_PROTOCOL_TIMEOUT_MS, MAX_RECORDER_ACTIVE_RECORDERS,
+        MAX_RECORDER_FILE_BYTES,
         MAX_RECORDER_FRAME_COUNT, MAX_RECORDER_QUEUE_BYTES, MAX_RECORDER_QUEUE_MESSAGES,
         MAX_RECORDER_ROTATION_INTERVAL_MS, MAX_RECORDER_SHUTDOWN_TIMEOUT_MS,
         MAX_RECORDER_STORAGE_BYTES, MAX_RECORDER_STORAGE_FILES,
@@ -23,6 +25,11 @@ use crate::{
         MAX_RTMP_FANOUT_QUEUE_MESSAGES, MAX_RTMP_OUTBOUND_CHUNK_SIZE, MAX_RTMP_OUTBOUND_CIDRS,
         MAX_RTMP_OUTBOUND_DOMAINS, MAX_RTMP_PULL_TARGETS, MAX_RTMP_PUSH_TARGETS,
         MAX_RTMP_RECONNECT_MS, MAX_RTMP_RECORDERS_PER_APPLICATION, MAX_RTMP_RECORDING_ROOTS,
+        MAX_RTMP_HLS_ACTIVE_STREAMS, MAX_RTMP_HLS_KEY_URL_PREFIX_BYTES,
+        MAX_RTMP_HLS_KEY_ROTATION_SEGMENTS,
+        MAX_RTMP_HLS_SEGMENT_DURATION_MS, MAX_RTMP_HLS_OUTPUTS, MAX_RTMP_HLS_QUEUE_MESSAGES,
+        MAX_RTMP_HLS_SEGMENT_BYTES, MAX_RTMP_HLS_STORAGE_BYTES, MAX_RTMP_HLS_STORAGE_FILES,
+        MAX_RTMP_HLS_VARIANTS, MAX_RTMP_HLS_NAME_BYTES, MAX_RTMP_HLS_PLAYLIST_LENGTH_MS,
         MAX_RTMP_RELAY_BUFFER_MS, MAX_RTMP_RELAY_TIMEOUT_MS, MAX_RTMP_SECRET_FILE_BYTES,
         MAX_RTMP_SERVICES, MAX_RTMP_SUBSCRIBERS, MAX_RTMP_TOKEN_BYTES,
         MAX_RTMP_TOKEN_PARAMETER_BYTES, MAX_RTMP_VOD_DURATION_MS, MAX_RTMP_VOD_FILE_BYTES,
@@ -40,13 +47,17 @@ use crate::{
         validate_file_path, validate_recording_suffix_template,
     },
     model::{
-        AccessLogPolicy, AlpnProtocol, Certificate, CertificateSource, Config, ConfigError,
+        AccessLogPolicy, AcmeDns01Config, AlpnProtocol, Certificate, CertificateSource, Config,
+        ConfigError,
         DnsResolutionPolicy, ForwardHttpVersion, ForwardProxyService, HealthCheck, HealthCheckType,
-        HttpVersion, L4Service, Listener, ListenerBind, Management, Protocol, RtmpAccessPolicy,
-        RtmpCallbackConfig, RtmpCredentialReference, RtmpOutboundPolicy, RtmpRecorder,
+         HttpRequestHeaderMutation, HttpResponseHeaderMutation, HttpRouteAction, HttpService,
+         HttpVersion, L4Service, Listener,
+        ListenerBind, Management, Protocol, RtmpAccessPolicy, RtmpCallbackConfig,
+        RtmpCredentialReference, RtmpOutboundPolicy, RtmpRecorder,
         RtmpRelayPolicy, RtmpRtmpsPolicy, RtmpService, RtmpSessionCeilings, RtmpTokenSource,
-        RtmpTransport, RtmpVodSource, Stats, StatsPage, TlsProfile, TlsVersion, UdpPolicy,
-        UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool,
+         RtmpTransport, RtmpVodSource, Stats, StatsPage, TlsClientAuthMode, TlsProfile, TlsVersion,
+         UdpPolicy,
+        UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, ProxyProtocolVersion,
     },
 };
 
@@ -69,9 +80,12 @@ pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
     validate_management(config.management.as_ref())?;
     validate_stats(config.stats.as_ref())?;
     validate_certificates(&mut config.certificates)?;
-    validate_tls_profiles(&config.tls_profiles, &config.certificates)?;
+        validate_tls_profiles(&mut config.tls_profiles, &config.certificates)?;
     let cache_stores = crate::cache_validation::validate_cache_stores(&mut config.cache_stores)?;
-    crate::forward_validation::validate_forward_proxy_services(&mut config.forward_proxy_services)?;
+    crate::forward_validation::validate_forward_proxy_services(
+        &mut config.forward_proxy_services,
+        &cache_stores,
+    )?;
     validate_config_names(config)?;
     validate_rtmp_services(&mut config.rtmp_services)?;
 
@@ -85,6 +99,11 @@ pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
         .iter()
         .map(|service| service.name.clone())
         .collect::<HashSet<_>>();
+    let http_services = config
+        .http_services
+        .iter()
+        .map(|service| (service.name.as_str(), service))
+        .collect::<HashMap<_, _>>();
     let l4_service_names = config
         .l4_services
         .iter()
@@ -115,6 +134,7 @@ pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
     validate_listeners(
         &config.listeners,
         &http_service_names,
+        &http_services,
         &rtmp_service_names,
         &l4_service_names,
         &tls_profile_names,
@@ -147,6 +167,7 @@ pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
         &config.l4_services,
         &upstream_pool_names,
         &tls_upstream_pool_names,
+        &config.listeners,
     )?;
 
     Ok(())
@@ -284,6 +305,7 @@ fn validate_certificates(certificates: &mut [Certificate]) -> Result<(), ConfigE
                 terms_agreed,
                 challenge,
                 allowed_dns_suffixes,
+                dns01,
                 ..
             } => {
                 validate_acme_source(
@@ -294,6 +316,7 @@ fn validate_certificates(certificates: &mut [Certificate]) -> Result<(), ConfigE
                     *terms_agreed,
                     *challenge,
                     allowed_dns_suffixes,
+                    dns01.as_ref(),
                 )?;
             }
             CertificateSource::SelfSignedDevelopment { validity_days, .. } => {
@@ -314,6 +337,7 @@ fn validate_certificates(certificates: &mut [Certificate]) -> Result<(), ConfigE
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn validate_acme_source(
     certificate: &Certificate,
     directory_url: &str,
@@ -322,6 +346,7 @@ fn validate_acme_source(
     terms_agreed: bool,
     challenge: crate::model::AcmeChallengeType,
     allowed_dns_suffixes: &[String],
+    dns01: Option<&AcmeDns01Config>,
 ) -> Result<(), ConfigError> {
     if !certificate
         .name
@@ -363,10 +388,27 @@ fn validate_acme_source(
             certificate: certificate.name.clone(),
         });
     }
-    if !matches!(challenge, crate::model::AcmeChallengeType::Http01) {
-        return Err(ConfigError::UnsupportedAcmeChallenge {
-            certificate: certificate.name.clone(),
-        });
+    match challenge {
+        crate::model::AcmeChallengeType::Http01 => {
+            if dns01.is_some() {
+                return Err(ConfigError::InvalidAcmeDns01Provider {
+                    certificate: certificate.name.clone(),
+                });
+            }
+        }
+        crate::model::AcmeChallengeType::Dns01 => {
+            let Some(dns01) = dns01 else {
+                return Err(ConfigError::InvalidAcmeDns01Credentials {
+                    certificate: certificate.name.clone(),
+                });
+            };
+            validate_acme_dns01_source(certificate, dns01)?;
+        }
+        crate::model::AcmeChallengeType::TlsAlpn01 => {
+            return Err(ConfigError::UnsupportedAcmeChallenge {
+                certificate: certificate.name.clone(),
+            });
+        }
     }
     if contacts.len() > MAX_ACME_CONTACTS
         || contacts.iter().any(|contact| {
@@ -400,14 +442,25 @@ fn validate_acme_source(
         }
     }
     for dns_name in &certificate.dns_names {
-        if dns_name.starts_with("*.") || dns_name.parse::<IpAddr>().is_ok() {
+        if dns_name.parse::<IpAddr>().is_ok() {
             return Err(ConfigError::AcmeIdentifierUnsupported {
                 certificate: certificate.name.clone(),
             });
         }
+        if dns_name.starts_with("*.")
+            && !matches!(challenge, crate::model::AcmeChallengeType::Dns01)
+        {
+            return Err(ConfigError::AcmeWildcardRequiresDns01 {
+                certificate: certificate.name.clone(),
+                dns_name: dns_name.clone(),
+            });
+        }
+        let policy_name = dns_name.strip_prefix("*.").unwrap_or(dns_name);
         if !suffixes
             .iter()
-            .any(|suffix| dns_name == suffix || dns_name.ends_with(&format!(".{suffix}")))
+            .any(|suffix| {
+                policy_name == suffix || policy_name.ends_with(&format!(".{suffix}"))
+            })
         {
             return Err(ConfigError::AcmeIdentifierOutsidePolicy {
                 certificate: certificate.name.clone(),
@@ -418,8 +471,43 @@ fn validate_acme_source(
     Ok(())
 }
 
+fn validate_acme_dns01_source(
+    certificate: &Certificate,
+    dns01: &AcmeDns01Config,
+) -> Result<(), ConfigError> {
+    if dns01.provider.is_empty()
+        || dns01.provider.len() > MAX_ACME_DNS01_PROVIDER_BYTES
+        || !dns01.provider.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
+        })
+        || dns01.provider.starts_with('.')
+        || dns01.provider.ends_with('.')
+        || dns01.provider.eq_ignore_ascii_case("shell")
+        || dns01.provider.eq_ignore_ascii_case("exec")
+        || dns01.provider.eq_ignore_ascii_case("dynamic")
+    {
+        return Err(ConfigError::InvalidAcmeDns01Provider {
+            certificate: certificate.name.clone(),
+        });
+    }
+    if dns01.timeout_seconds == 0 || dns01.timeout_seconds > MAX_ACME_DNS01_TIMEOUT_SECONDS {
+        return Err(ConfigError::InvalidAcmeDns01Timeout {
+            certificate: certificate.name.clone(),
+        });
+    }
+    validate_file_path(
+        "certificate",
+        &certificate.name,
+        "source.dns01.credential_file",
+        &dns01.credential_file,
+    )
+    .map_err(|_| ConfigError::InvalidAcmeDns01Credentials {
+        certificate: certificate.name.clone(),
+    })
+}
+
 fn validate_tls_profiles(
-    tls_profiles: &[TlsProfile],
+    tls_profiles: &mut [TlsProfile],
     certificates: &[Certificate],
 ) -> Result<(), ConfigError> {
     validate_names(
@@ -493,7 +581,72 @@ fn validate_tls_profiles(
     Ok(())
 }
 
-fn validate_tls_policy(profile: &TlsProfile) -> Result<(), ConfigError> {
+fn validate_tls_policy(profile: &mut TlsProfile) -> Result<(), ConfigError> {
+    let client_auth = &profile.policy.client_auth;
+    match client_auth.mode {
+        crate::model::TlsClientAuthMode::Disabled => {
+            if client_auth.ca_certificate_path.is_some() {
+                return Err(ConfigError::InvalidTlsProfilePolicy {
+                    profile: profile.name.clone(),
+                    field: "policy.client_auth.ca_certificate_path",
+                    detail: "must be omitted when client authentication is disabled",
+                });
+            }
+            if !client_auth.allowed_dns_names.is_empty() {
+                return Err(ConfigError::InvalidTlsProfilePolicy {
+                    profile: profile.name.clone(),
+                    field: "policy.client_auth.allowed_dns_names",
+                    detail: "must be empty when client authentication is disabled",
+                });
+            }
+        }
+        crate::model::TlsClientAuthMode::Optional | crate::model::TlsClientAuthMode::Required => {
+            let Some(path) = &client_auth.ca_certificate_path else {
+                return Err(ConfigError::InvalidTlsProfilePolicy {
+                    profile: profile.name.clone(),
+                    field: "policy.client_auth.ca_certificate_path",
+                    detail: "is required when client authentication is enabled",
+                });
+            };
+            validate_file_path(
+                "TLS profile",
+                &profile.name,
+                "policy.client_auth.ca_certificate_path",
+                path,
+            )?;
+        }
+    }
+    if client_auth.allowed_dns_names.len() > MAX_CERTIFICATE_DNS_NAMES {
+        return Err(ConfigError::TooManyTlsClientAuthDnsNames {
+            profile: profile.name.clone(),
+        });
+    }
+
+    let mut allowed_dns_names = Vec::with_capacity(client_auth.allowed_dns_names.len());
+    let mut unique_allowed_dns_names = HashSet::with_capacity(client_auth.allowed_dns_names.len());
+    for dns_name in &client_auth.allowed_dns_names {
+        let mut normalized = dns_name.clone();
+        if let Ok(ip) = normalized.parse::<IpAddr>() {
+            normalized = canonical_ip(ip).to_string();
+        } else {
+            normalized.make_ascii_lowercase();
+        }
+        if normalized.starts_with("*.") || !is_valid_certificate_dns_name(&normalized) {
+            return Err(ConfigError::InvalidTlsClientAuthDnsName {
+                profile: profile.name.clone(),
+                dns_name: dns_name.clone(),
+            });
+        }
+        if !unique_allowed_dns_names.insert(normalized.clone()) {
+            return Err(ConfigError::DuplicateTlsClientAuthDnsName {
+                profile: profile.name.clone(),
+                dns_name: normalized,
+            });
+        }
+        allowed_dns_names.push(normalized);
+    }
+    profile.policy.client_auth.allowed_dns_names = allowed_dns_names;
+
     if profile
         .policy
         .cipher_list
@@ -802,6 +955,7 @@ fn endpoint_exposes_management(endpoint: SocketAddr, management: SocketAddr) -> 
 fn validate_listeners(
     listeners: &[Listener],
     http_service_names: &HashSet<String>,
+    http_services: &HashMap<&str, &HttpService>,
     rtmp_service_names: &HashSet<String>,
     l4_service_names: &HashSet<String>,
     tls_profile_names: &HashSet<String>,
@@ -818,7 +972,8 @@ fn validate_listeners(
                 | Protocol::Udp
                 | Protocol::ForwardHttp1
                 | Protocol::ForwardHttp2
-                | Protocol::ForwardHttp3,
+                | Protocol::ForwardHttp3
+                | Protocol::Http3,
                 None,
             ) => {
                 return Err(ConfigError::MissingListenerService {
@@ -826,12 +981,23 @@ fn validate_listeners(
                     protocol: listener.protocol,
                 });
             }
-            (Protocol::Http, Some(service)) if !http_service_names.contains(service) => {
+            (Protocol::Http | Protocol::Http3, Some(service))
+                if !http_service_names.contains(service) =>
+            {
                 return Err(ConfigError::UnknownListenerService {
                     listener: listener.name.clone(),
                     protocol: listener.protocol,
                     service: service.into(),
                 });
+            }
+            (Protocol::Http3, Some(service)) => {
+                validate_http3_listener(
+                    listener,
+                    http_services
+                        .get(service)
+                        .expect("validated HTTP/3 service reference"),
+                    tls_profiles,
+                )?;
             }
             (Protocol::Tcp | Protocol::Udp, Some(service))
                 if !l4_service_names.contains(service) =>
@@ -895,7 +1061,10 @@ fn validate_listener_basics(
     }
 
     let datagram = matches!(listener.bind, ListenerBind::Udp { .. });
-    let datagram_protocol = matches!(listener.protocol, Protocol::ForwardHttp3 | Protocol::Udp);
+    let datagram_protocol = matches!(
+        listener.protocol,
+        Protocol::ForwardHttp3 | Protocol::Http3 | Protocol::Udp
+    );
     if datagram != datagram_protocol {
         return Err(ConfigError::InvalidListenerTransport {
             listener: listener.name.clone(),
@@ -903,7 +1072,7 @@ fn validate_listener_basics(
             detail: if datagram_protocol {
                 "this protocol requires a UDP bind"
             } else {
-                "UDP binds require forward_http3 or udp"
+                "UDP binds require http3, forward_http3, or udp"
             },
         });
     }
@@ -917,6 +1086,7 @@ fn validate_listener_basics(
         }
         (
             Protocol::Http
+            | Protocol::Http3
             | Protocol::ForwardHttp1
             | Protocol::ForwardHttp2
             | Protocol::ForwardHttp3,
@@ -983,9 +1153,34 @@ fn validate_listener_policies(listener: &Listener) -> Result<(), ConfigError> {
             validate_safe_integer("listener", &listener.name, field, timeout)?;
         }
     }
+    if let Some(policy) = listener.proxy_protocol {
+        validate_proxy_protocol_timeout("listener", &listener.name, policy.timeout_ms)?;
+        if !matches!(listener.protocol, Protocol::Tcp | Protocol::Udp) {
+            return Err(ConfigError::InvalidProxyProtocolPolicy {
+                kind: "listener",
+                name: listener.name.clone(),
+                field: "proxy_protocol",
+                detail: "PROXY protocol is supported only by TCP and UDP listeners",
+            });
+        }
+        if listener.protocol == Protocol::Udp
+            && matches!(policy.version, ProxyProtocolVersion::V1)
+        {
+            return Err(ConfigError::InvalidProxyProtocolPolicy {
+                kind: "listener",
+                name: listener.name.clone(),
+                field: "proxy_protocol.version",
+                detail: "UDP listeners require v2 or auto PROXY protocol",
+            });
+        }
+    }
     if !matches!(
         listener.protocol,
-        Protocol::Http | Protocol::ForwardHttp1 | Protocol::ForwardHttp2 | Protocol::ForwardHttp3
+        Protocol::Http
+        | Protocol::Http3
+        | Protocol::ForwardHttp1
+        | Protocol::ForwardHttp2
+        | Protocol::ForwardHttp3
     ) && (listener.downstream_timeouts.request_timeout_ms.is_some()
         || listener.downstream_timeouts.keepalive_timeout_ms.is_some())
     {
@@ -998,6 +1193,102 @@ fn validate_listener_policies(listener: &Listener) -> Result<(), ConfigError> {
     Ok(())
 }
 
+fn validate_http3_listener(
+    listener: &Listener,
+    service: &HttpService,
+    tls_profiles: &HashMap<&str, &TlsProfile>,
+) -> Result<(), ConfigError> {
+    let invalid = |detail: &'static str| ConfigError::InvalidListenerTransport {
+        listener: listener.name.clone(),
+        protocol: Protocol::Http3,
+        detail,
+    };
+    let Some(profile_name) = listener.tls_profile.as_deref() else {
+        return Err(invalid("HTTP/3 requires a TLS 1.3 profile advertising only h3"));
+    };
+    let profile = tls_profiles
+        .get(profile_name)
+        .ok_or_else(|| ConfigError::UnknownListenerTlsProfile {
+            listener: listener.name.clone(),
+            profile: profile_name.into(),
+        })?;
+    if profile.min_version != TlsVersion::Tls13
+        || profile.alpn.as_slice() != [AlpnProtocol::H3]
+    {
+        return Err(invalid(
+            "HTTP/3 requires a TLS 1.3 profile advertising only h3",
+        ));
+    }
+    if profile.policy.client_auth.mode != TlsClientAuthMode::Disabled {
+        return Err(invalid("HTTP/3 does not support downstream client authentication"));
+    }
+    if service.max_request_body_bytes.is_none() {
+        return Err(invalid("HTTP/3 requires a bounded service request body"));
+    }
+    if service.gzip.is_some() {
+        return Err(invalid("HTTP/3 reverse response compression is not supported"));
+    }
+    for route in &service.routes {
+        if route.policy.max_request_body_bytes.is_none() {
+            return Err(invalid("HTTP/3 requires a bounded route request body"));
+        }
+        if !route.policy.request_buffering {
+            return Err(invalid("HTTP/3 requires request buffering"));
+        }
+        if route.policy.response_buffering {
+            return Err(invalid("HTTP/3 response buffering is not supported"));
+        }
+        match &route.action {
+            HttpRouteAction::Proxy { policy, .. } => {
+                if policy.cache.is_some() {
+                    return Err(invalid("HTTP/3 reverse cache policy is not supported"));
+                }
+                if policy.retry.max_retries != 0 {
+                    return Err(invalid("HTTP/3 reverse retries are not supported"));
+                }
+                if policy.request_headers.iter().any(|mutation| {
+                    matches!(
+                        mutation,
+                        HttpRequestHeaderMutation::Set { name, .. }
+                            if is_http3_hop_by_hop_header(name)
+                    )
+                }) {
+                    return Err(invalid("HTTP/3 reverse hop-by-hop headers are not supported"));
+                }
+                if policy.response_headers.iter().any(|mutation| {
+                    let name = match mutation {
+                        HttpResponseHeaderMutation::Set { name, .. }
+                        | HttpResponseHeaderMutation::Add { name, .. }
+                        | HttpResponseHeaderMutation::Remove { name } => name,
+                    };
+                    is_http3_hop_by_hop_header(name)
+                }) {
+                    return Err(invalid("HTTP/3 reverse hop-by-hop headers are not supported"));
+                }
+            }
+            HttpRouteAction::FixedResponse { .. } | HttpRouteAction::Redirect { .. } => {}
+            HttpRouteAction::StaticFiles { .. } => {
+                return Err(invalid("HTTP/3 reverse static files are not supported"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_http3_hop_by_hop_header(name: &str) -> bool {
+    [
+        "connection",
+        "keep-alive",
+        "proxy-connection",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+    ]
+    .iter()
+    .any(|candidate| name.eq_ignore_ascii_case(candidate))
+}
+
 fn validate_forward_listener(
     listener: &Listener,
     service: &ForwardProxyService,
@@ -1007,7 +1298,9 @@ fn validate_forward_listener(
         Protocol::ForwardHttp1 => ForwardHttpVersion::H1,
         Protocol::ForwardHttp2 => ForwardHttpVersion::H2,
         Protocol::ForwardHttp3 => ForwardHttpVersion::H3,
-        Protocol::Http | Protocol::Rtmp | Protocol::Tcp | Protocol::Udp => return Ok(()),
+        Protocol::Http | Protocol::Http3 | Protocol::Rtmp | Protocol::Tcp | Protocol::Udp => {
+            return Ok(())
+        }
     };
     let invalid = |detail: String| ConfigError::InvalidForwardProxyListener {
         listener: listener.name.clone(),
@@ -1087,6 +1380,8 @@ fn validate_rtmp_services(services: &mut [RtmpService]) -> Result<(), ConfigErro
     }
     let mut total_recorders = 0_usize;
     let mut roots = HashMap::<PathBuf, (RtmpRecorderStorageLimits, String)>::new();
+    let mut hls_outputs = 0_usize;
+    let mut hls_roots = HashMap::<PathBuf, ((u64, u64, u64, u64), String)>::new();
     for service in services {
         if service.outbound_chunk_size == 0
             || service.outbound_chunk_size > MAX_RTMP_OUTBOUND_CHUNK_SIZE
@@ -1127,6 +1422,50 @@ fn validate_rtmp_services(services: &mut [RtmpService]) -> Result<(), ConfigErro
                 });
             }
             validate_rtmp_application(&service.name, &service.outbound_policy, application)?;
+            if application.dash.is_some() {
+                return Err(ConfigError::UnsupportedRtmpDash {
+                    service: service.name.clone(),
+                    application: application.name.clone(),
+                });
+            }
+            if let Some(hls) = &mut application.hls {
+                if !application.live {
+                    return Err(ConfigError::InvalidRtmpApplicationPolicy {
+                        service: service.name.clone(),
+                        application: application.name.clone(),
+                        field: "hls",
+                        detail: "requires live = true",
+                    });
+                }
+                hls_outputs = hls_outputs
+                    .checked_add(1)
+                    .ok_or(ConfigError::TooManyRtmpHlsOutputs)?;
+                if hls_outputs > MAX_RTMP_HLS_OUTPUTS {
+                    return Err(ConfigError::TooManyRtmpHlsOutputs);
+                }
+                validate_rtmp_hls(&service.name, &application.name, hls)?;
+                let limits = (
+                    hls.max_storage_bytes,
+                    hls.max_storage_files,
+                    hls.max_active_streams,
+                    hls.max_segment_bytes,
+                );
+                let identity = format!("{}/{}/hls", service.name, application.name);
+                if let Some((first_limits, first_output)) = hls_roots.get(&hls.root_directory) {
+                    if *first_limits != limits {
+                        return Err(ConfigError::RtmpHlsStorageLimitsMismatch {
+                            root_directory: hls.root_directory.display().to_string(),
+                            first_output: first_output.clone(),
+                            second_output: identity,
+                        });
+                    }
+                } else {
+                    if hls_roots.len() >= MAX_RTMP_HLS_OUTPUTS {
+                        return Err(ConfigError::TooManyRtmpHlsRoots);
+                    }
+                    hls_roots.insert(hls.root_directory.clone(), (limits, identity));
+                }
+            }
             if application.recorders.len() > MAX_RTMP_RECORDERS_PER_APPLICATION {
                 return Err(ConfigError::TooManyRtmpRecorders {
                     service: service.name.clone(),
@@ -1329,6 +1668,172 @@ fn validate_rtmp_application(
             "fanout.max_queue_bytes_per_subscriber",
             "must be between 1 and 1073741824",
         ));
+    }
+    Ok(())
+}
+
+fn validate_rtmp_hls(
+    service: &str,
+    application: &str,
+    hls: &mut crate::model::RtmpHlsPolicy,
+) -> Result<(), ConfigError> {
+    let invalid = |field, detail| ConfigError::InvalidRtmpApplicationPolicy {
+        service: service.into(),
+        application: application.into(),
+        field,
+        detail,
+    };
+    normalize_absolute_directory(&mut hls.root_directory)
+        .map_err(|detail| invalid("hls.root_directory", detail))?;
+    if hls.segment_duration_ms == 0
+        || hls.segment_duration_ms > MAX_RTMP_HLS_SEGMENT_DURATION_MS
+    {
+        return Err(invalid(
+            "hls.segment_duration_ms",
+            "must be between 1 and 120000",
+        ));
+    }
+    if hls.max_segment_duration_ms < hls.segment_duration_ms
+        || hls.max_segment_duration_ms > MAX_RTMP_HLS_SEGMENT_DURATION_MS
+    {
+        return Err(invalid(
+            "hls.max_segment_duration_ms",
+            "must be at least segment_duration_ms and at most 120000",
+        ));
+    }
+    if hls.playlist_length_ms < hls.segment_duration_ms
+        || hls.playlist_length_ms > MAX_RTMP_HLS_PLAYLIST_LENGTH_MS
+    {
+        return Err(invalid(
+            "hls.playlist_length_ms",
+            "must be at least segment_duration_ms and at most 86400000",
+        ));
+    }
+    for (field, value, maximum, detail) in [
+        (
+            "hls.max_segment_bytes",
+            hls.max_segment_bytes,
+            MAX_RTMP_HLS_SEGMENT_BYTES,
+            "must be between 1 and 67108864",
+        ),
+        (
+            "hls.max_queue_messages",
+            hls.max_queue_messages,
+            MAX_RTMP_HLS_QUEUE_MESSAGES,
+            "must be between 1 and 65536",
+        ),
+        (
+            "hls.max_storage_bytes",
+            hls.max_storage_bytes,
+            MAX_RTMP_HLS_STORAGE_BYTES,
+            "must be between 1 and 1099511627776",
+        ),
+        (
+            "hls.max_storage_files",
+            hls.max_storage_files,
+            MAX_RTMP_HLS_STORAGE_FILES,
+            "must be between 1 and 1000000",
+        ),
+        (
+            "hls.max_active_streams",
+            hls.max_active_streams,
+            MAX_RTMP_HLS_ACTIVE_STREAMS,
+            "must be between 1 and 100000",
+        ),
+    ] {
+        if value == 0 || value > maximum {
+            return Err(invalid(field, detail));
+        }
+    }
+    if hls.max_storage_bytes < hls.max_segment_bytes {
+        return Err(invalid(
+            "hls.max_storage_bytes",
+            "must be at least max_segment_bytes",
+        ));
+    }
+    if hls.variants.len() > MAX_RTMP_HLS_VARIANTS {
+        return Err(invalid("hls.variants", "must contain at most 16 variants"));
+    }
+    let mut names = HashSet::with_capacity(hls.variants.len());
+    for variant in &hls.variants {
+        if variant.name.is_empty()
+            || variant.name.len() > MAX_RTMP_HLS_NAME_BYTES
+            || !valid_rtmp_literal_component(&variant.name)
+            || !variant
+                .name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+            || !names.insert(variant.name.as_str())
+        {
+            return Err(invalid(
+                "hls.variants[].name",
+                "must be unique and one nonempty path component of at most 128 bytes",
+            ));
+        }
+        if variant.bandwidth == 0 || variant.bandwidth > MAX_SAFE_JSON_INTEGER {
+            return Err(invalid(
+                "hls.variants[].bandwidth",
+                "must be between 1 and the exact JSON integer limit",
+            ));
+        }
+        if variant.width.is_some() != variant.height.is_some()
+            || variant.width.is_some_and(|value| value == 0)
+            || variant.height.is_some_and(|value| value == 0)
+        {
+            return Err(invalid(
+                "hls.variants[]",
+                "width and height must be provided together and nonzero",
+            ));
+        }
+        if variant.codecs.as_deref().is_some_and(|codecs| {
+            codecs.is_empty()
+                || codecs.len() > 128
+                || !codecs.is_ascii()
+                || codecs
+                    .bytes()
+                    .any(|byte| byte.is_ascii_control() || matches!(byte, b'"' | b'\\'))
+        }) {
+            return Err(invalid(
+                "hls.variants[].codecs",
+                "must be an ASCII codec string of at most 128 bytes without controls or quotes",
+            ));
+        }
+    }
+    if let Some(keys) = &hls.keys {
+        if keys.rotation_segments == 0
+            || keys.rotation_segments > MAX_RTMP_HLS_KEY_ROTATION_SEGMENTS
+        {
+            return Err(invalid(
+                "hls.keys.rotation_segments",
+                "must be between 1 and 100000",
+            ));
+        }
+        if keys.url_prefix.len() > MAX_RTMP_HLS_KEY_URL_PREFIX_BYTES
+            || !keys.url_prefix.is_ascii()
+            || keys
+                .url_prefix
+                .bytes()
+                .any(|byte| {
+                    byte.is_ascii_control()
+                        || matches!(byte, b'?' | b'#' | b'\\' | b'"' | b'%' | b' ')
+                })
+            || (!keys.url_prefix.is_empty()
+                && (!keys.url_prefix.ends_with('/')
+                    || keys.url_prefix.starts_with('/')
+                    || keys
+                        .url_prefix
+                        .strip_suffix('/')
+                        .is_none_or(|prefix| {
+                            prefix.split('/').any(|component| {
+                                component.is_empty() || component == "." || component == ".."
+                            })
+                        })))
+        {
+            return Err(invalid(
+                "hls.keys.url_prefix",
+                "must be empty or an ASCII relative path prefix ending in `/`",
+            ));
+        }
     }
     Ok(())
 }
@@ -2401,6 +2906,7 @@ fn validate_l4_services(
     l4_services: &[L4Service],
     upstream_pool_names: &HashSet<String>,
     tls_upstream_pool_names: &HashSet<String>,
+    listeners: &[Listener],
 ) -> Result<(), ConfigError> {
     for service in l4_services {
         if !upstream_pool_names.contains(&service.upstream_pool) {
@@ -2459,9 +2965,48 @@ fn validate_l4_services(
         if let Some(policy) = &service.udp {
             validate_udp_policy(&service.name, policy)?;
         }
+        if let Some(policy) = service.proxy_protocol {
+            validate_proxy_protocol_timeout("L4 service", &service.name, policy.timeout_ms)?;
+            if matches!(policy.version, ProxyProtocolVersion::Auto) {
+                return Err(ConfigError::InvalidProxyProtocolPolicy {
+                    kind: "L4 service",
+                    name: service.name.clone(),
+                    field: "proxy_protocol.version",
+                    detail: "upstream PROXY protocol requires an explicit v1 or v2 version",
+                });
+            }
+            if listeners.iter().any(|listener| {
+                listener.service.as_deref() == Some(service.name.as_str())
+                    && listener.protocol == Protocol::Udp
+                    && matches!(policy.version, ProxyProtocolVersion::V1)
+            }) {
+                return Err(ConfigError::InvalidProxyProtocolPolicy {
+                    kind: "L4 service",
+                    name: service.name.clone(),
+                    field: "proxy_protocol.version",
+                    detail: "UDP listeners require an upstream v2 PROXY protocol policy",
+                });
+            }
+        }
     }
 
     Ok(())
+}
+
+fn validate_proxy_protocol_timeout(
+    kind: &'static str,
+    name: &str,
+    timeout_ms: u64,
+) -> Result<(), ConfigError> {
+    if timeout_ms == 0 || timeout_ms > MAX_PROXY_PROTOCOL_TIMEOUT_MS {
+        return Err(ConfigError::InvalidProxyProtocolPolicy {
+            kind,
+            name: name.into(),
+            field: "proxy_protocol.timeout_ms",
+            detail: "must be between 1 and 86400000 milliseconds",
+        });
+    }
+    validate_safe_integer(kind, name, "proxy_protocol.timeout_ms", timeout_ms)
 }
 
 fn validate_udp_policy(service: &str, policy: &UdpPolicy) -> Result<(), ConfigError> {
