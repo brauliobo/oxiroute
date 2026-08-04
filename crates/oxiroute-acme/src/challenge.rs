@@ -1,7 +1,10 @@
 use std::{
     collections::BTreeMap,
     fmt,
-    sync::{Arc, RwLock},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 pub const MAX_CHALLENGES: usize = 1_024;
@@ -9,6 +12,7 @@ pub const MAX_CHALLENGE_TTL_SECONDS: u64 = 3_600;
 const MAX_TOKEN_BYTES: usize = 256;
 const MAX_KEY_AUTHORIZATION_BYTES: usize = 512;
 const CHALLENGE_PATH_PREFIX: &str = "/.well-known/acme-challenge/";
+static NEXT_LEASE_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct ChallengeRecord {
@@ -26,7 +30,7 @@ impl fmt::Debug for ChallengeRecord {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ChallengeRecord")
-            .field("token", &self.token)
+            .field("token", &"REDACTED")
             .field("key_authorization", &"REDACTED")
             .field("account_id", &self.account_id)
             .field("order_id", &self.order_id)
@@ -72,8 +76,13 @@ impl ChallengeHttpResponse {
 
 #[derive(Clone)]
 pub struct ChallengeStore {
-    inner: Arc<RwLock<BTreeMap<String, ChallengeRecord>>>,
+    inner: Arc<RwLock<BTreeMap<String, StoredChallenge>>>,
     capacity: usize,
+}
+
+struct StoredChallenge {
+    record: ChallengeRecord,
+    owner_id: u64,
 }
 
 impl fmt::Debug for ChallengeStore {
@@ -121,6 +130,9 @@ impl ChallengeStore {
             .inner
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        entries.retain(|_, stored| {
+            stored.record.expires_at_unix_seconds > record.created_at_unix_seconds
+        });
         if entries.contains_key(&record.token) {
             return Err(ChallengeStoreError::DuplicateToken);
         }
@@ -128,11 +140,13 @@ impl ChallengeStore {
             return Err(ChallengeStoreError::CapacityExceeded);
         }
         let token = record.token.clone();
-        entries.insert(token.clone(), record);
+        let owner_id = NEXT_LEASE_ID.fetch_add(1, Ordering::Relaxed);
+        entries.insert(token.clone(), StoredChallenge { record, owner_id });
         drop(entries);
         Ok(ChallengeLease {
             store: self.clone(),
             token: Some(token),
+            owner_id,
         })
     }
 
@@ -148,14 +162,14 @@ impl ChallengeStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let expired = entries
             .get(token)
-            .is_some_and(|record| now_unix_seconds >= record.expires_at_unix_seconds);
+            .is_some_and(|stored| now_unix_seconds >= stored.record.expires_at_unix_seconds);
         if expired {
             entries.remove(token);
             return None;
         }
         entries
             .get(token)
-            .map(|record| record.key_authorization.clone())
+            .map(|stored| stored.record.key_authorization.clone())
     }
 
     /// Handles only the exact ACME challenge path before normal routing.
@@ -231,14 +245,31 @@ impl ChallengeStore {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let before = entries.len();
-        entries.retain(|_, record| !predicate(record));
+        entries.retain(|_, stored| !predicate(&stored.record));
         before - entries.len()
+    }
+
+    fn cancel_owned(&self, token: &str, owner_id: u64) -> bool {
+        let mut entries = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if entries
+            .get(token)
+            .is_some_and(|stored| stored.owner_id == owner_id)
+        {
+            entries.remove(token);
+            true
+        } else {
+            false
+        }
     }
 }
 
 pub struct ChallengeLease {
     store: ChallengeStore,
     token: Option<String>,
+    owner_id: u64,
 }
 
 impl fmt::Debug for ChallengeLease {
@@ -268,7 +299,7 @@ impl ChallengeLease {
 
     fn cancel_inner(&mut self) {
         if let Some(token) = self.token.take() {
-            self.store.cancel(&token);
+            self.store.cancel_owned(&token, self.owner_id);
         }
     }
 }
@@ -404,6 +435,37 @@ mod tests {
         assert_eq!(store.reap_expired(11), 0);
         drop(lease);
         assert!(store.is_empty());
+    }
+
+    #[test]
+    fn expired_capacity_is_reclaimed_and_old_leases_cannot_cancel_replacements() {
+        let store = ChallengeStore::new(1);
+        let old = store.provision(record("token", 10)).expect("old challenge");
+        assert!(store.provision(record("replacement", 20)).is_err());
+        let replacement = store
+            .provision(record("replacement", 20))
+            .expect_err("capacity remains occupied before expiry");
+        assert_eq!(replacement, ChallengeStoreError::CapacityExceeded);
+        assert_eq!(store.reap_expired(10), 1);
+        let replacement = store
+            .provision(record("token", 30))
+            .expect("replacement challenge");
+        old.cancel();
+        assert_eq!(
+            store.lookup("token", 11).as_deref(),
+            Some("token.thumbprint")
+        );
+        replacement.cancel();
+        assert!(store.is_empty());
+    }
+
+    #[test]
+    fn challenge_debug_redacts_token_and_key_authorization() {
+        let record = record("secret-token", 100);
+        let debug = format!("{record:?}");
+        assert!(!debug.contains("secret-token"));
+        assert!(!debug.contains("secret-token.thumbprint"));
+        assert!(debug.contains("REDACTED"));
     }
 
     #[test]
