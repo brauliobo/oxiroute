@@ -182,7 +182,7 @@ Exact paths are required; trailing slashes and repeated separators return `404`.
 
 Managed ACME inventory is exposed through authenticated `GET /api/v1/tls`. It includes the
 configured directory URL, key type, suffix policy, disk/active revisions, expiry timestamps,
-next scheduled action, and redacted last outcome/error. `POST /api/v1/tls/renew` accepts the same
+next scheduled action, job phase, retry attempt, last success, and redacted last outcome/error. `POST /api/v1/tls/renew` accepts the same
 revision-checked body as reconciliation and optionally a certificate name. It provisions exact
 HTTP-01 material before notifying the CA, cleans it after a terminal result, commits a complete
 revision, validates it through the TLS backend, and publishes it without interrupting existing
