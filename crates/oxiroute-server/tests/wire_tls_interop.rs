@@ -10,7 +10,8 @@ use oxiroute_config::{
     AlpnProtocol, Certificate, CertificateSource, HttpLiteralHeader, HttpRequestHeaderMutation,
     HttpRequestHeaderValue, HttpRetryPolicy, HttpRetryTrigger, HttpRouteAction,
     HttpStaticErrorResponse, HttpStaticMimePolicy, HttpStaticPathMapping, HttpVersion,
-    HttpVersionPolicy, TlsVersion, UpstreamServer, UpstreamTls,
+    HttpVersionPolicy, TlsClientAuthMode, TlsClientAuthPolicy, TlsVersion, UpstreamServer,
+    UpstreamTls,
 };
 use oxiroute_server::CertificateGeneration;
 use rustls::{HandshakeKind, ProtocolVersion};
@@ -25,9 +26,10 @@ use support::{
     GRPC_BODY, H2Client, LegacyTlsOrigin, LegacyTlsVersion, ORIGIN_SERVER_NAME, PROXY_SERVER_NAME,
     PlainH1Origin, ProxyHarness, ReservedListener, TEST_TIMEOUT, TestCertbotLineage, TlsOrigin,
     certificate_chain_fixture, direct_legacy_tls_origin_handshake, fixture, fixture_leaf,
-    generate_test_only_ecdsa_chain, h1_request, handshake_kind, legacy_tls_handshake,
-    negotiated_alpn, negotiated_tls_is_modern, peer_certificate_count, peer_leaf,
-    private_key_fixture, proxy_config, socket_endpoint, tcp_connect, tls_client_config,
+    generate_test_only_client_chain, generate_test_only_ecdsa_chain, h1_request, handshake_kind,
+    legacy_tls_handshake, negotiated_alpn, negotiated_tls_is_modern, peer_certificate_count,
+    openssl_tls_request_with_identity, peer_leaf, private_key_fixture, proxy_config,
+    socket_endpoint, tcp_connect, tls_client_config, tls_client_config_with_identity,
     tls_client_config_with_versions, tls_connect, tls_connect_with_config, verified_upstream,
 };
 
@@ -78,6 +80,172 @@ async fn downstream_tls_h1_uses_runtime_profile_and_pingora_listener() {
     })
     .await
     .expect("downstream TLS/H1 wire test timed out");
+}
+
+#[tokio::test]
+async fn required_downstream_client_auth_rejects_no_certificate_before_http() {
+    timeout(TEST_TIMEOUT, async {
+        let client_identity = generate_test_only_client_chain("client.example.test");
+        let wrong_san_identity = generate_test_only_client_chain("wrong.example.test");
+        let ca_bundle = client_identity
+            .root_certificate_path
+            .with_file_name("client-ca-bundle.pem");
+        let mut ca_bytes = fs::read(&client_identity.root_certificate_path).expect("client CA");
+        ca_bytes.extend_from_slice(
+            &fs::read(&wrong_san_identity.root_certificate_path).expect("wrong SAN CA"),
+        );
+        fs::write(&ca_bundle, ca_bytes).expect("client CA bundle");
+
+        let origin = PlainH1Origin::start(b"client-auth-required").await;
+        let reserved = ReservedListener::new();
+        let mut config = proxy_config(
+            reserved.address,
+            origin.address,
+            vec![AlpnProtocol::Http11],
+            None,
+            HttpVersionPolicy::default(),
+        );
+        config.tls_profiles[0].policy.client_auth = TlsClientAuthPolicy {
+            mode: TlsClientAuthMode::Required,
+            ca_certificate_path: Some(ca_bundle),
+            allowed_dns_names: vec!["client.example.test".into()],
+        };
+        let proxy = ProxyHarness::start(&config, reserved);
+
+        let no_certificate_rejected = match
+            tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"]).await
+        {
+            Ok(mut stream) => h1_request(&mut stream, "/without-client-cert", true)
+                .await
+                .is_err(),
+            Err(_) => true,
+        };
+        assert!(
+            no_certificate_rejected,
+            "required client auth accepted no certificate"
+        );
+        assert_eq!(origin.requests(), 0);
+        assert_eq!(origin.http_bytes(), 0);
+
+        let client_config = tls_client_config_with_identity(
+            &fixture("ca-a.pem"),
+            &client_identity.fullchain_path,
+            &client_identity.leaf_private_key_path,
+            &[b"http/1.1"],
+        )
+        .expect("valid client certificate config");
+        let mut stream = tls_connect_with_config(proxy.address, PROXY_SERVER_NAME, client_config)
+            .await
+            .expect("required client auth accepted valid certificate");
+        let response = h1_request(&mut stream, "/client-auth-required", true)
+            .await
+            .expect("required client auth response");
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, b"client-auth-required");
+        origin.wait_for_requests(1).await;
+
+        drop(stream);
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("required client auth wire test timed out");
+}
+
+#[tokio::test]
+async fn optional_downstream_client_auth_validates_chain_and_san_when_present() {
+    timeout(TEST_TIMEOUT, async {
+        let client_identity = generate_test_only_client_chain("client.example.test");
+        let wrong_san_identity = generate_test_only_client_chain("wrong.example.test");
+        let wrong_ca_identity = generate_test_only_client_chain("client.example.test");
+        let ca_bundle = client_identity
+            .root_certificate_path
+            .with_file_name("client-ca-bundle.pem");
+        let mut ca_bytes = fs::read(&client_identity.root_certificate_path).expect("client CA");
+        ca_bytes.extend_from_slice(
+            &fs::read(&wrong_san_identity.root_certificate_path).expect("wrong SAN CA"),
+        );
+        fs::write(&ca_bundle, ca_bytes).expect("client CA bundle");
+
+        let origin = PlainH1Origin::start(b"client-auth-optional").await;
+        let reserved = ReservedListener::new();
+        let mut config = proxy_config(
+            reserved.address,
+            origin.address,
+            vec![AlpnProtocol::Http11],
+            None,
+            HttpVersionPolicy::default(),
+        );
+        config.tls_profiles[0].policy.client_auth = TlsClientAuthPolicy {
+            mode: TlsClientAuthMode::Optional,
+            ca_certificate_path: Some(ca_bundle),
+            allowed_dns_names: vec!["client.example.test".into()],
+        };
+        let proxy = ProxyHarness::start(&config, reserved);
+
+        let mut no_certificate =
+            tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
+                .await
+                .expect("optional client auth accepted no certificate");
+        let response = h1_request(&mut no_certificate, "/without-client-cert", true)
+            .await
+            .expect("optional no-certificate response");
+        assert_eq!(response.status, 200);
+
+        let wrong_ca_result = openssl_tls_request_with_identity(
+            proxy.address,
+            PROXY_SERVER_NAME,
+            &fixture("ca-a.pem"),
+            &wrong_ca_identity.fullchain_path,
+            &wrong_ca_identity.leaf_private_key_path,
+        )
+        .await;
+        assert!(
+            !matches!(wrong_ca_result, Ok(true)),
+            "optional client auth accepted a certificate from the wrong CA"
+        );
+
+        let wrong_san_config = tls_client_config_with_identity(
+            &fixture("ca-a.pem"),
+            &wrong_san_identity.fullchain_path,
+            &wrong_san_identity.leaf_private_key_path,
+            &[b"http/1.1"],
+        )
+        .expect("wrong SAN client certificate config");
+        let wrong_san_rejected = match
+            tls_connect_with_config(proxy.address, PROXY_SERVER_NAME, wrong_san_config).await
+        {
+            Ok(mut stream) => h1_request(&mut stream, "/wrong-san", true).await.is_err(),
+            Err(_) => true,
+        };
+        assert!(
+            wrong_san_rejected,
+            "optional client auth accepted a certificate with a disallowed SAN"
+        );
+
+        let valid_config = tls_client_config_with_identity(
+            &fixture("ca-a.pem"),
+            &client_identity.fullchain_path,
+            &client_identity.leaf_private_key_path,
+            &[b"http/1.1"],
+        )
+        .expect("valid optional client certificate config");
+        let mut valid = tls_connect_with_config(proxy.address, PROXY_SERVER_NAME, valid_config)
+            .await
+            .expect("optional client auth accepted valid certificate");
+        let response = h1_request(&mut valid, "/with-client-cert", true)
+            .await
+            .expect("optional client certificate response");
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, b"client-auth-optional");
+        origin.wait_for_requests(2).await;
+
+        drop(valid);
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("optional client auth wire test timed out");
 }
 
 #[tokio::test]

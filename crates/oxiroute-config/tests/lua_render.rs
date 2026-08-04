@@ -11,9 +11,10 @@ use oxiroute_config::{
     HttpStaticMimePolicy, HttpStaticPathMapping, HttpUpstreamHost, HttpVersion, HttpVersionPolicy,
     L4Service, Listener, ListenerBind, Management, Protocol, RtmpAccessPolicy, RtmpApplication,
     RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis,
-    RtmpRecorderTimezone, RtmpService, RtmpSessionCeilings, TlsPolicy, TlsProfile, TlsSessionCache,
-    TlsVersion, UdpPolicy, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint,
-    UpstreamPool, UpstreamServer, UpstreamTls, load_lua, render_lua, validate_config,
+    RtmpRecorderTimezone, RtmpService, RtmpSessionCeilings, TlsClientAuthMode,
+    TlsClientAuthPolicy, TlsPolicy, TlsProfile, TlsSessionCache, TlsVersion, UdpPolicy,
+    UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer,
+    UpstreamTls, load_lua, render_lua, validate_config,
 };
 
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
@@ -66,6 +67,11 @@ fn test_tls_profiles() -> Vec<TlsProfile> {
             policy: TlsPolicy {
                 cipher_list: Some("ECDHE-ECDSA-AES128-GCM-SHA256".into()),
                 dh_parameters_path: Some("/etc/oxiroute/dhparam.pem".into()),
+                client_auth: TlsClientAuthPolicy {
+                    mode: TlsClientAuthMode::Optional,
+                    ca_certificate_path: Some("/etc/oxiroute/client-ca.pem".into()),
+                    allowed_dns_names: vec!["CLIENT.EXAMPLE.TEST".into()],
+                },
                 session_cache: Some(TlsSessionCache {
                     name: "le_nginx_SSL".into(),
                     size_bytes: 10 * 1024 * 1024,
@@ -640,6 +646,9 @@ const RENDERED_FIELDS: &[&str] = &[
     "policy",
     "cipher_list",
     "dh_parameters_path",
+    "client_auth",
+    "mode",
+    "allowed_dns_names",
     "session_cache",
     "size_bytes",
     "session_timeout_seconds",
@@ -783,6 +792,14 @@ fn serializes_the_complete_canonical_model_for_typed_ui_data() {
     assert_eq!(value["certificates"][1]["source"]["type"], "certbot");
     assert_eq!(value["tls_profiles"][0]["min_version"], "1.3");
     assert_eq!(value["tls_profiles"][0]["alpn"][0], "h2");
+    assert_eq!(
+        value["tls_profiles"][0]["policy"]["client_auth"]["mode"],
+        "optional"
+    );
+    assert_eq!(
+        value["tls_profiles"][0]["policy"]["client_auth"]["allowed_dns_names"][0],
+        "client.example.test"
+    );
     assert_eq!(
         value["tls_profiles"][0]["policy"]["session_cache"]["name"],
         "le_nginx_SSL"

@@ -9,8 +9,8 @@ use oxiroute_config::{
     AlpnProtocol, Certificate, CertificateSource, Config, HttpAccessPolicy, HttpHostSelector,
     HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction, HttpService, HttpVersionPolicy,
     L4Service, Listener, ListenerBind, Protocol, RtmpApplication, RtmpService, SelfSignedKeyType,
-    Stats, StatsPage, StatsPageAdminPolicy, TlsProfile, TlsVersion, UpstreamAlgorithm,
-    UpstreamEndpoint, UpstreamPool, UpstreamServer,
+    Stats, StatsPage, StatsPageAdminPolicy, TlsClientAuthMode, TlsClientAuthPolicy, TlsProfile,
+    TlsVersion, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, UpstreamServer,
 };
 use oxiroute_rtmp::{RtmpCapabilities, RtmpRegistry};
 use oxiroute_server::{
@@ -103,6 +103,17 @@ fn compiles_stable_redacted_nodes_and_typed_reference_edges() {
 
     assert_canonical_listener_service_and_endpoint_attributes(&plan);
     assert_private_key_redaction(&plan, &config);
+    let tls_profile = node(&plan, TopologyNodeKind::TlsProfile, "public");
+    assert_eq!(
+        tls_profile.attributes["clientAuth"],
+        json!({
+            "mode": "required",
+            "caConfigured": true,
+            "allowedDnsNameCount": 1,
+        })
+    );
+    let serialized = serde_json::to_string(tls_profile).expect("TLS profile topology JSON");
+    assert!(!serialized.contains("client-ca.pem"));
 }
 
 #[test]
@@ -333,6 +344,19 @@ fn serves_active_topology_with_name_joined_runtime_overlays() {
         CertificateSource::AcmeManaged { .. } => unreachable!("test uses file identity"),
     };
     assert!(!body_text.contains(private_key_path.to_str().expect("UTF-8 key path")));
+    assert!(!body_text.contains("client-ca.pem"));
+    let status = api.handle("GET", "/api/v1/status", 100);
+    let status_body: Value = serde_json::from_slice(&status.body).expect("status JSON");
+    assert_eq!(status.status, 200);
+    assert_eq!(
+        status_body["tlsProfiles"][0]["clientAuth"],
+        json!({
+            "mode": "required",
+            "caConfigured": true,
+            "allowedDnsNameCount": 1,
+        })
+    );
+    assert!(!status.body.windows("client-ca.pem".len()).any(|window| window == b"client-ca.pem"));
     assert_eq!(api.handle("POST", "/api/v1/topology", 100).status, 405);
 
     web.mark_failed();
@@ -483,7 +507,7 @@ fn action_aware_topology_never_serializes_access_tokens_or_filesystem_roots() {
 fn topology_config(temp: &TempDir) -> Config {
     let (certificate_chain_path, private_key_path) =
         write_test_identity(temp.path(), "topology-private-key-do-not-expose.pem");
-    Config {
+    let mut config = Config {
         certificates: vec![Certificate {
             name: "public".into(),
             dns_names: vec!["proxy.example.test".into()],
@@ -607,7 +631,13 @@ fn topology_config(temp: &TempDir) -> Config {
             udp: None,
         }],
         ..empty_config()
-    }
+    };
+    config.tls_profiles[0].policy.client_auth = TlsClientAuthPolicy {
+        mode: TlsClientAuthMode::Required,
+        ca_certificate_path: Some(fixture_support::fixture("ca-a.pem")),
+        allowed_dns_names: vec!["client.example.test".into()],
+    };
+    config
 }
 
 fn upstream_server(name: &str, endpoint: UpstreamEndpoint) -> UpstreamServer {

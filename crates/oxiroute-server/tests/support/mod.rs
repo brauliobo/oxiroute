@@ -184,6 +184,14 @@ impl TestCertbotLineage {
 }
 
 pub fn generate_test_only_ecdsa_chain(server_name: &str) -> TestOnlyEcdsaChain {
+    generate_test_only_chain(server_name, false)
+}
+
+pub fn generate_test_only_client_chain(client_name: &str) -> TestOnlyEcdsaChain {
+    generate_test_only_chain(client_name, true)
+}
+
+fn generate_test_only_chain(leaf_name: &str, client_auth: bool) -> TestOnlyEcdsaChain {
     let directory = TempDir::new().expect("test-only ECDSA fixture directory");
     let root_key = test_only_ec_key();
     let root_name = test_only_name("OxiRoute Wire Test-Only ECDSA Root");
@@ -193,7 +201,13 @@ pub fn generate_test_only_ecdsa_chain(server_name: &str) -> TestOnlyEcdsaChain {
     let intermediate =
         test_only_intermediate(&intermediate_key, &intermediate_name, &root, &root_key);
     let leaf_key = test_only_ec_key();
-    let leaf = test_only_leaf(server_name, &leaf_key, &intermediate, &intermediate_key);
+    let leaf = test_only_leaf(
+        leaf_name,
+        &leaf_key,
+        &intermediate,
+        &intermediate_key,
+        client_auth,
+    );
 
     let fullchain_path = directory
         .path()
@@ -377,12 +391,13 @@ fn test_only_intermediate(
 }
 
 fn test_only_leaf(
-    server_name: &str,
+    leaf_name: &str,
     key: &PKey<Private>,
     intermediate: &X509,
     intermediate_key: &PKey<Private>,
+    client_auth: bool,
 ) -> X509 {
-    let name = test_only_name(server_name);
+    let name = test_only_name(leaf_name);
     let mut certificate = X509::builder().expect("test-only ECDSA leaf builder");
     certificate
         .set_version(2)
@@ -417,16 +432,21 @@ fn test_only_leaf(
                 .expect("test-only ECDSA leaf key usage"),
         )
         .expect("append test-only ECDSA leaf key usage");
+    let mut extended_key_usage = ExtendedKeyUsage::new();
+    if client_auth {
+        extended_key_usage.client_auth();
+    } else {
+        extended_key_usage.server_auth();
+    }
     certificate
         .append_extension(
-            ExtendedKeyUsage::new()
-                .server_auth()
+            extended_key_usage
                 .build()
                 .expect("test-only ECDSA leaf extended key usage"),
         )
         .expect("append test-only ECDSA leaf extended key usage");
     let subject_alternative_name = SubjectAlternativeName::new()
-        .dns(server_name)
+        .dns(leaf_name)
         .build(&certificate.x509v3_context(Some(intermediate), None))
         .expect("test-only ECDSA leaf SAN");
     certificate
@@ -766,6 +786,28 @@ pub fn tls_client_config_with_versions(
     Ok(Arc::new(config))
 }
 
+pub fn tls_client_config_with_identity(
+    ca_certificate_path: &Path,
+    client_chain_path: &Path,
+    client_private_key_path: &Path,
+    alpn: &[&[u8]],
+) -> Result<Arc<ClientConfig>, BoxError> {
+    let mut roots = RootCertStore::empty();
+    for certificate in load_certificates(ca_certificate_path)? {
+        roots.add(certificate)?;
+    }
+    let certificates = load_certificates(client_chain_path)?;
+    let private_key = load_private_key(client_private_key_path)?;
+    let mut config = ClientConfig::builder_with_protocol_versions(&[
+        &rustls::version::TLS13,
+        &rustls::version::TLS12,
+    ])
+    .with_root_certificates(roots)
+    .with_client_auth_cert(certificates, private_key)?;
+    config.alpn_protocols = alpn.iter().map(|protocol| protocol.to_vec()).collect();
+    Ok(Arc::new(config))
+}
+
 pub async fn tls_connect_with_config(
     address: SocketAddr,
     server_name: &str,
@@ -773,6 +815,43 @@ pub async fn tls_connect_with_config(
 ) -> Result<ClientTlsStream<TcpStream>, BoxError> {
     let stream = tcp_connect(address).await?;
     tls_handshake(stream, server_name, config).await
+}
+
+pub async fn openssl_tls_request_with_identity(
+    address: SocketAddr,
+    server_name: &str,
+    server_ca_path: &Path,
+    client_chain_path: &Path,
+    client_private_key_path: &Path,
+) -> Result<bool, BoxError> {
+    let server_name = server_name.to_owned();
+    let server_ca_path = server_ca_path.to_owned();
+    let client_chain_path = client_chain_path.to_owned();
+    let client_private_key_path = client_private_key_path.to_owned();
+    timeout(
+        IO_TIMEOUT,
+        spawn_blocking(move || {
+            let mut connector = SslConnector::builder(SslMethod::tls_client())?;
+            connector.set_ca_file(server_ca_path)?;
+            connector.set_verify(SslVerifyMode::PEER);
+            connector.set_certificate_chain_file(client_chain_path)?;
+            connector.set_private_key_file(client_private_key_path, SslFiletype::PEM)?;
+            let stream = std::net::TcpStream::connect_timeout(&address, IO_TIMEOUT)?;
+            stream.set_read_timeout(Some(IO_TIMEOUT))?;
+            stream.set_write_timeout(Some(IO_TIMEOUT))?;
+            let mut stream = connector.build().connect(&server_name, stream)?;
+            std::io::Write::write_all(
+                &mut stream,
+                b"GET /openssl-client-auth HTTP/1.1\r\nHost: proxy.example.test\r\nConnection: close\r\n\r\n",
+            )?;
+            let mut response = Vec::new();
+            std::io::Read::read_to_end(&mut stream, &mut response)?;
+            Ok::<_, BoxError>(response.starts_with(b"HTTP/1.1 200"))
+        }),
+    )
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "OpenSSL client request timed out"))?
+    .map_err(|error| io::Error::other(format!("OpenSSL client request task failed: {error}")))?
 }
 
 pub async fn tls_handshake(

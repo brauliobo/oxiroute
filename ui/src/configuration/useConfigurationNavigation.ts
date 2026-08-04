@@ -191,6 +191,11 @@ export function useConfigurationNavigation(
           policy: {
             cipher_list: null,
             dh_parameters_path: null,
+            client_auth: {
+              mode: 'disabled',
+              ca_certificate_path: null,
+              allowed_dns_names: [],
+            },
             session_cache: null,
             session_timeout_seconds: null,
             session_tickets: false,

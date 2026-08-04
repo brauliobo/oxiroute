@@ -9,15 +9,16 @@ fieldset.list-field(:data-field="fieldPath")
       type="text"
       :value="value"
       :list="suggestions.length ? `${id}-suggestions` : undefined"
+      :disabled="disabled"
       @input="update(index, $event)"
     )
-    button.remove-row(type="button" :aria-label="`Remove ${itemLabel} ${index + 1}`" @click="remove(index)") Remove
+    button.remove-row(type="button" :disabled="disabled" :aria-label="`Remove ${itemLabel} ${index + 1}`" @click="remove(index)") Remove
   p.empty-list(v-if="modelValue.length === 0") No values configured.
   datalist(v-if="suggestions.length" :id="`${id}-suggestions`")
     option(v-for="suggestion in suggestions" :key="suggestion" :value="suggestion")
   button.add-row(
     type="button"
-    :disabled="modelValue.length >= maxItems"
+    :disabled="disabled || modelValue.length >= maxItems"
     :title="modelValue.length >= maxItems ? `At most ${maxItems} ${itemLabel} values are supported.` : undefined"
     @click="add"
   ) + Add {{ itemLabel }}
@@ -35,22 +36,25 @@ const props = withDefaults(
     hint?: string
     suggestions?: string[]
     maxItems?: number
+    disabled?: boolean
   }>(),
-  { hint: '', suggestions: () => [], maxItems: Number.MAX_SAFE_INTEGER },
+  { hint: '', suggestions: () => [], maxItems: Number.MAX_SAFE_INTEGER, disabled: false },
 )
 const emit = defineEmits<{ 'update:modelValue': [value: string[]] }>()
 const id = useId()
 
 function add(): void {
-  if (props.modelValue.length >= props.maxItems) return
+  if (props.disabled || props.modelValue.length >= props.maxItems) return
   emit('update:modelValue', [...props.modelValue, ''])
 }
 
 function remove(index: number): void {
+  if (props.disabled) return
   emit('update:modelValue', props.modelValue.filter((_, valueIndex) => valueIndex !== index))
 }
 
 function update(index: number, event: Event): void {
+  if (props.disabled) return
   const values = [...props.modelValue]
   values[index] = (event.target as HTMLInputElement).value
   emit('update:modelValue', values)

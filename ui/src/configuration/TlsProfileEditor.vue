@@ -31,6 +31,15 @@ header.form-heading
   label.field(data-field="tls_profiles[].policy.dh_parameters_path")
     span DH parameters path
     input(type="text" :value="profile.policy.dh_parameters_path ?? ''" @input="setNullableText('dh_parameters_path', $event)")
+  label.field(data-field="tls_profiles[].policy.client_auth.mode")
+    span Client certificate policy
+    select(v-model="profile.policy.client_auth.mode")
+      option(value="disabled") Disabled
+      option(value="optional") Optional
+      option(value="required") Required
+  label.field(data-field="tls_profiles[].policy.client_auth.ca_certificate_path")
+    span Client CA bundle path
+    input(type="text" :value="profile.policy.client_auth.ca_certificate_path ?? ''" :disabled="profile.policy.client_auth.mode === 'disabled'" @input="setClientCaPath")
   label.field(data-field="tls_profiles[].policy.session_cache.name")
     span Shared session cache name
     input(type="text" :value="profile.policy.session_cache?.name ?? ''" @input="setSessionCacheName")
@@ -46,6 +55,14 @@ header.form-heading
   label.checkbox-field(data-field="tls_profiles[].policy.prefer_server_ciphers")
     input(type="checkbox" v-model="profile.policy.prefer_server_ciphers")
     span Prefer server cipher order
+StringListField(
+  v-model="profile.policy.client_auth.allowed_dns_names"
+  label="Allowed client SANs"
+  item-label="exact DNS or IP SAN"
+  field-path="tls_profiles[].policy.client_auth.allowed_dns_names"
+  :disabled="profile.policy.client_auth.mode === 'disabled'"
+  hint="Empty accepts any SAN-bearing certificate trusted by the configured client CA bundle."
+)
 StringListField(
   v-model="profile.certificates"
   label="SNI certificates"
@@ -74,6 +91,10 @@ function setAlpnPolicy(event: Event): void {
 
 function setNullableText(field: 'cipher_list' | 'dh_parameters_path', event: Event): void {
   props.profile.policy[field] = (event.target as HTMLInputElement).value || null
+}
+
+function setClientCaPath(event: Event): void {
+  props.profile.policy.client_auth.ca_certificate_path = (event.target as HTMLInputElement).value || null
 }
 
 function setSessionCacheName(event: Event): void {

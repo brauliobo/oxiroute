@@ -266,6 +266,46 @@
       "required_tests": ["decode", "validate", "render", "interop"]
     },
     {
+      "id": "canonical.tls-profiles.policy.client-auth",
+      "kind": "field",
+      "path": "tls_profiles[].policy.client_auth",
+      "editability": "operator",
+      "normalization": ["default to disabled"],
+      "validation": ["closed mode object", "enabled modes require a CA path", "disabled mode has no CA or identities"],
+      "runtime": { "target": "tls.profile.client-auth", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "render", "interop", "security"]
+    },
+    {
+      "id": "canonical.tls-profiles.policy.client-auth.mode",
+      "kind": "field",
+      "path": "tls_profiles[].policy.client_auth.mode",
+      "editability": "operator",
+      "normalization": ["default to disabled"],
+      "validation": ["disabled, optional, or required"],
+      "runtime": { "target": "tls.profile.client-auth", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "render", "interop"]
+    },
+    {
+      "id": "canonical.tls-profiles.policy.client-auth.ca-certificate-path",
+      "kind": "field",
+      "path": "tls_profiles[].policy.client_auth.ca_certificate_path",
+      "editability": "operator",
+      "normalization": ["UTF-8 absolute path"],
+      "validation": ["bounded stable CA bundle read", "strict client chain validation"],
+      "runtime": { "target": "tls.profile.client-auth", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "security", "interop"]
+    },
+    {
+      "id": "canonical.tls-profiles.policy.client-auth.allowed-dns-names",
+      "kind": "field",
+      "path": "tls_profiles[].policy.client_auth.allowed_dns_names",
+      "editability": "operator",
+      "normalization": ["lowercase DNS names and canonical IP literals"],
+      "validation": ["exact DNS/IP SAN identities", "no wildcard or duplicate identities"],
+      "runtime": { "target": "tls.profile.client-auth", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "security", "interop"]
+    },
+    {
       "id": "canonical.tls-profiles.policy.cipher-list",
       "kind": "field",
       "path": "tls_profiles[].policy.cipher_list",
