@@ -79,7 +79,45 @@ fn report_json_is_deterministic_and_identifies_each_source_product() {
                     .is_some_and(|fingerprint| fingerprint.len() == 64))
         );
         assert!(value["candidate"]["finalized"].is_boolean());
+        if product == "squid" {
+            assert_eq!(value["capabilities"]["targetVersion"], "6f4c814");
+            assert_eq!(
+                value["capabilities"]["profile"]["id"],
+                "squid-forward-http1"
+            );
+            assert_eq!(value["capabilities"]["parity"], "partial");
+            assert_eq!(value["capabilities"]["completeParity"], false);
+        } else {
+            assert!(value.get("capabilities").is_none());
+        }
     }
+}
+
+#[test]
+fn squid_report_keeps_open_capability_entries_out_of_complete_parity_claims() {
+    let squid_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/squid/hostrouter-sanitized.conf");
+    let report = ImportReportEnvelope::from_squid(&import_squid(&squid_path));
+    let value: Value =
+        serde_json::from_str(&report.to_json().expect("Squid capability report JSON"))
+            .expect("Squid capability report object");
+    let capabilities = &value["capabilities"];
+    let families = capabilities["families"]
+        .as_array()
+        .expect("capability families");
+    assert!(families.iter().any(|family| family["status"] == "partial"));
+    assert!(families
+        .iter()
+        .any(|family| family["status"] == "unsupported"));
+    assert_eq!(capabilities["completeParity"], false);
+    assert_ne!(capabilities["parity"], "complete");
+    assert!(capabilities["directives"]
+        .as_array()
+        .is_some_and(|directives| {
+            directives.iter().any(|directive| {
+                directive["key"] == "cache_peer" && directive["status"] == "unsupported"
+            })
+        }));
 }
 
 #[test]

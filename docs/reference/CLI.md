@@ -18,6 +18,11 @@ oxiroute [--endpoint URL] [--token-file FILE] [--output table|json|plain] [--qui
 - Public `/ready` and `/metrics` probes do not need the management token. Other management operations
   use the bearer token according to their route contract.
 
+Squid report output includes `capabilities`, a versioned target-checkout registry. Its `parity` is
+`partial` and `completeParity` is false while any family or directive is partial, unsupported,
+obsolete, or not planned. Only forms with both runtime integration and failure coverage are marked
+`compatible`.
+
 ## Command Families
 
 | Family | Commands | Use |
@@ -58,6 +63,7 @@ oxiroute --output json server show --pool public-v4 --pool public-v6 origin-a
 oxiroute server drain --pool public-v4 --pool public-v6 origin-a
 oxiroute generation rollback
 oxiroute import nginx /etc/nginx/nginx.conf --output report
+oxiroute import squid /etc/squid/squid.conf --output report
 oxiroute import apache /etc/httpd/conf/httpd.conf --output report
 oxiroute import apache /etc/httpd/conf/httpd.conf --shadow-port-offset 10000 --output preview
 ```

@@ -410,6 +410,29 @@ fn import_report_is_deterministic_json_and_preview_remains_canonical_output() {
 }
 
 #[test]
+fn squid_import_report_publishes_the_target_capability_registry() {
+    let squid_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../oxiroute-import/tests/fixtures/squid/hostrouter-sanitized.conf");
+    let report = cli()
+        .args(["import", "squid", squid_path.to_str().unwrap()])
+        .output()
+        .expect("Squid import report");
+    assert!(report.status.success(), "{}", output_text(&report));
+    let report_json: Value = serde_json::from_slice(&report.stdout).expect("Squid report JSON");
+    assert_eq!(report_json["source"]["product"], "squid");
+    assert_eq!(report_json["capabilities"]["targetVersion"], "6f4c814");
+    assert_eq!(report_json["capabilities"]["parity"], "partial");
+    assert_eq!(report_json["capabilities"]["completeParity"], false);
+    assert!(
+        report_json["capabilities"]["families"]
+            .as_array()
+            .is_some_and(|families| families.iter().any(|family| {
+                family["id"] == "family.squid.cache" && family["status"] == "unsupported"
+            }))
+    );
+}
+
+#[test]
 fn varnish_import_report_and_preview_use_exact_invocation_arguments() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../oxiroute-import/tests/fixtures/varnish/exact.vcl");

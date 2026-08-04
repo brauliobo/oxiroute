@@ -1,6 +1,7 @@
 //! Strict, ordered Squid source loading, parsing, and import accounting.
 
 mod bytes;
+mod capabilities;
 mod importer;
 mod lexer;
 mod loader;
@@ -10,6 +11,12 @@ mod source;
 
 use crate::DiagnosticCode;
 
+pub use capabilities::{
+    squid_capability_report, squid_directive_capabilities, SquidCapabilityFamily,
+    SquidCapabilityProfile, SquidCapabilityReference, SquidCapabilityReport, SquidCapabilityStatus,
+    SquidDirectiveCapability, SQUID_CAPABILITY_PROFILE_ID, SQUID_CAPABILITY_PROFILE_VERSION,
+    SQUID_CAPABILITY_REGISTRY_VERSION, SQUID_TARGET_VERSION,
+};
 pub use importer::{
     BlockedCapability, ImportReport, LoweringView, SelectedImportReport, SquidLoweringAdapter,
     import, import_selected,

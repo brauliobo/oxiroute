@@ -43,6 +43,9 @@ pub struct ImportReportEnvelope {
     pub requirements: RequirementsEvidence,
     pub overlays: Vec<OverlayEvidence>,
     pub diagnostics: Vec<DiagnosticEvidence>,
+    #[cfg(unix)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<crate::squid::SquidCapabilityReport>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -295,7 +298,7 @@ impl ImportReportEnvelope {
             &report.canonical_provenance,
             squid_origin,
         );
-        Self::assemble(
+        let mut envelope = Self::assemble(
             source_metadata("squid", "squid-forward-http1"),
             squid_graph(&report.source_graph),
             source_metadata_evidence(&graph_source_metadata(
@@ -310,7 +313,9 @@ impl ImportReportEnvelope {
             Vec::new(),
             &report.diagnostics,
             squid_blockers(report),
-        )
+        );
+        envelope.capabilities = Some(report.capabilities);
+        envelope
     }
 
     /// Builds the shared evidence envelope for a static Apache httpd import.
@@ -412,6 +417,8 @@ impl ImportReportEnvelope {
             requirements,
             overlays,
             diagnostics: sorted.iter().map(diagnostic_evidence).collect(),
+            #[cfg(unix)]
+            capabilities: None,
         }
     }
 }

@@ -22,7 +22,7 @@ uses `stable` or `partial` so component integration is not confused with product
 | Capability | Status | Notes |
 | --- | --- | --- |
 | HTTP/1 reverse proxy | partial | Deterministic nginx-style routing, health-aware tagged pools, balancing, active checks, bounded safe connect retries, independent listener/route/pool timeouts, route-local body limits, bounded header/cookie policy, bounded fixed-length response buffering, deadline-clamped I/O, H1 early-response draining, semaphore-bounded bcrypt/APR1 Basic access, descriptor-pinned conditional/range static serving with optional ETags, gzip-only weighted content negotiation, bounded asynchronous redacted JSONL access logs, WebSocket upgrades, downstream TLS, and verified upstream TLS are implemented; broader conformance remains. |
-| HTTP/2 downstream | partial | TLS profiles provide explicit `h2` ALPN and a rustls client wire test negotiates H2 and proxies a real stream. H2-only listeners reject incompatible ALPN and close no-ALPN streams before HTTP parsing. There is no h2c, client authentication, or broad H2 conformance suite. |
+| HTTP/2 downstream | partial | TLS profiles provide explicit `h2` ALPN and a rustls client wire test negotiates H2 and proxies a real stream. H2-only listeners reject incompatible ALPN and close no-ALPN streams before HTTP parsing. There is no h2c or broad H2 conformance suite. Downstream client authentication is separately supported by the TLS profile policy. |
 | HTTP/2 upstream | partial | TLS pools support `1.1/1.1`, `1.1/2`, and H2-only `2/2` policies. H2-only success and no-compatible-ALPN failure before HTTP headers are wire-tested with verified custom CA and SNI; the HTTP/1.1-only policy is also wire-tested. |
 | HTTP/3 downstream/upstream | partial | The active `forward_http3` UDP listener uses a separate bounded Quinn/H3 runtime with TLS 1.3, `h3` ALPN, generation admission, and graceful drain; reverse HTTP/3 remains planned. |
 | WebSocket reverse proxy | stable | The standard nginx `Upgrade $http_upgrade` and `Connection upgrade` policy is accepted without taking upgrade ownership from Pingora; HTTP/1.1 passes independent bidirectional framed interoperability coverage. |
@@ -126,37 +126,37 @@ disable-only, parsed-only, source-no-op, source-bug, deprecated, and platform-li
 
 ## Squid feature families
 
-Squid configuration contains hundreds of directives whose availability changes by build.
-The importer will generate a versioned directive registry from the targeted upstream
-release and assign each directive `compatible`, `partial`, `unsupported`, or `obsolete`.
-Until that registry and behavior suite exist, no complete parity claim is valid.
+Squid directive coverage is a versioned registry for checkout `6f4c814` in
+[`coverage/squid-directives.json`](../coverage/squid-directives.json). The importer publishes the
+same registry in the machine-readable `capabilities` object of `oxiroute import squid --output
+report`. `compatible` is reserved for an exact form with both runtime integration and failure
+coverage. `partial` means an audited subset exists; `unsupported`, `obsolete`, and `not_planned`
+forms are never treated as parity.
 
-| Family | Status | Required work |
+| Family | Status | Boundary |
 | --- | --- | --- |
-| Explicit HTTP requests | partial | Integrated HTTP/1 absolute-form forwarding, origin-form normalization, verified HTTPS origins, hop-by-hop stripping, and bounded request/runtime policy; broader conformance and access logging remain. |
-| CONNECT tunnels | stable | Authority parsing, exact approved-address connection, unsplit bounded duplex relay, half-close, byte/idle/lifetime limits, and shutdown cancellation are wire- and host-shadow-tested. |
-| ACL definitions and access ordering | partial | Ordered first-match method, source CIDR, destination-port, authenticated, local, link-local, manager, and all predicates lower from the audited subset; canonical runtime destination domains and bounded UTC windows are available, while Squid time/domain ACL lowering and asynchronous helpers remain. |
-| Basic proxy authentication | partial | Secure bounded bcrypt/APR1 htpasswd verification, bounded TTL caching of salted validated-credential digests with fail-closed helper-file reload on misses, Squid-compatible client username normalization, and `basic_ncsa_auth` lowering are integrated; canonical mTLS is fail-closed pending the listener client-CA/session identity seam, and broader helper protocols remain absent. |
-| Digest/Negotiate/NTLM and helpers | research | Helper protocol and connection-affinity semantics. |
-| External ACL and URL rewrite helpers | research | Isolated helper lifecycle and concurrency. |
-| Memory cache | partial | Reverse HTTP GET/HEAD admission, collapsed forwarding, origin revalidation, conditional validators, bounded eviction, and cache-bound prepared-entry ownership are active; broader HTTP cache conformance remains. |
-| Persistent disk cache | partial | Descriptor-safe recovery, quota, eviction, exclusive-root ownership, async bounded request-path I/O, restart reuse, and foreign-entry rejection are active; cross-process coordination remains intentionally exclusive. |
-| Revalidation/range/collapsed forwarding | partial | Revalidation, conditional hits, and collapsed forwarding are active; range and unsafe conditional requests bypass cache reuse rather than being approximated. |
-| Delay pools | research | Hierarchical bandwidth accounting and compatibility tests. |
-| ICAP/eCAP adaptation | research | Separate adaptation protocol/plugin architecture. |
-| Parent/sibling cache peers | research | Selection, failure, direct/never-direct policies. |
-| ICP/HTCP | research | Legacy datagram peer protocols. |
-| WCCP | research | Kernel/router cooperation and operational relevance review. |
-| Transparent interception/TPROXY | research | Optional Linux helper and policy routing. |
-| TLS bump/certificate mimicry | research | High-risk security and policy feature; not part of initial ACME work. |
-| FTP proxy/listing behavior | research | Current Squid target-version capability review required. |
-| ESI and content processing | research | Standards/relevance review and cache integration. |
-| SNMP and Cache Manager equivalents | research | Prefer Prometheus/API equivalents; exact compatibility assessed separately. |
-| Logging formats and rotation | research | Structured native model plus selected format imports. |
-| Multi-worker coordination | foundation | Supervision and replacement components exist, but the direct in-process daemon remains the default and shared production runtime coordination is not claimed. |
+| Explicit HTTP forward requests | partial | Only the audited direct HTTP/1 forms are lowered. |
+| CONNECT tunnels | compatible | The bounded explicit CONNECT form has wire and failure coverage. |
+| Includes and source ordering | partial | Bounded deterministic file and glob includes only. |
+| ACL definitions and access ordering | partial | Source, exact port, proxy-auth, built-ins, and ordered HTTP access only. |
+| Proxy authentication | partial | Basic htpasswd form only; other schemes and helper settings block. |
+| Resolver selection | partial | Explicit finite nameserver lists only. |
+| Header privacy and access | partial | `forwarded_for delete` and `via off` only. |
+| Logging and audit output | partial | Disabled native access logging only. |
+| Memory and persistent HTTP caching | unsupported | No Squid cache admission or storage parity. |
+| Freshness, revalidation, ranges, and collapsed forwarding | unsupported | `refresh_pattern` is externalized, not enforced. |
+| Parent and sibling cache peers | unsupported | Peer hierarchy and selection are not runtime-owned. |
+| External ACL and URL rewrite helpers | unsupported | Helper lifecycle and protocols are not implemented. |
+| ICAP and eCAP adaptation | unsupported | Adaptation negotiation and transformation are absent. |
+| Transparent interception and TPROXY | unsupported | Kernel/router cooperation is not a socket-proxy capability. |
+| TLS bump and certificate mimicry | unsupported | HTTPS-origin verification is not TLS interception. |
+| Delay pools and traffic shaping | unsupported | Squid hierarchical bandwidth accounting is absent. |
+| FTP proxy and listing behavior | not_planned | Outside the maintained direct HTTP/1 line. |
+| ICP, HTCP, WCCP, SNMP, and Cache Manager | not_planned | Legacy datagram, router, and native management protocols are not targets. |
+| Process, worker, and deployment controls | not_planned | Externalized or owned by OxiRoute supervision. |
+| ESI and content processing | not_planned | Cache-coupled content processing is outside this scope. |
+| Obsolete target-version directives | obsolete | Removed or replaced names are blocked. |
 
-The matrix expands to directive-level coverage before a Squid-compatible release. Features
-marked `research` are goals under evaluation, not promises for the first releases. Remote
-multi-user management, unrestricted Lua, and runtime user-provided templates are `not-planned`
-for the current release line; packet filtering, NAT, transparent transit, and source spoofing are
-`out-of-scope` for the ordinary daemon.
+The registry deliberately reports `partial` parity and `completeParity: false` while any open
+family or directive remains. Cache, refresh, peer, helper, adaptation, interception, TLS-bump,
+legacy, and UDP-related behavior is not advertised by this matrix.
