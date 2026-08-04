@@ -128,18 +128,26 @@ pub enum AcmeError {
     AccountRegistrationAmbiguous,
     #[error("ACME account contact policy is invalid")]
     InvalidAccountRequest,
+    #[error("ACME account is not usable: {status}")]
+    AccountNotUsable { status: String },
     #[error("ACME terms of service must be explicitly agreed")]
     TermsNotAgreed,
     #[error("ACME directory requires external account binding")]
     ExternalAccountBindingRequired,
     #[error("ACME identifier set is invalid or unsupported")]
     UnsupportedIdentifier,
+    #[error("ACME order identifiers do not match the requested set")]
+    OrderIdentifiersMismatch,
+    #[error("ACME order returned an unsupported state: {status}")]
+    InvalidOrderState { status: String },
     #[error("ACME authorization has no supported HTTP-01 challenge")]
     UnsupportedChallenge,
     #[error("ACME polling exceeded its bounded deadline")]
     PollTimeout,
     #[error("ACME retry guidance is invalid")]
     InvalidRetryAfter,
+    #[error("ACME request exceeds the {limit}-byte bound")]
+    RequestTooLarge { limit: usize },
     #[error("ACME account key could not be generated or used")]
     Key(#[source] ErrorStack),
     #[error("ACME JWS signature could not be created")]
@@ -439,6 +447,7 @@ pub struct CertificateRequest {
 pub struct Order {
     pub url: String,
     pub status: String,
+    pub identifiers: Vec<String>,
     pub authorizations: Vec<String>,
     pub finalize: Option<String>,
     pub certificate: Option<String>,
@@ -570,6 +579,8 @@ impl<T: AcmeTransport> AcmeClient<T> {
     /// Returns an error when the persisted account URL is outside the directory origin policy.
     pub fn set_account(&mut self, account: Account) -> Result<(), AcmeError> {
         self.policy.permits(&account.url)?;
+        validate_account_status(&account.status)?;
+        validate_account_contacts(&account.contacts)?;
         self.account = Some(account);
         Ok(())
     }
@@ -608,14 +619,22 @@ impl<T: AcmeTransport> AcmeClient<T> {
             .to_owned();
         self.policy.permits(&url)?;
         let value = bounded_json(&response.body, MAX_ACME_BODY_BYTES)?;
+        let status = required_string(&value, "status")?;
+        validate_account_status(&status)?;
+        let contacts = string_array(&value, "contact")?;
+        validate_account_contacts(&contacts)?;
+        let response_terms = value
+            .get("termsOfServiceAgreed")
+            .and_then(Value::as_bool)
+            .ok_or(AcmeError::MalformedResponse)?;
+        if request.terms_agreed && !response_terms {
+            return Err(AcmeError::TermsNotAgreed);
+        }
         let account = Account {
             url,
-            status: required_string(&value, "status")?,
-            contacts: string_array(&value, "contact")?,
-            terms_agreed: value
-                .get("termsOfServiceAgreed")
-                .and_then(Value::as_bool)
-                .unwrap_or(request.terms_agreed),
+            status,
+            contacts,
+            terms_agreed: response_terms,
         };
         self.account = Some(account.clone());
         Ok(account)
@@ -637,7 +656,16 @@ impl<T: AcmeTransport> AcmeClient<T> {
         if response.status != 201 {
             return Err(problem_or_status(&response));
         }
-        parse_order(&response, &self.policy)
+        let order = parse_order(&response, &self.policy)?;
+        if order.identifiers != identifiers {
+            return Err(AcmeError::OrderIdentifiersMismatch);
+        }
+        if !matches!(order.status.as_str(), "pending" | "ready") {
+            return Err(AcmeError::InvalidOrderState {
+                status: order.status,
+            });
+        }
+        Ok(order)
     }
 
     /// Loads an authorization and selects its exact HTTP-01 challenge.
@@ -686,8 +714,8 @@ impl<T: AcmeTransport> AcmeClient<T> {
         url: &str,
         poll: &PollPolicy,
     ) -> Result<Authorization, AcmeError> {
-        let mut delay = poll.initial_delay_seconds.min(poll.max_delay_seconds);
-        for attempt in 0..poll.max_attempts.min(MAX_POLL_ATTEMPTS) {
+        let (max_attempts, mut delay, max_delay) = bounded_poll_policy(poll);
+        for attempt in 0..max_attempts {
             if self.clock.now_unix_seconds() > poll.deadline_unix_seconds {
                 return Err(AcmeError::PollTimeout);
             }
@@ -700,10 +728,11 @@ impl<T: AcmeTransport> AcmeClient<T> {
                 | AuthorizationStatus::Valid => return Ok(authorization),
                 AuthorizationStatus::Pending | AuthorizationStatus::Processing => {}
             }
-            if attempt + 1 == poll.max_attempts.min(MAX_POLL_ATTEMPTS) {
+            if attempt + 1 == max_attempts {
                 return Err(AcmeError::PollTimeout);
             }
-            let effective_delay = retry_after(&response)?.unwrap_or(delay);
+            let effective_delay = retry_after(&response, self.clock.now_unix_seconds())?
+                .unwrap_or_else(|| jittered_delay(delay, max_delay, url, attempt));
             if self
                 .clock
                 .now_unix_seconds()
@@ -713,9 +742,7 @@ impl<T: AcmeTransport> AcmeClient<T> {
                 return Err(AcmeError::PollTimeout);
             }
             self.clock.sleep_seconds(effective_delay);
-            delay = effective_delay
-                .saturating_mul(2)
-                .min(poll.max_delay_seconds);
+            delay = effective_delay.saturating_mul(2).min(max_delay);
         }
         Err(AcmeError::PollTimeout)
     }
@@ -741,8 +768,8 @@ impl<T: AcmeTransport> AcmeClient<T> {
     ///
     /// Returns an error when polling exceeds its bounds or the order response is invalid.
     pub fn poll_order(&mut self, url: &str, poll: &PollPolicy) -> Result<Order, AcmeError> {
-        let mut delay = poll.initial_delay_seconds.min(poll.max_delay_seconds);
-        for attempt in 0..poll.max_attempts.min(MAX_POLL_ATTEMPTS) {
+        let (max_attempts, mut delay, max_delay) = bounded_poll_policy(poll);
+        for attempt in 0..max_attempts {
             if self.clock.now_unix_seconds() > poll.deadline_unix_seconds {
                 return Err(AcmeError::PollTimeout);
             }
@@ -751,11 +778,18 @@ impl<T: AcmeTransport> AcmeClient<T> {
                 return Err(problem_or_status(&response));
             }
             let order = parse_order(&response, &self.policy)?;
-            if order.status == "valid" || order.status == "invalid" {
-                return Ok(order);
+            match order.status.as_str() {
+                "valid" | "invalid" => return Ok(order),
+                "pending" | "ready" | "processing" => {}
+                status => {
+                    return Err(AcmeError::InvalidOrderState {
+                        status: status.into(),
+                    });
+                }
             }
-            let effective_delay = retry_after(&response)?.unwrap_or(delay);
-            if attempt + 1 == poll.max_attempts.min(MAX_POLL_ATTEMPTS)
+            let effective_delay = retry_after(&response, self.clock.now_unix_seconds())?
+                .unwrap_or_else(|| jittered_delay(delay, max_delay, url, attempt));
+            if attempt + 1 == max_attempts
                 || self
                     .clock
                     .now_unix_seconds()
@@ -765,9 +799,7 @@ impl<T: AcmeTransport> AcmeClient<T> {
                 return Err(AcmeError::PollTimeout);
             }
             self.clock.sleep_seconds(effective_delay);
-            delay = effective_delay
-                .saturating_mul(2)
-                .min(poll.max_delay_seconds);
+            delay = effective_delay.saturating_mul(2).min(max_delay);
         }
         Err(AcmeError::PollTimeout)
     }
@@ -820,6 +852,11 @@ impl<T: AcmeTransport> AcmeClient<T> {
         loop {
             let nonce = self.take_nonce()?;
             let body = self.jws(url, nonce, payload, protected_key)?;
+            if body.len() > MAX_ACME_BODY_BYTES {
+                return Err(AcmeError::RequestTooLarge {
+                    limit: MAX_ACME_BODY_BYTES,
+                });
+            }
             let mut request = HttpRequest::new("POST", url, body);
             request
                 .headers
@@ -828,8 +865,8 @@ impl<T: AcmeTransport> AcmeClient<T> {
                 .transport
                 .request(request)
                 .map_err(AcmeError::Transport)?;
-            self.record_nonce(&response)?;
             validate_response_url(url, &response, &self.policy)?;
+            self.record_nonce(&response)?;
             if is_bad_nonce(&response) {
                 if retried_bad_nonce {
                     return Err(AcmeError::BadNonceRetryExhausted);
@@ -1039,17 +1076,46 @@ fn public_jwk(
 }
 
 fn validate_account_request(request: &AccountRequest) -> Result<(), AcmeError> {
-    if request.contacts.len() > 8
-        || request.contacts.iter().any(|contact| {
+    if !request.terms_agreed {
+        return Err(AcmeError::TermsNotAgreed);
+    }
+    validate_account_contacts(&request.contacts)
+}
+
+fn validate_account_contacts(contacts: &[String]) -> Result<(), AcmeError> {
+    if contacts.len() > 8
+        || contacts.iter().any(|contact| {
             contact.is_empty()
                 || contact.len() > 320
                 || !contact.is_ascii()
                 || !contact.starts_with("mailto:")
+                || contact[7..].contains(char::is_whitespace)
         })
     {
         return Err(AcmeError::InvalidAccountRequest);
     }
     Ok(())
+}
+
+fn validate_account_status(status: &str) -> Result<(), AcmeError> {
+    match status {
+        "valid" => Ok(()),
+        "deactivated" | "revoked" => Err(AcmeError::AccountNotUsable {
+            status: status.into(),
+        }),
+        _ => Err(AcmeError::MalformedResponse),
+    }
+}
+
+fn validate_order_status(status: &str) -> Result<(), AcmeError> {
+    matches!(
+        status,
+        "pending" | "ready" | "processing" | "valid" | "invalid"
+    )
+    .then_some(())
+    .ok_or_else(|| AcmeError::InvalidOrderState {
+        status: status.into(),
+    })
 }
 
 fn normalize_identifiers(identifiers: &[String]) -> Result<Vec<String>, AcmeError> {
@@ -1096,6 +1162,23 @@ fn parse_order(response: &HttpResponse, policy: &OriginPolicy) -> Result<Order, 
         .header("location")
         .map_or_else(|| response.url.clone(), str::to_owned);
     policy.permits(&url)?;
+    let identifiers = value
+        .get("identifiers")
+        .and_then(Value::as_array)
+        .ok_or(AcmeError::MissingField)?
+        .iter()
+        .map(|identifier| {
+            if identifier.get("type").and_then(Value::as_str) != Some("dns") {
+                return Err(AcmeError::UnsupportedIdentifier);
+            }
+            identifier
+                .get("value")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or(AcmeError::MissingField)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let identifiers = normalize_identifiers(&identifiers)?;
     let authorizations = value
         .get("authorizations")
         .and_then(Value::as_array)
@@ -1120,9 +1203,12 @@ fn parse_order(response: &HttpResponse, policy: &OriginPolicy) -> Result<Order, 
     {
         policy.permits(endpoint)?;
     }
+    let status = required_string(&value, "status")?;
+    validate_order_status(&status)?;
     Ok(Order {
         url,
-        status: required_string(&value, "status")?,
+        status,
+        identifiers,
         authorizations,
         finalize,
         certificate,
@@ -1279,13 +1365,36 @@ fn parse_json_body(body: &[u8]) -> Option<Value> {
         .flatten()
 }
 
-fn retry_after(response: &HttpResponse) -> Result<Option<u64>, AcmeError> {
+fn bounded_poll_policy(poll: &PollPolicy) -> (usize, u64, u64) {
+    let max_attempts = poll.max_attempts.min(MAX_POLL_ATTEMPTS);
+    let max_delay = poll.max_delay_seconds.min(MAX_POLL_DELAY_SECONDS);
+    let initial_delay = poll.initial_delay_seconds.min(max_delay);
+    (max_attempts, initial_delay, max_delay)
+}
+
+fn jittered_delay(base: u64, max_delay: u64, identity: &str, attempt: usize) -> u64 {
+    if base == 0 || max_delay == 0 {
+        return 0;
+    }
+    let digest = Sha256::digest(format!("{identity}:{attempt}").as_bytes());
+    let jitter_limit = base.min(5);
+    let jitter = u64::from(digest[0]) % (jitter_limit + 1);
+    base.saturating_add(jitter).min(max_delay)
+}
+
+fn retry_after(response: &HttpResponse, now_unix_seconds: u64) -> Result<Option<u64>, AcmeError> {
     let Some(value) = response.header("retry-after") else {
         return Ok(None);
     };
-    let seconds = value
-        .parse::<u64>()
-        .map_err(|_| AcmeError::InvalidRetryAfter)?;
+    let seconds = if let Ok(seconds) = value.parse::<u64>() {
+        seconds
+    } else {
+        let date = httpdate::parse_http_date(value).map_err(|_| AcmeError::InvalidRetryAfter)?;
+        date.duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| AcmeError::InvalidRetryAfter)?
+            .as_secs()
+            .saturating_sub(now_unix_seconds)
+    };
     if seconds > MAX_POLL_DELAY_SECONDS {
         return Err(AcmeError::InvalidRetryAfter);
     }
@@ -1432,7 +1541,7 @@ mod tests {
         HttpResponse::new(
             201,
             "https://acme.test/acme/new-order",
-            br#"{"status":"pending","authorizations":["https://acme.test/acme/authz/1"],"finalize":"https://acme.test/acme/order/1/finalize"}"#.to_vec(),
+            br#"{"status":"pending","identifiers":[{"type":"dns","value":"example.test"}],"authorizations":["https://acme.test/acme/authz/1"],"finalize":"https://acme.test/acme/order/1/finalize"}"#.to_vec(),
         )
         .with_header("location", "https://acme.test/acme/order/1")
         .with_header("replay-nonce", "nonce-order")
@@ -1502,6 +1611,100 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn order_state_and_identifiers_are_strict() {
+        for (status, expected_error) in [("processing", None), ("unknown", Some("invalid"))] {
+            let order = format!(
+                "{{\"status\":\"{status}\",\"identifiers\":[{{\"type\":\"dns\",\"value\":\"other.test\"}}],\"authorizations\":[\"https://acme.test/acme/authz/1\"],\"finalize\":\"https://acme.test/acme/order/1/finalize\"}}"
+            );
+            let transport = ScriptedTransport::new([
+                directory("https://acme.test/directory"),
+                HttpResponse::new(204, "https://acme.test/acme/new-nonce", Vec::new())
+                    .with_header("replay-nonce", "nonce-account"),
+                account(),
+                HttpResponse::new(201, "https://acme.test/acme/new-order", order.into_bytes())
+                    .with_header("location", "https://acme.test/acme/order/1")
+                    .with_header("replay-nonce", "nonce-order"),
+            ]);
+            let policy = OriginPolicy::strict("https://acme.test/directory").expect("policy");
+            let key = AccountKey::generate(AccountKeyAlgorithm::EcdsaP256).expect("key");
+            let mut client = AcmeClient::new(
+                transport,
+                "https://acme.test/directory",
+                policy,
+                key,
+                Arc::new(FakeClock::new(100)),
+            )
+            .expect("client");
+            client
+                .register_account(&AccountRequest {
+                    contacts: vec!["mailto:ops@example.test".into()],
+                    terms_agreed: true,
+                })
+                .expect("account");
+            let error = client
+                .create_order(&CertificateRequest {
+                    identifiers: vec!["example.test".into()],
+                })
+                .expect_err("invalid order");
+            if expected_error.is_some() {
+                assert!(matches!(error, AcmeError::InvalidOrderState { .. }));
+            } else {
+                assert!(matches!(error, AcmeError::OrderIdentifiersMismatch));
+            }
+        }
+    }
+
+    #[test]
+    fn nonce_is_not_cached_before_response_origin_validation() {
+        let transport = ScriptedTransport::new([
+            directory("https://acme.test/directory"),
+            HttpResponse::new(204, "https://acme.test/acme/new-nonce", Vec::new())
+                .with_header("replay-nonce", "nonce-account"),
+            HttpResponse::new(
+                400,
+                "https://evil.test/acme/new-account",
+                br#"{"type":"urn:ietf:params:acme:error:badNonce"}"#.to_vec(),
+            )
+            .with_header("replay-nonce", "evil-nonce"),
+        ]);
+        let policy = OriginPolicy::strict("https://acme.test/directory").expect("policy");
+        let key = AccountKey::generate(AccountKeyAlgorithm::EcdsaP256).expect("key");
+        let mut client = AcmeClient::new(
+            transport,
+            "https://acme.test/directory",
+            policy,
+            key,
+            Arc::new(FakeClock::new(100)),
+        )
+        .expect("client");
+        assert!(matches!(
+            client.register_account(&AccountRequest {
+                contacts: vec!["mailto:ops@example.test".into()],
+                terms_agreed: true,
+            }),
+            Err(AcmeError::UntrustedRedirect)
+        ));
+        assert!(client.nonces.is_empty());
+    }
+
+    #[test]
+    fn polling_bounds_cap_delay_and_accept_http_date_retry_guidance() {
+        let (attempts, initial, maximum) = bounded_poll_policy(&PollPolicy {
+            max_attempts: usize::MAX,
+            deadline_unix_seconds: u64::MAX,
+            initial_delay_seconds: u64::MAX,
+            max_delay_seconds: u64::MAX,
+        });
+        assert_eq!(attempts, MAX_POLL_ATTEMPTS);
+        assert_eq!(initial, MAX_POLL_DELAY_SECONDS);
+        assert_eq!(maximum, MAX_POLL_DELAY_SECONDS);
+        assert_eq!(jittered_delay(10, 10, "authz", 1), 10);
+        let response = HttpResponse::new(200, "https://acme.test/authz", Vec::new())
+            .with_header("retry-after", "Thu, 01 Jan 1970 00:02:00 GMT");
+        assert_eq!(retry_after(&response, 60).expect("date"), Some(60));
     }
 
     #[test]
