@@ -1,0 +1,2 @@
+nginx:events {}
+http { server { listen 8080; } }

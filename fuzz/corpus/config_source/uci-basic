@@ -1,0 +1,8 @@
+uci:config json 'root'
+option kind 'object'
+
+config json 'name'
+option parent 'root'
+option key 'name'
+option kind 'string'
+option value 'edge'

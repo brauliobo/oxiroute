@@ -1,0 +1,4 @@
+lua:return {
+  version = 1,
+  listeners = {},
+}

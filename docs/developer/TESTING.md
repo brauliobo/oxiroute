@@ -59,10 +59,10 @@ A capability should not move to `implemented` without the relevant:
 - reload/rotation or lifecycle coverage where applicable; and
 - independent protocol or interoperability evidence where applicable.
 
-There is currently no checked-in fuzz target or real-browser runner. The Linux workflow in
-`.github/workflows/ci.yml` enforces the Rust and UI gates plus coverage-manifest validation, but it
-does not imply browser or platform coverage.
+Checked-in bounded parser fuzz scaffolding lives under `fuzz/`; its optional smoke workflow does not
+claim fuzz coverage and skips execution when cargo-fuzz or nightly Rust is unavailable. The Linux
+workflow in `.github/workflows/ci.yml` enforces the Rust and UI gates plus coverage-manifest
+validation, but it does not imply browser, platform, or fuzz coverage.
 
-Fuzzing remains a documented follow-up. Do not add `cargo-fuzz` or a fuzzing dependency until an
-isolated parser/protocol target can compile and run deterministically with Rust 1.87; the release
-workflow deliberately does not claim that coverage yet.
+Read [`fuzz/README.md`](../../fuzz/README.md) before running a target. Keep parser harnesses
+isolated, deterministic, resource-bounded, and honest about unsupported protocol boundaries.
