@@ -31,7 +31,7 @@ use oxiroute_server::{
     HaproxyStatsApi, HaproxyStatsPage, HttpDownstreamPolicyApp, HttpListenerApp, HttpReverseProxy,
     ListenerMetrics, ListenerReservation, MAX_HTTP_ATTEMPTS, MonitoredHttpApp, RtmpManagementApi,
     RuntimeGeneration, RuntimeMetrics, RuntimeReferenceKind, ServiceKind, TcpRelayCore,
-    TlsProfilePlan, TopologySnapshot,
+    TlsProfilePlan, TopologySnapshot, UdpRuntime,
     cli::{Cli, Command, ConfigCommand, execute_offline},
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, ConfigRevision},
     emit_certificate,
@@ -1617,6 +1617,7 @@ fn serve_generation(
     let acme_reconcilers = tls.acme_reconcilers().to_vec();
     let certbot_reconcilers = tls.certbot_reconcilers().to_vec();
     let direct_file_reconcilers = tls.file_reconcilers().to_vec();
+    let mut udp_runtimes = Vec::new();
     if let Some(supervisor) = health_supervisor {
         server.add_service(background_service("upstream health", supervisor));
     }
@@ -1861,6 +1862,21 @@ fn serve_generation(
                         .with_generation(Arc::clone(generation)),
                 );
             }
+            ServiceKind::Udp(l4_service) => {
+                let runtime = UdpRuntime::start(
+                    listener_name.clone(),
+                    reservation,
+                    l4_service,
+                    Arc::clone(generation),
+                    metrics,
+                    shutdown.clone(),
+                )
+                .map_err(|error| {
+                    generation.mark_runtime_failed();
+                    error
+                })?;
+                udp_runtimes.push(runtime);
+            }
         }
 
         info!("configured {listener_name} on {listener_bind}");
@@ -1888,6 +1904,9 @@ fn serve_generation(
     server.run(RunArgs {
         shutdown_signal: Box::new(ChannelShutdownSignal { shutdown }),
     });
+    for runtime in udp_runtimes {
+        runtime.join()?;
+    }
     acme_supervisor.shutdown();
     if let Some(watcher) = &mut certbot_watcher {
         watcher.shutdown();
@@ -2344,6 +2363,7 @@ mod tests {
                 connect_timeout_ms: 100,
                 idle_timeout_ms: 1_000,
                 lifetime_timeout_ms: None,
+                udp: None,
             }],
         };
         let mut plan = runtime_plan(&config).expect("TCP runtime plan");

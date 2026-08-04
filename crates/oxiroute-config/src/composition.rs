@@ -241,6 +241,7 @@ mod tests {
             connect_timeout_ms: 5000,
             idle_timeout_ms: 60_000,
             lifetime_timeout_ms: None,
+            udp: None,
         });
         config.listeners.push(Listener {
             name: name.into(),

@@ -65,6 +65,7 @@ impl Lowerer<'_> {
             connect_timeout_ms,
             idle_timeout_ms,
             lifetime_timeout_ms: None,
+            udp: None,
         });
         let mut sources = section_sources(&frontend.section);
         sources.extend_from_slice(mode_sources);
@@ -128,6 +129,7 @@ impl Lowerer<'_> {
             connect_timeout_ms,
             idle_timeout_ms,
             lifetime_timeout_ms: None,
+            udp: None,
         });
         let mut sources = section_sources(&listen.section);
         sources.extend_from_slice(mode_sources);

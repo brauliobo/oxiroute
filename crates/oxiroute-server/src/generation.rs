@@ -32,6 +32,7 @@ pub enum RuntimeReferenceKind {
     WebSocket,
     Tcp,
     Rtmp,
+    Udp,
 }
 
 impl RuntimeReferenceKind {
@@ -43,6 +44,7 @@ impl RuntimeReferenceKind {
             Self::WebSocket => 3,
             Self::Tcp => 4,
             Self::Rtmp => 5,
+            Self::Udp => 6,
         }
     }
 }
@@ -216,7 +218,7 @@ pub struct RuntimeGeneration {
     drain: (Mutex<()>, Condvar),
     metrics: RuntimeMetrics,
     plan: RuntimePlan,
-    references: [AtomicU64; 6],
+    references: [AtomicU64; 7],
     mutations: AtomicU64,
     reservations: ListenerReservations,
     revision: GenerationRevision,
@@ -1769,6 +1771,7 @@ mod tests {
             RuntimeReferenceKind::WebSocket,
             RuntimeReferenceKind::Tcp,
             RuntimeReferenceKind::Rtmp,
+            RuntimeReferenceKind::Udp,
         ]
         .map(|kind| generation.begin_reference(kind).expect("reference"));
         let draining = Arc::clone(&generation);

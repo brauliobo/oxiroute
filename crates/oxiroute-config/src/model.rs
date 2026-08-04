@@ -29,8 +29,9 @@ use crate::defaults::{
     default_recorder_max_queue_bytes, default_recorder_max_queue_messages,
     default_recorder_shutdown_timeout_ms, default_recorder_suffix_template,
     default_rtmp_fanout_policy, default_rtmp_outbound_chunk_size,
-    default_self_signed_validity_days, default_true, default_unhealthy_threshold,
-    default_upstream_io_timeout_ms,
+    default_self_signed_validity_days, default_true, default_udp_max_datagram_bytes,
+    default_udp_max_queue_bytes, default_udp_max_queue_datagrams, default_udp_max_session_bytes,
+    default_udp_max_sessions, default_unhealthy_threshold, default_upstream_io_timeout_ms,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -305,6 +306,7 @@ pub enum Protocol {
     Http,
     Rtmp,
     Tcp,
+    Udp,
     ForwardHttp1,
     ForwardHttp2,
     ForwardHttp3,
@@ -1658,6 +1660,36 @@ pub struct L4Service {
     pub idle_timeout_ms: u64,
     #[serde(default)]
     pub lifetime_timeout_ms: Option<u64>,
+    /// Optional bounded policy used when this service is attached to a UDP listener.
+    #[serde(default)]
+    pub udp: Option<UdpPolicy>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct UdpPolicy {
+    #[serde(default = "default_udp_max_datagram_bytes")]
+    pub max_datagram_bytes: u64,
+    #[serde(default = "default_udp_max_sessions")]
+    pub max_sessions: u64,
+    #[serde(default = "default_udp_max_session_bytes")]
+    pub max_session_bytes: u64,
+    #[serde(default = "default_udp_max_queue_datagrams")]
+    pub max_queue_datagrams: u64,
+    #[serde(default = "default_udp_max_queue_bytes")]
+    pub max_queue_bytes: u64,
+}
+
+impl Default for UdpPolicy {
+    fn default() -> Self {
+        Self {
+            max_datagram_bytes: default_udp_max_datagram_bytes(),
+            max_sessions: default_udp_max_sessions(),
+            max_session_bytes: default_udp_max_session_bytes(),
+            max_queue_datagrams: default_udp_max_queue_datagrams(),
+            max_queue_bytes: default_udp_max_queue_bytes(),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -2016,6 +2048,12 @@ pub enum ConfigError {
     UnknownL4UpstreamPool { service: String, pool: String },
     #[error("L4 service `{service}` references TLS-enabled upstream pool `{pool}`")]
     TlsUpstreamPoolForL4Service { service: String, pool: String },
+    #[error("L4 service `{service}` has invalid UDP policy `{field}`: {detail}")]
+    InvalidL4UdpPolicy {
+        service: String,
+        field: &'static str,
+        detail: &'static str,
+    },
     #[error("management listener must use loopback, got `{0}`")]
     ManagementMustUseLoopback(SocketAddr),
     #[error(

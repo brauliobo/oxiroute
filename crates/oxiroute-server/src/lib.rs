@@ -19,6 +19,7 @@ mod secure_bearer;
 mod service_plan;
 mod stats;
 mod tcp_relay;
+mod udp_relay;
 pub mod tls;
 mod topology;
 mod upstream_peer;
@@ -65,6 +66,7 @@ pub use tcp_relay::{
     RELAY_BUFFER_SIZE, RelayDirection, RelayFailure, RelayFailureKind, RelayOperation, RelayPolicy,
     RelayStats, TcpRelayCore, relay_streams,
 };
+pub use udp_relay::UdpRuntime;
 pub use tls::{
     AcmeManagedError, AcmeManagedOutcome, AcmeManagedPolicy, AcmeManagedReconciler,
     AcmeManagedStatus, ActiveCertificateGeneration, CertbotActivationDirection, CertbotCandidate,

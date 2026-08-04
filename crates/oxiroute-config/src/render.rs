@@ -25,7 +25,7 @@ use crate::{
         RtmpPushTarget, RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart,
         RtmpRecorderTimeBasis, RtmpRecorderTimezone, RtmpService, Stats, StatsPage,
         StatsPageAdminPolicy, TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamConnectionReuse,
-        UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls,
+        UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls, UdpPolicy,
     },
     validation::validate_config,
 };
@@ -383,6 +383,7 @@ impl Renderer {
                 Protocol::Http => "http",
                 Protocol::Rtmp => "rtmp",
                 Protocol::Tcp => "tcp",
+                Protocol::Udp => "udp",
                 Protocol::ForwardHttp1 => "forward_http1",
                 Protocol::ForwardHttp2 => "forward_http2",
                 Protocol::ForwardHttp3 => "forward_http3",
@@ -1781,6 +1782,7 @@ impl Renderer {
             connect_timeout_ms,
             idle_timeout_ms,
             lifetime_timeout_ms,
+            udp,
         } = service;
 
         self.string_field("name", name);
@@ -1791,6 +1793,15 @@ impl Renderer {
             Some(timeout) => self.integer_field("lifetime_timeout_ms", timeout),
             None => self.nil_field("lifetime_timeout_ms"),
         }
+        self.optional_table_field("udp", udp.as_ref(), Self::udp_policy);
+    }
+
+    fn udp_policy(&mut self, policy: &UdpPolicy) {
+        self.integer_field("max_datagram_bytes", policy.max_datagram_bytes);
+        self.integer_field("max_sessions", policy.max_sessions);
+        self.integer_field("max_session_bytes", policy.max_session_bytes);
+        self.integer_field("max_queue_datagrams", policy.max_queue_datagrams);
+        self.integer_field("max_queue_bytes", policy.max_queue_bytes);
     }
 
     fn table_list_field<T>(&mut self, name: &str, values: &[T], render: fn(&mut Self, &T)) {

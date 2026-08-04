@@ -230,7 +230,7 @@ impl TopologyBuilder {
         for (index, (listener, service)) in config.listeners.iter().zip(services).enumerate() {
             let kind = match listener.protocol {
                 Protocol::Rtmp => TopologyNodeKind::RtmpListener,
-                Protocol::Http | Protocol::Tcp => TopologyNodeKind::Listener,
+                Protocol::Http | Protocol::Tcp | Protocol::Udp => TopologyNodeKind::Listener,
                 Protocol::ForwardHttp1 | Protocol::ForwardHttp2 | Protocol::ForwardHttp3 => {
                     TopologyNodeKind::ForwardProxyListener
                 }
@@ -279,7 +279,7 @@ impl TopologyBuilder {
             if let Some(service) = &listener.service {
                 let target = match listener.protocol {
                     Protocol::Http => http_service_id(service),
-                    Protocol::Tcp => l4_service_id(service),
+                    Protocol::Tcp | Protocol::Udp => l4_service_id(service),
                     Protocol::ForwardHttp1 | Protocol::ForwardHttp2 | Protocol::ForwardHttp3 => {
                         forward_proxy_service_id(service)
                     }
@@ -1113,6 +1113,7 @@ const fn protocol(protocol: Protocol) -> &'static str {
         Protocol::Http => "http",
         Protocol::Rtmp => "rtmp",
         Protocol::Tcp => "tcp",
+        Protocol::Udp => "udp",
         Protocol::ForwardHttp1 => "forward_http1",
         Protocol::ForwardHttp2 => "forward_http2",
         Protocol::ForwardHttp3 => "forward_http3",

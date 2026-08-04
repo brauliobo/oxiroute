@@ -181,6 +181,7 @@ impl Lowerer {
             connect_timeout_ms,
             idle_timeout_ms,
             lifetime_timeout_ms: None,
+            udp: None,
         });
         let service_path = format!("/l4_services/{service_index}");
         let mut service_origins = vec![stream.origin.clone(), server.origin.clone()];

@@ -18,7 +18,9 @@ use crate::{
         MAX_RTMP_FANOUT_QUEUE_MESSAGES, MAX_RTMP_OUTBOUND_CHUNK_SIZE, MAX_RTMP_PUSH_TARGETS,
         MAX_RTMP_RECORDERS_PER_APPLICATION, MAX_RTMP_RECORDING_ROOTS, MAX_RTMP_SERVICES,
         MAX_RTMP_SUBSCRIBERS, MAX_SAFE_JSON_INTEGER, MAX_SELF_SIGNED_VALIDITY_DAYS,
-        MAX_TLS_PROFILES, MAX_TOTAL_ENDPOINTS, MAX_TOTAL_RTMP_RECORDERS, MAX_UPSTREAM_WEIGHT,
+        MAX_TLS_PROFILES,
+        MAX_TOTAL_ENDPOINTS, MAX_TOTAL_RTMP_RECORDERS, MAX_UDP_DATAGRAM_BYTES, MAX_UDP_QUEUE_BYTES,
+        MAX_UDP_QUEUE_DATAGRAMS, MAX_UDP_SESSION_BYTES, MAX_UDP_SESSIONS, MAX_UPSTREAM_WEIGHT,
         MIN_HEALTH_INTERVAL_MS, MIN_SELF_SIGNED_VALIDITY_DAYS,
     },
     lexical::{
@@ -32,8 +34,8 @@ use crate::{
         AccessLogPolicy, AlpnProtocol, Certificate, CertificateSource, Config, ConfigError,
         DnsResolutionPolicy, ForwardHttpVersion, ForwardProxyService, HealthCheck, HealthCheckType,
         HttpVersion, L4Service, Listener, ListenerBind, Management, Protocol, RtmpRecorder,
-        RtmpService, Stats, StatsPage, TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamEndpoint,
-        UpstreamPool,
+        RtmpService, Stats, StatsPage, TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm,
+        UpstreamEndpoint, UpstreamPool,
     },
 };
 
@@ -802,6 +804,7 @@ fn validate_listeners(
                 Protocol::Http
                 | Protocol::Rtmp
                 | Protocol::Tcp
+                | Protocol::Udp
                 | Protocol::ForwardHttp1
                 | Protocol::ForwardHttp2
                 | Protocol::ForwardHttp3,
@@ -820,6 +823,13 @@ fn validate_listeners(
                 });
             }
             (Protocol::Tcp, Some(service)) if !l4_service_names.contains(service) => {
+                return Err(ConfigError::UnknownListenerService {
+                    listener: listener.name.clone(),
+                    protocol: listener.protocol,
+                    service: service.into(),
+                });
+            }
+            (Protocol::Udp, Some(service)) if !l4_service_names.contains(service) => {
                 return Err(ConfigError::UnknownListenerService {
                     listener: listener.name.clone(),
                     protocol: listener.protocol,
@@ -879,15 +889,15 @@ fn validate_listener_basics(
     }
 
     let datagram = matches!(listener.bind, ListenerBind::Udp { .. });
-    let h3 = listener.protocol == Protocol::ForwardHttp3;
-    if datagram != h3 {
+    let datagram_protocol = matches!(listener.protocol, Protocol::ForwardHttp3 | Protocol::Udp);
+    if datagram != datagram_protocol {
         return Err(ConfigError::InvalidListenerTransport {
             listener: listener.name.clone(),
             protocol: listener.protocol,
-            detail: if h3 {
-                "forward_http3 requires a UDP bind"
+            detail: if datagram_protocol {
+                "this protocol requires a UDP bind"
             } else {
-                "UDP binds require forward_http3"
+                "UDP binds require forward_http3 or udp"
             },
         });
     }
@@ -991,7 +1001,7 @@ fn validate_forward_listener(
         Protocol::ForwardHttp1 => ForwardHttpVersion::H1,
         Protocol::ForwardHttp2 => ForwardHttpVersion::H2,
         Protocol::ForwardHttp3 => ForwardHttpVersion::H3,
-        Protocol::Http | Protocol::Rtmp | Protocol::Tcp => return Ok(()),
+        Protocol::Http | Protocol::Rtmp | Protocol::Tcp | Protocol::Udp => return Ok(()),
     };
     let invalid = |detail: String| ConfigError::InvalidForwardProxyListener {
         listener: listener.name.clone(),
@@ -1750,8 +1760,61 @@ fn validate_l4_services(
                 lifetime_timeout_ms,
             )?;
         }
+        if let Some(policy) = &service.udp {
+            validate_udp_policy(&service.name, policy)?;
+        }
     }
 
+    Ok(())
+}
+
+fn validate_udp_policy(service: &str, policy: &UdpPolicy) -> Result<(), ConfigError> {
+    for (field, value, maximum) in [
+        (
+            "udp.max_datagram_bytes",
+            policy.max_datagram_bytes,
+            MAX_UDP_DATAGRAM_BYTES,
+        ),
+        ("udp.max_sessions", policy.max_sessions, MAX_UDP_SESSIONS),
+        (
+            "udp.max_session_bytes",
+            policy.max_session_bytes,
+            MAX_UDP_SESSION_BYTES,
+        ),
+        (
+            "udp.max_queue_datagrams",
+            policy.max_queue_datagrams,
+            MAX_UDP_QUEUE_DATAGRAMS,
+        ),
+        (
+            "udp.max_queue_bytes",
+            policy.max_queue_bytes,
+            MAX_UDP_QUEUE_BYTES,
+        ),
+    ] {
+        if value == 0 || value > maximum {
+            return Err(ConfigError::InvalidL4UdpPolicy {
+                service: service.into(),
+                field,
+                detail: "must be positive and within the bounded UDP limit",
+            });
+        }
+        validate_safe_integer("L4 service", service, field, value)?;
+    }
+    if policy.max_queue_bytes < policy.max_datagram_bytes {
+        return Err(ConfigError::InvalidL4UdpPolicy {
+            service: service.into(),
+            field: "udp.max_queue_bytes",
+            detail: "must be at least max_datagram_bytes",
+        });
+    }
+    if policy.max_session_bytes < policy.max_datagram_bytes {
+        return Err(ConfigError::InvalidL4UdpPolicy {
+            service: service.into(),
+            field: "udp.max_session_bytes",
+            detail: "must be at least max_datagram_bytes",
+        });
+    }
     Ok(())
 }
 

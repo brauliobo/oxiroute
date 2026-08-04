@@ -31,6 +31,7 @@ struct ReservationInner {
 #[cfg(unix)]
 enum ReservedSocket {
     Tcp(std::net::TcpListener),
+    Udp(std::net::UdpSocket),
     Unix(std::os::unix::net::UnixListener),
 }
 
@@ -272,12 +273,16 @@ impl ListenerReservation {
                     (ReservedSocket::Tcp(listener), None, address.to_string())
                 }
                 ListenerBind::Udp { address } => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Unsupported,
-                        format!(
-                            "listener `{listener_name}` cannot reserve UDP socket `{address}` yet"
-                        ),
-                    ));
+                    let socket = std::net::UdpSocket::bind(address).map_err(|source| {
+                        io::Error::new(
+                            source.kind(),
+                            format!(
+                                "listener `{listener_name}` could not bind UDP socket `{address}`: {source}"
+                            ),
+                        )
+                    })?;
+                    socket.set_nonblocking(true)?;
+                    (ReservedSocket::Udp(socket), None, format!("udp://{address}"))
                 }
                 ListenerBind::Unix { path, mode } => {
                     let path_text = path.to_str().ok_or_else(|| {
@@ -386,23 +391,48 @@ impl ListenerReservation {
     pub fn duplicate_owned_fd(&self) -> io::Result<std::os::fd::OwnedFd> {
         let descriptor = match &self.inner.socket {
             ReservedSocket::Tcp(listener) => rustix::io::fcntl_dupfd_cloexec(listener, 0),
+            ReservedSocket::Udp(socket) => rustix::io::fcntl_dupfd_cloexec(socket, 0),
             ReservedSocket::Unix(listener) => rustix::io::fcntl_dupfd_cloexec(listener, 0),
         };
         descriptor.map_err(io::Error::from)
     }
 
+    /// Duplicates an owned UDP socket for a standalone datagram runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this reservation is not a UDP socket or the operating system cannot
+    /// duplicate its descriptor.
+    #[cfg(unix)]
+    pub fn duplicate_udp_socket(&self) -> io::Result<std::net::UdpSocket> {
+        if !matches!(&self.inner.socket, ReservedSocket::Udp(_)) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "listener reservation is not a UDP socket",
+            ));
+        }
+        Ok(std::net::UdpSocket::from(self.duplicate_owned_fd()?))
+    }
+
+    #[cfg(not(unix))]
+    pub fn duplicate_udp_socket(&self) -> io::Result<std::net::UdpSocket> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "UDP listener reservations are unsupported on this platform",
+        ))
+    }
+
     #[cfg(target_os = "linux")]
     fn adopt(bind: ListenerBind, descriptor: std::os::fd::OwnedFd) -> Self {
         let bind_text = match &bind {
-            ListenerBind::Socket { address } | ListenerBind::Udp { address } => address.to_string(),
+            ListenerBind::Socket { address } => address.to_string(),
+            ListenerBind::Udp { address } => format!("udp://{address}"),
             ListenerBind::Unix { path, .. } => path.to_string_lossy().into_owned(),
         };
         let socket = match &bind {
             ListenerBind::Socket { .. } => ReservedSocket::Tcp(descriptor.into()),
+            ListenerBind::Udp { .. } => ReservedSocket::Udp(descriptor.into()),
             ListenerBind::Unix { .. } => ReservedSocket::Unix(descriptor.into()),
-            ListenerBind::Udp { .. } => {
-                unreachable!("UDP descriptors are rejected by the manifest")
-            }
         };
         Self {
             inner: Arc::new(ReservationInner {
@@ -968,6 +998,31 @@ mod tests {
             &first.get("edge").expect("first").inner,
             &second.get("edge").expect("second").inner
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn udp_listener_reservation_owns_and_releases_the_datagram_socket() {
+        let address = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .expect("temporary UDP bind")
+            .local_addr()
+            .expect("UDP address");
+        let bind = ListenerBind::Udp { address };
+        let reservation = ListenerReservation::bind("datagram", &bind)
+            .expect("UDP listener reservation");
+        let duplicate = reservation
+            .duplicate_udp_socket()
+            .expect("UDP descriptor duplicate");
+        assert_eq!(duplicate.local_addr().expect("duplicate address"), address);
+        assert_eq!(
+            std::net::UdpSocket::bind(address)
+                .expect_err("reserved UDP address must remain owned")
+                .kind(),
+            io::ErrorKind::AddrInUse
+        );
+        drop(duplicate);
+        drop(reservation);
+        std::net::UdpSocket::bind(address).expect("UDP address released");
     }
 
     #[test]

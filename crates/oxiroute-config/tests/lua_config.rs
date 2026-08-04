@@ -569,6 +569,45 @@ fn loads_the_canonical_configuration() {
 }
 
 #[test]
+fn loads_a_bounded_udp_service_and_listener() {
+    let source = changed(
+        r#"      bind = { type = "socket", address = "127.0.0.1:15432" },
+      protocol = "tcp","#,
+        r#"      bind = { type = "udp", address = "127.0.0.1:15432" },
+      protocol = "udp","#,
+    )
+    .replace(
+        "      lifetime_timeout_ms = 600000,\n",
+        "      lifetime_timeout_ms = 600000,\n      udp = { max_datagram_bytes = 1200, max_sessions = 16, max_session_bytes = 65536, max_queue_datagrams = 4, max_queue_bytes = 8192 },\n",
+    );
+    let config = load_lua(&source).expect("bounded UDP configuration");
+    assert_eq!(config.listeners[1].protocol, Protocol::Udp);
+    assert!(matches!(
+        config.listeners[1].bind,
+        ListenerBind::Udp { address } if address == "127.0.0.1:15432".parse().expect("UDP bind")
+    ));
+    let policy = config.l4_services[0].udp.expect("UDP policy");
+    assert_eq!(policy.max_datagram_bytes, 1200);
+    assert_eq!(policy.max_sessions, 16);
+    assert_eq!(policy.max_session_bytes, 65_536);
+    assert_eq!(policy.max_queue_datagrams, 4);
+    assert_eq!(policy.max_queue_bytes, 8192);
+}
+
+#[test]
+fn rejects_an_unbounded_udp_policy() {
+    let source = changed(
+        "      lifetime_timeout_ms = 600000,",
+        "      lifetime_timeout_ms = 600000,\n      udp = { max_datagram_bytes = 0 },",
+    );
+    assert!(matches!(
+        load_lua(&source),
+        Err(ConfigError::InvalidL4UdpPolicy { field, .. })
+            if field == "udp.max_datagram_bytes"
+    ));
+}
+
+#[test]
 fn self_signed_development_source_defaults_and_renders_explicitly() {
     let config = load_lua(&with_self_signed_source("")).expect("default development source");
     let CertificateSource::SelfSignedDevelopment {
@@ -3112,7 +3151,7 @@ fn rejects_unknown_tls_and_http_version_values() {
 fn rejects_unknown_protocols_and_algorithms() {
     let protocol_error = error_from(&changed(
         "      protocol = \"http\",",
-        "      protocol = \"udp\",",
+        "      protocol = \"sctp\",",
     ));
     assert!(matches!(protocol_error, ConfigError::Lua(_)));
 
