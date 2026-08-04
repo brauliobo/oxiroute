@@ -64,6 +64,7 @@ describe('configuration editor fields', () => {
       connect_timeout_ms: 10_000,
       idle_timeout_ms: 300_000,
       lifetime_timeout_ms: null,
+      udp: null,
     }]
     const wrapper = mount(UpstreamPoolEditor, { props: { pool, l4Services } })
 
