@@ -99,6 +99,11 @@ impl Http3Runtime {
     /// # Errors
     ///
     /// Returns an error if the listener thread panicked.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the listener thread handle was already consumed, which violates the runtime
+    /// ownership invariant.
     pub fn join(mut self) -> io::Result<()> {
         if self.thread.as_ref().is_some_and(JoinHandle::is_finished) {
             return self
@@ -116,6 +121,7 @@ impl Http3Runtime {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_forward(
     listener_name: &str,
     reservation: ListenerReservation,
@@ -291,7 +297,6 @@ async fn run_connection(
                 };
                 let service = Arc::clone(&service);
                 let shutdown = shutdown.clone();
-                let client_addr = client_addr;
                 requests.spawn(async move {
                     handle_request(resolver, service, client_addr, shutdown).await;
                 });

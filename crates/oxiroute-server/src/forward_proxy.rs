@@ -852,6 +852,7 @@ impl ForwardHttp1ServicePlan {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub(crate) async fn handle_h3<S>(
         &self,
         request: Request<()>,
@@ -994,7 +995,7 @@ impl ForwardHttp1ServicePlan {
                     return;
                 };
                 apply_header_policy(&mut headers, self.header_policy);
-                let (mut parts, _) = request.into_parts();
+                let (mut parts, ()) = request.into_parts();
                 parts.uri = target.origin_form;
                 parts.version = http::Version::HTTP_11;
                 parts.headers = headers;
@@ -1031,9 +1032,10 @@ impl ForwardHttp1ServicePlan {
                     let _ = connection.await;
                 });
                 let mut response = tokio::select! {
-                    response = sender.send_request(request) => match response {
-                        Ok(response) => response,
-                        Err(_) => {
+                    response = sender.send_request(request) => {
+                        if let Ok(response) = response {
+                            response
+                        } else {
                             let _ = send_h3_failure(
                                 &mut stream,
                                 RequestFailure::BadGateway,
