@@ -22,10 +22,10 @@ use crate::{
 
 use super::{
     AccessAction, AccessListKind, AclMatcher, AclReferenceResolution, AclTerm, Activation,
-    AuthenticationScheme, BuiltinAcl, DecisionLedger, DecisionOutcome, DirectiveOrigin,
-    EffectiveAcl, EffectiveConfiguration, ForwardedForMode, LogDestination, OccurrenceId,
-    PortEndpoint, PortKind, PrivacyDirective, ProxyAuthMatcher, RootSelection, SemanticBlockerKind,
-    SourceGraph, analyze, load, load_selected,
+    AuthenticationScheme, AuthenticationSetting, BuiltinAcl, DecisionLedger, DecisionOutcome,
+    DirectiveOrigin, EffectiveAcl, EffectiveConfiguration, ForwardedForMode, LogDestination,
+    OccurrenceId, PortEndpoint, PortKind, PrivacyDirective, ProxyAuthMatcher, RootSelection,
+    SemanticBlockerKind, SourceGraph, analyze, load, load_selected,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -221,12 +221,28 @@ fn import_graph(graph: SourceGraph, mut diagnostics: Vec<Diagnostic>) -> ImportR
         match oxiroute_config::validate_config(&mut config) {
             Ok(()) => Some(config),
             Err(error) => {
-                diagnostics.push(Diagnostic::new(
+                let mut diagnostic = Diagnostic::new(
                     E_SEMANTICS_NOT_REPRESENTABLE,
                     Severity::Error,
                     DiagnosticStage::Validate,
                     format!("lowered Squid candidate failed canonical validation: {error}"),
-                ));
+                );
+                if let Some(origin) = canonical_provenance
+                    .iter()
+                    .flat_map(|entry| entry.origins.iter())
+                    .next()
+                {
+                    diagnostic = diagnostic
+                        .with_primary_span(origin.directive_span)
+                        .with_include_stack(
+                            origin
+                                .provenance
+                                .include_stack
+                                .iter()
+                                .map(|frame| frame.directive_span),
+                        );
+                }
+                diagnostics.push(diagnostic);
                 None
             }
         }
@@ -541,37 +557,28 @@ fn lower_provenance(
     draft: &CanonicalDraft,
 ) -> Vec<CanonicalProvenance<DirectiveOrigin>> {
     let mut recorder = ProvenanceRecorder::default();
-    let all_origins = origins_for_occurrences(effective, consumed_occurrences(effective));
     let http_ports = effective
         .ports
         .iter()
         .filter(|port| port.kind == PortKind::Http)
+        .collect::<Vec<_>>();
+    let port_origins = http_ports
+        .iter()
+        .map(|port| port.origin.clone())
         .collect::<Vec<_>>();
     assert_eq!(
         draft.listeners.len(),
         http_ports.len(),
         "successful Squid lowering must retain one provenance source per listener"
     );
+    recorder.record("/listeners".into(), port_origins.clone());
 
     for (index, (listener, port)) in draft.listeners.iter().zip(http_ports).enumerate() {
         let path = format!("/listeners/{index}");
         record_fields(
             &mut recorder,
             &path,
-            [
-                "",
-                "/name",
-                "/bind",
-                "/bind/type",
-                "/protocol",
-                "/service",
-                "/tls_profile",
-                "/max_connections",
-                "/downstream_timeouts",
-                "/downstream_timeouts/client_timeout_ms",
-                "/downstream_timeouts/request_timeout_ms",
-                "/downstream_timeouts/keepalive_timeout_ms",
-            ],
+            ["", "/name", "/bind", "/bind/type", "/protocol", "/service"],
             &[port.origin.clone()],
         );
         if matches!(listener.bind, ListenerBind::Socket { .. }) {
@@ -583,88 +590,6 @@ fn lower_provenance(
         .forward_proxy_services
         .first()
         .expect("successful Squid lowering produces one forward-proxy service");
-    let service_path = "/forward_proxy_services/0";
-    record_fields(
-        &mut recorder,
-        service_path,
-        [
-            "",
-            "/name",
-            "/enabled_versions",
-            "/allow_absolute_form",
-            "/tls_required",
-            "/connect",
-            "/connect/enabled",
-            "/connect/allowed_ports",
-            "/destination_policy",
-            "/destination_policy/allow_domains",
-            "/destination_policy/deny_domains",
-            "/destination_policy/allow_cidrs",
-            "/destination_policy/deny_cidrs",
-            "/destination_policy/deny_private",
-            "/header_policy",
-            "/header_policy/forwarded_for",
-            "/header_policy/via",
-            "/connect_timeout_ms",
-            "/idle_timeout_ms",
-            "/lifetime_timeout_ms",
-            "/max_request_body_bytes",
-            "/max_header_bytes",
-            "/max_connections",
-            "/resolver",
-            "/resolver/nameservers",
-            "/resolver/max_cache_entries",
-            "/resolver/max_concurrent_queries",
-            "/resolver/max_addresses_per_name",
-            "/resolver/min_ttl_ms",
-            "/resolver/max_ttl_ms",
-            "/resolver/negative_ttl_ms",
-            "/resolver/revalidate_on_connect",
-            "/audit_mode",
-        ],
-        &all_origins,
-    );
-    for version_index in 0..service.enabled_versions.len() {
-        recorder.record(
-            format!("{service_path}/enabled_versions/{version_index}"),
-            all_origins.clone(),
-        );
-    }
-    for port_index in 0..service.connect.allowed_ports.len() {
-        recorder.record(
-            format!("{service_path}/connect/allowed_ports/{port_index}"),
-            all_origins.clone(),
-        );
-    }
-    for nameserver_index in 0..service.resolver.nameservers.len() {
-        recorder.record(
-            format!("{service_path}/resolver/nameservers/{nameserver_index}"),
-            all_origins.clone(),
-        );
-    }
-
-    if service.auth.is_some() {
-        let scheme = effective
-            .authentication_schemes
-            .first()
-            .expect("successful Squid authentication lowering retains its scheme");
-        let origins = origins_for_occurrences(effective, scheme.parameters.iter().copied());
-        let auth_path = format!("{service_path}/auth");
-        record_fields(
-            &mut recorder,
-            &auth_path,
-            [
-                "",
-                "/type",
-                "/htpasswd_file_path",
-                "/realm",
-                "/credential_ttl_ms",
-                "/username_case_sensitive",
-            ],
-            &origins,
-        );
-    }
-
     let policy = effective
         .access_policies
         .iter()
@@ -674,6 +599,151 @@ fn lower_provenance(
         .access_policy
         .as_ref()
         .expect("successful Squid lowering retains its access policy");
+    let policy_origins = policy
+        .rules
+        .iter()
+        .flat_map(|rule| access_rule_origins(effective, rule))
+        .collect::<Vec<_>>();
+    let header_origins = effective
+        .privacy
+        .iter()
+        .filter_map(|privacy| match privacy {
+            PrivacyDirective::ForwardedFor {
+                origin,
+                mode: ForwardedForMode::Delete,
+            }
+            | PrivacyDirective::Via {
+                origin,
+                enabled: false,
+            } => Some(origin.clone()),
+            PrivacyDirective::ForwardedFor { .. }
+            | PrivacyDirective::Via { .. }
+            | PrivacyDirective::HeaderReplace { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    let resolver_origins = effective
+        .dns_nameservers
+        .iter()
+        .map(|directive| directive.origin.clone())
+        .collect::<Vec<_>>();
+    let audit_origins = effective
+        .logging
+        .iter()
+        .filter(|logging| logging.destination == LogDestination::Disabled)
+        .map(|logging| logging.origin.clone())
+        .collect::<Vec<_>>();
+    let auth_origins = effective
+        .authentication_schemes
+        .first()
+        .map(|scheme| origins_for_occurrences(effective, scheme.parameters.iter().copied()))
+        .unwrap_or_default();
+    let service_origins = port_origins
+        .iter()
+        .cloned()
+        .chain(policy_origins.iter().cloned())
+        .chain(header_origins.iter().cloned())
+        .chain(resolver_origins.iter().cloned())
+        .chain(audit_origins.iter().cloned())
+        .chain(auth_origins.iter().cloned())
+        .collect::<Vec<_>>();
+    let service_path = "/forward_proxy_services/0";
+    recorder.record(service_path.into(), service_origins);
+    record_fields(&mut recorder, service_path, ["/name"], &port_origins);
+    record_fields(
+        &mut recorder,
+        service_path,
+        ["/enabled_versions", "/tls_required"],
+        &port_origins,
+    );
+    for version_index in 0..service.enabled_versions.len() {
+        recorder.record(
+            format!("{service_path}/enabled_versions/{version_index}"),
+            port_origins.clone(),
+        );
+    }
+    record_fields(
+        &mut recorder,
+        service_path,
+        ["/connect", "/connect/enabled", "/connect/allowed_ports"],
+        &policy_origins,
+    );
+    for port_index in 0..service.connect.allowed_ports.len() {
+        recorder.record(
+            format!("{service_path}/connect/allowed_ports/{port_index}"),
+            policy_origins.clone(),
+        );
+    }
+    record_fields(
+        &mut recorder,
+        service_path,
+        [
+            "/header_policy",
+            "/header_policy/forwarded_for",
+            "/header_policy/via",
+        ],
+        &header_origins,
+    );
+    if !resolver_origins.is_empty() {
+        record_fields(
+            &mut recorder,
+            service_path,
+            ["/resolver", "/resolver/nameservers"],
+            &resolver_origins,
+        );
+        for nameserver_index in 0..service.resolver.nameservers.len() {
+            recorder.record(
+                format!("{service_path}/resolver/nameservers/{nameserver_index}"),
+                resolver_origins.clone(),
+            );
+        }
+    }
+    record_fields(&mut recorder, service_path, ["/audit_mode"], &audit_origins);
+
+    // CanonicalProvenance records native source contributions. Fields populated only by
+    // OxiRoute defaults intentionally have no entry because this origin type has no default role.
+    if service.auth.is_some() {
+        let scheme = effective
+            .authentication_schemes
+            .first()
+            .expect("successful Squid authentication lowering retains its scheme");
+        let program_origins =
+            authentication_parameter_origins(effective, scheme, AuthenticationSetting::Program);
+        let realm_origins =
+            authentication_parameter_origins(effective, scheme, AuthenticationSetting::Realm);
+        let credential_ttl_origins = authentication_parameter_origins(
+            effective,
+            scheme,
+            AuthenticationSetting::CredentialTtl,
+        );
+        let case_sensitive_origins = authentication_parameter_origins(
+            effective,
+            scheme,
+            AuthenticationSetting::CaseSensitive,
+        );
+        let auth_path = format!("{service_path}/auth");
+        record_fields(&mut recorder, &auth_path, ["", "/type"], &auth_origins);
+        record_fields(
+            &mut recorder,
+            &auth_path,
+            ["/htpasswd_file_path"],
+            &program_origins,
+        );
+        record_fields(&mut recorder, &auth_path, ["/realm"], &realm_origins);
+        record_fields(
+            &mut recorder,
+            &auth_path,
+            ["/credential_ttl_ms"],
+            &credential_ttl_origins,
+        );
+        if !case_sensitive_origins.is_empty() {
+            record_fields(
+                &mut recorder,
+                &auth_path,
+                ["/username_case_sensitive"],
+                &case_sensitive_origins,
+            );
+        }
+    }
     record_access_policy(
         &mut recorder,
         effective,
@@ -816,6 +886,26 @@ fn origins_for_occurrences(
                 .unwrap_or_else(|| panic!("Squid provenance occurrence {occurrence:?} is missing"))
                 .origin
                 .clone()
+        })
+        .collect()
+}
+
+fn authentication_parameter_origins(
+    effective: &EffectiveConfiguration,
+    scheme: &AuthenticationScheme,
+    setting: AuthenticationSetting,
+) -> Vec<DirectiveOrigin> {
+    scheme
+        .parameters
+        .iter()
+        .filter_map(|occurrence| {
+            effective
+                .authentication
+                .iter()
+                .find(|parameter| {
+                    parameter.origin.occurrence == *occurrence && parameter.setting == setting
+                })
+                .map(|parameter| parameter.origin.clone())
         })
         .collect()
 }

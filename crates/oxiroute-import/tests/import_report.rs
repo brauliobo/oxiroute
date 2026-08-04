@@ -1,6 +1,6 @@
 #![cfg(unix)]
 
-use std::{fs, net::IpAddr, path::Path};
+use std::{collections::HashSet, fs, net::IpAddr, path::Path};
 
 use oxiroute_import::{
     ImportReportEnvelope,
@@ -70,6 +70,61 @@ fn report_json_is_deterministic_and_identifies_each_source_product() {
                 .is_some_and(|sources| !sources.is_empty())
         );
         assert!(value["candidate"]["finalized"].is_boolean());
+    }
+}
+
+#[test]
+fn squid_report_serializes_source_resolvable_canonical_provenance() {
+    let directory = tempdir().expect("Squid report directory");
+    let included = directory.path().join("forward.conf");
+    fs::write(
+        &included,
+        b"http_port 3128\n\
+          access_log none\n\
+          forwarded_for delete\n\
+          via off\n\
+          acl ssl_ports port 443\n\
+          http_access deny CONNECT !ssl_ports\n\
+          http_access allow all\n",
+    )
+    .expect("Squid included source");
+    let root = directory.path().join("squid.conf");
+    fs::write(&root, b"include forward.conf\n").expect("Squid root source");
+
+    let report = ImportReportEnvelope::from_squid(&import_squid(&root));
+    let value: Value = serde_json::from_str(&report.to_json().expect("Squid report JSON"))
+        .expect("Squid report object");
+    let sources = value["sourceGraph"]["sources"]
+        .as_array()
+        .expect("serialized Squid sources");
+    let provenance = value["candidate"]["provenance"]
+        .as_array()
+        .expect("serialized Squid provenance");
+    assert!(!provenance.is_empty());
+
+    let mut paths = HashSet::new();
+    for entry in provenance {
+        let path = entry["path"].as_str().expect("provenance path");
+        assert!(paths.insert(path), "duplicate serialized path {path}");
+        let origins = entry["origins"].as_array().expect("provenance origins");
+        assert!(!origins.is_empty(), "{path} has no serialized origins");
+        for origin in origins {
+            let source_id = origin["sourceId"].as_u64().expect("origin source ID");
+            let source = sources
+                .iter()
+                .find(|source| source["id"] == source_id)
+                .expect("origin source reference");
+            assert!(source["path"].as_str().is_some());
+            assert!(origin["range"]["start"].as_u64().is_some());
+            assert!(origin["range"]["end"].as_u64().is_some());
+            if path == "/listeners/0" {
+                assert_eq!(
+                    source["path"],
+                    fs::canonicalize(&included).unwrap().to_str().unwrap()
+                );
+                assert_eq!(origin["includeStack"].as_array().unwrap().len(), 1);
+            }
+        }
     }
 }
 
