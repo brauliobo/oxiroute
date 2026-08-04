@@ -24,7 +24,7 @@ use hyper_util::rt::{TokioIo, TokioTimer};
 use log::{error, info, warn};
 use oxiroute_config::ListenerBind;
 use oxiroute_rtmp::{
-    MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN, RtmpRegistry, RtmpServiceRuntime, VodCatalog,
+    MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN, MediaCatalog, RtmpRegistry, RtmpServiceRuntime, VodCatalog,
 };
 use oxiroute_server::{
     AcmeManagedReconciler, CertbotWatcherConfig, CertbotWatcherSupervisor, ConfigWatcher,
@@ -368,6 +368,7 @@ struct TcpRelay {
     generation: Option<Arc<RuntimeGeneration>>,
     service: Arc<oxiroute_server::L4ServicePlan>,
     metrics: ListenerMetrics,
+    proxy_protocol: Option<oxiroute_config::ProxyProtocolPolicy>,
 }
 
 struct ForwardHttp1App {
@@ -575,16 +576,21 @@ impl ServerApp for ForwardHttp1App {
         let lifecycle = Arc::new(ForwardConnectionLifecycle::default());
         let request_lifecycle = Arc::clone(&lifecycle);
         let challenge_store = self.challenge_store.clone();
+        let request_metrics = self.metrics.clone();
         let app = service_fn(move |request| {
             let plan = Arc::clone(&plan);
             let shutdown = request_shutdown.clone();
             let lifecycle = Arc::clone(&request_lifecycle);
             let challenge_store = challenge_store.clone();
+            let metrics = request_metrics.clone();
             async move {
                 let response = match oxiroute_server::challenge_response(&request, &challenge_store)
                 {
                     Some(response) => response,
-                    None => plan.handle(request, client_addr, shutdown, lifecycle).await,
+                    None => {
+                        plan.handle(request, client_addr, shutdown, lifecycle, metrics)
+                            .await
+                    }
                 };
                 Ok::<_, Infallible>(response)
             }
@@ -684,11 +690,16 @@ where
 }
 
 impl TcpRelay {
-    fn new(service: Arc<oxiroute_server::L4ServicePlan>, metrics: ListenerMetrics) -> Self {
+    fn new(
+        service: Arc<oxiroute_server::L4ServicePlan>,
+        metrics: ListenerMetrics,
+        proxy_protocol: Option<oxiroute_config::ProxyProtocolPolicy>,
+    ) -> Self {
         Self {
             generation: None,
             service,
             metrics,
+            proxy_protocol,
         }
     }
 
@@ -738,12 +749,31 @@ impl ServerApp for TcpRelay {
         downstream: Stream,
         shutdown: &ShutdownWatch,
     ) -> Option<Stream> {
+        let (downstream, client_address) = if let Some(policy) = self.proxy_protocol {
+            let mut proxy_shutdown = shutdown.clone();
+            let accepted =
+                match oxiroute_server::accept_stream(downstream, policy, &mut proxy_shutdown).await
+                {
+                    Ok(accepted) => accepted,
+                    Err(error) => {
+                        self.metrics.record_proxy_protocol(error.result());
+                        warn!("TCP PROXY protocol rejected: {error}");
+                        return None;
+                    }
+                };
+            self.metrics
+                .record_proxy_protocol(oxiroute_server::ProxyProtocolResult::Accepted);
+            (accepted.stream, Some(accepted.header.source))
+        } else {
+            (downstream, None)
+        };
         let connection = self.metrics.traffic_accounting();
         let Some(upstream) = self.service.select_wait().await else {
             warn!("TCP pool has no healthy upstream");
             return None;
         };
-        let relay = TcpRelayCore::new(upstream, self.service.policy());
+        let relay = TcpRelayCore::new(upstream, self.service.policy())
+            .with_proxy_protocol(self.service.proxy_protocol(), client_address);
         if let Err(error) = relay.relay(downstream, &connection, shutdown.clone()).await {
             warn!("TCP relay failed: {error}");
         }
@@ -929,6 +959,7 @@ async fn write_rtmp_packets(
 fn build_management_api(
     registry: Arc<RtmpRegistry>,
     vod_catalog: Arc<VodCatalog>,
+    media_catalog: Arc<MediaCatalog>,
     metrics: RuntimeMetrics,
     topology: Arc<TopologySnapshot>,
     coordinator: CanonicalConfigCoordinator,
@@ -942,6 +973,7 @@ fn build_management_api(
         Ok(RtmpManagementApi::new(registry, metrics, topology))
     }?;
     api.with_vod_catalog(vod_catalog)
+        .with_media_catalog(media_catalog)
         .with_config_coordinator_from_token_file(coordinator, active_revision, token_file)
 }
 
@@ -1688,6 +1720,7 @@ fn serve_generation(
         let management_api = build_management_api(
             Arc::clone(&rtmp_registry),
             Arc::clone(&plan.rtmp_vod_catalog),
+            Arc::clone(&plan.rtmp_media_catalog),
             runtime_metrics.clone(),
             Arc::clone(&topology),
             config_coordinator.clone(),
@@ -1791,6 +1824,7 @@ fn serve_generation(
         let service_name = format!("OxiRoute {listener_name}");
         let listener_tls = spec.tls;
         let downstream_timeouts = spec.downstream_timeouts;
+        let listener_proxy_protocol = spec.proxy_protocol;
 
         match spec.kind {
             ServiceKind::ForwardHttp1(forward_service) => {
@@ -1888,7 +1922,7 @@ fn serve_generation(
             ServiceKind::Tcp(l4_service) => {
                 let mut service = Service::new(
                     service_name,
-                    TcpRelay::new(l4_service, metrics.clone())
+                    TcpRelay::new(l4_service, metrics.clone(), listener_proxy_protocol)
                         .with_generation(Arc::clone(generation)),
                 );
                 add_plain_listener(&mut service, &listener_name, &listener_bind)?;
@@ -1919,6 +1953,29 @@ fn serve_generation(
                 })?;
                 http3_runtimes.push(runtime);
             }
+            ServiceKind::Http3(http_service) => {
+                let Some(listener_tls) = listener_tls else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("HTTP/3 listener `{listener_name}` requires a TLS profile"),
+                    )
+                    .into());
+                };
+                let runtime = Http3Runtime::start_reverse(
+                    listener_name.clone(),
+                    reservation,
+                    http_service,
+                    listener_tls,
+                    Arc::clone(generation),
+                    metrics,
+                    downstream_timeouts,
+                    shutdown.clone(),
+                )
+                .inspect_err(|_| {
+                    generation.mark_runtime_failed();
+                })?;
+                http3_runtimes.push(runtime);
+            }
             ServiceKind::Udp(l4_service) => {
                 let runtime = UdpRuntime::start(
                     listener_name.clone(),
@@ -1926,6 +1983,7 @@ fn serve_generation(
                     l4_service,
                     Arc::clone(generation),
                     metrics,
+                    listener_proxy_protocol,
                     shutdown.clone(),
                 )
                 .inspect_err(|_| {
@@ -2233,6 +2291,7 @@ mod tests {
                 protocol: Protocol::Rtmp,
                 service: Some("live".into()),
                 tls_profile: None,
+                proxy_protocol: None,
                 max_connections: Some(4),
                 downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
             }],
@@ -2259,6 +2318,8 @@ mod tests {
                     callbacks: oxiroute_config::RtmpCallbackConfig::default(),
                     fanout: oxiroute_config::RtmpFanoutPolicy::default(),
                     vod: None,
+                    hls: None,
+                    dash: None,
                     recorders: vec![RtmpRecorder {
                         name: "archive".into(),
                         start: RtmpRecorderStart::Continuous,
@@ -2396,6 +2457,7 @@ mod tests {
                 protocol: Protocol::Tcp,
                 service: Some("database".into()),
                 tls_profile: None,
+                proxy_protocol: None,
                 max_connections: Some(10),
                 downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
             }],
@@ -2437,6 +2499,7 @@ mod tests {
                 connect_timeout_ms: 100,
                 idle_timeout_ms: 1_000,
                 lifetime_timeout_ms: None,
+                proxy_protocol: None,
                 udp: None,
             }],
         };
@@ -2455,7 +2518,7 @@ mod tests {
         let ServiceKind::Tcp(service) = spec.kind else {
             panic!("listener must compile as TCP");
         };
-        let app = Arc::new(TcpRelay::new(service, listener_metrics));
+        let app = Arc::new(TcpRelay::new(service, listener_metrics, None));
         let mut client = tokio::net::TcpStream::connect(ingress_address)
             .await
             .expect("client connect");

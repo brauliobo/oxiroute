@@ -2,14 +2,14 @@ use std::{
     collections::{HashSet, VecDeque},
     convert::Infallible,
     error::Error,
-    future::{poll_fn, Future as _},
+    future::{Future as _, poll_fn},
     io,
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     pin::Pin,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     task::{Context, Poll},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -18,11 +18,11 @@ use std::{
 use async_trait::async_trait;
 use bytes::{Buf as _, Bytes, BytesMut};
 use hickory_resolver::{
-    config::{LookupIpStrategy, NameServerConfigGroup, ResolverConfig, ResolverOpts},
     TokioAsyncResolver,
+    config::{LookupIpStrategy, NameServerConfigGroup, ResolverConfig, ResolverOpts},
 };
-use http::{header, HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
-use http_body_util::{combinators::BoxBody, BodyExt as _, Full, Limited};
+use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode, header};
+use http_body_util::{BodyExt as _, Full, Limited, combinators::BoxBody};
 use hyper::body::{Body, Frame, Incoming};
 use hyper_util::rt::TokioIo;
 use openssl::{
@@ -30,35 +30,39 @@ use openssl::{
     ssl::{SslConnector, SslMethod, SslVerifyMode},
 };
 use oxiroute_acme::ChallengeStore;
+use oxiroute_cache::{
+    CacheResponse, CachedResponse, FillOutcome, Lookup, ResponseTiming, StoreOutcome, Validators,
+};
 use oxiroute_config::{
     ForwardAccessAction, ForwardAccessCondition, ForwardAccessMatcher, ForwardAccessPolicy,
     ForwardAuditMode, ForwardHeaderPolicy, ForwardProxyAuth, ForwardProxyService, ForwardTimeRange,
     ForwardViaPolicy, ForwardWeekday, ForwardedForPolicy,
 };
 use oxiroute_forward_proxy::{
-    parse_absolute_form, parse_connect_authority, sanitize_request_headers, ApprovedDestination,
-    BoundedTunnel, Destination, DestinationRules, ForwardScheme, H2TunnelStream, Host,
-    PolicyContext, Principal, Protocol, RuleError, TimeWindow, TunnelLimits,
+    ApprovedDestination, BoundedTunnel, Destination, DestinationRules, ForwardScheme,
+    H2TunnelStream, Host, PolicyContext, Principal, Protocol, RuleError, TimeWindow, TunnelLimits,
+    parse_absolute_form, parse_connect_authority, sanitize_request_headers,
 };
 use pingora::{
     apps::{HttpServerApp, HttpServerOptions, ReusedHttpStream},
     protocols::http::{
-        v2::server::{default_h2_options, H2Options},
         ServerSession,
+        v2::server::{H2Options, default_h2_options},
     },
     server::ShutdownWatch,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
-    sync::{mpsc, oneshot, Mutex, OwnedSemaphorePermit, Semaphore},
-    time::{timeout_at, Instant, Sleep},
+    sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc, oneshot},
+    time::{Instant, Sleep, timeout_at},
 };
 use tokio_openssl::SslStream;
 
 use crate::{
-    http_action::BasicHtpasswdAccess,
-    secure_bearer::{single_header, HeaderCardinality, SecureBearerToken},
+    http_action::{BasicHtpasswdAccess, CacheFill, CacheFillJoin, CacheRequest, HttpCachePlan},
+    monitoring::CacheEvent,
+    secure_bearer::{HeaderCardinality, SecureBearerToken, single_header},
 };
 
 type BoxError = Box<dyn Error + Send + Sync>;
@@ -244,6 +248,7 @@ pub struct ForwardHttp1ServicePlan {
     service_connections: Arc<Semaphore>,
     tls_connector: Arc<SslConnector>,
     access_metrics: Arc<ForwardAccessMetrics>,
+    cache: Option<Arc<HttpCachePlan>>,
 }
 
 impl std::fmt::Debug for ForwardHttp1ServicePlan {
@@ -406,6 +411,12 @@ impl RequestFailure {
     }
 }
 
+enum ForwardCacheDecision {
+    Bypass,
+    Respond(Response<ForwardProxyBody>),
+    Continue(ForwardCacheState),
+}
+
 enum ParsedTarget {
     Forward(oxiroute_forward_proxy::ForwardTarget),
     Tunnel(Destination),
@@ -416,6 +427,41 @@ struct AuthorizedRequest {
     authenticated: bool,
     parsed: ParsedTarget,
     lifetime_deadline: Instant,
+}
+
+struct ForwardCacheRevalidation {
+    key: oxiroute_cache::CacheKey,
+    response: CachedResponse,
+    validators: Validators,
+    stale_if_error: bool,
+}
+
+struct ForwardCacheState {
+    plan: Arc<HttpCachePlan>,
+    request: CacheRequest,
+    fill: Option<CacheFill>,
+    listener: crate::ListenerMetrics,
+    revalidation: Option<ForwardCacheRevalidation>,
+    store_response: bool,
+}
+
+struct ForwardCacheCapture {
+    plan: Arc<HttpCachePlan>,
+    request: CacheRequest,
+    fill: Option<CacheFill>,
+    status: StatusCode,
+    headers: HeaderMap,
+    body: Vec<u8>,
+    tags: Vec<Bytes>,
+    timing: ResponseTiming,
+    admissible: bool,
+    listener: crate::ListenerMetrics,
+    store_response: bool,
+}
+
+struct ForwardCacheBody<B> {
+    inner: B,
+    capture: Option<ForwardCacheCapture>,
 }
 
 /// H2 uses the same compiled plan as H1; only the downstream stream adapter differs.
@@ -586,8 +632,369 @@ enum ForwardBodyTimeout {
     Lifetime,
 }
 
+impl ForwardCacheState {
+    fn complete_without_store(&mut self) {
+        if let Some(fill) = self.fill.take() {
+            let _ = fill.complete_without_store();
+        }
+    }
+
+    fn take_capture(
+        &mut self,
+        status: StatusCode,
+        headers: HeaderMap,
+        body_complete: bool,
+    ) -> Option<ForwardCacheCapture> {
+        let fill = self.fill.take()?;
+        Some(ForwardCacheCapture {
+            plan: Arc::clone(&self.plan),
+            request: self.request.clone(),
+            fill: Some(fill),
+            status,
+            tags: self
+                .plan
+                .surrogate_header
+                .as_ref()
+                .map_or_else(Vec::new, |header| {
+                    response_surrogate_tags_forward(&headers, header)
+                }),
+            headers,
+            body: Vec::new(),
+            timing: ResponseTiming {
+                request_started: self.request.request_started,
+                response_received: self.plan.cache.now(),
+                response_received_wall: SystemTime::now(),
+            },
+            admissible: body_complete,
+            listener: self.listener.clone(),
+            store_response: self.store_response,
+        })
+    }
+
+    async fn stale_response(&mut self) -> Option<CachedResponse> {
+        let Some(revalidation) = self.revalidation.as_ref() else {
+            self.complete_without_store();
+            return None;
+        };
+        if !revalidation.stale_if_error {
+            self.complete_without_store();
+            return None;
+        }
+        let key = revalidation.key.clone();
+        let stale = self.plan.cache.stale_if_error(&key).await.ok().flatten();
+        self.complete_without_store();
+        stale
+    }
+}
+
+impl<B> Body for ForwardCacheBody<B>
+where
+    B: Body<Data = Bytes, Error = BoxError> + Unpin,
+{
+    type Data = Bytes;
+    type Error = BoxError;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
+        match Pin::new(&mut this.inner).poll_frame(context) {
+            Poll::Ready(Some(Ok(frame))) => {
+                if let Some(capture) = &mut this.capture {
+                    if let Some(data) = frame.data_ref() {
+                        capture.record_data(data);
+                    } else {
+                        capture.admissible = false;
+                    }
+                }
+                Poll::Ready(Some(Ok(frame)))
+            }
+            Poll::Ready(Some(Err(error))) => {
+                if let Some(capture) = this.capture.take() {
+                    capture.complete_without_store();
+                }
+                Poll::Ready(Some(Err(error)))
+            }
+            Poll::Ready(None) => {
+                if let Some(capture) = this.capture.take() {
+                    tokio::spawn(finish_forward_cache_capture(capture));
+                }
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+impl<B> Drop for ForwardCacheBody<B> {
+    fn drop(&mut self) {
+        if let Some(capture) = self.capture.take() {
+            capture.complete_without_store();
+        }
+    }
+}
+
+impl ForwardCacheCapture {
+    fn record_data(&mut self, data: &Bytes) {
+        if !self.store_response || !self.admissible {
+            return;
+        }
+        let limit = self.plan.cache.config().max_body_bytes;
+        if data.len() > limit.saturating_sub(self.body.len()) {
+            self.admissible = false;
+            return;
+        }
+        self.body.extend_from_slice(data);
+    }
+
+    fn complete_without_store(mut self) {
+        if let Some(fill) = self.fill.take() {
+            let _ = fill.complete_without_store();
+        }
+    }
+}
+
+async fn finish_forward_cache_capture(mut capture: ForwardCacheCapture) {
+    let Some(fill) = capture.fill.take() else {
+        return;
+    };
+    let tags_valid = capture.plan.cache_tags_within_limits(&capture.tags);
+    if !capture.store_response
+        || !capture.admissible
+        || !tags_valid
+        || !response_representation_valid_forward(
+            capture.status,
+            &capture.headers,
+            capture.body.len(),
+        )
+    {
+        let _ = fill.complete_without_store();
+        return;
+    }
+    let tag_refs = capture.tags.iter().map(Bytes::as_ref).collect::<Vec<_>>();
+    let prepared = capture.plan.cache.prepare_with_timeline(
+        capture.request.representation_input(),
+        CacheResponse {
+            status: capture.status,
+            headers: &capture.headers,
+            body: Bytes::from(capture.body),
+            timing: capture.timing,
+            tags: &tag_refs,
+        },
+        &capture.plan.timeline,
+    );
+    let Ok(entry) = prepared else {
+        let _ = fill.complete_without_store();
+        return;
+    };
+    match fill.store(entry).await {
+        Ok(StoreOutcome::Stored { evicted }) => {
+            record_forward_cache_event(&capture.listener, CacheEvent::Admission);
+            for _ in 0..evicted {
+                record_forward_cache_event(&capture.listener, CacheEvent::Eviction);
+            }
+        }
+        Ok(StoreOutcome::GenerationLost) | Err(_) => {}
+    }
+}
+
+async fn wait_for_forward_fill(waiter: oxiroute_cache::FillWaiter, waits: &mut usize) -> bool {
+    *waits = waits.saturating_add(1);
+    if *waits > 2 {
+        return false;
+    }
+    match waiter.wait().await {
+        FillOutcome::Stored => true,
+        FillOutcome::NotStored
+        | FillOutcome::Cancelled
+        | FillOutcome::Purged
+        | FillOutcome::Filling => *waits < 2,
+    }
+}
+
+async fn finish_forward_cache_revalidation(
+    mut state: ForwardCacheState,
+    headers: &HeaderMap,
+) -> CachedResponse {
+    let revalidation = state
+        .revalidation
+        .take()
+        .expect("304 response has a forward cache revalidation");
+    let timing = ResponseTiming {
+        request_started: state.request.request_started,
+        response_received: state.plan.cache.now(),
+        response_received_wall: SystemTime::now(),
+    };
+    let stored = state.plan.cache.prepare_not_modified_with_timeline(
+        state.request.representation_input(),
+        &revalidation.key,
+        headers,
+        timing,
+        &state.plan.timeline,
+    );
+    let listener = state.listener.clone();
+    let mut admitted = false;
+    if let Some(fill) = state.fill.take() {
+        match stored {
+            Ok(entry) => match fill.store(entry).await {
+                Ok(StoreOutcome::Stored { evicted }) => {
+                    admitted = true;
+                    record_forward_cache_event(&listener, CacheEvent::Admission);
+                    for _ in 0..evicted {
+                        record_forward_cache_event(&listener, CacheEvent::Eviction);
+                    }
+                }
+                Ok(StoreOutcome::GenerationLost) | Err(_) => {}
+            },
+            Err(_) => {
+                let _ = fill.complete_without_store();
+            }
+        }
+    }
+    if admitted {
+        match state.plan.cache.lookup(&state.request).await {
+            Ok(Lookup::Hit { response, .. }) => response,
+            _ => revalidation.response,
+        }
+    } else {
+        revalidation.response
+    }
+}
+
+fn cached_forward_response(
+    response: CachedResponse,
+    method: &Method,
+) -> Response<ForwardProxyBody> {
+    let body_forbidden = matches!(
+        response.status,
+        StatusCode::NO_CONTENT | StatusCode::RESET_CONTENT | StatusCode::NOT_MODIFIED
+    );
+    let body = if method == Method::HEAD || body_forbidden {
+        Bytes::new()
+    } else {
+        response.body.clone()
+    };
+    let mut headers = response.headers;
+    if matches!(
+        response.status,
+        StatusCode::NO_CONTENT | StatusCode::NOT_MODIFIED
+    ) {
+        headers.remove(header::CONTENT_LENGTH);
+    } else {
+        let length = if response.status == StatusCode::RESET_CONTENT {
+            0
+        } else {
+            response.body.len()
+        };
+        headers.insert(
+            header::CONTENT_LENGTH,
+            HeaderValue::from_str(&length.to_string()).expect("bounded cache body length"),
+        );
+    }
+    let mut output = Response::builder()
+        .status(response.status)
+        .body(
+            Full::new(body)
+                .map_err(|never: Infallible| -> BoxError { match never {} })
+                .boxed(),
+        )
+        .expect("cached forward response");
+    *output.headers_mut() = headers;
+    output
+}
+
+fn forward_response_from_parts(
+    mut parts: http::response::Parts,
+    body: Bytes,
+    head: bool,
+) -> Response<ForwardProxyBody> {
+    if matches!(
+        parts.status,
+        StatusCode::NO_CONTENT | StatusCode::NOT_MODIFIED
+    ) {
+        parts.headers.remove(header::CONTENT_LENGTH);
+    } else if parts.status == StatusCode::RESET_CONTENT {
+        parts
+            .headers
+            .insert(header::CONTENT_LENGTH, HeaderValue::from_static("0"));
+    }
+    let body = if head { Bytes::new() } else { body };
+    Response::from_parts(
+        parts,
+        Full::new(body)
+            .map_err(|never: Infallible| -> BoxError { match never {} })
+            .boxed(),
+    )
+}
+
+fn response_representation_valid_forward(
+    status: StatusCode,
+    headers: &HeaderMap,
+    body_len: usize,
+) -> bool {
+    if status.is_informational()
+        || status == StatusCode::SWITCHING_PROTOCOLS
+        || status == StatusCode::NOT_MODIFIED
+    {
+        return false;
+    }
+    if matches!(status, StatusCode::NO_CONTENT | StatusCode::RESET_CONTENT) && body_len != 0 {
+        return false;
+    }
+    let mut lengths = headers.get_all(header::CONTENT_LENGTH).iter();
+    let Some(length) = lengths.next() else {
+        return true;
+    };
+    lengths.next().is_none()
+        && length
+            .to_str()
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            == Some(body_len)
+}
+
+fn response_surrogate_tags_forward(headers: &HeaderMap, name: &http::HeaderName) -> Vec<Bytes> {
+    headers
+        .get_all(name)
+        .iter()
+        .flat_map(|value| {
+            value
+                .as_bytes()
+                .split(u8::is_ascii_whitespace)
+                .filter(|tag| !tag.is_empty())
+                .map(Bytes::copy_from_slice)
+        })
+        .collect()
+}
+
+fn record_forward_cache_event(listener: &crate::ListenerMetrics, event: CacheEvent) {
+    if let Err(error) = listener.record_cache_event(event) {
+        log::warn!("could not account for forward cache metrics: {error}");
+    }
+}
+
+async fn purge_forward_cache_base(
+    plan: &HttpCachePlan,
+    request: &CacheRequest,
+) -> Result<oxiroute_cache::PurgeResult, crate::http_action::CacheBackendError> {
+    let base = plan.cache.base(request)?;
+    plan.cache.purge_base(&base).await
+}
+
 impl ForwardHttp1ServicePlan {
-    pub(crate) fn compile(service: &ForwardProxyService) -> Result<Self, ForwardPlanError> {
+    pub(crate) fn compile_with_cache(
+        service: &ForwardProxyService,
+        cache: Option<Arc<HttpCachePlan>>,
+    ) -> Result<Self, ForwardPlanError> {
         let auth = match &service.auth {
             Some(ForwardProxyAuth::BearerTokenFile { token_file_path }) => Some(
                 SecureBearerToken::load(token_file_path)
@@ -677,7 +1084,7 @@ impl ForwardHttp1ServicePlan {
             connect_ports: service.connect.allowed_ports.clone().into(),
             connect_timeout: Duration::from_millis(service.connect_timeout_ms),
             destination_policy,
-            header_policy: service.header_policy,
+            header_policy: service.header_policy.clone(),
             http_server_options,
             idle_timeout: Duration::from_millis(service.idle_timeout_ms),
             lifetime_timeout: Duration::from_millis(service.lifetime_timeout_ms),
@@ -692,6 +1099,7 @@ impl ForwardHttp1ServicePlan {
             service_connections: Arc::new(Semaphore::new(max_connections)),
             tls_connector: Arc::new(connector.build()),
             access_metrics: Arc::new(ForwardAccessMetrics::default()),
+            cache,
         })
     }
 
@@ -862,9 +1270,11 @@ impl ForwardHttp1ServicePlan {
         client_addr: Option<SocketAddr>,
         mut shutdown: ShutdownWatch,
         lifecycle: Arc<ForwardConnectionLifecycle>,
+        listener: crate::ListenerMetrics,
     ) -> Response<ForwardProxyBody> {
         let AuthorizedRequest {
             approved,
+            authenticated,
             parsed,
             lifetime_deadline,
             ..
@@ -935,100 +1345,450 @@ impl ForwardHttp1ServicePlan {
                 response(StatusCode::OK, Bytes::new())
             }
             ParsedTarget::Forward(target) => {
-                if request.body().size_hint().upper().is_some_and(|length| {
-                    length > u64::try_from(self.max_request_body_bytes).unwrap_or(u64::MAX)
-                }) {
-                    return self.rejection(RequestFailure::PayloadTooLarge);
-                }
-                let upstream = match timeout_at(
+                self.handle_forward_request(
+                    request,
+                    target,
+                    approved,
+                    authenticated,
                     lifetime_deadline,
-                    self.connect_http(
-                        &target.destination,
-                        target.scheme,
-                        approved.socket_addresses.as_ref(),
-                        connect_deadline,
-                    ),
+                    connect_deadline,
+                    shutdown,
+                    listener,
                 )
                 .await
-                {
-                    Ok(Ok(upstream)) => upstream,
-                    Ok(Err(error)) => return self.rejection(error),
-                    Err(_) => return self.rejection(RequestFailure::GatewayTimeout),
-                };
-                *request.uri_mut() = target.origin_form;
-                let Ok(mut headers) =
-                    sanitize_request_headers(request.headers(), &target.destination)
-                else {
-                    return self.rejection(RequestFailure::BadRequest);
-                };
-                apply_header_policy(&mut headers, self.header_policy);
-                *request.headers_mut() = headers;
-                let (parts, body) = request.into_parts();
-                let (body, mut body_completion) = relay_request_body(
-                    body,
-                    self.max_request_body_bytes,
-                    self.idle_timeout,
-                    lifetime_deadline,
-                );
-                let request = Request::from_parts(parts, body);
-                let handshake_deadline =
-                    lifetime_deadline.min(Instant::now() + self.connect_timeout);
-                let (mut sender, connection) = match timeout_at(
-                    handshake_deadline,
-                    hyper::client::conn::http1::handshake(TokioIo::new(upstream)),
-                )
-                .await
-                {
-                    Ok(Ok(connection)) => connection,
-                    Ok(Err(_)) => return self.rejection(RequestFailure::BadGateway),
-                    Err(_) => return self.rejection(RequestFailure::GatewayTimeout),
-                };
-                tokio::spawn(async move {
-                    let _ = connection.await;
-                });
-                let response = sender.send_request(request);
-                tokio::pin!(response);
-                let mut body_complete = false;
-                let response_idle = tokio::time::sleep(self.idle_timeout);
-                tokio::pin!(response_idle);
-                let mut upstream_response = loop {
-                    tokio::select! {
-                        biased;
-                        result = &mut body_completion, if !body_complete => {
-                            body_complete = true;
-                            match result {
-                                Ok(Ok(())) => {
-                                    response_idle.as_mut().reset(Instant::now() + self.idle_timeout);
-                                }
-                                Ok(Err(error)) => return self.rejection(error),
-                                Err(_) => return self.rejection(RequestFailure::BadGateway),
-                            }
-                        }
-                        result = &mut response => break match result {
-                            Ok(response) => response,
-                            Err(_) => return self.rejection(RequestFailure::BadGateway),
-                        },
-                        () = &mut response_idle, if body_complete => {
-                            return self.rejection(RequestFailure::GatewayTimeout);
-                        }
-                        () = tokio::time::sleep_until(lifetime_deadline) => {
-                            return self.rejection(RequestFailure::GatewayTimeout);
-                        }
-                    }
-                };
-                if sanitize_response_headers(upstream_response.headers_mut()).is_err() {
-                    return self.rejection(RequestFailure::BadGateway);
-                }
-                if !body_complete {
-                    upstream_response
-                        .headers_mut()
-                        .insert(header::CONNECTION, HeaderValue::from_static("close"));
-                    drop(body_completion);
-                }
-                upstream_response
-                    .map(|body| TimedBody::new(body, self.idle_timeout, lifetime_deadline).boxed())
             }
         }
+    }
+
+    async fn handle_forward_request(
+        &self,
+        mut request: Request<Incoming>,
+        target: oxiroute_forward_proxy::ForwardTarget,
+        approved: ApprovedDestination,
+        authenticated: bool,
+        lifetime_deadline: Instant,
+        connect_deadline: Instant,
+        mut shutdown: ShutdownWatch,
+        listener: crate::ListenerMetrics,
+    ) -> Response<ForwardProxyBody> {
+        if request.body().size_hint().upper().is_some_and(|length| {
+            length > u64::try_from(self.max_request_body_bytes).unwrap_or(u64::MAX)
+        }) {
+            return self.rejection(RequestFailure::PayloadTooLarge);
+        }
+        if request.method().as_str().eq_ignore_ascii_case("PURGE")
+            && self
+                .cache
+                .as_ref()
+                .is_some_and(|plan| plan.purge_access.is_some())
+        {
+            return self.handle_forward_cache_purge(request, &target).await;
+        }
+
+        let mut cache_state = match self
+            .prepare_forward_cache(&request, &target, authenticated, &listener)
+            .await
+        {
+            ForwardCacheDecision::Bypass => None,
+            ForwardCacheDecision::Respond(response) => return response,
+            ForwardCacheDecision::Continue(state) => Some(state),
+        };
+        let upstream = match timeout_at(
+            lifetime_deadline,
+            self.connect_http(
+                &target.destination,
+                target.scheme,
+                approved.socket_addresses.as_ref(),
+                connect_deadline,
+            ),
+        )
+        .await
+        {
+            Ok(Ok(upstream)) => upstream,
+            Ok(Err(error)) => {
+                return self.forward_failure(&mut cache_state, error).await;
+            }
+            Err(_) => {
+                return self
+                    .forward_failure(&mut cache_state, RequestFailure::GatewayTimeout)
+                    .await;
+            }
+        };
+        *request.uri_mut() = target.origin_form.clone();
+        let Ok(mut headers) = sanitize_request_headers(request.headers(), &target.destination)
+        else {
+            return self
+                .forward_failure(&mut cache_state, RequestFailure::BadRequest)
+                .await;
+        };
+        apply_header_policy(&mut headers, &self.header_policy);
+        if let Some(state) = cache_state.as_ref().filter(|state| state.plan.revalidate) {
+            if let Some(validators) = state
+                .revalidation
+                .as_ref()
+                .map(|revalidation| &revalidation.validators)
+            {
+                validators.apply(&mut headers);
+            }
+        }
+        *request.headers_mut() = headers;
+        let (parts, body) = request.into_parts();
+        let (body, mut body_completion) = relay_request_body(
+            body,
+            self.max_request_body_bytes,
+            self.idle_timeout,
+            lifetime_deadline,
+        );
+        let request = Request::from_parts(parts, body);
+        let handshake_deadline = lifetime_deadline.min(Instant::now() + self.connect_timeout);
+        let (mut sender, connection) = match timeout_at(
+            handshake_deadline,
+            hyper::client::conn::http1::handshake(TokioIo::new(upstream)),
+        )
+        .await
+        {
+            Ok(Ok(connection)) => connection,
+            Ok(Err(_)) => {
+                return self
+                    .forward_failure(&mut cache_state, RequestFailure::BadGateway)
+                    .await;
+            }
+            Err(_) => {
+                return self
+                    .forward_failure(&mut cache_state, RequestFailure::GatewayTimeout)
+                    .await;
+            }
+        };
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let response = sender.send_request(request);
+        tokio::pin!(response);
+        let mut body_complete = false;
+        let response_idle = tokio::time::sleep(self.idle_timeout);
+        tokio::pin!(response_idle);
+        let mut upstream_response = loop {
+            tokio::select! {
+                biased;
+                result = &mut body_completion, if !body_complete => {
+                    body_complete = true;
+                    match result {
+                        Ok(Ok(())) => {
+                            response_idle.as_mut().reset(Instant::now() + self.idle_timeout);
+                        }
+                        Ok(Err(error)) => {
+                            return self.forward_failure(&mut cache_state, error).await;
+                        }
+                        Err(_) => {
+                            return self
+                                .forward_failure(&mut cache_state, RequestFailure::BadGateway)
+                                .await;
+                        }
+                    }
+                }
+                result = &mut response => break match result {
+                    Ok(response) => response,
+                    Err(_) => {
+                        return self
+                            .forward_failure(&mut cache_state, RequestFailure::BadGateway)
+                            .await;
+                    }
+                },
+                () = &mut response_idle, if body_complete => {
+                    return self
+                        .forward_failure(&mut cache_state, RequestFailure::GatewayTimeout)
+                        .await;
+                }
+                () = tokio::time::sleep_until(lifetime_deadline) => {
+                    return self
+                        .forward_failure(&mut cache_state, RequestFailure::GatewayTimeout)
+                        .await;
+                }
+                _ = shutdown.changed() => {
+                    return self
+                        .forward_failure(&mut cache_state, RequestFailure::GatewayTimeout)
+                        .await;
+                }
+            }
+        };
+        if sanitize_response_headers(upstream_response.headers_mut()).is_err() {
+            return self
+                .forward_failure(&mut cache_state, RequestFailure::BadGateway)
+                .await;
+        }
+        if !body_complete {
+            upstream_response
+                .headers_mut()
+                .insert(header::CONNECTION, HeaderValue::from_static("close"));
+            drop(body_completion);
+        }
+
+        let (parts, body) = upstream_response.into_parts();
+        let timed_body = TimedBody::new(body, self.idle_timeout, lifetime_deadline);
+        if parts.status == StatusCode::NOT_MODIFIED {
+            match timeout_at(lifetime_deadline, timed_body.collect()).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) => {
+                    return self
+                        .forward_failure(&mut cache_state, RequestFailure::BadGateway)
+                        .await;
+                }
+                Err(_) => {
+                    return self
+                        .forward_failure(&mut cache_state, RequestFailure::GatewayTimeout)
+                        .await;
+                }
+            }
+            if let Some(mut state) = cache_state.take() {
+                if state.revalidation.is_some() {
+                    let method = state.request.method.clone();
+                    let response = finish_forward_cache_revalidation(state, &parts.headers).await;
+                    return cached_forward_response(response, &method);
+                }
+                state.complete_without_store();
+            }
+            return forward_response_from_parts(parts, Bytes::new(), false);
+        }
+
+        let mut capture = None;
+        if let Some(mut state) = cache_state.take() {
+            if state.store_response {
+                capture = state.take_capture(parts.status, parts.headers.clone(), body_complete);
+            } else {
+                state.complete_without_store();
+            }
+        }
+        let body = match capture {
+            Some(capture) => ForwardCacheBody {
+                inner: timed_body,
+                capture: Some(capture),
+            }
+            .boxed(),
+            None => timed_body.boxed(),
+        };
+        Response::from_parts(parts, body)
+    }
+
+    async fn handle_forward_cache_purge(
+        &self,
+        request: Request<Incoming>,
+        target: &oxiroute_forward_proxy::ForwardTarget,
+    ) -> Response<ForwardProxyBody> {
+        let Some(plan) = &self.cache else {
+            return self.rejection(RequestFailure::BadRequest);
+        };
+        let Some(access) = &plan.purge_access else {
+            return self.rejection(RequestFailure::BadRequest);
+        };
+        if !access.authorizes(request.headers()) {
+            let mut response = response(StatusCode::UNAUTHORIZED, Bytes::new());
+            response
+                .headers_mut()
+                .insert(header::PROXY_AUTHENTICATE, access.challenge().clone());
+            return response;
+        }
+        if request
+            .body()
+            .size_hint()
+            .upper()
+            .is_some_and(|length| length > 0)
+        {
+            return response(StatusCode::BAD_REQUEST, Bytes::new());
+        }
+        let headers = request.headers().clone();
+        let cache_request = CacheRequest {
+            method: request.method().clone(),
+            scheme: target.scheme.as_str(),
+            authority: target.destination.authority(),
+            path: target.origin_form.path().to_owned(),
+            query: target.origin_form.query().map(str::to_owned),
+            headers: headers.clone(),
+            request_started: plan.cache.now(),
+        };
+        let result = if let Some(header_name) = &plan.surrogate_header {
+            if let Some(value) = headers.get(header_name) {
+                let bytes = value.as_bytes();
+                if bytes.is_empty()
+                    || !bytes
+                        .iter()
+                        .all(|byte| byte.is_ascii_graphic() && !matches!(byte, b',' | b'"'))
+                {
+                    return response(StatusCode::BAD_REQUEST, Bytes::new());
+                }
+                plan.cache.purge_tag(bytes).await
+            } else {
+                purge_forward_cache_base(plan, &cache_request).await
+            }
+        } else {
+            purge_forward_cache_base(plan, &cache_request).await
+        };
+        let status = match result {
+            Ok(result) if result.entries == 0 => StatusCode::NOT_FOUND,
+            Ok(_) => StatusCode::OK,
+            Err(error) => {
+                log::warn!("forward cache purge failed: {error}");
+                if error.is_invalid_request() {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::SERVICE_UNAVAILABLE
+                }
+            }
+        };
+        let mut output = response(status, Bytes::new());
+        output.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, no-store"),
+        );
+        output
+    }
+
+    async fn prepare_forward_cache(
+        &self,
+        request: &Request<Incoming>,
+        target: &oxiroute_forward_proxy::ForwardTarget,
+        authenticated: bool,
+        listener: &crate::ListenerMetrics,
+    ) -> ForwardCacheDecision {
+        let Some(plan) = &self.cache else {
+            return ForwardCacheDecision::Bypass;
+        };
+        if authenticated
+            || !matches!(request.method(), &Method::GET | &Method::HEAD)
+            || !plan.allows_method(request.method())
+            || request
+                .body()
+                .size_hint()
+                .upper()
+                .is_some_and(|length| length > 0)
+            || request.headers().contains_key(header::AUTHORIZATION)
+            || request.headers().contains_key(header::PROXY_AUTHORIZATION)
+            || request.headers().contains_key(header::COOKIE)
+        {
+            return ForwardCacheDecision::Bypass;
+        }
+        let headers = request.headers().clone();
+        let only_if_cached = oxiroute_cache::CacheControl::parse(&headers)
+            .ok()
+            .is_some_and(|control| control.only_if_cached);
+        let cache_request = CacheRequest {
+            method: request.method().clone(),
+            scheme: target.scheme.as_str(),
+            authority: target.destination.authority(),
+            path: target.origin_form.path().to_owned(),
+            query: target.origin_form.query().map(str::to_owned),
+            headers,
+            request_started: plan.cache.now(),
+        };
+        let mut waits = 0;
+        loop {
+            let lookup = match plan.cache.lookup(&cache_request).await {
+                Ok(lookup) => lookup,
+                Err(error) => {
+                    if !error.is_invalid_request() {
+                        log::warn!("forward cache lookup bypassed: {error}");
+                    }
+                    return ForwardCacheDecision::Bypass;
+                }
+            };
+            match lookup {
+                Lookup::Bypass { .. } => return ForwardCacheDecision::Bypass,
+                Lookup::Hit { response, .. } => {
+                    record_forward_cache_event(listener, CacheEvent::Hit);
+                    return ForwardCacheDecision::Respond(cached_forward_response(
+                        response,
+                        request.method(),
+                    ));
+                }
+                Lookup::Miss {
+                    base,
+                    only_if_cached: miss_only_if_cached,
+                    ..
+                } => {
+                    record_forward_cache_event(listener, CacheEvent::Miss);
+                    if only_if_cached || miss_only_if_cached {
+                        return ForwardCacheDecision::Respond(response(
+                            StatusCode::GATEWAY_TIMEOUT,
+                            Bytes::new(),
+                        ));
+                    }
+                    let fill = match plan.cache.begin_fill(base).await {
+                        Ok(CacheFillJoin::Leader(fill)) => fill,
+                        Ok(CacheFillJoin::Follower(waiter)) => {
+                            if !wait_for_forward_fill(waiter, &mut waits).await {
+                                return ForwardCacheDecision::Bypass;
+                            }
+                            continue;
+                        }
+                        Ok(CacheFillJoin::AtCapacity) | Err(_) => {
+                            return ForwardCacheDecision::Bypass;
+                        }
+                    };
+                    return ForwardCacheDecision::Continue(ForwardCacheState {
+                        plan: Arc::clone(plan),
+                        request: cache_request,
+                        fill: Some(fill),
+                        listener: listener.clone(),
+                        revalidation: None,
+                        store_response: request.method() == Method::GET,
+                    });
+                }
+                Lookup::Revalidate {
+                    response: cached,
+                    validators,
+                    stale_if_error,
+                    ..
+                } => {
+                    record_forward_cache_event(listener, CacheEvent::Miss);
+                    if only_if_cached {
+                        return ForwardCacheDecision::Respond(response(
+                            StatusCode::GATEWAY_TIMEOUT,
+                            Bytes::new(),
+                        ));
+                    }
+                    let base = cached.key.base().clone();
+                    let fill = match plan.cache.begin_fill(base).await {
+                        Ok(CacheFillJoin::Leader(fill)) => fill,
+                        Ok(CacheFillJoin::Follower(waiter)) => {
+                            if !wait_for_forward_fill(waiter, &mut waits).await {
+                                return ForwardCacheDecision::Bypass;
+                            }
+                            continue;
+                        }
+                        Ok(CacheFillJoin::AtCapacity) | Err(_) => {
+                            return ForwardCacheDecision::Bypass;
+                        }
+                    };
+                    return ForwardCacheDecision::Continue(ForwardCacheState {
+                        plan: Arc::clone(plan),
+                        request: cache_request,
+                        fill: Some(fill),
+                        listener: listener.clone(),
+                        revalidation: Some(ForwardCacheRevalidation {
+                            key: cached.key.clone(),
+                            response: cached,
+                            validators,
+                            stale_if_error,
+                        }),
+                        store_response: request.method() == Method::GET,
+                    });
+                }
+            }
+        }
+    }
+
+    async fn forward_failure(
+        &self,
+        cache_state: &mut Option<ForwardCacheState>,
+        failure: RequestFailure,
+    ) -> Response<ForwardProxyBody> {
+        if let Some(state) = cache_state.as_mut() {
+            let method = state.request.method.clone();
+            if let Some(response) = state.stale_response().await {
+                return cached_forward_response(response, &method);
+            }
+            state.complete_without_store();
+        }
+        self.rejection(failure)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1191,7 +1951,7 @@ impl ForwardHttp1ServicePlan {
                     .await;
                     return;
                 };
-                apply_header_policy(&mut headers, self.header_policy);
+                apply_header_policy(&mut headers, &self.header_policy);
                 let (mut parts, ()) = request.into_parts();
                 parts.uri = target.origin_form;
                 parts.version = http::Version::HTTP_11;
@@ -1910,7 +2670,7 @@ fn parse_forward_time(value: &str) -> Option<u16> {
     Some(hour * 60 + minute)
 }
 
-fn apply_header_policy(headers: &mut HeaderMap, policy: ForwardHeaderPolicy) {
+fn apply_header_policy(headers: &mut HeaderMap, policy: &ForwardHeaderPolicy) {
     if policy.forwarded_for == ForwardedForPolicy::Delete {
         headers.remove(header::FORWARDED);
         headers.remove("x-forwarded-for");
@@ -2017,7 +2777,7 @@ const fn protocol_name(protocol: Protocol) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{source_cidrs_match, ForwardAccessMetrics, ForwardAccessResult};
+    use super::{ForwardAccessMetrics, ForwardAccessResult, source_cidrs_match};
 
     #[test]
     fn missing_inet_peer_never_matches_source_cidrs() {

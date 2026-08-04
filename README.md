@@ -37,8 +37,9 @@ goal. These are the current building blocks:
   connection limits, WebSocket upgrades, downstream TLS, verified upstream TLS/SNI, and a tested
   HTTP/2/gRPC slice.
 - **Explicit forward proxy:** a narrow HTTP/1 absolute-form and CONNECT path with authentication,
-  resolved-address destination policy, header privacy, and bounded tunnels. It is partial, not a
-  general Squid replacement.
+  resolved-address destination policy, header privacy, bounded tunnels, and an opt-in bounded
+  memory/persistent cache for eligible GET/HEAD requests. It is partial, not a general Squid
+  replacement.
 - **Opaque TCP relay:** socket, DNS, and Unix upstreams, half-close handling, health-aware pools,
   backpressure, and connect/idle/lifetime limits.
 - **Configuration control plane:** KDL 2.0 by default, plus restricted Lua, HOCON, and UCI source
@@ -170,11 +171,12 @@ Use these labels consistently in issues, docs, and deployment decisions:
 
 The important current exclusions are:
 
-- No reverse HTTP/3 listener, UDP relay, or complete forward-proxy HTTP/2 runtime. The
-  `forward_http3` listener is an active partial capability through a separate bounded Quinn/H3
-  service; the forward HTTP/2 crate remains a foundation.
-- Reverse HTTP cache is partial: bounded memory and persistent GET/HEAD caching, revalidation,
-  conditional hits, collapsed fills, and authenticated purge are active; broader conformance remains.
+- No UDP relay or complete forward-proxy HTTP/2 runtime. The `http3` reverse listener and
+  `forward_http3` listener are active partial capabilities through separate bounded Quinn/H3
+  services; the forward HTTP/2 crate remains a foundation.
+- HTTP caching is partial: bounded memory and persistent GET/HEAD caching, revalidation, collapsed
+  fills, authenticated purge, and listener cache metrics are active for reverse HTTP and eligible
+  HTTP/1 forward requests; broader conformance remains.
 - Managed ACME is partial: HTTP-01 issuance/renewal, certificate status, and configuration UI are
   implemented; certificate upload and DNS-01/TLS-ALPN-01 remain absent. External Certbot lineage
   reconciliation is also implemented.
@@ -198,7 +200,7 @@ See [COMPATIBILITY.md](docs/COMPATIBILITY.md) for the capability-by-capability m
 | `crates/oxiroute-import` | nginx, HAProxy, Squid, Varnish, provenance, diagnostics, and lowering |
 | `crates/oxiroute-forward-proxy` | Protocol-neutral target parsing, authentication, destination policy, and bounded tunnels |
 | `crates/oxiroute-rtmp` | RTMP sessions, fanout, recorder store/workers, FLV, directives, and relays |
-| `crates/oxiroute-cache` | Bounded RFC-aware memory and persistent cache core used by the reverse HTTP request path |
+| `crates/oxiroute-cache` | Bounded RFC-aware memory and persistent cache core used by reverse HTTP and eligible forward HTTP/1 requests |
 | `crates/oxiroute-supervision*` | Replacement protocol, Unix transport, master, worker, and launcher foundations |
 | `ui` | Vue 3 dashboard with build-time Pug templates and contract/component tests |
 | `website` | Static public documentation site deployed by GitHub Pages |
