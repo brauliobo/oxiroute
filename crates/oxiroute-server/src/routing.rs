@@ -1754,6 +1754,11 @@ impl EndpointPool {
     }
 
     /// Creates an unchecked pool with an immutable passive failure policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PoolError::Empty`] when no endpoints are provided or a typed endpoint error when
+    /// an endpoint cannot be represented by the runtime.
     pub fn from_endpoints_with_policy(
         endpoints: impl IntoIterator<Item = RuntimeEndpoint>,
         algorithm: UpstreamAlgorithm,
@@ -2304,6 +2309,7 @@ impl EndpointPool {
         update.and_then(|update| update.transition)
     }
 
+    #[cfg(test)]
     pub(crate) fn record_passive_failure(&self, index: usize, failure: HealthFailure) {
         if let Some(server) = self.endpoints.get(index) {
             self.health.record_passive_failure(server, failure);

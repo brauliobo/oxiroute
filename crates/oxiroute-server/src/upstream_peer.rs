@@ -13,7 +13,7 @@ use pingora::{Error, ErrorType, protocols::Digest, upstreams::peer::HttpPeer};
 use tokio::time::Instant;
 
 use crate::routing::EndpointObservation;
-use crate::{EndpointLease, HealthFailure, RoundRobinPool, RuntimeEndpoint, UpstreamTlsPlan};
+use crate::{EndpointLease, RoundRobinPool, RuntimeEndpoint, UpstreamTlsPlan};
 
 #[derive(Debug)]
 pub(crate) struct UpstreamPlan {
@@ -207,10 +207,6 @@ impl SelectedEndpoint {
 
     pub(crate) fn observation(&self) -> EndpointObservation {
         self.observation.clone()
-    }
-
-    pub(crate) fn record_passive_failure(&self, failure: HealthFailure) {
-        self.observation.record_passive_failure(failure);
     }
 
     #[cfg(test)]
