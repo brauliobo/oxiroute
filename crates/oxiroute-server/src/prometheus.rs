@@ -232,6 +232,80 @@ pub fn render_prometheus(
                 ],
                 server.failed_checks,
             )?;
+            let passive_reason = server
+                .passive_ejection_reason
+                .map_or("none", crate::HealthFailure::as_str);
+            labels(
+                &mut output,
+                "oxiroute_server_passive_ejected",
+                &[
+                    ("pool", pool.name.as_str()),
+                    ("server", server.name.as_str()),
+                    ("reason", passive_reason),
+                ],
+                u8::from(server.passive_ejected),
+            )?;
+            labels(
+                &mut output,
+                "oxiroute_server_passive_failures_total",
+                &[
+                    ("pool", pool.name.as_str()),
+                    ("server", server.name.as_str()),
+                    ("reason", passive_reason),
+                ],
+                server.passive_failure_count,
+            )?;
+            labels(
+                &mut output,
+                "oxiroute_server_passive_ejections_total",
+                &[
+                    ("pool", pool.name.as_str()),
+                    ("server", server.name.as_str()),
+                ],
+                server.passive_ejection_count,
+            )?;
+            labels(
+                &mut output,
+                "oxiroute_server_passive_recoveries_total",
+                &[
+                    ("pool", pool.name.as_str()),
+                    ("server", server.name.as_str()),
+                ],
+                server.passive_recovery_count,
+            )?;
+            labels(
+                &mut output,
+                "oxiroute_server_passive_ejection_started_unix_seconds",
+                &[
+                    ("pool", pool.name.as_str()),
+                    ("server", server.name.as_str()),
+                ],
+                server
+                    .passive_ejected_at_unix_ms
+                    .map_or(0, |timestamp| timestamp / 1_000),
+            )?;
+            labels(
+                &mut output,
+                "oxiroute_server_passive_ejection_until_unix_seconds",
+                &[
+                    ("pool", pool.name.as_str()),
+                    ("server", server.name.as_str()),
+                ],
+                server
+                    .passive_ejection_until_unix_ms
+                    .map_or(0, |timestamp| timestamp / 1_000),
+            )?;
+            labels(
+                &mut output,
+                "oxiroute_server_passive_last_recovery_unix_seconds",
+                &[
+                    ("pool", pool.name.as_str()),
+                    ("server", server.name.as_str()),
+                ],
+                server
+                    .passive_last_recovery_at_unix_ms
+                    .map_or(0, |timestamp| timestamp / 1_000),
+            )?;
         }
     }
 
@@ -472,7 +546,12 @@ pub enum PrometheusError {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use oxiroute_config::UpstreamAlgorithm;
     use oxiroute_rtmp::RtmpCapabilities;
+
+    use crate::{HealthFailure, RoundRobinPool, RuntimeEndpoint};
 
     use super::*;
 
@@ -550,5 +629,47 @@ mod tests {
             "oxiroute_tcp_relay_duration_milliseconds_bucket{listener=\"edge\",le=\"5000\"} 1"
         ));
         assert!(!output.contains("/sensitive?token="));
+    }
+
+    #[test]
+    fn exposition_contains_bounded_passive_endpoint_observability() {
+        let metrics = RuntimeMetrics::new();
+        let pool = Arc::new(
+            RoundRobinPool::new_named(
+                "observability".into(),
+                [RuntimeEndpoint::from(
+                    "127.0.0.1:3000"
+                        .parse::<std::net::SocketAddr>()
+                        .expect("endpoint"),
+                )],
+                UpstreamAlgorithm::RoundRobin,
+                false,
+            )
+            .expect("pool"),
+        );
+        for _ in 0..3 {
+            pool.record_passive_failure(0, HealthFailure::ConnectFailed);
+        }
+        metrics
+            .register_upstream_pools([Arc::clone(&pool)])
+            .expect("upstream pools");
+        let registry = RtmpRegistry::new(RtmpCapabilities {
+            live_ingest: false,
+            manual_recording: false,
+        });
+
+        let output =
+            render_prometheus(&metrics, &registry, &GenerationManager::new()).expect("exposition");
+
+        assert!(output.contains(
+            "oxiroute_server_passive_ejected{pool=\"observability\",server=\"0\",reason=\"connect_failed\"} 1"
+        ));
+        assert!(output.contains(
+            "oxiroute_server_passive_failures_total{pool=\"observability\",server=\"0\",reason=\"connect_failed\"} 3"
+        ));
+        assert!(output.contains(
+            "oxiroute_server_passive_ejections_total{pool=\"observability\",server=\"0\"} 1"
+        ));
+        assert!(!output.contains("127.0.0.1:3000"));
     }
 }
