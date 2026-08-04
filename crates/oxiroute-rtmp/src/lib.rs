@@ -42,9 +42,9 @@ pub use recording_store::{
     RecordingStoreError, RecordingStoreLimits, RecordingStoreStats,
 };
 pub use recording_worker::{
-    RecorderEnqueueResult, RecorderFailure, RecorderShutdown, RecorderVideoCodec, RecorderWorker,
-    RecorderWorkerConfig, RecorderWorkerPhase, RecorderWorkerStartError, RecorderWorkerStatus,
-    RecorderWorkerSupervisor,
+    RecorderEnqueueResult, RecorderFailure, RecorderMediaMask, RecorderNotification,
+    RecorderShutdown, RecorderVideoCodec, RecorderWorker, RecorderWorkerConfig,
+    RecorderWorkerPhase, RecorderWorkerStartError, RecorderWorkerStatus, RecorderWorkerSupervisor,
 };
 pub use relay::{
     RtmpDestination, RtmpPushApplication, RtmpPushTarget, RtmpRelayConfig, RtmpRelayFailure,

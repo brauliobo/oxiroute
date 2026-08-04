@@ -450,6 +450,12 @@ impl Lowerer {
             ("root_directory", Some(recorder.path_origin.clone())),
             ("suffix_template", recorder.suffix_origin.clone()),
             ("append_unix_seconds", recorder.unique_origin.clone()),
+            ("record_mask", Some(recorder.mask_origin.clone())),
+            ("append", recorder.append_origin.clone()),
+            ("lock", recorder.lock_origin.clone()),
+            ("max_size", recorder.max_size_origin.clone()),
+            ("max_frames", recorder.max_frames_origin.clone()),
+            ("notify", recorder.notify_origin.clone()),
             ("rotation_interval_ms", recorder.interval_origin.clone()),
         ] {
             self.provenance.push(CanonicalProvenance {
@@ -465,7 +471,13 @@ impl Lowerer {
                 RtmpRecordMode::Manual => RtmpRecorderStart::Manual,
             },
             root_directory: self.recording_root.as_ref().map_or_else(
+            record_mask: recorder.record_mask,
                 || recorder.root_directory.clone(),
+            append: recorder.append,
+            lock: recorder.lock,
+            max_size: recorder.max_size,
+            max_frames: recorder.max_frames,
+            notify: recorder.notify,
                 |root| {
                     self.used_recording_root_overlay = true;
                     root.clone()

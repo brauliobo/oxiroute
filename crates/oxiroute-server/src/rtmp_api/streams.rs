@@ -259,9 +259,17 @@ fn recorder_json(recorder: &RecorderSnapshot) -> Value {
         "segments_started": recorder.segments_started.to_string(),
         "segments_completed": recorder.segments_completed.to_string(),
         "discontinuities": recorder.discontinuities.to_string(),
+        "last_notification": recorder.last_notification.map(notification_name),
     })
 }
 
+const fn notification_name(notification: oxiroute_rtmp::RecorderNotification) -> &'static str {
+    match notification {
+        oxiroute_rtmp::RecorderNotification::Started => "started",
+        oxiroute_rtmp::RecorderNotification::Stopped => "stopped",
+        oxiroute_rtmp::RecorderNotification::Failed => "failed",
+    }
+}
 fn phase_json(phase: RecorderPhase) -> Value {
     match phase {
         RecorderPhase::Idle => json!({ "state": "idle" }),

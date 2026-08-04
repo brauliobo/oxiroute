@@ -11,9 +11,10 @@ use crate::{
         MAX_ACME_CONTACTS, MAX_ACME_DIRECTORY_URL_BYTES, MAX_ACME_DNS_SUFFIXES,
         MAX_CERTIFICATE_DNS_NAMES, MAX_CERTIFICATES, MAX_ENDPOINTS_PER_POOL, MAX_HEALTH_HOST_BYTES,
         MAX_HEALTH_INTERVAL_MS, MAX_HEALTH_PATH_BYTES, MAX_HEALTH_THRESHOLD, MAX_HEALTH_TIMEOUT_MS,
-        MAX_HTTP_TIMEOUT_MS, MAX_RECORDER_ACTIVE_RECORDERS, MAX_RECORDER_QUEUE_BYTES,
-        MAX_RECORDER_QUEUE_MESSAGES, MAX_RECORDER_ROTATION_INTERVAL_MS,
-        MAX_RECORDER_SHUTDOWN_TIMEOUT_MS, MAX_RECORDER_STORAGE_BYTES, MAX_RECORDER_STORAGE_FILES,
+        MAX_HTTP_TIMEOUT_MS, MAX_RECORDER_ACTIVE_RECORDERS, MAX_RECORDER_FILE_BYTES,
+        MAX_RECORDER_FRAME_COUNT, MAX_RECORDER_QUEUE_BYTES, MAX_RECORDER_QUEUE_MESSAGES,
+        MAX_RECORDER_ROTATION_INTERVAL_MS, MAX_RECORDER_SHUTDOWN_TIMEOUT_MS,
+        MAX_RECORDER_STORAGE_BYTES, MAX_RECORDER_STORAGE_FILES,
         MAX_RTMP_ACCESS_RULES_PER_OPERATION, MAX_RTMP_APPLICATION_BYTES,
         MAX_RTMP_APPLICATION_CONNECTIONS, MAX_RTMP_APPLICATION_NAME_BYTES,
         MAX_RTMP_APPLICATION_PUBLISHERS, MAX_RTMP_APPLICATION_VIEWERS,
@@ -1412,6 +1413,15 @@ fn validate_rtmp_recorder(
     normalize_recording_root(&mut recorder.root_directory)
         .map_err(|detail| invalid("root_directory", detail))?;
     validate_recording_suffix_template(&recorder.suffix_template)
+    if !recorder.record_mask.audio && !recorder.record_mask.video {
+        return Err(invalid("record_mask", "must enable audio or video"));
+    }
+    if recorder.record_mask.keyframes && !recorder.record_mask.video {
+        return Err(invalid(
+            "record_mask.keyframes",
+            "requires record_mask.video = true",
+        ));
+    }
         .map_err(|detail| invalid("suffix_template", detail))?;
     if let crate::model::RtmpRecorderTimezone::Iana(name) = &recorder.timezone {
         let parsed = name.parse::<chrono_tz::Tz>();
@@ -1460,6 +1470,24 @@ fn validate_rtmp_recorder(
             "must be null or between 1 and 1000000",
             &invalid,
         )?;
+    if let Some(max_size) = recorder.max_size {
+        validate_rtmp_recorder_limit(
+            max_size,
+            MAX_RECORDER_FILE_BYTES,
+            "max_size",
+            "must be null or between 1 and 1099511627776",
+            &invalid,
+        )?;
+    }
+    if let Some(max_frames) = recorder.max_frames {
+        validate_rtmp_recorder_limit(
+            max_frames,
+            MAX_RECORDER_FRAME_COUNT,
+            "max_frames",
+            "must be null or between 1 and 1000000000",
+            &invalid,
+        )?;
+    }
     }
     validate_rtmp_recorder_limit(
         recorder.max_active_recorders,

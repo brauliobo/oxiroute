@@ -139,7 +139,7 @@
         "crates/oxiroute-import/tests/nginx_rtmp.rs#applies_native_application_and_recorder_defaults_explicitly",
         "crates/oxiroute-import/tests/nginx_rtmp.rs#maps_only_nginx_manual_recording_that_also_selects_all_media",
         "crates/oxiroute-import/tests/nginx_rtmp.rs#enforces_exact_path_suffix_interval_and_listener_bounds",
-        "crates/oxiroute-import/tests/nginx_rtmp.rs#blocks_every_unrepresented_recorder_form",
+        "crates/oxiroute-import/tests/nginx_rtmp.rs#lowers_extended_recorder_forms",
         "crates/oxiroute-import/tests/nginx_rtmp.rs#lowers_named_recorders_and_explicit_disabled_file_policies",
         "crates/oxiroute-import/tests/nginx_rtmp.rs#source_noop_hls_muxdelay_does_not_block_an_exact_application",
         "crates/oxiroute-import/tests/nginx_rtmp.rs#keeps_supported_servers_in_the_draft_without_placeholder_for_a_blocked_server"

@@ -141,6 +141,7 @@ fn every_rotation_gets_a_fresh_deterministic_extension_preserving_name() {
             rotation_interval: Some(Duration::from_millis(1)),
             shutdown_timeout: Duration::from_secs(1),
             video_codec: None,
+            ..RecorderWorkerConfig::default()
         },
     );
     enqueue(&worker, aac_header(0, 0x12));
@@ -301,6 +302,7 @@ fn hourly_bahia_segments_rerender_the_suffix_and_keep_flv_payload_with_mp4_names
             rotation_interval: Some(Duration::from_secs(3_600)),
             shutdown_timeout: Duration::from_secs(1),
             video_codec: None,
+            ..RecorderWorkerConfig::default()
         },
     )
     .expect("recorder worker");
@@ -335,6 +337,7 @@ fn reconnect_within_interval_resumes_the_existing_nginx_named_segment() {
         rotation_interval: Some(Duration::from_secs(3_600)),
         shutdown_timeout: Duration::from_secs(1),
         video_codec: None,
+        ..RecorderWorkerConfig::default()
     };
     let opened_at = 1_721_619_000;
     let first = RecorderWorker::start(
@@ -402,6 +405,7 @@ fn interrupted_segment_keeps_its_final_name_and_resumes_without_a_partial_file()
         rotation_interval: Some(Duration::from_secs(3_600)),
         shutdown_timeout: Duration::from_secs(1),
         video_codec: None,
+        ..RecorderWorkerConfig::default()
     };
     let opened_at = 1_721_619_000;
     let first = RecorderWorker::start(
@@ -482,6 +486,7 @@ fn reconnect_within_interval_preserves_a_safe_sequence_variant_name() {
         rotation_interval: Some(Duration::from_secs(3_600)),
         shutdown_timeout: Duration::from_secs(1),
         video_codec: None,
+        ..RecorderWorkerConfig::default()
     };
     let opened_at = 1_721_619_000;
     let first = RecorderWorker::start(
@@ -558,6 +563,7 @@ fn reconnect_after_interval_starts_a_new_nginx_named_segment() {
         rotation_interval: Some(Duration::from_secs(60)),
         shutdown_timeout: Duration::from_secs(1),
         video_codec: None,
+        ..RecorderWorkerConfig::default()
     };
     for opened_at in [1_721_619_000, 1_721_619_061] {
         let worker = RecorderWorker::start(
@@ -599,6 +605,7 @@ fn record_unique_and_segment_end_are_recomputed_for_every_rotation() {
             rotation_interval: Some(Duration::from_secs(1)),
             shutdown_timeout: Duration::from_secs(1),
             video_codec: None,
+            ..RecorderWorkerConfig::default()
         },
     )
     .expect("recorder worker");
@@ -664,6 +671,7 @@ fn a_queue_drop_quarantines_the_active_segment_and_stops_continuation() {
             rotation_interval: None,
             shutdown_timeout: Duration::from_secs(1),
             video_codec: None,
+            ..RecorderWorkerConfig::default()
         },
     );
     enqueue(&worker, aac_header(0, 0x12));
@@ -956,6 +964,7 @@ fn worker(
             rotation_interval,
             shutdown_timeout: Duration::from_secs(1),
             video_codec: None,
+            ..RecorderWorkerConfig::default()
         },
     )
     .expect("recorder worker")
@@ -977,6 +986,7 @@ fn worker_with_shutdown_timeout(
             rotation_interval: None,
             shutdown_timeout,
             video_codec: None,
+            ..RecorderWorkerConfig::default()
         },
     )
     .expect("recorder worker")

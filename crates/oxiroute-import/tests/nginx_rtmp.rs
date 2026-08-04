@@ -320,16 +320,16 @@ fn duplicates_and_overlapping_listens_are_terminal_blockers() {
 }
 
 #[test]
-fn blocks_every_unrepresented_recorder_form() {
-    for directive in [
-        "record audio;",
-        "record video;",
-        "record keyframes;",
-        "record_append on;",
-        "record_lock on;",
-        "record_notify on;",
-        "record_max_size 1m;",
-        "record_max_frames 100;",
+fn lowers_extended_recorder_forms() {
+    for (directive, audio, video, keyframes, append, lock, notify, max_size, max_frames) in [
+        ("record audio;", true, false, false, false, false, false, None, None),
+        ("record video;", false, true, false, false, false, false, None, None),
+        ("record keyframes;", false, true, true, false, false, false, None, None),
+        ("record_append on;", true, true, false, true, false, false, None, None),
+        ("record_lock on;", true, true, false, false, true, false, None, None),
+        ("record_notify on;", true, true, false, false, false, true, None, None),
+        ("record_max_size 1m;", true, true, false, false, false, false, Some(1_048_576), None),
+        ("record_max_frames 100;", true, true, false, false, false, false, None, Some(100)),
     ] {
         let inherited_record = if directive.starts_with("record ") {
             ""
@@ -340,18 +340,21 @@ fn blocks_every_unrepresented_recorder_form() {
             "rtmp {{ server {{ listen 1935; application app {{ live on; {inherited_record} record_path /var/lib/recordings; {directive} }} }} }}"
         );
         let report = import_source(source.as_bytes(), &[]);
-        assert!(report.config.is_none(), "{directive}");
-        assert!(!report.blocked_services.is_empty(), "{directive}");
-        assert!(
-            report.diagnostics.iter().any(|diagnostic| {
-                matches!(
-                    diagnostic.code(),
-                    E_UNSUPPORTED_FEATURE | E_SEMANTICS_NOT_REPRESENTABLE
-                )
-            }),
-            "{directive}: {:?}",
-            report.diagnostics
-        );
+        let recorder = &report
+            .config
+            .expect("extended recorder form")
+            .rtmp_services[0]
+            .applications[0]
+            .recorders[0];
+        assert!(report.blocked_services.is_empty(), "{directive}");
+        assert_eq!(recorder.record_mask.audio, audio, "{directive}");
+        assert_eq!(recorder.record_mask.video, video, "{directive}");
+        assert_eq!(recorder.record_mask.keyframes, keyframes, "{directive}");
+        assert_eq!(recorder.append, append, "{directive}");
+        assert_eq!(recorder.lock, lock, "{directive}");
+        assert_eq!(recorder.notify, notify, "{directive}");
+        assert_eq!(recorder.max_size, max_size, "{directive}");
+        assert_eq!(recorder.max_frames, max_frames, "{directive}");
     }
 }
 

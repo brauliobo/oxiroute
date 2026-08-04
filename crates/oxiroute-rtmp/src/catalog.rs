@@ -8,7 +8,7 @@ use std::{
 use uuid::Uuid;
 
 use crate::{
-    RecorderEnqueueResult, RecorderWorkerPhase, RecorderWorkerStatus,
+    RecorderEnqueueResult, RecorderNotification, RecorderWorkerPhase, RecorderWorkerStatus,
     live::VideoCodecIdentifier,
     recording_runtime::{
         RecorderCommandContext, RecorderController, RecorderReaper, RecorderReaperHandle,
@@ -320,6 +320,7 @@ pub struct RecorderSnapshot {
     pub segments_started: u64,
     pub segments_completed: u64,
     pub discontinuities: u64,
+    pub last_notification: Option<RecorderNotification>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -447,6 +448,7 @@ struct MutableRecorder {
     segments_started: u64,
     segments_completed: u64,
     discontinuities: u64,
+    last_notification: Option<RecorderNotification>,
     worker_generation: u64,
     control: Option<Arc<RecorderController>>,
 }
@@ -504,6 +506,7 @@ impl MutableRecorder {
             segments_started: self.segments_started,
             segments_completed: self.segments_completed,
             discontinuities: self.discontinuities,
+            last_notification: self.last_notification,
         }
     }
 }
@@ -836,6 +839,7 @@ impl RtmpRegistry {
                         segments_started: 0,
                         segments_completed: 0,
                         discontinuities: 0,
+                        last_notification: None,
                         worker_generation: 0,
                         control: control.into_recorder_control(),
                     },
@@ -1651,6 +1655,7 @@ fn apply_worker_details(recorder: &mut MutableRecorder, status: &RecorderWorkerS
     recorder.segments_started = status.segments_started;
     recorder.segments_completed = status.segments_completed;
     recorder.discontinuities = status.discontinuities;
+    recorder.last_notification = status.last_notification;
 }
 
 /// RAII ownership of one publisher entry in an [`RtmpRegistry`].
@@ -2567,6 +2572,7 @@ mod tests {
                     rotation_interval: None,
                     shutdown_timeout,
                     video_codec: None,
+                    ..RecorderWorkerConfig::default()
                 },
             ),
             Arc::<[u8]>::from(name.as_bytes()),

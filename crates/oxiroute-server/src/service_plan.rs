@@ -29,7 +29,7 @@ use oxiroute_config::{
     UdpPolicy,
 };
 use oxiroute_rtmp::{
-    LiveHub, LiveHubLimits, RecorderWorkerConfig, RecordingPathPolicy, RecordingSegmentNaming,
+    LiveHub, LiveHubLimits, RecorderMediaMask, RecorderWorkerConfig, RecordingPathPolicy,
     RecordingStore, RecordingStoreLimits, RecordingTimeBasis, RecordingTimezone, RtmpAccessAction,
     RtmpAccessPolicy as RuntimeRtmpAccessPolicy, RtmpAccessRule,
     RtmpApplication as RuntimeRtmpApplication, RtmpCapabilities, RtmpNetwork, RtmpPushApplication,
@@ -1487,6 +1487,16 @@ fn compile_rtmp_recorder(
         rotation_interval: recorder.rotation_interval_ms.map(Duration::from_millis),
         shutdown_timeout: Duration::from_millis(recorder.shutdown_timeout_ms),
         video_codec: None,
+        record_mask: RecorderMediaMask::new(
+            recorder.record_mask.audio,
+            recorder.record_mask.video,
+            recorder.record_mask.keyframes,
+        ),
+        append: recorder.append,
+        lock: recorder.lock,
+        max_size: recorder.max_size,
+        max_frames: recorder.max_frames,
+        notify: recorder.notify,
     };
     let store_limits = RecordingStoreLimits {
         max_bytes: recorder.max_storage_bytes,
