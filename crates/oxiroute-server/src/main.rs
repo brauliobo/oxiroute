@@ -28,7 +28,8 @@ use oxiroute_server::{
     AcmeManagedReconciler, CertbotWatcherConfig, CertbotWatcherSupervisor, ConfigWatcher,
     ConfigWatcherOptions, ConnectionGuard, FileWatcherConfig, FileWatcherSupervisor,
     ForwardConnectionLifecycle, ForwardHttp1ServicePlan, ForwardHttp2ServiceApp, GenerationManager,
-    HaproxyStatsApi, HaproxyStatsPage, HttpDownstreamPolicyApp, HttpListenerApp, HttpReverseProxy,
+    HaproxyStatsApi, HaproxyStatsPage, Http3Runtime, HttpDownstreamPolicyApp, HttpListenerApp,
+    HttpReverseProxy,
     ListenerMetrics, ListenerReservation, MAX_HTTP_ATTEMPTS, MonitoredHttpApp, RtmpManagementApi,
     RuntimeGeneration, RuntimeMetrics, RuntimeReferenceKind, ServiceKind, TcpRelayCore,
     TlsProfilePlan, TopologySnapshot, UdpRuntime,
@@ -1617,6 +1618,7 @@ fn serve_generation(
     let acme_reconcilers = tls.acme_reconcilers().to_vec();
     let certbot_reconcilers = tls.certbot_reconcilers().to_vec();
     let direct_file_reconcilers = tls.file_reconcilers().to_vec();
+    let mut http3_runtimes = Vec::new();
     let mut udp_runtimes = Vec::new();
     if let Some(supervisor) = health_supervisor {
         server.add_service(background_service("upstream health", supervisor));
@@ -1862,6 +1864,29 @@ fn serve_generation(
                         .with_generation(Arc::clone(generation)),
                 );
             }
+            ServiceKind::ForwardHttp3(forward_service) => {
+                let Some(listener_tls) = listener_tls else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("HTTP/3 listener `{listener_name}` requires a TLS profile"),
+                    )
+                    .into());
+                };
+                let runtime = Http3Runtime::start_forward(
+                    listener_name.clone(),
+                    reservation,
+                    forward_service,
+                    listener_tls,
+                    Arc::clone(generation),
+                    metrics,
+                    shutdown.clone(),
+                )
+                .map_err(|error| {
+                    generation.mark_runtime_failed();
+                    error
+                })?;
+                http3_runtimes.push(runtime);
+            }
             ServiceKind::Udp(l4_service) => {
                 let runtime = UdpRuntime::start(
                     listener_name.clone(),
@@ -1904,6 +1929,9 @@ fn serve_generation(
     server.run(RunArgs {
         shutdown_signal: Box::new(ChannelShutdownSignal { shutdown }),
     });
+    for runtime in http3_runtimes {
+        runtime.join()?;
+    }
     for runtime in udp_runtimes {
         runtime.join()?;
     }

@@ -16,7 +16,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use bytes::Bytes;
+use bytes::{Buf as _, Bytes, BytesMut};
 use hickory_resolver::{
     TokioAsyncResolver,
     config::{LookupIpStrategy, NameServerConfigGroup, ResolverConfig, ResolverOpts},
@@ -852,6 +852,255 @@ impl ForwardHttp1ServicePlan {
         }
     }
 
+    pub(crate) async fn handle_h3<S>(
+        &self,
+        request: Request<()>,
+        mut stream: h3::server::RequestStream<S, Bytes>,
+        client_addr: Option<SocketAddr>,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) where
+        S: h3::quic::BidiStream<Bytes> + Send,
+    {
+        let AuthorizedRequest {
+            parsed,
+            socket_addresses,
+            lifetime_deadline,
+        } = match self
+            .authorize_request(&request, Protocol::Http3, client_addr)
+            .await
+        {
+            Ok(request) => request,
+            Err(error) => {
+                let _ = send_h3_failure(&mut stream, error, self.challenge.as_ref()).await;
+                return;
+            }
+        };
+
+        match parsed {
+            ParsedTarget::Tunnel(_) => {
+                let connect_deadline = lifetime_deadline.min(Instant::now() + self.connect_timeout);
+                let upstream = match timeout_at(
+                    lifetime_deadline,
+                    self.connect_tcp_until(&socket_addresses, connect_deadline),
+                )
+                .await
+                {
+                    Ok(Ok(upstream)) => upstream,
+                    Ok(Err(error)) => {
+                        let _ = send_h3_failure(&mut stream, error, self.challenge.as_ref()).await;
+                        return;
+                    }
+                    Err(_) => {
+                        let _ = send_h3_failure(
+                            &mut stream,
+                            RequestFailure::GatewayTimeout,
+                            self.challenge.as_ref(),
+                        )
+                        .await;
+                        return;
+                    }
+                };
+                let Ok(response) = Response::builder().status(StatusCode::OK).body(()) else {
+                    return;
+                };
+                if !matches!(
+                    timeout_at(lifetime_deadline, stream.send_response(response)).await,
+                    Ok(Ok(()))
+                ) {
+                    return;
+                }
+                let lifetime_timeout = lifetime_deadline.saturating_duration_since(Instant::now());
+                let Ok(tunnel) = BoundedTunnel::new(TunnelLimits {
+                    idle_timeout: self.idle_timeout,
+                    lifetime_timeout,
+                    ..TunnelLimits::default()
+                }) else {
+                    return;
+                };
+                let relay = tunnel.relay_h3(stream, upstream);
+                tokio::pin!(relay);
+                tokio::select! {
+                    _ = &mut relay => {}
+                    _ = shutdown.changed() => {}
+                }
+            }
+            ParsedTarget::Forward(target) => {
+                let body_limit = u64::try_from(self.max_request_body_bytes).unwrap_or(u64::MAX);
+                if request
+                    .headers()
+                    .get(header::CONTENT_LENGTH)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .is_some_and(|length| length > body_limit)
+                {
+                    let _ = send_h3_failure(
+                        &mut stream,
+                        RequestFailure::PayloadTooLarge,
+                        self.challenge.as_ref(),
+                    )
+                    .await;
+                    return;
+                }
+                let body = match recv_h3_body(
+                    &mut stream,
+                    self.max_request_body_bytes,
+                    lifetime_deadline,
+                    &mut shutdown,
+                )
+                .await
+                {
+                    Ok(body) => body,
+                    Err(error) => {
+                        let _ = send_h3_failure(&mut stream, error, self.challenge.as_ref()).await;
+                        return;
+                    }
+                };
+                let connect_deadline = lifetime_deadline.min(Instant::now() + self.connect_timeout);
+                let upstream = match timeout_at(
+                    lifetime_deadline,
+                    self.connect_http(
+                        &target.destination,
+                        target.scheme,
+                        &socket_addresses,
+                        connect_deadline,
+                    ),
+                )
+                .await
+                {
+                    Ok(Ok(upstream)) => upstream,
+                    Ok(Err(error)) => {
+                        let _ = send_h3_failure(&mut stream, error, self.challenge.as_ref()).await;
+                        return;
+                    }
+                    Err(_) => {
+                        let _ = send_h3_failure(
+                            &mut stream,
+                            RequestFailure::GatewayTimeout,
+                            self.challenge.as_ref(),
+                        )
+                        .await;
+                        return;
+                    }
+                };
+                let Ok(mut headers) =
+                    sanitize_request_headers(request.headers(), &target.destination)
+                else {
+                    let _ = send_h3_failure(
+                        &mut stream,
+                        RequestFailure::BadRequest,
+                        self.challenge.as_ref(),
+                    )
+                    .await;
+                    return;
+                };
+                apply_header_policy(&mut headers, self.header_policy);
+                let (mut parts, _) = request.into_parts();
+                parts.uri = target.origin_form;
+                parts.version = http::Version::HTTP_11;
+                parts.headers = headers;
+                let request = Request::from_parts(parts, Full::new(body));
+                let handshake_deadline =
+                    lifetime_deadline.min(Instant::now() + self.connect_timeout);
+                let (mut sender, connection) = match timeout_at(
+                    handshake_deadline,
+                    hyper::client::conn::http1::handshake(TokioIo::new(upstream)),
+                )
+                .await
+                {
+                    Ok(Ok(connection)) => connection,
+                    Ok(Err(_)) => {
+                        let _ = send_h3_failure(
+                            &mut stream,
+                            RequestFailure::BadGateway,
+                            self.challenge.as_ref(),
+                        )
+                        .await;
+                        return;
+                    }
+                    Err(_) => {
+                        let _ = send_h3_failure(
+                            &mut stream,
+                            RequestFailure::GatewayTimeout,
+                            self.challenge.as_ref(),
+                        )
+                        .await;
+                        return;
+                    }
+                };
+                tokio::spawn(async move {
+                    let _ = connection.await;
+                });
+                let mut response = tokio::select! {
+                    response = sender.send_request(request) => match response {
+                        Ok(response) => response,
+                        Err(_) => {
+                            let _ = send_h3_failure(
+                                &mut stream,
+                                RequestFailure::BadGateway,
+                                self.challenge.as_ref(),
+                            )
+                            .await;
+                            return;
+                        }
+                    },
+                    _ = shutdown.changed() => return,
+                };
+                if sanitize_response_headers(response.headers_mut()).is_err() {
+                    let _ = send_h3_failure(
+                        &mut stream,
+                        RequestFailure::BadGateway,
+                        self.challenge.as_ref(),
+                    )
+                    .await;
+                    return;
+                }
+                let (parts, mut body) = response.into_parts();
+                let mut head = Response::new(());
+                *head.status_mut() = parts.status;
+                *head.version_mut() = parts.version;
+                *head.headers_mut() = parts.headers;
+                if !matches!(
+                    timeout_at(lifetime_deadline, stream.send_response(head)).await,
+                    Ok(Ok(()))
+                ) {
+                    return;
+                }
+                loop {
+                    let frame = tokio::select! {
+                        frame = timeout_at(lifetime_deadline, body.frame()) => match frame {
+                            Ok(Some(Ok(frame))) => frame,
+                            Ok(Some(Err(_))) | Err(_) => return,
+                            Ok(None) => break,
+                        },
+                        _ = shutdown.changed() => return,
+                    };
+                    match frame.into_data() {
+                        Ok(data) => {
+                            if !matches!(
+                                timeout_at(lifetime_deadline, stream.send_data(data)).await,
+                                Ok(Ok(()))
+                            ) {
+                                return;
+                            }
+                        }
+                        Err(frame) => {
+                            if let Ok(trailers) = frame.into_trailers() {
+                                if !matches!(
+                                    timeout_at(lifetime_deadline, stream.send_trailers(trailers))
+                                        .await,
+                                    Ok(Ok(()))
+                                ) {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+                let _ = timeout_at(lifetime_deadline, stream.finish()).await;
+            }
+        }
+    }
+
     async fn resolve(&self, destination: &Destination) -> Result<Vec<IpAddr>, RequestFailure> {
         match &destination.host {
             Host::Ip(address) => Ok(vec![*address]),
@@ -1164,6 +1413,56 @@ impl ForwardHttp1ServicePlan {
         }
         let _ = session.finish_body().await;
     }
+}
+
+async fn recv_h3_body<S>(
+    stream: &mut h3::server::RequestStream<S, Bytes>,
+    limit: usize,
+    deadline: Instant,
+    shutdown: &mut tokio::sync::watch::Receiver<bool>,
+) -> Result<Bytes, RequestFailure>
+where
+    S: h3::quic::BidiStream<Bytes> + Send,
+{
+    let mut body = BytesMut::new();
+    loop {
+        let chunk = tokio::select! {
+            result = timeout_at(deadline, stream.recv_data()) => {
+                result.map_err(|_| RequestFailure::GatewayTimeout)?
+                    .map_err(|_| RequestFailure::BadRequest)?
+            }
+            _ = shutdown.changed() => return Err(RequestFailure::GatewayTimeout),
+        };
+        let Some(mut chunk) = chunk else {
+            return Ok(body.freeze());
+        };
+        if chunk.remaining() > limit.saturating_sub(body.len()) {
+            return Err(RequestFailure::PayloadTooLarge);
+        }
+        let bytes = chunk.copy_to_bytes(chunk.remaining());
+        body.extend_from_slice(&bytes);
+    }
+}
+
+async fn send_h3_failure<S>(
+    stream: &mut h3::server::RequestStream<S, Bytes>,
+    failure: RequestFailure,
+    challenge: Option<&HeaderValue>,
+) -> Result<(), h3::error::StreamError>
+where
+    S: h3::quic::BidiStream<Bytes> + Send,
+{
+    let mut response = Response::new(());
+    *response.status_mut() = failure.status();
+    if failure == RequestFailure::Authentication {
+        if let Some(challenge) = challenge {
+            response
+                .headers_mut()
+                .insert(header::PROXY_AUTHENTICATE, challenge.clone());
+        }
+    }
+    stream.send_response(response).await?;
+    stream.finish().await
 }
 
 #[async_trait]

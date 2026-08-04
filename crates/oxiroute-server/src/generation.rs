@@ -33,6 +33,7 @@ pub enum RuntimeReferenceKind {
     Tcp,
     Rtmp,
     Udp,
+    ForwardHttp3,
 }
 
 impl RuntimeReferenceKind {
@@ -45,6 +46,7 @@ impl RuntimeReferenceKind {
             Self::Tcp => 4,
             Self::Rtmp => 5,
             Self::Udp => 6,
+            Self::ForwardHttp3 => 7,
         }
     }
 }
@@ -218,7 +220,7 @@ pub struct RuntimeGeneration {
     drain: (Mutex<()>, Condvar),
     metrics: RuntimeMetrics,
     plan: RuntimePlan,
-    references: [AtomicU64; 7],
+    references: [AtomicU64; 8],
     mutations: AtomicU64,
     reservations: ListenerReservations,
     revision: GenerationRevision,
@@ -1766,6 +1768,7 @@ mod tests {
         let generation = manager.activate(&candidate).expect("activate");
         let references = [
             RuntimeReferenceKind::ForwardHttp1,
+            RuntimeReferenceKind::ForwardHttp3,
             RuntimeReferenceKind::Http1,
             RuntimeReferenceKind::Http2,
             RuntimeReferenceKind::WebSocket,

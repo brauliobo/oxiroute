@@ -2,7 +2,7 @@
 
 This workspace crate defines explicit forward-proxy parsing, authorization, destination policy,
 request sanitization, and bounded tunnel primitives. The daemon integrates HTTP/1.1 and HTTP/2
-classic CONNECT; HTTP/3 remains fail-closed until its separate listener path is available.
+classic CONNECT plus a separate bounded `forward_http3` UDP listener.
 
 ```sh
 cargo test -p oxiroute-forward-proxy --locked
@@ -72,9 +72,11 @@ that reverse-proxy implementation:
    tunnel accounting. The relay propagates DATA end-stream, upstream half-close, flow control,
    byte limits, idle/lifetime timeouts, and stream reset cancellation.
 7. Register Quinn/H3 as a separate UDP listener because Pingora's current HTTP app path covers H1
-   and H2 only. After a successful tunnel decision and upstream connection, send the 2xx response
-   and pass the H3 request stream plus the connected upstream stream to `BoundedTunnel::relay_h3`.
-   Map ordinary decision failures through `DecisionError::rejection` before opening an upstream.
+   and H2 only. The daemon now performs this registration with shared listener reservation,
+   generation, metrics, TLS, and drain ownership. After a successful tunnel decision and upstream
+   connection, send the 2xx response and pass the H3 request stream plus the connected upstream
+   stream to `BoundedTunnel::relay_h3`. Map ordinary decision failures through
+   `DecisionError::rejection` before opening an upstream.
 
 Reverse proxy pools, retries, route matching, upstream health selection, and configured `HttpPeer`
 targets must not be reused for arbitrary forward destinations. Shared listener metrics and TLS

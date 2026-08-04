@@ -339,8 +339,9 @@ Current constraints:
   all matchers with optional negation. Destination domain/CIDR rules apply to the complete DNS
   answer, deny rules override allow rules, and `deny_private` rejects non-public addresses. Resolver
   cache/query/address/TTL limits, connection/body/header limits, connect/idle/lifetime deadlines,
-  header privacy, and metadata-only audit mode are explicit. H2/H3 labels fail preparation because
-  no integrated listener implements them.
+  header privacy, and metadata-only audit mode are explicit. H2 labels fail preparation because no
+  integrated listener implements them; H3 is available only through the UDP `forward_http3`
+  listener contract and its TLS 1.3/`h3` requirements.
 - `automatic_response_headers` defaults to true. When enabled, the runtime generates downstream
   HTTP/1 Date and Connection headers and HTTP/2 Date headers. When disabled, none of those headers
   are generated; mandatory HTTP/2 hop-header removal still applies.

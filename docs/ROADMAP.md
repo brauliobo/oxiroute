@@ -79,8 +79,9 @@ native config importers, transparent interception, firewall management, and remo
 administration. The current `0.3.0` working release has partial HTTP/1 forward proxying and
 bounded nginx, HAProxy, Squid, and nginx-RTMP import paths; that progress does not promote those
 subsets to complete compatibility or make foundations active capabilities. UDP, active cache,
-HTTP/3 daemon listeners, transparent interception, firewall management, and remote multi-user
-administration remain outside the current release contract.
+reverse HTTP/3 daemon listeners, transparent interception, firewall management, and remote
+multi-user administration remain outside the current release contract. The bounded `forward_http3`
+listener is now a partial exception documented in the compatibility matrix.
 
 Release gates:
 
@@ -131,8 +132,8 @@ listener semantics must block the affected service.
 
 ## Milestone 3: explicit forward proxy
 
-Status: partial. The HTTP/1 daemon path is integrated; standalone HTTP/2 and HTTP/3 components are
-foundations and do not represent daemon listener support.
+Status: partial. The HTTP/1 and forward HTTP/3 daemon paths are integrated; standalone HTTP/2 and
+reverse HTTP/3 remain outside the daemon contract.
 
 - Dedicated HTTP/1 absolute-form parser and bounded CONNECT tunnel with over-read preservation
   (integrated for the HTTP/1 daemon listener; broader conformance remains).
