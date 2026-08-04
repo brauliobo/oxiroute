@@ -963,6 +963,17 @@ impl<'a> Resolver<'a> {
                 E_UNSUPPORTED_FEATURE,
                 "variables in nginx policy values are unsupported",
             ))
+        } else if name == b"expires"
+            && directive
+                .directive
+                .arguments
+                .first()
+                .is_none_or(|argument| argument.value != b"off")
+        {
+            Some((
+                E_UNSUPPORTED_FEATURE,
+                "nginx expires value is unsupported; only `expires off` is supported by the canonical HTTP response policy",
+            ))
         } else {
             None
         };
@@ -1739,6 +1750,7 @@ fn is_location_policy(name: &[u8]) -> bool {
             | b"default_type"
             | b"error_page"
             | b"etag"
+            | b"expires"
             | b"proxy_cache"
             | b"try_files"
     )
@@ -1761,6 +1773,7 @@ fn is_scalar_policy(name: &[u8]) -> bool {
             | b"auth_basic"
             | b"auth_basic_user_file"
             | b"etag"
+            | b"expires"
             | b"keepalive_timeout"
             | b"ssl_protocols"
             | b"ssl_ciphers"

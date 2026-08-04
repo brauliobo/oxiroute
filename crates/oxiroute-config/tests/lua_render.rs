@@ -3,8 +3,9 @@ use std::{net::SocketAddr, path::PathBuf};
 use oxiroute_config::{
     AlpnProtocol, Certificate, CertificateSource, Config, ConfigError, DnsResolutionPolicy,
     DownstreamTimeoutPolicy, HealthCheck, HealthCheckType, HealthStartup, HttpAccessPolicy,
-    HttpCookiePathRewrite, HttpHostSelector, HttpLiteralHeader, HttpPathSelector, HttpProxyPolicy,
-    HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
+    HttpCookiePathRewrite, HttpHostSelector, HttpLiteralHeader, HttpPathSelector,
+    HttpProxyPathRewrite, HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation,
+    HttpRequestHeaderValue,
     HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryMethodSafety, HttpRetryPolicy,
     HttpRetryTarget, HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpService,
     HttpStaticMimePolicy, HttpStaticPathMapping, HttpUpstreamHost, HttpVersion, HttpVersionPolicy,
@@ -268,6 +269,10 @@ fn test_proxy_policy() -> HttpProxyPolicy {
         upstream_host: HttpUpstreamHost::Endpoint {
             unix_fallback: Some("fallback.internal:443".into()),
         },
+        upstream_path_rewrite: Some(HttpProxyPathRewrite {
+            from: "/api/".into(),
+            to: "/application/".into(),
+        }),
         request_headers: vec![
             HttpRequestHeaderMutation::Set {
                 name: "X-Authority".into(),
@@ -436,6 +441,7 @@ fn test_http_services() -> Vec<HttpService> {
                         upstream_host: HttpUpstreamHost::Literal {
                             value: "backend.internal".into(),
                         },
+                        upstream_path_rewrite: None,
                         request_headers: Vec::new(),
                         response_headers: Vec::new(),
                         response_cookie_path_rewrites: Vec::new(),
@@ -673,6 +679,7 @@ const RENDERED_FIELDS: &[&str] = &[
     "action",
     "policy",
     "upstream_host",
+    "upstream_path_rewrite",
     "unix_fallback",
     "request_headers",
     "response_headers",

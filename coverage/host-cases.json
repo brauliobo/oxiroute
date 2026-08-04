@@ -164,7 +164,7 @@
       "id": "HN-14",
       "status": "partial",
       "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": false },
-      "evidence": ["crates/oxiroute-config/tests/http_routes.rs#renders_every_proxy_policy_variant_and_field", "crates/oxiroute-import/tests/nginx_lower.rs#explicit_proxy_headers_cookie_rewrite_and_safe_retry_subset_finalize", "crates/oxiroute-server/tests/http_proxy_routing.rs#applies_host_header_cookie_and_request_response_header_policies"]
+      "evidence": ["crates/oxiroute-config/tests/http_routes.rs#renders_every_proxy_policy_variant_and_field", "crates/oxiroute-import/tests/nginx_lower.rs#lowers_proxy_pass_uri_replacement_and_accepts_explicit_expires_off", "crates/oxiroute-server/tests/http_proxy_routing.rs#proxy_path_replacement_rewrites_the_origin_path_and_preserves_the_query", "crates/oxiroute-server/tests/http_proxy_routing.rs#applies_host_header_cookie_and_request_response_header_policies"]
     },
     {
       "id": "HN-15",
@@ -176,7 +176,7 @@
       "id": "HN-16",
       "status": "partial",
       "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": true },
-      "evidence": ["crates/oxiroute-config/tests/http_routes.rs#static_etag_policy_renders_exact_booleans_and_rejects_invalid_forms", "crates/oxiroute-import/tests/nginx_lower.rs#lowers_inherited_etag_off_for_actual_alias_try_files_and_headers_shape", "crates/oxiroute-server/tests/http_proxy_routing.rs#host_shaped_static_policy_covers_root_alias_try_files_index_autoindex_mime_errors_and_ranges"]
+      "evidence": ["crates/oxiroute-config/tests/http_routes.rs#static_etag_policy_renders_exact_booleans_and_rejects_invalid_forms", "crates/oxiroute-import/tests/nginx_lower.rs#lowers_inherited_etag_off_for_actual_alias_try_files_and_headers_shape", "crates/oxiroute-import/tests/nginx_lower.rs#lowers_proxy_pass_uri_replacement_and_accepts_explicit_expires_off", "crates/oxiroute-server/tests/http_proxy_routing.rs#host_shaped_static_policy_covers_root_alias_try_files_index_autoindex_mime_errors_and_ranges"]
     },
     {
       "id": "HN-17",

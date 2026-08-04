@@ -39,6 +39,7 @@
             (object)upstream_host {
               type "preserve_incoming"
             }
+            upstream_path_rewrite #null
           }
           type "proxy"
           upstream_pool "web"
