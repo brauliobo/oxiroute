@@ -22,9 +22,9 @@ use crate::{
 
 use super::{
     AccessAction, AccessListKind, AclMatcher, AclReferenceResolution, AclTerm, Activation,
-    AuthenticationScheme, BuiltinAcl, DecisionLedger, DecisionOutcome, EffectiveAcl,
-    EffectiveConfiguration, ForwardedForMode, LogDestination, OccurrenceId, PortEndpoint, PortKind,
-    PrivacyDirective, Provenance, ProxyAuthMatcher, RootSelection, SemanticBlockerKind,
+    AuthenticationScheme, BuiltinAcl, DecisionLedger, DecisionOutcome, DirectiveOrigin,
+    EffectiveAcl, EffectiveConfiguration, ForwardedForMode, LogDestination, OccurrenceId,
+    PortEndpoint, PortKind, PrivacyDirective, ProxyAuthMatcher, RootSelection, SemanticBlockerKind,
     SourceGraph, analyze, load, load_selected,
 };
 
@@ -43,7 +43,7 @@ pub struct ImportReport {
     pub decision_ledger: DecisionLedger,
     pub blocked_capabilities: Vec<BlockedCapability>,
     pub draft: CanonicalDraft,
-    pub canonical_provenance: Vec<CanonicalProvenance<Provenance>>,
+    pub canonical_provenance: Vec<CanonicalProvenance<DirectiveOrigin>>,
     pub config: Option<Config>,
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -198,12 +198,7 @@ fn import_graph(graph: SourceGraph, mut diagnostics: Vec<Diagnostic>) -> ImportR
                     DecisionOutcome::Classified { .. } => None,
                 })
                 .collect::<Vec<_>>();
-            diagnostics.push(Diagnostic::new(
-                blocker_code(*kind),
-                Severity::Error,
-                DiagnosticStage::Lower,
-                blocker_message(*kind),
-            ));
+            diagnostics.push(lower_blocker_diagnostic(*kind, &effective, &graph));
             blocked_capabilities.push(BlockedCapability {
                 kind: *kind,
                 occurrences,
@@ -213,7 +208,10 @@ fn import_graph(graph: SourceGraph, mut diagnostics: Vec<Diagnostic>) -> ImportR
         }
     }
     let decision_ledger = effective.ledger.clone();
-    let draft = lowered.unwrap_or_default();
+    let (draft, canonical_provenance) = lowered.map_or_else(
+        |_| (CanonicalDraft::default(), Vec::new()),
+        |lowered| (lowered.draft, lowered.provenance),
+    );
     let mut config = draft.to_config();
     let config = if blocked_capabilities.is_empty()
         && !diagnostics
@@ -243,7 +241,7 @@ fn import_graph(graph: SourceGraph, mut diagnostics: Vec<Diagnostic>) -> ImportR
         decision_ledger,
         blocked_capabilities,
         draft,
-        canonical_provenance: Vec::new(),
+        canonical_provenance,
         config,
         diagnostics,
     }
@@ -372,8 +370,13 @@ fn extend_consumed_dns_occurrences(
     }
 }
 
+struct LoweredCanonical {
+    draft: CanonicalDraft,
+    provenance: Vec<CanonicalProvenance<DirectiveOrigin>>,
+}
+
 #[allow(clippy::too_many_lines)]
-fn lower(effective: &EffectiveConfiguration) -> Result<CanonicalDraft, SemanticBlockerKind> {
+fn lower(effective: &EffectiveConfiguration) -> Result<LoweredCanonical, SemanticBlockerKind> {
     let http_ports = effective
         .ports
         .iter()
@@ -496,11 +499,372 @@ fn lower(effective: &EffectiveConfiguration) -> Result<CanonicalDraft, SemanticB
         resolver,
         audit_mode,
     };
-    Ok(CanonicalDraft {
+    let draft = CanonicalDraft {
         listeners,
         forward_proxy_services: vec![service],
         ..CanonicalDraft::default()
+    };
+    Ok(LoweredCanonical {
+        provenance: lower_provenance(effective, &draft),
+        draft,
     })
+}
+
+#[derive(Default)]
+struct ProvenanceRecorder {
+    entries: Vec<CanonicalProvenance<DirectiveOrigin>>,
+}
+
+impl ProvenanceRecorder {
+    fn record(&mut self, path: String, mut origins: Vec<DirectiveOrigin>) {
+        assert!(
+            !origins.is_empty(),
+            "finalized Squid canonical field lacks source provenance: {path}"
+        );
+        origins.sort_unstable_by_key(|origin| origin.occurrence);
+        origins.dedup_by_key(|origin| origin.occurrence);
+        if let Some(existing) = self.entries.iter_mut().find(|entry| entry.path == path) {
+            existing.origins.extend(origins);
+            existing
+                .origins
+                .sort_unstable_by_key(|origin| origin.occurrence);
+            existing.origins.dedup_by_key(|origin| origin.occurrence);
+        } else {
+            self.entries.push(CanonicalProvenance { path, origins });
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn lower_provenance(
+    effective: &EffectiveConfiguration,
+    draft: &CanonicalDraft,
+) -> Vec<CanonicalProvenance<DirectiveOrigin>> {
+    let mut recorder = ProvenanceRecorder::default();
+    let all_origins = origins_for_occurrences(effective, consumed_occurrences(effective));
+    let http_ports = effective
+        .ports
+        .iter()
+        .filter(|port| port.kind == PortKind::Http)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        draft.listeners.len(),
+        http_ports.len(),
+        "successful Squid lowering must retain one provenance source per listener"
+    );
+
+    for (index, (listener, port)) in draft.listeners.iter().zip(http_ports).enumerate() {
+        let path = format!("/listeners/{index}");
+        record_fields(
+            &mut recorder,
+            &path,
+            [
+                "",
+                "/name",
+                "/bind",
+                "/bind/type",
+                "/protocol",
+                "/service",
+                "/tls_profile",
+                "/max_connections",
+                "/downstream_timeouts",
+                "/downstream_timeouts/client_timeout_ms",
+                "/downstream_timeouts/request_timeout_ms",
+                "/downstream_timeouts/keepalive_timeout_ms",
+            ],
+            &[port.origin.clone()],
+        );
+        if matches!(listener.bind, ListenerBind::Socket { .. }) {
+            recorder.record(format!("{path}/bind/address"), vec![port.origin.clone()]);
+        }
+    }
+
+    let service = draft
+        .forward_proxy_services
+        .first()
+        .expect("successful Squid lowering produces one forward-proxy service");
+    let service_path = "/forward_proxy_services/0";
+    record_fields(
+        &mut recorder,
+        service_path,
+        [
+            "",
+            "/name",
+            "/enabled_versions",
+            "/allow_absolute_form",
+            "/tls_required",
+            "/connect",
+            "/connect/enabled",
+            "/connect/allowed_ports",
+            "/destination_policy",
+            "/destination_policy/allow_domains",
+            "/destination_policy/deny_domains",
+            "/destination_policy/allow_cidrs",
+            "/destination_policy/deny_cidrs",
+            "/destination_policy/deny_private",
+            "/header_policy",
+            "/header_policy/forwarded_for",
+            "/header_policy/via",
+            "/connect_timeout_ms",
+            "/idle_timeout_ms",
+            "/lifetime_timeout_ms",
+            "/max_request_body_bytes",
+            "/max_header_bytes",
+            "/max_connections",
+            "/resolver",
+            "/resolver/nameservers",
+            "/resolver/max_cache_entries",
+            "/resolver/max_concurrent_queries",
+            "/resolver/max_addresses_per_name",
+            "/resolver/min_ttl_ms",
+            "/resolver/max_ttl_ms",
+            "/resolver/negative_ttl_ms",
+            "/resolver/revalidate_on_connect",
+            "/audit_mode",
+        ],
+        &all_origins,
+    );
+    for version_index in 0..service.enabled_versions.len() {
+        recorder.record(
+            format!("{service_path}/enabled_versions/{version_index}"),
+            all_origins.clone(),
+        );
+    }
+    for port_index in 0..service.connect.allowed_ports.len() {
+        recorder.record(
+            format!("{service_path}/connect/allowed_ports/{port_index}"),
+            all_origins.clone(),
+        );
+    }
+    for nameserver_index in 0..service.resolver.nameservers.len() {
+        recorder.record(
+            format!("{service_path}/resolver/nameservers/{nameserver_index}"),
+            all_origins.clone(),
+        );
+    }
+
+    if service.auth.is_some() {
+        let scheme = effective
+            .authentication_schemes
+            .first()
+            .expect("successful Squid authentication lowering retains its scheme");
+        let origins = origins_for_occurrences(effective, scheme.parameters.iter().copied());
+        let auth_path = format!("{service_path}/auth");
+        record_fields(
+            &mut recorder,
+            &auth_path,
+            [
+                "",
+                "/type",
+                "/htpasswd_file_path",
+                "/realm",
+                "/credential_ttl_ms",
+                "/username_case_sensitive",
+            ],
+            &origins,
+        );
+    }
+
+    let policy = effective
+        .access_policies
+        .iter()
+        .find(|policy| policy.kind == AccessListKind::Http && policy.selector.is_none())
+        .expect("successful Squid access lowering retains its HTTP policy");
+    let lowered_policy = service
+        .access_policy
+        .as_ref()
+        .expect("successful Squid lowering retains its access policy");
+    record_access_policy(
+        &mut recorder,
+        effective,
+        policy,
+        lowered_policy,
+        service_path,
+    );
+
+    recorder.entries
+}
+
+fn record_access_policy(
+    recorder: &mut ProvenanceRecorder,
+    effective: &EffectiveConfiguration,
+    policy: &super::AccessPolicy,
+    lowered: &ForwardAccessPolicy,
+    service_path: &str,
+) {
+    let policy_path = format!("{service_path}/access_policy");
+    let policy_origins = policy
+        .rules
+        .iter()
+        .flat_map(|rule| access_rule_origins(effective, rule))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        policy.rules.len(),
+        lowered.rules.len(),
+        "lowered Squid policy must retain every native rule"
+    );
+    recorder.record(policy_path.clone(), policy_origins.clone());
+    recorder.record(format!("{policy_path}/rules"), policy_origins.clone());
+    recorder.record(
+        format!("{policy_path}/default_action"),
+        policy_origins.clone(),
+    );
+
+    for (rule_index, (rule, lowered_rule)) in policy.rules.iter().zip(&lowered.rules).enumerate() {
+        let rule_path = format!("{policy_path}/rules/{rule_index}");
+        let rule_origins = access_rule_origins(effective, rule);
+        record_fields(
+            recorder,
+            &rule_path,
+            ["", "/action", "/conditions"],
+            &rule_origins,
+        );
+        for (condition_index, (term, condition)) in
+            rule.terms.iter().zip(&lowered_rule.conditions).enumerate()
+        {
+            let condition_path = format!("{rule_path}/conditions/{condition_index}");
+            let condition_origins = access_term_origins(effective, rule, term);
+            record_fields(
+                recorder,
+                &condition_path,
+                ["", "/negated", "/type"],
+                &condition_origins,
+            );
+            match &condition.matcher {
+                ForwardAccessMatcher::Methods { methods } => {
+                    recorder.record(
+                        format!("{condition_path}/methods"),
+                        condition_origins.clone(),
+                    );
+                    for index in 0..methods.len() {
+                        recorder.record(
+                            format!("{condition_path}/methods/{index}"),
+                            condition_origins.clone(),
+                        );
+                    }
+                }
+                ForwardAccessMatcher::SourceCidrs { cidrs } => {
+                    recorder.record(format!("{condition_path}/cidrs"), condition_origins.clone());
+                    for index in 0..cidrs.len() {
+                        recorder.record(
+                            format!("{condition_path}/cidrs/{index}"),
+                            condition_origins.clone(),
+                        );
+                    }
+                }
+                ForwardAccessMatcher::DestinationPorts { ranges } => {
+                    recorder.record(
+                        format!("{condition_path}/ranges"),
+                        condition_origins.clone(),
+                    );
+                    for (range_index, _) in ranges.iter().enumerate() {
+                        let range_path = format!("{condition_path}/ranges/{range_index}");
+                        record_fields(
+                            recorder,
+                            &range_path,
+                            ["", "/start", "/end"],
+                            &condition_origins,
+                        );
+                    }
+                }
+                ForwardAccessMatcher::All
+                | ForwardAccessMatcher::Authenticated
+                | ForwardAccessMatcher::DestinationLocal
+                | ForwardAccessMatcher::DestinationLinkLocal
+                | ForwardAccessMatcher::Manager => {}
+            }
+        }
+    }
+}
+
+fn access_rule_origins(
+    effective: &EffectiveConfiguration,
+    rule: &super::AccessRule,
+) -> Vec<DirectiveOrigin> {
+    let mut origins = vec![rule.origin.clone()];
+    for term in &rule.terms {
+        origins.extend(access_term_origins(effective, rule, term));
+    }
+    origins
+}
+
+fn access_term_origins(
+    effective: &EffectiveConfiguration,
+    rule: &super::AccessRule,
+    term: &AclTerm,
+) -> Vec<DirectiveOrigin> {
+    let mut origins = vec![rule.origin.clone()];
+    if let AclReferenceResolution::Defined(definitions) = &term.resolution {
+        origins.extend(origins_for_occurrences(
+            effective,
+            definitions.iter().copied(),
+        ));
+    }
+    origins
+}
+
+fn origins_for_occurrences(
+    effective: &EffectiveConfiguration,
+    occurrences: impl IntoIterator<Item = OccurrenceId>,
+) -> Vec<DirectiveOrigin> {
+    occurrences
+        .into_iter()
+        .map(|occurrence| {
+            effective
+                .ledger
+                .decision(occurrence)
+                .unwrap_or_else(|| panic!("Squid provenance occurrence {occurrence:?} is missing"))
+                .origin
+                .clone()
+        })
+        .collect()
+}
+
+fn record_fields<const N: usize>(
+    recorder: &mut ProvenanceRecorder,
+    base: &str,
+    suffixes: [&str; N],
+    origins: &[DirectiveOrigin],
+) {
+    for suffix in suffixes {
+        recorder.record(format!("{base}{suffix}"), origins.to_vec());
+    }
+}
+
+fn lower_blocker_diagnostic(
+    kind: SemanticBlockerKind,
+    effective: &EffectiveConfiguration,
+    graph: &SourceGraph,
+) -> Diagnostic {
+    let mut diagnostic = Diagnostic::new(
+        blocker_code(kind),
+        Severity::Error,
+        DiagnosticStage::Lower,
+        blocker_message(kind),
+    );
+    if let Some(origin) = effective.ledger.decisions.iter().find_map(|decision| {
+        matches!(
+            decision.outcome,
+            DecisionOutcome::Classified {
+                activation: Activation::Blocked(blocked),
+                ..
+            } if blocked == kind
+        )
+        .then_some(&decision.origin)
+    }) {
+        diagnostic = diagnostic
+            .with_primary_span(origin.directive_span)
+            .with_include_stack(
+                origin
+                    .provenance
+                    .include_stack
+                    .iter()
+                    .map(|frame| frame.directive_span),
+            );
+    } else if let Some(root) = graph.root.and_then(|source| graph.source(source)) {
+        diagnostic = diagnostic.with_primary_span(root.source.full_span());
+    }
+    diagnostic
 }
 
 fn lower_authentication(schemes: &[AuthenticationScheme]) -> Result<Option<ForwardProxyAuth>, ()> {

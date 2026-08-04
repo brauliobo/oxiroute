@@ -1,7 +1,7 @@
 use std::{
     error::Error,
     ffi::OsString,
-    fmt::{self, Write as _},
+    fmt,
     fs::File,
     io::{self, BufRead, BufReader, Read as _, Write as _},
     net::{IpAddr, TcpStream, ToSocketAddrs as _},
@@ -13,7 +13,6 @@ use std::{
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use oxiroute_config_source::{ConfigFormat, render_config};
-use oxiroute_import::{Diagnostic, Severity};
 use rustix::fs::{self as rustix_fs, FileType, Mode, OFlags};
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
@@ -683,19 +682,7 @@ fn import_nginx(
             if shadow_port_offset.is_some() {
                 return Err("--shadow-port-offset requires --output preview".into());
             }
-            let mut result = report_header("nginx", &report.diagnostics);
-            writeln!(result, "finalized: {}", report.candidate.config.is_some())?;
-            writeln!(
-                result,
-                "deployment requirements: {}",
-                report.candidate.deployment_requirements.len()
-            )?;
-            writeln!(
-                result,
-                "activation requirements: {}",
-                report.candidate.activation_requirements.len()
-            )?;
-            Ok(result)
+            Ok(oxiroute_import::ImportReportEnvelope::from_nginx(&report).to_json_line()?)
         }
     }
 }
@@ -730,20 +717,10 @@ fn import_haproxy(
             if shadow_port_offset.is_some() {
                 return Err("--shadow-port-offset requires --output preview".into());
             }
-            let candidate = report.value();
-            let mut result = report_header("haproxy", report.diagnostics());
-            writeln!(result, "finalized: {}", candidate.config.is_some())?;
-            writeln!(
-                result,
-                "deployment requirements: {}",
-                candidate.deployment_requirements.len()
-            )?;
-            writeln!(
-                result,
-                "activation requirements: {}",
-                candidate.activation_requirements.len()
-            )?;
-            Ok(result)
+            Ok(
+                oxiroute_import::ImportReportEnvelope::from_haproxy(&report, paths)
+                    .to_json_line()?,
+            )
         }
     }
 }
@@ -763,14 +740,7 @@ fn import_squid(
             if shadow_port_offset.is_some() {
                 return Err("--shadow-port-offset requires --output preview".into());
             }
-            let mut result = report_header("squid", &report.diagnostics);
-            writeln!(result, "finalized: {}", report.config.is_some())?;
-            writeln!(
-                result,
-                "blocked capabilities: {}",
-                report.blocked_capabilities.len()
-            )?;
-            Ok(result)
+            Ok(oxiroute_import::ImportReportEnvelope::from_squid(&report).to_json_line()?)
         }
     }
 }
@@ -792,34 +762,7 @@ fn import_apache(
             if shadow_port_offset.is_some() {
                 return Err("--shadow-port-offset requires --output preview".into());
             }
-            let mut result = report_header("apache", &report.diagnostics);
-            writeln!(
-                result,
-                "source files: {}",
-                report.source_graph.sources.len()
-            )?;
-            writeln!(
-                result,
-                "include edges: {}",
-                report.source_graph.includes.len()
-            )?;
-            writeln!(
-                result,
-                "blocked virtual hosts: {}",
-                report.blocked_virtual_hosts.len()
-            )?;
-            writeln!(result, "finalized: {}", report.candidate.config.is_some())?;
-            writeln!(
-                result,
-                "deployment requirements: {}",
-                report.candidate.deployment_requirements.len()
-            )?;
-            writeln!(
-                result,
-                "activation requirements: {}",
-                report.candidate.activation_requirements.len()
-            )?;
-            Ok(result)
+            Ok(oxiroute_import::ImportReportEnvelope::from_apache(&report).to_json_line()?)
         }
     }
 }
@@ -857,25 +800,6 @@ fn preview(
 ) -> Result<String, Box<dyn Error>> {
     let config = config.ok_or("native configuration did not produce an activatable candidate")?;
     Ok(render_config(format, config)?)
-}
-
-fn report_header(kind: &str, diagnostics: &[Diagnostic]) -> String {
-    let errors = diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.severity() == Severity::Error)
-        .count();
-    let warnings = diagnostics.len().saturating_sub(errors);
-    let mut result = format!("importer: {kind}\nerrors: {errors}\nwarnings: {warnings}\n");
-    for diagnostic in diagnostics {
-        let _ = writeln!(
-            result,
-            "{} {:?}: {}",
-            diagnostic.code().as_str(),
-            diagnostic.severity(),
-            diagnostic.message()
-        );
-    }
-    result
 }
 
 fn run(cli: &Cli) -> Result<(), CliError> {
