@@ -2,6 +2,7 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
 import type { RtmpRecorderConfig, RtmpServiceConfig } from '../config'
+import { defaultRtmpCallback, defaultRtmpOutboundPolicy, defaultRtmpRelay } from './canonicalDefaults'
 import RtmpRecorderEditor from './RtmpRecorderEditor.vue'
 import RtmpServiceEditor from './RtmpServiceEditor.vue'
 
@@ -10,8 +11,14 @@ function recorder(): RtmpRecorderConfig {
     name: 'archive',
     start: 'continuous',
     root_directory: '/var/lib/oxiroute/recordings',
+    record_mask: { audio: true, video: true, keyframes: false },
     suffix_template: '.flv',
     append_unix_seconds: false,
+    append: false,
+    lock: false,
+    max_size: null,
+    max_frames: null,
+    notify: false,
     timezone: 'utc',
     time_basis: 'segment_start',
     segment_naming: 'safe_unique',
@@ -51,8 +58,14 @@ describe('RTMP recorder configuration editors', () => {
       name: 'manual-archive',
       start: 'manual',
       root_directory: '/srv/recordings',
+      record_mask: { audio: true, video: true, keyframes: false },
       suffix_template: '-%Y%m%d.flv',
       append_unix_seconds: true,
+      append: false,
+      lock: false,
+      max_size: null,
+      max_frames: null,
+      notify: false,
       timezone: 'America/Recife',
       time_basis: 'segment_start',
       segment_naming: 'safe_unique',
@@ -73,7 +86,9 @@ describe('RTMP recorder configuration editors', () => {
       name: 'live',
       outbound_chunk_size: 4_096,
       access_log: null,
-      applications: [{ name: 'broadcast', live: true, idle_streams: true, publish: { rules: [], token: null }, play: { rules: [], token: null }, limits: { max_connections: 1_024, max_publishers: 256, max_viewers: 1_024 }, push_targets: [], fanout: { max_subscribers: 1_024, max_queue_messages_per_subscriber: 256, max_queue_bytes_per_subscriber: 8_388_608 }, recorders: [] }],
+      outbound_policy: defaultRtmpOutboundPolicy(),
+      callbacks: defaultRtmpCallback(),
+      applications: [{ name: 'broadcast', live: true, idle_streams: true, publish: { rules: [], token: null }, play: { rules: [], token: null }, limits: { max_connections: 1_024, max_publishers: 256, max_viewers: 1_024 }, push_targets: [], pull_targets: [], relay: defaultRtmpRelay(), callbacks: defaultRtmpCallback(), fanout: { max_subscribers: 1_024, max_queue_messages_per_subscriber: 256, max_queue_bytes_per_subscriber: 8_388_608 }, vod: null, recorders: [] }],
     }
     const wrapper = mount(RtmpServiceEditor, { props: { service } })
     const add = wrapper.get('.recorder-list .add-row')
@@ -98,7 +113,9 @@ describe('RTMP recorder configuration editors', () => {
           name: 'playback',
           outbound_chunk_size: 4_096,
           access_log: null,
-          applications: [{ name: 'playback', live: false, idle_streams: true, publish: { rules: [], token: null }, play: { rules: [], token: null }, limits: { max_connections: 1_024, max_publishers: 256, max_viewers: 1_024 }, push_targets: [], fanout: { max_subscribers: 1_024, max_queue_messages_per_subscriber: 256, max_queue_bytes_per_subscriber: 8_388_608 }, recorders: [] }],
+          outbound_policy: defaultRtmpOutboundPolicy(),
+          callbacks: defaultRtmpCallback(),
+          applications: [{ name: 'playback', live: false, idle_streams: true, publish: { rules: [], token: null }, play: { rules: [], token: null }, limits: { max_connections: 1_024, max_publishers: 256, max_viewers: 1_024 }, push_targets: [], pull_targets: [], relay: defaultRtmpRelay(), callbacks: defaultRtmpCallback(), fanout: { max_subscribers: 1_024, max_queue_messages_per_subscriber: 256, max_queue_bytes_per_subscriber: 8_388_608 }, vod: null, recorders: [] }],
         },
       },
     })
@@ -112,6 +129,8 @@ describe('RTMP recorder configuration editors', () => {
       name: 'live',
       outbound_chunk_size: 4_096,
       access_log: null,
+      outbound_policy: defaultRtmpOutboundPolicy(),
+      callbacks: defaultRtmpCallback(),
       applications: [{
         name: 'broadcast',
         live: true,
@@ -120,7 +139,11 @@ describe('RTMP recorder configuration editors', () => {
         play: { rules: [], token: null },
         limits: { max_connections: 1_024, max_publishers: 256, max_viewers: 1_024 },
         push_targets: [],
+        pull_targets: [],
+        relay: defaultRtmpRelay(),
+        callbacks: defaultRtmpCallback(),
         fanout: { max_subscribers: 1_024, max_queue_messages_per_subscriber: 256, max_queue_bytes_per_subscriber: 8_388_608 },
+        vod: null,
         recorders: [],
       }],
     }

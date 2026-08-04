@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import ConfigurationWorkspace from './ConfigurationWorkspace.vue'
 import { CANONICAL_FIELD_REGISTRY } from './config'
+import { defaultRtmpCallback, defaultRtmpOutboundPolicy, defaultRtmpRelay } from './configuration/canonicalDefaults'
 import { contractConfigSnapshot, jsonResponse } from './test/contractFixtures'
 import type {
   CanonicalConfig,
@@ -198,6 +199,8 @@ function canonicalConfig(): CanonicalConfig {
         name: 'live',
         outbound_chunk_size: 4_096,
         access_log: null,
+        outbound_policy: defaultRtmpOutboundPolicy(),
+        callbacks: defaultRtmpCallback(),
         applications: [
           {
             name: 'broadcast',
@@ -207,14 +210,24 @@ function canonicalConfig(): CanonicalConfig {
             play: { rules: [], token: null },
             limits: { max_connections: 1_024, max_publishers: 256, max_viewers: 1_024 },
             push_targets: [],
+            pull_targets: [],
+            relay: defaultRtmpRelay(),
+            callbacks: defaultRtmpCallback(),
             fanout: { max_subscribers: 1_024, max_queue_messages_per_subscriber: 256, max_queue_bytes_per_subscriber: 8_388_608 },
+            vod: null,
             recorders: [
               {
                 name: 'archive',
                 start: 'continuous',
                 root_directory: '/var/lib/oxiroute/recordings',
+                record_mask: { audio: true, video: true, keyframes: false },
                 suffix_template: '-%Y-%m-%dT%H-%M-%S.flv',
                 append_unix_seconds: false,
+                append: false,
+                lock: false,
+                max_size: null,
+                max_frames: null,
+                notify: false,
                 timezone: 'utc',
                 time_basis: 'segment_start',
                 segment_naming: 'safe_unique',
@@ -1020,6 +1033,8 @@ describe('ConfigurationWorkspace', () => {
       name: 'media-edge',
       outbound_chunk_size: 4_096,
       access_log: null,
+      outbound_policy: defaultRtmpOutboundPolicy(),
+      callbacks: defaultRtmpCallback(),
       applications: [{
         name: 'publish',
         live: true,
@@ -1028,13 +1043,23 @@ describe('ConfigurationWorkspace', () => {
         play: { rules: [], token: null },
         limits: { max_connections: 1_024, max_publishers: 256, max_viewers: 1_024 },
         push_targets: [],
+        pull_targets: [],
+        relay: defaultRtmpRelay(),
+        callbacks: defaultRtmpCallback(),
         fanout: { max_subscribers: 1_024, max_queue_messages_per_subscriber: 256, max_queue_bytes_per_subscriber: 8_388_608 },
+        vod: null,
         recorders: [{
           name: 'manual-archive',
           start: 'manual',
           root_directory: '/srv/recordings',
+          record_mask: { audio: true, video: true, keyframes: false },
           suffix_template: '-%Y%m%d.flv',
           append_unix_seconds: true,
+          append: false,
+          lock: false,
+          max_size: null,
+          max_frames: null,
+          notify: false,
           timezone: 'utc',
           time_basis: 'segment_start',
           segment_naming: 'safe_unique',
@@ -1113,6 +1138,8 @@ describe('ConfigurationWorkspace', () => {
         name: 'live-edge',
         outbound_chunk_size: 4_096,
         access_log: null,
+        outbound_policy: defaultRtmpOutboundPolicy(),
+        callbacks: defaultRtmpCallback(),
         applications: [{
           name: 'camera',
           live: true,
@@ -1121,7 +1148,11 @@ describe('ConfigurationWorkspace', () => {
           play: { rules: [], token: null },
           limits: { max_connections: 1_024, max_publishers: 256, max_viewers: 1_024 },
           push_targets: [],
+          pull_targets: [],
+          relay: defaultRtmpRelay(),
+          callbacks: defaultRtmpCallback(),
           fanout: { max_subscribers: 1_024, max_queue_messages_per_subscriber: 256, max_queue_bytes_per_subscriber: 8_388_608 },
+          vod: null,
           recorders: canonicalConfig().rtmp_services[0]!.applications[0]!.recorders,
         }],
       },

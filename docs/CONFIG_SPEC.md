@@ -267,7 +267,7 @@ Current constraints:
 - `management.ui_dir` optionally points to a prebuilt Vue distribution loaded into memory at daemon startup.
 - RTMP VOD sources are named local roots or HTTP/HTTPS origins. VOD paths are relative, no-follow,
   single-range objects with bounded file size, duration, and concurrent sessions. HTTP origins are
-  resolved and checked against the service outbound policy before activation.
+  resolved and checked against the RTMP service outbound policy before activation.
 - `stats` is optional. `binds` and `pages` together contain one to eight nonoverlapping IPv4/IPv6
   sockets. Every `binds` socket serves public read-only `/metrics` and `/ready`; `/stats` and
   `/api/v1/status` require a loopback peer and the configured Bearer token. Server
@@ -381,12 +381,16 @@ Current constraints:
   canonicalized to uppercase for matching.
 - Each route owns a `policy` with a nullable body limit, separate connect/read/write deadlines, and
   explicit request/response buffering booleans. Deadlines default to `30000`, buffering defaults to
-  false, and the body limit defaults to 10 MiB while explicit `null` means unbounded. Buffering-off
-  is the active Pingora streaming behavior; either buffering flag set to true fails startup.
+  false, and the body limit defaults to 10 MiB while explicit `null` means unbounded. Request
+  buffering reads the complete body before upstream connection; response buffering requires a
+  positive body limit and only admits a response with a fixed `Content-Length` at or below that
+  limit. Unbounded, chunked, trailer-bearing, or oversized responses fail as upstream errors before
+  their body is forwarded. Buffering-off is the active Pingora streaming behavior.
 - The version-1 service fields `upstream_io_timeout_ms` and `max_request_body_bytes` remain accepted
-  because current canonical files use them. New configuration uses route policy. The service I/O timeout defaults to `30000` and applies independently to upstream connect,
-  read-inactivity, and write-inactivity operations; progress resets the I/O deadline, so this is
-  not a total request deadline. Omitted `max_request_body_bytes` defaults to `10485760`; explicit
+  because current canonical files use them. New configuration uses route policy. The service I/O
+  timeout defaults to `30000` and applies independently to upstream connect, read-inactivity, and
+  write-inactivity operations; it also establishes the request deadline's upper bound, so I/O
+  progress does not extend the total request deadline. Omitted `max_request_body_bytes` defaults to `10485760`; explicit
   `null` means unbounded streaming, and a configured limit MUST be positive. Oversized declared
   bodies return `413` before contacting an origin. A streamed overflow aborts forwarding and
   returns `413` when an origin response has not already committed. Canonical rendering preserves
@@ -402,7 +406,8 @@ Current constraints:
   is transport fallback and does not consume `max_retries`; route retry begins only after that
   bounded address set is exhausted. Established-connection errors other than a refused stream,
   response statuses, upgrades, and unsafe or body-bearing request replays are never retried. Each
-  attempt has its own `upstream_io_timeout_ms` connect deadline; there is no total request deadline.
+  attempt is clamped to the remaining total request deadline, whose default upper bound is the
+  service `upstream_io_timeout_ms` and which is reduced by the listener's active request timeout.
   `final_redispatch = true` changes only the last configured retry from `same_server` to
   `next_server`; it requires positive `max_retries` and `target = "same_server"` and otherwise
   fails validation. It defaults to `false`.
@@ -812,9 +817,9 @@ or plugin credentials. Canonical output MUST NOT inline private keys or DNS API 
 
 ### RTMP service and recorder
 
-The current RTMP model supports live applications, structured push targets, bounded fanout,
-service access-log policy, and canonical recorder policies. Pull relay, VOD, callbacks, and media
-segmenters remain future fields. The strict nginx-RTMP
+The current RTMP model supports live applications, structured push/pull targets, bounded fanout,
+service outbound policy, bounded HTTP callbacks, named local/HTTP VOD sources, and canonical
+recorder policies. Media segmenters remain future fields. The strict nginx-RTMP
 importer retains source tokens, effective inheritance, terminal decisions, and provenance for its
 supported subset as defined in `RTMP_SPEC.md`.
 
@@ -869,14 +874,22 @@ recorders, one configuration accepts at most 256 recorders and 64 normalized rec
 recorders require `live = true`.
 
 `outbound_chunk_size` defaults to 4096, is bounded to 1 MiB, and is announced by the server session
-on wire. Push targets are unique structured host, port, and application tuples; they are resolved
-and pinned during runtime planning, reject any resolved direct listener loop, and are valid only for
-live applications. Application `$name` expands to the exact source stream name; the destination
-stream name is always the exact source stream name. Each publisher incarnation owns an independent
-bounded relay worker. An unavailable target retries every three seconds and can recover later;
-relay backpressure never blocks local viewers or recorders. Fanout limits default to 1024
+on wire. Push and pull targets are unique structured host, port, application, and stream tuples;
+they are resolved and pinned during runtime planning, reject any resolved direct listener loop, and
+are valid only for live applications. Application `$name` expands to the exact source stream name;
+the destination stream name is always the exact source stream name. Each publisher incarnation owns
+an independent bounded relay worker, while each pull target owns one bounded reconnecting source
+worker. An unavailable target retries every three seconds and can recover later; relay backpressure
+never blocks local viewers or recorders. Fanout limits default to 1024
 subscribers, 256 queued messages, and 8 MiB per subscriber and compile per application.
 Other `$` substitutions are rejected instead of being treated as implicit templates.
+
+`outbound_policy` applies to relay and callback destinations. It checks every resolved address,
+rejects private/local destinations by default, pins the admitted address for reconnects, and applies
+the RTMP/RTMPS and chain-depth policy. `callbacks` supports bounded `on_connect`, `on_disconnect`,
+`on_publish`, `on_publish_done`, `on_play`, `on_play_done`, `on_done`, and `on_update` endpoints.
+Authorization callbacks require a 2xx response; update callbacks may be disabled with a zero update
+timeout, and strict update mode closes the RTMP session after a failed update.
 
 Recorder fields are:
 
@@ -929,7 +942,7 @@ restricted Lua, UCI, or HOCON.
 - A successful UI save normalizes formatting and field order.
 - Comments, source formatting, Lua expressions, HOCON substitutions/merges, UCI record names,
   templates, and native-reference declarations do not round-trip through a typed save.
-- A root using `templates`, `nginx_server`, `haproxy_server`, `squid_server`, or `apache_server` is marked compositional. The backend
+- A root using `templates`, `nginx_server`, `haproxy_server`, `squid_server`, `apache_server`, or `varnish_server` is marked compositional. The backend
   rejects typed replacement of that root with `E_COMPOSITIONAL_ROOT`; operators must edit the source
   graph directly or explicitly flatten it with `config compose` into a separately owned file.
 - The API MUST state that normalization will occur before accepting a save.

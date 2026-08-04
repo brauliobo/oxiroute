@@ -5,8 +5,8 @@ use rml_rtmp::{
 };
 
 use crate::{
-    CatalogError, LiveHub, MediaEvent, MediaEventKind, PlaybackSubscription, StreamKey,
-    SubscriberRegistration,
+    CatalogError, LiveHub, MediaEvent, MediaEventKind, PlaybackSubscription, RtmpCallbackEvent,
+    StreamKey, SubscriberRegistration,
 };
 
 use super::{
@@ -48,6 +48,14 @@ impl PlaybackSession {
 
     pub(super) fn matches(&self, application: &str, protocol_name: &str) -> bool {
         identity::matches(&self.key, application, protocol_name)
+    }
+
+    pub(super) fn application(&self) -> &str {
+        &self.key.application
+    }
+
+    pub(super) fn stream_name(&self) -> &str {
+        &self.key.name
     }
 
     pub(super) fn observe_at(&mut self, at_unix_ms: u64) {
@@ -185,6 +193,12 @@ pub(super) fn handle_request(
                 "this connection already has an active media role",
             ),
         );
+    }
+    let context =
+        session.callback_context(application, Some(identity.stream_name()), identity.query());
+    if let Err(error) = session.authorize_callbacks(application, RtmpCallbackEvent::Play, &context)
+    {
+        return session.reject_request(request_id, status::callback(SessionOperation::Play, error));
     }
 
     let idle_streams = application_policy.idle_streams();

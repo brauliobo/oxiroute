@@ -6,7 +6,13 @@ import type {
   ListenerConfig,
   UpstreamPoolConfig,
 } from '../config'
-import { defaultCacheStore, defaultForwardProxyService } from './canonicalDefaults'
+import {
+  defaultCacheStore,
+  defaultForwardProxyService,
+  defaultRtmpCallback,
+  defaultRtmpOutboundPolicy,
+  defaultRtmpRelay,
+} from './canonicalDefaults'
 import { defaultHttpRoute } from './httpDefaults'
 
 export type CollectionName =
@@ -248,6 +254,8 @@ export function useConfigurationNavigation(
           name: '',
           outbound_chunk_size: 4_096,
           access_log: null,
+          outbound_policy: defaultRtmpOutboundPolicy(),
+          callbacks: defaultRtmpCallback(),
           applications: [{
             name: '',
             live: true,
@@ -260,11 +268,15 @@ export function useConfigurationNavigation(
               max_viewers: 1_024,
             },
             push_targets: [],
+            pull_targets: [],
+            relay: defaultRtmpRelay(),
+            callbacks: defaultRtmpCallback(),
             fanout: {
               max_subscribers: 1_024,
               max_queue_messages_per_subscriber: 256,
               max_queue_bytes_per_subscriber: 8_388_608,
             },
+            vod: null,
             recorders: [],
           }],
         })

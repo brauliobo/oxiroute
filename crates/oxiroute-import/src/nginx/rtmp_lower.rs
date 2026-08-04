@@ -6,9 +6,10 @@ use std::{
 
 use oxiroute_config::{
     AccessLogPolicy, Config, DownstreamTimeoutPolicy, Listener, ListenerBind, Protocol,
-    RtmpAccessPolicy, RtmpAccessRule, RtmpApplication, RtmpFanoutPolicy, RtmpPushTarget,
-    RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis,
-    RtmpRecorderTimezone, RtmpService, RtmpSessionCeilings, validate_config,
+    RtmpAccessPolicy, RtmpAccessRule, RtmpApplication, RtmpFanoutPolicy, RtmpOutboundPolicy,
+    RtmpPushTarget, RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart,
+    RtmpRecorderTimeBasis, RtmpRecorderTimezone, RtmpRelayPolicy, RtmpService, RtmpSessionCeilings,
+    RtmpTransport, validate_config,
 };
 
 use crate::{
@@ -255,6 +256,8 @@ impl Lowerer {
             access_log: rtmp
                 .access_log_disabled
                 .then_some(AccessLogPolicy::Disabled),
+            outbound_policy: RtmpOutboundPolicy::default(),
+            callbacks: Default::default(),
             applications,
         });
         self.provenance.push(CanonicalProvenance {
@@ -420,8 +423,16 @@ impl Lowerer {
                     host: target.host.clone(),
                     port: target.port,
                     application: target.application.clone(),
+                    scheme: RtmpTransport::Rtmp,
+                    stream_name: None,
+                    tc_url: None,
+                    flash_version: None,
+                    credentials: None,
                 })
                 .collect(),
+            pull_targets: Vec::new(),
+            relay: RtmpRelayPolicy::default(),
+            callbacks: Default::default(),
             fanout: RtmpFanoutPolicy {
                 max_subscribers: 1_024,
                 max_queue_messages_per_subscriber: 256,
@@ -479,13 +490,13 @@ impl Lowerer {
                 },
             ),
             record_mask: recorder.record_mask,
+            suffix_template: recorder.suffix_template.clone(),
+            append_unix_seconds: recorder.append_unix_seconds,
             append: recorder.append,
             lock: recorder.lock,
             max_size: recorder.max_size,
             max_frames: recorder.max_frames,
             notify: recorder.notify,
-            suffix_template: recorder.suffix_template.clone(),
-            append_unix_seconds: recorder.append_unix_seconds,
             timezone: RtmpRecorderTimezone::Iana(
                 self.host_timezone
                     .clone()

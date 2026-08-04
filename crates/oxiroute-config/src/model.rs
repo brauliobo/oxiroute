@@ -28,11 +28,17 @@ use crate::defaults::{
     default_max_request_body_bytes, default_recorder_max_active_recorders,
     default_recorder_max_queue_bytes, default_recorder_max_queue_messages,
     default_recorder_shutdown_timeout_ms, default_recorder_suffix_template,
-    default_rtmp_fanout_policy, default_rtmp_outbound_chunk_size, default_rtmp_session_ceilings,
-    default_rtmp_vod_duration_ms, default_rtmp_vod_file_bytes, default_rtmp_vod_sessions,
-    default_self_signed_validity_days, default_true, default_udp_max_datagram_bytes,
-    default_udp_max_queue_bytes, default_udp_max_queue_datagrams, default_udp_max_session_bytes,
-    default_udp_max_sessions, default_unhealthy_threshold, default_upstream_io_timeout_ms,
+    default_rtmp_callback_timeout_ms, default_rtmp_callback_update_timeout_ms,
+    default_rtmp_fanout_policy, default_rtmp_max_chain_depth, default_rtmp_outbound_chunk_size,
+    default_rtmp_outbound_policy, default_rtmp_pull_reconnect_ms, default_rtmp_push_reconnect_ms,
+    default_rtmp_relay_buffer_ms, default_rtmp_relay_connect_timeout_ms,
+    default_rtmp_relay_handshake_timeout_ms, default_rtmp_relay_policy,
+    default_rtmp_relay_queue_bytes, default_rtmp_relay_queue_messages,
+    default_rtmp_session_ceilings, default_rtmp_vod_duration_ms, default_rtmp_vod_file_bytes,
+    default_rtmp_vod_sessions, default_self_signed_validity_days, default_true,
+    default_udp_max_datagram_bytes, default_udp_max_queue_bytes, default_udp_max_queue_datagrams,
+    default_udp_max_session_bytes, default_udp_max_sessions, default_unhealthy_threshold,
+    default_upstream_io_timeout_ms,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1275,6 +1281,10 @@ pub struct RtmpService {
     pub outbound_chunk_size: u32,
     #[serde(default)]
     pub access_log: Option<AccessLogPolicy>,
+    #[serde(default = "default_rtmp_outbound_policy")]
+    pub outbound_policy: RtmpOutboundPolicy,
+    #[serde(default)]
+    pub callbacks: RtmpCallbackConfig,
     pub applications: Vec<RtmpApplication>,
 }
 
@@ -1294,6 +1304,12 @@ pub struct RtmpApplication {
     pub limits: RtmpSessionCeilings,
     #[serde(default)]
     pub push_targets: Vec<RtmpPushTarget>,
+    #[serde(default)]
+    pub pull_targets: Vec<RtmpPullTarget>,
+    #[serde(default = "default_rtmp_relay_policy")]
+    pub relay: RtmpRelayPolicy,
+    #[serde(default)]
+    pub callbacks: RtmpCallbackConfig,
     #[serde(default = "default_rtmp_fanout_policy")]
     pub fanout: RtmpFanoutPolicy,
     #[serde(default)]
@@ -1350,6 +1366,149 @@ pub enum RtmpTokenSource {
     StreamQuery,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RtmpOutboundPolicy {
+    #[serde(default)]
+    pub allow_domains: Vec<String>,
+    #[serde(default)]
+    pub deny_domains: Vec<String>,
+    #[serde(default)]
+    pub allow_cidrs: Vec<String>,
+    #[serde(default)]
+    pub deny_cidrs: Vec<String>,
+    #[serde(default = "default_true")]
+    pub deny_private: bool,
+    #[serde(default)]
+    pub rtmps: RtmpRtmpsPolicy,
+    #[serde(default = "default_rtmp_max_chain_depth")]
+    pub max_chain_depth: u8,
+}
+
+impl Default for RtmpOutboundPolicy {
+    fn default() -> Self {
+        default_rtmp_outbound_policy()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RtmpRtmpsPolicy {
+    #[default]
+    Disabled,
+    Allowed,
+    Required,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RtmpRelayPolicy {
+    #[serde(default = "default_rtmp_relay_queue_messages")]
+    pub max_queue_messages: u64,
+    #[serde(default = "default_rtmp_relay_queue_bytes")]
+    pub max_queue_bytes: u64,
+    #[serde(default = "default_rtmp_relay_buffer_ms")]
+    pub buffer_ms: u64,
+    #[serde(default = "default_rtmp_push_reconnect_ms")]
+    pub push_reconnect_ms: u64,
+    #[serde(default = "default_rtmp_pull_reconnect_ms")]
+    pub pull_reconnect_ms: u64,
+    #[serde(default = "default_rtmp_relay_connect_timeout_ms")]
+    pub connect_timeout_ms: u64,
+    #[serde(default = "default_rtmp_relay_handshake_timeout_ms")]
+    pub handshake_timeout_ms: u64,
+}
+
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RtmpCallbackConfig {
+    #[serde(default)]
+    pub on_connect: Option<String>,
+    #[serde(default)]
+    pub on_disconnect: Option<String>,
+    #[serde(default)]
+    pub on_publish: Option<String>,
+    #[serde(default)]
+    pub on_publish_done: Option<String>,
+    #[serde(default)]
+    pub on_play: Option<String>,
+    #[serde(default)]
+    pub on_play_done: Option<String>,
+    #[serde(default)]
+    pub on_done: Option<String>,
+    #[serde(default)]
+    pub on_update: Option<String>,
+    #[serde(default)]
+    pub notify_method: RtmpNotifyMethod,
+    #[serde(default = "default_rtmp_callback_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_rtmp_callback_update_timeout_ms")]
+    pub notify_update_timeout_ms: u64,
+    #[serde(default)]
+    pub notify_update_strict: bool,
+    #[serde(default)]
+    pub notify_relay_redirect: bool,
+}
+
+impl fmt::Debug for RtmpCallbackConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug = formatter.debug_struct("RtmpCallbackConfig");
+        for (name, value) in [
+            ("on_connect", self.on_connect.as_ref()),
+            ("on_disconnect", self.on_disconnect.as_ref()),
+            ("on_publish", self.on_publish.as_ref()),
+            ("on_publish_done", self.on_publish_done.as_ref()),
+            ("on_play", self.on_play.as_ref()),
+            ("on_play_done", self.on_play_done.as_ref()),
+            ("on_done", self.on_done.as_ref()),
+            ("on_update", self.on_update.as_ref()),
+        ] {
+            debug.field(name, &value.map(|_| "<redacted>"));
+        }
+        debug
+            .field("notify_method", &self.notify_method)
+            .field("timeout_ms", &self.timeout_ms)
+            .field("notify_update_timeout_ms", &self.notify_update_timeout_ms)
+            .field("notify_update_strict", &self.notify_update_strict)
+            .field("notify_relay_redirect", &self.notify_relay_redirect)
+            .finish()
+    }
+}
+
+impl Default for RtmpCallbackConfig {
+    fn default() -> Self {
+        Self {
+            on_connect: None,
+            on_disconnect: None,
+            on_publish: None,
+            on_publish_done: None,
+            on_play: None,
+            on_play_done: None,
+            on_done: None,
+            on_update: None,
+            notify_method: RtmpNotifyMethod::default(),
+            timeout_ms: default_rtmp_callback_timeout_ms(),
+            notify_update_timeout_ms: default_rtmp_callback_update_timeout_ms(),
+            notify_update_strict: false,
+            notify_relay_redirect: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RtmpNotifyMethod {
+    Get,
+    #[default]
+    Post,
+}
+
+impl Default for RtmpRelayPolicy {
+    fn default() -> Self {
+        default_rtmp_relay_policy()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct RtmpSessionCeilings {
@@ -1371,6 +1530,59 @@ pub struct RtmpPushTarget {
     #[serde(default = "default_rtmp_port")]
     pub port: u16,
     pub application: String,
+    #[serde(default)]
+    pub scheme: RtmpTransport,
+    #[serde(default)]
+    pub stream_name: Option<String>,
+    #[serde(default)]
+    pub tc_url: Option<String>,
+    #[serde(default)]
+    pub flash_version: Option<String>,
+    #[serde(default)]
+    pub credentials: Option<RtmpCredentialReference>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RtmpPullTarget {
+    pub host: String,
+    #[serde(default = "default_rtmp_port")]
+    pub port: u16,
+    pub application: String,
+    pub stream_name: String,
+    #[serde(default)]
+    pub scheme: RtmpTransport,
+    #[serde(default)]
+    pub tc_url: Option<String>,
+    #[serde(default)]
+    pub flash_version: Option<String>,
+    #[serde(default)]
+    pub credentials: Option<RtmpCredentialReference>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RtmpTransport {
+    #[default]
+    Rtmp,
+    Rtmps,
+}
+
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RtmpCredentialReference {
+    pub username: String,
+    pub secret_file: PathBuf,
+}
+
+impl fmt::Debug for RtmpCredentialReference {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RtmpCredentialReference")
+            .field("username", &self.username)
+            .field("secret_file", &"<redacted>")
+            .finish()
+    }
 }
 
 const fn default_rtmp_port() -> u16 {
@@ -1383,12 +1595,6 @@ pub struct RtmpFanoutPolicy {
     pub max_subscribers: u64,
     pub max_queue_messages_per_subscriber: u64,
     pub max_queue_bytes_per_subscriber: u64,
-}
-
-impl Default for RtmpFanoutPolicy {
-    fn default() -> Self {
-        default_rtmp_fanout_policy()
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1428,6 +1634,12 @@ pub enum RtmpVodSource {
     },
 }
 
+impl Default for RtmpFanoutPolicy {
+    fn default() -> Self {
+        default_rtmp_fanout_policy()
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RtmpRecorder {
@@ -1442,6 +1654,9 @@ pub struct RtmpRecorder {
     /// Defaults to `.flv` and accepts only the bounded UTC subset used by `RecordingPathPolicy`.
     #[serde(default = "default_recorder_suffix_template")]
     pub suffix_template: String,
+    /// Defaults to false.
+    #[serde(default)]
+    pub append_unix_seconds: bool,
     /// Resume the exact existing segment when it is a valid FLV stream.
     #[serde(default)]
     pub append: bool,
@@ -1457,9 +1672,6 @@ pub struct RtmpRecorder {
     /// Retain bounded start/stop/failure notifications in recorder status.
     #[serde(default)]
     pub notify: bool,
-    /// Defaults to false.
-    #[serde(default)]
-    pub append_unix_seconds: bool,
     #[serde(default)]
     pub timezone: RtmpRecorderTimezone,
     #[serde(default)]
@@ -1648,6 +1860,10 @@ pub enum ForwardProxyAuth {
         #[serde(default = "default_true")]
         username_case_sensitive: bool,
     },
+    /// Reserved for a future listener TLS client-certificate verifier integration.
+    MutualTls {
+        client_ca_file_path: PathBuf,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1741,6 +1957,10 @@ pub struct ForwardDestinationPolicy {
     pub deny_cidrs: Vec<String>,
     #[serde(default = "default_true")]
     pub deny_private: bool,
+    #[serde(default)]
+    pub allow_times: Vec<ForwardTimeRange>,
+    #[serde(default)]
+    pub deny_times: Vec<ForwardTimeRange>,
 }
 
 impl Default for ForwardDestinationPolicy {
@@ -1751,8 +1971,30 @@ impl Default for ForwardDestinationPolicy {
             allow_cidrs: Vec::new(),
             deny_cidrs: Vec::new(),
             deny_private: true,
+            allow_times: Vec::new(),
+            deny_times: Vec::new(),
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ForwardTimeRange {
+    pub days: Vec<ForwardWeekday>,
+    pub start: String,
+    pub end: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum ForwardWeekday {
+    Monday,
+    Tuesday,
+    Wednesday,
+    Thursday,
+    Friday,
+    Saturday,
+    Sunday,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

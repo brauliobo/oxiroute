@@ -18,16 +18,19 @@ use crate::{
         MAX_RTMP_ACCESS_RULES_PER_OPERATION, MAX_RTMP_APPLICATION_BYTES,
         MAX_RTMP_APPLICATION_CONNECTIONS, MAX_RTMP_APPLICATION_NAME_BYTES,
         MAX_RTMP_APPLICATION_PUBLISHERS, MAX_RTMP_APPLICATION_VIEWERS,
-        MAX_RTMP_APPLICATIONS_PER_SERVICE, MAX_RTMP_FANOUT_QUEUE_BYTES,
-        MAX_RTMP_FANOUT_QUEUE_MESSAGES, MAX_RTMP_OUTBOUND_CHUNK_SIZE, MAX_RTMP_PUSH_TARGETS,
-        MAX_RTMP_RECORDERS_PER_APPLICATION, MAX_RTMP_RECORDING_ROOTS, MAX_RTMP_SERVICES,
-        MAX_RTMP_SUBSCRIBERS, MAX_RTMP_TOKEN_BYTES, MAX_RTMP_TOKEN_PARAMETER_BYTES,
-        MAX_RTMP_VOD_DURATION_MS, MAX_RTMP_VOD_FILE_BYTES, MAX_RTMP_VOD_ORIGIN_BYTES,
-        MAX_RTMP_VOD_SESSIONS, MAX_RTMP_VOD_SOURCE_NAME_BYTES, MAX_RTMP_VOD_SOURCES,
-        MAX_SAFE_JSON_INTEGER, MAX_SELF_SIGNED_VALIDITY_DAYS, MAX_TLS_PROFILES,
-        MAX_TOTAL_ENDPOINTS, MAX_TOTAL_RTMP_RECORDERS, MAX_UDP_DATAGRAM_BYTES, MAX_UDP_QUEUE_BYTES,
-        MAX_UDP_QUEUE_DATAGRAMS, MAX_UDP_SESSION_BYTES, MAX_UDP_SESSIONS, MAX_UPSTREAM_WEIGHT,
-        MIN_HEALTH_INTERVAL_MS, MIN_SELF_SIGNED_VALIDITY_DAYS,
+        MAX_RTMP_APPLICATIONS_PER_SERVICE, MAX_RTMP_CALLBACK_URL_BYTES, MAX_RTMP_CHAIN_DEPTH,
+        MAX_RTMP_CREDENTIAL_USERNAME_BYTES, MAX_RTMP_FANOUT_QUEUE_BYTES,
+        MAX_RTMP_FANOUT_QUEUE_MESSAGES, MAX_RTMP_OUTBOUND_CHUNK_SIZE, MAX_RTMP_OUTBOUND_CIDRS,
+        MAX_RTMP_OUTBOUND_DOMAINS, MAX_RTMP_PULL_TARGETS, MAX_RTMP_PUSH_TARGETS,
+        MAX_RTMP_RECONNECT_MS, MAX_RTMP_RECORDERS_PER_APPLICATION, MAX_RTMP_RECORDING_ROOTS,
+        MAX_RTMP_RELAY_BUFFER_MS, MAX_RTMP_RELAY_TIMEOUT_MS, MAX_RTMP_SECRET_FILE_BYTES,
+        MAX_RTMP_SERVICES, MAX_RTMP_SUBSCRIBERS, MAX_RTMP_TOKEN_BYTES,
+        MAX_RTMP_TOKEN_PARAMETER_BYTES, MAX_RTMP_VOD_DURATION_MS, MAX_RTMP_VOD_FILE_BYTES,
+        MAX_RTMP_VOD_ORIGIN_BYTES, MAX_RTMP_VOD_SESSIONS, MAX_RTMP_VOD_SOURCE_NAME_BYTES,
+        MAX_RTMP_VOD_SOURCES, MAX_SAFE_JSON_INTEGER, MAX_SELF_SIGNED_VALIDITY_DAYS,
+        MAX_TLS_PROFILES, MAX_TOTAL_ENDPOINTS, MAX_TOTAL_RTMP_RECORDERS, MAX_UDP_DATAGRAM_BYTES,
+        MAX_UDP_QUEUE_BYTES, MAX_UDP_QUEUE_DATAGRAMS, MAX_UDP_SESSION_BYTES, MAX_UDP_SESSIONS,
+        MAX_UPSTREAM_WEIGHT, MIN_HEALTH_INTERVAL_MS, MIN_SELF_SIGNED_VALIDITY_DAYS,
     },
     lexical::{
         authority_has_invalid_port, canonical_ip, is_unambiguous_http_path,
@@ -40,9 +43,10 @@ use crate::{
         AccessLogPolicy, AlpnProtocol, Certificate, CertificateSource, Config, ConfigError,
         DnsResolutionPolicy, ForwardHttpVersion, ForwardProxyService, HealthCheck, HealthCheckType,
         HttpVersion, L4Service, Listener, ListenerBind, Management, Protocol, RtmpAccessPolicy,
-        RtmpRecorder, RtmpService, RtmpSessionCeilings, RtmpTokenSource, RtmpVodSource, Stats,
-        StatsPage, TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm, UpstreamEndpoint,
-        UpstreamPool,
+        RtmpCallbackConfig, RtmpCredentialReference, RtmpOutboundPolicy, RtmpRecorder,
+        RtmpRelayPolicy, RtmpRtmpsPolicy, RtmpService, RtmpSessionCeilings, RtmpTokenSource,
+        RtmpTransport, RtmpVodSource, Stats, StatsPage, TlsProfile, TlsVersion, UdpPolicy,
+        UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool,
     },
 };
 
@@ -1094,6 +1098,8 @@ fn validate_rtmp_services(services: &mut [RtmpService]) -> Result<(), ConfigErro
             });
         }
         validate_access_log("RTMP service", &service.name, service.access_log.as_ref())?;
+        validate_rtmp_outbound_policy(&service.name, &mut service.outbound_policy)?;
+        validate_rtmp_callbacks(&service.name, None, &service.callbacks)?;
         if service.applications.is_empty() {
             return Err(ConfigError::EmptyRtmpApplications {
                 service: service.name.clone(),
@@ -1120,7 +1126,7 @@ fn validate_rtmp_services(services: &mut [RtmpService]) -> Result<(), ConfigErro
                     detail: "must be between 1 and 128 bytes",
                 });
             }
-            validate_rtmp_application(&service.name, application)?;
+            validate_rtmp_application(&service.name, &service.outbound_policy, application)?;
             if application.recorders.len() > MAX_RTMP_RECORDERS_PER_APPLICATION {
                 return Err(ConfigError::TooManyRtmpRecorders {
                     service: service.name.clone(),
@@ -1180,6 +1186,7 @@ fn validate_rtmp_services(services: &mut [RtmpService]) -> Result<(), ConfigErro
 
 fn validate_rtmp_application(
     service: &str,
+    outbound_policy: &RtmpOutboundPolicy,
     application: &mut crate::model::RtmpApplication,
 ) -> Result<(), ConfigError> {
     validate_rtmp_vod(service, application)?;
@@ -1195,6 +1202,14 @@ fn validate_rtmp_application(
     if !application.live && !application.push_targets.is_empty() {
         return Err(invalid("push_targets", "requires live = true"));
     }
+    if application.pull_targets.len() > MAX_RTMP_PULL_TARGETS {
+        return Err(invalid("pull_targets", "must contain at most 16 targets"));
+    }
+    if !application.live && !application.pull_targets.is_empty() {
+        return Err(invalid("pull_targets", "requires live = true"));
+    }
+    validate_rtmp_relay_policy(service, application, &application.relay)?;
+    validate_rtmp_callbacks(service, Some(&application.name), &application.callbacks)?;
     validate_rtmp_access_policy(service, application, "publish", &application.publish)?;
     validate_rtmp_access_policy(service, application, "play", &application.play)?;
     validate_rtmp_session_ceilings(service, application, &application.limits)?;
@@ -1226,6 +1241,71 @@ fn validate_rtmp_application(
         if !targets.insert((&target.host, target.port, &target.application)) {
             return Err(invalid("push_targets", "must not contain duplicates"));
         }
+        validate_rtmp_transport(
+            outbound_policy,
+            &invalid,
+            target.scheme,
+            "push_targets[].scheme",
+        )?;
+        validate_rtmp_relay_stream_name(
+            &target.stream_name,
+            true,
+            &invalid,
+            "push_targets[].stream_name",
+        )?;
+        validate_rtmp_tc_url(&target.tc_url, &invalid, "push_targets[].tc_url")?;
+        validate_rtmp_flash_version(
+            &target.flash_version,
+            &invalid,
+            "push_targets[].flash_version",
+        )?;
+        validate_rtmp_credentials(&target.credentials, &invalid, "push_targets[].credentials")?;
+    }
+    let mut pull_targets = HashSet::with_capacity(application.pull_targets.len());
+    for target in &mut application.pull_targets {
+        target.host.make_ascii_lowercase();
+        if target.port == 0 {
+            return Err(invalid("pull_targets[].port", "must be nonzero"));
+        }
+        if !is_valid_dns_name(&target.host) && target.host.parse::<std::net::IpAddr>().is_err() {
+            return Err(invalid(
+                "pull_targets[].host",
+                "must be an IP address or canonical DNS name",
+            ));
+        }
+        if !valid_rtmp_literal_component(&target.application) {
+            return Err(invalid(
+                "pull_targets[].application",
+                "must be one nonempty path component without variables",
+            ));
+        }
+        if !valid_rtmp_literal_component(&target.stream_name) {
+            return Err(invalid(
+                "pull_targets[].stream_name",
+                "must be one nonempty path component without variables",
+            ));
+        }
+        if !pull_targets.insert((
+            &target.host,
+            target.port,
+            &target.application,
+            &target.stream_name,
+        )) {
+            return Err(invalid("pull_targets", "must not contain duplicates"));
+        }
+        validate_rtmp_transport(
+            outbound_policy,
+            &invalid,
+            target.scheme,
+            "pull_targets[].scheme",
+        )?;
+        validate_rtmp_tc_url(&target.tc_url, &invalid, "pull_targets[].tc_url")?;
+        validate_rtmp_flash_version(
+            &target.flash_version,
+            &invalid,
+            "pull_targets[].flash_version",
+        )?;
+        validate_rtmp_credentials(&target.credentials, &invalid, "pull_targets[].credentials")?;
     }
     let fanout = application.fanout;
     if fanout.max_subscribers == 0 || fanout.max_subscribers > MAX_RTMP_SUBSCRIBERS {
@@ -1248,6 +1328,66 @@ fn validate_rtmp_application(
         return Err(invalid(
             "fanout.max_queue_bytes_per_subscriber",
             "must be between 1 and 1073741824",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_rtmp_callbacks(
+    service: &str,
+    application: Option<&str>,
+    callbacks: &RtmpCallbackConfig,
+) -> Result<(), ConfigError> {
+    let invalid = |field, detail| match application {
+        Some(application) => ConfigError::InvalidRtmpApplicationPolicy {
+            service: service.into(),
+            application: application.into(),
+            field,
+            detail,
+        },
+        None => ConfigError::InvalidRtmpServicePolicy {
+            service: service.into(),
+            field,
+            detail,
+        },
+    };
+    for (field, value) in [
+        ("callbacks.on_connect", callbacks.on_connect.as_deref()),
+        (
+            "callbacks.on_disconnect",
+            callbacks.on_disconnect.as_deref(),
+        ),
+        ("callbacks.on_publish", callbacks.on_publish.as_deref()),
+        (
+            "callbacks.on_publish_done",
+            callbacks.on_publish_done.as_deref(),
+        ),
+        ("callbacks.on_play", callbacks.on_play.as_deref()),
+        ("callbacks.on_play_done", callbacks.on_play_done.as_deref()),
+        ("callbacks.on_done", callbacks.on_done.as_deref()),
+        ("callbacks.on_update", callbacks.on_update.as_deref()),
+    ] {
+        if value.is_some_and(|value| {
+            value.is_empty()
+                || value.len() > MAX_RTMP_CALLBACK_URL_BYTES
+                || (!value.starts_with("http://") && !value.starts_with("https://"))
+                || value.bytes().any(|byte| byte.is_ascii_control())
+                || value.contains(' ')
+                || value.contains('#')
+        }) {
+            return Err(invalid(field, "must be a bounded HTTP or HTTPS URL"));
+        }
+    }
+    if callbacks.timeout_ms == 0 || callbacks.timeout_ms > MAX_RTMP_RELAY_TIMEOUT_MS {
+        return Err(invalid(
+            "callbacks.timeout_ms",
+            "must be between 1 and 30000",
+        ));
+    }
+    if callbacks.notify_update_timeout_ms > MAX_RTMP_RELAY_TIMEOUT_MS {
+        return Err(invalid(
+            "callbacks.notify_update_timeout_ms",
+            "must be between 0 and 30000",
         ));
     }
     Ok(())
@@ -1294,7 +1434,7 @@ fn validate_rtmp_vod(
         };
         if name.is_empty()
             || name.len() > MAX_RTMP_VOD_SOURCE_NAME_BYTES
-            || !valid_rtmp_vod_component(name)
+            || !valid_rtmp_literal_component(name)
             || !name.bytes().all(|byte| byte.is_ascii_graphic())
             || !names.insert(name.clone())
         {
@@ -1376,12 +1516,247 @@ fn validate_rtmp_vod_origin(
     Ok(())
 }
 
-fn valid_rtmp_vod_component(value: &str) -> bool {
+fn validate_rtmp_outbound_policy(
+    service: &str,
+    policy: &mut RtmpOutboundPolicy,
+) -> Result<(), ConfigError> {
+    let invalid = |field, detail| ConfigError::InvalidRtmpServicePolicy {
+        service: service.into(),
+        field,
+        detail,
+    };
+    if policy.allow_domains.len() > MAX_RTMP_OUTBOUND_DOMAINS
+        || policy.deny_domains.len() > MAX_RTMP_OUTBOUND_DOMAINS
+    {
+        return Err(invalid(
+            "outbound_policy.allow_domains",
+            "must contain at most 64 domains per list",
+        ));
+    }
+    for (field, domains) in [
+        ("outbound_policy.allow_domains", &mut policy.allow_domains),
+        ("outbound_policy.deny_domains", &mut policy.deny_domains),
+    ] {
+        for domain in domains {
+            domain.make_ascii_lowercase();
+            if !is_valid_dns_name(domain) {
+                return Err(invalid(field, "must contain canonical DNS names"));
+            }
+        }
+    }
+    if policy.allow_cidrs.len() > MAX_RTMP_OUTBOUND_CIDRS
+        || policy.deny_cidrs.len() > MAX_RTMP_OUTBOUND_CIDRS
+    {
+        return Err(invalid(
+            "outbound_policy.allow_cidrs",
+            "must contain at most 64 CIDRs per list",
+        ));
+    }
+    for (field, cidrs) in [
+        ("outbound_policy.allow_cidrs", &mut policy.allow_cidrs),
+        ("outbound_policy.deny_cidrs", &mut policy.deny_cidrs),
+    ] {
+        for cidr in cidrs {
+            if !valid_rtmp_cidr(cidr) {
+                return Err(invalid(
+                    field,
+                    "must contain IP addresses with valid prefixes",
+                ));
+            }
+        }
+    }
+    if policy.max_chain_depth == 0 || policy.max_chain_depth > MAX_RTMP_CHAIN_DEPTH {
+        return Err(invalid(
+            "outbound_policy.max_chain_depth",
+            "must be between 1 and 16",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_rtmp_relay_policy(
+    service: &str,
+    application: &crate::model::RtmpApplication,
+    policy: &RtmpRelayPolicy,
+) -> Result<(), ConfigError> {
+    let invalid = |field, detail| ConfigError::InvalidRtmpApplicationPolicy {
+        service: service.into(),
+        application: application.name.clone(),
+        field,
+        detail,
+    };
+    for (field, value, detail) in [
+        (
+            "relay.max_queue_messages",
+            policy.max_queue_messages,
+            "must be between 1 and 65536",
+        ),
+        (
+            "relay.max_queue_bytes",
+            policy.max_queue_bytes,
+            "must be between 1 and 1073741824",
+        ),
+        (
+            "relay.buffer_ms",
+            policy.buffer_ms,
+            "must be between 1 and 60000",
+        ),
+        (
+            "relay.push_reconnect_ms",
+            policy.push_reconnect_ms,
+            "must be between 1 and 300000",
+        ),
+        (
+            "relay.pull_reconnect_ms",
+            policy.pull_reconnect_ms,
+            "must be between 1 and 300000",
+        ),
+        (
+            "relay.connect_timeout_ms",
+            policy.connect_timeout_ms,
+            "must be between 1 and 30000",
+        ),
+        (
+            "relay.handshake_timeout_ms",
+            policy.handshake_timeout_ms,
+            "must be between 1 and 30000",
+        ),
+    ] {
+        let maximum = match field {
+            "relay.max_queue_messages" => 65_536,
+            "relay.max_queue_bytes" => 1_073_741_824,
+            "relay.buffer_ms" => MAX_RTMP_RELAY_BUFFER_MS,
+            "relay.push_reconnect_ms" | "relay.pull_reconnect_ms" => MAX_RTMP_RECONNECT_MS,
+            "relay.connect_timeout_ms" | "relay.handshake_timeout_ms" => MAX_RTMP_RELAY_TIMEOUT_MS,
+            _ => unreachable!("RTMP relay policy field is closed"),
+        };
+        if value == 0 || value > maximum {
+            return Err(invalid(field, detail));
+        }
+    }
+    Ok(())
+}
+
+fn validate_rtmp_transport(
+    policy: &RtmpOutboundPolicy,
+    invalid: &impl Fn(&'static str, &'static str) -> ConfigError,
+    transport: RtmpTransport,
+    field: &'static str,
+) -> Result<(), ConfigError> {
+    let valid = match (policy.rtmps, transport) {
+        (RtmpRtmpsPolicy::Disabled, RtmpTransport::Rtmps)
+        | (RtmpRtmpsPolicy::Required, RtmpTransport::Rtmp) => false,
+        _ => true,
+    };
+    if !valid {
+        return Err(invalid(
+            field,
+            "transport does not satisfy the service outbound RTMPS policy",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_rtmp_relay_stream_name(
+    stream_name: &Option<String>,
+    allow_dynamic_name: bool,
+    invalid: &impl Fn(&'static str, &'static str) -> ConfigError,
+    field: &'static str,
+) -> Result<(), ConfigError> {
+    let Some(stream_name) = stream_name else {
+        return Ok(());
+    };
+    let valid =
+        (allow_dynamic_name && stream_name == "$name") || valid_rtmp_literal_component(stream_name);
+    if valid {
+        Ok(())
+    } else {
+        Err(invalid(
+            field,
+            "must be a literal stream component or the exact `$name` variable",
+        ))
+    }
+}
+
+fn validate_rtmp_tc_url(
+    tc_url: &Option<String>,
+    invalid: &impl Fn(&'static str, &'static str) -> ConfigError,
+    field: &'static str,
+) -> Result<(), ConfigError> {
+    let Some(tc_url) = tc_url else {
+        return Ok(());
+    };
+    if tc_url.len() > 2_048
+        || (!tc_url.starts_with("rtmp://") && !tc_url.starts_with("rtmps://"))
+        || tc_url.contains([' ', '\n', '\r', '#'])
+    {
+        return Err(invalid(
+            field,
+            "must be a bounded RTMP or RTMPS URL without fragments",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_rtmp_flash_version(
+    flash_version: &Option<String>,
+    invalid: &impl Fn(&'static str, &'static str) -> ConfigError,
+    field: &'static str,
+) -> Result<(), ConfigError> {
+    if flash_version.as_deref().is_some_and(|value| {
+        value.is_empty() || value.len() > 128 || value.chars().any(char::is_control)
+    }) {
+        return Err(invalid(field, "must be 1..=128 non-control bytes"));
+    }
+    Ok(())
+}
+
+fn validate_rtmp_credentials(
+    credentials: &Option<RtmpCredentialReference>,
+    invalid: &impl Fn(&'static str, &'static str) -> ConfigError,
+    field: &'static str,
+) -> Result<(), ConfigError> {
+    let Some(credentials) = credentials else {
+        return Ok(());
+    };
+    if credentials.username.is_empty()
+        || credentials.username.len() > MAX_RTMP_CREDENTIAL_USERNAME_BYTES
+        || credentials.username.chars().any(char::is_control)
+    {
+        return Err(invalid(field, "username must be 1..=128 non-control bytes"));
+    }
+    let path = credentials.secret_file.to_string_lossy();
+    if path.len() > MAX_RTMP_SECRET_FILE_BYTES {
+        return Err(invalid(field, "secret_file exceeds 4096 bytes"));
+    }
+    validate_file_path(
+        "RTMP credential",
+        &credentials.username,
+        "secret_file",
+        &credentials.secret_file,
+    )
+    .map_err(|_| invalid(field, "secret_file must be a secure absolute file path"))
+}
+
+fn valid_rtmp_literal_component(value: &str) -> bool {
     !value.is_empty()
         && value != "."
         && value != ".."
-        && !value.contains(['/', '\\', '?', '#', '%'])
+        && !value.contains(['/', '?', '#', '$'])
         && !value.chars().any(char::is_control)
+}
+
+fn valid_rtmp_cidr(value: &str) -> bool {
+    let Some((address, prefix)) = value.split_once('/') else {
+        return false;
+    };
+    let Ok(address) = address.parse::<IpAddr>() else {
+        return false;
+    };
+    let Ok(prefix) = prefix.parse::<u8>() else {
+        return false;
+    };
+    prefix <= if address.is_ipv4() { 32 } else { 128 }
 }
 
 fn validate_rtmp_access_policy(
@@ -1605,24 +1980,24 @@ fn validate_rtmp_recorder(
             "must be null or between 1 and 1000000",
             &invalid,
         )?;
-        if let Some(max_size) = recorder.max_size {
-            validate_rtmp_recorder_limit(
-                max_size,
-                MAX_RECORDER_FILE_BYTES,
-                "max_size",
-                "must be null or between 1 and 1099511627776",
-                &invalid,
-            )?;
-        }
-        if let Some(max_frames) = recorder.max_frames {
-            validate_rtmp_recorder_limit(
-                max_frames,
-                MAX_RECORDER_FRAME_COUNT,
-                "max_frames",
-                "must be null or between 1 and 1000000000",
-                &invalid,
-            )?;
-        }
+    }
+    if let Some(max_size) = recorder.max_size {
+        validate_rtmp_recorder_limit(
+            max_size,
+            MAX_RECORDER_FILE_BYTES,
+            "max_size",
+            "must be null or between 1 and 1099511627776",
+            &invalid,
+        )?;
+    }
+    if let Some(max_frames) = recorder.max_frames {
+        validate_rtmp_recorder_limit(
+            max_frames,
+            MAX_RECORDER_FRAME_COUNT,
+            "max_frames",
+            "must be null or between 1 and 1000000000",
+            &invalid,
+        )?;
     }
     validate_rtmp_recorder_limit(
         recorder.max_active_recorders,

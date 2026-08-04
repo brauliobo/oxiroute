@@ -1,6 +1,7 @@
 pub const RTMP_VERSION: u8 = 3;
 pub const HANDSHAKE_BLOCK_SIZE: usize = 1536;
 
+mod callback;
 mod catalog;
 mod client;
 mod directives;
@@ -15,11 +16,10 @@ mod relay;
 mod session;
 mod vod;
 
-pub use client::{
-    DestinationPolicyError, RtmpClientOptions, RtmpCredential, RtmpOutboundPolicy, RtmpRtmpsMode,
-    RtmpTransport,
+pub use callback::{
+    RtmpCallbackContext, RtmpCallbackEndpoint, RtmpCallbackError, RtmpCallbackEvent,
+    RtmpCallbackMethod, RtmpCallbackPolicy,
 };
-
 pub use catalog::{
     CatalogError, MAX_RTMP_APPLICATION_BYTES, MAX_RTMP_QUERY_BYTES, MAX_RTMP_STREAM_NAME_BYTES,
     MediaSnapshot, OperationId, PublisherRegistration, PublisherSnapshot, RecorderDefinition,
@@ -27,6 +27,10 @@ pub use catalog::{
     RelaySnapshot, RtmpCapabilities, RtmpCatalogSnapshot, RtmpRegistry, RtmpRegistryWorkStats,
     RtmpStreamPath, RtmpStreamPathError, SessionId, StreamId, StreamKey, StreamSnapshot,
     SubscriberRegistration, TrackSnapshot,
+};
+pub use client::{
+    DestinationPolicyError, RtmpClientOptions, RtmpCredential, RtmpOutboundPolicy, RtmpRtmpsMode,
+    RtmpTransport,
 };
 pub use directives::{directive_compatibility_report, directive_specs, validate_directive};
 pub use flv::{
@@ -54,8 +58,8 @@ pub use recording_worker::{
     RecorderWorkerPhase, RecorderWorkerStartError, RecorderWorkerStatus, RecorderWorkerSupervisor,
 };
 pub use relay::{
-    RtmpDestination, RtmpPushApplication, RtmpPushTarget, RtmpRelayConfig, RtmpRelayFailure,
-    RtmpRelayPhase, RtmpRelayStatus,
+    RtmpDestination, RtmpPullTarget, RtmpPushApplication, RtmpPushTarget, RtmpRelayConfig,
+    RtmpRelayFailure, RtmpRelayPhase, RtmpRelayStatus,
 };
 pub use rml_rtmp::sessions::StreamMetadata;
 pub use session::{
@@ -68,8 +72,8 @@ pub use session::{
 };
 pub use vod::{
     MAX_VOD_EVENTS, MAX_VOD_HTTP_HEADER_BYTES, MAX_VOD_ORIGIN_BYTES, MAX_VOD_PATH_BYTES,
-    MAX_VOD_REDIRECTS, MAX_VOD_SOURCE_NAME_BYTES, VodApplication, VodCatalog, VodError, VodLease,
-    VodLimits, VodObject, VodRange, VodSourceDefinition,
+    MAX_VOD_REDIRECTS, MAX_VOD_SOURCE_NAME_BYTES, VodApplication, VodCatalog, VodError, VodLimits,
+    VodLease, VodObject, VodRange, VodSourceDefinition,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

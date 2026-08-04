@@ -24,6 +24,12 @@ export type UpstreamAlgorithm = 'round_robin' | 'least_connections' | 'first'
 export type RtmpRecorderStart = 'continuous' | 'manual'
 export type RtmpAclAction = 'allow' | 'deny'
 export type RtmpTokenSource = 'stream_query'
+export type RtmpNotifyMethod = 'get' | 'post'
+export type RtmpRtmpsPolicy = 'disabled' | 'allowed' | 'required'
+export type RtmpTransport = 'rtmp' | 'rtmps'
+export type RtmpVodSource =
+  | { type: 'local'; name: string; root_directory: string }
+  | { type: 'http'; name: string; origin: string }
 export type AccessLogConfig = { type: 'disabled' } | { type: 'file'; path: string }
 
 export interface ManagementConfig {
@@ -507,12 +513,16 @@ export interface RtmpApplicationConfig {
   publish: RtmpAccessPolicyConfig
   play: RtmpAccessPolicyConfig
   limits: RtmpSessionCeilingsConfig
-  push_targets: Array<{ host: string; port: number; application: string }>
+  push_targets: RtmpPushTargetConfig[]
+  pull_targets: RtmpPullTargetConfig[]
+  relay: RtmpRelayPolicyConfig
+  callbacks: RtmpCallbackConfig
   fanout: {
     max_subscribers: number
     max_queue_messages_per_subscriber: number
     max_queue_bytes_per_subscriber: number
   }
+  vod: RtmpVodPolicyConfig | null
   recorders: RtmpRecorderConfig[]
 }
 
@@ -542,8 +552,14 @@ export interface RtmpRecorderConfig {
   name: string
   start: RtmpRecorderStart
   root_directory: string
+  record_mask: { audio: boolean; video: boolean; keyframes: boolean }
   suffix_template: string
   append_unix_seconds: boolean
+  append: boolean
+  lock: boolean
+  max_size: number | null
+  max_frames: number | null
+  notify: boolean
   timezone: string
   time_basis: 'segment_start' | 'segment_end'
   segment_naming: 'safe_unique' | 'nginx_compatible'
@@ -556,10 +572,82 @@ export interface RtmpRecorderConfig {
   max_active_recorders: number
 }
 
+export interface RtmpCallbackConfig {
+  on_connect: string | null
+  on_disconnect: string | null
+  on_publish: string | null
+  on_publish_done: string | null
+  on_play: string | null
+  on_play_done: string | null
+  on_done: string | null
+  on_update: string | null
+  notify_method: RtmpNotifyMethod
+  timeout_ms: number
+  notify_update_timeout_ms: number
+  notify_update_strict: boolean
+  notify_relay_redirect: boolean
+}
+
+export interface RtmpOutboundPolicyConfig {
+  allow_domains: string[]
+  deny_domains: string[]
+  allow_cidrs: string[]
+  deny_cidrs: string[]
+  deny_private: boolean
+  rtmps: RtmpRtmpsPolicy
+  max_chain_depth: number
+}
+
+export interface RtmpRelayPolicyConfig {
+  max_queue_messages: number
+  max_queue_bytes: number
+  buffer_ms: number
+  push_reconnect_ms: number
+  pull_reconnect_ms: number
+  connect_timeout_ms: number
+  handshake_timeout_ms: number
+}
+
+export interface RtmpCredentialReferenceConfig {
+  username: string
+  secret_file: string
+}
+
+export interface RtmpPushTargetConfig {
+  host: string
+  port: number
+  application: string
+  scheme: RtmpTransport
+  stream_name: string | null
+  tc_url: string | null
+  flash_version: string | null
+  credentials: RtmpCredentialReferenceConfig | null
+}
+
+export interface RtmpPullTargetConfig {
+  host: string
+  port: number
+  application: string
+  stream_name: string
+  scheme: RtmpTransport
+  tc_url: string | null
+  flash_version: string | null
+  credentials: RtmpCredentialReferenceConfig | null
+}
+
+export interface RtmpVodPolicyConfig {
+  sources: RtmpVodSource[]
+  max_sessions: number
+  max_file_bytes: number
+  max_duration_ms: number
+}
+
 export interface RtmpServiceConfig {
   name: string
   outbound_chunk_size: number
   access_log: AccessLogConfig | null
+  outbound_policy: RtmpOutboundPolicyConfig
+  callbacks: RtmpCallbackConfig
   applications: RtmpApplicationConfig[]
 }
 
@@ -579,6 +667,7 @@ export type ForwardProxyAuthConfig =
       credential_ttl_ms: number | null
       username_case_sensitive: boolean
     }
+  | { type: 'mutual_tls'; client_ca_file_path: string }
 
 export interface ForwardPortRangeConfig { start: number; end: number }
 
@@ -605,7 +694,17 @@ export interface ForwardDestinationPolicyConfig {
   allow_cidrs: string[]
   deny_cidrs: string[]
   deny_private: boolean
+  allow_times: ForwardTimeRangeConfig[]
+  deny_times: ForwardTimeRangeConfig[]
 }
+
+export interface ForwardTimeRangeConfig {
+  days: ForwardWeekday[]
+  start: string
+  end: string
+}
+
+export type ForwardWeekday = 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday' | 'sunday'
 
 export interface ForwardResolverPolicyConfig {
   nameservers: string[]
@@ -1061,17 +1160,70 @@ function isResponseHeaderMutation(value: unknown): value is HttpResponseHeaderMu
 
 function isRtmpService(value: unknown): value is RtmpServiceConfig {
   return isRecord(value) && typeof value.name === 'string' && safeInteger(value.outbound_chunk_size) &&
-    (value.access_log === null || isAccessLog(value.access_log)) && arrayOf(value.applications, (application) =>
+    (value.access_log === null || isAccessLog(value.access_log)) && isRtmpOutboundPolicy(value.outbound_policy) &&
+    isRtmpCallbackConfig(value.callbacks) && arrayOf(value.applications, (application) =>
     isRecord(application) && typeof application.name === 'string' && typeof application.live === 'boolean' &&
     typeof application.idle_streams === 'boolean' && isRtmpAccessPolicy(application.publish) &&
     isRtmpAccessPolicy(application.play) && isRtmpSessionCeilings(application.limits) &&
-    arrayOf(application.push_targets, (target) =>
-      isRecord(target) && typeof target.host === 'string' && safeInteger(target.port) &&
-      typeof target.application === 'string') && isRecord(application.fanout) &&
+    arrayOf(application.push_targets, isRtmpPushTarget) && arrayOf(application.pull_targets, isRtmpPullTarget) &&
+    isRtmpRelayPolicy(application.relay) && isRtmpCallbackConfig(application.callbacks) &&
+    isRecord(application.fanout) &&
     safeInteger(application.fanout.max_subscribers) &&
     safeInteger(application.fanout.max_queue_messages_per_subscriber) &&
     safeInteger(application.fanout.max_queue_bytes_per_subscriber) &&
+    (application.vod === null || isRtmpVodPolicy(application.vod)) &&
     arrayOf(application.recorders, isRtmpRecorder))
+}
+
+function isRtmpCallbackConfig(value: unknown): value is RtmpCallbackConfig {
+  return isRecord(value) && nullableString(value.on_connect) && nullableString(value.on_disconnect) &&
+    nullableString(value.on_publish) && nullableString(value.on_publish_done) && nullableString(value.on_play) &&
+    nullableString(value.on_play_done) && nullableString(value.on_done) && nullableString(value.on_update) &&
+    ['get', 'post'].includes(String(value.notify_method)) && safeInteger(value.timeout_ms) &&
+    safeInteger(value.notify_update_timeout_ms) && typeof value.notify_update_strict === 'boolean' &&
+    typeof value.notify_relay_redirect === 'boolean'
+}
+
+function isRtmpOutboundPolicy(value: unknown): value is RtmpOutboundPolicyConfig {
+  return isRecord(value) && arrayOf(value.allow_domains, isString) && arrayOf(value.deny_domains, isString) &&
+    arrayOf(value.allow_cidrs, isString) && arrayOf(value.deny_cidrs, isString) &&
+    typeof value.deny_private === 'boolean' && ['disabled', 'allowed', 'required'].includes(String(value.rtmps)) &&
+    safeInteger(value.max_chain_depth)
+}
+
+function isRtmpRelayPolicy(value: unknown): value is RtmpRelayPolicyConfig {
+  return isRecord(value) && safeInteger(value.max_queue_messages) && safeInteger(value.max_queue_bytes) &&
+    safeInteger(value.buffer_ms) && safeInteger(value.push_reconnect_ms) && safeInteger(value.pull_reconnect_ms) &&
+    safeInteger(value.connect_timeout_ms) && safeInteger(value.handshake_timeout_ms)
+}
+
+function isRtmpCredentialReference(value: unknown): value is RtmpCredentialReferenceConfig {
+  return isRecord(value) && typeof value.username === 'string' && typeof value.secret_file === 'string'
+}
+
+function isRtmpPushTarget(value: unknown): value is RtmpPushTargetConfig {
+  return isRecord(value) && typeof value.host === 'string' && safeInteger(value.port) &&
+    typeof value.application === 'string' && ['rtmp', 'rtmps'].includes(String(value.scheme)) &&
+    nullableString(value.stream_name) && nullableString(value.tc_url) && nullableString(value.flash_version) &&
+    (value.credentials === null || isRtmpCredentialReference(value.credentials))
+}
+
+function isRtmpPullTarget(value: unknown): value is RtmpPullTargetConfig {
+  return isRecord(value) && typeof value.host === 'string' && safeInteger(value.port) &&
+    typeof value.application === 'string' && typeof value.stream_name === 'string' &&
+    ['rtmp', 'rtmps'].includes(String(value.scheme)) && nullableString(value.tc_url) &&
+    nullableString(value.flash_version) && (value.credentials === null || isRtmpCredentialReference(value.credentials))
+}
+
+function isRtmpVodPolicy(value: unknown): value is RtmpVodPolicyConfig {
+  return isRecord(value) && arrayOf(value.sources, isRtmpVodSource) && safeInteger(value.max_sessions) &&
+    safeInteger(value.max_file_bytes) && safeInteger(value.max_duration_ms)
+}
+
+function isRtmpVodSource(value: unknown): value is RtmpVodSource {
+  if (!isRecord(value) || typeof value.name !== 'string') return false
+  if (value.type === 'local') return typeof value.root_directory === 'string'
+  return value.type === 'http' && typeof value.origin === 'string'
 }
 
 function isRtmpAccessPolicy(value: unknown): value is RtmpAccessPolicyConfig {
@@ -1115,6 +1267,8 @@ function isForwardProxyService(value: unknown): value is ForwardProxyServiceConf
     arrayOf(value.destination_policy.allow_cidrs, isString) &&
     arrayOf(value.destination_policy.deny_cidrs, isString) &&
     typeof value.destination_policy.deny_private === 'boolean' &&
+    arrayOf(value.destination_policy.allow_times, isForwardTimeRange) &&
+    arrayOf(value.destination_policy.deny_times, isForwardTimeRange) &&
     isRecord(value.header_policy) && ['preserve', 'delete'].includes(String(value.header_policy.forwarded_for)) &&
     ['preserve', 'delete'].includes(String(value.header_policy.via)) &&
     safeInteger(value.connect_timeout_ms) && safeInteger(value.idle_timeout_ms) &&
@@ -1133,7 +1287,8 @@ function isForwardProxyAuth(value: unknown): value is ForwardProxyAuthConfig {
   return isRecord(value) && ((value.type === 'bearer_token_file' &&
     typeof value.token_file_path === 'string') || (value.type === 'basic_htpasswd_file' &&
     typeof value.htpasswd_file_path === 'string' && typeof value.realm === 'string' &&
-    nullableSafeInteger(value.credential_ttl_ms) && typeof value.username_case_sensitive === 'boolean'))
+    nullableSafeInteger(value.credential_ttl_ms) && typeof value.username_case_sensitive === 'boolean') ||
+    (value.type === 'mutual_tls' && typeof value.client_ca_file_path === 'string'))
 }
 
 function isForwardAccessPolicy(value: unknown): value is ForwardAccessPolicyConfig {
@@ -1152,10 +1307,20 @@ function isForwardAccessMatcher(value: unknown): value is ForwardAccessMatcherCo
     safeInteger(range.start) && safeInteger(range.end))
 }
 
+function isForwardTimeRange(value: unknown): value is ForwardTimeRangeConfig {
+  return isRecord(value) && arrayOf(value.days, (day) =>
+    ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'].includes(String(day))) &&
+    typeof value.start === 'string' && typeof value.end === 'string'
+}
+
 function isRtmpRecorder(value: unknown): value is RtmpRecorderConfig {
   return isRecord(value) && typeof value.name === 'string' &&
     ['continuous', 'manual'].includes(String(value.start)) && typeof value.root_directory === 'string' &&
+    isRecord(value.record_mask) && typeof value.record_mask.audio === 'boolean' &&
+    typeof value.record_mask.video === 'boolean' && typeof value.record_mask.keyframes === 'boolean' &&
     typeof value.suffix_template === 'string' && typeof value.append_unix_seconds === 'boolean' &&
+    typeof value.append === 'boolean' && typeof value.lock === 'boolean' && nullableSafeInteger(value.max_size) &&
+    nullableSafeInteger(value.max_frames) && typeof value.notify === 'boolean' &&
     typeof value.timezone === 'string' && value.timezone.length > 0 &&
     ['segment_start', 'segment_end'].includes(String(value.time_basis)) &&
     ['safe_unique', 'nginx_compatible'].includes(String(value.segment_naming)) &&
@@ -1574,6 +1739,95 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'rtmp_services[].access_log', kind: 'object' },
   { path: 'rtmp_services[].access_log.type', kind: 'enum' },
   { path: 'rtmp_services[].access_log.path', kind: 'string' },
+  { path: 'forward_proxy_services[].auth.client_ca_file_path', kind: 'string' },
+  { path: 'forward_proxy_services[].destination_policy.allow_times', kind: 'collection' },
+  { path: 'forward_proxy_services[].destination_policy.allow_times[].days', kind: 'string_list' },
+  { path: 'forward_proxy_services[].destination_policy.allow_times[].start', kind: 'string' },
+  { path: 'forward_proxy_services[].destination_policy.allow_times[].end', kind: 'string' },
+  { path: 'forward_proxy_services[].destination_policy.deny_times', kind: 'collection' },
+  { path: 'forward_proxy_services[].destination_policy.deny_times[].days', kind: 'string_list' },
+  { path: 'forward_proxy_services[].destination_policy.deny_times[].start', kind: 'string' },
+  { path: 'forward_proxy_services[].destination_policy.deny_times[].end', kind: 'string' },
+  { path: 'rtmp_services[].outbound_policy', kind: 'object' },
+  { path: 'rtmp_services[].outbound_policy.allow_domains', kind: 'string_list' },
+  { path: 'rtmp_services[].outbound_policy.deny_domains', kind: 'string_list' },
+  { path: 'rtmp_services[].outbound_policy.allow_cidrs', kind: 'string_list' },
+  { path: 'rtmp_services[].outbound_policy.deny_cidrs', kind: 'string_list' },
+  { path: 'rtmp_services[].outbound_policy.deny_private', kind: 'boolean' },
+  { path: 'rtmp_services[].outbound_policy.rtmps', kind: 'enum' },
+  { path: 'rtmp_services[].outbound_policy.max_chain_depth', kind: 'integer' },
+  { path: 'rtmp_services[].callbacks', kind: 'object' },
+  { path: 'rtmp_services[].callbacks.on_connect', kind: 'string' },
+  { path: 'rtmp_services[].callbacks.on_disconnect', kind: 'string' },
+  { path: 'rtmp_services[].callbacks.on_publish', kind: 'string' },
+  { path: 'rtmp_services[].callbacks.on_publish_done', kind: 'string' },
+  { path: 'rtmp_services[].callbacks.on_play', kind: 'string' },
+  { path: 'rtmp_services[].callbacks.on_play_done', kind: 'string' },
+  { path: 'rtmp_services[].callbacks.on_done', kind: 'string' },
+  { path: 'rtmp_services[].callbacks.on_update', kind: 'string' },
+  { path: 'rtmp_services[].callbacks.notify_method', kind: 'enum' },
+  { path: 'rtmp_services[].callbacks.timeout_ms', kind: 'integer' },
+  { path: 'rtmp_services[].callbacks.notify_update_timeout_ms', kind: 'integer' },
+  { path: 'rtmp_services[].callbacks.notify_update_strict', kind: 'boolean' },
+  { path: 'rtmp_services[].callbacks.notify_relay_redirect', kind: 'boolean' },
+  { path: 'rtmp_services[].applications[].pull_targets', kind: 'collection' },
+  { path: 'rtmp_services[].applications[].pull_targets[].host', kind: 'string' },
+  { path: 'rtmp_services[].applications[].pull_targets[].port', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].pull_targets[].application', kind: 'string' },
+  { path: 'rtmp_services[].applications[].pull_targets[].stream_name', kind: 'string' },
+  { path: 'rtmp_services[].applications[].pull_targets[].scheme', kind: 'enum' },
+  { path: 'rtmp_services[].applications[].pull_targets[].tc_url', kind: 'string' },
+  { path: 'rtmp_services[].applications[].pull_targets[].flash_version', kind: 'string' },
+  { path: 'rtmp_services[].applications[].pull_targets[].credentials', kind: 'object' },
+  { path: 'rtmp_services[].applications[].pull_targets[].credentials.username', kind: 'string' },
+  { path: 'rtmp_services[].applications[].pull_targets[].credentials.secret_file', kind: 'string' },
+  { path: 'rtmp_services[].applications[].relay', kind: 'object' },
+  { path: 'rtmp_services[].applications[].relay.max_queue_messages', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].relay.max_queue_bytes', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].relay.buffer_ms', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].relay.push_reconnect_ms', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].relay.pull_reconnect_ms', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].relay.connect_timeout_ms', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].relay.handshake_timeout_ms', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].callbacks', kind: 'object' },
+  { path: 'rtmp_services[].applications[].callbacks.on_connect', kind: 'string' },
+  { path: 'rtmp_services[].applications[].callbacks.on_disconnect', kind: 'string' },
+  { path: 'rtmp_services[].applications[].callbacks.on_publish', kind: 'string' },
+  { path: 'rtmp_services[].applications[].callbacks.on_publish_done', kind: 'string' },
+  { path: 'rtmp_services[].applications[].callbacks.on_play', kind: 'string' },
+  { path: 'rtmp_services[].applications[].callbacks.on_play_done', kind: 'string' },
+  { path: 'rtmp_services[].applications[].callbacks.on_done', kind: 'string' },
+  { path: 'rtmp_services[].applications[].callbacks.on_update', kind: 'string' },
+  { path: 'rtmp_services[].applications[].callbacks.notify_method', kind: 'enum' },
+  { path: 'rtmp_services[].applications[].callbacks.timeout_ms', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].callbacks.notify_update_timeout_ms', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].callbacks.notify_update_strict', kind: 'boolean' },
+  { path: 'rtmp_services[].applications[].callbacks.notify_relay_redirect', kind: 'boolean' },
+  { path: 'rtmp_services[].applications[].vod', kind: 'object' },
+  { path: 'rtmp_services[].applications[].vod.max_sessions', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].vod.max_file_bytes', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].vod.max_duration_ms', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].vod.sources', kind: 'collection' },
+  { path: 'rtmp_services[].applications[].vod.sources[].type', kind: 'enum' },
+  { path: 'rtmp_services[].applications[].vod.sources[].name', kind: 'string' },
+  { path: 'rtmp_services[].applications[].vod.sources[].root_directory', kind: 'string' },
+  { path: 'rtmp_services[].applications[].vod.sources[].origin', kind: 'string' },
+  { path: 'rtmp_services[].applications[].push_targets[].scheme', kind: 'enum' },
+  { path: 'rtmp_services[].applications[].push_targets[].stream_name', kind: 'string' },
+  { path: 'rtmp_services[].applications[].push_targets[].tc_url', kind: 'string' },
+  { path: 'rtmp_services[].applications[].push_targets[].flash_version', kind: 'string' },
+  { path: 'rtmp_services[].applications[].push_targets[].credentials', kind: 'object' },
+  { path: 'rtmp_services[].applications[].push_targets[].credentials.username', kind: 'string' },
+  { path: 'rtmp_services[].applications[].push_targets[].credentials.secret_file', kind: 'string' },
+  { path: 'rtmp_services[].applications[].recorders[].record_mask', kind: 'object' },
+  { path: 'rtmp_services[].applications[].recorders[].record_mask.audio', kind: 'boolean' },
+  { path: 'rtmp_services[].applications[].recorders[].record_mask.video', kind: 'boolean' },
+  { path: 'rtmp_services[].applications[].recorders[].record_mask.keyframes', kind: 'boolean' },
+  { path: 'rtmp_services[].applications[].recorders[].append', kind: 'boolean' },
+  { path: 'rtmp_services[].applications[].recorders[].lock', kind: 'boolean' },
+  { path: 'rtmp_services[].applications[].recorders[].max_size', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].recorders[].max_frames', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].recorders[].notify', kind: 'boolean' },
   { path: 'rtmp_services[].applications[].push_targets', kind: 'collection' },
   { path: 'rtmp_services[].applications[].push_targets[].host', kind: 'string' },
   { path: 'rtmp_services[].applications[].push_targets[].port', kind: 'integer' },

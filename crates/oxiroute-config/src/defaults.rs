@@ -1,6 +1,6 @@
 use crate::model::{
     AlpnProtocol, CacheKeyComponent, ForwardHttpVersion, HttpRetryTrigger, HttpRoutePolicy,
-    RtmpFanoutPolicy, RtmpSessionCeilings,
+    RtmpFanoutPolicy, RtmpOutboundPolicy, RtmpRelayPolicy, RtmpRtmpsPolicy, RtmpSessionCeilings,
 };
 
 pub(crate) const MAX_SOURCE_BYTES: usize = 1024 * 1024;
@@ -20,6 +20,12 @@ const DEFAULT_RTMP_OUTBOUND_CHUNK_SIZE: u32 = 4_096;
 const DEFAULT_RTMP_MAX_SUBSCRIBERS: u64 = 1_024;
 const DEFAULT_RTMP_FANOUT_QUEUE_MESSAGES: u64 = 256;
 const DEFAULT_RTMP_FANOUT_QUEUE_BYTES: u64 = 8 * 1_024 * 1_024;
+const DEFAULT_RTMP_RELAY_BUFFER_MS: u64 = 5_000;
+const DEFAULT_RTMP_PUSH_RECONNECT_MS: u64 = 3_000;
+const DEFAULT_RTMP_PULL_RECONNECT_MS: u64 = 3_000;
+const DEFAULT_RTMP_RELAY_CONNECT_TIMEOUT_MS: u64 = 500;
+const DEFAULT_RTMP_RELAY_HANDSHAKE_TIMEOUT_MS: u64 = 2_000;
+const DEFAULT_RTMP_MAX_CHAIN_DEPTH: u8 = 4;
 const DEFAULT_RECORDER_MAX_QUEUE_MESSAGES: u64 = 256;
 const DEFAULT_RECORDER_MAX_QUEUE_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_RECORDER_SHUTDOWN_TIMEOUT_MS: u64 = 5_000;
@@ -123,6 +129,7 @@ pub(crate) const MAX_RECORDER_FILE_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
 pub(crate) const MAX_RECORDER_FRAME_COUNT: u64 = 1_000_000_000;
 pub(crate) const MAX_RTMP_OUTBOUND_CHUNK_SIZE: u32 = 1_048_576;
 pub(crate) const MAX_RTMP_PUSH_TARGETS: usize = 16;
+pub(crate) const MAX_RTMP_PULL_TARGETS: usize = 16;
 pub(crate) const MAX_RTMP_APPLICATION_BYTES: usize = 255;
 pub(crate) const MAX_RTMP_APPLICATION_NAME_BYTES: usize = 128;
 pub(crate) const MAX_RTMP_ACCESS_RULES_PER_OPERATION: usize = 64;
@@ -137,6 +144,17 @@ pub(crate) const DEFAULT_RTMP_APPLICATION_VIEWERS: u64 = 1_024;
 pub(crate) const MAX_RTMP_SUBSCRIBERS: u64 = 1_000_000;
 pub(crate) const MAX_RTMP_FANOUT_QUEUE_MESSAGES: u64 = 65_536;
 pub(crate) const MAX_RTMP_FANOUT_QUEUE_BYTES: u64 = 1_024 * 1_024 * 1_024;
+pub(crate) const MAX_RTMP_RELAY_BUFFER_MS: u64 = 60_000;
+pub(crate) const MAX_RTMP_RECONNECT_MS: u64 = 300_000;
+pub(crate) const MAX_RTMP_RELAY_TIMEOUT_MS: u64 = 30_000;
+pub(crate) const DEFAULT_RTMP_CALLBACK_TIMEOUT_MS: u64 = 10_000;
+pub(crate) const DEFAULT_RTMP_CALLBACK_UPDATE_TIMEOUT_MS: u64 = 30_000;
+pub(crate) const MAX_RTMP_CALLBACK_URL_BYTES: usize = 2_048;
+pub(crate) const MAX_RTMP_CHAIN_DEPTH: u8 = 16;
+pub(crate) const MAX_RTMP_OUTBOUND_DOMAINS: usize = 64;
+pub(crate) const MAX_RTMP_OUTBOUND_CIDRS: usize = 64;
+pub(crate) const MAX_RTMP_CREDENTIAL_USERNAME_BYTES: usize = 128;
+pub(crate) const MAX_RTMP_SECRET_FILE_BYTES: usize = 4_096;
 pub(crate) const MAX_RTMP_VOD_SOURCES: usize = 16;
 pub(crate) const MAX_RTMP_VOD_SOURCE_NAME_BYTES: usize = 128;
 pub(crate) const MAX_RTMP_VOD_ORIGIN_BYTES: usize = 2_048;
@@ -177,6 +195,7 @@ pub(crate) const MAX_FORWARD_NAMESERVERS: usize = 8;
 pub(crate) const MAX_FORWARD_ACCESS_RULES: usize = 256;
 pub(crate) const MAX_FORWARD_ACCESS_CONDITIONS: usize = 64;
 pub(crate) const MAX_FORWARD_ACCESS_MATCHERS: usize = 256;
+pub(crate) const MAX_FORWARD_TIME_RANGES: usize = 256;
 
 pub(crate) const fn default_true() -> bool {
     true
@@ -260,6 +279,70 @@ pub(crate) const fn default_rtmp_session_ceilings() -> RtmpSessionCeilings {
         max_connections: DEFAULT_RTMP_APPLICATION_CONNECTIONS,
         max_publishers: DEFAULT_RTMP_APPLICATION_PUBLISHERS,
         max_viewers: DEFAULT_RTMP_APPLICATION_VIEWERS,
+    }
+}
+
+pub(crate) const fn default_rtmp_relay_policy() -> RtmpRelayPolicy {
+    RtmpRelayPolicy {
+        max_queue_messages: DEFAULT_RTMP_FANOUT_QUEUE_MESSAGES,
+        max_queue_bytes: DEFAULT_RTMP_FANOUT_QUEUE_BYTES,
+        buffer_ms: DEFAULT_RTMP_RELAY_BUFFER_MS,
+        push_reconnect_ms: DEFAULT_RTMP_PUSH_RECONNECT_MS,
+        pull_reconnect_ms: DEFAULT_RTMP_PULL_RECONNECT_MS,
+        connect_timeout_ms: DEFAULT_RTMP_RELAY_CONNECT_TIMEOUT_MS,
+        handshake_timeout_ms: DEFAULT_RTMP_RELAY_HANDSHAKE_TIMEOUT_MS,
+    }
+}
+
+pub(crate) const fn default_rtmp_relay_queue_messages() -> u64 {
+    DEFAULT_RTMP_FANOUT_QUEUE_MESSAGES
+}
+
+pub(crate) const fn default_rtmp_relay_queue_bytes() -> u64 {
+    DEFAULT_RTMP_FANOUT_QUEUE_BYTES
+}
+
+pub(crate) const fn default_rtmp_relay_buffer_ms() -> u64 {
+    DEFAULT_RTMP_RELAY_BUFFER_MS
+}
+
+pub(crate) const fn default_rtmp_push_reconnect_ms() -> u64 {
+    DEFAULT_RTMP_PUSH_RECONNECT_MS
+}
+
+pub(crate) const fn default_rtmp_pull_reconnect_ms() -> u64 {
+    DEFAULT_RTMP_PULL_RECONNECT_MS
+}
+
+pub(crate) const fn default_rtmp_relay_connect_timeout_ms() -> u64 {
+    DEFAULT_RTMP_RELAY_CONNECT_TIMEOUT_MS
+}
+
+pub(crate) const fn default_rtmp_relay_handshake_timeout_ms() -> u64 {
+    DEFAULT_RTMP_RELAY_HANDSHAKE_TIMEOUT_MS
+}
+
+pub(crate) const fn default_rtmp_callback_timeout_ms() -> u64 {
+    DEFAULT_RTMP_CALLBACK_TIMEOUT_MS
+}
+
+pub(crate) const fn default_rtmp_callback_update_timeout_ms() -> u64 {
+    DEFAULT_RTMP_CALLBACK_UPDATE_TIMEOUT_MS
+}
+
+pub(crate) const fn default_rtmp_max_chain_depth() -> u8 {
+    DEFAULT_RTMP_MAX_CHAIN_DEPTH
+}
+
+pub(crate) const fn default_rtmp_outbound_policy() -> RtmpOutboundPolicy {
+    RtmpOutboundPolicy {
+        allow_domains: Vec::new(),
+        deny_domains: Vec::new(),
+        allow_cidrs: Vec::new(),
+        deny_cidrs: Vec::new(),
+        deny_private: true,
+        rtmps: RtmpRtmpsPolicy::Disabled,
+        max_chain_depth: DEFAULT_RTMP_MAX_CHAIN_DEPTH,
     }
 }
 

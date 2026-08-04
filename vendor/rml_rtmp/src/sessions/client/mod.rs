@@ -216,6 +216,18 @@ impl ClientSession {
             }
             None => (),
         };
+        if let Some(username) = &self.config.username {
+            properties.insert(
+                "username".to_string(),
+                Amf0Value::Utf8String(username.clone()),
+            );
+        }
+        if let Some(password) = &self.config.password {
+            properties.insert(
+                "password".to_string(),
+                Amf0Value::Utf8String(password.clone()),
+            );
+        }
 
         let message = RtmpMessage::Amf0Command {
             command_name: "connect".to_string(),

@@ -16,6 +16,15 @@ export const CACHE_STALE_TRIGGERS = [
 ] as const satisfies readonly CacheStaleTrigger[]
 
 export const FORWARD_HTTP_VERSIONS = ['h1', 'h2', 'h3'] as const satisfies readonly ForwardHttpVersion[]
+export const FORWARD_WEEKDAYS = [
+  'monday',
+  'tuesday',
+  'wednesday',
+  'thursday',
+  'friday',
+  'saturday',
+  'sunday',
+] as const
 
 const commonCacheLimits = () => ({
   max_object_bytes: 16_777_216,
@@ -85,6 +94,8 @@ export function defaultForwardProxyService(): ForwardProxyServiceConfig {
       allow_cidrs: [],
       deny_cidrs: [],
       deny_private: true,
+      allow_times: [],
+      deny_times: [],
     },
     header_policy: { forwarded_for: 'preserve', via: 'preserve' },
     connect_timeout_ms: 10_000,
@@ -104,5 +115,47 @@ export function defaultForwardProxyService(): ForwardProxyServiceConfig {
       revalidate_on_connect: true,
     },
     audit_mode: 'metadata',
+  }
+}
+
+export function defaultRtmpCallback() {
+  return {
+    on_connect: null,
+    on_disconnect: null,
+    on_publish: null,
+    on_publish_done: null,
+    on_play: null,
+    on_play_done: null,
+    on_done: null,
+    on_update: null,
+    notify_method: 'post' as const,
+    timeout_ms: 10_000,
+    notify_update_timeout_ms: 30_000,
+    notify_update_strict: false,
+    notify_relay_redirect: false,
+  }
+}
+
+export function defaultRtmpRelay() {
+  return {
+    max_queue_messages: 256,
+    max_queue_bytes: 8_388_608,
+    buffer_ms: 5_000,
+    push_reconnect_ms: 3_000,
+    pull_reconnect_ms: 3_000,
+    connect_timeout_ms: 500,
+    handshake_timeout_ms: 2_000,
+  }
+}
+
+export function defaultRtmpOutboundPolicy() {
+  return {
+    allow_domains: [],
+    deny_domains: [],
+    allow_cidrs: [],
+    deny_cidrs: [],
+    deny_private: true,
+    rtmps: 'disabled' as const,
+    max_chain_depth: 4,
   }
 }
