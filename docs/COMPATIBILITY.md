@@ -103,11 +103,11 @@ disable-only, parsed-only, source-no-op, source-bug, deprecated, and platform-li
 | Capability | Status |
 | --- | --- |
 | Imported PEM certificate/key | partial: strict bounded direct-file and descriptor-relative Certbot loading creates immutable generations; every declared DNS/IP identity must exist in the typed SAN set, undeclared SANs are not added to named SNI selection, IPv4-mapped IPv6 is canonicalized to IPv4, one TLS profile can select multiple exact/wildcard DNS SNI identities with an explicit default, and Certbot lineages are watched, but direct-file/config reload is absent. As with nginx, an explicit default certificate is still presented for unmatched SNI. |
-| Atomic certificate generation publication | partial: independent identity/SAN-bound compare-and-swap publication, complete-generation handshake snapshots, disabled downstream session resumption, existing-connection retention, deterministic concurrent handshake waves, per-identity SNI rotation, a multithreaded publication/snapshot race, and process-lifetime Certbot reconciliation are implemented; managed ACME activation remains absent |
-| Self-signed development certificate | planned M1 |
-| ACME account/order lifecycle | planned M1 |
-| ACME HTTP-01 | planned M1 |
-| Automatic renewal and zero-downtime activation | partial: externally renewed Certbot lineages are reconciled and published without interrupting existing connections; OxiRoute-managed ACME issuance and scheduling remain planned M1 |
+| Atomic certificate generation publication | partial: independent identity/SAN-bound compare-and-swap publication, complete-generation handshake snapshots, disabled downstream session resumption, existing-connection retention, deterministic concurrent handshake waves, per-identity SNI rotation, a multithreaded publication/snapshot race, process-lifetime Certbot reconciliation, and managed ACME activation are implemented |
+| Self-signed development certificate | partial: explicit development generation and in-memory first-start ACME bootstrap are implemented |
+| ACME account/order lifecycle | partial: bounded account, order, authorization, CSR, certificate download, and owner-only state paths are implemented; live staging evidence remains |
+| ACME HTTP-01 | partial: exact bounded challenge leases and HTTP routing are implemented; explicit listener/deployment evidence remains |
+| Automatic renewal and zero-downtime activation | partial: externally renewed Certbot lineages and OxiRoute-managed ACME certificates are reconciled and published without interrupting existing connections; live staging evidence remains |
 | Existing Certbot lineage import/watch | stable with strict common-revision snapshots, archive containment, descriptor-relative no-follow reads, key-reuse handling, bounded event coalescing, periodic rescans, directory-watch rebuilding, mixed/invalid retention, and zero-downtime per-identity publication |
 | ACME DNS-01 and wildcard names | planned M2 |
 | ACME TLS-ALPN-01 | research |

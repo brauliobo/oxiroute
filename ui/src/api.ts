@@ -211,6 +211,19 @@ export interface CertbotCertificateSnapshot {
   lastErrorCode: string | null
 }
 
+export interface AcmeManagedCertificateSnapshot {
+  name: string
+  directoryUrl: string
+  diskRevision: string
+  activeRevision: string
+  expiresAt: string
+  notBeforeUnixSeconds: number | null
+  notAfterUnixSeconds: number | null
+  nextActionUnixSeconds: number | null
+  lastOutcome: string | null
+  lastErrorCode: string | null
+}
+
 export interface CertbotWatcherSnapshot {
   health: 'healthy' | 'degraded' | 'stopped'
   coalescedEvents: string
@@ -270,6 +283,7 @@ export interface MonitoringSnapshot {
   upstreamPools: MonitoringPool[]
   certbotCertificates: CertbotCertificateSnapshot[]
   certbotWatcher: CertbotWatcherSnapshot | null
+  acmeManagedCertificates: AcmeManagedCertificateSnapshot[]
   rtmp: MonitoringRtmp
 }
 
@@ -969,6 +983,8 @@ function parseMonitoring(value: unknown): MonitoringSnapshot {
     !Array.isArray(value.upstreamPools) || !value.upstreamPools.every(monitoringPool) ||
     !Array.isArray(value.certbotCertificates) || !value.certbotCertificates.every(certbotCertificate) ||
     !(value.certbotWatcher === null || certbotWatcher(value.certbotWatcher)) || !isRecord(value.rtmp) ||
+    !Array.isArray(value.acmeManagedCertificates) ||
+    !value.acmeManagedCertificates.every(acmeManagedCertificate) ||
     !safeInteger(value.rtmp.activeStreams) || !safeInteger(value.rtmp.publishers) ||
     !safeInteger(value.rtmp.subscribers) || !decimalString(value.rtmp.mediaPayloadBytesReceived) ||
     typeof value.rtmp.recordingSupported !== 'boolean' || typeof value.rtmp.manualRecording !== 'boolean' ||
@@ -1179,6 +1195,14 @@ function monitoringPool(value: unknown): boolean {
 function certbotCertificate(value: unknown): boolean {
   return isRecord(value) && typeof value.name === 'string' && safeInteger(value.activeArchiveRevision) &&
     typeof value.activeContentRevision === 'string' && typeof value.expiresAt === 'string' &&
+    nullableString(value.lastOutcome) && nullableString(value.lastErrorCode)
+}
+
+function acmeManagedCertificate(value: unknown): boolean {
+  return isRecord(value) && typeof value.name === 'string' && typeof value.directoryUrl === 'string' &&
+    typeof value.diskRevision === 'string' && typeof value.activeRevision === 'string' &&
+    typeof value.expiresAt === 'string' && nullableSafeInteger(value.notBeforeUnixSeconds) &&
+    nullableSafeInteger(value.notAfterUnixSeconds) && nullableSafeInteger(value.nextActionUnixSeconds) &&
     nullableString(value.lastOutcome) && nullableString(value.lastErrorCode)
 }
 

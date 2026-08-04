@@ -212,6 +212,7 @@ export function contractMonitoring(): MonitoringSnapshot {
       }],
     }],
     certbotCertificates: [],
+    acmeManagedCertificates: [],
     certbotWatcher: {
       health: 'degraded',
       coalescedEvents: '18446744073709551615',

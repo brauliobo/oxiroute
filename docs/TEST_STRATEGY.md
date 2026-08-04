@@ -87,10 +87,11 @@ parser round-trip properties remain planned.
   non-overlapping polling.
 
 UDP behavior, active-traffic generation reload/drain breadth, richer native dependency watching,
-SSE reconnect, downstream client certificate authentication, and managed ACME are planned
-integration gates rather than current complete release evidence. Canonical watcher activation,
-route authentication, bounded event polling, and fixed RTMP assembled-message rejection are current
-tested paths.
+SSE reconnect, downstream client certificate authentication, and managed ACME live/staging
+integration are planned gates rather than current complete release evidence. Managed ACME protocol,
+state, bootstrap, and scripted-transport paths are unit-tested. Canonical watcher activation, route
+authentication, bounded event polling, and fixed RTMP assembled-message rejection are current tested
+paths.
 
 ### Import conformance
 
