@@ -2611,6 +2611,7 @@ dependencies = [
  "log",
  "notify",
  "openssl",
+ "oxiroute-acme",
  "oxiroute-cache",
  "oxiroute-config",
  "oxiroute-config-source",
@@ -2645,6 +2646,7 @@ name = "oxiroute-acme"
 version = "0.3.0"
 dependencies = [
  "base64",
+ "http",
  "openssl",
  "rustix",
  "serde",

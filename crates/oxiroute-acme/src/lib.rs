@@ -2,6 +2,7 @@ mod challenge;
 mod clock;
 mod protocol;
 mod state;
+mod transport;
 
 pub use challenge::{
     ChallengeHttpResponse, ChallengeLease, ChallengeRecord, ChallengeStore, ChallengeStoreError,
@@ -19,3 +20,4 @@ pub use state::{
     MAX_STATE_FILE_BYTES, RedactedOutcome, RevisionMetadata, RevisionStore, SecretBytes,
     StateStore, revision_id,
 };
+pub use transport::{SystemAcmeTransport, TransportConfig};
