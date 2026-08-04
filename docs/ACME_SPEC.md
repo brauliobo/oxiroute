@@ -15,7 +15,8 @@ lineage snapshots prepare immutable certificate generations. One process-lifetim
 supervisor combines bounded filesystem-event coalescing with periodic full rescans, validates a
 complete lineage candidate, and atomically publishes each identity independently. Managed ACME now
 has bounded owner-only state, injected and production HTTPS transports, account/order/challenge
-orchestration, HTTP-01 routing, authenticated renewal, a due-check supervisor, redacted monitoring,
+orchestration, HTTP-01 routing, DNS-01 orchestration, wildcard support, authenticated renewal, a due-check
+supervisor, redacted monitoring,
 and UI configuration. A first-start managed identity receives an in-memory, one-day self-signed
 bootstrap generation marked immediately due; bootstrap material is never persisted as ACME state.
 A TLS callback snapshots the active generation for each new handshake; existing connections retain
@@ -23,7 +24,7 @@ their selected generation and downstream session resumption is disabled.
 
 ## Implemented managed ACME slice
 
-The current implementation covers the first HTTP-01 release boundary:
+The current implementation covers bounded HTTP-01 and DNS-01 issuance:
 
 - ACME v2 directory discovery, configured-origin enforcement, account registration, persisted account
   state, JWS requests, bounded response/request sizes, and one `badNonce` retry.
@@ -34,22 +35,24 @@ The current implementation covers the first HTTP-01 release boundary:
 - In-memory one-day bootstrap certificates, HTTP-01 challenge leases with ownership-safe cleanup,
   exact SAN/key/chain/TLS validation, deterministic renewal scheduling, persisted retry state, and
   immediate or supervised renewal operations.
+- DNS-01 wildcard authorization parsing, SHA-256 TXT values, statically linked exact-name provider
+  registration, bounded credentials and cancellation, provider-controlled propagation checks, and
+  ownership-safe exact-record cleanup.
 - Authenticated TLS inventory and renewal API responses with bounded categorical outcomes. Existing
   certificate generations remain active when validation or publication fails.
 
 The implementation does not yet fetch or apply ACME Renewal Information responses, support account
-rollover, revocation/deletion/pause operations, DNS-01/TLS-ALPN-01, durable audit history, or a
-separate job-history retention policy. Those remain future contract work and must not be inferred from
-the current status fields.
+rollover, revocation/deletion/pause operations, TLS-ALPN-01, durable cleanup journaling, or a separate
+job-history retention policy. Those remain future contract work and must not be inferred from the
+current status fields.
 
 ## Certificate sources
 
 ### ACME managed
 
-The daemon owns issuance and renewal through an ACME v2 directory. The first managed release
-supports HTTP-01 only, rejects wildcard and IP identifiers, and requires explicit terms agreement
-and a configured DNS-suffix policy. DNS-01 and TLS-ALPN-01 remain rejected until their separate
-authenticator designs are implemented.
+The daemon owns issuance and renewal through an ACME v2 directory. Managed certificates support
+HTTP-01 and DNS-01; wildcard identifiers require DNS-01. IP identifiers and TLS-ALPN-01 remain
+unsupported. Explicit terms agreement and a configured DNS-suffix policy are required.
 
 ### Imported files
 
@@ -115,18 +118,19 @@ Otherwise the local renewal policy applies.
 - If another process owns port 80, validation fails with an actionable diagnostic rather than changing firewall rules.
 - All required challenge material is provisioned before the CA is notified; cleanup always runs after a terminal result or timeout.
 
-### DNS-01: planned next release
+### DNS-01: implemented
 
 - Required for wildcard identifiers and environments without reachable HTTP port 80.
-- Provider integrations run behind a narrow plugin protocol in isolated helper processes.
-- Input contains the record name/value and an opaque credential reference, never arbitrary shell commands.
-- Plugins return created record identity and cleanup status.
-- Propagation checks query authoritative DNS with bounded quorum/deadline policy.
-- TXT updates are additive and preserve unrelated or concurrently created values.
-- Cleanup removes only the value or provider record ID created by the job.
-- Cleanup intent is journaled durably; unresolved cleanup after failure or restart remains visible.
-- CNAME/NS delegation behavior is explicit per provider and never guessed.
-- Initial provider selection remains small; RFC 2136 is one option only where credentials can be narrowly scoped.
+- Providers implement a narrow in-process contract and must be statically linked and exactly
+  allowlisted. Dynamic loading and shell hooks are rejected.
+- Provider calls receive only bounded credentials, the exact record name/value, and a deadline with
+  cooperative cancellation. Provider errors are categorical and redacted.
+- Providers return an opaque record identity, verify propagation within the same operation budget, and
+  remove only that exact record during cleanup.
+- The orchestrator validates every returned record against the requested challenge before notifying
+  the CA. Cleanup runs after propagation, notification, polling, timeout, or ACME failure.
+- Provider-specific CNAME/NS delegation and authoritative DNS policy remain provider responsibilities;
+  the orchestrator never guesses them.
 
 ### TLS-ALPN-01
 
@@ -228,8 +232,8 @@ status checks and configurable clock-skew policy are not yet implemented.
 ## Current zero-downtime installation
 
 Challenge authenticators only provision and clean authorization material. The OxiRoute activator
-validates and publishes Pingora TLS generations. The current release has one built-in HTTP-01
-authenticator and one internal activator; it does not discover general web-server installers or
+validates and publishes Pingora TLS generations. The current release has HTTP-01 routing and a
+statically registered DNS-01 provider seam; it does not discover general web-server installers or
 maintain server-configuration checkpoints. The existing Certbot watcher uses the same
 generation-publication seam but is not an ACME authenticator or scheduler.
 
@@ -258,7 +262,8 @@ Inventory fields:
 
 - Name, source, domains, issuer, serial fingerprint, key type, not-before/not-after.
 - Disk and active revision, state, next scheduled action, last success, and last redacted error.
-- ACME directory and challenge type, but never account URL tokens, private keys, or DNS credentials.
+- ACME directory, challenge type, and non-secret provider name, but never account URL tokens, private
+  keys, credential contents, or DNS TXT values.
 
 Actions:
 
@@ -267,8 +272,9 @@ Actions:
 - Renew now, pause/resume automatic renewal, revoke, and delete when unreferenced.
 - Display challenge progress and cleanup failures.
 
-The current API exposes the configured directory, key type, suffix policy, disk/active revisions,
-expiry, next action, job status, retry attempt, last success, and redacted outcome/error. Production
+The current API exposes the configured directory, challenge and non-secret provider name, key type,
+suffix policy, disk/active revisions, expiry, next action, job status, retry attempt, last success,
+and redacted outcome/error. Production
 confirmation, staging/dry-validation gating, revocation, deletion, and certificate job-history views
 remain future UI work.
 
@@ -318,7 +324,7 @@ license grants use of its trademarks.
 - Local ACME server or CA staging integration; production endpoints are never used in CI.
 - New account, existing account, terms failure, external-account-binding fixture when supported.
 - HTTP-01 success, wrong token, unreachable listener, redirect coexistence, and cleanup.
-- DNS-01 plugin success, propagation timeout, credential error, and cleanup failure.
+- DNS-01 provider success, propagation timeout, credential error, and cleanup failure.
 - Nonce retry, order invalidation, polling timeout, rate limit, malformed chain, and key mismatch.
 - Renewal-window and stable-jitter property tests with a fake clock.
 - Crash/failure injection before and after every durable rename and runtime activation.

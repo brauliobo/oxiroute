@@ -7,7 +7,7 @@ use std::{
     sync::Arc,
 };
 
-use oxiroute_acme::{ChallengeStore, StateStore};
+use oxiroute_acme::{ChallengeStore, Dns01ProviderRegistry, StateStore};
 use oxiroute_config::{CertificateSource, Config};
 #[cfg(unix)]
 use rustix::fs::{self as rustix_fs, Mode, OFlags};
@@ -53,6 +53,7 @@ pub const MAX_PRIVATE_KEY_BYTES: usize = 256 * 1024;
 pub const MAX_DH_PARAMETERS_BYTES: usize = 64 * 1024;
 pub const MAX_CA_CERTIFICATE_BYTES: usize = 1024 * 1024;
 pub const MAX_CERTIFICATES_IN_CHAIN: usize = 16;
+pub const MAX_CLIENT_CA_CERTIFICATES: usize = 128;
 
 pub type CertificateIdentityMap = BTreeMap<String, Arc<ActiveCertificateGeneration>>;
 pub type TlsProfilePlanMap = BTreeMap<String, Arc<TlsProfilePlan>>;
@@ -177,6 +178,22 @@ impl std::fmt::Debug for PreparedTls {
 /// profile cannot be resolved.
 #[allow(clippy::too_many_lines)]
 pub fn prepare_tls(config: &Config) -> Result<PreparedTls, TlsBuildError> {
+    prepare_tls_with_dns01_providers(config, Dns01ProviderRegistry::default())
+}
+
+/// Loads TLS state with an explicit registry of statically linked DNS-01 providers.
+///
+/// The default [`prepare_tls`] path has no dynamic provider discovery, so a DNS-01 certificate
+/// fails closed unless an embedding caller supplies an exact allowlisted implementation here.
+///
+/// # Errors
+///
+/// Returns the same build errors as [`prepare_tls`], plus an unsupported-provider error when a
+/// configured DNS-01 provider is not registered.
+pub fn prepare_tls_with_dns01_providers(
+    config: &Config,
+    dns01_providers: Dns01ProviderRegistry,
+) -> Result<PreparedTls, TlsBuildError> {
     let mut certificates = BTreeMap::new();
     let mut acme_reconcilers = Vec::new();
     let mut acme_states = BTreeMap::new();
@@ -185,7 +202,14 @@ pub fn prepare_tls(config: &Config) -> Result<PreparedTls, TlsBuildError> {
     let mut file_reconcilers = Vec::new();
     for certificate in &config.certificates {
         let name = certificate.name.clone();
-        let (generation, certbot, direct_files, managed_state, managed_policy) =
+        let (
+            generation,
+            certbot,
+            direct_files,
+            managed_state,
+            managed_policy,
+            dns_provider,
+        ) =
             match &certificate.source {
                 CertificateSource::Files {
                     certificate_chain_path,
@@ -199,6 +223,7 @@ pub fn prepare_tls(config: &Config) -> Result<PreparedTls, TlsBuildError> {
                     )?,
                     None,
                     Some((certificate_chain_path.clone(), private_key_path.clone())),
+                    None,
                     None,
                     None,
                 ),
@@ -215,17 +240,34 @@ pub fn prepare_tls(config: &Config) -> Result<PreparedTls, TlsBuildError> {
                         None,
                         None,
                         None,
+                        None,
                     )
                 }
                 CertificateSource::AcmeManaged {
                     directory_url,
                     contacts,
                     terms_agreed,
+                    challenge,
                     key_type,
                     allowed_dns_suffixes,
                     state_root,
+                    dns01,
                     ..
                 } => {
+                    let dns_provider = if *challenge == oxiroute_config::AcmeChallengeType::Dns01 {
+                        let provider_name = dns01
+                            .as_ref()
+                            .map(|dns01| dns01.provider.as_str())
+                            .unwrap_or_default();
+                        Some(dns01_providers.get(provider_name).ok_or_else(|| {
+                            TlsBuildError::DnsProviderUnsupported {
+                                certificate: name.clone(),
+                                provider: provider_name.into(),
+                            }
+                        })?)
+                    } else {
+                        None
+                    };
                     let state = if let Some(state) = acme_states.get(state_root) {
                         Arc::clone(state)
                     } else {
@@ -266,9 +308,12 @@ pub fn prepare_tls(config: &Config) -> Result<PreparedTls, TlsBuildError> {
                             directory_url: directory_url.clone(),
                             contacts: contacts.clone(),
                             terms_agreed: *terms_agreed,
+                            challenge: *challenge,
                             key_type: *key_type,
                             allowed_dns_suffixes: allowed_dns_suffixes.clone(),
+                            dns01: dns01.clone(),
                         }),
+                        dns_provider,
                     )
                 }
                 CertificateSource::SelfSignedDevelopment {
@@ -281,6 +326,7 @@ pub fn prepare_tls(config: &Config) -> Result<PreparedTls, TlsBuildError> {
                         *validity_days,
                         *key_type,
                     )?,
+                    None,
                     None,
                     None,
                     None,
@@ -308,7 +354,7 @@ pub fn prepare_tls(config: &Config) -> Result<PreparedTls, TlsBuildError> {
             Some(policy),
         ) = (managed_state, managed_policy)
         {
-            acme_reconcilers.push(Arc::new(AcmeManagedReconciler::new(
+            acme_reconcilers.push(Arc::new(AcmeManagedReconciler::new_with_dns_provider(
                 certificate.name.clone(),
                 certificate.dns_names.clone(),
                 policy,
@@ -318,6 +364,7 @@ pub fn prepare_tls(config: &Config) -> Result<PreparedTls, TlsBuildError> {
                 not_after,
                 initial_issuance_due,
                 challenge_store.clone(),
+                dns_provider,
                 active,
             )));
         } else if let Some((certificate_chain_path, private_key_path)) = direct_files {
@@ -376,6 +423,11 @@ pub enum TlsBuildError {
         certificate: String,
         #[source]
         source: Box<oxiroute_acme::AcmeStateError>,
+    },
+    #[error("managed ACME certificate `{certificate}` uses unsupported DNS-01 provider `{provider}`")]
+    DnsProviderUnsupported {
+        certificate: String,
+        provider: String,
     },
     #[error("managed ACME certificate `{certificate}` could not be published")]
     AcmePublication {
@@ -768,6 +820,43 @@ pub enum TlsBuildError {
     },
     #[error("TLS profile `{profile}` has runtime TLS policy values outside OpenSSL limits")]
     InvalidTlsProfilePolicy { profile: String },
+    #[error("TLS profile `{profile}` has invalid client-auth policy: {detail}")]
+    InvalidTlsClientAuthPolicy {
+        profile: String,
+        detail: &'static str,
+    },
+    #[error("TLS profile `{profile}` client CA bundle contains too many certificates")]
+    TooManyClientCaCertificates { profile: String },
+    #[error("failed to parse client CA bundle `{path}` for TLS profile `{profile}`")]
+    ClientCaParse {
+        profile: String,
+        path: PathBuf,
+        #[source]
+        source: openssl::error::ErrorStack,
+    },
+    #[error("client CA certificate {index} for TLS profile `{profile}` is not currently valid")]
+    ClientCaCertificateInvalid {
+        profile: String,
+        index: usize,
+        detail: &'static str,
+    },
+    #[error("client CA certificate {index} for TLS profile `{profile}` is not CA-capable")]
+    NonCaClientCertificate { profile: String, index: usize },
+    #[error("client CA certificate {index} for TLS profile `{profile}` could not be inspected")]
+    ClientCaCertificateInspection {
+        profile: String,
+        index: usize,
+        #[source]
+        source: Box<openssl::error::ErrorStack>,
+    },
+    #[error("client CA certificate {index} for TLS profile `{profile}` is duplicated")]
+    DuplicateClientCaCertificate { profile: String, index: usize },
+    #[error("failed to construct the client CA trust store for TLS profile `{profile}`")]
+    ClientCaStore {
+        profile: String,
+        #[source]
+        source: Box<openssl::error::ErrorStack>,
+    },
     #[error("upstream pool `{pool}` has invalid TLS server name `{server_name}`")]
     InvalidUpstreamServerName { pool: String, server_name: String },
     #[error("upstream pool `{pool}` has an invalid HTTP version range")]

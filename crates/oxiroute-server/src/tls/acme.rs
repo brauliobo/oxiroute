@@ -1,11 +1,12 @@
 use std::{
     collections::BTreeSet,
     io,
+    path::Path,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex, TryLockError,
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use openssl::{
@@ -15,11 +16,13 @@ use openssl::{
 use oxiroute_acme::{
     renewal_due, stable_renewal_time, Account, AccountKey, AccountKeyAlgorithm, AcmeClient,
     AcmeError, AcmeStateError, AcmeTransport, AuthorizationStatus, CertificateMaterial,
-    ChallengeRecord, ChallengeStore, ChallengeStoreError, JobState, JobStatus, LeafKeyAlgorithm,
-    OriginPolicy, PollPolicy, RedactedOutcome, RevisionMetadata, RevisionStore, SecretBytes,
-    StateStore, SystemAcmeTransport, SystemClock, MAX_JOB_BYTES,
+    ChallengeRecord, ChallengeStore, ChallengeStoreError, ChallengeType, Dns01Challenge,
+    Dns01Credentials, Dns01Operation, Dns01Provider, Dns01ProviderError, JobState, JobStatus,
+    LeafKeyAlgorithm, OriginPolicy, PollPolicy, RedactedOutcome, RevisionMetadata, RevisionStore,
+    SecretBytes, StateStore, SystemAcmeTransport, SystemClock, MAX_DNS01_CREDENTIAL_BYTES,
+    MAX_JOB_BYTES,
 };
-use oxiroute_config::{AcmeKeyType, SelfSignedKeyType};
+use oxiroute_config::{AcmeChallengeType, AcmeDns01Config, AcmeKeyType, SelfSignedKeyType};
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -42,8 +45,10 @@ pub struct AcmeManagedPolicy {
     pub directory_url: String,
     pub contacts: Vec<String>,
     pub terms_agreed: bool,
+    pub challenge: AcmeChallengeType,
     pub key_type: AcmeKeyType,
     pub allowed_dns_suffixes: Vec<String>,
+    pub dns01: Option<AcmeDns01Config>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -68,6 +73,14 @@ pub enum AcmeManagedError {
     Publication,
     #[error("managed ACME challenge could not be provisioned")]
     Challenge(#[source] ChallengeStoreError),
+    #[error("managed ACME DNS-01 provider is unsupported or not registered")]
+    DnsProviderUnsupported,
+    #[error("managed ACME DNS-01 credentials are unavailable")]
+    DnsCredentials(#[source] Box<TlsBuildError>),
+    #[error("managed ACME DNS-01 provider operation failed")]
+    DnsProvider(#[source] Dns01ProviderError),
+    #[error("managed ACME DNS-01 cleanup failed")]
+    DnsCleanup(#[source] Dns01ProviderError),
 }
 
 impl AcmeManagedError {
@@ -89,6 +102,14 @@ impl AcmeManagedError {
             Self::AccountDirectoryChanged => "account_directory_changed",
             Self::Publication => "publication_conflict",
             Self::Challenge(_) => "challenge_failed",
+            Self::DnsProviderUnsupported => "dns_provider_unsupported",
+            Self::DnsCredentials(_) => "dns_credentials_failed",
+            Self::DnsProvider(error) => match error {
+                Dns01ProviderError::Timeout => "dns_provider_timeout",
+                Dns01ProviderError::Cancelled => "dns_provider_cancelled",
+                _ => "dns_provider_failed",
+            },
+            Self::DnsCleanup(_) => "dns_cleanup_failed",
         }
     }
 }
@@ -109,6 +130,8 @@ impl AcmeManagedOutcome {
 pub struct AcmeManagedStatus {
     pub certificate: String,
     pub directory_url: String,
+    pub challenge: String,
+    pub dns_provider: Option<String>,
     pub key_type: String,
     pub allowed_dns_suffixes: Vec<String>,
     pub disk_revision: String,
@@ -155,6 +178,8 @@ struct PersistedRenewal {
     directory_url: String,
     account_url: Option<String>,
     authenticator: String,
+    #[serde(default)]
+    dns_provider: Option<String>,
     key_type: String,
     next_action_unix_seconds: Option<u64>,
     retry_at_unix_seconds: Option<u64>,
@@ -173,6 +198,7 @@ pub struct AcmeManagedReconciler {
     policy: AcmeManagedPolicy,
     revisions: RevisionStore,
     challenge_store: ChallengeStore,
+    dns_provider: Option<Arc<dyn Dns01Provider>>,
     active: Arc<ActiveCertificateGeneration>,
     job: Mutex<()>,
     state: Mutex<ReconcileState>,
@@ -257,6 +283,36 @@ impl AcmeManagedReconciler {
         challenge_store: ChallengeStore,
         active: Arc<ActiveCertificateGeneration>,
     ) -> Self {
+        Self::new_with_dns_provider(
+            certificate,
+            declared_dns_names,
+            policy,
+            revisions,
+            disk_revision,
+            not_before_unix_seconds,
+            not_after_unix_seconds,
+            initial_issuance_due,
+            challenge_store,
+            None,
+            active,
+        )
+    }
+
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new_with_dns_provider(
+        certificate: impl Into<String>,
+        declared_dns_names: Vec<String>,
+        policy: AcmeManagedPolicy,
+        revisions: RevisionStore,
+        disk_revision: String,
+        not_before_unix_seconds: Option<u64>,
+        not_after_unix_seconds: Option<u64>,
+        initial_issuance_due: bool,
+        challenge_store: ChallengeStore,
+        dns_provider: Option<Arc<dyn Dns01Provider>>,
+        active: Arc<ActiveCertificateGeneration>,
+    ) -> Self {
         let certificate = certificate.into();
         let persisted = if initial_issuance_due {
             None
@@ -265,7 +321,9 @@ impl AcmeManagedReconciler {
                 renewal.certificate == certificate
                     && renewal.identifiers == declared_dns_names
                     && renewal.directory_url == policy.directory_url
-                    && renewal.authenticator == "http01"
+                    && renewal.authenticator == challenge_string(policy.challenge)
+                    && renewal.dns_provider
+                        == policy.dns01.as_ref().map(|dns01| dns01.provider.clone())
                     && renewal.key_type == key_type_string(policy.key_type)
             })
         };
@@ -313,6 +371,7 @@ impl AcmeManagedReconciler {
             policy,
             revisions,
             challenge_store,
+            dns_provider,
             active,
             job: Mutex::new(()),
             state: Mutex::new(ReconcileState {
@@ -353,6 +412,12 @@ impl AcmeManagedReconciler {
         AcmeManagedStatus {
             certificate: self.certificate.clone(),
             directory_url: self.policy.directory_url.clone(),
+            challenge: challenge_string(self.policy.challenge).into(),
+            dns_provider: self
+                .policy
+                .dns01
+                .as_ref()
+                .map(|dns01| dns01.provider.clone()),
             key_type: match self.policy.key_type {
                 AcmeKeyType::EcdsaP256 => "ecdsa_p256",
                 AcmeKeyType::Rsa2048 => "rsa_2048",
@@ -460,7 +525,7 @@ impl AcmeManagedReconciler {
     /// Returns a redacted managed-job error when account, challenge, ACME, storage, or publication
     /// steps fail.
     pub fn renew_now(&self) -> Result<AcmeManagedOutcome, AcmeManagedError> {
-        self.renew_with_transport(SystemAcmeTransport::default())
+        self.renew_with_provider(SystemAcmeTransport::default(), self.dns_provider.clone())
     }
 
     /// Runs one bounded managed issuance or renewal with an injected transport.
@@ -476,6 +541,14 @@ impl AcmeManagedReconciler {
         &self,
         transport: T,
     ) -> Result<AcmeManagedOutcome, AcmeManagedError> {
+        self.renew_with_provider(transport, self.dns_provider.clone())
+    }
+
+    fn renew_with_provider<T: AcmeTransport>(
+        &self,
+        transport: T,
+        provider: Option<Arc<dyn Dns01Provider>>,
+    ) -> Result<AcmeManagedOutcome, AcmeManagedError> {
         let _job = match self.job.try_lock() {
             Ok(job) => job,
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
@@ -487,7 +560,7 @@ impl AcmeManagedReconciler {
         self.set_job_status(Some(JobStatus::Queued));
         self.write_job(&job_id, JobStatus::Queued, now, 0, None, None, None, None)
             .map_err(AcmeManagedError::State)?;
-        let result = self.renew_inner(transport, &job_id, now);
+        let result = self.renew_inner(transport, &job_id, now, provider);
         match &result {
             Ok(outcome) => {
                 let status = self.status();
@@ -550,6 +623,7 @@ impl AcmeManagedReconciler {
         transport: T,
         job_id: &str,
         created_at: u64,
+        dns_provider: Option<Arc<dyn Dns01Provider>>,
     ) -> Result<AcmeManagedOutcome, AcmeManagedError> {
         self.write_job(
             job_id,
@@ -628,11 +702,36 @@ impl AcmeManagedReconciler {
             }
             Err(error) => return Err(AcmeManagedError::State(error)),
         }
+        let dns_context = match self.policy.challenge {
+            AcmeChallengeType::Dns01 => {
+                let dns01 = self
+                    .policy
+                    .dns01
+                    .as_ref()
+                    .ok_or(AcmeManagedError::DnsProviderUnsupported)?;
+                let provider = dns_provider
+                    .as_ref()
+                    .filter(|provider| provider.name() == dns01.provider)
+                    .ok_or(AcmeManagedError::DnsProviderUnsupported)?;
+                let credentials = load_dns_credentials(&dns01.credential_file, &self.certificate)?;
+                Some((Arc::clone(provider), credentials, dns01.timeout_seconds))
+            }
+            AcmeChallengeType::Http01 => None,
+            AcmeChallengeType::TlsAlpn01 => {
+                return Err(AcmeManagedError::Protocol(AcmeError::UnsupportedChallenge));
+            }
+        };
         let order = client
             .create_order(&oxiroute_acme::CertificateRequest {
                 identifiers: self.declared_dns_names.clone(),
             })
             .map_err(AcmeManagedError::Protocol)?;
+        let declared_identifiers = self
+            .declared_dns_names
+            .iter()
+            .map(|name| name.to_ascii_lowercase())
+            .collect::<BTreeSet<_>>();
+        let mut authorized_identifiers = BTreeSet::new();
         for (index, authorization_url) in order.authorizations.iter().enumerate() {
             self.set_job_status(Some(JobStatus::WaitingForChallenge));
             self.write_job(
@@ -646,9 +745,21 @@ impl AcmeManagedReconciler {
                 None,
             )
             .map_err(AcmeManagedError::State)?;
-            let authorization = client
-                .authorization(authorization_url)
-                .map_err(AcmeManagedError::Protocol)?;
+            let authorization = match self.policy.challenge {
+                AcmeChallengeType::Http01 => client.authorization(authorization_url),
+                AcmeChallengeType::Dns01 => {
+                    client.authorization_for(authorization_url, ChallengeType::Dns01)
+                }
+                AcmeChallengeType::TlsAlpn01 => {
+                    return Err(AcmeManagedError::Protocol(AcmeError::UnsupportedChallenge));
+                }
+            }
+            .map_err(AcmeManagedError::Protocol)?;
+            if !declared_identifiers.contains(&authorization.identifier)
+                || !authorized_identifiers.insert(authorization.identifier.clone())
+            {
+                return Err(AcmeManagedError::AuthorizationFailed);
+            }
             if authorization.status == AuthorizationStatus::Valid {
                 continue;
             }
@@ -657,6 +768,24 @@ impl AcmeManagedReconciler {
                 AuthorizationStatus::Pending | AuthorizationStatus::Processing
             ) {
                 return Err(AcmeManagedError::AuthorizationFailed);
+            }
+            if self.policy.challenge == AcmeChallengeType::Dns01 {
+                let (provider, credentials, timeout_seconds) = dns_context
+                    .as_ref()
+                    .ok_or(AcmeManagedError::DnsProviderUnsupported)?;
+                let challenge = authorization
+                    .dns01_challenge
+                    .as_ref()
+                    .ok_or(AcmeManagedError::Protocol(AcmeError::UnsupportedChallenge))?;
+                self.complete_dns01_challenge(
+                    &mut client,
+                    &authorization.url,
+                    challenge,
+                    provider.as_ref(),
+                    credentials,
+                    *timeout_seconds,
+                )?;
+                continue;
             }
             let challenge = authorization
                 .challenge
@@ -687,6 +816,9 @@ impl AcmeManagedReconciler {
             if authorization.status != AuthorizationStatus::Valid {
                 return Err(AcmeManagedError::AuthorizationFailed);
             }
+        }
+        if authorized_identifiers != declared_identifiers {
+            return Err(AcmeManagedError::AuthorizationFailed);
         }
         self.set_job_status(Some(JobStatus::Finalizing));
         self.write_job(
@@ -748,6 +880,59 @@ impl AcmeManagedReconciler {
         )
         .map_err(AcmeManagedError::State)?;
         Ok(outcome)
+    }
+
+    fn complete_dns01_challenge<T: AcmeTransport>(
+        &self,
+        client: &mut AcmeClient<T>,
+        authorization_url: &str,
+        challenge: &Dns01Challenge,
+        provider: &dyn Dns01Provider,
+        credentials: &Dns01Credentials,
+        timeout_seconds: u64,
+    ) -> Result<(), AcmeManagedError> {
+        let timeout = Duration::from_secs(timeout_seconds);
+        let operation = Dns01Operation::new(timeout).map_err(AcmeManagedError::DnsProvider)?;
+        operation.check().map_err(AcmeManagedError::DnsProvider)?;
+        let record = provider
+            .create_txt_record(challenge, credentials, &operation)
+            .map_err(AcmeManagedError::DnsProvider)?;
+        if !record.matches(challenge, provider.name()) {
+            return Err(AcmeManagedError::DnsProvider(
+                Dns01ProviderError::InvalidRecord,
+            ));
+        }
+        let authorization_result =
+            match provider.wait_for_propagation(challenge, &record, credentials, &operation) {
+                Ok(()) => (|| {
+                    operation.check().map_err(AcmeManagedError::DnsProvider)?;
+                    client
+                        .respond_to_dns01_challenge(challenge)
+                        .map_err(AcmeManagedError::Protocol)?;
+                    let authorization = client
+                        .poll_authorization_for(
+                            authorization_url,
+                            &poll_policy(unix_now().saturating_add(600)),
+                            ChallengeType::Dns01,
+                        )
+                        .map_err(AcmeManagedError::Protocol)?;
+                    if authorization.status != AuthorizationStatus::Valid {
+                        return Err(AcmeManagedError::AuthorizationFailed);
+                    }
+                    Ok(())
+                })(),
+                Err(error) => Err(AcmeManagedError::DnsProvider(error)),
+            };
+
+        let cleanup_operation =
+            Dns01Operation::new(timeout).map_err(AcmeManagedError::DnsCleanup)?;
+        cleanup_operation
+            .check()
+            .map_err(AcmeManagedError::DnsCleanup)?;
+        provider
+            .cleanup_txt_record(&record, credentials, &cleanup_operation)
+            .map_err(AcmeManagedError::DnsCleanup)?;
+        authorization_result
     }
 
     fn certificate_material(
@@ -924,7 +1109,12 @@ impl AcmeManagedReconciler {
             identifiers: self.declared_dns_names.clone(),
             directory_url: self.policy.directory_url.clone(),
             account_url: state.account_url.clone(),
-            authenticator: "http01".into(),
+            authenticator: challenge_string(self.policy.challenge).into(),
+            dns_provider: self
+                .policy
+                .dns01
+                .as_ref()
+                .map(|dns01| dns01.provider.clone()),
             key_type: key_type_string(self.policy.key_type).into(),
             next_action_unix_seconds: state.next_action_unix_seconds,
             retry_at_unix_seconds: state.retry_at_unix_seconds,
@@ -955,6 +1145,21 @@ fn unix_now() -> u64 {
         .map_or(0, |duration| duration.as_secs())
 }
 
+fn load_dns_credentials(
+    path: &Path,
+    certificate: &str,
+) -> Result<Dns01Credentials, AcmeManagedError> {
+    let bytes = super::read_bounded_stable(
+        certificate,
+        "DNS-01 credentials",
+        path,
+        MAX_DNS01_CREDENTIAL_BYTES,
+        true,
+    )
+    .map_err(|source| AcmeManagedError::DnsCredentials(Box::new(source)))?;
+    Dns01Credentials::new(bytes.to_vec()).map_err(AcmeManagedError::DnsProvider)
+}
+
 fn read_persisted_renewal(
     revisions: &RevisionStore,
     certificate: &str,
@@ -975,6 +1180,14 @@ fn key_type_string(key_type: AcmeKeyType) -> &'static str {
     }
 }
 
+fn challenge_string(challenge: AcmeChallengeType) -> &'static str {
+    match challenge {
+        AcmeChallengeType::Http01 => "http01",
+        AcmeChallengeType::Dns01 => "dns01",
+        AcmeChallengeType::TlsAlpn01 => "tls_alpn01",
+    }
+}
+
 fn is_known_error_code(code: &str) -> bool {
     matches!(
         code,
@@ -991,6 +1204,12 @@ fn is_known_error_code(code: &str) -> bool {
             | "account_directory_changed"
             | "publication_conflict"
             | "challenge_failed"
+            | "dns_provider_unsupported"
+            | "dns_credentials_failed"
+            | "dns_provider_timeout"
+            | "dns_provider_cancelled"
+            | "dns_provider_failed"
+            | "dns_cleanup_failed"
     )
 }
 
@@ -1124,10 +1343,11 @@ mod tests {
         },
     };
     use oxiroute_acme::{
-        AcmeTransport, ChallengeStore, HttpRequest, HttpResponse, RevisionStore, StateStore,
-        TransportError,
+        AcmeTransport, ChallengeStore, Dns01Challenge, Dns01Credentials, Dns01Operation,
+        Dns01Provider, Dns01ProviderError, Dns01Record, HttpRequest, HttpResponse, RevisionStore,
+        StateStore, TransportError,
     };
-    use oxiroute_config::{AcmeKeyType, SelfSignedKeyType};
+    use oxiroute_config::{AcmeDns01Config, AcmeKeyType, SelfSignedKeyType};
     use serde_json::Value;
     use tempfile::TempDir;
 
@@ -1144,6 +1364,7 @@ mod tests {
         requests: Arc<Mutex<Vec<String>>>,
         ca: Arc<TestCa>,
         certificate: Arc<Mutex<Option<Vec<u8>>>>,
+        certificate_names: Vec<String>,
     }
 
     impl AcmeTransport for FakePebbleTransport {
@@ -1170,7 +1391,8 @@ mod tests {
                     .ok_or(TransportError)?;
                 let csr = URL_SAFE_NO_PAD.decode(csr).map_err(|_| TransportError)?;
                 let csr = X509Req::from_der(&csr).map_err(|_| TransportError)?;
-                let certificate = issue_certificate(&csr, &self.ca).map_err(|_| TransportError)?;
+                let certificate = issue_certificate(&csr, &self.ca, &self.certificate_names)
+                    .map_err(|_| TransportError)?;
                 *self.certificate.lock().expect("certificate") = Some(certificate);
             }
             if request.url.ends_with("/certificate/1") {
@@ -1187,6 +1409,72 @@ mod tests {
                 .expect("responses")
                 .pop_front()
                 .ok_or(TransportError)
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeDnsProvider {
+        created: Arc<Mutex<Vec<String>>>,
+        propagated: Arc<Mutex<Vec<String>>>,
+        cleaned: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Dns01Provider for FakeDnsProvider {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+
+        fn create_txt_record(
+            &self,
+            challenge: &Dns01Challenge,
+            credentials: &Dns01Credentials,
+            operation: &Dns01Operation,
+        ) -> Result<Dns01Record, Dns01ProviderError> {
+            operation.check()?;
+            assert_eq!(credentials.as_bytes(), b"dns-secret");
+            self.created
+                .lock()
+                .expect("created records")
+                .push(challenge.record_name().into());
+            Dns01Record::new(
+                self.name(),
+                challenge.challenge_url(),
+                challenge.record_name(),
+                challenge.record_value().as_bytes().to_vec(),
+                "fake-record-1",
+            )
+        }
+
+        fn wait_for_propagation(
+            &self,
+            challenge: &Dns01Challenge,
+            record: &Dns01Record,
+            credentials: &Dns01Credentials,
+            operation: &Dns01Operation,
+        ) -> Result<(), Dns01ProviderError> {
+            operation.check()?;
+            assert_eq!(credentials.as_bytes(), b"dns-secret");
+            assert!(record.matches(challenge, self.name()));
+            self.propagated
+                .lock()
+                .expect("propagated records")
+                .push(record.provider_record_id().into());
+            Ok(())
+        }
+
+        fn cleanup_txt_record(
+            &self,
+            record: &Dns01Record,
+            credentials: &Dns01Credentials,
+            operation: &Dns01Operation,
+        ) -> Result<(), Dns01ProviderError> {
+            operation.check()?;
+            assert_eq!(credentials.as_bytes(), b"dns-secret");
+            self.cleaned
+                .lock()
+                .expect("cleaned records")
+                .push(record.provider_record_id().into());
+            Ok(())
         }
     }
 
@@ -1211,8 +1499,10 @@ mod tests {
                 directory_url: "https://acme.test/directory".into(),
                 contacts: vec!["mailto:ops@example.test".into()],
                 terms_agreed: true,
+                challenge: AcmeChallengeType::Http01,
                 key_type: AcmeKeyType::EcdsaP256,
                 allowed_dns_suffixes: vec!["example.test".into()],
+                dns01: None,
             },
             revisions.clone(),
             "bootstrap".into(),
@@ -1237,6 +1527,7 @@ mod tests {
             requests: Arc::new(Mutex::new(Vec::new())),
             ca: Arc::new(test_ca().expect("CA")),
             certificate: Arc::new(Mutex::new(None)),
+            certificate_names: vec!["proxy.example.test".into()],
         };
         let requests = Arc::clone(&transport.requests);
         let outcome = reconciler
@@ -1264,6 +1555,98 @@ mod tests {
     }
 
     #[test]
+    fn dns01_issues_wildcard_and_cleans_the_exact_provider_record() {
+        let temp = TempDir::new().expect("state directory");
+        let credentials = temp.path().join("dns-credentials");
+        fs::write(&credentials, b"dns-secret").expect("credentials");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            fs::set_permissions(&credentials, fs::Permissions::from_mode(0o600))
+                .expect("credential permissions");
+        }
+        let state = Arc::new(StateStore::open(temp.path().join("state")).expect("state"));
+        let revisions = RevisionStore::from_arc(Arc::clone(&state));
+        let names = vec!["*.example.test".to_owned()];
+        let bootstrap = CertificateGeneration::self_signed_development(
+            "managed-wildcard",
+            &names,
+            1,
+            SelfSignedKeyType::EcdsaP256,
+        )
+        .expect("bootstrap");
+        let active = Arc::new(ActiveCertificateGeneration::new(Arc::new(bootstrap)));
+        let provider = Arc::new(FakeDnsProvider::default());
+        let created = Arc::clone(&provider.created);
+        let propagated = Arc::clone(&provider.propagated);
+        let cleaned = Arc::clone(&provider.cleaned);
+        let provider: Arc<dyn Dns01Provider> = provider;
+        let reconciler = AcmeManagedReconciler::new_with_dns_provider(
+            "managed-wildcard",
+            names,
+            AcmeManagedPolicy {
+                directory_url: "https://acme.test/directory".into(),
+                contacts: vec!["mailto:ops@example.test".into()],
+                terms_agreed: true,
+                challenge: AcmeChallengeType::Dns01,
+                key_type: AcmeKeyType::EcdsaP256,
+                allowed_dns_suffixes: vec!["example.test".into()],
+                dns01: Some(AcmeDns01Config {
+                    provider: "fake".into(),
+                    credential_file: credentials,
+                    timeout_seconds: 30,
+                }),
+            },
+            revisions.clone(),
+            "bootstrap".into(),
+            None,
+            None,
+            true,
+            ChallengeStore::default(),
+            Some(provider),
+            Arc::clone(&active),
+        );
+        let transport = FakePebbleTransport {
+            responses: Arc::new(Mutex::new(VecDeque::from([
+                directory_response(),
+                nonce_response("nonce-account"),
+                account_response(),
+                order_response_with_identifier("*.example.test", "pending"),
+                dns_authorization_response("pending"),
+                challenge_response(),
+                dns_authorization_response("valid"),
+                order_response_with_identifier("*.example.test", "processing"),
+                order_response_with_identifier("*.example.test", "valid"),
+            ]))),
+            requests: Arc::new(Mutex::new(Vec::new())),
+            ca: Arc::new(test_ca().expect("CA")),
+            certificate: Arc::new(Mutex::new(None)),
+            certificate_names: vec!["*.example.test".into()],
+        };
+        let outcome = reconciler
+            .renew_with_transport(transport)
+            .expect("managed DNS-01 issuance");
+
+        assert_eq!(outcome, AcmeManagedOutcome::Activated);
+        assert_eq!(reconciler.status().challenge, "dns01");
+        assert_eq!(reconciler.status().dns_provider.as_deref(), Some("fake"));
+        assert_eq!(
+            created.lock().expect("created records").as_slice(),
+            ["_acme-challenge.example.test".to_owned()]
+        );
+        assert_eq!(
+            propagated.lock().expect("propagated records").as_slice(),
+            ["fake-record-1".to_owned()]
+        );
+        assert_eq!(
+            cleaned.lock().expect("cleaned records").as_slice(),
+            ["fake-record-1".to_owned()]
+        );
+        assert!(revisions.load_current("managed-wildcard").is_ok());
+    }
+
+    #[test]
     fn restart_retains_bounded_retry_state_and_redacted_error_code() {
         let temp = TempDir::new().expect("state directory");
         let state = Arc::new(StateStore::open(temp.path().join("state")).expect("state"));
@@ -1276,6 +1659,7 @@ mod tests {
                     directory_url: "https://acme.test/directory".into(),
                     account_url: Some("https://acme.test/acme/acct/1".into()),
                     authenticator: "http01".into(),
+                    dns_provider: None,
                     key_type: "ecdsa_p256".into(),
                     next_action_unix_seconds: Some(2_000),
                     retry_at_unix_seconds: Some(2_000),
@@ -1302,8 +1686,10 @@ mod tests {
                 directory_url: "https://acme.test/directory".into(),
                 contacts: vec!["mailto:ops@example.test".into()],
                 terms_agreed: true,
+                challenge: AcmeChallengeType::Http01,
                 key_type: AcmeKeyType::EcdsaP256,
                 allowed_dns_suffixes: vec!["example.test".into()],
+                dns01: None,
             },
             RevisionStore::from_arc(state),
             "revision".into(),
@@ -1345,8 +1731,12 @@ mod tests {
     }
 
     fn order_response(status: &str) -> HttpResponse {
+        order_response_with_identifier("proxy.example.test", status)
+    }
+
+    fn order_response_with_identifier(identifier: &str, status: &str) -> HttpResponse {
         let body = format!(
-            "{{\"status\":\"{status}\",\"identifiers\":[{{\"type\":\"dns\",\"value\":\"proxy.example.test\"}}],\"authorizations\":[\"https://acme.test/acme/authz/1\"],\"finalize\":\"https://acme.test/acme/order/1/finalize\"{}}}",
+            "{{\"status\":\"{status}\",\"identifiers\":[{{\"type\":\"dns\",\"value\":\"{identifier}\"}}],\"authorizations\":[\"https://acme.test/acme/authz/1\"],\"finalize\":\"https://acme.test/acme/order/1/finalize\"{}}}",
             if status == "valid" {
                 ",\"certificate\":\"https://acme.test/acme/certificate/1\""
             } else {
@@ -1370,6 +1760,20 @@ mod tests {
         };
         let body = format!(
             "{{\"status\":\"{status}\",\"identifier\":{{\"type\":\"dns\",\"value\":\"proxy.example.test\"}},\"challenges\":{challenges}}}"
+        );
+        HttpResponse::new(200, "https://acme.test/acme/authz/1", body.into_bytes())
+            .with_header("replay-nonce", "nonce-authz-response")
+    }
+
+    fn dns_authorization_response(status: &str) -> HttpResponse {
+        let challenges = if status == "valid" {
+            "[]".to_owned()
+        } else {
+            r#"[{"type":"dns-01","url":"https://acme.test/acme/challenge/1","token":"token-1"}]"#
+                .into()
+        };
+        let body = format!(
+            "{{\"status\":\"{status}\",\"identifier\":{{\"type\":\"dns\",\"value\":\"*.example.test\"}},\"challenges\":{challenges}}}"
         );
         HttpResponse::new(200, "https://acme.test/acme/authz/1", body.into_bytes())
             .with_header("replay-nonce", "nonce-authz-response")
@@ -1421,6 +1825,7 @@ mod tests {
     fn issue_certificate(
         csr: &X509Req,
         ca: &TestCa,
+        certificate_names: &[String],
     ) -> Result<Vec<u8>, openssl::error::ErrorStack> {
         let public_key = csr.public_key()?;
         let mut serial = BigNum::new()?;
@@ -1435,11 +1840,11 @@ mod tests {
         builder.set_not_before(Asn1Time::days_from_now(0)?.as_ref())?;
         builder.set_not_after(Asn1Time::days_from_now(30)?.as_ref())?;
         let context = builder.x509v3_context(Some(&ca.certificate), None);
-        builder.append_extension(
-            SubjectAlternativeName::new()
-                .dns("proxy.example.test")
-                .build(&context)?,
-        )?;
+        let mut subject_alt_names = SubjectAlternativeName::new();
+        for name in certificate_names {
+            subject_alt_names.dns(name);
+        }
+        builder.append_extension(subject_alt_names.build(&context)?)?;
         let context = builder.x509v3_context(Some(&ca.certificate), None);
         builder.append_extension(
             AuthorityKeyIdentifier::new()

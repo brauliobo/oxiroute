@@ -588,6 +588,8 @@ export interface TlsMaterialStatus {
 export interface TlsManagedCertificateStatus {
   certificate: string
   directoryUrl: string
+  challenge: 'http01' | 'dns01' | 'tls_alpn01'
+  dnsProvider: string | null
   keyType: string
   allowedDnsSuffixes: string[]
   diskRevision: string
@@ -1457,6 +1459,7 @@ function tlsMaterialStatus(value: unknown): value is Record<string, unknown> & T
 
 function tlsManagedCertificateStatus(value: unknown): value is Record<string, unknown> & TlsManagedCertificateStatus {
   return isRecord(value) && typeof value.certificate === 'string' && typeof value.directoryUrl === 'string' &&
+    ['http01', 'dns01', 'tls_alpn01'].includes(String(value.challenge)) && nullableString(value.dnsProvider) &&
     typeof value.keyType === 'string' && Array.isArray(value.allowedDnsSuffixes) && value.allowedDnsSuffixes.every((suffix) => typeof suffix === 'string') &&
     typeof value.diskRevision === 'string' && typeof value.activeRevision === 'string' &&
     nullableSafeInteger(value.notBeforeUnixSeconds) && nullableSafeInteger(value.notAfterUnixSeconds) &&
@@ -1495,6 +1498,8 @@ function normalizeTlsManagedStatus(value: Record<string, unknown>): TlsManagedCe
   return {
     certificate: value.certificate as string,
     directoryUrl: value.directoryUrl as string,
+    challenge: value.challenge as TlsManagedCertificateStatus['challenge'],
+    dnsProvider: value.dnsProvider as string | null,
     keyType: value.keyType as string,
     allowedDnsSuffixes: value.allowedDnsSuffixes as string[],
     diskRevision: value.diskRevision as string,

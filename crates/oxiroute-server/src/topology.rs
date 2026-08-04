@@ -230,7 +230,9 @@ impl TopologyBuilder {
         for (index, (listener, service)) in config.listeners.iter().zip(services).enumerate() {
             let kind = match listener.protocol {
                 Protocol::Rtmp => TopologyNodeKind::RtmpListener,
-                Protocol::Http | Protocol::Tcp | Protocol::Udp => TopologyNodeKind::Listener,
+                Protocol::Http | Protocol::Http3 | Protocol::Tcp | Protocol::Udp => {
+                    TopologyNodeKind::Listener
+                }
                 Protocol::ForwardHttp1 | Protocol::ForwardHttp2 | Protocol::ForwardHttp3 => {
                     TopologyNodeKind::ForwardProxyListener
                 }
@@ -278,7 +280,7 @@ impl TopologyBuilder {
 
             if let Some(service) = &listener.service {
                 let target = match listener.protocol {
-                    Protocol::Http => http_service_id(service),
+                    Protocol::Http | Protocol::Http3 => http_service_id(service),
                     Protocol::Tcp | Protocol::Udp => l4_service_id(service),
                     Protocol::ForwardHttp1 | Protocol::ForwardHttp2 | Protocol::ForwardHttp3 => {
                         forward_proxy_service_id(service)
@@ -379,6 +381,11 @@ impl TopologyBuilder {
                     "defaultCertificate": profile.default_certificate,
                     "minVersion": tls_version(profile.min_version),
                     "alpn": profile.alpn.iter().copied().map(alpn_protocol).collect::<Vec<_>>(),
+                    "clientAuth": {
+                        "mode": tls_client_auth_mode(profile.policy.client_auth.mode),
+                        "caConfigured": profile.policy.client_auth.ca_certificate_path.is_some(),
+                        "allowedDnsNameCount": profile.policy.client_auth.allowed_dns_names.len(),
+                    },
                 }),
             });
             for (certificate_index, certificate) in profile.certificates.iter().enumerate() {
@@ -1017,6 +1024,7 @@ fn certificate_source(source: &CertificateSource) -> Value {
             challenge,
             key_type,
             allowed_dns_suffixes,
+            dns01,
         } => json!({
             "type": "acme_managed",
             "directoryUrl": directory_url,
@@ -1033,6 +1041,7 @@ fn certificate_source(source: &CertificateSource) -> Value {
                 oxiroute_config::AcmeKeyType::Rsa2048 => "rsa_2048",
             },
             "allowedDnsSuffixCount": allowed_dns_suffixes.len(),
+            "dnsProvider": dns01.as_ref().map(|dns01| &dns01.provider),
         }),
         CertificateSource::SelfSignedDevelopment {
             validity_days,
@@ -1061,6 +1070,16 @@ const fn alpn_protocol(protocol: AlpnProtocol) -> &'static str {
         AlpnProtocol::H3 => "h3",
         AlpnProtocol::H2 => "h2",
         AlpnProtocol::Http11 => "http/1.1",
+    }
+}
+
+const fn tls_client_auth_mode(
+    mode: oxiroute_config::TlsClientAuthMode,
+) -> &'static str {
+    match mode {
+        oxiroute_config::TlsClientAuthMode::Disabled => "disabled",
+        oxiroute_config::TlsClientAuthMode::Optional => "optional",
+        oxiroute_config::TlsClientAuthMode::Required => "required",
     }
 }
 
@@ -1118,6 +1137,7 @@ const fn protocol(protocol: Protocol) -> &'static str {
         Protocol::ForwardHttp1 => "forward_http1",
         Protocol::ForwardHttp2 => "forward_http2",
         Protocol::ForwardHttp3 => "forward_http3",
+        Protocol::Http3 => "http3",
     }
 }
 

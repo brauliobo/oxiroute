@@ -2,8 +2,8 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
     sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
+        Arc,
     },
     time::{Duration, Instant},
 };
@@ -82,6 +82,7 @@ impl fmt::Debug for Dns01Credentials {
 }
 
 /// Exact ACME DNS-01 material passed to a provider. The TXT value is never printable.
+#[derive(Clone, Eq, PartialEq)]
 pub struct Dns01Challenge {
     identifier: String,
     challenge_url: String,
@@ -282,7 +283,9 @@ impl Dns01Record {
             || provider_record_id.is_empty()
             || provider_record_id.len() > MAX_DNS01_RECORD_ID_BYTES
             || !provider_record_id.is_ascii()
-            || provider_record_id.bytes().any(|byte| byte.is_ascii_control())
+            || provider_record_id
+                .bytes()
+                .any(|byte| byte.is_ascii_control())
         {
             return Err(Dns01ProviderError::InvalidRecord);
         }
@@ -360,6 +363,19 @@ pub trait Dns01Provider: Send + Sync {
         operation: &Dns01Operation,
     ) -> Result<Dns01Record, Dns01ProviderError>;
 
+    /// Waits until the exact TXT value is visible to the provider's propagation policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns a bounded propagation, timeout, or cancellation error without provider detail.
+    fn wait_for_propagation(
+        &self,
+        challenge: &Dns01Challenge,
+        record: &Dns01Record,
+        credentials: &Dns01Credentials,
+        operation: &Dns01Operation,
+    ) -> Result<(), Dns01ProviderError>;
+
     /// Removes only the exact record identity returned by `create_txt_record`.
     ///
     /// # Errors
@@ -433,9 +449,10 @@ impl Dns01ProviderRegistry {
         if !self.allowlist.permits(&name) {
             return Err(Dns01ProviderError::ProviderNotAllowlisted);
         }
-        if self.providers.insert(name, Arc::new(provider)).is_some() {
+        if self.providers.contains_key(&name) {
             return Err(Dns01ProviderError::DuplicateProvider);
         }
+        self.providers.insert(name, Arc::new(provider));
         Ok(())
     }
 
@@ -501,9 +518,9 @@ impl std::error::Error for Dns01ProviderError {}
 fn validate_provider_name(name: &str) -> Result<(), Dns01ProviderError> {
     if name.is_empty()
         || name.len() > MAX_DNS01_PROVIDER_NAME_BYTES
-        || !name.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
-        })
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
         || name.starts_with('.')
         || name.ends_with('.')
     {
@@ -539,9 +556,9 @@ fn valid_dns_record_name(name: &str) -> bool {
                 && label.len() <= 63
                 && (index == 0 && label == "_acme-challenge"
                     || index != 0
-                        && label.bytes().all(|byte| {
-                            byte.is_ascii_alphanumeric() || byte == b'-'
-                        })
+                        && label
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
                         && !label.starts_with('-')
                         && !label.ends_with('-'))
         })
@@ -560,7 +577,7 @@ mod tests {
     }
 
     impl Dns01Provider for FakeProvider {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "fake"
         }
 
@@ -597,6 +614,19 @@ mod tests {
                 .lock()
                 .expect("cleaned lock")
                 .push(record.provider_record_id().into());
+            Ok(())
+        }
+
+        fn wait_for_propagation(
+            &self,
+            challenge: &Dns01Challenge,
+            record: &Dns01Record,
+            credentials: &Dns01Credentials,
+            operation: &Dns01Operation,
+        ) -> Result<(), Dns01ProviderError> {
+            operation.check()?;
+            assert_eq!(record.record_name(), challenge.record_name());
+            assert_eq!(credentials.as_bytes(), b"provider-secret");
             Ok(())
         }
     }
@@ -642,11 +672,9 @@ mod tests {
             Err(Dns01ProviderError::InvalidOperationTimeout)
         ));
         let cancellation = Dns01Cancellation::new();
-        let operation = Dns01Operation::with_cancellation(
-            Duration::from_secs(1),
-            cancellation.clone(),
-        )
-        .expect("operation");
+        let operation =
+            Dns01Operation::with_cancellation(Duration::from_secs(1), cancellation.clone())
+                .expect("operation");
         cancellation.cancel();
         assert_eq!(operation.check(), Err(Dns01ProviderError::Cancelled));
     }
@@ -677,9 +705,10 @@ mod tests {
     #[test]
     fn unallowlisted_and_dynamic_provider_names_fail_closed() {
         let mut registry = Dns01ProviderRegistry::new(["fake".into()]).expect("registry");
+        assert_eq!(registry.register(FakeProvider::default()), Ok(()));
         assert_eq!(
             registry.register(FakeProvider::default()),
-            Ok(())
+            Err(Dns01ProviderError::DuplicateProvider)
         );
         assert!(matches!(
             Dns01ProviderRegistry::new(["dynamic:provider".into()]),

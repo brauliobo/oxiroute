@@ -71,6 +71,12 @@ export interface CertbotCertificateSource {
 export type AcmeChallengeType = 'http01' | 'dns01' | 'tls_alpn01'
 export type AcmeKeyType = 'ecdsa_p256' | 'rsa_2048'
 
+export interface AcmeDns01Config {
+  provider: string
+  credential_file: string
+  timeout_seconds: number
+}
+
 export interface AcmeManagedCertificateSource {
   type: 'acme_managed'
   directory_url: string
@@ -80,6 +86,7 @@ export interface AcmeManagedCertificateSource {
   challenge: AcmeChallengeType
   key_type: AcmeKeyType
   allowed_dns_suffixes: string[]
+  dns01: AcmeDns01Config | null
 }
 
 export type SelfSignedKeyType = 'ecdsa_p256' | 'rsa_2048'
@@ -114,10 +121,19 @@ export interface TlsProfileConfig {
 export interface TlsPolicyConfig {
   cipher_list: string | null
   dh_parameters_path: string | null
+  client_auth: TlsClientAuthPolicyConfig
   session_cache: TlsSessionCacheConfig | null
   session_timeout_seconds: number | null
   session_tickets: boolean
   prefer_server_ciphers: boolean
+}
+
+export type TlsClientAuthMode = 'disabled' | 'optional' | 'required'
+
+export interface TlsClientAuthPolicyConfig {
+  mode: TlsClientAuthMode
+  ca_certificate_path: string | null
+  allowed_dns_names: string[]
 }
 
 export interface TlsSessionCacheConfig {
@@ -321,6 +337,11 @@ export interface HttpCookiePathRewriteConfig {
   to: string
 }
 
+export interface HttpProxyPathRewriteConfig {
+  from: string
+  to: string
+}
+
 export interface HttpCookieAttributePolicyConfig {
   name: string
   secure: boolean | null
@@ -340,6 +361,7 @@ export interface HttpRetryPolicyConfig {
 
 export interface HttpProxyPolicyConfig {
   upstream_host: HttpUpstreamHostConfig
+  upstream_path_rewrite?: HttpProxyPathRewriteConfig | null
   request_headers: HttpRequestHeaderMutationConfig[]
   response_headers: HttpResponseHeaderMutationConfig[]
   response_cookie_path_rewrites: HttpCookiePathRewriteConfig[]
@@ -882,7 +904,11 @@ function isCertificate(value: unknown): value is CertificateConfig {
       arrayOf(source.contacts, isString) && typeof source.terms_agreed === 'boolean' &&
       ['http01', 'dns01', 'tls_alpn01'].includes(String(source.challenge)) &&
       ['ecdsa_p256', 'rsa_2048'].includes(String(source.key_type)) &&
-      arrayOf(source.allowed_dns_suffixes, isString)
+      arrayOf(source.allowed_dns_suffixes, isString) &&
+      (source.dns01 === null || (isRecord(source.dns01) &&
+        typeof source.dns01.provider === 'string' &&
+        typeof source.dns01.credential_file === 'string' &&
+        safeInteger(source.dns01.timeout_seconds)))
   }
   return source.type === 'self_signed_development' && safeInteger(source.validity_days) &&
     ['ecdsa_p256', 'rsa_2048'].includes(String(source.key_type))
@@ -894,6 +920,9 @@ function isTlsProfile(value: unknown): value is TlsProfileConfig {
     arrayOf(value.alpn, (entry) => ['h3', 'h2', 'http/1.1'].includes(String(entry))) &&
     isRecord(value.policy) && nullableString(value.policy.cipher_list) &&
     nullableString(value.policy.dh_parameters_path) &&
+    isRecord(value.policy.client_auth) && ['disabled', 'optional', 'required'].includes(String(value.policy.client_auth.mode)) &&
+    nullableString(value.policy.client_auth.ca_certificate_path) &&
+    arrayOf(value.policy.client_auth.allowed_dns_names, isString) &&
     (value.policy.session_cache === null || (isRecord(value.policy.session_cache) &&
       typeof value.policy.session_cache.name === 'string' && safeInteger(value.policy.session_cache.size_bytes))) &&
     nullableSafeInteger(value.policy.session_timeout_seconds) &&
@@ -1068,6 +1097,9 @@ function isHttpRedirectLocation(value: unknown): value is HttpRedirectLocationCo
 
 function isHttpProxyPolicy(value: unknown): value is HttpProxyPolicyConfig {
   return isRecord(value) && isHttpUpstreamHost(value.upstream_host) &&
+    (value.upstream_path_rewrite === undefined || value.upstream_path_rewrite === null ||
+      (isRecord(value.upstream_path_rewrite) && typeof value.upstream_path_rewrite.from === 'string' &&
+        typeof value.upstream_path_rewrite.to === 'string')) &&
     arrayOf(value.request_headers, isRequestHeaderMutation) &&
     arrayOf(value.response_headers, isResponseHeaderMutation) &&
     arrayOf(value.response_cookie_path_rewrites, (rewrite) => isRecord(rewrite) &&
@@ -1394,6 +1426,10 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'certificates[].source.terms_agreed', kind: 'boolean' },
   { path: 'certificates[].source.challenge', kind: 'enum' },
   { path: 'certificates[].source.allowed_dns_suffixes', kind: 'string_list' },
+  { path: 'certificates[].source.dns01', kind: 'object' },
+  { path: 'certificates[].source.dns01.provider', kind: 'string' },
+  { path: 'certificates[].source.dns01.credential_file', kind: 'string' },
+  { path: 'certificates[].source.dns01.timeout_seconds', kind: 'integer' },
   { path: 'certificates[].source.validity_days', kind: 'integer' },
   { path: 'certificates[].source.key_type', kind: 'enum' },
   { path: 'tls_profiles', kind: 'collection' },
@@ -1405,6 +1441,10 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'tls_profiles[].policy', kind: 'object' },
   { path: 'tls_profiles[].policy.cipher_list', kind: 'string' },
   { path: 'tls_profiles[].policy.dh_parameters_path', kind: 'string' },
+  { path: 'tls_profiles[].policy.client_auth', kind: 'object' },
+  { path: 'tls_profiles[].policy.client_auth.mode', kind: 'enum' },
+  { path: 'tls_profiles[].policy.client_auth.ca_certificate_path', kind: 'string' },
+  { path: 'tls_profiles[].policy.client_auth.allowed_dns_names', kind: 'string_list' },
   { path: 'tls_profiles[].policy.session_cache', kind: 'object' },
   { path: 'tls_profiles[].policy.session_cache.name', kind: 'string' },
   { path: 'tls_profiles[].policy.session_cache.size_bytes', kind: 'integer' },
@@ -1482,6 +1522,9 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'http_services[].routes[].action.policy.upstream_host.fallback', kind: 'string' },
   { path: 'http_services[].routes[].action.policy.upstream_host.unix_fallback', kind: 'string' },
   { path: 'http_services[].routes[].action.policy.upstream_host.value', kind: 'string' },
+  { path: 'http_services[].routes[].action.policy.upstream_path_rewrite', kind: 'object' },
+  { path: 'http_services[].routes[].action.policy.upstream_path_rewrite.from', kind: 'string' },
+  { path: 'http_services[].routes[].action.policy.upstream_path_rewrite.to', kind: 'string' },
   { path: 'http_services[].routes[].action.policy.request_headers', kind: 'collection' },
   { path: 'http_services[].routes[].action.policy.request_headers[].operation', kind: 'enum' },
   { path: 'http_services[].routes[].action.policy.request_headers[].name', kind: 'string' },
