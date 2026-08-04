@@ -29,6 +29,56 @@ pub struct RecorderWorkerConfig {
     pub rotation_interval: Option<Duration>,
     pub shutdown_timeout: Duration,
     pub video_codec: Option<RecorderVideoCodec>,
+    pub record_mask: RecorderMediaMask,
+    pub append: bool,
+    pub lock: bool,
+    pub max_size: Option<u64>,
+    pub max_frames: Option<u64>,
+    pub notify: bool,
+}
+
+/// Exact track selection for one recorder.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RecorderMediaMask {
+    pub audio: bool,
+    pub video: bool,
+    pub keyframes: bool,
+}
+
+impl Default for RecorderMediaMask {
+    fn default() -> Self {
+        Self {
+            audio: true,
+            video: true,
+            keyframes: false,
+        }
+    }
+}
+
+impl RecorderMediaMask {
+    #[must_use]
+    pub const fn new(audio: bool, video: bool, keyframes: bool) -> Self {
+        Self {
+            audio,
+            video,
+            keyframes,
+        }
+    }
+
+    #[must_use]
+    pub const fn accepts(self, kind: MediaEventKind) -> bool {
+        match kind {
+            MediaEventKind::Metadata => self.audio || self.video,
+            MediaEventKind::AacSequenceHeader | MediaEventKind::Audio => self.audio,
+            MediaEventKind::AvcSequenceHeader
+            | MediaEventKind::HevcSequenceHeader
+            | MediaEventKind::Av1SequenceHeader => self.video,
+            MediaEventKind::VideoKeyframe => self.video,
+            MediaEventKind::VideoInterframe | MediaEventKind::VideoDisposable => {
+                self.video && !self.keyframes
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,6 +97,12 @@ impl Default for RecorderWorkerConfig {
             rotation_interval: None,
             shutdown_timeout: Duration::from_secs(5),
             video_codec: None,
+            record_mask: RecorderMediaMask::default(),
+            append: false,
+            lock: false,
+            max_size: None,
+            max_frames: None,
+            notify: false,
         }
     }
 }
@@ -66,6 +122,13 @@ pub enum RecorderFailure {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecorderNotification {
+    Started,
+    Stopped,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecorderWorkerPhase {
     Starting,
     Recording,
@@ -76,6 +139,7 @@ pub enum RecorderWorkerPhase {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecorderEnqueueResult {
     Queued,
+    Filtered,
     DroppedDiscontinuity,
     Inactive,
 }
@@ -97,6 +161,7 @@ pub struct RecorderWorkerStatus {
     pub segments_started: u64,
     pub segments_completed: u64,
     pub discontinuities: u64,
+    pub last_notification: Option<RecorderNotification>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -115,6 +180,10 @@ pub enum RecorderWorkerStartError {
     Capacity(#[source] RecordingStoreError),
     #[error("recorder shutdown timeout must be nonzero")]
     InvalidShutdownTimeout,
+    #[error("recorder track mask must include audio or video and keyframes require video")]
+    InvalidRecordMask,
+    #[error("recorder per-segment limits must be nonzero when configured")]
+    InvalidRecordingLimit,
     #[error("recording does not support declared video codec {0:?}")]
     UnsupportedVideoCodec(RecorderVideoCodec),
 }
@@ -142,6 +211,12 @@ pub struct RecorderWorkerSupervisor {
 struct WorkerShared {
     max_queue_messages: usize,
     max_queue_bytes: usize,
+    record_mask: RecorderMediaMask,
+    max_size: Option<u64>,
+    max_frames: Option<u64>,
+    lock: bool,
+    append: bool,
+    notify: bool,
     queue: Mutex<QueueState>,
     available: Condvar,
     status: Mutex<WorkerStatusState>,
@@ -154,6 +229,7 @@ struct WorkerShared {
     commit_cancellation: Mutex<Option<RecordingCommitCancellation>>,
     pending_finalizations: Mutex<Vec<Arc<PendingFinalizationState>>>,
     current_partial_exists: Mutex<Option<Arc<AtomicBool>>>,
+    notification: Mutex<Option<RecorderNotification>>,
     #[cfg(test)]
     panic_on_finish: AtomicBool,
     #[cfg(test)]
@@ -214,6 +290,17 @@ impl RecorderWorker {
         if config.shutdown_timeout.is_zero() {
             return Err(RecorderWorkerStartError::InvalidShutdownTimeout);
         }
+        if !config.record_mask.audio && !config.record_mask.video {
+            return Err(RecorderWorkerStartError::InvalidRecordMask);
+        }
+        if config.record_mask.keyframes && !config.record_mask.video {
+            return Err(RecorderWorkerStartError::InvalidRecordMask);
+        }
+        if config.max_size.is_some_and(|maximum| maximum == 0)
+            || config.max_frames.is_some_and(|maximum| maximum == 0)
+        {
+            return Err(RecorderWorkerStartError::InvalidRecordingLimit);
+        }
         if let Some(
             codec @ (RecorderVideoCodec::EnhancedAvc
             | RecorderVideoCodec::Hevc
@@ -251,6 +338,12 @@ impl RecorderWorker {
         let shared = Arc::new(WorkerShared {
             max_queue_messages: config.max_queue_messages,
             max_queue_bytes: config.max_queue_bytes,
+            record_mask: config.record_mask,
+            max_size: config.max_size,
+            max_frames: config.max_frames,
+            lock: config.lock,
+            append: config.append,
+            notify: config.notify,
             queue: Mutex::new(QueueState {
                 events: VecDeque::new(),
                 bytes: 0,
@@ -281,6 +374,7 @@ impl RecorderWorker {
             commit_cancellation: Mutex::new(None),
             pending_finalizations: Mutex::new(Vec::new()),
             current_partial_exists: Mutex::new(None),
+            notification: Mutex::new(None),
             #[cfg(test)]
             panic_on_finish: AtomicBool::new(false),
             #[cfg(test)]
@@ -330,6 +424,9 @@ impl RecorderWorker {
         arrived_at: Instant,
         at_unix_ms: u64,
     ) -> RecorderEnqueueResult {
+        if !self.shared.record_mask.accepts(event.kind()) {
+            return RecorderEnqueueResult::Filtered;
+        }
         let mut queue = self.shared.lock_queue();
         if !queue.accepting {
             return RecorderEnqueueResult::Inactive;
@@ -659,6 +756,9 @@ impl WorkerShared {
                 failure.published_but_not_durable_relative_name;
         }
         status.current_relative_name = None;
+        if self.notify {
+            self.set_notification(RecorderNotification::Failed);
+        }
         self.available.notify_all();
     }
 
@@ -682,6 +782,10 @@ impl WorkerShared {
             segments_started: status.segments_started,
             segments_completed: status.segments_completed,
             discontinuities: queue.discontinuities,
+            last_notification: *self
+                .notification
+                .lock()
+                .expect("recorder notification mutex poisoned"),
         }
     }
 
@@ -719,6 +823,16 @@ impl WorkerShared {
             status.current_relative_name = None;
             status.current_partial_name = None;
         }
+        if self.notify {
+            self.set_notification(RecorderNotification::Stopped);
+        }
+    }
+
+    fn set_notification(&self, notification: RecorderNotification) {
+        *self
+            .notification
+            .lock()
+            .expect("recorder notification mutex poisoned") = Some(notification);
     }
 }
 
@@ -909,6 +1023,9 @@ fn run_worker(shared: &Arc<WorkerShared>, setup: WorkerSetup) {
             status.phase = RecorderWorkerPhase::Recording;
         }
     }
+    if shared.notify {
+        shared.set_notification(RecorderNotification::Started);
+    }
     let WorkerSetup {
         store,
         path_policy,
@@ -989,6 +1106,17 @@ impl WorkerContext {
             self.video_seen = true;
         }
 
+        if self.segment.is_some() {
+            if self.limit_requires_rotation(event)? {
+                self.start_segment_finalization()?;
+                self.segment_started_at = None;
+                self.segment_started_at_unix_seconds = None;
+                self.open_segment(queued.arrived_at, queued.arrived_at_unix_seconds)?;
+            } else if self.limit_requires_drop(event)? {
+                return Ok(());
+            }
+        }
+
         if matches!(
             event.kind(),
             MediaEventKind::Metadata
@@ -1022,6 +1150,50 @@ impl WorkerContext {
             .write(event)?;
         self.last_written_at_unix_seconds = self.latest_event_at_unix_seconds;
         Ok(())
+    }
+
+    fn limit_requires_rotation(&mut self, event: &MediaEvent) -> Result<bool, WorkerError> {
+        let segment = self
+            .segment
+            .as_mut()
+            .expect("limit checks require an open segment");
+        let frame_limit_reached = self
+            .shared
+            .max_frames
+            .is_some_and(|maximum| segment.frame_count() >= maximum && is_frame_event(event));
+        let size_limit_reached = if let Some(maximum) = self.shared.max_size {
+            segment
+                .projected_end(event)?
+                .is_some_and(|end| end > maximum)
+        } else {
+            false
+        };
+        let limit_reached = frame_limit_reached || size_limit_reached;
+        Ok(limit_reached
+            && segment.has_media()
+            && (!self.video_seen || event.kind() == MediaEventKind::VideoKeyframe))
+    }
+
+    fn limit_requires_drop(&mut self, event: &MediaEvent) -> Result<bool, WorkerError> {
+        let segment = self
+            .segment
+            .as_mut()
+            .expect("limit checks require an open segment");
+        let frame_limit_reached = self
+            .shared
+            .max_frames
+            .is_some_and(|maximum| segment.frame_count() >= maximum && is_frame_event(event));
+        let size_limit_reached = if let Some(maximum) = self.shared.max_size {
+            segment
+                .projected_end(event)?
+                .is_some_and(|end| end > maximum)
+        } else {
+            false
+        };
+        Ok((frame_limit_reached || size_limit_reached)
+            && segment.has_media()
+            && self.video_seen
+            && event.kind() != MediaEventKind::VideoKeyframe)
     }
 
     fn open_segment(
@@ -1125,13 +1297,28 @@ impl WorkerContext {
         &self,
         arrived_at_unix_seconds: u64,
     ) -> Result<Option<(String, u64, u64)>, WorkerError> {
-        let Some(interval) = self.rotation_interval else {
-            return Ok(None);
-        };
         let names = self
             .store
             .recording_names()
             .map_err(|_| WorkerError::new(RecorderFailure::Open))?;
+        if self.shared.append {
+            let requested = self
+                .path_policy
+                .segment_filename(
+                    &self.stream_name,
+                    arrived_at_unix_seconds,
+                    RecordingDateTime::from_unix_seconds(arrived_at_unix_seconds)
+                        .map_err(|_| WorkerError::new(RecorderFailure::Open))?,
+                    0,
+                )
+                .map_err(|_| WorkerError::new(RecorderFailure::Open))?;
+            if names.iter().any(|name| name == &requested) {
+                return Ok(Some((requested, arrived_at_unix_seconds, 0)));
+            }
+        }
+        let Some(interval) = self.rotation_interval else {
+            return Ok(None);
+        };
         Ok(names
             .into_iter()
             .filter_map(|name| {
@@ -1361,11 +1548,22 @@ fn is_unsupported_video_event(event: &MediaEvent) -> bool {
         .is_some_and(|header| header & 0x80 != 0)
 }
 
+fn is_frame_event(event: &MediaEvent) -> bool {
+    matches!(
+        event.kind(),
+        MediaEventKind::Audio
+            | MediaEventKind::VideoKeyframe
+            | MediaEventKind::VideoInterframe
+            | MediaEventKind::VideoDisposable
+    )
+}
+
 struct Segment {
     muxer: FlvMuxer<CountedRecordingFile>,
     partial_relative_name: String,
     preserve_partial: Arc<AtomicBool>,
     partial_exists: Arc<AtomicBool>,
+    frame_count: u64,
 }
 
 struct PreparedSegment {
@@ -1383,10 +1581,15 @@ impl Segment {
         shared: &WorkerShared,
     ) -> Result<Self, WorkerError> {
         let file = store
-            .create_unless(relative_name, || {
-                shared.cancelled.load(Ordering::Acquire)
-                    || shared.discontinuity_requested.load(Ordering::Acquire)
-            })
+            .create_unless_with_options(
+                relative_name,
+                || {
+                    shared.cancelled.load(Ordering::Acquire)
+                        || shared.discontinuity_requested.load(Ordering::Acquire)
+                },
+                shared.lock,
+                shared.max_size,
+            )
             .map_err(|error| {
                 if matches!(error, RecordingStoreError::CreationCancelled) {
                     if shared.discontinuity_requested.load(Ordering::Acquire) {
@@ -1432,6 +1635,7 @@ impl Segment {
             partial_relative_name,
             preserve_partial,
             partial_exists,
+            frame_count: 0,
         })
     }
 
@@ -1443,7 +1647,7 @@ impl Segment {
         shared: &WorkerShared,
     ) -> Result<Self, WorkerError> {
         let resume = store
-            .resume(relative_name)
+            .resume_with_options(relative_name, shared.lock, shared.max_size)
             .map_err(|_| WorkerError::new(RecorderFailure::Open))?;
         let partial_relative_name = resume.file.partial_relative_name().to_owned();
         let preserve_partial = resume.file.preservation_handle();
@@ -1466,11 +1670,50 @@ impl Segment {
             partial_relative_name,
             preserve_partial,
             partial_exists,
+            frame_count: 0,
         })
     }
 
     fn write(&mut self, event: &MediaEvent) -> Result<(), WorkerError> {
-        write_to_muxer(&mut self.muxer, event)
+        let projected = self.projected_bytes(event)?;
+        write_to_muxer(&mut self.muxer, event).map(|()| {
+            if projected > 0 && is_frame_event(event) {
+                self.frame_count = self.frame_count.saturating_add(1);
+            }
+        })
+    }
+
+    fn projected_end(&mut self, event: &MediaEvent) -> Result<Option<u64>, WorkerError> {
+        let current = self
+            .muxer
+            .output_position()
+            .map_err(|_| WorkerError::new(RecorderFailure::Write))?;
+        let projected = self.projected_bytes(event)?;
+        Ok(current.checked_add(projected))
+    }
+
+    fn projected_bytes(&self, event: &MediaEvent) -> Result<u64, WorkerError> {
+        let projected = match event.kind() {
+            MediaEventKind::AacSequenceHeader | MediaEventKind::Audio => {
+                self.muxer.projected_audio_size(event.payload())
+            }
+            MediaEventKind::AvcSequenceHeader
+            | MediaEventKind::VideoKeyframe
+            | MediaEventKind::VideoInterframe
+            | MediaEventKind::VideoDisposable
+            | MediaEventKind::HevcSequenceHeader
+            | MediaEventKind::Av1SequenceHeader => self.muxer.projected_video_size(event.payload()),
+            MediaEventKind::Metadata => self.muxer.projected_metadata_size(event.payload()),
+        };
+        projected.map_err(|_| WorkerError::new(RecorderFailure::Write))
+    }
+
+    fn has_media(&self) -> bool {
+        self.muxer.has_media()
+    }
+
+    const fn frame_count(&self) -> u64 {
+        self.frame_count
     }
 
     fn preserve(&self) {
@@ -1633,6 +1876,7 @@ mod tests {
                 rotation_interval: Some(Duration::from_millis(1)),
                 shutdown_timeout: Duration::from_secs(1),
                 video_codec: None,
+                ..RecorderWorkerConfig::default()
             },
         )
         .expect("recorder worker");
@@ -1702,6 +1946,7 @@ mod tests {
             rotation_interval: Some(Duration::from_millis(1)),
             shutdown_timeout: Duration::from_secs(2),
             video_codec: None,
+            ..RecorderWorkerConfig::default()
         };
         let workers: Vec<_> = (0..10)
             .map(|index| {
@@ -1792,6 +2037,7 @@ mod tests {
             rotation_interval: Some(Duration::from_millis(1)),
             shutdown_timeout: Duration::from_millis(40),
             video_codec: None,
+            ..RecorderWorkerConfig::default()
         };
         let start = |name: &[u8]| {
             RecorderWorker::start(
@@ -1888,6 +2134,7 @@ mod tests {
                 rotation_interval: Some(Duration::from_millis(1)),
                 shutdown_timeout: Duration::from_secs(1),
                 video_codec: None,
+                ..RecorderWorkerConfig::default()
             },
         )
         .expect("recorder worker");
@@ -1943,6 +2190,132 @@ mod tests {
         assert_eq!(
             status.phase,
             RecorderWorkerPhase::Failed(RecorderFailure::Finalize)
+        );
+    }
+
+    #[test]
+    fn record_mask_filters_events_before_the_worker_queue() {
+        let root = tempdir().expect("recording root");
+        let store = RecordingStore::open(
+            root.path(),
+            RecordingStoreLimits {
+                max_bytes: Some(1024 * 1024),
+                max_files: Some(4),
+                max_active_recorders: 1,
+            },
+        )
+        .expect("recording store");
+        let worker = RecorderWorker::start(
+            store,
+            &RecordingPathPolicy::new(".flv", false).expect("path policy"),
+            b"camera",
+            1_721_619_000,
+            RecordingDateTime::from_unix_seconds(1_721_619_000).expect("start time"),
+            RecorderWorkerConfig {
+                record_mask: RecorderMediaMask::new(false, true, false),
+                ..RecorderWorkerConfig::default()
+            },
+        )
+        .expect("recorder worker");
+
+        let audio =
+            MediaEvent::audio(0, Arc::<[u8]>::from(&b"\xaf\x01\x11"[..])).expect("audio event");
+        assert_eq!(worker.try_enqueue(audio), RecorderEnqueueResult::Filtered);
+        assert_eq!(worker.status().queue_messages, 0);
+
+        let video = MediaEvent::video(0, Arc::<[u8]>::from(&b"\x17\x01\x00\x00\x00\x01\x02"[..]))
+            .expect("video event");
+        assert_eq!(worker.try_enqueue(video), RecorderEnqueueResult::Queued);
+        let _ = worker.shutdown();
+    }
+
+    #[test]
+    fn invalid_recording_bounds_are_rejected_before_thread_start() {
+        let root = tempdir().expect("recording root");
+        let store = RecordingStore::open(
+            root.path(),
+            RecordingStoreLimits {
+                max_bytes: Some(1024 * 1024),
+                max_files: Some(4),
+                max_active_recorders: 1,
+            },
+        )
+        .expect("recording store");
+        let path = RecordingPathPolicy::new(".flv", false).expect("path policy");
+        let start_time = RecordingDateTime::from_unix_seconds(1_721_619_000).expect("start time");
+
+        let invalid_mask = RecorderWorker::start(
+            store.clone(),
+            &path,
+            b"mask",
+            1_721_619_000,
+            start_time,
+            RecorderWorkerConfig {
+                record_mask: RecorderMediaMask::new(false, false, false),
+                ..RecorderWorkerConfig::default()
+            },
+        );
+        assert!(matches!(
+            invalid_mask,
+            Err(RecorderWorkerStartError::InvalidRecordMask)
+        ));
+
+        let invalid_limit = RecorderWorker::start(
+            store,
+            &path,
+            b"limit",
+            1_721_619_000,
+            start_time,
+            RecorderWorkerConfig {
+                max_frames: Some(0),
+                ..RecorderWorkerConfig::default()
+            },
+        );
+        assert!(matches!(
+            invalid_limit,
+            Err(RecorderWorkerStartError::InvalidRecordingLimit)
+        ));
+    }
+
+    #[test]
+    fn notifications_report_the_worker_lifecycle_when_enabled() {
+        let root = tempdir().expect("recording root");
+        let store = RecordingStore::open(
+            root.path(),
+            RecordingStoreLimits {
+                max_bytes: Some(1024 * 1024),
+                max_files: Some(4),
+                max_active_recorders: 1,
+            },
+        )
+        .expect("recording store");
+        let worker = RecorderWorker::start(
+            store,
+            &RecordingPathPolicy::new(".flv", false).expect("path policy"),
+            b"camera",
+            1_721_619_000,
+            RecordingDateTime::from_unix_seconds(1_721_619_000).expect("start time"),
+            RecorderWorkerConfig {
+                notify: true,
+                ..RecorderWorkerConfig::default()
+            },
+        )
+        .expect("recorder worker");
+        enqueue(
+            &worker,
+            MediaEvent::audio(0, Arc::<[u8]>::from(&b"\xaf\x01\x11"[..])).unwrap(),
+        );
+        wait_until(|| worker.status().last_notification == Some(RecorderNotification::Started));
+
+        let status = match worker.shutdown() {
+            RecorderShutdown::Joined(status) => status,
+            RecorderShutdown::TimedOut(supervisor) => {
+                panic!("notifying recorder timed out: {:?}", supervisor.status())
+            }
+        };
+        assert_eq!(
+            status.last_notification,
+            Some(RecorderNotification::Stopped)
         );
     }
 

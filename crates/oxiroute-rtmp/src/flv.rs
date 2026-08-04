@@ -232,6 +232,65 @@ where
         Ok(self.writer)
     }
 
+    pub(crate) fn projected_audio_size(&self, payload: &[u8]) -> Result<u64, FlvMuxerError> {
+        validate_size(FlvTagType::Audio, payload)?;
+        let size = match classify_audio(payload)? {
+            AudioPacketKind::AacSequenceHeader if self.first_media_timestamp_ms.is_none() => 0,
+            AudioPacketKind::AacSequenceHeader => tag_size(payload),
+            AudioPacketKind::AacRaw if !self.aac_sequence_header_seen => 0,
+            AudioPacketKind::AacRaw | AudioPacketKind::Media if self.waiting_for_avc_keyframe => 0,
+            AudioPacketKind::AacRaw | AudioPacketKind::Media
+                if self.first_media_timestamp_ms.is_none() =>
+            {
+                self.cached_codec_header_size()
+                    .saturating_add(tag_size(payload))
+            }
+            AudioPacketKind::AacRaw | AudioPacketKind::Media => tag_size(payload),
+        };
+        Ok(size)
+    }
+
+    pub(crate) fn projected_video_size(&self, payload: &[u8]) -> Result<u64, FlvMuxerError> {
+        validate_size(FlvTagType::Video, payload)?;
+        let size = match classify_video(payload)? {
+            VideoPacketKind::AvcSequenceHeader if self.first_media_timestamp_ms.is_none() => 0,
+            VideoPacketKind::AvcSequenceHeader => tag_size(payload),
+            VideoPacketKind::AvcKeyframe if !self.avc_sequence_header_seen => 0,
+            VideoPacketKind::AvcKeyframe if self.first_media_timestamp_ms.is_none() => self
+                .cached_codec_header_size()
+                .saturating_add(tag_size(payload)),
+            VideoPacketKind::AvcKeyframe => tag_size(payload),
+            VideoPacketKind::AvcOther
+                if !self.avc_sequence_header_seen || self.waiting_for_avc_keyframe =>
+            {
+                0
+            }
+            VideoPacketKind::AvcOther if self.first_media_timestamp_ms.is_none() => self
+                .cached_codec_header_size()
+                .saturating_add(tag_size(payload)),
+            VideoPacketKind::AvcOther => tag_size(payload),
+            VideoPacketKind::Media if self.waiting_for_avc_keyframe => 0,
+            VideoPacketKind::Media if self.first_media_timestamp_ms.is_none() => self
+                .cached_codec_header_size()
+                .saturating_add(tag_size(payload)),
+            VideoPacketKind::Media => tag_size(payload),
+        };
+        Ok(size)
+    }
+
+    pub(crate) fn projected_metadata_size(&self, payload: &[u8]) -> Result<u64, FlvMuxerError> {
+        validate_size(FlvTagType::Metadata, payload)?;
+        Ok(tag_size(payload))
+    }
+
+    pub(crate) fn output_position(&mut self) -> Result<u64, FlvMuxerError> {
+        Ok(self.writer.stream_position()?)
+    }
+
+    pub(crate) const fn has_media(&self) -> bool {
+        self.first_media_timestamp_ms.is_some()
+    }
+
     fn cache_codec_header(&mut self, tag_type: FlvTagType, payload: &[u8]) {
         if let Some(index) = self
             .cached_codec_headers
@@ -244,6 +303,13 @@ where
             tag_type,
             payload: payload.to_vec(),
         });
+    }
+
+    fn cached_codec_header_size(&self) -> u64 {
+        self.cached_codec_headers
+            .iter()
+            .map(|header| tag_size(&header.payload))
+            .sum()
     }
 
     fn start_if_needed(&mut self, timestamp_ms: u32) -> Result<(), FlvMuxerError> {
@@ -317,6 +383,12 @@ fn validate_size(tag_type: FlvTagType, payload: &[u8]) -> Result<(), FlvMuxerErr
         });
     }
     Ok(())
+}
+
+fn tag_size(payload: &[u8]) -> u64 {
+    u64::try_from(payload.len())
+        .expect("validated FLV payload length fits in u64")
+        .saturating_add(u64::from(FLV_TAG_HEADER_SIZE) + 4)
 }
 
 fn validate_codec_header_size(tag_type: FlvTagType, payload: &[u8]) -> Result<(), FlvMuxerError> {

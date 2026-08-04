@@ -91,9 +91,24 @@ starts only after an exact stream and recorder control request:
     name "archive"
     start "manual"
     root_directory "/var/lib/oxiroute/recordings"
+    (object)record_mask {
+      audio #true
+      video #true
+      keyframes #false
+    }
     suffix_template "-%Y-%m-%dT%H-%M-%S.flv"
     append_unix_seconds #false
+    append #false
+    lock #true
+    max_size 1073741824
+    max_frames 1000000
+    notify #true
     rotation_interval_ms 3600000
+`record_mask` may select audio, video, or keyframes-only video; at least one of audio/video is
+required. `append` resumes the exact existing segment when its FLV tail is valid, and `lock` holds
+an exclusive advisory lock while the segment is active. `max_size` and `max_frames` bound one
+segment; omission means no per-segment limit. Notifications retain only the latest bounded
+start/stop/failure outcome in the recorder snapshot.
     max_queue_messages 256
     max_queue_bytes 8388608
     shutdown_timeout_ms 5000

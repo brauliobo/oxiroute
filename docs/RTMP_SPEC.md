@@ -463,6 +463,13 @@ explicitly as finalization while preserving the current segment.
 
 Recorder open, quota, write, discontinuity, and codec failures are isolated to that recorder. They
 remain observable but do not fail live ingest, fanout, or sibling recorders.
+The recorder mask is applied before queue admission. Audio, video, or keyframes-only video may be
+selected, but at least one audio/video track is required. `append` resumes the exact existing FLV
+segment only after descriptor, ownership, lock, and FLV-tail checks; `lock` holds an exclusive
+advisory lock for the active segment. `max_size` and `max_frames` are per-segment bounds. A reached
+bound rotates at the next safe audio boundary or video keyframe; if no safe boundary arrives, the
+worker drops over-limit non-keyframes rather than exceeding the bound. `notify` retains the latest
+bounded lifecycle outcome in the recorder status.
 
 Stop and disconnect transfer workers to a reaper with a bounded pending-task count. Submission
 backpressures when that bound is full, but waits outside registry and recorder-controller locks, so

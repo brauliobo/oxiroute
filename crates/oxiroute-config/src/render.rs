@@ -611,8 +611,14 @@ impl Renderer {
             name,
             start,
             root_directory,
+            record_mask,
             suffix_template,
             append_unix_seconds,
+            append,
+            lock,
+            max_size,
+            max_frames,
+            notify,
             timezone,
             time_basis,
             segment_naming,
@@ -630,8 +636,24 @@ impl Renderer {
             match start {
                 RtmpRecorderStart::Continuous => "continuous",
                 RtmpRecorderStart::Manual => "manual",
+        self.begin_table_field("record_mask");
+        self.boolean_field("audio", record_mask.audio);
+        self.boolean_field("video", record_mask.video);
+        self.boolean_field("keyframes", record_mask.keyframes);
+        self.end_table();
             },
         );
+        self.boolean_field("append", *append);
+        self.boolean_field("lock", *lock);
+        match max_size {
+            Some(limit) => self.integer_field("max_size", limit),
+            None => self.null_field("max_size"),
+        }
+        match max_frames {
+            Some(limit) => self.integer_field("max_frames", limit),
+            None => self.null_field("max_frames"),
+        }
+        self.boolean_field("notify", *notify);
         self.string_field(
             "root_directory",
             utf8_recording_root(root_directory, service_name, application_name, name)?,

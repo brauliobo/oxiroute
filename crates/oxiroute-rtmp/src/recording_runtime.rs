@@ -194,7 +194,12 @@ impl RecorderBootstrap {
     }
 
     fn mark_recovery_gap(&mut self, kind: MediaEventKind, result: RecorderEnqueueResult) {
-        if kind != MediaEventKind::VideoKeyframe || result == RecorderEnqueueResult::Queued {
+        if kind != MediaEventKind::VideoKeyframe
+            || matches!(
+                result,
+                RecorderEnqueueResult::Queued | RecorderEnqueueResult::Filtered
+            )
+        {
             self.keyframe = None;
         }
     }
@@ -464,6 +469,14 @@ impl RecorderController {
         at_unix_ms: u64,
     ) -> RecorderEnqueueResult {
         self.observe_at(at_unix_ms);
+        if !self
+            .policy
+            .worker_config()
+            .record_mask
+            .accepts(event.kind())
+        {
+            return RecorderEnqueueResult::Filtered;
+        }
         loop {
             let mut state = self.lock();
             if state.worker.is_none() {
@@ -1443,7 +1456,9 @@ fn recorder_start_error_code(error: &crate::RecorderWorkerStartError) -> Recorde
         | crate::RecorderWorkerStartError::Capacity(_)
         | crate::RecorderWorkerStartError::InvalidQueueLimits
         | crate::RecorderWorkerStartError::InvalidRotationInterval
-        | crate::RecorderWorkerStartError::InvalidShutdownTimeout => RecorderErrorCode::OpenFailed,
+        | crate::RecorderWorkerStartError::InvalidShutdownTimeout
+        | crate::RecorderWorkerStartError::InvalidRecordMask
+        | crate::RecorderWorkerStartError::InvalidRecordingLimit => RecorderErrorCode::OpenFailed,
     }
 }
 
@@ -1568,6 +1583,7 @@ mod tests {
             rotation_interval: None,
             shutdown_timeout: Duration::from_secs(1),
             video_codec: None,
+            ..RecorderWorkerConfig::default()
         };
         let reserved =
             MediaEvent::audio(1, Arc::<[u8]>::from(&b"current"[..])).expect("current audio");
@@ -2276,6 +2292,7 @@ mod tests {
                         rotation_interval,
                         shutdown_timeout,
                         video_codec: None,
+                        ..RecorderWorkerConfig::default()
                     },
                 ),
                 Arc::<[u8]>::from(&b"camera"[..]),

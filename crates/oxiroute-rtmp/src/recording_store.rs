@@ -357,7 +357,7 @@ impl RecordingStore {
     /// Returns an error for an invalid name, exhausted quota, repeated final-name collisions, or
     /// an operating-system creation failure.
     pub fn create(&self, final_relative_name: &str) -> Result<RecordingFile, RecordingStoreError> {
-        self.create_inner(final_relative_name, || false)
+        self.create_inner(final_relative_name, || false, false, None)
     }
 
     /// Reserves one active recorder slot until the returned lease is dropped.
@@ -384,13 +384,25 @@ impl RecordingStore {
         final_relative_name: &str,
         cancelled: impl Fn() -> bool,
     ) -> Result<RecordingFile, RecordingStoreError> {
-        self.create_inner(final_relative_name, cancelled)
+        self.create_inner(final_relative_name, cancelled, false, None)
+    }
+
+    pub(crate) fn create_unless_with_options(
+        &self,
+        final_relative_name: &str,
+        cancelled: impl Fn() -> bool,
+        lock: bool,
+        max_bytes: Option<u64>,
+    ) -> Result<RecordingFile, RecordingStoreError> {
+        self.create_inner(final_relative_name, cancelled, lock, max_bytes)
     }
 
     fn create_inner(
         &self,
         final_relative_name: &str,
         cancelled: impl Fn() -> bool,
+        lock: bool,
+        max_bytes: Option<u64>,
     ) -> Result<RecordingFile, RecordingStoreError> {
         validate_relative_name(final_relative_name)?;
 
@@ -425,6 +437,26 @@ impl RecordingStore {
                 Mode::RUSR | Mode::WUSR,
             ) {
                 Ok(descriptor) => {
+                    if lock {
+                        if let Err(source) =
+                            rustix_fs::flock(&descriptor, FlockOperation::NonBlockingLockExclusive)
+                        {
+                            drop(descriptor);
+                            match rustix_fs::unlinkat(
+                                &self.shared.root,
+                                relative_name.as_str(),
+                                AtFlags::empty(),
+                            ) {
+                                Ok(()) | Err(Errno::NOENT) => {}
+                                Err(cleanup) => {
+                                    return Err(RecordingStoreError::PartialCleanup(
+                                        cleanup.into(),
+                                    ));
+                                }
+                            }
+                            return Err(RecordingStoreError::PartialCreate(source.into()));
+                        }
+                    }
                     state.files += 1;
                     return Ok(RecordingFile {
                         shared: Arc::clone(&self.shared),
@@ -437,6 +469,7 @@ impl RecordingStore {
                         partial_exists: true,
                         partial_exists_state: Arc::new(AtomicBool::new(true)),
                         file_accounted: true,
+                        max_bytes,
                         preserve_partial: Arc::new(AtomicBool::new(false)),
                         commit: Arc::new(RecordingCommitState {
                             state: AtomicU8::new(COMMIT_OPEN),
@@ -508,6 +541,15 @@ impl RecordingStore {
         &self,
         relative_name: &str,
     ) -> Result<RecordingResume, RecordingStoreError> {
+        self.resume_with_options(relative_name, false, None)
+    }
+
+    pub(crate) fn resume_with_options(
+        &self,
+        relative_name: &str,
+        lock: bool,
+        max_bytes: Option<u64>,
+    ) -> Result<RecordingResume, RecordingStoreError> {
         validate_relative_name(relative_name)?;
         let ownership = acquire_shared_ownership(&self.shared.root, &|| false)?;
         let descriptor = rustix_fs::openat(
@@ -533,10 +575,15 @@ impl RecordingStore {
                 "recording entry identity is invalid",
             )));
         }
-        rustix_fs::flock(&descriptor, FlockOperation::NonBlockingLockExclusive)
-            .map_err(|source| RecordingStoreError::ResumeOpen(source.into()))?;
+        if lock {
+            rustix_fs::flock(&descriptor, FlockOperation::NonBlockingLockExclusive)
+                .map_err(|source| RecordingStoreError::ResumeOpen(source.into()))?;
+        }
         let length =
             u64::try_from(metadata.st_size).map_err(|_| RecordingStoreError::ResumeInvalid)?;
+        if max_bytes.is_some_and(|maximum| length > maximum) {
+            return Err(RecordingStoreError::ResumeInvalid);
+        }
         let mut file = File::from(descriptor);
         let (flags, last_timestamp_ms) = inspect_flv_tail(&mut file, length)?;
         Ok(RecordingResume {
@@ -551,6 +598,7 @@ impl RecordingStore {
                 partial_exists: false,
                 partial_exists_state: Arc::new(AtomicBool::new(false)),
                 file_accounted: true,
+                max_bytes,
                 preserve_partial: Arc::new(AtomicBool::new(false)),
                 commit: Arc::new(RecordingCommitState {
                     state: AtomicU8::new(COMMIT_OPEN),
@@ -588,6 +636,7 @@ pub struct RecordingFile {
     partial_exists: bool,
     partial_exists_state: Arc<AtomicBool>,
     file_accounted: bool,
+    max_bytes: Option<u64>,
     preserve_partial: Arc<AtomicBool>,
     commit: Arc<RecordingCommitState>,
     resumed: bool,
@@ -1179,6 +1228,14 @@ impl Write for RecordingFile {
         let requested_end = self.position.checked_add(requested).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "recording position overflow")
         })?;
+        if self
+            .max_bytes
+            .is_some_and(|maximum| requested_end > maximum)
+        {
+            return Err(byte_quota_error(
+                self.max_bytes.expect("recording byte limit was checked"),
+            ));
+        }
         let reserved_growth = requested_end.saturating_sub(self.length);
         {
             let mut state = self.shared.lock();

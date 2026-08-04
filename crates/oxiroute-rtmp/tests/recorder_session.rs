@@ -731,6 +731,7 @@ fn worker_config() -> RecorderWorkerConfig {
         rotation_interval: None,
         shutdown_timeout: Duration::from_secs(1),
         video_codec: None,
+        ..RecorderWorkerConfig::default()
     }
 }
 

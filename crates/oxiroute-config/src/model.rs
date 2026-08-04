@@ -1396,9 +1396,27 @@ pub struct RtmpRecorder {
     #[serde(default)]
     pub start: RtmpRecorderStart,
     pub root_directory: PathBuf,
+    /// Defaults to audio and video, without keyframe-only filtering.
+    #[serde(default)]
+    pub record_mask: RtmpRecordMask,
     /// Defaults to `.flv` and accepts only the bounded UTC subset used by `RecordingPathPolicy`.
     #[serde(default = "default_recorder_suffix_template")]
     pub suffix_template: String,
+    /// Resume the exact existing segment when it is a valid FLV stream.
+    #[serde(default)]
+    pub append: bool,
+    /// Hold an exclusive advisory lock on the active recording file.
+    #[serde(default)]
+    pub lock: bool,
+    /// Maximum bytes for one published recording. Null means unlimited.
+    #[serde(default)]
+    pub max_size: Option<u64>,
+    /// Maximum audio/video frames for one recording. Null means unlimited.
+    #[serde(default)]
+    pub max_frames: Option<u64>,
+    /// Retain bounded start/stop/failure notifications in recorder status.
+    #[serde(default)]
+    pub notify: bool,
     /// Defaults to false.
     #[serde(default)]
     pub append_unix_seconds: bool,
@@ -1477,6 +1495,29 @@ pub enum RtmpRecorderTimeBasis {
 pub enum RtmpRecorderSegmentNaming {
     #[default]
     SafeUnique,
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RtmpRecordMask {
+    /// Include AAC and other audio tags in the recording.
+    #[serde(default = "default_true")]
+    pub audio: bool,
+    /// Include AVC video tags in the recording.
+    #[serde(default = "default_true")]
+    pub video: bool,
+    /// When video is enabled, retain keyframes but omit interframes.
+    #[serde(default)]
+    pub keyframes: bool,
+}
+
+impl Default for RtmpRecordMask {
+    fn default() -> Self {
+        Self {
+            audio: true,
+            video: true,
+            keyframes: false,
+        }
+    }
+}
     NginxCompatible,
 }
 

@@ -1,6 +1,6 @@
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf};
 
-use oxiroute_config::RtmpAclAction;
+use oxiroute_config::{RtmpAclAction, RtmpRecordMask};
 use oxiroute_rtmp::{DirectiveContext, DirectiveError, validate_directive};
 
 use crate::{
@@ -19,6 +19,8 @@ const MAX_SUFFIX_BYTES: usize = 128;
 const MAX_ROTATION_INTERVAL_MS: u64 = (1 << 31) - 1;
 const MAX_OUTBOUND_CHUNK_SIZE: u32 = 1_048_576;
 const MAX_APPLICATION_CONNECTIONS: u64 = 100_000;
+const MAX_RECORDING_FILE_BYTES: u64 = 1_099_511_627_776;
+const MAX_RECORDING_FRAME_COUNT: u64 = 1_000_000_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RtmpResolution {
@@ -103,6 +105,18 @@ pub struct EffectiveRtmpRecorder {
     pub name_origin: DirectiveOrigin,
     pub mode: RtmpRecordMode,
     pub record_origin: DirectiveOrigin,
+    pub record_mask: RtmpRecordMask,
+    pub mask_origin: DirectiveOrigin,
+    pub append: bool,
+    pub append_origin: Option<DirectiveOrigin>,
+    pub lock: bool,
+    pub lock_origin: Option<DirectiveOrigin>,
+    pub max_size: Option<u64>,
+    pub max_size_origin: Option<DirectiveOrigin>,
+    pub max_frames: Option<u64>,
+    pub max_frames_origin: Option<DirectiveOrigin>,
+    pub notify: bool,
+    pub notify_origin: Option<DirectiveOrigin>,
     pub root_directory: PathBuf,
     pub path_origin: DirectiveOrigin,
     pub suffix_template: String,
@@ -127,9 +141,15 @@ struct Policy {
     play_access: Vec<EffectiveRtmpAccessRule>,
     max_connections: Setting<Option<u64>>,
     record: Setting<RecordSetting>,
+    record_mask: Setting<RtmpRecordMask>,
     path: Setting<Option<PathBuf>>,
     suffix: Setting<String>,
     unique: Setting<bool>,
+    append: Setting<bool>,
+    lock: Setting<bool>,
+    max_size: Setting<Option<u64>>,
+    max_frames: Setting<Option<u64>>,
+    notify: Setting<bool>,
     interval: Setting<Option<u64>>,
 }
 
@@ -155,9 +175,15 @@ impl Default for Policy {
             play_access: Vec::new(),
             max_connections: Setting::new(None),
             record: Setting::new(RecordSetting::Off),
+            record_mask: Setting::new(RtmpRecordMask::default()),
             path: Setting::new(None),
             suffix: Setting::new(".flv".into()),
             unique: Setting::new(false),
+            append: Setting::new(false),
+            lock: Setting::new(false),
+            max_size: Setting::new(None),
+            max_frames: Setting::new(None),
+            notify: Setting::new(false),
             interval: Setting::new(None),
         }
     }
@@ -699,6 +725,22 @@ impl<'a> Resolver<'a> {
             name_origin,
             mode,
             record_origin,
+            record_mask: policy.record_mask.value,
+            mask_origin: policy
+                .record_mask
+                .origin
+                .clone()
+                .unwrap_or_else(|| policy.record.origin.clone().expect("record origin")),
+            append: policy.append.value,
+            append_origin: policy.append.origin.clone(),
+            lock: policy.lock.value,
+            lock_origin: policy.lock.origin.clone(),
+            max_size: policy.max_size.value,
+            max_size_origin: policy.max_size.origin.clone(),
+            max_frames: policy.max_frames.value,
+            max_frames_origin: policy.max_frames.origin.clone(),
+            notify: policy.notify.value,
+            notify_origin: policy.notify.origin.clone(),
             root_directory,
             path_origin,
             suffix_template: policy.suffix.value.clone(),
@@ -789,7 +831,10 @@ impl<'a> Resolver<'a> {
                 self.apply_max_connections(child, argument, origin, context, policy);
             }
             b"record" => match parse_record(&child.directive.arguments) {
-                Ok(value) => policy.record.replace(value, origin),
+                Ok((value, mask)) => {
+                    policy.record.replace(value, origin.clone());
+                    policy.record_mask.replace(mask, origin);
+                }
                 Err(message) => self.block(child.occurrence, E_SEMANTICS_NOT_REPRESENTABLE, message),
             },
             b"record_path" => match secure_recording_root(argument) {
@@ -819,32 +864,31 @@ impl<'a> Resolver<'a> {
                     "record_interval is outside canonical millisecond bounds",
                 ),
             },
-            b"record_append" => self.require_disabled_policy(
-                child,
-                argument,
-                "canonical RTMP recorders cannot append to an existing FLV file",
-            ),
-            b"record_lock" => self.require_disabled_policy(
-                child,
-                argument,
-                "canonical RTMP recorders have no native lock-file policy",
-            ),
-            b"record_max_size" if parse_nginx_size(argument) != Some(0) => self.block(
-                child.occurrence,
-                E_SEMANTICS_NOT_REPRESENTABLE,
-                "nginx per-recording file-size termination is not a canonical shared-root storage quota",
-            ),
-            b"record_max_frames" if parse_nginx_size(argument) != Some(0) => self.block(
-                child.occurrence,
-                E_SEMANTICS_NOT_REPRESENTABLE,
-                "canonical RTMP recorders have no per-recording frame-count limit",
-            ),
-            b"record_notify" => self.require_disabled_policy(
-                child,
-                argument,
-                "canonical RTMP recorders do not emit nginx NetStream.Record status notifications",
-            ),
-            b"record_max_size" | b"record_max_frames" => {}
+            b"record_append" => policy.append.replace(argument == b"on", origin),
+            b"record_lock" => policy.lock.replace(argument == b"on", origin),
+            b"record_max_size" => match parse_nginx_size(argument) {
+                Some(0) => policy.max_size.replace(None, origin),
+                Some(value) if value <= MAX_RECORDING_FILE_BYTES => {
+                    policy.max_size.replace(Some(value), origin);
+                }
+                _ => self.block(
+                    child.occurrence,
+                    E_SEMANTICS_NOT_REPRESENTABLE,
+                    "record_max_size exceeds the bounded canonical per-file limit",
+                ),
+            },
+            b"record_max_frames" => match parse_nginx_size(argument) {
+                Some(0) => policy.max_frames.replace(None, origin),
+                Some(value) if value <= MAX_RECORDING_FRAME_COUNT => {
+                    policy.max_frames.replace(Some(value), origin);
+                }
+                _ => self.block(
+                    child.occurrence,
+                    E_SEMANTICS_NOT_REPRESENTABLE,
+                    "record_max_frames exceeds the bounded canonical per-file limit",
+                ),
+            },
+            b"record_notify" => policy.notify.replace(argument == b"on", origin),
             _ => unreachable!("supported policy name was matched"),
         }
     }
@@ -1311,20 +1355,53 @@ fn parse_access_rule(
     })
 }
 
-fn parse_record(arguments: &[Word]) -> Result<RecordSetting, &'static str> {
+fn parse_record(arguments: &[Word]) -> Result<(RecordSetting, RtmpRecordMask), &'static str> {
     let values = arguments
         .iter()
         .map(|argument| argument.value.as_slice())
         .collect::<Vec<_>>();
-    match values.as_slice() {
-        [b"off"] => Ok(RecordSetting::Off),
-        [b"all"] => Ok(RecordSetting::Continuous),
-        [b"all", b"manual"] | [b"manual", b"all"] => Ok(RecordSetting::Manual),
-        [b"manual"] => Err(
-            "bare record manual has no nginx audio/video bits and is not canonical manual recording",
-        ),
-        _ => Err("nginx-RTMP record bitmask is not exactly representable"),
+    let mut audio = false;
+    let mut video = false;
+    let mut keyframes = false;
+    let mut manual = false;
+    let mut off = false;
+    for value in values {
+        match value {
+            b"off" => off = true,
+            b"all" => {
+                audio = true;
+                video = true;
+            }
+            b"audio" => audio = true,
+            b"video" => video = true,
+            b"keyframes" => {
+                video = true;
+                keyframes = true;
+            }
+            b"manual" => manual = true,
+            _ => return Err("nginx-RTMP record bitmask is not exactly representable"),
+        }
     }
+    if off {
+        return Ok((RecordSetting::Off, RtmpRecordMask::default()));
+    }
+    if !audio && !video {
+        return Err(
+            "bare record manual has no nginx audio/video bits and is not canonical recording",
+        );
+    }
+    Ok((
+        if manual {
+            RecordSetting::Manual
+        } else {
+            RecordSetting::Continuous
+        },
+        RtmpRecordMask {
+            audio,
+            video,
+            keyframes,
+        },
+    ))
 }
 
 fn parse_u32(value: &[u8]) -> Option<u32> {
