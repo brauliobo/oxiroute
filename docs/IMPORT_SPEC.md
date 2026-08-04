@@ -3,7 +3,10 @@
 ## Contract
 
 Import means parsing and translating a documented subset into the canonical model. It does
-not mean loading foreign modules or reproducing undocumented implementation accidents.
+not mean loading foreign modules or reproducing undocumented implementation accidents. Every
+offline report uses one stable JSON schema with the source product, detected version when available
+(otherwise explicit `null`), capability profile, bounded source table, include graph, source fingerprints,
+candidate provenance, requirements, blockers, overlays, and ordered diagnostics.
 
 The target import result includes:
 
@@ -28,8 +31,9 @@ subset when that root contains an `rtmp` block.
 KDL, HOCON, and UCI roots may instead contain `nginx_server`, `haproxy_server`, `squid_server`, and `apache_server` references. The
 normal source resolver runs those references through the same complete import pipelines, composes
 only fully finalized candidates with inline canonical objects in source order, and lets the daemon
-watch/reconcile the effective result. This is runtime integration for strict source references, not
-general activation of standalone import reports. Restricted Lua cannot declare native references.
+watch/reconcile the effective result while retaining successful native report provenance in the
+resolved candidate metadata. This is runtime integration for strict source references, not general
+activation of standalone import reports. Restricted Lua cannot declare native references.
 
 - nginx exposes an explicit HTTP-fragment importer: the expanded root may contain only one `http`
   block. It has bounded byte-preserving parsing, deterministic includes/globs, provenance, HTTP
@@ -139,9 +143,12 @@ after explicit confirmation. Native files remain untouched.
 
 ### Watched import workflow
 
-The current source-reference path periodically re-resolves the complete importer input and activates
-only a fully prepared candidate. It does not provide a native-source editor, import report history,
-or separate native revision in the UI. Rich per-source watches and the UI workflow remain planned.
+The current source-reference path re-resolves the complete importer input after native dependency
+events and on a periodic reconciliation interval, and activates only a fully prepared candidate.
+Successful resolutions register the exact resolved files and the parent directories needed for literal
+includes, include globs, and ordered source roots; the registration set is rebuilt after each successful
+resolution so additions, removals, and renames are observed without waiting for the interval. It does
+not provide a native-source editor, import report history, or separate native revision in the UI.
 
 Typed API/UI saves reject a compositional root instead of flattening or rewriting it. Operators may
 edit the OxiRoute/native sources directly or use `config compose` to create a separate flattened,

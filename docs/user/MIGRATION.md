@@ -18,8 +18,9 @@ Native files are read-only inputs. OxiRoute does not rewrite them.
 
 ## nginx
 
-Use a report to see the include graph, source locations, unsupported directives, and deployment
-requirements:
+Use the machine-readable report to see the product/capability profile, bounded include graph,
+per-source fingerprints, source locations, candidate provenance, unsupported directives, blockers,
+and deployment requirements:
 
 ```sh
 oxiroute import nginx /etc/nginx/nginx.conf \

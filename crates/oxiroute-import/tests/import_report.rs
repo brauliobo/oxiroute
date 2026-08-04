@@ -69,6 +69,15 @@ fn report_json_is_deterministic_and_identifies_each_source_product() {
                 .as_array()
                 .is_some_and(|sources| !sources.is_empty())
         );
+        assert!(
+            value["sourceGraph"]["sources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|source| source["fingerprintSha256"]
+                    .as_str()
+                    .is_some_and(|fingerprint| fingerprint.len() == 64))
+        );
         assert!(value["candidate"]["finalized"].is_boolean());
     }
 }
@@ -153,6 +162,17 @@ fn report_retains_source_edges_environment_metadata_and_absent_maps() {
         apache_json["sourceGraph"]["dependencies"][0]["kind"],
         "include"
     );
+    let dependency = &apache_json["sourceGraph"]["dependencies"][0];
+    let target_id = dependency["targetSourceId"]
+        .as_u64()
+        .expect("Apache include target ID");
+    let target = apache_json["sourceGraph"]["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|source| source["id"].as_u64() == Some(target_id))
+        .expect("Apache include target source");
+    assert_eq!(dependency["fingerprintSha256"], target["fingerprintSha256"]);
     assert_eq!(
         apache_json["sourceMetadata"]["sourceMaps"],
         Value::Array(Vec::new())
@@ -214,6 +234,7 @@ fn report_exposes_blockers_requirements_and_satisfied_overlays() {
     )
     .expect("blocked report object");
     assert_eq!(blocked_json["candidate"]["finalized"], false);
+    assert!(blocked_json["candidate"]["config"].is_null());
     assert!(blocked_json["blockers"].as_array().is_some_and(|blockers| {
         blockers
             .iter()
