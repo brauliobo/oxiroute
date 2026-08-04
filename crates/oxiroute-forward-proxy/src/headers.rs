@@ -83,4 +83,16 @@ mod tests {
         assert_eq!(sanitized["x-end-to-end"], "kept");
         assert!(matches!(destination.host, Host::Dns(_)));
     }
+
+    #[test]
+    fn rejects_empty_connection_tokens_instead_of_forwarding_ambiguous_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONNECTION, "keep-alive, ".parse().unwrap());
+        let destination = parse_connect_authority("example.com:443").unwrap();
+
+        assert_eq!(
+            sanitize_request_headers(&headers, &destination),
+            Err(HeaderSanitizationError::InvalidConnectionToken)
+        );
+    }
 }

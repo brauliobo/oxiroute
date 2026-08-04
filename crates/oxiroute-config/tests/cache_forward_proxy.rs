@@ -196,6 +196,14 @@ fn applies_finite_forward_proxy_defaults() {
     );
     assert_eq!(service["auth"], serde_json::Value::Null);
     assert_eq!(service["destination_policy"]["deny_private"], true);
+    assert_eq!(
+        service["destination_policy"]["allow_times"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        service["destination_policy"]["deny_times"],
+        serde_json::json!([])
+    );
     assert_eq!(service["connect_timeout_ms"], 10_000_u64);
     assert_eq!(service["idle_timeout_ms"], 300_000_u64);
     assert_eq!(service["lifetime_timeout_ms"], 3_600_000_u64);
@@ -221,11 +229,24 @@ fn validates_forward_destinations_connect_auth_and_finite_limits() {
         allow_cidrs = { "203.0.113.0/24", "2001:db8::/32" },
         deny_cidrs = { "203.0.113.128/25" },
         deny_private = true,
+        allow_times = {
+          { days = { "friday", "monday" }, start = "09:00", ["end"] = "17:00" },
+        },
+        deny_times = {
+          { days = { "monday" }, start = "12:00", ["end"] = "13:00" },
+        },
       },
     }"#;
     let loaded = load_lua(&forward_config(service, "", "")).expect("forward policy");
     let rendered = render_lua(&loaded).expect("rendered forward policy");
     assert_eq!(load_lua(&rendered).expect("forward reload"), loaded);
+
+    assert!(error(&forward_config(
+        r#"{ name = "egress", auth = { type = "mutual_tls", client_ca_file_path = "/run/client-ca.pem" } }"#,
+        "",
+        "",
+    ))
+    .contains("client-certificate verifier"));
 
     for service in [
         r#"{ name = "egress", enabled_versions = {} }"#,
@@ -234,6 +255,9 @@ fn validates_forward_destinations_connect_auth_and_finite_limits() {
         r#"{ name = "egress", connect = { enabled = true, allowed_ports = { 0 } } }"#,
         r#"{ name = "egress", auth = { type = "bearer_token_file", token_file_path = "run/token" } }"#,
         r#"{ name = "egress", destination_policy = { allow_cidrs = { "10.0.0.0/99" } } }"#,
+        r#"{ name = "egress", destination_policy = { allow_times = { { days = {}, start = "09:00", end = "17:00" } } } }"#,
+        r#"{ name = "egress", destination_policy = { allow_times = { { days = { "monday" }, start = "17:00", end = "09:00" } } } }"#,
+        r#"{ name = "egress", destination_policy = { allow_times = { { days = { "monday" }, start = "09:00", end = "17:01" } } } }"#,
         r#"{ name = "egress", max_connections = 0 }"#,
         r#"{ name = "egress", max_header_bytes = 0 }"#,
         r#"{ name = "egress", max_header_bytes = 8191 }"#,

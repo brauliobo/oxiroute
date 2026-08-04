@@ -12,7 +12,7 @@ use quinn::{Endpoint, EndpointConfig, ServerConfig, TransportConfig, VarInt};
 use rustls::server::{ClientHello, ResolvesServerCert};
 use tokio::{
     runtime::Builder,
-    sync::{Semaphore, watch},
+    sync::{watch, Semaphore},
 };
 
 use crate::{

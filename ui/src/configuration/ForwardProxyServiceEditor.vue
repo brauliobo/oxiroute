@@ -56,11 +56,12 @@ fieldset.object-block(data-field="forward_proxy_services[].auth")
       select(:value="service.auth.type" @change="changeAuthType")
         option(value="bearer_token_file") Bearer token file
         option(value="basic_htpasswd_file") Basic htpasswd file
+        option(value="mutual_tls") Mutual TLS (reserved)
     label.field(v-if="service.auth.type === 'bearer_token_file'" data-field="forward_proxy_services[].auth.token_file_path")
       span Token file path
       input(type="text" v-model="service.auth.token_file_path" autocomplete="off" placeholder="/run/secrets/forward-proxy")
       small Authenticated configuration only; this path is suppressed from topology views.
-    template(v-else)
+    template(v-else-if="service.auth.type === 'basic_htpasswd_file'")
       label.field(data-field="forward_proxy_services[].auth.htpasswd_file_path")
         span htpasswd file path
         input(type="text" v-model="service.auth.htpasswd_file_path" autocomplete="off" placeholder="/etc/oxiroute/proxy.htpasswd")
@@ -73,6 +74,9 @@ fieldset.object-block(data-field="forward_proxy_services[].auth")
       label.enable-row.compact-enable(data-field="forward_proxy_services[].auth.username_case_sensitive")
         input(type="checkbox" v-model="service.auth.username_case_sensitive")
         span Match usernames case-sensitively
+    label.field(v-else data-field="forward_proxy_services[].auth.client_ca_file_path")
+      span Client CA file path
+      input(type="text" v-model="service.auth.client_ca_file_path" autocomplete="off" placeholder="/etc/oxiroute/client-ca.pem")
 
 fieldset.object-block(data-field="forward_proxy_services[].access_policy")
   legend Ordered access policy
@@ -151,6 +155,40 @@ fieldset.object-block(data-field="forward_proxy_services[].destination_policy")
     StringListField(v-model="service.destination_policy.deny_domains" label="Denied domains" item-label="domain" field-path="forward_proxy_services[].destination_policy.deny_domains" :max-items="256")
     StringListField(v-model="service.destination_policy.allow_cidrs" label="Allowed CIDRs" item-label="CIDR" field-path="forward_proxy_services[].destination_policy.allow_cidrs" :max-items="256")
     StringListField(v-model="service.destination_policy.deny_cidrs" label="Denied CIDRs" item-label="CIDR" field-path="forward_proxy_services[].destination_policy.deny_cidrs" :max-items="256")
+  .time-range-list(data-field="forward_proxy_services[].destination_policy.allow_times")
+    .route-heading
+      legend Allow windows
+      button.secondary-button(type="button" @click="addTimeRange('allow_times')") Add window
+    article.object-block(v-for="(range, rangeIndex) in service.destination_policy.allow_times" :key="`allow-${rangeIndex}`")
+      .field-grid
+        label.field(data-field="forward_proxy_services[].destination_policy.allow_times[].days")
+          span Days
+          select(multiple v-model="range.days")
+            option(v-for="day in FORWARD_WEEKDAYS" :key="day" :value="day") {{ day }}
+        label.field(data-field="forward_proxy_services[].destination_policy.allow_times[].start")
+          span Start (UTC)
+          input(type="time" v-model="range.start")
+        label.field(data-field="forward_proxy_services[].destination_policy.allow_times[].end")
+          span End (UTC)
+          input(type="time" v-model="range.end")
+        button.danger-button(type="button" @click="removeTimeRange('allow_times', rangeIndex)") Remove window
+  .time-range-list(data-field="forward_proxy_services[].destination_policy.deny_times")
+    .route-heading
+      legend Deny windows
+      button.secondary-button(type="button" @click="addTimeRange('deny_times')") Add window
+    article.object-block(v-for="(range, rangeIndex) in service.destination_policy.deny_times" :key="`deny-${rangeIndex}`")
+      .field-grid
+        label.field(data-field="forward_proxy_services[].destination_policy.deny_times[].days")
+          span Days
+          select(multiple v-model="range.days")
+            option(v-for="day in FORWARD_WEEKDAYS" :key="day" :value="day") {{ day }}
+        label.field(data-field="forward_proxy_services[].destination_policy.deny_times[].start")
+          span Start (UTC)
+          input(type="time" v-model="range.start")
+        label.field(data-field="forward_proxy_services[].destination_policy.deny_times[].end")
+          span End (UTC)
+          input(type="time" v-model="range.end")
+        button.danger-button(type="button" @click="removeTimeRange('deny_times', rangeIndex)") Remove window
 
 fieldset.object-block
   legend Finite service limits
@@ -205,7 +243,7 @@ fieldset.object-block(data-field="forward_proxy_services[].resolver")
 <script setup lang="ts">
 import StringListField from '../StringListField.vue'
 import type { ForwardAccessConditionConfig, ForwardHttpVersion, ForwardProxyServiceConfig } from '../config'
-import { FORWARD_HTTP_VERSIONS } from './canonicalDefaults'
+import { FORWARD_HTTP_VERSIONS, FORWARD_WEEKDAYS } from './canonicalDefaults'
 import NumberListField from './NumberListField.vue'
 
 const props = defineProps<{ service: ForwardProxyServiceConfig }>()
@@ -226,9 +264,12 @@ function toggleAuth(event: Event): void {
 }
 
 function changeAuthType(event: Event): void {
-  props.service.auth = (event.target as HTMLSelectElement).value === 'basic_htpasswd_file'
+  const type = (event.target as HTMLSelectElement).value
+  props.service.auth = type === 'basic_htpasswd_file'
     ? { type: 'basic_htpasswd_file', htpasswd_file_path: '', realm: 'Proxy', credential_ttl_ms: null, username_case_sensitive: true }
-    : { type: 'bearer_token_file', token_file_path: '' }
+    : type === 'mutual_tls'
+      ? { type: 'mutual_tls', client_ca_file_path: '' }
+      : { type: 'bearer_token_file', token_file_path: '' }
 }
 
 function updateCredentialTtl(event: Event): void {
@@ -274,5 +315,17 @@ function changeConditionType(ruleIndex: number, conditionIndex: number, event: E
   else if (type === 'destination_ports') replacement = { negated, type, ranges: [{ start: 443, end: 443 }] }
   else replacement = { negated, type: type as 'all' | 'authenticated' | 'destination_local' | 'destination_link_local' | 'manager' }
   conditions[conditionIndex] = replacement
+}
+
+function addTimeRange(kind: 'allow_times' | 'deny_times'): void {
+  props.service.destination_policy[kind].push({
+    days: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+    start: '09:00',
+    end: '17:00',
+  })
+}
+
+function removeTimeRange(kind: 'allow_times' | 'deny_times', index: number): void {
+  props.service.destination_policy[kind].splice(index, 1)
 }
 </script>

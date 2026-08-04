@@ -7,7 +7,7 @@ use std::{
 
 use bytes::Bytes;
 use http::{Request, Response};
-use http_body_util::Full;
+use http_body_util::{BodyExt as _, Full};
 use hyper::{body::Incoming, server::conn::http1, service::service_fn};
 use hyper_util::rt::TokioIo;
 use oxiroute_forward_proxy::{Decision, Protocol};
@@ -112,6 +112,63 @@ async fn h1_connect_ipv6_authority_crosses_a_real_http_connection() {
     assert!(response[..split].starts_with(b"HTTP/1.1 200 OK\r\n"));
     assert_eq!(&response[split..], b"pong");
     server.await.expect("H1 CONNECT server task");
+}
+
+#[tokio::test]
+async fn h1_absolute_form_relays_a_bounded_request_body_after_header_sanitization() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("H1 bind");
+    let address = listener.local_addr().expect("H1 listener address");
+    let server = tokio::spawn(async move {
+        let (stream, client_addr) = listener.accept().await.expect("H1 accept");
+        http1::Builder::new()
+            .serve_connection(
+                TokioIo::new(stream),
+                service_fn(move |request: Request<Incoming>| async move {
+                    let decision = support::decide(Protocol::Http1, client_addr, &request)
+                        .await
+                        .expect("H1 body decision");
+                    let body = request.into_body().collect().await.expect("H1 body");
+                    let Decision::Forward(forward) = decision else {
+                        panic!("H1 body request must be forwarded");
+                    };
+                    assert_eq!(body.to_bytes(), &b"hello world"[..]);
+                    assert_eq!(forward.headers[http::header::HOST], "example.com:80");
+                    assert!(
+                        !forward
+                            .headers
+                            .contains_key(http::header::PROXY_AUTHORIZATION)
+                    );
+                    Ok::<_, Infallible>(
+                        Response::builder()
+                            .status(200)
+                            .body(Full::new(Bytes::from_static(b"body-ok")))
+                            .expect("H1 body response"),
+                    )
+                }),
+            )
+            .await
+            .expect("H1 body serve connection");
+    });
+
+    let mut client = TcpStream::connect(address).await.expect("H1 connect");
+    client
+        .write_all(
+            b"POST http://example.com:80/body HTTP/1.1\r\n\
+              Host: stale.invalid\r\n\
+              Proxy-Authorization: Bearer wire-test\r\n\
+              Content-Length: 11\r\n\
+              Connection: close\r\n\r\nhello world",
+        )
+        .await
+        .expect("H1 body request");
+    let mut response = Vec::new();
+    client
+        .read_to_end(&mut response)
+        .await
+        .expect("H1 body response read");
+    assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    assert!(response.ends_with(b"body-ok"));
+    server.await.expect("H1 body server task");
 }
 
 async fn exchange(request: &[u8]) -> String {

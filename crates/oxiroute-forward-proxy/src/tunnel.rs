@@ -135,6 +135,43 @@ pub enum TunnelEnd {
     LifetimeTimeout,
 }
 
+impl TunnelEnd {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Eof => "eof",
+            Self::ByteLimitLeftToRight => "byte_limit_left_to_right",
+            Self::ByteLimitRightToLeft => "byte_limit_right_to_left",
+            Self::IdleTimeout => "idle_timeout",
+            Self::LifetimeTimeout => "lifetime_timeout",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TunnelOutcomeKind {
+    Eof,
+    ByteLimitLeftToRight,
+    ByteLimitRightToLeft,
+    IdleTimeout,
+    LifetimeTimeout,
+    IoError,
+}
+
+impl TunnelOutcomeKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Eof => "eof",
+            Self::ByteLimitLeftToRight => "byte_limit_left_to_right",
+            Self::ByteLimitRightToLeft => "byte_limit_right_to_left",
+            Self::IdleTimeout => "idle_timeout",
+            Self::LifetimeTimeout => "lifetime_timeout",
+            Self::IoError => "io_error",
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum TunnelOutcome {
     #[error("tunnel ended: {end:?}")]
@@ -145,6 +182,29 @@ pub enum TunnelOutcome {
         #[source]
         source: io::Error,
     },
+}
+
+impl TunnelOutcome {
+    #[must_use]
+    pub const fn kind(&self) -> TunnelOutcomeKind {
+        match self {
+            Self::Ended { end, .. } => match end {
+                TunnelEnd::Eof => TunnelOutcomeKind::Eof,
+                TunnelEnd::ByteLimitLeftToRight => TunnelOutcomeKind::ByteLimitLeftToRight,
+                TunnelEnd::ByteLimitRightToLeft => TunnelOutcomeKind::ByteLimitRightToLeft,
+                TunnelEnd::IdleTimeout => TunnelOutcomeKind::IdleTimeout,
+                TunnelEnd::LifetimeTimeout => TunnelOutcomeKind::LifetimeTimeout,
+            },
+            Self::Io { .. } => TunnelOutcomeKind::IoError,
+        }
+    }
+
+    #[must_use]
+    pub const fn stats(&self) -> TunnelStats {
+        match self {
+            Self::Ended { stats, .. } | Self::Io { stats, .. } => *stats,
+        }
+    }
 }
 
 pub struct BoundedTunnel {
@@ -1043,5 +1103,22 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn tunnel_outcomes_have_stable_safe_labels() {
+        let ended = TunnelOutcome::Ended {
+            end: TunnelEnd::IdleTimeout,
+            stats: TunnelStats::default(),
+        };
+        let failed = TunnelOutcome::Io {
+            stats: TunnelStats::default(),
+            source: io::Error::other("not logged"),
+        };
+
+        assert_eq!(ended.kind(), TunnelOutcomeKind::IdleTimeout);
+        assert_eq!(ended.kind().as_str(), "idle_timeout");
+        assert_eq!(failed.kind(), TunnelOutcomeKind::IoError);
+        assert_eq!(failed.stats(), TunnelStats::default());
     }
 }

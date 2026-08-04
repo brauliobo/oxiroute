@@ -2,14 +2,14 @@ use std::{
     collections::{HashSet, VecDeque},
     convert::Infallible,
     error::Error,
-    future::{Future as _, poll_fn},
+    future::{poll_fn, Future as _},
     io,
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     pin::Pin,
     sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
-        atomic::{AtomicBool, Ordering},
     },
     task::{Context, Poll},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -18,11 +18,11 @@ use std::{
 use async_trait::async_trait;
 use bytes::{Buf as _, Bytes, BytesMut};
 use hickory_resolver::{
-    TokioAsyncResolver,
     config::{LookupIpStrategy, NameServerConfigGroup, ResolverConfig, ResolverOpts},
+    TokioAsyncResolver,
 };
-use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode, header};
-use http_body_util::{BodyExt as _, Full, Limited, combinators::BoxBody};
+use http::{header, HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
+use http_body_util::{combinators::BoxBody, BodyExt as _, Full, Limited};
 use hyper::body::{Body, Frame, Incoming};
 use hyper_util::rt::TokioIo;
 use openssl::{
@@ -32,33 +32,33 @@ use openssl::{
 use oxiroute_acme::ChallengeStore;
 use oxiroute_config::{
     ForwardAccessAction, ForwardAccessCondition, ForwardAccessMatcher, ForwardAccessPolicy,
-    ForwardAuditMode, ForwardHeaderPolicy, ForwardProxyAuth, ForwardProxyService, ForwardViaPolicy,
-    ForwardedForPolicy,
+    ForwardAuditMode, ForwardHeaderPolicy, ForwardProxyAuth, ForwardProxyService, ForwardTimeRange,
+    ForwardViaPolicy, ForwardWeekday, ForwardedForPolicy,
 };
 use oxiroute_forward_proxy::{
-    BoundedTunnel, Destination, DestinationPolicy as _, DestinationRules, ForwardScheme,
-    H2TunnelStream, Host, PolicyContext, Principal, Protocol, TunnelLimits, parse_absolute_form,
-    parse_connect_authority, sanitize_request_headers,
+    parse_absolute_form, parse_connect_authority, sanitize_request_headers, ApprovedDestination,
+    BoundedTunnel, Destination, DestinationRules, ForwardScheme, H2TunnelStream, Host,
+    PolicyContext, Principal, Protocol, RuleError, TimeWindow, TunnelLimits,
 };
 use pingora::{
     apps::{HttpServerApp, HttpServerOptions, ReusedHttpStream},
     protocols::http::{
+        v2::server::{default_h2_options, H2Options},
         ServerSession,
-        v2::server::{H2Options, default_h2_options},
     },
     server::ShutdownWatch,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
-    sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc, oneshot},
-    time::{Instant, Sleep, timeout_at},
+    sync::{mpsc, oneshot, Mutex, OwnedSemaphorePermit, Semaphore},
+    time::{timeout_at, Instant, Sleep},
 };
 use tokio_openssl::SslStream;
 
 use crate::{
     http_action::BasicHtpasswdAccess,
-    secure_bearer::{HeaderCardinality, SecureBearerToken, single_header},
+    secure_bearer::{single_header, HeaderCardinality, SecureBearerToken},
 };
 
 type BoxError = Box<dyn Error + Send + Sync>;
@@ -239,9 +239,11 @@ pub struct ForwardHttp1ServicePlan {
     name: String,
     resolver: TokioAsyncResolver,
     resolver_addresses: usize,
+    resolver_revalidate_on_connect: bool,
     resolver_queries: Arc<Semaphore>,
     service_connections: Arc<Semaphore>,
     tls_connector: Arc<SslConnector>,
+    access_metrics: Arc<ForwardAccessMetrics>,
 }
 
 impl std::fmt::Debug for ForwardHttp1ServicePlan {
@@ -278,6 +280,119 @@ enum RequestFailure {
     PayloadTooLarge,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ForwardAccessResult {
+    Allowed,
+    BadRequest,
+    Authentication,
+    Forbidden,
+    BadGateway,
+    Timeout,
+    PayloadTooLarge,
+}
+
+impl ForwardAccessResult {
+    const ALL: [Self; 7] = [
+        Self::Allowed,
+        Self::BadRequest,
+        Self::Authentication,
+        Self::Forbidden,
+        Self::BadGateway,
+        Self::Timeout,
+        Self::PayloadTooLarge,
+    ];
+
+    const fn index(self) -> usize {
+        match self {
+            Self::Allowed => 0,
+            Self::BadRequest => 1,
+            Self::Authentication => 2,
+            Self::Forbidden => 3,
+            Self::BadGateway => 4,
+            Self::Timeout => 5,
+            Self::PayloadTooLarge => 6,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Allowed => "allowed",
+            Self::BadRequest => "bad_request",
+            Self::Authentication => "authentication",
+            Self::Forbidden => "forbidden",
+            Self::BadGateway => "bad_gateway",
+            Self::Timeout => "timeout",
+            Self::PayloadTooLarge => "payload_too_large",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ForwardAccessMetricsSnapshot {
+    pub allowed: u64,
+    pub bad_request: u64,
+    pub authentication: u64,
+    pub forbidden: u64,
+    pub bad_gateway: u64,
+    pub timeout: u64,
+    pub payload_too_large: u64,
+}
+
+#[derive(Default)]
+struct ForwardAccessMetrics {
+    counts: [AtomicU64; ForwardAccessResult::ALL.len()],
+}
+
+impl ForwardAccessMetrics {
+    fn record(&self, result: ForwardAccessResult) {
+        let counter = &self.counts[result.index()];
+        let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            Some(value.saturating_add(1))
+        });
+    }
+
+    fn snapshot(&self) -> ForwardAccessMetricsSnapshot {
+        ForwardAccessMetricsSnapshot {
+            allowed: self.counts[ForwardAccessResult::Allowed.index()].load(Ordering::Relaxed),
+            bad_request: self.counts[ForwardAccessResult::BadRequest.index()]
+                .load(Ordering::Relaxed),
+            authentication: self.counts[ForwardAccessResult::Authentication.index()]
+                .load(Ordering::Relaxed),
+            forbidden: self.counts[ForwardAccessResult::Forbidden.index()].load(Ordering::Relaxed),
+            bad_gateway: self.counts[ForwardAccessResult::BadGateway.index()]
+                .load(Ordering::Relaxed),
+            timeout: self.counts[ForwardAccessResult::Timeout.index()].load(Ordering::Relaxed),
+            payload_too_large: self.counts[ForwardAccessResult::PayloadTooLarge.index()]
+                .load(Ordering::Relaxed),
+        }
+    }
+}
+
+impl RequestFailure {
+    const fn access_result(self) -> ForwardAccessResult {
+        match self {
+            Self::BadRequest => ForwardAccessResult::BadRequest,
+            Self::Authentication => ForwardAccessResult::Authentication,
+            Self::Forbidden => ForwardAccessResult::Forbidden,
+            Self::BadGateway => ForwardAccessResult::BadGateway,
+            Self::GatewayTimeout => ForwardAccessResult::Timeout,
+            Self::PayloadTooLarge => ForwardAccessResult::PayloadTooLarge,
+        }
+    }
+
+    const fn reason(self) -> &'static str {
+        match self {
+            Self::BadRequest => "bad_request",
+            Self::Authentication => "authentication",
+            Self::Forbidden => "forbidden",
+            Self::BadGateway => "bad_gateway",
+            Self::GatewayTimeout => "timeout",
+            Self::PayloadTooLarge => "payload_too_large",
+        }
+    }
+}
+
 impl RequestFailure {
     const fn status(self) -> StatusCode {
         match self {
@@ -297,8 +412,9 @@ enum ParsedTarget {
 }
 
 struct AuthorizedRequest {
+    approved: ApprovedDestination,
+    authenticated: bool,
     parsed: ParsedTarget,
-    socket_addresses: Vec<SocketAddr>,
     lifetime_deadline: Instant,
 }
 
@@ -498,6 +614,9 @@ impl ForwardHttp1ServicePlan {
                     *username_case_sensitive,
                 )?)))
             }
+            Some(ForwardProxyAuth::MutualTls { .. }) => {
+                return Err(ForwardPlanError::Authentication);
+            }
             None => None,
         };
         let challenge = match &auth {
@@ -512,6 +631,12 @@ impl ForwardHttp1ServicePlan {
             service.destination_policy.deny_cidrs.clone(),
             service.destination_policy.deny_private,
         )
+        .and_then(|policy| {
+            policy.with_time_windows(
+                destination_time_windows(&service.destination_policy.allow_times)?,
+                destination_time_windows(&service.destination_policy.deny_times)?,
+            )
+        })
         .map_err(|_| ForwardPlanError::DestinationPolicy)?;
         let resolver = resolver(service)?;
         let mut connector =
@@ -562,9 +687,11 @@ impl ForwardHttp1ServicePlan {
             name: service.name.clone(),
             resolver,
             resolver_addresses,
+            resolver_revalidate_on_connect: service.resolver.revalidate_on_connect,
             resolver_queries: Arc::new(Semaphore::new(resolver_queries)),
             service_connections: Arc::new(Semaphore::new(max_connections)),
             tls_connector: Arc::new(connector.build()),
+            access_metrics: Arc::new(ForwardAccessMetrics::default()),
         })
     }
 
@@ -594,7 +721,55 @@ impl ForwardHttp1ServicePlan {
             .ok()
     }
 
+    #[must_use]
+    pub fn forward_access_metrics(&self) -> ForwardAccessMetricsSnapshot {
+        self.access_metrics.snapshot()
+    }
+
     async fn authorize_request<B>(
+        &self,
+        request: &Request<B>,
+        protocol: Protocol,
+        client_addr: Option<SocketAddr>,
+    ) -> Result<AuthorizedRequest, RequestFailure> {
+        let result = self
+            .authorize_request_inner(request, protocol, client_addr)
+            .await;
+        let access_result = result.as_ref().map_or_else(
+            |error| error.access_result(),
+            |_| ForwardAccessResult::Allowed,
+        );
+        self.access_metrics.record(access_result);
+        if self.audit_mode == ForwardAuditMode::Metadata {
+            let destination = result
+                .as_ref()
+                .ok()
+                .map(|request| request.approved.destination.authority());
+            let authenticated = result
+                .as_ref()
+                .ok()
+                .is_some_and(|request| request.authenticated);
+            let event = serde_json::json!({
+                "event": "forward_access",
+                "service": self.name,
+                "protocol": protocol_name(protocol),
+                "method": request.method().as_str(),
+                "destination": destination,
+                "result": access_result.as_str(),
+                "reason": result
+                    .as_ref()
+                    .err()
+                    .map_or("authorized", |error| error.reason()),
+                "status": result.as_ref().err().map(|error| error.status().as_u16()),
+                "authenticated": authenticated,
+                "clientIp": client_addr.map(|address| address.ip().to_string()),
+            });
+            log::info!(target: "oxiroute::forward_proxy", "{event}");
+        }
+        result
+    }
+
+    async fn authorize_request_inner<B>(
         &self,
         request: &Request<B>,
         protocol: Protocol,
@@ -639,6 +814,15 @@ impl ForwardHttp1ServicePlan {
             Ok(Err(error)) => return Err(error),
             Err(_) => return Err(RequestFailure::GatewayTimeout),
         };
+        let addresses = if self.resolver_revalidate_on_connect {
+            match timeout_at(connect_deadline, self.resolve(destination)).await {
+                Ok(Ok(addresses)) => addresses,
+                Ok(Err(error)) => return Err(error),
+                Err(_) => return Err(RequestFailure::GatewayTimeout),
+            }
+        } else {
+            addresses
+        };
         let principal = match timeout_at(
             lifetime_deadline,
             self.authorize_access(request, client_addr, destination, &addresses, principal),
@@ -652,9 +836,9 @@ impl ForwardHttp1ServicePlan {
         let policy_principal = principal
             .clone()
             .unwrap_or_else(|| Principal::new("anonymous"));
-        if self
+        let approved = self
             .destination_policy
-            .authorize(
+            .approve(
                 &PolicyContext {
                     protocol,
                     principal: policy_principal,
@@ -662,28 +846,11 @@ impl ForwardHttp1ServicePlan {
                 destination,
                 &addresses,
             )
-            .is_err()
-        {
-            return Err(RequestFailure::Forbidden);
-        }
-        if self.audit_mode == ForwardAuditMode::Metadata {
-            log::info!(
-                target: "oxiroute::forward_proxy",
-                "service={} method={} destination={} authenticated={}",
-                self.name,
-                request.method(),
-                destination.authority(),
-                principal.is_some()
-            );
-        }
-        let socket_addresses = addresses
-            .iter()
-            .map(|address| SocketAddr::new(*address, destination.port))
-            .collect();
-
+            .map_err(|_| RequestFailure::Forbidden)?;
         Ok(AuthorizedRequest {
+            approved,
+            authenticated: principal.is_some(),
             parsed,
-            socket_addresses,
             lifetime_deadline,
         })
     }
@@ -697,8 +864,8 @@ impl ForwardHttp1ServicePlan {
         lifecycle: Arc<ForwardConnectionLifecycle>,
     ) -> Response<ForwardProxyBody> {
         let AuthorizedRequest {
+            approved,
             parsed,
-            socket_addresses,
             lifetime_deadline,
             ..
         } = match self
@@ -714,7 +881,7 @@ impl ForwardHttp1ServicePlan {
             ParsedTarget::Tunnel(_) => {
                 let upstream = match timeout_at(
                     lifetime_deadline,
-                    self.connect_tcp_until(&socket_addresses, connect_deadline),
+                    self.connect_tcp_until(approved.socket_addresses.as_ref(), connect_deadline),
                 )
                 .await
                 {
@@ -728,6 +895,7 @@ impl ForwardHttp1ServicePlan {
                 if lifetime_timeout.is_zero() {
                     return self.rejection(RequestFailure::GatewayTimeout);
                 }
+                let tunnel_destination = approved.destination.authority();
                 let completion = lifecycle.start();
                 tokio::spawn(async move {
                     let _completion = completion;
@@ -747,10 +915,21 @@ impl ForwardHttp1ServicePlan {
                             outcome = tunnel.relay(TokioIo::new(upgraded), upstream) => Some(outcome),
                             _ = shutdown.changed() => None,
                         };
-                        log::debug!(
-                            target: "oxiroute::forward_proxy",
-                            "CONNECT tunnel ended: {outcome:?}"
-                        );
+                        match outcome {
+                            Some(outcome) => log::info!(
+                                target: "oxiroute::forward_proxy",
+                                "event=forward_tunnel protocol=h1 destination={} outcome={} bytes_left_to_right={} bytes_right_to_left={}",
+                                tunnel_destination,
+                                outcome.kind().as_str(),
+                                outcome.stats().left_to_right,
+                                outcome.stats().right_to_left,
+                            ),
+                            None => log::info!(
+                                target: "oxiroute::forward_proxy",
+                                "event=forward_tunnel protocol=h1 destination={} outcome=cancelled bytes_left_to_right=0 bytes_right_to_left=0",
+                                tunnel_destination,
+                            ),
+                        }
                     }
                 });
                 response(StatusCode::OK, Bytes::new())
@@ -766,7 +945,7 @@ impl ForwardHttp1ServicePlan {
                     self.connect_http(
                         &target.destination,
                         target.scheme,
-                        &socket_addresses,
+                        approved.socket_addresses.as_ref(),
                         connect_deadline,
                     ),
                 )
@@ -863,9 +1042,10 @@ impl ForwardHttp1ServicePlan {
         S: h3::quic::BidiStream<Bytes> + Send,
     {
         let AuthorizedRequest {
+            approved,
             parsed,
-            socket_addresses,
             lifetime_deadline,
+            ..
         } = match self
             .authorize_request(&request, Protocol::Http3, client_addr)
             .await
@@ -882,7 +1062,7 @@ impl ForwardHttp1ServicePlan {
                 let connect_deadline = lifetime_deadline.min(Instant::now() + self.connect_timeout);
                 let upstream = match timeout_at(
                     lifetime_deadline,
-                    self.connect_tcp_until(&socket_addresses, connect_deadline),
+                    self.connect_tcp_until(approved.socket_addresses.as_ref(), connect_deadline),
                 )
                 .await
                 {
@@ -920,9 +1100,26 @@ impl ForwardHttp1ServicePlan {
                 };
                 let relay = tunnel.relay_h3(stream, upstream);
                 tokio::pin!(relay);
-                tokio::select! {
-                    _ = &mut relay => {}
-                    _ = shutdown.changed() => {}
+                let outcome = tokio::select! {
+                    outcome = &mut relay => Some(outcome),
+                    _ = shutdown.changed() => None,
+                };
+                match outcome {
+                    Some(outcome) => {
+                        log::info!(
+                            target: "oxiroute::forward_proxy",
+                            "event=forward_tunnel protocol=h3 destination={} outcome={} bytes_left_to_right={} bytes_right_to_left={}",
+                            approved.destination.authority(),
+                            outcome.kind().as_str(),
+                            outcome.stats().left_to_right,
+                            outcome.stats().right_to_left,
+                        );
+                    }
+                    None => log::info!(
+                        target: "oxiroute::forward_proxy",
+                        "event=forward_tunnel protocol=h3 destination={} outcome=cancelled bytes_left_to_right=0 bytes_right_to_left=0",
+                        approved.destination.authority(),
+                    ),
                 }
             }
             ParsedTarget::Forward(target) => {
@@ -962,7 +1159,7 @@ impl ForwardHttp1ServicePlan {
                     self.connect_http(
                         &target.destination,
                         target.scheme,
-                        &socket_addresses,
+                        approved.socket_addresses.as_ref(),
                         connect_deadline,
                     ),
                 )
@@ -1507,8 +1704,8 @@ impl HttpServerApp for ForwardHttp1ServicePlan {
             }
         };
         let AuthorizedRequest {
+            approved,
             parsed: ParsedTarget::Tunnel(destination),
-            socket_addresses,
             lifetime_deadline,
             ..
         } = authorized
@@ -1520,7 +1717,7 @@ impl HttpServerApp for ForwardHttp1ServicePlan {
         let connect_deadline = lifetime_deadline.min(Instant::now() + self.connect_timeout);
         let upstream = match timeout_at(
             lifetime_deadline,
-            self.connect_tcp_until(&socket_addresses, connect_deadline),
+            self.connect_tcp_until(approved.socket_addresses.as_ref(), connect_deadline),
         )
         .await
         {
@@ -1568,11 +1765,21 @@ impl HttpServerApp for ForwardHttp1ServicePlan {
             ) => Some(outcome),
             _ = shutdown.changed() => None,
         };
-        log::debug!(
-            target: "oxiroute::forward_proxy",
-            "HTTP/2 CONNECT tunnel destination={} ended={outcome:?}",
-            destination.authority(),
-        );
+        match outcome.as_ref() {
+            Some(outcome) => log::info!(
+                target: "oxiroute::forward_proxy",
+                "event=forward_tunnel protocol=h2 destination={} outcome={} bytes_left_to_right={} bytes_right_to_left={}",
+                destination.authority(),
+                outcome.kind().as_str(),
+                outcome.stats().left_to_right,
+                outcome.stats().right_to_left,
+            ),
+            None => log::info!(
+                target: "oxiroute::forward_proxy",
+                "event=forward_tunnel protocol=h2 destination={} outcome=cancelled bytes_left_to_right=0 bytes_right_to_left=0",
+                destination.authority(),
+            ),
+        }
         None
     }
 
@@ -1665,6 +1872,42 @@ fn resolver(service: &ForwardProxyService) -> Result<TokioAsyncResolver, Forward
             options,
         ))
     }
+}
+
+fn destination_time_windows(ranges: &[ForwardTimeRange]) -> Result<Vec<TimeWindow>, RuleError> {
+    ranges
+        .iter()
+        .map(|range| {
+            let days = range.days.iter().fold(0_u8, |days, day| {
+                days | match day {
+                    ForwardWeekday::Monday => 1 << 0,
+                    ForwardWeekday::Tuesday => 1 << 1,
+                    ForwardWeekday::Wednesday => 1 << 2,
+                    ForwardWeekday::Thursday => 1 << 3,
+                    ForwardWeekday::Friday => 1 << 4,
+                    ForwardWeekday::Saturday => 1 << 5,
+                    ForwardWeekday::Sunday => 1 << 6,
+                }
+            });
+            TimeWindow::new(
+                days,
+                parse_forward_time(&range.start).ok_or(RuleError::InvalidTimeWindow)?,
+                parse_forward_time(&range.end).ok_or(RuleError::InvalidTimeWindow)?,
+            )
+        })
+        .collect()
+}
+
+fn parse_forward_time(value: &str) -> Option<u16> {
+    if value.len() != 5 || !value.is_ascii() || value.as_bytes().get(2) != Some(&b':') {
+        return None;
+    }
+    let hour = value[..2].parse::<u16>().ok()?;
+    let minute = value[3..].parse::<u16>().ok()?;
+    if hour > 24 || minute > 59 || (hour == 24 && minute != 0) {
+        return None;
+    }
+    Some(hour * 60 + minute)
 }
 
 fn apply_header_policy(headers: &mut HeaderMap, policy: ForwardHeaderPolicy) {
@@ -1764,9 +2007,17 @@ const fn is_link_local(address: IpAddr) -> bool {
     }
 }
 
+const fn protocol_name(protocol: Protocol) -> &'static str {
+    match protocol {
+        Protocol::Http1 => "h1",
+        Protocol::Http2 => "h2",
+        Protocol::Http3 => "h3",
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::source_cidrs_match;
+    use super::{source_cidrs_match, ForwardAccessMetrics, ForwardAccessResult};
 
     #[test]
     fn missing_inet_peer_never_matches_source_cidrs() {
@@ -1783,5 +2034,22 @@ mod tests {
             &["127.0.0.0/8".into()],
             Some(client_addr)
         ));
+    }
+
+    #[test]
+    fn access_metrics_classify_results_without_retaining_request_data() {
+        let metrics = ForwardAccessMetrics::default();
+        metrics.record(ForwardAccessResult::Allowed);
+        metrics.record(ForwardAccessResult::Forbidden);
+        metrics.record(ForwardAccessResult::Forbidden);
+
+        assert_eq!(
+            metrics.snapshot(),
+            super::ForwardAccessMetricsSnapshot {
+                allowed: 1,
+                forbidden: 2,
+                ..super::ForwardAccessMetricsSnapshot::default()
+            }
+        );
     }
 }

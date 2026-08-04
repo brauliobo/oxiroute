@@ -132,21 +132,25 @@ listener semantics must block the affected service.
 
 ## Milestone 3: explicit forward proxy
 
-Status: partial. The HTTP/1 and forward HTTP/3 daemon paths are integrated; standalone HTTP/2 and
-reverse HTTP/3 remain outside the daemon contract.
+Status: partial. The HTTP/1, HTTP/2 classic CONNECT, and forward HTTP/3 daemon paths are integrated;
+arbitrary HTTP/2 forwarding and reverse HTTP/3 remain outside the daemon contract.
 
 - Dedicated HTTP/1 absolute-form parser and bounded CONNECT tunnel with over-read preservation
   (integrated for the HTTP/1 daemon listener; broader conformance remains).
 - Ordered first-match ACL engine for identity, source, destination, method, and port (integrated for
-  the audited Squid subset; time and helper-backed predicates remain).
+  the audited Squid subset); canonical destination domains and bounded UTC time windows are also
+  available, while imported time/domain ACL lowering and helper-backed predicates remain.
 - DNS and resolved-IP egress policy to prevent open-proxy and SSRF behavior (integrated with bounded
-  custom/system resolution and exact approved-address connection).
+  custom/system resolution, optional connect revalidation, and exact final-answer approved-address
+  connection across address-family retries).
 - Static or mTLS proxy authentication first (Bearer and bounded bcrypt/APR1 htpasswd Basic are
-  integrated; mTLS remains).
+  integrated; canonical mTLS fails closed until the listener TLS client-CA/session identity seam is
+  available).
 - Squid importer for the independently implemented supported subset (bounded source/parser/typed
   semantics, canonical direct-forward lowering, CLI/native references, and daemon runtime are
   integrated; cache/refresh semantics remain explicitly non-equivalent).
-- HTTP/2 CONNECT only after stream takeover semantics have dedicated conformance tests.
+- HTTP/2 classic CONNECT with dedicated stream takeover, flow-control, half-close, timeout, reset,
+  and cancellation conformance coverage (integrated; arbitrary H2 forward requests remain blocked).
 - Bounded forward HTTP/3 absolute-form and classic CONNECT through a separate UDP listener, with
   TLS 1.3/`h3` negotiation, shared forward policy, and generation-aware drain (integrated; broader
   conformance remains).
@@ -183,10 +187,10 @@ the main daemon.
 
 ## RTMP workstream
 
-Status: partial. The current contract is bounded live publish/play, fanout, static push relay, and
-legacy AVC/AAC FLV recording. Canonical named recorders, exact-ID manual controls, and fixed
-inbound assembled-message protection are implemented; nginx-RTMP directive breadth and parity
-remain incomplete.
+Status: partial. The current contract is bounded live publish/play, fanout, static push/pull relay,
+callbacks, local/HTTP VOD, and legacy AVC/AAC FLV recording. Canonical named recorders, exact-ID
+manual controls, and fixed inbound assembled-message protection are implemented; nginx-RTMP
+directive breadth and parity remain incomplete.
 
 RTMP proceeds in independently releasable slices rather than waiting for HTTP/Squid parity:
 
@@ -201,9 +205,9 @@ RTMP proceeds in independently releasable slices rather than waiting for HTTP/Sq
    broader conformance, and exhaustive chunk coverage remain).
 3. Add access, callbacks, push/pull relay, FLV recording, VOD, statistics, control, and logging
    (canonical continuous/manual legacy AVC/AAC FLV recording, canonical named recorders, session
-   dispatch, storage, bounded workers/reaping, observability, and exact-ID bearer-protected
-   controls are integrated; enhanced codec recording, pull/callback breadth, VOD, statistics
-   parity, and RTMP access-log parity remain).
+   dispatch, storage, bounded workers/reaping, observability, exact-ID bearer-protected controls,
+   bounded access/callback policy, and local/HTTP VOD are integrated; enhanced codec recording,
+   broader callback/native parity, statistics parity, and RTMP access-log parity remain).
 4. Add HLS, MPEG-DASH, isolated exec workers, limits, and multi-worker equivalents.
 
 Each remaining slice will begin with protocol/configuration failures and differential fixtures

@@ -305,6 +305,7 @@ mod tests {
         };
         assert_eq!(decision.target, "/resource");
         assert!(!decision.headers.contains_key(header::PROXY_AUTHORIZATION));
+        assert!(!format!("{decision:?}").contains("do-not-retain"));
         assert_eq!(decision.destination.socket_addresses.len(), 1);
     }
 
