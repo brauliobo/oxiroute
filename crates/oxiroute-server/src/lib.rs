@@ -20,9 +20,9 @@ mod secure_bearer;
 mod service_plan;
 mod stats;
 mod tcp_relay;
-mod udp_relay;
 pub mod tls;
 mod topology;
+mod udp_relay;
 mod upstream_peer;
 mod wire;
 
@@ -37,9 +37,9 @@ pub use generation::{
     PreparedGeneration, RuntimeGeneration, RuntimeReferenceKind,
 };
 pub use health::{HealthBuildError, HealthSupervisor};
-pub use http3::Http3Runtime;
 pub use http_proxy::{HttpRequestContext, HttpReverseProxy};
 pub use http_server_app::{HttpDownstreamPolicyApp, HttpListenerApp, MonitoredHttpApp};
+pub use http3::Http3Runtime;
 pub use l4_service::L4ServicePlan;
 pub use listener_reservation::{ListenerReservation, ListenerReservations};
 pub use monitoring::{
@@ -56,8 +56,7 @@ pub use prometheus::{PrometheusError, render_prometheus};
 pub use routing::{
     AdministrativeState, EndpointHealthSnapshot, EndpointHealthState, EndpointLease, EndpointPool,
     HealthFailure, HealthOverride, PassiveFailurePolicy, PoolAdminError, PoolError,
-    PoolHealthSnapshot, RoundRobinPool,
-    Route, RouteError, RouteTable, RuntimeEndpoint,
+    PoolHealthSnapshot, RoundRobinPool, Route, RouteError, RouteTable, RuntimeEndpoint,
 };
 pub use rtmp_api::{ApiResponse, RtmpManagementApi, RtmpManagementHttpApp};
 pub use service_plan::{
@@ -69,7 +68,6 @@ pub use tcp_relay::{
     RELAY_BUFFER_SIZE, RelayDirection, RelayFailure, RelayFailureKind, RelayOperation, RelayPolicy,
     RelayStats, TcpRelayCore, relay_streams,
 };
-pub use udp_relay::UdpRuntime;
 pub use tls::{
     AcmeManagedError, AcmeManagedOutcome, AcmeManagedPolicy, AcmeManagedReconciler,
     AcmeManagedStatus, ActiveCertificateGeneration, CertbotActivationDirection, CertbotCandidate,
@@ -85,5 +83,6 @@ pub use topology::{
     TOPOLOGY_SCHEMA_VERSION, TopologyEdge, TopologyEdgeKind, TopologyNode, TopologyNodeKind,
     TopologySnapshot,
 };
+pub use udp_relay::UdpRuntime;
 
 pub const MAX_HTTP_ATTEMPTS: usize = routing::MAX_RESOLVED_ENDPOINT_ADDRESSES * 4;

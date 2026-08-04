@@ -9,9 +9,8 @@ use std::{
 use crate::{
     CertbotReconciler, ForwardHttp1ServicePlan, ForwardHttp2ServicePlan, HealthBuildError,
     HealthSupervisor, L4ServicePlan, PassiveFailurePolicy, PoolError, PreparedTls, RelayPolicy,
-    RoundRobinPool, Route,
-    RouteError, RouteTable, RuntimeEndpoint, TlsBuildError, TlsProfilePlan, TopologySnapshot,
-    health,
+    RoundRobinPool, Route, RouteError, RouteTable, RuntimeEndpoint, TlsBuildError, TlsProfilePlan,
+    TopologySnapshot, health,
     http_action::{
         AccessLog, CachePurgeAccess, DiskBackend, FixedResponsePlan, HttpActionPlan,
         HttpCacheBackend, HttpCachePlan, HttpGzipPlan, HttpRoutePlan, ProxyActionPlan,
@@ -25,19 +24,17 @@ use oxiroute_cache::{Cache, CacheConfig, CacheTimeline, DiskCache, DiskCacheConf
 use oxiroute_config::{
     AccessLogPolicy, CacheAuthorizationPolicy, CacheKeyComponent, CachePurgeAuthorization,
     CacheSetCookiePolicy, CacheStore, CacheVaryPolicy, Config, DnsResolutionPolicy,
-    HttpCachePolicy, HttpProxyPolicy,
-    HttpRoute as ConfigHttpRoute, HttpRouteAction, ListenerBind, Protocol,
-    RtmpAccessPolicy as ConfigRtmpAccessPolicy, RtmpRecorderStart as ConfigRecorderStart,
+    HttpCachePolicy, HttpProxyPolicy, HttpRoute as ConfigHttpRoute, HttpRouteAction, ListenerBind,
+    Protocol, RtmpAccessPolicy as ConfigRtmpAccessPolicy, RtmpRecorderStart as ConfigRecorderStart,
     UdpPolicy,
 };
 use oxiroute_rtmp::{
     LiveHub, LiveHubLimits, RecorderWorkerConfig, RecordingPathPolicy, RecordingSegmentNaming,
-    RecordingStore, RecordingStoreLimits, RecordingTimeBasis, RecordingTimezone,
-    RtmpAccessAction, RtmpAccessPolicy as RuntimeRtmpAccessPolicy, RtmpAccessRule,
-    RtmpApplication as RuntimeRtmpApplication, RtmpCapabilities, RtmpNetwork,
-    RtmpPushApplication, RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry,
-    RtmpRelayConfig, RtmpServiceRuntime, RtmpSessionCeilings, RtmpTokenPolicy,
-    RtmpSessionPolicy,
+    RecordingStore, RecordingStoreLimits, RecordingTimeBasis, RecordingTimezone, RtmpAccessAction,
+    RtmpAccessPolicy as RuntimeRtmpAccessPolicy, RtmpAccessRule,
+    RtmpApplication as RuntimeRtmpApplication, RtmpCapabilities, RtmpNetwork, RtmpPushApplication,
+    RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry, RtmpRelayConfig,
+    RtmpServiceRuntime, RtmpSessionCeilings, RtmpSessionPolicy, RtmpTokenPolicy,
 };
 
 static DISK_BACKEND_REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Weak<DiskBackend>>>> =
@@ -1131,9 +1128,10 @@ fn compile_cache_policy(
                     max_disk_files: to_usize(*max_files)?,
                     max_record_bytes: to_usize(*max_bytes)?,
                 };
-                let backend = open_shared_disk_backend(root_directory, disk_config).map_err(|()| {
-                    unavailable("http_services[].routes[].action.policy.cache.disk")
-                })?;
+                let backend =
+                    open_shared_disk_backend(root_directory, disk_config).map_err(|()| {
+                        unavailable("http_services[].routes[].action.policy.cache.disk")
+                    })?;
                 Arc::new(HttpCacheBackend::Disk(backend))
             }
         };
@@ -1545,18 +1543,16 @@ fn compile_listener(
     let tls = match (listener.protocol, listener.tls_profile.as_deref()) {
         (
             Protocol::Http
-                | Protocol::ForwardHttp1
-                | Protocol::ForwardHttp2
-                | Protocol::ForwardHttp3,
+            | Protocol::ForwardHttp1
+            | Protocol::ForwardHttp2
+            | Protocol::ForwardHttp3,
             Some(profile),
-        ) => {
-            Some(Arc::clone(tls_profiles.get(profile).ok_or_else(|| {
-                ServicePlanError::UnknownListenerTlsProfile {
-                    listener: listener.name.clone(),
-                    profile: profile.into(),
-                }
-            })?))
-        }
+        ) => Some(Arc::clone(tls_profiles.get(profile).ok_or_else(|| {
+            ServicePlanError::UnknownListenerTlsProfile {
+                listener: listener.name.clone(),
+                profile: profile.into(),
+            }
+        })?)),
         (
             Protocol::Http
             | Protocol::ForwardHttp1

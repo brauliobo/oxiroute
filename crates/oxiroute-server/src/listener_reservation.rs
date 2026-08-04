@@ -282,7 +282,11 @@ impl ListenerReservation {
                         )
                     })?;
                     socket.set_nonblocking(true)?;
-                    (ReservedSocket::Udp(socket), None, format!("udp://{address}"))
+                    (
+                        ReservedSocket::Udp(socket),
+                        None,
+                        format!("udp://{address}"),
+                    )
                 }
                 ListenerBind::Unix { path, mode } => {
                     let path_text = path.to_str().ok_or_else(|| {
@@ -1008,8 +1012,8 @@ mod tests {
             .local_addr()
             .expect("UDP address");
         let bind = ListenerBind::Udp { address };
-        let reservation = ListenerReservation::bind("datagram", &bind)
-            .expect("UDP listener reservation");
+        let reservation =
+            ListenerReservation::bind("datagram", &bind).expect("UDP listener reservation");
         let duplicate = reservation
             .duplicate_udp_socket()
             .expect("UDP descriptor duplicate");

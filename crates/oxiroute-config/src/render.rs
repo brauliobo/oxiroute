@@ -25,8 +25,8 @@ use crate::{
         RtmpAclAction, RtmpApplication, RtmpFanoutPolicy, RtmpPushTarget, RtmpRecorder,
         RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis, RtmpRecorderTimezone,
         RtmpService, RtmpSessionCeilings, RtmpTokenPolicy, RtmpTokenSource, Stats, StatsPage,
-        StatsPageAdminPolicy, TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamConnectionReuse,
-        UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls, UdpPolicy,
+        StatsPageAdminPolicy, TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm,
+        UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls,
     },
     validation::validate_config,
 };
