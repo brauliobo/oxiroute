@@ -19,8 +19,8 @@ use http::{
 use log::warn;
 use oxiroute_acme::ChallengeStore;
 use oxiroute_cache::{
-    CacheControl, CacheError, CacheKey, CacheResponse, CachedResponse, FillGuard, FillJoin,
-    FillOutcome, Lookup, RequestKeyInput, ResponseTiming, StoreOutcome, Validators,
+    CacheControl, CacheKey, CacheResponse, CachedResponse, FillOutcome, Lookup, ResponseTiming,
+    StoreOutcome, Validators,
 };
 use oxiroute_config::{
     HttpGzipMinimumVersion, HttpRedirectLocation, HttpRetryTarget, HttpRetryTrigger, HttpSameSite,
@@ -39,9 +39,9 @@ use crate::{
     GenerationReference, HttpOperationResult, HttpServicePlan, ListenerMetrics, RuntimeEndpoint,
     RuntimeGeneration, RuntimeReferenceKind,
     http_action::{
-        HttpActionPlan, HttpCachePlan, HttpGzipPlan, HttpRoutePlan, ProxyPolicyPlan,
-        RequestHeaderMutationPlan, RequestHeaderValuePlan, ResponseHeaderMutationPlan,
-        StaticErrorTarget, StaticFile, StaticServeError, StaticTarget,
+        CacheFill, CacheFillJoin, CacheRequest, HttpActionPlan, HttpCachePlan, HttpGzipPlan,
+        HttpRoutePlan, ProxyPolicyPlan, RequestHeaderMutationPlan, RequestHeaderValuePlan,
+        ResponseHeaderMutationPlan, StaticErrorTarget, StaticFile, StaticServeError, StaticTarget,
     },
     monitoring::CacheEvent,
     upstream_peer::{
@@ -117,45 +117,11 @@ pub struct HttpRequestContext {
     operation_result: Option<HttpOperationResult>,
     websocket_reference: Option<GenerationReference>,
     cache_plan: Option<Arc<HttpCachePlan>>,
-    cache_request: Option<CacheRequestKey>,
-    cache_fill: Option<FillGuard>,
+    cache_request: Option<CacheRequest>,
+    cache_fill: Option<CacheFill>,
     cache_revalidation: Option<CacheRevalidation>,
     cache_capture: Option<CacheCapture>,
     cache_response_handled: bool,
-}
-
-struct CacheRequestKey {
-    method: Method,
-    scheme: &'static str,
-    authority: String,
-    path: String,
-    query: Option<String>,
-    headers: HeaderMap,
-    request_started: oxiroute_cache::MonoTime,
-}
-
-impl CacheRequestKey {
-    fn input(&self) -> RequestKeyInput<'_> {
-        RequestKeyInput {
-            method: &self.method,
-            scheme: self.scheme,
-            authority: &self.authority,
-            path: &self.path,
-            query: self.query.as_deref(),
-            headers: &self.headers,
-        }
-    }
-
-    fn representation_input(&self) -> RequestKeyInput<'_> {
-        RequestKeyInput {
-            method: &Method::GET,
-            scheme: self.scheme,
-            authority: &self.authority,
-            path: &self.path,
-            query: self.query.as_deref(),
-            headers: &self.headers,
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -170,6 +136,7 @@ struct CacheCapture {
     status: StatusCode,
     headers: HeaderMap,
     body: Vec<u8>,
+    tags: Vec<Bytes>,
     timing: ResponseTiming,
     complete: bool,
     admissible: bool,
@@ -338,7 +305,12 @@ impl ProxyHttp for HttpReverseProxy {
             }
         } {
             if let Some(cache) = &proxy.policy.cache {
-                if cache.allows_method(&method)
+                if method.as_str().eq_ignore_ascii_case("PURGE") {
+                    if cache.purge_access.is_some() {
+                        return cache_purge_filter(session, ctx, Arc::clone(cache), &method, &uri)
+                            .await;
+                    }
+                } else if cache.allows_method(&method)
                     && !upgrade
                     && cache_request_filter(session, ctx, Arc::clone(cache), &method, &uri).await?
                 {
@@ -489,10 +461,15 @@ impl ProxyHttp for HttpReverseProxy {
         if error.esource() == &pingora::ErrorSource::Upstream {
             if let Some(revalidation) = ctx.cache_revalidation.as_ref() {
                 if revalidation.stale_if_error {
-                    let stale = ctx
-                        .cache_plan
-                        .as_ref()
-                        .and_then(|plan| plan.cache.stale_if_error(&revalidation.key));
+                    let stale = if let Some(plan) = ctx.cache_plan.as_ref() {
+                        plan.cache
+                            .stale_if_error(&revalidation.key)
+                            .await
+                            .ok()
+                            .flatten()
+                    } else {
+                        None
+                    };
                     if let Some(stale) = stale {
                         if write_cached_response(session, &stale).await.is_ok() {
                             if let Some(fill) = ctx.cache_fill.take() {
@@ -665,11 +642,16 @@ impl ProxyHttp for HttpReverseProxy {
                 return finish_cache_revalidation(session, ctx, revalidation, response).await;
             }
             if response.status.is_server_error() && revalidation.stale_if_error {
-                if let Some(stale) = ctx
-                    .cache_plan
-                    .as_ref()
-                    .and_then(|plan| plan.cache.stale_if_error(&revalidation.key))
-                {
+                let stale = if let Some(plan) = ctx.cache_plan.as_ref() {
+                    plan.cache
+                        .stale_if_error(&revalidation.key)
+                        .await
+                        .ok()
+                        .flatten()
+                } else {
+                    None
+                };
+                if let Some(stale) = stale {
                     return finish_cache_stale_response(session, ctx, stale).await;
                 }
             }
@@ -687,6 +669,13 @@ impl ProxyHttp for HttpReverseProxy {
                     status,
                     headers: cache_response_headers(&response.headers),
                     body: Vec::new(),
+                    tags: ctx
+                        .cache_plan
+                        .as_ref()
+                        .and_then(|plan| plan.surrogate_header.as_ref())
+                        .map_or_else(Vec::new, |header| {
+                            response_surrogate_tags(&response.headers, header)
+                        }),
                     timing: ResponseTiming {
                         request_started: cache_request.request_started,
                         response_received: ctx
@@ -781,7 +770,7 @@ impl ProxyHttp for HttpReverseProxy {
         ctx: &mut Self::CTX,
     ) {
         if error.is_none() {
-            finish_cache_fill(ctx);
+            finish_cache_fill(ctx).await;
         } else {
             ctx.cache_capture = None;
             complete_cache_fill_without_store(ctx);
@@ -866,7 +855,7 @@ async fn finish_cache_revalidation(
     let mut admitted = false;
     if let Some(fill) = ctx.cache_fill.take() {
         match stored {
-            Ok(entry) => match fill.store(entry) {
+            Ok(entry) => match fill.store(entry).await {
                 Ok(StoreOutcome::Stored { evicted }) => {
                     admitted = true;
                     record_cache_event(&ctx.listener, CacheEvent::Admission);
@@ -882,7 +871,7 @@ async fn finish_cache_revalidation(
         }
     }
     let cached = if admitted {
-        match plan.cache.lookup(request.input()) {
+        match plan.cache.lookup(request).await {
             Ok(Lookup::Hit { response, .. }) => response,
             _ => revalidation.response,
         }
@@ -912,7 +901,7 @@ async fn finish_cache_response(
     ctx.cache_capture = None;
     ctx.cache_response_handled = true;
     record_cache_event(&ctx.listener, CacheEvent::Hit);
-    write_cached_response(session, &response).await?;
+    write_cached_response_conditionally(session, &response).await?;
     Err(Error::new_in(ErrorType::InternalError))
 }
 
@@ -931,6 +920,9 @@ async fn cache_request_filter(
         return Ok(false);
     };
     let headers = session.req_header().headers.clone();
+    if cache_request_bypasses_cache(&headers) {
+        return Ok(false);
+    }
     let only_if_cached = CacheControl::parse(&headers)
         .ok()
         .is_some_and(|control| control.only_if_cached);
@@ -943,21 +935,13 @@ async fn cache_request_filter(
     } else {
         "http"
     };
-    let request = CacheRequestKey {
-        method: method.clone(),
-        scheme,
-        authority: authority.as_str().to_owned(),
-        path: uri.path().to_owned(),
-        query: uri.query().map(str::to_owned),
-        headers,
-        request_started: cache.cache.now(),
-    };
+    let request = cache_request(cache.as_ref(), authority, method, uri, headers, scheme);
     let mut waits = 0;
     loop {
-        let lookup = match cache.cache.lookup(request.input()) {
+        let lookup = match cache.cache.lookup(&request).await {
             Ok(lookup) => lookup,
             Err(error) => {
-                if !matches!(error, CacheError::InvalidRequest(_)) {
+                if !error.is_invalid_request() {
                     warn!("cache lookup bypassed after validation failure: {error}");
                 }
                 return Ok(false);
@@ -968,7 +952,7 @@ async fn cache_request_filter(
             Lookup::Hit { response, .. } => {
                 record_cache_event(&ctx.listener, CacheEvent::Hit);
                 ctx.cache_response_handled = true;
-                write_cached_response(session, &response).await?;
+                write_cached_response_conditionally(session, &response).await?;
                 return Ok(true);
             }
             Lookup::Miss {
@@ -981,19 +965,19 @@ async fn cache_request_filter(
                     session.respond_error(504).await?;
                     return Ok(true);
                 }
-                match cache.cache.begin_fill(base) {
-                    Ok(FillJoin::Leader(fill)) => {
+                match cache.cache.begin_fill(base).await {
+                    Ok(CacheFillJoin::Leader(fill)) => {
                         ctx.cache_plan = Some(Arc::clone(&cache));
                         ctx.cache_request = Some(request);
                         ctx.cache_fill = Some(fill);
                         return Ok(false);
                     }
-                    Ok(FillJoin::Follower(waiter)) => {
+                    Ok(CacheFillJoin::Follower(waiter)) => {
                         if !wait_for_fill(waiter, &mut waits).await {
                             return Ok(false);
                         }
                     }
-                    Ok(FillJoin::AtCapacity) | Err(_) => return Ok(false),
+                    Ok(CacheFillJoin::AtCapacity) | Err(_) => return Ok(false),
                 }
             }
             Lookup::Revalidate {
@@ -1008,8 +992,8 @@ async fn cache_request_filter(
                     return Ok(true);
                 }
                 let base = response.key.base().clone();
-                match cache.cache.begin_fill(base) {
-                    Ok(FillJoin::Leader(fill)) => {
+                match cache.cache.begin_fill(base).await {
+                    Ok(CacheFillJoin::Leader(fill)) => {
                         ctx.cache_plan = Some(Arc::clone(&cache));
                         ctx.cache_request = Some(request);
                         ctx.cache_revalidation = Some(CacheRevalidation {
@@ -1021,16 +1005,135 @@ async fn cache_request_filter(
                         ctx.cache_fill = Some(fill);
                         return Ok(false);
                     }
-                    Ok(FillJoin::Follower(waiter)) => {
+                    Ok(CacheFillJoin::Follower(waiter)) => {
                         if !wait_for_fill(waiter, &mut waits).await {
                             return Ok(false);
                         }
                     }
-                    Ok(FillJoin::AtCapacity) | Err(_) => return Ok(false),
+                    Ok(CacheFillJoin::AtCapacity) | Err(_) => return Ok(false),
                 }
             }
         }
     }
+}
+
+fn cache_request(
+    cache: &HttpCachePlan,
+    authority: &Authority,
+    method: &Method,
+    uri: &http::Uri,
+    headers: HeaderMap,
+    scheme: &'static str,
+) -> CacheRequest {
+    CacheRequest {
+        method: method.clone(),
+        scheme,
+        authority: authority.as_str().to_owned(),
+        path: uri.path().to_owned(),
+        query: uri.query().map(str::to_owned),
+        headers,
+        request_started: cache.cache.now(),
+    }
+}
+
+async fn cache_purge_filter(
+    session: &mut Session,
+    _ctx: &mut HttpRequestContext,
+    cache: Arc<HttpCachePlan>,
+    method: &Method,
+    uri: &http::Uri,
+) -> pingora::Result<bool> {
+    let Some(access) = cache.purge_access.as_ref() else {
+        return Ok(false);
+    };
+    if !access.authorizes(&session.req_header().headers) {
+        let head = session.req_header().method == Method::HEAD;
+        write_local_response(
+            session,
+            401,
+            &[(WWW_AUTHENTICATE, access.challenge().clone())],
+            Bytes::new(),
+            head,
+        )
+        .await?;
+        return Ok(true);
+    }
+    let (authority_result, headers) = {
+        let request = session.req_header();
+        (request_authority(request), request.headers.clone())
+    };
+    let Ok(Some(authority)) = authority_result else {
+        session.respond_error(400).await?;
+        return Ok(true);
+    };
+    let scheme = if session
+        .digest()
+        .and_then(|digest| digest.ssl_digest.as_ref())
+        .is_some()
+    {
+        "https"
+    } else {
+        "http"
+    };
+    let request = cache_request(
+        cache.as_ref(),
+        &authority,
+        method,
+        uri,
+        headers.clone(),
+        scheme,
+    );
+    let tag = cache
+        .surrogate_header
+        .as_ref()
+        .and_then(|header| headers.get(header));
+    let result = if let Some(value) = tag {
+        let bytes = value.as_bytes();
+        if bytes.is_empty()
+            || !bytes
+                .iter()
+                .all(|byte| byte.is_ascii_graphic() && !matches!(byte, b',' | b'"'))
+        {
+            write_local_response(
+                session,
+                400,
+                &[],
+                Bytes::from_static(b"invalid cache purge tag\n"),
+                false,
+            )
+            .await?;
+            return Ok(true);
+        }
+        cache.cache.purge_tag(bytes).await
+    } else {
+        match cache.cache.base(&request) {
+            Ok(base) => cache.cache.purge_base(&base).await,
+            Err(error) => Err(error),
+        }
+    };
+    match result {
+        Ok(result) => {
+            let status = if result.entries == 0 { 404 } else { 200 };
+            let head = session.req_header().method == Method::HEAD;
+            write_local_response(
+                session,
+                status,
+                &[(
+                    HeaderName::from_static("cache-control"),
+                    HeaderValue::from_static("private, no-store"),
+                )],
+                Bytes::new(),
+                head,
+            )
+            .await?;
+        }
+        Err(error) => {
+            warn!("cache purge failed: {error}");
+            let status = if error.is_invalid_request() { 400 } else { 503 };
+            session.respond_error(status).await?;
+        }
+    }
+    Ok(true)
 }
 
 async fn wait_for_fill(waiter: oxiroute_cache::FillWaiter, waits: &mut usize) -> bool {
@@ -1047,7 +1150,7 @@ async fn wait_for_fill(waiter: oxiroute_cache::FillWaiter, waits: &mut usize) ->
     }
 }
 
-fn finish_cache_fill(ctx: &mut HttpRequestContext) {
+async fn finish_cache_fill(ctx: &mut HttpRequestContext) {
     let Some(capture) = ctx.cache_capture.take() else {
         complete_cache_fill_without_store(ctx);
         return;
@@ -1067,14 +1170,21 @@ fn finish_cache_fill(ctx: &mut HttpRequestContext) {
         status,
         headers,
         body,
+        tags,
         timing,
         complete,
         admissible,
     } = capture;
-    if !complete || !admissible || !response_representation_valid(status, &headers, body.len()) {
+    let tags_valid = plan.cache_tags_within_limits(&tags);
+    if !complete
+        || !admissible
+        || !tags_valid
+        || !response_representation_valid(status, &headers, body.len())
+    {
         let _ = fill.complete_without_store();
         return;
     }
+    let tag_refs = tags.iter().map(Bytes::as_ref).collect::<Vec<_>>();
     let prepared = plan.cache.prepare_with_timeline(
         request.representation_input(),
         CacheResponse {
@@ -1082,7 +1192,7 @@ fn finish_cache_fill(ctx: &mut HttpRequestContext) {
             headers: &headers,
             body: Bytes::from(body),
             timing,
-            tags: &[],
+            tags: &tag_refs,
         },
         &plan.timeline,
     );
@@ -1090,7 +1200,7 @@ fn finish_cache_fill(ctx: &mut HttpRequestContext) {
         let _ = fill.complete_without_store();
         return;
     };
-    match fill.store(entry) {
+    match fill.store(entry).await {
         Ok(StoreOutcome::Stored { evicted }) => {
             record_cache_event(&ctx.listener, CacheEvent::Admission);
             for _ in 0..evicted {
@@ -1154,6 +1264,106 @@ fn cache_response_headers(headers: &HeaderMap) -> HeaderMap {
         sanitized.remove(name);
     }
     sanitized
+}
+
+fn response_surrogate_tags(headers: &HeaderMap, name: &HeaderName) -> Vec<Bytes> {
+    headers
+        .get_all(name)
+        .iter()
+        .flat_map(|value| {
+            value
+                .as_bytes()
+                .split(|byte| byte.is_ascii_whitespace())
+                .filter(|tag| !tag.is_empty())
+                .map(Bytes::copy_from_slice)
+        })
+        .collect()
+}
+
+fn cache_request_bypasses_cache(headers: &HeaderMap) -> bool {
+    headers.contains_key(RANGE)
+        || headers.contains_key(IF_RANGE)
+        || headers.contains_key(IF_MATCH)
+        || headers.contains_key(IF_UNMODIFIED_SINCE)
+}
+
+async fn write_cached_response_conditionally(
+    session: &mut Session,
+    response: &CachedResponse,
+) -> pingora::Result<()> {
+    if cached_response_matches_condition(session, response) {
+        let mut not_modified = response.clone();
+        not_modified.status = StatusCode::NOT_MODIFIED;
+        not_modified.body = Bytes::new();
+        write_cached_response(session, &not_modified).await
+    } else {
+        write_cached_response(session, response).await
+    }
+}
+
+fn cached_response_matches_condition(session: &Session, response: &CachedResponse) -> bool {
+    let request = session.req_header();
+    if let Some(if_none_match) = request.headers.get(IF_NONE_MATCH) {
+        return cached_etag_list_matches(
+            if_none_match.as_bytes(),
+            response.headers.get(ETAG).map(HeaderValue::as_bytes),
+        );
+    }
+    if !matches!(request.method, Method::GET | Method::HEAD) {
+        return false;
+    }
+    let Some(if_modified_since) = request.headers.get(IF_MODIFIED_SINCE) else {
+        return false;
+    };
+    let Some(last_modified) = response.headers.get(LAST_MODIFIED) else {
+        return false;
+    };
+    let Ok(if_modified_since_text) = if_modified_since.to_str() else {
+        return false;
+    };
+    let Ok(if_modified_since) = httpdate::parse_http_date(if_modified_since_text) else {
+        return false;
+    };
+    let Ok(last_modified_text) = last_modified.to_str() else {
+        return false;
+    };
+    let Ok(last_modified) = httpdate::parse_http_date(last_modified_text) else {
+        return false;
+    };
+    last_modified <= if_modified_since
+}
+
+fn cached_etag_list_matches(value: &[u8], current: Option<&[u8]>) -> bool {
+    value
+        .split(|byte| *byte == b',')
+        .map(trim_ows)
+        .any(|candidate| {
+            candidate == b"*" || current.is_some_and(|current| weak_etag_equal(candidate, current))
+        })
+}
+
+fn weak_etag_equal(left: &[u8], right: &[u8]) -> bool {
+    strip_weak_etag(left) == strip_weak_etag(right)
+}
+
+fn strip_weak_etag(value: &[u8]) -> &[u8] {
+    let value = trim_ows(value);
+    value
+        .strip_prefix(b"W/")
+        .or_else(|| value.strip_prefix(b"w/"))
+        .unwrap_or(value)
+}
+
+fn trim_ows(value: &[u8]) -> &[u8] {
+    let start = value
+        .iter()
+        .position(|byte| !matches!(byte, b' ' | b'\t'))
+        .unwrap_or(value.len());
+    let end = value
+        .iter()
+        .rposition(|byte| !matches!(byte, b' ' | b'\t'))
+        .map_or(start, |index| index + 1);
+    &value[start..end]
 }
 
 async fn write_cached_response(
@@ -2730,6 +2940,28 @@ mod tests {
             classify_http_result(Some(&timeout), None),
             HttpOperationResult::Timeout
         );
+    }
+
+    #[test]
+    fn cache_reuse_rejects_ranges_and_unsafe_preconditions() {
+        let mut headers = HeaderMap::new();
+        headers.insert(RANGE, HeaderValue::from_static("bytes=0-1"));
+        assert!(cache_request_bypasses_cache(&headers));
+        headers.remove(RANGE);
+        headers.insert(IF_NONE_MATCH, HeaderValue::from_static("\"v1\""));
+        assert!(!cache_request_bypasses_cache(&headers));
+        headers.insert(IF_UNMODIFIED_SINCE, HeaderValue::from_static("now"));
+        assert!(cache_request_bypasses_cache(&headers));
+    }
+
+    #[test]
+    fn cache_etag_matching_uses_weak_comparison_and_wildcards() {
+        assert!(cached_etag_list_matches(
+            b"W/\"v1\", \"v2\"",
+            Some(b"\"v1\"")
+        ));
+        assert!(cached_etag_list_matches(b"*", None));
+        assert!(!cached_etag_list_matches(b"\"v1\"", Some(b"\"v2\"")));
     }
 
     #[test]

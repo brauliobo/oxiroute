@@ -234,7 +234,7 @@ async fn memory_cache_reuses_get_and_head_responses() {
         let proxy = ProxyHarness::start_with_memory_cache(
             vec![pool("origin", &[origin.address])],
             vec![cached_route(None, "/", "origin")],
-            4,
+            3,
         )
         .await;
 
