@@ -825,14 +825,9 @@ fn validate_listeners(
                     service: service.into(),
                 });
             }
-            (Protocol::Tcp, Some(service)) if !l4_service_names.contains(service) => {
-                return Err(ConfigError::UnknownListenerService {
-                    listener: listener.name.clone(),
-                    protocol: listener.protocol,
-                    service: service.into(),
-                });
-            }
-            (Protocol::Udp, Some(service)) if !l4_service_names.contains(service) => {
+            (Protocol::Tcp | Protocol::Udp, Some(service))
+                if !l4_service_names.contains(service) =>
+            {
                 return Err(ConfigError::UnknownListenerService {
                     listener: listener.name.clone(),
                     protocol: listener.protocol,
