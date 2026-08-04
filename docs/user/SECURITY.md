@@ -26,6 +26,13 @@ openssl rand -hex 32 > /etc/oxiroute/management.token
 chmod 600 /etc/oxiroute/management.token
 ```
 
+The CLI uses the first available explicit, configured, or packaged/default path and relies on the
+operating system's read permission. It does not require the file to be owned by the invoking user;
+root or the configured daemon/operator identity must simply have read and directory-search access.
+The accepted token modes remain exactly `0400` and `0600`. The packaged environment file is read
+only for the bounded `OXIROUTE_MANAGEMENT_TOKEN_FILE=/path` assignment; it is never executed as a
+shell script.
+
 Do not put tokens in source control, URLs, screenshots, Remotion props, support bundles, or process
 arguments.
 

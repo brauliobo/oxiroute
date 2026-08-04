@@ -7,7 +7,6 @@ This page is the task-oriented layer over [OPERATIONS.md](../OPERATIONS.md) and 
 
 ```sh
 export OXIROUTE_ENDPOINT=http://127.0.0.1:9900
-export OXIROUTE_MANAGEMENT_TOKEN_FILE=/etc/oxiroute/management.token
 
 oxiroute ready
 oxiroute status
@@ -15,6 +14,11 @@ oxiroute generation status
 oxiroute listener list
 oxiroute pool list
 ```
+
+For the packaged service, the client discovers `/etc/oxiroute/management.token` automatically. Set
+`OXIROUTE_MANAGEMENT_TOKEN_FILE` only for a custom token path; an authenticated command reports a
+local token-file error when the selected file is missing or unreadable. The daemon still requires
+the path assignment in `/etc/oxiroute/oxiroute.env` when its management listener is enabled.
 
 `ready` is the cheap admission check. `status` reports build and generation revisions. Use
 `monitoring` for host/process/load and traffic evidence:

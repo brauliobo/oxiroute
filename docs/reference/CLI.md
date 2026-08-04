@@ -10,7 +10,10 @@ oxiroute [--endpoint URL] [--token-file FILE] [--output table|json|plain] [--qui
 ```
 
 - `--endpoint` defaults to `OXIROUTE_ENDPOINT`, then `http://127.0.0.1:9900`.
-- `--token-file` defaults to `OXIROUTE_MANAGEMENT_TOKEN_FILE`.
+- `--token-file` explicitly selects the token file and wins over all automatic discovery.
+- `OXIROUTE_MANAGEMENT_TOKEN_FILE` is the next source; when unset, the packaged
+  `/etc/oxiroute/oxiroute.env` assignment is checked, followed by the built-in
+  `/etc/oxiroute/management.token` path when that file exists.
 - `--output json` writes one JSON value to stdout; diagnostics use stderr.
 - Public `/ready` and `/metrics` probes do not need the management token. Other management operations
   use the bearer token according to their route contract.

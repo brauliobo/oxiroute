@@ -89,11 +89,12 @@ Manual recorder responses are exact:
 
 ### Configuration authentication
 
-Whenever `management` is configured, startup requires `OXIROUTE_MANAGEMENT_TOKEN_FILE`. The file is
-opened without following symlinks, MUST be a regular file with mode `0400` or `0600`, and is bounded
-to 514 bytes so a maximum-size token may include one line ending. One trailing LF or CRLF is removed;
-the remaining token MUST be 32 through 512 visible ASCII bytes (`0x21` through `0x7e`). Other
-whitespace is part of the token or makes it invalid.
+Whenever `management` is configured, startup requires a valid management token file. The packaged
+service supplies its path through `OXIROUTE_MANAGEMENT_TOKEN_FILE`; the file is opened without
+following symlinks, MUST be a regular file with mode `0400` or `0600`, and is bounded to 514 bytes so
+a maximum-size token may include one line ending. One trailing LF or CRLF is removed; the remaining
+token MUST be 32 through 512 visible ASCII bytes (`0x21` through `0x7e`). Other whitespace is part
+of the token or makes it invalid.
 
 Each recognized non-public API request requires exactly one `Authorization: Bearer <token>` header. Duplicate
 authorization returns `400 duplicate_authorization`; missing, malformed, or incorrect authorization

@@ -25,8 +25,16 @@ supervised-mode dispatch remains behind a future runtime activation gate for an 
 configuration set. Do not add a service override to select supervised mode until that gate is wired
 and documented.
 
-To enable the authenticated management client, create a restrictive token file, set
-`OXIROUTE_MANAGEMENT_TOKEN_FILE` in `/etc/oxiroute/oxiroute.env`, and add:
+To enable the authenticated management client, create the restrictive default token file:
+
+```sh
+umask 077
+openssl rand -hex 32 > /etc/oxiroute/management.token
+chown oxiroute:oxiroute /etc/oxiroute/management.token
+chmod 600 /etc/oxiroute/management.token
+```
+
+Add the management object:
 
 ```kdl
 (object)management {
@@ -34,11 +42,20 @@ To enable the authenticated management client, create a restrictive token file, 
 }
 ```
 
-The client then uses the same environment variable and its default endpoint:
+The package environment file has a commented example for a configured token path. Uncomment or
+change that assignment when the daemon should use a non-default path. The client resolves paths in
+this order: explicit `--token-file`, process `OXIROUTE_MANAGEMENT_TOKEN_FILE`, the one plain
+assignment in `/etc/oxiroute/oxiroute.env`, then `/etc/oxiroute/management.token` when present. It
+does not execute the environment file. With the default token above, no token option or environment
+export is needed:
 
 ```sh
-OXIROUTE_MANAGEMENT_TOKEN_FILE=/etc/oxiroute/management.token oxiroute status
+oxiroute status
 ```
+
+The daemon still needs `OXIROUTE_MANAGEMENT_TOKEN_FILE` in its systemd environment file whenever a
+management listener is configured; uncomment the packaged assignment before starting the service.
+The CLI's default-path discovery is a client convenience and does not change that startup gate.
 
 With the authenticated management listener enabled, `systemctl reload oxiroute.service` runs
 `/usr/bin/oxiroute generation reload`. The command re-reads the canonical configuration and

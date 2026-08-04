@@ -40,12 +40,75 @@ fn json_output_is_script_safe_and_preserves_fields() {
 }
 
 #[test]
+fn public_ready_does_not_read_an_unusable_token_file() {
+    let directory = TempDir::new().expect("directory");
+    let missing_token = directory.path().join("missing.token");
+    let endpoint = serve_once(200, r#"{"schemaVersion":1,"ready":true}"#);
+    let output = cli()
+        .args([
+            "--endpoint",
+            &endpoint,
+            "--output",
+            "json",
+            "--token-file",
+            missing_token.to_str().unwrap(),
+            "ready",
+        ])
+        .output()
+        .expect("CLI");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "{\"ready\":true,\"schemaVersion\":1}\n"
+    );
+}
+
+#[test]
+fn configured_environment_token_path_is_used_without_the_cli_option() {
+    let directory = TempDir::new().expect("directory");
+    let token_path = directory.path().join("management.token");
+    fs::write(&token_path, TOKEN).expect("token");
+    fs::set_permissions(&token_path, fs::Permissions::from_mode(0o600)).expect("mode");
+    let endpoint = serve_once(200, r#"{"status":"ok"}"#);
+    let output = cli()
+        .env("OXIROUTE_MANAGEMENT_TOKEN_FILE", &token_path)
+        .args(["--endpoint", &endpoint, "--output", "json", "status"])
+        .output()
+        .expect("CLI");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "{\"status\":\"ok\"}\n"
+    );
+}
+
+#[test]
 fn endpoint_failure_and_remote_status_use_stable_exit_categories() {
+    let directory = TempDir::new().expect("directory");
+    let token_path = directory.path().join("management.token");
+    fs::write(&token_path, TOKEN).expect("token");
+    fs::set_permissions(&token_path, fs::Permissions::from_mode(0o600)).expect("mode");
     let listener = TcpListener::bind("127.0.0.1:0").expect("reserve endpoint");
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     drop(listener);
     let unavailable = cli()
-        .args(["--endpoint", &endpoint, "status"])
+        .args([
+            "--endpoint",
+            &endpoint,
+            "--token-file",
+            token_path.to_str().unwrap(),
+            "status",
+        ])
         .output()
         .expect("CLI");
     assert_eq!(unavailable.status.code(), Some(4));

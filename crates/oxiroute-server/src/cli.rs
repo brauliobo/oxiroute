@@ -27,9 +27,13 @@ use crate::{
 use std::io::Cursor;
 
 const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:9900";
+const DEFAULT_PACKAGE_ENV_FILE: &str = "/etc/oxiroute/oxiroute.env";
+const DEFAULT_MANAGEMENT_TOKEN_FILE: &str = "/etc/oxiroute/management.token";
+const MANAGEMENT_TOKEN_ENV: &str = "OXIROUTE_MANAGEMENT_TOKEN_FILE";
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_PACKAGE_ENV_BYTES: usize = 8 * 1024;
 const MAX_TOKEN_BYTES: usize = 512;
 const EXIT_LOCAL: u8 = 3;
 const EXIT_CONNECT: u8 = 4;
@@ -45,7 +49,7 @@ pub const BUILD_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub struct Cli {
     #[arg(long, env = "OXIROUTE_ENDPOINT", default_value = DEFAULT_ENDPOINT)]
     endpoint: String,
-    #[arg(long, env = "OXIROUTE_MANAGEMENT_TOKEN_FILE")]
+    #[arg(long)]
     token_file: Option<PathBuf>,
     #[arg(long, value_enum, default_value_t = Output::Table)]
     output: Output,
@@ -876,7 +880,19 @@ fn report_header(kind: &str, diagnostics: &[Diagnostic]) -> String {
 
 fn run(cli: &Cli) -> Result<(), CliError> {
     let endpoint = Endpoint::parse(&cli.endpoint)?;
-    let token = cli.token_file.as_deref().map(read_token).transpose()?;
+    let token = if command_requires_token(cli.command()) {
+        let configured_token_file = std::env::var_os(MANAGEMENT_TOKEN_ENV);
+        resolve_token_path(
+            cli.token_file.as_deref(),
+            configured_token_file.as_deref().map(Path::new),
+            Path::new(DEFAULT_PACKAGE_ENV_FILE),
+            Path::new(DEFAULT_MANAGEMENT_TOKEN_FILE),
+        )?
+        .map(|path| read_token(&path))
+        .transpose()?
+    } else {
+        None
+    };
     let client = Client { endpoint, token };
     if execute(cli, &client)? == FollowOutcome::Follow {
         follow_events(cli, &client)?;
@@ -1364,6 +1380,79 @@ fn config_file(path: &Path) -> Result<Value, CliError> {
     Ok(value.get("config").cloned().unwrap_or(value))
 }
 
+fn command_requires_token(command: &Command) -> bool {
+    !matches!(
+        command,
+        Command::Ready
+            | Command::Metrics
+            | Command::Rtmp {
+                command: RtmpCommand::Stream {
+                    command: StreamCommand::Disconnect { .. },
+                } | RtmpCommand::Relay {
+                    command: RelayCommand::Reconnect { .. },
+                },
+            }
+    )
+}
+
+fn resolve_token_path(
+    explicit_path: Option<&Path>,
+    configured_path: Option<&Path>,
+    package_env_file: &Path,
+    default_path: &Path,
+) -> Result<Option<PathBuf>, CliError> {
+    if let Some(path) = explicit_path.or(configured_path) {
+        return Ok(Some(path.to_owned()));
+    }
+    if let Some(path) = package_env_token_path(package_env_file)? {
+        return Ok(Some(path));
+    }
+    match std::fs::symlink_metadata(default_path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Ok(_) | Err(_) => Ok(Some(default_path.to_owned())),
+    }
+}
+
+fn package_env_token_path(path: &Path) -> Result<Option<PathBuf>, CliError> {
+    let bytes = match read_regular_file(path, MAX_PACKAGE_ENV_BYTES, false) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => {
+            return Err(CliError::Local(
+                "management token path configuration could not be read securely".into(),
+            ));
+        }
+    };
+    let contents = std::str::from_utf8(&bytes)
+        .map_err(|_| CliError::Local("management token path configuration is invalid".into()))?;
+    let mut token_path = None;
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((name, value)) = line.split_once('=') else {
+            continue;
+        };
+        if name != MANAGEMENT_TOKEN_ENV {
+            continue;
+        }
+        if token_path.is_some() {
+            return Err(CliError::Local(
+                "management token path configuration is invalid".into(),
+            ));
+        }
+        let value = value.trim();
+        if value.is_empty() || value.chars().any(char::is_control) {
+            return Err(CliError::Local(
+                "management token path configuration is invalid".into(),
+            ));
+        }
+        token_path = Some(PathBuf::from(value));
+    }
+    Ok(token_path)
+}
+
 fn read_token(path: &Path) -> Result<Zeroizing<String>, CliError> {
     let bytes = Zeroizing::new(
         read_regular_file(path, MAX_TOKEN_BYTES + 2, true).map_err(|_| {
@@ -1374,7 +1463,10 @@ fn read_token(path: &Path) -> Result<Zeroizing<String>, CliError> {
         String::from_utf8(bytes.to_vec())
             .map_err(|_| CliError::Local("management token file is invalid".into()))?,
     );
-    while token.ends_with(['\n', '\r']) {
+    if token.ends_with("\r\n") {
+        let length = token.len();
+        token.truncate(length - 2);
+    } else if token.ends_with('\n') {
         token.pop();
     }
     if token.len() < 32
@@ -1620,6 +1712,13 @@ impl Client {
         if !path.starts_with('/') || path.contains(['\r', '\n']) {
             return Err(CliError::Local("request path is invalid".into()));
         }
+        let token = if authenticated {
+            Some(self.token.as_deref().ok_or_else(|| {
+                CliError::Local("management token file is missing or unreadable".into())
+            })?)
+        } else {
+            None
+        };
         let address = self
             .endpoint
             .address
@@ -1641,10 +1740,7 @@ impl Client {
                 .write_all(b"Content-Type: application/json\r\n")
                 .map_err(connect_io)?;
         }
-        if authenticated {
-            let token = self.token.as_deref().ok_or_else(|| {
-                CliError::Local("--token-file or OXIROUTE_MANAGEMENT_TOKEN_FILE is required".into())
-            })?;
+        if let Some(token) = token {
             write!(stream, "Authorization: Bearer {token}\r\n").map_err(connect_io)?;
         }
         for (name, value) in headers {
@@ -2257,6 +2353,104 @@ mod tests {
         };
         assert_eq!(status, 422);
         assert_eq!(code, "config_rejected: E_NATIVE_SOURCE");
+    }
+
+    #[test]
+    fn token_path_resolution_obeys_precedence_and_default_presence() {
+        let directory = tempfile::TempDir::new().expect("directory");
+        let explicit = directory.path().join("explicit.token");
+        let configured = directory.path().join("configured.token");
+        let package = directory.path().join("oxiroute.env");
+        let package_token = directory.path().join("package.token");
+        let default = directory.path().join("management.token");
+
+        assert_eq!(
+            resolve_token_path(Some(&explicit), Some(&configured), &package, &default)
+                .expect("explicit path"),
+            Some(explicit.clone())
+        );
+        assert_eq!(
+            resolve_token_path(None, Some(&configured), &package, &default)
+                .expect("configured path"),
+            Some(configured.clone())
+        );
+
+        std::fs::write(
+            &package,
+            format!(
+                "RUST_LOG=info\n{MANAGEMENT_TOKEN_ENV}={}\n",
+                package_token.display()
+            ),
+        )
+        .expect("package environment");
+        assert_eq!(
+            resolve_token_path(Some(&explicit), Some(&configured), &package, &default)
+                .expect("explicit path over package path"),
+            Some(explicit.clone())
+        );
+        assert_eq!(
+            resolve_token_path(None, Some(&configured), &package, &default)
+                .expect("configured path over package path"),
+            Some(configured)
+        );
+        assert_eq!(
+            resolve_token_path(None, None, &package, &default).expect("package path"),
+            Some(package_token)
+        );
+
+        std::fs::remove_file(&package).expect("remove package environment");
+        assert_eq!(
+            resolve_token_path(None, None, &package, &default).expect("missing default"),
+            None
+        );
+        std::fs::write(&default, b"placeholder").expect("default token");
+        assert_eq!(
+            resolve_token_path(None, None, &package, &default).expect("default path"),
+            Some(default)
+        );
+    }
+
+    #[test]
+    fn restrictive_token_files_use_os_access_without_an_owner_check() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::TempDir::new().expect("directory");
+        let path = directory.path().join("token");
+        let expected = "0123456789abcdefghijklmnopqrstuv";
+        std::fs::write(&path, expected).expect("token");
+        for mode in [0o400, 0o600] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("mode");
+            assert_eq!(read_token(&path).expect("read token").as_str(), expected);
+        }
+    }
+
+    #[test]
+    fn invalid_token_permissions_are_rejected_without_exposing_contents() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::TempDir::new().expect("directory");
+        let path = directory.path().join("token");
+        let expected = "0123456789abcdefghijklmnopqrstuv";
+        std::fs::write(&path, expected).expect("token");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("mode");
+        let error = read_token(&path).expect_err("insecure mode");
+        assert!(error.to_string().contains("could not be read securely"));
+        assert!(!error.to_string().contains(expected));
+    }
+
+    #[test]
+    fn authenticated_requests_report_a_missing_token_before_connecting() {
+        let client = Client {
+            endpoint: Endpoint::parse("http://127.0.0.1:1").expect("endpoint"),
+            token: None,
+        };
+        let error = client
+            .request("GET", "/api/v1/status", &[], &[], true)
+            .expect_err("missing token");
+        assert_eq!(
+            error.to_string(),
+            "management token file is missing or unreadable"
+        );
     }
 
     #[test]
