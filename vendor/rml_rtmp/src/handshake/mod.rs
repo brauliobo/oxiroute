@@ -93,16 +93,9 @@ enum Stage {
 
 /// Struct that handles the handshaking process.
 ///
-/// It should be noted that the current system does not perform validation on the peer's p2 packet.
-/// This is due to the complicated hmac verification.  While this verification was successful when
-/// tested agains OBS, Ffmpeg, Mplayer, and Evostream, but for some reason Flash clients would fail
-/// the hmac verification.
-///
-/// Due to the documentation on the fp9 handshake being third party, the hmac verification was
-/// removed.  It is now assumed that as long as the peer sent us a p2 packet, and they did not
-/// dicsonnect us after receiving our p2 packet, that the handshake was successful.  This has
-/// allowed us to succeed in handshaking with flash players, and there are still enough checks that
-/// it should be unlikely for too many false positives.
+/// Complex-handshake peer packet 2 responses are authenticated with the digest from the locally
+/// generated packet 1.  Original RTMP handshakes remain compatible by accepting an exact packet 1
+/// echo, which is the simple-handshake packet 2 form.
 ///
 /// ## Examples
 ///
@@ -142,6 +135,7 @@ pub struct Handshake {
     input_buffer: Vec<u8>,
     sent_p1: [u8; RTMP_PACKET_SIZE],
     sent_digest: [u8; SHA256_DIGEST_LENGTH],
+    peer_uses_complex_handshake: bool,
 }
 
 impl Handshake {
@@ -158,6 +152,7 @@ impl Handshake {
             sent_p1: [0_u8; RTMP_PACKET_SIZE],
             peer_type,
             sent_digest: [0_u8; SHA256_DIGEST_LENGTH],
+            peer_uses_complex_handshake: false,
         }
     }
 
@@ -315,7 +310,10 @@ impl Handshake {
         };
 
         let received_digest = match get_digest_for_received_packet(&received_packet_1, &p1_key) {
-            Ok(digest) => digest,
+            Ok(digest) => {
+                self.peer_uses_complex_handshake = true;
+                digest
+            }
             Err(HandshakeError::UnknownPacket1Format) => {
                 // Since no digest was found chances are that this handshake is
                 // not a fp9 handshake but instead is the handshake from the
@@ -376,9 +374,8 @@ impl Handshake {
             self.input_buffer.drain(..RTMP_PACKET_SIZE);
         }
 
-        // If the peer sent back a p2 that is an exact copy of our p1, accept it as that mean's it
-        // is the old style handshake
-        if &self.sent_p1[..] == &received_packet_2[..] {
+        // A legacy peer sends an exact copy of our p1 as packet 2.
+        if !self.peer_uses_complex_handshake && &self.sent_p1[..] == &received_packet_2[..] {
             self.current_stage = Stage::Complete;
             let remaining_bytes = self.input_buffer.drain(..).collect();
             return Ok(HandshakeProcessResult::Completed {
@@ -387,7 +384,7 @@ impl Handshake {
             });
         }
 
-        // Not an exact match, so test the signature
+        // Not an exact match, so test the complex-handshake signature.
         let mut peer_key = match self.peer_type {
             PeerType::Server => GENUINE_FP_CONST.as_bytes().to_vec(),
             PeerType::Client => GENUINE_FMS_CONST.as_bytes().to_vec(),
@@ -395,19 +392,15 @@ impl Handshake {
 
         peer_key.extend_from_slice(&RANDOM_CRUD[..]);
 
-        // TODO: Re-enable P2 verification.
-        // Verification of packet 2 had to be commented out for flash players to work.  For some
-        // reason flash players are failing the p2 validation even though VLC, ffmpeg, and others
-        // are handshaking just fine.  For now I am just going to assume that the p2 they sent
-        // us is fine if they don't disconnect after we sent them our p2, and can look at this
-        // later if there's a reason to really care.
-
-        //let expected_hmac = &received_packet_2[P2_SIG_START_INDEX..RTMP_PACKET_SIZE];
-        //let hmac1 = calc_hmac(&self.sent_digest, &peer_key[..]);
-        //let hmac2 = calc_hmac(&received_packet_2[..P2_SIG_START_INDEX], &hmac1);
-        //if &expected_hmac[..] != &hmac2[..] {
-        //    return Err(HandshakeError{kind: HandshakeErrorKind::InvalidP2Packet});
-        //}
+        let hmac1 = calc_hmac(&self.sent_digest, &peer_key[..]);
+        let mut verifier = Hmac::<Sha256>::new_varkey(&hmac1).unwrap();
+        verifier.update(&received_packet_2[..P2_SIG_START_INDEX]);
+        if verifier
+            .verify(&received_packet_2[P2_SIG_START_INDEX..RTMP_PACKET_SIZE])
+            .is_err()
+        {
+            return Err(HandshakeError::InvalidP2Packet);
+        }
 
         self.current_stage = Stage::Complete;
         let bytes_left = self.input_buffer.drain(..).collect();
