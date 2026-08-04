@@ -7,9 +7,9 @@ use oxiroute_config::{
     UpstreamTls,
 };
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
-use crate::{ListenerRuntimeState, RoundRobinPool, ServiceSpec, monitoring::RuntimeHealthSnapshot};
+use crate::{monitoring::RuntimeHealthSnapshot, ListenerRuntimeState, RoundRobinPool, ServiceSpec};
 
 pub const TOPOLOGY_SCHEMA_VERSION: u32 = 1;
 
@@ -353,6 +353,7 @@ impl TopologyBuilder {
                     "auth": match service.auth {
                         Some(oxiroute_config::ForwardProxyAuth::BearerTokenFile { .. }) => "bearer_token_file",
                         Some(oxiroute_config::ForwardProxyAuth::BasicHtpasswdFile { .. }) => "basic_htpasswd_file",
+                        Some(oxiroute_config::ForwardProxyAuth::MutualTls { .. }) => "mutual_tls",
                         None => "none",
                     },
                     "accessRuleCount": service.access_policy.as_ref().map_or(0, |policy| policy.rules.len()),

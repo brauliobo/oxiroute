@@ -1,6 +1,7 @@
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
@@ -32,6 +33,8 @@ pub enum PolicyError {
     LocalName,
     #[error("destination resolves to a forbidden address")]
     ForbiddenAddress,
+    #[error("destination is outside the configured time policy")]
+    ForbiddenTime,
     #[error("destination port is forbidden")]
     ForbiddenPort,
     #[error("destination was rejected by policy")]
@@ -106,6 +109,8 @@ pub struct DestinationRules {
     deny_domains: Vec<DomainRule>,
     allow_networks: Vec<IpNetwork>,
     deny_networks: Vec<IpNetwork>,
+    allow_times: Vec<TimeWindow>,
+    deny_times: Vec<TimeWindow>,
     deny_private: bool,
 }
 
@@ -131,8 +136,83 @@ impl DestinationRules {
             deny_domains: parse_unique(deny_domains, DomainRule::parse)?,
             allow_networks: parse_unique(allow_cidrs, IpNetwork::parse)?,
             deny_networks: parse_unique(deny_cidrs, IpNetwork::parse)?,
+            allow_times: Vec::new(),
+            deny_times: Vec::new(),
             deny_private,
         })
+    }
+
+    /// Adds bounded UTC time windows to the destination policy.
+    ///
+    /// Deny windows take precedence. When one or more allow windows are configured, the current
+    /// UTC time must be inside at least one of them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuleError::InvalidTimeWindow`] for malformed windows or [`RuleError::Duplicate`]
+    /// for repeated windows.
+    pub fn with_time_windows(
+        mut self,
+        allow: impl IntoIterator<Item = TimeWindow>,
+        deny: impl IntoIterator<Item = TimeWindow>,
+    ) -> Result<Self, RuleError> {
+        self.allow_times = parse_time_windows(allow)?;
+        self.deny_times = parse_time_windows(deny)?;
+        Ok(self)
+    }
+
+    /// Returns an approved destination after evaluating the policy at the current UTC time.
+    ///
+    /// The returned socket addresses are exactly the addresses supplied to this call. A runtime
+    /// must not resolve the hostname again after receiving this value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolicyError`] when the destination is not allowed.
+    pub fn approve(
+        &self,
+        context: &PolicyContext,
+        destination: &Destination,
+        addresses: &[IpAddr],
+    ) -> Result<ApprovedDestination, PolicyError> {
+        self.approve_at(context, destination, addresses, SystemTime::now())
+    }
+
+    /// Returns an approved destination after evaluating the policy at an explicit UTC instant.
+    ///
+    /// This deterministic form is useful for policy tests and callers that already own a trusted
+    /// clock sample.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolicyError`] when the destination is not allowed.
+    pub fn approve_at(
+        &self,
+        context: &PolicyContext,
+        destination: &Destination,
+        addresses: &[IpAddr],
+        now: SystemTime,
+    ) -> Result<ApprovedDestination, PolicyError> {
+        self.authorize_at(context, destination, addresses, now)?;
+        Ok(ApprovedDestination::new(
+            destination.clone(),
+            addresses.to_vec(),
+        ))
+    }
+
+    /// Authorizes a destination at an explicit UTC instant.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolicyError`] when the destination is not allowed.
+    pub fn authorize_at(
+        &self,
+        context: &PolicyContext,
+        destination: &Destination,
+        addresses: &[IpAddr],
+        now: SystemTime,
+    ) -> Result<(), PolicyError> {
+        self.authorize_inner(context, destination, addresses, now)
     }
 }
 
@@ -142,6 +222,18 @@ impl DestinationPolicy for DestinationRules {
         context: &PolicyContext,
         destination: &Destination,
         addresses: &[IpAddr],
+    ) -> Result<(), PolicyError> {
+        self.authorize_at(context, destination, addresses, SystemTime::now())
+    }
+}
+
+impl DestinationRules {
+    fn authorize_inner(
+        &self,
+        context: &PolicyContext,
+        destination: &Destination,
+        addresses: &[IpAddr],
+        now: SystemTime,
     ) -> Result<(), PolicyError> {
         if self.deny_private {
             ForbiddenDestinationPolicy.authorize(context, destination, addresses)?;
@@ -154,6 +246,12 @@ impl DestinationPolicy for DestinationRules {
             && !matches!(&destination.host, Host::Dns(name) if self.allow_domains.iter().any(|rule| rule.matches(name)))
         {
             return Err(PolicyError::Rejected);
+        }
+        if self.deny_times.iter().any(|window| window.matches_at(now))
+            || (!self.allow_times.is_empty()
+                && !self.allow_times.iter().any(|window| window.matches_at(now)))
+        {
+            return Err(PolicyError::ForbiddenTime);
         }
         if addresses.iter().any(|address| {
             self.deny_networks
@@ -182,6 +280,61 @@ pub enum RuleError {
     Malformed,
     #[error("destination rule is duplicated")]
     Duplicate,
+    #[error("destination time window is malformed")]
+    InvalidTimeWindow,
+}
+
+/// A bounded half-open UTC time window for destination policy evaluation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct TimeWindow {
+    days: u8,
+    start_minute: u16,
+    end_minute: u16,
+}
+
+impl TimeWindow {
+    /// Creates a window using Monday bit 0 through Sunday bit 6 and minutes since midnight.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuleError::InvalidTimeWindow`] when no day is selected, a bit outside the week
+    /// is set, or the end is not after the start in the inclusive 24-hour bound.
+    pub fn new(days: u8, start_minute: u16, end_minute: u16) -> Result<Self, RuleError> {
+        if days == 0 || days & !0x7f != 0 || start_minute >= end_minute || end_minute > 24 * 60 {
+            return Err(RuleError::InvalidTimeWindow);
+        }
+        Ok(Self {
+            days,
+            start_minute,
+            end_minute,
+        })
+    }
+
+    #[must_use]
+    pub const fn days(self) -> u8 {
+        self.days
+    }
+
+    #[must_use]
+    pub const fn start_minute(self) -> u16 {
+        self.start_minute
+    }
+
+    #[must_use]
+    pub const fn end_minute(self) -> u16 {
+        self.end_minute
+    }
+
+    #[must_use]
+    pub fn matches_at(self, now: SystemTime) -> bool {
+        let Ok(duration) = now.duration_since(UNIX_EPOCH) else {
+            return false;
+        };
+        let days_since_epoch = duration.as_secs() / Duration::from_secs(86_400).as_secs();
+        let weekday = u8::try_from((days_since_epoch + 3) % 7).unwrap_or(0);
+        let minute = u16::try_from((duration.as_secs() % 86_400) / 60).unwrap_or(0);
+        self.days & (1 << weekday) != 0 && (self.start_minute..self.end_minute).contains(&minute)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -273,10 +426,31 @@ fn parse_unique<T: Eq>(
     Ok(parsed)
 }
 
+fn parse_time_windows(
+    values: impl IntoIterator<Item = TimeWindow>,
+) -> Result<Vec<TimeWindow>, RuleError> {
+    let mut parsed = Vec::new();
+    for value in values {
+        if value.days == 0
+            || value.days & !0x7f != 0
+            || value.start_minute >= value.end_minute
+            || value.end_minute > 24 * 60
+        {
+            return Err(RuleError::InvalidTimeWindow);
+        }
+        if parsed.contains(&value) {
+            return Err(RuleError::Duplicate);
+        }
+        parsed.push(value);
+    }
+    Ok(parsed)
+}
+
 fn valid_dns_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 253
         && !name.ends_with('.')
+        && name.parse::<IpAddr>().is_err()
         && name.split('.').all(|label| {
             !label.is_empty()
                 && label.len() <= 63
@@ -560,6 +734,77 @@ mod tests {
         assert_eq!(
             DestinationRules::new([], [], ["192.0.2.1/24".into()], [], true),
             Err(RuleError::Malformed)
+        );
+        assert_eq!(TimeWindow::new(0, 0, 60), Err(RuleError::InvalidTimeWindow));
+        assert_eq!(
+            TimeWindow::new(1, 60, 60),
+            Err(RuleError::InvalidTimeWindow)
+        );
+    }
+
+    #[test]
+    fn time_windows_are_utc_bounded_and_deny_overrides() {
+        let policy = DestinationRules::new([], [], [], [], false)
+            .expect("base policy")
+            .with_time_windows(
+                [TimeWindow::new(1, 9 * 60, 17 * 60).expect("Monday window")],
+                [TimeWindow::new(1, 12 * 60, 13 * 60).expect("Monday lunch deny")],
+            )
+            .expect("time policy");
+        let destination = Destination {
+            host: Host::Dns("example.com".into()),
+            port: 443,
+        };
+        let monday_morning = UNIX_EPOCH + Duration::from_secs(4 * 86_400 + 10 * 3_600);
+        let monday_lunch = UNIX_EPOCH + Duration::from_secs(4 * 86_400 + 12 * 3_600);
+        let tuesday_morning = UNIX_EPOCH + Duration::from_secs(5 * 86_400 + 10 * 3_600);
+
+        assert!(
+            policy
+                .authorize_at(
+                    &context(),
+                    &destination,
+                    &["93.184.216.34".parse().unwrap()],
+                    monday_morning,
+                )
+                .is_ok()
+        );
+        assert_eq!(
+            policy.authorize_at(
+                &context(),
+                &destination,
+                &["93.184.216.34".parse().unwrap()],
+                monday_lunch,
+            ),
+            Err(PolicyError::ForbiddenTime)
+        );
+        assert_eq!(
+            policy.authorize_at(
+                &context(),
+                &destination,
+                &["93.184.216.34".parse().unwrap()],
+                tuesday_morning,
+            ),
+            Err(PolicyError::ForbiddenTime)
+        );
+    }
+
+    #[test]
+    fn approved_destination_retains_only_the_checked_addresses() {
+        let policy = DestinationRules::new([], [], [], [], false).expect("base policy");
+        let destination = Destination {
+            host: Host::Dns("example.com".into()),
+            port: 443,
+        };
+        let addresses = vec!["93.184.216.34".parse().unwrap()];
+        let approved = policy
+            .approve(&context(), &destination, &addresses)
+            .expect("approved destination");
+
+        assert_eq!(approved.destination, destination);
+        assert_eq!(
+            approved.socket_addresses.as_ref(),
+            &["93.184.216.34:443".parse().unwrap()]
         );
     }
 }

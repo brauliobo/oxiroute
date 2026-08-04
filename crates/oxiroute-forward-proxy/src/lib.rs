@@ -20,7 +20,7 @@ pub use decision::{
 pub use headers::{HeaderSanitizationError, sanitize_request_headers};
 pub use policy::{
     ApprovedDestination, DestinationPolicy, DestinationRules, ForbiddenDestinationPolicy,
-    PolicyContext, PolicyError, ResolveError, Resolver, RuleError,
+    PolicyContext, PolicyError, ResolveError, Resolver, RuleError, TimeWindow,
 };
 pub use target::{
     Destination, ForwardScheme, ForwardTarget, Host, TargetError, parse_absolute_form,
@@ -28,7 +28,7 @@ pub use target::{
 };
 pub use tunnel::{
     BoundedTunnel, H2TunnelStream, OverreadIo, TunnelConfigError, TunnelEnd, TunnelLimits,
-    TunnelOutcome, TunnelStats,
+    TunnelOutcome, TunnelOutcomeKind, TunnelStats,
 };
 
 /// ALPN identifier required by RFC 9114 HTTP/3 connections.

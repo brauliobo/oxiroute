@@ -28,18 +28,24 @@ explicitly rejected and is not used as a TCP CONNECT substitute.
 - Parsing accepts only HTTP(S) absolute-form forwarding targets and explicit `host:port` CONNECT
   targets. User information, invalid DNS labels, unbracketed IPv6, zero ports, and ports above 65535
   fail closed.
-- DNS runs through the injected `Resolver`. Policy evaluates the complete answer once, and
+- DNS runs through the injected `Resolver`. Policy evaluates every complete answer, and
   `ApprovedDestination` carries the exact socket addresses the connector must use. A runtime must
-  not resolve the hostname again after approval.
+  not connect to an address outside that approved set. The daemon's optional connect revalidation
+  evaluates the final answer through the same policy before replacing the approved set.
 - `ForbiddenDestinationPolicy` rejects localhost names, mixed public/private answers, and common
   non-public, special-use, mapped, NAT64, multicast, documentation, benchmark, and reserved IP
   ranges. Deployments can provide a stricter `DestinationPolicy`, including port or tenant rules.
 - `DestinationRules` implements the canonical public-by-default contract: empty allow lists admit
   public destinations, denies override, and nonempty domain/CIDR lists independently constrain the
-  requested DNS name and every address in the complete resolution result.
+  requested DNS name and every address in the complete resolution result. Bounded UTC time windows
+  can further constrain the destination; deny windows override allow windows.
 - `ProxyAuthenticator` receives a borrowed credential wrapper that has no `Debug` or `Display`.
   Decisions retain only `Principal`; proxy authorization headers are removed before forwarding.
   Secret storage and credential comparison belong to the injected implementation.
+- Canonical `mutual_tls` authentication is currently rejected during validation. The required
+  interface is a listener TLS client-CA verifier that publishes a verified peer-certificate
+  identity to the HTTP session; the current daemon forward listener does not expose that identity
+  boundary, so it never treats an unverified certificate or header as proxy authentication.
 - Sanitization removes `Connection`-nominated fields and standard hop-by-hop/proxy fields, then
   replaces `Host` with the normalized destination authority.
 - `OverreadIo` replays bytes consumed beyond H1 headers before touching the socket. This is required
@@ -48,8 +54,33 @@ explicitly rejected and is not used as a TCP CONNECT substitute.
   `relay` handles byte streams, `relay_h2` applies bounded DATA-frame relay to HTTP/2 streams, and
   `relay_h3` applies the same coordinator and accounting to H3 DATA frames, including FIN
   half-close and reset cancellation.
+  Tunnel outcomes have stable labels for EOF, byte limits, timeouts, I/O failure, and cancellation.
   The runtime remains responsible for connection concurrency, aggregate bandwidth, audit logging,
   shutdown, and mapping typed failures to safe HTTP responses.
+- With `audit_mode = "metadata"`, the daemon emits redacted JSON forward-access events containing
+  only normalized authority, method, protocol, outcome, status/reason, authentication state, and
+  client IP. The compiled plan also exposes saturating access-result counters; credentials and raw
+  request targets are never retained in either surface.
+
+## Canonical destination time grammar
+
+Forward destination rules use UTC and half-open `start`/`end` minute windows. `end` may be `24:00`;
+overnight windows must be split at midnight. A Lua example is:
+
+```lua
+destination_policy = {
+  allow_domains = { "example.com", "*.example.net" },
+  allow_times = {
+    { days = { "monday", "friday" }, start = "09:00", ["end"] = "17:00" },
+  },
+  deny_times = {
+    { days = { "monday" }, start = "12:00", ["end"] = "13:00" },
+  },
+}
+```
+
+Both time lists are bounded to 256 normalized ranges. Domains are ASCII exact names or one-label
+wildcards, and the resolved-address policy still applies to every address in the final answer.
 
 ## Pingora integration
 

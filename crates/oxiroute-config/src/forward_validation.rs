@@ -10,12 +10,12 @@ use crate::{
         MAX_FORWARD_CONNECTIONS, MAX_FORWARD_DOMAINS, MAX_FORWARD_HEADER_BYTES,
         MAX_FORWARD_NAMESERVERS, MAX_FORWARD_PROXY_SERVICES, MAX_FORWARD_RESOLVER_ADDRESSES,
         MAX_FORWARD_RESOLVER_CACHE_ENTRIES, MAX_FORWARD_RESOLVER_CONCURRENT_QUERIES,
-        MAX_FORWARD_TIMEOUT_MS,
+        MAX_FORWARD_TIME_RANGES, MAX_FORWARD_TIMEOUT_MS,
     },
     lexical::{is_valid_certificate_dns_name, validate_file_path},
     model::{
         ConfigError, ForwardAccessMatcher, ForwardHttpVersion, ForwardProxyAuth,
-        ForwardProxyService,
+        ForwardProxyService, ForwardTimeRange, ForwardWeekday,
     },
 };
 
@@ -86,6 +86,21 @@ fn validate_service(service: &mut ForwardProxyService) -> Result<(), ConfigError
                         format!("must be null or between 1 and {MAX_FORWARD_TIMEOUT_MS}"),
                     ));
                 }
+            }
+            ForwardProxyAuth::MutualTls {
+                client_ca_file_path,
+            } => {
+                validate_file_path(
+                    "forward proxy service",
+                    &service.name,
+                    "auth.client_ca_file_path",
+                    client_ca_file_path,
+                )?;
+                return Err(invalid(
+                    &service.name,
+                    "auth.type",
+                    "mutual_tls requires a listener TLS client-certificate verifier and is not available in the current runtime",
+                ));
             }
         }
     }
@@ -391,6 +406,16 @@ fn validate_destinations(service: &mut ForwardProxyService) -> Result<(), Config
         "destination_policy.deny_cidrs",
         &mut policy.deny_cidrs,
     )?;
+    validate_time_ranges(
+        &service.name,
+        "destination_policy.allow_times",
+        &mut policy.allow_times,
+    )?;
+    validate_time_ranges(
+        &service.name,
+        "destination_policy.deny_times",
+        &mut policy.deny_times,
+    )?;
 
     let allowed_domains = policy.allow_domains.iter().collect::<HashSet<_>>();
     if let Some(domain) = policy
@@ -416,6 +441,17 @@ fn validate_destinations(service: &mut ForwardProxyService) -> Result<(), Config
             format!("CIDR `{cidr}` appears in both allow and deny lists"),
         ));
     }
+    if let Some(range) = policy
+        .deny_times
+        .iter()
+        .find(|range| policy.allow_times.contains(range))
+    {
+        return Err(invalid(
+            &service.name,
+            "destination_policy",
+            format!("time range `{range:?}` appears in both allow and deny lists"),
+        ));
+    }
     Ok(())
 }
 
@@ -434,7 +470,7 @@ fn validate_domains(
     let mut unique = HashSet::with_capacity(domains.len());
     for domain in domains {
         domain.make_ascii_lowercase();
-        if !is_valid_certificate_dns_name(domain) {
+        if !is_valid_certificate_dns_name(domain) || domain.parse::<IpAddr>().is_ok() {
             return Err(invalid(
                 service,
                 field,
@@ -450,6 +486,89 @@ fn validate_domains(
         }
     }
     Ok(())
+}
+
+fn validate_time_ranges(
+    service: &str,
+    field: &'static str,
+    ranges: &mut [ForwardTimeRange],
+) -> Result<(), ConfigError> {
+    if ranges.len() > MAX_FORWARD_TIME_RANGES {
+        return Err(invalid(
+            service,
+            field,
+            format!("must contain at most {MAX_FORWARD_TIME_RANGES} time ranges"),
+        ));
+    }
+    let mut unique = HashSet::with_capacity(ranges.len());
+    for range in ranges {
+        if range.days.is_empty() || range.days.len() > 7 {
+            return Err(invalid(
+                service,
+                field,
+                "days must contain 1..=7 unique weekdays",
+            ));
+        }
+        range.days.sort_by_key(|day| weekday_order(*day));
+        if range.days.windows(2).any(|days| days[0] == days[1]) {
+            return Err(invalid(service, field, "days must contain unique weekdays"));
+        }
+        let start = parse_time(&range.start).ok_or_else(|| {
+            invalid(
+                service,
+                field,
+                "start must use canonical UTC HH:MM between 00:00 and 23:59",
+            )
+        })?;
+        let end = parse_time(&range.end).ok_or_else(|| {
+            invalid(
+                service,
+                field,
+                "end must use canonical UTC HH:MM between 00:01 and 24:00",
+            )
+        })?;
+        if start >= end || end > 24 * 60 {
+            return Err(invalid(
+                service,
+                field,
+                "time ranges must have start before end and end at or before 24:00",
+            ));
+        }
+        range.start = format_time(start);
+        range.end = format_time(end);
+        if !unique.insert((range.days.clone(), start, end)) {
+            return Err(invalid(service, field, "time ranges must be unique"));
+        }
+    }
+    Ok(())
+}
+
+fn parse_time(value: &str) -> Option<u16> {
+    if value.len() != 5 || !value.is_ascii() || value.as_bytes().get(2) != Some(&b':') {
+        return None;
+    }
+    let hour = value[..2].parse::<u16>().ok()?;
+    let minute = value[3..].parse::<u16>().ok()?;
+    if hour > 24 || minute > 59 || (hour == 24 && minute != 0) {
+        return None;
+    }
+    Some(hour * 60 + minute)
+}
+
+fn format_time(value: u16) -> String {
+    format!("{:02}:{:02}", value / 60, value % 60)
+}
+
+const fn weekday_order(day: ForwardWeekday) -> u8 {
+    match day {
+        ForwardWeekday::Monday => 0,
+        ForwardWeekday::Tuesday => 1,
+        ForwardWeekday::Wednesday => 2,
+        ForwardWeekday::Thursday => 3,
+        ForwardWeekday::Friday => 4,
+        ForwardWeekday::Saturday => 5,
+        ForwardWeekday::Sunday => 6,
+    }
 }
 
 fn validate_cidrs(
