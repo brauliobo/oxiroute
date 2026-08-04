@@ -271,6 +271,24 @@ impl DiskCache {
             .map_err(Into::into)
     }
 
+    /// Validates an upstream response with the memory cache's policy and a canonical timeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after shutdown or when the response is not safe or bounded.
+    pub fn prepare_with_timeline(
+        &self,
+        request: RequestKeyInput<'_>,
+        response: crate::CacheResponse<'_>,
+        timeline: &crate::CacheTimeline,
+    ) -> Result<PreparedEntry, DiskCacheError> {
+        self.ensure_open()?;
+        self.shared
+            .cache
+            .prepare_with_timeline(request, response, timeline)
+            .map_err(Into::into)
+    }
+
     /// Prepares a replacement by applying 304 metadata to the resident representation.
     ///
     /// # Errors
@@ -287,6 +305,27 @@ impl DiskCache {
         self.shared
             .cache
             .prepare_not_modified(request, key, not_modified, timing)
+            .map_err(Into::into)
+    }
+
+    /// Prepares a persistent replacement by applying 304 metadata to the resident representation
+    /// using the same canonical timeline as the original response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after shutdown or for an invalid or missing representation.
+    pub fn prepare_not_modified_with_timeline(
+        &self,
+        request: RequestKeyInput<'_>,
+        key: &CacheKey,
+        not_modified: &HeaderMap,
+        timing: ResponseTiming,
+        timeline: &crate::CacheTimeline,
+    ) -> Result<PreparedEntry, DiskCacheError> {
+        self.ensure_open()?;
+        self.shared
+            .cache
+            .prepare_not_modified_with_timeline(request, key, not_modified, timing, timeline)
             .map_err(Into::into)
     }
 
@@ -308,6 +347,8 @@ impl DiskCache {
         };
         if let Some(key) = key {
             self.shared.touch(&mut state, &key)?;
+        } else if let Lookup::Miss { base, .. } = &result {
+            self.shared.reconcile_base(&mut state, base)?;
         }
         Ok(result)
     }
@@ -362,6 +403,35 @@ impl DiskCache {
             self.shared.sync_root()?;
         }
         Ok(self.shared.cache.purge_exact(key))
+    }
+
+    /// Durably removes every representation for one bounded request key before cancelling its fill.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after shutdown or if identity-checked removal or directory sync fails.
+    pub fn purge_base(&self, base: &BaseKey) -> Result<PurgeResult, DiskCacheError> {
+        self.ensure_open()?;
+        let mut state = self.shared.lock();
+        self.ensure_open()?;
+        let keys = state
+            .records
+            .keys()
+            .filter(|key| key.base() == base)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut removed = 0usize;
+        for key in &keys {
+            if let Some(record) = state.records.get(key).cloned() {
+                self.shared.remove_record(&record)?;
+                state.remove(key);
+                removed += 1;
+            }
+        }
+        if removed != 0 {
+            self.shared.sync_root()?;
+        }
+        Ok(self.shared.cache.purge_base(base))
     }
 
     /// Durably removes all representations in the recovered tag index.
@@ -568,6 +638,25 @@ impl Shared {
         state.remove(key);
         let new = self.publish(&encoded, sequence, sequence, &entry.tags)?;
         state.insert(key.clone(), new);
+        Ok(())
+    }
+
+    fn reconcile_base(&self, state: &mut State, base: &BaseKey) -> Result<(), DiskCacheError> {
+        let keys = state
+            .records
+            .keys()
+            .filter(|key| key.base() == base && self.cache.entry(key).is_none())
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in &keys {
+            if let Some(record) = state.records.get(key).cloned() {
+                self.remove_record(&record)?;
+                state.remove(key);
+            }
+        }
+        if !keys.is_empty() {
+            self.sync_root()?;
+        }
         Ok(())
     }
 

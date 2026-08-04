@@ -47,6 +47,7 @@ pub(crate) fn validate_cache_stores(
     }
 
     let mut names = HashSet::with_capacity(stores.len());
+    let mut disk_roots = HashSet::new();
     let mut bounds = HashMap::with_capacity(stores.len());
     for store in stores {
         let name = store.name().to_owned();
@@ -58,6 +59,15 @@ pub(crate) fn validate_cache_stores(
             });
         }
         let limits = cache_store_limits(store, &name)?;
+        if let CacheStore::Disk { root_directory, .. } = store {
+            if !disk_roots.insert(root_directory.clone()) {
+                return Err(invalid_store(
+                    &name,
+                    "root_directory",
+                    "must be unique across disk stores",
+                ));
+            }
+        }
         validate_cache_store_limits(&name, limits)?;
         bounds.insert(
             name,

@@ -963,11 +963,15 @@ fn vary_variants_and_bounded_surrogate_purge_are_exact() {
             .purge_tag(b"page")
             .expect("in-flight purge")
             .fills_cancelled,
-        1
+        0
     );
     assert_eq!(
         leader.store(candidate).expect("obsolete fill"),
-        StoreOutcome::GenerationLost
+        StoreOutcome::Stored { evicted: 0 }
+    );
+    assert_eq!(
+        cache.purge_tag(b"page").expect("stored tag purge").entries,
+        1
     );
 }
 

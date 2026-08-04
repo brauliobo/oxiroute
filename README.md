@@ -170,9 +170,11 @@ Use these labels consistently in issues, docs, and deployment decisions:
 
 The important current exclusions are:
 
-- No HTTP/3 daemon listener, UDP relay, or complete forward-proxy HTTP/2/HTTP/3 runtime. The
-  forward HTTP/2/HTTP/3 crates are foundations, not active listener capabilities.
-- No active cache request path; the cache crate is a tested foundation only.
+- No reverse HTTP/3 listener, UDP relay, or complete forward-proxy HTTP/2 runtime. The
+  `forward_http3` listener is an active partial capability through a separate bounded Quinn/H3
+  service; the forward HTTP/2 crate remains a foundation.
+- Reverse HTTP cache is partial: bounded memory and persistent GET/HEAD caching, revalidation,
+  conditional hits, collapsed fills, and authenticated purge are active; broader conformance remains.
 - Managed ACME is partial: HTTP-01 issuance/renewal, certificate status, and configuration UI are
   implemented; certificate upload and DNS-01/TLS-ALPN-01 remain absent. External Certbot lineage
   reconciliation is also implemented.
@@ -196,7 +198,7 @@ See [COMPATIBILITY.md](docs/COMPATIBILITY.md) for the capability-by-capability m
 | `crates/oxiroute-import` | nginx, HAProxy, Squid, Varnish, provenance, diagnostics, and lowering |
 | `crates/oxiroute-forward-proxy` | Protocol-neutral target parsing, authentication, destination policy, and bounded tunnels |
 | `crates/oxiroute-rtmp` | RTMP sessions, fanout, recorder store/workers, FLV, directives, and relays |
-| `crates/oxiroute-cache` | Standalone RFC-aware cache core; not connected to the request path |
+| `crates/oxiroute-cache` | Bounded RFC-aware memory and persistent cache core used by the reverse HTTP request path |
 | `crates/oxiroute-supervision*` | Replacement protocol, Unix transport, master, worker, and launcher foundations |
 | `ui` | Vue 3 dashboard with build-time Pug templates and contract/component tests |
 | `website` | Static public documentation site deployed by GitHub Pages |

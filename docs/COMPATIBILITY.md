@@ -139,9 +139,9 @@ Until that registry and behavior suite exist, no complete parity claim is valid.
 | Basic proxy authentication | partial | Secure bounded bcrypt/APR1 htpasswd verification, bounded TTL caching of salted validated-credential digests with fail-closed helper-file reload on misses, Squid-compatible client username normalization, and `basic_ncsa_auth` lowering are integrated; mTLS and broader helper protocols remain absent. |
 | Digest/Negotiate/NTLM and helpers | research | Helper protocol and connection-affinity semantics. |
 | External ACL and URL rewrite helpers | research | Isolated helper lifecycle and concurrency. |
-| Memory cache | foundation | A bounded RFC-aware core exists, including cache-bound prepared-entry ownership, but active route policies fail startup until exact server integration planned for M4 lands. |
-| Persistent disk cache | foundation | A descriptor-safe persistent core exists and rejects foreign prepared entries before disk admission, but active route policies fail startup; async request-path integration planned for M4 and storage coordination remain. |
-| Revalidation/range/collapsed forwarding | planned M4 | HTTP cache conformance. |
+| Memory cache | partial | Reverse HTTP GET/HEAD admission, collapsed forwarding, origin revalidation, conditional validators, bounded eviction, and cache-bound prepared-entry ownership are active; broader HTTP cache conformance remains. |
+| Persistent disk cache | partial | Descriptor-safe recovery, quota, eviction, exclusive-root ownership, async bounded request-path I/O, restart reuse, and foreign-entry rejection are active; cross-process coordination remains intentionally exclusive. |
+| Revalidation/range/collapsed forwarding | partial | Revalidation, conditional hits, and collapsed forwarding are active; range and unsafe conditional requests bypass cache reuse rather than being approximated. |
 | Delay pools | research | Hierarchical bandwidth accounting and compatibility tests. |
 | ICAP/eCAP adaptation | research | Separate adaptation protocol/plugin architecture. |
 | Parent/sibling cache peers | research | Selection, failure, direct/never-direct policies. |
