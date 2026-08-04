@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     io,
     sync::{Arc, Mutex, TryLockError},
     time::{SystemTime, UNIX_EPOCH},
@@ -18,7 +19,9 @@ use oxiroute_acme::{
 use oxiroute_config::{AcmeKeyType, SelfSignedKeyType};
 use serde::{Deserialize, Serialize};
 
-use super::{ActiveCertificateGeneration, CertificateGeneration, TlsBuildError};
+use super::{
+    ActiveCertificateGeneration, CertificateGeneration, MAX_CERTIFICATE_CHAIN_BYTES, TlsBuildError,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AcmeManagedOutcome {
@@ -616,11 +619,15 @@ impl AcmeManagedReconciler {
         csr: &oxiroute_acme::LeafCsr,
         certificate_pem: &[u8],
     ) -> Result<(CertificateMaterial, CertificateGeneration), AcmeManagedError> {
+        if certificate_pem.len() > MAX_CERTIFICATE_CHAIN_BYTES {
+            return Err(AcmeManagedError::CertificateMalformed);
+        }
         let certificates = X509::stack_from_pem(certificate_pem)
             .map_err(|_| AcmeManagedError::CertificateMalformed)?;
         if certificates.len() < 2 {
             return Err(AcmeManagedError::CertificateMalformed);
         }
+        validate_exact_dns_sans(&certificates[0], &self.declared_dns_names)?;
         let mut fullchain_pem = Vec::new();
         let mut chain_pem = Vec::new();
         for (index, certificate) in certificates.iter().enumerate() {
@@ -635,6 +642,10 @@ impl AcmeManagedReconciler {
         let certificate_pem = certificates[0]
             .to_pem()
             .map_err(|_| AcmeManagedError::CertificateMalformed)?;
+        let serial = certificates[0]
+            .serial_number()
+            .to_bn()
+            .map_err(|_| AcmeManagedError::CertificateMalformed)?;
         let mut material = CertificateMaterial {
             certificate_pem,
             chain_pem,
@@ -646,8 +657,10 @@ impl AcmeManagedReconciler {
                 created_at_unix_seconds: unix_now(),
                 not_before_unix_seconds: asn1_unix(certificates[0].not_before()),
                 not_after_unix_seconds: asn1_unix(certificates[0].not_after()),
-                issuer: None,
-                serial_fingerprint: None,
+                issuer: Some(certificates[0].issuer_name().to_string()),
+                serial_fingerprint: Some(crate::encoding::lower_hex(&openssl::sha::sha256(
+                    &serial.to_vec(),
+                ))),
                 key_type: Some(
                     match self.policy.key_type {
                         AcmeKeyType::EcdsaP256 => "ecdsa_p256",
@@ -790,6 +803,32 @@ fn asn1_unix(value: &Asn1TimeRef) -> Option<u64> {
         .checked_add(u64::try_from(difference.secs).ok()?)
 }
 
+fn validate_exact_dns_sans(
+    certificate: &X509,
+    declared_dns_names: &[String],
+) -> Result<(), AcmeManagedError> {
+    let expected = declared_dns_names
+        .iter()
+        .map(|name| name.to_ascii_lowercase())
+        .collect::<BTreeSet<_>>();
+    let Some(sans) = certificate.subject_alt_names() else {
+        return Err(AcmeManagedError::CertificateMalformed);
+    };
+    let mut actual = BTreeSet::new();
+    for san in sans {
+        let Some(dns_name) = san.dnsname() else {
+            return Err(AcmeManagedError::CertificateMalformed);
+        };
+        if !actual.insert(dns_name.to_ascii_lowercase()) {
+            return Err(AcmeManagedError::CertificateMalformed);
+        }
+    }
+    if actual != expected {
+        return Err(AcmeManagedError::CertificateMalformed);
+    }
+    Ok(())
+}
+
 impl std::fmt::Debug for AcmeManagedReconciler {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -801,5 +840,289 @@ impl std::fmt::Debug for AcmeManagedReconciler {
                 &self.active.snapshot().metadata().revision,
             )
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Mutex},
+    };
+
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use openssl::{
+        asn1::Asn1Time,
+        bn::{BigNum, MsbOption},
+        ec::{EcGroup, EcKey},
+        hash::MessageDigest,
+        nid::Nid,
+        pkey::{PKey, Private},
+        req::X509Req,
+        x509::{
+            X509, X509NameBuilder,
+            extension::{BasicConstraints, ExtendedKeyUsage, KeyUsage, SubjectAlternativeName},
+        },
+    };
+    use oxiroute_acme::{
+        AcmeTransport, ChallengeStore, HttpRequest, HttpResponse, RevisionStore, StateStore,
+        TransportError,
+    };
+    use oxiroute_config::{AcmeKeyType, SelfSignedKeyType};
+    use serde_json::Value;
+    use tempfile::TempDir;
+
+    use super::*;
+
+    struct TestCa {
+        certificate: X509,
+        key: PKey<Private>,
+    }
+
+    #[derive(Clone)]
+    struct FakePebbleTransport {
+        responses: Arc<Mutex<VecDeque<HttpResponse>>>,
+        requests: Arc<Mutex<Vec<String>>>,
+        ca: Arc<TestCa>,
+        certificate: Arc<Mutex<Option<Vec<u8>>>>,
+    }
+
+    impl AcmeTransport for FakePebbleTransport {
+        fn request(&self, request: HttpRequest) -> Result<HttpResponse, TransportError> {
+            self.requests
+                .lock()
+                .expect("request log")
+                .push(request.url.clone());
+            if request.url.ends_with("/finalize") {
+                let envelope: Value =
+                    serde_json::from_slice(&request.body).map_err(|_| TransportError)?;
+                let payload = envelope
+                    .get("payload")
+                    .and_then(Value::as_str)
+                    .ok_or(TransportError)?;
+                let payload = URL_SAFE_NO_PAD
+                    .decode(payload)
+                    .map_err(|_| TransportError)?;
+                let payload: Value =
+                    serde_json::from_slice(&payload).map_err(|_| TransportError)?;
+                let csr = payload
+                    .get("csr")
+                    .and_then(Value::as_str)
+                    .ok_or(TransportError)?;
+                let csr = URL_SAFE_NO_PAD.decode(csr).map_err(|_| TransportError)?;
+                let csr = X509Req::from_der(&csr).map_err(|_| TransportError)?;
+                let certificate = issue_certificate(&csr, &self.ca).map_err(|_| TransportError)?;
+                *self.certificate.lock().expect("certificate") = Some(certificate);
+            }
+            if request.url.ends_with("/certificate/1") {
+                let body = self
+                    .certificate
+                    .lock()
+                    .expect("certificate")
+                    .clone()
+                    .ok_or(TransportError)?;
+                return Ok(HttpResponse::new(200, request.url, body));
+            }
+            self.responses
+                .lock()
+                .expect("responses")
+                .pop_front()
+                .ok_or(TransportError)
+        }
+    }
+
+    #[test]
+    fn local_fake_pebble_issues_validates_and_publishes_managed_certificate() {
+        let temp = TempDir::new().expect("state directory");
+        let state = Arc::new(StateStore::open(temp.path().join("state")).expect("state"));
+        let revisions = RevisionStore::from_arc(Arc::clone(&state));
+        let names = vec!["proxy.example.test".to_owned()];
+        let bootstrap = CertificateGeneration::self_signed_development(
+            "managed",
+            &names,
+            1,
+            SelfSignedKeyType::EcdsaP256,
+        )
+        .expect("bootstrap");
+        let active = Arc::new(ActiveCertificateGeneration::new(Arc::new(bootstrap)));
+        let reconciler = AcmeManagedReconciler::new(
+            "managed",
+            names,
+            AcmeManagedPolicy {
+                directory_url: "https://acme.test/directory".into(),
+                contacts: vec!["mailto:ops@example.test".into()],
+                terms_agreed: true,
+                key_type: AcmeKeyType::EcdsaP256,
+                allowed_dns_suffixes: vec!["example.test".into()],
+            },
+            revisions.clone(),
+            "bootstrap".into(),
+            None,
+            None,
+            true,
+            ChallengeStore::default(),
+            Arc::clone(&active),
+        );
+        let transport = FakePebbleTransport {
+            responses: Arc::new(Mutex::new(VecDeque::from([
+                directory_response(),
+                nonce_response("nonce-account"),
+                account_response(),
+                order_response("pending"),
+                authorization_response("pending"),
+                challenge_response(),
+                authorization_response("valid"),
+                order_response("processing"),
+                order_response("valid"),
+            ]))),
+            requests: Arc::new(Mutex::new(Vec::new())),
+            ca: Arc::new(test_ca().expect("CA")),
+            certificate: Arc::new(Mutex::new(None)),
+        };
+        let requests = Arc::clone(&transport.requests);
+        let outcome = reconciler
+            .renew_with_transport(transport)
+            .expect("managed issuance");
+        assert_eq!(outcome, AcmeManagedOutcome::Activated);
+        assert_ne!(reconciler.status().active_revision, "bootstrap");
+        let material = revisions
+            .load_current("managed")
+            .expect("published revision");
+        assert!(material.metadata.issuer.is_some());
+        assert!(material.metadata.serial_fingerprint.is_some());
+        assert!(reconciler.challenge_store.is_empty());
+        assert!(
+            requests
+                .lock()
+                .expect("request log")
+                .iter()
+                .all(|url| url.starts_with("https://acme.test/"))
+        );
+    }
+
+    fn directory_response() -> HttpResponse {
+        HttpResponse::new(
+            200,
+            "https://acme.test/directory",
+            br#"{"newNonce":"https://acme.test/acme/new-nonce","newAccount":"https://acme.test/acme/new-account","newOrder":"https://acme.test/acme/new-order","meta":{"termsOfService":"https://acme.test/terms"}}"#.to_vec(),
+        )
+    }
+
+    fn nonce_response(nonce: &str) -> HttpResponse {
+        HttpResponse::new(204, "https://acme.test/acme/new-nonce", Vec::new())
+            .with_header("replay-nonce", nonce)
+    }
+
+    fn account_response() -> HttpResponse {
+        HttpResponse::new(
+            201,
+            "https://acme.test/acme/new-account",
+            br#"{"status":"valid","contact":["mailto:ops@example.test"],"termsOfServiceAgreed":true}"#.to_vec(),
+        )
+        .with_header("location", "https://acme.test/acme/acct/1")
+        .with_header("replay-nonce", "nonce-account-response")
+    }
+
+    fn order_response(status: &str) -> HttpResponse {
+        let body = format!(
+            "{{\"status\":\"{status}\",\"identifiers\":[{{\"type\":\"dns\",\"value\":\"proxy.example.test\"}}],\"authorizations\":[\"https://acme.test/acme/authz/1\"],\"finalize\":\"https://acme.test/acme/order/1/finalize\"{}}}",
+            if status == "valid" {
+                ",\"certificate\":\"https://acme.test/acme/certificate/1\""
+            } else {
+                ""
+            }
+        );
+        HttpResponse::new(
+            if status == "pending" { 201 } else { 200 },
+            "https://acme.test/acme/order/1",
+            body.into_bytes(),
+        )
+        .with_header("replay-nonce", "nonce-order-response")
+    }
+
+    fn authorization_response(status: &str) -> HttpResponse {
+        let challenges = if status == "valid" {
+            "[]".to_owned()
+        } else {
+            r#"[{"type":"http-01","url":"https://acme.test/acme/challenge/1","token":"token-1"}]"#
+                .into()
+        };
+        let body = format!(
+            "{{\"status\":\"{status}\",\"identifier\":{{\"type\":\"dns\",\"value\":\"proxy.example.test\"}},\"challenges\":{challenges}}}"
+        );
+        HttpResponse::new(200, "https://acme.test/acme/authz/1", body.into_bytes())
+            .with_header("replay-nonce", "nonce-authz-response")
+    }
+
+    fn challenge_response() -> HttpResponse {
+        HttpResponse::new(
+            200,
+            "https://acme.test/acme/challenge/1",
+            br#"{"status":"processing"}"#.to_vec(),
+        )
+        .with_header("replay-nonce", "nonce-challenge-response")
+    }
+
+    fn test_ca() -> Result<TestCa, openssl::error::ErrorStack> {
+        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1)?;
+        let key = PKey::from_ec_key(EcKey::generate(&group)?)?;
+        let mut subject = X509NameBuilder::new()?;
+        subject.append_entry_by_text("commonName", "Fake Pebble Root")?;
+        let subject = subject.build();
+        let mut serial = BigNum::new()?;
+        serial.rand(64, MsbOption::ONE, false)?;
+        let serial = serial.to_asn1_integer()?;
+        let mut builder = X509::builder()?;
+        builder.set_version(2)?;
+        builder.set_serial_number(&serial)?;
+        builder.set_subject_name(&subject)?;
+        builder.set_issuer_name(&subject)?;
+        builder.set_pubkey(&key)?;
+        builder.set_not_before(Asn1Time::days_from_now(0)?.as_ref())?;
+        builder.set_not_after(Asn1Time::days_from_now(30)?.as_ref())?;
+        builder.append_extension(BasicConstraints::new().critical().ca().build()?)?;
+        builder.append_extension(
+            KeyUsage::new()
+                .critical()
+                .key_cert_sign()
+                .crl_sign()
+                .build()?,
+        )?;
+        builder.sign(&key, MessageDigest::sha256())?;
+        Ok(TestCa {
+            certificate: builder.build(),
+            key,
+        })
+    }
+
+    fn issue_certificate(
+        csr: &X509Req,
+        ca: &TestCa,
+    ) -> Result<Vec<u8>, openssl::error::ErrorStack> {
+        let public_key = csr.public_key()?;
+        let mut serial = BigNum::new()?;
+        serial.rand(64, MsbOption::ONE, false)?;
+        let serial = serial.to_asn1_integer()?;
+        let mut builder = X509::builder()?;
+        builder.set_version(2)?;
+        builder.set_serial_number(&serial)?;
+        builder.set_subject_name(csr.subject_name())?;
+        builder.set_issuer_name(ca.certificate.subject_name())?;
+        builder.set_pubkey(&public_key)?;
+        builder.set_not_before(Asn1Time::days_from_now(0)?.as_ref())?;
+        builder.set_not_after(Asn1Time::days_from_now(30)?.as_ref())?;
+        let context = builder.x509v3_context(Some(&ca.certificate), None);
+        builder.append_extension(
+            SubjectAlternativeName::new()
+                .dns("proxy.example.test")
+                .build(&context)?,
+        )?;
+        builder.append_extension(KeyUsage::new().critical().digital_signature().build()?)?;
+        builder.append_extension(ExtendedKeyUsage::new().server_auth().build()?)?;
+        builder.sign(&ca.key, MessageDigest::sha256())?;
+        let leaf = builder.build();
+        let mut chain = leaf.to_pem()?;
+        chain.extend_from_slice(&ca.certificate.to_pem()?);
+        Ok(chain)
     }
 }
