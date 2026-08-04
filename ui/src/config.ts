@@ -60,7 +60,18 @@ export interface CertbotCertificateSource {
   archive_directory_path: string
 }
 
-export type CertificateSource = DirectCertificateSource | CertbotCertificateSource
+export type SelfSignedKeyType = 'ecdsa_p256' | 'rsa_2048'
+
+export interface SelfSignedDevelopmentCertificateSource {
+  type: 'self_signed_development'
+  validity_days: number
+  key_type: SelfSignedKeyType
+}
+
+export type CertificateSource =
+  | DirectCertificateSource
+  | CertbotCertificateSource
+  | SelfSignedDevelopmentCertificateSource
 
 export interface CertificateConfig {
   name: string
@@ -711,7 +722,9 @@ function isCertificate(value: unknown): value is CertificateConfig {
     isRecord(value.source) && (value.source.type === 'files'
       ? typeof value.source.certificate_chain_path === 'string' && typeof value.source.private_key_path === 'string'
       : value.source.type === 'certbot' && typeof value.source.live_directory_path === 'string' &&
-        typeof value.source.archive_directory_path === 'string')
+        typeof value.source.archive_directory_path === 'string'
+      || value.source.type === 'self_signed_development' && safeInteger(value.source.validity_days) &&
+        ['ecdsa_p256', 'rsa_2048'].includes(String(value.source.key_type)))
 }
 
 function isTlsProfile(value: unknown): value is TlsProfileConfig {
@@ -1115,6 +1128,8 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'certificates[].source.private_key_path', kind: 'string' },
   { path: 'certificates[].source.live_directory_path', kind: 'string' },
   { path: 'certificates[].source.archive_directory_path', kind: 'string' },
+  { path: 'certificates[].source.validity_days', kind: 'integer' },
+  { path: 'certificates[].source.key_type', kind: 'enum' },
   { path: 'tls_profiles', kind: 'collection' },
   { path: 'tls_profiles[].name', kind: 'string' },
   { path: 'tls_profiles[].certificates', kind: 'string_list' },

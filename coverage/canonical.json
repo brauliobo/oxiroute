@@ -176,6 +176,26 @@
       "required_tests": ["decode", "validate", "failure", "security", "reload"]
     },
     {
+      "id": "canonical.certificates.source.self-signed.validity-days",
+      "kind": "field",
+      "path": "certificates[].source<self_signed_development>.validity_days",
+      "editability": "operator",
+      "normalization": ["default to 7 days"],
+      "validation": ["integer from 1 through 30"],
+      "runtime": { "target": "tls.identity", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "interop"]
+    },
+    {
+      "id": "canonical.certificates.source.self-signed.key-type",
+      "kind": "field",
+      "path": "certificates[].source<self_signed_development>.key_type",
+      "editability": "operator",
+      "normalization": ["default to ecdsa_p256"],
+      "validation": ["closed self-signed key type"],
+      "runtime": { "target": "tls.identity", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "interop"]
+    },
+    {
       "id": "canonical.config.tls-profiles",
       "kind": "field",
       "path": "tls_profiles[]",
@@ -1149,6 +1169,46 @@
       "required_tests": ["decode", "validate", "failure", "security", "reload"]
     },
     {
+      "id": "canonical.enum.certificate-source.self-signed-development",
+      "kind": "variant",
+      "path": "CertificateSource::SelfSignedDevelopment",
+      "editability": "operator",
+      "normalization": ["type token self_signed_development"],
+      "validation": ["validity and key type fields only"],
+      "runtime": { "target": "tls.identity", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "render", "interop"]
+    },
+    {
+      "id": "canonical.enum.self-signed-key-type",
+      "kind": "enum",
+      "path": "SelfSignedKeyType",
+      "editability": "fixed",
+      "normalization": ["snake_case serde token"],
+      "validation": ["closed self-signed key type set"],
+      "runtime": { "target": "schema", "disposition": "classified" },
+      "required_tests": ["decode", "validate", "failure", "render"]
+    },
+    {
+      "id": "canonical.enum.self-signed-key-type.ecdsa-p256",
+      "kind": "variant",
+      "path": "SelfSignedKeyType::EcdsaP256",
+      "editability": "operator",
+      "normalization": ["token ecdsa_p256"],
+      "validation": ["supported development certificate key type"],
+      "runtime": { "target": "tls.identity", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "render", "interop"]
+    },
+    {
+      "id": "canonical.enum.self-signed-key-type.rsa-2048",
+      "kind": "variant",
+      "path": "SelfSignedKeyType::Rsa2048",
+      "editability": "operator",
+      "normalization": ["token rsa_2048"],
+      "validation": ["supported development certificate key type"],
+      "runtime": { "target": "tls.identity", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "render", "interop"]
+    },
+    {
       "id": "canonical.enum.tls-version",
       "kind": "enum",
       "path": "TlsVersion",
@@ -1421,6 +1481,26 @@
       "validation": ["accepted upstream selection algorithm"],
       "runtime": { "target": "upstream.pool", "disposition": "lowered" },
       "required_tests": ["decode", "validate", "integration"]
+    },
+    {
+      "id": "canonical.enum.upstream-algorithm.weighted-round-robin",
+      "kind": "variant",
+      "path": "UpstreamAlgorithm::WeightedRoundRobin",
+      "editability": "operator",
+      "normalization": ["type token weighted_round_robin"],
+      "validation": ["one weight per server", "each weight from 1 through 100"],
+      "runtime": { "target": "upstream.pool", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.algorithm.weighted-weights",
+      "kind": "field",
+      "path": "upstream_pools[].algorithm<weighted_round_robin>.weights[]",
+      "editability": "operator",
+      "normalization": ["preserve server order"],
+      "validation": ["one through 100 per server", "exactly one weight per server"],
+      "runtime": { "target": "upstream.pool", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "integration", "observability"]
     },
     {
       "id": "canonical.enum.upstream-algorithm.least-connections",

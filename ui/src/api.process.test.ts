@@ -109,6 +109,9 @@ describe('production API client against the built management process', () => {
       activeConnections: 0,
       bytesReceived: '0',
       bytesSent: '0',
+      httpOperations: null,
+      tcpRelays: null,
+      cache: null,
     }])
     expect(monitoring.upstreamPools).toEqual([])
     expect(monitoring.certbotCertificates).toEqual([])
