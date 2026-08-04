@@ -111,6 +111,11 @@ impl UdpRuntime {
     /// # Errors
     ///
     /// Returns an error when the listener thread panicked.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the listener thread handle was already consumed, which violates the runtime
+    /// ownership invariant.
     pub fn join(mut self) -> io::Result<()> {
         self.thread
             .take()
@@ -148,7 +153,7 @@ fn run(
         };
         metrics.mark_listening();
         if ready.send(Ok(())).is_err() {
-            return Err(io::Error::other("UDP startup receiver was dropped").into());
+            return Err(io::Error::other("UDP startup receiver was dropped"));
         }
         match serve(
             listener_name,
@@ -251,6 +256,7 @@ struct SessionEntry {
 
 type SessionTable = Arc<Mutex<HashMap<std::net::SocketAddr, SessionEntry>>>;
 
+#[allow(clippy::too_many_lines)]
 async fn serve(
     listener_name: &str,
     socket: UdpSocket,
@@ -325,7 +331,7 @@ async fn serve(
                         continue;
                     }
                 };
-                let (queue, receiver) = DatagramQueue::new(policy)?;
+                let (queue, queue_receiver) = DatagramQueue::new(policy)?;
                 let id = next_id.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
                 let entry = SessionEntry {
                     id,
@@ -344,7 +350,7 @@ async fn serve(
                         socket_for_task,
                         client,
                         payload,
-                        receiver,
+                        queue_receiver,
                         service_for_task,
                         generation_for_task,
                         listener_connection,
@@ -409,7 +415,7 @@ async fn run_session(
     listener: Arc<UdpSocket>,
     client: std::net::SocketAddr,
     initial: Vec<u8>,
-    mut receiver: mpsc::Receiver<QueuedDatagram>,
+    mut queue_receiver: mpsc::Receiver<QueuedDatagram>,
     service: Arc<L4ServicePlan>,
     _generation: Arc<RuntimeGeneration>,
     connection: ConnectionGuard,
@@ -459,16 +465,16 @@ async fn run_session(
     loop {
         tokio::select! {
             _ = shutdown.changed() => return Err(SessionEnd::Cancelled),
-            _ = wait_for_sleep(&mut idle) => return Err(SessionEnd::IdleTimeout),
-            _ = &mut lifetime => return Err(SessionEnd::LifetimeTimeout),
-            queued = receiver.recv() => {
+            () = wait_for_sleep(&mut idle) => return Err(SessionEnd::IdleTimeout),
+            () = &mut lifetime => return Err(SessionEnd::LifetimeTimeout),
+            queued = queue_receiver.recv() => {
                 let Some(queued) = queued else { return Ok(()) };
                 account_received(&connection, &mut session_bytes, queued.payload.len(), policy)?;
                 upstream.send(&queued.payload).await.map_err(SessionEnd::Io)?;
                 reset_sleep(&mut idle, relay_policy.idle);
             }
-            received = upstream.recv(&mut upstream_buffer) => {
-                let length = received.map_err(SessionEnd::Io)?;
+            upstream_result = upstream.recv(&mut upstream_buffer) => {
+                let length = upstream_result.map_err(SessionEnd::Io)?;
                 if length > usize::try_from(policy.max_datagram_bytes).unwrap_or(65_507) {
                     return Err(SessionEnd::Io(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -742,7 +748,7 @@ mod tests {
                 algorithm: UpstreamAlgorithm::RoundRobin,
                 health_check: None,
                 tls: None,
-                http_versions: Default::default(),
+                http_versions: oxiroute_config::HttpVersionPolicy::default(),
                 queue_timeout_ms: None,
                 connect_timeout_ms: None,
                 server_timeout_ms: None,
