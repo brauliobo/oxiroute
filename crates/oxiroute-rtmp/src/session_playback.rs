@@ -12,7 +12,7 @@ use crate::{
 use super::{
     RtmpSession,
     identity::{self, StreamIdentity},
-    runtime::{SessionRole, drop_role, release_role},
+    runtime::{SessionOperation, SessionRole, drop_role, release_role},
     status::{self, PLAY_NOT_FOUND_CODE, PLAY_REJECTION_CODE, Rejection, RtmpSessionError},
 };
 
@@ -24,6 +24,7 @@ pub(super) struct PlaybackSession {
     protocol_stream_id: u32,
     subscription: Option<PlaybackSubscription>,
     registration: Option<SubscriberRegistration>,
+    _session_lease: super::runtime::ApplicationSessionLease,
 }
 
 impl PlaybackSession {
@@ -33,6 +34,7 @@ impl PlaybackSession {
         protocol_stream_id: u32,
         subscription: PlaybackSubscription,
         registration: SubscriberRegistration,
+        session_lease: super::runtime::ApplicationSessionLease,
     ) -> Self {
         Self {
             key,
@@ -40,6 +42,7 @@ impl PlaybackSession {
             protocol_stream_id,
             subscription: Some(subscription),
             registration: Some(registration),
+            _session_lease: session_lease,
         }
     }
 
@@ -109,6 +112,17 @@ pub(super) fn handle_request(
         return session.reject_request(
             request_id,
             Rejection::new(PLAY_NOT_FOUND_CODE, "only live playback is available"),
+        );
+    }
+    if let Err(error) = session.runtime.authorize(
+        application,
+        SessionOperation::Play,
+        session.peer_addr(),
+        identity.query(),
+    ) {
+        return session.reject_request(
+            request_id,
+            status::authorization(SessionOperation::Play, error),
         );
     }
     if session.role.is_some() {

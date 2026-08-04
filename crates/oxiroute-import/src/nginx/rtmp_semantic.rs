@@ -1,5 +1,6 @@
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf};
 
+use oxiroute_config::RtmpAclAction;
 use oxiroute_rtmp::{DirectiveContext, DirectiveError, validate_directive};
 
 use crate::{
@@ -17,6 +18,7 @@ const MAX_RECORDING_ROOT_BYTES: usize = 4_096;
 const MAX_SUFFIX_BYTES: usize = 128;
 const MAX_ROTATION_INTERVAL_MS: u64 = (1 << 31) - 1;
 const MAX_OUTBOUND_CHUNK_SIZE: u32 = 1_048_576;
+const MAX_APPLICATION_CONNECTIONS: u64 = 100_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RtmpResolution {
@@ -73,7 +75,26 @@ pub struct EffectiveRtmpPolicy {
     pub live_origin: Option<DirectiveOrigin>,
     pub idle_streams: bool,
     pub idle_streams_origin: Option<DirectiveOrigin>,
+    pub publish_access: Vec<EffectiveRtmpAccessRule>,
+    pub play_access: Vec<EffectiveRtmpAccessRule>,
+    pub max_connections: Option<u64>,
+    pub max_connections_origin: Option<DirectiveOrigin>,
     pub recorders: Vec<EffectiveRtmpRecorder>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EffectiveRtmpAccessRule {
+    pub action: RtmpAclAction,
+    pub network: String,
+    pub origin: DirectiveOrigin,
+    operation: AccessOperation,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AccessOperation {
+    Publish,
+    Play,
+    Both,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -102,6 +123,9 @@ pub enum RtmpRecordMode {
 struct Policy {
     live: Setting<bool>,
     idle_streams: Setting<bool>,
+    publish_access: Vec<EffectiveRtmpAccessRule>,
+    play_access: Vec<EffectiveRtmpAccessRule>,
+    max_connections: Setting<Option<u64>>,
     record: Setting<RecordSetting>,
     path: Setting<Option<PathBuf>>,
     suffix: Setting<String>,
@@ -127,6 +151,9 @@ impl Default for Policy {
         Self {
             live: Setting::new(false),
             idle_streams: Setting::new(true),
+            publish_access: Vec::new(),
+            play_access: Vec::new(),
+            max_connections: Setting::new(None),
             record: Setting::new(RecordSetting::Off),
             path: Setting::new(None),
             suffix: Setting::new(".flv".into()),
@@ -569,6 +596,10 @@ impl<'a> Resolver<'a> {
                 live_origin: policy.live.origin,
                 idle_streams: policy.idle_streams.value,
                 idle_streams_origin: policy.idle_streams.origin,
+                publish_access: policy.publish_access.clone(),
+                play_access: policy.play_access.clone(),
+                max_connections: policy.max_connections.value,
+                max_connections_origin: policy.max_connections.origin,
                 recorders,
             },
         }
@@ -685,20 +716,25 @@ impl<'a> Resolver<'a> {
         context: DirectiveContext,
         mut policy: Policy,
     ) -> Policy {
+        let inherited_publish_access = std::mem::take(&mut policy.publish_access);
+        let inherited_play_access = std::mem::take(&mut policy.play_access);
         let mut seen = HashMap::new();
         for child in children {
             let name = child.directive.name.value.as_slice();
             if !is_supported_policy(name) {
                 continue;
             }
-            if let Some(first) = seen.insert(name.to_vec(), child.occurrence) {
-                self.block_related(
-                    child.occurrence,
-                    E_DUPLICATE_IDENTITY,
-                    "duplicate nginx-RTMP scalar directive in one context",
-                    first,
-                );
-                continue;
+            let repeatable = matches!(name, b"allow" | b"deny");
+            if !repeatable {
+                if let Some(first) = seen.insert(name.to_vec(), child.occurrence) {
+                    self.block_related(
+                        child.occurrence,
+                        E_DUPLICATE_IDENTITY,
+                        "duplicate nginx-RTMP scalar directive in one context",
+                        first,
+                    );
+                    continue;
+                }
             }
             if self.validate_registered(child, context).is_err()
                 || child.directive.children.is_some()
@@ -714,8 +750,10 @@ impl<'a> Resolver<'a> {
             }
             self.resolved(child.occurrence);
             let origin = Self::origin(child);
-            self.apply_policy(child, name, origin, &mut policy);
+            self.apply_policy(child, name, origin, context, &mut policy);
         }
+        policy.publish_access.extend(inherited_publish_access);
+        policy.play_access.extend(inherited_play_access);
         policy
     }
 
@@ -724,12 +762,32 @@ impl<'a> Resolver<'a> {
         child: &ExpandedDirective,
         name: &[u8],
         origin: DirectiveOrigin,
+        context: DirectiveContext,
         policy: &mut Policy,
     ) {
         let argument = &child.directive.arguments[0].value;
         match name {
             b"live" => policy.live.replace(argument == b"on", origin),
             b"idle_streams" => policy.idle_streams.replace(argument == b"on", origin),
+            b"allow" | b"deny" => {
+                let Some(rule) = parse_access_rule(child, name, origin) else {
+                    self.block(
+                        child.occurrence,
+                        E_INVALID_VALUE,
+                        "nginx-RTMP access rule arguments must be valid UTF-8",
+                    );
+                    return;
+                };
+                if matches!(rule.operation, AccessOperation::Publish | AccessOperation::Both) {
+                    policy.publish_access.push(rule.clone());
+                }
+                if matches!(rule.operation, AccessOperation::Play | AccessOperation::Both) {
+                    policy.play_access.push(rule);
+                }
+            }
+            b"max_connections" => {
+                self.apply_max_connections(child, argument, origin, context, policy);
+            }
             b"record" => match parse_record(&child.directive.arguments) {
                 Ok(value) => policy.record.replace(value, origin),
                 Err(message) => self.block(child.occurrence, E_SEMANTICS_NOT_REPRESENTABLE, message),
@@ -788,6 +846,34 @@ impl<'a> Resolver<'a> {
             ),
             b"record_max_size" | b"record_max_frames" => {}
             _ => unreachable!("supported policy name was matched"),
+        }
+    }
+
+    fn apply_max_connections(
+        &mut self,
+        child: &ExpandedDirective,
+        argument: &[u8],
+        origin: DirectiveOrigin,
+        context: DirectiveContext,
+        policy: &mut Policy,
+    ) {
+        if context != DirectiveContext::RtmpApplication {
+            self.block(
+                child.occurrence,
+                E_SEMANTICS_NOT_REPRESENTABLE,
+                "nginx-RTMP max_connections is lowered only at application scope",
+            );
+            return;
+        }
+        match parse_u64(argument) {
+            Some(value) if (1..=MAX_APPLICATION_CONNECTIONS).contains(&value) => {
+                policy.max_connections.replace(Some(value), origin);
+            }
+            _ => self.block(
+                child.occurrence,
+                E_INVALID_VALUE,
+                "application max_connections is outside canonical RTMP bounds",
+            ),
         }
     }
 
@@ -1104,7 +1190,10 @@ impl<'a> Resolver<'a> {
 fn is_supported_policy(name: &[u8]) -> bool {
     matches!(
         name,
-        b"live"
+        b"allow"
+            | b"deny"
+            | b"max_connections"
+            | b"live"
             | b"idle_streams"
             | b"record"
             | b"record_path"
@@ -1192,6 +1281,36 @@ fn unsupported_rtmp_reason(name: &[u8]) -> &'static str {
     }
 }
 
+fn parse_access_rule(
+    directive: &ExpandedDirective,
+    name: &[u8],
+    origin: DirectiveOrigin,
+) -> Option<EffectiveRtmpAccessRule> {
+    let (operation, target) = match directive.directive.arguments.as_slice() {
+        [target] => (AccessOperation::Both, target),
+        [operation, target] => (
+            match operation.value.as_slice() {
+                b"publish" => AccessOperation::Publish,
+                b"play" => AccessOperation::Play,
+                _ => return None,
+            },
+            target,
+        ),
+        _ => return None,
+    };
+    let network = std::str::from_utf8(&target.value).ok()?.to_owned();
+    Some(EffectiveRtmpAccessRule {
+        action: match name {
+            b"allow" => RtmpAclAction::Allow,
+            b"deny" => RtmpAclAction::Deny,
+            _ => return None,
+        },
+        network,
+        origin,
+        operation,
+    })
+}
+
 fn parse_record(arguments: &[Word]) -> Result<RecordSetting, &'static str> {
     let values = arguments
         .iter()
@@ -1209,6 +1328,10 @@ fn parse_record(arguments: &[Word]) -> Result<RecordSetting, &'static str> {
 }
 
 fn parse_u32(value: &[u8]) -> Option<u32> {
+    std::str::from_utf8(value).ok()?.parse().ok()
+}
+
+fn parse_u64(value: &[u8]) -> Option<u64> {
     std::str::from_utf8(value).ok()?.parse().ok()
 }
 

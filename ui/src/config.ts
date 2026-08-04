@@ -22,6 +22,8 @@ export type HttpVersion = '1.1' | '2'
 export type HealthCheckType = 'http' | 'tcp'
 export type UpstreamAlgorithm = 'round_robin' | 'least_connections' | 'first'
 export type RtmpRecorderStart = 'continuous' | 'manual'
+export type RtmpAclAction = 'allow' | 'deny'
+export type RtmpTokenSource = 'stream_query'
 export type AccessLogConfig = { type: 'disabled' } | { type: 'file'; path: string }
 
 export interface ManagementConfig {
@@ -502,6 +504,9 @@ export interface RtmpApplicationConfig {
   name: string
   live: boolean
   idle_streams: boolean
+  publish: RtmpAccessPolicyConfig
+  play: RtmpAccessPolicyConfig
+  limits: RtmpSessionCeilingsConfig
   push_targets: Array<{ host: string; port: number; application: string }>
   fanout: {
     max_subscribers: number
@@ -509,6 +514,28 @@ export interface RtmpApplicationConfig {
     max_queue_bytes_per_subscriber: number
   }
   recorders: RtmpRecorderConfig[]
+}
+
+export interface RtmpAccessPolicyConfig {
+  rules: RtmpAccessRuleConfig[]
+  token: RtmpTokenPolicyConfig | null
+}
+
+export interface RtmpAccessRuleConfig {
+  action: RtmpAclAction
+  network: string
+}
+
+export interface RtmpTokenPolicyConfig {
+  source: RtmpTokenSource
+  parameter: string
+  secret: string
+}
+
+export interface RtmpSessionCeilingsConfig {
+  max_connections: number
+  max_publishers: number
+  max_viewers: number
 }
 
 export interface RtmpRecorderConfig {
@@ -1027,13 +1054,37 @@ function isRtmpService(value: unknown): value is RtmpServiceConfig {
   return isRecord(value) && typeof value.name === 'string' && safeInteger(value.outbound_chunk_size) &&
     (value.access_log === null || isAccessLog(value.access_log)) && arrayOf(value.applications, (application) =>
     isRecord(application) && typeof application.name === 'string' && typeof application.live === 'boolean' &&
-    typeof application.idle_streams === 'boolean' && arrayOf(application.push_targets, (target) =>
+    typeof application.idle_streams === 'boolean' && isRtmpAccessPolicy(application.publish) &&
+    isRtmpAccessPolicy(application.play) && isRtmpSessionCeilings(application.limits) &&
+    arrayOf(application.push_targets, (target) =>
       isRecord(target) && typeof target.host === 'string' && safeInteger(target.port) &&
       typeof target.application === 'string') && isRecord(application.fanout) &&
     safeInteger(application.fanout.max_subscribers) &&
     safeInteger(application.fanout.max_queue_messages_per_subscriber) &&
     safeInteger(application.fanout.max_queue_bytes_per_subscriber) &&
     arrayOf(application.recorders, isRtmpRecorder))
+}
+
+function isRtmpAccessPolicy(value: unknown): value is RtmpAccessPolicyConfig {
+  return isRecord(value) && arrayOf(value.rules, isRtmpAccessRule) &&
+    (value.token === null || isRtmpTokenPolicy(value.token))
+}
+
+function isRtmpAccessRule(value: unknown): value is RtmpAccessRuleConfig {
+  return isRecord(value) && ['allow', 'deny'].includes(String(value.action)) &&
+    typeof value.network === 'string'
+}
+
+function isRtmpTokenPolicy(value: unknown): value is RtmpTokenPolicyConfig {
+  return isRecord(value) && value.source === 'stream_query' &&
+    typeof value.parameter === 'string' && value.parameter.length > 0 && value.parameter.length <= 32 &&
+    typeof value.secret === 'string' && value.secret.length > 0 && value.secret.length <= 128
+}
+
+function isRtmpSessionCeilings(value: unknown): value is RtmpSessionCeilingsConfig {
+  return isRecord(value) && integerInRange(value.max_connections, 1, 100_000) &&
+    integerInRange(value.max_publishers, 1, 10_000) &&
+    integerInRange(value.max_viewers, 1, 1_000_000)
 }
 
 function isAccessLog(value: unknown): value is AccessLogConfig {
@@ -1389,6 +1440,26 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'rtmp_services[].applications[].name', kind: 'string' },
   { path: 'rtmp_services[].applications[].live', kind: 'boolean' },
   { path: 'rtmp_services[].applications[].idle_streams', kind: 'boolean' },
+  { path: 'rtmp_services[].applications[].publish', kind: 'object' },
+  { path: 'rtmp_services[].applications[].publish.rules', kind: 'collection' },
+  { path: 'rtmp_services[].applications[].publish.rules[].action', kind: 'enum' },
+  { path: 'rtmp_services[].applications[].publish.rules[].network', kind: 'string' },
+  { path: 'rtmp_services[].applications[].publish.token', kind: 'object' },
+  { path: 'rtmp_services[].applications[].publish.token.source', kind: 'enum' },
+  { path: 'rtmp_services[].applications[].publish.token.parameter', kind: 'string' },
+  { path: 'rtmp_services[].applications[].publish.token.secret', kind: 'string' },
+  { path: 'rtmp_services[].applications[].play', kind: 'object' },
+  { path: 'rtmp_services[].applications[].play.rules', kind: 'collection' },
+  { path: 'rtmp_services[].applications[].play.rules[].action', kind: 'enum' },
+  { path: 'rtmp_services[].applications[].play.rules[].network', kind: 'string' },
+  { path: 'rtmp_services[].applications[].play.token', kind: 'object' },
+  { path: 'rtmp_services[].applications[].play.token.source', kind: 'enum' },
+  { path: 'rtmp_services[].applications[].play.token.parameter', kind: 'string' },
+  { path: 'rtmp_services[].applications[].play.token.secret', kind: 'string' },
+  { path: 'rtmp_services[].applications[].limits', kind: 'object' },
+  { path: 'rtmp_services[].applications[].limits.max_connections', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].limits.max_publishers', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].limits.max_viewers', kind: 'integer' },
   { path: 'rtmp_services[].applications[].recorders', kind: 'collection' },
   { path: 'rtmp_services[].applications[].recorders[].name', kind: 'string' },
   { path: 'rtmp_services[].applications[].recorders[].start', kind: 'enum' },

@@ -1,10 +1,11 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::{collections::VecDeque, net::IpAddr, sync::Arc};
 
 use bytes::Bytes;
 use oxiroute_rtmp::{
     LiveHub, LiveHubLimits, MAX_RTMP_APPLICATION_BYTES, MAX_RTMP_STREAM_NAME_BYTES,
-    RtmpApplication, RtmpCapabilities, RtmpRegistry, RtmpServiceRuntime, RtmpSession,
-    RtmpSessionError, RtmpSessionPolicy, StreamMetadata,
+    RtmpAccessAction, RtmpAccessPolicy, RtmpAccessRule, RtmpApplication, RtmpCapabilities,
+    RtmpNetwork, RtmpRegistry, RtmpServiceRuntime, RtmpSession, RtmpSessionCeilings,
+    RtmpSessionError, RtmpSessionPolicy, RtmpTokenPolicy, StreamMetadata,
 };
 use rml_rtmp::{
     handshake::{Handshake, HandshakeProcessResult, PeerType},
@@ -396,6 +397,164 @@ fn one_service_runtime_bridges_publish_and_play_across_listeners() {
     assert_eq!(
         registry.snapshot().streams[0].key.server_id,
         "shared-live-service"
+    );
+}
+
+#[test]
+fn viewer_ceiling_rejects_a_second_playback_until_the_first_role_closes() {
+    let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
+        live_ingest: true,
+        manual_recording: false,
+    }));
+    let hub = LiveHub::new(LiveHubLimits::default());
+    let application = RtmpApplication::new("live", true, false).with_authorization(
+        RtmpAccessPolicy::default(),
+        RtmpAccessPolicy::default(),
+        RtmpSessionCeilings::new(16, 16, 1),
+    );
+    let runtime = RtmpServiceRuntime::new(
+        "shared-live-service",
+        Arc::clone(&registry),
+        hub,
+        RtmpSessionPolicy::new([application]),
+    );
+
+    let mut publisher_server = runtime.session();
+    let mut publisher = connect(&mut publisher_server, "live");
+    request_publish(&mut publisher, &mut publisher_server, "camera", 6_000);
+
+    let mut first_viewer_server = runtime.session();
+    let mut first_viewer = connect(&mut first_viewer_server, "live");
+    let first_play = first_viewer
+        .request_playback("camera".into())
+        .expect("first play request");
+    let first_events = exchange(
+        &mut first_viewer,
+        &mut first_viewer_server,
+        vec![first_play],
+        6_100,
+    );
+    assert!(
+        first_events
+            .iter()
+            .any(|event| matches!(event, ClientSessionEvent::PlaybackRequestAccepted))
+    );
+
+    let mut second_viewer_server = runtime.session();
+    let mut second_viewer = connect(&mut second_viewer_server, "live");
+    let second_play = second_viewer
+        .request_playback("camera".into())
+        .expect("second play request");
+    let second_events = exchange(
+        &mut second_viewer,
+        &mut second_viewer_server,
+        vec![second_play],
+        6_200,
+    );
+    assert!(has_status(&second_events, "NetStream.Play.Failed"));
+
+    first_viewer_server
+        .close(6_300)
+        .expect("close first viewer role");
+    drop(second_viewer);
+    drop(second_viewer_server);
+    let mut retry_server = runtime.session();
+    let mut retry_client = connect(&mut retry_server, "live");
+    let retry = retry_client
+        .request_playback("camera".into())
+        .expect("retry play request");
+    let retry_events = exchange(&mut retry_client, &mut retry_server, vec![retry], 6_400);
+    assert!(
+        retry_events
+            .iter()
+            .any(|event| matches!(event, ClientSessionEvent::PlaybackRequestAccepted))
+    );
+}
+
+#[test]
+fn enforces_ordered_play_acl_and_stream_query_token() {
+    let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
+        live_ingest: true,
+        manual_recording: false,
+    }));
+    let hub = LiveHub::new(LiveHubLimits::default());
+    let play = RtmpAccessPolicy::new(
+        [
+            RtmpAccessRule::new(
+                RtmpAccessAction::Deny,
+                RtmpNetwork::parse("192.0.2.0/24").expect("valid network"),
+            ),
+            RtmpAccessRule::new(RtmpAccessAction::Allow, RtmpNetwork::All),
+        ],
+        Some(RtmpTokenPolicy::stream_query("viewer", "secret").expect("valid token policy")),
+    );
+    let application = RtmpApplication::new("live", true, false).with_authorization(
+        RtmpAccessPolicy::default(),
+        play,
+        RtmpSessionCeilings::default(),
+    );
+    let runtime = RtmpServiceRuntime::new(
+        "live",
+        Arc::clone(&registry),
+        hub,
+        RtmpSessionPolicy::new([application]),
+    );
+
+    let mut publisher_server = runtime.session();
+    let mut publisher = connect(&mut publisher_server, "live");
+    request_publish(&mut publisher, &mut publisher_server, "camera", 8_000);
+
+    let mut denied_server = runtime.session_with_peer_addr(Some(
+        "192.0.2.10".parse::<IpAddr>().expect("valid peer address"),
+    ));
+    let mut denied_client = connect(&mut denied_server, "live");
+    let denied_play = denied_client
+        .request_playback("camera?viewer=secret".into())
+        .expect("denied play request");
+    let denied_events = exchange(
+        &mut denied_client,
+        &mut denied_server,
+        vec![denied_play],
+        8_100,
+    );
+    assert!(has_status(&denied_events, "NetStream.Play.Failed"));
+
+    let mut wrong_server = runtime.session_with_peer_addr(Some(
+        "198.51.100.10"
+            .parse::<IpAddr>()
+            .expect("valid peer address"),
+    ));
+    let mut wrong_client = connect(&mut wrong_server, "live");
+    let wrong_play = wrong_client
+        .request_playback("camera?viewer=wrong".into())
+        .expect("wrong token play request");
+    let wrong_events = exchange(
+        &mut wrong_client,
+        &mut wrong_server,
+        vec![wrong_play],
+        8_200,
+    );
+    assert!(has_status(&wrong_events, "NetStream.Play.Failed"));
+
+    let mut accepted_server = runtime.session_with_peer_addr(Some(
+        "198.51.100.10"
+            .parse::<IpAddr>()
+            .expect("valid peer address"),
+    ));
+    let mut accepted_client = connect(&mut accepted_server, "live");
+    let accepted_play = accepted_client
+        .request_playback("camera?viewer=secret".into())
+        .expect("accepted play request");
+    let accepted_events = exchange(
+        &mut accepted_client,
+        &mut accepted_server,
+        vec![accepted_play],
+        8_300,
+    );
+    assert!(
+        accepted_events
+            .iter()
+            .any(|event| matches!(event, ClientSessionEvent::PlaybackRequestAccepted))
     );
 }
 

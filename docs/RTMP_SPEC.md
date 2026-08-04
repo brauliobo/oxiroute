@@ -29,11 +29,12 @@ non-enforced classifications. Consequently, the report may identify enforced for
 claiming that all 117 directive keys are enforced.
 
 The current runtime contract is intentionally narrower than the directive inventory. Bounded live
-publish/play, fanout, static push relay, canonical named continuous/manual recorders, and legacy
+publish/play, ordered application network ACLs, stream-query tokens, per-application session
+ceilings, fanout, static push relay, canonical named continuous/manual recorders, and legacy
 AVC/AAC FLV output are partial product capabilities. The live adapter enforces a fixed 1 MiB
 inbound chunk ceiling and fixed 8 MiB assembled inbound-message ceiling; the nginx `max_message`
 directive is parsed and classified but does not configure that ceiling. HLS, DASH, VOD, callbacks,
-exec, broad access/control behavior, and full nginx-RTMP parity remain planned or unsupported.
+exec, broad control behavior, and full nginx-RTMP parity remain planned or unsupported.
 
 ## Context abbreviations and common values
 
@@ -96,8 +97,10 @@ strict compatibility mode and MAY offer a canonical multi-option form.
 | `deny` | R,S,A | `[publish|play] <CIDR|all>` or `<CIDR|all>` | ordered first match; implicit allow |
 | `meta` | R,S,A | `off | on | copy` | `on`; normalize metadata, or retain publisher payload for `copy` |
 
-IPv4 and IPv6 CIDRs are supported. Local rules precede inherited rules. Internal relays
-and auto-push have special reference bypass behavior that requires explicit tests.
+IPv4 and IPv6 CIDRs are supported. Native nginx rules retain ordered first-match semantics and
+implicit allow. Canonical application policies use the same ordered first-match semantics, but a
+nonempty policy denies an unmatched peer. Canonical tokens may require a `stream_query` parameter
+for publish and play; query data never contributes to stream identity or observable stream keys.
 
 ### Live: 11
 
@@ -218,6 +221,8 @@ The finalizable subset is intentionally narrow:
 - One effective `rtmp` block with non-overlapping IP socket `listen` values and no listen options.
 - `server` and uniquely named `application` blocks.
 - Inheritable `live` and `idle_streams` flags.
+- Ordered `allow`/`deny` network rules for publish and play.
+- A finite application-scoped `max_connections` ceiling.
 - `record off`, `record all`, or `record all manual`/`record manual all` on a live application.
 - A required secure absolute `record_path` when recording is enabled.
 - Default `.flv` or a separator-free suffix of at most 128 bytes containing only literals and `%%`.
@@ -229,10 +234,10 @@ The finalizable subset is intentionally narrow:
   recorders.
 
 Any applicable unsupported directive blocks its server; any blocking error prevents a finalized
-config, although other safe servers may remain visible in the draft. Blockers include global RTMP
-policy, listen options, overlapping listeners, duplicate scalar/application identities, non-live
-recording, missing/insecure paths, local-time suffix formats, manual intervals, partial recording
-bitmasks, push/pull, access, notify, exec, VOD, HLS/DASH, logging/stat/control behavior, enabled
+config, although other safe servers may remain visible in the draft. Blockers include global/server
+`max_connections`, listen options, overlapping listeners, duplicate scalar/application identities,
+non-live recording, missing/insecure paths, local-time suffix formats, manual intervals, partial
+recording bitmasks, push/pull, notify, exec, VOD, HLS/DASH, logging/stat/control behavior, enabled
 append/lock, nonzero size/frame limits, and named `recorder {}` blocks with unsupported effective
 fields. The `import_rtmp` entry point remains a Rust library without a separate `import rtmp`
 command, import API, or import UI. Complete nginx-root import does integrate the strict RTMP result:

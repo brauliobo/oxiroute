@@ -28,7 +28,7 @@ use crate::defaults::{
     default_max_request_body_bytes, default_recorder_max_active_recorders,
     default_recorder_max_queue_bytes, default_recorder_max_queue_messages,
     default_recorder_shutdown_timeout_ms, default_recorder_suffix_template,
-    default_rtmp_fanout_policy, default_rtmp_outbound_chunk_size,
+    default_rtmp_fanout_policy, default_rtmp_outbound_chunk_size, default_rtmp_session_ceilings,
     default_self_signed_validity_days, default_true, default_udp_max_datagram_bytes,
     default_udp_max_queue_bytes, default_udp_max_queue_datagrams, default_udp_max_session_bytes,
     default_udp_max_sessions, default_unhealthy_threshold, default_upstream_io_timeout_ms,
@@ -1286,11 +1286,79 @@ pub struct RtmpApplication {
     #[serde(default = "default_true")]
     pub idle_streams: bool,
     #[serde(default)]
+    pub publish: RtmpAccessPolicy,
+    #[serde(default)]
+    pub play: RtmpAccessPolicy,
+    #[serde(default = "default_rtmp_session_ceilings")]
+    pub limits: RtmpSessionCeilings,
+    #[serde(default)]
     pub push_targets: Vec<RtmpPushTarget>,
     #[serde(default = "default_rtmp_fanout_policy")]
     pub fanout: RtmpFanoutPolicy,
     #[serde(default)]
     pub recorders: Vec<RtmpRecorder>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RtmpAccessPolicy {
+    #[serde(default)]
+    pub rules: Vec<RtmpAccessRule>,
+    #[serde(default)]
+    pub token: Option<RtmpTokenPolicy>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RtmpAccessRule {
+    pub action: RtmpAclAction,
+    pub network: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum RtmpAclAction {
+    Allow,
+    Deny,
+}
+
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RtmpTokenPolicy {
+    pub source: RtmpTokenSource,
+    pub parameter: String,
+    pub secret: String,
+}
+
+impl fmt::Debug for RtmpTokenPolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RtmpTokenPolicy")
+            .field("source", &self.source)
+            .field("parameter", &self.parameter)
+            .field("secret", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RtmpTokenSource {
+    StreamQuery,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct RtmpSessionCeilings {
+    pub max_connections: u64,
+    pub max_publishers: u64,
+    pub max_viewers: u64,
+}
+
+impl Default for RtmpSessionCeilings {
+    fn default() -> Self {
+        default_rtmp_session_ceilings()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1986,6 +2054,15 @@ pub enum ConfigError {
         application: String,
         field: &'static str,
         detail: &'static str,
+    },
+    #[error(
+        "RTMP application `{application}` in service `{service}` has duplicate {operation} ACL rule `{network}`"
+    )]
+    DuplicateRtmpAccessRule {
+        service: String,
+        application: String,
+        operation: &'static str,
+        network: String,
     },
     #[error(
         "RTMP recorder `{recorder}` max_queue_bytes must not exceed max_storage_bytes in application `{application}` of service `{service}`"

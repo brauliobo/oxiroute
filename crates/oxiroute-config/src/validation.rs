@@ -14,11 +14,14 @@ use crate::{
         MAX_HTTP_TIMEOUT_MS, MAX_RECORDER_ACTIVE_RECORDERS, MAX_RECORDER_QUEUE_BYTES,
         MAX_RECORDER_QUEUE_MESSAGES, MAX_RECORDER_ROTATION_INTERVAL_MS,
         MAX_RECORDER_SHUTDOWN_TIMEOUT_MS, MAX_RECORDER_STORAGE_BYTES, MAX_RECORDER_STORAGE_FILES,
-        MAX_RTMP_APPLICATION_BYTES, MAX_RTMP_APPLICATIONS_PER_SERVICE, MAX_RTMP_FANOUT_QUEUE_BYTES,
+        MAX_RTMP_ACCESS_RULES_PER_OPERATION, MAX_RTMP_APPLICATION_BYTES,
+        MAX_RTMP_APPLICATION_CONNECTIONS, MAX_RTMP_APPLICATION_NAME_BYTES,
+        MAX_RTMP_APPLICATION_PUBLISHERS, MAX_RTMP_APPLICATION_VIEWERS,
+        MAX_RTMP_APPLICATIONS_PER_SERVICE, MAX_RTMP_FANOUT_QUEUE_BYTES,
         MAX_RTMP_FANOUT_QUEUE_MESSAGES, MAX_RTMP_OUTBOUND_CHUNK_SIZE, MAX_RTMP_PUSH_TARGETS,
         MAX_RTMP_RECORDERS_PER_APPLICATION, MAX_RTMP_RECORDING_ROOTS, MAX_RTMP_SERVICES,
-        MAX_RTMP_SUBSCRIBERS, MAX_SAFE_JSON_INTEGER, MAX_SELF_SIGNED_VALIDITY_DAYS,
-        MAX_TLS_PROFILES,
+        MAX_RTMP_SUBSCRIBERS, MAX_RTMP_TOKEN_BYTES, MAX_RTMP_TOKEN_PARAMETER_BYTES,
+        MAX_SAFE_JSON_INTEGER, MAX_SELF_SIGNED_VALIDITY_DAYS, MAX_TLS_PROFILES,
         MAX_TOTAL_ENDPOINTS, MAX_TOTAL_RTMP_RECORDERS, MAX_UDP_DATAGRAM_BYTES, MAX_UDP_QUEUE_BYTES,
         MAX_UDP_QUEUE_DATAGRAMS, MAX_UDP_SESSION_BYTES, MAX_UDP_SESSIONS, MAX_UPSTREAM_WEIGHT,
         MIN_HEALTH_INTERVAL_MS, MIN_SELF_SIGNED_VALIDITY_DAYS,
@@ -33,9 +36,9 @@ use crate::{
     model::{
         AccessLogPolicy, AlpnProtocol, Certificate, CertificateSource, Config, ConfigError,
         DnsResolutionPolicy, ForwardHttpVersion, ForwardProxyService, HealthCheck, HealthCheckType,
-        HttpVersion, L4Service, Listener, ListenerBind, Management, Protocol, RtmpRecorder,
-        RtmpService, Stats, StatsPage, TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm,
-        UpstreamEndpoint, UpstreamPool,
+        HttpVersion, L4Service, Listener, ListenerBind, Management, Protocol, RtmpAccessPolicy,
+        RtmpRecorder, RtmpService, RtmpSessionCeilings, RtmpTokenSource, Stats, StatsPage,
+        TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool,
     },
 };
 
@@ -1110,6 +1113,14 @@ fn validate_rtmp_services(services: &mut [RtmpService]) -> Result<(), ConfigErro
                 .map(|application| application.name.as_str()),
         )?;
         for application in &mut service.applications {
+            if application.name.len() > MAX_RTMP_APPLICATION_NAME_BYTES {
+                return Err(ConfigError::InvalidRtmpApplicationPolicy {
+                    service: service.name.clone(),
+                    application: application.name.clone(),
+                    field: "name",
+                    detail: "must be between 1 and 128 bytes",
+                });
+            }
             validate_rtmp_application(&service.name, application)?;
             if application.recorders.len() > MAX_RTMP_RECORDERS_PER_APPLICATION {
                 return Err(ConfigError::TooManyRtmpRecorders {
@@ -1184,6 +1195,9 @@ fn validate_rtmp_application(
     if !application.live && !application.push_targets.is_empty() {
         return Err(invalid("push_targets", "requires live = true"));
     }
+    validate_rtmp_access_policy(service, application, "publish", &application.publish)?;
+    validate_rtmp_access_policy(service, application, "play", &application.play)?;
+    validate_rtmp_session_ceilings(service, application, &application.limits)?;
     let mut targets = HashSet::with_capacity(application.push_targets.len());
     for target in &mut application.push_targets {
         target.host.make_ascii_lowercase();
@@ -1237,6 +1251,155 @@ fn validate_rtmp_application(
         ));
     }
     Ok(())
+}
+
+fn validate_rtmp_access_policy(
+    service: &str,
+    application: &crate::model::RtmpApplication,
+    operation: &'static str,
+    policy: &RtmpAccessPolicy,
+) -> Result<(), ConfigError> {
+    let invalid = |field, detail| ConfigError::InvalidRtmpApplicationPolicy {
+        service: service.into(),
+        application: application.name.clone(),
+        field,
+        detail,
+    };
+    if policy.rules.len() > MAX_RTMP_ACCESS_RULES_PER_OPERATION {
+        return Err(invalid(
+            match operation {
+                "publish" => "publish.rules",
+                "play" => "play.rules",
+                _ => unreachable!("RTMP access operation is closed"),
+            },
+            "must contain at most 64 rules",
+        ));
+    }
+    let mut seen = HashSet::with_capacity(policy.rules.len());
+    for rule in &policy.rules {
+        if !valid_rtmp_network(&rule.network) {
+            return Err(invalid(
+                match operation {
+                    "publish" => "publish.rules[].network",
+                    "play" => "play.rules[].network",
+                    _ => unreachable!("RTMP access operation is closed"),
+                },
+                "must be `all`, an IP address, or an IP address with a valid CIDR prefix",
+            ));
+        }
+        if !seen.insert((rule.action, rule.network.as_str())) {
+            return Err(ConfigError::DuplicateRtmpAccessRule {
+                service: service.into(),
+                application: application.name.clone(),
+                operation,
+                network: rule.network.clone(),
+            });
+        }
+    }
+    if let Some(token) = &policy.token {
+        if token.source != RtmpTokenSource::StreamQuery {
+            return Err(invalid(
+                match operation {
+                    "publish" => "publish.token.source",
+                    "play" => "play.token.source",
+                    _ => unreachable!("RTMP access operation is closed"),
+                },
+                "only `stream_query` is supported",
+            ));
+        }
+        if token.parameter.is_empty()
+            || token.parameter.len() > MAX_RTMP_TOKEN_PARAMETER_BYTES
+            || !token
+                .parameter
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+        {
+            return Err(invalid(
+                match operation {
+                    "publish" => "publish.token.parameter",
+                    "play" => "play.token.parameter",
+                    _ => unreachable!("RTMP access operation is closed"),
+                },
+                "must be 1..=32 ASCII query-key bytes",
+            ));
+        }
+        if token.secret.is_empty()
+            || token.secret.len() > MAX_RTMP_TOKEN_BYTES
+            || !token
+                .secret
+                .bytes()
+                .all(|byte| byte.is_ascii_graphic() && !matches!(byte, b'&' | b'=' | b'#' | b'?'))
+        {
+            return Err(invalid(
+                match operation {
+                    "publish" => "publish.token.secret",
+                    "play" => "play.token.secret",
+                    _ => unreachable!("RTMP access operation is closed"),
+                },
+                "must be 1..=128 query-safe visible ASCII bytes",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_rtmp_session_ceilings(
+    service: &str,
+    application: &crate::model::RtmpApplication,
+    limits: &RtmpSessionCeilings,
+) -> Result<(), ConfigError> {
+    let invalid = |field, detail| ConfigError::InvalidRtmpApplicationPolicy {
+        service: service.into(),
+        application: application.name.clone(),
+        field,
+        detail,
+    };
+    for (field, value, maximum) in [
+        (
+            "limits.max_connections",
+            limits.max_connections,
+            MAX_RTMP_APPLICATION_CONNECTIONS,
+        ),
+        (
+            "limits.max_publishers",
+            limits.max_publishers,
+            MAX_RTMP_APPLICATION_PUBLISHERS,
+        ),
+        (
+            "limits.max_viewers",
+            limits.max_viewers,
+            MAX_RTMP_APPLICATION_VIEWERS,
+        ),
+    ] {
+        if value == 0 || value > maximum {
+            return Err(invalid(
+                field,
+                match field {
+                    "limits.max_connections" => "must be between 1 and 100000",
+                    "limits.max_publishers" => "must be between 1 and 10000",
+                    "limits.max_viewers" => "must be between 1 and 1000000",
+                    _ => unreachable!("RTMP session limit field is closed"),
+                },
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn valid_rtmp_network(value: &str) -> bool {
+    if value == "all" {
+        return true;
+    }
+    let Some((address, prefix)) = value.split_once('/') else {
+        return value.parse::<IpAddr>().is_ok();
+    };
+    let Ok(address) = address.parse::<IpAddr>() else {
+        return false;
+    };
+    let Ok(prefix) = prefix.parse::<u8>() else {
+        return false;
+    };
+    prefix <= if address.is_ipv4() { 32 } else { 128 }
 }
 
 fn validate_rtmp_recorder(

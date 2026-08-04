@@ -64,7 +64,7 @@ const TARGETS: [&str; 29] = [
     "tls.identity",
 ];
 
-const ADDITIONAL_TARGETS: [&str; 18] = [
+const ADDITIONAL_TARGETS: [&str; 20] = [
     "forward.access",
     "forward.admission",
     "forward.audit",
@@ -79,7 +79,9 @@ const ADDITIONAL_TARGETS: [&str; 18] = [
     "forward.service",
     "forward.timeout",
     "forward.tunnel",
+    "rtmp.access_policy",
     "rtmp.application",
+    "rtmp.session_limits",
     "rtmp.service",
     "tls.profile",
     "upstream.pool",
@@ -630,6 +632,9 @@ fn validate_rtmp_reference(manifest: &RtmpDirectiveManifest) {
 
 fn validate_rtmp_import_forms(manifest: &RtmpDirectiveManifest) {
     let expected = [
+        "import.nginx-rtmp.allow.bounded",
+        "import.nginx-rtmp.deny.bounded",
+        "import.nginx-rtmp.max-connections.application",
         "import.nginx-rtmp.record.off",
         "import.nginx-rtmp.record.all",
         "import.nginx-rtmp.record.all-manual",

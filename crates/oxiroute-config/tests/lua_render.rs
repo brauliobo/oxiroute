@@ -8,9 +8,9 @@ use oxiroute_config::{
     HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryMethodSafety, HttpRetryPolicy,
     HttpRetryTarget, HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpService,
     HttpStaticMimePolicy, HttpStaticPathMapping, HttpUpstreamHost, HttpVersion, HttpVersionPolicy,
-    L4Service, Listener, ListenerBind, Management, Protocol, RtmpApplication, RtmpRecorder,
-    RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis, RtmpRecorderTimezone,
-    RtmpService, TlsPolicy, TlsProfile, TlsSessionCache,
+    L4Service, Listener, ListenerBind, Management, Protocol, RtmpAccessPolicy, RtmpApplication,
+    RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis,
+    RtmpRecorderTimezone, RtmpService, RtmpSessionCeilings, TlsPolicy, TlsProfile, TlsSessionCache,
     TlsVersion, UdpPolicy, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint,
     UpstreamPool, UpstreamServer, UpstreamTls, load_lua, render_lua, validate_config,
 };
@@ -490,6 +490,9 @@ fn test_rtmp_services() -> Vec<RtmpService> {
             name: "live".into(),
             live: true,
             idle_streams: true,
+            publish: RtmpAccessPolicy::default(),
+            play: RtmpAccessPolicy::default(),
+            limits: RtmpSessionCeilings::default(),
             push_targets: Vec::new(),
             fanout: oxiroute_config::RtmpFanoutPolicy {
                 max_subscribers: 1_024,

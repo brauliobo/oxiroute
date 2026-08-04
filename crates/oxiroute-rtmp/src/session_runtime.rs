@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    net::IpAddr,
     sync::{Arc, Mutex, Weak},
     time::Instant,
 };
@@ -23,6 +24,304 @@ use super::{
 };
 
 pub const RTMP_STALE_PUBLISHER_THRESHOLD_MS: u64 = 30_000;
+const MAX_RTMP_TOKEN_BYTES: usize = 128;
+const DEFAULT_RTMP_APPLICATION_CONNECTIONS: usize = 1_024;
+const DEFAULT_RTMP_APPLICATION_PUBLISHERS: usize = 256;
+const DEFAULT_RTMP_APPLICATION_VIEWERS: usize = 1_024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RtmpAccessAction {
+    Allow,
+    Deny,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RtmpNetwork {
+    All,
+    Cidr { address: IpAddr, prefix: u8 },
+}
+
+impl RtmpNetwork {
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        if value == "all" {
+            return Some(Self::All);
+        }
+        let (address, prefix) = value.split_once('/').map_or_else(
+            || {
+                let address = value.parse::<IpAddr>().ok()?;
+                Some((address, if address.is_ipv4() { 32 } else { 128 }))
+            },
+            |(address, prefix)| Some((address.parse().ok()?, prefix.parse().ok()?)),
+        )?;
+        (prefix <= if address.is_ipv4() { 32 } else { 128 })
+            .then_some(Self::Cidr { address, prefix })
+    }
+
+    fn matches(&self, peer: Option<IpAddr>) -> bool {
+        match self {
+            Self::All => true,
+            Self::Cidr { address, prefix } => peer.is_some_and(|peer| match (address, peer) {
+                (IpAddr::V4(address), IpAddr::V4(peer)) => {
+                    masked(u32::from(*address), 32, *prefix) == masked(u32::from(peer), 32, *prefix)
+                }
+                (IpAddr::V6(address), IpAddr::V6(peer)) => {
+                    masked(u128::from(*address), 128, *prefix)
+                        == masked(u128::from(peer), 128, *prefix)
+                }
+                _ => false,
+            }),
+        }
+    }
+}
+
+fn masked(value: impl Into<u128>, bits: u8, prefix: u8) -> u128 {
+    let value = value.into();
+    if prefix == 0 {
+        0
+    } else {
+        value & (u128::MAX << u32::from(bits - prefix))
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RtmpAccessRule {
+    action: RtmpAccessAction,
+    network: RtmpNetwork,
+}
+
+impl RtmpAccessRule {
+    #[must_use]
+    pub fn new(action: RtmpAccessAction, network: RtmpNetwork) -> Self {
+        Self { action, network }
+    }
+}
+
+#[derive(Clone)]
+pub struct RtmpTokenPolicy {
+    parameter: Arc<str>,
+    secret: Arc<[u8]>,
+}
+
+impl std::fmt::Debug for RtmpTokenPolicy {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RtmpTokenPolicy")
+            .field("source", &"stream_query")
+            .field("parameter", &self.parameter)
+            .field("secret", &"<redacted>")
+            .finish()
+    }
+}
+
+impl RtmpTokenPolicy {
+    #[must_use]
+    pub fn stream_query(parameter: impl Into<Arc<str>>, secret: impl AsRef<[u8]>) -> Option<Self> {
+        let parameter = parameter.into();
+        let secret = secret.as_ref();
+        let valid = (1..=32).contains(&parameter.len())
+            && parameter
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+            && !secret.is_empty()
+            && secret.len() <= MAX_RTMP_TOKEN_BYTES
+            && secret
+                .iter()
+                .all(|byte| byte.is_ascii_graphic() && !matches!(byte, b'&' | b'=' | b'#' | b'?'));
+        valid.then(|| Self {
+            parameter,
+            secret: Arc::from(secret),
+        })
+    }
+
+    fn authorize(&self, query: Option<&str>) -> Result<(), RtmpAuthorizationError> {
+        let Some(query) = query else {
+            return Err(RtmpAuthorizationError::TokenMissing);
+        };
+        let mut value = None;
+        for pair in query.split('&') {
+            let Some((parameter, candidate)) = pair.split_once('=') else {
+                return Err(RtmpAuthorizationError::QueryMalformed);
+            };
+            if parameter == self.parameter.as_ref() {
+                if value.is_some() {
+                    return Err(RtmpAuthorizationError::TokenRejected);
+                }
+                value = Some(candidate);
+            }
+        }
+        let Some(value) = value else {
+            return Err(RtmpAuthorizationError::TokenMissing);
+        };
+        if constant_time_eq(value.as_bytes(), &self.secret) {
+            Ok(())
+        } else {
+            Err(RtmpAuthorizationError::TokenRejected)
+        }
+    }
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let mut difference = u8::from(left.len() != right.len());
+    for index in 0..MAX_RTMP_TOKEN_BYTES {
+        let left = left.get(index).copied().unwrap_or_default();
+        let right = right.get(index).copied().unwrap_or_default();
+        difference |= left ^ right;
+    }
+    difference == 0
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct RtmpAccessPolicy {
+    rules: Arc<Vec<RtmpAccessRule>>,
+    token: Option<RtmpTokenPolicy>,
+}
+
+impl RtmpAccessPolicy {
+    #[must_use]
+    pub fn new(
+        rules: impl IntoIterator<Item = RtmpAccessRule>,
+        token: Option<RtmpTokenPolicy>,
+    ) -> Self {
+        Self {
+            rules: Arc::new(rules.into_iter().collect()),
+            token,
+        }
+    }
+
+    fn authorize(
+        &self,
+        peer: Option<IpAddr>,
+        query: Option<&str>,
+    ) -> Result<(), RtmpAuthorizationError> {
+        if !self.rules.is_empty() {
+            let Some(rule) = self.rules.iter().find(|rule| rule.network.matches(peer)) else {
+                return Err(RtmpAuthorizationError::NetworkDenied);
+            };
+            if rule.action == RtmpAccessAction::Deny {
+                return Err(RtmpAuthorizationError::NetworkDenied);
+            }
+        }
+        if let Some(token) = &self.token {
+            token.authorize(query)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RtmpSessionCeilings {
+    pub max_connections: usize,
+    pub max_publishers: usize,
+    pub max_viewers: usize,
+}
+
+impl RtmpSessionCeilings {
+    #[must_use]
+    pub const fn new(max_connections: usize, max_publishers: usize, max_viewers: usize) -> Self {
+        Self {
+            max_connections,
+            max_publishers,
+            max_viewers,
+        }
+    }
+}
+
+impl Default for RtmpSessionCeilings {
+    fn default() -> Self {
+        Self::new(
+            DEFAULT_RTMP_APPLICATION_CONNECTIONS,
+            DEFAULT_RTMP_APPLICATION_PUBLISHERS,
+            DEFAULT_RTMP_APPLICATION_VIEWERS,
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RtmpAuthorizationError {
+    NetworkDenied,
+    TokenMissing,
+    TokenRejected,
+    QueryMalformed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SessionCounter {
+    Connections,
+    Publishers,
+    Viewers,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct SessionCounts {
+    connections: usize,
+    publishers: usize,
+    viewers: usize,
+}
+
+struct ApplicationAdmission {
+    limits: RtmpSessionCeilings,
+    counts: Mutex<SessionCounts>,
+}
+
+impl ApplicationAdmission {
+    fn new(limits: RtmpSessionCeilings) -> Self {
+        Self {
+            limits,
+            counts: Mutex::new(SessionCounts::default()),
+        }
+    }
+
+    fn acquire(
+        self: &Arc<Self>,
+        counter: SessionCounter,
+    ) -> Result<ApplicationSessionLease, SessionLimitError> {
+        let mut counts = self
+            .counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (current, maximum) = match counter {
+            SessionCounter::Connections => (&mut counts.connections, self.limits.max_connections),
+            SessionCounter::Publishers => (&mut counts.publishers, self.limits.max_publishers),
+            SessionCounter::Viewers => (&mut counts.viewers, self.limits.max_viewers),
+        };
+        if *current >= maximum {
+            return Err(SessionLimitError { counter, maximum });
+        }
+        *current += 1;
+        Ok(ApplicationSessionLease {
+            admission: Arc::clone(self),
+            counter,
+        })
+    }
+}
+
+pub(super) struct ApplicationSessionLease {
+    admission: Arc<ApplicationAdmission>,
+    counter: SessionCounter,
+}
+
+impl Drop for ApplicationSessionLease {
+    fn drop(&mut self) {
+        let mut counts = self
+            .admission
+            .counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = match self.counter {
+            SessionCounter::Connections => &mut counts.connections,
+            SessionCounter::Publishers => &mut counts.publishers,
+            SessionCounter::Viewers => &mut counts.viewers,
+        };
+        *current = current.saturating_sub(1);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct SessionLimitError {
+    pub(super) counter: SessionCounter,
+    pub(super) maximum: usize,
+}
 
 /// Runtime-only admission bounds for one RTMP session.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -84,6 +383,10 @@ pub struct RtmpApplication {
     name: String,
     live: bool,
     idle_streams: bool,
+    publish_policy: RtmpAccessPolicy,
+    play_policy: RtmpAccessPolicy,
+    session_limits: RtmpSessionCeilings,
+    admission: Arc<ApplicationAdmission>,
     hub: Option<LiveHub>,
     push_targets: Arc<Vec<RtmpPushTarget>>,
     recorders: Arc<Vec<RtmpRecorderPolicy>>,
@@ -92,10 +395,15 @@ pub struct RtmpApplication {
 impl RtmpApplication {
     #[must_use]
     pub fn new(name: impl Into<String>, live: bool, idle_streams: bool) -> Self {
+        let session_limits = RtmpSessionCeilings::default();
         Self {
             name: name.into(),
             live,
             idle_streams,
+            publish_policy: RtmpAccessPolicy::default(),
+            play_policy: RtmpAccessPolicy::default(),
+            session_limits,
+            admission: Arc::new(ApplicationAdmission::new(session_limits)),
             hub: None,
             push_targets: Arc::new(Vec::new()),
             recorders: Arc::new(Vec::new()),
@@ -109,10 +417,15 @@ impl RtmpApplication {
         idle_streams: bool,
         recorders: impl IntoIterator<Item = RtmpRecorderPolicy>,
     ) -> Self {
+        let session_limits = RtmpSessionCeilings::default();
         Self {
             name: name.into(),
             live,
             idle_streams,
+            publish_policy: RtmpAccessPolicy::default(),
+            play_policy: RtmpAccessPolicy::default(),
+            session_limits,
+            admission: Arc::new(ApplicationAdmission::new(session_limits)),
             hub: None,
             push_targets: Arc::new(Vec::new()),
             recorders: Arc::new(recorders.into_iter().collect()),
@@ -128,14 +441,33 @@ impl RtmpApplication {
         push_targets: impl IntoIterator<Item = RtmpPushTarget>,
         recorders: impl IntoIterator<Item = RtmpRecorderPolicy>,
     ) -> Self {
+        let session_limits = RtmpSessionCeilings::default();
         Self {
             name: name.into(),
             live,
             idle_streams,
+            publish_policy: RtmpAccessPolicy::default(),
+            play_policy: RtmpAccessPolicy::default(),
+            session_limits,
+            admission: Arc::new(ApplicationAdmission::new(session_limits)),
             hub: Some(hub),
             push_targets: Arc::new(push_targets.into_iter().collect()),
             recorders: Arc::new(recorders.into_iter().collect()),
         }
+    }
+
+    #[must_use]
+    pub fn with_authorization(
+        mut self,
+        publish_policy: RtmpAccessPolicy,
+        play_policy: RtmpAccessPolicy,
+        session_limits: RtmpSessionCeilings,
+    ) -> Self {
+        self.publish_policy = publish_policy;
+        self.play_policy = play_policy;
+        self.session_limits = session_limits;
+        self.admission = Arc::new(ApplicationAdmission::new(session_limits));
+        self
     }
 
     #[must_use]
@@ -163,9 +495,27 @@ impl RtmpApplication {
         &self.push_targets
     }
 
+    #[must_use]
+    pub const fn session_limits(&self) -> RtmpSessionCeilings {
+        self.session_limits
+    }
+
     fn hub(&self) -> Option<LiveHub> {
         self.hub.clone()
     }
+
+    fn policy(&self, operation: SessionOperation) -> &RtmpAccessPolicy {
+        match operation {
+            SessionOperation::Publish => &self.publish_policy,
+            SessionOperation::Play => &self.play_policy,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum SessionOperation {
+    Publish,
+    Play,
 }
 
 #[derive(Clone)]
@@ -241,6 +591,7 @@ pub struct RtmpServiceRuntime {
     registry: Arc<RtmpRegistry>,
     hub: LiveHub,
     policy: RtmpSessionPolicy,
+    default_admission: Arc<ApplicationAdmission>,
     recorder_reaper: Option<RecorderReaperHandle>,
     recorder_reaper_owner: Option<Arc<RecorderReaperOwner>>,
 }
@@ -306,6 +657,7 @@ impl RtmpServiceRuntime {
             registry,
             hub,
             policy,
+            default_admission: Arc::new(ApplicationAdmission::new(RtmpSessionCeilings::default())),
             recorder_reaper,
             recorder_reaper_owner,
         }
@@ -328,7 +680,12 @@ impl RtmpServiceRuntime {
 
     #[must_use]
     pub fn session(&self) -> RtmpSession {
-        RtmpSession::from_runtime(self.for_session())
+        RtmpSession::from_runtime(self.for_session(), None)
+    }
+
+    #[must_use]
+    pub fn session_with_peer_addr(&self, peer_addr: Option<IpAddr>) -> RtmpSession {
+        RtmpSession::from_runtime(self.for_session(), peer_addr)
     }
 
     pub fn close_admission(&self) {
@@ -382,6 +739,34 @@ impl RtmpServiceRuntime {
         self.policy.application(name)
     }
 
+    pub(super) fn authorize(
+        &self,
+        application: &str,
+        operation: SessionOperation,
+        peer_addr: Option<IpAddr>,
+        query: Option<&str>,
+    ) -> Result<(), RtmpAuthorizationError> {
+        self.application(application)
+            .expect("authorization follows application lookup")
+            .policy(operation)
+            .authorize(peer_addr, query)
+    }
+
+    pub(super) fn acquire_connection(
+        &self,
+        application: &str,
+    ) -> Result<ApplicationSessionLease, SessionLimitError> {
+        self.admission(application)
+            .acquire(SessionCounter::Connections)
+    }
+
+    fn admission(&self, application: &str) -> &Arc<ApplicationAdmission> {
+        self.application(application)
+            .map_or(&self.default_admission, |application| {
+                &application.admission
+            })
+    }
+
     fn for_session(&self) -> Self {
         Self {
             admission_open: Arc::clone(&self.admission_open),
@@ -389,6 +774,7 @@ impl RtmpServiceRuntime {
             registry: Arc::clone(&self.registry),
             hub: self.hub.clone(),
             policy: self.policy.clone(),
+            default_admission: Arc::clone(&self.default_admission),
             recorder_reaper: self.recorder_reaper.clone(),
             recorder_reaper_owner: self.recorder_reaper_owner.clone(),
         }
@@ -444,6 +830,10 @@ impl RtmpServiceRuntime {
             .application(&key.application)
             .and_then(RtmpApplication::hub)
             .unwrap_or_else(|| self.hub.clone());
+        let role_lease = self
+            .admission(&key.application)
+            .acquire(SessionCounter::Publishers)
+            .map_err(PublisherRoleError::SessionLimit)?;
         let _transaction = hub.lock_roles();
         let lease = self.acquire_publisher_lease(&hub, &key, at_unix_ms)?;
         let policies = self
@@ -523,7 +913,11 @@ impl RtmpServiceRuntime {
             registration,
             Arc::clone(&self.registry),
             session_id,
-            PublisherOutputs { recorders, relays },
+            PublisherOutputs {
+                recorders,
+                relays,
+                session_lease: role_lease,
+            },
         ))
     }
 
@@ -546,6 +940,10 @@ impl RtmpServiceRuntime {
             .application(&key.application)
             .and_then(RtmpApplication::hub)
             .unwrap_or_else(|| self.hub.clone());
+        let role_lease = self
+            .admission(&key.application)
+            .acquire(SessionCounter::Viewers)
+            .map_err(PlaybackRoleError::SessionLimit)?;
         let _transaction = hub.lock_roles();
         if !idle_streams && !hub.has_publisher(&key) {
             return Err(PlaybackRoleError::NoPublisher);
@@ -568,6 +966,7 @@ impl RtmpServiceRuntime {
             protocol_stream_id,
             subscription,
             registration,
+            role_lease,
         ))
     }
 
@@ -605,6 +1004,7 @@ impl SessionRole {
 #[derive(Debug)]
 pub(super) enum PublisherRoleError {
     AdmissionClosed,
+    SessionLimit(SessionLimitError),
     Hub(LiveHubError),
     Catalog(CatalogError),
 }
@@ -613,6 +1013,7 @@ pub(super) enum PublisherRoleError {
 pub(super) enum PlaybackRoleError {
     AdmissionClosed,
     NoPublisher,
+    SessionLimit(SessionLimitError),
     Hub(LiveHubError),
     Catalog(CatalogError),
 }
@@ -828,5 +1229,97 @@ mod tests {
             Err(CatalogError::AdmissionClosed)
         ));
         assert!(registry.snapshot().streams.is_empty());
+    }
+
+    #[test]
+    fn access_policy_uses_the_first_matching_rule_and_requires_the_configured_token() {
+        let policy = RtmpAccessPolicy::new(
+            [
+                RtmpAccessRule::new(
+                    RtmpAccessAction::Deny,
+                    RtmpNetwork::parse("192.0.2.0/24").expect("valid network"),
+                ),
+                RtmpAccessRule::new(RtmpAccessAction::Allow, RtmpNetwork::All),
+            ],
+            Some(RtmpTokenPolicy::stream_query("token", "secret").expect("valid token policy")),
+        );
+
+        assert_eq!(
+            policy.authorize(
+                Some("192.0.2.10".parse().expect("valid peer")),
+                Some("token=secret")
+            ),
+            Err(RtmpAuthorizationError::NetworkDenied)
+        );
+        assert_eq!(
+            policy.authorize(
+                Some("198.51.100.10".parse().expect("valid peer")),
+                Some("token=wrong")
+            ),
+            Err(RtmpAuthorizationError::TokenRejected)
+        );
+        assert_eq!(
+            policy.authorize(
+                Some("198.51.100.10".parse().expect("valid peer")),
+                Some("token=secret")
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn application_session_ceilings_are_shared_and_released() {
+        let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
+            live_ingest: true,
+            manual_recording: false,
+        }));
+        let application = RtmpApplication::new("broadcast", true, true).with_authorization(
+            RtmpAccessPolicy::default(),
+            RtmpAccessPolicy::default(),
+            RtmpSessionCeilings::new(1, 1, 1),
+        );
+        let runtime = RtmpServiceRuntime::new(
+            "live",
+            registry,
+            LiveHub::new(LiveHubLimits::default()),
+            RtmpSessionPolicy::new([application]),
+        );
+
+        let connection = runtime
+            .acquire_connection("broadcast")
+            .expect("first connection lease");
+        assert!(matches!(
+            runtime.acquire_connection("broadcast"),
+            Err(SessionLimitError {
+                counter: SessionCounter::Connections,
+                ..
+            })
+        ));
+        drop(connection);
+
+        let key = StreamKey::new("live", "broadcast", "camera");
+        let publisher = runtime
+            .acquire_publisher_role(key.clone(), SessionId::new(), 1)
+            .expect("first publisher lease");
+        assert!(matches!(
+            runtime.acquire_publisher_role(key.clone(), SessionId::new(), 2),
+            Err(PublisherRoleError::SessionLimit(SessionLimitError {
+                counter: SessionCounter::Publishers,
+                ..
+            }))
+        ));
+        drop(publisher);
+
+        let viewer = runtime
+            .acquire_playback_role(key.clone(), SessionId::new(), 1, true, 3)
+            .expect("first viewer lease");
+        assert!(matches!(
+            runtime.acquire_playback_role(key, SessionId::new(), 1, true, 4),
+            Err(PlaybackRoleError::SessionLimit(SessionLimitError {
+                counter: SessionCounter::Viewers,
+                ..
+            }))
+        ));
+        drop(viewer);
     }
 }

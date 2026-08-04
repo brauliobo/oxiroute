@@ -272,6 +272,23 @@ const ACCESS_LOG_FORMS: &[DirectiveForm] = &[
         status: ParsedOnly,
     },
 ];
+const ACCESS_RULE_FORMS: &[DirectiveForm] = &[DirectiveForm {
+    form: "bounded publish/play IP rule",
+    contexts: RSA,
+    status: Enforced,
+}];
+const MAX_CONNECTIONS_FORMS: &[DirectiveForm] = &[
+    DirectiveForm {
+        form: "bounded per-application connection ceiling",
+        contexts: A,
+        status: Enforced,
+    },
+    DirectiveForm {
+        form: "service or global connection ceiling",
+        contexts: RS,
+        status: ParsedOnly,
+    },
+];
 const STREAM_BUCKETS_FORMS: &[DirectiveForm] = &[DirectiveForm {
     form: "any registered stream_buckets integer",
     contexts: RSA,
@@ -497,7 +514,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(2),
         ValueKind::AccessRule,
         Some("implicit allow"),
-        true
+        true;
+        ACCESS_RULE_FORMS
     ),
     directive!(
         "deny",
@@ -506,7 +524,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(2),
         ValueKind::AccessRule,
         Some("implicit allow"),
-        true
+        true;
+        ACCESS_RULE_FORMS
     ),
     directive!(
         "meta",
@@ -979,7 +998,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::Integer,
         None,
-        false
+        false;
+        MAX_CONNECTIONS_FORMS
     ),
     directive!(
         "rtmp_auto_push",

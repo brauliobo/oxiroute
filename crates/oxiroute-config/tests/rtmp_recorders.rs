@@ -166,6 +166,107 @@ fn applies_the_same_defaults_and_normalization_to_json() {
 }
 
 #[test]
+fn round_trips_rtmp_access_policies_and_session_ceilings_without_debug_secrets() {
+    let source = config(&service(
+        "live",
+        r#"        {
+          name = "camera",
+          live = true,
+          publish = {
+            rules = {
+              { action = "deny", network = "192.0.2.0/24" },
+              { action = "allow", network = "all" },
+            },
+            token = {
+              source = "stream_query",
+              parameter = "token",
+              secret = "publish-secret",
+            },
+          },
+          play = {
+            token = {
+              source = "stream_query",
+              parameter = "viewer",
+              secret = "viewer-secret",
+            },
+          },
+          limits = {
+            max_connections = 2,
+            max_publishers = 1,
+            max_viewers = 3,
+          },
+        },"#,
+    ));
+    let loaded = load_lua(&source).expect("RTMP access policy");
+    let application = &loaded.rtmp_services[0].applications[0];
+    assert_eq!(application.publish.rules.len(), 2);
+    assert_eq!(application.publish.rules[0].network, "192.0.2.0/24");
+    assert_eq!(
+        application
+            .publish
+            .token
+            .as_ref()
+            .expect("publish token")
+            .secret,
+        "publish-secret"
+    );
+    assert_eq!(application.limits.max_connections, 2);
+    assert_eq!(application.limits.max_publishers, 1);
+    assert_eq!(application.limits.max_viewers, 3);
+
+    let debug = format!("{application:?}");
+    assert!(!debug.contains("publish-secret"));
+    assert!(!debug.contains("viewer-secret"));
+    assert!(debug.contains("<redacted>"));
+
+    let rendered = render_lua(&loaded).expect("render RTMP access policy");
+    assert!(rendered.contains("network = \"192.0.2.0/24\",\n"));
+    assert!(rendered.contains("max_connections = 2,"));
+    assert_eq!(
+        load_lua(&rendered).expect("reload RTMP access policy"),
+        loaded
+    );
+}
+
+#[test]
+fn rejects_invalid_rtmp_access_rules_and_session_ceilings() {
+    let invalid_network = config(&service(
+        "live",
+        r#"        {
+          name = "camera",
+          live = true,
+          publish = { rules = { { action = "allow", network = "not-a-network" } } },
+        },"#,
+    ));
+    assert!(error(&invalid_network).contains("publish.rules[].network"));
+
+    let duplicate_rule = config(&service(
+        "live",
+        r#"        {
+          name = "camera",
+          live = true,
+          publish = {
+            rules = {
+              { action = "allow", network = "all" },
+              { action = "allow", network = "all" },
+            },
+          },
+        },"#,
+    ));
+    assert!(error(&duplicate_rule).contains("duplicate publish ACL rule"));
+
+    let zero_limit = config(&service(
+        "live",
+        r#"        {
+          name = "camera",
+          live = true,
+          limits = { max_connections = 0 },
+        },"#,
+    ));
+    assert!(error(&zero_limit).contains("limits.max_connections"));
+}
+
+#[test]
 fn loads_normalizes_and_deterministically_renders_the_complete_policy() {
     let source = one_recorder_source(
         true,

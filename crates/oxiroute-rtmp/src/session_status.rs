@@ -1,6 +1,9 @@
 use crate::{CatalogError, LiveHubError, MediaEventError, RtmpStreamPathError};
 
-use super::runtime::{PlaybackRoleError, PublisherRoleError};
+use super::runtime::{
+    PlaybackRoleError, PublisherRoleError, RtmpAuthorizationError, SessionCounter,
+    SessionLimitError, SessionOperation,
+};
 
 pub(super) const CONNECT_REJECTION_CODE: &str = "NetConnection.Connect.Rejected";
 pub(super) const PUBLISH_REJECTION_CODE: &str = "NetStream.Publish.BadName";
@@ -57,6 +60,57 @@ pub(super) fn connection_path(error: RtmpStreamPathError) -> Rejection {
     }
 }
 
+pub(super) fn connection_limit(error: SessionLimitError) -> Rejection {
+    Rejection::new(
+        CONNECT_REJECTION_CODE,
+        match error.counter {
+            SessionCounter::Connections => "RTMP application connection limit reached",
+            SessionCounter::Publishers | SessionCounter::Viewers => {
+                "RTMP application session limit reached"
+            }
+        },
+    )
+}
+
+pub(super) fn authorization(
+    operation: SessionOperation,
+    error: RtmpAuthorizationError,
+) -> Rejection {
+    let description = match (operation, error) {
+        (SessionOperation::Publish, RtmpAuthorizationError::NetworkDenied) => {
+            "RTMP publish denied by application ACL"
+        }
+        (SessionOperation::Play, RtmpAuthorizationError::NetworkDenied) => {
+            "RTMP play denied by application ACL"
+        }
+        (SessionOperation::Publish, RtmpAuthorizationError::TokenMissing) => {
+            "RTMP publish token is required in the stream query"
+        }
+        (SessionOperation::Play, RtmpAuthorizationError::TokenMissing) => {
+            "RTMP play token is required in the stream query"
+        }
+        (SessionOperation::Publish, RtmpAuthorizationError::TokenRejected) => {
+            "RTMP publish token was rejected"
+        }
+        (SessionOperation::Play, RtmpAuthorizationError::TokenRejected) => {
+            "RTMP play token was rejected"
+        }
+        (SessionOperation::Publish, RtmpAuthorizationError::QueryMalformed) => {
+            "RTMP publish stream query is malformed"
+        }
+        (SessionOperation::Play, RtmpAuthorizationError::QueryMalformed) => {
+            "RTMP play stream query is malformed"
+        }
+    };
+    Rejection::new(
+        match operation {
+            SessionOperation::Publish => PUBLISH_REJECTION_CODE,
+            SessionOperation::Play => PLAY_REJECTION_CODE,
+        },
+        description,
+    )
+}
+
 pub(super) fn publish_path(error: RtmpStreamPathError) -> Rejection {
     Rejection::new(PUBLISH_REJECTION_CODE, stream_path_description(error))
 }
@@ -70,6 +124,14 @@ pub(super) fn publisher_role(error: PublisherRoleError) -> Result<Rejection, Rtm
         PublisherRoleError::AdmissionClosed => Ok(Rejection::new(
             PUBLISH_REJECTION_CODE,
             "RTMP runtime is shutting down",
+        )),
+        PublisherRoleError::SessionLimit(error) => Ok(Rejection::new(
+            PUBLISH_REJECTION_CODE,
+            match error.counter {
+                SessionCounter::Publishers => "RTMP application publisher limit reached",
+                SessionCounter::Connections => "RTMP application connection limit reached",
+                SessionCounter::Viewers => "RTMP application session limit reached",
+            },
         )),
         PublisherRoleError::Hub(LiveHubError::PublisherAlreadyAttached { .. })
         | PublisherRoleError::Catalog(CatalogError::PublisherAlreadyAttached { .. }) => {
@@ -98,6 +160,14 @@ pub(super) fn playback_role(error: PlaybackRoleError) -> Result<Rejection, RtmpS
         PlaybackRoleError::NoPublisher => Ok(Rejection::new(
             PLAY_NOT_FOUND_CODE,
             "live stream has no publisher",
+        )),
+        PlaybackRoleError::SessionLimit(error) => Ok(Rejection::new(
+            PLAY_REJECTION_CODE,
+            match error.counter {
+                SessionCounter::Viewers => "RTMP application viewer limit reached",
+                SessionCounter::Connections => "RTMP application connection limit reached",
+                SessionCounter::Publishers => "RTMP application session limit reached",
+            },
         )),
         PlaybackRoleError::Hub(
             LiveHubError::StreamLimitReached { .. }

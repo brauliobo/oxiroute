@@ -45,6 +45,20 @@ fieldset.route-list(data-field="rtmp_services[].applications")
       label.enable-row.compact-enable(data-field="rtmp_services[].applications[].idle_streams")
         input(type="checkbox" v-model="application.idle_streams")
         span Allow viewers before a publisher
+      RtmpAccessPolicyEditor(:policy="application.publish" operation="publish")
+      RtmpAccessPolicyEditor(:policy="application.play" operation="play")
+      fieldset.object-block(data-field="rtmp_services[].applications[].limits")
+        legend Session ceilings
+        .field-grid
+          label.field(data-field="rtmp_services[].applications[].limits.max_connections")
+            span Maximum connections
+            input(type="number" min="1" max="100000" step="1" v-model.number="application.limits.max_connections")
+          label.field(data-field="rtmp_services[].applications[].limits.max_publishers")
+            span Maximum publishers
+            input(type="number" min="1" max="10000" step="1" v-model.number="application.limits.max_publishers")
+          label.field(data-field="rtmp_services[].applications[].limits.max_viewers")
+            span Maximum viewers
+            input(type="number" min="1" max="1000000" step="1" v-model.number="application.limits.max_viewers")
     fieldset.object-block(data-field="rtmp_services[].applications[].fanout")
       legend Fanout bounds
       .field-grid
@@ -97,7 +111,8 @@ fieldset.route-list(data-field="rtmp_services[].applications")
 </template>
 
 <script setup lang="ts">
-import type { RtmpApplicationConfig, RtmpRecorderConfig, RtmpServiceConfig } from '../config'
+import type { RtmpAccessPolicyConfig, RtmpApplicationConfig, RtmpRecorderConfig, RtmpServiceConfig } from '../config'
+import RtmpAccessPolicyEditor from './RtmpAccessPolicyEditor.vue'
 import RtmpRecorderEditor from './RtmpRecorderEditor.vue'
 
 const props = defineProps<{ service: RtmpServiceConfig }>()
@@ -111,6 +126,13 @@ function newApplication(): RtmpApplicationConfig {
     name: '',
     live: true,
     idle_streams: true,
+    publish: newAccessPolicy(),
+    play: newAccessPolicy(),
+    limits: {
+      max_connections: 1_024,
+      max_publishers: 256,
+      max_viewers: 1_024,
+    },
     push_targets: [],
     fanout: {
       max_subscribers: 1_024,
@@ -119,6 +141,10 @@ function newApplication(): RtmpApplicationConfig {
     },
     recorders: [],
   }
+}
+
+function newAccessPolicy(): RtmpAccessPolicyConfig {
+  return { rules: [], token: null }
 }
 
 function newRecorder(): RtmpRecorderConfig {

@@ -161,7 +161,7 @@ fn reports_truthful_key_and_form_statuses() {
     assert_eq!(report.entries.len(), 117);
     assert_eq!(report.directive_status.total(), 117);
     assert_eq!(report.form_status.total(), explicit_form_count);
-    assert_eq!(report.directive_status.enforced, 5);
+    assert_eq!(report.directive_status.enforced, 7);
     assert!(report.directive_status.enforced < report.entries.len());
     assert!(report.directive_status.partial > 0);
     assert!(report.form_status.enforced > 0);

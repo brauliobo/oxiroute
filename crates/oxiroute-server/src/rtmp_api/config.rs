@@ -2,7 +2,7 @@ use std::{io, path::Path, str::FromStr};
 
 use http::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE};
 use oxiroute_config::Config;
-use oxiroute_config_source::ConfigFormat;
+use oxiroute_config_source::{ConfigFormat, render_config};
 use pingora::protocols::http::ServerSession;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -143,19 +143,21 @@ impl ConfigApiState {
     fn config_response(&self) -> ApiResponse {
         match self.coordinator.load() {
             ConfigLoadOutcome::Loaded(document) => {
+                let (config, config_preview) =
+                    redacted_config_view(document.normalized_config, document.format);
                 let mut response = json!({
                     "schemaVersion": 1,
                     "diskRevision": document.disk_revision,
                     "candidateRevision": document.candidate_revision,
                     "activeRevision": self.active_revision(),
-                    "config": document.normalized_config,
+                    "config": config,
                     "configFormat": document.format,
                     "compositional": document.compositional,
                     "dependencyCount": document.dependencies.len(),
-                    "configPreview": document.config_preview,
+                    "configPreview": config_preview,
                     "diagnostics": document.diagnostics,
                 });
-                add_legacy_lua_preview(&mut response, document.format, &document.config_preview);
+                add_legacy_lua_preview(&mut response, document.format, &config_preview);
                 ApiResponse::json(200, &response)
             }
             ConfigLoadOutcome::Rejected(rejection) => ApiResponse::json(
@@ -183,14 +185,18 @@ impl ConfigApiState {
             Ok(candidate) => candidate,
             Err(response) => return response,
         };
+        let (normalized_config, config_preview) = redacted_config_view(
+            candidate.draft.normalized_config.clone(),
+            candidate.draft.format,
+        );
 
         let mut response = json!({
             "candidateRevision": candidate.draft.candidate_revision,
-            "normalizedConfig": candidate.draft.normalized_config,
+            "normalizedConfig": normalized_config,
             "configFormat": candidate.draft.format,
             "compositional": candidate.draft.compositional,
             "dependencyCount": candidate.draft.dependencies.len(),
-            "configPreview": candidate.draft.config_preview,
+            "configPreview": config_preview,
             "diagnostics": candidate.draft.diagnostics,
             "topology": candidate.topology,
             "restartRequired": candidate.restart_required,
@@ -201,11 +207,7 @@ impl ConfigApiState {
                 .expect("candidate diagnostics are an array")
                 .push(restart_required_diagnostic());
         }
-        add_legacy_lua_preview(
-            &mut response,
-            candidate.draft.format,
-            &candidate.draft.config_preview,
-        );
+        add_legacy_lua_preview(&mut response, candidate.draft.format, &config_preview);
         ApiResponse::json(200, &response)
     }
 
@@ -404,6 +406,8 @@ impl ConfigApiState {
     fn conflict_response(&self, conflict: &ConfigConflict) -> ApiResponse {
         match self.coordinator.load() {
             ConfigLoadOutcome::Loaded(document) => {
+                let (config, config_preview) =
+                    redacted_config_view(document.normalized_config, document.format);
                 let mut response = json!({
                     "schemaVersion": 1,
                     "diskRevision": document.disk_revision,
@@ -411,14 +415,14 @@ impl ConfigApiState {
                     "activeRevision": self.active_revision(),
                     "expectedRevision": conflict.expected_revision,
                     "outcome": "conflict",
-                    "config": document.normalized_config,
+                    "config": config,
                     "configFormat": document.format,
                     "compositional": document.compositional,
                     "dependencyCount": document.dependencies.len(),
-                    "configPreview": document.config_preview,
+                    "configPreview": config_preview,
                     "diagnostics": conflict.diagnostics,
                 });
-                add_legacy_lua_preview(&mut response, document.format, &document.config_preview);
+                add_legacy_lua_preview(&mut response, document.format, &config_preview);
                 ApiResponse::json(409, &response)
             }
             ConfigLoadOutcome::Rejected(rejection) => ApiResponse::json(
@@ -438,6 +442,23 @@ impl ConfigApiState {
             ),
         }
     }
+}
+
+const REDACTED_RTMP_TOKEN: &str = "<redacted>";
+
+fn redacted_config_view(mut config: Config, format: ConfigFormat) -> (Config, String) {
+    for service in &mut config.rtmp_services {
+        for application in &mut service.applications {
+            for policy in [&mut application.publish, &mut application.play] {
+                if let Some(token) = policy.token.as_mut() {
+                    token.secret = REDACTED_RTMP_TOKEN.into();
+                }
+            }
+        }
+    }
+    let preview = render_config(format, &config)
+        .expect("normalized configuration remains renderable after token redaction");
+    (config, preview)
 }
 
 fn add_legacy_lua_preview(response: &mut Value, format: ConfigFormat, preview: &str) {

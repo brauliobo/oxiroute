@@ -1,6 +1,6 @@
 use crate::model::{
     AlpnProtocol, CacheKeyComponent, ForwardHttpVersion, HttpRetryTrigger, HttpRoutePolicy,
-    RtmpFanoutPolicy,
+    RtmpFanoutPolicy, RtmpSessionCeilings,
 };
 
 pub(crate) const MAX_SOURCE_BYTES: usize = 1024 * 1024;
@@ -122,6 +122,16 @@ pub(crate) const MAX_RECORDER_ACTIVE_RECORDERS: u64 = 256;
 pub(crate) const MAX_RTMP_OUTBOUND_CHUNK_SIZE: u32 = 1_048_576;
 pub(crate) const MAX_RTMP_PUSH_TARGETS: usize = 16;
 pub(crate) const MAX_RTMP_APPLICATION_BYTES: usize = 255;
+pub(crate) const MAX_RTMP_APPLICATION_NAME_BYTES: usize = 128;
+pub(crate) const MAX_RTMP_ACCESS_RULES_PER_OPERATION: usize = 64;
+pub(crate) const MAX_RTMP_TOKEN_PARAMETER_BYTES: usize = 32;
+pub(crate) const MAX_RTMP_TOKEN_BYTES: usize = 128;
+pub(crate) const MAX_RTMP_APPLICATION_CONNECTIONS: u64 = 100_000;
+pub(crate) const MAX_RTMP_APPLICATION_PUBLISHERS: u64 = 10_000;
+pub(crate) const MAX_RTMP_APPLICATION_VIEWERS: u64 = 1_000_000;
+pub(crate) const DEFAULT_RTMP_APPLICATION_CONNECTIONS: u64 = 1_024;
+pub(crate) const DEFAULT_RTMP_APPLICATION_PUBLISHERS: u64 = 256;
+pub(crate) const DEFAULT_RTMP_APPLICATION_VIEWERS: u64 = 1_024;
 pub(crate) const MAX_RTMP_SUBSCRIBERS: u64 = 1_000_000;
 pub(crate) const MAX_RTMP_FANOUT_QUEUE_MESSAGES: u64 = 65_536;
 pub(crate) const MAX_RTMP_FANOUT_QUEUE_BYTES: u64 = 1_024 * 1_024 * 1_024;
@@ -231,6 +241,14 @@ pub(crate) const fn default_rtmp_fanout_policy() -> RtmpFanoutPolicy {
         max_subscribers: DEFAULT_RTMP_MAX_SUBSCRIBERS,
         max_queue_messages_per_subscriber: DEFAULT_RTMP_FANOUT_QUEUE_MESSAGES,
         max_queue_bytes_per_subscriber: DEFAULT_RTMP_FANOUT_QUEUE_BYTES,
+    }
+}
+
+pub(crate) const fn default_rtmp_session_ceilings() -> RtmpSessionCeilings {
+    RtmpSessionCeilings {
+        max_connections: DEFAULT_RTMP_APPLICATION_CONNECTIONS,
+        max_publishers: DEFAULT_RTMP_APPLICATION_PUBLISHERS,
+        max_viewers: DEFAULT_RTMP_APPLICATION_VIEWERS,
     }
 }
 

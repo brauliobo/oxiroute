@@ -6,8 +6,9 @@ use std::{
 
 use oxiroute_config::{
     AccessLogPolicy, Config, DownstreamTimeoutPolicy, Listener, ListenerBind, Protocol,
-    RtmpApplication, RtmpFanoutPolicy, RtmpPushTarget, RtmpRecorder, RtmpRecorderSegmentNaming,
-    RtmpRecorderStart, RtmpRecorderTimeBasis, RtmpRecorderTimezone, RtmpService, validate_config,
+    RtmpAccessPolicy, RtmpAccessRule, RtmpApplication, RtmpFanoutPolicy, RtmpPushTarget,
+    RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis,
+    RtmpRecorderTimezone, RtmpService, RtmpSessionCeilings, validate_config,
 };
 
 use crate::{
@@ -297,6 +298,10 @@ impl Lowerer {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one lowering pass keeps application provenance and canonical fields aligned"
+    )]
     fn lower_application(
         &mut self,
         application: &EffectiveRtmpApplication,
@@ -344,6 +349,27 @@ impl Lowerer {
                 origins: vec![target.origin.clone()],
             });
         }
+        for (operation, rules) in [
+            ("publish", &application.policy.publish_access),
+            ("play", &application.policy.play_access),
+        ] {
+            for (rule_index, rule) in rules.iter().enumerate() {
+                self.provenance.push(CanonicalProvenance {
+                    path: format!("{application_path}/{operation}/rules/{rule_index}"),
+                    origins: vec![rule.origin.clone()],
+                });
+            }
+        }
+        self.provenance.push(CanonicalProvenance {
+            path: format!("{application_path}/limits"),
+            origins: vec![
+                application
+                    .policy
+                    .max_connections_origin
+                    .clone()
+                    .unwrap_or_else(|| application.origin.clone()),
+            ],
+        });
 
         let recorders = application
             .policy
@@ -358,6 +384,35 @@ impl Lowerer {
             name,
             live: application.policy.live,
             idle_streams: application.policy.idle_streams,
+            publish: RtmpAccessPolicy {
+                rules: application
+                    .policy
+                    .publish_access
+                    .iter()
+                    .map(|rule| RtmpAccessRule {
+                        action: rule.action,
+                        network: rule.network.clone(),
+                    })
+                    .collect(),
+                token: None,
+            },
+            play: RtmpAccessPolicy {
+                rules: application
+                    .policy
+                    .play_access
+                    .iter()
+                    .map(|rule| RtmpAccessRule {
+                        action: rule.action,
+                        network: rule.network.clone(),
+                    })
+                    .collect(),
+                token: None,
+            },
+            limits: RtmpSessionCeilings {
+                max_connections: application.policy.max_connections.unwrap_or(1_024),
+                max_publishers: 256,
+                max_viewers: 1_024,
+            },
             push_targets: application
                 .push_targets
                 .iter()

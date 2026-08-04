@@ -35,6 +35,15 @@ fn parses_explicit_rtmp_application_and_stream_components() {
 }
 
 #[test]
+fn redacts_stream_query_arguments_from_debug_output() {
+    let path = RtmpStreamPath::parse("live", "camera?token=secret").expect("valid RTMP path");
+    let debug = format!("{path:?}");
+
+    assert!(!debug.contains("token=secret"));
+    assert!(debug.contains("<redacted>"));
+}
+
+#[test]
 fn bounds_rtmp_identity_components_before_retaining_them() {
     let application = "a".repeat(MAX_RTMP_APPLICATION_BYTES);
     let stream = "s".repeat(MAX_RTMP_STREAM_NAME_BYTES);

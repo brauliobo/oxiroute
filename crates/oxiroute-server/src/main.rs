@@ -40,7 +40,7 @@ use oxiroute_server::{
 use pingora::{
     apps::http_app::HttpServer,
     apps::{AcceptGate, ConnectionAdmission, ServerApp},
-    protocols::Stream,
+    protocols::{GetSocketDigest as _, Stream},
     proxy::http_proxy,
     server::{
         RunArgs, Server, ShutdownSignal, ShutdownSignalWatch, ShutdownWatch,
@@ -806,7 +806,15 @@ impl ServerApp for RtmpIngest {
             warn!("cannot start RTMP session because the system clock is invalid");
             return None;
         };
-        let mut session = self.runtime.session();
+        let peer_addr = downstream
+            .get_socket_digest()
+            .and_then(|digest| {
+                digest
+                    .peer_addr()
+                    .and_then(|address| address.as_inet().copied())
+            })
+            .map(|address| address.ip());
+        let mut session = self.runtime.session_with_peer_addr(peer_addr);
         let mut buffer = [0; RTMP_READ_BUFFER_SIZE];
         let mut shutdown = shutdown.clone();
         let mut playback_drain = interval(RTMP_PLAYBACK_DRAIN_INTERVAL);
@@ -2217,6 +2225,9 @@ mod tests {
                     name: "live".into(),
                     live: true,
                     idle_streams: true,
+                    publish: Default::default(),
+                    play: Default::default(),
+                    limits: Default::default(),
                     push_targets: Vec::new(),
                     fanout: oxiroute_config::RtmpFanoutPolicy::default(),
                     recorders: vec![RtmpRecorder {
