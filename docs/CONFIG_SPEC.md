@@ -215,6 +215,14 @@ return {
           name = "live",
           live = true,
           idle_streams = true,
+          vod = {
+            max_sessions = 64,
+            max_file_bytes = 67108864,
+            max_duration_ms = 21600000,
+            sources = {
+              { type = "local", name = "archive", root_directory = "/var/lib/oxiroute/recordings" },
+            },
+          },
           recorders = {
             {
               name = "archive",
@@ -257,6 +265,9 @@ Current constraints:
   configuration routes use bearer authentication, but the schema does not expose a remote
   management mode.
 - `management.ui_dir` optionally points to a prebuilt Vue distribution loaded into memory at daemon startup.
+- RTMP VOD sources are named local roots or HTTP/HTTPS origins. VOD paths are relative, no-follow,
+  single-range objects with bounded file size, duration, and concurrent sessions. HTTP origins are
+  resolved and checked against the service outbound policy before activation.
 - `stats` is optional. `binds` and `pages` together contain one to eight nonoverlapping IPv4/IPv6
   sockets. Every `binds` socket serves public read-only `/metrics` and `/ready`; `/stats` and
   `/api/v1/status` require a loopback peer and the configured Bearer token. Server

@@ -2,7 +2,7 @@ use std::time::SystemTime;
 
 use http::{
     HeaderValue, Response, StatusCode,
-    header::{ALLOW, CONTENT_LENGTH, CONTENT_TYPE, WWW_AUTHENTICATE},
+    header::{ALLOW, CONTENT_LENGTH, CONTENT_TYPE, HeaderName, WWW_AUTHENTICATE},
 };
 use serde_json::{Value, json};
 
@@ -13,6 +13,8 @@ pub struct ApiResponse {
     pub allow: Option<&'static str>,
     pub content_type: &'static str,
     pub www_authenticate: Option<&'static str>,
+    pub content_range: Option<String>,
+    pub accept_ranges: bool,
 }
 
 impl ApiResponse {
@@ -23,6 +25,8 @@ impl ApiResponse {
             allow: None,
             content_type,
             www_authenticate: None,
+            content_range: None,
+            accept_ranges: false,
         }
     }
 
@@ -58,6 +62,12 @@ impl ApiResponse {
         );
         response.www_authenticate = Some("Bearer");
         response
+    }
+
+    pub(crate) fn with_range(mut self, content_range: Option<String>) -> Self {
+        self.content_range = content_range;
+        self.accept_ranges = true;
+        self
     }
 }
 
@@ -100,6 +110,18 @@ pub(crate) fn to_http_response(response: ApiResponse) -> Response<Vec<u8>> {
         result
             .headers_mut()
             .insert(WWW_AUTHENTICATE, HeaderValue::from_static(challenge));
+    }
+    if let Some(content_range) = response.content_range {
+        result.headers_mut().insert(
+            HeaderName::from_static("content-range"),
+            HeaderValue::from_str(&content_range).expect("validated content range is a header"),
+        );
+    }
+    if response.accept_ranges {
+        result.headers_mut().insert(
+            HeaderName::from_static("accept-ranges"),
+            HeaderValue::from_static("bytes"),
+        );
     }
     result
 }

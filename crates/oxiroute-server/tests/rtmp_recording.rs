@@ -197,6 +197,7 @@ fn recording_config(root_directory: &std::path::Path, start: RtmpRecorderStart) 
                 limits: oxiroute_config::RtmpSessionCeilings::default(),
                 push_targets: Vec::new(),
                 fanout: oxiroute_config::RtmpFanoutPolicy::default(),
+                vod: None,
                 recorders: vec![rtmp_recorder("archive", start, root_directory)],
             }],
         }],

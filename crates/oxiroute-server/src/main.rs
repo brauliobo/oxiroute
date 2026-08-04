@@ -1671,6 +1671,7 @@ fn serve_generation(
                 .expect("management token path was required above"),
             management.ui_dir.as_deref(),
         )?
+        .with_vod_catalog(Arc::clone(&plan.rtmp_vod_catalog))
         .with_generation_manager(generation_manager.clone())
         .with_process_shutdown(process_shutdown);
         let app = ProcessAdmissionApp::new(
@@ -2227,6 +2228,7 @@ mod tests {
                     limits: oxiroute_config::RtmpSessionCeilings::default(),
                     push_targets: Vec::new(),
                     fanout: oxiroute_config::RtmpFanoutPolicy::default(),
+                    vod: None,
                     recorders: vec![RtmpRecorder {
                         name: "archive".into(),
                         start: RtmpRecorderStart::Continuous,

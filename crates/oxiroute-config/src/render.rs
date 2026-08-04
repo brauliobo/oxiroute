@@ -24,9 +24,10 @@ use crate::{
         L4Service, Listener, ListenerBind, Management, Protocol, RtmpAccessPolicy, RtmpAccessRule,
         RtmpAclAction, RtmpApplication, RtmpFanoutPolicy, RtmpPushTarget, RtmpRecorder,
         RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis, RtmpRecorderTimezone,
-        RtmpService, RtmpSessionCeilings, RtmpTokenPolicy, RtmpTokenSource, Stats, StatsPage,
-        StatsPageAdminPolicy, TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm,
-        UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls,
+        RtmpService, RtmpSessionCeilings, RtmpTokenPolicy, RtmpTokenSource, RtmpVodPolicy,
+        RtmpVodSource, Stats, StatsPage, StatsPageAdminPolicy, TlsProfile, TlsVersion, UdpPolicy,
+        UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer,
+        UpstreamTls,
     },
     validation::validate_config,
 };
@@ -526,6 +527,7 @@ impl Renderer {
             limits,
             push_targets,
             fanout,
+            vod,
             recorders,
         } = application;
         self.string_field("name", name);
@@ -544,10 +546,41 @@ impl Renderer {
         self.begin_table_field("fanout");
         self.rtmp_fanout(fanout);
         self.end_table();
+        self.optional_table_field("vod", vod.as_ref(), Self::rtmp_vod_policy);
         self.fallible_table_list_field("recorders", recorders, |renderer, recorder| {
             renderer.rtmp_recorder(service_name, name, recorder)
         })?;
         Ok(())
+    }
+
+    fn rtmp_vod_policy(&mut self, policy: &RtmpVodPolicy) {
+        self.integer_field("max_sessions", policy.max_sessions);
+        self.integer_field("max_file_bytes", policy.max_file_bytes);
+        self.integer_field("max_duration_ms", policy.max_duration_ms);
+        self.table_list_field("sources", &policy.sources, Self::rtmp_vod_source);
+    }
+
+    fn rtmp_vod_source(&mut self, source: &RtmpVodSource) {
+        match source {
+            RtmpVodSource::Local {
+                name,
+                root_directory,
+            } => {
+                self.string_field("type", "local");
+                self.string_field("name", name);
+                self.string_field(
+                    "root_directory",
+                    root_directory
+                        .to_str()
+                        .expect("validated VOD root directory is UTF-8"),
+                );
+            }
+            RtmpVodSource::Http { name, origin } => {
+                self.string_field("type", "http");
+                self.string_field("name", name);
+                self.string_field("origin", origin);
+            }
+        }
     }
 
     fn rtmp_push_target(&mut self, target: &RtmpPushTarget) {
@@ -636,13 +669,13 @@ impl Renderer {
             match start {
                 RtmpRecorderStart::Continuous => "continuous",
                 RtmpRecorderStart::Manual => "manual",
+            },
+        );
         self.begin_table_field("record_mask");
         self.boolean_field("audio", record_mask.audio);
         self.boolean_field("video", record_mask.video);
         self.boolean_field("keyframes", record_mask.keyframes);
         self.end_table();
-            },
-        );
         self.boolean_field("append", *append);
         self.boolean_field("lock", *lock);
         match max_size {

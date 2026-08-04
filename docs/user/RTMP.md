@@ -104,11 +104,6 @@ starts only after an exact stream and recorder control request:
     max_frames 1000000
     notify #true
     rotation_interval_ms 3600000
-`record_mask` may select audio, video, or keyframes-only video; at least one of audio/video is
-required. `append` resumes the exact existing segment when its FLV tail is valid, and `lock` holds
-an exclusive advisory lock while the segment is active. `max_size` and `max_frames` bound one
-segment; omission means no per-segment limit. Notifications retain only the latest bounded
-start/stop/failure outcome in the recorder snapshot.
     max_queue_messages 256
     max_queue_bytes 8388608
     shutdown_timeout_ms 5000
@@ -118,6 +113,12 @@ start/stop/failure outcome in the recorder snapshot.
   }
 }
 ```
+
+`record_mask` may select audio, video, or keyframes-only video; at least one of audio/video is
+required. `append` resumes the exact existing segment when its FLV tail is valid, and `lock` holds
+an exclusive advisory lock while the segment is active. `max_size` and `max_frames` bound one
+segment; omission means no per-segment limit. Notifications retain only the latest bounded
+start/stop/failure outcome in the recorder snapshot.
 
 Use the dashboard or the management client:
 
@@ -141,6 +142,37 @@ private material.
 The dashboard disables manual controls when there is no publisher, no manual recorder, a transition
 is in progress, or an observed codec is not recordable.
 
+## Add Bounded VOD
+
+An application may expose named local or HTTP VOD sources. RTMP playback uses the
+`source/path.flv` stream name; the authenticated management API serves the same object at
+`/api/v1/rtmp/vod/SERVICE/APPLICATION/SOURCE/path.flv` and accepts one byte range.
+
+```kdl
+(object)vod {
+  max_sessions 64
+  max_file_bytes 67108864
+  max_duration_ms 21600000
+  (array)sources {
+    (object)- {
+      type "local"
+      name "archive"
+      root_directory "/var/lib/oxiroute/recordings"
+    }
+    (object)- {
+      type "http"
+      name "origin"
+      origin "https://media.example.test/library"
+    }
+  }
+}
+```
+
+Local roots use pinned no-follow descriptors. HTTP origins must use HTTP or HTTPS, contain no
+credentials/query/fragment, resolve through the service outbound policy, and follow at most three
+redirects. File size, duration, active sessions, and range count are bounded; multiple ranges and
+chunked upstream responses are rejected.
+
 ## Current Boundaries
 
 - Legacy AVC video and AAC audio are recordable. Enhanced AVC, HEVC, and AV1 can be observed/fanned
@@ -149,8 +181,9 @@ is in progress, or an observed codec is not recordable.
   unbounded queue.
 - Continuous recording and exact-ID manual controls are integrated. Authenticated remote recorder
   administration and cross-process quota coordination are not.
-- HLS, DASH, VOD, callbacks, broad control parity, isolated exec, and complete directive lowering
-  remain future slices. Native `allow`/`deny` and application `max_connections` have bounded
+- HLS, richer callback fields, broad control parity, isolated exec, and complete directive lowering
+  remain future slices. Named local/HTTP VOD sources, bounded RTMP playback workers, and the
+  authenticated management range endpoint are integrated. Native `allow`/`deny` and application `max_connections` have bounded
   lowering; canonical token rules and publisher/viewer ceilings are canonical-only.
 - An RTMP parser accepting a directive does not mean the runtime enforces that directive. The
   compatibility registry reports enforced and disable-only forms separately from parsed-only,

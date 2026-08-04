@@ -17,6 +17,8 @@ mod publish;
 mod runtime;
 #[path = "session_status.rs"]
 mod status;
+#[path = "vod_playback.rs"]
+mod vod_playback;
 
 pub use playback::MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN;
 pub use runtime::{
@@ -84,7 +86,10 @@ impl RtmpSession {
     /// [`RtmpSessionError::NoActivePlayback`] when called without one.
     #[must_use]
     pub const fn is_playback_active(&self) -> bool {
-        matches!(self.role, Some(SessionRole::Playback(_)))
+        matches!(
+            self.role,
+            Some(SessionRole::Playback(_) | SessionRole::VodPlayback(_))
+        )
     }
 
     /// Returns whether the active publisher has emitted no metadata or media for the stale
@@ -160,6 +165,18 @@ impl RtmpSession {
         maximum_events: usize,
     ) -> Result<Vec<Vec<u8>>, RtmpSessionError> {
         playback::drain(self, maximum_events)
+    }
+
+    pub(super) fn drain_vod_playback(
+        &mut self,
+        maximum_events: usize,
+    ) -> Result<Vec<Vec<u8>>, RtmpSessionError> {
+        let Some(SessionRole::VodPlayback(mut playback)) = self.role.take() else {
+            return Err(RtmpSessionError::NoActivePlayback);
+        };
+        let result = playback.drain(self.protocol_mut(), maximum_events);
+        self.role = Some(SessionRole::VodPlayback(playback));
+        result
     }
 
     /// Detaches this connection's active publisher or viewer, if any.
@@ -362,11 +379,13 @@ impl RtmpSession {
     }
 
     fn playback_matches(&self, application: &str, protocol_name: &str) -> bool {
-        matches!(
-            &self.role,
-            Some(SessionRole::Playback(playback))
-                if playback.matches(application, protocol_name)
-        )
+        match &self.role {
+            Some(SessionRole::Playback(playback)) => playback.matches(application, protocol_name),
+            Some(SessionRole::VodPlayback(playback)) => {
+                playback.matches(application, protocol_name)
+            }
+            Some(SessionRole::Publisher(_)) | None => false,
+        }
     }
 
     fn publisher_mut(&mut self) -> &mut publish::PublishSession {

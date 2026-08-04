@@ -7,7 +7,8 @@ use std::{
 
 use crate::{
     CatalogError, LiveHub, LiveHubError, PublisherLease, RecorderDefinition, RtmpPushTarget,
-    RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry, SessionId, StreamKey,
+    RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry, SessionId, StreamKey, VodApplication,
+    VodError,
     recording_runtime::{
         RecorderController, RecorderReaperHandle, RecorderReaperOwner, RecorderShutdownControl,
         RtmpRecorderShutdown,
@@ -21,6 +22,7 @@ use super::{
     MAX_INBOUND_AMF0_VALUES, MAX_INBOUND_CHUNK_SIZE, MAX_INBOUND_MESSAGE_SIZE, RtmpSession,
     playback::PlaybackSession,
     publish::{PublishSession, PublisherOutputs},
+    vod_playback::{VodPlaybackSession, VodPlaybackStart},
 };
 
 pub const RTMP_STALE_PUBLISHER_THRESHOLD_MS: u64 = 30_000;
@@ -388,6 +390,7 @@ pub struct RtmpApplication {
     session_limits: RtmpSessionCeilings,
     admission: Arc<ApplicationAdmission>,
     hub: Option<LiveHub>,
+    vod: Option<Arc<VodApplication>>,
     push_targets: Arc<Vec<RtmpPushTarget>>,
     recorders: Arc<Vec<RtmpRecorderPolicy>>,
 }
@@ -405,6 +408,7 @@ impl RtmpApplication {
             session_limits,
             admission: Arc::new(ApplicationAdmission::new(session_limits)),
             hub: None,
+            vod: None,
             push_targets: Arc::new(Vec::new()),
             recorders: Arc::new(Vec::new()),
         }
@@ -427,6 +431,7 @@ impl RtmpApplication {
             session_limits,
             admission: Arc::new(ApplicationAdmission::new(session_limits)),
             hub: None,
+            vod: None,
             push_targets: Arc::new(Vec::new()),
             recorders: Arc::new(recorders.into_iter().collect()),
         }
@@ -451,9 +456,16 @@ impl RtmpApplication {
             session_limits,
             admission: Arc::new(ApplicationAdmission::new(session_limits)),
             hub: Some(hub),
+            vod: None,
             push_targets: Arc::new(push_targets.into_iter().collect()),
             recorders: Arc::new(recorders.into_iter().collect()),
         }
+    }
+
+    #[must_use]
+    pub fn with_vod(mut self, vod: Option<Arc<VodApplication>>) -> Self {
+        self.vod = vod;
+        self
     }
 
     #[must_use]
@@ -493,6 +505,11 @@ impl RtmpApplication {
     #[must_use]
     pub fn push_targets(&self) -> &[RtmpPushTarget] {
         &self.push_targets
+    }
+
+    #[must_use]
+    pub fn vod(&self) -> Option<Arc<VodApplication>> {
+        self.vod.clone()
     }
 
     #[must_use]
@@ -970,6 +987,46 @@ impl RtmpServiceRuntime {
         ))
     }
 
+    pub(super) fn acquire_vod_playback(
+        &self,
+        application: &str,
+        source: &str,
+        path: &str,
+        stream_name: String,
+        protocol_stream_id: u32,
+    ) -> Result<VodPlaybackSession, PlaybackRoleError> {
+        let admission_open = self
+            .admission_open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !*admission_open {
+            return Err(PlaybackRoleError::AdmissionClosed);
+        }
+        let application_policy = self
+            .application(application)
+            .ok_or(PlaybackRoleError::NoPublisher)?;
+        let vod = application_policy
+            .vod()
+            .ok_or(PlaybackRoleError::NoPublisher)?;
+        vod.validate_request(source, path)
+            .map_err(PlaybackRoleError::Vod)?;
+        let session_lease = self
+            .admission(application)
+            .acquire(SessionCounter::Viewers)
+            .map_err(PlaybackRoleError::SessionLimit)?;
+        let vod_lease = vod.reserve().map_err(PlaybackRoleError::Vod)?;
+        Ok(VodPlaybackSession::start(VodPlaybackStart {
+            application: application.to_owned(),
+            stream_name,
+            protocol_stream_id,
+            application_source: vod,
+            source: source.to_owned(),
+            path: path.to_owned(),
+            vod_lease,
+            session_lease,
+        }))
+    }
+
     #[cfg(test)]
     fn publisher_presence(&self, key: &StreamKey) -> (bool, bool) {
         let _transaction = self.hub.lock_roles();
@@ -983,6 +1040,7 @@ impl RtmpServiceRuntime {
 pub(super) enum SessionRole {
     Publisher(PublishSession),
     Playback(PlaybackSession),
+    VodPlayback(VodPlaybackSession),
 }
 
 impl SessionRole {
@@ -990,6 +1048,7 @@ impl SessionRole {
         match self {
             Self::Publisher(publisher) => publisher.observe_at(at_unix_ms),
             Self::Playback(playback) => playback.observe_at(at_unix_ms),
+            Self::VodPlayback(_) => {}
         }
     }
 
@@ -997,6 +1056,10 @@ impl SessionRole {
         match self {
             Self::Publisher(publisher) => publisher.release(at_unix_ms),
             Self::Playback(playback) => playback.release(at_unix_ms),
+            Self::VodPlayback(playback) => {
+                playback.release();
+                Ok(())
+            }
         }
     }
 }
@@ -1016,6 +1079,7 @@ pub(super) enum PlaybackRoleError {
     SessionLimit(SessionLimitError),
     Hub(LiveHubError),
     Catalog(CatalogError),
+    Vod(VodError),
 }
 
 pub(super) fn release_role<C, F>(

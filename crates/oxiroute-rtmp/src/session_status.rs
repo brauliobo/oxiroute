@@ -1,4 +1,4 @@
-use crate::{CatalogError, LiveHubError, MediaEventError, RtmpStreamPathError};
+use crate::{CatalogError, LiveHubError, MediaEventError, RtmpStreamPathError, VodError};
 
 use super::runtime::{
     PlaybackRoleError, PublisherRoleError, RtmpAuthorizationError, SessionCounter,
@@ -42,6 +42,8 @@ pub enum RtmpSessionError {
     MissingMetadata,
     #[error("RTMP playback drain requires an active live playback role")]
     NoActivePlayback,
+    #[error("RTMP VOD playback failed: {0}")]
+    Vod(#[from] VodError),
 }
 
 pub(super) fn connection_path(error: RtmpStreamPathError) -> Rejection {
@@ -180,6 +182,13 @@ pub(super) fn playback_role(error: PlaybackRoleError) -> Result<Rejection, RtmpS
         )),
         PlaybackRoleError::Hub(error) => Err(error.into()),
         PlaybackRoleError::Catalog(error) => Err(error.into()),
+        PlaybackRoleError::Vod(error) => {
+            let _ = error;
+            Ok(Rejection::new(
+                PLAY_NOT_FOUND_CODE,
+                "VOD source is unavailable",
+            ))
+        }
     }
 }
 

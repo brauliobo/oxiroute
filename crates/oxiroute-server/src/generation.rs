@@ -1815,6 +1815,7 @@ mod tests {
                 limits: oxiroute_config::RtmpSessionCeilings::default(),
                 push_targets: Vec::new(),
                 fanout: oxiroute_config::RtmpFanoutPolicy::default(),
+                vod: None,
                 recorders: Vec::new(),
             }],
         });

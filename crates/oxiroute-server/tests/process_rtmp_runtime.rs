@@ -626,6 +626,7 @@ fn idle_runtime_config(management_address: SocketAddr, rtmp_address: SocketAddr)
                 limits: oxiroute_config::RtmpSessionCeilings::default(),
                 push_targets: Vec::new(),
                 fanout: oxiroute_config::RtmpFanoutPolicy::default(),
+                vod: None,
                 recorders: Vec::new(),
             }],
         }],
@@ -724,6 +725,7 @@ fn handoff_runtime_config(
                 limits: oxiroute_config::RtmpSessionCeilings::default(),
                 push_targets: Vec::new(),
                 fanout: oxiroute_config::RtmpFanoutPolicy::default(),
+                vod: None,
                 recorders: Vec::new(),
             }],
         }],
@@ -878,6 +880,7 @@ fn application(name: &str, start: RtmpRecorderStart, root_directory: &Path) -> R
         limits: oxiroute_config::RtmpSessionCeilings::default(),
         push_targets: Vec::new(),
         fanout: oxiroute_config::RtmpFanoutPolicy::default(),
+        vod: None,
         recorders: vec![rtmp_recorder_with_queue_bytes(
             "archive",
             start,

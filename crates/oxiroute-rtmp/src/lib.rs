@@ -2,6 +2,7 @@ pub const RTMP_VERSION: u8 = 3;
 pub const HANDSHAKE_BLOCK_SIZE: usize = 1536;
 
 mod catalog;
+mod client;
 mod directives;
 mod flv;
 mod live;
@@ -12,6 +13,12 @@ mod recording_store;
 mod recording_worker;
 mod relay;
 mod session;
+mod vod;
+
+pub use client::{
+    DestinationPolicyError, RtmpClientOptions, RtmpCredential, RtmpOutboundPolicy, RtmpRtmpsMode,
+    RtmpTransport,
+};
 
 pub use catalog::{
     CatalogError, MAX_RTMP_APPLICATION_BYTES, MAX_RTMP_QUERY_BYTES, MAX_RTMP_STREAM_NAME_BYTES,
@@ -58,6 +65,11 @@ pub use session::{
     RtmpAccessPolicy, RtmpAccessRule, RtmpApplication, RtmpNetwork, RtmpRecorderLifecycle,
     RtmpServiceRuntime, RtmpSession, RtmpSessionCeilings, RtmpSessionError, RtmpSessionLimits,
     RtmpSessionPolicy, RtmpTokenPolicy,
+};
+pub use vod::{
+    MAX_VOD_EVENTS, MAX_VOD_HTTP_HEADER_BYTES, MAX_VOD_ORIGIN_BYTES, MAX_VOD_PATH_BYTES,
+    MAX_VOD_REDIRECTS, MAX_VOD_SOURCE_NAME_BYTES, VodApplication, VodCatalog, VodError, VodLease,
+    VodLimits, VodObject, VodRange, VodSourceDefinition,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
