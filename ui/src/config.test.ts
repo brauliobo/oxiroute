@@ -30,6 +30,8 @@ const currentCanonicalFields = [
   'certificates[].source.private_key_path',
   'certificates[].source.live_directory_path',
   'certificates[].source.archive_directory_path',
+  'certificates[].source.validity_days',
+  'certificates[].source.key_type',
   'tls_profiles',
   'tls_profiles[].name',
   'tls_profiles[].certificates',
@@ -305,6 +307,12 @@ describe('canonical field registry', () => {
       final_redispatch: true,
     }
 
+    expect(isCanonicalConfig(config)).toBe(true)
+    config.certificates[0]!.source = {
+      type: 'self_signed_development',
+      validity_days: 7,
+      key_type: 'ecdsa_p256',
+    }
     expect(isCanonicalConfig(config)).toBe(true)
     route.action.policy.retry.target = 'next_server'
     expect(isCanonicalConfig(config)).toBe(false)

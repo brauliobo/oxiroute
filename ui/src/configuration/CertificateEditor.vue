@@ -22,6 +22,7 @@ fieldset.object-block(data-field="certificates[].source")
     select(:value="certificate.source.type" @change="changeSource")
       option(value="files") Direct files
       option(value="certbot") Certbot lineage
+      option(value="self_signed_development") Development self-signed
   .field-grid(v-if="certificate.source.type === 'files'")
     label.field(data-field="certificates[].source.certificate_chain_path")
       span Certificate chain path
@@ -29,25 +30,49 @@ fieldset.object-block(data-field="certificates[].source")
     label.field(data-field="certificates[].source.private_key_path")
       span Private key path
       input(type="text" v-model="certificate.source.private_key_path")
-  .field-grid(v-else)
+  .field-grid(v-else-if="certificate.source.type === 'certbot'")
     label.field(data-field="certificates[].source.live_directory_path")
       span Live directory path
       input(type="text" v-model="certificate.source.live_directory_path")
     label.field(data-field="certificates[].source.archive_directory_path")
       span Archive directory path
       input(type="text" v-model="certificate.source.archive_directory_path")
+  .field-grid(v-else)
+    label.field(data-field="certificates[].source.validity_days")
+      span Validity days
+      input(type="number" min="1" max="30" step="1" :value="certificate.source.validity_days" @input="setSelfSignedValidity")
+    label.field(data-field="certificates[].source.key_type")
+      span Key type
+      select(:value="certificate.source.key_type" @change="setSelfSignedKeyType")
+        option(value="ecdsa_p256") ECDSA P-256
+        option(value="rsa_2048") RSA 2048
 </template>
 
 <script setup lang="ts">
-import type { CertificateConfig } from '../config'
+import type { CertificateConfig, SelfSignedKeyType } from '../config'
 import StringListField from '../StringListField.vue'
 
 const props = defineProps<{ certificate: CertificateConfig }>()
 defineEmits<{ remove: [] }>()
 
 function changeSource(event: Event): void {
-  props.certificate.source = (event.target as HTMLSelectElement).value === 'certbot'
+  const sourceType = (event.target as HTMLSelectElement).value
+  props.certificate.source = sourceType === 'certbot'
     ? { type: 'certbot', live_directory_path: '', archive_directory_path: '' }
-    : { type: 'files', certificate_chain_path: '', private_key_path: '' }
+    : sourceType === 'self_signed_development'
+      ? { type: 'self_signed_development', validity_days: 7, key_type: 'ecdsa_p256' }
+      : { type: 'files', certificate_chain_path: '', private_key_path: '' }
+}
+
+function setSelfSignedValidity(event: Event): void {
+  if (props.certificate.source.type === 'self_signed_development') {
+    props.certificate.source.validity_days = Number((event.target as HTMLInputElement).value)
+  }
+}
+
+function setSelfSignedKeyType(event: Event): void {
+  if (props.certificate.source.type === 'self_signed_development') {
+    props.certificate.source.key_type = (event.target as HTMLSelectElement).value as SelfSignedKeyType
+  }
 }
 </script>

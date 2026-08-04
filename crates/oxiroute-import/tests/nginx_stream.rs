@@ -11,7 +11,7 @@ use oxiroute_import::nginx::{
 #[test]
 fn resolves_static_stream_upstreams_and_forward_references() {
     let resolved = resolve_source(
-        br#"
+        br"
             stream {
                 server { listen 15432; proxy_pass postgres; }
                 upstream postgres {
@@ -19,7 +19,7 @@ fn resolves_static_stream_upstreams_and_forward_references() {
                     server unix:/run/backup.sock;
                 }
             }
-        "#,
+        ",
     );
 
     assert!(
@@ -58,7 +58,7 @@ fn lowers_stream_tcp_service_with_inherited_and_local_timeouts() {
     let directory = tempfile::tempdir().expect("stream fixture directory");
     fs::write(
         directory.path().join("nginx.conf"),
-        br#"
+        br"
             stream {
                 proxy_connect_timeout 7s;
                 proxy_timeout 11m;
@@ -69,7 +69,7 @@ fn lowers_stream_tcp_service_with_inherited_and_local_timeouts() {
                     proxy_pass postgres;
                 }
             }
-        "#,
+        ",
     )
     .expect("write stream fixture");
 
@@ -122,12 +122,12 @@ fn preserves_include_graph_and_provenance_for_stream_upstream_lowering() {
     let directory = tempfile::tempdir().expect("stream include fixture directory");
     fs::write(
         directory.path().join("nginx.conf"),
-        br#"
+        br"
             stream {
                 include stream-upstreams.conf;
                 server { listen 15432; proxy_pass database; }
             }
-        "#,
+        ",
     )
     .expect("write stream include root");
     fs::write(
@@ -187,7 +187,7 @@ fn blocks_udp_preread_and_dynamic_stream_routing() {
     let directory = tempfile::tempdir().expect("blocked stream fixture directory");
     fs::write(
         directory.path().join("nginx.conf"),
-        br#"
+        br"
             stream {
                 map $ssl_preread_server_name $backend { default 127.0.0.1:5432; }
                 server {
@@ -196,7 +196,7 @@ fn blocks_udp_preread_and_dynamic_stream_routing() {
                     proxy_pass $backend;
                 }
             }
-        "#,
+        ",
     )
     .expect("write blocked stream fixture");
 
@@ -228,14 +228,14 @@ fn complete_root_merges_stream_services_and_marks_stream_occurrences() {
     let directory = tempfile::tempdir().expect("complete stream root directory");
     fs::write(
         directory.path().join("nginx.conf"),
-        br#"
+        br"
             events { worker_connections 64; }
             http { access_log off; server { listen 18080; location / { return 200 ok; } } }
             stream {
                 upstream database { server 127.0.0.1:5432; }
                 server { listen 15432; proxy_pass database; }
             }
-        "#,
+        ",
     )
     .expect("write complete stream root");
 
