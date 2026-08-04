@@ -8,7 +8,8 @@ use std::{
 
 use crate::{
     CertbotReconciler, ForwardHttp1ServicePlan, ForwardHttp2ServicePlan, HealthBuildError,
-    HealthSupervisor, L4ServicePlan, PoolError, PreparedTls, RelayPolicy, RoundRobinPool, Route,
+    HealthSupervisor, L4ServicePlan, PassiveFailurePolicy, PoolError, PreparedTls, RelayPolicy,
+    RoundRobinPool, Route,
     RouteError, RouteTable, RuntimeEndpoint, TlsBuildError, TlsProfilePlan, TopologySnapshot,
     health,
     http_action::{
@@ -458,13 +459,26 @@ impl RuntimePlan {
 ///
 /// Returns an error when a pool, route, reference, or health probe cannot be compiled.
 pub fn runtime_plan(config: &Config) -> Result<RuntimePlan, ServicePlanError> {
+    runtime_plan_with_passive_failure_policy(config, PassiveFailurePolicy::default())
+}
+
+/// Compiles one immutable runtime generation with an explicit passive endpoint policy.
+///
+/// # Errors
+///
+/// Returns an error when a pool, route, reference, or health probe cannot be compiled, including
+/// when the passive policy exceeds its runtime bounds.
+pub fn runtime_plan_with_passive_failure_policy(
+    config: &Config,
+    passive_policy: PassiveFailurePolicy,
+) -> Result<RuntimePlan, ServicePlanError> {
     let mut config = config.clone();
     oxiroute_config::validate_config(&mut config)
         .map_err(|source| ServicePlanError::InvalidConfig(Box::new(source)))?;
     reject_unimplemented_runtime_policies(&config)?;
     let tls = crate::tls::prepare_tls(&config)
         .map_err(|source| ServicePlanError::Tls(Box::new(source)))?;
-    let pools = compile_pools(&config)?;
+    let pools = compile_pools(&config, passive_policy)?;
     let http_services = compile_http_services(&config, &pools.by_name)?;
     let forward_services = compile_forward_proxy_services(&config)?;
     let rtmp_services = compile_rtmp_services(&config)?;
@@ -546,7 +560,10 @@ struct CompiledPools {
     clippy::too_many_lines,
     reason = "pool compilation performs one atomic validation and construction pass"
 )]
-fn compile_pools(config: &Config) -> Result<CompiledPools, ServicePlanError> {
+fn compile_pools(
+    config: &Config,
+    passive_policy: PassiveFailurePolicy,
+) -> Result<CompiledPools, ServicePlanError> {
     let protected_addresses: Arc<[std::net::SocketAddr]> = config
         .management
         .iter()
@@ -626,12 +643,13 @@ fn compile_pools(config: &Config) -> Result<CompiledPools, ServicePlanError> {
                 source,
             })?;
         let selector = Arc::new(
-            RoundRobinPool::new_named_servers(
+            RoundRobinPool::new_named_servers_with_policy(
                 pool.name.clone(),
                 servers,
                 pool.algorithm.clone(),
                 pool.health_check.as_ref().map(|health| health.startup),
                 pool.queue_timeout_ms.map(Duration::from_millis),
+                passive_policy,
             )
             .map_err(|source| ServicePlanError::Pool {
                 pool: pool.name.clone(),

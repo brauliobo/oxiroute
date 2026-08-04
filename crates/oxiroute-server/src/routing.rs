@@ -8,6 +8,7 @@ use std::{
         Arc, Mutex, RwLock,
         atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering, fence},
     },
+    time::{Duration, SystemTime},
 };
 
 use http::{
@@ -571,6 +572,81 @@ pub enum HealthFailure {
     ProtocolError = 4,
 }
 
+const DEFAULT_PASSIVE_FAILURE_THRESHOLD: u16 = 3;
+const DEFAULT_PASSIVE_EJECTION_DURATION: Duration = Duration::from_secs(30);
+const DEFAULT_PASSIVE_MAX_EJECTION_DURATION: Duration = Duration::from_secs(300);
+const MAX_PASSIVE_FAILURE_THRESHOLD: u16 = 100;
+const MAX_PASSIVE_EJECTION_DURATION: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Bounded policy for passively ejecting endpoints after attributed upstream failures.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PassiveFailurePolicy {
+    pub consecutive_failure_threshold: u16,
+    pub initial_ejection_duration: Duration,
+    pub max_ejection_duration: Duration,
+}
+
+impl PassiveFailurePolicy {
+    #[must_use]
+    pub const fn new(
+        consecutive_failure_threshold: u16,
+        initial_ejection_duration: Duration,
+        max_ejection_duration: Duration,
+    ) -> Self {
+        Self {
+            consecutive_failure_threshold,
+            initial_ejection_duration,
+            max_ejection_duration,
+        }
+    }
+
+    fn validate(self) -> Result<(), PoolError> {
+        if self.consecutive_failure_threshold == 0
+            || self.consecutive_failure_threshold > MAX_PASSIVE_FAILURE_THRESHOLD
+        {
+            return Err(PoolError::InvalidPassivePolicy {
+                detail: "consecutive failure threshold must be between 1 and 100",
+            });
+        }
+        if self.initial_ejection_duration.is_zero() {
+            return Err(PoolError::InvalidPassivePolicy {
+                detail: "initial ejection duration must be nonzero",
+            });
+        }
+        if self.initial_ejection_duration > self.max_ejection_duration {
+            return Err(PoolError::InvalidPassivePolicy {
+                detail: "maximum ejection duration must not be shorter than the initial duration",
+            });
+        }
+        if self.max_ejection_duration > MAX_PASSIVE_EJECTION_DURATION {
+            return Err(PoolError::InvalidPassivePolicy {
+                detail: "maximum ejection duration must not exceed 24 hours",
+            });
+        }
+        Ok(())
+    }
+
+    fn ejection_duration_for(self, backoff_step: u64) -> Duration {
+        let exponent = backoff_step.saturating_sub(1).min(31);
+        let multiplier = 1_u32 << exponent;
+        self.initial_ejection_duration
+            .checked_mul(multiplier)
+            .map_or(self.max_ejection_duration, |duration| {
+                duration.min(self.max_ejection_duration)
+            })
+    }
+}
+
+impl Default for PassiveFailurePolicy {
+    fn default() -> Self {
+        Self::new(
+            DEFAULT_PASSIVE_FAILURE_THRESHOLD,
+            DEFAULT_PASSIVE_EJECTION_DURATION,
+            DEFAULT_PASSIVE_MAX_EJECTION_DURATION,
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[repr(u8)]
@@ -612,6 +688,15 @@ impl HealthOverride {
 }
 
 impl HealthFailure {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Timeout => "timeout",
+            Self::ConnectFailed => "connect_failed",
+            Self::UnexpectedStatus => "unexpected_status",
+            Self::ProtocolError => "protocol_error",
+        }
+    }
+
     const fn from_u8(value: u8) -> Option<Self> {
         match value {
             1 => Some(Self::Timeout),
@@ -653,6 +738,16 @@ struct PoolEndpoint {
     consecutive_successes: AtomicU64,
     consecutive_failures: AtomicU64,
     last_failure: AtomicU8,
+    passive_ejected: AtomicBool,
+    passive_failure_count: AtomicU64,
+    passive_consecutive_failures: AtomicU64,
+    passive_ejection_count: AtomicU64,
+    passive_backoff_step: AtomicU64,
+    passive_last_failure: AtomicU8,
+    passive_ejected_at_unix_ms: AtomicU64,
+    passive_ejection_until_unix_ms: AtomicU64,
+    passive_last_recovery_at_unix_ms: AtomicU64,
+    passive_recovery_count: AtomicU64,
 }
 
 impl PoolEndpoint {
@@ -683,6 +778,16 @@ impl PoolEndpoint {
             consecutive_successes: AtomicU64::new(0),
             consecutive_failures: AtomicU64::new(0),
             last_failure: AtomicU8::new(0),
+            passive_ejected: AtomicBool::new(false),
+            passive_failure_count: AtomicU64::new(0),
+            passive_consecutive_failures: AtomicU64::new(0),
+            passive_ejection_count: AtomicU64::new(0),
+            passive_backoff_step: AtomicU64::new(0),
+            passive_last_failure: AtomicU8::new(0),
+            passive_ejected_at_unix_ms: AtomicU64::new(0),
+            passive_ejection_until_unix_ms: AtomicU64::new(0),
+            passive_last_recovery_at_unix_ms: AtomicU64::new(0),
+            passive_recovery_count: AtomicU64::new(0),
         }
     }
 
@@ -690,13 +795,22 @@ impl PoolEndpoint {
         EndpointHealthState::from_u8(self.state.load(Ordering::Acquire))
     }
 
-    fn selectable(&self) -> bool {
+    fn selectable_at(&self, now_unix_ms: u64) -> bool {
         self.administrative_state() == AdministrativeState::Ready
+            && !self.passively_ejected_at(now_unix_ms)
             && match self.health_override() {
                 HealthOverride::Auto => self.state().selectable(),
                 HealthOverride::Up => true,
                 HealthOverride::Down => false,
             }
+    }
+
+    fn passively_ejected_at(&self, now_unix_ms: u64) -> bool {
+        self.passive_ejected.load(Ordering::Acquire)
+            && self
+                .passive_ejection_until_unix_ms
+                .load(Ordering::Acquire)
+                > now_unix_ms
     }
 
     fn has_capacity(&self) -> bool {
@@ -724,22 +838,32 @@ impl PoolEndpoint {
             && self.administrative_state() != AdministrativeState::Maintenance
     }
 
-    fn try_acquire(self: &Arc<Self>, queue: &Arc<PoolQueue>) -> Option<EndpointLease> {
-        if !self.selectable() {
+    fn try_acquire(
+        self: &Arc<Self>,
+        queue: &Arc<PoolQueue>,
+        health: &Arc<PoolHealthState>,
+        now_unix_ms: u64,
+    ) -> Option<EndpointLease> {
+        if !self.selectable_at(now_unix_ms) {
             return None;
         }
-        self.try_acquire_capacity()?;
-        if !self.selectable() {
+        self.try_acquire_capacity(now_unix_ms)?;
+        if !self.selectable_at(now_unix_ms) {
             self.release_capacity(queue);
             return None;
         }
-        Some(EndpointLease::acquired(Arc::clone(self), Arc::clone(queue)))
+        Some(EndpointLease::acquired(
+            Arc::clone(self),
+            Arc::clone(queue),
+            Arc::clone(health),
+        ))
     }
 
-    fn try_acquire_capacity(&self) -> Option<()> {
+    fn try_acquire_capacity(&self, now_unix_ms: u64) -> Option<()> {
         self.active_work
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
-                if !self.selectable() || self.max_connections().is_some_and(|limit| active >= limit)
+                if !self.selectable_at(now_unix_ms)
+                    || self.max_connections().is_some_and(|limit| active >= limit)
                 {
                     None
                 } else {
@@ -824,13 +948,13 @@ impl PoolEndpoint {
         at_unix_ms: Option<u64>,
         healthy_threshold: u16,
         unhealthy_threshold: u16,
-    ) -> Option<(EndpointHealthState, EndpointHealthState)> {
+    ) -> HealthUpdate {
         if let Some(at_unix_ms) = at_unix_ms {
             self.last_checked_at_unix_ms
                 .store(at_unix_ms, Ordering::Relaxed);
         }
         let previous = self.state();
-        let next = if healthy {
+        let (next, consecutive) = if healthy {
             self.successful_checks.fetch_add(1, Ordering::Relaxed);
             let consecutive = self
                 .consecutive_successes
@@ -838,7 +962,7 @@ impl PoolEndpoint {
                 .saturating_add(1);
             self.consecutive_failures.store(0, Ordering::Relaxed);
             self.last_failure.store(0, Ordering::Relaxed);
-            if matches!(
+            let next = if matches!(
                 previous,
                 EndpointHealthState::Unknown | EndpointHealthState::Unhealthy
             ) && consecutive >= u64::from(healthy_threshold)
@@ -846,7 +970,8 @@ impl PoolEndpoint {
                 EndpointHealthState::Healthy
             } else {
                 previous
-            }
+            };
+            (next, consecutive)
         } else {
             self.failed_checks.fetch_add(1, Ordering::Relaxed);
             let consecutive = self
@@ -858,7 +983,7 @@ impl PoolEndpoint {
                 failure.map_or(0, |failure| failure as u8),
                 Ordering::Relaxed,
             );
-            if matches!(
+            let next = if matches!(
                 previous,
                 EndpointHealthState::Unknown | EndpointHealthState::Healthy
             ) && consecutive >= u64::from(unhealthy_threshold)
@@ -866,9 +991,10 @@ impl PoolEndpoint {
                 EndpointHealthState::Unhealthy
             } else {
                 previous
-            }
+            };
+            (next, consecutive)
         };
-        if next == previous {
+        let transition = if next == previous {
             None
         } else {
             self.state.store(next as u8, Ordering::Release);
@@ -877,10 +1003,70 @@ impl PoolEndpoint {
                     .store(at_unix_ms, Ordering::Relaxed);
             }
             Some((previous, next))
+        };
+        let passive_recovery = healthy
+            .then_some(consecutive)
+            .filter(|consecutive| *consecutive >= u64::from(healthy_threshold))
+            .and_then(|_| self.recover_passive(at_unix_ms.unwrap_or_else(now_unix_ms)));
+        HealthUpdate {
+            transition,
+            passive_recovery,
         }
     }
 
-    fn snapshot(&self) -> EndpointHealthSnapshot {
+    fn record_passive_failure(
+        &self,
+        failure: HealthFailure,
+        at_unix_ms: u64,
+        policy: PassiveFailurePolicy,
+    ) -> Option<PassiveEjection> {
+        let failure_count = increment_saturating(&self.passive_failure_count);
+        let consecutive = increment_saturating(&self.passive_consecutive_failures);
+        self.passive_last_failure
+            .store(failure as u8, Ordering::Relaxed);
+        if self.passively_ejected_at(at_unix_ms)
+            || consecutive < u64::from(policy.consecutive_failure_threshold)
+        {
+            return None;
+        }
+
+        let ejection_count = increment_saturating(&self.passive_ejection_count);
+        let backoff_step = increment_saturating(&self.passive_backoff_step);
+        let duration = policy.ejection_duration_for(backoff_step);
+        let duration_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+        let ejection_until_unix_ms = at_unix_ms.saturating_add(duration_ms);
+        self.passive_ejected.store(true, Ordering::Release);
+        self.passive_consecutive_failures.store(0, Ordering::Relaxed);
+        self.passive_ejected_at_unix_ms
+            .store(at_unix_ms, Ordering::Relaxed);
+        self.passive_ejection_until_unix_ms
+            .store(ejection_until_unix_ms, Ordering::Release);
+        Some(PassiveEjection {
+            reason: failure,
+            failure_count,
+            ejection_count,
+            ejected_at_unix_ms: at_unix_ms,
+            ejection_until_unix_ms,
+        })
+    }
+
+    fn recover_passive(&self, at_unix_ms: u64) -> Option<PassiveRecovery> {
+        if !self.passive_ejected.swap(false, Ordering::AcqRel) {
+            return None;
+        }
+        let recovery_count = increment_saturating(&self.passive_recovery_count);
+        self.passive_consecutive_failures.store(0, Ordering::Relaxed);
+        self.passive_backoff_step.store(0, Ordering::Relaxed);
+        self.passive_last_recovery_at_unix_ms
+            .store(at_unix_ms, Ordering::Relaxed);
+        Some(PassiveRecovery {
+            reason: HealthFailure::from_u8(self.passive_last_failure.load(Ordering::Relaxed)),
+            recovery_count,
+            recovered_at_unix_ms: at_unix_ms,
+        })
+    }
+
+    fn snapshot(&self, now_unix_ms: u64) -> EndpointHealthSnapshot {
         EndpointHealthSnapshot {
             active_connections: self.active_work.load(Ordering::Relaxed),
             administrative_state: self.administrative_state(),
@@ -902,12 +1088,70 @@ impl PoolEndpoint {
             consecutive_successes: self.consecutive_successes.load(Ordering::Relaxed),
             consecutive_failures: self.consecutive_failures.load(Ordering::Relaxed),
             last_failure: HealthFailure::from_u8(self.last_failure.load(Ordering::Relaxed)),
+            passive_ejected: self.passively_ejected_at(now_unix_ms),
+            passive_failure_count: self.passive_failure_count.load(Ordering::Relaxed),
+            passive_consecutive_failures: self
+                .passive_consecutive_failures
+                .load(Ordering::Relaxed),
+            passive_ejection_count: self.passive_ejection_count.load(Ordering::Relaxed),
+            passive_ejection_reason: HealthFailure::from_u8(
+                self.passive_last_failure.load(Ordering::Relaxed),
+            ),
+            passive_ejected_at_unix_ms: nonzero(
+                self.passive_ejected_at_unix_ms.load(Ordering::Relaxed),
+            ),
+            passive_ejection_until_unix_ms: nonzero(
+                self.passive_ejection_until_unix_ms.load(Ordering::Relaxed),
+            ),
+            passive_recovery_count: self.passive_recovery_count.load(Ordering::Relaxed),
+            passive_last_recovery_at_unix_ms: nonzero(
+                self.passive_last_recovery_at_unix_ms.load(Ordering::Relaxed),
+            ),
         }
     }
 }
 
+#[derive(Debug)]
+struct HealthUpdate {
+    transition: Option<(EndpointHealthState, EndpointHealthState)>,
+    passive_recovery: Option<PassiveRecovery>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PassiveEjection {
+    reason: HealthFailure,
+    failure_count: u64,
+    ejection_count: u64,
+    ejected_at_unix_ms: u64,
+    ejection_until_unix_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PassiveRecovery {
+    reason: Option<HealthFailure>,
+    recovery_count: u64,
+    recovered_at_unix_ms: u64,
+}
+
 const fn nonzero(value: u64) -> Option<u64> {
     if value == 0 { None } else { Some(value) }
+}
+
+fn increment_saturating(counter: &AtomicU64) -> u64 {
+    counter
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            Some(value.saturating_add(1))
+        })
+        .unwrap_or(u64::MAX)
+        .saturating_add(1)
+}
+
+fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+        .unwrap_or(u64::MAX)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -936,6 +1180,19 @@ pub struct EndpointHealthSnapshot {
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub consecutive_failures: u64,
     pub last_failure: Option<HealthFailure>,
+    pub passive_ejected: bool,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub passive_failure_count: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub passive_consecutive_failures: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub passive_ejection_count: u64,
+    pub passive_ejection_reason: Option<HealthFailure>,
+    pub passive_ejected_at_unix_ms: Option<u64>,
+    pub passive_ejection_until_unix_ms: Option<u64>,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub passive_recovery_count: u64,
+    pub passive_last_recovery_at_unix_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -1018,6 +1275,101 @@ impl PoolQueue {
     }
 }
 
+#[derive(Debug)]
+struct PoolHealthState {
+    health_version: AtomicU64,
+    health_writer: Mutex<()>,
+    passive_policy: PassiveFailurePolicy,
+    pool_name: String,
+    queue: Arc<PoolQueue>,
+}
+
+impl PoolHealthState {
+    fn new(pool_name: String, queue: Arc<PoolQueue>, passive_policy: PassiveFailurePolicy) -> Self {
+        Self {
+            health_version: AtomicU64::new(0),
+            health_writer: Mutex::new(()),
+            passive_policy,
+            pool_name,
+            queue,
+        }
+    }
+
+    fn record_passive_failure(&self, server: &PoolEndpoint, failure: HealthFailure) {
+        self.record_passive_failure_at(server, failure, now_unix_ms());
+    }
+
+    fn record_passive_failure_at(
+        &self,
+        server: &PoolEndpoint,
+        failure: HealthFailure,
+        at_unix_ms: u64,
+    ) {
+        let ejection = {
+            let _writer = self
+                .health_writer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.health_version.fetch_add(1, Ordering::AcqRel);
+            let ejection = server.record_passive_failure(failure, at_unix_ms, self.passive_policy);
+            self.health_version.fetch_add(1, Ordering::Release);
+            ejection
+        };
+        if let Some(ejection) = ejection {
+            self.queue.notify_capacity_waiters();
+            crate::operational_event::emit_upstream_endpoint_ejection(
+                &self.pool_name,
+                &server.name,
+                ejection.reason,
+                ejection.failure_count,
+                ejection.ejection_count,
+                ejection.ejected_at_unix_ms,
+                ejection.ejection_until_unix_ms,
+            );
+        }
+    }
+
+    fn record_health(
+        &self,
+        server: &PoolEndpoint,
+        healthy: bool,
+        failure: Option<HealthFailure>,
+        at_unix_ms: Option<u64>,
+        healthy_threshold: u16,
+        unhealthy_threshold: u16,
+    ) -> HealthUpdate {
+        let update = {
+            let _writer = self
+                .health_writer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.health_version.fetch_add(1, Ordering::AcqRel);
+            let update = server.record(
+                healthy,
+                failure,
+                at_unix_ms,
+                healthy_threshold,
+                unhealthy_threshold,
+            );
+            self.health_version.fetch_add(1, Ordering::Release);
+            update
+        };
+        if update.transition.is_some() || update.passive_recovery.is_some() {
+            self.queue.notify_capacity_waiters();
+        }
+        if let Some(recovery) = update.passive_recovery {
+            crate::operational_event::emit_upstream_endpoint_recovery(
+                &self.pool_name,
+                &server.name,
+                recovery.reason,
+                recovery.recovery_count,
+                recovery.recovered_at_unix_ms,
+            );
+        }
+        update
+    }
+}
+
 /// A health-aware selector over a fixed, nonempty named-server list.
 #[derive(Debug)]
 pub struct EndpointPool {
@@ -1025,8 +1377,7 @@ pub struct EndpointPool {
     name: String,
     endpoints: Box<[Arc<PoolEndpoint>]>,
     weighted_schedule: Box<[usize]>,
-    health_version: AtomicU64,
-    health_writer: Mutex<()>,
+    health: Arc<PoolHealthState>,
     selection: Mutex<SelectionState>,
     queue: Arc<PoolQueue>,
     queue_timeout: Option<std::time::Duration>,
@@ -1046,20 +1397,38 @@ pub struct EndpointLease {
     inner: Arc<EndpointLeaseInner>,
 }
 
+#[derive(Clone)]
+pub(crate) struct EndpointObservation {
+    health: Arc<PoolHealthState>,
+    server: Arc<PoolEndpoint>,
+}
+
+impl EndpointObservation {
+    pub(crate) fn record_passive_failure(&self, failure: HealthFailure) {
+        self.health.record_passive_failure(&self.server, failure);
+    }
+}
+
 #[derive(Debug)]
 struct EndpointLeaseInner {
     acquired: AtomicBool,
     deadline: Option<Instant>,
+    health: Arc<PoolHealthState>,
     queue: Arc<PoolQueue>,
     server: Arc<PoolEndpoint>,
 }
 
 impl EndpointLease {
-    fn acquired(server: Arc<PoolEndpoint>, queue: Arc<PoolQueue>) -> Self {
+    fn acquired(
+        server: Arc<PoolEndpoint>,
+        queue: Arc<PoolQueue>,
+        health: Arc<PoolHealthState>,
+    ) -> Self {
         Self {
             inner: Arc::new(EndpointLeaseInner {
                 acquired: AtomicBool::new(true),
                 deadline: None,
+                health,
                 queue,
                 server,
             }),
@@ -1070,11 +1439,13 @@ impl EndpointLease {
         server: Arc<PoolEndpoint>,
         queue: Arc<PoolQueue>,
         queue_timeout: Option<std::time::Duration>,
+        health: Arc<PoolHealthState>,
     ) -> Self {
         Self {
             inner: Arc::new(EndpointLeaseInner {
                 acquired: AtomicBool::new(false),
                 deadline: queue_timeout.map(|timeout| Instant::now() + timeout),
+                health,
                 queue,
                 server,
             }),
@@ -1089,6 +1460,19 @@ impl EndpointLease {
     #[must_use]
     pub fn server_name(&self) -> &str {
         &self.inner.server.name
+    }
+
+    pub(crate) fn observation(&self) -> EndpointObservation {
+        EndpointObservation {
+            health: Arc::clone(&self.inner.health),
+            server: Arc::clone(&self.inner.server),
+        }
+    }
+
+    pub(crate) fn record_passive_failure(&self, failure: HealthFailure) {
+        self.inner
+            .health
+            .record_passive_failure(&self.inner.server, failure);
     }
 
     pub(crate) async fn resolve_addresses(&self) -> io::Result<Vec<SocketAddr>> {
@@ -1118,7 +1502,7 @@ impl pingora::protocols::ConnectionLifetime for EndpointLeaseInner {
         if self.acquired.load(Ordering::Acquire) {
             return Ok(true);
         }
-        if self.server.try_acquire_capacity().is_none() {
+        if self.server.try_acquire_capacity(now_unix_ms()).is_none() {
             return Ok(false);
         }
         self.acquired.store(true, Ordering::Release);
@@ -1369,6 +1753,28 @@ impl EndpointPool {
         Self::new_named(String::new(), endpoints, algorithm, false)
     }
 
+    /// Creates an unchecked pool with an immutable passive failure policy.
+    pub fn from_endpoints_with_policy(
+        endpoints: impl IntoIterator<Item = RuntimeEndpoint>,
+        algorithm: UpstreamAlgorithm,
+        passive_policy: PassiveFailurePolicy,
+    ) -> Result<Self, PoolError> {
+        Self::new_named_servers_with_policy(
+            String::new(),
+            endpoints.into_iter().enumerate().map(|(index, endpoint)| RuntimeServer {
+                name: index.to_string(),
+                endpoint,
+                max_connections: None,
+                pinned_addresses: None,
+                protected_addresses: Arc::from([]),
+            }),
+            algorithm,
+            None,
+            None,
+            passive_policy,
+        )
+    }
+
     pub(crate) fn new_named(
         name: String,
         endpoints: impl IntoIterator<Item = RuntimeEndpoint>,
@@ -1401,6 +1807,25 @@ impl EndpointPool {
         startup: Option<HealthStartup>,
         queue_timeout: Option<std::time::Duration>,
     ) -> Result<Self, PoolError> {
+        Self::new_named_servers_with_policy(
+            name,
+            servers,
+            algorithm,
+            startup,
+            queue_timeout,
+            PassiveFailurePolicy::default(),
+        )
+    }
+
+    pub(crate) fn new_named_servers_with_policy(
+        name: String,
+        servers: impl IntoIterator<Item = RuntimeServer>,
+        algorithm: UpstreamAlgorithm,
+        startup: Option<HealthStartup>,
+        queue_timeout: Option<std::time::Duration>,
+        passive_policy: PassiveFailurePolicy,
+    ) -> Result<Self, PoolError> {
+        passive_policy.validate()?;
         let servers = servers.into_iter().collect::<Vec<_>>();
         let weights = effective_weights(&algorithm, servers.len())?;
         let weighted_schedule = build_weighted_schedule(&algorithm, &weights)?;
@@ -1417,15 +1842,20 @@ impl EndpointPool {
         if endpoints.is_empty() {
             return Err(PoolError::Empty);
         }
+        let queue = Arc::new(PoolQueue::new(queue_timeout.is_some()));
+        let health = Arc::new(PoolHealthState::new(
+            name.clone(),
+            Arc::clone(&queue),
+            passive_policy,
+        ));
         Ok(Self {
             algorithm,
             name,
             endpoints,
             weighted_schedule,
-            health_version: AtomicU64::new(0),
-            health_writer: Mutex::new(()),
+            health,
             selection: Mutex::new(SelectionState::default()),
-            queue: Arc::new(PoolQueue::new(queue_timeout.is_some())),
+            queue,
             queue_timeout,
             unavailable_selections: AtomicU64::new(0),
         })
@@ -1437,18 +1867,25 @@ impl EndpointPool {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let start = selection.next;
+        let now_unix_ms = now_unix_ms();
         let (candidates, pool_available) =
             self.read_health(|endpoints| {
-                let pool_available = endpoints.iter().any(|server| server.selectable());
+                let pool_available = endpoints
+                    .iter()
+                    .any(|server| server.selectable_at(now_unix_ms));
                 let candidates =
                     if self.weighted_schedule.is_empty() {
                         (0..endpoints.len())
                             .filter_map(|offset| {
                                 let index = (start + offset) % endpoints.len();
                                 let server = &endpoints[index];
-                                (server.selectable() && !excluded.contains(&server.name)).then_some(
-                                    (index, index, server.active_work.load(Ordering::Acquire)),
-                                )
+                                (server.selectable_at(now_unix_ms)
+                                    && !excluded.contains(&server.name))
+                                    .then_some((
+                                        index,
+                                        index,
+                                        server.active_work.load(Ordering::Acquire),
+                                    ))
                             })
                             .collect::<Vec<_>>()
                     } else {
@@ -1457,9 +1894,13 @@ impl EndpointPool {
                                 let cursor = (start + offset) % self.weighted_schedule.len();
                                 let index = self.weighted_schedule[cursor];
                                 let server = &endpoints[index];
-                                (server.selectable() && !excluded.contains(&server.name)).then_some(
-                                    (cursor, index, server.active_work.load(Ordering::Acquire)),
-                                )
+                                (server.selectable_at(now_unix_ms)
+                                    && !excluded.contains(&server.name))
+                                    .then_some((
+                                        cursor,
+                                        index,
+                                        server.active_work.load(Ordering::Acquire),
+                                    ))
                             })
                             .collect::<Vec<_>>()
                     };
@@ -1468,28 +1909,24 @@ impl EndpointPool {
         let saturated = candidates
             .iter()
             .any(|(_, index, _)| !self.endpoints[*index].has_capacity());
-        let selected = match &self.algorithm {
-            UpstreamAlgorithm::WeightedRoundRobin { .. } => candidates
-                .iter()
-                .find(|(_, index, _)| self.endpoints[*index].has_capacity())
-                .map(|(cursor, index, _)| (*cursor, *index)),
-            UpstreamAlgorithm::RoundRobin => candidates
-                .iter()
-                .find(|(_, index, _)| self.endpoints[*index].has_capacity())
-                .map(|(cursor, index, _)| (*cursor, *index)),
-            UpstreamAlgorithm::LeastConnections => candidates
-                .iter()
-                .filter(|(_, index, _)| self.endpoints[*index].has_capacity())
-                .min_by_key(|(_, _, active)| *active)
-                .map(|(cursor, index, _)| (*cursor, *index)),
-            UpstreamAlgorithm::First => candidates
-                .iter()
-                .filter(|(_, index, _)| self.endpoints[*index].has_capacity())
-                .min_by_key(|(_, index, _)| *index)
-                .map(|(cursor, index, _)| (*cursor, *index)),
-        };
-        let lease = selected.and_then(|(cursor, index)| {
-            let lease = self.endpoints[index].try_acquire(&self.queue)?;
+        let mut ordered = candidates
+            .iter()
+            .filter(|(_, index, _)| self.endpoints[*index].has_capacity())
+            .copied()
+            .collect::<Vec<_>>();
+        match &self.algorithm {
+            UpstreamAlgorithm::LeastConnections => {
+                ordered.sort_by_key(|(_, _, active)| *active);
+            }
+            UpstreamAlgorithm::First => ordered.sort_by_key(|(_, index, _)| *index),
+            UpstreamAlgorithm::WeightedRoundRobin { .. } | UpstreamAlgorithm::RoundRobin => {}
+        }
+        let selected = ordered.into_iter().find_map(|(cursor, index, _)| {
+            self.endpoints[index]
+                .try_acquire(&self.queue, &self.health, now_unix_ms)
+                .map(|lease| (lease, cursor, index))
+        });
+        let lease = selected.map(|(lease, cursor, index)| {
             if !matches!(&self.algorithm, UpstreamAlgorithm::First) {
                 selection.next = if self.weighted_schedule.is_empty() {
                     (index + 1) % self.endpoints.len()
@@ -1497,7 +1934,7 @@ impl EndpointPool {
                     (cursor + 1) % self.weighted_schedule.len()
                 };
             }
-            Some(lease)
+            lease
         });
         SelectionAttempt {
             lease,
@@ -1515,17 +1952,20 @@ impl EndpointPool {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let start = selection.next;
+        let now_unix_ms = now_unix_ms();
         let candidates = self.read_health(|endpoints| {
             if self.weighted_schedule.is_empty() {
                 (0..endpoints.len())
                     .filter_map(|offset| {
                         let index = (start + offset) % endpoints.len();
                         let server = &endpoints[index];
-                        (server.selectable() && !excluded.contains(&server.name)).then_some((
-                            index,
-                            index,
-                            server.active_work.load(Ordering::Acquire),
-                        ))
+                        (server.selectable_at(now_unix_ms)
+                            && !excluded.contains(&server.name))
+                            .then_some((
+                                index,
+                                index,
+                                server.active_work.load(Ordering::Acquire),
+                            ))
                     })
                     .collect::<Vec<_>>()
             } else {
@@ -1534,11 +1974,13 @@ impl EndpointPool {
                         let cursor = (start + offset) % self.weighted_schedule.len();
                         let index = self.weighted_schedule[cursor];
                         let server = &endpoints[index];
-                        (server.selectable() && !excluded.contains(&server.name)).then_some((
-                            cursor,
-                            index,
-                            server.active_work.load(Ordering::Acquire),
-                        ))
+                        (server.selectable_at(now_unix_ms)
+                            && !excluded.contains(&server.name))
+                            .then_some((
+                                cursor,
+                                index,
+                                server.active_work.load(Ordering::Acquire),
+                            ))
                     })
                     .collect::<Vec<_>>()
             }
@@ -1583,6 +2025,7 @@ impl EndpointPool {
             Arc::clone(&self.endpoints[index]),
             Arc::clone(&self.queue),
             self.queue_timeout,
+            Arc::clone(&self.health),
         ))
     }
 
@@ -1668,10 +2111,11 @@ impl EndpointPool {
                 saturated: false,
             };
         };
-        let pool_available = server.selectable();
+        let now_unix_ms = now_unix_ms();
+        let pool_available = server.selectable_at(now_unix_ms);
         let saturated = pool_available && !server.has_capacity();
         SelectionAttempt {
-            lease: server.try_acquire(&self.queue),
+            lease: server.try_acquire(&self.queue, &self.health, now_unix_ms),
             pool_available,
             saturated,
         }
@@ -1679,11 +2123,12 @@ impl EndpointPool {
 
     pub(crate) fn select_server_connection_target(&self, name: &str) -> Option<EndpointLease> {
         let server = self.endpoints.iter().find(|server| server.name == name)?;
-        server.selectable().then(|| {
+        server.selectable_at(now_unix_ms()).then(|| {
             EndpointLease::pending(
                 Arc::clone(server),
                 Arc::clone(&self.queue),
                 self.queue_timeout,
+                Arc::clone(&self.health),
             )
         })
     }
@@ -1695,28 +2140,35 @@ impl EndpointPool {
 
     #[must_use]
     pub fn has_unattempted(&self, attempted: &[RuntimeEndpoint]) -> bool {
+        let now_unix_ms = now_unix_ms();
         self.read_health(|endpoints| {
             endpoints
                 .iter()
-                .any(|server| server.selectable() && !attempted.contains(&server.endpoint))
+                .any(|server| {
+                    server.selectable_at(now_unix_ms) && !attempted.contains(&server.endpoint)
+                })
         })
     }
 
     #[must_use]
     pub(crate) fn has_unattempted_servers(&self, attempted: &[String]) -> bool {
+        let now_unix_ms = now_unix_ms();
         self.read_health(|endpoints| {
             endpoints
                 .iter()
-                .any(|server| server.selectable() && !attempted.contains(&server.name))
+                .any(|server| {
+                    server.selectable_at(now_unix_ms) && !attempted.contains(&server.name)
+                })
         })
     }
 
     #[must_use]
     pub fn has_available(&self) -> bool {
+        let now_unix_ms = now_unix_ms();
         self.read_health(|endpoints| {
             endpoints
                 .iter()
-                .any(|server| server.selectable() && server.has_capacity())
+                .any(|server| server.selectable_at(now_unix_ms) && server.has_capacity())
         })
     }
 
@@ -1839,13 +2291,9 @@ impl EndpointPool {
         healthy_threshold: u16,
         unhealthy_threshold: u16,
     ) -> Option<(EndpointHealthState, EndpointHealthState)> {
-        let _writer = self
-            .health_writer
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.health_version.fetch_add(1, Ordering::AcqRel);
-        let transition = self.endpoints.get(index).and_then(|server| {
-            server.record(
+        let update = self.endpoints.get(index).map(|server| {
+            self.health.record_health(
+                server,
                 healthy,
                 failure,
                 at_unix_ms,
@@ -1853,11 +2301,21 @@ impl EndpointPool {
                 unhealthy_threshold,
             )
         });
-        self.health_version.fetch_add(1, Ordering::Release);
-        if transition.is_some() {
-            self.queue.notify_capacity_waiters();
+        update.and_then(|update| update.transition)
+    }
+
+    pub(crate) fn record_passive_failure(&self, index: usize, failure: HealthFailure) {
+        if let Some(server) = self.endpoints.get(index) {
+            self.health.record_passive_failure(server, failure);
         }
-        transition
+    }
+
+    #[cfg(test)]
+    fn record_passive_failure_at(&self, index: usize, failure: HealthFailure, at_unix_ms: u64) {
+        if let Some(server) = self.endpoints.get(index) {
+            self.health
+                .record_passive_failure_at(server, failure, at_unix_ms);
+        }
     }
 
     pub(crate) fn health_state(&self, index: usize) -> Option<EndpointHealthState> {
@@ -1868,6 +2326,12 @@ impl EndpointPool {
         self.endpoints
             .get(index)
             .is_some_and(|server| server.checks_running())
+    }
+
+    pub(crate) fn passive_ejected(&self, index: usize) -> bool {
+        self.endpoints
+            .get(index)
+            .is_some_and(|server| server.passively_ejected_at(now_unix_ms()))
     }
 
     /// Resolves one server immediately without mutating runtime state.
@@ -1910,10 +2374,11 @@ impl EndpointPool {
 
     #[must_use]
     pub fn health_snapshot(&self) -> PoolHealthSnapshot {
+        let now_unix_ms = now_unix_ms();
         let endpoints = self.read_health(|endpoints| {
             endpoints
                 .iter()
-                .map(|server| server.snapshot())
+                .map(|server| server.snapshot(now_unix_ms))
                 .collect::<Vec<_>>()
         });
         PoolHealthSnapshot {
@@ -1923,6 +2388,7 @@ impl EndpointPool {
                 .iter()
                 .filter(|endpoint| {
                     endpoint.administrative_state == AdministrativeState::Ready
+                        && !endpoint.passive_ejected
                         && match endpoint.health_override {
                             HealthOverride::Auto => endpoint.state.selectable(),
                             HealthOverride::Up => true,
@@ -1942,18 +2408,19 @@ impl EndpointPool {
 
     fn read_health<T>(&self, read: impl Fn(&[Arc<PoolEndpoint>]) -> T) -> T {
         for _ in 0..8 {
-            let version = self.health_version.load(Ordering::Acquire);
+            let version = self.health.health_version.load(Ordering::Acquire);
             if version % 2 != 0 {
                 std::thread::yield_now();
                 continue;
             }
             let value = read(&self.endpoints);
             fence(Ordering::Acquire);
-            if self.health_version.load(Ordering::Relaxed) == version {
+            if self.health.health_version.load(Ordering::Relaxed) == version {
                 return value;
             }
         }
         let _writer = self
+            .health
             .health_writer
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1985,6 +2452,7 @@ const fn algorithm_name(algorithm: &UpstreamAlgorithm) -> &'static str {
 pub enum PoolError {
     Empty,
     InvalidWeights { detail: &'static str },
+    InvalidPassivePolicy { detail: &'static str },
     StartupDns { server: String, detail: String },
     InvalidSocketEndpoint(SocketAddr),
     InvalidDnsEndpoint { host: String, port: u16 },
@@ -2001,6 +2469,9 @@ impl fmt::Display for PoolError {
                     formatter,
                     "invalid weighted round-robin configuration: {detail}"
                 )
+            }
+            Self::InvalidPassivePolicy { detail } => {
+                write!(formatter, "invalid passive failure policy: {detail}")
             }
             Self::StartupDns { server, detail } => {
                 write!(
@@ -3374,8 +3845,8 @@ mod tests {
         pool.endpoints[1]
             .state
             .store(EndpointHealthState::Healthy as u8, Ordering::Relaxed);
-        let writer = pool.health_writer.lock().expect("health writer");
-        pool.health_version.store(1, Ordering::Release);
+        let writer = pool.health.health_writer.lock().expect("health writer");
+        pool.health.health_version.store(1, Ordering::Release);
         let barrier = Arc::new(Barrier::new(2));
         let (selection_tx, selection_rx) = mpsc::channel();
         let selection_pool = Arc::clone(&pool);
@@ -3403,7 +3874,7 @@ mod tests {
         pool.endpoints[1]
             .state
             .store(EndpointHealthState::Unhealthy as u8, Ordering::Relaxed);
-        pool.health_version.store(2, Ordering::Release);
+        pool.health.health_version.store(2, Ordering::Release);
         drop(writer);
 
         assert_eq!(
@@ -3554,6 +4025,207 @@ mod tests {
             pool.health_snapshot().endpoints[1].state,
             EndpointHealthState::Healthy
         );
+    }
+
+    #[test]
+    fn passive_ejection_is_deterministic_and_active_health_reentry_preserves_weighting() {
+        let pool = RoundRobinPool::new_named_servers_with_policy(
+            "passive-weighted".into(),
+            [runtime_server("primary", 3000, None), runtime_server("backup", 3001, None)],
+            UpstreamAlgorithm::WeightedRoundRobin {
+                weights: vec![3, 1],
+            },
+            Some(HealthStartup::Healthy),
+            None,
+            PassiveFailurePolicy::new(
+                2,
+                Duration::from_secs(60),
+                Duration::from_secs(120),
+            ),
+        )
+        .expect("passive policy pool");
+
+        let base = now_unix_ms();
+        pool.record_passive_failure_at(0, HealthFailure::ConnectFailed, base);
+        pool.record_passive_failure_at(0, HealthFailure::ConnectFailed, base + 1);
+        let ejected = pool.health_snapshot();
+        assert_eq!(ejected.available_endpoints, 1);
+        assert!(ejected.endpoints[0].passive_ejected);
+        assert_eq!(ejected.endpoints[0].passive_failure_count, 2);
+        assert_eq!(ejected.endpoints[0].passive_ejection_count, 1);
+        assert_eq!(
+            ejected.endpoints[0].passive_ejection_reason,
+            Some(HealthFailure::ConnectFailed)
+        );
+        assert_eq!(ejected.endpoints[0].passive_ejected_at_unix_ms, Some(base + 1));
+        assert_eq!(
+            ejected.endpoints[0].passive_ejection_until_unix_ms,
+            Some(base + 60_001)
+        );
+
+        let selected_while_ejected = (0..16)
+            .map(|_| {
+                pool.select()
+                    .expect("backup remains eligible")
+                    .server_name()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert!(selected_while_ejected.iter().all(|name| name == "backup"));
+
+        pool.record_health(0, true, None, Some(base + 10), 1, 1);
+        let recovered = pool.health_snapshot();
+        assert!(!recovered.endpoints[0].passive_ejected);
+        assert_eq!(recovered.endpoints[0].passive_recovery_count, 1);
+        assert_eq!(
+            recovered.endpoints[0].passive_last_recovery_at_unix_ms,
+            Some(base + 10)
+        );
+
+        let selected_after_recovery = (0..4)
+            .map(|_| {
+                pool.select()
+                    .expect("recovered endpoint")
+                    .server_name()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(selected_after_recovery, ["primary", "primary", "primary", "backup"]);
+    }
+
+    #[test]
+    fn passive_ejection_backoff_is_bounded_and_active_failures_are_not_double_counted() {
+        let pool = RoundRobinPool::new_named_servers_with_policy(
+            "passive-backoff".into(),
+            [runtime_server("only", 3000, None)],
+            UpstreamAlgorithm::First,
+            Some(HealthStartup::Healthy),
+            None,
+            PassiveFailurePolicy::new(
+                1,
+                Duration::from_millis(100),
+                Duration::from_millis(250),
+            ),
+        )
+        .expect("passive backoff pool");
+        let base = now_unix_ms();
+
+        pool.record_health(
+            0,
+            false,
+            Some(HealthFailure::ConnectFailed),
+            Some(base.saturating_sub(500)),
+            1,
+            1,
+        );
+        assert_eq!(pool.health_snapshot().endpoints[0].passive_failure_count, 0);
+
+        pool.record_passive_failure_at(0, HealthFailure::Timeout, base);
+        pool.record_passive_failure_at(0, HealthFailure::Timeout, base + 101);
+        pool.record_passive_failure_at(0, HealthFailure::Timeout, base + 302);
+        let snapshot = pool.health_snapshot();
+        assert_eq!(snapshot.endpoints[0].passive_failure_count, 3);
+        assert_eq!(snapshot.endpoints[0].passive_ejection_count, 3);
+        assert_eq!(
+            snapshot.endpoints[0].passive_ejection_until_unix_ms,
+            Some(base + 552)
+        );
+        assert!(snapshot.endpoints[0].passive_ejected);
+    }
+
+    #[test]
+    fn passive_ejection_fails_closed_without_revoking_concurrent_leases() {
+        let pool = RoundRobinPool::new_named_servers_with_policy(
+            "passive-leases".into(),
+            [runtime_server("only", 3000, Some(2))],
+            UpstreamAlgorithm::First,
+            Some(HealthStartup::Healthy),
+            None,
+            PassiveFailurePolicy::new(
+                1,
+                Duration::from_secs(60),
+                Duration::from_secs(60),
+            ),
+        )
+        .expect("passive lease pool");
+        let base = now_unix_ms();
+        let first = pool.select().expect("first lease");
+        let second = pool.select().expect("second lease");
+
+        pool.record_passive_failure_at(0, HealthFailure::ProtocolError, base);
+        assert!(pool.select().is_none(), "ejected pool must fail closed");
+        assert_eq!(pool.health_snapshot().unavailable_selections, 1);
+        assert_eq!(pool.health_snapshot().endpoints[0].active_connections, 2);
+
+        drop((first, second));
+        assert_eq!(pool.health_snapshot().endpoints[0].active_connections, 0);
+    }
+
+    #[test]
+    fn invalid_passive_policy_is_rejected_at_pool_construction() {
+        let error = RoundRobinPool::new_named_servers_with_policy(
+            "invalid-passive".into(),
+            [runtime_server("only", 3000, None)],
+            UpstreamAlgorithm::First,
+            None,
+            None,
+            PassiveFailurePolicy::new(0, Duration::from_secs(1), Duration::from_secs(1)),
+        )
+        .expect_err("zero threshold must be rejected");
+        assert!(matches!(error, PoolError::InvalidPassivePolicy { .. }));
+    }
+
+    #[test]
+    fn passive_policy_bounds_are_rejected_at_pool_construction() {
+        let policies = [
+            PassiveFailurePolicy::new(101, Duration::from_secs(1), Duration::from_secs(1)),
+            PassiveFailurePolicy::new(1, Duration::ZERO, Duration::from_secs(1)),
+            PassiveFailurePolicy::new(1, Duration::from_secs(2), Duration::from_secs(1)),
+            PassiveFailurePolicy::new(
+                1,
+                Duration::from_secs(1),
+                Duration::from_secs(24 * 60 * 60 + 1),
+            ),
+        ];
+
+        for policy in policies {
+            let error = RoundRobinPool::new_named_servers_with_policy(
+                "invalid-passive".into(),
+                [runtime_server("only", 3000, None)],
+                UpstreamAlgorithm::First,
+                None,
+                None,
+                policy,
+            )
+            .expect_err("invalid passive policy must be rejected");
+            assert!(matches!(error, PoolError::InvalidPassivePolicy { .. }));
+        }
+    }
+
+    #[test]
+    fn passive_ejection_expiry_allows_new_selection() {
+        let pool = RoundRobinPool::new_named_servers_with_policy(
+            "passive-expiry".into(),
+            [runtime_server("only", 3000, None)],
+            UpstreamAlgorithm::First,
+            Some(HealthStartup::Healthy),
+            None,
+            PassiveFailurePolicy::new(
+                1,
+                Duration::from_millis(100),
+                Duration::from_millis(100),
+            ),
+        )
+        .expect("passive expiry pool");
+        let now = now_unix_ms();
+        pool.record_passive_failure_at(
+            0,
+            HealthFailure::Timeout,
+            now.saturating_sub(101),
+        );
+
+        assert!(!pool.health_snapshot().endpoints[0].passive_ejected);
+        assert_eq!(pool.select().expect("expired endpoint").server_name(), "only");
     }
 
     #[test]
@@ -3756,8 +4428,8 @@ mod tests {
             )
             .expect("checked pool"),
         );
-        let writer = pool.health_writer.lock().expect("health writer");
-        pool.health_version.store(1, Ordering::Release);
+        let writer = pool.health.health_writer.lock().expect("health writer");
+        pool.health.health_version.store(1, Ordering::Release);
         let barrier = Arc::new(Barrier::new(2));
         let (snapshot_tx, snapshot_rx) = mpsc::channel();
         let snapshot_pool = Arc::clone(&pool);
@@ -3783,7 +4455,7 @@ mod tests {
         pool.endpoints[0]
             .successful_checks
             .store(1, Ordering::Relaxed);
-        pool.health_version.store(2, Ordering::Release);
+        pool.health.health_version.store(2, Ordering::Release);
         drop(writer);
 
         let snapshot = snapshot_rx

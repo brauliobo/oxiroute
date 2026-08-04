@@ -12,7 +12,8 @@ use oxiroute_config::{HttpVersion, UpstreamConnectionReuse};
 use pingora::{Error, ErrorType, protocols::Digest, upstreams::peer::HttpPeer};
 use tokio::time::Instant;
 
-use crate::{EndpointLease, RoundRobinPool, RuntimeEndpoint, UpstreamTlsPlan};
+use crate::routing::EndpointObservation;
+use crate::{EndpointLease, HealthFailure, RoundRobinPool, RuntimeEndpoint, UpstreamTlsPlan};
 
 #[derive(Debug)]
 pub(crate) struct UpstreamPlan {
@@ -175,6 +176,7 @@ pub(crate) struct SelectedEndpoint {
     addresses: Option<std::vec::IntoIter<SocketAddr>>,
     deadline: Option<Instant>,
     endpoint: RuntimeEndpoint,
+    observation: EndpointObservation,
     lease: EndpointLease,
     server_name: String,
     unix_pending: bool,
@@ -183,10 +185,12 @@ pub(crate) struct SelectedEndpoint {
 impl SelectedEndpoint {
     fn new(lease: EndpointLease) -> Self {
         let server_name = lease.server_name().to_owned();
+        let observation = lease.observation();
         Self {
             addresses: None,
             deadline: None,
             endpoint: lease.endpoint().clone(),
+            observation,
             lease,
             server_name,
             unix_pending: true,
@@ -201,13 +205,23 @@ impl SelectedEndpoint {
         &self.server_name
     }
 
+    pub(crate) fn observation(&self) -> EndpointObservation {
+        self.observation.clone()
+    }
+
+    pub(crate) fn record_passive_failure(&self, failure: HealthFailure) {
+        self.observation.record_passive_failure(failure);
+    }
+
     #[cfg(test)]
     pub(crate) fn with_addresses(lease: EndpointLease, addresses: Vec<SocketAddr>) -> Self {
         let server_name = lease.server_name().to_owned();
+        let observation = lease.observation();
         Self {
             addresses: Some(addresses.into_iter()),
             deadline: None,
             endpoint: lease.endpoint().clone(),
+            observation,
             lease,
             server_name,
             unix_pending: true,

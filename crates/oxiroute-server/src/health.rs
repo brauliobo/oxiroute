@@ -86,6 +86,9 @@ impl HealthTarget {
     }
 
     fn next_interval(&self) -> Duration {
+        if self.pool.passive_ejected(self.endpoint_index) {
+            return self.fast_interval;
+        }
         match self.pool.health_state(self.endpoint_index) {
             Some(crate::EndpointHealthState::Unknown) => self.fast_interval,
             Some(crate::EndpointHealthState::Unhealthy) => self.down_interval,
