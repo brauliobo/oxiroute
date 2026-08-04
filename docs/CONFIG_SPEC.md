@@ -71,7 +71,7 @@ return {
     {
       name = "web",
       bind = { type = "socket", address = "127.0.0.1:8443" },
-      protocol = "http", -- http | forward_http1 | tcp | rtmp
+      protocol = "http", -- http | forward_http1 | tcp | udp | rtmp
       service = "web",
       tls_profile = "public-tls",
       max_connections = 10000,
@@ -242,6 +242,7 @@ return {
       connect_timeout_ms = 10000,
       idle_timeout_ms = 300000,
       lifetime_timeout_ms = 3600000,
+      udp = nil,
     },
   },
 }
@@ -760,6 +761,10 @@ schema.
 
 - TCP or UDP transport.
 - Pool reference, affinity policy, timeouts, limits, and optional bounded inspection.
+- `udp` is optional on an L4 service and is used when the service is attached to a `udp` listener.
+  Its `max_datagram_bytes`, `max_sessions`, `max_session_bytes`, `max_queue_datagrams`, and
+  `max_queue_bytes` fields are positive bounded integers. Queue and session byte limits must each
+  be at least `max_datagram_bytes`; omitted UDP policy fields use bounded defaults.
 
 ### Certificate and TLS profile
 
