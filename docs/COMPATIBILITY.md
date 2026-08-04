@@ -24,12 +24,13 @@ uses `stable` or `partial` so component integration is not confused with product
 | HTTP/1 reverse proxy | partial | Deterministic nginx-style routing, health-aware tagged pools, balancing, active checks, bounded safe connect retries, independent listener/route/pool timeouts, route-local body limits, bounded header/cookie policy, bounded fixed-length response buffering, deadline-clamped I/O, H1 early-response draining, semaphore-bounded bcrypt/APR1 Basic access, descriptor-pinned conditional/range static serving with optional ETags, gzip-only weighted content negotiation, bounded asynchronous redacted JSONL access logs, WebSocket upgrades, downstream TLS, and verified upstream TLS are implemented; broader conformance remains. |
 | HTTP/2 downstream | partial | TLS profiles provide explicit `h2` ALPN and a rustls client wire test negotiates H2 and proxies a real stream. H2-only listeners reject incompatible ALPN and close no-ALPN streams before HTTP parsing. There is no h2c or broad H2 conformance suite. Downstream client authentication is separately supported by the TLS profile policy. |
 | HTTP/2 upstream | partial | TLS pools support `1.1/1.1`, `1.1/2`, and H2-only `2/2` policies. H2-only success and no-compatible-ALPN failure before HTTP headers are wire-tested with verified custom CA and SNI; the HTTP/1.1-only policy is also wire-tested. |
-| HTTP/3 downstream/upstream | partial | The active `forward_http3` UDP listener uses a separate bounded Quinn/H3 runtime with TLS 1.3, `h3` ALPN, generation admission, and graceful drain; reverse HTTP/3 remains planned. |
+| HTTP/3 downstream/upstream | partial | The active `http3` reverse and `forward_http3` UDP listeners use separate bounded Quinn/H3 runtimes with TLS 1.3, `h3` ALPN, generation admission, metrics, capability reporting, and graceful drain; broader conformance remains. |
 | WebSocket reverse proxy | stable | The standard nginx `Upgrade $http_upgrade` and `Connection upgrade` policy is accepted without taking upgrade ownership from Pingora; HTTP/1.1 passes independent bidirectional framed interoperability coverage. |
 | gRPC reverse proxy | partial | The TLS/H2 path wire-tests gRPC response DATA, successful trailers, and trailers-only error metadata end to end; streaming breadth, deadlines, cancellation, and broader conformance remain. |
-| HTTP/1 explicit forward proxy | partial | A daemon-integrated HTTP/1 listener handles absolute-form HTTP and bounded CONNECT tunnels with Basic/Bearer authentication, ordered access rules, canonical domain/CIDR and bounded UTC time policy, final-answer DNS/SSRF pinning across address retries, header privacy, connection/body/header/time limits, structured metadata access events, per-plan access counters, shutdown cancellation, and real wire coverage. Broader HTTP conformance and caching remain. |
+| HTTP/1 explicit forward proxy | partial | A daemon-integrated HTTP/1 listener handles absolute-form HTTP and bounded CONNECT tunnels with Basic/Bearer authentication, ordered access rules, canonical domain/CIDR and bounded UTC time policy, final-answer DNS/SSRF pinning across address retries, header privacy, connection/body/header/time limits, opt-in bounded GET/HEAD memory or persistent caching with collapsed fills/revalidation, authenticated purge, structured metadata access events, per-listener cache outcomes, shutdown cancellation, and real wire coverage. Broader HTTP conformance remains. |
 | HTTP/2 forward proxy/CONNECT | partial | The daemon integrates classic CONNECT over TLS/H2 with the shared policy, exact approved-address connection, bounded DATA relay, half-close, flow-control, timeout, reset, and cancellation behavior; arbitrary H2 forward request forms remain unsupported. |
 | HTTP/3 forward proxy | partial | `forward_http3` is daemon-integrated through a separate UDP listener with absolute-form forwarding, classic CONNECT tunnel support, shared authorization/destination policy, bounded QUIC resources, and process-level wire coverage; broader conformance remains. |
+| HTTP/3 reverse proxy | partial | `http3` is daemon-integrated through a separate UDP listener with validated HTTP routing, fixed/redirect/proxy actions, Pingora upstream sessions, bounded request/response resources, TLS 1.3, disabled migration/0-RTT, and generation drain; static files, retries, cache, compression, upgrades, and broader conformance remain unsupported. |
 | Opaque TCP relay | partial | Bounded bidirectional relay, independent half-close, configured connect/idle/lifetime timeouts, socket/DNS/Unix upstreams, health-aware round-robin or relay-scoped least-connections pools, active TCP/HTTP checks for non-Unix pools, nullable listener connection caps, shutdown cancellation, partial traffic accounting, and loopback tests are implemented; Unix transports require Unix, and reload and graceful process drain remain. |
 | TLS pass-through | partial | Opaque bytes can traverse the implemented TCP relay without termination; no SNI inspection, TLS-specific policy, or dedicated pass-through conformance suite exists. |
 | UDP relay | partial | UDP listeners use generation-owned bounded pseudo-sessions keyed by client address, per-client reply routing, family-safe DNS selection, idle/lifetime expiry, queue/session/table limits, cancellation, and listener/process accounting; PROXY protocol, passive UDP health semantics, and full wire/exhaustion coverage remain. |
@@ -83,8 +84,8 @@ procedure are documented in `vendor/pingora-core/README.oxiroute.md`.
 | FLV/MP4 local/HTTP VOD | partial: bounded named local/HTTP objects, FLV RTMP playback workers, safe roots/origins, and authenticated single-range management responses |
 | HTTP notify callbacks | partial: bounded HTTP/HTTPS authorization, teardown, and update callbacks with GET/POST methods, resolved-address policy checks, strict update handling, and redacted outcomes; richer nginx callback fields and redirect forwarding remain absent |
 | RTMP statistics/control API equivalents | planned RTMP slice 2 |
-| HLS H.264/AAC transmuxing and AES keys | planned RTMP slice 3 |
-| MPEG-DASH fragmented MP4 output | planned RTMP slice 3 |
+| HLS H.264/AAC transmuxing and AES keys | partial: bounded MPEG-TS HLS output, variants, atomic storage, cleanup, and AES-128 key rotation are integrated; transcoding and broader origin/auth policy remain absent |
+| MPEG-DASH fragmented MP4 output | unsupported: configuration is rejected explicitly until a supported DASH muxer/container path is available |
 | Isolated exec/transcode process integration | planned RTMP slice 3 |
 | Multi-worker auto-push equivalent | planned RTMP slice 3 |
 
@@ -109,7 +110,7 @@ disable-only, parsed-only, source-no-op, source-bug, deprecated, and platform-li
 | ACME HTTP-01 | partial: exact bounded challenge leases and HTTP routing are implemented; explicit listener/deployment evidence remains |
 | Automatic renewal and zero-downtime activation | partial: externally renewed Certbot lineages and OxiRoute-managed ACME certificates are reconciled and published without interrupting existing connections; live staging evidence remains |
 | Existing Certbot lineage import/watch | stable with strict common-revision snapshots, archive containment, descriptor-relative no-follow reads, key-reuse handling, bounded event coalescing, periodic rescans, directory-watch rebuilding, mixed/invalid retention, and zero-downtime per-identity publication |
-| ACME DNS-01 and wildcard names | planned M2 |
+| ACME DNS-01 and wildcard names | partial: bounded wildcard identifiers, DNS-01 TXT derivation, statically linked exact-name provider registration, credential/timeout/cancellation bounds, provider propagation hooks, exact cleanup, atomic validated activation, and redacted status are implemented; provider deployments and durable cleanup journaling remain |
 | ACME TLS-ALPN-01 | research |
 | External/HSM key provider | research |
 
@@ -143,8 +144,8 @@ forms are never treated as parity.
 | Resolver selection | partial | Explicit finite nameserver lists only. |
 | Header privacy and access | partial | `forwarded_for delete` and `via off` only. |
 | Logging and audit output | partial | Disabled native access logging only. |
-| Memory and persistent HTTP caching | unsupported | No Squid cache admission or storage parity. |
-| Freshness, revalidation, ranges, and collapsed forwarding | unsupported | `refresh_pattern` is externalized, not enforced. |
+| Memory and persistent HTTP caching | partial | Reverse HTTP and eligible HTTP/1 forward requests use bounded memory or descriptor-safe persistent stores; broad Squid admission/storage parity remains absent. |
+| Freshness, revalidation, ranges, and collapsed forwarding | partial | Forward and reverse runtime cache timelines, revalidation, collapsed fills, and fail-closed range/conditional bypass are active; broad `refresh_pattern` parity remains absent. |
 | Parent and sibling cache peers | unsupported | Peer hierarchy and selection are not runtime-owned. |
 | External ACL and URL rewrite helpers | unsupported | Helper lifecycle and protocols are not implemented. |
 | ICAP and eCAP adaptation | unsupported | Adaptation negotiation and transformation are absent. |

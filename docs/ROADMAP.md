@@ -60,8 +60,8 @@ Status: partial. The annotations below identify landed slices; Milestone 1 is no
 - Parent-directory file watcher with content-hash revisions (implemented for the canonical root,
   including periodic re-resolution of native references; direct watches for every resolved native
   dependency and richer dependency registration remain planned).
-- ACME HTTP-01 certificate issuance, renewal scheduling, and zero-downtime activation (narrow
-  managed HTTP-01 is implemented; live staging evidence and broader authenticators remain).
+- ACME HTTP-01/DNS-01 certificate issuance, wildcard renewal scheduling, and zero-downtime activation
+  (bounded managed authenticators are implemented; live staging evidence and broader providers remain).
 - Imported PEM and generated self-signed certificates for development and bootstrap use (strict
   imported-PEM startup preparation and the atomic callback-publication seam are implemented;
   file reload/API activation and self-signed generation remain).
@@ -76,9 +76,9 @@ Status: partial. The annotations below identify landed slices; Milestone 1 is no
 
 The original Milestone 1 boundary explicitly excluded UDP, forward proxying, caching, HTTP/3,
 native config importers, transparent interception, firewall management, and remote multi-user
-administration. The current `0.3.0` working release has partial HTTP/1 forward proxying and
-bounded nginx, HAProxy, Squid, and nginx-RTMP import paths; that progress does not promote those
-subsets to complete compatibility or make foundations active capabilities. UDP, active cache,
+administration. The current `0.3.0` working release has partial HTTP/1 forward proxying, bounded
+HTTP caching, and bounded nginx, HAProxy, Squid, and nginx-RTMP import paths; that progress does not
+promote those subsets to complete compatibility or make foundations active capabilities. UDP,
 reverse HTTP/3 daemon listeners, transparent interception, firewall management, and remote
 multi-user administration remain outside the current release contract. The bounded `forward_http3`
 listener is now a partial exception documented in the compatibility matrix.
@@ -125,15 +125,16 @@ runtime, failure-path, test, and native-lowering coverage all land.
 - UDP relay with bounded pseudo-sessions, per-client reply mapping, and expiry.
 - PROXY protocol v1/v2 for explicit client-address propagation.
 - Least-connections policy (implemented); weighted round-robin remains.
-- ACME DNS-01 through isolated provider plugins and wildcard certificate support.
+- ACME DNS-01 through bounded statically linked provider implementations and wildcard certificate support
+  (the provider seam and orchestrator are implemented; concrete provider deployments remain).
 
 Imports are not successful when behavior is ignored. Unsupported routing, TLS, ACL, or
 listener semantics must block the affected service.
 
 ## Milestone 3: explicit forward proxy
 
-Status: partial. The HTTP/1, HTTP/2 classic CONNECT, and forward HTTP/3 daemon paths are integrated;
-arbitrary HTTP/2 forwarding and reverse HTTP/3 remain outside the daemon contract.
+Status: partial. The HTTP/1, HTTP/2 classic CONNECT, forward HTTP/3, and reverse HTTP/3 daemon paths
+are integrated; arbitrary HTTP/2 forwarding remains outside the daemon contract.
 
 - Dedicated HTTP/1 absolute-form parser and bounded CONNECT tunnel with over-read preservation
   (integrated for the HTTP/1 daemon listener; broader conformance remains).
@@ -154,23 +155,28 @@ arbitrary HTTP/2 forwarding and reverse HTTP/3 remain outside the daemon contrac
 - Bounded forward HTTP/3 absolute-form and classic CONNECT through a separate UDP listener, with
   TLS 1.3/`h3` negotiation, shared forward policy, and generation-aware drain (integrated; broader
   conformance remains).
+- Opt-in bounded memory/persistent caching for eligible HTTP/1 forward GET/HEAD requests, with
+  collapsed fills, origin revalidation, fail-closed privacy admission, authenticated purge, and
+  listener cache outcome metrics (integrated; broader HTTP cache conformance remains).
 
 Defer TLS interception, transparent proxying, ICAP/eCAP, NTLM/Negotiate helpers, cache
 peer protocols, and broad Squid helper compatibility.
 
 ## Milestone 4: cache and HTTP/3
 
-Status: partial; bounded reverse HTTP cache integration is active, while reverse HTTP/3 remains
-planned. The forward H3 listener is an integrated partial capability.
+Status: partial; bounded reverse HTTP and eligible HTTP/1 forward cache integrations are active.
+Both H3 directions remain partial capabilities pending broader conformance.
 
 - Production cache storage with recovery, eviction, exclusive-root ownership, bounded asynchronous
-  request-path I/O, and cache-bound prepared-entry admission is active for reverse HTTP.
+  request-path I/O, and cache-bound prepared-entry admission is active for reverse HTTP and forward
+  HTTP/1.
 - Cache freshness, revalidation, conditional validators, collapsed forwarding, bounded surrogate-tag
   purge, streaming/range bypass, and request-level observability are active; broader conformance
   and reverse HTTP/3 remain.
-- Reverse QUIC/H3 frontend selected through a proof of compatibility with Pingora's service model.
-- HTTP/3 conformance, migration, timeout, reverse-proxy behavior, 0-RTT policy, and UDP
-  resource-exhaustion tests.
+- Reverse QUIC/H3 frontend selected through a proof of compatibility with Pingora's service model
+  and reusing immutable upstream service/pool plans.
+- HTTP/3 conformance, timeout, reverse-proxy behavior, and UDP resource-exhaustion tests remain;
+  migration is disabled and 0-RTT is disabled by policy.
 
 HTTP/3 must be advertised only when the active listener is actually QUIC-capable. It must
 never degrade silently to another HTTP version.

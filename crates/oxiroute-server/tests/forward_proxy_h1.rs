@@ -13,7 +13,7 @@ use oxiroute_config::{
     ForwardAccessAction, ForwardAccessCondition, ForwardAccessMatcher, ForwardAccessPolicy,
     ForwardAccessRule, ForwardAuditMode, ForwardConnectPolicy, ForwardDestinationPolicy,
     ForwardHeaderPolicy, ForwardHttpVersion, ForwardProxyAuth, ForwardProxyService,
-    ForwardResolverPolicy, Listener, Protocol,
+    ForwardResolverPolicy, Listener, Protocol, load_lua,
 };
 use oxiroute_import::squid::import;
 use tempfile::tempdir;
@@ -202,6 +202,7 @@ async fn basic_authenticated_absolute_form_and_connect_cross_the_runtime_listene
         protocol: Protocol::ForwardHttp1,
         service: Some("forward".into()),
         tls_profile: None,
+        proxy_protocol: None,
         max_connections: None,
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
     });
@@ -385,6 +386,78 @@ async fn basic_authenticated_absolute_form_and_connect_cross_the_runtime_listene
     assert_eq!(&pong, b"pong");
     server.shutdown_gracefully();
     origin_task.await.expect("origin task");
+}
+
+#[tokio::test]
+async fn cache_serves_a_second_absolute_form_get_without_reaching_the_origin() {
+    let origin = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
+    let origin_address = origin.local_addr().expect("origin address");
+    let origin_task = tokio::spawn(async move {
+        let (mut stream, _) = origin.accept().await.expect("origin accept");
+        let mut request = Vec::new();
+        let mut buffer = [0; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = stream.read(&mut buffer).await.expect("origin read");
+            assert_ne!(read, 0, "origin request ended before headers");
+            request.extend_from_slice(&buffer[..read]);
+        }
+        assert!(request.starts_with(b"GET /cached HTTP/1.1\r\n"));
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nCache-Control: max-age=60\r\nContent-Length: 6\r\nConnection: close\r\n\r\ncached",
+            )
+            .await
+            .expect("origin response");
+    });
+
+    let proxy_address = process_support::reserve_tcp_address();
+    let config = load_lua(&format!(
+        r#"return {{
+  version = 1,
+  listeners = {{ {{
+    name = "forward",
+    bind = {{ type = "socket", address = "{proxy_address}" }},
+    protocol = "forward_http1",
+    service = "forward",
+  }} }},
+  cache_stores = {{ {{ name = "memory", type = "memory" }} }},
+  forward_proxy_services = {{ {{
+    name = "forward",
+    tls_required = false,
+    destination_policy = {{ deny_private = false }},
+    cache = {{ store = "memory" }},
+  }} }},
+}}"#,
+    ))
+    .expect("forward cache config");
+    let mut server = process_support::ServerProcess::start(&config, None);
+    server.wait_for_tcp(proxy_address).await;
+
+    let first = exchange(
+        proxy_address,
+        format!(
+            "GET http://{origin_address}/cached HTTP/1.1\r\nHost: origin\r\nConnection: close\r\n\r\n"
+        )
+        .as_bytes(),
+    )
+    .await;
+    assert!(first.starts_with(b"HTTP/1.1 200"));
+    assert!(first.ends_with(b"cached"));
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let second = exchange(
+        proxy_address,
+        format!(
+            "GET http://{origin_address}/cached HTTP/1.1\r\nHost: origin\r\nConnection: close\r\n\r\n"
+        )
+        .as_bytes(),
+    )
+    .await;
+    assert!(second.starts_with(b"HTTP/1.1 200"));
+    assert!(second.ends_with(b"cached"));
+
+    origin_task.await.expect("origin task");
+    server.shutdown();
 }
 
 #[tokio::test]
