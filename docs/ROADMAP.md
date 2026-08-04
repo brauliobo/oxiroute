@@ -60,8 +60,8 @@ Status: partial. The annotations below identify landed slices; Milestone 1 is no
 - Parent-directory file watcher with content-hash revisions (implemented for the canonical root,
   including periodic re-resolution of native references; direct watches for every resolved native
   dependency and richer dependency registration remain planned).
-- ACME HTTP-01 certificate issuance, renewal scheduling, and zero-downtime activation (managed ACME
-  remains absent; external Certbot lineage rotation is implemented).
+- ACME HTTP-01 certificate issuance, renewal scheduling, and zero-downtime activation (narrow
+  managed HTTP-01 is implemented; live staging evidence and broader authenticators remain).
 - Imported PEM and generated self-signed certificates for development and bootstrap use (strict
   imported-PEM startup preparation and the atomic callback-publication seam are implemented;
   file reload/API activation and self-signed generation remain).
@@ -70,9 +70,9 @@ Status: partial. The annotations below identify landed slices; Milestone 1 is no
   generation, TLS, process, listener, pool, server, config, and bounded event routes are
   implemented or partial as documented; SSE remains planned).
 - Minimal Vue 3 SPA using build-time Pug SFC templates (implemented).
-- UI for listeners, upstreams, validation diagnostics, active revision, and basic metrics (the
-  complete current canonical-field workspace and runtime observatory are implemented; certificate,
-  import, and event workflows remain).
+- UI for listeners, upstreams, validation diagnostics, active revision, basic metrics, and managed
+  certificate configuration (the complete current canonical-field workspace and runtime observatory
+  are implemented; import and event workflows remain).
 
 The original Milestone 1 boundary explicitly excluded UDP, forward proxying, caching, HTTP/3,
 native config importers, transparent interception, firewall management, and remote multi-user

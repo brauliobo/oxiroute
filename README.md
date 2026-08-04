@@ -173,8 +173,9 @@ The important current exclusions are:
 - No HTTP/3 daemon listener, UDP relay, or complete forward-proxy HTTP/2/HTTP/3 runtime. The
   forward HTTP/2/HTTP/3 crates are foundations, not active listener capabilities.
 - No active cache request path; the cache crate is a tested foundation only.
-- No managed ACME issuance, certificate upload API, or certificate management UI. External Certbot
-  lineage reconciliation is implemented.
+- Managed ACME is partial: HTTP-01 issuance/renewal, certificate status, and configuration UI are
+  implemented; certificate upload and DNS-01/TLS-ALPN-01 remain absent. External Certbot lineage
+  reconciliation is also implemented.
 - No complete nginx, HAProxy, Squid, Varnish, or nginx-RTMP compatibility. Importers finalize only
   audited, representable subsets and fail closed for blocking semantics; strict nginx-RTMP results
   are integrated through complete-root import and native references where documented.

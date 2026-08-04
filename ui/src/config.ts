@@ -60,6 +60,20 @@ export interface CertbotCertificateSource {
   archive_directory_path: string
 }
 
+export type AcmeChallengeType = 'http01' | 'dns01' | 'tls_alpn01'
+export type AcmeKeyType = 'ecdsa_p256' | 'rsa_2048'
+
+export interface AcmeManagedCertificateSource {
+  type: 'acme_managed'
+  directory_url: string
+  state_root: string
+  contacts: string[]
+  terms_agreed: boolean
+  challenge: AcmeChallengeType
+  key_type: AcmeKeyType
+  allowed_dns_suffixes: string[]
+}
+
 export type SelfSignedKeyType = 'ecdsa_p256' | 'rsa_2048'
 
 export interface SelfSignedDevelopmentCertificateSource {
@@ -71,6 +85,7 @@ export interface SelfSignedDevelopmentCertificateSource {
 export type CertificateSource =
   | DirectCertificateSource
   | CertbotCertificateSource
+  | AcmeManagedCertificateSource
   | SelfSignedDevelopmentCertificateSource
 
 export interface CertificateConfig {
@@ -718,13 +733,24 @@ export function errorDiagnosticsFrom(value: unknown): ConfigDiagnostic[] {
 }
 
 function isCertificate(value: unknown): value is CertificateConfig {
-  return isRecord(value) && typeof value.name === 'string' && arrayOf(value.dns_names, isString) &&
-    isRecord(value.source) && (value.source.type === 'files'
-      ? typeof value.source.certificate_chain_path === 'string' && typeof value.source.private_key_path === 'string'
-      : value.source.type === 'certbot' && typeof value.source.live_directory_path === 'string' &&
-        typeof value.source.archive_directory_path === 'string'
-      || value.source.type === 'self_signed_development' && safeInteger(value.source.validity_days) &&
-        ['ecdsa_p256', 'rsa_2048'].includes(String(value.source.key_type)))
+  if (!isRecord(value) || typeof value.name !== 'string' || !arrayOf(value.dns_names, isString) ||
+    !isRecord(value.source)) return false
+  const source = value.source
+  if (source.type === 'files') {
+    return typeof source.certificate_chain_path === 'string' && typeof source.private_key_path === 'string'
+  }
+  if (source.type === 'certbot') {
+    return typeof source.live_directory_path === 'string' && typeof source.archive_directory_path === 'string'
+  }
+  if (source.type === 'acme_managed') {
+    return typeof source.directory_url === 'string' && typeof source.state_root === 'string' &&
+      arrayOf(source.contacts, isString) && typeof source.terms_agreed === 'boolean' &&
+      ['http01', 'dns01', 'tls_alpn01'].includes(String(source.challenge)) &&
+      ['ecdsa_p256', 'rsa_2048'].includes(String(source.key_type)) &&
+      arrayOf(source.allowed_dns_suffixes, isString)
+  }
+  return source.type === 'self_signed_development' && safeInteger(source.validity_days) &&
+    ['ecdsa_p256', 'rsa_2048'].includes(String(source.key_type))
 }
 
 function isTlsProfile(value: unknown): value is TlsProfileConfig {
@@ -1128,6 +1154,12 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'certificates[].source.private_key_path', kind: 'string' },
   { path: 'certificates[].source.live_directory_path', kind: 'string' },
   { path: 'certificates[].source.archive_directory_path', kind: 'string' },
+  { path: 'certificates[].source.directory_url', kind: 'string' },
+  { path: 'certificates[].source.state_root', kind: 'string' },
+  { path: 'certificates[].source.contacts', kind: 'string_list' },
+  { path: 'certificates[].source.terms_agreed', kind: 'boolean' },
+  { path: 'certificates[].source.challenge', kind: 'enum' },
+  { path: 'certificates[].source.allowed_dns_suffixes', kind: 'string_list' },
   { path: 'certificates[].source.validity_days', kind: 'integer' },
   { path: 'certificates[].source.key_type', kind: 'enum' },
   { path: 'tls_profiles', kind: 'collection' },

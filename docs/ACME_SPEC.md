@@ -13,17 +13,22 @@ CSR, X.509, and TLS operations MUST use maintained Rust or system cryptography l
 Current implementation boundary: strict direct-file startup loading and descriptor-relative Certbot
 lineage snapshots prepare immutable certificate generations. One process-lifetime Certbot watcher
 supervisor combines bounded filesystem-event coalescing with periodic full rescans, validates a
-complete lineage candidate, and atomically publishes each identity independently. A TLS callback
-snapshots the active generation for each new handshake; existing connections retain their selected
-generation and downstream session resumption is disabled. Direct-file watching, configuration
-reload, managed storage, certificate API/UI, the ACME client, and renewal scheduling remain targets.
+complete lineage candidate, and atomically publishes each identity independently. Managed ACME now
+has bounded owner-only state, injected and production HTTPS transports, account/order/challenge
+orchestration, HTTP-01 routing, authenticated renewal, a due-check supervisor, redacted monitoring,
+and UI configuration. A first-start managed identity receives an in-memory, one-day self-signed
+bootstrap generation marked immediately due; bootstrap material is never persisted as ACME state.
+A TLS callback snapshots the active generation for each new handshake; existing connections retain
+their selected generation and downstream session resumption is disabled.
 
 ## Certificate sources
 
 ### ACME managed
 
-The daemon will own issuance and renewal through an ACME v2 directory. No ACME client or managed
-certificate source is implemented yet.
+The daemon owns issuance and renewal through an ACME v2 directory. The first managed release
+supports HTTP-01 only, rejects wildcard and IP identifiers, and requires explicit terms agreement
+and a configured DNS-suffix policy. DNS-01 and TLS-ALPN-01 remain rejected until their separate
+authenticator designs are implemented.
 
 ### Imported files
 
@@ -42,16 +47,17 @@ mutate, chmod, or lock Certbot's lineage, renewal, archive, or account directori
 
 ### Self-signed
 
-This planned mode will be for local development and bootstrap only. The daemon will generate a leaf
-key and certificate for explicit names and validity. Browsers will not trust it automatically. The
-future mode MUST be visibly labeled and SHOULD default to loopback/private use.
+This mode is for local development and managed-ACME bootstrap only. The daemon generates a leaf key
+and certificate for explicit names and validity. Browsers will not trust it automatically. Managed
+bootstrap material is in-memory only and is replaced by the first validated ACME revision. The mode
+MUST be visibly labeled and SHOULD default to loopback/private use.
 
 A future local-CA mode requires separate trust-distribution design and is not implied by
 self-signed support.
 
 ## ACME protocol scope
 
-The planned initial implementation will follow RFC 8555 behavior:
+The first managed implementation follows RFC 8555 behavior:
 
 1. Fetch and validate an HTTPS directory.
 2. Create or load an account key.
@@ -287,5 +293,5 @@ license grants use of its trademarks.
 - API and logs never contain private or account key bytes.
 - State-root lock, owner/mode, no-follow, hard-link, unsafe-name, and non-local-filesystem failures.
 
-Managed ACME implementation will begin with failing state-machine and storage tests before any
-live ACME request code.
+Managed ACME tests use scripted transports and fake clocks. Production endpoints are not used by
+CI; live validation remains the operator's staging-directory responsibility.

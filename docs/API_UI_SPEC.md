@@ -36,8 +36,9 @@ Implemented and recognized endpoints:
 | `POST` | `/api/v1/servers/refresh-dns` | Resolve every prevalidated target and report explicit non-atomic per-server outcomes. |
 | `GET` | `/api/v1/generations` | Active, previous, candidate, and quarantined generation state. |
 | `POST` | `/api/v1/generations/reload`, `/api/v1/generations/rollback`, `/api/v1/generations/drain` | Revision-checked generation preparation, rollback, and drain operations. |
-| `GET` | `/api/v1/tls` | Redacted certificate and Certbot watcher status. |
+| `GET` | `/api/v1/tls` | Redacted certificate, managed ACME, and Certbot watcher status. |
 | `POST` | `/api/v1/tls/reconcile` | Revision-checked reconciliation of externally owned Certbot lineages. |
+| `POST` | `/api/v1/tls/renew` | Revision-checked immediate renewal of one managed ACME certificate. |
 | `GET` | `/api/v1/events?after={cursor}&limit={n}` | Bounded cursor polling over the in-memory operational event ring. |
 | `POST` | `/api/v1/process/drain`, `/api/v1/process/shutdown` | Revision-checked process drain or shutdown requests. |
 | `GET` | `/api/v1/rtmp/streams` | Active RTMP catalog and runtime capabilities. |
@@ -179,12 +180,16 @@ Configuration request failures use these statuses:
 
 Exact paths are required; trailing slashes and repeated separators return `404`.
 
-Full certificate inventory, issuance, renewal, and certificate UI workflows are planned, not
-implemented by the current TLS slice. The current authenticated `GET /api/v1/tls` status route and
-`POST /api/v1/tls/reconcile` operation expose and reconcile externally owned Certbot lineages.
+Managed ACME inventory is exposed through authenticated `GET /api/v1/tls`. It includes the
+configured directory URL, key type, suffix policy, disk/active revisions, expiry timestamps,
+next scheduled action, and redacted last outcome/error. `POST /api/v1/tls/renew` accepts the same
+revision-checked body as reconciliation and optionally a certificate name. It provisions exact
+HTTP-01 material before notifying the CA, cleans it after a terminal result, commits a complete
+revision, validates it through the TLS backend, and publishes it without interrupting existing
+connections. Account URLs, order URLs, tokens, and private keys are never returned; configured
+certificate identifiers and suffix-policy values follow the existing redacted inventory contract.
 Lua-configured direct-file identities are prepared at startup and configured Certbot identities are
-watched and atomically reconciled. The management API cannot add, replace, or renew certificate
-material directly.
+watched and atomically reconciled.
 
 The implemented monitoring snapshot contains daemon uptime, process CPU/RSS/virtual memory,
 threads, open file descriptors, host load averages and memory, aggregate/listener connection and
@@ -193,7 +198,8 @@ state, pool/endpoint health, and RTMP
 stream/publisher/subscriber/media totals. It also includes redacted `certbotCertificates` entries
 with identity name, active archive/content revision, expiry, and last outcome/error code, plus
 `certbotWatcher` health and bounded counters. Source paths, SAN labels, PEM, and private material
-are excluded. Process and host sampling
+are excluded. Managed entries additionally expose redacted disk/active revisions, expiry and
+scheduler timestamps, and bounded outcome/error codes. Process and host sampling
 currently reads Linux `/proc`; a sampling or parsing failure returns `503` instead of fabricated
 zeroes. CPU utilization is `null` until two successful samples establish a delta.
 
