@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     net::ToSocketAddrs,
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, Mutex, OnceLock, Weak},
     time::Duration,
 };
 
@@ -12,18 +12,19 @@ use crate::{
     RouteError, RouteTable, RuntimeEndpoint, TlsBuildError, TlsProfilePlan, TopologySnapshot,
     health,
     http_action::{
-        AccessLog, FixedResponsePlan, HttpActionPlan, HttpCachePlan, HttpGzipPlan, HttpRoutePlan,
-        ProxyActionPlan, ProxyPolicyPlan, RedirectPlan, RouteAccess, RoutePolicyPlan,
-        StaticFilesPlan,
+        AccessLog, CachePurgeAccess, DiskBackend, FixedResponsePlan, HttpActionPlan,
+        HttpCacheBackend, HttpCachePlan, HttpGzipPlan, HttpRoutePlan, ProxyActionPlan,
+        ProxyPolicyPlan, RedirectPlan, RouteAccess, RoutePolicyPlan, StaticFilesPlan,
     },
     routing::RuntimeServer,
     upstream_peer::UpstreamPlan,
 };
 use http::{Method, Uri, uri::Authority};
-use oxiroute_cache::{Cache, CacheConfig, CacheTimeline};
+use oxiroute_cache::{Cache, CacheConfig, CacheTimeline, DiskCache, DiskCacheConfig};
 use oxiroute_config::{
-    AccessLogPolicy, CacheAuthorizationPolicy, CacheKeyComponent, CacheSetCookiePolicy, CacheStore,
-    CacheVaryPolicy, Config, DnsResolutionPolicy, HttpCachePolicy, HttpProxyPolicy,
+    AccessLogPolicy, CacheAuthorizationPolicy, CacheKeyComponent, CachePurgeAuthorization,
+    CacheSetCookiePolicy, CacheStore, CacheVaryPolicy, Config, DnsResolutionPolicy,
+    HttpCachePolicy, HttpProxyPolicy,
     HttpRoute as ConfigHttpRoute, HttpRouteAction, ListenerBind, Protocol,
     RtmpRecorderStart as ConfigRecorderStart,
 };
@@ -34,6 +35,9 @@ use oxiroute_rtmp::{
     RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry, RtmpRelayConfig,
     RtmpServiceRuntime, RtmpSessionPolicy,
 };
+
+static DISK_BACKEND_REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Weak<DiskBackend>>>> =
+    OnceLock::new();
 
 #[derive(Clone, Debug)]
 pub struct ServiceSpec {
@@ -664,7 +668,7 @@ fn compile_http_services(
     pools: &Arc<HashMap<String, Arc<UpstreamPlan>>>,
 ) -> Result<HashMap<String, Arc<HttpServicePlan>>, ServicePlanError> {
     let mut http_services = HashMap::with_capacity(config.http_services.len());
-    let mut memory_caches = HashMap::new();
+    let mut cache_backends = HashMap::new();
     for service in &config.http_services {
         let mut routes = Vec::with_capacity(service.routes.len());
         let mut route_plans = HashMap::with_capacity(service.routes.len());
@@ -675,7 +679,7 @@ fn compile_http_services(
                 route,
                 pools,
                 &config.cache_stores,
-                &mut memory_caches,
+                &mut cache_backends,
                 service.gzip.is_some(),
             )?;
             routes.push(compiled_route);
@@ -711,7 +715,7 @@ fn compile_http_route(
     route: &ConfigHttpRoute,
     pools: &Arc<HashMap<String, Arc<UpstreamPlan>>>,
     cache_stores: &[CacheStore],
-    memory_caches: &mut HashMap<String, Arc<Cache>>,
+    cache_backends: &mut HashMap<String, Arc<HttpCacheBackend>>,
     has_gzip: bool,
 ) -> Result<(Route, Arc<HttpRoutePlan>), ServicePlanError> {
     let methods = if route.methods.is_empty() {
@@ -754,7 +758,7 @@ fn compile_http_route(
             route.access_policy.is_some(),
             pools,
             cache_stores,
-            memory_caches,
+            cache_backends,
             has_gzip,
         )?,
         HttpRouteAction::FixedResponse {
@@ -849,6 +853,25 @@ fn reject_unimplemented_runtime_policies(config: &Config) -> Result<(), ServiceP
     Ok(())
 }
 
+fn open_shared_disk_backend(
+    root: &std::path::Path,
+    config: DiskCacheConfig,
+) -> Result<Arc<DiskBackend>, ()> {
+    let registry = DISK_BACKEND_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut registry = registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(existing) = registry.get(root).and_then(Weak::upgrade) {
+        return (existing.disk_config() == &config)
+            .then_some(existing)
+            .ok_or(());
+    }
+    let cache = Arc::new(DiskCache::open(root, config).map_err(|_| ())?);
+    let backend = Arc::new(DiskBackend::new(cache));
+    registry.insert(root.to_owned(), Arc::downgrade(&backend));
+    Ok(backend)
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "proxy compilation carries route errors and shared cache-generation state"
@@ -861,7 +884,7 @@ fn compile_proxy_action(
     has_access_policy: bool,
     pools: &HashMap<String, Arc<UpstreamPlan>>,
     cache_stores: &[CacheStore],
-    memory_caches: &mut HashMap<String, Arc<Cache>>,
+    cache_backends: &mut HashMap<String, Arc<HttpCacheBackend>>,
     has_gzip: bool,
 ) -> Result<HttpActionPlan, ServicePlanError> {
     let pool = pools
@@ -878,7 +901,7 @@ fn compile_proxy_action(
         has_access_policy,
         &policy.request_headers,
         cache_stores,
-        memory_caches,
+        cache_backends,
         has_gzip,
     )?;
     Ok(HttpActionPlan::Proxy(ProxyActionPlan {
@@ -899,7 +922,7 @@ fn compile_cache_policy(
     has_access_policy: bool,
     request_headers: &[oxiroute_config::HttpRequestHeaderMutation],
     stores: &[CacheStore],
-    memory_caches: &mut HashMap<String, Arc<Cache>>,
+    cache_backends: &mut HashMap<String, Arc<HttpCacheBackend>>,
     has_gzip: bool,
 ) -> Result<Option<Arc<HttpCachePlan>>, ServicePlanError> {
     let Some(policy) = policy else {
@@ -970,17 +993,7 @@ fn compile_cache_policy(
             "http_services[].routes[].action.policy.cache.collapsed_forwarding",
         ));
     }
-    if policy.surrogate_tags.is_some() {
-        return Err(unavailable(
-            "http_services[].routes[].action.policy.cache.surrogate_tags",
-        ));
-    }
-    if policy.purge_authorization.is_some() {
-        return Err(unavailable(
-            "http_services[].routes[].action.policy.cache.purge_authorization",
-        ));
-    }
-    let cache = if let Some(cache) = memory_caches.get(&policy.store) {
+    let cache = if let Some(cache) = cache_backends.get(&policy.store) {
         Arc::clone(cache)
     } else {
         let store = stores.iter().find(|store| match store {
@@ -988,45 +1001,107 @@ fn compile_cache_policy(
                 name == &policy.store
             }
         });
-        let Some(CacheStore::Memory {
-            max_bytes,
-            max_entries,
-            max_object_bytes,
-            max_header_bytes,
-            max_key_bytes,
-            max_tag_bytes,
-            max_tags_per_object,
-            max_in_flight_fills,
-            max_followers_per_fill,
-            ..
-        }) = store
-        else {
+        let Some(store) = store else {
             return Err(ServicePlanError::CacheRuntimeUnavailable {
                 service: service.into(),
                 route,
             });
         };
         let to_usize = |value: u64| usize::try_from(value).map_err(|_| unavailable("cache bounds"));
-        let cache_config = CacheConfig {
-            max_entries: to_usize(*max_entries)?,
-            max_total_bytes: to_usize(*max_bytes)?,
-            max_object_bytes: to_usize(*max_object_bytes)?,
-            max_header_bytes: to_usize(*max_header_bytes)?,
-            max_header_fields: 256,
-            max_body_bytes: to_usize(*max_object_bytes)?,
-            max_key_bytes: to_usize(*max_key_bytes)?,
-            max_vary_fields: 32,
-            max_tags_per_entry: to_usize(*max_tags_per_object)?,
-            max_tag_bytes: to_usize(*max_tag_bytes)?,
-            max_in_flight: to_usize(*max_in_flight_fills)?,
-            max_followers_per_fill: to_usize(*max_followers_per_fill)?,
-            max_heuristic_freshness: Duration::from_secs(24 * 60 * 60),
+        let make_memory_config = |max_bytes: u64,
+                                  max_entries: u64,
+                                  max_object_bytes: u64,
+                                  max_header_bytes: u64,
+                                  max_key_bytes: u64,
+                                  max_tag_bytes: u64,
+                                  max_tags_per_object: u64,
+                                  max_in_flight_fills: u64,
+                                  max_followers_per_fill: u64|
+         -> Result<CacheConfig, ServicePlanError> {
+            Ok(CacheConfig {
+                max_entries: to_usize(max_entries)?,
+                max_total_bytes: to_usize(max_bytes)?,
+                max_object_bytes: to_usize(max_object_bytes)?,
+                max_header_bytes: to_usize(max_header_bytes)?,
+                max_header_fields: 256,
+                max_body_bytes: to_usize(max_object_bytes)?,
+                max_key_bytes: to_usize(max_key_bytes)?,
+                max_vary_fields: 32,
+                max_tags_per_entry: to_usize(max_tags_per_object)?,
+                max_tag_bytes: to_usize(max_tag_bytes)?,
+                max_in_flight: to_usize(max_in_flight_fills)?,
+                max_followers_per_fill: to_usize(max_followers_per_fill)?,
+                max_heuristic_freshness: Duration::from_secs(24 * 60 * 60),
+            })
         };
-        let cache = Arc::new(
-            Cache::new(cache_config)
-                .map_err(|_| unavailable("http_services[].routes[].action.policy.cache.memory"))?,
-        );
-        memory_caches.insert(policy.store.clone(), Arc::clone(&cache));
+        let cache = match store {
+            CacheStore::Memory {
+                max_bytes,
+                max_entries,
+                max_object_bytes,
+                max_header_bytes,
+                max_key_bytes,
+                max_tag_bytes,
+                max_tags_per_object,
+                max_in_flight_fills,
+                max_followers_per_fill,
+                ..
+            } => {
+                let cache_config = make_memory_config(
+                    *max_bytes,
+                    *max_entries,
+                    *max_object_bytes,
+                    *max_header_bytes,
+                    *max_key_bytes,
+                    *max_tag_bytes,
+                    *max_tags_per_object,
+                    *max_in_flight_fills,
+                    *max_followers_per_fill,
+                )?;
+                Arc::new(HttpCacheBackend::Memory(Arc::new(
+                    Cache::new(cache_config).map_err(|_| {
+                        unavailable("http_services[].routes[].action.policy.cache.memory")
+                    })?,
+                )))
+            }
+            CacheStore::Disk {
+                root_directory,
+                max_bytes,
+                max_files,
+                max_object_bytes,
+                max_header_bytes,
+                max_key_bytes,
+                max_tag_bytes,
+                max_tags_per_object,
+                max_in_flight_fills,
+                max_followers_per_fill,
+                ..
+            } => {
+                let memory = make_memory_config(
+                    *max_bytes,
+                    *max_files,
+                    *max_object_bytes,
+                    *max_header_bytes,
+                    *max_key_bytes,
+                    *max_tag_bytes,
+                    *max_tags_per_object,
+                    *max_in_flight_fills,
+                    *max_followers_per_fill,
+                )?;
+                let disk_config = DiskCacheConfig {
+                    memory,
+                    max_disk_bytes: *max_bytes,
+                    max_disk_files: to_usize(*max_files)?,
+                    max_record_bytes: to_usize(*max_bytes)?,
+                };
+                let backend =
+                    open_shared_disk_backend(root_directory, disk_config).map_err(|_| {
+                        unavailable("http_services[].routes[].action.policy.cache.disk")
+                    })?;
+                Arc::new(HttpCacheBackend::Disk(backend))
+            }
+        };
+        cache_backends.insert(policy.store.clone(), Arc::clone(&cache));
         cache
     };
     let timeline = CacheTimeline::new(
@@ -1047,11 +1122,42 @@ fn compile_cache_policy(
         .iter()
         .map(|method| method.parse::<Method>().expect("validated cache method"))
         .collect();
+    let surrogate_header = policy.surrogate_tags.as_ref().map(|tags| {
+        http::HeaderName::from_bytes(tags.response_header.as_bytes())
+            .expect("validated cache surrogate header")
+    });
+    let surrogate_limits = policy
+        .surrogate_tags
+        .as_ref()
+        .map(|tags| {
+            Ok::<_, ServicePlanError>((
+                usize::try_from(tags.max_tags).map_err(|_| unavailable("cache tag bounds"))?,
+                usize::try_from(tags.max_tag_bytes).map_err(|_| unavailable("cache tag bounds"))?,
+            ))
+        })
+        .transpose()?;
+    let purge_access = policy
+        .purge_authorization
+        .as_ref()
+        .map(|authorization| match authorization {
+            CachePurgeAuthorization::BearerTokenFile { token_file_path } => {
+                CachePurgeAccess::load(token_file_path).map_err(|_| {
+                    ServicePlanError::AccessPreflight {
+                        service: service.to_owned(),
+                        route,
+                    }
+                })
+            }
+        })
+        .transpose()?;
     Ok(Some(Arc::new(HttpCachePlan {
         cache,
         timeline,
         methods,
         revalidate: policy.revalidate,
+        surrogate_header,
+        surrogate_limits,
+        purge_access,
     })))
 }
 

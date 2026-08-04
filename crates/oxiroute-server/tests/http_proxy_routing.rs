@@ -10,7 +10,7 @@ use std::{
     net::SocketAddr,
     os::fd::AsRawFd as _,
     os::unix::fs::symlink,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -19,15 +19,15 @@ use std::{
 };
 
 use oxiroute_config::{
-    AccessLogPolicy, CacheKeyComponent, CacheStore, Config, DnsResolutionPolicy,
-    DownstreamTimeoutPolicy, HealthCheck, HealthCheckType, HttpAccessPolicy,
-    HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpGzipMinimumVersion, HttpGzipPolicy,
-    HttpLiteralHeader, HttpMimeType, HttpPathSelector, HttpProxyPolicy, HttpRedirectLocation,
-    HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpResponseHeaderMutation, HttpRetryTarget,
-    HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpSameSite, HttpService,
-    HttpStaticErrorResponse, HttpStaticMimePolicy, HttpStaticPathMapping, HttpStaticTryFile,
-    HttpUpstreamHost, HttpVersionPolicy, Listener, Protocol, UpstreamAlgorithm, UpstreamEndpoint,
-    UpstreamPool, UpstreamServer,
+    AccessLogPolicy, CacheKeyComponent, CachePurgeAuthorization, CacheStore, CacheSurrogateTags,
+    Config, DnsResolutionPolicy, DownstreamTimeoutPolicy, HealthCheck, HealthCheckType,
+    HttpAccessPolicy, HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpGzipMinimumVersion,
+    HttpGzipPolicy, HttpLiteralHeader, HttpMimeType, HttpPathSelector, HttpProxyPolicy,
+    HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
+    HttpResponseHeaderMutation, HttpRetryTarget, HttpRetryTrigger, HttpRoute, HttpRouteAction,
+    HttpSameSite, HttpService, HttpStaticErrorResponse, HttpStaticMimePolicy,
+    HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost, HttpVersionPolicy, Listener,
+    Protocol, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, UpstreamServer,
 };
 use oxiroute_import::nginx::{
     NginxDefaultErrorPageOverlay, NginxImportOptions, import_root_with_options,
@@ -42,6 +42,7 @@ use pingora::{
     proxy::http_proxy,
     server::configuration::ServerConf,
 };
+use tempfile::TempDir;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -233,7 +234,7 @@ async fn memory_cache_reuses_get_and_head_responses() {
         let proxy = ProxyHarness::start_with_memory_cache(
             vec![pool("origin", &[origin.address])],
             vec![cached_route(None, "/", "origin")],
-            3,
+            4,
         )
         .await;
 
@@ -270,6 +271,139 @@ async fn memory_cache_reuses_get_and_head_responses() {
     })
     .await
     .expect("memory cache reuse test timed out");
+}
+
+#[tokio::test]
+async fn disk_cache_survives_proxy_restart() {
+    timeout(TEST_TIMEOUT, async {
+        let temp = TempDir::new().expect("disk cache parent");
+        let origin = Origin::start("persistent", 1).await;
+        let root = temp.path().join("cache");
+        let mut route = cached_route(None, "/", "origin");
+        let HttpRouteAction::Proxy { policy, .. } = &mut route.action else {
+            unreachable!("cached route is a proxy route");
+        };
+        policy.cache.as_mut().expect("cache policy").store = "disk".into();
+        let store = disk_cache_store("disk", root.clone());
+
+        let proxy = ProxyHarness::start_with_features_and_cache(
+            vec![pool("origin", &[origin.address])],
+            vec![route.clone()],
+            Some(1024),
+            true,
+            100,
+            0,
+            false,
+            1,
+            None,
+            None,
+            DownstreamTimeoutPolicy::default(),
+            vec![store.clone()],
+        )
+        .await;
+        assert_origin_response(
+            &proxy
+                .request("GET /persistent HTTP/1.1\r\nHost: cache.test\r\n")
+                .await,
+            "persistent",
+        );
+        proxy.finish().await;
+
+        let proxy = ProxyHarness::start_with_features_and_cache(
+            vec![pool("origin", &[origin.address])],
+            vec![route],
+            Some(1024),
+            true,
+            100,
+            0,
+            false,
+            1,
+            None,
+            None,
+            DownstreamTimeoutPolicy::default(),
+            vec![store],
+        )
+        .await;
+        assert_origin_response(
+            &proxy
+                .request("GET /persistent HTTP/1.1\r\nHost: cache.test\r\n")
+                .await,
+            "persistent",
+        );
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 1);
+
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("persistent cache restart test timed out");
+}
+
+#[tokio::test]
+async fn authenticated_surrogate_tag_purge_removes_a_cached_response() {
+    timeout(TEST_TIMEOUT, async {
+        let temp = TempDir::new().expect("purge token parent");
+        let token = "x".repeat(32);
+        let token_file = write_secure_token(temp.path(), "purge.token", &token);
+        let origin = Origin::start_with_surrogate_tag("tagged", 2).await;
+        let mut route = cached_route(None, "/", "origin");
+        route.methods = vec!["GET".into(), "HEAD".into(), "PURGE".into()];
+        let HttpRouteAction::Proxy { policy, .. } = &mut route.action else {
+            unreachable!("cached route is a proxy route");
+        };
+        let cache = policy.cache.as_mut().expect("cache policy");
+        cache.surrogate_tags = Some(CacheSurrogateTags {
+            response_header: "Surrogate-Key".into(),
+            max_tags: 4,
+            max_tag_bytes: 64,
+        });
+        cache.purge_authorization = Some(CachePurgeAuthorization::BearerTokenFile {
+            token_file_path: token_file,
+        });
+        let proxy = ProxyHarness::start_with_features_and_cache(
+            vec![pool("origin", &[origin.address])],
+            vec![route],
+            Some(1024),
+            true,
+            100,
+            0,
+            false,
+            4,
+            None,
+            None,
+            DownstreamTimeoutPolicy::default(),
+            vec![memory_cache_store("memory")],
+        )
+        .await;
+
+        assert_origin_response(
+            &proxy
+                .request("GET /tagged HTTP/1.1\r\nHost: cache.test\r\n")
+                .await,
+            "tagged",
+        );
+        let unauthorized = proxy
+            .request("PURGE /tagged HTTP/1.1\r\nHost: cache.test\r\n")
+            .await;
+        assert_eq!(unauthorized.status, 401);
+        let purge_request = format!(
+            "PURGE /tagged HTTP/1.1\r\nHost: cache.test\r\nAuthorization: Bearer {token}\r\nSurrogate-Key: page\r\n"
+        );
+        let purged = proxy.request(&purge_request).await;
+        assert_eq!(purged.status, 200, "response: {}", purged.text());
+        assert_origin_response(
+            &proxy
+                .request("GET /tagged HTTP/1.1\r\nHost: cache.test\r\n")
+                .await,
+            "tagged",
+        );
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 2);
+
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("authenticated purge test timed out");
 }
 
 #[tokio::test]
@@ -4952,6 +5086,37 @@ impl Origin {
         }
     }
 
+    async fn start_with_surrogate_tag(name: &'static str, expected_requests: usize) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
+        let address = listener.local_addr().expect("origin address");
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let accepted_by_task = Arc::clone(&accepted);
+        let task = tokio::spawn(async move {
+            for _ in 0..expected_requests {
+                let (mut stream, _) = listener.accept().await.expect("origin accept");
+                accepted_by_task.fetch_add(1, Ordering::SeqCst);
+                read_request_head(&mut stream)
+                    .await
+                    .expect("origin request");
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nCache-Control: max-age=60\r\nSurrogate-Key: page\r\nConnection: close\r\n\r\n{name}",
+                    name.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("origin response");
+                stream.shutdown().await.expect("origin shutdown");
+            }
+        });
+
+        Self {
+            address,
+            accepted,
+            task: Some(task),
+        }
+    }
+
     async fn start_with_set_cookie(name: &'static str, expected_requests: usize) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
         let address = listener.local_addr().expect("origin address");
@@ -5349,6 +5514,22 @@ fn memory_cache_store(name: &str) -> CacheStore {
         name: name.into(),
         max_bytes: 1024 * 1024,
         max_entries: 128,
+        max_object_bytes: 64 * 1024,
+        max_header_bytes: 8 * 1024,
+        max_key_bytes: 4 * 1024,
+        max_tag_bytes: 256,
+        max_tags_per_object: 64,
+        max_in_flight_fills: 16,
+        max_followers_per_fill: 16,
+    }
+}
+
+fn disk_cache_store(name: &str, root_directory: PathBuf) -> CacheStore {
+    CacheStore::Disk {
+        name: name.into(),
+        root_directory,
+        max_bytes: 1024 * 1024,
+        max_files: 128,
         max_object_bytes: 64 * 1024,
         max_header_bytes: 8 * 1024,
         max_key_bytes: 4 * 1024,

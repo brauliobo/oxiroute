@@ -193,13 +193,13 @@ The current contract is:
   loopback management exposure, bearer protection for recognized management/API routes, public
   readiness and metrics probes, bounded event polling, and external Certbot lineage
   reconciliation.
-- `partial`: reverse HTTP and TCP, HTTP/1 forward proxying, RTMP live/recording/relay slices,
-  managed ACME HTTP-01 issuance/renewal, structured access logs, native nginx/HAProxy/Squid import
-  subsets, and the Vue control plane.
-- `foundation`: standalone cache, forward HTTP/2 and HTTP/3 protocol components, Varnish semantic
-  analysis, and supervised replacement components that are not the default direct `serve` path.
-- `planned`: UDP relay, active cache integration, broader managed ACME authenticators, HTTP/3 daemon
-  listeners, SSE, and broader protocol/import compatibility.
+- `partial`: reverse HTTP and TCP/UDP relay, HTTP/1 and forward HTTP/3 proxying, RTMP live/recording/relay slices,
+  managed ACME HTTP-01 issuance/renewal, bounded reverse HTTP cache, structured access logs, native
+  nginx/HAProxy/Squid import subsets, and the Vue control plane.
+- `foundation`: forward HTTP/2 protocol components, Varnish semantic analysis,
+  and supervised replacement components that are not the default direct `serve` path.
+- `planned`: PROXY protocol, broader cache conformance, broader managed ACME authenticators, reverse
+  HTTP/3, SSE, and broader protocol/import compatibility.
 - `research`: remote administration, DNS-01/TLS-ALPN-01 policy, external key providers, and
   transparent interception through a separate privileged helper.
 - `not-planned`: unrestricted Lua and runtime user-provided templates.

@@ -16,8 +16,8 @@ then the state is destroyed. KDL, HOCON, and UCI are declarative parsers and do 
 Format status is explicit: KDL 2.0 is the current canonical default; restricted Lua is a supported
 legacy/compatibility adapter; HOCON and UCI are supported declarative adapters; templates and native
 server references are available only in the declarative pipeline. None of these adapters implies
-that every modeled field is an active runtime capability: cache policies, for example, remain a
-foundation until request-path ownership is integrated.
+that every modeled field is an active runtime capability: unsupported cache policy forms still fail
+closed during runtime preparation rather than being silently ignored.
 
 ## Current Schema
 
@@ -668,9 +668,10 @@ same pool. All pools share a limit of 32 concurrent probes, and a server never o
 
 ### Cache policy timeline
 
-Canonical cache stores and per-route cache policies are accepted for configuration editing, but an
-active cache policy currently fails runtime planning instead of being ignored. The cache core uses
-the following contract for future server integration:
+Canonical cache stores and per-route cache policies compile into the reverse HTTP runtime. Memory and
+descriptor-safe disk stores share the bounded cache contract below; disk lookup, touch, admission,
+revalidation, and purge work run through a bounded blocking-I/O executor. Unsupported request forms
+such as ranges and unsafe conditional preconditions bypass cache reuse and continue to the origin.
 
 - A matching `status_ttls` entry overrides both origin freshness and `default_ttl_ms`.
 - Otherwise, explicit origin freshness is used when `use_origin_cache_control` is true; absent or
@@ -688,7 +689,14 @@ RFC-policy records without a finite canonical keep window.
 A prepared cache entry is bound to the shared cache identity that validated it. Memory and disk fill
 guards reject an entry prepared by another cache before eviction, quota, or disk publication; cache
 clones share the identity, and recovered disk entries are rebound only to the cache that recovered
-them. This is a standalone component invariant, not server request-path integration.
+them. A persistent root is exclusively leased and may be reused by an overlapping generation only
+when its complete store configuration is unchanged.
+
+The active reverse HTTP slice admits GET and HEAD representations, preserves collapsed forwarding,
+origin revalidation, conditional `ETag`/`Last-Modified` hits, bounded surrogate tags, exact/base
+PURGE, and bearer-protected tag purge. A route using purge must also match the `PURGE` method.
+Range requests and `If-Match`, `If-Unmodified-Since`, `If-Range`, or streamed/upgraded responses
+are not admitted to the cache.
 
 This schema is pre-release and may change without compatibility code until a public release
 persists it.

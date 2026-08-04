@@ -13,13 +13,14 @@ use std::{
 use http::{Method, Uri, uri::Authority};
 use openssl::x509::X509;
 use oxiroute_config::{
-    AccessLogPolicy, AlpnProtocol, CacheAuthorizationPolicy, CacheStore, Certificate,
-    CertificateSource, Config, ConfigError, DnsResolutionPolicy, HealthCheck, HealthCheckType,
-    HealthHttpVersion, HttpAccessPolicy, HttpHostSelector, HttpPathSelector, HttpProxyPolicy,
-    HttpRoute, HttpRouteAction, HttpService, HttpVersionPolicy, L4Service, Listener, ListenerBind,
-    Protocol, RtmpApplication, RtmpPushTarget, RtmpRecorderStart, RtmpService, Stats, StatsPage,
-    StatsPageAdminPolicy, TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamEndpoint,
-    UpstreamPool, UpstreamServer, UpstreamTls, load_lua,
+    AccessLogPolicy, AlpnProtocol, CacheAuthorizationPolicy, CachePurgeAuthorization, CacheStore,
+    CacheSurrogateTags, Certificate, CertificateSource, Config, ConfigError, DnsResolutionPolicy,
+    HealthCheck, HealthCheckType, HealthHttpVersion, HttpAccessPolicy, HttpHostSelector,
+    HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction, HttpService, HttpVersionPolicy,
+    L4Service, Listener, ListenerBind, Protocol, RtmpApplication, RtmpPushTarget,
+    RtmpRecorderStart, RtmpService, Stats, StatsPage, StatsPageAdminPolicy, TlsProfile, TlsVersion,
+    UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls,
+    load_lua,
 };
 use oxiroute_rtmp::{RtmpCapabilities, RtmpRegistry, StreamKey};
 use oxiroute_server::{
@@ -34,7 +35,9 @@ use config_support::{
     empty_config, loopback_address as address, loopback_bind as socket_bind,
     loopback_endpoint as socket_endpoint, rtmp_recorder as recorder,
 };
-use fixture_support::{create_secure_root, write_file_with_mode, write_test_identity};
+use fixture_support::{
+    create_secure_root, write_file_with_mode, write_secure_token, write_test_identity,
+};
 
 #[test]
 fn startup_dns_cannot_resolve_to_a_statistics_listener() {
@@ -258,11 +261,12 @@ fn compiles_an_active_memory_cache_policy() {
 }
 
 #[test]
-fn rejects_persistent_cache_storage_at_runtime() {
+fn compiles_an_active_persistent_cache_policy() {
+    let temp = TempDir::new().expect("cache root parent");
     let mut config = active_memory_cache_config();
     config.cache_stores[0] = CacheStore::Disk {
         name: "memory".into(),
-        root_directory: PathBuf::from("/var/cache/oxiroute"),
+        root_directory: temp.path().join("cache"),
         max_bytes: 1_048_576,
         max_files: 128,
         max_object_bytes: 65_536,
@@ -274,11 +278,32 @@ fn rejects_persistent_cache_storage_at_runtime() {
         max_followers_per_fill: 16,
     };
 
-    assert!(matches!(
-        runtime_plan(&config),
-        Err(ServicePlanError::CacheRuntimeUnavailable { service, route })
-            if service == "web" && route == 0
-    ));
+    let first = runtime_plan(&config).expect("active disk cache runtime");
+    runtime_plan(&config).expect("disk cache survives overlapping generation preparation");
+    drop(first);
+}
+
+#[test]
+fn compiles_surrogate_tag_and_authenticated_purge_cache_policy() {
+    let temp = TempDir::new().expect("purge token parent");
+    let token_file = write_secure_token(temp.path(), "purge.token", &"x".repeat(32));
+    let mut config = active_memory_cache_config();
+    let route = &mut config.http_services[0].routes[0];
+    route.methods = vec!["GET".into(), "HEAD".into(), "PURGE".into()];
+    let HttpRouteAction::Proxy { policy, .. } = &mut route.action else {
+        panic!("active cache route is not a proxy");
+    };
+    let cache = policy.cache.as_mut().expect("cache policy");
+    cache.surrogate_tags = Some(CacheSurrogateTags {
+        response_header: "Surrogate-Key".into(),
+        max_tags: 4,
+        max_tag_bytes: 64,
+    });
+    cache.purge_authorization = Some(CachePurgeAuthorization::BearerTokenFile {
+        token_file_path: token_file,
+    });
+
+    runtime_plan(&config).expect("tagged purge cache runtime");
 }
 
 #[test]

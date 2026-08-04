@@ -107,6 +107,15 @@ fn validates_disk_roots_store_limits_and_references() {
     );
     assert_eq!(value["cache_stores"][0]["max_files"], 1_000_000_u64);
 
+    let duplicate_roots = r#"
+      { name = "first", type = "disk", root_directory = "/var/cache/oxiroute" },
+      { name = "second", type = "disk", root_directory = "/var//cache///oxiroute" }
+    "#;
+    assert!(
+        error(&proxy_config(duplicate_roots, r#"{ store = "first" }"#))
+            .contains("unique across disk stores")
+    );
+
     for root in ["var/cache", "/", "/var/../cache", "/var/cache/"] {
         let disk = format!(r#"{{ name = "disk", type = "disk", root_directory = "{root}" }}"#);
         assert!(error(&proxy_config(&disk, r#"{ store = "disk" }"#)).contains("root"));

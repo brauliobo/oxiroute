@@ -37,8 +37,10 @@ checked-in fuzz targets, real-browser test runner, or CI workflow.
 - TCP timeout/half-close state and RTMP catalog, fanout, FLV, canonical recorder validation/rendering,
   path/store/worker/controller/reaper state, bounded reaper backpressure outside registry/controller
   locks, and continuous/manual publisher integration.
-- Cache freshness, recovery, quota/eviction, collapsed fills, and rejection of foreign prepared
-  entries before memory or disk admission. The cache remains outside the server request path.
+- Cache freshness, recovery, quota/eviction, collapsed fills, conditional/range admission,
+  surrogate-tag purge, and rejection of foreign prepared entries before memory or disk admission.
+  Reverse HTTP integration covers memory reuse, persistent restart reuse, revalidation, and
+  streaming bypass.
 - nginx, HAProxy, Squid, and Varnish parser tokens, ordered source/include graphs,
   inheritance/resolution, diagnostics, decision accounting, provenance, and conservative semantic
   conversion. Squid additionally covers canonical direct-forward lowering, cross-format native

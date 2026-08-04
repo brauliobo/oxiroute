@@ -709,6 +709,29 @@ impl Cache {
         result
     }
 
+    /// Purges every representation for one bounded request key and cancels its active fill.
+    #[must_use]
+    pub fn purge_base(&self, base: &BaseKey) -> PurgeResult {
+        let mut state = self.shared.lock();
+        let keys = state
+            .entries
+            .keys()
+            .filter(|key| key.base() == base)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut result = PurgeResult::default();
+        for key in keys {
+            if let Some(stored) = state.entries.remove(&key) {
+                state.bytes_used = state.bytes_used.saturating_sub(stored.entry.charge);
+                result.entries += 1;
+                result.bytes = result.bytes.saturating_add(stored.entry.charge);
+            }
+        }
+        result.fills_cancelled = usize::from(cancel_flight(&mut state, base, FillOutcome::Purged));
+        state.stats.purged = state.stats.purged.saturating_add(result.entries as u64);
+        result
+    }
+
     /// Purges entries carrying an exact bounded surrogate tag and cancels fills for affected bases.
     ///
     /// # Errors
@@ -739,16 +762,6 @@ impl Cache {
             result.fills_cancelled +=
                 usize::from(cancel_flight(&mut state, key.base(), FillOutcome::Purged));
         }
-        let mut additionally_cancelled = 0usize;
-        for (_, flight) in state.flights.drain() {
-            flight.signal.send_replace(FillOutcome::Purged);
-            result.fills_cancelled += 1;
-            additionally_cancelled += 1;
-        }
-        state.stats.fill_cancelled = state
-            .stats
-            .fill_cancelled
-            .saturating_add(additionally_cancelled as u64);
         state.stats.purged = state.stats.purged.saturating_add(result.entries as u64);
         Ok(result)
     }

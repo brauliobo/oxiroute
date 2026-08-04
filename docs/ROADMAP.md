@@ -146,22 +146,26 @@ foundations and do not represent daemon listener support.
   semantics, canonical direct-forward lowering, CLI/native references, and daemon runtime are
   integrated; cache/refresh semantics remain explicitly non-equivalent).
 - HTTP/2 CONNECT only after stream takeover semantics have dedicated conformance tests.
+- Bounded forward HTTP/3 absolute-form and classic CONNECT through a separate UDP listener, with
+  TLS 1.3/`h3` negotiation, shared forward policy, and generation-aware drain (integrated; broader
+  conformance remains).
 
 Defer TLS interception, transparent proxying, ICAP/eCAP, NTLM/Negotiate helpers, cache
 peer protocols, and broad Squid helper compatibility.
 
 ## Milestone 4: cache and HTTP/3
 
-Status: foundation; active integration is planned. The cache and forward-proxy protocol components
-have tests, but neither active cache request-path ownership nor a QUIC listener is part of the
-current daemon contract.
+Status: partial; bounded reverse HTTP cache integration is active, while reverse HTTP/3 remains
+planned. The forward H3 listener is an integrated partial capability.
 
-- Production cache storage designed as a separate component with recovery, eviction, and
-  cache-bound prepared-entry admission tests (the standalone foundation exists; request-path
-  integration remains).
-- Cache freshness, revalidation, locking, range, purge, and observability behavior.
-- QUIC/H3 frontend selected through a proof of compatibility with Pingora's service model.
-- HTTP/3 conformance, migration, timeout, 0-RTT policy, and UDP resource-exhaustion tests.
+- Production cache storage with recovery, eviction, exclusive-root ownership, bounded asynchronous
+  request-path I/O, and cache-bound prepared-entry admission is active for reverse HTTP.
+- Cache freshness, revalidation, conditional validators, collapsed forwarding, bounded surrogate-tag
+  purge, streaming/range bypass, and request-level observability are active; broader conformance
+  and reverse HTTP/3 remain.
+- Reverse QUIC/H3 frontend selected through a proof of compatibility with Pingora's service model.
+- HTTP/3 conformance, migration, timeout, reverse-proxy behavior, 0-RTT policy, and UDP
+  resource-exhaustion tests.
 
 HTTP/3 must be advertised only when the active listener is actually QUIC-capable. It must
 never degrade silently to another HTTP version.
