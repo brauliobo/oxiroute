@@ -1,10 +1,9 @@
 use bytes::Bytes;
 use rml_amf0;
 use rml_amf0::Amf0Value;
-use std::io::Cursor;
 
 use messages::RtmpMessage;
-use messages::{MessageDeserializationError, MessageSerializationError};
+use messages::{Amf0Limits, MessageDeserializationError, MessageSerializationError};
 
 pub fn serialize(
     command_name: String,
@@ -25,8 +24,14 @@ pub fn serialize(
 }
 
 pub fn deserialize(data: Bytes) -> Result<RtmpMessage, MessageDeserializationError> {
-    let mut cursor = Cursor::new(data);
-    let mut arguments = rml_amf0::deserialize(&mut cursor)?;
+    deserialize_with_limits(data, &Amf0Limits::default())
+}
+
+pub fn deserialize_with_limits(
+    data: Bytes,
+    limits: &Amf0Limits,
+) -> Result<RtmpMessage, MessageDeserializationError> {
+    let mut arguments = super::super::amf0::deserialize(data.as_ref(), limits)?;
 
     let command_name: String;
     let transaction_id: f64;

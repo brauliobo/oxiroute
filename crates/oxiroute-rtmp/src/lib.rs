@@ -52,9 +52,11 @@ pub use relay::{
 };
 pub use rml_rtmp::sessions::StreamMetadata;
 pub use session::{
-    MAX_INBOUND_CHUNK_SIZE, MAX_INBOUND_MESSAGE_SIZE, MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN,
-    RTMP_STALE_PUBLISHER_THRESHOLD_MS, RtmpApplication, RtmpRecorderLifecycle, RtmpServiceRuntime,
-    RtmpSession, RtmpSessionError, RtmpSessionPolicy,
+    MAX_INBOUND_AMF0_CONTAINER_ENTRIES, MAX_INBOUND_AMF0_DEPTH, MAX_INBOUND_AMF0_STRING_BYTES,
+    MAX_INBOUND_AMF0_VALUES, MAX_INBOUND_CHUNK_SIZE, MAX_INBOUND_MESSAGE_SIZE,
+    MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN, RTMP_STALE_PUBLISHER_THRESHOLD_MS, RtmpApplication,
+    RtmpRecorderLifecycle, RtmpServiceRuntime, RtmpSession, RtmpSessionError, RtmpSessionLimits,
+    RtmpSessionPolicy,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

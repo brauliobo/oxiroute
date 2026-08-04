@@ -21,7 +21,7 @@ mod status;
 pub use playback::MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN;
 pub use runtime::{
     RTMP_STALE_PUBLISHER_THRESHOLD_MS, RtmpApplication, RtmpRecorderLifecycle, RtmpServiceRuntime,
-    RtmpSessionPolicy,
+    RtmpSessionLimits, RtmpSessionPolicy,
 };
 pub use status::RtmpSessionError;
 
@@ -30,6 +30,10 @@ use status::{CONNECT_REJECTION_CODE, Rejection};
 
 pub const MAX_INBOUND_CHUNK_SIZE: u32 = 1024 * 1024;
 pub const MAX_INBOUND_MESSAGE_SIZE: usize = 8 * 1024 * 1024;
+pub const MAX_INBOUND_AMF0_DEPTH: usize = 32;
+pub const MAX_INBOUND_AMF0_CONTAINER_ENTRIES: usize = 1_024;
+pub const MAX_INBOUND_AMF0_VALUES: usize = 4_096;
+pub const MAX_INBOUND_AMF0_STRING_BYTES: usize = u16::MAX as usize;
 
 /// Incremental server-side RTMP connection with one live publisher or playback role.
 pub struct RtmpSession {
@@ -121,10 +125,12 @@ impl RtmpSession {
             } => {
                 self.handshake = None;
                 let mut config = ServerSessionConfig::new();
+                let limits = self.runtime.inbound_limits();
                 config.chunk_size = self.runtime.outbound_chunk_size();
-                config.max_inbound_chunk_size = MAX_INBOUND_CHUNK_SIZE as usize;
-                config.max_inbound_message_size = MAX_INBOUND_MESSAGE_SIZE;
-                let (protocol, startup) = ServerSession::new(config)?;
+                config.max_inbound_chunk_size = limits.max_inbound_chunk_size as usize;
+                config.max_inbound_message_size = limits.max_inbound_message_size;
+                let (protocol, startup) =
+                    ServerSession::new_with_amf0_limits(config, limits.amf0_limits())?;
                 self.protocol = Some(protocol);
 
                 let mut outbound = non_empty(response_bytes);
@@ -248,7 +254,7 @@ impl RtmpSession {
                 Ok(Vec::new())
             }
             ServerSessionEvent::ClientChunkSizeChanged { new_chunk_size }
-                if new_chunk_size > MAX_INBOUND_CHUNK_SIZE =>
+                if new_chunk_size > self.runtime.inbound_limits().max_inbound_chunk_size =>
             {
                 Err(RtmpSessionError::InboundChunkTooLarge(new_chunk_size))
             }

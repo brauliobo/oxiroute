@@ -13,14 +13,71 @@ use crate::{
     },
     relay::RtmpRelayController,
 };
+use rml_rtmp::messages::Amf0Limits;
 
 use super::{
-    RtmpSession,
+    MAX_INBOUND_AMF0_CONTAINER_ENTRIES, MAX_INBOUND_AMF0_DEPTH, MAX_INBOUND_AMF0_STRING_BYTES,
+    MAX_INBOUND_AMF0_VALUES, MAX_INBOUND_CHUNK_SIZE, MAX_INBOUND_MESSAGE_SIZE, RtmpSession,
     playback::PlaybackSession,
     publish::{PublishSession, PublisherOutputs},
 };
 
 pub const RTMP_STALE_PUBLISHER_THRESHOLD_MS: u64 = 30_000;
+
+/// Runtime-only admission bounds for one RTMP session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RtmpSessionLimits {
+    pub max_inbound_chunk_size: u32,
+    pub max_inbound_message_size: usize,
+    pub max_amf0_depth: usize,
+    pub max_amf0_container_entries: usize,
+    pub max_amf0_values: usize,
+    pub max_amf0_string_bytes: usize,
+}
+
+impl RtmpSessionLimits {
+    /// Creates explicit inbound chunk, message, and AMF0 admission bounds.
+    #[must_use]
+    pub const fn new(
+        max_inbound_chunk_size: u32,
+        max_inbound_message_size: usize,
+        max_amf0_depth: usize,
+        max_amf0_container_entries: usize,
+        max_amf0_values: usize,
+        max_amf0_string_bytes: usize,
+    ) -> Self {
+        Self {
+            max_inbound_chunk_size,
+            max_inbound_message_size,
+            max_amf0_depth,
+            max_amf0_container_entries,
+            max_amf0_values,
+            max_amf0_string_bytes,
+        }
+    }
+
+    pub(super) fn amf0_limits(self) -> Amf0Limits {
+        Amf0Limits::new(
+            self.max_amf0_depth,
+            self.max_amf0_container_entries,
+            self.max_amf0_values,
+            self.max_amf0_string_bytes,
+        )
+    }
+}
+
+impl Default for RtmpSessionLimits {
+    fn default() -> Self {
+        Self::new(
+            MAX_INBOUND_CHUNK_SIZE,
+            MAX_INBOUND_MESSAGE_SIZE,
+            MAX_INBOUND_AMF0_DEPTH,
+            MAX_INBOUND_AMF0_CONTAINER_ENTRIES,
+            MAX_INBOUND_AMF0_VALUES,
+            MAX_INBOUND_AMF0_STRING_BYTES,
+        )
+    }
+}
 
 #[derive(Clone)]
 pub struct RtmpApplication {
@@ -115,6 +172,7 @@ impl RtmpApplication {
 pub struct RtmpSessionPolicy {
     applications: Arc<BTreeMap<String, RtmpApplication>>,
     outbound_chunk_size: u32,
+    inbound_limits: RtmpSessionLimits,
 }
 
 impl RtmpSessionPolicy {
@@ -128,6 +186,7 @@ impl RtmpSessionPolicy {
                     .collect(),
             ),
             outbound_chunk_size: 4_096,
+            inbound_limits: RtmpSessionLimits::default(),
         }
     }
 
@@ -141,12 +200,26 @@ impl RtmpSessionPolicy {
         policy
     }
 
+    #[must_use]
+    pub fn with_inbound_limits(
+        applications: impl IntoIterator<Item = RtmpApplication>,
+        inbound_limits: RtmpSessionLimits,
+    ) -> Self {
+        let mut policy = Self::new(applications);
+        policy.inbound_limits = inbound_limits;
+        policy
+    }
+
     fn application(&self, name: &str) -> Option<&RtmpApplication> {
         self.applications.get(name)
     }
 
     pub(super) const fn outbound_chunk_size(&self) -> u32 {
         self.outbound_chunk_size
+    }
+
+    pub(super) const fn inbound_limits(&self) -> RtmpSessionLimits {
+        self.inbound_limits
     }
 
     fn first_hub(&self) -> Option<LiveHub> {
@@ -299,6 +372,10 @@ impl RtmpServiceRuntime {
 
     pub(super) const fn outbound_chunk_size(&self) -> u32 {
         self.policy.outbound_chunk_size()
+    }
+
+    pub(super) const fn inbound_limits(&self) -> RtmpSessionLimits {
+        self.policy.inbound_limits()
     }
 
     pub(super) fn application(&self, name: &str) -> Option<&RtmpApplication> {

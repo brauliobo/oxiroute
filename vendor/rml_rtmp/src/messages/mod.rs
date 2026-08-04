@@ -6,11 +6,13 @@ and deserializing these messages into payloads.
 meant for, the timestamp for the message and what type of message it is.
 */
 
+mod amf0;
 mod deserialization_errors;
 mod message_payload;
 mod serialization_errors;
 mod types;
 
+pub use self::amf0::Amf0Limits;
 pub use self::deserialization_errors::MessageDeserializationError;
 pub use self::message_payload::MessagePayload;
 pub use self::serialization_errors::MessageSerializationError;
