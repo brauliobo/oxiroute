@@ -747,7 +747,7 @@ fn validate_response_mutations(
             "must contain at most 32 header mutations",
         ));
     }
-    let mut names = HashSet::with_capacity(mutations.len());
+    let mut operations = HashMap::with_capacity(mutations.len());
     for mutation in mutations {
         normalize_header_name(mutation.name_mut()).map_err(|detail| {
             invalid_route(
@@ -757,16 +757,28 @@ fn validate_response_mutations(
                 detail,
             )
         })?;
-        if !names.insert(mutation.name().to_owned()) {
-            return Err(invalid_route(
-                service,
-                route_index,
-                "action.policy.response_headers",
-                format!(
-                    "contains duplicate or conflicting mutation for `{}`",
-                    mutation.name()
-                ),
-            ));
+        let operation = response_mutation_kind(mutation);
+        if let Some(previous) = operations.get(mutation.name()) {
+            let compatible = matches!(
+                (*previous, operation),
+                (
+                    ResponseMutationKind::Add | ResponseMutationKind::Remove,
+                    ResponseMutationKind::Add,
+                )
+            );
+            if !compatible {
+                return Err(invalid_route(
+                    service,
+                    route_index,
+                    "action.policy.response_headers",
+                    format!(
+                        "contains duplicate or conflicting mutation for `{}`",
+                        mutation.name()
+                    ),
+                ));
+            }
+        } else {
+            operations.insert(mutation.name().to_owned(), operation);
         }
         if let HttpResponseHeaderMutation::Set { value, .. }
         | HttpResponseHeaderMutation::Add { value, .. } = mutation
@@ -782,6 +794,21 @@ fn validate_response_mutations(
         }
     }
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum ResponseMutationKind {
+    Set,
+    Add,
+    Remove,
+}
+
+fn response_mutation_kind(mutation: &HttpResponseHeaderMutation) -> ResponseMutationKind {
+    match mutation {
+        HttpResponseHeaderMutation::Set { .. } => ResponseMutationKind::Set,
+        HttpResponseHeaderMutation::Add { .. } => ResponseMutationKind::Add,
+        HttpResponseHeaderMutation::Remove { .. } => ResponseMutationKind::Remove,
+    }
 }
 
 pub(crate) fn normalize_header_name(name: &mut String) -> Result<(), &'static str> {
@@ -1045,20 +1072,11 @@ fn validate_literal_headers(
             "must contain at most 32 headers",
         ));
     }
-    let mut names = HashSet::with_capacity(headers.len());
     for header in headers {
         normalize_header_name(&mut header.name)
             .map_err(|detail| invalid_route(service, route_index, field, detail))?;
         validate_header_value(&header.value)
             .map_err(|detail| invalid_route(service, route_index, field, detail))?;
-        if !names.insert(header.name.clone()) {
-            return Err(invalid_route(
-                service,
-                route_index,
-                field,
-                format!("contains duplicate header `{}`", header.name),
-            ));
-        }
     }
     Ok(())
 }

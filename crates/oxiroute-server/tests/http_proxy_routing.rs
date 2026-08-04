@@ -2701,6 +2701,114 @@ async fn bearer_access_uses_the_configured_header_without_exposing_the_token() {
 }
 
 #[tokio::test]
+async fn serves_static_headers_and_internal_error_page_on_h1_wire() {
+    timeout(TEST_TIMEOUT, async {
+        let directory = tempfile::tempdir().expect("static response directory");
+        let root = create_secure_root(directory.path(), "public");
+        fs::write(root.join("ok.txt"), b"ok").expect("write static success file");
+        fs::write(root.join("404.html"), b"missing").expect("write static error file");
+        fs::write(root.join("405.html"), b"method not allowed").expect("write method error file");
+        let route = HttpRoute {
+            host: None,
+            path: HttpPathSelector::SegmentPrefix { value: "/".into() },
+            methods: Vec::new(),
+            access_policy: None,
+            policy: oxiroute_config::HttpRoutePolicy::default(),
+            action: HttpRouteAction::StaticFiles {
+                root_directory: root,
+                path_mapping: HttpStaticPathMapping::Root,
+                index_files: Vec::new(),
+                internal_index_redirects: true,
+                directory_redirects: true,
+                spa_fallback: None,
+                try_files: Vec::new(),
+                autoindex: false,
+                autoindex_exact_size: true,
+                autoindex_local_time: false,
+                etag: true,
+                mime: HttpStaticMimePolicy {
+                    default_type: Some("text/plain".into()),
+                    types: Vec::new(),
+                },
+                headers: vec![
+                    HttpLiteralHeader {
+                        name: "x-selected-status".into(),
+                        value: "no".into(),
+                        always: false,
+                    },
+                    HttpLiteralHeader {
+                        name: "x-always".into(),
+                        value: "yes".into(),
+                        always: true,
+                    },
+                ],
+                error_responses: vec![
+                    HttpStaticErrorResponse {
+                        statuses: vec![404],
+                        file: Some("404.html".into()),
+                        body: None,
+                        headers: vec![HttpLiteralHeader {
+                            name: "x-error".into(),
+                            value: "yes".into(),
+                            always: true,
+                        }],
+                        internal_redirect: Some("/404.html".into()),
+                    },
+                    HttpStaticErrorResponse {
+                        statuses: vec![405],
+                        file: Some("405.html".into()),
+                        body: None,
+                        headers: vec![HttpLiteralHeader {
+                            name: "x-method-error".into(),
+                            value: "yes".into(),
+                            always: true,
+                        }],
+                        internal_redirect: Some("/405.html".into()),
+                    },
+                ],
+            },
+        };
+        let proxy = ProxyHarness::start(Vec::new(), vec![route], 1024, 4).await;
+
+        let success = proxy
+            .request("GET /ok.txt HTTP/1.1\r\nHost: static.test\r\n")
+            .await;
+        assert_eq!(success.status, 200);
+        assert_eq!(success.header("x-selected-status"), Some("no"));
+        assert_eq!(success.header("x-always"), Some("yes"));
+        assert_eq!(success.header("x-error"), None);
+        assert_eq!(success.body(), b"ok");
+
+        let missing = proxy
+            .request("GET /missing HTTP/1.1\r\nHost: static.test\r\n")
+            .await;
+        assert_eq!(missing.status, 404);
+        assert_eq!(missing.header("x-selected-status"), None);
+        assert_eq!(missing.header("x-always"), Some("yes"));
+        assert_eq!(missing.header("x-error"), Some("yes"));
+        assert_eq!(missing.body(), b"missing");
+
+        let head = proxy
+            .request("HEAD /missing HTTP/1.1\r\nHost: static.test\r\n")
+            .await;
+        assert_eq!(head.status, 404);
+        assert_eq!(head.header("content-length"), Some("7"));
+        assert!(head.body().is_empty());
+
+        let method = proxy
+            .request("POST /missing HTTP/1.1\r\nHost: static.test\r\nContent-Length: 0\r\n")
+            .await;
+        assert_eq!(method.status, 405);
+        assert_eq!(method.header("x-method-error"), Some("yes"));
+        assert_eq!(method.body(), b"method not allowed");
+
+        proxy.finish().await;
+    })
+    .await
+    .expect("static response H1 test timed out");
+}
+
+#[tokio::test]
 async fn basic_access_verifies_apr1_for_known_and_unknown_users_without_exposing_credentials() {
     use std::os::unix::fs::PermissionsExt as _;
 

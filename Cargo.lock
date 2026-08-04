@@ -2705,6 +2705,7 @@ dependencies = [
 name = "oxiroute-import"
 version = "0.3.0"
 dependencies = [
+ "http",
  "openssl",
  "oxiroute-config",
  "oxiroute-rtmp",

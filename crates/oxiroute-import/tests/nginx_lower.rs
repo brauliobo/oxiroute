@@ -1613,6 +1613,177 @@ fn lowers_inherited_add_header_for_every_action_and_rejects_dynamic_values() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one response fixture covers lowering, rendering, and provenance"
+)]
+fn lowers_literal_response_directives_with_order_statuses_provenance_and_rendering() {
+    let source = r"http {
+      add_header X-Http http;
+      server {
+        listen 127.0.0.1:8080 default_server;
+        add_header X-Server server;
+        location = /fixed { return 404; }
+        location = /redirect {
+          add_header X-Duplicate first;
+          add_header X-Duplicate second always;
+          return 302 /new;
+        }
+        location /static {
+          root /srv/www;
+          add_header X-Static static;
+          error_page 404 /404.html;
+        }
+        location = /404.html {
+          root /srv/www;
+          add_header X-Error error always;
+        }
+        location / { return 204; }
+      }
+    }";
+    let report = import_source(source);
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let config = report.config.as_ref().expect("literal response directives");
+
+    let fixed = config.http_services[0]
+        .routes
+        .iter()
+        .find(|route| {
+            matches!(
+                route.action,
+                HttpRouteAction::FixedResponse { status: 404, .. }
+            )
+        })
+        .expect("fixed route");
+    let HttpRouteAction::FixedResponse { headers, .. } = &fixed.action else {
+        unreachable!();
+    };
+    assert_eq!(headers[0].name, "x-server");
+    assert!(!headers[0].always);
+
+    let redirect = config.http_services[0]
+        .routes
+        .iter()
+        .find(|route| matches!(route.action, HttpRouteAction::Redirect { status: 302, .. }))
+        .expect("redirect route");
+    let HttpRouteAction::Redirect { headers, .. } = &redirect.action else {
+        unreachable!();
+    };
+    assert_eq!(
+        headers
+            .iter()
+            .map(|header| (header.name.as_str(), header.value.as_str(), header.always))
+            .collect::<Vec<_>>(),
+        [
+            ("x-duplicate", "first", false),
+            ("x-duplicate", "second", true),
+        ]
+    );
+
+    let static_route = config.http_services[0]
+        .routes
+        .iter()
+        .find(|route| matches!(route.action, HttpRouteAction::StaticFiles { .. }))
+        .expect("static route");
+    let HttpRouteAction::StaticFiles {
+        headers,
+        error_responses,
+        ..
+    } = &static_route.action
+    else {
+        unreachable!();
+    };
+    assert_eq!(headers[0].name, "x-static");
+    assert_eq!(error_responses[0].statuses, [404]);
+    assert_eq!(
+        error_responses[0].internal_redirect.as_deref(),
+        Some("/404.html")
+    );
+
+    let rendered = render_lua(config).expect("rendered literal response directives");
+    assert!(rendered.contains("name = \"x-static\""));
+    assert!(rendered.contains("x-duplicate"));
+    assert!(rendered.contains("error_responses"));
+    assert!(rendered.contains("internal_redirect = \"/404.html\""));
+
+    let header_provenance = report
+        .provenance
+        .iter()
+        .find(|entry| entry.path.ends_with("/action/headers/0"))
+        .expect("header provenance");
+    assert!(header_provenance.origins.iter().any(|origin| {
+        report
+            .source_graph
+            .source(origin.span.source())
+            .and_then(|source| source.source.slice(origin.span.range()))
+            .is_some_and(|bytes| bytes.starts_with(b"add_header"))
+    }));
+    assert!(
+        report
+            .provenance
+            .iter()
+            .any(|entry| entry.path.ends_with("/action/headers/0/always"))
+    );
+    assert!(
+        report
+            .provenance
+            .iter()
+            .any(|entry| entry.path.ends_with("/action/error_responses/0/statuses/0"))
+    );
+    let error_provenance = report
+        .provenance
+        .iter()
+        .find(|entry| entry.path.ends_with("/action/error_responses/0"))
+        .expect("error-page provenance");
+    assert!(error_provenance.origins.iter().any(|origin| {
+        report
+            .source_graph
+            .source(origin.span.source())
+            .and_then(|source| source.source.slice(origin.span.range()))
+            .is_some_and(|bytes| bytes.starts_with(b"error_page"))
+    }));
+}
+
+#[test]
+fn rejects_invalid_duplicate_and_unsupported_response_directive_forms_with_source_diagnostics() {
+    for (directive, message) in [
+        (
+            "add_header bad\\ name value;",
+            "response header name is invalid",
+        ),
+        (
+            "add_header X-Header \"bad\\nvalue\";",
+            "response header value contains invalid bytes",
+        ),
+        (
+            "error_page 404 404 /404.html;",
+            "error_page statuses must be unique",
+        ),
+        ("error_page 404 =200 /404.html;", "400..=599 status list"),
+        (
+            "error_page 404 https://example.test/404;",
+            "absolute canonical URI target",
+        ),
+        ("expires 1h;", "unsupported"),
+    ] {
+        let source = format!(
+            "http {{ access_log off; server {{ listen 127.0.0.1:8080 default_server; {directive} location / {{ root /srv/www; }} location = /404.html {{ root /srv/www; }} }} }}"
+        );
+        let report = import_source(&source);
+        assert!(report.config.is_none(), "accepted {directive}");
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message().contains(message)
+                    && diagnostic.primary_span().is_some()),
+            "missing source diagnostic for {directive}: {:#?}",
+            report.diagnostics
+        );
+    }
+}
+
+#[test]
 fn phoenix_shaped_error_page_is_an_explicit_internal_redirect() {
     let report = import_source(
         r"http {

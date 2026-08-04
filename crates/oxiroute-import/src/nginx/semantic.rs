@@ -1739,7 +1739,6 @@ fn is_location_policy(name: &[u8]) -> bool {
             | b"default_type"
             | b"error_page"
             | b"etag"
-            | b"expires"
             | b"proxy_cache"
             | b"try_files"
     )
