@@ -2,11 +2,18 @@
 mod source;
 pub use source::{ByteRange, SourceFile, SourceId, Span};
 
+#[path = "../src/candidate.rs"]
+mod candidate;
+pub use candidate::{
+    CanonicalCandidate, CanonicalDraft, CanonicalProvenance, SourceImportMetadata,
+};
+
 #[path = "../src/diagnostic.rs"]
 #[allow(dead_code)]
 mod diagnostic;
 pub use diagnostic::{
-    Diagnostic, DiagnosticCode, DiagnosticStage, E_DUPLICATE_IDENTITY, Report, Severity,
+    Diagnostic, DiagnosticCode, DiagnosticStage, E_DUPLICATE_IDENTITY, E_INVALID_VALUE,
+    E_SEMANTICS_NOT_REPRESENTABLE, E_UNSUPPORTED_FEATURE, Report, Severity,
 };
 
 #[path = "../src/limits.rs"]
@@ -136,7 +143,7 @@ fn complete_ordered_decision_ledger_matches_the_differential_fixture() {
     assert_eq!(report.statements.len(), representative_statement_count());
     assert_eq!(
         report.lowering,
-        LoweringStatus::Blocked(LoweringBlocker::CanonicalVclLoweringNotImplemented)
+        LoweringStatus::Blocked(LoweringBlocker::UnsupportedBehavior)
     );
 }
 
@@ -257,7 +264,11 @@ fn filesystem_v41_glob_report_covers_composition_and_native_facts() {
     ]);
     let report = import(&root, &invocation);
 
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert!(report.has_errors(), "{:#?}", report.diagnostics);
+    assert_eq!(
+        report.lowering,
+        LoweringStatus::Blocked(LoweringBlocker::UnsupportedBehavior)
+    );
     assert!(report.source_graph.snapshot_stable);
     assert_eq!(report.source_graph.sources.len(), 3);
     assert_eq!(
@@ -346,7 +357,11 @@ fn filesystem_v41_glob_report_covers_composition_and_native_facts() {
 fn filesystem_v40_exact_include_inherits_version_and_legacy_director() {
     let report = import(&fixture("v40/root.vcl"), &VarnishdInvocation::default());
 
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert!(report.has_errors(), "{:#?}", report.diagnostics);
+    assert_eq!(
+        report.lowering,
+        LoweringStatus::Blocked(LoweringBlocker::SemanticMismatch)
+    );
     assert!(report.source_graph.snapshot_stable);
     assert_eq!(report.backends.len(), 2);
     assert_eq!(report.directors.len(), 1);
@@ -421,6 +436,124 @@ fn invocation_model_retains_storage_and_startup_without_spawning_varnishd() {
         bounded.unsupported_arguments.len(),
         MAX_INVOCATION_ARGUMENTS
     );
+}
+
+#[test]
+fn exact_static_cache_subset_lowers_to_a_finalized_candidate() {
+    let invocation = VarnishdInvocation::new([
+        "varnishd",
+        "-a",
+        ":6081",
+        "-s",
+        "cache=malloc,256M",
+        "-p",
+        "default_ttl=120s",
+        "-p",
+        "default_grace=10s",
+        "-p",
+        "default_keep=300s",
+        "-F",
+    ]);
+    let report = import(&fixture("exact.vcl"), &invocation);
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_eq!(report.lowering, LoweringStatus::Lowered);
+    let config = report
+        .candidate
+        .config
+        .as_ref()
+        .expect("finalized candidate");
+    assert_eq!(config.listeners.len(), 1);
+    assert_eq!(config.upstream_pools.len(), 1);
+    assert_eq!(config.http_services.len(), 1);
+    assert_eq!(config.cache_stores.len(), 1);
+    let oxiroute_config::HttpRouteAction::Proxy { policy, .. } =
+        &config.http_services[0].routes[0].action
+    else {
+        panic!("exact Varnish route must proxy");
+    };
+    let cache = policy.cache.as_ref().expect("cache policy");
+    assert_eq!(cache.store, "cache");
+    assert_eq!(cache.default_ttl_ms, 120_000);
+    assert_eq!(cache.grace_ms, 10_000);
+    assert_eq!(cache.keep_ms, 300_000);
+    assert!(policy.response_headers.iter().any(|header| matches!(
+        header,
+        oxiroute_config::HttpResponseHeaderMutation::Set { name, value, .. }
+            if name == "x-cache" && value == "hit"
+    )));
+    assert!(
+        report
+            .candidate
+            .provenance
+            .iter()
+            .any(|entry| entry.path == "/http_services/0/routes/0/action/policy/cache")
+    );
+}
+
+#[test]
+fn exact_legacy_round_robin_director_lowers_to_one_upstream_pool() {
+    let invocation = VarnishdInvocation::new([
+        "varnishd",
+        "-s",
+        "cache=malloc,256M",
+        "-p",
+        "default_ttl=120s",
+        "-p",
+        "default_grace=10s",
+        "-p",
+        "default_keep=300s",
+    ]);
+    let report = import(&fixture("exact-director.vcl"), &invocation);
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let config = report
+        .candidate
+        .config
+        .as_ref()
+        .expect("finalized director candidate");
+    let pool = config
+        .upstream_pools
+        .iter()
+        .find(|pool| pool.name == "pool")
+        .expect("director pool");
+    assert_eq!(pool.servers.len(), 2);
+    assert_eq!(
+        pool.algorithm,
+        oxiroute_config::UpstreamAlgorithm::RoundRobin
+    );
+}
+
+#[test]
+fn exact_file_storage_lowers_to_a_disk_cache_store() {
+    let invocation = VarnishdInvocation::new([
+        "varnishd",
+        "-s",
+        "cache=file,/var/lib/varnish/cache.bin,1G",
+        "-p",
+        "default_ttl=120s",
+        "-p",
+        "default_grace=10s",
+        "-p",
+        "default_keep=300s",
+    ]);
+    let report = import(&fixture("exact.vcl"), &invocation);
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert!(matches!(
+        report
+            .candidate
+            .config
+            .as_ref()
+            .expect("disk candidate")
+            .cache_stores[0],
+        oxiroute_config::CacheStore::Disk {
+            ref root_directory,
+            max_bytes,
+            ..
+        } if root_directory == std::path::Path::new("/var/lib/varnish/cache.bin")
+            && max_bytes == 1 << 30
+    ));
 }
 
 #[test]

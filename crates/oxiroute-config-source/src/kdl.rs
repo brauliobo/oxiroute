@@ -6,7 +6,9 @@ use serde_json::{Map, Number, Value};
 
 use crate::ConfigSourceError;
 use crate::limits::{MAX_NODES, MAX_STRUCTURAL_DEPTH, check_string, validate_value};
-use crate::native::{NativeDirective, decode_apache, decode_haproxy, decode_nginx, decode_squid};
+use crate::native::{
+    NativeDirective, decode_apache, decode_haproxy, decode_nginx, decode_squid, decode_varnish,
+};
 
 pub(crate) fn decode(source: &str) -> Result<Value, ConfigSourceError> {
     let document = KdlDocument::parse(source)
@@ -31,6 +33,7 @@ pub(crate) fn decode_with_directives(
             "haproxy_server" => directives.push(decode_haproxy_node(node, &mut nodes)?),
             "squid_server" => directives.push(decode_squid_node(node, &mut nodes)?),
             "apache_server" => directives.push(decode_apache_node(node, &mut nodes)?),
+            "varnish_server" => directives.push(decode_varnish_node(node, &mut nodes)?),
             _ => generic_nodes.push(node.clone()),
         }
     }
@@ -83,6 +86,31 @@ fn decode_apache_node(
     }
     object.insert("path".to_owned(), Value::String(paths[0].clone()));
     decode_apache(Value::Object(object), "KDL 2").map(NativeDirective::Apache)
+}
+
+fn decode_varnish_node(
+    node: &KdlNode,
+    count: &mut usize,
+) -> Result<NativeDirective, ConfigSourceError> {
+    increment_node_count(count)?;
+    let arguments = directive_paths(node)?;
+    let Some((path, invocation)) = arguments.split_first() else {
+        return Err(ConfigSourceError::parse(
+            "KDL 2",
+            "varnish_server requires a VCL path argument",
+        ));
+    };
+    if node.children().is_some() {
+        return Err(ConfigSourceError::parse(
+            "KDL 2",
+            "varnish_server invocation arguments must be positional strings",
+        ));
+    }
+    let object = serde_json::json!({
+        "path": path,
+        "arguments": invocation,
+    });
+    decode_varnish(object, "KDL 2").map(NativeDirective::Varnish)
 }
 
 fn decode_nginx_node(

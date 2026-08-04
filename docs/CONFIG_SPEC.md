@@ -945,8 +945,10 @@ restricted Lua, UCI, or HOCON.
   `activationState = "restart_required"`, and `restartRequired = true`; candidate preparation does
   not mutate or silently reuse the active socket, and the complete candidate is applied on process
   restart.
-- The watcher debounces root-directory events and periodically re-resolves the root and native
-  references. Invalid edits are rejected while the last active generation continues serving.
+- The watcher debounces root-directory and resolved-native dependency events, watches exact resolved
+  files plus include/glob parent directories, rebuilds that set after each successful resolution, and
+  periodically re-resolves the root and native references. Invalid edits are rejected while the last
+  active generation continues serving.
 
 ## Diagnostics
 

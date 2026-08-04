@@ -4,7 +4,15 @@ use std::{
 };
 
 use oxiroute_config::{Config, compose_configs, load_lua};
+use oxiroute_import::ImportReportEnvelope;
 use serde_json::Value;
+
+#[cfg(unix)]
+use std::{
+    ffi::OsString,
+    os::unix::ffi::{OsStrExt as _, OsStringExt as _},
+    path::Component,
+};
 
 use crate::error::{NativeDiagnosticCount, NativeDiagnostics};
 use crate::native::{NativeDirective, extract_directives};
@@ -26,6 +34,17 @@ pub struct ResolvedSource {
     pub compositional: bool,
     /// Native filesystem inputs needed for diagnostics and change watching.
     pub dependencies: Vec<PathBuf>,
+    /// Successful native imports retained with their product evidence and canonical provenance.
+    pub native_references: Vec<NativeReferenceMetadata>,
+}
+
+/// Evidence retained for one successful native reference in a composed source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeReferenceMetadata {
+    /// Resolved paths supplied to the native importer, in authored order.
+    pub roots: Vec<PathBuf>,
+    /// The same structured evidence emitted by the standalone import command.
+    pub evidence: ImportReportEnvelope,
 }
 
 /// Infers the authored syntax from `path` and resolves it into canonical configuration.
@@ -54,7 +73,7 @@ pub fn resolve_source_with_format(
     let source = limits::source_text(bytes)?;
     if format == ConfigFormat::Lua {
         let config = load_lua(source).map_err(|error| ConfigSourceError::Lua(error.to_string()))?;
-        return finish(format, config, false, Vec::new());
+        return finish(format, config, false, Vec::new(), Vec::new());
     }
 
     let (mut value, mut directives) = match format {
@@ -81,12 +100,15 @@ pub fn resolve_source_with_format(
 
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let mut dependencies = Dependencies::default();
+    let mut native_references = Vec::with_capacity(directives.len());
     for directive in &directives {
-        let mut config = import_native(directive, parent, &mut dependencies)?;
+        let imported = import_native(directive, parent, &mut dependencies)?;
+        let mut config = imported.config;
         config.version = fragments
             .first()
             .map_or(native_version, |inline| inline.version);
         fragments.push(config);
+        native_references.push(imported.metadata);
     }
     if fragments.is_empty() {
         return Err(ConfigSourceError::NoFragments);
@@ -99,6 +121,7 @@ pub fn resolve_source_with_format(
         config,
         has_templates || !directives.is_empty(),
         dependencies.paths,
+        native_references,
     )
 }
 
@@ -136,6 +159,7 @@ fn finish(
     config: Config,
     compositional: bool,
     dependencies: Vec<PathBuf>,
+    native_references: Vec<NativeReferenceMetadata>,
 ) -> Result<ResolvedSource, ConfigSourceError> {
     let config = compose_configs(&[config])
         .map_err(|error| ConfigSourceError::Composition(error.to_string()))?;
@@ -146,7 +170,13 @@ fn finish(
         canonical_kdl,
         compositional,
         dependencies,
+        native_references,
     })
+}
+
+struct ImportedNative {
+    config: Config,
+    metadata: NativeReferenceMetadata,
 }
 
 #[cfg(unix)]
@@ -154,12 +184,13 @@ fn import_native(
     directive: &NativeDirective,
     parent: &Path,
     dependencies: &mut Dependencies,
-) -> Result<Config, ConfigSourceError> {
+) -> Result<ImportedNative, ConfigSourceError> {
     match directive {
         NativeDirective::Nginx(source) => import_nginx(source, parent, dependencies),
         NativeDirective::Haproxy(source) => import_haproxy(source, parent, dependencies),
         NativeDirective::Squid(source) => import_squid(source, parent, dependencies),
         NativeDirective::Apache(source) => import_apache(source, parent, dependencies),
+        NativeDirective::Varnish(source) => import_varnish(source, parent, dependencies),
     }
 }
 
@@ -168,7 +199,7 @@ fn import_squid(
     source: &crate::native::SquidSource,
     parent: &Path,
     dependencies: &mut Dependencies,
-) -> Result<Config, ConfigSourceError> {
+) -> Result<ImportedNative, ConfigSourceError> {
     let path = resolve_path(parent, &source.path);
     let report = oxiroute_import::squid::import(&path);
     if !source.externalize_cache && !report.effective.refresh_policy.patterns.is_empty() {
@@ -190,10 +221,14 @@ fn import_squid(
                 .map(|diagnostic| diagnostic.code().as_str()),
         )
     })?;
-    for source in &report.source_graph.sources {
-        dependencies.push(source.canonical_path.clone())?;
-    }
-    Ok(config)
+    push_squid_dependencies(&report.source_graph, dependencies)?;
+    Ok(ImportedNative {
+        config,
+        metadata: NativeReferenceMetadata {
+            roots: vec![path],
+            evidence: oxiroute_import::ImportReportEnvelope::from_squid(&report),
+        },
+    })
 }
 
 #[cfg(unix)]
@@ -201,7 +236,7 @@ fn import_apache(
     source: &crate::native::ApacheSource,
     parent: &Path,
     dependencies: &mut Dependencies,
-) -> Result<Config, ConfigSourceError> {
+) -> Result<ImportedNative, ConfigSourceError> {
     let path = resolve_path(parent, &source.path);
     let report = oxiroute_import::apache::import_root(&path);
     let config = report.candidate.config.clone().ok_or_else(|| {
@@ -213,10 +248,58 @@ fn import_apache(
                 .map(|diagnostic| diagnostic.code().as_str()),
         )
     })?;
-    for source in &report.source_graph.sources {
-        dependencies.push(source.canonical_path.clone())?;
-    }
-    Ok(config)
+    push_apache_dependencies(&report.source_graph, dependencies)?;
+    Ok(ImportedNative {
+        config,
+        metadata: NativeReferenceMetadata {
+            roots: vec![path],
+            evidence: oxiroute_import::ImportReportEnvelope::from_apache(&report),
+        },
+    })
+}
+
+#[cfg(unix)]
+fn import_varnish(
+    source: &crate::native::VarnishSource,
+    parent: &Path,
+    dependencies: &mut Dependencies,
+) -> Result<ImportedNative, ConfigSourceError> {
+    let path = resolve_path(parent, &source.path);
+    let invocation = oxiroute_import::varnish::VarnishdInvocation::new(source.arguments.clone());
+    let report = oxiroute_import::varnish::import(&path, &invocation);
+    let config = report.candidate.config.clone().ok_or_else(|| {
+        let lowering_code = match report.lowering {
+            oxiroute_import::varnish::LoweringStatus::Lowered => None,
+            oxiroute_import::varnish::LoweringStatus::Blocked(
+                oxiroute_import::varnish::LoweringBlocker::UnsupportedSubroutine,
+            ) => Some(oxiroute_import::varnish::E_VCL_UNSUPPORTED_SUBROUTINE.as_str()),
+            oxiroute_import::varnish::LoweringStatus::Blocked(
+                oxiroute_import::varnish::LoweringBlocker::SemanticMismatch,
+            ) => Some(oxiroute_import::varnish::E_VCL_SEMANTIC_MISMATCH.as_str()),
+            oxiroute_import::varnish::LoweringStatus::Blocked(
+                oxiroute_import::varnish::LoweringBlocker::Validation,
+            ) => Some(oxiroute_import::E_INVALID_VALUE.as_str()),
+            oxiroute_import::varnish::LoweringStatus::Blocked(_) => {
+                Some(oxiroute_import::varnish::E_VCL_LOWERING_BLOCKED.as_str())
+            }
+        };
+        failed_native_import(
+            "varnish",
+            report
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.code().as_str())
+                .chain(lowering_code),
+        )
+    })?;
+    push_varnish_dependencies(&report.source_graph, dependencies)?;
+    Ok(ImportedNative {
+        config,
+        metadata: NativeReferenceMetadata {
+            roots: vec![path],
+            evidence: oxiroute_import::ImportReportEnvelope::from_varnish(&report),
+        },
+    })
 }
 
 #[cfg(not(unix))]
@@ -224,7 +307,7 @@ fn import_native(
     _directive: &NativeDirective,
     _parent: &Path,
     _dependencies: &mut Dependencies,
-) -> Result<Config, ConfigSourceError> {
+) -> Result<ImportedNative, ConfigSourceError> {
     Err(ConfigSourceError::UnsupportedAdapter {
         format: "native configuration",
         operation: "import",
@@ -236,7 +319,7 @@ fn import_nginx(
     source: &crate::native::NginxSource,
     parent: &Path,
     dependencies: &mut Dependencies,
-) -> Result<Config, ConfigSourceError> {
+) -> Result<ImportedNative, ConfigSourceError> {
     use oxiroute_import::nginx::{
         NginxDefaultAccessLogOverlay, NginxDefaultErrorPageOverlay, NginxHostTimezoneOverlay,
         NginxImportOptions, NginxRecordingRootOverlay, import_root_with_options,
@@ -282,10 +365,14 @@ fn import_nginx(
                 .map(|diagnostic| diagnostic.code().as_str()),
         )
     })?;
-    for source in &report.source_graph.sources {
-        dependencies.push(source.canonical_path.clone())?;
-    }
-    Ok(config)
+    push_nginx_dependencies(&report.source_graph, dependencies)?;
+    Ok(ImportedNative {
+        config,
+        metadata: NativeReferenceMetadata {
+            roots: vec![path],
+            evidence: oxiroute_import::ImportReportEnvelope::from_nginx(&report),
+        },
+    })
 }
 
 #[cfg(unix)]
@@ -293,7 +380,7 @@ fn import_haproxy(
     source: &crate::native::HaproxySource,
     parent: &Path,
     dependencies: &mut Dependencies,
-) -> Result<Config, ConfigSourceError> {
+) -> Result<ImportedNative, ConfigSourceError> {
     use oxiroute_import::haproxy::{
         PreprocessingEnvironment, import_roots, import_roots_with_environment,
     };
@@ -315,7 +402,8 @@ fn import_haproxy(
             )
         },
     );
-    let config = report.value().config.clone().ok_or_else(|| {
+    let candidate = report.value();
+    let config = candidate.config.clone().ok_or_else(|| {
         failed_native_import(
             "HAProxy",
             report
@@ -324,10 +412,153 @@ fn import_haproxy(
                 .map(|diagnostic| diagnostic.code().as_str()),
         )
     })?;
-    for path in paths {
-        dependencies.push(path)?;
+    for path in &paths {
+        dependencies.push_with_parent(path)?;
     }
-    Ok(config)
+    for source in &candidate.source_metadata.original_sources {
+        if let Some(path) = source.path() {
+            dependencies.push_with_parent(path)?;
+        }
+    }
+    Ok(ImportedNative {
+        config,
+        metadata: NativeReferenceMetadata {
+            roots: paths.clone(),
+            evidence: oxiroute_import::ImportReportEnvelope::from_haproxy(&report, &paths),
+        },
+    })
+}
+
+#[cfg(unix)]
+fn push_nginx_dependencies(
+    graph: &oxiroute_import::nginx::SourceGraph,
+    dependencies: &mut Dependencies,
+) -> Result<(), ConfigSourceError> {
+    for source in &graph.sources {
+        dependencies.push_with_parent(&source.canonical_path)?;
+    }
+    let include_base = graph
+        .root
+        .and_then(|root| graph.source(root))
+        .and_then(|source| source.canonical_path.parent())
+        .unwrap_or_else(|| Path::new("."));
+    for edge in &graph.includes {
+        dependencies.push_include_parent(include_base, &path_from_bytes(&edge.pattern))?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn push_apache_dependencies(
+    graph: &oxiroute_import::apache::SourceGraph,
+    dependencies: &mut Dependencies,
+) -> Result<(), ConfigSourceError> {
+    for source in &graph.sources {
+        dependencies.push_with_parent(&source.canonical_path)?;
+    }
+    let include_base = graph
+        .root
+        .and_then(|root| graph.source(root))
+        .and_then(|source| source.canonical_path.parent())
+        .unwrap_or_else(|| Path::new("."));
+    for edge in &graph.includes {
+        dependencies.push_include_parent(include_base, &path_from_bytes(&edge.pattern))?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn push_varnish_dependencies(
+    graph: &oxiroute_import::varnish::SourceGraph,
+    dependencies: &mut Dependencies,
+) -> Result<(), ConfigSourceError> {
+    for source in &graph.sources {
+        if let Some(path) = &source.canonical_path {
+            dependencies.push_with_parent(path)?;
+        }
+    }
+    let include_base = graph
+        .root
+        .and_then(|root| graph.source(root))
+        .and_then(|source| source.canonical_path.as_deref())
+        .and_then(Path::parent)
+        .unwrap_or_else(|| Path::new("."));
+    for edge in &graph.includes {
+        dependencies.push_include_parent(include_base, &path_from_bytes(&edge.pattern))?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn push_squid_dependencies(
+    graph: &oxiroute_import::squid::SourceGraph,
+    dependencies: &mut Dependencies,
+) -> Result<(), ConfigSourceError> {
+    for source in &graph.sources {
+        dependencies.push_with_parent(&source.canonical_path)?;
+    }
+    for edge in &graph.includes {
+        for target in &edge.targets {
+            dependencies.push_with_parent(&target.requested_path)?;
+        }
+        if let Some(directive) = graph
+            .expanded_directives
+            .iter()
+            .find(|directive| directive.occurrence == edge.occurrence)
+        {
+            let base = graph
+                .source(edge.source)
+                .and_then(|source| source.canonical_path.parent())
+                .unwrap_or_else(|| Path::new("."));
+            for argument in &directive.directive.arguments {
+                dependencies.push_include_parent(base, &path_from_bytes(&argument.value))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn path_from_bytes(bytes: &[u8]) -> PathBuf {
+    PathBuf::from(OsString::from_vec(bytes.to_vec()))
+}
+
+#[cfg(unix)]
+fn has_glob_meta(path: &Path) -> bool {
+    let mut escaped = false;
+    for byte in path.as_os_str().as_bytes() {
+        if escaped {
+            escaped = false;
+        } else if *byte == b'\\' {
+            escaped = true;
+        } else if matches!(*byte, b'*' | b'?' | b'[') {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(unix)]
+fn include_watch_parent(base: &Path, requested: &Path) -> PathBuf {
+    let path = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        base.join(requested)
+    };
+    let mut prefix = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::RootDir => prefix.push(Path::new("/")),
+            Component::CurDir => {}
+            Component::ParentDir => prefix.push(".."),
+            Component::Normal(segment) if has_glob_meta(Path::new(segment)) => return prefix,
+            Component::Normal(segment) => prefix.push(segment),
+            Component::Prefix(_) => unreachable!("Unix paths have no prefix component"),
+        }
+    }
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map_or(prefix, Path::to_path_buf)
 }
 
 fn failed_native_import<'a>(
@@ -384,5 +615,25 @@ impl Dependencies {
             self.paths.push(path);
         }
         Ok(())
+    }
+
+    fn push_with_parent(&mut self, path: &Path) -> Result<(), ConfigSourceError> {
+        self.push(path.to_path_buf())?;
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            self.push(parent.to_path_buf())?;
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn push_include_parent(
+        &mut self,
+        base: &Path,
+        requested: &Path,
+    ) -> Result<(), ConfigSourceError> {
+        self.push(include_watch_parent(base, requested))
     }
 }

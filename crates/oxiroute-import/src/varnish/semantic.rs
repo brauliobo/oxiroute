@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::{
-    Diagnostic, DiagnosticStage, E_DUPLICATE_IDENTITY, E_SOURCE_LIMIT, Report, Severity,
-    SourceFile, Span,
+    CanonicalCandidate, Diagnostic, DiagnosticStage, E_DUPLICATE_IDENTITY, E_SOURCE_LIMIT, Report,
+    Severity, SourceFile, Span,
 };
 
 use super::{
@@ -48,6 +48,7 @@ pub struct ImportReport {
     pub statements: Vec<StatementDecision>,
     pub invocation: InvocationFacts,
     pub diagnostics: Vec<Diagnostic>,
+    pub candidate: CanonicalCandidate<Provenance>,
     pub lowering: LoweringStatus,
 }
 
@@ -62,12 +63,19 @@ impl ImportReport {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LoweringStatus {
+    Lowered,
     Blocked(LoweringBlocker),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LoweringBlocker {
-    CanonicalVclLoweringNotImplemented,
+    NoCanonicalGraph,
+    InvalidSource,
+    UnsupportedBehavior,
+    UnsupportedSubroutine,
+    SemanticMismatch,
+    Invocation,
+    Validation,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -655,7 +663,19 @@ impl Builder {
         let call_graph = self.finish_call_graph();
         self.validate_unique_symbols();
         self.validate_versions();
-        let ((), diagnostics) = Report::new((), self.diagnostics).into_parts();
+        let (candidate, lowering, diagnostics) = super::lower::lower(
+            &self.graph,
+            &self.invocation,
+            &self.backends,
+            &self.directors,
+            &self.modern_directors,
+            &self.subroutines,
+            &self.statements,
+            &self.imports,
+            &self.vmod_objects,
+            self.diagnostics,
+        );
+        let ((), diagnostics) = Report::new((), diagnostics).into_parts();
         let sources = self
             .graph
             .sources
@@ -679,7 +699,8 @@ impl Builder {
             statements: self.statements,
             invocation: self.invocation,
             diagnostics,
-            lowering: LoweringStatus::Blocked(LoweringBlocker::CanonicalVclLoweringNotImplemented),
+            candidate,
+            lowering,
         }
     }
 

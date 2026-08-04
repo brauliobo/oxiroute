@@ -5,8 +5,8 @@
 //! `(array)` nodes are explicit containers, and array children are named `-`. The decoder accepts
 //! KDL 2 only. UCI uses named `config json` records rooted at `root`; each non-root record has a
 //! `parent` plus either `key` or `index`, and every record has a `kind` and optional scalar `value`.
-//! Source resolution additionally recognizes strict native nginx, `HAProxy`, and Apache directives without
-//! changing these generic reversible mappings.
+//! Source resolution additionally recognizes strict native nginx, `HAProxy`, Squid, Apache, and Varnish
+//! directives without changing these generic reversible mappings.
 
 mod error;
 mod hocon;
@@ -24,7 +24,9 @@ pub use limits::{
     MAX_DEPENDENCY_PATHS, MAX_EXPANSION_DEPTH, MAX_NODES, MAX_OUTPUT_BYTES, MAX_SOURCE_BYTES,
     MAX_STRING_BYTES, MAX_STRUCTURAL_DEPTH,
 };
-pub use resolver::{ResolvedSource, resolve_source, resolve_source_with_format};
+pub use resolver::{
+    NativeReferenceMetadata, ResolvedSource, resolve_source, resolve_source_with_format,
+};
 pub use templates::expand_templates;
 pub use uci::{UciDocument, UciEntry, UciSection, parse_uci_document, render_uci_document};
 

@@ -7,7 +7,9 @@ use crate::ConfigSourceError;
 use crate::limits::{
     MAX_STRUCTURAL_DEPTH, check_output, check_string, source_text, validate_value,
 };
-use crate::native::{NativeDirective, decode_apache, decode_haproxy, decode_nginx, decode_squid};
+use crate::native::{
+    NativeDirective, decode_apache, decode_haproxy, decode_nginx, decode_squid, decode_varnish,
+};
 
 /// A parsed, ordered UCI document.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -275,6 +277,9 @@ pub(crate) fn decode_with_directives(
             "apache_server" => {
                 directives.push(NativeDirective::Apache(decode_apache_section(&section)?));
             }
+            "varnish_server" => {
+                directives.push(NativeDirective::Varnish(decode_varnish_section(&section)?));
+            }
             section_type => {
                 return Err(ConfigSourceError::parse(
                     "UCI",
@@ -383,6 +388,39 @@ fn decode_apache_section(
         }
     }
     decode_apache(Value::Object(object), "UCI")
+}
+
+fn decode_varnish_section(
+    section: &UciSection,
+) -> Result<crate::native::VarnishSource, ConfigSourceError> {
+    let mut object = Map::new();
+    let mut arguments = Vec::new();
+    for entry in &section.entries {
+        match entry {
+            UciEntry::Option { name, value } if name == "path" => {
+                if object
+                    .insert(name.clone(), Value::String(value.clone()))
+                    .is_some()
+                {
+                    return Err(ConfigSourceError::parse(
+                        "UCI",
+                        "duplicate varnish_server option `path`",
+                    ));
+                }
+            }
+            UciEntry::List { name, value } if name == "arguments" => {
+                arguments.push(Value::String(value.clone()));
+            }
+            UciEntry::Option { name, .. } | UciEntry::List { name, .. } => {
+                return Err(ConfigSourceError::parse(
+                    "UCI",
+                    format!("unknown varnish_server entry `{name}`"),
+                ));
+            }
+        }
+    }
+    object.insert("arguments".to_owned(), Value::Array(arguments));
+    decode_varnish(Value::Object(object), "UCI")
 }
 
 fn decode_main_section(section: &UciSection) -> Result<Map<String, Value>, ConfigSourceError> {

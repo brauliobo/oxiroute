@@ -117,9 +117,9 @@ oxiroute config compose edge.kdl legacy.lua openwrt.uci site.conf
 oxiroute config compose --format hocon edge.kdl legacy.lua
 ```
 
-KDL, HOCON, and UCI may instead declare strict `nginx_server`, `haproxy_server`, `squid_server`, or
-`apache_server`
-references. Those roots remain compositional: the browser can inspect and validate them, but typed
+KDL, HOCON, and UCI may instead declare strict `nginx_server`, `haproxy_server`, `squid_server`,
+`apache_server`, or `varnish_server` references. Varnish references may include repeated explicit
+`arguments` for the `varnishd` invocation facts. Those roots remain compositional: the browser can inspect and validate them, but typed
 save refuses to flatten them accidentally. A KDL/HOCON/UCI native reference re-resolves its complete
 source graph during watcher reconciliation; it is native-source integration, not an import management
 API or UI workflow.
