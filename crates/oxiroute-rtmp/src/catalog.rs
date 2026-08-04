@@ -90,11 +90,22 @@ impl StreamKey {
 }
 
 /// Parsed RTMP URL path with authentication/query data kept separate from stream identity.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct RtmpStreamPath {
     application: String,
     stream_name: String,
     query: Option<String>,
+}
+
+impl std::fmt::Debug for RtmpStreamPath {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RtmpStreamPath")
+            .field("application", &self.application)
+            .field("stream_name", &self.stream_name)
+            .field("query", &self.query.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 impl RtmpStreamPath {

@@ -1,11 +1,12 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::{collections::VecDeque, net::IpAddr, sync::Arc};
 
 use bytes::Bytes;
 use oxiroute_rtmp::{
     CatalogError, LiveHub, LiveHubError, LiveHubLimits, MAX_RTMP_QUERY_BYTES,
-    MAX_RTMP_STREAM_NAME_BYTES, MediaSnapshot, RTMP_STALE_PUBLISHER_THRESHOLD_MS, RtmpApplication,
-    RtmpCapabilities, RtmpRegistry, RtmpSession, RtmpSessionError, RtmpSessionPolicy, StreamKey,
-    VideoCodecIdentifier,
+    MAX_RTMP_STREAM_NAME_BYTES, MediaSnapshot, RTMP_STALE_PUBLISHER_THRESHOLD_MS, RtmpAccessAction,
+    RtmpAccessPolicy, RtmpAccessRule, RtmpApplication, RtmpCapabilities, RtmpNetwork, RtmpRegistry,
+    RtmpServiceRuntime, RtmpSession, RtmpSessionCeilings, RtmpSessionError, RtmpSessionPolicy,
+    RtmpTokenPolicy, StreamKey, VideoCodecIdentifier,
 };
 use rml_rtmp::{
     handshake::{Handshake, HandshakeProcessResult, PeerType},
@@ -314,6 +315,130 @@ fn treats_publish_query_arguments_as_non_identity_protocol_data() {
 }
 
 #[test]
+fn enforces_ordered_publish_acl_and_stream_query_token() {
+    let registry = registry();
+    let publish = RtmpAccessPolicy::new(
+        [
+            RtmpAccessRule::new(
+                RtmpAccessAction::Deny,
+                RtmpNetwork::parse("192.0.2.0/24").expect("valid network"),
+            ),
+            RtmpAccessRule::new(RtmpAccessAction::Allow, RtmpNetwork::All),
+        ],
+        Some(RtmpTokenPolicy::stream_query("token", "secret").expect("valid token policy")),
+    );
+    let application = RtmpApplication::new("broadcast", true, true).with_authorization(
+        publish,
+        RtmpAccessPolicy::default(),
+        RtmpSessionCeilings::default(),
+    );
+    let runtime = RtmpServiceRuntime::new(
+        "live",
+        Arc::clone(&registry),
+        LiveHub::new(LiveHubLimits::default()),
+        RtmpSessionPolicy::new([application]),
+    );
+
+    let mut denied_server = runtime.session_with_peer_addr(Some(
+        "192.0.2.10".parse::<IpAddr>().expect("valid peer address"),
+    ));
+    let mut denied_client = connect(&mut denied_server, "broadcast");
+    let denied_events = request_named_publish(
+        &mut denied_client,
+        &mut denied_server,
+        "camera?token=secret",
+        6_100,
+    );
+    assert!(
+        !denied_events
+            .iter()
+            .any(|event| matches!(event, ClientSessionEvent::PublishRequestAccepted))
+    );
+
+    let mut wrong_token_server = runtime.session_with_peer_addr(Some(
+        "198.51.100.10"
+            .parse::<IpAddr>()
+            .expect("valid peer address"),
+    ));
+    let mut wrong_token_client = connect(&mut wrong_token_server, "broadcast");
+    let wrong_token_events = request_named_publish(
+        &mut wrong_token_client,
+        &mut wrong_token_server,
+        "camera?token=wrong",
+        6_200,
+    );
+    assert!(
+        !wrong_token_events
+            .iter()
+            .any(|event| matches!(event, ClientSessionEvent::PublishRequestAccepted))
+    );
+
+    let mut accepted_server = runtime.session_with_peer_addr(Some(
+        "198.51.100.10"
+            .parse::<IpAddr>()
+            .expect("valid peer address"),
+    ));
+    let mut accepted_client = connect(&mut accepted_server, "broadcast");
+    let accepted_events = request_named_publish(
+        &mut accepted_client,
+        &mut accepted_server,
+        "camera?token=secret",
+        6_300,
+    );
+    assert!(
+        accepted_events
+            .iter()
+            .any(|event| matches!(event, ClientSessionEvent::PublishRequestAccepted))
+    );
+}
+
+#[test]
+fn enforces_application_connection_ceiling_and_releases_it_on_close() {
+    let registry = registry();
+    let application = RtmpApplication::new("broadcast", true, true).with_authorization(
+        RtmpAccessPolicy::default(),
+        RtmpAccessPolicy::default(),
+        RtmpSessionCeilings::new(1, 256, 1_024),
+    );
+    let runtime = RtmpServiceRuntime::new(
+        "live",
+        Arc::clone(&registry),
+        LiveHub::new(LiveHubLimits::default()),
+        RtmpSessionPolicy::new([application]),
+    );
+
+    let mut first_server = runtime.session();
+    let (first_client, first_events) = connect_with_events(&mut first_server, "broadcast");
+    assert!(
+        first_events
+            .iter()
+            .any(|event| matches!(event, ClientSessionEvent::ConnectionRequestAccepted))
+    );
+
+    let mut second_server = runtime.session();
+    let (second_client, second_events) = connect_with_events(&mut second_server, "broadcast");
+    assert!(second_events.iter().any(|event| matches!(
+        event,
+        ClientSessionEvent::ConnectionRequestRejected { description }
+            if description == "RTMP application connection limit reached"
+    )));
+    drop(second_client);
+    drop(second_server);
+
+    drop(first_client);
+    drop(first_server);
+    let mut third_server = runtime.session();
+    let (third_client, third_events) = connect_with_events(&mut third_server, "broadcast");
+    assert!(
+        third_events
+            .iter()
+            .any(|event| matches!(event, ClientSessionEvent::ConnectionRequestAccepted))
+    );
+    drop(third_client);
+    drop(third_server);
+}
+
+#[test]
 fn rejects_oversized_stream_and_query_identities_without_catalog_entries() {
     let registry = registry();
     let hub = LiveHub::new(LiveHubLimits::default());
@@ -380,6 +505,19 @@ fn session(registry: Arc<RtmpRegistry>, hub: LiveHub) -> RtmpSession {
 }
 
 fn connect(server: &mut RtmpSession, application: &str) -> ClientSession {
+    let (client, events) = connect_with_events(server, application);
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, ClientSessionEvent::ConnectionRequestAccepted))
+    );
+    client
+}
+
+fn connect_with_events(
+    server: &mut RtmpSession,
+    application: &str,
+) -> (ClientSession, Vec<ClientSessionEvent>) {
     let mut handshake = Handshake::new(PeerType::Client);
     let client_hello = handshake
         .generate_outbound_p0_and_p1()
@@ -411,12 +549,7 @@ fn connect(server: &mut RtmpSession, application: &str) -> ClientSession {
         .request_connection(application.into())
         .expect("connection request");
     let events = exchange(&mut client, server, vec![request], 1_000);
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, ClientSessionEvent::ConnectionRequestAccepted))
-    );
-    client
+    (client, events)
 }
 
 fn request_publish(

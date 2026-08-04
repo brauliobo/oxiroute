@@ -21,9 +21,10 @@ use crate::{
         HttpRetryTarget, HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpRoutePolicy,
         HttpSameSite, HttpService, HttpStaticErrorResponse, HttpStaticMimePolicy,
         HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost, HttpVersion, HttpVersionPolicy,
-        L4Service, Listener, ListenerBind, Management, Protocol, RtmpApplication, RtmpFanoutPolicy,
-        RtmpPushTarget, RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart,
-        RtmpRecorderTimeBasis, RtmpRecorderTimezone, RtmpService, Stats, StatsPage,
+        L4Service, Listener, ListenerBind, Management, Protocol, RtmpAccessPolicy, RtmpAccessRule,
+        RtmpAclAction, RtmpApplication, RtmpFanoutPolicy, RtmpPushTarget, RtmpRecorder,
+        RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis, RtmpRecorderTimezone,
+        RtmpService, RtmpSessionCeilings, RtmpTokenPolicy, RtmpTokenSource, Stats, StatsPage,
         StatsPageAdminPolicy, TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamConnectionReuse,
         UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls, UdpPolicy,
     },
@@ -520,6 +521,9 @@ impl Renderer {
             name,
             live,
             idle_streams,
+            publish,
+            play,
+            limits,
             push_targets,
             fanout,
             recorders,
@@ -527,6 +531,15 @@ impl Renderer {
         self.string_field("name", name);
         self.boolean_field("live", *live);
         self.boolean_field("idle_streams", *idle_streams);
+        self.begin_table_field("publish");
+        self.rtmp_access_policy(publish);
+        self.end_table();
+        self.begin_table_field("play");
+        self.rtmp_access_policy(play);
+        self.end_table();
+        self.begin_table_field("limits");
+        self.rtmp_session_ceilings(limits);
+        self.end_table();
         self.table_list_or_nil_field("push_targets", push_targets, Self::rtmp_push_target);
         self.begin_table_field("fanout");
         self.rtmp_fanout(fanout);
@@ -553,6 +566,39 @@ impl Renderer {
             "max_queue_bytes_per_subscriber",
             policy.max_queue_bytes_per_subscriber,
         );
+    }
+
+    fn rtmp_access_policy(&mut self, policy: &RtmpAccessPolicy) {
+        self.table_list_field("rules", &policy.rules, Self::rtmp_access_rule);
+        self.optional_table_field("token", policy.token.as_ref(), Self::rtmp_token_policy);
+    }
+
+    fn rtmp_access_rule(&mut self, rule: &RtmpAccessRule) {
+        self.string_field(
+            "action",
+            match rule.action {
+                RtmpAclAction::Allow => "allow",
+                RtmpAclAction::Deny => "deny",
+            },
+        );
+        self.string_field("network", &rule.network);
+    }
+
+    fn rtmp_token_policy(&mut self, token: &RtmpTokenPolicy) {
+        self.string_field(
+            "source",
+            match token.source {
+                RtmpTokenSource::StreamQuery => "stream_query",
+            },
+        );
+        self.string_field("parameter", &token.parameter);
+        self.string_field("secret", &token.secret);
+    }
+
+    fn rtmp_session_ceilings(&mut self, limits: &RtmpSessionCeilings) {
+        self.integer_field("max_connections", limits.max_connections);
+        self.integer_field("max_publishers", limits.max_publishers);
+        self.integer_field("max_viewers", limits.max_viewers);
     }
 
     fn rtmp_recorder(

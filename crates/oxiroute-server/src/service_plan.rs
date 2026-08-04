@@ -27,14 +27,17 @@ use oxiroute_config::{
     CacheSetCookiePolicy, CacheStore, CacheVaryPolicy, Config, DnsResolutionPolicy,
     HttpCachePolicy, HttpProxyPolicy,
     HttpRoute as ConfigHttpRoute, HttpRouteAction, ListenerBind, Protocol,
-    RtmpRecorderStart as ConfigRecorderStart, UdpPolicy,
+    RtmpAccessPolicy as ConfigRtmpAccessPolicy, RtmpRecorderStart as ConfigRecorderStart,
+    UdpPolicy,
 };
 use oxiroute_rtmp::{
     LiveHub, LiveHubLimits, RecorderWorkerConfig, RecordingPathPolicy, RecordingSegmentNaming,
     RecordingStore, RecordingStoreLimits, RecordingTimeBasis, RecordingTimezone,
-    RtmpApplication as RuntimeRtmpApplication, RtmpCapabilities, RtmpPushApplication,
-    RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry, RtmpRelayConfig,
-    RtmpServiceRuntime, RtmpSessionPolicy,
+    RtmpAccessAction, RtmpAccessPolicy as RuntimeRtmpAccessPolicy, RtmpAccessRule,
+    RtmpApplication as RuntimeRtmpApplication, RtmpCapabilities, RtmpNetwork,
+    RtmpPushApplication, RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry,
+    RtmpRelayConfig, RtmpServiceRuntime, RtmpSessionCeilings, RtmpTokenPolicy,
+    RtmpSessionPolicy,
 };
 
 static DISK_BACKEND_REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Weak<DiskBackend>>>> =
@@ -148,6 +151,11 @@ impl RtmpServicePlan {
                         application.hub.clone(),
                         application.push_targets.clone(),
                         recorders,
+                    )
+                    .with_authorization(
+                        application.publish_policy.clone(),
+                        application.play_policy.clone(),
+                        application.session_limits,
                     ))
                 })
                 .collect::<Result<Vec<_>, ServicePlanError>>()?;
@@ -187,6 +195,9 @@ struct PreparedRtmpApplication {
     name: String,
     live: bool,
     idle_streams: bool,
+    publish_policy: RuntimeRtmpAccessPolicy,
+    play_policy: RuntimeRtmpAccessPolicy,
+    session_limits: RtmpSessionCeilings,
     hub: LiveHub,
     push_targets: Vec<RtmpPushTarget>,
     recorders: Vec<PreparedRtmpRecorder>,
@@ -1240,6 +1251,35 @@ fn compile_rtmp_services(
         let mut prepared_applications = Vec::with_capacity(service.applications.len());
         for application in &service.applications {
             let (hub, max_queue_messages, max_queue_bytes) = compile_rtmp_fanout(application)?;
+            let publish_policy = compile_rtmp_access_policy(
+                &service.name,
+                &application.name,
+                "publish",
+                &application.publish,
+            )?;
+            let play_policy = compile_rtmp_access_policy(
+                &service.name,
+                &application.name,
+                "play",
+                &application.play,
+            )?;
+            let session_limits = RtmpSessionCeilings::new(
+                usize::try_from(application.limits.max_connections).map_err(|_| {
+                    ServicePlanError::RuntimePolicyUnavailable {
+                        policy: "rtmp_services[].applications[].limits.max_connections",
+                    }
+                })?,
+                usize::try_from(application.limits.max_publishers).map_err(|_| {
+                    ServicePlanError::RuntimePolicyUnavailable {
+                        policy: "rtmp_services[].applications[].limits.max_publishers",
+                    }
+                })?,
+                usize::try_from(application.limits.max_viewers).map_err(|_| {
+                    ServicePlanError::RuntimePolicyUnavailable {
+                        policy: "rtmp_services[].applications[].limits.max_viewers",
+                    }
+                })?,
+            );
             let push_targets = compile_rtmp_push_targets(
                 &service.name,
                 application,
@@ -1260,6 +1300,9 @@ fn compile_rtmp_services(
                 name: application.name.clone(),
                 live: application.live,
                 idle_streams: application.idle_streams,
+                publish_policy,
+                play_policy,
+                session_limits,
                 hub,
                 push_targets,
                 recorders: prepared_recorders,
@@ -1280,6 +1323,42 @@ fn compile_rtmp_services(
         );
     }
     Ok(services)
+}
+
+fn compile_rtmp_access_policy(
+    service: &str,
+    application: &str,
+    operation: &'static str,
+    policy: &ConfigRtmpAccessPolicy,
+) -> Result<RuntimeRtmpAccessPolicy, ServicePlanError> {
+    let unavailable = || ServicePlanError::RuntimePolicyUnavailable {
+        policy: match operation {
+            "publish" => "rtmp_services[].applications[].publish",
+            "play" => "rtmp_services[].applications[].play",
+            _ => unreachable!("RTMP access operation is closed"),
+        },
+    };
+    let rules = policy
+        .rules
+        .iter()
+        .map(|rule| {
+            let action = match rule.action {
+                oxiroute_config::RtmpAclAction::Allow => RtmpAccessAction::Allow,
+                oxiroute_config::RtmpAclAction::Deny => RtmpAccessAction::Deny,
+            };
+            let network = RtmpNetwork::parse(&rule.network).ok_or_else(unavailable)?;
+            Ok(RtmpAccessRule::new(action, network))
+        })
+        .collect::<Result<Vec<_>, ServicePlanError>>()?;
+    let token = match policy.token.as_ref() {
+        Some(token) => Some(
+            RtmpTokenPolicy::stream_query(token.parameter.as_str(), token.secret.as_bytes())
+                .ok_or_else(unavailable)?,
+        ),
+        None => None,
+    };
+    let _ = (service, application);
+    Ok(RuntimeRtmpAccessPolicy::new(rules, token))
 }
 
 fn compile_rtmp_fanout(

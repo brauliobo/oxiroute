@@ -67,6 +67,57 @@ fn lowers_inherited_exact_rtmp_and_recorder_policy_without_accessing_the_root() 
 }
 
 #[test]
+fn lowers_bounded_access_rules_and_application_connection_ceiling() {
+    let report = import_source(
+        br"
+        rtmp {
+          server {
+            listen 127.0.0.1:1935;
+            application camera {
+              live on;
+              allow publish 192.0.2.0/24;
+              deny publish all;
+              deny play 198.51.100.0/24;
+              allow play all;
+              max_connections 64;
+            }
+          }
+        }
+        ",
+        &[],
+    );
+
+    let config = report.config.expect("bounded RTMP policy");
+    let application = &config.rtmp_services[0].applications[0];
+    assert_eq!(
+        application.publish.rules[0].action,
+        oxiroute_config::RtmpAclAction::Allow
+    );
+    assert_eq!(application.publish.rules[0].network, "192.0.2.0/24");
+    assert_eq!(
+        application.publish.rules[1].action,
+        oxiroute_config::RtmpAclAction::Deny
+    );
+    assert_eq!(application.publish.rules[1].network, "all");
+    assert_eq!(application.play.rules.len(), 2);
+    assert_eq!(application.limits.max_connections, 64);
+    assert_eq!(application.limits.max_publishers, 256);
+    assert_eq!(application.limits.max_viewers, 1_024);
+    assert!(
+        report
+            .provenance
+            .iter()
+            .any(|entry| { entry.path == "/rtmp_services/0/applications/0/publish/rules/0" })
+    );
+    assert!(
+        report
+            .provenance
+            .iter()
+            .any(|entry| { entry.path == "/rtmp_services/0/applications/0/limits" })
+    );
+}
+
+#[test]
 fn recording_import_requires_an_explicit_host_iana_timezone() {
     let directory = TempDir::new().expect("RTMP source directory");
     fs::write(

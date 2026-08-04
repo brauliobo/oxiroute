@@ -2,6 +2,7 @@ use crate::{RtmpStreamPath, RtmpStreamPathError, StreamKey};
 
 pub(super) struct StreamIdentity {
     key: StreamKey,
+    query: Option<String>,
 }
 
 impl StreamIdentity {
@@ -10,13 +11,19 @@ impl StreamIdentity {
         application: &str,
         protocol_name: &str,
     ) -> Result<Self, RtmpStreamPathError> {
+        let path = RtmpStreamPath::parse(application, protocol_name)?;
         Ok(Self {
-            key: RtmpStreamPath::parse(application, protocol_name)?.into_stream_key(service_id),
+            key: path.stream_key(service_id),
+            query: path.query().map(str::to_owned),
         })
     }
 
     pub(super) fn into_key(self) -> StreamKey {
         self.key
+    }
+
+    pub(super) fn query(&self) -> Option<&str> {
+        self.query.as_deref()
     }
 }
 

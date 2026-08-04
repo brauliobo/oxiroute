@@ -22,8 +22,9 @@ use std::{
 };
 
 use oxiroute_config::{
-    Certificate, CertificateSource, Config, Listener, Management, Protocol, RtmpApplication,
-    RtmpRecorderStart, RtmpService, render_lua,
+    Certificate, CertificateSource, Config, Listener, Management, Protocol, RtmpAccessPolicy,
+    RtmpApplication, RtmpRecorderStart, RtmpService, RtmpSessionCeilings, RtmpTokenPolicy,
+    RtmpTokenSource, render_lua,
 };
 use oxiroute_rtmp::{
     LiveHub, LiveHubLimits, MediaSnapshot, RtmpApplication as RuntimeRtmpApplication,
@@ -606,6 +607,60 @@ async fn config_api_reports_source_format_composition_and_native_preview_name() 
 }
 
 #[tokio::test]
+async fn config_api_redacts_rtmp_token_secrets_from_typed_and_rendered_views() {
+    let mut active = editable_config();
+    active.rtmp_services = vec![RtmpService {
+        name: "live".into(),
+        outbound_chunk_size: 4_096,
+        access_log: None,
+        applications: vec![RtmpApplication {
+            name: "broadcast".into(),
+            live: true,
+            idle_streams: true,
+            publish: RtmpAccessPolicy {
+                rules: Vec::new(),
+                token: Some(RtmpTokenPolicy {
+                    source: RtmpTokenSource::StreamQuery,
+                    parameter: "token".into(),
+                    secret: "super-secret-token".into(),
+                }),
+            },
+            play: RtmpAccessPolicy::default(),
+            limits: RtmpSessionCeilings::default(),
+            push_targets: Vec::new(),
+            fanout: oxiroute_config::RtmpFanoutPolicy::default(),
+            recorders: Vec::new(),
+        }],
+    }];
+    let harness = ManagementHarness::start(&active).await;
+
+    let get = harness.request("GET", "/api/v1/config", None, None).await;
+    assert_eq!(get.status, 200);
+    let get_json = get.json();
+    assert_eq!(
+        get_json["config"]["rtmp_services"][0]["applications"][0]["publish"]["token"]["secret"],
+        "<redacted>"
+    );
+    assert!(get_json["configPreview"].as_str().is_some_and(|preview| {
+        preview.contains("<redacted>") && !preview.contains("super-secret-token")
+    }));
+    assert!(!String::from_utf8_lossy(&get.body).contains("super-secret-token"));
+
+    let request = serde_json::json!({ "config": active });
+    let validated = harness
+        .request("POST", "/api/v1/config/validate", None, Some(&request))
+        .await;
+    assert_eq!(validated.status, 200);
+    let validated_json = validated.json();
+    assert_eq!(
+        validated_json["normalizedConfig"]["rtmp_services"][0]["applications"][0]["publish"]["token"]
+            ["secret"],
+        "<redacted>"
+    );
+    assert!(!String::from_utf8_lossy(&validated.body).contains("super-secret-token"));
+}
+
+#[tokio::test]
 async fn config_api_rejects_typed_save_over_a_compositional_root() {
     let config = editable_config();
     let rendered = serde_json::json!({
@@ -1040,6 +1095,9 @@ fn candidate_config(active: &Config, listener_name: &str) -> Config {
             name: "broadcast".into(),
             live: true,
             idle_streams: false,
+            publish: Default::default(),
+            play: Default::default(),
+            limits: Default::default(),
             push_targets: Vec::new(),
             fanout: oxiroute_config::RtmpFanoutPolicy::default(),
             recorders: Vec::new(),

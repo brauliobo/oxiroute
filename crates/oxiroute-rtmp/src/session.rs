@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::{collections::VecDeque, net::IpAddr, sync::Arc};
 
 use rml_rtmp::{
     handshake::{Handshake, HandshakeProcessResult, PeerType},
@@ -20,8 +20,9 @@ mod status;
 
 pub use playback::MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN;
 pub use runtime::{
-    RTMP_STALE_PUBLISHER_THRESHOLD_MS, RtmpApplication, RtmpRecorderLifecycle, RtmpServiceRuntime,
-    RtmpSessionLimits, RtmpSessionPolicy,
+    RTMP_STALE_PUBLISHER_THRESHOLD_MS, RtmpAccessAction, RtmpAccessPolicy, RtmpAccessRule,
+    RtmpApplication, RtmpNetwork, RtmpRecorderLifecycle, RtmpServiceRuntime, RtmpSessionCeilings,
+    RtmpSessionLimits, RtmpSessionPolicy, RtmpTokenPolicy,
 };
 pub use status::RtmpSessionError;
 
@@ -42,6 +43,8 @@ pub struct RtmpSession {
     handshake: Option<Handshake>,
     protocol: Option<ServerSession>,
     role: Option<SessionRole>,
+    peer_addr: Option<IpAddr>,
+    connection_lease: Option<runtime::ApplicationSessionLease>,
 }
 
 impl RtmpSession {
@@ -54,16 +57,18 @@ impl RtmpSession {
     ) -> Self {
         let service_id: String = service_id.into();
         let runtime = RtmpServiceRuntime::new(Arc::<str>::from(service_id), registry, hub, policy);
-        Self::from_runtime(runtime)
+        Self::from_runtime(runtime, None)
     }
 
-    fn from_runtime(runtime: RtmpServiceRuntime) -> Self {
+    pub(super) fn from_runtime(runtime: RtmpServiceRuntime, peer_addr: Option<IpAddr>) -> Self {
         Self {
             runtime,
             session_id: SessionId::new(),
             handshake: Some(Handshake::new(PeerType::Server)),
             protocol: None,
             role: None,
+            peer_addr,
+            connection_lease: None,
         }
     }
 
@@ -305,13 +310,24 @@ impl RtmpSession {
         if let Err(error) = identity::validate_application(application) {
             return self.reject_request(request_id, status::connection_path(error));
         }
-        if self.runtime.application(application).is_some() {
-            Ok(self.protocol_mut().accept_request(request_id)?)
-        } else {
+        if self.runtime.application(application).is_none() {
             self.reject_request(
                 request_id,
                 Rejection::new(CONNECT_REJECTION_CODE, "RTMP application is not configured"),
             )
+        } else {
+            let connection_lease = match self.runtime.acquire_connection(application) {
+                Ok(lease) => lease,
+                Err(error) => {
+                    return self.reject_request(request_id, status::connection_limit(error));
+                }
+            };
+            let accepted = match self.protocol_mut().accept_request(request_id) {
+                Ok(accepted) => accepted,
+                Err(error) => return Err(error.into()),
+            };
+            self.connection_lease = Some(connection_lease);
+            Ok(accepted)
         }
     }
 
@@ -364,6 +380,10 @@ impl RtmpSession {
         self.protocol
             .as_mut()
             .expect("server events require a protocol session")
+    }
+
+    pub(super) const fn peer_addr(&self) -> Option<IpAddr> {
+        self.peer_addr
     }
 }
 

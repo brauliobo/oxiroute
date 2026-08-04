@@ -15,7 +15,7 @@ use crate::{
 use super::{
     RtmpSession,
     identity::{self, StreamIdentity},
-    runtime::{RTMP_STALE_PUBLISHER_THRESHOLD_MS, SessionRole},
+    runtime::{RTMP_STALE_PUBLISHER_THRESHOLD_MS, SessionOperation, SessionRole},
     status::{self, PUBLISH_REJECTION_CODE, Rejection, RtmpSessionError},
 };
 
@@ -26,6 +26,7 @@ pub(super) struct PublishSession {
     registration: Option<PublisherRegistration>,
     registry: Arc<RtmpRegistry>,
     session_id: SessionId,
+    _session_lease: super::runtime::ApplicationSessionLease,
     media: MediaSnapshot,
     media_sequence: u64,
     last_media_activity_at_unix_ms: u64,
@@ -36,6 +37,7 @@ pub(super) struct PublishSession {
 pub(super) struct PublisherOutputs {
     pub recorders: Vec<(crate::RecorderId, Arc<RecorderController>)>,
     pub relays: Vec<Arc<RtmpRelayController>>,
+    pub session_lease: super::runtime::ApplicationSessionLease,
 }
 
 impl PublishSession {
@@ -48,7 +50,11 @@ impl PublishSession {
         session_id: SessionId,
         outputs: PublisherOutputs,
     ) -> Self {
-        let PublisherOutputs { recorders, relays } = outputs;
+        let PublisherOutputs {
+            recorders,
+            relays,
+            session_lease,
+        } = outputs;
         let last_media_activity_at_unix_ms = registration.last_observed_at_unix_ms();
         Self {
             key,
@@ -57,6 +63,7 @@ impl PublishSession {
             registration: Some(registration),
             registry,
             session_id,
+            _session_lease: session_lease,
             media: MediaSnapshot::default(),
             media_sequence: 0,
             last_media_activity_at_unix_ms,
@@ -256,6 +263,17 @@ pub(super) fn handle_request(
                 PUBLISH_REJECTION_CODE,
                 "live publishing is not enabled for this application",
             ),
+        );
+    }
+    if let Err(error) = session.runtime.authorize(
+        application,
+        SessionOperation::Publish,
+        session.peer_addr(),
+        identity.query(),
+    ) {
+        return session.reject_request(
+            request_id,
+            status::authorization(SessionOperation::Publish, error),
         );
     }
     if session.role.is_some() {

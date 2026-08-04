@@ -39,6 +39,47 @@ The smallest shape is a listener, an RTMP service, and one live application:
 Publish to `rtmp://127.0.0.1:1935/live/<stream-name>`. Viewers use the same application and stream
 name. The exact session and media behavior is defined in [RTMP_SPEC.md](../RTMP_SPEC.md).
 
+## Restrict Publish And Play
+
+Publish and play policies are evaluated independently. Rules are ordered; when a policy has rules,
+the first matching network decides the result and unmatched peers are denied. A stream-query token
+is checked without becoming part of the stream identity:
+
+```kdl
+(object)publish {
+  (array)rules {
+    (object)- {
+      action "deny"
+      network "192.0.2.0/24"
+    }
+    (object)- {
+      action "allow"
+      network "all"
+    }
+  }
+  (object)token {
+    source "stream_query"
+    parameter "token"
+    secret "replace-with-a-private-value"
+  }
+}
+(object)play {
+  (object)token {
+    source "stream_query"
+    parameter "viewer"
+    secret "replace-with-a-private-value"
+  }
+}
+(object)limits {
+  max_connections 256
+  max_publishers 8
+  max_viewers 1024
+}
+```
+
+Place these objects inside an application. Use `?token=...` on the stream name for publish or play.
+The management API redacts token secrets from typed configuration and rendered previews.
+
 ## Add Recording
 
 Continuous and manual recorders use the same bounded store and worker pipeline. A manual recorder
@@ -93,8 +134,9 @@ is in progress, or an observed codec is not recordable.
   unbounded queue.
 - Continuous recording and exact-ID manual controls are integrated. Authenticated remote recorder
   administration and cross-process quota coordination are not.
-- HLS, DASH, VOD, callbacks, broad access/control parity, isolated exec, and complete directive
-  lowering remain future slices.
+- HLS, DASH, VOD, callbacks, broad control parity, isolated exec, and complete directive lowering
+  remain future slices. Native `allow`/`deny` and application `max_connections` have bounded
+  lowering; canonical token rules and publisher/viewer ceilings are canonical-only.
 - An RTMP parser accepting a directive does not mean the runtime enforces that directive. The
   compatibility registry reports enforced and disable-only forms separately from parsed-only,
   source-no-op, source-bug, deprecated, and platform-limited forms.

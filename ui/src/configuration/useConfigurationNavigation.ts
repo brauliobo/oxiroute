@@ -252,6 +252,13 @@ export function useConfigurationNavigation(
             name: '',
             live: true,
             idle_streams: true,
+            publish: { rules: [], token: null },
+            play: { rules: [], token: null },
+            limits: {
+              max_connections: 1_024,
+              max_publishers: 256,
+              max_viewers: 1_024,
+            },
             push_targets: [],
             fanout: {
               max_subscribers: 1_024,

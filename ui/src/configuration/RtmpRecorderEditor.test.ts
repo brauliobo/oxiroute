@@ -73,7 +73,7 @@ describe('RTMP recorder configuration editors', () => {
       name: 'live',
       outbound_chunk_size: 4_096,
       access_log: null,
-      applications: [{ name: 'broadcast', live: true, idle_streams: true, push_targets: [], fanout: { max_subscribers: 1_024, max_queue_messages_per_subscriber: 256, max_queue_bytes_per_subscriber: 8_388_608 }, recorders: [] }],
+      applications: [{ name: 'broadcast', live: true, idle_streams: true, publish: { rules: [], token: null }, play: { rules: [], token: null }, limits: { max_connections: 1_024, max_publishers: 256, max_viewers: 1_024 }, push_targets: [], fanout: { max_subscribers: 1_024, max_queue_messages_per_subscriber: 256, max_queue_bytes_per_subscriber: 8_388_608 }, recorders: [] }],
     }
     const wrapper = mount(RtmpServiceEditor, { props: { service } })
     const add = wrapper.get('.recorder-list .add-row')
@@ -98,12 +98,51 @@ describe('RTMP recorder configuration editors', () => {
           name: 'playback',
           outbound_chunk_size: 4_096,
           access_log: null,
-          applications: [{ name: 'playback', live: false, idle_streams: true, push_targets: [], fanout: { max_subscribers: 1_024, max_queue_messages_per_subscriber: 256, max_queue_bytes_per_subscriber: 8_388_608 }, recorders: [] }],
+          applications: [{ name: 'playback', live: false, idle_streams: true, publish: { rules: [], token: null }, play: { rules: [], token: null }, limits: { max_connections: 1_024, max_publishers: 256, max_viewers: 1_024 }, push_targets: [], fanout: { max_subscribers: 1_024, max_queue_messages_per_subscriber: 256, max_queue_bytes_per_subscriber: 8_388_608 }, recorders: [] }],
         },
       },
     })
     const disabledForPlayback = playback.get('.recorder-list .add-row')
     expect(disabledForPlayback.attributes()).toHaveProperty('disabled')
     expect(disabledForPlayback.attributes('title')).toContain('requires live publishing')
+  })
+
+  it('edits RTMP access rules, stream tokens, and session ceilings', async () => {
+    const service: RtmpServiceConfig = {
+      name: 'live',
+      outbound_chunk_size: 4_096,
+      access_log: null,
+      applications: [{
+        name: 'broadcast',
+        live: true,
+        idle_streams: true,
+        publish: { rules: [], token: null },
+        play: { rules: [], token: null },
+        limits: { max_connections: 1_024, max_publishers: 256, max_viewers: 1_024 },
+        push_targets: [],
+        fanout: { max_subscribers: 1_024, max_queue_messages_per_subscriber: 256, max_queue_bytes_per_subscriber: 8_388_608 },
+        recorders: [],
+      }],
+    }
+    const wrapper = mount(RtmpServiceEditor, { props: { service } })
+    const publish = 'rtmp_services[].applications[].publish'
+
+    await wrapper.get(`[data-field="${publish}.rules"] .add-row`).trigger('click')
+    await wrapper.get(`[data-field="${publish}.rules[].action"] select`).setValue('deny')
+    await wrapper.get(`[data-field="${publish}.rules[].network"] input`).setValue('192.0.2.0/24')
+    await wrapper.get(`[data-field="${publish}.token"] select`).setValue('stream_query')
+    await wrapper.get(`[data-field="${publish}.token.parameter"] input`).setValue('access')
+    await wrapper.get(`[data-field="${publish}.token.secret"] input`).setValue('publish-secret')
+    await wrapper.get('[data-field="rtmp_services[].applications[].limits.max_connections"] input').setValue(64)
+    await wrapper.get('[data-field="rtmp_services[].applications[].limits.max_publishers"] input').setValue(4)
+    await wrapper.get('[data-field="rtmp_services[].applications[].limits.max_viewers"] input').setValue(128)
+
+    expect(service.applications[0]).toMatchObject({
+      publish: {
+        rules: [{ action: 'deny', network: '192.0.2.0/24' }],
+        token: { source: 'stream_query', parameter: 'access', secret: 'publish-secret' },
+      },
+      limits: { max_connections: 64, max_publishers: 4, max_viewers: 128 },
+    })
   })
 })
