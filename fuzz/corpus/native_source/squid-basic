@@ -1,0 +1,2 @@
+squid:http_port 3128
+acl localnet src 127.0.0.1/32

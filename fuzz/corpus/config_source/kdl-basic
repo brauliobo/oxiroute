@@ -1,0 +1,7 @@
+kdl:version 1
+(array)listeners {
+  (object)- {
+    name "web"
+    protocol "http"
+  }
+}

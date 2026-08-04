@@ -1,0 +1,6 @@
+haproxy:global
+  maxconn 100
+
+defaults
+  mode http
+  timeout connect 5s

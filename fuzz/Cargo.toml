@@ -1,0 +1,73 @@
+[package]
+name = "oxiroute-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+rust-version = "1.87"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+bytes = "1"
+libfuzzer-sys = "0.4"
+oxiroute-config = { path = "../crates/oxiroute-config" }
+oxiroute-config-source = { path = "../crates/oxiroute-config-source" }
+oxiroute-forward-proxy = { path = "../crates/oxiroute-forward-proxy" }
+oxiroute-import = { path = "../crates/oxiroute-import" }
+rml_rtmp = { path = "../vendor/rml_rtmp" }
+tokio = { version = "1", features = ["io-util", "rt"] }
+
+[workspace]
+
+[patch.crates-io]
+rml_rtmp = { path = "../vendor/rml_rtmp" }
+
+[[bin]]
+name = "config_source"
+path = "fuzz_targets/config_source.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "native_source"
+path = "fuzz_targets/native_source.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "forward_target"
+path = "fuzz_targets/forward_target.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "overread_io"
+path = "fuzz_targets/overread_io.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rtmp_handshake"
+path = "fuzz_targets/rtmp_handshake.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rtmp_chunk"
+path = "fuzz_targets/rtmp_chunk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rtmp_amf"
+path = "fuzz_targets/rtmp_amf.rs"
+test = false
+doc = false
+bench = false

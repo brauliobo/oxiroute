@@ -1,0 +1,4 @@
+apache:<VirtualHost *:80>
+  ServerName example.test
+  ProxyPass / http://127.0.0.1:3000/
+</VirtualHost>
