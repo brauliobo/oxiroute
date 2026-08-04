@@ -4,10 +4,11 @@ use std::{
     time::SystemTime,
 };
 
-use serde::Serialize;
+use serde::{Serialize, Serializer, ser::SerializeStruct};
 use tokio::sync::Notify;
 
 use crate::config_coordinator::ConfigRevision;
+use crate::routing::HealthFailure;
 
 pub(crate) const EVENT_CAPACITY: usize = 2_048;
 
@@ -36,6 +37,8 @@ pub(crate) enum EventName {
     ServerUpdate,
     CertificateRenewal,
     CertificateActivation,
+    UpstreamEndpointEjection,
+    UpstreamEndpointRecovery,
     Unknown,
 }
 
@@ -52,6 +55,8 @@ impl EventName {
             "server_update" => Self::ServerUpdate,
             "certificate_renewal" => Self::CertificateRenewal,
             "certificate_activated" => Self::CertificateActivation,
+            "upstream_endpoint_ejection" => Self::UpstreamEndpointEjection,
+            "upstream_endpoint_recovery" => Self::UpstreamEndpointRecovery,
             _ => Self::Unknown,
         }
     }
@@ -68,13 +73,14 @@ impl EventName {
             Self::ServerUpdate => "server_update",
             Self::CertificateRenewal => "certificate_renewal",
             Self::CertificateActivation => "certificate_activated",
+            Self::UpstreamEndpointEjection => "upstream_endpoint_ejection",
+            Self::UpstreamEndpointRecovery => "upstream_endpoint_recovery",
             Self::Unknown => "unknown",
         }
     }
 }
 
-#[derive(Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug)]
 pub(crate) enum EventOutcome {
     Prepared,
     Rejected,
@@ -83,7 +89,77 @@ pub(crate) enum EventOutcome {
     Requested,
     Applied,
     Failed,
+    Ejected {
+        pool: String,
+        server: String,
+        reason: HealthFailure,
+        failure_count: u64,
+        ejection_count: u64,
+        ejected_at_unix_ms: u64,
+        ejection_until_unix_ms: u64,
+    },
+    Recovered {
+        pool: String,
+        server: String,
+        reason: Option<HealthFailure>,
+        recovery_count: u64,
+        recovered_at_unix_ms: u64,
+    },
     Unknown,
+}
+
+impl Serialize for EventOutcome {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Prepared => serializer.serialize_str("prepared"),
+            Self::Rejected => serializer.serialize_str("rejected"),
+            Self::Activated => serializer.serialize_str("activated"),
+            Self::Quarantined => serializer.serialize_str("quarantined"),
+            Self::Requested => serializer.serialize_str("requested"),
+            Self::Applied => serializer.serialize_str("applied"),
+            Self::Failed => serializer.serialize_str("failed"),
+            Self::Unknown => serializer.serialize_str("unknown"),
+            Self::Ejected {
+                pool,
+                server,
+                reason,
+                failure_count,
+                ejection_count,
+                ejected_at_unix_ms,
+                ejection_until_unix_ms,
+            } => {
+                let mut value = serializer.serialize_struct("EventOutcome", 8)?;
+                value.serialize_field("type", "ejected")?;
+                value.serialize_field("pool", pool)?;
+                value.serialize_field("server", server)?;
+                value.serialize_field("reason", reason)?;
+                value.serialize_field("failureCount", failure_count)?;
+                value.serialize_field("ejectionCount", ejection_count)?;
+                value.serialize_field("ejectedAtUnixMs", ejected_at_unix_ms)?;
+                value.serialize_field("ejectionUntilUnixMs", ejection_until_unix_ms)?;
+                value.end()
+            }
+            Self::Recovered {
+                pool,
+                server,
+                reason,
+                recovery_count,
+                recovered_at_unix_ms,
+            } => {
+                let mut value = serializer.serialize_struct("EventOutcome", 6)?;
+                value.serialize_field("type", "recovered")?;
+                value.serialize_field("pool", pool)?;
+                value.serialize_field("server", server)?;
+                value.serialize_field("reason", reason)?;
+                value.serialize_field("recoveryCount", recovery_count)?;
+                value.serialize_field("recoveredAtUnixMs", recovered_at_unix_ms)?;
+                value.end()
+            }
+        }
+    }
 }
 
 impl EventOutcome {
@@ -132,6 +208,75 @@ pub(crate) fn emit(event: &str, outcome: &str, revision: Option<&ConfigRevision>
 
 pub fn emit_certificate(event: &str, outcome: &str, certificate: &str) {
     emit_inner(event, outcome, None, Some(certificate));
+}
+
+pub(crate) fn emit_upstream_endpoint_ejection(
+    pool: &str,
+    server: &str,
+    reason: HealthFailure,
+    failure_count: u64,
+    ejection_count: u64,
+    ejected_at_unix_ms: u64,
+    ejection_until_unix_ms: u64,
+) {
+    emit_typed(
+        EventName::UpstreamEndpointEjection,
+        EventOutcome::Ejected {
+            pool: pool.to_owned(),
+            server: server.to_owned(),
+            reason,
+            failure_count,
+            ejection_count,
+            ejected_at_unix_ms,
+            ejection_until_unix_ms,
+        },
+    );
+}
+
+pub(crate) fn emit_upstream_endpoint_recovery(
+    pool: &str,
+    server: &str,
+    reason: Option<HealthFailure>,
+    recovery_count: u64,
+    recovered_at_unix_ms: u64,
+) {
+    emit_typed(
+        EventName::UpstreamEndpointRecovery,
+        EventOutcome::Recovered {
+            pool: pool.to_owned(),
+            server: server.to_owned(),
+            reason,
+            recovery_count,
+            recovered_at_unix_ms,
+        },
+    );
+}
+
+fn emit_typed(event: EventName, outcome: EventOutcome) {
+    let mut state = log()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    state.next_cursor = state.next_cursor.saturating_add(1);
+    let value = OperationalEvent {
+        cursor: state.next_cursor,
+        timestamp_unix_ms: SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| u64::try_from(duration.as_millis()).ok()),
+        event,
+        outcome,
+        revision: None,
+        certificate: None,
+    };
+    if state.events.len() == EVENT_CAPACITY {
+        state.events.pop_front();
+    }
+    state.events.push_back(value.clone());
+    drop(state);
+    if let Ok(json) = serde_json::to_string(&value) {
+        log::info!(target: "oxiroute::operations", "{json}");
+    }
+    notifications().notify_one();
 }
 
 fn emit_inner(
@@ -324,5 +469,47 @@ mod tests {
         assert!(json.contains(r#""outcome":"unknown""#));
         assert!(!json.contains("private-key-secret"));
         assert!(!json.contains("session-secret"));
+    }
+
+    #[test]
+    fn passive_endpoint_events_serialize_bounded_recovery_details() {
+        let ejection = OperationalEvent {
+            cursor: 1,
+            timestamp_unix_ms: Some(10),
+            event: EventName::UpstreamEndpointEjection,
+            outcome: EventOutcome::Ejected {
+                pool: "backend".into(),
+                server: "primary".into(),
+                reason: HealthFailure::ConnectFailed,
+                failure_count: 3,
+                ejection_count: 2,
+                ejected_at_unix_ms: 10,
+                ejection_until_unix_ms: 20,
+            },
+            revision: None,
+            certificate: None,
+        };
+        let recovery = OperationalEvent {
+            cursor: 2,
+            timestamp_unix_ms: Some(30),
+            event: EventName::UpstreamEndpointRecovery,
+            outcome: EventOutcome::Recovered {
+                pool: "backend".into(),
+                server: "primary".into(),
+                reason: Some(HealthFailure::ConnectFailed),
+                recovery_count: 1,
+                recovered_at_unix_ms: 30,
+            },
+            revision: None,
+            certificate: None,
+        };
+
+        let ejection = serde_json::to_value(ejection).expect("ejection event JSON");
+        let recovery = serde_json::to_value(recovery).expect("recovery event JSON");
+        assert_eq!(ejection["outcome"]["type"], "ejected");
+        assert_eq!(ejection["outcome"]["reason"], "connect_failed");
+        assert_eq!(ejection["outcome"]["ejectionCount"], 2);
+        assert_eq!(recovery["outcome"]["type"], "recovered");
+        assert_eq!(recovery["outcome"]["recoveryCount"], 1);
     }
 }

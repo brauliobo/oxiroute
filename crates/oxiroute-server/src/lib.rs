@@ -53,13 +53,14 @@ pub use operational_event::emit_certificate;
 pub use prometheus::{PrometheusError, render_prometheus};
 pub use routing::{
     AdministrativeState, EndpointHealthSnapshot, EndpointHealthState, EndpointLease, EndpointPool,
-    HealthFailure, HealthOverride, PoolAdminError, PoolError, PoolHealthSnapshot, RoundRobinPool,
+    HealthFailure, HealthOverride, PassiveFailurePolicy, PoolAdminError, PoolError,
+    PoolHealthSnapshot, RoundRobinPool,
     Route, RouteError, RouteTable, RuntimeEndpoint,
 };
 pub use rtmp_api::{ApiResponse, RtmpManagementApi, RtmpManagementHttpApp};
 pub use service_plan::{
     HttpServicePlan, RtmpServicePlan, RuntimePlan, ServiceKind, ServicePlanError, ServiceSpec,
-    runtime_plan, service_specs,
+    runtime_plan, runtime_plan_with_passive_failure_policy, service_specs,
 };
 pub use stats::{HaproxyStatsApi, HaproxyStatsPage};
 pub use tcp_relay::{

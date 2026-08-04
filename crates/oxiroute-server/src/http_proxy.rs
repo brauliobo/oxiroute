@@ -35,9 +35,10 @@ use pingora::{
     upstreams::peer::HttpPeer,
 };
 
+use crate::routing::EndpointObservation;
 use crate::{
-    GenerationReference, HttpOperationResult, HttpServicePlan, ListenerMetrics, RuntimeEndpoint,
-    RuntimeGeneration, RuntimeReferenceKind,
+    GenerationReference, HealthFailure, HttpOperationResult, HttpServicePlan, ListenerMetrics,
+    RuntimeEndpoint, RuntimeGeneration, RuntimeReferenceKind,
     http_action::{
         CacheFill, CacheFillJoin, CacheRequest, HttpActionPlan, HttpCachePlan, HttpGzipPlan,
         HttpRoutePlan, ProxyPolicyPlan, RequestHeaderMutationPlan, RequestHeaderValuePlan,
@@ -106,6 +107,7 @@ pub struct HttpRequestContext {
     pool: Option<Arc<UpstreamPlan>>,
     route: Option<Arc<HttpRoutePlan>>,
     selected: Option<SelectedEndpoint>,
+    selected_observation: Option<EndpointObservation>,
     selected_upstream_host: Option<HeaderValue>,
     connection_retryable: bool,
     replay_retryable: bool,
@@ -160,6 +162,21 @@ impl HttpRequestContext {
 
     fn release_lease(&mut self) {
         self.selected.take();
+        self.selected_observation.take();
+    }
+
+    fn detach_lease(&mut self) {
+        self.selected.take();
+    }
+
+    fn record_passive_failure(&mut self, failure: HealthFailure) {
+        let observation = self
+            .selected_observation
+            .take()
+            .or_else(|| self.selected.as_ref().map(SelectedEndpoint::observation));
+        if let Some(observation) = observation {
+            observation.record_passive_failure(failure);
+        }
     }
 }
 
@@ -185,6 +202,7 @@ impl ProxyHttp for HttpReverseProxy {
             pool: None,
             route: None,
             selected: None,
+            selected_observation: None,
             selected_upstream_host: None,
             connection_retryable: false,
             replay_retryable: false,
@@ -346,6 +364,7 @@ impl ProxyHttp for HttpReverseProxy {
             )?;
             ctx.attempted_upstreams
                 .push(selected.server_name().to_owned());
+            ctx.selected_observation = Some(selected.observation());
             ctx.selected = Some(selected);
         }
         let route_policy = proxy_route(ctx).policy;
@@ -375,6 +394,9 @@ impl ProxyHttp for HttpReverseProxy {
             .as_ref()
             .is_some_and(SelectedEndpoint::has_address_fallback);
         if !has_address_fallback {
+            if let Some(failure) = passive_failure_for_error(&error) {
+                ctx.record_passive_failure(failure);
+            }
             ctx.release_lease();
         }
         let policy = proxy_policy(ctx);
@@ -416,6 +438,9 @@ impl ProxyHttp for HttpReverseProxy {
         ctx: &mut Self::CTX,
         _client_reused: bool,
     ) -> Box<Error> {
+        if let Some(failure) = passive_failure_for_error(&error) {
+            ctx.record_passive_failure(failure);
+        }
         ctx.release_lease();
         let policy = proxy_policy(ctx);
         let has_budget = ctx.attempted_upstreams.len() <= usize::from(policy.max_retries);
@@ -561,6 +586,11 @@ impl ProxyHttp for HttpReverseProxy {
             upstream_request.version,
         );
         if result.is_err() {
+            if let Err(error) = &result {
+                if let Some(failure) = passive_failure_for_error(error) {
+                    ctx.record_passive_failure(failure);
+                }
+            }
             ctx.release_lease();
         }
         result?;
@@ -605,6 +635,11 @@ impl ProxyHttp for HttpReverseProxy {
             session.req_header().version,
         );
         if result.is_err() {
+            if let Err(error) = &result {
+                if let Some(failure) = passive_failure_for_error(error) {
+                    ctx.record_passive_failure(failure);
+                }
+            }
             ctx.release_lease();
         }
         result?;
@@ -709,10 +744,15 @@ impl ProxyHttp for HttpReverseProxy {
         let result =
             validate_tls_connection(ctx.pool.as_deref().and_then(UpstreamPlan::tls), digest);
         if result.is_err() {
+            if let Err(error) = &result {
+                if let Some(failure) = passive_failure_for_error(error) {
+                    ctx.record_passive_failure(failure);
+                }
+            }
             ctx.release_lease();
         } else {
             // The Pingora socket digest now owns the lease until the physical connection closes.
-            ctx.release_lease();
+            ctx.detach_lease();
         }
         result
     }
@@ -2766,6 +2806,20 @@ fn connect_retry_trigger(error: &Error) -> Option<HttpRetryTrigger> {
     }
 }
 
+fn passive_failure_for_error(error: &Error) -> Option<HealthFailure> {
+    (error.esource() == &pingora::ErrorSource::Upstream).then(|| match error.etype() {
+        ErrorType::ConnectTimedout
+        | ErrorType::TLSHandshakeTimedout
+        | ErrorType::ReadTimedout
+        | ErrorType::WriteTimedout => HealthFailure::Timeout,
+        ErrorType::ConnectRefused | ErrorType::ConnectNoRoute | ErrorType::ConnectError => {
+            HealthFailure::ConnectFailed
+        }
+        ErrorType::HTTPStatus(_) => HealthFailure::UnexpectedStatus,
+        _ => HealthFailure::ProtocolError,
+    })
+}
+
 const fn should_retry_connection(has_address_fallback: bool, route_retry_allowed: bool) -> bool {
     has_address_fallback || route_retry_allowed
 }
@@ -2875,7 +2929,7 @@ mod tests {
 
     use oxiroute_config::{
         HttpProxyPolicy, HttpRequestHeaderMutation, HttpRequestHeaderValue,
-        HttpResponseHeaderMutation, UpstreamAlgorithm, UpstreamConnectionReuse,
+        HttpResponseHeaderMutation, HttpRetryPolicy, UpstreamAlgorithm, UpstreamConnectionReuse,
     };
     use pingora::{protocols::Stream, proxy::Session, upstreams::peer::Peer};
     use tokio::io::AsyncWriteExt as _;
@@ -2974,7 +3028,7 @@ mod tests {
             "[2001:db8::1]"
         );
     }
-    use crate::{RoundRobinPool, RouteTable, RuntimeMetrics};
+    use crate::{PassiveFailurePolicy, RoundRobinPool, RouteTable, RuntimeMetrics};
 
     struct CloneProbe(Arc<AtomicUsize>);
 
@@ -3533,6 +3587,83 @@ mod tests {
         let (_accepted, _) = listener.accept().await.expect("second address accept");
         drop(connection);
         assert_eq!(context.attempted_upstreams.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn passive_failures_eject_connect_and_stream_endpoints_before_retrying() {
+        let policy = HttpProxyPolicy {
+            retry: HttpRetryPolicy {
+                max_retries: 1,
+                ..HttpRetryPolicy::default()
+            },
+            ..HttpProxyPolicy::default()
+        };
+        let (proxy, mut session, mut context, _client) = request_preparation_fixture(
+            policy,
+            UpstreamConnectionReuse::Safe,
+            b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n",
+        )
+        .await;
+        let first_address: SocketAddr = "192.0.2.1:3000".parse().expect("first endpoint");
+        let second_address: SocketAddr = "192.0.2.2:3000".parse().expect("second endpoint");
+        let first = RuntimeEndpoint::Socket {
+            address: first_address,
+        };
+        let second = RuntimeEndpoint::Socket {
+            address: second_address,
+        };
+        let selector = Arc::new(
+            RoundRobinPool::from_endpoints_with_policy(
+                [first.clone(), second.clone()],
+                UpstreamAlgorithm::RoundRobin,
+                PassiveFailurePolicy::new(
+                    1,
+                    Duration::from_secs(60),
+                    Duration::from_secs(60),
+                ),
+            )
+            .expect("passive selector"),
+        );
+        let plan = Arc::new(UpstreamPlan::with_policy(
+            selector.clone(),
+            None,
+            None,
+            None,
+            UpstreamConnectionReuse::Safe,
+        ));
+        context.pool = Some(plan);
+        context.connection_retryable = true;
+
+        let first_peer = proxy
+            .upstream_peer(&mut session, &mut context)
+            .await
+            .expect("first peer");
+        assert_eq!(first_peer.address().as_inet(), Some(&first_address));
+        let retry = proxy.fail_to_connect(
+            &mut session,
+            &first_peer,
+            &mut context,
+            Error::new_up(ErrorType::ConnectRefused),
+        );
+        assert!(retry.retry());
+        assert!(selector.health_snapshot().endpoints[0].passive_ejected);
+
+        let second_peer = proxy
+            .upstream_peer(&mut session, &mut context)
+            .await
+            .expect("second peer after connect failure");
+        assert_eq!(second_peer.address().as_inet(), Some(&second_address));
+        let terminal = proxy.error_while_proxy(
+            &second_peer,
+            &mut session,
+            Error::new_up(ErrorType::ReadTimedout),
+            &mut context,
+            false,
+        );
+        assert!(!terminal.retry());
+        assert!(selector.health_snapshot().endpoints[1].passive_ejected);
+        assert_eq!(selector.health_snapshot().available_endpoints, 0);
+        assert!(selector.select().is_none());
     }
 
     #[test]
