@@ -26,7 +26,7 @@ use oxiroute_config::{
     CacheSetCookiePolicy, CacheStore, CacheVaryPolicy, Config, DnsResolutionPolicy,
     HttpCachePolicy, HttpProxyPolicy,
     HttpRoute as ConfigHttpRoute, HttpRouteAction, ListenerBind, Protocol,
-    RtmpRecorderStart as ConfigRecorderStart,
+    RtmpRecorderStart as ConfigRecorderStart, UdpPolicy,
 };
 use oxiroute_rtmp::{
     LiveHub, LiveHubLimits, RecorderWorkerConfig, RecordingPathPolicy, RecordingSegmentNaming,
@@ -56,6 +56,7 @@ pub enum ServiceKind {
     Http(Arc<HttpServicePlan>),
     Rtmp(Arc<RtmpServicePlan>),
     Tcp(Arc<L4ServicePlan>),
+    Udp(Arc<L4ServicePlan>),
 }
 
 impl ServiceKind {
@@ -67,6 +68,7 @@ impl ServiceKind {
             Self::Http(_) => "http",
             Self::Rtmp(_) => "rtmp",
             Self::Tcp(_) => "tcp",
+            Self::Udp(_) => "udp",
         }
     }
 }
@@ -346,6 +348,8 @@ pub enum ServicePlanError {
     UnknownHttpService { listener: String, service: String },
     #[error("TCP listener `{listener}` references unknown service `{service}`")]
     UnknownL4Service { listener: String, service: String },
+    #[error("UDP listener `{listener}` references unknown service `{service}`")]
+    UnknownUdpService { listener: String, service: String },
     #[error("RTMP listener `{listener}` references unknown service `{service}`")]
     UnknownRtmpService { listener: String, service: String },
     #[error("forward proxy runtime is not integrated for listener `{listener}`")]
@@ -492,7 +496,8 @@ pub fn runtime_plan(config: &Config) -> Result<RuntimePlan, ServicePlanError> {
         ServiceKind::ForwardHttp1(_)
         | ServiceKind::ForwardHttp2(_)
         | ServiceKind::Http(_)
-        | ServiceKind::Tcp(_) => None,
+        | ServiceKind::Tcp(_)
+        | ServiceKind::Udp(_) => None,
     });
     let rtmp_capabilities = RtmpCapabilities {
         live_ingest: active_rtmp_services.clone().next().is_some(),
@@ -1189,6 +1194,7 @@ fn compile_l4_services(
                     lifetime: service.lifetime_timeout_ms.map(Duration::from_millis),
                 },
                 Arc::clone(pool.selector()),
+                service.udp.clone().unwrap_or_else(UdpPolicy::default),
             )),
         );
     }
@@ -1450,10 +1456,11 @@ fn compile_listener(
             | Protocol::ForwardHttp1
             | Protocol::ForwardHttp2
             | Protocol::Tcp
+            | Protocol::Udp
             | Protocol::Rtmp,
             None,
         ) => None,
-        (protocol @ (Protocol::Tcp | Protocol::Rtmp), Some(profile)) => {
+        (protocol @ (Protocol::Tcp | Protocol::Udp | Protocol::Rtmp), Some(profile)) => {
             return Err(ServicePlanError::UnexpectedListenerTlsProfile {
                 listener: listener.name.clone(),
                 protocol,
@@ -1472,7 +1479,8 @@ fn compile_listener(
             | Protocol::ForwardHttp1
             | Protocol::ForwardHttp2
             | Protocol::Rtmp
-            | Protocol::Tcp,
+            | Protocol::Tcp
+            | Protocol::Udp,
             None,
         ) => {
             return Err(ServicePlanError::MissingListenerService {
@@ -1506,6 +1514,14 @@ fn compile_listener(
         (Protocol::Tcp, Some(service)) => {
             ServiceKind::Tcp(Arc::clone(l4_services.get(service).ok_or_else(|| {
                 ServicePlanError::UnknownL4Service {
+                    listener: listener.name.clone(),
+                    service: service.into(),
+                }
+            })?))
+        }
+        (Protocol::Udp, Some(service)) => {
+            ServiceKind::Udp(Arc::clone(l4_services.get(service).ok_or_else(|| {
+                ServicePlanError::UnknownUdpService {
                     listener: listener.name.clone(),
                     service: service.into(),
                 }

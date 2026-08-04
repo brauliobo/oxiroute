@@ -19,7 +19,7 @@ use oxiroute_config::{
     HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction, HttpService, HttpVersionPolicy,
     L4Service, Listener, ListenerBind, Protocol, RtmpApplication, RtmpPushTarget,
     RtmpRecorderStart, RtmpService, Stats, StatsPage, StatsPageAdminPolicy, TlsProfile, TlsVersion,
-    UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls,
+    UdpPolicy, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls,
     load_lua,
 };
 use oxiroute_rtmp::{RtmpCapabilities, RtmpRegistry, StreamKey};
@@ -667,6 +667,68 @@ fn compiles_shared_http_and_l4_service_plans() {
     assert_eq!(l4.policy().idle, Some(Duration::from_secs(120)));
     assert_eq!(l4.policy().lifetime, Some(Duration::from_secs(600)));
     assert!(matches!(services[3].kind, ServiceKind::Rtmp(_)));
+}
+
+#[test]
+fn compiles_a_bounded_udp_service_plan() {
+    let mut config = canonical_config();
+    config.upstream_pools.push(UpstreamPool {
+        name: "dns".into(),
+        servers: Vec::new(),
+        endpoints: vec![socket_endpoint(5353)],
+        algorithm: UpstreamAlgorithm::RoundRobin,
+        health_check: None,
+        tls: None,
+        http_versions: HttpVersionPolicy::default(),
+        queue_timeout_ms: None,
+        connect_timeout_ms: None,
+        server_timeout_ms: None,
+        connection_reuse: oxiroute_config::UpstreamConnectionReuse::default(),
+    });
+    config.l4_services.push(L4Service {
+        name: "dns".into(),
+        upstream_pool: "dns".into(),
+        connect_timeout_ms: 2_000,
+        idle_timeout_ms: 30_000,
+        lifetime_timeout_ms: Some(120_000),
+        udp: Some(UdpPolicy {
+            max_datagram_bytes: 1_232,
+            max_sessions: 32,
+            max_session_bytes: 256 * 1_024,
+            max_queue_datagrams: 8,
+            max_queue_bytes: 16 * 1_024,
+        }),
+    });
+    config.listeners.push(Listener {
+        name: "dns-relay".into(),
+        bind: ListenerBind::Udp {
+            address: address(15353),
+        },
+        protocol: Protocol::Udp,
+        service: Some("dns".into()),
+        tls_profile: None,
+        max_connections: Some(32),
+        downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+    });
+
+    let services = service_specs(&config).expect("bounded UDP service plan");
+    let ServiceKind::Udp(udp) = &services[4].kind else {
+        panic!("fifth service must be UDP");
+    };
+    assert_eq!(services[4].kind.protocol(), "udp");
+    assert_eq!(udp.policy().connect, Duration::from_secs(2));
+    assert_eq!(udp.policy().idle, Some(Duration::from_secs(30)));
+    assert_eq!(udp.policy().lifetime, Some(Duration::from_secs(120)));
+    assert_eq!(
+        udp.udp_policy(),
+        UdpPolicy {
+            max_datagram_bytes: 1_232,
+            max_sessions: 32,
+            max_session_bytes: 256 * 1_024,
+            max_queue_datagrams: 8,
+            max_queue_bytes: 16 * 1_024,
+        }
+    );
 }
 
 #[test]
@@ -1613,6 +1675,7 @@ fn canonical_config() -> Config {
             connect_timeout_ms: 5_000,
             idle_timeout_ms: 120_000,
             lifetime_timeout_ms: Some(600_000),
+            udp: None,
         }],
         ..empty_config()
     }

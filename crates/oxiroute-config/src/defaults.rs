@@ -47,6 +47,11 @@ const DEFAULT_FORWARD_RESOLVER_MAX_ADDRESSES: u64 = 16;
 const DEFAULT_FORWARD_RESOLVER_MIN_TTL_MS: u64 = 1_000;
 const DEFAULT_FORWARD_RESOLVER_MAX_TTL_MS: u64 = 300_000;
 const DEFAULT_FORWARD_RESOLVER_NEGATIVE_TTL_MS: u64 = 30_000;
+const DEFAULT_UDP_MAX_DATAGRAM_BYTES: u64 = 16 * 1024;
+const DEFAULT_UDP_MAX_SESSIONS: u64 = 4_096;
+const DEFAULT_UDP_MAX_SESSION_BYTES: u64 = 64 * 1024 * 1024;
+const DEFAULT_UDP_MAX_QUEUE_DATAGRAMS: u64 = 64;
+const DEFAULT_UDP_MAX_QUEUE_BYTES: u64 = 1024 * 1024;
 
 pub(crate) const MIN_HEALTH_INTERVAL_MS: u64 = 1_000;
 pub(crate) const MAX_HEALTH_INTERVAL_MS: u64 = 86_400_000;
@@ -96,6 +101,11 @@ pub(crate) const MAX_HTTP_FILE_EXTENSION_BYTES: usize = 32;
 pub(crate) const MAX_HTTP_COOKIE_ATTRIBUTE_RULES: usize = 16;
 pub(crate) const MAX_HTTP_GZIP_TYPES: usize = 64;
 pub(crate) const MAX_HTTP_TIMEOUT_MS: u64 = 86_400_000;
+pub(crate) const MAX_UDP_DATAGRAM_BYTES: u64 = 65_507;
+pub(crate) const MAX_UDP_SESSIONS: u64 = 100_000;
+pub(crate) const MAX_UDP_SESSION_BYTES: u64 = 1024 * 1024 * 1024;
+pub(crate) const MAX_UDP_QUEUE_DATAGRAMS: u64 = 4_096;
+pub(crate) const MAX_UDP_QUEUE_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const MAX_RTMP_SERVICES: usize = 64;
 pub(crate) const MAX_RTMP_APPLICATIONS_PER_SERVICE: usize = 256;
 pub(crate) const MAX_RTMP_RECORDERS_PER_APPLICATION: usize = 8;
@@ -170,6 +180,26 @@ pub(crate) const fn default_connect_timeout_ms() -> u64 {
 
 pub(crate) const fn default_idle_timeout_ms() -> u64 {
     DEFAULT_IDLE_TIMEOUT_MS
+}
+
+pub(crate) const fn default_udp_max_datagram_bytes() -> u64 {
+    DEFAULT_UDP_MAX_DATAGRAM_BYTES
+}
+
+pub(crate) const fn default_udp_max_sessions() -> u64 {
+    DEFAULT_UDP_MAX_SESSIONS
+}
+
+pub(crate) const fn default_udp_max_session_bytes() -> u64 {
+    DEFAULT_UDP_MAX_SESSION_BYTES
+}
+
+pub(crate) const fn default_udp_max_queue_datagrams() -> u64 {
+    DEFAULT_UDP_MAX_QUEUE_DATAGRAMS
+}
+
+pub(crate) const fn default_udp_max_queue_bytes() -> u64 {
+    DEFAULT_UDP_MAX_QUEUE_BYTES
 }
 
 pub(crate) const fn default_health_interval_ms() -> u64 {

@@ -10,9 +10,9 @@ use oxiroute_config::{
     HttpStaticMimePolicy, HttpStaticPathMapping, HttpUpstreamHost, HttpVersion, HttpVersionPolicy,
     L4Service, Listener, ListenerBind, Management, Protocol, RtmpApplication, RtmpRecorder,
     RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis, RtmpRecorderTimezone,
-    RtmpService, TlsPolicy, TlsProfile, TlsSessionCache, TlsVersion, UpstreamAlgorithm,
-    UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls, load_lua,
-    render_lua, validate_config,
+    RtmpService, TlsPolicy, TlsProfile, TlsSessionCache,
+    TlsVersion, UdpPolicy, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint,
+    UpstreamPool, UpstreamServer, UpstreamTls, load_lua, render_lua, validate_config,
 };
 
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
@@ -462,6 +462,13 @@ fn test_l4_services() -> Vec<L4Service> {
             connect_timeout_ms: MAX_SAFE_INTEGER - 2,
             idle_timeout_ms: MAX_SAFE_INTEGER - 3,
             lifetime_timeout_ms: Some(MAX_SAFE_INTEGER - 4),
+            udp: Some(UdpPolicy {
+                max_datagram_bytes: 1_200,
+                max_sessions: 2_048,
+                max_session_bytes: 8 * 1024 * 1024,
+                max_queue_datagrams: 32,
+                max_queue_bytes: 64 * 1024,
+            }),
         },
         L4Service {
             name: "database-short-lived".into(),
@@ -469,6 +476,7 @@ fn test_l4_services() -> Vec<L4Service> {
             connect_timeout_ms: 1_000,
             idle_timeout_ms: 2_000,
             lifetime_timeout_ms: None,
+            udp: None,
         },
     ]
 }
@@ -679,6 +687,12 @@ const RENDERED_FIELDS: &[&str] = &[
     "connect_timeout_ms",
     "idle_timeout_ms",
     "lifetime_timeout_ms",
+    "udp",
+    "max_datagram_bytes",
+    "max_sessions",
+    "max_session_bytes",
+    "max_queue_datagrams",
+    "max_queue_bytes",
 ];
 
 #[test]
