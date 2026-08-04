@@ -369,6 +369,40 @@ fn import_report_output_is_unchanged_by_preview_format() {
 }
 
 #[test]
+fn import_report_is_deterministic_json_and_preview_remains_canonical_output() {
+    let haproxy_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../oxiroute-import/tests/fixtures/haproxy/minimal-representable.cfg");
+    let path = haproxy_path.to_str().unwrap();
+    let report = cli()
+        .args(["import", "haproxy", path])
+        .output()
+        .expect("import report");
+    let repeated = cli()
+        .args(["import", "haproxy", path])
+        .output()
+        .expect("repeated import report");
+    assert!(report.status.success(), "{}", output_text(&report));
+    assert!(repeated.status.success(), "{}", output_text(&repeated));
+    assert_eq!(report.stdout, repeated.stdout);
+    let report_json: Value = serde_json::from_slice(&report.stdout).expect("report JSON");
+    assert_eq!(report_json["schemaVersion"], 1);
+    assert_eq!(report_json["source"]["product"], "haproxy");
+    assert!(
+        report_json["sourceGraph"]["sources"]
+            .as_array()
+            .is_some_and(|sources| !sources.is_empty())
+    );
+
+    let preview = cli()
+        .args(["import", "haproxy", path, "--output", "preview"])
+        .output()
+        .expect("import preview");
+    assert!(preview.status.success(), "{}", output_text(&preview));
+    assert!(preview.stdout.ends_with(b"version 1\n"));
+    assert_ne!(report.stdout, preview.stdout);
+}
+
+#[test]
 fn generation_reload_cli_re_resolves_a_deleted_nginx_site() {
     let server = NativeReloadServer::start(false);
     let initial = server.generation_status();

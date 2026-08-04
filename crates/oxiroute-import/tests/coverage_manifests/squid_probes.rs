@@ -29,7 +29,21 @@ pub(crate) fn assert_hostrouter_squid_inventory() {
     assert_eq!(report.effective.access_rules.len(), 9);
     assert!(report.config.is_some());
     assert_eq!(report.draft.listeners.len(), 1);
-    assert!(report.canonical_provenance.is_empty());
+    assert!(!report.canonical_provenance.is_empty());
+    let paths = report
+        .canonical_provenance
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(paths.len(), report.canonical_provenance.len());
+    assert!(paths.contains("/listeners/0"));
+    assert!(paths.contains("/forward_proxy_services/0"));
+    assert!(
+        report
+            .canonical_provenance
+            .iter()
+            .all(|entry| !entry.origins.is_empty())
+    );
 
     let manifested = manifest
         .entries

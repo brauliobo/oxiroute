@@ -1,6 +1,13 @@
 #![cfg(unix)]
 
-use std::{ffi::OsString, fs, net::IpAddr, path::PathBuf, time::Duration};
+use std::{
+    collections::HashSet,
+    ffi::OsString,
+    fs,
+    net::IpAddr,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use oxiroute_import::{
     DiagnosticStage, E_INCLUDE_CYCLE, E_UNSUPPORTED_FEATURE, SourceFile, SourceId,
@@ -256,7 +263,45 @@ fn hostrouter_report_lowers_to_a_complete_forward_proxy_candidate() {
             ..
         })
     ));
-    assert!(report.canonical_provenance.is_empty());
+    assert_squid_provenance_paths_are_unique(&report);
+    let paths = report
+        .canonical_provenance
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect::<HashSet<_>>();
+    for path in [
+        "/listeners/0/tls_profile",
+        "/listeners/0/downstream_timeouts/keepalive_timeout_ms",
+        "/forward_proxy_services/0/enabled_versions/0",
+        "/forward_proxy_services/0/connect/allowed_ports/0",
+        "/forward_proxy_services/0/auth/htpasswd_file_path",
+        "/forward_proxy_services/0/resolver/nameservers/0",
+        "/forward_proxy_services/0/access_policy/rules/0/conditions/0/type",
+        "/forward_proxy_services/0/access_policy/rules/1/conditions/1/ranges/0/start",
+    ] {
+        assert!(paths.contains(path), "missing Squid provenance path {path}");
+    }
+    assert_squid_origin(
+        &report,
+        "/listeners/0",
+        &fixture("hostrouter-sanitized.conf"),
+        4,
+        0,
+    );
+    assert_squid_origin(
+        &report,
+        "/forward_proxy_services/0/auth",
+        &fixture("hostrouter-sanitized.conf"),
+        27,
+        0,
+    );
+    assert_squid_origin(
+        &report,
+        "/forward_proxy_services/0/access_policy/rules/0",
+        &fixture("hostrouter-sanitized.conf"),
+        20,
+        0,
+    );
     assert!(hostrouter_blockers(&report).is_empty());
     assert_eq!(report.diagnostics.len(), 1);
     assert_eq!(
@@ -269,6 +314,151 @@ fn hostrouter_report_lowers_to_a_complete_forward_proxy_candidate() {
             diagnostic.code(),
             E_UNKNOWN_DIRECTIVE | E_UNCONSUMED_DIRECTIVE | E_UNSUPPORTED_FORM
         )
+    }));
+}
+
+#[test]
+fn canonical_provenance_retains_include_file_and_stack_for_finalized_fields() {
+    let directory = tempdir().expect("Squid fixture directory");
+    let included = directory.path().join("forward.conf");
+    fs::write(
+        &included,
+        b"http_port 3128\n\
+          access_log none\n\
+          forwarded_for delete\n\
+          via off\n\
+          acl ssl_ports port 443\n\
+          http_access deny CONNECT !ssl_ports\n\
+          http_access allow all\n",
+    )
+    .expect("included source");
+    let root = directory.path().join("squid.conf");
+    fs::write(&root, b"include forward.conf\n").expect("root source");
+
+    let report = import(&root);
+    assert!(report.config.is_some(), "{:#?}", report.diagnostics);
+    assert_eq!(report.source_graph.sources.len(), 2);
+    assert!(report.source_graph.snapshot_stable);
+    assert_squid_provenance_paths_are_unique(&report);
+    assert_squid_origin(&report, "/listeners/0", &included, 1, 1);
+    assert_squid_origin(
+        &report,
+        "/forward_proxy_services/0/access_policy/rules/0",
+        &included,
+        6,
+        1,
+    );
+}
+
+#[test]
+fn unsupported_included_behavior_blocks_with_include_provenance() {
+    let directory = tempdir().expect("Squid fixture directory");
+    let included = directory.path().join("unsupported.conf");
+    fs::write(&included, b"http_port 3128 intercept\n").expect("included source");
+    let root = directory.path().join("squid.conf");
+    fs::write(&root, b"include unsupported.conf\n").expect("root source");
+
+    let report = import(&root);
+    assert!(report.config.is_none());
+    assert!(
+        report
+            .blocked_capabilities
+            .iter()
+            .any(|blocked| blocked.kind == SemanticBlockerKind::UnsupportedPortOption)
+    );
+    let diagnostic = report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code() == E_UNSUPPORTED_FEATURE)
+        .expect("blocking lower diagnostic");
+    let primary = diagnostic.primary_span().expect("blocker primary span");
+    assert_eq!(primary.source(), SourceId::new(1));
+    assert_eq!(diagnostic.include_stack().len(), 1);
+    assert_eq!(diagnostic.include_stack()[0].source(), SourceId::new(0));
+}
+
+#[test]
+fn selected_native_root_report_retains_canonical_provenance() {
+    let directory = tempdir().expect("Squid fixture directory");
+    let root = directory.path().join("active.conf");
+    fs::write(
+        &root,
+        b"http_port 3128\n\
+          access_log none\n\
+          forwarded_for delete\n\
+          via off\n\
+          acl ssl_ports port 443\n\
+          http_access deny CONNECT !ssl_ports\n\
+          http_access allow all\n",
+    )
+    .expect("active source");
+
+    let report = import_selected(
+        &[OsString::from("-f"), root.clone().into_os_string()],
+        Path::new("/synthetic/default.conf"),
+    );
+    assert_eq!(report.selection.active_root, root);
+    assert!(report.import.config.is_some());
+    assert_squid_provenance_paths_are_unique(&report.import);
+    assert_squid_origin(&report.import, "/listeners/0", &root, 1, 0);
+}
+
+#[allow(clippy::naive_bytecount)]
+fn assert_squid_provenance_paths_are_unique(report: &oxiroute_import::squid::ImportReport) {
+    let mut paths = HashSet::new();
+    assert!(!report.canonical_provenance.is_empty());
+    for entry in &report.canonical_provenance {
+        assert!(
+            paths.insert(entry.path.as_str()),
+            "duplicate path {}",
+            entry.path
+        );
+        assert!(!entry.origins.is_empty(), "{} lacks origins", entry.path);
+        for origin in &entry.origins {
+            let source = report
+                .source_graph
+                .source(origin.provenance.source)
+                .expect("canonical provenance source");
+            assert_eq!(origin.directive_span.source(), origin.provenance.source);
+            assert!(source.source.path().is_some());
+            assert!(
+                source.source.bytes()[..origin.directive_span.range().start()]
+                    .iter()
+                    .filter(|byte| **byte == b'\n')
+                    .count()
+                    < source.source.len()
+            );
+        }
+    }
+}
+
+#[allow(clippy::naive_bytecount)]
+fn assert_squid_origin(
+    report: &oxiroute_import::squid::ImportReport,
+    path: &str,
+    expected_source: &Path,
+    expected_line: usize,
+    expected_include_depth: usize,
+) {
+    let entry = report
+        .canonical_provenance
+        .iter()
+        .find(|entry| entry.path == path)
+        .unwrap_or_else(|| panic!("missing Squid provenance {path}"));
+    let expected_source = fs::canonicalize(expected_source).expect("canonical source path");
+    assert!(entry.origins.iter().any(|origin| {
+        let source = report
+            .source_graph
+            .source(origin.provenance.source)
+            .expect("origin source");
+        let line = source.source.bytes()[..origin.directive_span.range().start()]
+            .iter()
+            .filter(|byte| **byte == b'\n')
+            .count()
+            + 1;
+        source.canonical_path == expected_source
+            && line == expected_line
+            && origin.provenance.include_stack.len() == expected_include_depth
     }));
 }
 

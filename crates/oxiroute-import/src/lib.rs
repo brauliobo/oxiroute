@@ -4,6 +4,7 @@ pub mod apache;
 mod candidate;
 mod canonical;
 mod diagnostic;
+pub mod evidence;
 pub mod haproxy;
 mod limits;
 pub mod nginx;
@@ -22,6 +23,14 @@ pub use diagnostic::{
     Diagnostic, DiagnosticCode, DiagnosticStage, E_DUPLICATE_IDENTITY, E_INVALID_VALUE,
     E_SEMANTICS_NOT_REPRESENTABLE, E_UNRESOLVED_REFERENCE, E_UNSUPPORTED_FEATURE, RelatedSpan,
     Report, Severity,
+};
+pub use evidence::{
+    ByteRangeEvidence, CandidateDraftEvidence, CandidateEvidence, CanonicalProvenanceEvidence,
+    CapabilityProfileMetadata, DependencyEvidence, DiagnosticEvidence,
+    IMPORT_REPORT_SCHEMA_VERSION, ImportBlocker, ImportReportEnvelope, ImportSourceMetadata,
+    InactiveSourceEvidence, OriginEvidence, OverlayEvidence, RequirementEvidence,
+    RequirementsEvidence, SourceGraphEvidence, SourceMapEvidence, SourceMapSegmentEvidence,
+    SourceReference, SourceRootEvidence, SpanEvidence,
 };
 pub use limits::{
     E_INCLUDE_CYCLE, E_INCLUDE_NOT_FOUND, E_SOURCE_CHANGED, E_SOURCE_IO, E_SOURCE_LIMIT,

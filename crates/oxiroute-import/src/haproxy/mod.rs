@@ -115,7 +115,19 @@ pub fn import_sources(sources: &[LoadedSource]) -> Report<CanonicalCandidate> {
 /// Imports ordered `-f` roots through loading, parsing, resolution, lowering, and validation.
 #[must_use]
 pub fn import_roots<P: AsRef<Path>>(roots: &[P]) -> Report<CanonicalCandidate> {
-    import_parsed(parser::parse_roots(roots))
+    let (configuration, diagnostics) = parser::parse_roots(roots).into_parts();
+    let source_metadata = crate::SourceImportMetadata {
+        original_sources: configuration
+            .files
+            .iter()
+            .map(|file| file.source.clone())
+            .collect(),
+        ..crate::SourceImportMetadata::default()
+    };
+    let (mut candidate, diagnostics) =
+        import_parsed(Report::new(configuration, diagnostics)).into_parts();
+    candidate.source_metadata = source_metadata;
+    Report::new(candidate, diagnostics)
 }
 
 /// Imports ordered roots using only the explicitly supplied, fingerprinted preprocessing inputs.
