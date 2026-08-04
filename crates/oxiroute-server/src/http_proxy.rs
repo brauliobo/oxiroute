@@ -1287,6 +1287,7 @@ async fn execute_route_action(
     let mut internal_redirects = 0;
     let mut status_override = None;
     let mut status_headers = Vec::new();
+    let mut method = method.clone();
     loop {
         ctx.route = Some(Arc::clone(&route));
         match &route.action {
@@ -1296,7 +1297,7 @@ async fn execute_route_action(
                 ctx.connection_retryable =
                     proxy.policy.max_retries > 0 && !session.is_upgrade_req();
                 ctx.replay_retryable = proxy.policy.max_retries > 0
-                    && matches!(*method, Method::GET | Method::HEAD)
+                    && (method == Method::GET || method == Method::HEAD)
                     && session.is_body_empty()
                     && !session.is_upgrade_req();
                 ctx.pool = Some(Arc::clone(&proxy.pool));
@@ -1310,7 +1311,7 @@ async fn execute_route_action(
                     response.status,
                     &headers,
                     response.body.clone(),
-                    *method == Method::HEAD,
+                    method == Method::HEAD,
                 )
                 .await?;
                 return Ok(true);
@@ -1344,134 +1345,163 @@ async fn execute_route_action(
                     redirect.status,
                     &headers,
                     body,
-                    *method == Method::HEAD,
+                    method == Method::HEAD,
                 )
                 .await?;
                 return Ok(true);
             }
             HttpActionPlan::Static(files) => {
-                if !matches!(*method, Method::GET | Method::HEAD) {
-                    let mut headers = files.headers(405);
-                    headers.push((ALLOW, HeaderValue::from_static("GET, HEAD")));
-                    write_local_response(session, 405, &headers, Bytes::new(), false).await?;
-                    return Ok(true);
-                }
-                let result = files.serve(uri.path()).await;
-                let mut internal_redirect = None;
-                match result {
-                    Ok(StaticTarget::File(file)) => {
-                        if let Some(status) = status_override.take() {
-                            write_static_file_with_status(
+                let mut internal_redirect: Option<(String, Vec<(HeaderName, HeaderValue)>)> = None;
+                if method != Method::GET && method != Method::HEAD {
+                    internal_redirect = write_static_error(
+                        session,
+                        files,
+                        405,
+                        false,
+                        &[(ALLOW, HeaderValue::from_static("GET, HEAD"))],
+                    )
+                    .await?;
+                    status_override = Some(405);
+                    status_headers.clear();
+                } else {
+                    let result = files.serve(uri.path()).await;
+                    match result {
+                        Ok(StaticTarget::File(file)) => {
+                            if let Some(status) = status_override.take() {
+                                write_static_file_with_status(
+                                    session,
+                                    files,
+                                    file,
+                                    status,
+                                    method == Method::HEAD,
+                                    None,
+                                    &status_headers,
+                                )
+                                .await?;
+                                status_headers.clear();
+                            } else if let Some(headers) =
+                                write_static_file(session, files, file, method == Method::HEAD)
+                                    .await?
+                            {
+                                status_headers = headers;
+                                internal_redirect = write_static_error(
+                                    session,
+                                    files,
+                                    416,
+                                    method == Method::HEAD,
+                                    &status_headers,
+                                )
+                                .await?;
+                                status_override = Some(416);
+                            }
+                        }
+                        Ok(StaticTarget::Autoindex { body }) => {
+                            let status = status_override.take().unwrap_or(200);
+                            let mut headers = files.headers(status);
+                            headers.append(&mut status_headers);
+                            headers.push((
+                                CONTENT_TYPE,
+                                HeaderValue::from_static("text/html; charset=utf-8"),
+                            ));
+                            write_local_response(
                                 session,
-                                files,
-                                file,
                                 status,
-                                *method == Method::HEAD,
-                                None,
-                                &status_headers,
+                                &headers,
+                                body,
+                                method == Method::HEAD,
                             )
                             .await?;
-                            status_headers.clear();
-                        } else if let Some(headers) =
-                            write_static_file(session, files, file, *method == Method::HEAD).await?
-                        {
-                            status_headers = headers;
+                        }
+                        Ok(StaticTarget::Status(status)) => {
                             internal_redirect = write_static_error(
                                 session,
                                 files,
-                                416,
-                                *method == Method::HEAD,
-                                &status_headers,
+                                status,
+                                method == Method::HEAD,
+                                &[],
                             )
                             .await?;
-                            status_override = Some(416);
+                            status_override = Some(status);
+                            status_headers.clear();
+                        }
+                        Ok(StaticTarget::DirectoryRedirect { path }) => {
+                            let location = internal_location(&path, &uri)?;
+                            let mut headers = files.headers(301);
+                            headers.push((LOCATION, location));
+                            write_local_response(
+                                session,
+                                301,
+                                &headers,
+                                Bytes::new(),
+                                method == Method::HEAD,
+                            )
+                            .await?;
+                        }
+                        Ok(StaticTarget::InternalRedirect { path }) => {
+                            internal_redirect = Some((path, Vec::new()));
+                        }
+                        Err(StaticServeError::Unsafe) => {
+                            internal_redirect = write_static_error(
+                                session,
+                                files,
+                                403,
+                                method == Method::HEAD,
+                                &[],
+                            )
+                            .await?;
+                            status_override = Some(403);
+                            status_headers.clear();
+                        }
+                        Err(StaticServeError::NotFound) => {
+                            internal_redirect = write_static_error(
+                                session,
+                                files,
+                                404,
+                                method == Method::HEAD,
+                                &[],
+                            )
+                            .await?;
+                            status_override = Some(404);
+                            status_headers.clear();
+                        }
+                        Err(StaticServeError::TooLarge | StaticServeError::Unavailable) => {
+                            internal_redirect = write_static_error(
+                                session,
+                                files,
+                                500,
+                                method == Method::HEAD,
+                                &[],
+                            )
+                            .await?;
+                            status_override = Some(500);
+                            status_headers.clear();
                         }
                     }
-                    Ok(StaticTarget::Autoindex { body }) => {
-                        let status = status_override.take().unwrap_or(200);
-                        let mut headers = files.headers(status);
-                        headers.append(&mut status_headers);
-                        headers.push((
-                            CONTENT_TYPE,
-                            HeaderValue::from_static("text/html; charset=utf-8"),
-                        ));
-                        write_local_response(
-                            session,
-                            status,
-                            &headers,
-                            body,
-                            *method == Method::HEAD,
-                        )
-                        .await?;
-                    }
-                    Ok(StaticTarget::Status(status)) => {
-                        internal_redirect = write_static_error(
-                            session,
-                            files,
-                            status,
-                            *method == Method::HEAD,
-                            &[],
-                        )
-                        .await?;
-                        status_override = Some(status);
-                        status_headers.clear();
-                    }
-                    Ok(StaticTarget::DirectoryRedirect { path }) => {
-                        let location = internal_location(&path, &uri)?;
-                        let mut headers = files.headers(301);
-                        headers.push((LOCATION, location));
-                        write_local_response(
-                            session,
-                            301,
-                            &headers,
-                            Bytes::new(),
-                            *method == Method::HEAD,
-                        )
-                        .await?;
-                    }
-                    Ok(StaticTarget::InternalRedirect { path }) => {
-                        internal_redirect = Some(path);
-                    }
-                    Err(StaticServeError::Unsafe) => {
-                        internal_redirect =
-                            write_static_error(session, files, 403, *method == Method::HEAD, &[])
-                                .await?;
-                        status_override = Some(403);
-                        status_headers.clear();
-                    }
-                    Err(StaticServeError::NotFound) => {
-                        internal_redirect =
-                            write_static_error(session, files, 404, *method == Method::HEAD, &[])
-                                .await?;
-                        status_override = Some(404);
-                        status_headers.clear();
-                    }
-                    Err(StaticServeError::TooLarge | StaticServeError::Unavailable) => {
-                        internal_redirect =
-                            write_static_error(session, files, 500, *method == Method::HEAD, &[])
-                                .await?;
-                        status_override = Some(500);
-                        status_headers.clear();
-                    }
                 }
-                let Some(path) = internal_redirect else {
+                let Some((path, error_headers)) = internal_redirect else {
                     return Ok(true);
                 };
+                status_headers.extend(error_headers);
                 if internal_redirects >= MAX_INTERNAL_REDIRECTS {
                     write_local_response(
                         session,
                         500,
                         &files.headers(500),
                         Bytes::new(),
-                        *method == Method::HEAD,
+                        method == Method::HEAD,
                     )
                     .await?;
                     return Ok(true);
                 }
                 internal_redirects += 1;
+                if method != Method::GET && method != Method::HEAD {
+                    method = Method::GET;
+                }
                 uri = internal_uri(&path, &uri)?;
-                session.req_header_mut().uri = uri.clone();
-                let Some(next) = service.select_route(ctx.authority.as_ref(), &uri, method) else {
+                let request = session.req_header_mut();
+                request.method = method.clone();
+                request.uri = uri.clone();
+                let Some(next) = service.select_route(ctx.authority.as_ref(), &uri, &method) else {
                     session.respond_error(404).await?;
                     return Ok(true);
                 };
@@ -1482,7 +1512,7 @@ async fn execute_route_action(
                             401,
                             &[(WWW_AUTHENTICATE, access.challenge().clone())],
                             Bytes::new(),
-                            *method == Method::HEAD,
+                            method == Method::HEAD,
                         )
                         .await?;
                         return Ok(true);
@@ -1555,10 +1585,12 @@ async fn write_static_error(
     status: u16,
     head: bool,
     extra_headers: &[(HeaderName, HeaderValue)],
-) -> pingora::Result<Option<String>> {
+) -> pingora::Result<Option<(String, Vec<(HeaderName, HeaderValue)>)>> {
     if let Some(target) = files.error_document(status).await {
         match target {
-            StaticErrorTarget::File(file) => {
+            StaticErrorTarget::File { file, headers } => {
+                let mut response_headers = headers.into_vec();
+                response_headers.extend_from_slice(extra_headers);
                 write_static_file_with_status(
                     session,
                     files,
@@ -1566,12 +1598,14 @@ async fn write_static_error(
                     status,
                     head,
                     None,
-                    extra_headers,
+                    &response_headers,
                 )
                 .await?;
                 Ok(None)
             }
-            StaticErrorTarget::InternalRedirect(path) => Ok(Some(path)),
+            StaticErrorTarget::InternalRedirect { path, headers } => {
+                Ok(Some((path, headers.into_vec())))
+            }
             StaticErrorTarget::Literal { body, headers } => {
                 let mut response_headers = files.headers(status);
                 response_headers.extend(headers);

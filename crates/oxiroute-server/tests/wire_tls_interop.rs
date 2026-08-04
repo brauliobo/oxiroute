@@ -2,13 +2,14 @@
 
 mod support;
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{fs, net::SocketAddr, os::unix::fs::PermissionsExt as _, sync::Arc};
 
 use bytes::Bytes;
 use http::{Method, StatusCode};
 use oxiroute_config::{
     AlpnProtocol, Certificate, CertificateSource, HttpLiteralHeader, HttpRequestHeaderMutation,
-    HttpRequestHeaderValue, HttpRetryPolicy, HttpRetryTrigger, HttpRouteAction, HttpVersion,
+    HttpRequestHeaderValue, HttpRetryPolicy, HttpRetryTrigger, HttpRouteAction,
+    HttpStaticErrorResponse, HttpStaticMimePolicy, HttpStaticPathMapping, HttpVersion,
     HttpVersionPolicy, TlsVersion, UpstreamServer, UpstreamTls,
 };
 use oxiroute_server::CertificateGeneration;
@@ -636,6 +637,109 @@ async fn downstream_h2_executes_fixed_actions_with_head_semantics_without_an_ups
     })
     .await
     .expect("H2 fixed action test timed out");
+}
+
+#[tokio::test]
+async fn downstream_h2_serves_static_headers_and_internal_error_page() {
+    timeout(TEST_TIMEOUT, async {
+        let directory = tempfile::tempdir().expect("H2 static response directory");
+        let root = directory.path().join("public");
+        fs::create_dir(&root).expect("create H2 static response root");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+            .expect("secure H2 static response root");
+        fs::write(root.join("ok.txt"), b"ok").expect("write H2 static success file");
+        fs::write(root.join("404.html"), b"missing").expect("write H2 static error file");
+
+        let unused_origin =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("reserve unused H2 static origin");
+        unused_origin
+            .set_nonblocking(true)
+            .expect("unused H2 static origin nonblocking");
+        let origin_address = unused_origin
+            .local_addr()
+            .expect("unused H2 static origin address");
+        let reserved = ReservedListener::new();
+        let mut config = proxy_config(
+            reserved.address,
+            origin_address,
+            vec![AlpnProtocol::H2],
+            None,
+            HttpVersionPolicy::default(),
+        );
+        config.http_services[0].routes[0].action = HttpRouteAction::StaticFiles {
+            root_directory: root,
+            path_mapping: HttpStaticPathMapping::Root,
+            index_files: Vec::new(),
+            internal_index_redirects: true,
+            directory_redirects: true,
+            spa_fallback: None,
+            try_files: Vec::new(),
+            autoindex: false,
+            autoindex_exact_size: true,
+            autoindex_local_time: false,
+            etag: true,
+            mime: HttpStaticMimePolicy {
+                default_type: Some("text/plain".into()),
+                types: Vec::new(),
+            },
+            headers: vec![
+                HttpLiteralHeader {
+                    name: "x-selected-status".into(),
+                    value: "no".into(),
+                    always: false,
+                },
+                HttpLiteralHeader {
+                    name: "x-always".into(),
+                    value: "yes".into(),
+                    always: true,
+                },
+            ],
+            error_responses: vec![HttpStaticErrorResponse {
+                statuses: vec![404],
+                file: Some("404.html".into()),
+                body: None,
+                headers: vec![HttpLiteralHeader {
+                    name: "x-error".into(),
+                    value: "yes".into(),
+                    always: true,
+                }],
+                internal_redirect: Some("/404.html".into()),
+            }],
+        };
+        let proxy = ProxyHarness::start(&config, reserved);
+        let stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"h2"])
+            .await
+            .expect("H2 static response TLS connect");
+        let mut client = H2Client::from_tls(stream)
+            .await
+            .expect("H2 static response client");
+
+        let success = client
+            .request(Method::GET, "/ok.txt")
+            .await
+            .expect("H2 static success");
+        assert_eq!(success.status, StatusCode::OK);
+        assert_eq!(success.headers.get("x-selected-status").unwrap(), "no");
+        assert_eq!(success.headers.get("x-always").unwrap(), "yes");
+        assert!(!success.headers.contains_key("x-error"));
+        assert_eq!(success.body.as_ref(), b"ok");
+
+        let missing = client
+            .request(Method::GET, "/missing")
+            .await
+            .expect("H2 static error page");
+        assert_eq!(missing.status, StatusCode::NOT_FOUND);
+        assert!(!missing.headers.contains_key("x-selected-status"));
+        assert_eq!(missing.headers.get("x-always").unwrap(), "yes");
+        assert_eq!(missing.headers.get("x-error").unwrap(), "yes");
+        assert_eq!(missing.body.as_ref(), b"missing");
+
+        client.finish().await;
+        proxy.finish().await;
+        assert!(unused_origin.accept().is_err());
+    })
+    .await
+    .expect("static response H2 test timed out");
 }
 
 #[tokio::test]

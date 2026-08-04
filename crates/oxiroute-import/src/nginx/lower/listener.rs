@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use http::header::{HeaderName, HeaderValue};
 use oxiroute_config::{
     AccessLogPolicy, DnsResolutionPolicy, DownstreamTimeoutPolicy, HttpAccessPolicy,
     HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpGzipMinimumVersion, HttpGzipPolicy,
@@ -35,6 +36,12 @@ const NGINX_DEFAULT_BODY_BYTES: u64 = 1024 * 1024;
 const NGINX_DEFAULT_PROXY_TIMEOUT_MS: u64 = 60_000;
 const NGINX_DEFAULT_GZIP_LEVEL: u8 = 1;
 const NGINX_DEFAULT_GZIP_MIN_LENGTH_BYTES: u64 = 20;
+const NGINX_MAX_HEADER_NAME_BYTES: usize = 64;
+const NGINX_MAX_HEADER_VALUE_BYTES: usize = 8192;
+const NGINX_MAX_LITERAL_HEADERS: usize = 32;
+const NGINX_MAX_STATIC_ERROR_RESPONSES: usize = 16;
+const NGINX_MAX_STATIC_ERROR_STATUSES: usize = 16;
+const NGINX_MAX_STATIC_ERROR_TARGET_BYTES: usize = 1024;
 const NGINX_IMPLICIT_GZIP_TYPE: &str = "text/html";
 const NGINX_GZIP_PROXIED_MODES: [&[u8]; 9] = [
     b"off",
@@ -2432,6 +2439,22 @@ impl Lowerer {
                 ));
                 continue;
             };
+            if let Err(message) = validate_literal_response_header(name, value) {
+                issues.push(issue(
+                    policy.origins.last().unwrap_or(&location.origin),
+                    E_INVALID_VALUE,
+                    message,
+                ));
+                continue;
+            }
+            if headers.len() >= NGINX_MAX_LITERAL_HEADERS {
+                issues.push(issue(
+                    policy.origins.last().unwrap_or(&location.origin),
+                    E_INVALID_VALUE,
+                    "nginx add_header declarations exceed the canonical response-header bound",
+                ));
+                continue;
+            }
             headers.push(HttpLiteralHeader {
                 name: name.into(),
                 value: value.into(),
@@ -2448,9 +2471,16 @@ impl Lowerer {
         issues: &mut Vec<LowerIssue>,
     ) -> Vec<HttpStaticErrorResponse> {
         let mut responses = Vec::new();
+        let mut seen_statuses = HashSet::new();
         for policy in self.effective_list_policy_chain(location.origin.occurrence, b"error_page") {
             origins.extend(policy.origins.clone());
+            let origin = policy.origins.last().unwrap_or(&location.origin);
             let Some(file) = policy.arguments.last().and_then(|value| utf8(value)) else {
+                issues.push(issue(
+                    origin,
+                    E_INVALID_VALUE,
+                    "nginx error_page target must be UTF-8",
+                ));
                 continue;
             };
             let statuses = policy.arguments[..policy.arguments.len().saturating_sub(1)]
@@ -2461,17 +2491,41 @@ impl Lowerer {
                         .filter(|status| (400..=599).contains(status))
                 })
                 .collect::<Option<Vec<_>>>();
+            let statuses_valid = statuses.as_ref().is_some_and(|statuses| {
+                let mut local = HashSet::new();
+                !statuses.is_empty()
+                    && statuses.len() <= NGINX_MAX_STATIC_ERROR_STATUSES
+                    && statuses.iter().all(|status| local.insert(*status))
+            });
             let canonical_file = canonicalize_http_path(file)
                 .filter(|canonical| canonical.as_ref() == file)
-                .filter(|_| file.starts_with('/'));
+                .filter(|_| file.starts_with('/'))
+                .filter(|_| file.len() <= NGINX_MAX_STATIC_ERROR_TARGET_BYTES);
             let (Some(statuses), Some(canonical_file)) = (statuses, canonical_file) else {
                 issues.push(issue(
-                    policy.origins.last().unwrap_or(&location.origin),
+                    origin,
                     E_INVALID_VALUE,
-                    "nginx error_page requires 400..=599 statuses and an absolute canonical URI target",
+                    "nginx error_page requires a bounded 400..=599 status list and an absolute canonical URI target",
                 ));
                 continue;
             };
+            if !statuses_valid || statuses.iter().any(|status| seen_statuses.contains(status)) {
+                issues.push(issue(
+                    origin,
+                    E_INVALID_VALUE,
+                    "nginx error_page statuses must be unique bounded 400..=599 values",
+                ));
+                continue;
+            }
+            if responses.len() >= NGINX_MAX_STATIC_ERROR_RESPONSES {
+                issues.push(issue(
+                    origin,
+                    E_INVALID_VALUE,
+                    "nginx error_page declarations exceed the canonical response bound",
+                ));
+                continue;
+            }
+            seen_statuses.extend(statuses.iter().copied());
             responses.push(HttpStaticErrorResponse {
                 statuses,
                 file: Some(PathBuf::from(canonical_file.trim_start_matches('/'))),
@@ -2500,6 +2554,35 @@ impl Lowerer {
             .and_then(|policy| policy.arguments.first().cloned())
             .map_or(default, |value| value == b"on")
     }
+}
+
+fn validate_literal_response_header(name: &str, value: &str) -> Result<(), &'static str> {
+    if name.is_empty() || name.len() > NGINX_MAX_HEADER_NAME_BYTES {
+        return Err("nginx response header name must be 1..=64 bytes");
+    }
+    HeaderName::from_bytes(name.as_bytes()).map_err(|_| "nginx response header name is invalid")?;
+    if matches!(
+        name.to_ascii_lowercase().as_str(),
+        "connection"
+            | "content-length"
+            | "host"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "proxy-connection"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+    ) {
+        return Err("nginx response header is hop-by-hop, framing, or request-managed");
+    }
+    if value.len() > NGINX_MAX_HEADER_VALUE_BYTES {
+        return Err("nginx response header value exceeds 8192 bytes");
+    }
+    HeaderValue::from_str(value)
+        .map_err(|_| "nginx response header value contains invalid bytes")?;
+    Ok(())
 }
 
 #[cfg(test)]

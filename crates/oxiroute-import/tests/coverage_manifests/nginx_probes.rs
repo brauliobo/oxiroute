@@ -278,8 +278,8 @@ fn import_nginx_registration_fixture() -> NginxImportReport {
     fs::write(
         directory.path().join("registered.conf"),
         render_nginx_fixture(NginxFixtureSpec {
-            extra_http: "http2 on;",
-            extra_server: "location = /fixed { return 204; }\n    location = /redirect { return 308 https://example.test/new; }\n    location /static { root /srv/static; index index.html; }\n    location /protected { auth_basic synthetic; auth_basic_user_file /tmp/synthetic-users; return 403; }",
+            extra_http: "http2 on;\n  add_header X-Manifest manifest;",
+            extra_server: "location = /fixed { return 204; }\n    location = /redirect { return 308 https://example.test/new; }\n    location /static { root /srv/static; index index.html; error_page 404 /404.html; }\n    location = /404.html { root /srv/static; }\n    location /protected { auth_basic synthetic; auth_basic_user_file /tmp/synthetic-users; return 403; }",
             ..standard_nginx_fixture()
         }),
     )
@@ -309,10 +309,7 @@ fn import_nginx_stream_probe(entry: &DirectiveForm) -> StreamImportReport {
     import_stream_fragment(Path::new("nginx.conf"), directory.path())
 }
 
-fn import_nginx_stream_context_probe(
-    entry: &DirectiveForm,
-    _context: &str,
-) -> StreamImportReport {
+fn import_nginx_stream_context_probe(entry: &DirectiveForm, _context: &str) -> StreamImportReport {
     import_nginx_stream_probe(entry)
 }
 
@@ -375,6 +372,9 @@ fn assert_stream_probe(entry: &DirectiveForm, report: &StreamImportReport, label
 
 fn nginx_context_probe_source(entry: &DirectiveForm, context: &str, directory: &Path) -> String {
     let source = nginx_probe_source(entry.id.as_str(), directory);
+    if entry.key == "error_page" {
+        return nginx_error_page_context_probe(context);
+    }
     if entry.key == "location" && context == "location" {
         return nginx_nested_location_probe(entry.id.as_str());
     }
@@ -506,6 +506,8 @@ fn nginx_probe_source(id: &str, directory: &Path) -> String {
             nginx_proxy_http_version_probe(id)
         }
         id if id.starts_with("directive.nginx.return.") => nginx_return_probe(id),
+        "directive.nginx.add-header.literal" => render_nginx_fixture(standard_nginx_fixture()),
+        "directive.nginx.error-page.literal-static" => nginx_error_page_probe(),
         id if id.starts_with("directive.nginx.auth-basic.") => nginx_auth_basic_probe(id),
         "directive.nginx.auth-basic-user-file" => nginx_auth_basic_probe(id),
         "directive.nginx.root.static" | "directive.nginx.index.static" => nginx_static_probe(),
@@ -646,6 +648,26 @@ fn nginx_static_probe() -> String {
     )
 }
 
+fn nginx_error_page_probe() -> String {
+    nginx_error_page_context_probe("http")
+}
+
+fn nginx_error_page_context_probe(context: &str) -> String {
+    let directive = "error_page 404 /404.html;";
+    match context {
+        "http" => format!(
+            "http {{ access_log off; {directive} server {{ listen 127.0.0.1:8443 default_server; location / {{ root /srv/static; }} location = /404.html {{ root /srv/static; }} }} }}"
+        ),
+        "http_server" => format!(
+            "http {{ access_log off; server {{ listen 127.0.0.1:8443 default_server; {directive} location / {{ root /srv/static; }} location = /404.html {{ root /srv/static; }} }} }}"
+        ),
+        "location" => format!(
+            "http {{ access_log off; server {{ listen 127.0.0.1:8443 default_server; location / {{ root /srv/static; {directive} }} location = /404.html {{ root /srv/static; }} }} }}"
+        ),
+        value => panic!("unsupported nginx error_page context `{value}`"),
+    }
+}
+
 fn nginx_auth_basic_probe(id: &str) -> String {
     let policy = match id {
         "directive.nginx.auth-basic.off" => "auth_basic off;",
@@ -680,7 +702,7 @@ const fn standard_nginx_fixture() -> NginxFixtureSpec<'static> {
         location: "location /",
         proxy_pass: "http://app",
         proxy_http_version: "1.1",
-        extra_http: "",
+        extra_http: "add_header X-Manifest manifest;",
         extra_server: "",
         upstream_server: "127.0.0.1:3000",
     }

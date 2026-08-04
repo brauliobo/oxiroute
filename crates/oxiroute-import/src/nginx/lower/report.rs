@@ -347,13 +347,15 @@ impl Lowerer {
                     suffixes.extend(["/action/status", "/action/body", "/action/headers"]);
                 }
                 oxiroute_config::HttpRouteAction::Redirect { .. } => {
-                    suffixes.extend(["/action/status", "/action/location"]);
+                    suffixes.extend(["/action/status", "/action/location", "/action/headers"]);
                 }
                 oxiroute_config::HttpRouteAction::StaticFiles { .. } => {
                     suffixes.extend([
                         "/action/root_directory",
                         "/action/index_files",
                         "/action/etag",
+                        "/action/headers",
+                        "/action/error_responses",
                     ]);
                 }
             }
@@ -433,12 +435,12 @@ impl Lowerer {
             oxiroute_config::HttpRouteAction::FixedResponse { headers, .. } => {
                 for index in 0..headers.len() {
                     let path = format!("{route_path}/action/headers/{index}");
-                    for suffix in ["", "/name", "/value"] {
+                    for suffix in ["", "/name", "/value", "/always"] {
                         self.record(format!("{path}{suffix}"), origins.to_vec());
                     }
                 }
             }
-            oxiroute_config::HttpRouteAction::Redirect { .. } => {
+            oxiroute_config::HttpRouteAction::Redirect { headers, .. } => {
                 self.record(
                     format!("{route_path}/action/location/type"),
                     origins.to_vec(),
@@ -447,13 +449,52 @@ impl Lowerer {
                     format!("{route_path}/action/location/value"),
                     origins.to_vec(),
                 );
+                for index in 0..headers.len() {
+                    let path = format!("{route_path}/action/headers/{index}");
+                    for suffix in ["", "/name", "/value", "/always"] {
+                        self.record(format!("{path}{suffix}"), origins.to_vec());
+                    }
+                }
             }
-            oxiroute_config::HttpRouteAction::StaticFiles { spa_fallback, .. } => {
+            oxiroute_config::HttpRouteAction::StaticFiles {
+                spa_fallback,
+                headers,
+                error_responses,
+                ..
+            } => {
                 if spa_fallback.is_some() {
                     self.record(
                         format!("{route_path}/action/spa_fallback"),
                         origins.to_vec(),
                     );
+                }
+                for (index, _) in headers.iter().enumerate() {
+                    let path = format!("{route_path}/action/headers/{index}");
+                    for suffix in ["", "/name", "/value", "/always"] {
+                        self.record(format!("{path}{suffix}"), origins.to_vec());
+                    }
+                }
+                for (index, response) in error_responses.iter().enumerate() {
+                    let path = format!("{route_path}/action/error_responses/{index}");
+                    for suffix in [
+                        "",
+                        "/statuses",
+                        "/file",
+                        "/body",
+                        "/headers",
+                        "/internal_redirect",
+                    ] {
+                        self.record(format!("{path}{suffix}"), origins.to_vec());
+                    }
+                    for status_index in 0..response.statuses.len() {
+                        self.record(format!("{path}/statuses/{status_index}"), origins.to_vec());
+                    }
+                    for (header_index, _) in response.headers.iter().enumerate() {
+                        let header_path = format!("{path}/headers/{header_index}");
+                        for suffix in ["", "/name", "/value", "/always"] {
+                            self.record(format!("{header_path}{suffix}"), origins.to_vec());
+                        }
+                    }
                 }
             }
         }
