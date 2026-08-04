@@ -46,7 +46,7 @@ pub use file_watcher::{
     FileWatcherConfig, FileWatcherError, FileWatcherMonitor, FileWatcherStatus,
     FileWatcherSupervisor,
 };
-pub use upstream::{UpstreamTlsPlan, prepare_upstream_tls};
+pub use upstream::{prepare_upstream_tls, UpstreamTlsPlan};
 
 pub const MAX_CERTIFICATE_CHAIN_BYTES: usize = 1024 * 1024;
 pub const MAX_PRIVATE_KEY_BYTES: usize = 256 * 1024;
@@ -669,7 +669,9 @@ pub enum TlsBuildError {
         subject_index: usize,
         issuer_index: usize,
     },
-    #[error("failed to validate certificate `{certificate}` chain entry {subject_index} signature")]
+    #[error(
+        "failed to validate certificate `{certificate}` chain entry {subject_index} signature"
+    )]
     ChainSignatureValidation {
         certificate: String,
         subject_index: usize,

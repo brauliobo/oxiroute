@@ -12,14 +12,14 @@ use std::{
 };
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use oxiroute_config_source::{ConfigFormat, render_config};
+use oxiroute_config_source::{render_config, ConfigFormat};
 use rustix::fs::{self as rustix_fs, FileType, Mode, OFlags};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use zeroize::Zeroizing;
 
 use crate::{
-    GenerationManager,
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome},
+    GenerationManager,
 };
 
 #[cfg(test)]
@@ -2232,16 +2232,14 @@ mod tests {
 
     #[test]
     fn haproxy_gpu_presence_requires_a_node_ip() {
-        assert!(
-            Cli::try_parse_process_from([
-                "oxiroute",
-                "import",
-                "haproxy",
-                "/etc/haproxy/haproxy.cfg",
-                "--gpu1-defined",
-            ])
-            .is_err()
-        );
+        assert!(Cli::try_parse_process_from([
+            "oxiroute",
+            "import",
+            "haproxy",
+            "/etc/haproxy/haproxy.cfg",
+            "--gpu1-defined",
+        ])
+        .is_err());
     }
 
     #[test]
@@ -2275,28 +2273,24 @@ mod tests {
         let paths = [fixture];
         let node_ip = Some("10.0.0.15".parse().unwrap());
 
-        assert!(
-            import_haproxy(
-                &paths,
-                node_ip,
-                true,
-                Some(60_000),
-                ConfigFormat::Kdl,
-                ImportOutput::Preview,
-            )
-            .is_err()
-        );
-        assert!(
-            import_haproxy(
-                &paths,
-                node_ip,
-                true,
-                Some(10_000),
-                ConfigFormat::Kdl,
-                ImportOutput::Report,
-            )
-            .is_err()
-        );
+        assert!(import_haproxy(
+            &paths,
+            node_ip,
+            true,
+            Some(60_000),
+            ConfigFormat::Kdl,
+            ImportOutput::Preview,
+        )
+        .is_err());
+        assert!(import_haproxy(
+            &paths,
+            node_ip,
+            true,
+            Some(10_000),
+            ConfigFormat::Kdl,
+            ImportOutput::Report,
+        )
+        .is_err());
     }
 
     #[test]

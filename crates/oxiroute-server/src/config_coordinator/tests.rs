@@ -1,19 +1,19 @@
 use std::{
     env, fs,
-    os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink},
+    os::unix::fs::{symlink, MetadataExt as _, PermissionsExt as _},
     path::{Path, PathBuf},
     process::{Child, Command},
-    sync::{Arc, Barrier, mpsc},
+    sync::{mpsc, Arc, Barrier},
     thread,
     time::{Duration, Instant},
 };
 
 use oxiroute_config::{
-    Config, HttpHostSelector, HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction,
-    HttpService, HttpVersionPolicy, Listener, ListenerBind, Protocol, RtmpApplication, RtmpService,
-    UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, render_lua,
+    render_lua, Config, HttpHostSelector, HttpPathSelector, HttpProxyPolicy, HttpRoute,
+    HttpRouteAction, HttpService, HttpVersionPolicy, Listener, ListenerBind, Protocol,
+    RtmpApplication, RtmpService, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool,
 };
-use oxiroute_config_source::{ConfigFormat, render_config};
+use oxiroute_config_source::{render_config, ConfigFormat};
 use tempfile::TempDir;
 
 use super::{storage::StorageFailure, *};
@@ -338,11 +338,9 @@ fn save_escapes_values_and_installs_a_secure_regular_file() {
 
     let bytes = fs::read(&path).unwrap();
     assert_eq!(bytes, saved.config_preview.as_bytes());
-    assert!(
-        saved
-            .config_preview
-            .contains(r#"name = "edge \"quoted\" \\ slash café","#)
-    );
+    assert!(saved
+        .config_preview
+        .contains(r#"name = "edge \"quoted\" \\ slash café","#));
     assert_eq!(fs::symlink_metadata(&path).unwrap().mode() & 0o7777, 0o600);
     assert!(fs::symlink_metadata(&path).unwrap().file_type().is_file());
     assert_eq!(loaded(coordinator.load()).normalized_config, draft);
@@ -818,12 +816,10 @@ fn symlink_and_special_file_targets_are_rejected_without_following() {
 
     assert!(matches!(outcome, ConfigSaveOutcome::Failed(_)));
     assert_eq!(fs::read_to_string(&outside).unwrap(), outside_bytes);
-    assert!(
-        fs::symlink_metadata(&path)
-            .unwrap()
-            .file_type()
-            .is_symlink()
-    );
+    assert!(fs::symlink_metadata(&path)
+        .unwrap()
+        .file_type()
+        .is_symlink());
 
     fs::remove_file(&path).unwrap();
     fs::create_dir(&path).unwrap();

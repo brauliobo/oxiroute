@@ -8,9 +8,9 @@ use std::{
 };
 
 use super::{
-    CertificateIdentitySan, CertificateIdentitySans, MAX_CERTIFICATE_CHAIN_BYTES,
-    MAX_CERTIFICATES_IN_CHAIN, MAX_DH_PARAMETERS_BYTES, MAX_PRIVATE_KEY_BYTES, TlsBuildError,
     certificate_identity_sans, certificate_is_ca_capable, pem_labels, read_bounded_stable,
+    CertificateIdentitySan, CertificateIdentitySans, TlsBuildError, MAX_CERTIFICATES_IN_CHAIN,
+    MAX_CERTIFICATE_CHAIN_BYTES, MAX_DH_PARAMETERS_BYTES, MAX_PRIVATE_KEY_BYTES,
 };
 use crate::encoding::lower_hex;
 use arc_swap::ArcSwap;
@@ -29,17 +29,17 @@ use openssl::{
     ssl::{NameType, SslAcceptor, SslMethod, SslOptions, SslSessionCacheMode, SslVersion},
     stack::Stack,
     x509::{
-        X509, X509NameBuilder, X509PurposeId, X509StoreContext,
         extension::{BasicConstraints, ExtendedKeyUsage, KeyUsage, SubjectAlternativeName},
         store::X509StoreBuilder,
         verify::X509VerifyFlags,
+        X509NameBuilder, X509PurposeId, X509StoreContext, X509,
     },
 };
 use oxiroute_config::{
     AlpnProtocol, SelfSignedKeyType, TlsPolicy, TlsProfile, TlsSessionCache, TlsVersion,
 };
 use pingora::{
-    listeners::{ALPN, TlsAccept, tls::TlsSettings},
+    listeners::{tls::TlsSettings, TlsAccept, ALPN},
     protocols::tls::CustomALPN,
     protocols::tls::TlsRef,
     tls::ext::{ssl_add_chain_cert, ssl_use_certificate, ssl_use_private_key},

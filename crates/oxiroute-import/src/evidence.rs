@@ -5,8 +5,8 @@ use serde::Serialize;
 
 use crate::{
     ActivationRequirement, CanonicalCandidate, CanonicalDraft, CanonicalProvenance,
-    DeploymentRequirement, Diagnostic, DiagnosticCode, OperationalOverlayRequirement, Report,
-    Severity, SourceFile, SourceId, SourceImportMetadata, Span,
+    DeploymentRequirement, Diagnostic, OperationalOverlayRequirement, Report, Severity, SourceFile,
+    SourceId, SourceImportMetadata, Span,
 };
 
 /// Stable schema version for the standalone machine-readable import report.
@@ -438,9 +438,7 @@ fn source_metadata_with_version(
     }
 }
 
-fn varnish_source_metadata(
-    report: &crate::varnish::ImportReport,
-) -> ImportSourceMetadata {
+fn varnish_source_metadata(report: &crate::varnish::ImportReport) -> ImportSourceMetadata {
     let version = report.declarations.iter().find_map(|declaration| {
         declaration
             .version

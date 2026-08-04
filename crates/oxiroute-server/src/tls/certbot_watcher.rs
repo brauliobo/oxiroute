@@ -3,9 +3,9 @@ use std::{
     fmt, io,
     path::{Path, PathBuf},
     sync::{
-        Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
+        Arc,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -13,7 +13,7 @@ use std::{
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 
-use super::{CertbotReconciler, certbot_reconcile::PublicationGate};
+use super::{certbot_reconcile::PublicationGate, CertbotReconciler};
 
 const MAX_RECONCILERS: usize = 256;
 const MIN_RESCAN_INTERVAL: Duration = Duration::from_secs(1);
@@ -560,8 +560,8 @@ mod tests {
     use std::sync::mpsc::TryRecvError;
 
     use notify::{
-        Event, EventKind,
         event::{AccessKind, AccessMode, Flag},
+        Event, EventKind,
     };
 
     use super::*;
