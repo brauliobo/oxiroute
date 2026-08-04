@@ -581,6 +581,9 @@ impl<T: AcmeTransport> AcmeClient<T> {
         self.policy.permits(&account.url)?;
         validate_account_status(&account.status)?;
         validate_account_contacts(&account.contacts)?;
+        if !account.terms_agreed {
+            return Err(AcmeError::TermsNotAgreed);
+        }
         self.account = Some(account);
         Ok(())
     }
@@ -1554,6 +1557,30 @@ mod tests {
             Err(AcmeError::PrivateOriginRequiresAllowlist)
         ));
         assert!(OriginPolicy::development_allowlist("https://127.0.0.1:14000/directory").is_ok());
+    }
+
+    #[test]
+    fn persisted_accounts_must_retain_explicit_terms_agreement() {
+        let transport = ScriptedTransport::new([directory("https://acme.test/directory")]);
+        let policy = OriginPolicy::strict("https://acme.test/directory").expect("policy");
+        let key = AccountKey::generate(AccountKeyAlgorithm::EcdsaP256).expect("key");
+        let mut client = AcmeClient::new(
+            transport,
+            "https://acme.test/directory",
+            policy,
+            key,
+            Arc::new(FakeClock::new(100)),
+        )
+        .expect("client");
+        assert!(matches!(
+            client.set_account(Account {
+                url: "https://acme.test/acme/acct/1".into(),
+                status: "valid".into(),
+                contacts: vec!["mailto:ops@example.test".into()],
+                terms_agreed: false,
+            }),
+            Err(AcmeError::TermsNotAgreed)
+        ));
     }
 
     #[test]
