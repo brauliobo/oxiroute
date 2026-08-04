@@ -80,7 +80,7 @@ Status meanings:
 | Metrics | Prometheus exposition | Supported | `oxiroute metrics`; `/metrics` is intentionally public for local scraping. Other statistics reads require the configured statistics admin token. |
 | Metrics | monitoring/topology | Supported | `oxiroute monitoring`, `oxiroute topology` |
 | Events | bounded list/follow | Supported | Cursor and limit are validated; follow polls and never requests an unbounded stream. |
-| Cache | purge | Route-level only | Configured reverse HTTP routes accept bearer-protected `PURGE` for an exact request key or configured surrogate tag. No separate CLI/API cache purge command is exposed. |
+| Cache | purge | Configured HTTP route or forward service | Configured reverse HTTP routes and forward HTTP/1 services accept bearer-protected `PURGE` for an exact request key or configured surrogate tag. No separate CLI/API cache purge command is exposed. |
 
 All mutations carry the exact active-generation revision. The CLI reads that revision immediately
 before issuing a mutation; the server acquires a generation mutation permit before resolving any

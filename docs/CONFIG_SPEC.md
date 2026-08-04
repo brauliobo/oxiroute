@@ -67,6 +67,9 @@ return {
       alpn = { "h2", "http/1.1" },
     },
   },
+  cache_stores = {
+    { name = "forward-cache", type = "memory" },
+  },
   listeners = {
     {
       name = "web",
@@ -203,6 +206,7 @@ return {
       },
       destination_policy = { deny_private = true },
       header_policy = { forwarded_for = "delete", via = "delete" },
+      cache = { store = "forward-cache" },
       resolver = {},
       audit_mode = "off",
     },
@@ -350,10 +354,21 @@ Current constraints:
   rules use method, source CIDR, destination-port, authenticated, local, link-local, manager, and
   all matchers with optional negation. Destination domain/CIDR rules apply to the complete DNS
   answer, deny rules override allow rules, and `deny_private` rejects non-public addresses. Resolver
-  cache/query/address/TTL limits, connection/body/header limits, connect/idle/lifetime deadlines,
-  header privacy, and metadata-only audit mode are explicit. H2 labels fail preparation because no
-  integrated listener implements them; H3 is available only through the UDP `forward_http3`
-  listener contract and its TLS 1.3/`h3` requirements.
+   cache/query/address/TTL limits, connection/body/header limits, connect/idle/lifetime deadlines,
+   header privacy, and metadata-only audit mode are explicit. H2 labels fail preparation because no
+   integrated listener implements them. Reverse H3 uses the UDP `http3` listener contract; forward
+   H3 uses `forward_http3`. Both require TLS 1.3 with only `h3` ALPN, and neither silently falls back
+   to another downstream protocol.
+- A forward service's optional `cache` references a named memory or persistent `cache_store`. Only
+  absolute-form H1 GET/HEAD requests with a safe request shape are eligible. CONNECT, unsafe methods,
+  ranges, conditionals, proxy/authenticated requests, cookies, private or `Set-Cookie` responses,
+  unsupported `Vary`, and oversized or incomplete responses bypass admission or fail closed. Cache
+  fills are collapsed and revalidated through the same bounded cache contract as reverse HTTP;
+  configured bearer-protected `PURGE` handles an exact request key or surrogate tag.
+- HTTP/3 reverse services require a bounded service and route request body, request buffering, no
+  response buffering, no cache, no retries, no gzip, no upgrade header mutation, and no static-file
+  action. The runtime uses bounded QUIC admission, field sections, streams, request bodies, and
+  response bodies; migration and 0-RTT are disabled.
 - `automatic_response_headers` defaults to true. When enabled, the runtime generates downstream
   HTTP/1 Date and Connection headers and HTTP/2 Date headers. When disabled, none of those headers
   are generated; mandatory HTTP/2 hop-header removal still applies.
@@ -437,7 +452,9 @@ HAProxy directives:
 - Dynamic request-header values are closed to appended X-Forwarded-For, downstream scheme, and one
   named incoming header. Values derived from request headers carry an explicit 1 through 8192 byte
   output bound. Hop-by-hop mutations remain forbidden except for the exact standard nginx WebSocket
-  pair, which is bounds-checked but left under Pingora's upgrade ownership.
+  pair, which is bounds-checked but left under Pingora's upgrade ownership. Proxy policies optionally
+  replace one canonical incoming path prefix with one canonical upstream path prefix while preserving
+  the request query.
 - Basic access loads one bounded no-follow regular htpasswd file with mode `0400`, `0600`, `0440`,
   or `0640` and accepts bcrypt `$2a$`/`$2b$`/`$2y$` and Apache APR1 `$apr1$` entries. Mixed schemes
   and bcrypt costs are supported; malformed salts/digests, duplicate users, excessive bcrypt costs,
@@ -521,6 +538,11 @@ tls_profiles = {
       session_timeout_seconds = nil,
       session_tickets = false,
       prefer_server_ciphers = true,
+      client_auth = {
+        mode = "disabled",
+        ca_certificate_path = nil,
+        allowed_dns_names = {},
+      },
     },
   },
 }
@@ -554,6 +576,18 @@ The current certificate and profile rules are:
   the server session cache and tickets, retain OpenSSL's default session timeout, and prefer server
   cipher order. `cipher_list`, `dh_parameters_path`, `session_cache`, and
   `session_timeout_seconds` override those defaults only when present.
+- Downstream client authentication defaults to `disabled`. `optional` requests a client certificate
+  but permits an absent certificate; `required` rejects the handshake when no certificate is sent.
+  Enabled modes require one bounded absolute `ca_certificate_path`. The CA bundle is read twice for
+  stable identical content, limited to 1 MiB and 128 CA certificates, and each certificate must be
+  current, unique, CA-capable, and usable by strict OpenSSL `SSL_CLIENT` chain validation. The
+  parsed bundle is retained in the immutable TLS profile generation; listener rotation does not
+  reread or mutate an existing connection's policy.
+- A client certificate must contain at least one exact DNS or IP SAN; the common name is never a
+  fallback. An empty `allowed_dns_names` list accepts any SAN-bearing certificate trusted by the
+  configured CA bundle. Otherwise at least one exact normalized SAN must be listed. Wildcard client
+  identities are rejected. Client-auth mode, CA presence, and allowed-identity count are reported
+  in redacted topology/status output; CA paths, SAN values, PEM, and private key material are not.
 - A shared `session_cache` has a 1-through-255-byte ASCII `name` and an exact `size_bytes`. Runtime
   planning estimates one session per 256 bytes, enables OpenSSL's bounded server cache, and derives
   a distinct 32-byte session-id context from the profile and cache names. DH parameter files are
@@ -686,10 +720,11 @@ same pool. All pools share a limit of 32 concurrent probes, and a server never o
 
 ### Cache policy timeline
 
-Canonical cache stores and per-route cache policies compile into the reverse HTTP runtime. Memory and
-descriptor-safe disk stores share the bounded cache contract below; disk lookup, touch, admission,
-revalidation, and purge work run through a bounded blocking-I/O executor. Unsupported request forms
-such as ranges and unsafe conditional preconditions bypass cache reuse and continue to the origin.
+Canonical cache stores and reverse per-route or forward per-service cache policies compile into the
+runtime. Memory and descriptor-safe disk stores share the bounded cache contract below; disk lookup,
+touch, admission, revalidation, and purge work run through a bounded blocking-I/O executor.
+Unsupported request forms such as ranges and unsafe conditional preconditions bypass cache reuse and
+continue to the origin.
 
 - A matching `status_ttls` entry overrides both origin freshness and `default_ttl_ms`.
 - Otherwise, explicit origin freshness is used when `use_origin_cache_control` is true; absent or
@@ -712,7 +747,10 @@ when its complete store configuration is unchanged.
 
 The active reverse HTTP slice admits GET and HEAD representations, preserves collapsed forwarding,
 origin revalidation, conditional `ETag`/`Last-Modified` hits, bounded surrogate tags, exact/base
-PURGE, and bearer-protected tag purge. A route using purge must also match the `PURGE` method.
+PURGE, and bearer-protected tag purge. The forward HTTP/1 slice uses the same bounded storage and
+timeline for eligible absolute-form GET/HEAD requests, including collapsed fills, origin
+revalidation, bounded streaming capture, exact/base PURGE, and listener cache outcome metrics. A
+route or forward service using purge must also configure bearer authorization.
 Range requests and `If-Match`, `If-Unmodified-Since`, `If-Range`, or streamed/upgraded responses
 are not admitted to the cache.
 
@@ -814,6 +852,12 @@ tls_profiles = {
 
 Secrets SHOULD be references to protected files, environment-independent secret stores,
 or plugin credentials. Canonical output MUST NOT inline private keys or DNS API tokens.
+
+The canonical managed source uses `challenge = "http01"` or `challenge = "dns01"`. DNS-01 sources
+must provide an exact statically linked provider name, a protected credential file, and a bounded
+`timeout_seconds` value. A wildcard DNS name is valid only with DNS-01; the configured
+`allowed_dns_suffixes` policy applies to the wildcard's base name. Credential contents are never
+rendered into API, event, metric, or UI state.
 
 ### RTMP service and recorder
 
