@@ -19,6 +19,7 @@ use openssl::{
     stack::Stack,
     x509::{X509NameBuilder, X509Req, X509ReqBuilder, extension::SubjectAlternativeName},
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 
@@ -420,7 +421,8 @@ pub struct AccountRequest {
     pub terms_agreed: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Account {
     pub url: String,
     pub status: String,
@@ -559,6 +561,17 @@ impl<T: AcmeTransport> AcmeClient<T> {
     #[must_use]
     pub const fn account(&self) -> Option<&Account> {
         self.account.as_ref()
+    }
+
+    /// Associates an already registered account with this client after validating its endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the persisted account URL is outside the directory origin policy.
+    pub fn set_account(&mut self, account: Account) -> Result<(), AcmeError> {
+        self.policy.permits(&account.url)?;
+        self.account = Some(account);
+        Ok(())
     }
 
     /// Registers an account once, refusing ambiguous replay after a transport failure.

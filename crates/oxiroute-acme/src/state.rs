@@ -1,9 +1,13 @@
 use std::{
+    collections::BTreeMap,
     fmt,
     fs::{self, File},
     io::{self, Read, Write},
     path::{Component, Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc, Mutex, OnceLock, Weak,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 #[cfg(not(unix))]
@@ -25,6 +29,7 @@ const PUBLIC_MODE: u32 = 0o644;
 const MAX_TEMP_ATTEMPTS: usize = 128;
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static SHARED_LOCKS: OnceLock<Mutex<BTreeMap<PathBuf, Weak<File>>>> = OnceLock::new();
 
 #[derive(Debug, thiserror::Error)]
 pub enum AcmeStateError {
@@ -176,7 +181,7 @@ impl fmt::Debug for CertificateMaterial {
 
 pub struct StateStore {
     root: PathBuf,
-    _lock: File,
+    _lock: Arc<File>,
 }
 
 impl fmt::Debug for StateStore {
@@ -203,7 +208,7 @@ impl StateStore {
         ensure_state_root(root)?;
 
         let lock_path = root.join(".lock");
-        let lock = open_lock(&lock_path)?;
+        let lock = shared_lock(root, &lock_path)?;
         Ok(Self {
             root: root.into(),
             _lock: lock,
@@ -370,13 +375,21 @@ impl StateStore {
     }
 }
 
+#[derive(Clone)]
 pub struct RevisionStore {
-    state: StateStore,
+    state: Arc<StateStore>,
 }
 
 impl RevisionStore {
     #[must_use]
     pub fn new(state: StateStore) -> Self {
+        Self {
+            state: Arc::new(state),
+        }
+    }
+
+    #[must_use]
+    pub fn from_arc(state: Arc<StateStore>) -> Self {
         Self { state }
     }
 
@@ -657,6 +670,19 @@ fn open_lock(path: &Path) -> Result<File, AcmeStateError> {
     }
 }
 
+fn shared_lock(root: &Path, path: &Path) -> Result<Arc<File>, AcmeStateError> {
+    let locks = SHARED_LOCKS.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut locks = locks
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(lock) = locks.get(root).and_then(Weak::upgrade) {
+        return Ok(lock);
+    }
+    let lock = Arc::new(open_lock(path)?);
+    locks.insert(root.to_owned(), Arc::downgrade(&lock));
+    Ok(lock)
+}
+
 fn open_private_temp(path: &Path) -> io::Result<File> {
     #[cfg(unix)]
     {
@@ -819,6 +845,14 @@ mod tests {
             assert_eq!(root_mode, 0o700);
             assert_eq!(key_mode, 0o600);
         }
+    }
+
+    #[test]
+    fn same_process_state_root_reuses_the_lock_for_generation_reload() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let first = StateStore::open(directory.path().join("state")).expect("first state");
+        let second = StateStore::open(directory.path().join("state")).expect("second state");
+        assert_eq!(first.root(), second.root());
     }
 
     #[test]
