@@ -4,7 +4,7 @@ main.console-shell(:aria-busy="activeView !== 'configuration' && monitoring === 
     .brand-block
       p.eyebrow Network control / telemetry
       h1 OxiRoute
-      p.deck {{ activeView === 'overview' ? 'Runtime observatory' : activeView === 'stats' ? 'HAProxy statistics' : 'Canonical configuration' }}
+      p.deck {{ viewTitles[activeView] }}
     .system-state(v-if="activeView !== 'configuration'" :class="{ alert: monitoringError && !monitoring, stale: isStale }" role="status" aria-live="polite")
       span.state-light(aria-hidden="true")
       span {{ monitoringStatus }}
@@ -24,10 +24,30 @@ main.console-shell(:aria-busy="activeView !== 'configuration' && monitoring === 
       @click="activateView('stats')"
     ) Statistics
     a(
+      href="#/operations"
+      :aria-current="activeView === 'operations' ? 'page' : undefined"
+      @click="activateView('operations')"
+    ) Operations
+    a(
+      href="#/certificates"
+      :aria-current="activeView === 'certificates' ? 'page' : undefined"
+      @click="activateView('certificates')"
+    ) Certificates
+    a(
+      href="#/events"
+      :aria-current="activeView === 'events' ? 'page' : undefined"
+      @click="activateView('events')"
+    ) Events
+    a(
       href="#/configuration"
       :aria-current="activeView === 'configuration' ? 'page' : undefined"
       @click="activateView('configuration')"
     ) Configuration
+    a(
+      href="#/provenance"
+      :aria-current="activeView === 'provenance' ? 'page' : undefined"
+      @click="activateView('provenance')"
+    ) Provenance
     form.management-auth(@submit.prevent="setManagementToken")
       label(for="management-access-token") Management token
       input#management-access-token(
@@ -88,6 +108,14 @@ main.console-shell(:aria-busy="activeView !== 'configuration' && monitoring === 
     |  Continuous recorder state remains visible, but this runtime does not accept start or stop commands.
 
   HaproxyStatsDashboard(v-if="activeView === 'stats' && monitoring" :monitoring="monitoring")
+
+  OperationsWorkspace(v-if="activeView === 'operations'" :token="managementToken" @unauthorized="clearManagementToken")
+
+  EventsWorkspace(v-if="activeView === 'events'" :token="managementToken" @unauthorized="clearManagementToken")
+
+  CertificatesWorkspace(v-if="activeView === 'certificates'" :token="managementToken" @unauthorized="clearManagementToken")
+
+  ProvenanceWorkspace(v-if="activeView === 'provenance'" :token="managementToken" @unauthorized="clearManagementToken")
 
   TopologyView(v-if="activeView === 'overview' && topology" :topology="topology")
 
@@ -316,12 +344,16 @@ main.console-shell(:aria-busy="activeView !== 'configuration' && monitoring === 
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 
 import ConfigurationWorkspace from './ConfigurationWorkspace.vue'
+import CertificatesWorkspace from './CertificatesWorkspace.vue'
+import EventsWorkspace from './EventsWorkspace.vue'
 import HaproxyStatsDashboard from './HaproxyStatsDashboard.vue'
 import { formatBytes, formatCount, formatTelemetryDuration } from './formatters'
 import RtmpRecorderPanel from './RtmpRecorderPanel.vue'
 import { recorderControlAction } from './recording'
 import { listenerStateLabels } from './runtimeStates'
 import TopologyView from './TopologyView.vue'
+import OperationsWorkspace from './OperationsWorkspace.vue'
+import ProvenanceWorkspace from './ProvenanceWorkspace.vue'
 import {
   ApiError,
   connectEventStream,
@@ -370,7 +402,17 @@ const listenerProtocolLabels: Record<ListenerProtocol, string> = {
   forward_http3: 'Forward H3',
 }
 
-type AppView = 'overview' | 'stats' | 'configuration'
+type AppView = 'overview' | 'stats' | 'operations' | 'certificates' | 'events' | 'configuration' | 'provenance'
+
+const viewTitles: Record<AppView, string> = {
+  overview: 'Runtime observatory',
+  stats: 'HAProxy statistics',
+  operations: 'Local operations',
+  certificates: 'Certificate inventory',
+  events: 'Operational event history',
+  configuration: 'Canonical configuration',
+  provenance: 'Source provenance',
+}
 
 const activeView = ref<AppView>(viewFromHash())
 const managementToken = ref('')
@@ -447,14 +489,19 @@ function refresh(): Promise<void> {
 
 function viewFromHash(): AppView {
   if (window.location.hash === '#/configuration') return 'configuration'
-  return window.location.hash === '#/stats' ? 'stats' : 'overview'
+  if (window.location.hash === '#/stats') return 'stats'
+  if (window.location.hash === '#/operations') return 'operations'
+  if (window.location.hash === '#/certificates') return 'certificates'
+  if (window.location.hash === '#/events') return 'events'
+  return window.location.hash === '#/provenance' ? 'provenance' : 'overview'
 }
 
 function activateView(view: AppView): void {
   activeView.value = view
-  if (view === 'overview' || view === 'stats') {
+  if (view !== 'configuration') {
     startMonitoring()
-  } else if (monitoringStarted) {
+    if (view !== 'overview' && view !== 'stats') stopEventStream()
+  } else {
     stopMonitoring()
   }
 }
@@ -465,9 +512,16 @@ function setManagementToken(): void {
   managementTokenInput.value = ''
   if (activeView.value !== 'configuration') {
     stopEventStream()
-    startEventStream()
+    if (activeView.value === 'overview' || activeView.value === 'stats') startEventStream()
     void refresh()
   }
+}
+
+function clearManagementToken(): void {
+  managementToken.value = ''
+  managementTokenInput.value = ''
+  monitoringError.value = 'Management token rejected. Enter a valid bearer token.'
+  stopEventStream()
 }
 
 function syncViewFromHash(): void {
@@ -475,9 +529,12 @@ function syncViewFromHash(): void {
 }
 
 function startMonitoring(): void {
-  if (monitoringStarted) return
+  if (monitoringStarted) {
+    if (activeView.value === 'overview' || activeView.value === 'stats') startEventStream()
+    return
+  }
   monitoringStarted = true
-  startEventStream()
+  if (activeView.value === 'overview' || activeView.value === 'stats') startEventStream()
   void refresh()
   refreshTimer = window.setInterval(() => void refresh(), REFRESH_INTERVAL_MS)
 }
@@ -758,6 +815,7 @@ onUnmounted(() => {
 
 .app-navigation {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   padding: 10px 0;
   border-bottom: 1px solid #34392f;
@@ -1727,7 +1785,7 @@ h2 {
 
   .app-navigation {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
   }
 
   .management-auth {

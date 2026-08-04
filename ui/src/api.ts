@@ -441,6 +441,8 @@ export type OperationalEventName =
   | 'listener_administrative_state'
   | 'pool_administrative_state'
   | 'server_update'
+  | 'certificate_renewal'
+  | 'certificate_activated'
   | 'unknown'
 
 export type OperationalEventOutcome =
@@ -450,6 +452,7 @@ export type OperationalEventOutcome =
   | 'quarantined'
   | 'requested'
   | 'applied'
+  | 'failed'
   | 'unknown'
 
 export interface OperationalEvent {
@@ -458,6 +461,7 @@ export interface OperationalEvent {
   event: OperationalEventName
   outcome: OperationalEventOutcome
   revision: string | null
+  certificate?: string
 }
 
 export interface EventStreamResyncRequired {
@@ -482,6 +486,7 @@ export interface EventStreamHandlers {
 
 export interface EventStreamOptions {
   signal?: AbortSignal
+  after?: number
   maxRetries?: number
   retryDelayMs?: number
   maxRetryDelayMs?: number
@@ -490,6 +495,140 @@ export interface EventStreamOptions {
 export interface EventStreamClient {
   close: () => void
   closed: Promise<void>
+}
+
+export interface RuntimeStatus {
+  schemaVersion: 1
+  buildVersion: string
+  diskRevision: string | null
+  candidateRevision: string | null
+  activeRevision: string | null
+  previousRevision: string | null
+  degraded: boolean
+  listeners: MonitoringListener[]
+}
+
+export interface GenerationStatus {
+  buildVersion: string
+  diskRevision: string | null
+  candidateRevision: string | null
+  activeRevision: string | null
+  previousRevision: string | null
+  quarantinedRevision: string | null
+  activeAccepting: boolean
+  degraded: boolean
+  lastFailure: string | null
+  prepares: number
+  activations: number
+  failures: number
+  rollbacks: number
+}
+
+export interface GenerationResponse {
+  generation: GenerationStatus
+}
+
+export interface ListenerInventoryResponse {
+  listeners: MonitoringListener[]
+}
+
+export interface PoolInventoryResponse {
+  pools: MonitoringPool[]
+}
+
+export interface ServerTarget {
+  pool: string
+  server: string
+}
+
+export interface ServerInventoryEntry {
+  pool: string
+  server: MonitoringPoolEndpoint
+}
+
+export interface ServerInventoryResponse {
+  servers: ServerInventoryEntry[]
+}
+
+export interface MutationResponse {
+  outcome: string
+  changed?: number
+}
+
+export interface DnsRefreshResult {
+  pool: string
+  server: string
+  outcome: 'refreshed' | 'failed'
+  addresses?: string[]
+  errorCode?: string
+}
+
+export interface DnsRefreshResponse {
+  outcome: 'refreshed' | 'partially_refreshed'
+  atomic: false
+  servers: DnsRefreshResult[]
+}
+
+export interface EventPage {
+  events: OperationalEvent[]
+  cursor: number
+  latestCursor: number
+  hasMore: boolean
+  oldestCursor: number | null
+}
+
+export interface TlsMaterialStatus {
+  activeContentRevision: string
+  expiresAt: string
+  activeArchiveRevision?: number
+  lastOutcome: string | null
+  lastErrorCode: string | null
+}
+
+export interface TlsManagedCertificateStatus {
+  certificate: string
+  directoryUrl: string
+  keyType: string
+  allowedDnsSuffixes: string[]
+  diskRevision: string
+  activeRevision: string
+  notBeforeUnixSeconds: number | null
+  notAfterUnixSeconds: number | null
+  nextActionUnixSeconds: number | null
+  notAfter: string
+  lastOutcome: string | null
+  lastErrorCode: string | null
+}
+
+export interface TlsCertificateInventory {
+  name: string
+  dnsNames: string[]
+  source: 'files' | 'certbot' | 'acme_managed' | 'self_signed_development'
+  developmentOnly: boolean
+  status: TlsMaterialStatus | TlsManagedCertificateStatus | null
+}
+
+export interface TlsInventory {
+  certificates: TlsCertificateInventory[]
+  watcher: CertbotWatcherSnapshot | null
+}
+
+export interface TlsOperationOutcome {
+  certificate: string
+  outcome: string
+  previousArchiveRevision?: string | null
+  archiveRevision?: string
+  diskRevision?: string
+  activeRevision?: string
+}
+
+export interface TlsReconcileResponse {
+  outcomes: TlsOperationOutcome[]
+}
+
+export interface TlsRenewResponse extends TlsOperationOutcome {
+  diskRevision: string
+  activeRevision: string
 }
 
 const EVENT_STREAM_PATH = '/api/v1/events/stream'
@@ -505,6 +644,8 @@ const OPERATIONAL_EVENT_NAMES: readonly OperationalEventName[] = [
   'listener_administrative_state',
   'pool_administrative_state',
   'server_update',
+  'certificate_renewal',
+  'certificate_activated',
   'unknown',
 ]
 const OPERATIONAL_EVENT_OUTCOMES: readonly OperationalEventOutcome[] = [
@@ -514,6 +655,7 @@ const OPERATIONAL_EVENT_OUTCOMES: readonly OperationalEventOutcome[] = [
   'quarantined',
   'requested',
   'applied',
+  'failed',
   'unknown',
 ]
 
@@ -566,23 +708,49 @@ export function parseEventStreamFrame(frame: string): EventStreamMessage | null 
   if (!isOperationalEventName(eventName) || !isRecord(payload)) return null
   const cursor = eventCursor(payload, 'cursor')
   const id = eventId === null ? null : parseEventCursor(eventId)
-  const timestampUnixMs = payload.timestampUnixMs === null
-    ? null
-    : safeInteger(payload.timestampUnixMs)
-      ? payload.timestampUnixMs
-      : undefined
-  const event = isOperationalEventName(payload.event) ? payload.event : null
-  const outcome = isOperationalEventOutcome(payload.outcome) ? payload.outcome : null
-  const revision = payload.revision === null
-    ? null
-    : typeof payload.revision === 'string'
-      ? payload.revision
-      : undefined
-  if (cursor === null || id !== cursor || timestampUnixMs === undefined || event !== eventName ||
-    outcome === null || revision === undefined) return null
+  const event = parseOperationalEvent(payload, eventName, cursor, id)
+  if (event === null) return null
   return {
     type: 'operational',
-    event: { cursor, timestampUnixMs, event, outcome, revision },
+    event,
+  }
+}
+
+function parseOperationalEvent(
+  value: Record<string, unknown>,
+  expectedName?: OperationalEventName,
+  expectedCursor?: number | null,
+  expectedId?: number | null,
+): OperationalEvent | null {
+  const cursor = eventCursor(value, 'cursor')
+  const timestampUnixMs = value.timestampUnixMs === null
+    ? null
+    : safeInteger(value.timestampUnixMs)
+      ? value.timestampUnixMs
+      : undefined
+  const event = isOperationalEventName(value.event) ? value.event : null
+  const outcome = isOperationalEventOutcome(value.outcome) ? value.outcome : null
+  const revision = value.revision === null
+    ? null
+    : typeof value.revision === 'string'
+      ? value.revision
+      : undefined
+  const certificate = value.certificate === undefined
+    ? undefined
+    : typeof value.certificate === 'string'
+      ? value.certificate
+      : null
+  if (cursor === null || (expectedCursor !== undefined && cursor !== expectedCursor) ||
+    (expectedId !== undefined && expectedId !== cursor) || timestampUnixMs === undefined ||
+    event === null || (expectedName !== undefined && event !== expectedName) || outcome === null ||
+    revision === undefined || certificate === null) return null
+  return {
+    cursor,
+    timestampUnixMs,
+    event,
+    outcome,
+    revision,
+    ...(certificate === undefined ? {} : { certificate }),
   }
 }
 
@@ -593,7 +761,7 @@ export function connectEventStream(
 ): EventStreamClient {
   const controller = new AbortController()
   let retryTimer: ReturnType<typeof setTimeout> | undefined
-  let lastEventId: number | null = null
+  let lastEventId: number | null = options.after ?? null
   let closed = false
   let resolveClosed!: () => void
   const closedPromise = new Promise<void>((resolve) => {
@@ -849,6 +1017,155 @@ export async function fetchTopology(signal?: AbortSignal, token?: string): Promi
   }))
 }
 
+export async function fetchStatus(token: string, signal?: AbortSignal): Promise<RuntimeStatus> {
+  return parseRuntimeStatus(await request<unknown>('/api/v1/status', {
+    cache: 'no-store',
+    headers: authorizationHeader(token),
+    signal,
+  }))
+}
+
+export async function fetchListeners(token: string, signal?: AbortSignal): Promise<ListenerInventoryResponse> {
+  return parseListenerInventory(await request<unknown>('/api/v1/listeners', {
+    cache: 'no-store',
+    headers: authorizationHeader(token),
+    signal,
+  }))
+}
+
+export async function fetchPools(token: string, signal?: AbortSignal): Promise<PoolInventoryResponse> {
+  return parsePoolInventory(await request<unknown>('/api/v1/pools', {
+    cache: 'no-store',
+    headers: authorizationHeader(token),
+    signal,
+  }))
+}
+
+export async function fetchServers(token: string, signal?: AbortSignal): Promise<ServerInventoryResponse> {
+  return parseServerInventory(await request<unknown>('/api/v1/servers', {
+    cache: 'no-store',
+    headers: authorizationHeader(token),
+    signal,
+  }))
+}
+
+export async function fetchGenerations(token: string, signal?: AbortSignal): Promise<GenerationResponse> {
+  return parseGenerationResponse(await request<unknown>('/api/v1/generations', {
+    cache: 'no-store',
+    headers: authorizationHeader(token),
+    signal,
+  }))
+}
+
+export async function fetchEvents(
+  after: number,
+  limit: number,
+  token: string,
+  signal?: AbortSignal,
+): Promise<EventPage> {
+  return parseEventPage(await request<unknown>(
+    `/api/v1/events?after=${after}&limit=${limit}`,
+    {
+      cache: 'no-store',
+      headers: authorizationHeader(token),
+      signal,
+    },
+  ))
+}
+
+export async function fetchTlsInventory(token: string, signal?: AbortSignal): Promise<TlsInventory> {
+  return parseTlsInventory(await request<unknown>('/api/v1/tls', {
+    cache: 'no-store',
+    headers: authorizationHeader(token),
+    signal,
+  }))
+}
+
+export async function setListenerAdministrativeState(
+  listeners: string[], state: AdministrativeState, expectedActiveRevision: string, token: string,
+): Promise<MutationResponse> {
+  return postRevisionMutation('/api/v1/listeners/administrative-state', { listeners, state }, expectedActiveRevision, token)
+}
+
+export async function setPoolAdministrativeState(
+  pools: string[], state: AdministrativeState, expectedActiveRevision: string, token: string,
+): Promise<MutationResponse> {
+  return postRevisionMutation('/api/v1/pools/administrative-state', { pools, state }, expectedActiveRevision, token)
+}
+
+export async function setServerAdministrativeState(
+  targets: ServerTarget[], state: AdministrativeState, expectedActiveRevision: string, token: string,
+): Promise<MutationResponse> {
+  return postRevisionMutation('/api/v1/servers/administrative-state', { targets, state }, expectedActiveRevision, token)
+}
+
+export async function setServerHealthOverride(
+  targets: ServerTarget[], health: HealthOverride, expectedActiveRevision: string, token: string,
+): Promise<MutationResponse> {
+  return postRevisionMutation('/api/v1/servers/health-override', { targets, health }, expectedActiveRevision, token)
+}
+
+export async function setServerChecks(
+  targets: ServerTarget[], enabled: boolean, expectedActiveRevision: string, token: string,
+): Promise<MutationResponse> {
+  return postRevisionMutation('/api/v1/servers/checks', { targets, enabled }, expectedActiveRevision, token)
+}
+
+export async function setServerMaxConnections(
+  targets: ServerTarget[], maxConnections: number | null, expectedActiveRevision: string, token: string,
+): Promise<MutationResponse> {
+  return putRevisionMutation('/api/v1/servers/max-connections', { targets, maxConnections }, expectedActiveRevision, token)
+}
+
+export async function refreshServerDns(
+  targets: ServerTarget[], expectedActiveRevision: string, token: string,
+): Promise<DnsRefreshResponse> {
+  return parseDnsRefreshResponse(await request<unknown>('/api/v1/servers/refresh-dns', {
+    method: 'POST', headers: mutationHeaders(token),
+    body: JSON.stringify({ targets, expectedActiveRevision }),
+  }))
+}
+
+export async function reloadGeneration(expectedActiveRevision: string, token: string): Promise<MutationResponse> {
+  return postRevisionMutation('/api/v1/generations/reload', {}, expectedActiveRevision, token)
+}
+
+export async function rollbackGeneration(expectedActiveRevision: string, token: string): Promise<MutationResponse> {
+  return postRevisionMutation('/api/v1/generations/rollback', {}, expectedActiveRevision, token)
+}
+
+export async function drainGeneration(
+  expectedActiveRevision: string, token: string, timeoutMs?: number,
+): Promise<MutationResponse> {
+  return postRevisionMutation('/api/v1/generations/drain', timeoutMs === undefined ? {} : { timeoutMs }, expectedActiveRevision, token)
+}
+
+export async function reconcileTls(
+  expectedActiveRevision: string, token: string, certificate?: string,
+): Promise<TlsReconcileResponse> {
+  return parseTlsReconcileResponse(await request<unknown>('/api/v1/tls/reconcile', {
+    method: 'POST', headers: mutationHeaders(token),
+    body: JSON.stringify({ expectedActiveRevision, ...(certificate ? { certificate } : {}) }),
+  }))
+}
+
+export async function renewManagedCertificate(
+  expectedActiveRevision: string, token: string, certificate: string,
+): Promise<TlsRenewResponse> {
+  return parseTlsRenewResponse(await request<unknown>('/api/v1/tls/renew', {
+    method: 'POST', headers: mutationHeaders(token),
+    body: JSON.stringify({ expectedActiveRevision, certificate }),
+  }))
+}
+
+export async function drainProcess(expectedActiveRevision: string, token: string): Promise<MutationResponse> {
+  return postRevisionMutation('/api/v1/process/drain', {}, expectedActiveRevision, token)
+}
+
+export async function shutdownProcess(expectedActiveRevision: string, token: string): Promise<MutationResponse> {
+  return postRevisionMutation('/api/v1/process/shutdown', {}, expectedActiveRevision, token)
+}
+
 export async function fetchConfig(token: string, signal?: AbortSignal): Promise<ConfigSnapshot> {
   return parseConfigSnapshot(await request<unknown>('/api/v1/config', {
     cache: 'no-store',
@@ -907,6 +1224,28 @@ export async function setRecording(
   ))
 }
 
+async function postRevisionMutation(
+  url: string, body: Record<string, unknown>, expectedActiveRevision: string, token: string,
+): Promise<MutationResponse> {
+  return parseMutationResponse(await request<unknown>(url, {
+    method: 'POST', headers: mutationHeaders(token),
+    body: JSON.stringify({ ...body, expectedActiveRevision }),
+  }))
+}
+
+async function putRevisionMutation(
+  url: string, body: Record<string, unknown>, expectedActiveRevision: string, token: string,
+): Promise<MutationResponse> {
+  return parseMutationResponse(await request<unknown>(url, {
+    method: 'PUT', headers: mutationHeaders(token),
+    body: JSON.stringify({ ...body, expectedActiveRevision }),
+  }))
+}
+
+function mutationHeaders(token: string): Record<string, string> {
+  return { ...authorizationHeader(token), 'Content-Type': 'application/json' }
+}
+
 async function fetchActiveRevision(token: string): Promise<string> {
   const value = await request<unknown>('/api/v1/generations', {
     cache: 'no-store',
@@ -959,6 +1298,255 @@ function apiErrorCode(value: unknown): string | null {
   return isRecord(value) && isRecord(value.error) && typeof value.error.code === 'string'
     ? value.error.code
     : null
+}
+
+function parseRuntimeStatus(value: unknown): RuntimeStatus {
+  if (!isRecord(value) || value.schemaVersion !== 1 || typeof value.buildVersion !== 'string' ||
+    !nullableRevision(value.diskRevision) || !nullableRevision(value.candidateRevision) ||
+    !nullableRevision(value.activeRevision) || !nullableRevision(value.previousRevision) ||
+    typeof value.degraded !== 'boolean' || !Array.isArray(value.listeners) ||
+    !value.listeners.every(monitoringListener)
+  ) return invalidPayload('runtime status')
+  return value as unknown as RuntimeStatus
+}
+
+function parseListenerInventory(value: unknown): ListenerInventoryResponse {
+  if (!isRecord(value) || !Array.isArray(value.listeners) || !value.listeners.every(monitoringListener)) {
+    return invalidPayload('listener inventory')
+  }
+  return value as unknown as ListenerInventoryResponse
+}
+
+function parsePoolInventory(value: unknown): PoolInventoryResponse {
+  if (!isRecord(value) || !Array.isArray(value.pools) || !value.pools.every(monitoringPool)) {
+    return invalidPayload('pool inventory')
+  }
+  return value as unknown as PoolInventoryResponse
+}
+
+function parseServerInventory(value: unknown): ServerInventoryResponse {
+  if (!isRecord(value) || !Array.isArray(value.servers) || !value.servers.every(serverInventoryEntry)) {
+    return invalidPayload('server inventory')
+  }
+  return value as unknown as ServerInventoryResponse
+}
+
+function parseGenerationResponse(value: unknown): GenerationResponse {
+  if (!isRecord(value) || !generationStatus(value.generation)) return invalidPayload('generation status')
+  return { generation: value.generation }
+}
+
+function parseEventPage(value: unknown): EventPage {
+  if (!isRecord(value) || !Array.isArray(value.events) ||
+    !value.events.every((event) => isRecord(event) && parseOperationalEvent(event) !== null) ||
+    !safeInteger(value.cursor) || typeof value.hasMore !== 'boolean' ||
+    !(value.oldestCursor === null || safeInteger(value.oldestCursor))
+  ) return invalidPayload('event history')
+  const events = value.events.map((event) => parseOperationalEvent(event as Record<string, unknown>))
+  if (events.some((event): event is null => event === null)) return invalidPayload('event history')
+  return {
+    events: events as OperationalEvent[],
+    cursor: value.cursor,
+    latestCursor: value.latestCursor === undefined
+      ? value.cursor
+      : parseEventCursor(value.latestCursor) ?? invalidEventPage(),
+    hasMore: value.hasMore,
+    oldestCursor: value.oldestCursor,
+  }
+}
+
+function parseTlsInventory(value: unknown): TlsInventory {
+  if (!isRecord(value) || !Array.isArray(value.certificates) ||
+    !value.certificates.every(tlsCertificateInventory) ||
+    !(value.watcher === null || certbotWatcher(value.watcher))
+  ) return invalidPayload('TLS inventory')
+  return {
+    certificates: value.certificates.map((certificate) => normalizeTlsCertificate(certificate as Record<string, unknown>)),
+    watcher: value.watcher as CertbotWatcherSnapshot | null,
+  }
+}
+
+function parseMutationResponse(value: unknown): MutationResponse {
+  if (!isRecord(value) || typeof value.outcome !== 'string' ||
+    (value.changed !== undefined && !safeInteger(value.changed))
+  ) return invalidPayload('management mutation')
+  return { outcome: value.outcome, ...(value.changed === undefined ? {} : { changed: value.changed }) }
+}
+
+function parseDnsRefreshResponse(value: unknown): DnsRefreshResponse {
+  if (!isRecord(value) || !['refreshed', 'partially_refreshed'].includes(String(value.outcome)) ||
+    value.atomic !== false || !Array.isArray(value.servers) || !value.servers.every(dnsRefreshResult)
+  ) return invalidPayload('DNS refresh')
+  return {
+    outcome: value.outcome as DnsRefreshResponse['outcome'],
+    atomic: false,
+    servers: value.servers.map((server) => normalizeDnsRefreshResult(server as Record<string, unknown>)),
+  }
+}
+
+function parseTlsReconcileResponse(value: unknown): TlsReconcileResponse {
+  if (!isRecord(value) || !Array.isArray(value.outcomes) || !value.outcomes.every(tlsOperationOutcome)) {
+    return invalidPayload('TLS reconciliation')
+  }
+  return { outcomes: value.outcomes.map((outcome) => normalizeTlsOperationOutcome(outcome as Record<string, unknown>)) }
+}
+
+function parseTlsRenewResponse(value: unknown): TlsRenewResponse {
+  if (!tlsOperationOutcome(value) || typeof value.diskRevision !== 'string' ||
+    typeof value.activeRevision !== 'string'
+  ) return invalidPayload('TLS renewal')
+  return {
+    ...normalizeTlsOperationOutcome(value),
+    diskRevision: value.diskRevision,
+    activeRevision: value.activeRevision,
+  }
+}
+
+function nullableRevision(value: unknown): value is string | null {
+  return value === null || typeof value === 'string'
+}
+
+function generationStatus(value: unknown): value is GenerationStatus {
+  return isRecord(value) && typeof value.buildVersion === 'string' &&
+    nullableRevision(value.diskRevision) && nullableRevision(value.candidateRevision) &&
+    nullableRevision(value.activeRevision) && nullableRevision(value.previousRevision) &&
+    nullableRevision(value.quarantinedRevision) && typeof value.activeAccepting === 'boolean' &&
+    typeof value.degraded === 'boolean' && nullableString(value.lastFailure) &&
+    safeInteger(value.prepares) && safeInteger(value.activations) && safeInteger(value.failures) &&
+    safeInteger(value.rollbacks)
+}
+
+function serverInventoryEntry(value: unknown): value is ServerInventoryEntry {
+  return isRecord(value) && typeof value.pool === 'string' && monitoringPoolEndpoint(value.server)
+}
+
+function monitoringPoolEndpoint(value: unknown): value is MonitoringPoolEndpoint {
+  return isRecord(value) && typeof value.address === 'string' && typeof value.name === 'string' &&
+    decimalString(value.activeConnections) && ['ready', 'drain', 'maintenance'].includes(String(value.administrativeState)) &&
+    typeof value.checksEnabled === 'boolean' && typeof value.checksRunning === 'boolean' &&
+    (value.configuredMaxConnections === null || safeInteger(value.configuredMaxConnections)) &&
+    ['auto', 'up', 'down'].includes(String(value.healthOverride)) &&
+    (value.maxConnections === null || safeInteger(value.maxConnections)) &&
+    ['unchecked', 'unknown', 'healthy', 'unhealthy'].includes(String(value.state)) &&
+    nullableSafeInteger(value.lastCheckedAtUnixMs) && nullableSafeInteger(value.lastTransitionAtUnixMs) &&
+    decimalString(value.successfulChecks) && decimalString(value.failedChecks) &&
+    decimalString(value.consecutiveSuccesses) && decimalString(value.consecutiveFailures) &&
+    (value.lastFailure === null || ['timeout', 'connect_failed', 'unexpected_status', 'protocol_error'].includes(String(value.lastFailure)))
+}
+
+function tlsCertificateInventory(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value) || typeof value.name !== 'string' || !Array.isArray(value.dnsNames) ||
+    !value.dnsNames.every((name) => typeof name === 'string') ||
+    !['files', 'certbot', 'acme_managed', 'self_signed_development'].includes(String(value.source)) ||
+    typeof value.developmentOnly !== 'boolean'
+  ) return false
+  if (value.status === null) return true
+  if (!isRecord(value.status)) return false
+  return value.source === 'acme_managed' ? tlsManagedCertificateStatus(value.status) : tlsMaterialStatus(value.status)
+}
+
+function tlsMaterialStatus(value: unknown): value is Record<string, unknown> & TlsMaterialStatus {
+  return isRecord(value) && typeof value.activeContentRevision === 'string' && typeof value.expiresAt === 'string' &&
+    (value.activeArchiveRevision === undefined || safeInteger(value.activeArchiveRevision)) &&
+    (value.lastOutcome === undefined || nullableString(value.lastOutcome)) &&
+    (value.lastErrorCode === undefined || nullableString(value.lastErrorCode))
+}
+
+function tlsManagedCertificateStatus(value: unknown): value is Record<string, unknown> & TlsManagedCertificateStatus {
+  return isRecord(value) && typeof value.certificate === 'string' && typeof value.directoryUrl === 'string' &&
+    typeof value.keyType === 'string' && Array.isArray(value.allowedDnsSuffixes) && value.allowedDnsSuffixes.every((suffix) => typeof suffix === 'string') &&
+    typeof value.diskRevision === 'string' && typeof value.activeRevision === 'string' &&
+    nullableSafeInteger(value.notBeforeUnixSeconds) && nullableSafeInteger(value.notAfterUnixSeconds) &&
+    nullableSafeInteger(value.nextActionUnixSeconds) && typeof value.notAfter === 'string' &&
+    nullableString(value.lastOutcome) && nullableString(value.lastErrorCode)
+}
+
+function normalizeTlsCertificate(value: Record<string, unknown>): TlsCertificateInventory {
+  const status = value.status === null
+    ? null
+    : value.source === 'acme_managed'
+      ? normalizeTlsManagedStatus(value.status as Record<string, unknown>)
+      : normalizeTlsMaterialStatus(value.status as Record<string, unknown>)
+  return {
+    name: value.name as string,
+    dnsNames: value.dnsNames as string[],
+    source: value.source as TlsCertificateInventory['source'],
+    developmentOnly: value.developmentOnly as boolean,
+    status,
+  }
+}
+
+function normalizeTlsMaterialStatus(value: Record<string, unknown>): TlsMaterialStatus {
+  return {
+    activeContentRevision: value.activeContentRevision as string,
+    expiresAt: value.expiresAt as string,
+    ...(value.activeArchiveRevision === undefined ? {} : { activeArchiveRevision: value.activeArchiveRevision as number }),
+    lastOutcome: value.lastOutcome as string | null | undefined ?? null,
+    lastErrorCode: value.lastErrorCode as string | null | undefined ?? null,
+  }
+}
+
+function normalizeTlsManagedStatus(value: Record<string, unknown>): TlsManagedCertificateStatus {
+  return {
+    certificate: value.certificate as string,
+    directoryUrl: value.directoryUrl as string,
+    keyType: value.keyType as string,
+    allowedDnsSuffixes: value.allowedDnsSuffixes as string[],
+    diskRevision: value.diskRevision as string,
+    activeRevision: value.activeRevision as string,
+    notBeforeUnixSeconds: value.notBeforeUnixSeconds as number | null,
+    notAfterUnixSeconds: value.notAfterUnixSeconds as number | null,
+    nextActionUnixSeconds: value.nextActionUnixSeconds as number | null,
+    notAfter: value.notAfter as string,
+    lastOutcome: value.lastOutcome as string | null,
+    lastErrorCode: value.lastErrorCode as string | null,
+  }
+}
+
+function dnsRefreshResult(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && typeof value.pool === 'string' && typeof value.server === 'string' &&
+    ['refreshed', 'failed'].includes(String(value.outcome)) &&
+    (value.addresses === undefined || (Array.isArray(value.addresses) && value.addresses.every((address) => typeof address === 'string'))) &&
+    (value.error === undefined || (isRecord(value.error) && typeof value.error.code === 'string'))
+}
+
+function normalizeDnsRefreshResult(value: Record<string, unknown>): DnsRefreshResult {
+  return {
+    pool: value.pool as string,
+    server: value.server as string,
+    outcome: value.outcome as DnsRefreshResult['outcome'],
+    ...(value.addresses === undefined ? {} : { addresses: value.addresses as string[] }),
+    ...(value.error === undefined ? {} : { errorCode: (value.error as Record<string, unknown>).code as string }),
+  }
+}
+
+function tlsOperationOutcome(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value) || typeof value.certificate !== 'string' || typeof value.outcome !== 'string') return false
+  return optionalStringOrNull(value.previousArchiveRevision) && optionalString(value.archiveRevision) &&
+    optionalString(value.diskRevision) && optionalString(value.activeRevision)
+}
+
+function normalizeTlsOperationOutcome(value: Record<string, unknown>): TlsOperationOutcome {
+  return {
+    certificate: value.certificate as string,
+    outcome: value.outcome as string,
+    ...(value.previousArchiveRevision === undefined ? {} : { previousArchiveRevision: value.previousArchiveRevision as string | null }),
+    ...(value.archiveRevision === undefined ? {} : { archiveRevision: value.archiveRevision as string }),
+    ...(value.diskRevision === undefined ? {} : { diskRevision: value.diskRevision as string }),
+    ...(value.activeRevision === undefined ? {} : { activeRevision: value.activeRevision as string }),
+  }
+}
+
+function optionalString(value: unknown): boolean {
+  return value === undefined || typeof value === 'string'
+}
+
+function optionalStringOrNull(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === 'string'
+}
+
+function invalidEventPage(): never {
+  return invalidPayload('event history')
 }
 
 function parseRtmpCatalog(value: unknown): RtmpCatalog {
