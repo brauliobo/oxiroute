@@ -12,6 +12,7 @@ fn cache_memory_reverse_http_is_integrated_but_broader_cache_remains_foundationa
     let expected = [
         "component.cache-core",
         "component.cache-memory-reverse-http",
+        "component.cache-persistent-reverse-http",
         "component.forward-proxy-h1",
         "component.forward-proxy-h2",
         "component.forward-proxy-h3",
@@ -31,7 +32,9 @@ fn cache_memory_reverse_http_is_integrated_but_broader_cache_remains_foundationa
         assert!(entry.gates.tests.0, "{} tests gate", entry.id);
         if matches!(
             entry.id.as_str(),
-            "component.cache-memory-reverse-http" | "component.forward-proxy-h1"
+            "component.cache-memory-reverse-http"
+                | "component.cache-persistent-reverse-http"
+                | "component.forward-proxy-h1"
         ) {
             assert_eq!(entry.status, ComponentStatus::Integrated);
             assert!(entry.gates.canonical.0, "{} canonical gate", entry.id);
