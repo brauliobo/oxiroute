@@ -1,7 +1,10 @@
 use std::{
     collections::BTreeSet,
     io,
-    sync::{Arc, Mutex, TryLockError},
+    sync::{
+        Arc, Mutex, TryLockError,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -12,9 +15,9 @@ use openssl::{
 use oxiroute_acme::{
     Account, AccountKey, AccountKeyAlgorithm, AcmeClient, AcmeError, AcmeStateError, AcmeTransport,
     AuthorizationStatus, CertificateMaterial, ChallengeRecord, ChallengeStore, ChallengeStoreError,
-    JobState, JobStatus, LeafKeyAlgorithm, OriginPolicy, PollPolicy, RedactedOutcome,
-    RevisionMetadata, RevisionStore, SecretBytes, StateStore, SystemAcmeTransport, SystemClock,
-    renewal_due, stable_renewal_time,
+    JobState, JobStatus, LeafKeyAlgorithm, MAX_JOB_BYTES, OriginPolicy, PollPolicy,
+    RedactedOutcome, RevisionMetadata, RevisionStore, SecretBytes, StateStore, SystemAcmeTransport,
+    SystemClock, renewal_due, stable_renewal_time,
 };
 use oxiroute_config::{AcmeKeyType, SelfSignedKeyType};
 use serde::{Deserialize, Serialize};
@@ -22,6 +25,10 @@ use serde::{Deserialize, Serialize};
 use super::{
     ActiveCertificateGeneration, CertificateGeneration, MAX_CERTIFICATE_CHAIN_BYTES, TlsBuildError,
 };
+
+static NEXT_JOB_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+const ACME_RETRY_BASE_SECONDS: u64 = 5 * 60;
+const ACME_RETRY_MAX_SECONDS: u64 = 12 * 60 * 60;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AcmeManagedOutcome {
@@ -110,8 +117,11 @@ pub struct AcmeManagedStatus {
     pub not_after_unix_seconds: Option<u64>,
     pub next_action_unix_seconds: Option<u64>,
     pub not_after: String,
+    pub job_status: Option<JobStatus>,
+    pub retry_attempt: u32,
+    pub last_success_unix_seconds: Option<u64>,
     pub last_outcome: Option<&'static str>,
-    pub last_error_code: Option<&'static str>,
+    pub last_error_code: Option<String>,
 }
 
 struct ReconcileState {
@@ -119,8 +129,15 @@ struct ReconcileState {
     not_before_unix_seconds: Option<u64>,
     not_after_unix_seconds: Option<u64>,
     next_action_unix_seconds: Option<u64>,
+    retry_attempt: u32,
+    retry_at_unix_seconds: Option<u64>,
+    suggested_renewal_unix_seconds: Option<u64>,
+    account_url: Option<String>,
+    renewal_info_url: Option<String>,
+    job_status: Option<JobStatus>,
+    last_success_unix_seconds: Option<u64>,
     last_outcome: Option<&'static str>,
-    last_error_code: Option<&'static str>,
+    last_error_code: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -128,6 +145,25 @@ struct ReconcileState {
 struct PersistedAccount {
     directory_url: String,
     account: Account,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PersistedRenewal {
+    certificate: String,
+    identifiers: Vec<String>,
+    directory_url: String,
+    account_url: Option<String>,
+    authenticator: String,
+    key_type: String,
+    next_action_unix_seconds: Option<u64>,
+    retry_at_unix_seconds: Option<u64>,
+    retry_attempt: u32,
+    suggested_renewal_unix_seconds: Option<u64>,
+    renewal_info_url: Option<String>,
+    last_success_unix_seconds: Option<u64>,
+    #[serde(default)]
+    last_error_code: Option<String>,
 }
 
 /// Owns the managed state root for one certificate and publishes only validated revisions.
@@ -222,14 +258,55 @@ impl AcmeManagedReconciler {
         active: Arc<ActiveCertificateGeneration>,
     ) -> Self {
         let certificate = certificate.into();
-        let next_action_unix_seconds = if initial_issuance_due {
-            Some(0)
+        let persisted = if initial_issuance_due {
+            None
         } else {
-            not_before_unix_seconds.and_then(|not_before| {
-                not_after_unix_seconds
-                    .and_then(|not_after| stable_renewal_time(not_before, not_after, &certificate))
+            read_persisted_renewal(&revisions, &certificate).filter(|renewal| {
+                renewal.certificate == certificate
+                    && renewal.identifiers == declared_dns_names
+                    && renewal.directory_url == policy.directory_url
+                    && renewal.authenticator == "http01"
+                    && renewal.key_type == key_type_string(policy.key_type)
             })
         };
+        let next_action_unix_seconds = persisted
+            .as_ref()
+            .and_then(|renewal| renewal.next_action_unix_seconds)
+            .or_else(|| {
+                if initial_issuance_due {
+                    Some(0)
+                } else {
+                    not_before_unix_seconds.and_then(|not_before| {
+                        not_after_unix_seconds.and_then(|not_after| {
+                            stable_renewal_time(not_before, not_after, &certificate)
+                        })
+                    })
+                }
+            });
+        let retry_attempt = persisted
+            .as_ref()
+            .map_or(0, |renewal| renewal.retry_attempt);
+        let retry_at_unix_seconds = persisted
+            .as_ref()
+            .and_then(|renewal| renewal.retry_at_unix_seconds);
+        let suggested_renewal_unix_seconds = persisted
+            .as_ref()
+            .and_then(|renewal| renewal.suggested_renewal_unix_seconds);
+        let account_url = persisted
+            .as_ref()
+            .and_then(|renewal| renewal.account_url.clone());
+        let renewal_info_url = persisted
+            .as_ref()
+            .and_then(|renewal| renewal.renewal_info_url.clone());
+        let last_success_unix_seconds = persisted
+            .as_ref()
+            .and_then(|renewal| renewal.last_success_unix_seconds);
+        let last_error_code = persisted
+            .as_ref()
+            .and_then(|renewal| renewal.last_error_code.as_deref())
+            .filter(|code| is_known_error_code(code))
+            .map(str::to_owned);
+        let last_outcome = Some(AcmeManagedOutcome::Loaded.code());
         Self {
             certificate,
             declared_dns_names,
@@ -243,8 +320,15 @@ impl AcmeManagedReconciler {
                 not_before_unix_seconds,
                 not_after_unix_seconds,
                 next_action_unix_seconds,
-                last_outcome: Some(AcmeManagedOutcome::Loaded.code()),
-                last_error_code: None,
+                retry_attempt,
+                retry_at_unix_seconds,
+                suggested_renewal_unix_seconds,
+                account_url,
+                renewal_info_url,
+                job_status: None,
+                last_success_unix_seconds,
+                last_outcome,
+                last_error_code,
             }),
         }
     }
@@ -281,8 +365,11 @@ impl AcmeManagedReconciler {
             not_after_unix_seconds: state.not_after_unix_seconds,
             next_action_unix_seconds: state.next_action_unix_seconds,
             not_after: generation.metadata().validity.not_after.clone(),
+            job_status: state.job_status.clone(),
+            retry_attempt: state.retry_attempt,
+            last_success_unix_seconds: state.last_success_unix_seconds,
             last_outcome: state.last_outcome,
-            last_error_code: state.last_error_code,
+            last_error_code: state.last_error_code.clone(),
         }
     }
 
@@ -299,9 +386,12 @@ impl AcmeManagedReconciler {
             return true;
         }
         match (state.not_before_unix_seconds, state.not_after_unix_seconds) {
-            (Some(not_before), Some(not_after)) => {
-                renewal_due(now_unix_seconds, not_before, not_after, None)
-            }
+            (Some(not_before), Some(not_after)) => renewal_due(
+                now_unix_seconds,
+                not_before,
+                not_after,
+                state.suggested_renewal_unix_seconds,
+            ),
             _ => false,
         }
     }
@@ -338,7 +428,7 @@ impl AcmeManagedReconciler {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.last_outcome = None;
-            state.last_error_code = Some("invalid_candidate");
+            state.last_error_code = Some("invalid_candidate".into());
         })?;
         let expected = self.active.snapshot();
         let disk_revision = material.metadata.revision.clone();
@@ -392,7 +482,9 @@ impl AcmeManagedReconciler {
             Err(TryLockError::WouldBlock) => return Err(AcmeManagedError::Busy),
         };
         let now = unix_now();
-        let job_id = format!("renew-{now}");
+        let sequence = NEXT_JOB_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let job_id = format!("renew-{now}-{sequence}");
+        self.set_job_status(Some(JobStatus::Queued));
         self.write_job(&job_id, JobStatus::Queued, now, 0, None, None, None, None)
             .map_err(AcmeManagedError::State)?;
         let result = self.renew_inner(transport, &job_id, now);
@@ -400,6 +492,7 @@ impl AcmeManagedReconciler {
             Ok(outcome) => {
                 let status = self.status();
                 self.set_outcome(Some(outcome.code()), None);
+                self.set_job_status(Some(JobStatus::Succeeded));
                 self.write_job(
                     &job_id,
                     JobStatus::Succeeded,
@@ -417,20 +510,35 @@ impl AcmeManagedReconciler {
             }
             Err(error) => {
                 self.set_outcome(None, Some(error.code()));
+                let retry_error = self.schedule_retry(unix_now()).err();
+                if retry_error.is_some() {
+                    self.set_outcome(None, Some("state_failed"));
+                }
+                self.set_job_status(Some(JobStatus::Failed));
                 let status = self.status();
-                let _ = self.write_job(
-                    &job_id,
-                    JobStatus::Failed,
-                    unix_now(),
-                    1,
-                    None,
-                    Some(status.disk_revision),
-                    Some(status.active_revision),
-                    Some(RedactedOutcome::new(
-                        error.code(),
-                        "managed ACME renewal failed",
-                    )),
-                );
+                let outcome_code = if retry_error.is_some() {
+                    "state_failed"
+                } else {
+                    error.code()
+                };
+                let job_error = self
+                    .write_job(
+                        &job_id,
+                        JobStatus::Failed,
+                        unix_now(),
+                        1,
+                        None,
+                        Some(status.disk_revision),
+                        Some(status.active_revision),
+                        Some(RedactedOutcome::new(
+                            outcome_code,
+                            "managed ACME renewal failed",
+                        )),
+                    )
+                    .err();
+                if let Some(state_error) = retry_error.or(job_error) {
+                    return Err(AcmeManagedError::State(state_error));
+                }
             }
         }
         result
@@ -454,6 +562,7 @@ impl AcmeManagedReconciler {
             None,
         )
         .map_err(AcmeManagedError::State)?;
+        self.set_job_status(Some(JobStatus::Running));
         let key_algorithm = account_key_algorithm(self.policy.key_type);
         let account_key_path = format!("accounts/{}/account-key.pem", self.certificate);
         let account_key = match self
@@ -525,6 +634,18 @@ impl AcmeManagedReconciler {
             })
             .map_err(AcmeManagedError::Protocol)?;
         for (index, authorization_url) in order.authorizations.iter().enumerate() {
+            self.set_job_status(Some(JobStatus::WaitingForChallenge));
+            self.write_job(
+                job_id,
+                JobStatus::WaitingForChallenge,
+                unix_now(),
+                1,
+                None,
+                None,
+                None,
+                None,
+            )
+            .map_err(AcmeManagedError::State)?;
             let authorization = client
                 .authorization(authorization_url)
                 .map_err(AcmeManagedError::Protocol)?;
@@ -567,6 +688,18 @@ impl AcmeManagedReconciler {
                 return Err(AcmeManagedError::AuthorizationFailed);
             }
         }
+        self.set_job_status(Some(JobStatus::Finalizing));
+        self.write_job(
+            job_id,
+            JobStatus::Finalizing,
+            unix_now(),
+            1,
+            None,
+            None,
+            None,
+            None,
+        )
+        .map_err(AcmeManagedError::State)?;
         let csr = oxiroute_acme::generate_leaf_csr(
             &self.declared_dns_names,
             leaf_key_algorithm(self.policy.key_type),
@@ -610,7 +743,10 @@ impl AcmeManagedReconciler {
             material.metadata.not_after_unix_seconds,
             revision,
             outcome.code(),
-        );
+            client.account().map(|account| account.url.clone()),
+            client.directory().document.renewal_info.clone(),
+        )
+        .map_err(AcmeManagedError::State)?;
         Ok(outcome)
     }
 
@@ -657,7 +793,7 @@ impl AcmeManagedReconciler {
                 created_at_unix_seconds: unix_now(),
                 not_before_unix_seconds: asn1_unix(certificates[0].not_before()),
                 not_after_unix_seconds: asn1_unix(certificates[0].not_after()),
-                issuer: Some(certificates[0].issuer_name().to_string()),
+                issuer: Some(issuer_name(&certificates[0])?),
                 serial_fingerprint: Some(crate::encoding::lower_hex(&openssl::sha::sha256(
                     &serial.to_vec(),
                 ))),
@@ -721,7 +857,14 @@ impl AcmeManagedReconciler {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.last_outcome = outcome;
-        state.last_error_code = error;
+        state.last_error_code = error.map(str::to_owned);
+    }
+
+    fn set_job_status(&self, status: Option<JobStatus>) {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .job_status = status;
     }
 
     fn update_schedule(
@@ -730,7 +873,9 @@ impl AcmeManagedReconciler {
         not_after_unix_seconds: Option<u64>,
         disk_revision: String,
         outcome: &'static str,
-    ) {
+        account_url: Option<String>,
+        renewal_info_url: Option<String>,
+    ) -> Result<(), AcmeStateError> {
         let next_action_unix_seconds = not_before_unix_seconds.and_then(|not_before| {
             not_after_unix_seconds
                 .and_then(|not_after| stable_renewal_time(not_before, not_after, &self.certificate))
@@ -743,8 +888,57 @@ impl AcmeManagedReconciler {
         state.not_before_unix_seconds = not_before_unix_seconds;
         state.not_after_unix_seconds = not_after_unix_seconds;
         state.next_action_unix_seconds = next_action_unix_seconds;
+        state.retry_attempt = 0;
+        state.retry_at_unix_seconds = None;
+        state.suggested_renewal_unix_seconds = None;
+        state.account_url = account_url.or_else(|| state.account_url.clone());
+        state.renewal_info_url = renewal_info_url.or_else(|| state.renewal_info_url.clone());
+        state.last_success_unix_seconds = Some(unix_now());
         state.last_outcome = Some(outcome);
         state.last_error_code = None;
+        drop(state);
+        self.persist_renewal()
+    }
+
+    fn schedule_retry(&self, now_unix_seconds: u64) -> Result<(), AcmeStateError> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let attempt = state.retry_attempt.saturating_add(1);
+        let delay = retry_delay(&self.certificate, attempt);
+        state.retry_attempt = attempt;
+        state.retry_at_unix_seconds = Some(now_unix_seconds.saturating_add(delay));
+        state.next_action_unix_seconds = state.retry_at_unix_seconds;
+        drop(state);
+        self.persist_renewal()
+    }
+
+    fn persist_renewal(&self) -> Result<(), AcmeStateError> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let renewal = PersistedRenewal {
+            certificate: self.certificate.clone(),
+            identifiers: self.declared_dns_names.clone(),
+            directory_url: self.policy.directory_url.clone(),
+            account_url: state.account_url.clone(),
+            authenticator: "http01".into(),
+            key_type: key_type_string(self.policy.key_type).into(),
+            next_action_unix_seconds: state.next_action_unix_seconds,
+            retry_at_unix_seconds: state.retry_at_unix_seconds,
+            retry_attempt: state.retry_attempt,
+            suggested_renewal_unix_seconds: state.suggested_renewal_unix_seconds,
+            renewal_info_url: state.renewal_info_url.clone(),
+            last_success_unix_seconds: state.last_success_unix_seconds,
+            last_error_code: state.last_error_code.clone(),
+        };
+        drop(state);
+        self.revisions.state().write_json(
+            &format!("certificates/{}/renewal.json", self.certificate),
+            &renewal,
+        )
     }
 
     fn state_error(&self, source: AcmeStateError) -> TlsBuildError {
@@ -759,6 +953,54 @@ fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())
+}
+
+fn read_persisted_renewal(
+    revisions: &RevisionStore,
+    certificate: &str,
+) -> Option<PersistedRenewal> {
+    revisions
+        .state()
+        .read_json(
+            &format!("certificates/{certificate}/renewal.json"),
+            MAX_JOB_BYTES,
+        )
+        .ok()
+}
+
+fn key_type_string(key_type: AcmeKeyType) -> &'static str {
+    match key_type {
+        AcmeKeyType::EcdsaP256 => "ecdsa_p256",
+        AcmeKeyType::Rsa2048 => "rsa_2048",
+    }
+}
+
+fn is_known_error_code(code: &str) -> bool {
+    matches!(
+        code,
+        "job_busy"
+            | "state_failed"
+            | "poll_timeout"
+            | "transport_failed"
+            | "acme_problem"
+            | "protocol_failed"
+            | "invalid_candidate"
+            | "authorization_failed"
+            | "order_failed"
+            | "certificate_malformed"
+            | "account_directory_changed"
+            | "publication_conflict"
+            | "challenge_failed"
+    )
+}
+
+fn retry_delay(certificate: &str, attempt: u32) -> u64 {
+    let exponent = attempt.saturating_sub(1).min(8);
+    let base = ACME_RETRY_BASE_SECONDS.saturating_mul(1_u64 << exponent);
+    let base = base.min(ACME_RETRY_MAX_SECONDS);
+    let digest = openssl::sha::sha256(format!("{certificate}:{attempt}").as_bytes());
+    let jitter = u64::from(digest[0]) % (base / 4 + 1);
+    base.saturating_add(jitter).min(ACME_RETRY_MAX_SECONDS)
 }
 
 fn account_key_algorithm(key_type: AcmeKeyType) -> AccountKeyAlgorithm {
@@ -829,6 +1071,20 @@ fn validate_exact_dns_sans(
     Ok(())
 }
 
+fn issuer_name(certificate: &X509) -> Result<String, AcmeManagedError> {
+    let values = certificate
+        .issuer_name()
+        .entries()
+        .map(|entry| {
+            entry
+                .data()
+                .to_string()
+                .map_err(|_| AcmeManagedError::CertificateMalformed)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(values.join(","))
+}
+
 impl std::fmt::Debug for AcmeManagedReconciler {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -847,6 +1103,7 @@ impl std::fmt::Debug for AcmeManagedReconciler {
 mod tests {
     use std::{
         collections::VecDeque,
+        fs,
         sync::{Arc, Mutex},
     };
 
@@ -858,10 +1115,12 @@ mod tests {
         hash::MessageDigest,
         nid::Nid,
         pkey::{PKey, Private},
-        req::X509Req,
         x509::{
-            X509, X509NameBuilder,
-            extension::{BasicConstraints, ExtendedKeyUsage, KeyUsage, SubjectAlternativeName},
+            X509, X509NameBuilder, X509Req,
+            extension::{
+                AuthorityKeyIdentifier, BasicConstraints, ExtendedKeyUsage, KeyUsage,
+                SubjectAlternativeName, SubjectKeyIdentifier,
+            },
         },
     };
     use oxiroute_acme::{
@@ -991,6 +1250,12 @@ mod tests {
         assert!(material.metadata.issuer.is_some());
         assert!(material.metadata.serial_fingerprint.is_some());
         assert!(reconciler.challenge_store.is_empty());
+        assert_eq!(reconciler.status().job_status, Some(JobStatus::Succeeded));
+        assert!(reconciler.status().last_success_unix_seconds.is_some());
+        let renewal =
+            fs::read_to_string(temp.path().join("state/certificates/managed/renewal.json"))
+                .expect("renewal schedule");
+        assert!(renewal.contains("proxy.example.test"));
         assert!(
             requests
                 .lock()
@@ -998,6 +1263,64 @@ mod tests {
                 .iter()
                 .all(|url| url.starts_with("https://acme.test/"))
         );
+    }
+
+    #[test]
+    fn restart_retains_bounded_retry_state_and_redacted_error_code() {
+        let temp = TempDir::new().expect("state directory");
+        let state = Arc::new(StateStore::open(temp.path().join("state")).expect("state"));
+        state
+            .write_json(
+                "certificates/managed/renewal.json",
+                &PersistedRenewal {
+                    certificate: "managed".into(),
+                    identifiers: vec!["proxy.example.test".into()],
+                    directory_url: "https://acme.test/directory".into(),
+                    account_url: Some("https://acme.test/acme/acct/1".into()),
+                    authenticator: "http01".into(),
+                    key_type: "ecdsa_p256".into(),
+                    next_action_unix_seconds: Some(2_000),
+                    retry_at_unix_seconds: Some(2_000),
+                    retry_attempt: 2,
+                    suggested_renewal_unix_seconds: None,
+                    renewal_info_url: None,
+                    last_success_unix_seconds: Some(1_000),
+                    last_error_code: Some("transport_failed".into()),
+                },
+            )
+            .expect("renewal state");
+        let bootstrap = CertificateGeneration::self_signed_development(
+            "managed",
+            &["proxy.example.test".into()],
+            1,
+            SelfSignedKeyType::EcdsaP256,
+        )
+        .expect("bootstrap");
+        let active = Arc::new(ActiveCertificateGeneration::new(Arc::new(bootstrap)));
+        let reconciler = AcmeManagedReconciler::new(
+            "managed",
+            vec!["proxy.example.test".into()],
+            AcmeManagedPolicy {
+                directory_url: "https://acme.test/directory".into(),
+                contacts: vec!["mailto:ops@example.test".into()],
+                terms_agreed: true,
+                key_type: AcmeKeyType::EcdsaP256,
+                allowed_dns_suffixes: vec!["example.test".into()],
+            },
+            RevisionStore::from_arc(state),
+            "revision".into(),
+            Some(900),
+            Some(4_000),
+            false,
+            ChallengeStore::default(),
+            active,
+        );
+
+        let status = reconciler.status();
+        assert_eq!(status.retry_attempt, 2);
+        assert_eq!(status.next_action_unix_seconds, Some(2_000));
+        assert_eq!(status.last_success_unix_seconds, Some(1_000));
+        assert_eq!(status.last_error_code.as_deref(), Some("transport_failed"));
     }
 
     fn directory_response() -> HttpResponse {
@@ -1088,6 +1411,8 @@ mod tests {
                 .crl_sign()
                 .build()?,
         )?;
+        let context = builder.x509v3_context(None, None);
+        builder.append_extension(SubjectKeyIdentifier::new().build(&context)?)?;
         builder.sign(&key, MessageDigest::sha256())?;
         Ok(TestCa {
             certificate: builder.build(),
@@ -1115,6 +1440,13 @@ mod tests {
         builder.append_extension(
             SubjectAlternativeName::new()
                 .dns("proxy.example.test")
+                .build(&context)?,
+        )?;
+        let context = builder.x509v3_context(Some(&ca.certificate), None);
+        builder.append_extension(
+            AuthorityKeyIdentifier::new()
+                .keyid(true)
+                .issuer(true)
                 .build(&context)?,
         )?;
         builder.append_extension(KeyUsage::new().critical().digital_signature().build()?)?;
