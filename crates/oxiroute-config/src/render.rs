@@ -170,6 +170,7 @@ impl Renderer {
         self.end_table();
     }
 
+    #[allow(clippy::too_many_lines)]
     fn certificate(&mut self, certificate: &Certificate) -> Result<(), ConfigError> {
         let Certificate {
             name,
@@ -228,6 +229,40 @@ impl Renderer {
                         "source.archive_directory_path",
                     )?,
                 );
+            }
+            CertificateSource::AcmeManaged {
+                directory_url,
+                state_root,
+                contacts,
+                terms_agreed,
+                challenge,
+                key_type,
+                allowed_dns_suffixes,
+            } => {
+                self.string_field("type", "acme_managed");
+                self.string_field("directory_url", directory_url);
+                self.string_field(
+                    "state_root",
+                    utf8_path(state_root, "certificate", name, "source.state_root")?,
+                );
+                self.string_list_field("contacts", contacts);
+                self.boolean_field("terms_agreed", *terms_agreed);
+                self.string_field(
+                    "challenge",
+                    match challenge {
+                        crate::model::AcmeChallengeType::Http01 => "http01",
+                        crate::model::AcmeChallengeType::Dns01 => "dns01",
+                        crate::model::AcmeChallengeType::TlsAlpn01 => "tls_alpn01",
+                    },
+                );
+                self.string_field(
+                    "key_type",
+                    match key_type {
+                        crate::model::AcmeKeyType::EcdsaP256 => "ecdsa_p256",
+                        crate::model::AcmeKeyType::Rsa2048 => "rsa_2048",
+                    },
+                );
+                self.string_list_field("allowed_dns_suffixes", allowed_dns_suffixes);
             }
             CertificateSource::SelfSignedDevelopment {
                 validity_days,

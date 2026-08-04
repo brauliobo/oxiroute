@@ -686,6 +686,7 @@ mod tests {
             event: crate::operational_event::EventName::GenerationPrepare,
             outcome: crate::operational_event::EventOutcome::Prepared,
             revision: None,
+            certificate: None,
         };
         let frame = operational_frame(&event);
 
@@ -704,6 +705,7 @@ mod tests {
             event: crate::operational_event::EventName::Unknown,
             outcome: crate::operational_event::EventOutcome::Unknown,
             revision: None,
+            certificate: None,
         };
         let frame = operational_frame(&event);
         let frame = String::from_utf8(frame).expect("SSE frame");

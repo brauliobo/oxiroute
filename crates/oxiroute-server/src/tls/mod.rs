@@ -7,11 +7,13 @@ use std::{
     sync::Arc,
 };
 
+use oxiroute_acme::{ChallengeStore, StateStore};
 use oxiroute_config::{CertificateSource, Config};
 #[cfg(unix)]
 use rustix::fs::{self as rustix_fs, Mode, OFlags};
 use zeroize::Zeroizing;
 
+mod acme;
 mod certbot;
 mod certbot_reconcile;
 mod certbot_watcher;
@@ -20,6 +22,10 @@ mod file_reconcile;
 mod file_watcher;
 mod upstream;
 
+pub use acme::{
+    AcmeManagedError, AcmeManagedOutcome, AcmeManagedPolicy, AcmeManagedReconciler,
+    AcmeManagedStatus,
+};
 pub use certbot::{CertbotCandidate, CertbotLineage};
 pub use certbot_reconcile::{
     CertbotActivationDirection, CertbotReconcileError, CertbotReconcileOutcome, CertbotReconciler,
@@ -55,6 +61,8 @@ pub type TlsProfilePlanMap = BTreeMap<String, Arc<TlsProfilePlan>>;
 /// publish validated replacement generations through their process-lifetime reconciler.
 pub struct PreparedTls {
     certificates: CertificateIdentityMap,
+    acme_reconcilers: Vec<Arc<AcmeManagedReconciler>>,
+    challenge_store: ChallengeStore,
     certbot_reconcilers: Vec<Arc<CertbotReconciler>>,
     file_reconcilers: Vec<Arc<FileReconciler>>,
     profiles: TlsProfilePlanMap,
@@ -69,6 +77,16 @@ impl PreparedTls {
     #[must_use]
     pub fn certbot_reconcilers(&self) -> &[Arc<CertbotReconciler>] {
         &self.certbot_reconcilers
+    }
+
+    #[must_use]
+    pub fn acme_reconcilers(&self) -> &[Arc<AcmeManagedReconciler>] {
+        &self.acme_reconcilers
+    }
+
+    #[must_use]
+    pub const fn challenge_store(&self) -> &ChallengeStore {
+        &self.challenge_store
     }
 
     #[must_use]
@@ -139,6 +157,8 @@ impl std::fmt::Debug for PreparedTls {
         formatter
             .debug_struct("PreparedTls")
             .field("certificates", &self.certificates)
+            .field("acme_reconcilers", &self.acme_reconcilers)
+            .field("challenge_store", &self.challenge_store)
             .field("certbot_reconcilers", &self.certbot_reconcilers)
             .field("file_reconcilers", &self.file_reconcilers)
             .field("profiles", &self.profiles)
@@ -158,51 +178,115 @@ impl std::fmt::Debug for PreparedTls {
 #[allow(clippy::too_many_lines)]
 pub fn prepare_tls(config: &Config) -> Result<PreparedTls, TlsBuildError> {
     let mut certificates = BTreeMap::new();
+    let mut acme_reconcilers = Vec::new();
+    let mut acme_states = BTreeMap::new();
+    let challenge_store = ChallengeStore::default();
     let mut certbot_reconcilers = Vec::new();
     let mut file_reconcilers = Vec::new();
     for certificate in &config.certificates {
         let name = certificate.name.clone();
-        let (generation, certbot, direct_files) = match &certificate.source {
-            CertificateSource::Files {
-                certificate_chain_path,
-                private_key_path,
-            } => (
-                CertificateGeneration::from_files(
-                    certificate.name.clone(),
-                    &certificate.dns_names,
+        let (generation, certbot, direct_files, managed_state, managed_policy) =
+            match &certificate.source {
+                CertificateSource::Files {
                     certificate_chain_path,
                     private_key_path,
-                )?,
-                None,
-                Some((certificate_chain_path.clone(), private_key_path.clone())),
-            ),
-            CertificateSource::Certbot {
-                live_directory_path,
-                archive_directory_path,
-            } => {
-                let lineage = CertbotLineage::new(live_directory_path, archive_directory_path);
-                let candidate = lineage.load_candidate(name.clone(), &certificate.dns_names)?;
-                let archive_revision = candidate.archive_revision();
-                (
-                    candidate.into_generation(),
-                    Some((lineage, archive_revision)),
+                } => (
+                    CertificateGeneration::from_files(
+                        certificate.name.clone(),
+                        &certificate.dns_names,
+                        certificate_chain_path,
+                        private_key_path,
+                    )?,
                     None,
-                )
-            }
-            CertificateSource::SelfSignedDevelopment {
-                validity_days,
-                key_type,
-            } => (
-                CertificateGeneration::self_signed_development(
-                    certificate.name.clone(),
-                    &certificate.dns_names,
-                    *validity_days,
-                    *key_type,
-                )?,
-                None,
-                None,
-            ),
-        };
+                    Some((certificate_chain_path.clone(), private_key_path.clone())),
+                    None,
+                    None,
+                ),
+                CertificateSource::Certbot {
+                    live_directory_path,
+                    archive_directory_path,
+                } => {
+                    let lineage = CertbotLineage::new(live_directory_path, archive_directory_path);
+                    let candidate = lineage.load_candidate(name.clone(), &certificate.dns_names)?;
+                    let archive_revision = candidate.archive_revision();
+                    (
+                        candidate.into_generation(),
+                        Some((lineage, archive_revision)),
+                        None,
+                        None,
+                        None,
+                    )
+                }
+                CertificateSource::AcmeManaged {
+                    directory_url,
+                    contacts,
+                    terms_agreed,
+                    key_type,
+                    allowed_dns_suffixes,
+                    state_root,
+                    ..
+                } => {
+                    let state = if let Some(state) = acme_states.get(state_root) {
+                        Arc::clone(state)
+                    } else {
+                        let state = Arc::new(StateStore::open(state_root).map_err(|source| {
+                            TlsBuildError::AcmeState {
+                                certificate: name.clone(),
+                                source: Box::new(source),
+                            }
+                        })?);
+                        acme_states.insert(state_root.clone(), Arc::clone(&state));
+                        state
+                    };
+                    let (
+                        generation,
+                        revisions,
+                        disk_revision,
+                        not_before,
+                        not_after,
+                        initial_issuance_due,
+                    ) = AcmeManagedReconciler::load(
+                        name.clone(),
+                        &certificate.dns_names,
+                        state,
+                        *key_type,
+                    )?;
+                    (
+                        generation,
+                        None,
+                        None,
+                        Some((
+                            revisions,
+                            disk_revision,
+                            not_before,
+                            not_after,
+                            initial_issuance_due,
+                        )),
+                        Some(AcmeManagedPolicy {
+                            directory_url: directory_url.clone(),
+                            contacts: contacts.clone(),
+                            terms_agreed: *terms_agreed,
+                            key_type: *key_type,
+                            allowed_dns_suffixes: allowed_dns_suffixes.clone(),
+                        }),
+                    )
+                }
+                CertificateSource::SelfSignedDevelopment {
+                    validity_days,
+                    key_type,
+                } => (
+                    CertificateGeneration::self_signed_development(
+                        certificate.name.clone(),
+                        &certificate.dns_names,
+                        *validity_days,
+                        *key_type,
+                    )?,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+            };
         let generation = Arc::new(generation);
         let active = Arc::new(ActiveCertificateGeneration::new(generation));
         if certificates
@@ -217,6 +301,23 @@ pub fn prepare_tls(config: &Config) -> Result<PreparedTls, TlsBuildError> {
                 name,
                 certificate.dns_names.clone(),
                 archive_revision,
+                active,
+            )));
+        } else if let (
+            Some((revisions, disk_revision, not_before, not_after, initial_issuance_due)),
+            Some(policy),
+        ) = (managed_state, managed_policy)
+        {
+            acme_reconcilers.push(Arc::new(AcmeManagedReconciler::new(
+                certificate.name.clone(),
+                certificate.dns_names.clone(),
+                policy,
+                revisions,
+                disk_revision,
+                not_before,
+                not_after,
+                initial_issuance_due,
+                challenge_store.clone(),
                 active,
             )));
         } else if let Some((certificate_chain_path, private_key_path)) = direct_files {
@@ -260,6 +361,8 @@ pub fn prepare_tls(config: &Config) -> Result<PreparedTls, TlsBuildError> {
 
     Ok(PreparedTls {
         certificates,
+        acme_reconcilers,
+        challenge_store,
         certbot_reconcilers,
         file_reconcilers,
         profiles,
@@ -268,6 +371,18 @@ pub fn prepare_tls(config: &Config) -> Result<PreparedTls, TlsBuildError> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum TlsBuildError {
+    #[error("managed ACME certificate `{certificate}` state is unavailable or invalid")]
+    AcmeState {
+        certificate: String,
+        #[source]
+        source: Box<oxiroute_acme::AcmeStateError>,
+    },
+    #[error("managed ACME certificate `{certificate}` could not be published")]
+    AcmePublication {
+        certificate: String,
+        #[source]
+        source: CertificatePublishError,
+    },
     #[error("failed to open {kind} file `{path}` for `{owner}`")]
     FileOpen {
         owner: String,

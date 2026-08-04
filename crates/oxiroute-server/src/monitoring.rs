@@ -17,8 +17,8 @@ use serde::Serialize;
 use oxiroute_config::ListenerBind;
 
 use crate::{
-    AdministrativeState, CertbotReconciler, CertbotWatcherMonitor, FileReconciler,
-    FileWatcherMonitor, PoolHealthSnapshot, RoundRobinPool,
+    AcmeManagedReconciler, AdministrativeState, CertbotReconciler, CertbotWatcherMonitor,
+    FileReconciler, FileWatcherMonitor, PoolHealthSnapshot, RoundRobinPool,
 };
 
 #[derive(Debug)]
@@ -336,6 +336,7 @@ struct RuntimeMetricsInner {
     listeners: RwLock<HashMap<String, Arc<ListenerMetricsState>>>,
     upstream_pools: RwLock<Vec<Arc<RoundRobinPool>>>,
     certbot: RwLock<CertbotMonitoring>,
+    acme_managed: RwLock<AcmeManagedMonitoring>,
     direct_files: RwLock<DirectFileMonitoring>,
     previous_cpu_sample: Mutex<Option<CpuSample>>,
     rtmp_recording_supported: AtomicBool,
@@ -396,6 +397,11 @@ struct DirectFileMonitoring {
     watcher: Option<FileWatcherMonitor>,
 }
 
+#[derive(Default)]
+struct AcmeManagedMonitoring {
+    reconcilers: Vec<Arc<AcmeManagedReconciler>>,
+}
+
 impl RuntimeMetrics {
     #[must_use]
     pub fn new() -> Self {
@@ -416,6 +422,7 @@ impl RuntimeMetrics {
                 listeners: RwLock::new(HashMap::new()),
                 upstream_pools: RwLock::new(Vec::new()),
                 certbot: RwLock::new(CertbotMonitoring::default()),
+                acme_managed: RwLock::new(AcmeManagedMonitoring::default()),
                 direct_files: RwLock::new(DirectFileMonitoring::default()),
                 previous_cpu_sample: Mutex::new(None),
                 rtmp_recording_supported: AtomicBool::new(false),
@@ -467,6 +474,24 @@ impl RuntimeMetrics {
             .map_err(|_| MetricsError::StatePoisoned("Certbot monitoring"))?;
         certbot.reconcilers = reconcilers.into_iter().collect();
         certbot.watcher = watcher;
+        Ok(())
+    }
+
+    /// Registers the managed ACME reconcilers for status, API, and Prometheus snapshots.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the managed ACME monitoring registry is poisoned.
+    pub fn register_acme_managed_monitoring(
+        &self,
+        reconcilers: impl IntoIterator<Item = Arc<AcmeManagedReconciler>>,
+    ) -> Result<(), MetricsError> {
+        let mut managed = self
+            .inner
+            .acme_managed
+            .write()
+            .map_err(|_| MetricsError::StatePoisoned("managed ACME monitoring"))?;
+        managed.reconcilers = reconcilers.into_iter().collect();
         Ok(())
     }
 
@@ -678,6 +703,8 @@ impl RuntimeMetrics {
         let upstream_pools = self.upstream_pool_snapshots()?;
         let (mut certbot_certificates, certbot_watcher) = self.certbot_snapshots()?;
         certbot_certificates.sort_unstable_by(|left, right| left.name.cmp(&right.name));
+        let mut acme_managed_certificates = self.acme_managed_snapshots()?;
+        acme_managed_certificates.sort_unstable_by(|left, right| left.name.cmp(&right.name));
         let (mut direct_file_certificates, direct_file_watcher) = self.direct_file_snapshots()?;
         direct_file_certificates.sort_unstable_by(|left, right| left.name.cmp(&right.name));
         let mut previous_cpu_sample = self
@@ -740,6 +767,7 @@ impl RuntimeMetrics {
             upstream_pools,
             certbot_certificates,
             certbot_watcher,
+            acme_managed_certificates,
             direct_file_certificates,
             direct_file_watcher,
         };
@@ -870,6 +898,33 @@ impl RuntimeMetrics {
             }
         });
         Ok((certificates, watcher))
+    }
+
+    fn acme_managed_snapshots(&self) -> Result<Vec<AcmeManagedCertificateSnapshot>, MetricsError> {
+        let managed = self
+            .inner
+            .acme_managed
+            .read()
+            .map_err(|_| MetricsError::StatePoisoned("managed ACME monitoring"))?;
+        Ok(managed
+            .reconcilers
+            .iter()
+            .map(|reconciler| {
+                let status = reconciler.status();
+                AcmeManagedCertificateSnapshot {
+                    name: status.certificate,
+                    directory_url: status.directory_url,
+                    disk_revision: status.disk_revision,
+                    active_revision: status.active_revision,
+                    expires_at: status.not_after,
+                    not_before_unix_seconds: status.not_before_unix_seconds,
+                    not_after_unix_seconds: status.not_after_unix_seconds,
+                    next_action_unix_seconds: status.next_action_unix_seconds,
+                    last_outcome: status.last_outcome.map(str::to_owned),
+                    last_error_code: status.last_error_code.map(str::to_owned),
+                }
+            })
+            .collect())
     }
 
     fn counter_snapshots(&self) -> Result<(TrafficSnapshot, Vec<ListenerSnapshot>), MetricsError> {
@@ -1583,8 +1638,24 @@ pub struct RuntimeSnapshot {
     pub upstream_pools: Vec<PoolHealthSnapshot>,
     pub certbot_certificates: Vec<CertbotCertificateSnapshot>,
     pub certbot_watcher: Option<CertbotWatcherSnapshot>,
+    pub acme_managed_certificates: Vec<AcmeManagedCertificateSnapshot>,
     pub direct_file_certificates: Vec<DirectFileCertificateSnapshot>,
     pub direct_file_watcher: Option<DirectFileWatcherSnapshot>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcmeManagedCertificateSnapshot {
+    pub name: String,
+    pub directory_url: String,
+    pub disk_revision: String,
+    pub active_revision: String,
+    pub expires_at: String,
+    pub not_before_unix_seconds: Option<u64>,
+    pub not_after_unix_seconds: Option<u64>,
+    pub next_action_unix_seconds: Option<u64>,
+    pub last_outcome: Option<String>,
+    pub last_error_code: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]

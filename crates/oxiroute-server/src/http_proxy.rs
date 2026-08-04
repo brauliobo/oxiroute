@@ -17,6 +17,7 @@ use http::{
     uri::Authority,
 };
 use log::warn;
+use oxiroute_acme::ChallengeStore;
 use oxiroute_cache::{
     CacheControl, CacheError, CacheKey, CacheResponse, CachedResponse, FillGuard, FillJoin,
     FillOutcome, Lookup, RequestKeyInput, ResponseTiming, StoreOutcome, Validators,
@@ -50,6 +51,7 @@ use crate::{
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
 pub struct HttpReverseProxy {
+    challenge_store: Option<ChallengeStore>,
     generation: Option<Arc<RuntimeGeneration>>,
     metrics: ListenerMetrics,
     service: Arc<HttpServicePlan>,
@@ -59,6 +61,7 @@ impl HttpReverseProxy {
     #[must_use]
     pub fn new(service: Arc<HttpServicePlan>, metrics: ListenerMetrics) -> Self {
         Self {
+            challenge_store: None,
             generation: None,
             metrics,
             service,
@@ -69,6 +72,24 @@ impl HttpReverseProxy {
     pub fn with_generation(mut self, generation: Arc<RuntimeGeneration>) -> Self {
         self.generation = Some(generation);
         self
+    }
+
+    #[must_use]
+    pub fn with_challenge_store(mut self, challenge_store: ChallengeStore) -> Self {
+        self.challenge_store = Some(challenge_store);
+        self
+    }
+
+    fn challenge_response(
+        &self,
+        session: &Session,
+    ) -> Option<oxiroute_acme::ChallengeHttpResponse> {
+        let store = self.challenge_store.as_ref()?;
+        let request = session.req_header();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs());
+        store.route(request.method.as_str(), request.uri.path(), now)
     }
 }
 
@@ -216,11 +237,33 @@ impl ProxyHttp for HttpReverseProxy {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn request_filter(
         &self,
         session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<bool> {
+        if let Some(response) = self.challenge_response(session) {
+            let head = session.req_header().method == Method::HEAD;
+            write_local_response(
+                session,
+                response.status,
+                &[
+                    (
+                        CONTENT_TYPE,
+                        HeaderValue::from_static(response.content_type),
+                    ),
+                    (
+                        HeaderName::from_static("cache-control"),
+                        HeaderValue::from_static(response.cache_control),
+                    ),
+                ],
+                Bytes::from(response.body),
+                head,
+            )
+            .await?;
+            return Ok(true);
+        }
         session.set_automatic_response_headers(self.service.automatic_response_headers());
         let (authority, content_length, method, uri, upgrade) = {
             let request = session.req_header();

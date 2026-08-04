@@ -1,4 +1,7 @@
-use std::fmt::{self, Write as _};
+use std::{
+    fmt::{self, Write as _},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use oxiroute_rtmp::RtmpRegistry;
 
@@ -239,6 +242,56 @@ pub fn render_prometheus(
             &[("certificate", certificate.name.as_str())],
             1,
         )?;
+    }
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map_or(0, |duration| duration.as_secs());
+    for certificate in &runtime.acme_managed_certificates {
+        labels(
+            &mut output,
+            "oxiroute_acme_certificate_info",
+            &[("certificate", certificate.name.as_str())],
+            1,
+        )?;
+        if let Some(not_after) = certificate.not_after_unix_seconds {
+            labels(
+                &mut output,
+                "oxiroute_acme_certificate_seconds_until_expiry",
+                &[("certificate", certificate.name.as_str())],
+                not_after.saturating_sub(now),
+            )?;
+        }
+        labels(
+            &mut output,
+            "oxiroute_acme_renewal_due",
+            &[("certificate", certificate.name.as_str())],
+            u8::from(
+                certificate
+                    .next_action_unix_seconds
+                    .is_some_and(|next| now >= next),
+            ),
+        )?;
+        if let Some(outcome) = certificate.last_outcome.as_deref() {
+            labels(
+                &mut output,
+                "oxiroute_acme_job_last_result",
+                &[
+                    ("certificate", certificate.name.as_str()),
+                    ("result", outcome),
+                ],
+                1,
+            )?;
+        }
+        if let Some(error) = certificate.last_error_code.as_deref() {
+            labels(
+                &mut output,
+                "oxiroute_acme_job_last_error",
+                &[("certificate", certificate.name.as_str()), ("code", error)],
+                1,
+            )?;
+        }
     }
 
     let mut relay_attempts = 0_u64;

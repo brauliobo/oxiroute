@@ -48,6 +48,7 @@ pub(super) enum Route<'a> {
     GenerationDrain,
     Tls,
     TlsReconcile,
+    TlsRenew,
     Events(Option<&'a str>),
     EventStream(Option<&'a str>),
     ProcessDrain,
@@ -75,6 +76,7 @@ pub(super) fn match_route(path_and_query: &str) -> Option<Route<'_>> {
         "/api/v1/generations/drain" => Some(Route::GenerationDrain),
         "/api/v1/tls" => Some(Route::Tls),
         "/api/v1/tls/reconcile" => Some(Route::TlsReconcile),
+        "/api/v1/tls/renew" => Some(Route::TlsRenew),
         "/api/v1/events" => Some(Route::Events(query)),
         "/api/v1/events/stream" => Some(Route::EventStream(query)),
         "/api/v1/process/drain" => Some(Route::ProcessDrain),
@@ -141,6 +143,7 @@ impl ManagementState {
             (Route::GenerationDrain, "POST") => self.generation_drain(session).await,
             (Route::Tls, "GET") => self.tls(),
             (Route::TlsReconcile, "POST") => self.tls_reconcile(session).await,
+            (Route::TlsRenew, "POST") => self.tls_renew(session).await,
             (Route::Events(query), "GET") => Self::events(query),
             (Route::ProcessDrain, "POST") => self.process_drain(session).await,
             (Route::ProcessShutdown, "POST") => self.process_shutdown(session).await,
@@ -150,6 +153,7 @@ impl ManagementState {
                 | Route::Servers
                 | Route::Generations
                 | Route::Tls
+                | Route::TlsRenew
                 | Route::Events(_)
                 | Route::EventStream(_),
                 _,
@@ -638,6 +642,16 @@ impl ManagementState {
                                     .find(|status| status.name == certificate.name)
                                     .map(|status| json!(status)),
                             ),
+                            CertificateSource::AcmeManaged { .. } => (
+                                "acme_managed",
+                                false,
+                                active.plan().tls.acme_reconcilers().iter().find_map(
+                                    |reconciler| {
+                                        (reconciler.status().certificate == certificate.name)
+                                            .then(|| json!(reconciler.status()))
+                                    },
+                                ),
+                            ),
                             CertificateSource::SelfSignedDevelopment { .. } => (
                                 "self_signed_development",
                                 true,
@@ -684,10 +698,14 @@ impl ManagementState {
         };
         let active = mutation.generation();
         let reconcilers = active.plan().certbot_reconcilers();
+        let managed_reconcilers = active.plan().tls.acme_reconcilers();
         if let Some(name) = request.certificate.as_deref() {
             if !reconcilers
                 .iter()
                 .any(|reconciler| reconciler.status().certificate == name)
+                && !managed_reconcilers
+                    .iter()
+                    .any(|reconciler| reconciler.status().certificate == name)
             {
                 return ApiResponse::error(
                     404,
@@ -733,7 +751,116 @@ impl ManagementState {
                 }
             }
         }
+        for reconciler in managed_reconcilers {
+            let status = reconciler.status();
+            if request
+                .certificate
+                .as_deref()
+                .is_none_or(|name| name == status.certificate)
+            {
+                match reconciler.reconcile() {
+                    Ok(outcome) => outcomes.push(json!({
+                        "certificate": status.certificate,
+                        "outcome": outcome.code(),
+                        "diskRevision": reconciler.status().disk_revision,
+                        "activeRevision": reconciler.status().active_revision,
+                    })),
+                    Err(_) => {
+                        return ApiResponse::error(
+                            503,
+                            "managed_certificate_reconciliation_failed",
+                            "managed certificate reconciliation failed",
+                        );
+                    }
+                }
+            }
+        }
         ApiResponse::json(200, &json!({ "outcomes": outcomes }))
+    }
+
+    async fn tls_renew(&self, session: &mut ServerSession) -> ApiResponse {
+        let request: TlsRequest = match body(session).await {
+            Ok(request) => request,
+            Err(response) => return response,
+        };
+        let mutation = match self
+            .generations
+            .begin_mutation(&request.expected_active_revision)
+        {
+            Ok(mutation) => mutation,
+            Err(error) => return mutation_error(&error),
+        };
+        let reconciler = {
+            let active = mutation.generation();
+            active
+                .plan()
+                .tls
+                .acme_reconcilers()
+                .iter()
+                .find(|reconciler| {
+                    request
+                        .certificate
+                        .as_deref()
+                        .is_none_or(|name| name == reconciler.status().certificate)
+                })
+                .cloned()
+        };
+        let Some(reconciler) = reconciler else {
+            return ApiResponse::error(
+                404,
+                "managed_certificate_not_found",
+                "managed ACME certificate was not found",
+            );
+        };
+        let certificate_name = reconciler.status().certificate;
+        crate::operational_event::emit_certificate(
+            "certificate_renewal",
+            "requested",
+            &certificate_name,
+        );
+        let worker_reconciler = Arc::clone(&reconciler);
+        let result = tokio::task::spawn_blocking(move || {
+            let result = worker_reconciler.renew_now();
+            drop(mutation);
+            result
+        })
+        .await;
+        match result {
+            Ok(Ok(outcome)) => {
+                let status = reconciler.status();
+                crate::operational_event::emit_certificate(
+                    if outcome == crate::AcmeManagedOutcome::Activated {
+                        "certificate_activated"
+                    } else {
+                        "certificate_renewal"
+                    },
+                    if outcome == crate::AcmeManagedOutcome::Activated {
+                        "activated"
+                    } else {
+                        "applied"
+                    },
+                    &status.certificate,
+                );
+                ApiResponse::json(
+                    200,
+                    &json!({
+                        "certificate": status.certificate,
+                        "outcome": outcome.code(),
+                        "diskRevision": status.disk_revision,
+                        "activeRevision": status.active_revision,
+                    }),
+                )
+            }
+            Ok(Err(error)) => {
+                crate::operational_event::emit_certificate(
+                    "certificate_renewal",
+                    "failed",
+                    &certificate_name,
+                );
+                ApiResponse::error(503, error.code(), "managed ACME renewal failed")
+            }
+            Err(_) => ApiResponse::error(503, "renewal_worker_failed", "renewal worker failed"),
+        }
     }
 
     fn events(query: Option<&str>) -> ApiResponse {
