@@ -392,6 +392,13 @@ fn import_report_is_deterministic_json_and_preview_remains_canonical_output() {
             .as_array()
             .is_some_and(|sources| !sources.is_empty())
     );
+    assert!(
+        report_json["sourceGraph"]["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|source| source["fingerprintSha256"].as_str().is_some())
+    );
 
     let preview = cli()
         .args(["import", "haproxy", path, "--output", "preview"])

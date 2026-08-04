@@ -1,11 +1,12 @@
-use std::path::Path;
+use std::{fmt::Write as _, path::Path};
 
+use openssl::sha::sha256;
 use serde::Serialize;
 
 use crate::{
     ActivationRequirement, CanonicalCandidate, CanonicalDraft, CanonicalProvenance,
-    DeploymentRequirement, Diagnostic, OperationalOverlayRequirement, Report, Severity, SourceFile,
-    SourceId, SourceImportMetadata, Span,
+    DeploymentRequirement, Diagnostic, DiagnosticCode, OperationalOverlayRequirement, Report,
+    Severity, SourceFile, SourceId, SourceImportMetadata, Span,
 };
 
 /// Stable schema version for the standalone machine-readable import report.
@@ -71,6 +72,8 @@ pub struct SourceReference {
     pub name: String,
     pub path: Option<String>,
     pub byte_length: usize,
+    /// SHA-256 of the exact bounded source snapshot used by the importer.
+    pub fingerprint_sha256: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -85,6 +88,8 @@ pub struct DependencyEvidence {
     pub status: String,
     pub span: Option<SpanEvidence>,
     pub failure_code: Option<String>,
+    /// The target source snapshot fingerprint when the dependency was loaded.
+    pub fingerprint_sha256: Option<String>,
     pub truncated: bool,
 }
 
@@ -246,7 +251,13 @@ impl ImportReportEnvelope {
         Self::assemble(
             source_metadata("nginx", "nginx-root"),
             nginx_graph(&report.source_graph),
-            source_metadata_evidence(&report.candidate.source_metadata),
+            source_metadata_evidence(&graph_source_metadata(
+                report
+                    .source_graph
+                    .sources
+                    .iter()
+                    .map(|source| &source.source),
+            )),
             candidate,
             shared_requirements(&report.candidate, nginx_origin),
             shared_overlays(&report.candidate, nginx_origin),
@@ -287,7 +298,13 @@ impl ImportReportEnvelope {
         Self::assemble(
             source_metadata("squid", "squid-forward-http1"),
             squid_graph(&report.source_graph),
-            source_metadata_evidence(&SourceImportMetadata::default()),
+            source_metadata_evidence(&graph_source_metadata(
+                report
+                    .source_graph
+                    .sources
+                    .iter()
+                    .map(|source| &source.source),
+            )),
             candidate,
             RequirementsEvidence::default(),
             Vec::new(),
@@ -309,6 +326,22 @@ impl ImportReportEnvelope {
             shared_overlays(candidate, apache_origin),
             &report.diagnostics,
             apache_blockers(report),
+        )
+    }
+
+    /// Builds the shared evidence envelope for an exact Varnish VCL import.
+    #[must_use]
+    pub fn from_varnish(report: &crate::varnish::ImportReport) -> Self {
+        let candidate = &report.candidate;
+        Self::assemble(
+            varnish_source_metadata(report),
+            varnish_graph(&report.source_graph),
+            source_metadata_evidence(&candidate.source_metadata),
+            candidate_evidence(candidate, varnish_origin),
+            shared_requirements(candidate, varnish_origin),
+            shared_overlays(candidate, varnish_origin),
+            &report.diagnostics,
+            varnish_blockers(report),
         )
     }
 
@@ -348,6 +381,7 @@ impl ImportReportEnvelope {
         typed_blockers: Vec<ImportBlocker>,
     ) -> Self {
         let sorted = sorted_diagnostics(diagnostics);
+        let mut candidate = candidate;
         let mut blockers = diagnostic_blockers(&sorted);
         blockers.extend(typed_blockers);
         blockers.sort_by(|left, right| {
@@ -364,6 +398,10 @@ impl ImportReportEnvelope {
                     right.id.as_str(),
                 ))
         });
+        if !blockers.is_empty() {
+            candidate.finalized = false;
+            candidate.config = None;
+        }
         Self {
             schema_version: IMPORT_REPORT_SCHEMA_VERSION,
             source,
@@ -379,15 +417,45 @@ impl ImportReportEnvelope {
 }
 
 fn source_metadata(product: &str, profile: &str) -> ImportSourceMetadata {
+    source_metadata_with_version(product, profile, 1, None, None)
+}
+
+fn source_metadata_with_version(
+    product: &str,
+    profile: &str,
+    profile_version: u32,
+    version: Option<String>,
+    version_source: Option<String>,
+) -> ImportSourceMetadata {
     ImportSourceMetadata {
         product: product.into(),
-        version: None,
-        version_source: None,
+        version,
+        version_source,
         capability_profile: CapabilityProfileMetadata {
             id: profile.into(),
-            version: 1,
+            version: profile_version,
         },
     }
+}
+
+fn varnish_source_metadata(
+    report: &crate::varnish::ImportReport,
+) -> ImportSourceMetadata {
+    let version = report.declarations.iter().find_map(|declaration| {
+        declaration
+            .version
+            .effective
+            .as_ref()
+            .and_then(|version| String::from_utf8(version.as_bytes().to_vec()).ok())
+            .map(|version| (version, declaration.version.origin))
+    });
+    source_metadata_with_version(
+        "varnish",
+        crate::varnish::VARNISH_CAPABILITY_PROFILE_ID,
+        crate::varnish::VARNISH_CAPABILITY_PROFILE_VERSION,
+        version.as_ref().map(|(version, _)| version.clone()),
+        version.map(|(_, origin)| snake_case(&format!("{origin:?}"))),
+    )
 }
 
 fn candidate_evidence<O>(
@@ -533,6 +601,15 @@ fn source_metadata_evidence(metadata: &SourceImportMetadata) -> SourceMetadataEv
     }
 }
 
+fn graph_source_metadata<'a>(
+    sources: impl Iterator<Item = &'a SourceFile>,
+) -> SourceImportMetadata {
+    SourceImportMetadata {
+        original_sources: sources.cloned().collect(),
+        ..SourceImportMetadata::default()
+    }
+}
+
 fn source_map_evidence(map: &crate::SourceSpanMap) -> SourceMapEvidence {
     SourceMapEvidence {
         source_id: map.source.get(),
@@ -555,6 +632,7 @@ fn source_reference(source: &SourceFile, canonical_path: Option<&Path>) -> Sourc
             .and_then(path_string)
             .or_else(|| source.path().and_then(path_string)),
         byte_length: source.len(),
+        fingerprint_sha256: fingerprint_sha256(source.bytes()),
     }
 }
 
@@ -578,6 +656,23 @@ fn path_string(path: &Path) -> Option<String> {
 
 fn bytes_string(bytes: &[u8]) -> Option<String> {
     String::from_utf8(bytes.to_vec()).ok()
+}
+
+fn fingerprint_sha256(bytes: &[u8]) -> String {
+    let mut fingerprint = String::with_capacity(64);
+    for byte in sha256(bytes) {
+        write!(fingerprint, "{byte:02x}").expect("writing to a string cannot fail");
+    }
+    fingerprint
+}
+
+fn source_fingerprint(sources: &[SourceReference], source_id: Option<u32>) -> Option<String> {
+    source_id.and_then(|source_id| {
+        sources
+            .iter()
+            .find(|source| source.id == source_id)
+            .map(|source| source.fingerprint_sha256.clone())
+    })
 }
 
 fn source_roots(root: Option<SourceId>, sources: &[SourceReference]) -> Vec<SourceRootEvidence> {
@@ -618,6 +713,7 @@ fn nginx_graph(graph: &crate::nginx::SourceGraph) -> SourceGraphEvidence {
                     status: "expanded".into(),
                     span: Some(span_evidence(edge.span)),
                     failure_code: edge.failure.map(|code| code.as_str().into()),
+                    fingerprint_sha256: source_fingerprint(&sources, Some(target.get())),
                     truncated: edge.truncated,
                 });
             }
@@ -632,6 +728,7 @@ fn nginx_graph(graph: &crate::nginx::SourceGraph) -> SourceGraphEvidence {
                     status: "failed".into(),
                     span: Some(span_evidence(edge.span)),
                     failure_code: edge.failure.map(|code| code.as_str().into()),
+                    fingerprint_sha256: None,
                     truncated: edge.truncated,
                 });
             }
@@ -649,6 +746,7 @@ fn nginx_graph(graph: &crate::nginx::SourceGraph) -> SourceGraphEvidence {
                 status: status.into(),
                 span: Some(span_evidence(edge.span)),
                 failure_code: edge.failure.map(|code| code.as_str().into()),
+                fingerprint_sha256: source_fingerprint(&sources, target_source_id),
                 truncated: edge.truncated,
             });
         }
@@ -708,6 +806,7 @@ fn apache_graph(graph: &crate::apache::SourceGraph) -> SourceGraphEvidence {
                     status: "expanded".into(),
                     span: Some(span_evidence(edge.span)),
                     failure_code: edge.failure.map(|code| code.as_str().into()),
+                    fingerprint_sha256: source_fingerprint(&sources, Some(target.get())),
                     truncated: edge.truncated,
                 });
             }
@@ -722,6 +821,7 @@ fn apache_graph(graph: &crate::apache::SourceGraph) -> SourceGraphEvidence {
                     status: "failed".into(),
                     span: Some(span_evidence(edge.span)),
                     failure_code: edge.failure.map(|code| code.as_str().into()),
+                    fingerprint_sha256: None,
                     truncated: edge.truncated,
                 });
             }
@@ -739,6 +839,7 @@ fn apache_graph(graph: &crate::apache::SourceGraph) -> SourceGraphEvidence {
                 status: status.into(),
                 span: Some(span_evidence(edge.span)),
                 failure_code: edge.failure.map(|code| code.as_str().into()),
+                fingerprint_sha256: source_fingerprint(&sources, target_source_id),
                 truncated: edge.truncated,
             });
         }
@@ -769,6 +870,73 @@ fn apache_target_status(
     }
 }
 
+fn varnish_graph(graph: &crate::varnish::SourceGraph) -> SourceGraphEvidence {
+    let sources = graph
+        .sources
+        .iter()
+        .map(|source| source_reference(&source.source, source.canonical_path.as_deref()))
+        .collect::<Vec<_>>();
+    let mut dependencies = Vec::new();
+    for edge in &graph.includes {
+        if edge.targets.is_empty() {
+            dependencies.push(DependencyEvidence {
+                source_id: edge.source.get(),
+                target_source_id: None,
+                kind: "include".into(),
+                requested_path: bytes_string(&edge.pattern),
+                canonical_path: None,
+                optional: Some(false),
+                status: "failed".into(),
+                span: Some(span_evidence(edge.span)),
+                failure_code: edge.failure.map(|code| code.as_str().into()),
+                fingerprint_sha256: None,
+                truncated: edge.truncated,
+            });
+            continue;
+        }
+        for target in &edge.targets {
+            let (target_source_id, status) = varnish_target_status(target.status);
+            dependencies.push(DependencyEvidence {
+                source_id: edge.source.get(),
+                target_source_id,
+                kind: "include".into(),
+                requested_path: path_string(&target.requested_path),
+                canonical_path: target.canonical_path.as_deref().and_then(path_string),
+                optional: Some(false),
+                status: status.into(),
+                span: Some(span_evidence(edge.span)),
+                failure_code: edge.failure.map(|code| code.as_str().into()),
+                fingerprint_sha256: source_fingerprint(&sources, target_source_id),
+                truncated: edge.truncated,
+            });
+        }
+    }
+    SourceGraphEvidence {
+        roots: source_roots(graph.root, &sources),
+        sources,
+        dependencies,
+        dependencies_complete: true,
+        snapshot_stable: Some(graph.snapshot_stable),
+    }
+}
+
+fn varnish_target_status(
+    status: crate::varnish::IncludeTargetStatus,
+) -> (Option<u32>, &'static str) {
+    match status {
+        crate::varnish::IncludeTargetStatus::Expanded(source) => (Some(source.get()), "expanded"),
+        crate::varnish::IncludeTargetStatus::Cycle(source) => (Some(source.get()), "cycle"),
+        crate::varnish::IncludeTargetStatus::SourceIo => (None, "source_io"),
+        crate::varnish::IncludeTargetStatus::SourceChanged => (None, "source_changed"),
+        crate::varnish::IncludeTargetStatus::SourceSizeLimit => (None, "source_size_limit"),
+        crate::varnish::IncludeTargetStatus::SourceFileLimit => (None, "source_file_limit"),
+        crate::varnish::IncludeTargetStatus::AggregateSourceLimit => {
+            (None, "aggregate_source_limit")
+        }
+        crate::varnish::IncludeTargetStatus::ExpansionLimit => (None, "expansion_limit"),
+    }
+}
+
 #[cfg(unix)]
 fn squid_graph(graph: &crate::squid::SourceGraph) -> SourceGraphEvidence {
     let sources = graph
@@ -789,6 +957,7 @@ fn squid_graph(graph: &crate::squid::SourceGraph) -> SourceGraphEvidence {
                 status: "failed".into(),
                 span: Some(span_evidence(edge.span)),
                 failure_code: edge.failure.map(|code| code.as_str().into()),
+                fingerprint_sha256: None,
                 truncated: edge.truncated,
             });
         }
@@ -804,6 +973,7 @@ fn squid_graph(graph: &crate::squid::SourceGraph) -> SourceGraphEvidence {
                 status: status.into(),
                 span: Some(span_evidence(edge.span)),
                 failure_code: edge.failure.map(|code| code.as_str().into()),
+                fingerprint_sha256: source_fingerprint(&sources, target_source_id),
                 truncated: edge.truncated,
             });
         }
@@ -909,6 +1079,22 @@ fn apache_origin(origin: &crate::apache::ApacheProvenance) -> OriginEvidence {
             .include_stack
             .iter()
             .map(|frame| span_evidence(frame.directive_span))
+            .collect(),
+    }
+}
+
+fn varnish_origin(origin: &crate::varnish::Provenance) -> OriginEvidence {
+    OriginEvidence {
+        role: None,
+        source_id: origin.span.source().get(),
+        range: Some(byte_range_evidence(origin.span.range())),
+        path: None,
+        line: None,
+        include_stack: origin
+            .include_stack
+            .iter()
+            .copied()
+            .map(span_evidence)
             .collect(),
     }
 }
@@ -1019,6 +1205,58 @@ fn typed_blocker(
         occurrence_ids,
         origins,
     }
+}
+
+fn varnish_blockers(report: &crate::varnish::ImportReport) -> Vec<ImportBlocker> {
+    let crate::varnish::LoweringStatus::Blocked(blocker) = report.lowering else {
+        return Vec::new();
+    };
+    let (code, message) = match blocker {
+        crate::varnish::LoweringBlocker::NoCanonicalGraph => (
+            crate::varnish::E_VCL_LOWERING_BLOCKED,
+            "Varnish source contains no canonical HTTP lowering graph",
+        ),
+        crate::varnish::LoweringBlocker::InvalidSource => (
+            crate::varnish::E_VCL_LOWERING_BLOCKED,
+            "Varnish source is invalid for exact canonical lowering",
+        ),
+        crate::varnish::LoweringBlocker::UnsupportedBehavior => (
+            crate::varnish::E_VCL_LOWERING_BLOCKED,
+            "Varnish behavior is outside the exact canonical lowering subset",
+        ),
+        crate::varnish::LoweringBlocker::UnsupportedSubroutine => (
+            crate::varnish::E_VCL_UNSUPPORTED_SUBROUTINE,
+            "Varnish subroutine behavior is outside the exact canonical lowering graph",
+        ),
+        crate::varnish::LoweringBlocker::SemanticMismatch => (
+            crate::varnish::E_VCL_SEMANTIC_MISMATCH,
+            "Varnish behavior has no semantics-preserving canonical representation",
+        ),
+        crate::varnish::LoweringBlocker::Invocation => (
+            crate::varnish::E_VCL_LOWERING_BLOCKED,
+            "Varnish invocation facts are insufficient for exact canonical lowering",
+        ),
+        crate::varnish::LoweringBlocker::Validation => (
+            crate::E_INVALID_VALUE,
+            "lowered Varnish configuration failed canonical validation",
+        ),
+    };
+    let origins = report
+        .source_graph
+        .root
+        .and_then(|root| report.source_graph.source(root))
+        .map(|source| span_evidence(source.source.full_span()))
+        .into_iter()
+        .collect();
+    vec![typed_blocker(
+        "varnish-lowering".into(),
+        "lowering",
+        code,
+        message.into(),
+        None,
+        Vec::new(),
+        origins,
+    )]
 }
 
 fn message_for_code(diagnostics: &[Diagnostic], code: crate::DiagnosticCode) -> String {
