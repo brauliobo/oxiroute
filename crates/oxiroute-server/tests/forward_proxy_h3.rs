@@ -1,4 +1,4 @@
-#![allow(clippy::duplicate_mod)]
+#![allow(dead_code, unused_imports, clippy::duplicate_mod)]
 
 #[path = "support/fixtures.rs"]
 mod fixture_support;
@@ -34,6 +34,7 @@ use tokio::{
 const H3_ALPN: &[u8] = b"h3";
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn daemon_accepts_active_h3_absolute_form_and_releases_udp_listener() {
     let origin = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
@@ -114,12 +115,10 @@ async fn daemon_accepts_active_h3_absolute_form_and_releases_udp_listener() {
     let endpoint = client_endpoint().expect("H3 client endpoint");
     let connection = timeout(Duration::from_secs(10), async {
         loop {
-            match endpoint.connect(proxy_address, support::PROXY_SERVER_NAME) {
-                Ok(connecting) => match connecting.await {
-                    Ok(connection) => break connection,
-                    Err(_) => {}
-                },
-                Err(_) => {}
+            if let Ok(connecting) = endpoint.connect(proxy_address, support::PROXY_SERVER_NAME) {
+                if let Ok(connection) = connecting.await {
+                    break connection;
+                }
             }
             sleep(Duration::from_millis(10)).await;
         }
