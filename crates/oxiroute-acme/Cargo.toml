@@ -10,6 +10,7 @@ version.workspace = true
 [dependencies]
 base64.workspace = true
 http.workspace = true
+httpdate.workspace = true
 openssl.workspace = true
 rustix.workspace = true
 serde.workspace = true
