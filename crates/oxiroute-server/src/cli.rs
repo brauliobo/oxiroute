@@ -197,6 +197,26 @@ pub enum ImportCommand {
         #[arg(long, value_enum, default_value_t = ImportOutput::Report)]
         output: ImportOutput,
     },
+    Varnish {
+        #[arg(value_name = "CONFIG")]
+        config: PathBuf,
+        /// Add one exact varnishd argument used to interpret the VCL source.
+        #[arg(
+            long = "arg",
+            value_name = "ARG",
+            action = clap::ArgAction::Append,
+            allow_hyphen_values = true
+        )]
+        arguments: Vec<String>,
+        /// Shift imported IP socket listener ports for side-by-side validation.
+        #[arg(long, value_name = "PORTS", value_parser = clap::value_parser!(u16).range(1..))]
+        shadow_port_offset: Option<u16>,
+        /// Render preview output in this canonical configuration format.
+        #[arg(long, value_enum, default_value_t = ComposeFormat::Kdl)]
+        format: ComposeFormat,
+        #[arg(long, value_enum, default_value_t = ImportOutput::Report)]
+        output: ImportOutput,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
@@ -596,6 +616,22 @@ pub fn execute_offline(command: &Command) -> Result<Option<String>, Box<dyn Erro
             (*format).into(),
             *output,
         )?)),
+        Command::Import {
+            command:
+                ImportCommand::Varnish {
+                    config,
+                    arguments,
+                    shadow_port_offset,
+                    format,
+                    output,
+                },
+        } => Ok(Some(import_varnish(
+            config,
+            arguments,
+            *shadow_port_offset,
+            (*format).into(),
+            *output,
+        )?)),
         _ => Ok(None),
     }
 }
@@ -763,6 +799,30 @@ fn import_apache(
                 return Err("--shadow-port-offset requires --output preview".into());
             }
             Ok(oxiroute_import::ImportReportEnvelope::from_apache(&report).to_json_line()?)
+        }
+    }
+}
+
+fn import_varnish(
+    path: &Path,
+    arguments: &[String],
+    shadow_port_offset: Option<u16>,
+    format: ConfigFormat,
+    output: ImportOutput,
+) -> Result<String, Box<dyn Error>> {
+    let invocation = oxiroute_import::varnish::VarnishdInvocation::new(arguments.iter().cloned());
+    let report = oxiroute_import::varnish::import(path, &invocation);
+    match output {
+        ImportOutput::Preview => preview_with_shadow_listener_offset(
+            report.candidate.config.as_ref(),
+            shadow_port_offset,
+            format,
+        ),
+        ImportOutput::Report => {
+            if shadow_port_offset.is_some() {
+                return Err("--shadow-port-offset requires --output preview".into());
+            }
+            Ok(oxiroute_import::ImportReportEnvelope::from_varnish(&report).to_json_line()?)
         }
     }
 }

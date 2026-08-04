@@ -410,6 +410,67 @@ fn import_report_is_deterministic_json_and_preview_remains_canonical_output() {
 }
 
 #[test]
+fn varnish_import_report_and_preview_use_exact_invocation_arguments() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../oxiroute-import/tests/fixtures/varnish/exact.vcl");
+    let invocation = [
+        "varnishd",
+        "-a",
+        ":6081",
+        "-s",
+        "cache=malloc,256M",
+        "-p",
+        "default_ttl=120s",
+        "-p",
+        "default_grace=10s",
+        "-p",
+        "default_keep=300s",
+        "-F",
+    ];
+    let mut report_command = cli();
+    report_command.args(["import", "varnish", root.to_str().unwrap()]);
+    for argument in invocation {
+        report_command.args(["--arg", argument]);
+    }
+    let report = report_command.output().expect("Varnish report");
+    assert!(report.status.success(), "{}", output_text(&report));
+    let report_json: Value = serde_json::from_slice(&report.stdout).expect("Varnish report JSON");
+    assert_eq!(report_json["source"]["product"], "varnish");
+    assert_eq!(
+        report_json["source"]["capabilityProfile"]["id"],
+        "varnish-vcl-exact-cache"
+    );
+    assert_eq!(report_json["candidate"]["finalized"], true);
+
+    let mut preview_command = cli();
+    preview_command.args([
+        "import",
+        "varnish",
+        root.to_str().unwrap(),
+        "--output",
+        "preview",
+    ]);
+    for argument in invocation {
+        preview_command.args(["--arg", argument]);
+    }
+    let preview = preview_command.output().expect("Varnish preview");
+    assert!(preview.status.success(), "{}", output_text(&preview));
+    assert!(preview.stdout.ends_with(b"version 1\n"));
+    assert_eq!(
+        resolve_source_with_format(
+            Path::new("varnish-preview"),
+            &preview.stdout,
+            ConfigFormat::Kdl
+        )
+        .expect("Varnish preview round trip")
+        .config
+        .http_services
+        .len(),
+        1
+    );
+}
+
+#[test]
 fn generation_reload_cli_re_resolves_a_deleted_nginx_site() {
     let server = NativeReloadServer::start(false);
     let initial = server.generation_status();

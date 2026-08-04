@@ -1,6 +1,6 @@
 #![cfg(unix)]
 
-use std::{fs, path::Path};
+use std::{fs, net::TcpListener, path::Path};
 
 use oxiroute_config_source::{
     ConfigFormat, ConfigSourceError, decode_value, resolve_source, resolve_source_with_format,
@@ -25,17 +25,18 @@ haproxy_server "frontend.cfg" "backend.cfg" {
     assert_eq!(resolved.config.version, 1);
     assert_eq!(resolved.config.listeners.len(), 2);
     assert!(resolved.compositional);
-    assert_eq!(resolved.dependencies.len(), 3);
+    assert_eq!(resolved.dependencies.len(), 4);
     assert_eq!(
         resolved.dependencies[0],
         fs::canonicalize(directory.path().join("nginx.conf")).unwrap()
     );
+    assert_eq!(resolved.dependencies[1], directory.path());
     assert_eq!(
-        resolved.dependencies[1],
+        resolved.dependencies[2],
         directory.path().join("frontend.cfg")
     );
     assert_eq!(
-        resolved.dependencies[2],
+        resolved.dependencies[3],
         directory.path().join("backend.cfg")
     );
 }
@@ -50,7 +51,25 @@ fn concise_kdl_imports_a_complete_squid_forward_proxy_root() {
     assert_eq!(resolved.config.listeners.len(), 1);
     assert_eq!(resolved.config.forward_proxy_services.len(), 1);
     assert!(resolved.compositional);
-    assert_eq!(resolved.dependencies, [fs::canonicalize(root).unwrap()]);
+    assert_eq!(
+        resolved.dependencies,
+        [
+            fs::canonicalize(&root).unwrap(),
+            fs::canonicalize(root.parent().unwrap()).unwrap()
+        ]
+    );
+    assert_eq!(resolved.native_references.len(), 1);
+    assert_eq!(
+        resolved.native_references[0].evidence.source.product,
+        "squid"
+    );
+    assert!(
+        !resolved.native_references[0]
+            .evidence
+            .candidate
+            .provenance
+            .is_empty()
+    );
     resolve_source(&source_path, resolved.canonical_kdl.as_bytes())
         .expect("rendered Squid candidate round trip");
 }
@@ -81,7 +100,13 @@ fn native_apache_imports_from_kdl_hocon_and_uci() {
         assert_eq!(resolved.config.listeners.len(), 1, "{extension}");
         assert_eq!(resolved.config.http_services.len(), 1, "{extension}");
         assert!(resolved.compositional, "{extension}");
-        assert_eq!(resolved.dependencies, [fs::canonicalize(&root).unwrap()]);
+        assert_eq!(
+            resolved.dependencies,
+            [
+                fs::canonicalize(&root).unwrap(),
+                fs::canonicalize(root.parent().unwrap()).unwrap()
+            ]
+        );
     }
 }
 
@@ -107,7 +132,13 @@ fn hocon_and_uci_import_a_complete_squid_forward_proxy_root() {
         assert_eq!(resolved.config.listeners.len(), 1);
         assert_eq!(resolved.config.forward_proxy_services.len(), 1);
         assert!(resolved.compositional);
-        assert_eq!(resolved.dependencies, [fs::canonicalize(&root).unwrap()]);
+        assert_eq!(
+            resolved.dependencies,
+            [
+                fs::canonicalize(&root).unwrap(),
+                fs::canonicalize(root.parent().unwrap()).unwrap()
+            ]
+        );
     }
 }
 
@@ -146,6 +177,65 @@ fn native_squid_references_resolve_the_same_candidate_shape() {
 }
 
 #[test]
+fn nginx_native_dependencies_track_glob_parents_and_match_changes() {
+    let directory = tempdir().expect("temporary nginx source tree");
+    let native = directory.path().join("native");
+    let sites = native.join("sites-enabled");
+    fs::create_dir_all(&sites).expect("nginx include directory");
+    fs::write(
+        native.join("nginx.conf"),
+        b"events {} http { access_log off; include sites-enabled/*.conf; }",
+    )
+    .expect("nginx root");
+    let first_port = TcpListener::bind("127.0.0.1:0")
+        .expect("first listener")
+        .local_addr()
+        .unwrap()
+        .port();
+    let first = sites.join("10-first.conf");
+    fs::write(
+        &first,
+        format!("server {{ listen 127.0.0.1:{first_port}; location / {{ return 200 ok; }} }}"),
+    )
+    .expect("first site");
+    let source_path = directory.path().join("host.kdl");
+    let source = b"nginx_server \"native/nginx.conf\" { root_prefix \"native\" }\n";
+
+    let resolved = resolve_source(&source_path, source).expect("initial nginx resolution");
+    assert!(resolved.dependencies.contains(&sites));
+    assert!(
+        resolved
+            .dependencies
+            .contains(&fs::canonicalize(&first).unwrap())
+    );
+
+    let renamed = sites.join("20-renamed.conf");
+    fs::rename(&first, &renamed).expect("rename included site");
+    let resolved = resolve_source(&source_path, source).expect("renamed nginx resolution");
+    assert!(resolved.dependencies.contains(&renamed));
+    assert!(!resolved.dependencies.contains(&first));
+
+    let second_port = TcpListener::bind("127.0.0.1:0")
+        .expect("second listener")
+        .local_addr()
+        .unwrap()
+        .port();
+    let added = sites.join("30-added.conf");
+    fs::write(
+        &added,
+        format!("server {{ listen 127.0.0.1:{second_port}; location / {{ return 200 added; }} }}"),
+    )
+    .expect("added site");
+    let resolved = resolve_source(&source_path, source).expect("added nginx resolution");
+    assert!(resolved.dependencies.contains(&added));
+
+    fs::remove_file(&renamed).expect("remove renamed site");
+    let resolved = resolve_source(&source_path, source).expect("removed nginx resolution");
+    assert!(!resolved.dependencies.contains(&renamed));
+    assert!(resolved.dependencies.contains(&sites));
+}
+
+#[test]
 fn native_squid_requires_explicit_cache_externalization() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../oxiroute-import/tests/fixtures/squid/hostrouter-sanitized.conf");
@@ -167,6 +257,8 @@ fn kdl_native_nodes_are_repeated_but_their_shapes_remain_strict() {
         "haproxy_server 1",
         "apache_server path=\"httpd.conf\"",
         "apache_server \"httpd.conf\" { path \"other.conf\" }",
+        "varnish_server path=\"vcl\"",
+        "varnish_server \"vcl\" { path \"other.vcl\" }",
     ];
     for source in invalid {
         assert!(
@@ -205,7 +297,7 @@ haproxy_server = [{
         .expect("resolved native HOCON");
 
     assert_eq!(resolved.config.listeners.len(), 2);
-    assert_eq!(resolved.dependencies.len(), 3);
+    assert_eq!(resolved.dependencies.len(), 4);
     assert!(resolved.compositional);
 }
 
@@ -240,7 +332,7 @@ config haproxy_server 'database'
 
     assert_eq!(resolved.config.version, 1);
     assert_eq!(resolved.config.listeners.len(), 2);
-    assert_eq!(resolved.dependencies.len(), 3);
+    assert_eq!(resolved.dependencies.len(), 4);
     assert!(resolved.compositional);
 }
 
@@ -314,7 +406,10 @@ fn sanitized_back1_and_chicopc_haproxy_sources_use_explicit_environments() {
             .unwrap_or_else(|error| panic!("{host} did not resolve: {error}"));
 
         assert!(!resolved.config.listeners.is_empty());
-        assert_eq!(resolved.dependencies, vec![fixture.join("haproxy.cfg")]);
+        assert_eq!(
+            resolved.dependencies,
+            vec![fixture.join("haproxy.cfg"), fixture.clone()]
+        );
     }
 }
 
@@ -328,7 +423,10 @@ fn newly_representable_native_candidate_resolves_with_complete_policy() {
         .expect("representable HAProxy root");
 
     assert!(resolved.compositional);
-    assert_eq!(resolved.dependencies, [fixture]);
+    assert_eq!(
+        resolved.dependencies,
+        [fixture.clone(), fixture.parent().unwrap().to_path_buf()]
+    );
     assert_eq!(resolved.config.listeners.len(), 1);
     assert_eq!(resolved.config.upstream_pools.len(), 1);
     assert_eq!(resolved.config.http_services[0].routes.len(), 2);
@@ -339,6 +437,76 @@ fn newly_representable_native_candidate_resolves_with_complete_policy() {
     };
     assert_eq!(policy.retry.max_retries, 3);
     assert!(policy.retry.final_redispatch);
+}
+
+#[test]
+fn native_varnish_reference_resolves_exact_cache_subset_and_retains_evidence() {
+    let root = fs::canonicalize(fixture_root().join("varnish/exact.vcl"))
+        .expect("canonical Varnish fixture");
+    let path = serde_json::to_string(root.to_str().expect("UTF-8 Varnish path")).unwrap();
+    let source = format!(
+        r#"varnish_server = {{
+  path = {path}
+  arguments = [
+    "varnishd", "-a", ":6081", "-s", "cache=malloc,256M",
+    "-p", "default_ttl=120s", "-p", "default_grace=10s",
+    "-p", "default_keep=300s", "-F"
+  ]
+}}"#
+    );
+
+    let resolved = resolve_source(Path::new("varnish.hocon"), source.as_bytes())
+        .expect("resolved exact Varnish HOCON");
+
+    assert_eq!(resolved.config.listeners.len(), 1);
+    assert_eq!(resolved.config.upstream_pools.len(), 1);
+    assert_eq!(resolved.config.http_services.len(), 1);
+    assert_eq!(resolved.config.cache_stores.len(), 1);
+    assert_eq!(
+        resolved.dependencies,
+        [root.clone(), root.parent().unwrap().to_path_buf()]
+    );
+    let evidence = &resolved.native_references[0].evidence;
+    assert_eq!(evidence.source.product, "varnish");
+    assert_eq!(
+        evidence.source.capability_profile.id,
+        "varnish-vcl-exact-cache"
+    );
+    assert_eq!(evidence.source.version.as_deref(), Some("4.1"));
+    assert!(evidence.candidate.finalized);
+    assert!(
+        evidence
+            .candidate
+            .provenance
+            .iter()
+            .any(|entry| entry.path == "/http_services/0/routes/0/action/policy/cache")
+    );
+
+    let kdl_source = format!(
+        "varnish_server {path} \"varnishd\" \"-a\" \":6081\" \"-s\" \"cache=malloc,256M\" \"-p\" \"default_ttl=120s\" \"-p\" \"default_grace=10s\" \"-p\" \"default_keep=300s\" \"-F\"\n"
+    );
+    let kdl = resolve_source(Path::new("varnish.kdl"), kdl_source.as_bytes())
+        .expect("resolved exact Varnish KDL");
+    assert_eq!(kdl.config, resolved.config);
+
+    let uci_source = format!(
+        "config varnish_server 'cache'\n  option path {}\n  list arguments 'varnishd'\n  list arguments '-a'\n  list arguments ':6081'\n  list arguments '-s'\n  list arguments 'cache=malloc,256M'\n  list arguments '-p'\n  list arguments 'default_ttl=120s'\n  list arguments '-p'\n  list arguments 'default_grace=10s'\n  list arguments '-p'\n  list arguments 'default_keep=300s'\n  list arguments '-F'\n",
+        root.display()
+    );
+    let uci = resolve_source(Path::new("varnish.uci"), uci_source.as_bytes())
+        .expect("resolved exact Varnish UCI");
+    assert_eq!(uci.config, resolved.config);
+}
+
+#[test]
+fn native_varnish_reference_rejects_missing_invocation_semantics() {
+    let root = fixture_root().join("varnish/exact.vcl");
+    let path = serde_json::to_string(root.to_str().expect("UTF-8 Varnish path")).unwrap();
+    let source = format!("varnish_server = {{ path = {path} }}");
+
+    let error = resolve_source(Path::new("blocked-varnish.hocon"), source.as_bytes()).unwrap_err();
+    assert!(matches!(error, ConfigSourceError::NativeImport { .. }));
+    assert!(error.to_string().contains("E_VCL_SEMANTIC_MISMATCH"));
 }
 
 #[test]

@@ -59,8 +59,9 @@ pub struct ConfigWatcher {
 }
 
 impl ConfigWatcher {
-    /// Watches the canonical file's parent so atomic rename replacement is observed, and performs
-    /// periodic hash reconciliation in case the backend drops an event.
+    /// Watches the canonical file's parent and resolved native inputs so atomic replacement and
+    /// include/glob changes are observed, and performs periodic reconciliation in case the backend
+    /// drops an event.
     ///
     /// # Errors
     ///
@@ -85,15 +86,17 @@ impl ConfigWatcher {
             },
             notify::Config::default(),
         )?;
-        watcher.watch(&parent, RecursiveMode::NonRecursive)?;
-        let mut watched_directories = HashSet::from([parent]);
-        if let ConfigLoadOutcome::Loaded(document) = coordinator.load() {
-            watch_dependency_parents(
-                &mut watcher,
-                &document.dependencies,
-                &mut watched_directories,
-            )?;
-        }
+        let initial_dependencies = match coordinator.load() {
+            ConfigLoadOutcome::Loaded(document) => document.dependencies.clone(),
+            ConfigLoadOutcome::Rejected(_) => Vec::new(),
+        };
+        let mut watched_paths = HashSet::new();
+        rebuild_watches(
+            &mut watcher,
+            &parent,
+            &initial_dependencies,
+            &mut watched_paths,
+        )?;
         let shutdown = Arc::new(AtomicBool::new(false));
         let counters = Arc::new(WatcherCounters::default());
         counters.running.store(true, Ordering::Release);
@@ -103,7 +106,7 @@ impl ConfigWatcher {
             .name("oxiroute-config-watch".into())
             .spawn(move || {
                 let mut watcher = watcher;
-                let mut watched_directories = watched_directories;
+                let mut watched_paths = watched_paths;
                 while !thread_shutdown.load(Ordering::Acquire) {
                     let event = events_rx
                         .recv_timeout(options.reconciliation_interval)
@@ -128,12 +131,8 @@ impl ConfigWatcher {
                     if let Some(dependencies) =
                         reconcile(&coordinator, &generations, &thread_counters)
                     {
-                        if watch_dependency_parents(
-                            &mut watcher,
-                            &dependencies,
-                            &mut watched_directories,
-                        )
-                        .is_err()
+                        if rebuild_watches(&mut watcher, &parent, &dependencies, &mut watched_paths)
+                            .is_err()
                         {
                             thread_counters.rejected.fetch_add(1, Ordering::Relaxed);
                         }
@@ -187,25 +186,47 @@ fn handle_notify_event(wake: &mpsc::SyncSender<()>, event: notify::Result<notify
     }
 }
 
-fn watch_dependency_parents(
+fn rebuild_watches(
     watcher: &mut RecommendedWatcher,
+    root_parent: &Path,
     dependencies: &[PathBuf],
-    watched_directories: &mut HashSet<PathBuf>,
+    watched_paths: &mut HashSet<PathBuf>,
 ) -> notify::Result<()> {
+    let mut desired = HashSet::from([root_parent.to_path_buf()]);
     for dependency in dependencies {
-        let Some(parent) = dependency
+        if dependency.exists() {
+            desired.insert(dependency.clone());
+        }
+        if let Some(parent) = dependency
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
-        else {
-            continue;
-        };
-        let parent = parent.to_path_buf();
-        if !watched_directories.contains(&parent) {
-            watcher.watch(&parent, RecursiveMode::NonRecursive)?;
-            watched_directories.insert(parent);
+        {
+            desired.insert(existing_parent(parent));
         }
     }
+
+    for path in watched_paths.difference(&desired) {
+        let _ = watcher.unwatch(path);
+    }
+    for path in desired.difference(watched_paths) {
+        watcher.watch(path, RecursiveMode::NonRecursive)?;
+    }
+    *watched_paths = desired;
     Ok(())
+}
+
+fn existing_parent(path: &Path) -> PathBuf {
+    let mut current = path;
+    while !current.exists() {
+        let Some(parent) = current.parent() else {
+            return PathBuf::from(".");
+        };
+        if parent == current {
+            return current.to_path_buf();
+        }
+        current = parent;
+    }
+    current.to_path_buf()
 }
 
 fn reconcile(
@@ -491,6 +512,96 @@ mod tests {
 
         let candidate = manager.candidate().expect("queued candidate");
         assert!(candidate.generation().config().listeners.is_empty());
+        assert!(watcher.status().events > 0);
+        watcher.shutdown();
+    }
+
+    #[test]
+    fn dependency_watch_rebuilds_for_nginx_glob_add_and_rename() {
+        let directory = TempDir::new().expect("directory");
+        let native_directory = directory.path().join("native");
+        let sites_directory = native_directory.join("sites-enabled");
+        fs::create_dir_all(&sites_directory).expect("native directories");
+        fs::write(
+            native_directory.join("nginx.conf"),
+            b"events {} http { access_log off; include sites-enabled/*.conf; }",
+        )
+        .expect("nginx root");
+        let path = directory.path().join("oxiroute.kdl");
+        fs::write(
+            &path,
+            "version 1\nnginx_server \"native/nginx.conf\" { root_prefix \"native\" }\n",
+        )
+        .expect("root source");
+        let coordinator = CanonicalConfigCoordinator::new(&path).expect("coordinator");
+        let manager = GenerationManager::new();
+        let ConfigLoadOutcome::Loaded(initial) = coordinator.load() else {
+            panic!("initial load")
+        };
+        let initial_revision = initial.candidate_revision.clone();
+        let initial = manager.prepare(*initial).expect("initial prepare");
+        manager.activate(&initial).expect("initial activation");
+        let mut watcher = ConfigWatcher::start(
+            coordinator,
+            manager.clone(),
+            ConfigWatcherOptions {
+                debounce: Duration::from_millis(10),
+                max_debounce: Duration::from_millis(30),
+                reconciliation_interval: Duration::from_secs(30),
+            },
+        )
+        .expect("watcher");
+
+        let first_port = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("first listener")
+            .local_addr()
+            .unwrap()
+            .port();
+        let first = sites_directory.join("first.conf");
+        fs::write(
+            &first,
+            format!(
+                "server {{ listen 127.0.0.1:{first_port}; location / {{ return 200 first; }} }}"
+            ),
+        )
+        .expect("add glob match");
+        wait_until(|| {
+            manager
+                .status()
+                .candidate_revision
+                .as_ref()
+                .is_some_and(|revision| revision != &initial_revision)
+        });
+        let added_revision = manager.status().candidate_revision.expect("added revision");
+
+        let renamed = sites_directory.join("renamed.conf");
+        fs::rename(&first, &renamed).expect("rename glob match");
+        let renamed_port = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("renamed listener")
+            .local_addr()
+            .unwrap()
+            .port();
+        fs::write(
+            &renamed,
+            format!(
+                "server {{ listen 127.0.0.1:{renamed_port}; location / {{ return 200 renamed; }} }}"
+            ),
+        )
+        .expect("change renamed match");
+        wait_until(|| {
+            manager
+                .status()
+                .candidate_revision
+                .as_ref()
+                .is_some_and(|revision| revision != &added_revision)
+        });
+        let renamed_revision = manager
+            .status()
+            .candidate_revision
+            .expect("renamed revision");
+
+        fs::remove_file(renamed).expect("remove glob match");
+        assert_ne!(added_revision, renamed_revision);
         assert!(watcher.status().events > 0);
         watcher.shutdown();
     }

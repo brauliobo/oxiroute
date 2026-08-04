@@ -221,7 +221,13 @@
       "tests": [
         "crates/oxiroute-import/tests/varnish_foundation.rs#complete_ordered_decision_ledger_matches_the_differential_fixture",
         "crates/oxiroute-import/tests/varnish_foundation.rs#typed_ir_covers_cache_headers_cookies_backends_and_invalidation",
-        "crates/oxiroute-import/tests/varnish_foundation.rs#include_cycles_are_blocking_and_do_not_expand_forever"
+        "crates/oxiroute-import/tests/varnish_foundation.rs#include_cycles_are_blocking_and_do_not_expand_forever",
+        "crates/oxiroute-import/tests/varnish_foundation.rs#exact_static_cache_subset_lowers_to_a_finalized_candidate",
+        "crates/oxiroute-import/tests/varnish_foundation.rs#exact_legacy_round_robin_director_lowers_to_one_upstream_pool",
+        "crates/oxiroute-import/tests/varnish_foundation.rs#exact_file_storage_lowers_to_a_disk_cache_store",
+        "crates/oxiroute-config-source/tests/resolver.rs#native_varnish_reference_resolves_exact_cache_subset_and_retains_evidence",
+        "crates/oxiroute-config-source/tests/resolver.rs#native_varnish_reference_rejects_missing_invocation_semantics",
+        "crates/oxiroute-server/tests/cli.rs#varnish_import_report_and_preview_use_exact_invocation_arguments"
       ]
     },
     {

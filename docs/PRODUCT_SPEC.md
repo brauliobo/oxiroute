@@ -195,8 +195,8 @@ The current contract is:
   reconciliation.
 - `partial`: reverse HTTP and TCP/UDP relay, HTTP/1 and forward HTTP/3 proxying, RTMP live/recording/relay slices,
   managed ACME HTTP-01 issuance/renewal, bounded reverse HTTP cache, structured access logs, native
-  nginx/HAProxy/Squid import subsets, and the Vue control plane.
-- `foundation`: forward HTTP/2 protocol components, Varnish semantic analysis,
+  nginx/HAProxy/Squid/Varnish import subsets, and the Vue control plane.
+- `foundation`: forward HTTP/2 protocol components,
   and supervised replacement components that are not the default direct `serve` path.
 - `planned`: PROXY protocol, broader cache conformance, broader managed ACME authenticators, reverse
   HTTP/3, SSE, and broader protocol/import compatibility.

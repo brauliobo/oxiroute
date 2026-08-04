@@ -35,6 +35,7 @@ fn cache_memory_reverse_http_is_integrated_but_broader_cache_remains_foundationa
             "component.cache-memory-reverse-http"
                 | "component.cache-persistent-reverse-http"
                 | "component.forward-proxy-h1"
+                | "component.varnish-import"
         ) {
             assert_eq!(entry.status, ComponentStatus::Integrated);
             assert!(entry.gates.canonical.0, "{} canonical gate", entry.id);

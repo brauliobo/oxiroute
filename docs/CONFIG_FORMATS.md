@@ -25,7 +25,8 @@ The source pipeline has one semantics regardless of syntax:
 4. Expand generic root `templates` and exact object `use` markers. Objects merge recursively, arrays
    and scalars replace, local fields override templates, and cycles are rejected.
 5. Deserialize any inline fragment into `oxiroute_config::Config` and resolve each `nginx_server`,
-   `haproxy_server`, `squid_server`, and `apache_server` through the existing complete native import pipeline.
+   `haproxy_server`, `squid_server`, `apache_server`, and `varnish_server` through the existing
+   complete native import pipeline.
 6. Compose the inline fragment first and imported fragments in declaration order. Reject conflicting
    process-wide values, duplicate identities, dangling references, and every non-final native import.
 7. Apply schema defaults, normalize, validate, and render deterministic KDL. The SHA-256 of those KDL
@@ -126,11 +127,13 @@ squid_server "/etc/squid/squid.conf" {
 }
 
 apache_server "/etc/httpd/conf/httpd.conf"
+
+varnish_server "/etc/varnish/default.vcl" "varnishd" "-a" ":6081" "-s" "cache=malloc,256M"
 ```
 
 KDL permits repeated native server nodes. nginx, Squid, and Apache take exactly one positional path;
-HAProxy takes one or more ordered positional paths. Child options must be untyped scalar nodes, and
-properties are rejected.
+HAProxy takes one or more ordered positional paths; Varnish takes one positional path followed by
+optional ordered invocation arguments. Child options must be untyped scalar nodes, and properties are rejected.
 
 HOCON uses a single object or an array of objects with these exact shapes:
 
@@ -151,10 +154,15 @@ squid_server = {
 apache_server = {
   path = "httpd.conf"
 }
+varnish_server = {
+  path = "default.vcl"
+  arguments = ["varnishd", "-a", ":6081", "-s", "cache=malloc,256M"]
+}
 ```
 
 UCI uses named source sections. `nginx_server`, `squid_server`, and `apache_server` accept scalar `option` entries;
-`haproxy_server` uses ordered `list path` entries and optional scalar preprocessing values:
+`haproxy_server` uses ordered `list path` entries and optional scalar preprocessing values; Varnish uses
+one scalar `option path` and ordered `list arguments` entries:
 
 ```uci
 config nginx_server 'web'
@@ -173,6 +181,14 @@ config squid_server 'proxy'
 
 config apache_server 'web'
   option path 'httpd.conf'
+
+config varnish_server 'cache'
+  option path 'default.vcl'
+  list arguments 'varnishd'
+  list arguments '-a'
+  list arguments ':6081'
+  list arguments '-s'
+  list arguments 'cache=malloc,256M'
 ```
 
 nginx reference options are exactly `path`, `root_prefix`, `host_timezone`,
@@ -181,7 +197,8 @@ exactly `path`. HAProxy reference options are
 exactly ordered `paths`, optional `node_ip`, and `gpu1_defined`; true `gpu1_defined` requires
 `node_ip`. Squid accepts `path` and `externalize_cache`; the latter is required when parsed refresh
 rules would otherwise be discarded by direct non-caching forwarding. Relative paths, including an explicitly relative nginx `root_prefix`, resolve from the
-OxiRoute source document directory. Unknown options, empty paths, native blockers, or an invalid
+OxiRoute source document directory. Varnish accepts `path` and ordered `arguments`; unknown options,
+empty paths, native blockers, or an invalid
 composed namespace reject the complete OxiRoute source; partial native candidates are never
 activated.
 

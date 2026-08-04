@@ -47,12 +47,21 @@ pub(crate) struct ApacheSource {
     pub path: PathBuf,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct VarnishSource {
+    pub path: PathBuf,
+    #[serde(default)]
+    pub arguments: Vec<String>,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum NativeDirective {
     Nginx(NginxSource),
     Haproxy(HaproxySource),
     Squid(SquidSource),
     Apache(ApacheSource),
+    Varnish(VarnishSource),
 }
 
 fn default_root_prefix() -> PathBuf {
@@ -87,6 +96,11 @@ pub(crate) fn extract_directives(
             directives.push(NativeDirective::Apache(decode_apache(value, format)?));
         }
     }
+    if let Some(value) = root.remove("varnish_server") {
+        for value in one_or_many(value, "varnish_server", format)? {
+            directives.push(NativeDirective::Varnish(decode_varnish(value, format)?));
+        }
+    }
     Ok(directives)
 }
 
@@ -117,6 +131,28 @@ pub(crate) fn decode_apache(
         return Err(ConfigSourceError::parse(
             format,
             "apache_server path must not be empty",
+        ));
+    }
+    Ok(source)
+}
+
+pub(crate) fn decode_varnish(
+    value: Value,
+    format: &'static str,
+) -> Result<VarnishSource, ConfigSourceError> {
+    let source: VarnishSource = serde_json::from_value(value).map_err(|error| {
+        ConfigSourceError::parse(format, format!("invalid varnish_server: {error}"))
+    })?;
+    if source.path.as_os_str().is_empty() {
+        return Err(ConfigSourceError::parse(
+            format,
+            "varnish_server path must not be empty",
+        ));
+    }
+    if source.arguments.iter().any(|argument| argument.is_empty()) {
+        return Err(ConfigSourceError::parse(
+            format,
+            "varnish_server arguments must not contain empty values",
         ));
     }
     Ok(source)
