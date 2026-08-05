@@ -183,6 +183,14 @@ pub(super) fn publisher_role(error: PublisherRoleError) -> Result<Rejection, Rtm
             PUBLISH_REJECTION_CODE,
             "stream publisher capacity is unavailable",
         )),
+        PublisherRoleError::AutoPush(error) => Ok(Rejection::new(
+            PUBLISH_REJECTION_CODE,
+            if matches!(error, crate::RtmpAutoPushError::StreamLimit) {
+                "RTMP auto-push stream capacity is unavailable"
+            } else {
+                "RTMP auto-push worker coordination is unavailable"
+            },
+        )),
         PublisherRoleError::Hub(error) => Err(error.into()),
         PublisherRoleError::Catalog(error) => Err(error.into()),
     }

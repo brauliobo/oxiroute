@@ -170,6 +170,18 @@ impl MediaEvent {
         Ok(event)
     }
 
+    pub(crate) fn from_wire(
+        kind: MediaEventKind,
+        timestamp_ms: u32,
+        payload: Vec<u8>,
+        video_codec_identifier: Option<VideoCodecIdentifier>,
+    ) -> Result<Self, MediaEventError> {
+        let mut event = Self::new(kind, timestamp_ms, payload.into())?;
+        event.video_codec = video_codec_identifier.and_then(VideoCodecIdentifier::codec);
+        event.video_codec_identifier = video_codec_identifier;
+        Ok(event)
+    }
+
     #[must_use]
     pub const fn kind(&self) -> MediaEventKind {
         self.kind

@@ -13,30 +13,27 @@ use crate::{
         ForwardAccessMatcher, ForwardAccessPolicy, ForwardAccessRule, ForwardAuditMode,
         ForwardConnectPolicy, ForwardDestinationPolicy, ForwardDirectFallback, ForwardHeaderPolicy,
         ForwardHttpVersion, ForwardPeerPolicy, ForwardProxyAuth, ForwardProxyService,
-        ForwardResolverPolicy, ForwardTimeRange,
-        ForwardViaPolicy, ForwardWeekday, ForwardedForPolicy, HealthCheck, HealthCheckType,
-        HealthHttpVersion, HealthStartup, HttpAccessPolicy, HttpCachePolicy,
-        HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpGzipPolicy, HttpHostSelector,
-        HttpLiteralHeader, HttpMimeType, HttpPathSelector, HttpProxyPathRewrite, HttpProxyPolicy,
-        HttpRedirectLocation,
-        HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpResponseHeaderMutation,
-        HttpRetryBodySafety, HttpRetryMethodSafety, HttpRetryPolicy, HttpRetryTarget,
-        HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpSameSite, HttpService,
-        HttpStaticErrorResponse, HttpStaticMimePolicy, HttpStaticPathMapping, HttpStaticTryFile,
-        HttpUpstreamHost, HttpVersion, HttpVersionPolicy, L4Service, Listener, ListenerBind,
-         Management, Protocol, RtmpAccessPolicy, RtmpAccessRule, RtmpAclAction, RtmpApplication,
-         RtmpCallbackConfig, RtmpFanoutPolicy, RtmpNotifyMethod, RtmpPullTarget, RtmpPushTarget,
-         RtmpExecEnvironment, RtmpExecFilesystemPolicy, RtmpExecMode, RtmpExecNetworkPolicy,
-         RtmpExecProfile, RtmpExecTrigger,
-         RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis,
-         RtmpRecorderTimezone, RtmpRelayPolicy, RtmpRtmpsPolicy, RtmpService, RtmpSessionCeilings,
-         RtmpTokenPolicy, RtmpTokenSource, RtmpTransport, RtmpVodPolicy, RtmpVodSource,
-          RtmpHlsFragmentNaming, RtmpHlsKeyPolicy, RtmpHlsPolicy, RtmpHlsVariant, RtmpDashPolicy,
-          RtmpDashSegmentNaming,
-         Stats,
-        StatsPage, StatsPageAdminPolicy, TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm,
-        UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls,
-        ProxyProtocolPolicy, ProxyProtocolVersion,
+        ForwardResolverPolicy, ForwardTimeRange, ForwardViaPolicy, ForwardWeekday,
+        ForwardedForPolicy, HealthCheck, HealthCheckType, HealthHttpVersion, HealthStartup,
+        HttpAccessPolicy, HttpCachePolicy, HttpCookieAttributePolicy, HttpCookiePathRewrite,
+        HttpGzipPolicy, HttpHostSelector, HttpLiteralHeader, HttpMimeType, HttpPathSelector,
+        HttpProxyPathRewrite, HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation,
+        HttpRequestHeaderValue, HttpResponseHeaderMutation, HttpRetryBodySafety,
+        HttpRetryMethodSafety, HttpRetryPolicy, HttpRetryTarget, HttpRetryTrigger, HttpRoute,
+        HttpRouteAction, HttpRoutePolicy, HttpSameSite, HttpService, HttpStaticErrorResponse,
+        HttpStaticMimePolicy, HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost,
+        HttpVersion, HttpVersionPolicy, L4Service, Listener, ListenerBind, Management, Protocol,
+        ProxyProtocolPolicy, ProxyProtocolVersion, RtmpAccessPolicy, RtmpAccessRule, RtmpAclAction,
+        RtmpApplication, RtmpCallbackConfig, RtmpDashPolicy, RtmpDashSegmentNaming,
+        RtmpExecEnvironment, RtmpExecFilesystemPolicy, RtmpExecMode, RtmpExecNetworkPolicy,
+        RtmpExecProfile, RtmpExecTrigger, RtmpFanoutPolicy, RtmpHlsFragmentNaming,
+        RtmpHlsKeyPolicy, RtmpHlsPolicy, RtmpHlsVariant, RtmpNotifyMethod, RtmpPullTarget,
+        RtmpPushTarget, RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart,
+        RtmpRecorderTimeBasis, RtmpRecorderTimezone, RtmpRelayPolicy, RtmpRtmpsPolicy, RtmpService,
+        RtmpSessionCeilings, RtmpTokenPolicy, RtmpTokenSource, RtmpTransport, RtmpVodPolicy,
+        RtmpVodSource, Stats, StatsPage, StatsPageAdminPolicy, TlsProfile, TlsVersion, UdpPolicy,
+        UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer,
+        UpstreamTls,
     },
     validation::validate_config,
 };
@@ -579,6 +576,7 @@ impl Renderer {
             access_log,
             outbound_policy,
             callbacks,
+            auto_push,
             exec_profiles,
             applications,
         } = service;
@@ -590,6 +588,9 @@ impl Renderer {
         self.end_table();
         self.begin_table_field("callbacks");
         self.rtmp_callbacks(callbacks);
+        self.end_table();
+        self.begin_table_field("auto_push");
+        self.rtmp_auto_push(auto_push)?;
         self.end_table();
         self.fallible_table_list_field("exec_profiles", exec_profiles, Self::rtmp_exec_profile)?;
         self.fallible_table_list_field("applications", applications, |renderer, application| {
@@ -665,6 +666,37 @@ impl Renderer {
     fn rtmp_exec_environment(&mut self, environment: &RtmpExecEnvironment) {
         self.string_field("name", &environment.name);
         self.string_field("value", &environment.value);
+    }
+
+    fn rtmp_auto_push(
+        &mut self,
+        policy: &crate::model::RtmpAutoPushPolicy,
+    ) -> Result<(), ConfigError> {
+        self.boolean_field("enabled", policy.enabled);
+        self.string_field(
+            "socket_dir",
+            utf8_path(
+                &policy.socket_dir,
+                "RTMP auto-push",
+                "auto_push",
+                "socket_dir",
+            )?,
+        );
+        match &policy.secret_file {
+            Some(path) => self.string_field(
+                "secret_file",
+                utf8_path(path, "RTMP auto-push", "auto_push", "secret_file")?,
+            ),
+            None => self.null_field("secret_file"),
+        }
+        self.integer_field("reconnect_ms", policy.reconnect_ms);
+        self.integer_field("connect_timeout_ms", policy.connect_timeout_ms);
+        self.integer_field("handshake_timeout_ms", policy.handshake_timeout_ms);
+        self.integer_field("max_peers", policy.max_peers);
+        self.integer_field("max_queue_messages", policy.max_queue_messages);
+        self.integer_field("max_queue_bytes", policy.max_queue_bytes);
+        self.integer_field("max_streams", policy.max_streams);
+        Ok(())
     }
 
     fn rtmp_application(

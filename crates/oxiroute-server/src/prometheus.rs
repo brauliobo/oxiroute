@@ -21,6 +21,11 @@ pub fn render_prometheus(
 ) -> Result<String, PrometheusError> {
     let runtime = metrics.snapshot()?;
     let rtmp = registry.snapshot();
+    let auto_push = generations
+        .active()
+        .map_or_else(oxiroute_rtmp::RtmpAutoPushStatus::default, |generation| {
+            generation.rtmp_auto_push_status()
+        });
     let rtmp_clients = registry
         .session_snapshots()
         .into_iter()
@@ -436,6 +441,66 @@ pub fn render_prometheus(
         &mut output,
         "oxiroute_rtmp_recording_queue_depth",
         recording_queue,
+    )?;
+    sample(
+        &mut output,
+        "oxiroute_rtmp_auto_push_enabled",
+        u8::from(auto_push.enabled),
+    )?;
+    sample(
+        &mut output,
+        "oxiroute_rtmp_auto_push_started",
+        u8::from(auto_push.started),
+    )?;
+    sample(
+        &mut output,
+        "oxiroute_rtmp_auto_push_peers",
+        auto_push.peers,
+    )?;
+    sample(
+        &mut output,
+        "oxiroute_rtmp_auto_push_source_streams",
+        auto_push.source_streams,
+    )?;
+    sample(
+        &mut output,
+        "oxiroute_rtmp_auto_push_remote_streams",
+        auto_push.remote_streams,
+    )?;
+    sample(
+        &mut output,
+        "oxiroute_rtmp_auto_push_frames_sent_total",
+        auto_push.frames_sent,
+    )?;
+    sample(
+        &mut output,
+        "oxiroute_rtmp_auto_push_frames_received_total",
+        auto_push.frames_received,
+    )?;
+    sample(
+        &mut output,
+        "oxiroute_rtmp_auto_push_frames_dropped_total",
+        auto_push.frames_dropped,
+    )?;
+    sample(
+        &mut output,
+        "oxiroute_rtmp_auto_push_authentication_failures_total",
+        auto_push.authentication_failures,
+    )?;
+    sample(
+        &mut output,
+        "oxiroute_rtmp_auto_push_reconnects_total",
+        auto_push.reconnects,
+    )?;
+    sample(
+        &mut output,
+        "oxiroute_rtmp_auto_push_queue_messages",
+        auto_push.queue_messages,
+    )?;
+    sample(
+        &mut output,
+        "oxiroute_rtmp_auto_push_queue_bytes",
+        auto_push.queue_bytes,
     )?;
 
     sample(

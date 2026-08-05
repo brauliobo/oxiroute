@@ -23,28 +23,27 @@ use crate::{
 use http::{Method, Uri, uri::Authority};
 use oxiroute_cache::{Cache, CacheConfig, CacheTimeline, DiskCache, DiskCacheConfig};
 use oxiroute_config::{
-    CacheAuthorizationPolicy, CacheKeyComponent, CachePurgeAuthorization,
-    CacheSetCookiePolicy, CacheStore, CacheVaryPolicy, Config, DnsResolutionPolicy,
-    HttpCachePolicy, HttpProxyPolicy, HttpRoute as ConfigHttpRoute, HttpRouteAction, ListenerBind,
-    Protocol, RtmpAccessPolicy as ConfigRtmpAccessPolicy,
-    RtmpExecFilesystemPolicy as ConfigExecFilesystemPolicy,
-    RtmpExecMode as ConfigExecMode, RtmpExecNetworkPolicy as ConfigExecNetworkPolicy,
-    RtmpExecTrigger as ConfigExecTrigger, RtmpRecorderStart as ConfigRecorderStart, UdpPolicy,
+    CacheAuthorizationPolicy, CacheKeyComponent, CachePurgeAuthorization, CacheSetCookiePolicy,
+    CacheStore, CacheVaryPolicy, Config, DnsResolutionPolicy, HttpCachePolicy, HttpProxyPolicy,
+    HttpRoute as ConfigHttpRoute, HttpRouteAction, ListenerBind, Protocol,
+    RtmpAccessPolicy as ConfigRtmpAccessPolicy,
+    RtmpExecFilesystemPolicy as ConfigExecFilesystemPolicy, RtmpExecMode as ConfigExecMode,
+    RtmpExecNetworkPolicy as ConfigExecNetworkPolicy, RtmpExecTrigger as ConfigExecTrigger,
+    RtmpRecorderStart as ConfigRecorderStart, UdpPolicy,
 };
 use oxiroute_rtmp::{
     DashOutputConfig, DashSegmentNaming, ExecEnvironment, ExecFilesystemPolicy, ExecLimits,
     ExecMode, ExecNetworkPolicy, ExecProfile, ExecTrigger, HlsFragmentNaming, HlsKeyConfig,
-    HlsOutputConfig, HlsVariant, LiveHub, LiveHubLimits,
-    MediaApplication, MediaCatalog, MediaStore, MediaStoreLimits, RecorderMediaMask,
-    RecorderWorkerConfig, RecordingPathPolicy, RecordingSegmentNaming, RecordingStore,
-    RecordingStoreLimits, RecordingTimeBasis, RecordingTimezone, RtmpAccessAction,
-    RtmpAccessPolicy as RuntimeRtmpAccessPolicy, RtmpAccessRule,
-    RtmpApplication as RuntimeRtmpApplication, RtmpCallbackEndpoint, RtmpCallbackMethod,
-    RtmpCallbackPolicy, RtmpCapabilities, RtmpClientOptions, RtmpCredential, RtmpNetwork,
-    RtmpOutboundPolicy, RtmpPullTarget, RtmpPushApplication, RtmpPushTarget, RtmpRecorderPolicy,
-    RtmpRecorderStart, RtmpRegistry, RtmpRelayConfig, RtmpRtmpsMode, RtmpServiceRuntime,
-    RtmpSessionCeilings, RtmpSessionPolicy, RtmpTokenPolicy, RtmpTransport, VodApplication,
-    VodCatalog, VodLimits, VodSourceDefinition,
+    HlsOutputConfig, HlsVariant, LiveHub, LiveHubLimits, MediaApplication, MediaCatalog,
+    MediaStore, MediaStoreLimits, RecorderMediaMask, RecorderWorkerConfig, RecordingPathPolicy,
+    RecordingSegmentNaming, RecordingStore, RecordingStoreLimits, RecordingTimeBasis,
+    RecordingTimezone, RtmpAccessAction, RtmpAccessPolicy as RuntimeRtmpAccessPolicy,
+    RtmpAccessRule, RtmpApplication as RuntimeRtmpApplication, RtmpAutoPushConfig,
+    RtmpCallbackEndpoint, RtmpCallbackMethod, RtmpCallbackPolicy, RtmpCapabilities,
+    RtmpClientOptions, RtmpCredential, RtmpNetwork, RtmpOutboundPolicy, RtmpPullTarget,
+    RtmpPushApplication, RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry,
+    RtmpRelayConfig, RtmpRtmpsMode, RtmpServiceRuntime, RtmpSessionCeilings, RtmpSessionPolicy,
+    RtmpTokenPolicy, RtmpTransport, VodApplication, VodCatalog, VodLimits, VodSourceDefinition,
 };
 
 static DISK_BACKEND_REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Weak<DiskBackend>>>> =
@@ -98,6 +97,7 @@ pub struct RtmpServicePlan {
     applications: Vec<PreparedRtmpApplication>,
     vod_catalog: Arc<VodCatalog>,
     media_catalog: Arc<MediaCatalog>,
+    auto_push: Option<RtmpAutoPushConfig>,
 }
 
 impl std::fmt::Debug for RtmpServicePlan {
@@ -189,13 +189,21 @@ impl RtmpServicePlan {
                     ))
                 })
                 .collect::<Result<Vec<_>, ServicePlanError>>()?;
-        Ok(RtmpServiceRuntime::new(
+        let mut runtime = RtmpServiceRuntime::new(
             self.service_id.clone(),
             registry,
             self.hub.clone(),
             RtmpSessionPolicy::with_outbound_chunk_size(applications, self.outbound_chunk_size),
         )
-        .with_callbacks(self.callbacks.clone()))
+        .with_callbacks(self.callbacks.clone());
+        if let Some(auto_push) = self.auto_push.clone() {
+            runtime = runtime.with_auto_push(auto_push).map_err(|_| {
+                ServicePlanError::AutoPushUnavailable {
+                    service: self.service_id.clone(),
+                }
+            })?;
+        }
+        Ok(runtime)
     }
 
     #[must_use]
@@ -236,6 +244,11 @@ impl RtmpServicePlan {
         self.applications
             .iter()
             .any(|application| !application.recorders.is_empty())
+    }
+
+    #[must_use]
+    pub fn auto_push_enabled(&self) -> bool {
+        self.auto_push.is_some()
     }
 }
 
@@ -474,6 +487,8 @@ pub enum ServicePlanError {
         "RTMP DASH output in application `{application}` of service `{service}` failed media-root preflight"
     )]
     DashPreflight { service: String, application: String },
+    #[error("RTMP auto-push for service `{service}` is unavailable")]
+    AutoPushUnavailable { service: String },
     #[error(
         "RTMP push target {target} in application `{application}` of service `{service}` cannot be resolved safely"
     )]
@@ -1379,6 +1394,7 @@ fn compile_rtmp_services(
     let mut services = HashMap::with_capacity(config.rtmp_services.len());
     for service in &config.rtmp_services {
         let outbound_policy = compile_rtmp_outbound_policy(&service.outbound_policy);
+        let auto_push = compile_rtmp_auto_push(&service.name, &service.auto_push)?;
         let callbacks =
             compile_rtmp_callbacks(&service.name, None, &service.callbacks, &outbound_policy)?;
         let mut prepared_applications = Vec::with_capacity(service.applications.len());
@@ -1511,6 +1527,7 @@ fn compile_rtmp_services(
                 applications: prepared_applications,
                 vod_catalog,
                 media_catalog: Arc::new(media_catalog),
+                auto_push,
             }),
         );
     }
@@ -1741,6 +1758,31 @@ fn compile_rtmp_outbound_policy(
         },
         max_chain_depth: policy.max_chain_depth,
     }
+}
+
+fn compile_rtmp_auto_push(
+    service: &str,
+    policy: &oxiroute_config::RtmpAutoPushPolicy,
+) -> Result<Option<RtmpAutoPushConfig>, ServicePlanError> {
+    if !policy.enabled {
+        return Ok(None);
+    }
+    let unavailable = || ServicePlanError::AutoPushUnavailable {
+        service: service.to_owned(),
+    };
+    Ok(Some(RtmpAutoPushConfig {
+        enabled: true,
+        socket_dir: policy.socket_dir.clone(),
+        secret_file: policy.secret_file.clone(),
+        reconnect_interval: Duration::from_millis(policy.reconnect_ms),
+        connect_timeout: Duration::from_millis(policy.connect_timeout_ms),
+        handshake_timeout: Duration::from_millis(policy.handshake_timeout_ms),
+        max_peers: usize::try_from(policy.max_peers).map_err(|_| unavailable())?,
+        max_queue_messages: usize::try_from(policy.max_queue_messages)
+            .map_err(|_| unavailable())?,
+        max_queue_bytes: usize::try_from(policy.max_queue_bytes).map_err(|_| unavailable())?,
+        max_streams: usize::try_from(policy.max_streams).map_err(|_| unavailable())?,
+    }))
 }
 
 fn compile_rtmp_callbacks(

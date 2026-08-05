@@ -1,6 +1,7 @@
 use crate::model::{
     AlpnProtocol, CacheKeyComponent, ForwardHttpVersion, HttpRetryTrigger, HttpRoutePolicy,
-    RtmpFanoutPolicy, RtmpOutboundPolicy, RtmpRelayPolicy, RtmpRtmpsPolicy, RtmpSessionCeilings,
+    RtmpAutoPushPolicy, RtmpFanoutPolicy, RtmpOutboundPolicy, RtmpRelayPolicy, RtmpRtmpsPolicy,
+    RtmpSessionCeilings,
 };
 
 pub(crate) const MAX_SOURCE_BYTES: usize = 1024 * 1024;
@@ -25,6 +26,13 @@ const DEFAULT_RTMP_PUSH_RECONNECT_MS: u64 = 3_000;
 const DEFAULT_RTMP_PULL_RECONNECT_MS: u64 = 3_000;
 const DEFAULT_RTMP_RELAY_CONNECT_TIMEOUT_MS: u64 = 500;
 const DEFAULT_RTMP_RELAY_HANDSHAKE_TIMEOUT_MS: u64 = 2_000;
+const DEFAULT_RTMP_AUTO_PUSH_RECONNECT_MS: u64 = 100;
+const DEFAULT_RTMP_AUTO_PUSH_CONNECT_TIMEOUT_MS: u64 = 500;
+const DEFAULT_RTMP_AUTO_PUSH_HANDSHAKE_TIMEOUT_MS: u64 = 2_000;
+const DEFAULT_RTMP_AUTO_PUSH_MAX_PEERS: u64 = 8;
+const DEFAULT_RTMP_AUTO_PUSH_MAX_QUEUE_MESSAGES: u64 = 256;
+const DEFAULT_RTMP_AUTO_PUSH_MAX_QUEUE_BYTES: u64 = 8 * 1_024 * 1_024;
+const DEFAULT_RTMP_AUTO_PUSH_MAX_STREAMS: u64 = 1_024;
 const DEFAULT_RTMP_MAX_CHAIN_DEPTH: u8 = 4;
 const DEFAULT_RTMP_HLS_SEGMENT_DURATION_MS: u64 = 2_000;
 const DEFAULT_RTMP_HLS_MAX_SEGMENT_DURATION_MS: u64 = 10_000;
@@ -221,6 +229,11 @@ pub(crate) const MAX_RTMP_FANOUT_QUEUE_BYTES: u64 = 1_024 * 1_024 * 1_024;
 pub(crate) const MAX_RTMP_RELAY_BUFFER_MS: u64 = 60_000;
 pub(crate) const MAX_RTMP_RECONNECT_MS: u64 = 300_000;
 pub(crate) const MAX_RTMP_RELAY_TIMEOUT_MS: u64 = 30_000;
+pub(crate) const MAX_RTMP_AUTO_PUSH_PEERS: u64 = 64;
+pub(crate) const MAX_RTMP_AUTO_PUSH_QUEUE_MESSAGES: u64 = 4_096;
+pub(crate) const MAX_RTMP_AUTO_PUSH_QUEUE_BYTES: u64 = 64 * 1024 * 1024;
+pub(crate) const MAX_RTMP_AUTO_PUSH_STREAMS: u64 = 4_096;
+pub(crate) const MAX_RTMP_AUTO_PUSH_SOCKET_DIR_BYTES: usize = 55;
 pub(crate) const DEFAULT_RTMP_CALLBACK_TIMEOUT_MS: u64 = 10_000;
 pub(crate) const DEFAULT_RTMP_CALLBACK_UPDATE_TIMEOUT_MS: u64 = 30_000;
 pub(crate) const MAX_RTMP_CALLBACK_URL_BYTES: usize = 2_048;
@@ -444,6 +457,49 @@ pub(crate) const fn default_rtmp_relay_policy() -> RtmpRelayPolicy {
         connect_timeout_ms: DEFAULT_RTMP_RELAY_CONNECT_TIMEOUT_MS,
         handshake_timeout_ms: DEFAULT_RTMP_RELAY_HANDSHAKE_TIMEOUT_MS,
     }
+}
+
+pub(crate) fn default_rtmp_auto_push_policy() -> RtmpAutoPushPolicy {
+    RtmpAutoPushPolicy {
+        enabled: false,
+        socket_dir: std::path::PathBuf::from("/tmp/oxiroute-rtmp"),
+        secret_file: None,
+        reconnect_ms: DEFAULT_RTMP_AUTO_PUSH_RECONNECT_MS,
+        connect_timeout_ms: DEFAULT_RTMP_AUTO_PUSH_CONNECT_TIMEOUT_MS,
+        handshake_timeout_ms: DEFAULT_RTMP_AUTO_PUSH_HANDSHAKE_TIMEOUT_MS,
+        max_peers: DEFAULT_RTMP_AUTO_PUSH_MAX_PEERS,
+        max_queue_messages: DEFAULT_RTMP_AUTO_PUSH_MAX_QUEUE_MESSAGES,
+        max_queue_bytes: DEFAULT_RTMP_AUTO_PUSH_MAX_QUEUE_BYTES,
+        max_streams: DEFAULT_RTMP_AUTO_PUSH_MAX_STREAMS,
+    }
+}
+
+pub(crate) const fn default_rtmp_auto_push_reconnect_ms() -> u64 {
+    DEFAULT_RTMP_AUTO_PUSH_RECONNECT_MS
+}
+
+pub(crate) const fn default_rtmp_auto_push_connect_timeout_ms() -> u64 {
+    DEFAULT_RTMP_AUTO_PUSH_CONNECT_TIMEOUT_MS
+}
+
+pub(crate) const fn default_rtmp_auto_push_handshake_timeout_ms() -> u64 {
+    DEFAULT_RTMP_AUTO_PUSH_HANDSHAKE_TIMEOUT_MS
+}
+
+pub(crate) const fn default_rtmp_auto_push_max_peers() -> u64 {
+    DEFAULT_RTMP_AUTO_PUSH_MAX_PEERS
+}
+
+pub(crate) const fn default_rtmp_auto_push_max_queue_messages() -> u64 {
+    DEFAULT_RTMP_AUTO_PUSH_MAX_QUEUE_MESSAGES
+}
+
+pub(crate) const fn default_rtmp_auto_push_max_queue_bytes() -> u64 {
+    DEFAULT_RTMP_AUTO_PUSH_MAX_QUEUE_BYTES
+}
+
+pub(crate) const fn default_rtmp_auto_push_max_streams() -> u64 {
+    DEFAULT_RTMP_AUTO_PUSH_MAX_STREAMS
 }
 
 pub(crate) const fn default_rtmp_relay_queue_messages() -> u64 {

@@ -8,48 +8,48 @@ use http::{Uri, uri::PathAndQuery};
 
 use crate::{
     defaults::{
-        MAX_ACME_CONTACTS, MAX_ACME_DIRECTORY_URL_BYTES, MAX_ACME_DNS01_PROVIDER_BYTES,
-        MAX_ACME_DNS01_TIMEOUT_SECONDS, MAX_ACME_DNS_SUFFIXES, MAX_ACME_RETAINED_REVISIONS,
-        MAX_ACME_RETENTION_DAYS,
-        MAX_CERTIFICATE_DNS_NAMES, MAX_CERTIFICATES, MAX_ENDPOINTS_PER_POOL, MAX_HEALTH_HOST_BYTES,
-        MAX_HEALTH_INTERVAL_MS, MAX_HEALTH_PATH_BYTES, MAX_HEALTH_THRESHOLD, MAX_HEALTH_TIMEOUT_MS,
-        MAX_HTTP_TIMEOUT_MS, MAX_PROXY_PROTOCOL_TIMEOUT_MS, MAX_RECORDER_ACTIVE_RECORDERS,
-        MAX_RECORDER_FILE_BYTES,
+        MAX_ACME_CONTACTS, MAX_ACME_DIRECTORY_URL_BYTES, MAX_ACME_DNS_SUFFIXES,
+        MAX_ACME_DNS01_PROVIDER_BYTES, MAX_ACME_DNS01_TIMEOUT_SECONDS, MAX_ACME_RETAINED_REVISIONS,
+        MAX_ACME_RETENTION_DAYS, MAX_CERTIFICATE_DNS_NAMES, MAX_CERTIFICATES,
+        MAX_ENDPOINTS_PER_POOL, MAX_HEALTH_HOST_BYTES, MAX_HEALTH_INTERVAL_MS,
+        MAX_HEALTH_PATH_BYTES, MAX_HEALTH_THRESHOLD, MAX_HEALTH_TIMEOUT_MS, MAX_HTTP_TIMEOUT_MS,
+        MAX_PROXY_PROTOCOL_TIMEOUT_MS, MAX_RECORDER_ACTIVE_RECORDERS, MAX_RECORDER_FILE_BYTES,
         MAX_RECORDER_FRAME_COUNT, MAX_RECORDER_QUEUE_BYTES, MAX_RECORDER_QUEUE_MESSAGES,
         MAX_RECORDER_ROTATION_INTERVAL_MS, MAX_RECORDER_SHUTDOWN_TIMEOUT_MS,
         MAX_RECORDER_STORAGE_BYTES, MAX_RECORDER_STORAGE_FILES,
         MAX_RTMP_ACCESS_RULES_PER_OPERATION, MAX_RTMP_APPLICATION_BYTES,
         MAX_RTMP_APPLICATION_CONNECTIONS, MAX_RTMP_APPLICATION_NAME_BYTES,
         MAX_RTMP_APPLICATION_PUBLISHERS, MAX_RTMP_APPLICATION_VIEWERS,
-        MAX_RTMP_APPLICATIONS_PER_SERVICE, MAX_RTMP_CALLBACK_URL_BYTES, MAX_RTMP_CHAIN_DEPTH,
-        MAX_RTMP_CREDENTIAL_USERNAME_BYTES, MAX_RTMP_FANOUT_QUEUE_BYTES,
-        MAX_RTMP_FANOUT_QUEUE_MESSAGES, MAX_RTMP_OUTBOUND_CHUNK_SIZE, MAX_RTMP_OUTBOUND_CIDRS,
+        MAX_RTMP_APPLICATIONS_PER_SERVICE, MAX_RTMP_AUTO_PUSH_PEERS,
+        MAX_RTMP_AUTO_PUSH_QUEUE_BYTES, MAX_RTMP_AUTO_PUSH_QUEUE_MESSAGES,
+        MAX_RTMP_AUTO_PUSH_SOCKET_DIR_BYTES, MAX_RTMP_AUTO_PUSH_STREAMS,
+        MAX_RTMP_CALLBACK_URL_BYTES, MAX_RTMP_CHAIN_DEPTH, MAX_RTMP_CREDENTIAL_USERNAME_BYTES,
+        MAX_RTMP_DASH_ACTIVE_STREAMS, MAX_RTMP_DASH_OUTPUTS, MAX_RTMP_DASH_PLAYLIST_LENGTH_MS,
+        MAX_RTMP_DASH_QUEUE_MESSAGES, MAX_RTMP_DASH_SEGMENT_BYTES,
+        MAX_RTMP_DASH_SEGMENT_DURATION_MS, MAX_RTMP_DASH_STORAGE_BYTES,
+        MAX_RTMP_DASH_STORAGE_FILES, MAX_RTMP_EXEC_ARGUMENT_BYTES, MAX_RTMP_EXEC_ARGUMENTS,
+        MAX_RTMP_EXEC_ARGV_BYTES, MAX_RTMP_EXEC_ENV_BYTES, MAX_RTMP_EXEC_ENV_NAME_BYTES,
+        MAX_RTMP_EXEC_ENV_VALUE_BYTES, MAX_RTMP_EXEC_ENVIRONMENT, MAX_RTMP_EXEC_NAME_BYTES,
+        MAX_RTMP_EXEC_PROCESSES, MAX_RTMP_EXEC_PROFILES_PER_SERVICE, MAX_RTMP_EXEC_QUEUE_BYTES,
+        MAX_RTMP_EXEC_QUEUE_MESSAGES, MAX_RTMP_EXEC_RESPAWN_DELAY_MS, MAX_RTMP_EXEC_RESPAWNS,
+        MAX_RTMP_EXEC_SHUTDOWN_TIMEOUT_MS, MAX_RTMP_EXEC_STDERR_BYTES, MAX_RTMP_EXEC_STDOUT_BYTES,
+        MAX_RTMP_EXEC_TIMEOUT_MS, MAX_RTMP_FANOUT_QUEUE_BYTES, MAX_RTMP_FANOUT_QUEUE_MESSAGES,
+        MAX_RTMP_HLS_ACTIVE_STREAMS, MAX_RTMP_HLS_KEY_ROTATION_SEGMENTS,
+        MAX_RTMP_HLS_KEY_URL_PREFIX_BYTES, MAX_RTMP_HLS_NAME_BYTES, MAX_RTMP_HLS_OUTPUTS,
+        MAX_RTMP_HLS_PLAYLIST_LENGTH_MS, MAX_RTMP_HLS_QUEUE_MESSAGES, MAX_RTMP_HLS_SEGMENT_BYTES,
+        MAX_RTMP_HLS_SEGMENT_DURATION_MS, MAX_RTMP_HLS_STORAGE_BYTES, MAX_RTMP_HLS_STORAGE_FILES,
+        MAX_RTMP_HLS_VARIANTS, MAX_RTMP_OUTBOUND_CHUNK_SIZE, MAX_RTMP_OUTBOUND_CIDRS,
         MAX_RTMP_OUTBOUND_DOMAINS, MAX_RTMP_PULL_TARGETS, MAX_RTMP_PUSH_TARGETS,
         MAX_RTMP_RECONNECT_MS, MAX_RTMP_RECORDERS_PER_APPLICATION, MAX_RTMP_RECORDING_ROOTS,
-        MAX_RTMP_HLS_ACTIVE_STREAMS, MAX_RTMP_HLS_KEY_URL_PREFIX_BYTES,
-        MAX_RTMP_HLS_KEY_ROTATION_SEGMENTS,
-         MAX_RTMP_HLS_SEGMENT_DURATION_MS, MAX_RTMP_HLS_OUTPUTS, MAX_RTMP_HLS_QUEUE_MESSAGES,
-         MAX_RTMP_HLS_SEGMENT_BYTES, MAX_RTMP_HLS_STORAGE_BYTES, MAX_RTMP_HLS_STORAGE_FILES,
-         MAX_RTMP_HLS_VARIANTS, MAX_RTMP_HLS_NAME_BYTES, MAX_RTMP_HLS_PLAYLIST_LENGTH_MS,
-         MAX_RTMP_DASH_ACTIVE_STREAMS, MAX_RTMP_DASH_OUTPUTS, MAX_RTMP_DASH_QUEUE_MESSAGES,
-         MAX_RTMP_DASH_SEGMENT_BYTES, MAX_RTMP_DASH_SEGMENT_DURATION_MS,
-         MAX_RTMP_DASH_STORAGE_BYTES, MAX_RTMP_DASH_STORAGE_FILES,
-         MAX_RTMP_DASH_PLAYLIST_LENGTH_MS,
-         MAX_RTMP_EXEC_ARGUMENTS, MAX_RTMP_EXEC_ARGUMENT_BYTES, MAX_RTMP_EXEC_ARGV_BYTES,
-         MAX_RTMP_EXEC_ENVIRONMENT, MAX_RTMP_EXEC_ENV_NAME_BYTES, MAX_RTMP_EXEC_ENV_VALUE_BYTES,
-         MAX_RTMP_EXEC_ENV_BYTES, MAX_RTMP_EXEC_NAME_BYTES, MAX_RTMP_EXEC_PROCESSES,
-         MAX_RTMP_EXEC_PROFILES_PER_SERVICE, MAX_RTMP_EXEC_QUEUE_BYTES,
-         MAX_RTMP_EXEC_QUEUE_MESSAGES, MAX_RTMP_EXEC_RESPAWN_DELAY_MS, MAX_RTMP_EXEC_RESPAWNS,
-         MAX_RTMP_EXEC_SHUTDOWN_TIMEOUT_MS, MAX_RTMP_EXEC_STDERR_BYTES,
-         MAX_RTMP_EXEC_STDOUT_BYTES, MAX_RTMP_EXEC_TIMEOUT_MS, MAX_TOTAL_RTMP_EXEC_PROFILES,
-         MAX_RTMP_RELAY_BUFFER_MS, MAX_RTMP_RELAY_TIMEOUT_MS, MAX_RTMP_SECRET_FILE_BYTES,
+        MAX_RTMP_RELAY_BUFFER_MS, MAX_RTMP_RELAY_TIMEOUT_MS, MAX_RTMP_SECRET_FILE_BYTES,
         MAX_RTMP_SERVICES, MAX_RTMP_SUBSCRIBERS, MAX_RTMP_TOKEN_BYTES,
         MAX_RTMP_TOKEN_PARAMETER_BYTES, MAX_RTMP_VOD_DURATION_MS, MAX_RTMP_VOD_FILE_BYTES,
         MAX_RTMP_VOD_ORIGIN_BYTES, MAX_RTMP_VOD_SESSIONS, MAX_RTMP_VOD_SOURCE_NAME_BYTES,
         MAX_RTMP_VOD_SOURCES, MAX_SAFE_JSON_INTEGER, MAX_SELF_SIGNED_VALIDITY_DAYS,
-        MAX_TLS_PROFILES, MAX_TOTAL_ENDPOINTS, MAX_TOTAL_RTMP_RECORDERS, MAX_UDP_DATAGRAM_BYTES,
-        MAX_UDP_QUEUE_BYTES, MAX_UDP_QUEUE_DATAGRAMS, MAX_UDP_SESSION_BYTES, MAX_UDP_SESSIONS,
-        MAX_UPSTREAM_WEIGHT, MIN_HEALTH_INTERVAL_MS, MIN_SELF_SIGNED_VALIDITY_DAYS,
+        MAX_TLS_PROFILES, MAX_TOTAL_ENDPOINTS, MAX_TOTAL_RTMP_EXEC_PROFILES,
+        MAX_TOTAL_RTMP_RECORDERS, MAX_UDP_DATAGRAM_BYTES, MAX_UDP_QUEUE_BYTES,
+        MAX_UDP_QUEUE_DATAGRAMS, MAX_UDP_SESSION_BYTES, MAX_UDP_SESSIONS, MAX_UPSTREAM_WEIGHT,
+        MIN_HEALTH_INTERVAL_MS, MIN_SELF_SIGNED_VALIDITY_DAYS,
     },
     lexical::{
         authority_has_invalid_port, canonical_ip, is_unambiguous_http_path,
@@ -60,18 +60,15 @@ use crate::{
     },
     model::{
         AccessLogPolicy, AcmeDns01Config, AlpnProtocol, Certificate, CertificateSource, Config,
-        ConfigError,
-        DnsResolutionPolicy, ForwardHttpVersion, ForwardProxyService, HealthCheck, HealthCheckType,
-         HttpRequestHeaderMutation, HttpResponseHeaderMutation, HttpRouteAction, HttpService,
-         HttpVersion, L4Service, Listener,
-        ListenerBind, Management, Protocol, RtmpAccessPolicy, RtmpCallbackConfig,
-         RtmpCredentialReference, RtmpOutboundPolicy, RtmpRecorder,
-         RtmpExecFilesystemPolicy, RtmpExecMode, RtmpExecProfile,
-         RtmpExecTrigger, RtmpRelayPolicy, RtmpRtmpsPolicy, RtmpService, RtmpSessionCeilings,
-         RtmpTokenSource,
-          RtmpTransport, RtmpVodSource, Stats, StatsPage, TlsClientAuthMode, TlsProfile, TlsVersion,
-         UdpPolicy,
-        UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, ProxyProtocolVersion,
+        ConfigError, DnsResolutionPolicy, ForwardHttpVersion, ForwardProxyService, HealthCheck,
+        HealthCheckType, HttpRequestHeaderMutation, HttpResponseHeaderMutation, HttpRouteAction,
+        HttpService, HttpVersion, L4Service, Listener, ListenerBind, Management, Protocol,
+        ProxyProtocolVersion, RtmpAccessPolicy, RtmpAutoPushPolicy, RtmpCallbackConfig,
+        RtmpCredentialReference, RtmpExecFilesystemPolicy, RtmpExecMode, RtmpExecProfile,
+        RtmpExecTrigger, RtmpOutboundPolicy, RtmpRecorder, RtmpRelayPolicy, RtmpRtmpsPolicy,
+        RtmpService, RtmpSessionCeilings, RtmpTokenSource, RtmpTransport, RtmpVodSource, Stats,
+        StatsPage, TlsClientAuthMode, TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm,
+        UpstreamEndpoint, UpstreamPool,
     },
 };
 
@@ -1505,6 +1502,7 @@ fn validate_rtmp_services(services: &mut [RtmpService]) -> Result<(), ConfigErro
         validate_access_log("RTMP service", &service.name, service.access_log.as_ref())?;
         validate_rtmp_outbound_policy(&service.name, &mut service.outbound_policy)?;
         validate_rtmp_callbacks(&service.name, None, &service.callbacks)?;
+        validate_rtmp_auto_push_policy(&service.name, &mut service.auto_push)?;
         if service.exec_profiles.len() > MAX_RTMP_EXEC_PROFILES_PER_SERVICE {
             return Err(ConfigError::InvalidRtmpServicePolicy {
                 service: service.name.clone(),
@@ -2646,6 +2644,94 @@ fn validate_rtmp_relay_policy(
             "relay.connect_timeout_ms" | "relay.handshake_timeout_ms" => MAX_RTMP_RELAY_TIMEOUT_MS,
             _ => unreachable!("RTMP relay policy field is closed"),
         };
+        if value == 0 || value > maximum {
+            return Err(invalid(field, detail));
+        }
+    }
+    Ok(())
+}
+
+fn validate_rtmp_auto_push_policy(
+    service: &str,
+    policy: &mut RtmpAutoPushPolicy,
+) -> Result<(), ConfigError> {
+    let invalid = |field, detail| ConfigError::InvalidRtmpServicePolicy {
+        service: service.into(),
+        field,
+        detail,
+    };
+    normalize_absolute_directory(&mut policy.socket_dir)
+        .map_err(|detail| invalid("auto_push.socket_dir", detail))?;
+    if policy.enabled
+        && (policy.socket_dir == Path::new("/") || policy.socket_dir == Path::new("/tmp"))
+    {
+        return Err(invalid(
+            "auto_push.socket_dir",
+            "must use a dedicated owner-only directory, not a shared root",
+        ));
+    }
+    if policy
+        .socket_dir
+        .to_str()
+        .is_none_or(|path| path.len() > MAX_RTMP_AUTO_PUSH_SOCKET_DIR_BYTES)
+    {
+        return Err(invalid(
+            "auto_push.socket_dir",
+            "must leave room for the bounded worker socket name",
+        ));
+    }
+    if let Some(secret_file) = &policy.secret_file {
+        validate_file_path(
+            "RTMP auto-push",
+            service,
+            "auto_push.secret_file",
+            secret_file,
+        )?;
+    }
+    for (field, value, maximum, detail) in [
+        (
+            "auto_push.reconnect_ms",
+            policy.reconnect_ms,
+            MAX_RTMP_RECONNECT_MS,
+            "must be between 1 and 300000 milliseconds",
+        ),
+        (
+            "auto_push.connect_timeout_ms",
+            policy.connect_timeout_ms,
+            MAX_RTMP_RELAY_TIMEOUT_MS,
+            "must be between 1 and 30000 milliseconds",
+        ),
+        (
+            "auto_push.handshake_timeout_ms",
+            policy.handshake_timeout_ms,
+            MAX_RTMP_RELAY_TIMEOUT_MS,
+            "must be between 1 and 30000 milliseconds",
+        ),
+        (
+            "auto_push.max_peers",
+            policy.max_peers,
+            MAX_RTMP_AUTO_PUSH_PEERS,
+            "must be between 1 and 64",
+        ),
+        (
+            "auto_push.max_queue_messages",
+            policy.max_queue_messages,
+            MAX_RTMP_AUTO_PUSH_QUEUE_MESSAGES,
+            "must be between 1 and 4096",
+        ),
+        (
+            "auto_push.max_queue_bytes",
+            policy.max_queue_bytes,
+            MAX_RTMP_AUTO_PUSH_QUEUE_BYTES,
+            "must be between 1 and 67108864",
+        ),
+        (
+            "auto_push.max_streams",
+            policy.max_streams,
+            MAX_RTMP_AUTO_PUSH_STREAMS,
+            "must be between 1 and 4096",
+        ),
+    ] {
         if value == 0 || value > maximum {
             return Err(invalid(field, detail));
         }

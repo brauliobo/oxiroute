@@ -6,12 +6,11 @@ use std::{
 
 use oxiroute_config::{
     AccessLogPolicy, Config, DownstreamTimeoutPolicy, Listener, ListenerBind, Protocol,
-    RtmpAccessPolicy, RtmpAccessRule, RtmpApplication, RtmpCallbackConfig, RtmpFanoutPolicy,
-    RtmpOutboundPolicy,
+    RtmpAccessPolicy, RtmpAccessRule, RtmpApplication, RtmpAutoPushPolicy, RtmpCallbackConfig,
     RtmpExecEnvironment, RtmpExecFilesystemPolicy, RtmpExecNetworkPolicy, RtmpExecProfile,
-    RtmpPushTarget, RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart,
-    RtmpRecorderTimeBasis, RtmpRecorderTimezone, RtmpRelayPolicy, RtmpService, RtmpSessionCeilings,
-    RtmpTransport, validate_config,
+    RtmpFanoutPolicy, RtmpOutboundPolicy, RtmpPushTarget, RtmpRecorder, RtmpRecorderSegmentNaming,
+    RtmpRecorderStart, RtmpRecorderTimeBasis, RtmpRecorderTimezone, RtmpRelayPolicy, RtmpService,
+    RtmpSessionCeilings, RtmpTransport, validate_config,
 };
 
 use crate::{
@@ -21,9 +20,8 @@ use crate::{
 
 use super::{
     DirectiveOrigin, EffectiveRtmpApplication, EffectiveRtmpExecProfile, EffectiveRtmpRecorder,
-    EffectiveRtmpServer,
-    OccurrenceDecision, OccurrenceDisposition, OccurrenceId, RtmpRecordMode, RtmpResolution,
-    SourceGraph, load,
+    EffectiveRtmpServer, OccurrenceDecision, OccurrenceDisposition, OccurrenceId, RtmpRecordMode,
+    RtmpResolution, SourceGraph, load,
 };
 
 const DEFAULT_MAX_QUEUE_MESSAGES: u64 = 256;
@@ -244,6 +242,10 @@ impl Lowerer {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "service lowering keeps canonical fields and provenance aligned"
+    )]
     fn lower_server(
         &mut self,
         server: &EffectiveRtmpServer,
@@ -286,10 +288,18 @@ impl Lowerer {
             access_log: if rtmp.access_log_disabled {
                 Some(AccessLogPolicy::Disabled)
             } else {
-                rtmp.access_log_path.clone().map(|path| AccessLogPolicy::File { path })
+                rtmp.access_log_path
+                    .clone()
+                    .map(|path| AccessLogPolicy::File { path })
             },
             outbound_policy: RtmpOutboundPolicy::default(),
             callbacks: RtmpCallbackConfig::default(),
+            auto_push: RtmpAutoPushPolicy {
+                enabled: rtmp.auto_push,
+                socket_dir: rtmp.auto_push_socket_dir.clone(),
+                reconnect_ms: rtmp.auto_push_reconnect_ms,
+                ..RtmpAutoPushPolicy::default()
+            },
             exec_profiles,
             applications,
         });
@@ -298,6 +308,9 @@ impl Lowerer {
             origins: std::iter::once(server.origin.clone())
                 .chain(rtmp.chunk_size_origin.clone())
                 .chain(rtmp.access_log_origin.clone())
+                .chain(rtmp.auto_push_origin.clone())
+                .chain(rtmp.auto_push_reconnect_origin.clone())
+                .chain(rtmp.auto_push_socket_origin.clone())
                 .collect(),
         });
         if let Some(origin) = &rtmp.chunk_size_origin {
@@ -309,6 +322,24 @@ impl Lowerer {
         if let Some(origin) = &rtmp.access_log_origin {
             self.provenance.push(CanonicalProvenance {
                 path: format!("/rtmp_services/{service_index}/access_log"),
+                origins: vec![origin.clone()],
+            });
+        }
+        if let Some(origin) = &rtmp.auto_push_origin {
+            self.provenance.push(CanonicalProvenance {
+                path: format!("/rtmp_services/{service_index}/auto_push/enabled"),
+                origins: vec![origin.clone()],
+            });
+        }
+        if let Some(origin) = &rtmp.auto_push_reconnect_origin {
+            self.provenance.push(CanonicalProvenance {
+                path: format!("/rtmp_services/{service_index}/auto_push/reconnect_ms"),
+                origins: vec![origin.clone()],
+            });
+        }
+        if let Some(origin) = &rtmp.auto_push_socket_origin {
+            self.provenance.push(CanonicalProvenance {
+                path: format!("/rtmp_services/{service_index}/auto_push/socket_dir"),
                 origins: vec![origin.clone()],
             });
         }
