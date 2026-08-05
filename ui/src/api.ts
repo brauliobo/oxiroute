@@ -443,6 +443,10 @@ export type OperationalEventName =
   | 'server_update'
   | 'certificate_renewal'
   | 'certificate_activated'
+  | 'certificate_revocation'
+  | 'certificate_deletion'
+  | 'certificate_account_rollover'
+  | 'certificate_job_control'
   | 'unknown'
 
 export type OperationalEventOutcome =
@@ -598,7 +602,11 @@ export interface TlsManagedCertificateStatus {
   notAfterUnixSeconds: number | null
   nextActionUnixSeconds: number | null
   notAfter: string
-  jobStatus: 'queued' | 'running' | 'waiting_for_challenge' | 'finalizing' | 'succeeded' | 'failed' | 'cancelled' | null
+  jobStatus: 'queued' | 'running' | 'waiting_for_challenge' | 'finalizing' | 'paused' | 'succeeded' | 'failed' | 'cancelled' | null
+  jobId: string | null
+  paused: boolean
+  retainedRevisions: number
+  retentionDays: number
   retryAttempt: number
   lastSuccessUnixSeconds: number | null
   lastOutcome: string | null
@@ -625,6 +633,7 @@ export interface TlsOperationOutcome {
   archiveRevision?: string
   diskRevision?: string
   activeRevision?: string
+  jobId?: string | null
 }
 
 export interface TlsReconcileResponse {
@@ -634,6 +643,10 @@ export interface TlsReconcileResponse {
 export interface TlsRenewResponse extends TlsOperationOutcome {
   diskRevision: string
   activeRevision: string
+}
+
+export interface TlsActionResponse extends TlsOperationOutcome {
+  jobId: string | null
 }
 
 const EVENT_STREAM_PATH = '/api/v1/events/stream'
@@ -651,6 +664,10 @@ const OPERATIONAL_EVENT_NAMES: readonly OperationalEventName[] = [
   'server_update',
   'certificate_renewal',
   'certificate_activated',
+  'certificate_revocation',
+  'certificate_deletion',
+  'certificate_account_rollover',
+  'certificate_job_control',
   'unknown',
 ]
 const OPERATIONAL_EVENT_OUTCOMES: readonly OperationalEventOutcome[] = [
@@ -1145,6 +1162,56 @@ export async function drainGeneration(
   return postRevisionMutation('/api/v1/generations/drain', timeoutMs === undefined ? {} : { timeoutMs }, expectedActiveRevision, token)
 }
 
+export async function revokeManagedCertificate(
+  expectedActiveRevision: string,
+  token: string,
+  certificate: string,
+  reason?: number,
+): Promise<TlsActionResponse> {
+  return parseTlsActionResponse(await request<unknown>('/api/v1/tls/revoke', {
+    method: 'POST', headers: mutationHeaders(token),
+    body: JSON.stringify({ expectedActiveRevision, certificate, ...(reason === undefined ? {} : { reason }) }),
+  }))
+}
+
+export async function deleteManagedCertificate(
+  expectedActiveRevision: string, token: string, certificate: string,
+): Promise<TlsActionResponse> {
+  return parseTlsActionResponse(await request<unknown>('/api/v1/tls/delete', {
+    method: 'POST', headers: mutationHeaders(token),
+    body: JSON.stringify({ expectedActiveRevision, certificate }),
+  }))
+}
+
+export async function rolloverManagedAccountKey(
+  expectedActiveRevision: string,
+  token: string,
+  certificate?: string,
+): Promise<TlsActionResponse> {
+  return parseTlsActionResponse(await request<unknown>('/api/v1/tls/account/rollover', {
+    method: 'POST', headers: mutationHeaders(token),
+    body: JSON.stringify({ expectedActiveRevision, ...(certificate ? { certificate } : {}) }),
+  }))
+}
+
+export async function cancelManagedJob(
+  expectedActiveRevision: string, token: string, certificate: string,
+): Promise<TlsActionResponse> {
+  return postTlsAction('/api/v1/tls/jobs/cancel', expectedActiveRevision, token, certificate)
+}
+
+export async function pauseManagedJobs(
+  expectedActiveRevision: string, token: string, certificate: string,
+): Promise<TlsActionResponse> {
+  return postTlsAction('/api/v1/tls/jobs/pause', expectedActiveRevision, token, certificate)
+}
+
+export async function resumeManagedJobs(
+  expectedActiveRevision: string, token: string, certificate: string,
+): Promise<TlsActionResponse> {
+  return postTlsAction('/api/v1/tls/jobs/resume', expectedActiveRevision, token, certificate)
+}
+
 export async function reconcileTls(
   expectedActiveRevision: string, token: string, certificate?: string,
 ): Promise<TlsReconcileResponse> {
@@ -1244,6 +1311,15 @@ async function putRevisionMutation(
   return parseMutationResponse(await request<unknown>(url, {
     method: 'PUT', headers: mutationHeaders(token),
     body: JSON.stringify({ ...body, expectedActiveRevision }),
+  }))
+}
+
+async function postTlsAction(
+  url: string, expectedActiveRevision: string, token: string, certificate: string,
+): Promise<TlsActionResponse> {
+  return parseTlsActionResponse(await request<unknown>(url, {
+    method: 'POST', headers: mutationHeaders(token),
+    body: JSON.stringify({ expectedActiveRevision, certificate }),
   }))
 }
 
@@ -1407,6 +1483,14 @@ function parseTlsRenewResponse(value: unknown): TlsRenewResponse {
   }
 }
 
+function parseTlsActionResponse(value: unknown): TlsActionResponse {
+  if (!tlsOperationOutcome(value)) return invalidPayload('TLS action')
+  return {
+    ...normalizeTlsOperationOutcome(value),
+    jobId: value.jobId as string | null | undefined ?? null,
+  }
+}
+
 function nullableRevision(value: unknown): value is string | null {
   return value === null || typeof value === 'string'
 }
@@ -1460,11 +1544,13 @@ function tlsMaterialStatus(value: unknown): value is Record<string, unknown> & T
 function tlsManagedCertificateStatus(value: unknown): value is Record<string, unknown> & TlsManagedCertificateStatus {
   return isRecord(value) && typeof value.certificate === 'string' && typeof value.directoryUrl === 'string' &&
     ['http01', 'dns01', 'tls_alpn01'].includes(String(value.challenge)) && nullableString(value.dnsProvider) &&
+     nullableString(value.jobId) && typeof value.paused === 'boolean' &&
+     safeInteger(value.retainedRevisions) && safeInteger(value.retentionDays) &&
     typeof value.keyType === 'string' && Array.isArray(value.allowedDnsSuffixes) && value.allowedDnsSuffixes.every((suffix) => typeof suffix === 'string') &&
     typeof value.diskRevision === 'string' && typeof value.activeRevision === 'string' &&
     nullableSafeInteger(value.notBeforeUnixSeconds) && nullableSafeInteger(value.notAfterUnixSeconds) &&
     nullableSafeInteger(value.nextActionUnixSeconds) && typeof value.notAfter === 'string' &&
-    (value.jobStatus === null || ['queued', 'running', 'waiting_for_challenge', 'finalizing', 'succeeded', 'failed', 'cancelled'].includes(String(value.jobStatus))) &&
+    (value.jobStatus === null || ['queued', 'running', 'waiting_for_challenge', 'finalizing', 'paused', 'succeeded', 'failed', 'cancelled'].includes(String(value.jobStatus))) &&
     safeInteger(value.retryAttempt) && nullableSafeInteger(value.lastSuccessUnixSeconds) &&
     nullableString(value.lastOutcome) && nullableString(value.lastErrorCode)
 }
@@ -1504,6 +1590,10 @@ function normalizeTlsManagedStatus(value: Record<string, unknown>): TlsManagedCe
     allowedDnsSuffixes: value.allowedDnsSuffixes as string[],
     diskRevision: value.diskRevision as string,
     activeRevision: value.activeRevision as string,
+    jobId: value.jobId as string | null,
+    paused: value.paused as boolean,
+    retainedRevisions: value.retainedRevisions as number,
+    retentionDays: value.retentionDays as number,
     notBeforeUnixSeconds: value.notBeforeUnixSeconds as number | null,
     notAfterUnixSeconds: value.notAfterUnixSeconds as number | null,
     nextActionUnixSeconds: value.nextActionUnixSeconds as number | null,
@@ -1536,13 +1626,15 @@ function normalizeDnsRefreshResult(value: Record<string, unknown>): DnsRefreshRe
 function tlsOperationOutcome(value: unknown): value is Record<string, unknown> {
   if (!isRecord(value) || typeof value.certificate !== 'string' || typeof value.outcome !== 'string') return false
   return optionalStringOrNull(value.previousArchiveRevision) && optionalString(value.archiveRevision) &&
-    optionalString(value.diskRevision) && optionalString(value.activeRevision)
+    optionalString(value.diskRevision) && optionalString(value.activeRevision) &&
+    optionalStringOrNull(value.jobId)
 }
 
 function normalizeTlsOperationOutcome(value: Record<string, unknown>): TlsOperationOutcome {
   return {
     certificate: value.certificate as string,
     outcome: value.outcome as string,
+    jobId: value.jobId as string | null | undefined ?? null,
     ...(value.previousArchiveRevision === undefined ? {} : { previousArchiveRevision: value.previousArchiveRevision as string | null }),
     ...(value.archiveRevision === undefined ? {} : { archiveRevision: value.archiveRevision as string }),
     ...(value.diskRevision === undefined ? {} : { diskRevision: value.diskRevision as string }),

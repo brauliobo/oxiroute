@@ -15,6 +15,8 @@ The current control plane is JSON over loopback HTTP. The base path for manageme
 | DNS | `POST /api/v1/servers/refresh-dns` | Management bearer token; validated target batch and explicit non-atomic outcomes |
 | Generation actions | `POST /api/v1/generations/reload|rollback|drain` | Management bearer token and active-generation revision |
 | TLS/process | `POST /api/v1/tls/reconcile`, `/process/drain`, `/process/shutdown` | Management bearer token and active-generation revision |
+| Managed ACME actions | `POST /api/v1/tls/renew`, `/tls/revoke`, `/tls/delete`, `/tls/account/rollover` | Management bearer token and active-generation revision; failed actions retain active material |
+| Managed ACME jobs | `POST /api/v1/tls/jobs/cancel`, `/tls/jobs/pause`, `/tls/jobs/resume` | Management bearer token and active-generation revision; cooperative controls with redacted job IDs |
 | Audit | `GET /api/v1/audit?after={cursor}&limit={n}`, `GET /api/v1/audit/status` | Management bearer token; durable redacted history and persistence status |
 | Events | `GET /api/v1/events?after={cursor}&limit={n}`, `GET /api/v1/events/stream` | Management bearer token; bounded cursor polling or SSE |
 | RTMP | `GET /api/v1/rtmp/streams`, `/streams/{streamId}` | Management bearer token; redacted active catalog |
@@ -56,6 +58,9 @@ revision returns `409` and does not perform a last-writer-wins write.
 ## Response Rules
 
 - Cumulative `u64` values are decimal strings; gauges and bounded counts are JSON numbers.
+- ACME action responses contain only certificate names, categorical outcomes, job IDs, and disk/active
+  revisions where applicable. Account keys, account/order URLs, JWS bodies, challenge tokens, DNS TXT
+  values, and private certificate material are never returned.
 - Timestamps use RFC 3339 or explicitly named Unix-millisecond fields.
 - Topology is an active-generation graph with stable IDs, canonical config paths, and runtime overlays.
 - Sensitive paths and secret material are omitted or redacted.
@@ -72,6 +77,12 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 curl -s -H "Authorization: Bearer $TOKEN" \
   http://127.0.0.1:9080/api/v1/config | jq '{diskRevision, activeRevision, configFormat, compositional}'
 ```
+
+All managed TLS mutations also require a JSON `expectedActiveRevision` field. Renewal and action
+requests accept a `certificate` name; revocation additionally accepts an optional numeric `reason`.
+Delete removes only persisted managed ACME state and returns `409 certificate_in_use` while an active
+TLS profile still references the certificate. Every mutation returns `X-Correlation-ID`, and the same
+safe correlation is persisted on the bounded job record and audit event.
 
 Avoid putting the token in shell history in long-lived environments; use the installed client or a
 process-safe secret mechanism instead.

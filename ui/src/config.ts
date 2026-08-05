@@ -86,6 +86,8 @@ export interface AcmeManagedCertificateSource {
   challenge: AcmeChallengeType
   key_type: AcmeKeyType
   allowed_dns_suffixes: string[]
+  retained_revisions: number
+  retention_days: number
   dns01: AcmeDns01Config | null
 }
 
@@ -957,6 +959,7 @@ function isCertificate(value: unknown): value is CertificateConfig {
       ['http01', 'dns01', 'tls_alpn01'].includes(String(source.challenge)) &&
       ['ecdsa_p256', 'rsa_2048'].includes(String(source.key_type)) &&
       arrayOf(source.allowed_dns_suffixes, isString) &&
+      safeInteger(source.retained_revisions) && safeInteger(source.retention_days) &&
       (source.dns01 === null || (isRecord(source.dns01) &&
         typeof source.dns01.provider === 'string' &&
         typeof source.dns01.credential_file === 'string' &&
@@ -1509,6 +1512,8 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'certificates[].source.terms_agreed', kind: 'boolean' },
   { path: 'certificates[].source.challenge', kind: 'enum' },
   { path: 'certificates[].source.allowed_dns_suffixes', kind: 'string_list' },
+  { path: 'certificates[].source.retained_revisions', kind: 'integer' },
+  { path: 'certificates[].source.retention_days', kind: 'integer' },
   { path: 'certificates[].source.dns01', kind: 'object' },
   { path: 'certificates[].source.dns01.provider', kind: 'string' },
   { path: 'certificates[].source.dns01.credential_file', kind: 'string' },

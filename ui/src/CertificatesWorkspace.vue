@@ -90,6 +90,12 @@ section.certificates-workspace(aria-labelledby="certificates-heading" :aria-busy
             .fact(v-if="isManaged(certificate.status)")
               span.label Next action
               strong {{ unixSecondsLabel(certificate.status.nextActionUnixSeconds) }}
+            .fact(v-if="isManaged(certificate.status)")
+              span.label Renewal policy
+              strong {{ certificate.status.retainedRevisions }} revisions / {{ certificate.status.retentionDays }} days
+            .fact(v-if="isManaged(certificate.status) && certificate.status.jobId")
+              span.label Active job
+              code {{ certificate.status.jobId }}
             .fact(v-if="certificate.status?.lastErrorCode")
               span.label Last error code
               strong.warning-copy {{ certificate.status.lastErrorCode }}
@@ -106,6 +112,36 @@ section.certificates-workspace(aria-labelledby="certificates-heading" :aria-busy
               :disabled="!canMutate || mutating !== null"
               @click="renew(certificate.name)"
             ) Renew now
+            button.secondary-button(
+              v-if="certificate.source === 'acme_managed'"
+              type="button"
+              :disabled="!canMutate || mutating !== null"
+              @click="rollover(certificate.name)"
+            ) Rollover account key
+            button.danger-button(
+              v-if="certificate.source === 'acme_managed'"
+              type="button"
+              :disabled="!canMutate || mutating !== null"
+              @click="revoke(certificate.name)"
+            ) Revoke certificate
+            button.danger-button(
+              v-if="certificate.source === 'acme_managed'"
+              type="button"
+              :disabled="!canMutate || mutating !== null"
+              @click="removeState(certificate.name)"
+            ) Delete stored state
+            button.secondary-button(
+              v-if="isManaged(certificate.status)"
+              type="button"
+              :disabled="!canMutate || mutating !== null"
+              @click="certificate.status.paused ? resume(certificate.name) : pause(certificate.name)"
+            ) {{ certificate.status.paused ? 'Resume renewal' : 'Pause renewal' }}
+            button.danger-button(
+              v-if="isManaged(certificate.status) && certificate.status.jobId"
+              type="button"
+              :disabled="!canMutate || mutating !== null"
+              @click="cancel(certificate.name)"
+            ) Cancel active job
             span.read-only-note(v-if="certificate.developmentOnly") Development-only identity
 
     section.jobs-panel(aria-labelledby="jobs-heading")
@@ -132,10 +168,16 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   ApiError,
   connectEventStream,
+  deleteManagedCertificate,
   fetchEvents,
   fetchGenerations,
   fetchTlsInventory,
+  cancelManagedJob,
+  pauseManagedJobs,
   reconcileTls,
+  revokeManagedCertificate,
+  resumeManagedJobs,
+  rolloverManagedAccountKey,
   renewManagedCertificate,
   type EventStreamClient,
   type OperationalEvent,
@@ -161,7 +203,10 @@ let stream: EventStreamClient | null = null
 
 const canMutate = computed(() => Boolean(props.token && generationRevision.value))
 const certificateJobs = computed(() => jobs.value
-  .filter((event) => event.certificate && ['certificate_renewal', 'certificate_activated'].includes(event.event))
+  .filter((event) => event.certificate && [
+    'certificate_renewal', 'certificate_activated', 'certificate_revocation',
+    'certificate_deletion', 'certificate_account_rollover', 'certificate_job_control',
+  ].includes(event.event))
   .sort((left, right) => right.cursor - left.cursor))
 
 async function load(): Promise<void> {
@@ -224,6 +269,36 @@ function renew(certificate: string): Promise<void> {
   return runMutation(`renew ${certificate}`, (revision, token) => renewManagedCertificate(revision, token, certificate))
 }
 
+function rollover(certificate: string): Promise<void> {
+  return runMutation(`roll over the account key for ${certificate}`, (revision, token) =>
+    rolloverManagedAccountKey(revision, token, certificate))
+}
+
+function revoke(certificate: string): Promise<void> {
+  return runMutation(`revoke ${certificate} at the ACME CA`, (revision, token) =>
+    revokeManagedCertificate(revision, token, certificate))
+}
+
+function removeState(certificate: string): Promise<void> {
+  return runMutation(`delete stored state for ${certificate}`, (revision, token) =>
+    deleteManagedCertificate(revision, token, certificate))
+}
+
+function cancel(certificate: string): Promise<void> {
+  return runMutation(`cancel the active job for ${certificate}`, (revision, token) =>
+    cancelManagedJob(revision, token, certificate))
+}
+
+function pause(certificate: string): Promise<void> {
+  return runMutation(`pause renewal for ${certificate}`, (revision, token) =>
+    pauseManagedJobs(revision, token, certificate))
+}
+
+function resume(certificate: string): Promise<void> {
+  return runMutation(`resume renewal for ${certificate}`, (revision, token) =>
+    resumeManagedJobs(revision, token, certificate))
+}
+
 function isManaged(status: TlsMaterialStatus | TlsManagedCertificateStatus | null): status is TlsManagedCertificateStatus {
   return status !== null && 'directoryUrl' in status
 }
@@ -231,11 +306,13 @@ function isManaged(status: TlsMaterialStatus | TlsManagedCertificateStatus | nul
 function certificateStatusLabel(certificate: TlsCertificateInventory): string {
   if (!certificate.status) return 'No active material'
   if (certificate.status.lastErrorCode) return 'Error reported'
+  if (isManaged(certificate.status) && certificate.status.paused) return 'Renewal paused'
   return certificate.developmentOnly ? 'Development only' : 'Loaded'
 }
 
 function certificateStatusClass(certificate: TlsCertificateInventory): string {
   if (!certificate.status || certificate.status.lastErrorCode) return 'status-alert'
+  if (isManaged(certificate.status) && certificate.status.paused) return 'status-development'
   return certificate.developmentOnly ? 'status-development' : 'status-healthy'
 }
 
@@ -574,7 +651,8 @@ h4 {
 }
 
 .primary-button,
-.secondary-button {
+.secondary-button,
+.danger-button {
   min-height: 41px;
   padding: 10px 14px;
   border: 1px solid #56604f;
@@ -582,6 +660,12 @@ h4 {
   background: transparent;
   cursor: pointer;
   font-weight: 700;
+}
+
+.danger-button {
+  border-color: #a64d46;
+  color: #ff9b88;
+  background: transparent;
 }
 
 .primary-button {

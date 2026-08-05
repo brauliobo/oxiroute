@@ -40,11 +40,14 @@ The current implementation covers bounded HTTP-01 and DNS-01 issuance:
   ownership-safe exact-record cleanup.
 - Authenticated TLS inventory and renewal API responses with bounded categorical outcomes. Existing
   certificate generations remain active when validation or publication fails.
+- Authenticated ACME certificate revocation, RFC 8555 account-key rollover, cooperative job
+  cancellation, pause/resume controls, correlation-linked durable jobs, and redacted action outcomes.
+- Configurable revision retention with automatic garbage collection that always preserves the active
+  pointer and newest retained revisions. State deletion is guarded by active TLS-profile usage.
 
-The implementation does not yet fetch or apply ACME Renewal Information responses, support account
-rollover, revocation/deletion/pause operations, TLS-ALPN-01, durable cleanup journaling, or a separate
-job-history retention policy. Those remain future contract work and must not be inferred from the
-current status fields.
+The implementation does not yet fetch or apply ACME Renewal Information responses, support TLS-ALPN-01,
+or provide durable DNS cleanup journaling. Those remain future contract work and must not be inferred
+from the current status fields.
 
 ## Certificate sources
 
@@ -101,6 +104,11 @@ operations are defined per operation: ambiguous non-idempotent account creation,
 creation, revocation, and key rollover are not blindly replayed. Safe polling and retrieval
 use bounded exponential backoff with jitter and honor `Retry-After`. Permanent ACME
 problem types fail without broad retry loops.
+
+Revocation is explicit and never follows certificate removal automatically. Account key rollover uses
+the directory `keyChange` endpoint and a nested JWS: the inner payload is signed by the replacement key
+and the outer request is signed by the current account key. A replacement key is installed locally only
+after the CA accepts the request.
 
 The ACME Renewal Information service SHOULD be used when the directory advertises it.
 Otherwise the local renewal policy applies.
@@ -178,6 +186,9 @@ state/
 - Backups and diagnostics MUST not copy private keys into general logs or support bundles.
 - Hardware or external key stores are a future `KeyProvider`; lifecycle code must not assume keys are exportable.
 - A process-lifetime OS lock protects the state root; per-certificate jobs also coalesce in process.
+- Revision garbage collection keeps at least the configured newest revision count and age window,
+  always retaining the current pointer. Account and revision deletion requires an operator action and
+  an active-generation check that no TLS profile references the certificate.
 - Shared/network filesystems and multiple daemons writing one state root are unsupported in the first release.
 
 `account.json` will persist the exact directory URL, account URL/JWS key ID, status, contacts,
@@ -225,9 +236,12 @@ status checks and configurable clock-skew policy are not yet implemented.
   minutes up to twelve hours. A successful publication resets the retry state.
 - An operator may request early renewal, and duplicate concurrent jobs are rejected by certificate
   name. Expiry never silently replaces a certificate with self-signed material.
+- Operators may pause/resume automatic renewal or cancel an in-flight polling job. Cancellation and
+  pause cleanup paths retain the active certificate and run DNS cleanup independently of the cancelled
+  operation.
 - The directory's Renewal Information endpoint is recorded when advertised but is not yet fetched or
   applied to scheduling; the local policy remains authoritative until that work is implemented.
-- Warning thresholds, explicit pause/resume, and escalating expiry events remain future work.
+- Warning thresholds and escalating expiry events remain future work.
 
 ## Current zero-downtime installation
 
@@ -248,13 +262,16 @@ generation-publication seam but is not an ACME authenticator or scheduler.
 If runtime preparation fails after files are stored, disk certificate revision and active
 certificate revision differ visibly; the old active certificate remains.
 
-## Planned revocation and deletion
+## Revocation and deletion
 
-- The API MAY request ACME revocation with explicit confirmation and reason.
+- The API MAY request ACME revocation with explicit confirmation and an optional RFC 5280 reason.
 - Revocation is never an automatic consequence of removing a listener.
-- Deleting a managed certificate first requires no active TLS profile references.
-- Account key rollover and account deactivation are administrative operations with audit records.
-- Old private-key revisions use configurable retention and secure deletion where the filesystem can provide meaningful guarantees.
+- Deleting managed state first requires no active TLS profile references. The current in-memory
+  generation remains available until a configuration reload; deletion does not implicitly edit the
+  canonical configuration.
+- Account key rollover is an administrative operation with an audit/correlation record.
+- Old private-key revisions use configurable count/age retention and secure file removal within the
+  owner-locked state root.
 
 ## Current API and UI behavior
 
@@ -270,13 +287,13 @@ Actions:
 - Validate imported files.
 - Issue using a staging or production directory.
 - Renew now, pause/resume automatic renewal, revoke, and delete when unreferenced.
-- Display challenge progress and cleanup failures.
+- Rollover the account key, cancel active jobs, and display challenge progress and cleanup failures.
 
 The current API exposes the configured directory, challenge and non-secret provider name, key type,
 suffix policy, disk/active revisions, expiry, next action, job status, retry attempt, last success,
-and redacted outcome/error. Production
-confirmation, staging/dry-validation gating, revocation, deletion, and certificate job-history views
-remain future UI work.
+  redacted outcome/error, job ID/correlation, pause state, and lineage retention policy. Production
+confirmation and staging/dry-validation gating remain operator policy rather than an implicit API
+fallback.
 
 ## Observability
 

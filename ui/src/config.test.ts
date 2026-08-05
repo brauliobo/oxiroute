@@ -36,6 +36,8 @@ const currentCanonicalFields = [
   'certificates[].source.terms_agreed',
   'certificates[].source.challenge',
   'certificates[].source.allowed_dns_suffixes',
+  'certificates[].source.retained_revisions',
+  'certificates[].source.retention_days',
   'certificates[].source.dns01',
   'certificates[].source.dns01.provider',
   'certificates[].source.dns01.credential_file',

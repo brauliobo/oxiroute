@@ -70,6 +70,12 @@ fieldset.object-block(data-field="certificates[].source")
       item-label="DNS suffix"
       field-path="certificates[].source.allowed_dns_suffixes"
     )
+    label.field(data-field="certificates[].source.retained_revisions")
+      span Retained revisions
+      input(type="number" min="1" max="32" step="1" v-model.number="certificate.source.retained_revisions")
+    label.field(data-field="certificates[].source.retention_days")
+      span Retention days
+      input(type="number" min="1" max="3650" step="1" v-model.number="certificate.source.retention_days")
     .field-grid(v-if="certificate.source.challenge === 'dns01' && certificate.source.dns01")
       label.field(data-field="certificates[].source.dns01.provider")
         span DNS provider
@@ -112,6 +118,8 @@ function changeSource(event: Event): void {
           challenge: 'http01',
           key_type: 'ecdsa_p256',
           allowed_dns_suffixes: [],
+          retained_revisions: 3,
+          retention_days: 30,
           dns01: null,
         }
     : sourceType === 'self_signed_development'
