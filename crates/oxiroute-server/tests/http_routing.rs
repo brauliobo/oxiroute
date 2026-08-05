@@ -310,6 +310,27 @@ fn path_prefixes_are_normalized_and_respect_segment_boundaries() {
 }
 
 #[test]
+fn slash_terminated_segment_prefixes_match_descendants_without_widening() {
+    let table = RouteTable::new(vec![
+        route(None, "/api/", None, "api-slash"),
+        route(None, "/", None, "root"),
+    ]);
+
+    assert_eq!(
+        selected_pool(&table, None, "/api/users", &Method::GET),
+        Some("api-slash")
+    );
+    assert_eq!(
+        selected_pool(&table, None, "/api", &Method::GET),
+        Some("root")
+    );
+    assert_eq!(
+        selected_pool(&table, None, "/apix", &Method::GET),
+        Some("root")
+    );
+}
+
+#[test]
 fn percent_triplet_case_is_canonical_for_matching() {
     let encoded = route(None, "/private%3Azone", None, "private");
     assert_eq!(encoded.path_value(), "/private%3Azone");
