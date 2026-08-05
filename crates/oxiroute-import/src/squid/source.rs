@@ -6,7 +6,7 @@ use std::{
 
 use crate::{Diagnostic, DiagnosticStage, Report, Severity};
 
-use super::{E_UNSUPPORTED_FORM, SourceGraph, SquidLoadLimits, load_with_limits};
+use super::{load_with_limits, SourceGraph, SquidLoadLimits, E_UNSUPPORTED_FORM};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RootSelectionSource {

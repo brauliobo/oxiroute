@@ -1,9 +1,9 @@
 use crate::{
-    ByteRange, Diagnostic, DiagnosticStage, E_SOURCE_LIMIT, MAX_DIRECTIVES_PER_SOURCE,
-    MAX_SOURCE_BYTES, MAX_TOKENS_PER_SOURCE, Report, Severity, SourceFile, Span,
+    ByteRange, Diagnostic, DiagnosticStage, Report, Severity, SourceFile, Span, E_SOURCE_LIMIT,
+    MAX_DIRECTIVES_PER_SOURCE, MAX_SOURCE_BYTES, MAX_TOKENS_PER_SOURCE,
 };
 
-use super::{Line, Word, lexer::lex_with_limits};
+use super::{lexer::lex_with_limits, Line, Word};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Directive {
