@@ -147,8 +147,9 @@ are integrated; arbitrary HTTP/2 forwarding remains outside the daemon contract.
   integrated; canonical mTLS fails closed until the listener TLS client-CA/session identity seam is
   available).
 - Squid importer for the independently implemented supported subset (bounded source/parser/typed
-  semantics, canonical direct-forward lowering, CLI/native references, and daemon runtime are
-  integrated; cache/refresh semantics remain explicitly non-equivalent).
+  semantics, canonical direct-forward lowering, ordered static parent peers, global direct-fallback
+  rules, CLI/native references, and daemon runtime are integrated; cache/refresh semantics remain
+  explicitly non-equivalent).
 - HTTP/2 classic CONNECT with dedicated stream takeover, flow-control, half-close, timeout, reset,
   and cancellation conformance coverage (integrated; arbitrary H2 forward requests remain blocked).
 - Bounded forward HTTP/3 absolute-form and classic CONNECT through a separate UDP listener, with
@@ -158,8 +159,8 @@ are integrated; arbitrary HTTP/2 forwarding remains outside the daemon contract.
   collapsed fills, origin revalidation, fail-closed privacy admission, authenticated purge, and
   listener cache outcome metrics (integrated; broader HTTP cache conformance remains).
 
-Defer TLS interception, transparent proxying, ICAP/eCAP, NTLM/Negotiate helpers, cache
-peer protocols, and broad Squid helper compatibility.
+Defer TLS interception, transparent proxying, ICAP/eCAP, NTLM/Negotiate helpers, sibling/dynamic
+peer protocols, ICP/HTCP, and broad Squid helper compatibility.
 
 ## Milestone 4: cache and HTTP/3
 

@@ -44,8 +44,9 @@ fuzz targets; the real-browser runner and CI gates are checked in under `ui/test
   streaming bypass.
 - nginx, HAProxy, Squid, and Varnish parser tokens, ordered source/include graphs,
   inheritance/resolution, diagnostics, decision accounting, provenance, and conservative semantic
-  conversion. Squid additionally covers canonical direct-forward lowering, cross-format native
-  references, authenticated absolute-form/CONNECT daemon wires, and bounded tunnel flushing;
+   conversion. Squid additionally covers canonical direct-forward lowering, cross-format native
+   references, static parent peer ordering/fallback, DNS/SSRF answer pinning, authenticated
+   absolute-form/CONNECT daemon wires, and bounded tunnel flushing;
   Varnish exact canonical lowering, native-reference evidence, report, preview, and fail-closed
   invocation tests cover the finalized subset.
 

@@ -82,7 +82,10 @@ oxiroute import squid /etc/squid/squid.conf --output preview
 
 If refresh rules are present, explicit `externalize_cache` acceptance is required before a direct
 candidate can activate. CONNECT, ACL ordering, bounded DNS, and Basic authentication have dedicated
-policy constraints; full Squid parity is not claimed.
+policy constraints. Static ordered `cache_peer <host> parent <http-port> 0` entries without options
+are lowered for HTTP/1, together with global `always_direct allow all` or `never_direct allow all`
+fallback rules. Sibling, dynamic, credentialed, hierarchy, ICP, and peer-option forms remain
+blocking; full Squid parity is not claimed.
 
 ## Apache httpd
 

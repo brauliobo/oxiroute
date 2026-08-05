@@ -21,6 +21,7 @@ use crate::defaults::{
     default_disk_cache_max_bytes, default_disk_cache_max_files, default_forward_connect_ports,
     default_forward_http_versions, default_forward_lifetime_timeout_ms,
     default_forward_max_connections, default_forward_max_header_bytes,
+    default_forward_peer_max_retries,
     default_forward_resolver_cache_entries, default_forward_resolver_concurrent_queries,
     default_forward_resolver_max_addresses, default_forward_resolver_max_ttl_ms,
     default_forward_resolver_min_ttl_ms, default_forward_resolver_negative_ttl_ms,
@@ -2130,6 +2131,7 @@ pub struct ForwardProxyService {
     pub allow_absolute_form: bool,
     pub tls_required: bool,
     pub connect: ForwardConnectPolicy,
+    pub peer_policy: ForwardPeerPolicy,
     pub auth: Option<ForwardProxyAuth>,
     pub access_policy: Option<ForwardAccessPolicy>,
     pub destination_policy: ForwardDestinationPolicy,
@@ -2156,6 +2158,8 @@ struct ForwardProxyServiceWire {
     tls_required: bool,
     #[serde(default)]
     connect: ForwardConnectPolicy,
+    #[serde(default)]
+    peer_policy: ForwardPeerPolicy,
     #[serde(default)]
     auth: Option<ForwardProxyAuth>,
     #[serde(default)]
@@ -2198,6 +2202,7 @@ impl<'de> Deserialize<'de> for ForwardProxyService {
             allow_absolute_form: wire.allow_absolute_form,
             tls_required: wire.tls_required,
             connect: wire.connect,
+            peer_policy: wire.peer_policy,
             auth: wire.auth,
             access_policy: wire.access_policy,
             destination_policy: wire.destination_policy,
@@ -2227,6 +2232,7 @@ impl Serialize for ForwardProxyService {
             allow_absolute_form: self.allow_absolute_form,
             tls_required: self.tls_required,
             connect: self.connect.clone(),
+            peer_policy: self.peer_policy.clone(),
             auth: self.auth.clone(),
             access_policy: self.access_policy.clone(),
             destination_policy: self.destination_policy.clone(),
@@ -2269,6 +2275,43 @@ impl Default for ForwardConnectPolicy {
             allowed_ports: default_forward_connect_ports(),
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ForwardPeerPolicy {
+    #[serde(default)]
+    pub peers: Vec<ForwardPeer>,
+    #[serde(default)]
+    pub direct_fallback: ForwardDirectFallback,
+    #[serde(default = "default_forward_peer_max_retries")]
+    pub max_retries: u8,
+}
+
+impl Default for ForwardPeerPolicy {
+    fn default() -> Self {
+        Self {
+            peers: Vec::new(),
+            direct_fallback: ForwardDirectFallback::default(),
+            max_retries: default_forward_peer_max_retries(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ForwardPeer {
+    pub host: String,
+    pub port: u16,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardDirectFallback {
+    #[default]
+    Allowed,
+    Denied,
+    Required,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

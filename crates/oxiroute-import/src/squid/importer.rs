@@ -9,11 +9,13 @@ use std::{
 use oxiroute_config::{
     Config, DownstreamTimeoutPolicy, ForwardAccessAction, ForwardAccessCondition,
     ForwardAccessMatcher, ForwardAccessPolicy, ForwardAccessRule, ForwardAuditMode,
-    ForwardConnectPolicy, ForwardDestinationPolicy, ForwardHeaderPolicy, ForwardHttpVersion,
-    ForwardPortRange, ForwardProxyAuth, ForwardProxyService, ForwardResolverPolicy,
-    ForwardViaPolicy, ForwardedForPolicy, Listener, ListenerBind, Protocol,
+    ForwardConnectPolicy, ForwardDestinationPolicy, ForwardDirectFallback, ForwardHeaderPolicy,
+    ForwardHttpVersion, ForwardPeer, ForwardPeerPolicy, ForwardPortRange, ForwardProxyAuth,
+    ForwardProxyService, ForwardResolverPolicy, ForwardViaPolicy, ForwardedForPolicy, Listener,
+    ListenerBind, Protocol,
 };
 
+use crate::canonical::{dns_name, ip_address};
 use crate::{
     CanonicalDraft, CanonicalProvenance, Diagnostic, DiagnosticCode, DiagnosticStage,
     E_DUPLICATE_IDENTITY, E_SEMANTICS_NOT_REPRESENTABLE, E_UNRESOLVED_REFERENCE,
@@ -279,6 +281,9 @@ fn consumed_occurrences(effective: &EffectiveConfiguration) -> BTreeSet<Occurren
             })
             .map(|port| port.origin.occurrence),
     );
+    if lower_peer_policy(effective).is_ok() {
+        extend_consumed_peer_occurrences(effective, &mut occurrences);
+    }
     occurrences.extend(
         effective
             .acl_definitions
@@ -363,6 +368,30 @@ fn consumed_occurrences(effective: &EffectiveConfiguration) -> BTreeSet<Occurren
     occurrences
 }
 
+fn extend_consumed_peer_occurrences(
+    effective: &EffectiveConfiguration,
+    occurrences: &mut BTreeSet<OccurrenceId>,
+) {
+    occurrences.extend(
+        effective
+            .cache_peers
+            .iter()
+            .map(|peer| peer.origin.occurrence),
+    );
+    occurrences.extend(
+        effective
+            .access_policies
+            .iter()
+            .filter(|policy| {
+                matches!(
+                    policy.kind,
+                    AccessListKind::AlwaysDirect | AccessListKind::NeverDirect
+                ) && policy.selector.is_none()
+            })
+            .flat_map(|policy| policy.rules.iter().map(|rule| rule.origin.occurrence)),
+    );
+}
+
 fn extend_consumed_dns_occurrences(
     effective: &EffectiveConfiguration,
     occurrences: &mut BTreeSet<OccurrenceId>,
@@ -407,9 +436,7 @@ fn lower(effective: &EffectiveConfiguration) -> Result<LoweredCanonical, Semanti
     if http_ports.iter().any(|port| !port.options.is_empty()) {
         return Err(SemanticBlockerKind::UnsupportedPortOption);
     }
-    if !effective.cache_peers.is_empty() {
-        return Err(SemanticBlockerKind::CachePeerHierarchy);
-    }
+    let peer_policy = lower_peer_policy(effective)?;
     if !effective.authentication_controls.is_empty() {
         return Err(SemanticBlockerKind::ProxyAuthentication);
     }
@@ -503,6 +530,7 @@ fn lower(effective: &EffectiveConfiguration) -> Result<LoweredCanonical, Semanti
             enabled: !connect_ports.is_empty(),
             allowed_ports: connect_ports,
         },
+        peer_policy,
         auth,
         access_policy: Some(access_policy),
         destination_policy: ForwardDestinationPolicy {
@@ -636,6 +664,22 @@ fn lower_provenance(
         .filter(|logging| logging.destination == LogDestination::Disabled)
         .map(|logging| logging.origin.clone())
         .collect::<Vec<_>>();
+    let peer_origins = effective
+        .cache_peers
+        .iter()
+        .map(|peer| peer.origin.clone())
+        .collect::<Vec<_>>();
+    let direct_origins = effective
+        .access_policies
+        .iter()
+        .filter(|policy| {
+            matches!(
+                policy.kind,
+                AccessListKind::AlwaysDirect | AccessListKind::NeverDirect
+            ) && policy.selector.is_none()
+        })
+        .flat_map(|policy| policy.rules.iter().map(|rule| rule.origin.clone()))
+        .collect::<Vec<_>>();
     let auth_origins = effective
         .authentication_schemes
         .first()
@@ -648,6 +692,8 @@ fn lower_provenance(
         .chain(header_origins.iter().cloned())
         .chain(resolver_origins.iter().cloned())
         .chain(audit_origins.iter().cloned())
+        .chain(peer_origins.iter().cloned())
+        .chain(direct_origins.iter().cloned())
         .chain(auth_origins.iter().cloned())
         .collect::<Vec<_>>();
     let service_path = "/forward_proxy_services/0";
@@ -755,8 +801,44 @@ fn lower_provenance(
         lowered_policy,
         service_path,
     );
+    record_peer_policy(
+        &mut recorder,
+        &peer_origins,
+        &direct_origins,
+        &service.peer_policy,
+        service_path,
+    );
 
     recorder.entries
+}
+
+fn record_peer_policy(
+    recorder: &mut ProvenanceRecorder,
+    peer_origins: &[DirectiveOrigin],
+    direct_origins: &[DirectiveOrigin],
+    policy: &ForwardPeerPolicy,
+    service_path: &str,
+) {
+    if peer_origins.is_empty() && direct_origins.is_empty() {
+        return;
+    }
+    let path = format!("{service_path}/peer_policy");
+    let mut origins = peer_origins.to_vec();
+    origins.extend(direct_origins.iter().cloned());
+    recorder.record(path.clone(), origins.clone());
+    if !peer_origins.is_empty() {
+        recorder.record(format!("{path}/peers"), peer_origins.to_vec());
+    }
+    if !direct_origins.is_empty() {
+        recorder.record(format!("{path}/direct_fallback"), direct_origins.to_vec());
+    }
+    if !peer_origins.is_empty() {
+        recorder.record(format!("{path}/max_retries"), peer_origins.to_vec());
+    }
+    for (index, _peer) in policy.peers.iter().enumerate() {
+        let peer_path = format!("{path}/peers/{index}");
+        record_fields(recorder, &peer_path, ["", "/host", "/port"], peer_origins);
+    }
 }
 
 fn record_access_policy(
@@ -998,6 +1080,91 @@ fn lower_authentication(schemes: &[AuthenticationScheme]) -> Result<Option<Forwa
     }))
 }
 
+fn lower_peer_policy(
+    effective: &EffectiveConfiguration,
+) -> Result<ForwardPeerPolicy, SemanticBlockerKind> {
+    let direct_fallback = lower_direct_policy(effective)?;
+    let mut peers = Vec::with_capacity(effective.cache_peers.len());
+    let mut identities = BTreeSet::new();
+    for peer in &effective.cache_peers {
+        if peer.peer_type != super::CachePeerType::Parent
+            || peer.http_port == 0
+            || peer.icp_port != 0
+            || !peer.options.is_empty()
+        {
+            return Err(SemanticBlockerKind::CachePeerHierarchy);
+        }
+        let host = ip_address(&peer.host.value)
+            .map(|address| address.to_string())
+            .or_else(|| dns_name(&peer.host.value))
+            .ok_or(SemanticBlockerKind::CachePeerHierarchy)?;
+        if !identities.insert((host.clone(), peer.http_port)) {
+            return Err(SemanticBlockerKind::CachePeerHierarchy);
+        }
+        peers.push(ForwardPeer {
+            host,
+            port: peer.http_port,
+        });
+    }
+    if peers.is_empty() && direct_fallback == ForwardDirectFallback::Denied {
+        return Err(SemanticBlockerKind::DirectRoutingPolicy);
+    }
+    let max_retries = u8::try_from(peers.len().saturating_sub(1))
+        .map_err(|_| SemanticBlockerKind::CachePeerHierarchy)?;
+    Ok(ForwardPeerPolicy {
+        peers,
+        direct_fallback,
+        max_retries,
+    })
+}
+
+fn lower_direct_policy(
+    effective: &EffectiveConfiguration,
+) -> Result<ForwardDirectFallback, SemanticBlockerKind> {
+    let always = lower_direct_policy_list(effective, AccessListKind::AlwaysDirect)?;
+    let never = lower_direct_policy_list(effective, AccessListKind::NeverDirect)?;
+    if always && never {
+        return Err(SemanticBlockerKind::DirectRoutingPolicy);
+    }
+    Ok(if always {
+        ForwardDirectFallback::Required
+    } else if never {
+        ForwardDirectFallback::Denied
+    } else {
+        ForwardDirectFallback::Allowed
+    })
+}
+
+fn lower_direct_policy_list(
+    effective: &EffectiveConfiguration,
+    kind: AccessListKind,
+) -> Result<bool, SemanticBlockerKind> {
+    let policies = effective
+        .access_policies
+        .iter()
+        .filter(|policy| policy.kind == kind && policy.selector.is_none())
+        .collect::<Vec<_>>();
+    if policies.is_empty() {
+        return Ok(false);
+    }
+    let [policy] = policies.as_slice() else {
+        return Err(SemanticBlockerKind::DirectRoutingPolicy);
+    };
+    let [rule] = policy.rules.as_slice() else {
+        return Err(SemanticBlockerKind::DirectRoutingPolicy);
+    };
+    if rule.terms.len() != 1
+        || rule.terms[0].negated
+        || !matches!(
+            rule.terms[0].resolution,
+            AclReferenceResolution::Builtin(super::BuiltinAcl::All)
+        )
+    {
+        return Err(SemanticBlockerKind::DirectRoutingPolicy);
+    }
+    Ok(rule.action == AccessAction::Allow)
+}
+
 fn lower_access_policy(effective: &EffectiveConfiguration) -> Option<ForwardAccessPolicy> {
     let policies = effective
         .access_policies
@@ -1217,13 +1384,13 @@ const fn blocker_message(kind: SemanticBlockerKind) -> &'static str {
             "Squid header access semantics lack a canonical capability"
         }
         SemanticBlockerKind::DirectRoutingPolicy => {
-            "Squid direct-routing semantics lack a canonical capability"
+            "Squid direct-routing form is outside the exact global direct-fallback subset"
         }
         SemanticBlockerKind::CacheAccessPolicy => {
             "Squid cache access semantics lack a canonical capability"
         }
         SemanticBlockerKind::CachePeerHierarchy => {
-            "Squid cache-peer hierarchy semantics lack a canonical capability"
+            "Squid cache_peer must be an ordered static parent with HTTP port, ICP port 0, and no options"
         }
         SemanticBlockerKind::RefreshPolicy => {
             "Squid ordered refresh semantics lack a canonical capability"

@@ -3,10 +3,10 @@ use serde::Serialize;
 /// The Squid checkout used to classify the native directive surface.
 pub const SQUID_TARGET_VERSION: &str = "6f4c814";
 /// Stable version of the Squid directive and family registry.
-pub const SQUID_CAPABILITY_REGISTRY_VERSION: u32 = 1;
+pub const SQUID_CAPABILITY_REGISTRY_VERSION: u32 = 2;
 /// Stable importer profile identifier exposed in source metadata.
 pub const SQUID_CAPABILITY_PROFILE_ID: &str = "squid-forward-http1";
-pub const SQUID_CAPABILITY_PROFILE_VERSION: u32 = 1;
+pub const SQUID_CAPABILITY_PROFILE_VERSION: u32 = 2;
 
 const E_HOSTROUTER: &[&str] = &["evidence.squid.hostrouter"];
 const E_UPSTREAM: &[&str] = &["docs/UPSTREAM_ANALYSIS.md"];
@@ -207,11 +207,11 @@ const FAMILIES: &[SquidCapabilityFamily] = &[
     },
     SquidCapabilityFamily {
         id: "family.squid.peers",
-        name: "Parent and sibling cache peers",
-        status: SquidCapabilityStatus::Unsupported,
-        rationale: "Peer selection, hierarchy, failover, directness, credentials, and ICP interaction have no canonical runtime implementation in this scope.",
-        current_evidence: E_UPSTREAM,
-        required_tests: T_IMPORT,
+        name: "Static parent peers and direct fallback",
+        status: SquidCapabilityStatus::Partial,
+        rationale: "Only ordered static parent peers with bounded connection failure retry and explicit direct fallback are lowered; hierarchy, authentication, and peer protocols remain blocked.",
+        current_evidence: E_HOSTROUTER,
+        required_tests: T_RUNTIME_SECURITY,
     },
     SquidCapabilityFamily {
         id: "family.squid.helpers",
@@ -661,14 +661,66 @@ const DIRECTIVES: &[SquidDirectiveCapability] = &[
         required_tests: T_IMPORT,
     },
     SquidDirectiveCapability {
-        id: "directive.squid.cache-peer",
-        key: "cache_peer",
+        id: "directive.squid.always-direct.global",
+        key: "always_direct",
         family: "family.squid.peers",
-        form: "parent, sibling, or multicast cache peer",
+        form: "one global allow or deny rule over the built-in all ACL",
+        contexts: GLOBAL,
+        status: SquidCapabilityStatus::Compatible,
+        rationale: "The exact global form maps to direct-only, peer-first, or peer-only selection without guessing conditional ACL behavior.",
+        current_evidence: E_HOSTROUTER,
+        importer_disposition: "lowered",
+        target: "forward.peer_policy",
+        required_tests: T_RUNTIME_SECURITY,
+    },
+    SquidDirectiveCapability {
+        id: "directive.squid.never-direct.global",
+        key: "never_direct",
+        family: "family.squid.peers",
+        form: "one global allow or deny rule over the built-in all ACL",
+        contexts: GLOBAL,
+        status: SquidCapabilityStatus::Compatible,
+        rationale: "The exact global form maps to peer-only, peer-first, or direct-only selection without guessing conditional ACL behavior.",
+        current_evidence: E_HOSTROUTER,
+        importer_disposition: "lowered",
+        target: "forward.peer_policy",
+        required_tests: T_RUNTIME_SECURITY,
+    },
+    SquidDirectiveCapability {
+        id: "directive.squid.direct-routing.conditional",
+        key: "always_direct/never_direct",
+        family: "family.squid.peers",
+        form: "conditional, named-ACL, or multiple direct-routing rules",
         contexts: GLOBAL,
         status: SquidCapabilityStatus::Unsupported,
-        rationale: "Peer hierarchy and selection are parsed as typed blockers and are not lowered to an origin pool.",
+        rationale: "Conditional directness requires hierarchy-aware request evaluation that is not represented by the bounded static peer policy.",
+        current_evidence: E_UPSTREAM,
+        importer_disposition: "blocked",
+        target: "import.blocking_diagnostic",
+        required_tests: T_IMPORT,
+    },
+    SquidDirectiveCapability {
+        id: "directive.squid.cache-peer.static-parent",
+        key: "cache_peer",
+        family: "family.squid.peers",
+        form: "static parent with HTTP port, ICP port 0, and no options",
+        contexts: GLOBAL,
+        status: SquidCapabilityStatus::Compatible,
         current_evidence: E_HOSTROUTER,
+        rationale: "The exact static parent form lowers to the ordered forward peer policy and is covered by peer selection and failure-path tests.",
+        importer_disposition: "lowered",
+        target: "forward.peer_policy",
+        required_tests: T_RUNTIME_SECURITY,
+    },
+    SquidDirectiveCapability {
+        id: "directive.squid.cache-peer.unsupported",
+        key: "cache_peer",
+        family: "family.squid.peers",
+        form: "sibling, multicast, dynamic, authenticated, option-bearing, or ICP peer",
+        contexts: GLOBAL,
+        status: SquidCapabilityStatus::Unsupported,
+        rationale: "Only static parent selection is representable; hierarchy codes, peer credentials, options, and peer protocols are blocking.",
+        current_evidence: E_UPSTREAM,
         importer_disposition: "blocked",
         target: "import.blocking_diagnostic",
         required_tests: T_IMPORT,

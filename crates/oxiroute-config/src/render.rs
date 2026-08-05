@@ -11,8 +11,9 @@ use crate::{
         CacheStore, CacheSurrogateTags, CacheVaryPolicy, Certificate, CertificateSource, Config,
         ConfigError, DnsResolutionPolicy, DownstreamTimeoutPolicy, ForwardAccessAction,
         ForwardAccessMatcher, ForwardAccessPolicy, ForwardAccessRule, ForwardAuditMode,
-        ForwardConnectPolicy, ForwardDestinationPolicy, ForwardHeaderPolicy, ForwardHttpVersion,
-        ForwardProxyAuth, ForwardProxyService, ForwardResolverPolicy, ForwardTimeRange,
+        ForwardConnectPolicy, ForwardDestinationPolicy, ForwardDirectFallback, ForwardHeaderPolicy,
+        ForwardHttpVersion, ForwardPeerPolicy, ForwardProxyAuth, ForwardProxyService,
+        ForwardResolverPolicy, ForwardTimeRange,
         ForwardViaPolicy, ForwardWeekday, ForwardedForPolicy, HealthCheck, HealthCheckType,
         HealthHttpVersion, HealthStartup, HttpAccessPolicy, HttpCachePolicy,
         HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpGzipPolicy, HttpHostSelector,
@@ -2050,6 +2051,9 @@ impl Renderer {
         self.begin_table_field("connect");
         self.forward_connect_policy(&service.connect);
         self.end_table();
+        self.begin_table_field("peer_policy");
+        self.forward_peer_policy(&service.peer_policy);
+        self.end_table();
         self.forward_proxy_auth(service)?;
         match &service.access_policy {
             Some(policy) => {
@@ -2160,6 +2164,26 @@ impl Renderer {
     fn forward_connect_policy(&mut self, policy: &ForwardConnectPolicy) {
         self.boolean_field("enabled", policy.enabled);
         self.integer_list_field("allowed_ports", &policy.allowed_ports);
+    }
+
+    fn forward_peer_policy(&mut self, policy: &ForwardPeerPolicy) {
+        self.begin_table_field("peers");
+        for peer in &policy.peers {
+            self.begin_table_item();
+            self.string_field("host", &peer.host);
+            self.integer_field("port", u64::from(peer.port));
+            self.end_table();
+        }
+        self.end_table();
+        self.string_field(
+            "direct_fallback",
+            match policy.direct_fallback {
+                ForwardDirectFallback::Allowed => "allowed",
+                ForwardDirectFallback::Denied => "denied",
+                ForwardDirectFallback::Required => "required",
+            },
+        );
+        self.integer_field("max_retries", u64::from(policy.max_retries));
     }
 
     fn forward_destination_policy(&mut self, policy: &ForwardDestinationPolicy) {

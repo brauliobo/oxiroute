@@ -291,6 +291,9 @@ The integrated first subset follows the explicit-forward-proxy milestone:
 - Basic static authentication only when semantics match.
 - Disabled access logging, header privacy, explicit DNS nameservers, and bounded canonical runtime
   defaults.
+- Ordered static `cache_peer <host> parent <http-port> 0` entries without options, with bounded
+  peer attempts and source-order preservation.
+- One global `always_direct allow all` or `never_direct allow all` rule for direct fallback policy.
 
 `oxiroute import squid <root>` emits the same report/preview contract as the nginx and HAProxy
 commands. Its report additionally contains a machine-readable `capabilities` registry for Squid
@@ -305,11 +308,12 @@ helper file, and credential TTL. Other helper settings remain blocking. CONNECT 
 requires one exact unconditional `deny CONNECT !ports` guard before any rule that could allow
 CONNECT; conditional, ranged, reordered, or multiple guards fail closed.
 
-Cache storage and policy directives, helpers, adaptation, interception, peers, SSL bump, delay
-pools, and legacy protocols remain unsupported or not planned in the registry and blocking in the
-importer. Parsed refresh rules may be externalized only through reviewed CLI import or that explicit
-native opt-in. A form is `compatible` only when its runtime and failure-path tests are listed in the
-registry; parsing or typed classification alone never promotes a form.
+Cache storage and policy directives, helpers, adaptation, interception, sibling/dynamic/credentialed
+peer forms, peer access ACLs, SSL bump, delay pools, and legacy protocols remain unsupported or not
+planned in the registry and blocking in the importer. Parsed refresh rules may be externalized only
+through reviewed CLI import or that explicit native opt-in. A form is `compatible` only when its
+runtime and failure-path tests are listed in the registry; parsing or typed classification alone
+never promotes a form.
 
 ## Validation
 

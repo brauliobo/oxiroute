@@ -191,6 +191,13 @@ return {
       allow_absolute_form = true,
       tls_required = false,
       connect = { enabled = true, allowed_ports = { 443 } },
+      peer_policy = {
+        peers = {
+          { host = "proxy.example.test", port = 3128 },
+        },
+        direct_fallback = "denied",
+        max_retries = 1,
+      },
       auth = {
         type = "basic_htpasswd_file",
         htpasswd_file_path = "/etc/oxiroute/proxy.htpasswd",

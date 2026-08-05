@@ -29,9 +29,10 @@ Squid, RTMP, or any native proxy product.
   arbitrary forward HTTP/2/HTTP/3 forms remain unsupported.
 - **HTTP caching: partial.** Only the implemented reverse and eligible HTTP/1 forward GET/HEAD paths
   are cacheable. Broader HTTP cache conformance and Squid refresh/cache semantics are not provided.
-- **Squid: partial.** The importer lowers an audited direct HTTP/1 and CONNECT subset. Peer hierarchies,
-  helper protocols, ICAP/eCAP, transparent interception, TLS bump, legacy datagram protocols, and
-  native cache-manager behavior remain unsupported.
+- **Squid: partial.** The importer lowers an audited direct HTTP/1 and CONNECT subset plus ordered
+  static parent peers and global direct-fallback rules. Sibling/dynamic/credentialed peer forms,
+  peer hierarchy, helper protocols, ICAP/eCAP, transparent interception, TLS bump, legacy datagram
+  protocols, and native cache-manager behavior remain unsupported.
 - **RTMP: partial.** Live publish/play, recording/VOD, HLS, DASH, relays, and selected controls are
   bounded slices. Complete nginx-RTMP directive parity, transcoding, unsupported codecs, broader
   callback/control parity, and multi-worker auto-push remain absent.

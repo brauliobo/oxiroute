@@ -58,6 +58,7 @@ impl<'a> Analyzer<'a> {
         }
         self.merge_acls();
         self.resolve_access();
+        self.resolve_direct_access();
         self.resolve_authentication();
         self.terminal_accounting();
         Report::new(self.effective, self.diagnostics)
@@ -360,19 +361,25 @@ impl<'a> Analyzer<'a> {
             );
             return;
         };
-        self.effective.cache_peers.push(CachePeer {
+        let peer = CachePeer {
             origin: origin(expanded),
             host: host.into(),
             peer_type,
             http_port,
             icp_port,
             options: options.iter().map(parse_peer_option).collect(),
-        });
+        };
+        let activation = if is_static_parent_peer(&peer) {
+            Activation::Structural
+        } else {
+            Activation::Blocked(SemanticBlockerKind::CachePeerHierarchy)
+        };
+        self.effective.cache_peers.push(peer);
         self.record(
             expanded,
             DirectiveFamily::CachePeer,
             DirectiveSemantics::CachePeer,
-            Activation::Blocked(SemanticBlockerKind::CachePeerHierarchy),
+            activation,
         );
     }
 
@@ -1005,6 +1012,40 @@ impl<'a> Analyzer<'a> {
         }
     }
 
+    fn resolve_direct_access(&mut self) {
+        let updates = self
+            .effective
+            .access_policies
+            .iter()
+            .filter(|policy| {
+                matches!(
+                    policy.kind,
+                    AccessListKind::AlwaysDirect | AccessListKind::NeverDirect
+                ) && policy.selector.is_none()
+            })
+            .flat_map(|policy| {
+                let supported = policy.rules.len() == 1
+                    && policy.rules[0].terms.len() == 1
+                    && !policy.rules[0].terms[0].negated
+                    && matches!(
+                        policy.rules[0].terms[0].resolution,
+                        AclReferenceResolution::Builtin(BuiltinAcl::All)
+                    );
+                policy
+                    .rules
+                    .iter()
+                    .map(move |rule| (rule.origin.occurrence, supported))
+            })
+            .collect::<Vec<_>>();
+        for (occurrence, supported) in updates {
+            if supported {
+                self.activate_occurrence(occurrence);
+            } else {
+                self.block_occurrence(occurrence, SemanticBlockerKind::DirectRoutingPolicy);
+            }
+        }
+    }
+
     fn resolve_authentication(&mut self) {
         let mut indexes = HashMap::<Vec<u8>, usize>::new();
         for parameter in &self.effective.authentication {
@@ -1158,6 +1199,28 @@ impl<'a> Analyzer<'a> {
             semantics,
             resolution,
             activation: Activation::Blocked(blocker),
+        };
+    }
+
+    fn activate_occurrence(&mut self, occurrence: OccurrenceId) {
+        let Some(decision) = self
+            .decisions
+            .get_mut(occurrence.get())
+            .and_then(Option::as_mut)
+        else {
+            return;
+        };
+        let DecisionOutcome::Classified {
+            family,
+            semantics,
+            resolution,
+            ..
+        } = decision.outcome;
+        decision.outcome = DecisionOutcome::Classified {
+            family,
+            semantics,
+            resolution,
+            activation: Activation::Structural,
         };
     }
 
@@ -1371,6 +1434,43 @@ fn parse_peer_option(option: &Word) -> PeerOption {
         value if bytes::assignment(value, b"name").is_some() => PeerOption::Name(option.into()),
         _ => PeerOption::Unsupported(option.into()),
     }
+}
+
+fn is_static_parent_peer(peer: &CachePeer) -> bool {
+    peer.peer_type == CachePeerType::Parent
+        && peer.http_port != 0
+        && peer.icp_port == 0
+        && peer.options.is_empty()
+        && (std::str::from_utf8(&peer.host.value)
+            .ok()
+            .and_then(|value| value.parse::<std::net::IpAddr>().ok())
+            .is_some()
+            || valid_peer_dns_name(&peer.host.value))
+}
+
+fn valid_peer_dns_name(value: &[u8]) -> bool {
+    let Ok(value) = std::str::from_utf8(value) else {
+        return false;
+    };
+    value.is_ascii()
+        && !value.is_empty()
+        && value.len() <= 253
+        && !value.ends_with('.')
+        && value.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                && label
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && label
+                    .as_bytes()
+                    .last()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+        })
 }
 
 fn peer_secret_kind(value: &[u8]) -> Option<SecretKind> {

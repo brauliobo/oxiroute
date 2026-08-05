@@ -63,7 +63,10 @@ fn report_json_is_deterministic_and_identifies_each_source_product() {
         assert_eq!(value["source"]["product"], product);
         assert!(value["source"]["version"].is_null());
         assert!(value["source"]["versionSource"].is_null());
-        assert_eq!(value["source"]["capabilityProfile"]["version"], 1);
+        assert_eq!(
+            value["source"]["capabilityProfile"]["version"],
+            if product == "squid" { 2 } else { 1 }
+        );
         assert!(
             value["sourceGraph"]["sources"]
                 .as_array()
@@ -148,6 +151,8 @@ fn squid_report_keeps_open_capability_entries_out_of_complete_parity_claims() {
         .iter()
         .any(|family| family["status"] == "unsupported"));
     assert_eq!(capabilities["completeParity"], false);
+    assert_eq!(capabilities["registryVersion"], 2);
+    assert_eq!(capabilities["profile"]["version"], 2);
     assert_ne!(capabilities["parity"], "complete");
     assert!(capabilities["directives"]
         .as_array()
@@ -155,6 +160,13 @@ fn squid_report_keeps_open_capability_entries_out_of_complete_parity_claims() {
             directives.iter().any(|directive| {
                 directive["key"] == "cache_peer" && directive["status"] == "unsupported"
             })
+                && directives.iter().any(|directive| {
+                    directive["id"] == "directive.squid.cache-peer.static-parent"
+                        && directive["status"] == "compatible"
+                })
+                && directives.iter().any(|directive| {
+                    directive["key"] == "always_direct" && directive["status"] == "compatible"
+                })
         }));
 }
 
@@ -170,7 +182,9 @@ fn squid_report_serializes_source_resolvable_canonical_provenance() {
           via off\n\
           acl ssl_ports port 443\n\
           http_access deny CONNECT !ssl_ports\n\
-          http_access allow all\n",
+          http_access allow all\n\
+          cache_peer peer.example.test parent 3128 0\n\
+          never_direct allow all\n",
     )
     .expect("Squid included source");
     let root = directory.path().join("squid.conf");
@@ -186,6 +200,12 @@ fn squid_report_serializes_source_resolvable_canonical_provenance() {
         .as_array()
         .expect("serialized Squid provenance");
     assert!(!provenance.is_empty());
+    assert!(provenance.iter().any(|entry| {
+        entry["path"] == "/forward_proxy_services/0/peer_policy/peers/0/host"
+    }));
+    assert!(provenance.iter().any(|entry| {
+        entry["path"] == "/forward_proxy_services/0/peer_policy/direct_fallback"
+    }));
 
     let mut paths = HashSet::new();
     for entry in provenance {
