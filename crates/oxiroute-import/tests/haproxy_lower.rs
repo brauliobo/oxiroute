@@ -28,6 +28,7 @@ const SYNTHETIC_UNIX_DNS_LEASTCONN: &[u8] =
 const PHOENIX: &[u8] = include_bytes!("fixtures/haproxy/phoenix-dormant.cfg");
 const MINIMAL: &[u8] = include_bytes!("fixtures/haproxy/minimal-representable.cfg");
 const ACL_CONJUNCTION: &[u8] = include_bytes!("fixtures/haproxy/acl-conjunction.cfg");
+const HTTP_CHECK_SEND: &[u8] = include_bytes!("fixtures/haproxy/http-check-send.cfg");
 
 #[test]
 fn imported_http_services_disable_automatic_response_headers_in_canonical_rendering() {
@@ -471,6 +472,135 @@ backend app
     assert_eq!(health.down_interval_ms, Some(60_000));
     assert_eq!(health.healthy_threshold, 2);
     assert_eq!(health.unhealthy_threshold, 3);
+}
+
+#[test]
+fn http_check_send_lowers_to_the_existing_runtime_health_request() {
+    let imported = import_fixture("http-check-send.cfg", HTTP_CHECK_SEND);
+    assert!(!imported.has_errors(), "{:?}", imported.diagnostics());
+    let candidate = imported.value();
+    let config = candidate.config.as_ref().expect("send health config");
+    let health = config.upstream_pools[0]
+        .health_check
+        .as_ref()
+        .expect("lowered HTTP health check");
+
+    assert_eq!(health.kind, oxiroute_config::HealthCheckType::Http);
+    assert_eq!(health.interval_ms, 1_000);
+    assert_eq!(health.timeout_ms, 1_000);
+    assert_eq!(health.healthy_threshold, 1);
+    assert_eq!(health.unhealthy_threshold, 2);
+    assert_eq!(health.host.as_deref(), Some("backend.internal"));
+    assert_eq!(health.path.as_deref(), Some("/healthz"));
+    assert_eq!(health.expected_status, Some(204));
+    assert_eq!(
+        health.http_version,
+        Some(oxiroute_config::HealthHttpVersion::Http11)
+    );
+    for path in [
+        "/upstream_pools/0/health_check/kind",
+        "/upstream_pools/0/health_check/path",
+        "/upstream_pools/0/health_check/host",
+        "/upstream_pools/0/health_check/http_version",
+        "/upstream_pools/0/health_check/expected_status",
+        "/upstream_pools/0/health_check/interval_ms",
+        "/upstream_pools/0/health_check/timeout_ms",
+        "/upstream_pools/0/health_check/healthy_threshold",
+        "/upstream_pools/0/health_check/unhealthy_threshold",
+    ] {
+        assert_has_provenance(candidate, path);
+    }
+}
+
+#[test]
+fn http_check_send_with_disabled_http_checks_fails_closed() {
+    let source = String::from_utf8(HTTP_CHECK_SEND.to_vec())
+        .expect("HTTP check fixture UTF-8")
+        .replace("  option httpchk\n", "  no option httpchk\n");
+    let imported = import_fixture("disabled-http-check-send.cfg", source.as_bytes());
+
+    assert!(imported.value().config.is_none());
+    assert!(imported.value().draft.upstream_pools.is_empty());
+    assert!(diagnostic_contains(
+        imported.diagnostics(),
+        "cannot be combined with disabled option httpchk"
+    ));
+}
+
+#[test]
+fn http_check_send_preprocessing_is_deterministic_and_retains_source_map() {
+    let directory = tempdir().expect("preprocessing directory");
+    let root = directory.path().join("haproxy.cfg");
+    let source = b"defaults web
+  mode http
+  option httpchk
+  timeout connect 5s
+  timeout client 30s
+  timeout server 30s
+  default-server check inter 1s rise 1 fall 2
+frontend public
+  bind 127.0.0.1:18080
+  default_backend app
+backend app
+  balance roundrobin
+  http-check send meth GET uri /healthz ver HTTP/1.1 hdr Host backend.internal
+  http-check expect status 204
+  server app1 ${NODE_IP}:3000
+";
+    fs::write(&root, source).expect("preprocessing source");
+    let environment = PreprocessingEnvironment {
+        node_ip: "192.0.2.25".parse().expect("node IP"),
+        gpu1_defined: false,
+    };
+
+    let first = import_roots_with_environment(std::slice::from_ref(&root), environment);
+    let second = import_roots_with_environment(std::slice::from_ref(&root), environment);
+    assert!(!first.has_errors(), "{:?}", first.diagnostics());
+    assert_eq!(first.diagnostics(), second.diagnostics());
+    assert_eq!(first.value().config, second.value().config);
+    assert_eq!(
+        first.value().source_metadata,
+        second.value().source_metadata
+    );
+    assert_eq!(first.value().source_metadata.original_sources.len(), 1);
+    assert_eq!(
+        first.value().source_metadata.original_sources[0].bytes(),
+        source
+    );
+    assert_eq!(first.value().source_metadata.source_maps.len(), 1);
+    assert!(
+        first
+            .value()
+            .source_metadata
+            .environment_fingerprint_sha256
+            .is_some()
+    );
+}
+
+#[test]
+fn http_check_send_does_not_mask_unrepresented_native_policy() {
+    for (name, frontend_policy, backend_policy) in [
+        (
+            "acl-expression",
+            "  use_backend app if { path /healthz }\n",
+            "",
+        ),
+        (
+            "map-expression",
+            "  http-request set-header X-Route %[map_str(routes.map)]\n",
+            "",
+        ),
+        ("lua", "", "  lua.health\n"),
+        ("spoe", "", "  filter spoe engine audit\n"),
+    ] {
+        let source = format!(
+            "defaults web\n  mode http\n  timeout connect 5s\n  timeout client 30s\n  timeout server 30s\nfrontend public\n  bind 127.0.0.1:18080\n  default_backend app\n{frontend_policy}backend app\n{backend_policy}  balance roundrobin\n  http-check send meth GET uri /healthz ver HTTP/1.1\n  http-check expect status 204\n  server app1 127.0.0.1:3000 check\n"
+        );
+        let imported = import_fixture(name, source.as_bytes());
+
+        assert!(imported.value().config.is_none(), "{name} finalized");
+        assert!(imported.has_errors(), "{name} was not blocked");
+    }
 }
 
 #[test]

@@ -211,6 +211,7 @@ fn assert_haproxy_lowered_subset(entries: &[DirectiveForm]) {
         "directive.haproxy.option.forwardfor",
         "directive.haproxy.no-option.httpchk-http",
         "directive.haproxy.option.http-server-close",
+        "directive.haproxy.http-check.send",
         "directive.haproxy.http-request.return",
         "directive.haproxy.http-request.redirect",
         "directive.haproxy.http-request.set-header",
@@ -537,6 +538,9 @@ fn haproxy_context_directives(entry: &DirectiveForm, context: &str) -> Vec<&'sta
         "directive.haproxy.http-check.expect-status" => {
             vec!["http-check expect status 200"]
         }
+        "directive.haproxy.http-check.send" => {
+            vec!["http-check send meth GET uri /health ver HTTP/1.1 hdr Host app.internal"]
+        }
         "directive.haproxy.http-request.return" => {
             vec!["http-request return status 200 content-type text/plain string healthy"]
         }
@@ -594,6 +598,9 @@ fn haproxy_context_probe_source(entry: &DirectiveForm, context: &str, directive:
     if entry.id.starts_with("directive.haproxy.section.") {
         return haproxy_probe_source(entry);
     }
+    if entry.id == "directive.haproxy.http-check.send" {
+        return haproxy_http_check_send_probe_source(context, directive);
+    }
     if entry.id == "directive.haproxy.stats-page" {
         return format!(
             "{context} coverage-stats\n  mode http\n  bind 127.0.0.1:18404\n  {directive}\n"
@@ -614,6 +621,46 @@ fn haproxy_context_probe_source(entry: &DirectiveForm, context: &str, directive:
         source.insert_str(0, "global\n");
     }
     inject_haproxy_context(&source, context, &entry.key, directive)
+}
+
+fn haproxy_http_check_send_probe_source(context: &str, directive: &str) -> String {
+    let mut source = if context == "listen" {
+        haproxy_http_listen_base()
+    } else {
+        haproxy_http_base()
+    };
+    source = source
+        .replace(
+            "\nbackend api\n",
+            "\nbackend api\n  http-check expect status 200\n",
+        )
+        .replace(
+            "\nbackend fallback\n",
+            "\nbackend fallback\n  http-check expect status 200\n",
+        )
+        .replace(
+            "\nbackend database_pool\n",
+            "\nbackend database_pool\n  http-check expect status 200\n",
+        )
+        .replace(
+            "server api-1 127.0.0.1:3001",
+            "server api-1 127.0.0.1:3001 check inter 1s",
+        )
+        .replace(
+            "server fallback-1 127.0.0.1:3002",
+            "server fallback-1 127.0.0.1:3002 check inter 1s",
+        )
+        .replace(
+            "server local 127.0.0.1:3001",
+            "server local 127.0.0.1:3001 check inter 1s",
+        );
+    if context == "listen" {
+        source = source.replace(
+            "listen public\n",
+            "listen public\n  http-check expect status 200\n",
+        );
+    }
+    inject_haproxy_context(&source, context, "__coverage_http_check_send__", directive)
 }
 
 fn inject_haproxy_context(source: &str, context: &str, key: &str, directive: &str) -> String {
@@ -706,6 +753,7 @@ fn haproxy_http_form(id: &str) -> bool {
                 | "directive.haproxy.option.httpchk"
                 | "directive.haproxy.option.http-server-close"
                 | "directive.haproxy.http-check.expect-status"
+                | "directive.haproxy.http-check.send"
         )
 }
 
@@ -789,6 +837,10 @@ fn haproxy_probe_source(entry: &DirectiveForm) -> String {
         "directive.haproxy.http-check.expect-status" => {
             inject_haproxy_http_defaults("http-check expect status 200")
         }
+        "directive.haproxy.http-check.send" => haproxy_http_check_send_probe_source(
+            "backend",
+            "http-check send meth GET uri /health ver HTTP/1.1 hdr Host app.internal",
+        ),
         "directive.haproxy.stats" => inject_haproxy_defaults("stats hide-version"),
         "directive.haproxy.stats-page" => "frontend coverage-stats\n  mode http\n  bind 127.0.0.1:18404\n  stats enable\n  stats uri /stats\n  stats refresh 10s\n  stats admin if LOCALHOST\n".into(),
         "directive.haproxy.log" => inject_haproxy_defaults("log global"),

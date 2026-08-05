@@ -3,12 +3,13 @@ mod config_support;
 #[path = "support/http.rs"]
 mod http_support;
 
-use std::{net::SocketAddr, time::Duration};
+use std::{net::SocketAddr, path::Path, time::Duration};
 
 use oxiroute_config::{
     Config, ConfigError, HealthCheck, HealthCheckType, HealthHttpVersion, HttpVersionPolicy,
     UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool,
 };
+use oxiroute_import::haproxy::import_roots;
 use oxiroute_server::{
     EndpointHealthState, HealthFailure, RuntimeMetrics, ServicePlanError, runtime_plan,
 };
@@ -24,6 +25,25 @@ use config_support::{empty_config, socket_endpoint};
 use http_support::read_request_head as read_request_head_bytes;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[test]
+fn imported_haproxy_http_check_send_compiles_into_the_runtime_health_plan() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../oxiroute-import/tests/fixtures/haproxy/http-check-send.cfg");
+    let imported = import_roots(&[path]);
+    assert!(!imported.has_errors(), "{:?}", imported.diagnostics());
+    let config = imported.value().config.as_ref().expect("imported config");
+    let plan = runtime_plan(config).expect("runtime plan");
+    let health = config.upstream_pools[0]
+        .health_check
+        .as_ref()
+        .expect("canonical health check");
+
+    assert_eq!(health.path.as_deref(), Some("/healthz"));
+    assert_eq!(health.host.as_deref(), Some("backend.internal"));
+    assert_eq!(health.expected_status, Some(204));
+    assert_eq!(plan.pools[0].health_snapshot().endpoints.len(), 1);
+}
 
 #[tokio::test]
 async fn tcp_probe_establishes_healthy_and_unhealthy_states() {

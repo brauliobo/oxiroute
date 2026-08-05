@@ -232,6 +232,67 @@ pub(super) fn parse_http_check(arguments: &[Word]) -> Option<HttpCheck> {
     }
 }
 
+pub(super) fn parse_http_check_send(arguments: &[Word]) -> Option<HttpCheck> {
+    let mut method = None;
+    let mut uri = None;
+    let mut version = None;
+    let mut host = None;
+    let mut index = 0;
+
+    while index < arguments.len() {
+        match arguments[index].value.as_slice() {
+            b"meth" if method.is_none() => {
+                let value = arguments.get(index + 1)?;
+                if !is_literal_http_check_value(&value.value) {
+                    return None;
+                }
+                method = Some(value.value.clone());
+                index += 2;
+            }
+            b"uri" if uri.is_none() => {
+                let value = arguments.get(index + 1)?;
+                if !is_literal_http_check_value(&value.value) {
+                    return None;
+                }
+                uri = Some(value.value.clone());
+                index += 2;
+            }
+            b"ver" if version.is_none() => {
+                let value = arguments.get(index + 1)?;
+                if !is_literal_http_check_value(&value.value) {
+                    return None;
+                }
+                version = Some(value.value.clone());
+                index += 2;
+            }
+            b"hdr" => {
+                let name = arguments.get(index + 1)?;
+                let value = arguments.get(index + 2)?;
+                if !name.value.eq_ignore_ascii_case(b"host")
+                    || host.is_some()
+                    || !is_literal_http_check_value(&value.value)
+                {
+                    return None;
+                }
+                host = Some(value.value.clone());
+                index += 3;
+            }
+            _ => return None,
+        }
+    }
+
+    Some(HttpCheck {
+        method: method.unwrap_or_else(|| b"GET".to_vec()),
+        uri: uri.unwrap_or_else(|| b"/".to_vec()),
+        version: version.unwrap_or_else(|| b"HTTP/1.0".to_vec()),
+        host,
+    })
+}
+
+fn is_literal_http_check_value(value: &[u8]) -> bool {
+    !value.is_empty() && !value.contains(&b'$') && !value.windows(2).any(|window| window == b"%[")
+}
+
 pub(super) fn parse_status_ranges(value: &[u8]) -> Option<Vec<StatusRange>> {
     let mut ranges = Vec::new();
     for item in value.split(|byte| *byte == b',') {

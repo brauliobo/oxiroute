@@ -101,6 +101,85 @@ fn dedicated_stats_page_directives_are_typed_and_consumed_exactly() {
 }
 
 #[test]
+fn resolves_http_check_send_as_a_typed_canonical_request() {
+    let contents = b"defaults web
+  mode http
+  option httpchk
+  timeout connect 5s
+  timeout server 30s
+  default-server check inter 2s rise 2 fall 3
+backend app
+  balance roundrobin
+  http-check send meth GET uri /healthz ver HTTP/1.1 hdr Host app.internal
+  http-check expect status 204
+   server app1 127.0.0.1:3000
+";
+    let (configuration, report) = resolve_bytes(contents);
+
+    assert!(
+        report.diagnostics().is_empty(),
+        "{:?}",
+        report.diagnostics()
+    );
+    let backend = &report.value().backends[0];
+    let send = &backend
+        .settings
+        .http_check_send
+        .as_ref()
+        .expect("typed send request")
+        .value;
+    assert_eq!(send.method, b"GET");
+    assert_eq!(send.uri, b"/healthz");
+    assert_eq!(send.version, b"HTTP/1.1");
+    assert_eq!(send.host.as_deref(), Some(b"app.internal".as_slice()));
+    assert_eq!(
+        backend
+            .settings
+            .http_check_expect
+            .as_ref()
+            .expect("exact status")
+            .value[0]
+            .start,
+        204
+    );
+    assert_eq!(
+        report.value().ledger.len(),
+        occurrence_count(&configuration)
+    );
+    assert!(report.value().ledger.iter().all(|decision| {
+        matches!(
+            decision.outcome,
+            oxiroute_import::haproxy::DecisionOutcome::Consumed(_)
+                | oxiroute_import::haproxy::DecisionOutcome::Superseded { .. }
+        )
+    }));
+}
+
+#[test]
+fn unsupported_http_check_send_forms_remain_blocking() {
+    for directive in [
+        "http-check send meth GET uri /healthz ver HTTP/1.1 hdr X-Token secret",
+        "http-check send meth GET uri /healthz ver HTTP/1.1 hdr Host %[src]",
+        "http-check connect port 8443",
+    ] {
+        let contents = format!(
+            "backend app\n  balance roundrobin\n  {directive}\n  server app1 127.0.0.1:3000 check\n"
+        );
+        let (_, report) = resolve_bytes(contents.as_bytes());
+
+        assert_eq!(code_count(&report, E_UNSUPPORTED_FORM), 1, "{directive}");
+        assert_eq!(code_count(&report, E_UNKNOWN_DIRECTIVE), 0, "{directive}");
+        assert!(report.value().ledger.iter().any(|decision| {
+            decision.keyword == b"http-check"
+                && decision.outcome
+                    == oxiroute_import::haproxy::DecisionOutcome::Blocked(
+                        BlockingReason::UnsupportedForm,
+                    )
+        }));
+    }
+}
+
+#[test]
 fn unix_at_bind_and_octal_mode_are_typed_with_direct_provenance() {
     let contents = b"frontend public
   mode http
