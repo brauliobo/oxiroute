@@ -1,5 +1,8 @@
 # Compatibility matrix
 
+This matrix describes the OxiRoute 0.4.0 pre-alpha release line. It records narrow tested
+capabilities, not complete parity with the native products or protocols named below.
+
 ## Status meanings
 
 - `stable`: part of the current narrow release contract with implementation and the required
