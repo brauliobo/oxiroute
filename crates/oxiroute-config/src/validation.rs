@@ -12,7 +12,8 @@ use crate::{
         MAX_ACME_DNS01_PROVIDER_BYTES, MAX_ACME_DNS01_TIMEOUT_SECONDS, MAX_ACME_RETAINED_REVISIONS,
         MAX_ACME_RETENTION_DAYS, MAX_CERTIFICATE_DNS_NAMES, MAX_CERTIFICATES,
         MAX_ENDPOINTS_PER_POOL, MAX_HEALTH_HOST_BYTES, MAX_HEALTH_INTERVAL_MS,
-        MAX_HEALTH_PATH_BYTES, MAX_HEALTH_THRESHOLD, MAX_HEALTH_TIMEOUT_MS, MAX_HTTP_TIMEOUT_MS,
+        MAX_HEALTH_PATH_BYTES, MAX_HEALTH_THRESHOLD, MAX_HEALTH_TIMEOUT_MS,
+        MAX_HTTP3_REQUEST_BODY_BYTES, MAX_HTTP_TIMEOUT_MS,
         MAX_PROXY_PROTOCOL_TIMEOUT_MS, MAX_RECORDER_ACTIVE_RECORDERS, MAX_RECORDER_FILE_BYTES,
         MAX_RECORDER_FRAME_COUNT, MAX_RECORDER_QUEUE_BYTES, MAX_RECORDER_QUEUE_MESSAGES,
         MAX_RECORDER_ROTATION_INTERVAL_MS, MAX_RECORDER_SHUTDOWN_TIMEOUT_MS,
@@ -1259,12 +1260,25 @@ fn validate_http3_listener(
     if service.max_request_body_bytes.is_none() {
         return Err(invalid("HTTP/3 requires a bounded service request body"));
     }
+    if service
+        .max_request_body_bytes
+        .is_some_and(|value| value > MAX_HTTP3_REQUEST_BODY_BYTES)
+    {
+        return Err(invalid("HTTP/3 service request body exceeds the 64 MiB limit"));
+    }
     if service.gzip.is_some() {
         return Err(invalid("HTTP/3 reverse response compression is not supported"));
     }
     for route in &service.routes {
         if route.policy.max_request_body_bytes.is_none() {
             return Err(invalid("HTTP/3 requires a bounded route request body"));
+        }
+        if route
+            .policy
+            .max_request_body_bytes
+            .is_some_and(|value| value > MAX_HTTP3_REQUEST_BODY_BYTES)
+        {
+            return Err(invalid("HTTP/3 route request body exceeds the 64 MiB limit"));
         }
         if !route.policy.request_buffering {
             return Err(invalid("HTTP/3 requires request buffering"));
@@ -1297,10 +1311,9 @@ fn validate_http3_listener(
                     return Err(invalid("HTTP/3 reverse hop-by-hop headers are not supported"));
                 }
             }
-            HttpRouteAction::FixedResponse { .. } | HttpRouteAction::Redirect { .. } => {}
-            HttpRouteAction::StaticFiles { .. } => {
-                return Err(invalid("HTTP/3 reverse static files are not supported"));
-            }
+            HttpRouteAction::FixedResponse { .. }
+            | HttpRouteAction::Redirect { .. }
+            | HttpRouteAction::StaticFiles { .. } => {}
         }
     }
     Ok(())
@@ -1316,6 +1329,10 @@ fn validate_h3_upstream_usage(
         .map(|pool| (pool.name.as_str(), pool))
         .collect::<HashMap<_, _>>();
     for service in services {
+        let service_listeners = listeners
+            .iter()
+            .filter(|listener| listener.service.as_deref() == Some(service.name.as_str()))
+            .collect::<Vec<_>>();
         let uses_h3_pool = service.routes.iter().any(|route| {
             let HttpRouteAction::Proxy { upstream_pool, .. } = &route.action else {
                 return false;
@@ -1324,54 +1341,54 @@ fn validate_h3_upstream_usage(
                 .get(upstream_pool.as_str())
                 .is_some_and(|pool| pool.http_versions.min == HttpVersion::Http3)
         });
-        if !uses_h3_pool {
-            continue;
-        }
-        let service_listeners = listeners
-            .iter()
-            .filter(|listener| listener.service.as_deref() == Some(service.name.as_str()))
-            .collect::<Vec<_>>();
-        let Some(http3_listener) = service_listeners
-            .iter()
-            .find(|listener| listener.protocol == Protocol::Http3)
-        else {
-            if let Some(listener) = service_listeners.first() {
-                return Err(ConfigError::InvalidListenerTransport {
-                    listener: listener.name.clone(),
-                    protocol: listener.protocol,
-                    detail: "an HTTP/3 upstream pool requires an http3 listener",
-                });
+        let Some(http3_listener) = listeners.iter().find(|listener| {
+            listener.service.as_deref() == Some(service.name.as_str())
+                && listener.protocol == Protocol::Http3
+        }) else {
+            if uses_h3_pool {
+                if let Some(listener) = service_listeners.first() {
+                    return Err(ConfigError::InvalidListenerTransport {
+                        listener: listener.name.clone(),
+                        protocol: listener.protocol,
+                        detail: "an HTTP/3 upstream pool requires an http3 listener",
+                    });
+                }
             }
             continue;
         };
-        if let Some(listener) = service_listeners
-            .iter()
-            .find(|listener| listener.protocol != Protocol::Http3)
-        {
-            return Err(ConfigError::InvalidListenerTransport {
-                listener: listener.name.clone(),
-                protocol: listener.protocol,
-                detail: "a service using an HTTP/3 upstream pool cannot be shared with a non-HTTP/3 listener",
-            });
-        }
+        let mut uses_h3_pool = false;
         for route in &service.routes {
-            let HttpRouteAction::Proxy {
-                upstream_pool,
-                policy,
-            } = &route.action
-            else {
+            let HttpRouteAction::Proxy { upstream_pool, .. } = &route.action else {
                 continue;
             };
             let Some(pool) = pools.get(upstream_pool.as_str()) else {
-                continue;
-            };
-            if policy.retry.max_retries != 0 && pool.http_versions.min != HttpVersion::Http3 {
                 return Err(ConfigError::InvalidListenerTransport {
                     listener: http3_listener.name.clone(),
                     protocol: Protocol::Http3,
-                    detail: "HTTP/3 retries require an exact HTTP/3 upstream pool",
+                    detail: "HTTP/3 reverse routes require a resolvable exact HTTP/3 upstream pool",
+                });
+            };
+            if pool.http_versions.min != HttpVersion::Http3
+                || pool.http_versions.max != HttpVersion::Http3
+            {
+                return Err(ConfigError::InvalidListenerTransport {
+                    listener: http3_listener.name.clone(),
+                    protocol: Protocol::Http3,
+                    detail: "HTTP/3 reverse routes require an exact HTTP/3 upstream pool",
                 });
             }
+            uses_h3_pool = true;
+        }
+        if uses_h3_pool
+            && service_listeners
+                .iter()
+                .any(|listener| listener.protocol != Protocol::Http3)
+        {
+            return Err(ConfigError::InvalidListenerTransport {
+                listener: http3_listener.name.clone(),
+                protocol: Protocol::Http3,
+                detail: "a service using an HTTP/3 upstream pool cannot be shared with a non-HTTP/3 listener",
+            });
         }
     }
     Ok(())
@@ -1422,6 +1439,15 @@ fn validate_forward_listener(
             "referenced service `{}` does not enable {version:?}",
             service.name
         )));
+    }
+    if version == ForwardHttpVersion::H3
+        && service
+            .max_request_body_bytes
+            .is_some_and(|value| value > MAX_HTTP3_REQUEST_BODY_BYTES)
+    {
+        return Err(invalid(
+            "forward HTTP/3 request body exceeds the 64 MiB limit".into(),
+        ));
     }
     if matches!(listener.bind, ListenerBind::Unix { .. }) && service.tls_required {
         return Err(invalid(

@@ -373,9 +373,11 @@ Current constraints:
   fills are collapsed and revalidated through the same bounded cache contract as reverse HTTP;
   configured bearer-protected `PURGE` handles an exact request key or surrogate tag.
 - HTTP/3 reverse services require a bounded service and route request body, request buffering, no
-  response buffering, no cache, no retries, no gzip, no upgrade header mutation, and no static-file
-  action. The runtime uses bounded QUIC admission, field sections, streams, request bodies, and
-  response bodies; migration and 0-RTT are disabled.
+  response buffering, no cache, no gzip, no upgrade header mutation, and an exact `3/3` upstream
+  pool for every proxy route. Fixed, redirect, and descriptor-pinned static-file actions are active;
+  cache, compression, and upgrades remain explicitly unsupported. The runtime uses bounded QUIC
+  admission, field sections, streams, request bodies (at most 64 MiB), response bodies, safe response
+  framing, and graceful GOAWAY drain; migration and 0-RTT are disabled.
 - `automatic_response_headers` defaults to true. When enabled, the runtime generates downstream
   HTTP/1 Date and Connection headers and HTTP/2 Date headers. When disabled, none of those headers
   are generated; mandatory HTTP/2 hop-header removal still applies.

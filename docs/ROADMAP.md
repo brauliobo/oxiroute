@@ -171,12 +171,13 @@ Both H3 directions remain partial capabilities pending broader conformance.
   request-path I/O, and cache-bound prepared-entry admission is active for reverse HTTP and forward
   HTTP/1.
 - Cache freshness, revalidation, conditional validators, collapsed forwarding, bounded surrogate-tag
-  purge, streaming/range bypass, and request-level observability are active; broader conformance
-  and reverse HTTP/3 remain.
+  purge, streaming/range bypass, and request-level observability are active; H3 cache remains
+  explicitly unsupported.
 - Reverse QUIC/H3 frontend selected through a proof of compatibility with Pingora's service model
   and reusing immutable upstream service/pool plans.
-- HTTP/3 conformance, timeout, reverse-proxy behavior, and UDP resource-exhaustion tests remain;
-  migration is disabled and 0-RTT is disabled by policy.
+- HTTP/3 broader conformance and additional UDP resource-exhaustion tests remain; bounded response
+  conformance, graceful drain, cancellation, malformed-input, and reload coverage are active.
+  Migration is disabled and 0-RTT is disabled by policy.
 
 HTTP/3 must be advertised only when the active listener is actually QUIC-capable. It must
 never degrade silently to another HTTP version.
