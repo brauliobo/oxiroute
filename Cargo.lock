@@ -2629,6 +2629,7 @@ dependencies = [
  "rml_rtmp",
  "rustix",
  "rustls",
+ "rustls-native-certs",
  "rustls-pemfile",
  "serde",
  "serde_json",

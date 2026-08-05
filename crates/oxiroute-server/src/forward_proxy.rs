@@ -21,7 +21,7 @@ use hickory_resolver::{
     TokioAsyncResolver,
     config::{LookupIpStrategy, NameServerConfigGroup, ResolverConfig, ResolverOpts},
 };
-use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode, header};
+use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode, Uri, header};
 use http_body_util::{BodyExt as _, Full, Limited, combinators::BoxBody};
 use hyper::body::{Body, Frame, Incoming};
 use hyper_util::rt::TokioIo;
@@ -35,8 +35,8 @@ use oxiroute_cache::{
 };
 use oxiroute_config::{
     ForwardAccessAction, ForwardAccessCondition, ForwardAccessMatcher, ForwardAccessPolicy,
-    ForwardAuditMode, ForwardHeaderPolicy, ForwardProxyAuth, ForwardProxyService, ForwardTimeRange,
-    ForwardViaPolicy, ForwardWeekday, ForwardedForPolicy,
+    ForwardAuditMode, ForwardHeaderPolicy, ForwardHttpVersion, ForwardProxyAuth,
+    ForwardProxyService, ForwardTimeRange, ForwardViaPolicy, ForwardWeekday, ForwardedForPolicy,
 };
 use oxiroute_forward_proxy::{
     ApprovedDestination, BoundedTunnel, Destination, DestinationRules, ForwardScheme,
@@ -60,6 +60,7 @@ use tokio::{
 use tokio_openssl::SslStream;
 
 use crate::{
+    H3UpstreamError, H3UpstreamPlan,
     http_action::{BasicHtpasswdAccess, CacheFill, CacheFillJoin, CacheRequest, HttpCachePlan},
     monitoring::CacheEvent,
     secure_bearer::{HeaderCardinality, SecureBearerToken, single_header},
@@ -249,6 +250,7 @@ pub struct ForwardHttp1ServicePlan {
     tls_connector: Arc<SslConnector>,
     access_metrics: Arc<ForwardAccessMetrics>,
     cache: Option<Arc<HttpCachePlan>>,
+    h3_upstream: Option<Arc<H3UpstreamPlan>>,
 }
 
 impl std::fmt::Debug for ForwardHttp1ServicePlan {
@@ -1091,6 +1093,15 @@ impl ForwardHttp1ServicePlan {
                 .ok_or(ForwardPlanError::Limit)?,
         )
         .map_err(|_| ForwardPlanError::Limit)?;
+        let h3_upstream = service
+            .enabled_versions
+            .contains(&ForwardHttpVersion::H3)
+            .then(|| {
+                H3UpstreamPlan::for_forward(max_connections)
+                    .map(Arc::new)
+                    .map_err(|_| ForwardPlanError::Tls)
+            })
+            .transpose()?;
         let resolver_addresses = usize::try_from(service.resolver.max_addresses_per_name)
             .map_err(|_| ForwardPlanError::Limit)?;
         let resolver_queries = usize::try_from(service.resolver.max_concurrent_queries)
@@ -1129,6 +1140,7 @@ impl ForwardHttp1ServicePlan {
             tls_connector: Arc::new(connector.build()),
             access_metrics: Arc::new(ForwardAccessMetrics::default()),
             cache,
+            h3_upstream,
         })
     }
 
@@ -1156,6 +1168,10 @@ impl ForwardHttp1ServicePlan {
         Arc::clone(&self.service_connections)
             .try_acquire_owned()
             .ok()
+    }
+
+    fn h3_upstream(&self) -> Option<&H3UpstreamPlan> {
+        self.h3_upstream.as_deref()
     }
 
     #[must_use]
@@ -1939,32 +1955,23 @@ impl ForwardHttp1ServicePlan {
                         return;
                     }
                 };
-                let connect_deadline = lifetime_deadline.min(Instant::now() + self.connect_timeout);
-                let upstream = match timeout_at(
-                    lifetime_deadline,
-                    self.connect_http(
-                        &target.destination,
-                        target.scheme,
-                        approved.socket_addresses.as_ref(),
-                        connect_deadline,
-                    ),
-                )
-                .await
-                {
-                    Ok(Ok(upstream)) => upstream,
-                    Ok(Err(error)) => {
-                        let _ = send_h3_failure(&mut stream, error, self.challenge.as_ref()).await;
-                        return;
-                    }
-                    Err(_) => {
-                        let _ = send_h3_failure(
-                            &mut stream,
-                            RequestFailure::GatewayTimeout,
-                            self.challenge.as_ref(),
-                        )
-                        .await;
-                        return;
-                    }
+                if target.scheme != ForwardScheme::Https {
+                    let _ = send_h3_failure(
+                        &mut stream,
+                        RequestFailure::BadGateway,
+                        self.challenge.as_ref(),
+                    )
+                    .await;
+                    return;
+                }
+                let Some(h3_upstream) = self.h3_upstream() else {
+                    let _ = send_h3_failure(
+                        &mut stream,
+                        RequestFailure::BadGateway,
+                        self.challenge.as_ref(),
+                    )
+                    .await;
+                    return;
                 };
                 let Ok(mut headers) =
                     sanitize_request_headers(request.headers(), &target.destination)
@@ -1978,59 +1985,73 @@ impl ForwardHttp1ServicePlan {
                     return;
                 };
                 apply_header_policy(&mut headers, &self.header_policy);
-                let (mut parts, ()) = request.into_parts();
-                parts.uri = target.origin_form;
-                parts.version = http::Version::HTTP_11;
+                headers.remove(header::HOST);
+                let mut parts = request.into_parts().0;
+                let path = target
+                    .origin_form
+                    .path_and_query()
+                    .map_or(target.origin_form.path(), |value| value.as_str());
+                let Ok(uri) = Uri::builder()
+                    .scheme("https")
+                    .authority(target.destination.authority())
+                    .path_and_query(path)
+                    .build()
+                else {
+                    let _ = send_h3_failure(
+                        &mut stream,
+                        RequestFailure::BadRequest,
+                        self.challenge.as_ref(),
+                    )
+                    .await;
+                    return;
+                };
+                parts.uri = uri;
+                parts.version = http::Version::HTTP_3;
                 parts.headers = headers;
-                let request = Request::from_parts(parts, Full::new(body));
-                let handshake_deadline =
-                    lifetime_deadline.min(Instant::now() + self.connect_timeout);
-                let (mut sender, connection) = match timeout_at(
-                    handshake_deadline,
-                    hyper::client::conn::http1::handshake(TokioIo::new(upstream)),
-                )
-                .await
-                {
-                    Ok(Ok(connection)) => connection,
-                    Ok(Err(_)) => {
-                        let _ = send_h3_failure(
-                            &mut stream,
-                            RequestFailure::BadGateway,
-                            self.challenge.as_ref(),
-                        )
-                        .await;
-                        return;
-                    }
-                    Err(_) => {
-                        let _ = send_h3_failure(
-                            &mut stream,
-                            RequestFailure::GatewayTimeout,
-                            self.challenge.as_ref(),
-                        )
-                        .await;
-                        return;
-                    }
+                let request = Request::from_parts(parts, ());
+                let server_name = match &target.destination.host {
+                    Host::Dns(host) => host.as_str().to_owned(),
+                    Host::Ip(address) => address.to_string(),
                 };
-                tokio::spawn(async move {
-                    let _ = connection.await;
-                });
-                let mut response = tokio::select! {
-                    response = sender.send_request(request) => {
-                        if let Ok(response) = response {
-                            response
-                        } else {
-                            let _ = send_h3_failure(
-                                &mut stream,
-                                RequestFailure::BadGateway,
-                                self.challenge.as_ref(),
-                            )
-                            .await;
-                            return;
+                let mut response = None;
+                let mut last_error = H3UpstreamError::Connect;
+                for address in approved.socket_addresses.iter() {
+                    match h3_upstream
+                        .request(
+                            *address,
+                            &server_name,
+                            request.clone(),
+                            body.clone(),
+                            lifetime_deadline,
+                            shutdown.clone(),
+                        )
+                        .await
+                    {
+                        Ok(value) => {
+                            response = Some(value);
+                            break;
                         }
-                    },
-                    _ = shutdown.changed() => return,
+                        Err(error) if error.retryable() => last_error = error,
+                        Err(error) => {
+                            last_error = error;
+                            break;
+                        }
+                    }
+                    if Instant::now() >= lifetime_deadline {
+                        break;
+                    }
+                }
+                let Some(response) = response else {
+                    let failure = if matches!(last_error, H3UpstreamError::Timeout) {
+                        RequestFailure::GatewayTimeout
+                    } else {
+                        RequestFailure::BadGateway
+                    };
+                    let _ = send_h3_failure(&mut stream, failure, self.challenge.as_ref()).await;
+                    return;
                 };
-                if sanitize_response_headers(response.headers_mut()).is_err() {
+                let mut response_headers = response.headers;
+                if sanitize_response_headers(&mut response_headers).is_err() {
                     let _ = send_h3_failure(
                         &mut stream,
                         RequestFailure::BadGateway,
@@ -2039,46 +2060,41 @@ impl ForwardHttp1ServicePlan {
                     .await;
                     return;
                 }
-                let (parts, mut body) = response.into_parts();
+                let status = response.status;
                 let mut head = Response::new(());
-                *head.status_mut() = parts.status;
-                *head.version_mut() = parts.version;
-                *head.headers_mut() = parts.headers;
+                *head.status_mut() = status;
+                *head.version_mut() = http::Version::HTTP_3;
+                *head.headers_mut() = response_headers;
                 if !matches!(
                     timeout_at(lifetime_deadline, stream.send_response(head)).await,
                     Ok(Ok(()))
                 ) {
                     return;
                 }
-                loop {
-                    let frame = tokio::select! {
-                        frame = timeout_at(lifetime_deadline, body.frame()) => match frame {
-                            Ok(Some(Ok(frame))) => frame,
-                            Ok(Some(Err(_))) | Err(_) => return,
-                            Ok(None) => break,
-                        },
-                        _ = shutdown.changed() => return,
-                    };
-                    match frame.into_data() {
-                        Ok(data) => {
-                            if !matches!(
-                                timeout_at(lifetime_deadline, stream.send_data(data)).await,
-                                Ok(Ok(()))
-                            ) {
-                                return;
-                            }
-                        }
-                        Err(frame) => {
-                            if let Ok(trailers) = frame.into_trailers() {
-                                if !matches!(
-                                    timeout_at(lifetime_deadline, stream.send_trailers(trailers))
-                                        .await,
-                                    Ok(Ok(()))
-                                ) {
-                                    return;
-                                }
-                            }
-                        }
+                if request.method() != Method::HEAD
+                    && !matches!(
+                        status,
+                        StatusCode::NO_CONTENT
+                            | StatusCode::RESET_CONTENT
+                            | StatusCode::NOT_MODIFIED
+                    )
+                    && !response.body.is_empty()
+                    && !matches!(
+                        timeout_at(lifetime_deadline, stream.send_data(response.body)).await,
+                        Ok(Ok(()))
+                    )
+                {
+                    return;
+                }
+                if let Some(mut trailers) = response.trailers {
+                    if sanitize_response_headers(&mut trailers).is_err() {
+                        return;
+                    }
+                    if !matches!(
+                        timeout_at(lifetime_deadline, stream.send_trailers(trailers)).await,
+                        Ok(Ok(()))
+                    ) {
+                        return;
                     }
                 }
                 let _ = timeout_at(lifetime_deadline, stream.finish()).await;

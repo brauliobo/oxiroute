@@ -1,24 +1,26 @@
 use std::{
     net::SocketAddr,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
 
 use http::Version;
 use oxiroute_config::{HttpVersion, UpstreamConnectionReuse};
-use pingora::{protocols::Digest, upstreams::peer::HttpPeer, Error, ErrorType};
+use pingora::{Error, ErrorType, protocols::Digest, upstreams::peer::HttpPeer};
 use tokio::time::Instant;
 
 use crate::routing::EndpointObservation;
-use crate::{EndpointLease, RoundRobinPool, RuntimeEndpoint, UpstreamTlsPlan};
+use crate::{EndpointLease, H3UpstreamPlan, RoundRobinPool, RuntimeEndpoint, UpstreamTlsPlan};
 
 #[derive(Debug)]
 pub(crate) struct UpstreamPlan {
     connect_timeout: Option<Duration>,
     connection_reuse: UpstreamConnectionReuse,
+    h3: Option<Arc<H3UpstreamPlan>>,
+    http_version: HttpVersion,
     selector: Arc<RoundRobinPool>,
     server_timeout: Option<Duration>,
     tls: Option<Arc<UpstreamTlsPlan>>,
@@ -35,6 +37,8 @@ impl UpstreamPlan {
         Self {
             connect_timeout: None,
             connection_reuse: UpstreamConnectionReuse::Safe,
+            h3: None,
+            http_version: HttpVersion::Http11,
             selector,
             server_timeout: None,
             tls,
@@ -48,9 +52,31 @@ impl UpstreamPlan {
         server_timeout: Option<Duration>,
         connection_reuse: UpstreamConnectionReuse,
     ) -> Self {
+        Self::with_http_policy(
+            selector,
+            tls,
+            connect_timeout,
+            server_timeout,
+            connection_reuse,
+            HttpVersion::Http11,
+            None,
+        )
+    }
+
+    pub(crate) const fn with_http_policy(
+        selector: Arc<RoundRobinPool>,
+        tls: Option<Arc<UpstreamTlsPlan>>,
+        connect_timeout: Option<Duration>,
+        server_timeout: Option<Duration>,
+        connection_reuse: UpstreamConnectionReuse,
+        http_version: HttpVersion,
+        h3: Option<Arc<H3UpstreamPlan>>,
+    ) -> Self {
         Self {
             connect_timeout,
             connection_reuse,
+            h3,
+            http_version,
             selector,
             server_timeout,
             tls,
@@ -65,11 +91,17 @@ impl UpstreamPlan {
         self.tls.as_deref()
     }
 
+    pub(crate) fn h3(&self) -> Option<&H3UpstreamPlan> {
+        self.h3.as_deref()
+    }
+
     pub(crate) async fn select_endpoint(
         &self,
         excluded: &[String],
     ) -> pingora::Result<SelectedEndpoint> {
-        let lease = if self.connection_reuse == UpstreamConnectionReuse::Never {
+        let lease = if self.http_version == HttpVersion::Http3
+            || self.connection_reuse == UpstreamConnectionReuse::Never
+        {
             self.selector.select_wait_excluding(excluded).await
         } else {
             self.selector.select_connection_target_excluding(excluded)
@@ -83,7 +115,9 @@ impl UpstreamPlan {
         &self,
         name: &str,
     ) -> pingora::Result<SelectedEndpoint> {
-        let lease = if self.connection_reuse == UpstreamConnectionReuse::Never {
+        let lease = if self.http_version == HttpVersion::Http3
+            || self.connection_reuse == UpstreamConnectionReuse::Never
+        {
             self.selector.select_server_wait(name).await
         } else {
             self.selector.select_server_connection_target(name)
@@ -271,6 +305,28 @@ impl SelectedEndpoint {
         Ok(peer)
     }
 
+    pub(crate) async fn prepare_h3_address(
+        &mut self,
+        connection_timeout: Duration,
+    ) -> pingora::Result<SocketAddr> {
+        if matches!(self.endpoint, RuntimeEndpoint::Unix { .. }) {
+            return Err(Error::new_up(ErrorType::ConnectError));
+        }
+        if self.addresses.is_none() {
+            let remaining = self.remaining_timeout(connection_timeout)?;
+            let addresses = tokio::time::timeout(remaining, self.lease.resolve_addresses())
+                .await
+                .map_err(|_| endpoint_timeout(&self.endpoint, connection_timeout))?
+                .map_err(|source| dns_failure(&self.endpoint, source))?;
+            self.addresses = Some(addresses.into_iter());
+        }
+        let _remaining = self.remaining_timeout(connection_timeout)?;
+        self.addresses
+            .as_mut()
+            .and_then(Iterator::next)
+            .ok_or_else(|| Error::new_up(ErrorType::ConnectError))
+    }
+
     pub(crate) fn has_address_fallback(&self) -> bool {
         self.deadline
             .is_none_or(|deadline| Instant::now() < deadline)
@@ -375,10 +431,10 @@ mod tests {
         UpstreamTls,
     };
     use pingora::{
-        listeners::ALPN,
-        protocols::{tls::SslDigest, Digest},
-        upstreams::peer::Peer,
         ErrorSource,
+        listeners::ALPN,
+        protocols::{Digest, tls::SslDigest},
+        upstreams::peer::Peer,
     };
 
     use super::*;

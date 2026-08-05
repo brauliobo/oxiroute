@@ -624,6 +624,21 @@ fn normalized_round_trip(mut config: Config) -> (Config, String) {
     (config, source)
 }
 
+#[test]
+fn renders_and_round_trips_the_exact_http3_upstream_policy() {
+    let mut pool = test_upstream_pools().remove(0);
+    pool.http_versions = HttpVersionPolicy {
+        min: HttpVersion::Http3,
+        max: HttpVersion::Http3,
+    };
+    let mut config = minimal_config();
+    config.upstream_pools.push(pool);
+
+    let (_, source) = normalized_round_trip(config);
+    assert!(source.contains("min = \"3\""));
+    assert!(source.contains("max = \"3\""));
+}
+
 const RENDERED_FIELDS: &[&str] = &[
     "version",
     "max_connections",

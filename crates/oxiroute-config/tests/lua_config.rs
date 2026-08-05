@@ -2080,6 +2080,34 @@ fn loads_upstream_tls_and_all_supported_http_version_ranges() {
             }
         );
     }
+
+    let fields = format!(
+        "{}\n      http_versions = {{ min = \"3\", max = \"3\" }},",
+        upstream_tls("BACKEND.EXAMPLE.COM")
+    );
+    let source = with_web_pool_fields(&fields)
+        .replacen(r#"alpn = { "h2", "http/1.1" },"#, r#"alpn = { "h3" },"#, 1)
+        .replacen(
+            r#"bind = { type = "socket", address = "127.0.0.1:8080" },"#,
+            r#"bind = { type = "udp", address = "127.0.0.1:8080" },"#,
+            1,
+        )
+        .replacen(r#"protocol = "http","#, r#"protocol = "http3","#, 1)
+        .replacen(
+            r#"path = { kind = "segment_prefix", value = "/api" },"#,
+            r#"path = { kind = "segment_prefix", value = "/api" },
+          policy = { request_buffering = true },"#,
+            1,
+        );
+    let config = load_lua(&source).expect("HTTP/3 upstream range");
+    assert_eq!(
+        config.upstream_pools[0].http_versions.min,
+        HttpVersion::Http3
+    );
+    assert_eq!(
+        config.upstream_pools[0].http_versions.max,
+        HttpVersion::Http3
+    );
 }
 
 #[test]
@@ -2230,6 +2258,24 @@ fn rejects_invalid_or_plaintext_http2_upstream_ranges() {
             ConfigError::H2RequiresUpstreamTls { pool } if pool == "web-backends"
         ));
     }
+
+    let fields = r#"      http_versions = { min = "3", max = "3" },"#;
+    assert!(matches!(
+        error_from(&with_web_pool_fields(fields)),
+        ConfigError::H3RequiresUpstreamTls { pool } if pool == "web-backends"
+    ));
+    let fields = format!(
+        "{}\n      http_versions = {{ min = \"2\", max = \"3\" }},",
+        upstream_tls("backend.example.com")
+    );
+    assert!(matches!(
+        error_from(&with_web_pool_fields(&fields)),
+        ConfigError::InvalidHttpVersionRange {
+            pool,
+            min: "2",
+            max: "3"
+        } if pool == "web-backends"
+    ));
 }
 
 #[test]
@@ -3165,7 +3211,7 @@ fn rejects_unknown_tls_and_http_version_values() {
             "      alpn = { \"http/2\" },",
         ),
         with_web_pool_fields(r#"      http_versions = { min = "1", max = "1.1" },"#),
-        with_web_pool_fields(r#"      http_versions = { min = "1.1", max = "3" },"#),
+        with_web_pool_fields(r#"      http_versions = { min = "1.1", max = "4" },"#),
     ];
 
     for source in cases {

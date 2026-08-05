@@ -356,6 +356,11 @@ pub enum ServicePlanError {
     InvalidConfig(#[source] Box<oxiroute_config::ConfigError>),
     #[error("TLS configuration cannot be prepared: {0}")]
     Tls(#[source] Box<TlsBuildError>),
+    #[error("HTTP/3 upstream pool `{pool}` cannot be prepared: {source}")]
+    H3Upstream {
+        pool: String,
+        source: Box<crate::H3UpstreamBuildError>,
+    },
     #[error("upstream pool `{pool}` cannot be compiled: {source}")]
     Pool { pool: String, source: PoolError },
     #[error("upstream pool `{pool}` health check cannot be compiled: {source}")]
@@ -767,12 +772,20 @@ fn compile_pools(
         let tls = crate::tls::prepare_upstream_tls(pool)
             .map_err(|source| ServicePlanError::Tls(Box::new(source)))?
             .map(Arc::new);
-        let compiled = Arc::new(UpstreamPlan::with_policy(
+        let h3 = crate::H3UpstreamPlan::from_pool(pool)
+            .map_err(|source| ServicePlanError::H3Upstream {
+                pool: pool.name.clone(),
+                source: Box::new(source),
+            })?
+            .map(Arc::new);
+        let compiled = Arc::new(UpstreamPlan::with_http_policy(
             Arc::clone(&selector),
             tls,
             pool.connect_timeout_ms.map(Duration::from_millis),
             pool.server_timeout_ms.map(Duration::from_millis),
             pool.connection_reuse,
+            pool.http_versions.min,
+            h3,
         ));
         if let Some(health_check) = &pool.health_check {
             health_groups.push(

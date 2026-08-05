@@ -29,24 +29,17 @@ const H3_ALPN: &[u8] = b"h3";
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn daemon_accepts_active_h3_absolute_form_and_releases_udp_listener() {
+async fn daemon_rejects_h3_plain_http_without_fallback_and_releases_udp_listener() {
     let origin = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
         .expect("origin bind");
     let origin_address = origin.local_addr().expect("origin address");
-    let origin_task = tokio::spawn(async move {
-        let (mut stream, _) = origin.accept().await.expect("origin accept");
-        let mut request = vec![0; 512];
-        let bytes = stream.read(&mut request).await.expect("origin request");
-        assert!(
-            std::str::from_utf8(&request[..bytes])
-                .expect("origin request UTF-8")
-                .contains("GET /h3 HTTP/1.1")
-        );
-        stream
-            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 4\r\n\r\npong")
+    let mut origin_task = tokio::spawn(async move {
+        let _ = origin
+            .accept()
             .await
-            .expect("origin response");
+            .expect("origin accept must not receive an H3 fallback");
+        panic!("HTTP/3 must not fall back to a TCP origin");
     });
 
     let proxy_address = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
@@ -132,16 +125,28 @@ async fn daemon_accepts_active_h3_absolute_form_and_releases_udp_listener() {
     let mut stream = sender.send_request(request).await.expect("send H3 request");
     stream.finish().await.expect("finish H3 request");
     let response = stream.recv_response().await.expect("H3 response");
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(recv_chunk(&mut stream).await.as_ref(), b"pong");
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert!(
+        stream
+            .recv_data()
+            .await
+            .expect("H3 error response")
+            .is_none()
+    );
+    assert!(
+        timeout(Duration::from_millis(500), &mut origin_task)
+            .await
+            .is_err(),
+        "HTTP/3 request reached the TCP origin"
+    );
+    origin_task.abort();
+    let _ = origin_task.await;
 
     drop(stream);
     drop(sender);
     endpoint.close(quinn::VarInt::from_u32(0), b"test complete");
     driver.await.expect("H3 driver task");
     server.shutdown_gracefully();
-    origin_task.await.expect("origin task");
-
     let released = std::net::UdpSocket::bind(proxy_address).expect("UDP listener release");
     drop(released);
 }

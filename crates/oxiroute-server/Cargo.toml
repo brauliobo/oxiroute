@@ -47,6 +47,8 @@ pingora.workspace = true
 quinn.workspace = true
 rustix.workspace = true
 rustls.workspace = true
+rustls-native-certs.workspace = true
+rustls-pemfile.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 signal-hook.workspace = true
@@ -66,7 +68,6 @@ oxiroute-supervisor-process = { path = "../oxiroute-supervisor-process" }
 [dev-dependencies]
 rml_rtmp.workspace = true
 rustls.workspace = true
-rustls-pemfile.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
 tokio-rustls.workspace = true

@@ -6,6 +6,7 @@ mod forward_proxy;
 mod generation;
 mod health;
 mod http3;
+mod http3_upstream;
 mod http_action;
 mod http_proxy;
 mod http_server_app;
@@ -41,6 +42,7 @@ pub use generation::{
 };
 pub use health::{HealthBuildError, HealthSupervisor};
 pub use http3::Http3Runtime;
+pub(crate) use http3_upstream::{H3UpstreamBuildError, H3UpstreamError, H3UpstreamPlan};
 pub use http_proxy::{HttpRequestContext, HttpReverseProxy};
 pub use http_server_app::{HttpDownstreamPolicyApp, HttpListenerApp, MonitoredHttpApp};
 pub use l4_service::L4ServicePlan;

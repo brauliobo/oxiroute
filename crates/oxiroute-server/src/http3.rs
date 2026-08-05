@@ -15,7 +15,10 @@ use http::{
     uri::Authority,
 };
 use log::{error, warn};
-use oxiroute_config::{DownstreamTimeoutPolicy, HttpRedirectLocation, is_unambiguous_http_path};
+use oxiroute_config::{
+    DownstreamTimeoutPolicy, HttpRedirectLocation, HttpRetryTarget, HttpRetryTrigger,
+    is_unambiguous_http_path,
+};
 use pingora::{connectors::http::Connector, http::RequestHeader};
 use quinn::crypto::rustls::QuicServerConfig;
 use quinn::{Endpoint, EndpointConfig, ServerConfig, TransportConfig, VarInt};
@@ -27,14 +30,17 @@ use tokio::{
 };
 
 use crate::{
-    ForwardHttp1ServicePlan, HttpOperationResult, HttpServicePlan, ListenerMetrics,
-    ListenerReservation, ListenerRuntimeState, RuntimeGeneration, RuntimeReferenceKind,
-    TlsProfilePlan,
+    ForwardHttp1ServicePlan, H3UpstreamError, HttpOperationResult, HttpServicePlan,
+    ListenerMetrics, ListenerReservation, ListenerRuntimeState, RuntimeGeneration,
+    RuntimeReferenceKind, TlsProfilePlan,
     http_action::{
-        HttpActionPlan, ProxyPolicyPlan, RequestHeaderMutationPlan, RequestHeaderValuePlan,
+        HttpActionPlan, ProxyActionPlan, ProxyPolicyPlan, RequestHeaderMutationPlan,
+        RequestHeaderValuePlan,
     },
     http_proxy::{
-        apply_response_policy, remove_upstream_hop_by_hop_response_headers, rewrite_upstream_path,
+        apply_response_policy, apply_response_policy_map,
+        remove_upstream_hop_by_hop_response_headers,
+        remove_upstream_hop_by_hop_response_headers_map, rewrite_upstream_path,
         selected_upstream_host,
     },
     upstream_peer::validate_tls_connection,
@@ -888,6 +894,20 @@ where
                 Err(ReverseBodyError::Cancelled) => return None,
             };
             let _ = metrics.record_bytes_received(u64::try_from(body.len()).unwrap_or(u64::MAX));
+            if proxy.pool.h3().is_some() {
+                return dispatch_h3_upstream_request(
+                    stream,
+                    request,
+                    authority,
+                    proxy,
+                    body,
+                    metrics,
+                    client_addr,
+                    deadline,
+                    shutdown,
+                )
+                .await;
+            }
             let mut selected = match timeout_at(deadline, proxy.pool.select_endpoint(&[])).await {
                 Ok(Ok(selected)) => selected,
                 Ok(Err(_)) => {
@@ -1114,6 +1134,408 @@ where
             Some(status)
         }
     }
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+async fn dispatch_h3_upstream_request<S>(
+    stream: &mut h3::server::RequestStream<S, Bytes>,
+    request: &Request<()>,
+    authority: &Authority,
+    proxy: &ProxyActionPlan,
+    body: Bytes,
+    metrics: &ListenerMetrics,
+    client_addr: Option<SocketAddr>,
+    deadline: Instant,
+    mut shutdown: watch::Receiver<bool>,
+) -> Option<u16>
+where
+    S: h3::quic::BidiStream<Bytes> + Send,
+{
+    let Some(h3) = proxy.pool.h3() else {
+        return send_h3_error(
+            stream,
+            StatusCode::BAD_GATEWAY,
+            b"HTTP/3 upstream policy is unavailable\n",
+            deadline,
+        )
+        .await
+        .then_some(StatusCode::BAD_GATEWAY.as_u16());
+    };
+    let Some(server_name) = h3.server_name() else {
+        return send_h3_error(
+            stream,
+            StatusCode::BAD_GATEWAY,
+            b"HTTP/3 upstream SNI is unavailable\n",
+            deadline,
+        )
+        .await
+        .then_some(StatusCode::BAD_GATEWAY.as_u16());
+    };
+    let mut attempted = Vec::new();
+    let mut retry_server: Option<String> = None;
+    let max_attempts = usize::from(proxy.policy.max_retries).saturating_add(1);
+    let retry_safe = matches!(request.method(), &Method::GET | &Method::HEAD) && body.is_empty();
+    let mut last_error = H3UpstreamError::Connect;
+
+    for attempt in 0..max_attempts {
+        let mut selected = if let Some(server) = retry_server.take() {
+            tokio::select! {
+                changed = shutdown.changed() => {
+                    let _ = changed;
+                    return None;
+                }
+                result = timeout_at(deadline, proxy.pool.select_server_endpoint(&server)) => {
+                    match result {
+                        Ok(Ok(selected)) => selected,
+                        Ok(Err(_)) => break,
+                        Err(_) => {
+                            last_error = H3UpstreamError::Timeout;
+                            break;
+                        }
+                    }
+                }
+            }
+        } else {
+            tokio::select! {
+                changed = shutdown.changed() => {
+                    let _ = changed;
+                    return None;
+                }
+                result = timeout_at(deadline, proxy.pool.select_endpoint(&attempted)) => {
+                    match result {
+                        Ok(Ok(selected)) => selected,
+                        Ok(Err(_)) => break,
+                        Err(_) => {
+                            last_error = H3UpstreamError::Timeout;
+                            break;
+                        }
+                    }
+                }
+            }
+        };
+        let Ok(Some(selected_host)) = selected_upstream_host(
+            selected.endpoint(),
+            proxy.policy.upstream_host.clone(),
+            Some(authority),
+        ) else {
+            last_error = H3UpstreamError::Protocol;
+            break;
+        };
+        let Ok(upstream_request) = build_h3_upstream_request(
+            request,
+            body.len(),
+            authority,
+            &selected_host,
+            &proxy.policy,
+            client_addr,
+        ) else {
+            last_error = H3UpstreamError::Protocol;
+            break;
+        };
+        attempted.push(selected.server_name().to_owned());
+        let mut response = None;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                last_error = H3UpstreamError::Timeout;
+                break;
+            }
+            let Ok(address) = selected.prepare_h3_address(remaining).await else {
+                last_error = H3UpstreamError::Connect;
+                break;
+            };
+            match h3
+                .request(
+                    address,
+                    server_name,
+                    upstream_request.clone(),
+                    body.clone(),
+                    deadline,
+                    shutdown.clone(),
+                )
+                .await
+            {
+                Ok(value) => {
+                    response = Some(value);
+                    break;
+                }
+                Err(error) if error.retryable() && selected.has_address_fallback() => {
+                    last_error = error;
+                }
+                Err(error) => {
+                    last_error = error;
+                    break;
+                }
+            }
+        }
+        if let Some(response) = response {
+            return send_h3_upstream_response(stream, request, response, proxy, metrics, deadline)
+                .await;
+        }
+
+        let trigger = h3_retry_trigger(&last_error);
+        let retry_target = proxy.policy.target_for_retry(attempted.len());
+        let target_available = match retry_target {
+            HttpRetryTarget::SameServer => attempted.last().is_some(),
+            HttpRetryTarget::NextServer => proxy.pool.has_unattempted(&attempted),
+        };
+        let retry = retry_safe
+            && attempt.saturating_add(1) < max_attempts
+            && target_available
+            && proxy.policy.retries_on(trigger)
+            && last_error.retryable()
+            && Instant::now() < deadline;
+        if !retry {
+            break;
+        }
+        let delay = proxy.policy.retry_delay;
+        if !delay.is_zero() {
+            if delay > deadline.saturating_duration_since(Instant::now()) {
+                break;
+            }
+            tokio::select! {
+                changed = shutdown.changed() => {
+                    let _ = changed;
+                    return None;
+                }
+                () = tokio::time::sleep(delay) => {}
+            }
+        }
+        if retry_target == HttpRetryTarget::SameServer {
+            retry_server = attempted.last().cloned();
+        }
+    }
+
+    let status = if matches!(last_error, H3UpstreamError::Timeout) {
+        StatusCode::GATEWAY_TIMEOUT
+    } else {
+        StatusCode::BAD_GATEWAY
+    };
+    send_h3_error(
+        stream,
+        status,
+        b"HTTP/3 upstream request failed\n",
+        deadline,
+    )
+    .await
+    .then_some(status.as_u16())
+}
+
+fn h3_retry_trigger(error: &H3UpstreamError) -> HttpRetryTrigger {
+    match error {
+        H3UpstreamError::Timeout => HttpRetryTrigger::ConnectTimeout,
+        H3UpstreamError::RefusedStream => HttpRetryTrigger::RefusedStream,
+        H3UpstreamError::Connect
+        | H3UpstreamError::Protocol
+        | H3UpstreamError::Cancelled
+        | H3UpstreamError::ResponseBodyTooLarge
+        | H3UpstreamError::RequestBodyTooLarge
+        | H3UpstreamError::ResourceExhausted
+        | H3UpstreamError::MissingServerName => HttpRetryTrigger::ConnectFailure,
+    }
+}
+
+async fn send_h3_upstream_response<S>(
+    stream: &mut h3::server::RequestStream<S, Bytes>,
+    request: &Request<()>,
+    response: crate::http3_upstream::H3UpstreamResponse,
+    proxy: &ProxyActionPlan,
+    metrics: &ListenerMetrics,
+    deadline: Instant,
+) -> Option<u16>
+where
+    S: h3::quic::BidiStream<Bytes> + Send,
+{
+    let status = response.status;
+    let mut headers = response.headers;
+    if remove_upstream_hop_by_hop_response_headers_map(&mut headers).is_err()
+        || apply_response_policy_map(status, &mut headers, &proxy.policy).is_err()
+    {
+        let _ = send_h3_error(
+            stream,
+            StatusCode::BAD_GATEWAY,
+            b"HTTP/3 upstream response headers are invalid\n",
+            deadline,
+        )
+        .await;
+        return Some(StatusCode::BAD_GATEWAY.as_u16());
+    }
+    let mut response_head = Response::new(());
+    *response_head.status_mut() = status;
+    *response_head.headers_mut() = headers;
+    if !matches!(
+        timeout_at(deadline, stream.send_response(response_head)).await,
+        Ok(Ok(()))
+    ) {
+        return None;
+    }
+    let body_forbidden = matches!(
+        status,
+        StatusCode::NO_CONTENT | StatusCode::RESET_CONTENT | StatusCode::NOT_MODIFIED
+    );
+    if request.method() != Method::HEAD && !body_forbidden && !response.body.is_empty() {
+        let body_length = u64::try_from(response.body.len()).unwrap_or(u64::MAX);
+        let _ = metrics.record_bytes_sent(body_length);
+        if !matches!(
+            timeout_at(deadline, stream.send_data(response.body)).await,
+            Ok(Ok(()))
+        ) {
+            return None;
+        }
+    }
+    if let Some(mut trailers) = response.trailers {
+        if remove_upstream_hop_by_hop_response_headers_map(&mut trailers).is_err()
+            || !matches!(
+                timeout_at(deadline, stream.send_trailers(trailers)).await,
+                Ok(Ok(()))
+            )
+        {
+            return None;
+        }
+    }
+    if !matches!(timeout_at(deadline, stream.finish()).await, Ok(Ok(()))) {
+        return None;
+    }
+    Some(status.as_u16())
+}
+
+fn build_h3_upstream_request(
+    request: &Request<()>,
+    body_length: usize,
+    authority: &Authority,
+    selected_host: &HeaderValue,
+    policy: &ProxyPolicyPlan,
+    client_addr: Option<SocketAddr>,
+) -> Result<Request<()>, ()> {
+    let mut uri = request.uri().clone();
+    if let Some(rewrite) = &policy.upstream_path_rewrite {
+        rewrite_upstream_path(&mut uri, rewrite).map_err(|_| ())?;
+    }
+    let selected_authority = selected_host
+        .to_str()
+        .map_err(|_| ())?
+        .parse::<Authority>()
+        .map_err(|_| ())?;
+    let path = uri
+        .path_and_query()
+        .map_or(uri.path(), |value| value.as_str());
+    let uri = Uri::builder()
+        .scheme("https")
+        .authority(selected_authority.as_str())
+        .path_and_query(path)
+        .build()
+        .map_err(|_| ())?;
+    let mut headers = request.headers().clone();
+    for name in [
+        HOST,
+        CONNECTION,
+        KEEP_ALIVE,
+        PROXY_CONNECTION,
+        TE,
+        TRAILER,
+        TRANSFER_ENCODING,
+        UPGRADE,
+    ] {
+        headers.remove(name);
+    }
+    headers.insert(
+        CONTENT_LENGTH,
+        HeaderValue::from_str(&body_length.to_string()).map_err(|_| ())?,
+    );
+    apply_h3_header_mutations(
+        request,
+        &mut headers,
+        authority,
+        policy,
+        client_addr,
+        selected_host,
+    )?;
+    let mut output = Request::builder()
+        .method(request.method().clone())
+        .uri(uri)
+        .body(())
+        .map_err(|_| ())?;
+    *output.version_mut() = http::Version::HTTP_3;
+    *output.headers_mut() = headers;
+    Ok(output)
+}
+
+fn apply_h3_header_mutations(
+    incoming: &Request<()>,
+    headers: &mut HeaderMap,
+    authority: &Authority,
+    policy: &ProxyPolicyPlan,
+    client_addr: Option<SocketAddr>,
+    selected_upstream_host: &HeaderValue,
+) -> Result<(), ()> {
+    for mutation in &policy.request_headers {
+        if mutation.is_pingora_managed_upgrade() {
+            continue;
+        }
+        match mutation {
+            RequestHeaderMutationPlan::Remove { name } => {
+                headers.remove(name);
+            }
+            RequestHeaderMutationPlan::Set { name, value } => {
+                let value = match value {
+                    RequestHeaderValuePlan::Literal(value) => value.clone(),
+                    RequestHeaderValuePlan::IncomingAuthority => {
+                        HeaderValue::from_str(authority.as_str()).map_err(|_| ())?
+                    }
+                    RequestHeaderValuePlan::NormalizedHost => {
+                        HeaderValue::from_str(&normalized_h3_host(authority).unwrap_or_default())
+                            .map_err(|_| ())?
+                    }
+                    RequestHeaderValuePlan::NginxHost { fallback } => {
+                        nginx_h3_host(authority).unwrap_or_else(|| fallback.clone())
+                    }
+                    RequestHeaderValuePlan::ClientIp => {
+                        HeaderValue::from_str(&client_addr.ok_or(())?.ip().to_string())
+                            .map_err(|_| ())?
+                    }
+                    RequestHeaderValuePlan::AppendedXForwardedFor {
+                        max_bytes,
+                        except_source_cidrs,
+                    } => {
+                        if client_addr.is_some_and(|address| {
+                            except_source_cidrs
+                                .iter()
+                                .any(|cidr| cidr.contains(address.ip()))
+                        }) {
+                            continue;
+                        }
+                        let mut value = joined_h3_headers(
+                            incoming.headers(),
+                            &HeaderName::from_static("x-forwarded-for"),
+                            *max_bytes,
+                        )?
+                        .unwrap_or_default();
+                        if let Some(address) = client_addr {
+                            if !value.is_empty() {
+                                value.extend_from_slice(b", ");
+                            }
+                            value.extend_from_slice(address.ip().to_string().as_bytes());
+                        }
+                        if value.len() > *max_bytes {
+                            return Err(());
+                        }
+                        HeaderValue::from_bytes(&value).map_err(|_| ())?
+                    }
+                    RequestHeaderValuePlan::DownstreamScheme => HeaderValue::from_static("https"),
+                    RequestHeaderValuePlan::IncomingHeader { name, max_bytes } => {
+                        HeaderValue::from_bytes(
+                            &joined_h3_headers(incoming.headers(), name, *max_bytes)?
+                                .unwrap_or_default(),
+                        )
+                        .map_err(|_| ())?
+                    }
+                    RequestHeaderValuePlan::SelectedUpstreamHost => selected_upstream_host.clone(),
+                };
+                headers.insert(name.clone(), value);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn request_deadline(
