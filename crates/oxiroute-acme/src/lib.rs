@@ -21,7 +21,7 @@ pub use protocol::{
     Account, AccountKey, AccountKeyAlgorithm, AccountRequest, AcmeClient, AcmeError, AcmeTransport,
     Authorization, AuthorizationStatus, ChallengeType, CertificateRequest, Directory,
     DirectoryDocument, Http01Challenge, HttpRequest, HttpResponse, LeafCsr, LeafKeyAlgorithm,
-    Order, OriginPolicy, PollPolicy, TransportError, generate_leaf_csr,
+    Order, OriginPolicy, PollPolicy, TlsAlpn01Challenge, TransportError, generate_leaf_csr,
 };
 pub use state::{
     AcmeStateError, CertificateMaterial, JobState, JobStatus, MAX_CERTIFICATE_BYTES, MAX_JOB_BYTES,

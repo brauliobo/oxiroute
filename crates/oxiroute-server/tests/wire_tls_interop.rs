@@ -2,7 +2,13 @@
 
 mod support;
 
-use std::{fs, net::SocketAddr, os::unix::fs::PermissionsExt as _, sync::Arc};
+use std::{
+    fs,
+    net::SocketAddr,
+    os::unix::fs::PermissionsExt as _,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use bytes::Bytes;
 use http::{Method, StatusCode};
@@ -13,7 +19,7 @@ use oxiroute_config::{
     HttpVersionPolicy, TlsClientAuthMode, TlsClientAuthPolicy, TlsVersion, UpstreamServer,
     UpstreamTls,
 };
-use oxiroute_server::CertificateGeneration;
+use oxiroute_server::{CertificateGeneration, TlsAlpnChallenge};
 use rustls::{HandshakeKind, ProtocolVersion};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -28,7 +34,8 @@ use support::{
     certificate_chain_fixture, direct_legacy_tls_origin_handshake, fixture, fixture_leaf,
     generate_test_only_client_chain, generate_test_only_ecdsa_chain, h1_request, handshake_kind,
     legacy_tls_handshake, negotiated_alpn, negotiated_tls_is_modern, peer_certificate_count,
-    openssl_tls_request_with_identity, peer_leaf, private_key_fixture, proxy_config,
+    openssl_tls_alpn_handshake, openssl_tls_request_with_identity, peer_leaf, private_key_fixture,
+    proxy_config,
     socket_endpoint, tcp_connect, tls_client_config, tls_client_config_with_identity,
     tls_client_config_with_versions, tls_connect, tls_connect_with_config, verified_upstream,
 };
@@ -443,6 +450,141 @@ async fn downstream_selects_exact_wildcard_and_default_certificates_by_sni() {
     })
     .await
     .expect("downstream SNI certificate-selection wire test timed out");
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn downstream_tls_alpn01_selects_only_owned_live_challenges() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = PlainH1Origin::start(b"tls-alpn01").await;
+        let reserved = ReservedListener::new();
+        let config = proxy_config(
+            reserved.address,
+            origin.address,
+            vec![AlpnProtocol::Http11],
+            None,
+            HttpVersionPolicy::default(),
+        );
+        let proxy = ProxyHarness::start(&config, reserved);
+        let mut ordinary = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
+            .await
+            .expect("ordinary TLS connection before challenge");
+        let ordinary_leaf = peer_leaf(&ordinary);
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_secs();
+        let lease = proxy
+            .tls_alpn_challenges
+            .provision(
+                TlsAlpnChallenge::generate(
+                    PROXY_SERVER_NAME,
+                    "token.thumbprint",
+                    "account-1",
+                    "order-1",
+                    "authorization-1",
+                    "challenge-1",
+                    now,
+                    now + 300,
+                )
+                .expect("TLS-ALPN-01 challenge identity"),
+            )
+            .expect("provision TLS-ALPN-01 challenge");
+        assert!(proxy
+            .tls_alpn_challenges
+            .provision(
+                TlsAlpnChallenge::generate(
+                    PROXY_SERVER_NAME,
+                    "other.thumbprint",
+                    "account-2",
+                    "order-2",
+                    "authorization-2",
+                    "challenge-2",
+                    now,
+                    now + 300,
+                )
+                .expect("second TLS-ALPN-01 identity"),
+            )
+            .is_err());
+        let challenge_leaf = lease
+            .identity()
+            .certificate()
+            .to_der()
+            .expect("challenge certificate DER");
+        let challenge_connection = openssl_tls_alpn_handshake(
+            proxy.address,
+            PROXY_SERVER_NAME,
+            &[b"acme-tls/1"],
+        )
+        .await
+        .expect("TLS-ALPN-01 handshake");
+        assert_eq!(
+            challenge_connection.negotiated_alpn.as_deref(),
+            Some(b"acme-tls/1".as_slice())
+        );
+        assert_eq!(challenge_connection.peer_leaf, challenge_leaf);
+
+        let mut wrong_alpn = tls_connect(
+            proxy.address,
+            PROXY_SERVER_NAME,
+            "ca-a.pem",
+            &[b"http/1.1"],
+        )
+        .await
+        .expect("ordinary ALPN remains on the normal certificate");
+        assert_eq!(peer_leaf(&wrong_alpn), ordinary_leaf);
+        assert!(openssl_tls_alpn_handshake(
+            proxy.address,
+            "wrong.example.test",
+            &[b"acme-tls/1"],
+        )
+        .await
+        .is_err());
+
+        lease.complete();
+        let expired = proxy
+            .tls_alpn_challenges
+            .provision(
+                TlsAlpnChallenge::generate(
+                    PROXY_SERVER_NAME,
+                    "expired.thumbprint",
+                    "account-3",
+                    "order-3",
+                    "authorization-3",
+                    "challenge-3",
+                    now.saturating_sub(2),
+                    now.saturating_sub(1),
+                )
+                .expect("expired TLS-ALPN-01 identity"),
+            )
+            .expect("provision expired identity for expiry check");
+        assert!(openssl_tls_alpn_handshake(
+            proxy.address,
+            PROXY_SERVER_NAME,
+            &[b"acme-tls/1"],
+        )
+        .await
+        .is_err());
+        expired.cancel();
+
+        let response = h1_request(&mut ordinary, "/ordinary-after-challenge", true)
+            .await
+            .expect("existing ordinary connection after challenge");
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, b"tls-alpn01");
+        assert!(h1_request(&mut wrong_alpn, "/ordinary-alpn", true)
+            .await
+            .is_ok());
+        origin.wait_for_requests(2).await;
+
+        drop(ordinary);
+        drop(wrong_alpn);
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("TLS-ALPN-01 downstream selection wire test timed out");
 }
 
 #[tokio::test]

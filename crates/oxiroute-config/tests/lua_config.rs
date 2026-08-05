@@ -684,7 +684,6 @@ fn managed_acme_source_round_trips_and_rejects_unsafe_policy_values() {
             "directory_url",
             "directory_url = \"http://acme.example.test/directory\"",
         ),
-        ("challenge", "challenge = \"tls_alpn01\""),
         (
             "allowed_dns_suffixes",
             "allowed_dns_suffixes = { \"other.test\" }",
@@ -696,7 +695,6 @@ fn managed_acme_source_round_trips_and_rejects_unsafe_policy_values() {
             matches!(
                 (field, &error),
                 ("directory_url", ConfigError::InvalidAcmeDirectoryUrl { .. })
-                    | ("challenge", ConfigError::UnsupportedAcmeChallenge { .. })
                     | (
                         "allowed_dns_suffixes",
                         ConfigError::AcmeIdentifierOutsidePolicy { .. }
@@ -709,6 +707,24 @@ fn managed_acme_source_round_trips_and_rejects_unsafe_policy_values() {
             "unexpected error for {field}: {error:?}"
         );
     }
+
+    let tls_alpn_config = load_lua(&with_acme_source(
+        "contacts = { \"mailto:ops@example.test\" },\n        challenge = \"tls_alpn01\",\n        key_type = \"ecdsa_p256\",",
+    ))
+    .expect("managed TLS-ALPN-01 source");
+    assert!(matches!(
+        tls_alpn_config.certificates[0].source,
+        CertificateSource::AcmeManaged {
+            challenge: AcmeChallengeType::TlsAlpn01,
+            dns01: None,
+            ..
+        }
+    ));
+    assert_eq!(
+        load_lua(&render_lua(&tls_alpn_config).expect("render TLS-ALPN-01 source"))
+            .expect("reload TLS-ALPN-01 source"),
+        tls_alpn_config
+    );
 
     let dns_config = with_acme_source(
         "contacts = { \"mailto:ops@example.test\" },\n        challenge = \"dns01\",\n        key_type = \"ecdsa_p256\",\n        dns01 = { provider = \"fake\", credential_file = \"/etc/oxiroute/dns-credentials\", timeout_seconds = 30 },",

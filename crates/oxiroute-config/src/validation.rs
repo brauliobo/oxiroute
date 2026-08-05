@@ -413,7 +413,7 @@ fn validate_acme_source(
         });
     }
     match challenge {
-        crate::model::AcmeChallengeType::Http01 => {
+        crate::model::AcmeChallengeType::Http01 | crate::model::AcmeChallengeType::TlsAlpn01 => {
             if dns01.is_some() {
                 return Err(ConfigError::InvalidAcmeDns01Provider {
                     certificate: certificate.name.clone(),
@@ -427,11 +427,6 @@ fn validate_acme_source(
                 });
             };
             validate_acme_dns01_source(certificate, dns01)?;
-        }
-        crate::model::AcmeChallengeType::TlsAlpn01 => {
-            return Err(ConfigError::UnsupportedAcmeChallenge {
-                certificate: certificate.name.clone(),
-            });
         }
     }
     if contacts.len() > MAX_ACME_CONTACTS

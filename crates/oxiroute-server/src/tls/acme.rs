@@ -26,7 +26,8 @@ use oxiroute_config::{AcmeChallengeType, AcmeDns01Config, AcmeKeyType, SelfSigne
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ActiveCertificateGeneration, CertificateGeneration, TlsBuildError, MAX_CERTIFICATE_CHAIN_BYTES,
+    ActiveCertificateGeneration, CertificateGeneration, TlsAlpnChallenge, TlsAlpnChallengeStore,
+    TlsBuildError, MAX_CERTIFICATE_CHAIN_BYTES,
 };
 
 static NEXT_JOB_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -84,6 +85,8 @@ pub enum AcmeManagedError {
     Publication,
     #[error("managed ACME challenge could not be provisioned")]
     Challenge(#[source] ChallengeStoreError),
+    #[error("managed ACME TLS-ALPN-01 challenge could not be provisioned")]
+    TlsAlpnChallenge(#[source] Box<super::TlsAlpnChallengeError>),
     #[error("managed ACME DNS-01 provider is unsupported or not registered")]
     DnsProviderUnsupported,
     #[error("managed ACME DNS-01 credentials are unavailable")]
@@ -120,7 +123,7 @@ impl AcmeManagedError {
             Self::AccountDirectoryChanged => "account_directory_changed",
             Self::AccountNotConfigured => "account_not_configured",
             Self::Publication => "publication_conflict",
-            Self::Challenge(_) => "challenge_failed",
+            Self::Challenge(_) | Self::TlsAlpnChallenge(_) => "challenge_failed",
             Self::DnsProviderUnsupported => "dns_provider_unsupported",
             Self::DnsCredentials(_) => "dns_credentials_failed",
             Self::DnsProvider(error) => match error {
@@ -234,6 +237,7 @@ pub struct AcmeManagedReconciler {
     policy: AcmeManagedPolicy,
     revisions: RevisionStore,
     challenge_store: ChallengeStore,
+    tls_alpn_challenge_store: TlsAlpnChallengeStore,
     dns_provider: Option<Arc<dyn Dns01Provider>>,
     active: Arc<ActiveCertificateGeneration>,
     job: Mutex<()>,
@@ -350,6 +354,38 @@ impl AcmeManagedReconciler {
         dns_provider: Option<Arc<dyn Dns01Provider>>,
         active: Arc<ActiveCertificateGeneration>,
     ) -> Self {
+        Self::new_with_challenge_stores(
+            certificate,
+            declared_dns_names,
+            policy,
+            revisions,
+            disk_revision,
+            not_before_unix_seconds,
+            not_after_unix_seconds,
+            initial_issuance_due,
+            challenge_store,
+            TlsAlpnChallengeStore::default(),
+            dns_provider,
+            active,
+        )
+    }
+
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new_with_challenge_stores(
+        certificate: impl Into<String>,
+        declared_dns_names: Vec<String>,
+        policy: AcmeManagedPolicy,
+        revisions: RevisionStore,
+        disk_revision: String,
+        not_before_unix_seconds: Option<u64>,
+        not_after_unix_seconds: Option<u64>,
+        initial_issuance_due: bool,
+        challenge_store: ChallengeStore,
+        tls_alpn_challenge_store: TlsAlpnChallengeStore,
+        dns_provider: Option<Arc<dyn Dns01Provider>>,
+        active: Arc<ActiveCertificateGeneration>,
+    ) -> Self {
         let certificate = certificate.into();
         let persisted = if initial_issuance_due {
             None
@@ -414,6 +450,7 @@ impl AcmeManagedReconciler {
             policy,
             revisions,
             challenge_store,
+            tls_alpn_challenge_store,
             dns_provider,
             active,
             job: Mutex::new(()),
@@ -987,10 +1024,7 @@ impl AcmeManagedReconciler {
                 let credentials = load_dns_credentials(&dns01.credential_file, &self.certificate)?;
                 Some((Arc::clone(provider), credentials, dns01.timeout_seconds))
             }
-            AcmeChallengeType::Http01 => None,
-            AcmeChallengeType::TlsAlpn01 => {
-                return Err(AcmeManagedError::Protocol(AcmeError::UnsupportedChallenge));
-            }
+            AcmeChallengeType::Http01 | AcmeChallengeType::TlsAlpn01 => None,
         };
         let order = client
             .create_order(&oxiroute_acme::CertificateRequest {
@@ -1024,7 +1058,7 @@ impl AcmeManagedReconciler {
                     client.authorization_for(authorization_url, ChallengeType::Dns01)
                 }
                 AcmeChallengeType::TlsAlpn01 => {
-                    return Err(AcmeManagedError::Protocol(AcmeError::UnsupportedChallenge));
+                    client.authorization_for(authorization_url, ChallengeType::TlsAlpn01)
                 }
             }
             .map_err(AcmeManagedError::Protocol)?;
@@ -1059,6 +1093,43 @@ impl AcmeManagedReconciler {
                     *timeout_seconds,
                     cancellation.clone(),
                 )?;
+                continue;
+            }
+            if self.policy.challenge == AcmeChallengeType::TlsAlpn01 {
+                let challenge = authorization
+                    .tls_alpn01_challenge
+                    .as_ref()
+                    .ok_or(AcmeManagedError::Protocol(AcmeError::UnsupportedChallenge))?;
+                let created_at = unix_now();
+                let identity = TlsAlpnChallenge::generate(
+                    &authorization.identifier,
+                    &challenge.key_authorization,
+                    "managed-account",
+                    job_id,
+                    &format!("authorization-{index}"),
+                    &format!("challenge-{index}"),
+                    created_at,
+                    created_at.saturating_add(600),
+                )
+                .map_err(|error| AcmeManagedError::TlsAlpnChallenge(Box::new(error)))?;
+                let lease = self
+                    .tls_alpn_challenge_store
+                    .provision(identity)
+                    .map_err(|error| AcmeManagedError::TlsAlpnChallenge(Box::new(error)))?;
+                client
+                    .respond_to_tls_alpn01_challenge(challenge)
+                    .map_err(AcmeManagedError::Protocol)?;
+                let authorization = client
+                    .poll_authorization_for(
+                        &authorization.url,
+                        &poll_policy(unix_now().saturating_add(600), Some(cancellation.clone())),
+                        ChallengeType::TlsAlpn01,
+                    )
+                    .map_err(AcmeManagedError::Protocol)?;
+                lease.complete();
+                if authorization.status != AuthorizationStatus::Valid {
+                    return Err(AcmeManagedError::AuthorizationFailed);
+                }
                 continue;
             }
             let challenge = authorization
@@ -2064,6 +2135,152 @@ mod tests {
     }
 
     #[test]
+    fn tls_alpn01_issues_cleans_up_and_keeps_a_redacted_audit_record() {
+        let temp = TempDir::new().expect("state directory");
+        let state = Arc::new(StateStore::open(temp.path().join("state")).expect("state"));
+        let revisions = RevisionStore::from_arc(Arc::clone(&state));
+        let names = vec!["proxy.example.test".to_owned()];
+        let bootstrap = CertificateGeneration::self_signed_development(
+            "managed-tls-alpn",
+            &names,
+            1,
+            SelfSignedKeyType::EcdsaP256,
+        )
+        .expect("bootstrap");
+        let active = Arc::new(ActiveCertificateGeneration::new(Arc::new(bootstrap)));
+        let tls_alpn_challenge_store = TlsAlpnChallengeStore::default();
+        let reconciler = AcmeManagedReconciler::new_with_challenge_stores(
+            "managed-tls-alpn",
+            names,
+            AcmeManagedPolicy {
+                directory_url: "https://acme.test/directory".into(),
+                contacts: vec!["mailto:ops@example.test".into()],
+                terms_agreed: true,
+                challenge: AcmeChallengeType::TlsAlpn01,
+                key_type: AcmeKeyType::EcdsaP256,
+                allowed_dns_suffixes: vec!["example.test".into()],
+                retained_revisions: 3,
+                retention_days: 30,
+                dns01: None,
+            },
+            revisions.clone(),
+            "bootstrap".into(),
+            None,
+            None,
+            true,
+            ChallengeStore::default(),
+            tls_alpn_challenge_store.clone(),
+            None,
+            Arc::clone(&active),
+        );
+        let transport = FakePebbleTransport {
+            responses: Arc::new(Mutex::new(VecDeque::from([
+                directory_response(),
+                nonce_response("nonce-account"),
+                account_response(),
+                order_response("pending"),
+                tls_alpn_authorization_response("pending"),
+                challenge_response(),
+                tls_alpn_authorization_response("valid"),
+                order_response("processing"),
+                order_response("valid"),
+            ]))),
+            requests: Arc::new(Mutex::new(Vec::new())),
+            ca: Arc::new(test_ca().expect("CA")),
+            certificate: Arc::new(Mutex::new(None)),
+            certificate_names: vec!["proxy.example.test".into()],
+        };
+        let outcome = reconciler
+            .renew_with_transport(transport)
+            .expect("managed TLS-ALPN-01 issuance");
+        assert_eq!(outcome, AcmeManagedOutcome::Activated);
+        assert_eq!(reconciler.status().challenge, "tls_alpn01");
+        assert!(tls_alpn_challenge_store.is_empty());
+        assert!(revisions.load_current("managed-tls-alpn").is_ok());
+
+        let jobs = fs::read_dir(temp.path().join("state/jobs"))
+            .expect("redacted job directory")
+            .map(|entry| fs::read_to_string(entry.expect("job entry").path()).expect("job"))
+            .collect::<Vec<_>>();
+        assert!(!jobs.is_empty());
+        assert!(jobs.iter().any(|job| job.contains("test")));
+        assert!(jobs.iter().all(|job| !job.contains("token-1")));
+        assert!(jobs.iter().all(|job| !job.contains("thumbprint")));
+    }
+
+    #[test]
+    fn tls_alpn01_failure_cleans_up_and_keeps_the_bootstrap_generation() {
+        let temp = TempDir::new().expect("state directory");
+        let state = Arc::new(StateStore::open(temp.path().join("state")).expect("state"));
+        let revisions = RevisionStore::from_arc(Arc::clone(&state));
+        let names = vec!["proxy.example.test".to_owned()];
+        let bootstrap = CertificateGeneration::self_signed_development(
+            "managed-tls-alpn-failure",
+            &names,
+            1,
+            SelfSignedKeyType::EcdsaP256,
+        )
+        .expect("bootstrap");
+        let active = Arc::new(ActiveCertificateGeneration::new(Arc::new(bootstrap)));
+        let bootstrap_revision = active.snapshot().metadata().revision.clone();
+        let tls_alpn_challenge_store = TlsAlpnChallengeStore::default();
+        let reconciler = AcmeManagedReconciler::new_with_challenge_stores(
+            "managed-tls-alpn-failure",
+            names,
+            AcmeManagedPolicy {
+                directory_url: "https://acme.test/directory".into(),
+                contacts: vec!["mailto:ops@example.test".into()],
+                terms_agreed: true,
+                challenge: AcmeChallengeType::TlsAlpn01,
+                key_type: AcmeKeyType::EcdsaP256,
+                allowed_dns_suffixes: vec!["example.test".into()],
+                retained_revisions: 3,
+                retention_days: 30,
+                dns01: None,
+            },
+            revisions,
+            "bootstrap".into(),
+            None,
+            None,
+            true,
+            ChallengeStore::default(),
+            tls_alpn_challenge_store.clone(),
+            None,
+            Arc::clone(&active),
+        );
+        let transport = FakePebbleTransport {
+            responses: Arc::new(Mutex::new(VecDeque::from([
+                directory_response(),
+                nonce_response("nonce-account"),
+                account_response(),
+                order_response("pending"),
+                tls_alpn_authorization_response("pending"),
+                challenge_response(),
+                tls_alpn_authorization_response("invalid"),
+            ]))),
+            requests: Arc::new(Mutex::new(Vec::new())),
+            ca: Arc::new(test_ca().expect("CA")),
+            certificate: Arc::new(Mutex::new(None)),
+            certificate_names: vec!["proxy.example.test".into()],
+        };
+
+        let error = reconciler
+            .renew_with_transport(transport)
+            .expect_err("invalid TLS-ALPN-01 authorization");
+        assert!(matches!(error, AcmeManagedError::AuthorizationFailed));
+        assert!(tls_alpn_challenge_store.is_empty());
+        assert_eq!(
+            reconciler
+                .active_generation()
+                .snapshot()
+                .metadata()
+                .revision,
+            bootstrap_revision
+        );
+        assert_eq!(reconciler.status().job_status, Some(JobStatus::Failed));
+    }
+
+    #[test]
     fn dns01_issues_wildcard_and_cleans_the_exact_provider_record() {
         let temp = TempDir::new().expect("state directory");
         let credentials = temp.path().join("dns-credentials");
@@ -2270,6 +2487,20 @@ mod tests {
             "[]".to_owned()
         } else {
             r#"[{"type":"http-01","url":"https://acme.test/acme/challenge/1","token":"token-1"}]"#
+                .into()
+        };
+        let body = format!(
+            "{{\"status\":\"{status}\",\"identifier\":{{\"type\":\"dns\",\"value\":\"proxy.example.test\"}},\"challenges\":{challenges}}}"
+        );
+        HttpResponse::new(200, "https://acme.test/acme/authz/1", body.into_bytes())
+            .with_header("replay-nonce", "nonce-authz-response")
+    }
+
+    fn tls_alpn_authorization_response(status: &str) -> HttpResponse {
+        let challenges = if status == "valid" {
+            "[]".to_owned()
+        } else {
+            r#"[{"type":"tls-alpn-01","url":"https://acme.test/acme/challenge/1","token":"token-1"}]"#
                 .into()
         };
         let body = format!(

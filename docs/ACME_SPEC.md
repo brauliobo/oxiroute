@@ -15,16 +15,17 @@ lineage snapshots prepare immutable certificate generations. One process-lifetim
 supervisor combines bounded filesystem-event coalescing with periodic full rescans, validates a
 complete lineage candidate, and atomically publishes each identity independently. Managed ACME now
 has bounded owner-only state, injected and production HTTPS transports, account/order/challenge
-orchestration, HTTP-01 routing, DNS-01 orchestration, wildcard support, authenticated renewal, a due-check
-supervisor, redacted monitoring,
-and UI configuration. A first-start managed identity receives an in-memory, one-day self-signed
-bootstrap generation marked immediately due; bootstrap material is never persisted as ACME state.
+orchestration, HTTP-01 routing, DNS-01 orchestration, TLS-ALPN-01 orchestration, wildcard support,
+authenticated renewal, a due-check supervisor, redacted monitoring, and UI configuration. TLS-ALPN-01
+challenge identities are short-lived and in-memory. A first-start managed identity receives an in-memory,
+one-day self-signed bootstrap generation marked immediately due; bootstrap material is never persisted as
+ACME state.
 A TLS callback snapshots the active generation for each new handshake; existing connections retain
 their selected generation and downstream session resumption is disabled.
 
 ## Implemented managed ACME slice
 
-The current implementation covers bounded HTTP-01 and DNS-01 issuance:
+The current implementation covers bounded HTTP-01, DNS-01, and TLS-ALPN-01 issuance:
 
 - ACME v2 directory discovery, configured-origin enforcement, account registration, persisted account
   state, JWS requests, bounded response/request sizes, and one `badNonce` retry.
@@ -38,6 +39,9 @@ The current implementation covers bounded HTTP-01 and DNS-01 issuance:
 - DNS-01 wildcard authorization parsing, SHA-256 TXT values, statically linked exact-name provider
   registration, bounded credentials and cancellation, provider-controlled propagation checks, and
   ownership-safe exact-record cleanup.
+- TLS-ALPN-01 authorization parsing, RFC 8737 self-signed challenge certificate generation and
+  validation, exact SNI/ALPN selection, bounded ownership/expiry/cancellation, and no-fallback
+  handshake failure when a challenge identity is unavailable.
 - Authenticated TLS inventory and renewal API responses with bounded categorical outcomes. Existing
   certificate generations remain active when validation or publication fails.
 - Authenticated ACME certificate revocation, RFC 8555 account-key rollover, cooperative job
@@ -45,16 +49,16 @@ The current implementation covers bounded HTTP-01 and DNS-01 issuance:
 - Configurable revision retention with automatic garbage collection that always preserves the active
   pointer and newest retained revisions. State deletion is guarded by active TLS-profile usage.
 
-The implementation does not yet fetch or apply ACME Renewal Information responses, support TLS-ALPN-01,
-or provide durable DNS cleanup journaling. Those remain future contract work and must not be inferred
-from the current status fields.
+The implementation does not yet fetch or apply ACME Renewal Information responses or provide durable
+DNS cleanup journaling. Those remain future contract work and must not be inferred from the current
+status fields.
 
 ## Certificate sources
 
 ### ACME managed
 
 The daemon owns issuance and renewal through an ACME v2 directory. Managed certificates support
-HTTP-01 and DNS-01; wildcard identifiers require DNS-01. IP identifiers and TLS-ALPN-01 remain
+HTTP-01, DNS-01, and TLS-ALPN-01; wildcard identifiers require DNS-01. IP identifiers remain
 unsupported. Explicit terms agreement and a configured DNS-suffix policy are required.
 
 ### Imported files
@@ -142,8 +146,19 @@ Otherwise the local renewal policy applies.
 
 ### TLS-ALPN-01
 
-Deferred until dynamic per-name challenge certificate selection is tested across every TLS
-backend used by Pingora. It MUST not disrupt ordinary handshakes.
+- OxiRoute generates a fresh in-memory self-signed certificate for each pending DNS identifier.
+- The leaf has exactly the requested DNS SAN and the critical `id-pe-acmeIdentifier` extension
+  (`1.3.6.1.5.5.7.1.31`) containing the SHA-256 digest of the key authorization, as specified by
+  RFC 8737. The certificate and private key are generated and validated with OpenSSL and are never
+  persisted.
+- A pending identity is selected only when the ClientHello has the exact SNI and offers the exact
+  `acme-tls/1` ALPN protocol. Wrong names, unavailable identities, expired identities, and cancelled
+  identities fail the challenge handshake rather than falling back to a normal certificate.
+- Ordinary ALPN offers continue through the normal immutable certificate selector. A normal
+  connection that already completed its handshake retains its selected certificate generation.
+- Challenge records are bounded, atomically published under a write lock, fenced by an ownership
+  lease, and removed on completion, cancellation, expiry, or every renewal failure path. Concurrent
+  challenges for the same exact name are rejected.
 
 ## Planned domain and authorization policy
 
