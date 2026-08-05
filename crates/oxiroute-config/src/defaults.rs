@@ -133,6 +133,7 @@ pub(crate) const MAX_HTTP_COOKIE_PATH_REWRITES: usize = 16;
 pub(crate) const MAX_HTTP_COOKIE_PATH_BYTES: usize = 1024;
 pub(crate) const MAX_HTTP_PROXY_PATH_BYTES: usize = 1024;
 pub(crate) const MAX_HTTP_FIXED_RESPONSE_BODY_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_HTTP3_REQUEST_BODY_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) const MAX_HTTP_REDIRECT_LOCATION_BYTES: usize = 2048;
 pub(crate) const MAX_STATS_PAGE_URI_BYTES: usize = 2048;
 pub(crate) const MAX_STATS_PAGE_REFRESH_MS: u64 = 86_400_000;

@@ -134,6 +134,60 @@ async fn daemon_rejects_h3_plain_http_without_fallback_and_releases_udp_listener
             .expect("H3 error response")
             .is_none()
     );
+
+    let mut malformed = sender
+        .send_request(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!(
+                    "http://127.0.0.1:{}/malformed",
+                    origin_address.port()
+                ))
+                .header("content-length", "not-a-number")
+                .body(())
+                .expect("malformed H3 request"),
+        )
+        .await
+        .expect("send malformed H3 request");
+    malformed
+        .finish()
+        .await
+        .expect("finish malformed H3 request");
+    assert_eq!(
+        malformed
+            .recv_response()
+            .await
+            .expect("malformed H3 response")
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    let mut oversized = sender
+        .send_request(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!(
+                    "http://127.0.0.1:{}/oversized",
+                    origin_address.port()
+                ))
+                .header("content-length", (64 * 1024 + 1).to_string())
+                .body(())
+                .expect("oversized H3 request"),
+        )
+        .await
+        .expect("send oversized H3 request");
+    oversized
+        .finish()
+        .await
+        .expect("finish oversized H3 request");
+    assert_eq!(
+        oversized
+            .recv_response()
+            .await
+            .expect("oversized H3 response")
+            .status(),
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
     assert!(
         timeout(Duration::from_millis(500), &mut origin_task)
             .await
@@ -144,6 +198,8 @@ async fn daemon_rejects_h3_plain_http_without_fallback_and_releases_udp_listener
     let _ = origin_task.await;
 
     drop(stream);
+    drop(malformed);
+    drop(oversized);
     drop(sender);
     endpoint.close(quinn::VarInt::from_u32(0), b"test complete");
     driver.await.expect("H3 driver task");

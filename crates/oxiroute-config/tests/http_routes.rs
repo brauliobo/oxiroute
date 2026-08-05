@@ -89,6 +89,61 @@ fn accepts_a_bounded_reverse_http3_listener() {
 }
 
 #[test]
+fn accepts_bounded_reverse_http3_static_files() {
+    let mut config = http3_config(true, Some("h3"));
+    config.http_services[0].routes[0].action = serde_json::from_value(json!({
+        "type": "static_files",
+        "root_directory": "/srv/www",
+    }))
+    .expect("static HTTP/3 route");
+
+    validate_config(&mut config).expect("static files are an active HTTP/3 response");
+}
+
+#[test]
+fn rejects_reverse_http3_request_body_limits_above_the_runtime_bound() {
+    let mut config = http3_config(true, Some("h3"));
+    config.http_services[0].max_request_body_bytes = Some(64 * 1024 * 1024 + 1);
+    let error = validate_config(&mut config).expect_err("oversized H3 service body limit");
+    assert!(error
+        .to_string()
+        .contains("HTTP/3 service request body exceeds the 64 MiB limit"));
+
+    let mut config = http3_config(true, Some("h3"));
+    config.http_services[0].routes[0].policy.max_request_body_bytes =
+        Some(64 * 1024 * 1024 + 1);
+    let error = validate_config(&mut config).expect_err("oversized H3 route body limit");
+    assert!(error
+        .to_string()
+        .contains("HTTP/3 route request body exceeds the 64 MiB limit"));
+}
+
+#[test]
+fn rejects_reverse_http3_routes_that_would_use_an_h1_pool() {
+    let mut config = http3_config(true, Some("h3"));
+    config.upstream_pools.push(
+        serde_json::from_value(json!({
+            "name": "web",
+            "endpoints": [{"type": "socket", "address": "127.0.0.1:3000"}],
+        }))
+        .expect("H1 upstream pool"),
+    );
+    config.http_services[0].routes[0].action = serde_json::from_value(json!({
+        "type": "proxy",
+        "upstream_pool": "web",
+        "policy": {},
+    }))
+    .expect("proxy HTTP/3 route");
+
+    let error = validate_config(&mut config).expect_err("H3 must not relabel H1 upstream traffic");
+    assert!(
+        error
+            .to_string()
+            .contains("HTTP/3 reverse routes require an exact HTTP/3 upstream pool")
+    );
+}
+
+#[test]
 fn rejects_reverse_http3_without_request_buffering() {
     let error = validate_config(&mut http3_config(false, Some("h3")))
         .expect_err("unbuffered reverse HTTP/3 request");

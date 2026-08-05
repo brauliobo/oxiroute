@@ -163,9 +163,10 @@ behavior. Synthetic fixtures remain implementation evidence only.
 - HTTP/2 versions are asserted from negotiation and wire behavior; the active `forward_http3` and
   reverse `http3` listeners are asserted through independent QUIC/H3 process-level wire tests.
 - H3 upstream unit/wire tests use an independent QUIC origin to assert TLS/SNI/`h3` negotiation,
-  request bodies, response trailers, no-ALPN rejection, bounded request admission, and disabled
-  migration/0-RTT. Reverse H3 process tests cover service-plan routing to an HTTP origin, bounded
-  request policy validation, generation-owned UDP listener release, and no silent protocol fallback.
+  request bodies, safe response framing and trailers, no-ALPN rejection, bounded request/response
+  admission, malformed input, cancellation, and disabled migration/0-RTT. Reverse H3 process tests
+  cover fixed/redirect/static/proxy responses, GOAWAY drain, reload, generation-owned UDP listener
+  release, exhaustion, malformed traffic, and no silent protocol fallback.
 - TLS tests use independent OpenSSL/rustls clients where applicable.
 - gRPC and WebSocket behavior use independent implementations. Bounded PROXY v1/v2 parser and
   TCP/UDP integration tests cover malformed, timeout, mismatch, over-read, and quota boundaries;
