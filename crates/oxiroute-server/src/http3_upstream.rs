@@ -8,7 +8,7 @@ use std::{
 };
 
 use bytes::{Buf as _, Bytes};
-use http::{HeaderMap, Request, StatusCode};
+use http::{HeaderMap, Request, StatusCode, header::CONTENT_LENGTH};
 use oxiroute_config::UpstreamPool;
 use quinn::crypto::rustls::QuicClientConfig;
 use quinn::{ClientConfig, Endpoint, TransportConfig, VarInt};
@@ -274,6 +274,7 @@ async fn exchange(
     request: Request<()>,
     body: Bytes,
 ) -> Result<H3UpstreamResponse, H3UpstreamError> {
+    let request_method = request.method().clone();
     let mut stream = sender
         .send_request(request)
         .await
@@ -292,6 +293,35 @@ async fn exchange(
         .recv_response()
         .await
         .map_err(|_| H3UpstreamError::Protocol)?;
+    let expected_length = response
+        .headers()
+        .get_all(CONTENT_LENGTH)
+        .iter()
+        .next()
+        .map(|value| {
+            value
+                .to_str()
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .ok_or(H3UpstreamError::Protocol)
+        })
+        .transpose()?;
+    if response
+        .headers()
+        .get_all(CONTENT_LENGTH)
+        .iter()
+        .nth(1)
+        .is_some()
+    {
+        return Err(H3UpstreamError::Protocol);
+    }
+    if expected_length.is_some_and(|length| {
+        length > u64::try_from(H3_UPSTREAM_MAX_RESPONSE_BODY_BYTES).unwrap_or(u64::MAX)
+    }) {
+        stream.stop_sending(h3::error::Code::H3_EXCESSIVE_LOAD);
+        stream.stop_stream(h3::error::Code::H3_EXCESSIVE_LOAD);
+        return Err(H3UpstreamError::ResponseBodyTooLarge);
+    }
     let mut body = Vec::new();
     while let Some(mut chunk) = stream
         .recv_data()
@@ -301,9 +331,17 @@ async fn exchange(
         let length = chunk.remaining();
         let chunk = chunk.copy_to_bytes(length);
         if body.len().saturating_add(chunk.len()) > H3_UPSTREAM_MAX_RESPONSE_BODY_BYTES {
+            stream.stop_sending(h3::error::Code::H3_EXCESSIVE_LOAD);
+            stream.stop_stream(h3::error::Code::H3_EXCESSIVE_LOAD);
             return Err(H3UpstreamError::ResponseBodyTooLarge);
         }
         body.extend_from_slice(&chunk);
+    }
+    if request_method != http::Method::HEAD
+        && expected_length
+            .is_some_and(|length| length != u64::try_from(body.len()).unwrap_or(u64::MAX))
+    {
+        return Err(H3UpstreamError::Protocol);
     }
     let trailers = stream
         .recv_trailers()
@@ -555,6 +593,133 @@ mod tests {
             "complete"
         );
         assert_eq!(plan.connections.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn rejects_a_mismatched_upstream_content_length() {
+        let endpoint =
+            quinn::Endpoint::server(origin_server_config(b"h3"), (Ipv4Addr::LOCALHOST, 0).into())
+                .expect("origin endpoint");
+        let address = endpoint.local_addr().expect("origin address");
+        let origin = tokio::spawn(async move {
+            let incoming = endpoint.accept().await.expect("origin incoming connection");
+            let connection = incoming.await.expect("origin QUIC connection");
+            let mut h3: Connection<_, Bytes> = h3::server::builder()
+                .build(h3_quinn::Connection::new(connection))
+                .await
+                .expect("origin H3 connection");
+            let resolver = h3
+                .accept()
+                .await
+                .expect("origin H3 accept")
+                .expect("origin H3 request");
+            let (_request, mut stream) = resolver.resolve_request().await.expect("origin request");
+            assert!(
+                stream
+                    .recv_data()
+                    .await
+                    .expect("origin request body")
+                    .is_none()
+            );
+            stream
+                .send_response(
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-length", "4")
+                        .body(())
+                        .expect("origin response"),
+                )
+                .await
+                .expect("origin response headers");
+            stream
+                .send_data(Bytes::from_static(b"bad"))
+                .await
+                .expect("origin response body");
+            stream.finish().await.expect("origin response finish");
+            let _ = h3.accept().await;
+        });
+
+        let plan = test_plan(1);
+        let (_shutdown_sender, shutdown) = watch::channel(false);
+        let error = plan
+            .request(
+                address,
+                ORIGIN_SERVER_NAME,
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("https://origin.example.test/mismatch")
+                    .body(())
+                    .expect("upstream request"),
+                Bytes::new(),
+                Instant::now() + Duration::from_secs(5),
+                shutdown,
+            )
+            .await
+            .expect_err("mismatched response length");
+        assert!(matches!(error, H3UpstreamError::Protocol));
+        origin.await.expect("origin task");
+    }
+
+    #[tokio::test]
+    async fn preserves_head_response_content_length_without_a_body() {
+        let endpoint =
+            quinn::Endpoint::server(origin_server_config(b"h3"), (Ipv4Addr::LOCALHOST, 0).into())
+                .expect("origin endpoint");
+        let address = endpoint.local_addr().expect("origin address");
+        let origin = tokio::spawn(async move {
+            let incoming = endpoint.accept().await.expect("origin incoming connection");
+            let connection = incoming.await.expect("origin QUIC connection");
+            let mut h3: Connection<_, Bytes> = h3::server::builder()
+                .build(h3_quinn::Connection::new(connection))
+                .await
+                .expect("origin H3 connection");
+            let resolver = h3
+                .accept()
+                .await
+                .expect("origin H3 accept")
+                .expect("origin H3 request");
+            let (_request, mut stream) = resolver.resolve_request().await.expect("origin request");
+            assert!(
+                stream
+                    .recv_data()
+                    .await
+                    .expect("origin request body")
+                    .is_none()
+            );
+            stream
+                .send_response(
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-length", "7")
+                        .body(())
+                        .expect("origin response"),
+                )
+                .await
+                .expect("origin response headers");
+            stream.finish().await.expect("origin response finish");
+            let _ = h3.accept().await;
+        });
+
+        let plan = test_plan(1);
+        let (_shutdown_sender, shutdown) = watch::channel(false);
+        let response = plan
+            .request(
+                address,
+                ORIGIN_SERVER_NAME,
+                Request::builder()
+                    .method(Method::HEAD)
+                    .uri("https://origin.example.test/head")
+                    .body(())
+                    .expect("upstream request"),
+                Bytes::new(),
+                Instant::now() + Duration::from_secs(5),
+                shutdown,
+            )
+            .await
+            .expect("HEAD upstream response");
+        assert_eq!(response.headers[CONTENT_LENGTH], "7");
+        assert!(response.body.is_empty());
+        origin.await.expect("origin task");
     }
 
     #[tokio::test]

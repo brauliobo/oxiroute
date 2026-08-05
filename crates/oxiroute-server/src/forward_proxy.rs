@@ -1972,13 +1972,18 @@ impl ForwardHttp1ServicePlan {
             }
             ParsedTarget::Forward(target) => {
                 let body_limit = u64::try_from(self.max_request_body_bytes).unwrap_or(u64::MAX);
-                if request
-                    .headers()
-                    .get(header::CONTENT_LENGTH)
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(|value| value.parse::<u64>().ok())
-                    .is_some_and(|length| length > body_limit)
-                {
+                let Ok(expected_length) = crate::http3::request_content_length(request.headers())
+                else {
+                    let _ = send_h3_failure(
+                        &mut stream,
+                        RequestFailure::BadRequest,
+                        self.challenge.as_ref(),
+                    )
+                    .await;
+                    return;
+                };
+                if expected_length.is_some_and(|length| length > body_limit) {
+                    stream.stop_sending(h3::error::Code::H3_REQUEST_CANCELLED);
                     let _ = send_h3_failure(
                         &mut stream,
                         RequestFailure::PayloadTooLarge,
@@ -1990,6 +1995,7 @@ impl ForwardHttp1ServicePlan {
                 let body = match recv_h3_body(
                     &mut stream,
                     self.max_request_body_bytes,
+                    expected_length,
                     lifetime_deadline,
                     &mut shutdown,
                 )
@@ -2097,7 +2103,14 @@ impl ForwardHttp1ServicePlan {
                     return;
                 };
                 let mut response_headers = response.headers;
-                if sanitize_response_headers(&mut response_headers).is_err() {
+                if crate::http3::sanitize_h3_response_headers(
+                    &mut response_headers,
+                    response.status,
+                    u64::try_from(response.body.len()).unwrap_or(u64::MAX),
+                    request.method() == Method::HEAD,
+                )
+                .is_err()
+                {
                     let _ = send_h3_failure(
                         &mut stream,
                         RequestFailure::BadGateway,
@@ -2132,15 +2145,17 @@ impl ForwardHttp1ServicePlan {
                 {
                     return;
                 }
-                if let Some(mut trailers) = response.trailers {
-                    if sanitize_response_headers(&mut trailers).is_err() {
-                        return;
-                    }
-                    if !matches!(
-                        timeout_at(lifetime_deadline, stream.send_trailers(trailers)).await,
-                        Ok(Ok(()))
-                    ) {
-                        return;
+                if request.method() != Method::HEAD {
+                    if let Some(mut trailers) = response.trailers {
+                        if crate::http3::sanitize_h3_trailers(&mut trailers).is_err() {
+                            return;
+                        }
+                        if !matches!(
+                            timeout_at(lifetime_deadline, stream.send_trailers(trailers)).await,
+                            Ok(Ok(()))
+                        ) {
+                            return;
+                        }
                     }
                 }
                 let _ = timeout_at(lifetime_deadline, stream.finish()).await;
@@ -2625,6 +2640,7 @@ impl ForwardHttp1ServicePlan {
 async fn recv_h3_body<S>(
     stream: &mut h3::server::RequestStream<S, Bytes>,
     limit: usize,
+    expected_length: Option<u64>,
     deadline: Instant,
     shutdown: &mut tokio::sync::watch::Receiver<bool>,
 ) -> Result<Bytes, RequestFailure>
@@ -2641,9 +2657,15 @@ where
             _ = shutdown.changed() => return Err(RequestFailure::GatewayTimeout),
         };
         let Some(mut chunk) = chunk else {
+            if expected_length
+                .is_some_and(|length| length != u64::try_from(body.len()).unwrap_or(u64::MAX))
+            {
+                return Err(RequestFailure::BadRequest);
+            }
             return Ok(body.freeze());
         };
         if chunk.remaining() > limit.saturating_sub(body.len()) {
+            stream.stop_sending(h3::error::Code::H3_REQUEST_CANCELLED);
             return Err(RequestFailure::PayloadTooLarge);
         }
         let bytes = chunk.copy_to_bytes(chunk.remaining());
