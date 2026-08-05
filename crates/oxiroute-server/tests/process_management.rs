@@ -1650,6 +1650,7 @@ fn recording_candidate(active: &Config, root: &Path) -> Config {
         access_log: None,
         outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
         callbacks: oxiroute_config::RtmpCallbackConfig::default(),
+        exec_profiles: Vec::new(),
         applications: vec![RtmpApplication {
             name: "live".into(),
             live: true,
@@ -1694,6 +1695,7 @@ fn rtmp_listener_config(bind: ListenerBind) -> Config {
             access_log: None,
             outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
             callbacks: oxiroute_config::RtmpCallbackConfig::default(),
+            exec_profiles: Vec::new(),
             applications: vec![RtmpApplication {
                 name: "live".into(),
                 live: true,

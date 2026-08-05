@@ -2,7 +2,7 @@
 
 use std::{fs, path::Path};
 
-use oxiroute_config::{Protocol, RtmpHlsFragmentNaming, RtmpRecorderStart};
+use oxiroute_config::{AccessLogPolicy, Protocol, RtmpHlsFragmentNaming, RtmpRecorderStart};
 use oxiroute_import::{
     DiagnosticStage, E_DUPLICATE_IDENTITY, E_SEMANTICS_NOT_REPRESENTABLE, E_UNSUPPORTED_FEATURE,
     nginx::{OccurrenceDisposition, import_rtmp, import_rtmp_with_timezone, load, resolve_rtmp},
@@ -67,6 +67,31 @@ fn lowers_inherited_exact_rtmp_and_recorder_policy_without_accessing_the_root() 
 }
 
 #[test]
+fn lowers_one_absolute_rtmp_access_log_with_the_combined_format() {
+    let report = import_source(
+        br#"
+        rtmp {
+          access_log /var/log/oxiroute/rtmp-access.jsonl combined;
+          server {
+            listen 127.0.0.1:1935;
+            application live { live on; }
+          }
+        }
+        "#,
+        &[],
+    );
+
+    let config = report.config.expect("exact RTMP access log configuration");
+    assert!(report.blocked_services.is_empty());
+    assert_eq!(
+        config.rtmp_services[0].access_log,
+        Some(AccessLogPolicy::File {
+            path: "/var/log/oxiroute/rtmp-access.jsonl".into(),
+        })
+    );
+}
+
+#[test]
 fn lowers_bounded_hls_policy_and_key_rotation() {
     let report = import_source(
         br"
@@ -109,6 +134,46 @@ fn lowers_bounded_hls_policy_and_key_rotation() {
     assert_eq!(keys.url_prefix, "keys/");
     assert!(report.provenance.iter().any(|entry| {
         entry.path == "/rtmp_services/0/applications/0/hls"
+    }));
+}
+
+#[test]
+fn lowers_allowlisted_exec_profiles_with_typed_arguments_and_provenance() {
+    let report = import_source(
+        br#"
+        rtmp {
+          respawn on;
+          respawn_timeout 2s;
+          server {
+            listen 127.0.0.1:1935;
+            application camera {
+              live on;
+              exec_push /usr/bin/cat --input raw;
+              exec_publish_done /usr/bin/true;
+            }
+          }
+        }
+        "#,
+        &[],
+    );
+
+    let config = report.config.expect("exact exec configuration");
+    assert!(report.blocked_services.is_empty());
+    let profiles = &config.rtmp_services[0].exec_profiles;
+    assert_eq!(profiles.len(), 2);
+    assert_eq!(profiles[0].application, "camera");
+    assert_eq!(profiles[0].executable, Path::new("/usr/bin/cat"));
+    assert_eq!(profiles[0].arguments, ["--input", "raw"]);
+    assert_eq!(profiles[0].trigger, oxiroute_config::RtmpExecTrigger::Publisher);
+    assert!(profiles[0].respawn);
+    assert_eq!(profiles[0].respawn_delay_ms, 2_000);
+    assert_eq!(
+        profiles[1].trigger,
+        oxiroute_config::RtmpExecTrigger::PublishDone
+    );
+    assert_eq!(profiles[1].working_directory, Path::new("/var/empty"));
+    assert!(report.provenance.iter().any(|entry| {
+        entry.path == "/rtmp_services/0/applications/0/exec_profiles/0/executable"
     }));
 }
 

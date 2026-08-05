@@ -606,6 +606,7 @@ fn topology_config(temp: &TempDir) -> Config {
             access_log: None,
             outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
             callbacks: oxiroute_config::RtmpCallbackConfig::default(),
+            exec_profiles: Vec::new(),
             applications: vec![RtmpApplication {
                 name: "live".into(),
                 live: true,

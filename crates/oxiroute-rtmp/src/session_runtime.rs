@@ -6,6 +6,8 @@ use std::{
 };
 
 use crate::{
+    exec::{ExecProfile},
+    exec_worker::ExecProfileSet,
     recording_runtime::{
         RecorderController, RecorderReaperHandle, RecorderReaperOwner, RecorderShutdownControl,
         RtmpRecorderShutdown,
@@ -396,6 +398,7 @@ pub struct RtmpApplication {
     callbacks: Arc<RtmpCallbackPolicy>,
     vod: Option<Arc<VodApplication>>,
     media: Option<Arc<MediaApplication>>,
+    exec_profiles: Option<Arc<ExecProfileSet>>,
     recorders: Arc<Vec<RtmpRecorderPolicy>>,
 }
 
@@ -417,6 +420,7 @@ impl RtmpApplication {
             callbacks: Arc::new(RtmpCallbackPolicy::default()),
             vod: None,
             media: None,
+            exec_profiles: None,
             recorders: Arc::new(Vec::new()),
         }
     }
@@ -443,6 +447,7 @@ impl RtmpApplication {
             callbacks: Arc::new(RtmpCallbackPolicy::default()),
             vod: None,
             media: None,
+            exec_profiles: None,
             recorders: Arc::new(recorders.into_iter().collect()),
         }
     }
@@ -471,6 +476,7 @@ impl RtmpApplication {
             callbacks: Arc::new(RtmpCallbackPolicy::default()),
             vod: None,
             media: None,
+            exec_profiles: None,
             recorders: Arc::new(recorders.into_iter().collect()),
         }
     }
@@ -507,6 +513,15 @@ impl RtmpApplication {
     #[must_use]
     pub fn with_media(mut self, media: Option<Arc<MediaApplication>>) -> Self {
         self.media = media;
+        self
+    }
+
+    #[must_use]
+    pub fn with_exec_profiles(
+        mut self,
+        profiles: impl IntoIterator<Item = ExecProfile>,
+    ) -> Self {
+        self.exec_profiles = ExecProfileSet::new(profiles);
         self
     }
 
@@ -559,6 +574,10 @@ impl RtmpApplication {
     #[must_use]
     pub fn media(&self) -> Option<Arc<MediaApplication>> {
         self.media.clone()
+    }
+
+    pub(crate) fn exec_profiles(&self) -> Option<Arc<ExecProfileSet>> {
+        self.exec_profiles.clone()
     }
 
     #[must_use]
@@ -933,6 +952,9 @@ impl RtmpServiceRuntime {
         let media = self
             .application(&key.application)
             .and_then(RtmpApplication::media);
+        let exec_profiles = self
+            .application(&key.application)
+            .and_then(RtmpApplication::exec_profiles);
         let role_lease = self
             .admission(&key.application)
             .acquire(SessionCounter::Publishers)
@@ -1013,6 +1035,10 @@ impl RtmpServiceRuntime {
                 );
             }
         }
+        drop(_transaction);
+        let exec_workers = exec_profiles.as_ref().map_or_else(Vec::new, |profiles| {
+            profiles.start_publisher(&key.server_id, &key, session_id)
+        });
         debug_assert!(self.registry.has_publisher(&key));
         Ok(PublishSession::new(
             key,
@@ -1026,6 +1052,8 @@ impl RtmpServiceRuntime {
                 relays,
                 media: media_publisher,
                 session_lease: role_lease,
+                exec_profiles,
+                exec_workers,
             },
         ))
     }

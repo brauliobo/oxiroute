@@ -30,23 +30,28 @@ use crate::defaults::{
     default_max_request_body_bytes, default_recorder_max_active_recorders,
     default_recorder_max_queue_bytes, default_recorder_max_queue_messages,
     default_recorder_shutdown_timeout_ms, default_recorder_suffix_template,
-    default_rtmp_callback_timeout_ms, default_rtmp_callback_update_timeout_ms,
-    default_rtmp_fanout_policy, default_rtmp_max_chain_depth, default_rtmp_outbound_chunk_size,
-    default_rtmp_outbound_policy, default_rtmp_pull_reconnect_ms, default_rtmp_push_reconnect_ms,
-    default_rtmp_relay_buffer_ms, default_rtmp_relay_connect_timeout_ms,
-    default_rtmp_relay_handshake_timeout_ms, default_rtmp_relay_policy,
-    default_rtmp_relay_queue_bytes, default_rtmp_relay_queue_messages,
-    default_rtmp_session_ceilings, default_rtmp_vod_duration_ms, default_rtmp_vod_file_bytes,
+     default_rtmp_callback_timeout_ms, default_rtmp_callback_update_timeout_ms,
+     default_rtmp_fanout_policy, default_rtmp_max_chain_depth, default_rtmp_outbound_chunk_size,
+     default_rtmp_outbound_policy, default_rtmp_pull_reconnect_ms, default_rtmp_push_reconnect_ms,
+     default_rtmp_relay_buffer_ms, default_rtmp_relay_connect_timeout_ms,
+     default_rtmp_relay_handshake_timeout_ms, default_rtmp_relay_policy,
+     default_rtmp_relay_queue_bytes, default_rtmp_relay_queue_messages,
+     default_rtmp_exec_max_processes, default_rtmp_exec_max_queue_bytes,
+     default_rtmp_exec_max_queue_messages, default_rtmp_exec_max_respawns,
+     default_rtmp_exec_max_stderr_bytes, default_rtmp_exec_max_stdout_bytes,
+     default_rtmp_exec_respawn_delay_ms, default_rtmp_exec_shutdown_timeout_ms,
+     default_rtmp_exec_timeout_ms,
+     default_rtmp_session_ceilings, default_rtmp_vod_duration_ms, default_rtmp_vod_file_bytes,
     default_rtmp_vod_sessions, default_rtmp_hls_max_active_streams,
     default_rtmp_hls_max_queue_messages, default_rtmp_hls_max_segment_bytes,
-    default_rtmp_hls_max_segment_duration_ms, default_rtmp_hls_max_storage_bytes,
-    default_rtmp_hls_max_storage_files, default_rtmp_hls_playlist_length_ms,
-    default_rtmp_dash_max_active_streams, default_rtmp_dash_max_queue_messages,
-    default_rtmp_dash_max_segment_bytes, default_rtmp_dash_max_segment_duration_ms,
-    default_rtmp_dash_max_storage_bytes, default_rtmp_dash_max_storage_files,
-    default_rtmp_dash_segment_duration_ms,
-    default_rtmp_hls_segment_duration_ms, default_acme_dns01_timeout_seconds,
-    default_acme_retained_revisions, default_acme_retention_days,
+      default_rtmp_hls_max_segment_duration_ms, default_rtmp_hls_max_storage_bytes,
+     default_rtmp_hls_max_storage_files, default_rtmp_hls_playlist_length_ms,
+     default_rtmp_dash_max_active_streams, default_rtmp_dash_max_queue_messages,
+     default_rtmp_dash_max_segment_bytes, default_rtmp_dash_max_segment_duration_ms,
+     default_rtmp_dash_max_storage_bytes, default_rtmp_dash_max_storage_files,
+     default_rtmp_dash_segment_duration_ms,
+      default_rtmp_hls_segment_duration_ms, default_acme_dns01_timeout_seconds,
+     default_acme_retained_revisions, default_acme_retention_days,
     default_proxy_protocol_timeout_ms, default_self_signed_validity_days, default_true,
     default_udp_max_datagram_bytes, default_udp_max_queue_bytes, default_udp_max_queue_datagrams,
     default_udp_max_session_bytes, default_udp_max_sessions, default_unhealthy_threshold,
@@ -107,16 +112,16 @@ pub enum CertificateSource {
         state_root: PathBuf,
         #[serde(default)]
         contacts: Vec<String>,
-        #[serde(default = "default_acme_retained_revisions")]
-        retained_revisions: u32,
-        #[serde(default = "default_acme_retention_days")]
-        retention_days: u32,
         terms_agreed: bool,
         #[serde(default)]
         challenge: AcmeChallengeType,
         #[serde(default)]
         key_type: AcmeKeyType,
         allowed_dns_suffixes: Vec<String>,
+        #[serde(default = "default_acme_retained_revisions")]
+        retained_revisions: u32,
+        #[serde(default = "default_acme_retention_days")]
+        retention_days: u32,
         #[serde(default)]
         dns01: Option<AcmeDns01Config>,
     },
@@ -1389,7 +1394,130 @@ pub struct RtmpService {
     pub outbound_policy: RtmpOutboundPolicy,
     #[serde(default)]
     pub callbacks: RtmpCallbackConfig,
+    #[serde(default)]
+    pub exec_profiles: Vec<RtmpExecProfile>,
     pub applications: Vec<RtmpApplication>,
+}
+
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RtmpExecProfile {
+    pub name: String,
+    pub application: String,
+    #[serde(default)]
+    pub mode: RtmpExecMode,
+    #[serde(default)]
+    pub trigger: RtmpExecTrigger,
+    pub executable: PathBuf,
+    #[serde(default)]
+    pub arguments: Vec<String>,
+    #[serde(default)]
+    pub environment: Vec<RtmpExecEnvironment>,
+    pub working_directory: PathBuf,
+    #[serde(default)]
+    pub filesystem: RtmpExecFilesystemPolicy,
+    #[serde(default)]
+    pub network: RtmpExecNetworkPolicy,
+    #[serde(default = "default_rtmp_exec_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_rtmp_exec_shutdown_timeout_ms")]
+    pub shutdown_timeout_ms: u64,
+    #[serde(default = "default_rtmp_exec_max_processes")]
+    pub max_processes: u64,
+    #[serde(default = "default_rtmp_exec_max_queue_messages")]
+    pub max_queue_messages: u64,
+    #[serde(default = "default_rtmp_exec_max_queue_bytes")]
+    pub max_queue_bytes: u64,
+    #[serde(default = "default_rtmp_exec_max_stdout_bytes")]
+    pub max_stdout_bytes: u64,
+    #[serde(default = "default_rtmp_exec_max_stderr_bytes")]
+    pub max_stderr_bytes: u64,
+    #[serde(default)]
+    pub respawn: bool,
+    #[serde(default = "default_rtmp_exec_respawn_delay_ms")]
+    pub respawn_delay_ms: u64,
+    #[serde(default = "default_rtmp_exec_max_respawns")]
+    pub max_respawns: u64,
+}
+
+impl fmt::Debug for RtmpExecProfile {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RtmpExecProfile")
+            .field("name", &self.name)
+            .field("application", &self.application)
+            .field("mode", &self.mode)
+            .field("trigger", &self.trigger)
+            .field("executable", &"<redacted>")
+            .field("arguments", &format_args!("<{} redacted>", self.arguments.len()))
+            .field(
+                "environment",
+                &format_args!("<{} redacted>", self.environment.len()),
+            )
+            .field("working_directory", &"<redacted>")
+            .field("filesystem", &self.filesystem)
+            .field("network", &self.network)
+            .field("timeout_ms", &self.timeout_ms)
+            .field("shutdown_timeout_ms", &self.shutdown_timeout_ms)
+            .field("max_processes", &self.max_processes)
+            .field("max_queue_messages", &self.max_queue_messages)
+            .field("max_queue_bytes", &self.max_queue_bytes)
+            .field("max_stdout_bytes", &self.max_stdout_bytes)
+            .field("max_stderr_bytes", &self.max_stderr_bytes)
+            .field("respawn", &self.respawn)
+            .field("respawn_delay_ms", &self.respawn_delay_ms)
+            .field("max_respawns", &self.max_respawns)
+            .finish()
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RtmpExecEnvironment {
+    pub name: String,
+    pub value: String,
+}
+
+impl fmt::Debug for RtmpExecEnvironment {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RtmpExecEnvironment")
+            .field("name", &self.name)
+            .field("value", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RtmpExecMode {
+    #[default]
+    Command,
+    Transcode,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RtmpExecTrigger {
+    #[default]
+    Publisher,
+    PublishDone,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RtmpExecFilesystemPolicy {
+    #[default]
+    WorkingDirectory,
+    Host,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RtmpExecNetworkPolicy {
+    #[default]
+    Disabled,
+    Inherited,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -2453,12 +2581,12 @@ pub enum ConfigError {
     InvalidAcmeDns01Provider { certificate: String },
     #[error("managed ACME certificate `{certificate}` has an invalid DNS-01 credential file")]
     InvalidAcmeDns01Credentials { certificate: String },
-    #[error("managed ACME certificate `{certificate}` has invalid revision retention")]
-    InvalidAcmeRetention { certificate: String },
     #[error("managed ACME certificate `{certificate}` has an invalid DNS-01 timeout")]
     InvalidAcmeDns01Timeout { certificate: String },
     #[error("managed ACME certificate `{certificate}` has invalid contacts")]
     InvalidAcmeContacts { certificate: String },
+    #[error("managed ACME certificate `{certificate}` has invalid revision retention")]
+    InvalidAcmeRetention { certificate: String },
     #[error(
         "managed ACME certificate `{certificate}` must configure between one and sixteen DNS suffixes"
     )]

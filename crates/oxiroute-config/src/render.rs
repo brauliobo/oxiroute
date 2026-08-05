@@ -23,13 +23,15 @@ use crate::{
         HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpSameSite, HttpService,
         HttpStaticErrorResponse, HttpStaticMimePolicy, HttpStaticPathMapping, HttpStaticTryFile,
         HttpUpstreamHost, HttpVersion, HttpVersionPolicy, L4Service, Listener, ListenerBind,
-        Management, Protocol, RtmpAccessPolicy, RtmpAccessRule, RtmpAclAction, RtmpApplication,
-        RtmpCallbackConfig, RtmpFanoutPolicy, RtmpNotifyMethod, RtmpPullTarget, RtmpPushTarget,
+         Management, Protocol, RtmpAccessPolicy, RtmpAccessRule, RtmpAclAction, RtmpApplication,
+         RtmpCallbackConfig, RtmpFanoutPolicy, RtmpNotifyMethod, RtmpPullTarget, RtmpPushTarget,
+         RtmpExecEnvironment, RtmpExecFilesystemPolicy, RtmpExecMode, RtmpExecNetworkPolicy,
+         RtmpExecProfile, RtmpExecTrigger,
          RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis,
          RtmpRecorderTimezone, RtmpRelayPolicy, RtmpRtmpsPolicy, RtmpService, RtmpSessionCeilings,
          RtmpTokenPolicy, RtmpTokenSource, RtmpTransport, RtmpVodPolicy, RtmpVodSource,
-         RtmpHlsFragmentNaming, RtmpHlsKeyPolicy, RtmpHlsPolicy, RtmpHlsVariant, RtmpDashPolicy,
-         RtmpDashSegmentNaming,
+          RtmpHlsFragmentNaming, RtmpHlsKeyPolicy, RtmpHlsPolicy, RtmpHlsVariant, RtmpDashPolicy,
+          RtmpDashSegmentNaming,
          Stats,
         StatsPage, StatsPageAdminPolicy, TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm,
         UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls,
@@ -245,9 +247,9 @@ impl Renderer {
                 terms_agreed,
                 challenge,
                 key_type,
+                allowed_dns_suffixes,
                 retained_revisions,
                 retention_days,
-                allowed_dns_suffixes,
                 dns01,
             } => {
                 self.string_field("type", "acme_managed");
@@ -273,9 +275,9 @@ impl Renderer {
                         crate::model::AcmeKeyType::Rsa2048 => "rsa_2048",
                     },
                 );
+                self.string_list_field("allowed_dns_suffixes", allowed_dns_suffixes);
                 self.integer_field("retained_revisions", u64::from(*retained_revisions));
                 self.integer_field("retention_days", u64::from(*retention_days));
-                self.string_list_field("allowed_dns_suffixes", allowed_dns_suffixes);
                 match dns01 {
                     Some(dns01) => {
                         self.begin_table_field("dns01");
@@ -576,6 +578,7 @@ impl Renderer {
             access_log,
             outbound_policy,
             callbacks,
+            exec_profiles,
             applications,
         } = service;
         self.string_field("name", name);
@@ -587,10 +590,80 @@ impl Renderer {
         self.begin_table_field("callbacks");
         self.rtmp_callbacks(callbacks);
         self.end_table();
+        self.fallible_table_list_field("exec_profiles", exec_profiles, Self::rtmp_exec_profile)?;
         self.fallible_table_list_field("applications", applications, |renderer, application| {
             renderer.rtmp_application(name, application)
         })?;
         Ok(())
+    }
+
+    fn rtmp_exec_profile(&mut self, profile: &RtmpExecProfile) -> Result<(), ConfigError> {
+        self.string_field("name", &profile.name);
+        self.string_field("application", &profile.application);
+        self.string_field(
+            "mode",
+            match profile.mode {
+                RtmpExecMode::Command => "command",
+                RtmpExecMode::Transcode => "transcode",
+            },
+        );
+        self.string_field(
+            "trigger",
+            match profile.trigger {
+                RtmpExecTrigger::Publisher => "publisher",
+                RtmpExecTrigger::PublishDone => "publish_done",
+            },
+        );
+        self.string_field(
+            "executable",
+            utf8_path(
+                &profile.executable,
+                "RTMP exec profile",
+                &profile.name,
+                "exec_profiles[].executable",
+            )?,
+        );
+        self.string_list_field("arguments", &profile.arguments);
+        self.table_list_field("environment", &profile.environment, Self::rtmp_exec_environment);
+        self.string_field(
+            "working_directory",
+            utf8_path(
+                &profile.working_directory,
+                "RTMP exec profile",
+                &profile.name,
+                "exec_profiles[].working_directory",
+            )?,
+        );
+        self.string_field(
+            "filesystem",
+            match profile.filesystem {
+                RtmpExecFilesystemPolicy::WorkingDirectory => "working_directory",
+                RtmpExecFilesystemPolicy::Host => "host",
+            },
+        );
+        self.string_field(
+            "network",
+            match profile.network {
+                RtmpExecNetworkPolicy::Disabled => "disabled",
+                RtmpExecNetworkPolicy::Inherited => "inherited",
+            },
+        );
+        self.integer_field("timeout_ms", profile.timeout_ms);
+        self.integer_field("shutdown_timeout_ms", profile.shutdown_timeout_ms);
+        self.integer_field("max_processes", profile.max_processes);
+        self.integer_field("max_queue_messages", profile.max_queue_messages);
+        self.integer_field("max_queue_bytes", profile.max_queue_bytes);
+        self.integer_field("max_stdout_bytes", profile.max_stdout_bytes);
+        self.integer_field("max_stderr_bytes", profile.max_stderr_bytes);
+        self.boolean_field("respawn", profile.respawn);
+        self.integer_field("respawn_delay_ms", profile.respawn_delay_ms);
+        self.integer_field("max_respawns", profile.max_respawns);
+        Ok(())
+    }
+
+    fn rtmp_exec_environment(&mut self, environment: &RtmpExecEnvironment) {
+        self.string_field("name", &environment.name);
+        self.string_field("value", &environment.value);
     }
 
     fn rtmp_application(

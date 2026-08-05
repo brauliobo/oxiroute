@@ -1,7 +1,8 @@
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf};
 
 use oxiroute_config::{
-    RtmpAclAction, RtmpHlsFragmentNaming, RtmpHlsKeyPolicy, RtmpHlsPolicy, RtmpRecordMask,
+    RtmpAclAction, RtmpExecMode, RtmpExecTrigger, RtmpHlsFragmentNaming, RtmpHlsKeyPolicy,
+    RtmpHlsPolicy, RtmpRecordMask,
 };
 use oxiroute_rtmp::{DirectiveContext, DirectiveError, validate_directive};
 
@@ -28,6 +29,8 @@ const DEFAULT_HLS_MAX_SEGMENT_DURATION_MS: u64 = 10_000;
 const DEFAULT_HLS_PLAYLIST_LENGTH_MS: u64 = 30_000;
 const MAX_HLS_DURATION_MS: u64 = 120_000;
 const MAX_HLS_PLAYLIST_LENGTH_MS: u64 = 86_400_000;
+const MAX_EXEC_RESPAWN_TIMEOUT_MS: u64 = 300_000;
+const DEFAULT_EXEC_RESPAWN_TIMEOUT_MS: u64 = 5_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RtmpResolution {
@@ -42,6 +45,7 @@ pub struct EffectiveRtmp {
     pub outbound_chunk_size: u32,
     pub chunk_size_origin: Option<DirectiveOrigin>,
     pub access_log_disabled: bool,
+    pub access_log_path: Option<PathBuf>,
     pub access_log_origin: Option<DirectiveOrigin>,
     pub servers: Vec<EffectiveRtmpServer>,
 }
@@ -89,7 +93,22 @@ pub struct EffectiveRtmpPolicy {
     pub max_connections: Option<u64>,
     pub max_connections_origin: Option<DirectiveOrigin>,
     pub hls: Option<RtmpHlsPolicy>,
+    pub exec_profiles: Vec<EffectiveRtmpExecProfile>,
     pub recorders: Vec<EffectiveRtmpRecorder>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EffectiveRtmpExecProfile {
+    pub name: String,
+    pub origin: DirectiveOrigin,
+    pub mode: RtmpExecMode,
+    pub trigger: RtmpExecTrigger,
+    pub executable: PathBuf,
+    pub arguments: Vec<String>,
+    pub respawn: bool,
+    pub respawn_origin: Option<DirectiveOrigin>,
+    pub respawn_delay_ms: u64,
+    pub respawn_delay_origin: Option<DirectiveOrigin>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -159,6 +178,9 @@ struct Policy {
     max_frames: Setting<Option<u64>>,
     notify: Setting<bool>,
     interval: Setting<Option<u64>>,
+    exec_profiles: Vec<EffectiveRtmpExecProfile>,
+    respawn: Setting<bool>,
+    respawn_timeout_ms: Setting<u64>,
     hls: HlsPolicy,
 }
 
@@ -207,6 +229,9 @@ impl Default for Policy {
             max_frames: Setting::new(None),
             notify: Setting::new(false),
             interval: Setting::new(None),
+            exec_profiles: Vec::new(),
+            respawn: Setting::new(true),
+            respawn_timeout_ms: Setting::new(DEFAULT_EXEC_RESPAWN_TIMEOUT_MS),
             hls: HlsPolicy::default(),
         }
     }
@@ -332,6 +357,7 @@ impl<'a> Resolver<'a> {
         let mut outbound_chunk_size = 4_096;
         let mut chunk_size_origin = None;
         let mut access_log_disabled = false;
+        let mut access_log_path = None;
         let mut access_log_origin = None;
 
         for child in children {
@@ -359,7 +385,6 @@ impl<'a> Resolver<'a> {
                     .validate_registered(child, DirectiveContext::RtmpMain)
                     .is_ok()
                     && child.directive.children.is_none()
-                    && child.directive.arguments.len() == 1
                 {
                     match parse_u32(&child.directive.arguments[0].value) {
                         Some(value) if (1..=MAX_OUTBOUND_CHUNK_SIZE).contains(&value) => {
@@ -379,17 +404,32 @@ impl<'a> Resolver<'a> {
                     .validate_registered(child, DirectiveContext::RtmpMain)
                     .is_ok()
                     && child.directive.children.is_none()
-                    && child.directive.arguments.len() == 1
+                    && (child.directive.arguments.len() == 1
+                        || (child.directive.arguments.len() == 2
+                            && child.directive.arguments[1].value == b"combined"))
                 {
-                    if child.directive.arguments[0].value == b"off" {
+                    if child.directive.arguments.len() == 1
+                        && child.directive.arguments[0].value == b"off"
+                    {
                         access_log_disabled = true;
+                        access_log_origin = Some(Self::origin(child));
+                        self.resolved(child.occurrence);
+                    } else if (child.directive.arguments.len() == 1
+                        || (child.directive.arguments.len() == 2
+                            && child.directive.arguments[1].value == b"combined"))
+                        && std::str::from_utf8(&child.directive.arguments[0].value)
+                            .is_ok_and(|path| path.starts_with('/'))
+                    {
+                        let path = std::str::from_utf8(&child.directive.arguments[0].value)
+                            .expect("UTF-8 access_log path was checked above");
+                        access_log_path = Some(PathBuf::from(path));
                         access_log_origin = Some(Self::origin(child));
                         self.resolved(child.occurrence);
                     } else {
                         self.block(
                             child.occurrence,
                             E_UNSUPPORTED_FEATURE,
-                            "only disabled nginx-RTMP access logging has exact canonical semantics",
+                            "RTMP access_log requires an absolute path with the optional combined format",
                         );
                     }
                 }
@@ -416,6 +456,7 @@ impl<'a> Resolver<'a> {
             outbound_chunk_size,
             chunk_size_origin,
             access_log_disabled,
+            access_log_path,
             access_log_origin,
             servers,
         }
@@ -652,6 +693,21 @@ impl<'a> Resolver<'a> {
             }
         }
 
+        let exec_profiles = policy
+            .exec_profiles
+            .iter()
+            .cloned()
+            .map(|mut profile| {
+                profile.respawn = profile.respawn && policy.respawn.value;
+                profile.respawn_origin = profile
+                    .respawn
+                    .then(|| policy.respawn.origin.clone())
+                    .flatten();
+                profile.respawn_delay_ms = policy.respawn_timeout_ms.value;
+                profile.respawn_delay_origin = policy.respawn_timeout_ms.origin.clone();
+                profile
+            })
+            .collect();
         EffectiveRtmpApplication {
             origin: Self::origin(directive),
             name,
@@ -666,6 +722,7 @@ impl<'a> Resolver<'a> {
                 max_connections: policy.max_connections.value,
                 max_connections_origin: policy.max_connections.origin,
                 hls: self.finish_hls_policy(&policy.hls, directive.occurrence),
+                exec_profiles,
                 recorders,
             },
         }
@@ -840,7 +897,15 @@ impl<'a> Resolver<'a> {
             if !is_supported_policy(name) {
                 continue;
             }
-            let repeatable = matches!(name, b"allow" | b"deny");
+            let repeatable = matches!(
+                name,
+                b"allow"
+                    | b"deny"
+                    | b"exec"
+                    | b"exec_push"
+                    | b"exec_publish"
+                    | b"exec_publish_done"
+            );
             if !repeatable {
                 if let Some(first) = seen.insert(name.to_vec(), child.occurrence) {
                     self.block_related(
@@ -904,6 +969,20 @@ impl<'a> Resolver<'a> {
             b"max_connections" => {
                 self.apply_max_connections(child, argument, origin, context, policy);
             }
+            b"exec" | b"exec_push" | b"exec_publish" | b"exec_publish_done" => {
+                self.apply_exec(child, name, origin, policy);
+            }
+            b"respawn" => policy.respawn.replace(argument == b"on", origin),
+            b"respawn_timeout" => match parse_nginx_milliseconds(argument) {
+                Some(value) if (1..=MAX_EXEC_RESPAWN_TIMEOUT_MS).contains(&value) => {
+                    policy.respawn_timeout_ms.replace(value, origin);
+                }
+                _ => self.block(
+                    child.occurrence,
+                    E_INVALID_VALUE,
+                    "respawn_timeout is outside canonical millisecond bounds",
+                ),
+            },
             b"record" => match parse_record(&child.directive.arguments) {
                 Ok((value, mask)) => {
                     policy.record.replace(value, origin.clone());
@@ -1072,6 +1151,79 @@ impl<'a> Resolver<'a> {
             },
             _ => unreachable!("supported policy name was matched"),
         }
+    }
+
+    fn apply_exec(
+        &mut self,
+        child: &ExpandedDirective,
+        name: &[u8],
+        origin: DirectiveOrigin,
+        policy: &mut Policy,
+    ) {
+        let Some(executable) = child.directive.arguments.first() else {
+            return;
+        };
+        let Ok(executable) = std::str::from_utf8(&executable.value) else {
+            self.block(
+                child.occurrence,
+                E_INVALID_VALUE,
+                "exec executable must be UTF-8",
+            );
+            return;
+        };
+        if !valid_exec_path(executable) {
+            self.block(
+                child.occurrence,
+                E_SEMANTICS_NOT_REPRESENTABLE,
+                "exec requires one bounded absolute executable path without traversal",
+            );
+            return;
+        }
+        let Some(arguments) = child
+            .directive
+            .arguments
+            .iter()
+            .skip(1)
+            .map(|argument| std::str::from_utf8(&argument.value).ok())
+            .collect::<Option<Vec<_>>>()
+        else {
+            self.block(
+                child.occurrence,
+                E_INVALID_VALUE,
+                "exec arguments must be UTF-8",
+            );
+            return;
+        };
+        if arguments.iter().any(|argument| {
+            argument.bytes().any(|byte| byte == 0 || byte.is_ascii_control())
+                || argument.bytes().any(|byte| matches!(byte, b'<' | b'>'))
+        }) {
+            self.block(
+                child.occurrence,
+                E_SEMANTICS_NOT_REPRESENTABLE,
+                "exec redirection and control tokens are not represented by typed argv",
+            );
+            return;
+        }
+        let (mode, trigger) = match name {
+            b"exec" | b"exec_push" => (RtmpExecMode::Command, RtmpExecTrigger::Publisher),
+            b"exec_publish" => (RtmpExecMode::Command, RtmpExecTrigger::Publisher),
+            b"exec_publish_done" => (RtmpExecMode::Command, RtmpExecTrigger::PublishDone),
+            _ => unreachable!("exec directive was matched before lowering"),
+        };
+        let managed = matches!(name, b"exec" | b"exec_push");
+        policy.exec_profiles.push(EffectiveRtmpExecProfile {
+            name: format!("nginx-exec-{}", child.occurrence.get()),
+            origin,
+            mode,
+            trigger,
+            executable: PathBuf::from(executable),
+            arguments: arguments.into_iter().map(str::to_owned).collect(),
+            respawn: managed && policy.respawn.value,
+            respawn_origin: managed.then(|| policy.respawn.origin.clone()).flatten(),
+            respawn_delay_ms: policy.respawn_timeout_ms.value,
+            respawn_delay_origin: policy.respawn_timeout_ms.origin.clone(),
+        });
     }
 
     fn apply_max_connections(
@@ -1420,6 +1572,12 @@ fn is_supported_policy(name: &[u8]) -> bool {
             | b"max_connections"
             | b"live"
             | b"idle_streams"
+            | b"exec"
+            | b"exec_push"
+            | b"exec_publish"
+            | b"exec_publish_done"
+            | b"respawn"
+            | b"respawn_timeout"
             | b"record"
             | b"record_path"
             | b"record_suffix"
@@ -1485,7 +1643,7 @@ fn unsupported_rtmp_reason(name: &[u8]) -> &'static str {
             "nginx-RTMP HTTP callbacks have no canonical notification policy"
         }
         b"access_log" | b"log_format" => {
-            "nginx-RTMP access logging has no canonical RTMP logging policy"
+            "only one absolute rtmp-scope access_log with the combined format has canonical semantics"
         }
         b"max_connections" => {
             "nginx-RTMP max_connections is one process-wide RTMP CONNECT cap, not a per-listener connection cap"
@@ -1515,6 +1673,21 @@ fn unsupported_rtmp_reason(name: &[u8]) -> &'static str {
         }
         _ => "registered nginx-RTMP behavior has no canonical or runtime abstraction",
     }
+}
+
+fn valid_exec_path(value: &str) -> bool {
+    value.starts_with('/')
+        && !value.is_empty()
+        && !value.ends_with('/')
+        && value.len() <= 4_096
+        && !value
+            .bytes()
+            .any(|byte| byte == 0 || byte.is_ascii_control())
+        && value.strip_prefix('/').is_some_and(|value| {
+            value
+                .split('/')
+                .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+        })
 }
 
 fn parse_access_rule(

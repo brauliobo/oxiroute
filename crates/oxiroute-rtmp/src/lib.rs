@@ -6,6 +6,8 @@ mod catalog;
 mod client;
 mod dash_segmenter;
 mod directives;
+mod exec;
+mod exec_worker;
 mod flv;
 mod live;
 mod media_segmenter;
@@ -17,6 +19,7 @@ mod recording_store;
 mod recording_worker;
 mod relay;
 mod session;
+mod session_control;
 mod vod;
 
 pub use callback::{
@@ -37,6 +40,14 @@ pub use client::{
     RtmpTransport,
 };
 pub use directives::{directive_compatibility_report, directive_specs, validate_directive};
+pub use exec::{
+    ExecEnvironment, ExecFilesystemPolicy, ExecLimits, ExecMode, ExecNetworkPolicy, ExecProfile,
+    ExecProfileError, ExecTrigger,
+};
+pub use exec_worker::{
+    ExecEnqueueResult, ExecWorkerCorrelation, ExecWorkerFailure, ExecWorkerPhase,
+    ExecWorkerStartError, ExecWorkerStatus,
+};
 pub use flv::{
     FlvMuxer, FlvMuxerError, FlvTagType, MAX_CACHED_CODEC_HEADER_SIZE, MAX_FLV_TAG_DATA_SIZE,
 };
@@ -80,6 +91,10 @@ pub use session::{
     RtmpAccessPolicy, RtmpAccessRule, RtmpApplication, RtmpNetwork, RtmpRecorderLifecycle,
     RtmpServiceRuntime, RtmpSession, RtmpSessionCeilings, RtmpSessionError, RtmpSessionLimits,
     RtmpSessionPolicy, RtmpTokenPolicy,
+};
+pub use session_control::{
+    RtmpClientSnapshot, RtmpSessionControlAction, RtmpSessionControlError,
+    RtmpSessionControlOutcome, RtmpSessionRole, MAX_RTMP_SESSION_CONTROLS,
 };
 pub use vod::{
     MAX_VOD_EVENTS, MAX_VOD_HTTP_HEADER_BYTES, MAX_VOD_ORIGIN_BYTES, MAX_VOD_PATH_BYTES,

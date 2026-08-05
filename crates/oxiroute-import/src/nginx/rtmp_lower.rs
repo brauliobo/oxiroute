@@ -7,6 +7,7 @@ use std::{
 use oxiroute_config::{
     AccessLogPolicy, Config, DownstreamTimeoutPolicy, Listener, ListenerBind, Protocol,
     RtmpAccessPolicy, RtmpAccessRule, RtmpApplication, RtmpFanoutPolicy, RtmpOutboundPolicy,
+    RtmpExecEnvironment, RtmpExecFilesystemPolicy, RtmpExecNetworkPolicy, RtmpExecProfile,
     RtmpPushTarget, RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart,
     RtmpRecorderTimeBasis, RtmpRecorderTimezone, RtmpRelayPolicy, RtmpService, RtmpSessionCeilings,
     RtmpTransport, validate_config,
@@ -18,7 +19,8 @@ use crate::{
 };
 
 use super::{
-    DirectiveOrigin, EffectiveRtmpApplication, EffectiveRtmpRecorder, EffectiveRtmpServer,
+    DirectiveOrigin, EffectiveRtmpApplication, EffectiveRtmpExecProfile, EffectiveRtmpRecorder,
+    EffectiveRtmpServer,
     OccurrenceDecision, OccurrenceDisposition, OccurrenceId, RtmpRecordMode, RtmpResolution,
     SourceGraph, load,
 };
@@ -27,6 +29,15 @@ const DEFAULT_MAX_QUEUE_MESSAGES: u64 = 256;
 const DEFAULT_MAX_QUEUE_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_MAX_ACTIVE_RECORDERS: u64 = 32;
+const DEFAULT_EXEC_TIMEOUT_MS: u64 = 60_000;
+const DEFAULT_EXEC_SHUTDOWN_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_EXEC_MAX_PROCESSES: u64 = 8;
+const DEFAULT_EXEC_MAX_QUEUE_MESSAGES: u64 = 256;
+const DEFAULT_EXEC_MAX_QUEUE_BYTES: u64 = 8 * 1024 * 1024;
+const DEFAULT_EXEC_MAX_STDOUT_BYTES: u64 = 64 * 1024;
+const DEFAULT_EXEC_MAX_STDERR_BYTES: u64 = 64 * 1024;
+const DEFAULT_EXEC_MAX_RESPAWNS: u64 = 3;
+const DEFAULT_EXEC_WORKING_DIRECTORY: &str = "/var/empty";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BlockedRtmpService {
@@ -249,15 +260,36 @@ impl Lowerer {
                 self.lower_application(application, service_index, application_index)
             })
             .collect();
+        let mut exec_profiles = Vec::new();
+        for (application_index, application) in server.applications.iter().enumerate() {
+            let name = application
+                .name
+                .as_ref()
+                .expect("unblocked application has one name");
+            let name = std::str::from_utf8(&name.value).expect("application name is UTF-8");
+            let application_path =
+                format!("/rtmp_services/{service_index}/applications/{application_index}");
+            for (profile_index, profile) in application.policy.exec_profiles.iter().enumerate() {
+                exec_profiles.push(self.lower_exec_profile(
+                    profile,
+                    name,
+                    &application_path,
+                    profile_index,
+                ));
+            }
+        }
 
         self.draft.rtmp_services.push(RtmpService {
             name: service_name.clone(),
             outbound_chunk_size: rtmp.outbound_chunk_size,
-            access_log: rtmp
-                .access_log_disabled
-                .then_some(AccessLogPolicy::Disabled),
+            access_log: if rtmp.access_log_disabled {
+                Some(AccessLogPolicy::Disabled)
+            } else {
+                rtmp.access_log_path.clone().map(|path| AccessLogPolicy::File { path })
+            },
             outbound_policy: RtmpOutboundPolicy::default(),
             callbacks: Default::default(),
+            exec_profiles,
             applications,
         });
         self.provenance.push(CanonicalProvenance {
@@ -450,6 +482,60 @@ impl Lowerer {
             hls,
             dash: None,
             recorders,
+        }
+    }
+
+    fn lower_exec_profile(
+        &mut self,
+        profile: &EffectiveRtmpExecProfile,
+        application: &str,
+        application_path: &str,
+        profile_index: usize,
+    ) -> RtmpExecProfile {
+        let path = format!("{application_path}/exec_profiles/{profile_index}");
+        self.provenance.push(CanonicalProvenance {
+            path: path.clone(),
+            origins: vec![profile.origin.clone()],
+        });
+        for (field, origin) in [
+            ("name", Some(profile.origin.clone())),
+            ("application", Some(profile.origin.clone())),
+            ("mode", Some(profile.origin.clone())),
+            ("trigger", Some(profile.origin.clone())),
+            ("executable", Some(profile.origin.clone())),
+            ("arguments", Some(profile.origin.clone())),
+            ("working_directory", Some(profile.origin.clone())),
+            ("filesystem", Some(profile.origin.clone())),
+            ("network", Some(profile.origin.clone())),
+            ("respawn", profile.respawn_origin.clone()),
+            ("respawn_delay_ms", profile.respawn_delay_origin.clone()),
+        ] {
+            self.provenance.push(CanonicalProvenance {
+                path: format!("{path}/{field}"),
+                origins: vec![origin.unwrap_or_else(|| profile.origin.clone())],
+            });
+        }
+        RtmpExecProfile {
+            name: profile.name.clone(),
+            application: application.to_owned(),
+            mode: profile.mode,
+            trigger: profile.trigger,
+            executable: profile.executable.clone(),
+            arguments: profile.arguments.clone(),
+            environment: Vec::<RtmpExecEnvironment>::new(),
+            working_directory: PathBuf::from(DEFAULT_EXEC_WORKING_DIRECTORY),
+            filesystem: RtmpExecFilesystemPolicy::WorkingDirectory,
+            network: RtmpExecNetworkPolicy::Inherited,
+            timeout_ms: DEFAULT_EXEC_TIMEOUT_MS,
+            shutdown_timeout_ms: DEFAULT_EXEC_SHUTDOWN_TIMEOUT_MS,
+            max_processes: DEFAULT_EXEC_MAX_PROCESSES,
+            max_queue_messages: DEFAULT_EXEC_MAX_QUEUE_MESSAGES,
+            max_queue_bytes: DEFAULT_EXEC_MAX_QUEUE_BYTES,
+            max_stdout_bytes: DEFAULT_EXEC_MAX_STDOUT_BYTES,
+            max_stderr_bytes: DEFAULT_EXEC_MAX_STDERR_BYTES,
+            respawn: profile.respawn,
+            respawn_delay_ms: profile.respawn_delay_ms,
+            max_respawns: DEFAULT_EXEC_MAX_RESPAWNS,
         }
     }
 

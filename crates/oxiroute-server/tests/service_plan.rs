@@ -901,6 +901,7 @@ fn excludes_unreferenced_rtmp_services_from_active_capabilities() {
         access_log: None,
         outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
         callbacks: oxiroute_config::RtmpCallbackConfig::default(),
+        exec_profiles: Vec::new(),
         applications: vec![RtmpApplication {
             name: "unused".into(),
             live: true,
@@ -1683,6 +1684,7 @@ fn canonical_config() -> Config {
             access_log: None,
             outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
             callbacks: oxiroute_config::RtmpCallbackConfig::default(),
+            exec_profiles: Vec::new(),
             applications: vec![RtmpApplication {
                 name: "live".into(),
                 live: true,
