@@ -220,6 +220,27 @@ fn reports_http3_only_when_a_listener_is_active() {
     assert_eq!(body["http3"]["forward"]["status"], "unconfigured");
 }
 
+#[test]
+fn status_reports_component_health_generation_age_and_certificate_sections() {
+    let metrics = RuntimeMetrics::new();
+    let api = management_api(empty_registry(), metrics);
+
+    let response = api.handle("GET", "/api/v1/status", 100);
+    let body: Value = serde_json::from_slice(&response.body).expect("status JSON");
+
+    assert_eq!(response.status, 200);
+    assert_eq!(body["components"]["process"]["state"], "healthy");
+    assert_eq!(body["components"]["host"]["state"], "healthy");
+    assert_eq!(
+        body["components"]["generation"]["reason"],
+        "active_generation_unavailable"
+    );
+    assert!(body["activeGenerationAgeMs"].as_u64().is_some());
+    assert_eq!(body["certificates"]["certbot"], serde_json::json!([]));
+    assert_eq!(body["certificates"]["acmeManaged"], serde_json::json!([]));
+    assert_eq!(body["certificates"]["directFiles"], serde_json::json!([]));
+}
+
 #[tokio::test]
 async fn serves_authenticated_vod_objects_and_single_ranges() {
     let directory = TempDir::new().expect("VOD directory");

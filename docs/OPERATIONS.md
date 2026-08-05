@@ -88,8 +88,10 @@ deadline. Tests send SIGTERM and reserve force-kill only as a bounded test clean
 
 `GET /ready` returns 200 only when an active non-degraded generation exists and all configured
 traffic listeners report `listening`; otherwise it returns 503. `GET /api/v1/status` reports the
-build version, disk/candidate/active/previous revisions, listener states, and audit component
-degradation.
+build version, disk/candidate/active/previous revisions, active-generation age, listener states,
+component states, certificate expiry data, and audit component degradation. Process/host sampling
+is healthy on Linux x86_64 and aarch64; other platforms keep status available with explicit
+`unsupported` process/host component states and null unavailable samples.
 
 Every recognized `/api/v1` route, including monitoring, topology, RTMP, listener/pool/server,
 generation, TLS, process, configuration, audit, and event routes, requires exactly one management Bearer
@@ -99,8 +101,10 @@ operations use bounded cursor polling at `/api/v1/events` or authenticated bound
 There is no unbounded event queue. Durable audit history is separate from the event ring and is
 available through authenticated `/api/v1/audit` and `/api/v1/audit/status`.
 
-`GET /metrics` exports process, listener, pool, server, queue, health, retry, certificate, RTMP
-relay/recording, generation, and bounded audit persistence families in Prometheus text format.
+`GET /metrics` exports process/host sampling state and values, active-generation age, listener,
+pool, server, queue, health, retry, certificate, RTMP relay/recording, generation, and bounded
+audit persistence families in Prometheus text format. Unsupported process/host samples are
+omitted rather than exported as zeroes.
 `/stats` provides a compact
 read-only HAProxy-oriented pool/server view. `/metrics` and `/ready` are public on a configured
 statistics bind; `/stats` and `/api/v1/status` require a loopback peer and the statistics Bearer

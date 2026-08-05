@@ -56,8 +56,8 @@ fn status_response(
     generations: Option<&GenerationManager>,
     topology: &TopologySnapshot,
 ) -> ApiResponse {
-    let listeners = match metrics.snapshot() {
-        Ok(runtime) => runtime.listeners,
+    let runtime = match metrics.snapshot() {
+        Ok(runtime) => runtime,
         Err(_) => {
             return ApiResponse::error(
                 503,
@@ -66,7 +66,9 @@ fn status_response(
             );
         }
     };
+    let listeners = runtime.listeners.clone();
     let generation = generations.map(GenerationManager::status);
+    let audit = crate::operational_event::audit_status();
     let tls_profiles = topology
         .nodes()
         .iter()
@@ -88,12 +90,40 @@ fn status_response(
             "activeRevision": generation.as_ref().and_then(|status| status.active_revision.as_ref()),
             "previousRevision": generation.as_ref().and_then(|status| status.previous_revision.as_ref()),
             "degraded": generation.as_ref().is_none_or(|status| status.degraded),
-            "audit": crate::operational_event::audit_status(),
+            "activeGenerationAgeMs": runtime.generation_age_ms,
+            "components": {
+                "process": runtime.process.status,
+                "host": runtime.host.status,
+                "generation": generation_component_status(generation.as_ref()),
+                "audit": audit.clone(),
+            },
+            "certificates": {
+                "certbot": runtime.certbot_certificates,
+                "acmeManaged": runtime.acme_managed_certificates,
+                "directFiles": runtime.direct_file_certificates,
+            },
+            "audit": audit,
             "capabilities": crate::http3::capability_snapshot(&listeners),
             "listeners": listeners,
             "tlsProfiles": tls_profiles,
         }),
     )
+}
+
+fn generation_component_status(
+    generation: Option<&crate::GenerationStatus>,
+) -> serde_json::Value {
+    match generation {
+        Some(status) if status.degraded => json!({
+            "state": "degraded",
+            "reason": status.last_failure,
+        }),
+        Some(status) if status.active_revision.is_some() => json!({ "state": "healthy" }),
+        Some(_) | None => json!({
+            "state": "degraded",
+            "reason": "active_generation_unavailable",
+        }),
+    }
 }
 
 fn capabilities_response(metrics: &RuntimeMetrics) -> ApiResponse {

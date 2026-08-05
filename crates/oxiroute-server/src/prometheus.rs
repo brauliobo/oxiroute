@@ -49,6 +49,23 @@ pub fn render_prometheus(
     )?;
     sample(
         &mut output,
+        "oxiroute_generation_active_age_seconds",
+        runtime.generation_age_ms as f64 / 1_000.0,
+    )?;
+    labels(
+        &mut output,
+        "oxiroute_process_sampling_state",
+        &[("state", component_state(runtime.process.status.state))],
+        1,
+    )?;
+    labels(
+        &mut output,
+        "oxiroute_host_sampling_state",
+        &[("state", component_state(runtime.host.status.state))],
+        1,
+    )?;
+    sample(
+        &mut output,
         "oxiroute_process_active_connections",
         runtime.process.active_connections,
     )?;
@@ -62,13 +79,43 @@ pub fn render_prometheus(
         "oxiroute_upstream_retry_attempts_total",
         runtime.process.retry_attempts,
     )?;
-    sample(
-        &mut output,
-        "oxiroute_process_resident_memory_bytes",
-        runtime.process.resident_memory_bytes,
-    )?;
+    if let Some(value) = runtime.process.resident_memory_bytes {
+        sample(
+            &mut output,
+            "oxiroute_process_resident_memory_bytes",
+            value,
+        )?;
+    }
+    if let Some(value) = runtime.process.virtual_memory_bytes {
+        sample(
+            &mut output,
+            "oxiroute_process_virtual_memory_bytes",
+            value,
+        )?;
+    }
+    if let Some(value) = runtime.process.thread_count {
+        sample(&mut output, "oxiroute_process_threads", value)?;
+    }
+    if let Some(value) = runtime.process.open_file_descriptors {
+        sample(&mut output, "oxiroute_process_open_file_descriptors", value)?;
+    }
     if let Some(cpu) = runtime.process.cpu_percent {
         sample(&mut output, "oxiroute_process_cpu_percent", cpu)?;
+    }
+    if let Some(value) = runtime.host.load_average_1m {
+        sample(&mut output, "oxiroute_host_load_average_1m", value)?;
+    }
+    if let Some(value) = runtime.host.load_average_5m {
+        sample(&mut output, "oxiroute_host_load_average_5m", value)?;
+    }
+    if let Some(value) = runtime.host.load_average_15m {
+        sample(&mut output, "oxiroute_host_load_average_15m", value)?;
+    }
+    if let Some(value) = runtime.host.total_memory_bytes {
+        sample(&mut output, "oxiroute_host_total_memory_bytes", value)?;
+    }
+    if let Some(value) = runtime.host.available_memory_bytes {
+        sample(&mut output, "oxiroute_host_available_memory_bytes", value)?;
     }
 
     for listener in &runtime.listeners {
@@ -660,6 +707,14 @@ const fn endpoint_state(state: crate::EndpointHealthState) -> &'static str {
         crate::EndpointHealthState::Unknown => "unknown",
         crate::EndpointHealthState::Healthy => "healthy",
         crate::EndpointHealthState::Unhealthy => "unhealthy",
+    }
+}
+
+const fn component_state(state: crate::monitoring::ComponentState) -> &'static str {
+    match state {
+        crate::monitoring::ComponentState::Healthy => "healthy",
+        crate::monitoring::ComponentState::Degraded => "degraded",
+        crate::monitoring::ComponentState::Unsupported => "unsupported",
     }
 }
 

@@ -168,7 +168,10 @@ fn snapshot_serializes_to_the_monitoring_contract() {
 
     assert!(json.get("sampledAtUnixMs").is_some());
     assert!(json.get("uptimeMs").is_some());
+    assert!(json["generationAgeMs"].as_u64().is_some());
     assert!(json.get("sampled_at_unix_ms").is_none());
+    assert_eq!(json["process"]["status"]["state"], "healthy");
+    assert_eq!(json["host"]["status"]["state"], "healthy");
     assert!(json["process"]["cpuPercent"].is_null());
     assert!(json["process"]["residentMemoryBytes"].as_u64().is_some());
     assert!(json["process"]["virtualMemoryBytes"].as_u64().is_some());
