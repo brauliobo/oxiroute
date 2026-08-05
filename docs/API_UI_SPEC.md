@@ -221,9 +221,13 @@ stream/publisher/subscriber/media totals. It also includes redacted `certbotCert
 with identity name, active archive/content revision, expiry, and last outcome/error code, plus
 `certbotWatcher` health and bounded counters. Source paths, SAN labels, PEM, and private material
 are excluded. Managed entries additionally expose redacted disk/active revisions, expiry and
-scheduler timestamps, and bounded outcome/error codes. Process and host sampling
-currently reads Linux `/proc`; a sampling or parsing failure returns `503` instead of fabricated
-zeroes. CPU utilization is `null` until two successful samples establish a delta.
+scheduler timestamps, and bounded outcome/error codes. Process and host sampling reads Linux
+`/proc` on x86_64 and aarch64. On non-Linux platforms the snapshot remains available with
+`process.status.state` and `host.status.state` set to `unsupported`, a bounded reason, and `null`
+unavailable values; no zeroes are fabricated. A Linux sampling or parsing failure remains a `503`
+sampling failure. CPU utilization is `null` until two successful samples establish a delta. The
+status endpoint repeats component state, active-generation age, and certificate sections so
+operators can distinguish a degraded sampler from a degraded runtime.
 
 `upstreamPools` preserves canonical pool and endpoint order and has this response shape:
 
@@ -294,9 +298,10 @@ RTMP counts protocol bytes, TCP relay totals retain every completed transfer inc
 traffic before a failure, and HTTP uses Pingora's application counters. Pingora's HTTP/1 sent
 counter includes serialized response
 headers, while its received counter covers request bodies; callers MUST NOT interpret these values
-as protocol-independent billable octets. Prometheus exposition is implemented for the current
-metric families; latency/error series, historical storage, and cross-platform host samplers remain
-separate work.
+as protocol-independent billable octets. Prometheus exposition includes bounded latency/error
+series, fixed transport outcome labels, active-generation age, and explicit process/host sampler
+state. It never uses URI, query, body, credential, client address, stream name, or endpoint address
+as a label.
 
 `GET /api/v1/topology` returns schema version `1` and the active validated runtime generation as
 immutable `nodes` and typed reference `edges`. Stable IDs are derived from canonical entity identity,

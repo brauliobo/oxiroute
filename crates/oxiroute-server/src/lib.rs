@@ -49,13 +49,13 @@ pub use l4_service::L4ServicePlan;
 pub use listener_reservation::{ListenerReservation, ListenerReservations};
 pub use monitoring::{
     AcmeManagedCertificateSnapshot, CacheSnapshot, CertbotCertificateSnapshot,
-    CertbotWatcherHealth, CertbotWatcherSnapshot, ConnectionGuard, DirectFileCertificateSnapshot,
-    DirectFileWatcherSnapshot, HostSnapshot, HttpOperationCountSnapshot, HttpOperationResult,
-    HttpOperationSnapshot, LatencyBucketSnapshot, LatencySnapshot, ListenerMetrics,
-    ListenerRuntimeState, ListenerSnapshot, MetricsError, ProcessConnectionGuard, ProcessRuntime,
-    ProcessSnapshot, ProxyProtocolCountSnapshot, ProxyProtocolSnapshot, RuntimeMetrics,
-    RuntimeSnapshot, TcpRelayCountSnapshot, TcpRelayResult, TcpRelaySnapshot, TrafficSnapshot,
-    OPERATION_LATENCY_BUCKETS_MS,
+    CertbotWatcherHealth, CertbotWatcherSnapshot, ComponentState, ComponentStatus, ConnectionGuard,
+    DirectFileCertificateSnapshot, DirectFileWatcherSnapshot, HostSnapshot,
+    HttpOperationCountSnapshot, HttpOperationResult, HttpOperationSnapshot, LatencyBucketSnapshot,
+    LatencySnapshot, ListenerMetrics, ListenerRuntimeState, ListenerSnapshot, MetricsError,
+    ProcessConnectionGuard, ProcessRuntime, ProcessSnapshot, ProxyProtocolCountSnapshot,
+    ProxyProtocolSnapshot, RuntimeMetrics, RuntimeSnapshot, TcpRelayCountSnapshot, TcpRelayResult,
+    TcpRelaySnapshot, TrafficSnapshot, OPERATION_LATENCY_BUCKETS_MS,
 };
 pub use operational_event::{emit_certificate, emit_rtmp_access};
 pub use operational_event::{worker_event_page, WorkerEventPage, WorkerEventSnapshot};

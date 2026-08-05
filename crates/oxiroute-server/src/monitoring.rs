@@ -132,6 +132,39 @@ pub const OPERATION_LATENCY_BUCKETS_MS: &[u64] = &[
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub enum ComponentState {
+    Healthy,
+    Degraded,
+    Unsupported,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComponentStatus {
+    pub state: ComponentState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<&'static str>,
+}
+
+impl ComponentStatus {
+    const fn healthy() -> Self {
+        Self {
+            state: ComponentState::Healthy,
+            reason: None,
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    const fn unsupported(reason: &'static str) -> Self {
+        Self {
+            state: ComponentState::Unsupported,
+            reason: Some(reason),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum HttpOperationResult {
     Success,
     ClientError,
@@ -358,6 +391,7 @@ struct RuntimeMetricsInner {
     direct_files: RwLock<DirectFileMonitoring>,
     previous_cpu_sample: Mutex<Option<CpuSample>>,
     rtmp_recording_supported: AtomicBool,
+    generation_started_at: Instant,
 }
 
 #[derive(Clone)]
@@ -444,6 +478,7 @@ impl RuntimeMetrics {
                 direct_files: RwLock::new(DirectFileMonitoring::default()),
                 previous_cpu_sample: Mutex::new(None),
                 rtmp_recording_supported: AtomicBool::new(false),
+                generation_started_at: Instant::now(),
             }),
         }
     }
@@ -731,7 +766,11 @@ impl RuntimeMetrics {
             .lock()
             .map_err(|_| MetricsError::StatePoisoned("previous CPU sample"))?;
         let system = sample_system()?;
-        let cpu_percent = cpu_percent(previous_cpu_sample.as_ref(), &system.cpu)?;
+        let cpu_percent = (system.process_status.state == ComponentState::Healthy
+            && system.host.status.state == ComponentState::Healthy)
+            .then(|| cpu_percent(previous_cpu_sample.as_ref(), &system.cpu))
+            .transpose()?
+            .flatten();
         let sampled_at_unix_ms = unix_time_ms()?;
         let uptime_ms = u64::try_from(
             self.inner
@@ -744,6 +783,7 @@ impl RuntimeMetrics {
         .map_err(|_| MetricsError::ValueOutOfRange("uptime milliseconds"))?;
 
         let SystemSample {
+            process_status,
             resident_memory_bytes,
             virtual_memory_bytes,
             thread_count,
@@ -754,6 +794,10 @@ impl RuntimeMetrics {
         let snapshot = RuntimeSnapshot {
             sampled_at_unix_ms,
             uptime_ms,
+            generation_age_ms: u64::try_from(
+                self.inner.generation_started_at.elapsed().as_millis(),
+            )
+            .map_err(|_| MetricsError::ValueOutOfRange("generation age milliseconds"))?,
             process: ProcessSnapshot {
                 active_connections: self.inner.process_admission.active.load(Ordering::Relaxed),
                 administrative_state: AdministrativeState::from_u8(
@@ -762,6 +806,7 @@ impl RuntimeMetrics {
                         .administrative_state
                         .load(Ordering::Acquire),
                 ),
+                status: process_status,
                 cpu_percent,
                 max_connections: self.inner.process_admission.limit(),
                 rejected_connections: self
@@ -789,7 +834,11 @@ impl RuntimeMetrics {
             direct_file_certificates,
             direct_file_watcher,
         };
-        *previous_cpu_sample = Some(cpu);
+        if process_status.state == ComponentState::Healthy
+            && snapshot.host.status.state == ComponentState::Healthy
+        {
+            *previous_cpu_sample = Some(cpu);
+        }
         Ok(snapshot)
     }
 
@@ -1702,6 +1751,7 @@ impl ListenerRuntimeState {
 pub struct RuntimeSnapshot {
     pub sampled_at_unix_ms: u64,
     pub uptime_ms: u64,
+    pub generation_age_ms: u64,
     pub process: ProcessSnapshot,
     pub host: HostSnapshot,
     pub traffic: TrafficSnapshot,
@@ -1807,26 +1857,28 @@ pub struct DirectFileWatcherSnapshot {
 pub struct ProcessSnapshot {
     pub active_connections: u64,
     pub administrative_state: AdministrativeState,
+    pub status: ComponentStatus,
     pub cpu_percent: Option<f64>,
     pub max_connections: Option<u64>,
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub rejected_connections: u64,
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     pub retry_attempts: u64,
-    pub resident_memory_bytes: u64,
-    pub virtual_memory_bytes: u64,
-    pub thread_count: u64,
-    pub open_file_descriptors: u64,
+    pub resident_memory_bytes: Option<u64>,
+    pub virtual_memory_bytes: Option<u64>,
+    pub thread_count: Option<u64>,
+    pub open_file_descriptors: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostSnapshot {
-    pub load_average_1m: f64,
-    pub load_average_5m: f64,
-    pub load_average_15m: f64,
-    pub total_memory_bytes: u64,
-    pub available_memory_bytes: u64,
+    pub status: ComponentStatus,
+    pub load_average_1m: Option<f64>,
+    pub load_average_5m: Option<f64>,
+    pub load_average_15m: Option<f64>,
+    pub total_memory_bytes: Option<u64>,
+    pub available_memory_bytes: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
@@ -1949,10 +2001,11 @@ struct CpuSample {
 }
 
 struct SystemSample {
-    resident_memory_bytes: u64,
-    virtual_memory_bytes: u64,
-    thread_count: u64,
-    open_file_descriptors: u64,
+    process_status: ComponentStatus,
+    resident_memory_bytes: Option<u64>,
+    virtual_memory_bytes: Option<u64>,
+    thread_count: Option<u64>,
+    open_file_descriptors: Option<u64>,
     host: HostSnapshot,
     cpu: CpuSample,
 }
@@ -1973,16 +2026,18 @@ fn sample_system() -> Result<SystemSample, MetricsError> {
     let memory = parse_memory_info(&read_proc(MEMORY_INFO)?)?;
 
     Ok(SystemSample {
-        resident_memory_bytes: status.resident_memory_bytes,
-        virtual_memory_bytes: status.virtual_memory_bytes,
-        thread_count: status.thread_count,
-        open_file_descriptors: count_open_file_descriptors()?,
+        process_status: ComponentStatus::healthy(),
+        resident_memory_bytes: Some(status.resident_memory_bytes),
+        virtual_memory_bytes: Some(status.virtual_memory_bytes),
+        thread_count: Some(status.thread_count),
+        open_file_descriptors: Some(count_open_file_descriptors()?),
         host: HostSnapshot {
-            load_average_1m: load_average[0],
-            load_average_5m: load_average[1],
-            load_average_15m: load_average[2],
-            total_memory_bytes: memory.total_memory_bytes,
-            available_memory_bytes: memory.available_memory_bytes,
+            status: ComponentStatus::healthy(),
+            load_average_1m: Some(load_average[0]),
+            load_average_5m: Some(load_average[1]),
+            load_average_15m: Some(load_average[2]),
+            total_memory_bytes: Some(memory.total_memory_bytes),
+            available_memory_bytes: Some(memory.available_memory_bytes),
         },
         cpu,
     })
@@ -1990,7 +2045,38 @@ fn sample_system() -> Result<SystemSample, MetricsError> {
 
 #[cfg(not(target_os = "linux"))]
 fn sample_system() -> Result<SystemSample, MetricsError> {
-    Err(MetricsError::UnsupportedPlatform(std::env::consts::OS))
+    Ok(unsupported_system_sample())
+}
+
+#[cfg(any(not(target_os = "linux"), test))]
+fn unsupported_system_sample() -> SystemSample {
+    #[cfg(not(target_os = "linux"))]
+    let status = ComponentStatus::unsupported("platform_not_supported");
+    #[cfg(target_os = "linux")]
+    let status = ComponentStatus {
+        state: ComponentState::Unsupported,
+        reason: Some("platform_not_supported"),
+    };
+    SystemSample {
+        process_status: status,
+        resident_memory_bytes: None,
+        virtual_memory_bytes: None,
+        thread_count: None,
+        open_file_descriptors: None,
+        host: HostSnapshot {
+            status,
+            load_average_1m: None,
+            load_average_5m: None,
+            load_average_15m: None,
+            total_memory_bytes: None,
+            available_memory_bytes: None,
+        },
+        cpu: CpuSample {
+            process_ticks: 0,
+            system_ticks: 0,
+            logical_cpu_count: 0,
+        },
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -2339,6 +2425,34 @@ fn unix_time_ms() -> Result<u64, MetricsError> {
         .map_err(|_| MetricsError::SystemClockBeforeUnixEpoch)?;
     u64::try_from(duration.as_millis())
         .map_err(|_| MetricsError::ValueOutOfRange("Unix timestamp milliseconds"))
+}
+
+#[cfg(test)]
+mod platform_tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_platform_fixture_has_no_fabricated_samples() {
+        let sample = unsupported_system_sample();
+
+        assert_eq!(sample.process_status.state, ComponentState::Unsupported);
+        assert_eq!(sample.host.status.state, ComponentState::Unsupported);
+        assert_eq!(sample.resident_memory_bytes, None);
+        assert_eq!(sample.host.total_memory_bytes, None);
+        assert_eq!(sample.host.load_average_1m, None);
+    }
+
+    #[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+    #[test]
+    fn linux_architecture_fixture_samples_process_and_host_metrics() {
+        let sample = sample_system().expect("Linux process and host fixture");
+
+        assert_eq!(sample.process_status.state, ComponentState::Healthy);
+        assert_eq!(sample.host.status.state, ComponentState::Healthy);
+        assert!(sample.resident_memory_bytes.is_some());
+        assert!(sample.host.total_memory_bytes.is_some());
+        assert!(sample.host.load_average_1m.is_some());
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]

@@ -9,6 +9,7 @@ use http::{
 use oxiroute_config::{StatsPage, StatsPageAdminPolicy};
 use pingora::{apps::http_app::ServeHttp, protocols::http::ServerSession};
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::{
     prometheus::render_prometheus,
@@ -170,10 +171,48 @@ impl HaproxyStatsApi {
 
     fn status_response(&self) -> ApiResponse {
         let status = self.generations.status();
-        let listeners = self
-            .metrics
-            .snapshot()
-            .map_or_else(|_| Vec::new(), |runtime| runtime.listeners);
+        let runtime = self.metrics.snapshot().ok();
+        let listeners = runtime
+            .as_ref()
+            .map_or_else(Vec::new, |runtime| runtime.listeners.clone());
+        let audit = crate::operational_event::audit_status();
+        let components = runtime.as_ref().map_or_else(
+            || {
+                serde_json::json!({
+                    "process": { "state": "degraded", "reason": "runtime_sampling_failed" },
+                    "host": { "state": "degraded", "reason": "runtime_sampling_failed" },
+                    "generation": generation_component_status(&status),
+                    "audit": audit.clone(),
+                })
+            },
+            |runtime| {
+                serde_json::json!({
+                    "process": runtime.process.status,
+                    "host": runtime.host.status,
+                    "generation": generation_component_status(&status),
+                    "audit": audit.clone(),
+                })
+            },
+        );
+        let certificates = runtime.as_ref().map_or_else(
+            || {
+                serde_json::json!({
+                    "certbot": [],
+                    "acmeManaged": [],
+                    "directFiles": [],
+                })
+            },
+            |runtime| {
+                serde_json::json!({
+                    "certbot": runtime.certbot_certificates,
+                    "acmeManaged": runtime.acme_managed_certificates,
+                    "directFiles": runtime.direct_file_certificates,
+                })
+            },
+        );
+        let active_generation_age_ms = runtime
+            .as_ref()
+            .map_or(Value::Null, |runtime| serde_json::json!(runtime.generation_age_ms));
         ApiResponse::json(
             200,
             &serde_json::json!({
@@ -184,6 +223,10 @@ impl HaproxyStatsApi {
                 "activeRevision": status.active_revision,
                 "previousRevision": status.previous_revision,
                 "degraded": status.degraded,
+                "activeGenerationAgeMs": active_generation_age_ms,
+                "components": components,
+                "certificates": certificates,
+                "audit": audit,
                 "listeners": listeners,
             }),
         )
@@ -237,6 +280,22 @@ impl HaproxyStatsApi {
             return ApiResponse::error(404, "server_not_found", "upstream server was not found");
         }
         ApiResponse::bytes(204, Vec::new(), "text/plain; charset=utf-8")
+    }
+}
+
+fn generation_component_status(status: &crate::GenerationStatus) -> Value {
+    if status.degraded {
+        serde_json::json!({
+            "state": "degraded",
+            "reason": status.last_failure,
+        })
+    } else if status.active_revision.is_some() {
+        serde_json::json!({ "state": "healthy" })
+    } else {
+        serde_json::json!({
+            "state": "degraded",
+            "reason": "active_generation_unavailable",
+        })
     }
 }
 
