@@ -15,8 +15,8 @@ use http::{Method, Request, StatusCode};
 use oxiroute_config::{
     AlpnProtocol, Certificate, CertificateSource, DownstreamTimeoutPolicy, ForwardAuditMode,
     ForwardConnectPolicy, ForwardDestinationPolicy, ForwardHeaderPolicy, ForwardHttpVersion,
-    ForwardProxyService, ForwardResolverPolicy, Listener, ListenerBind, Protocol, TlsProfile,
-    TlsVersion,
+    ForwardPeerPolicy, ForwardProxyService, ForwardResolverPolicy, Listener, ListenerBind,
+    Protocol, TlsProfile, TlsVersion,
 };
 use quinn::crypto::rustls::QuicClientConfig;
 use tokio::{
@@ -70,6 +70,7 @@ async fn daemon_rejects_h3_plain_http_without_fallback_and_releases_udp_listener
         allow_absolute_form: true,
         tls_required: true,
         connect: ForwardConnectPolicy::default(),
+        peer_policy: ForwardPeerPolicy::default(),
         auth: None,
         access_policy: None,
         destination_policy: ForwardDestinationPolicy {

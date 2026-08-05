@@ -12,7 +12,8 @@ use http::{Method, Request, StatusCode};
 use oxiroute_config::{
     AlpnProtocol, Certificate, CertificateSource, DownstreamTimeoutPolicy, ForwardAuditMode,
     ForwardConnectPolicy, ForwardDestinationPolicy, ForwardHeaderPolicy, ForwardHttpVersion,
-    ForwardProxyService, ForwardResolverPolicy, Listener, Protocol, TlsProfile, TlsVersion,
+    ForwardPeerPolicy, ForwardProxyService, ForwardResolverPolicy, Listener, Protocol, TlsProfile,
+    TlsVersion,
 };
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -63,6 +64,7 @@ async fn daemon_accepts_tls_h2_connect_and_relays_stream_data() {
             enabled: true,
             allowed_ports: vec![origin_address.port()],
         },
+        peer_policy: ForwardPeerPolicy::default(),
         auth: None,
         access_policy: None,
         destination_policy: ForwardDestinationPolicy {
