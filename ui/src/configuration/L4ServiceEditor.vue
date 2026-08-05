@@ -22,6 +22,20 @@ header.form-heading
   label.field(data-field="l4_services[].lifetime_timeout_ms")
     span Lifetime timeout (ms)
     input(type="number" min="1" step="1" :value="service.lifetime_timeout_ms ?? ''" placeholder="No limit" @input="setLifetimeTimeout")
+fieldset.object-block(data-field="l4_services[].proxy_protocol")
+  legend Outbound PROXY protocol
+  label.enable-row
+    input(type="checkbox" :checked="service.proxy_protocol != null" @change="toggleProxyProtocol")
+    span Send the selected client address upstream
+  .field-grid(v-if="service.proxy_protocol")
+    label.field(data-field="l4_services[].proxy_protocol.version")
+      span Version
+      select(v-model="service.proxy_protocol.version")
+        option(value="v1") PROXY v1
+        option(value="v2") PROXY v2
+    label.field(data-field="l4_services[].proxy_protocol.timeout_ms")
+      span Header timeout (ms)
+      input(type="number" min="1" max="60000" step="1" v-model.number="service.proxy_protocol.timeout_ms")
 fieldset.object-block(data-field="l4_services[].udp")
   legend UDP policy
   label.enable-row
@@ -63,6 +77,12 @@ function setLifetimeTimeout(event: Event): void {
 function toggleUdp(event: Event): void {
   const enabled = (event.target as HTMLInputElement).checked
   props.service.udp = enabled ? defaultUdpPolicy() : null
+}
+
+function toggleProxyProtocol(event: Event): void {
+  props.service.proxy_protocol = (event.target as HTMLInputElement).checked
+    ? { version: 'v2', timeout_ms: 5_000 }
+    : null
 }
 
 function defaultUdpPolicy(): UdpPolicyConfig {

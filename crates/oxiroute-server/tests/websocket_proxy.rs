@@ -204,6 +204,7 @@ fn websocket_config(proxy_address: SocketAddr, origin_address: SocketAddr) -> Co
             protocol: Protocol::Http,
             service: Some("websocket".into()),
             tls_profile: None,
+            proxy_protocol: None,
             max_connections: Some(100),
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
         }],

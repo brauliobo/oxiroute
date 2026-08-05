@@ -699,6 +699,7 @@ mod tests {
             protocol,
             service: None,
             tls_profile: tls_profile.map(str::to_owned),
+            proxy_protocol: None,
             max_connections: None,
             downstream_timeouts: DownstreamTimeoutPolicy::default(),
         }

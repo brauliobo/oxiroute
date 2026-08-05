@@ -548,6 +548,7 @@ pub fn proxy_config(
             protocol: Protocol::Http,
             service: Some("wire".into()),
             tls_profile: Some("downstream".into()),
+            proxy_protocol: None,
             max_connections: Some(100),
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
         }],

@@ -1640,6 +1640,7 @@ fn recording_candidate(active: &Config, root: &Path) -> Config {
         protocol: Protocol::Rtmp,
         service: Some("recording-wire".into()),
         tls_profile: None,
+        proxy_protocol: None,
         max_connections: Some(8),
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
     });
@@ -1662,6 +1663,8 @@ fn recording_candidate(active: &Config, root: &Path) -> Config {
             callbacks: oxiroute_config::RtmpCallbackConfig::default(),
             fanout: oxiroute_config::RtmpFanoutPolicy::default(),
             vod: None,
+            hls: None,
+            dash: None,
             recorders: vec![rtmp_recorder_with_queue_bytes(
                 "archive",
                 RtmpRecorderStart::Continuous,
@@ -1681,6 +1684,7 @@ fn rtmp_listener_config(bind: ListenerBind) -> Config {
             protocol: Protocol::Rtmp,
             service: Some("live".into()),
             tls_profile: None,
+            proxy_protocol: None,
             max_connections: Some(8),
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
         }],
@@ -1703,6 +1707,8 @@ fn rtmp_listener_config(bind: ListenerBind) -> Config {
                 callbacks: oxiroute_config::RtmpCallbackConfig::default(),
                 fanout: oxiroute_config::RtmpFanoutPolicy::default(),
                 vod: None,
+                hls: None,
+                dash: None,
                 recorders: Vec::new(),
             }],
         }],

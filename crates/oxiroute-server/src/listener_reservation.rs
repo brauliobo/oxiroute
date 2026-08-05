@@ -963,6 +963,7 @@ mod tests {
                 protocol: oxiroute_config::Protocol::Rtmp,
                 service: Some("rtmp".into()),
                 tls_profile: None,
+                proxy_protocol: None,
                 max_connections: None,
                 downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
             }],
@@ -1285,6 +1286,7 @@ mod tests {
                 protocol: oxiroute_config::Protocol::Http,
                 service: Some("http".into()),
                 tls_profile: None,
+                proxy_protocol: None,
                 max_connections: None,
                 downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
             })
@@ -1308,6 +1310,7 @@ mod tests {
             protocol: oxiroute_config::Protocol::Http,
             service: Some("http".into()),
             tls_profile: None,
+            proxy_protocol: None,
             max_connections: None,
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
         });
@@ -1338,6 +1341,7 @@ mod tests {
             protocol: oxiroute_config::Protocol::Http,
             service: Some("http".into()),
             tls_profile: None,
+            proxy_protocol: None,
             max_connections: None,
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
         });
@@ -1375,6 +1379,7 @@ mod tests {
             protocol: oxiroute_config::Protocol::Http,
             service: Some("http".into()),
             tls_profile: None,
+            proxy_protocol: None,
             max_connections: None,
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
         });

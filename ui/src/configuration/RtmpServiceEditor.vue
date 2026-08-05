@@ -122,6 +122,110 @@ fieldset.route-list(data-field="rtmp_services[].applications")
           label.field(data-field="rtmp_services[].applications[].limits.max_viewers")
             span Maximum viewers
             input(type="number" min="1" max="1000000" step="1" v-model.number="application.limits.max_viewers")
+      fieldset.object-block(data-field="rtmp_services[].applications[].hls")
+        legend HLS output
+        label.enable-row
+          input(type="checkbox" :checked="application.hls != null" @change="toggleHls(application, $event)")
+          span Publish HLS media output
+        template(v-if="application.hls")
+          .field-grid
+            label.field(data-field="rtmp_services[].applications[].hls.root_directory")
+              span HLS root directory
+              input(type="text" v-model="application.hls.root_directory" placeholder="/var/lib/oxiroute/hls")
+            label.field(data-field="rtmp_services[].applications[].hls.segment_duration_ms")
+              span Segment duration (ms)
+              input(type="number" min="100" max="60000" step="1" v-model.number="application.hls.segment_duration_ms")
+            label.field(data-field="rtmp_services[].applications[].hls.max_segment_duration_ms")
+              span Maximum segment duration (ms)
+              input(type="number" min="100" max="120000" step="1" v-model.number="application.hls.max_segment_duration_ms")
+            label.field(data-field="rtmp_services[].applications[].hls.playlist_length_ms")
+              span Playlist length (ms)
+              input(type="number" min="100" max="86400000" step="1" v-model.number="application.hls.playlist_length_ms")
+            label.field(data-field="rtmp_services[].applications[].hls.fragment_naming")
+              span Fragment naming
+              select(v-model="application.hls.fragment_naming")
+                option(value="sequential") Sequential
+                option(value="timestamp") Timestamp
+                option(value="system") System
+            label.field(data-field="rtmp_services[].applications[].hls.max_segment_bytes")
+              span Maximum segment bytes
+              input(type="number" min="1" max="1073741824" step="1" v-model.number="application.hls.max_segment_bytes")
+            label.field(data-field="rtmp_services[].applications[].hls.max_queue_messages")
+              span Maximum queue messages
+              input(type="number" min="1" max="65536" step="1" v-model.number="application.hls.max_queue_messages")
+            label.field(data-field="rtmp_services[].applications[].hls.max_storage_bytes")
+              span Maximum storage bytes
+              input(type="number" min="1" max="1099511627776" step="1" v-model.number="application.hls.max_storage_bytes")
+            label.field(data-field="rtmp_services[].applications[].hls.max_storage_files")
+              span Maximum storage files
+              input(type="number" min="1" max="1000000" step="1" v-model.number="application.hls.max_storage_files")
+            label.field(data-field="rtmp_services[].applications[].hls.max_active_streams")
+              span Maximum active streams
+              input(type="number" min="1" max="100000" step="1" v-model.number="application.hls.max_active_streams")
+          .field-grid
+            label.enable-row.compact-enable(data-field="rtmp_services[].applications[].hls.nested")
+              input(type="checkbox" v-model="application.hls.nested")
+              span Nest media under the stream name
+            label.enable-row.compact-enable(data-field="rtmp_services[].applications[].hls.cleanup")
+              input(type="checkbox" v-model="application.hls.cleanup")
+              span Remove expired media files
+          fieldset.object-block(data-field="rtmp_services[].applications[].hls.keys")
+            legend AES-128 keys
+            label.enable-row
+              input(type="checkbox" :checked="application.hls.keys != null" @change="toggleHlsKeys(application, $event)")
+              span Rotate encrypted HLS keys
+            .field-grid(v-if="application.hls.keys")
+              label.field(data-field="rtmp_services[].applications[].hls.keys.rotation_segments")
+                span Segments per key
+                input(type="number" min="1" max="10000" step="1" v-model.number="application.hls.keys.rotation_segments")
+              label.field(data-field="rtmp_services[].applications[].hls.keys.url_prefix")
+                span Key URL prefix
+                input(type="text" v-model="application.hls.keys.url_prefix" placeholder="/media/keys/")
+          fieldset.route-list(data-field="rtmp_services[].applications[].hls.variants")
+            .route-heading
+              legend HLS variants
+              button.add-row(type="button" :disabled="application.hls.variants.length >= 16" @click="application.hls.variants.push({ name: '', bandwidth: 1000000, codecs: null, width: null, height: null })") + Add variant
+            article.route-card(v-for="(variant, variantIndex) in application.hls.variants" :key="variantIndex")
+              header.route-card-heading
+                strong Variant {{ variantIndex + 1 }}
+                button.danger-link(type="button" @click="application.hls.variants.splice(variantIndex, 1)") Remove
+              .field-grid
+                label.field(data-field="rtmp_services[].applications[].hls.variants[].name")
+                  span Name
+                  input(type="text" v-model="variant.name")
+                label.field(data-field="rtmp_services[].applications[].hls.variants[].bandwidth")
+                  span Bandwidth (bps)
+                  input(type="number" min="1" max="1000000000" step="1" v-model.number="variant.bandwidth")
+                label.field(data-field="rtmp_services[].applications[].hls.variants[].codecs")
+                  span Codecs
+                  input(type="text" :value="variant.codecs ?? ''" @input="setNullableVariantField(variant, 'codecs', $event)")
+                label.field(data-field="rtmp_services[].applications[].hls.variants[].width")
+                  span Width
+                  input(type="number" min="1" max="10000" step="1" :value="variant.width ?? ''" @input="setNullableVariantField(variant, 'width', $event)")
+                label.field(data-field="rtmp_services[].applications[].hls.variants[].height")
+                  span Height
+                  input(type="number" min="1" max="10000" step="1" :value="variant.height ?? ''" @input="setNullableVariantField(variant, 'height', $event)")
+      fieldset.object-block(data-field="rtmp_services[].applications[].dash")
+        legend MPEG-DASH output
+        label.enable-row
+          input(type="checkbox" :checked="application.dash != null" @change="toggleDash(application, $event)")
+          span Configure DASH output (validation reports unsupported runtime capability)
+        .field-grid(v-if="application.dash")
+          label.field(data-field="rtmp_services[].applications[].dash.root_directory")
+            span DASH root directory
+            input(type="text" v-model="application.dash.root_directory" placeholder="/var/lib/oxiroute/dash")
+          label.field(data-field="rtmp_services[].applications[].dash.segment_duration_ms")
+            span Segment duration (ms)
+            input(type="number" min="100" max="60000" step="1" v-model.number="application.dash.segment_duration_ms")
+          label.field(data-field="rtmp_services[].applications[].dash.playlist_length_ms")
+            span Playlist length (ms)
+            input(type="number" min="100" max="86400000" step="1" v-model.number="application.dash.playlist_length_ms")
+          label.enable-row.compact-enable(data-field="rtmp_services[].applications[].dash.nested")
+            input(type="checkbox" v-model="application.dash.nested")
+            span Nest media under the stream name
+          label.enable-row.compact-enable(data-field="rtmp_services[].applications[].dash.cleanup")
+            input(type="checkbox" v-model="application.dash.cleanup")
+            span Remove expired media files
       fieldset.object-block(data-field="rtmp_services[].applications[].relay")
         legend Relay bounds
         .field-grid
@@ -348,6 +452,9 @@ import StringListField from '../StringListField.vue'
 import type {
   RtmpAccessPolicyConfig,
   RtmpApplicationConfig,
+  RtmpDashPolicyConfig,
+  RtmpHlsPolicyConfig,
+  RtmpHlsVariantConfig,
   RtmpPullTargetConfig,
   RtmpPushTargetConfig,
   RtmpRecorderConfig,
@@ -385,7 +492,38 @@ function newApplication(): RtmpApplicationConfig {
       max_queue_bytes_per_subscriber: 8_388_608,
     },
     vod: null,
+    hls: null,
+    dash: null,
     recorders: [],
+  }
+}
+
+function newHlsPolicy(): RtmpHlsPolicyConfig {
+  return {
+    root_directory: '/var/lib/oxiroute/hls',
+    segment_duration_ms: 2_000,
+    max_segment_duration_ms: 10_000,
+    playlist_length_ms: 30_000,
+    fragment_naming: 'sequential',
+    nested: false,
+    cleanup: true,
+    variants: [],
+    keys: null,
+    max_segment_bytes: 8 * 1024 * 1024,
+    max_queue_messages: 256,
+    max_storage_bytes: 512 * 1024 * 1024,
+    max_storage_files: 10_000,
+    max_active_streams: 1_024,
+  }
+}
+
+function newDashPolicy(): RtmpDashPolicyConfig {
+  return {
+    root_directory: '/var/lib/oxiroute/dash',
+    segment_duration_ms: 5_000,
+    playlist_length_ms: 30_000,
+    nested: false,
+    cleanup: true,
   }
 }
 
@@ -429,6 +567,31 @@ function setAccessLog(event: Event): void {
   const value = (event.target as HTMLSelectElement).value
   props.service.access_log = value === 'disabled' ? { type: 'disabled' } : null
   emit('changed')
+}
+
+function toggleHls(application: RtmpApplicationConfig, event: Event): void {
+  application.hls = (event.target as HTMLInputElement).checked ? newHlsPolicy() : null
+}
+
+function toggleHlsKeys(application: RtmpApplicationConfig, event: Event): void {
+  if (!application.hls) return
+  application.hls.keys = (event.target as HTMLInputElement).checked
+    ? { rotation_segments: 5, url_prefix: '' }
+    : null
+}
+
+function setNullableVariantField(
+  variant: RtmpHlsVariantConfig,
+  field: 'codecs' | 'width' | 'height',
+  event: Event,
+): void {
+  const value = (event.target as HTMLInputElement).value
+  if (field === 'codecs') variant.codecs = value || null
+  else variant[field] = value === '' ? null : Number(value)
+}
+
+function toggleDash(application: RtmpApplicationConfig, event: Event): void {
+  application.dash = (event.target as HTMLInputElement).checked ? newDashPolicy() : null
 }
 
 function addPushTarget(applicationIndex: number): void {

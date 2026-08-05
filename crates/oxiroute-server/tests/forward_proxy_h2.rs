@@ -85,6 +85,7 @@ async fn daemon_accepts_tls_h2_connect_and_relays_stream_data() {
         protocol: Protocol::ForwardHttp2,
         service: Some("forward".into()),
         tls_profile: Some("downstream".into()),
+        proxy_protocol: None,
         max_connections: None,
         downstream_timeouts: DownstreamTimeoutPolicy::default(),
     });

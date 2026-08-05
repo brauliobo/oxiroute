@@ -159,12 +159,20 @@ export interface UdpListenerBind {
 
 export type ListenerBind = SocketListenerBind | UdpListenerBind | UnixListenerBind
 
+export type ProxyProtocolVersion = 'v1' | 'v2' | 'auto'
+
+export interface ProxyProtocolPolicyConfig {
+  version: ProxyProtocolVersion
+  timeout_ms: number
+}
+
 export interface ListenerConfig {
   name: string
   bind: ListenerBind
   protocol: ListenerProtocol
   service: string | null
   tls_profile: string | null
+  proxy_protocol?: ProxyProtocolPolicyConfig | null
   max_connections: number | null
   downstream_timeouts: {
     client_timeout_ms: number | null
@@ -528,6 +536,46 @@ export interface HttpServiceConfig {
   access_log: AccessLogConfig | null
 }
 
+export type RtmpHlsFragmentNaming = 'sequential' | 'timestamp' | 'system'
+
+export interface RtmpHlsVariantConfig {
+  name: string
+  bandwidth: number
+  codecs: string | null
+  width: number | null
+  height: number | null
+}
+
+export interface RtmpHlsKeyConfig {
+  rotation_segments: number
+  url_prefix: string
+}
+
+export interface RtmpHlsPolicyConfig {
+  root_directory: string
+  segment_duration_ms: number
+  max_segment_duration_ms: number
+  playlist_length_ms: number
+  fragment_naming: RtmpHlsFragmentNaming
+  nested: boolean
+  cleanup: boolean
+  variants: RtmpHlsVariantConfig[]
+  keys: RtmpHlsKeyConfig | null
+  max_segment_bytes: number
+  max_queue_messages: number
+  max_storage_bytes: number
+  max_storage_files: number
+  max_active_streams: number
+}
+
+export interface RtmpDashPolicyConfig {
+  root_directory: string
+  segment_duration_ms: number
+  playlist_length_ms: number
+  nested: boolean
+  cleanup: boolean
+}
+
 export interface RtmpApplicationConfig {
   name: string
   live: boolean
@@ -545,6 +593,8 @@ export interface RtmpApplicationConfig {
     max_queue_bytes_per_subscriber: number
   }
   vod: RtmpVodPolicyConfig | null
+  hls?: RtmpHlsPolicyConfig | null
+  dash?: RtmpDashPolicyConfig | null
   recorders: RtmpRecorderConfig[]
 }
 
@@ -749,6 +799,7 @@ export interface ForwardProxyServiceConfig {
   access_policy: ForwardAccessPolicyConfig | null
   destination_policy: ForwardDestinationPolicyConfig
   header_policy: { forwarded_for: 'preserve' | 'delete'; via: 'preserve' | 'delete' }
+  cache?: HttpCachePolicyConfig | null
   connect_timeout_ms: number
   idle_timeout_ms: number
   lifetime_timeout_ms: number
@@ -765,6 +816,7 @@ export interface L4ServiceConfig {
   connect_timeout_ms: number
   idle_timeout_ms: number
   lifetime_timeout_ms: number | null
+  proxy_protocol?: ProxyProtocolPolicyConfig | null
   udp: UdpPolicyConfig | null
 }
 
@@ -933,7 +985,9 @@ function isListener(value: unknown): value is ListenerConfig {
   return isRecord(value) && typeof value.name === 'string' && isListenerBind(value.bind) &&
     ['http', 'tcp', 'rtmp', 'forward_http1', 'forward_http2', 'forward_http3']
       .includes(String(value.protocol)) && nullableString(value.service) &&
-    nullableString(value.tls_profile) && nullableSafeInteger(value.max_connections) &&
+    nullableString(value.tls_profile) &&
+    (value.proxy_protocol === undefined || value.proxy_protocol === null || isProxyProtocolPolicy(value.proxy_protocol)) &&
+    nullableSafeInteger(value.max_connections) &&
     isRecord(value.downstream_timeouts) &&
     nullableSafeInteger(value.downstream_timeouts.client_timeout_ms) &&
     nullableSafeInteger(value.downstream_timeouts.request_timeout_ms) &&
@@ -956,6 +1010,11 @@ function isCacheStore(value: unknown): value is CacheStoreConfig {
   return value.type === 'memory'
     ? safeInteger(value.max_entries)
     : value.type === 'disk' && typeof value.root_directory === 'string' && safeInteger(value.max_files)
+}
+
+function isProxyProtocolPolicy(value: unknown): value is ProxyProtocolPolicyConfig {
+  return isRecord(value) && ['v1', 'v2', 'auto'].includes(String(value.version)) &&
+    integerInRange(value.timeout_ms, 1, 60_000)
 }
 
 function isUpstreamPool(value: unknown): value is UpstreamPoolConfig {
@@ -1204,6 +1263,8 @@ function isRtmpService(value: unknown): value is RtmpServiceConfig {
     safeInteger(application.fanout.max_queue_messages_per_subscriber) &&
     safeInteger(application.fanout.max_queue_bytes_per_subscriber) &&
     (application.vod === null || isRtmpVodPolicy(application.vod)) &&
+    (application.hls === undefined || application.hls === null || isRtmpHlsPolicy(application.hls)) &&
+    (application.dash === undefined || application.dash === null || isRtmpDashPolicy(application.dash)) &&
     arrayOf(application.recorders, isRtmpRecorder))
 }
 
@@ -1250,6 +1311,26 @@ function isRtmpPullTarget(value: unknown): value is RtmpPullTargetConfig {
 function isRtmpVodPolicy(value: unknown): value is RtmpVodPolicyConfig {
   return isRecord(value) && arrayOf(value.sources, isRtmpVodSource) && safeInteger(value.max_sessions) &&
     safeInteger(value.max_file_bytes) && safeInteger(value.max_duration_ms)
+}
+
+function isRtmpHlsPolicy(value: unknown): value is RtmpHlsPolicyConfig {
+  return isRecord(value) && typeof value.root_directory === 'string' &&
+    safeInteger(value.segment_duration_ms) && safeInteger(value.max_segment_duration_ms) &&
+    safeInteger(value.playlist_length_ms) && ['sequential', 'timestamp', 'system'].includes(String(value.fragment_naming)) &&
+    typeof value.nested === 'boolean' && typeof value.cleanup === 'boolean' &&
+    arrayOf(value.variants, (variant) => isRecord(variant) && typeof variant.name === 'string' &&
+      safeInteger(variant.bandwidth) && nullableString(variant.codecs) && nullableSafeInteger(variant.width) &&
+      nullableSafeInteger(variant.height)) &&
+    (value.keys === null || (isRecord(value.keys) && safeInteger(value.keys.rotation_segments) &&
+      typeof value.keys.url_prefix === 'string')) && safeInteger(value.max_segment_bytes) &&
+    safeInteger(value.max_queue_messages) && safeInteger(value.max_storage_bytes) &&
+    safeInteger(value.max_storage_files) && safeInteger(value.max_active_streams)
+}
+
+function isRtmpDashPolicy(value: unknown): value is RtmpDashPolicyConfig {
+  return isRecord(value) && typeof value.root_directory === 'string' &&
+    safeInteger(value.segment_duration_ms) && safeInteger(value.playlist_length_ms) &&
+    typeof value.nested === 'boolean' && typeof value.cleanup === 'boolean'
 }
 
 function isRtmpVodSource(value: unknown): value is RtmpVodSource {
@@ -1303,6 +1384,7 @@ function isForwardProxyService(value: unknown): value is ForwardProxyServiceConf
     arrayOf(value.destination_policy.deny_times, isForwardTimeRange) &&
     isRecord(value.header_policy) && ['preserve', 'delete'].includes(String(value.header_policy.forwarded_for)) &&
     ['preserve', 'delete'].includes(String(value.header_policy.via)) &&
+    (value.cache === undefined || value.cache === null || isHttpCachePolicy(value.cache)) &&
     safeInteger(value.connect_timeout_ms) && safeInteger(value.idle_timeout_ms) &&
     safeInteger(value.lifetime_timeout_ms) && nullableSafeInteger(value.max_request_body_bytes) &&
     safeInteger(value.max_header_bytes) && safeInteger(value.max_connections) &&
@@ -1366,6 +1448,7 @@ function isL4Service(value: unknown): value is L4ServiceConfig {
   return isRecord(value) && typeof value.name === 'string' && typeof value.upstream_pool === 'string' &&
     safeInteger(value.connect_timeout_ms) && safeInteger(value.idle_timeout_ms) &&
     nullableSafeInteger(value.lifetime_timeout_ms) &&
+    (value.proxy_protocol === undefined || value.proxy_protocol === null || isProxyProtocolPolicy(value.proxy_protocol)) &&
     (value.udp === null || isUdpPolicy(value.udp))
 }
 
@@ -1461,6 +1544,9 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'listeners[].service', kind: 'reference' },
   { path: 'listeners[].tls_profile', kind: 'reference' },
   { path: 'listeners[].max_connections', kind: 'integer' },
+  { path: 'listeners[].proxy_protocol', kind: 'object' },
+  { path: 'listeners[].proxy_protocol.timeout_ms', kind: 'integer' },
+  { path: 'listeners[].proxy_protocol.version', kind: 'enum' },
   { path: 'cache_stores', kind: 'collection' },
   { path: 'cache_stores[].type', kind: 'enum' },
   { path: 'cache_stores[].name', kind: 'string' },
@@ -1644,6 +1730,41 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'forward_proxy_services[].header_policy', kind: 'object' },
   { path: 'forward_proxy_services[].header_policy.forwarded_for', kind: 'enum' },
   { path: 'forward_proxy_services[].header_policy.via', kind: 'enum' },
+  { path: 'forward_proxy_services[].header_policy.cache', kind: 'object' },
+  { path: 'forward_proxy_services[].header_policy.cache.authorization_policy', kind: 'enum' },
+  { path: 'forward_proxy_services[].header_policy.cache.bypass_request', kind: 'collection' },
+  { path: 'forward_proxy_services[].header_policy.cache.bypass_request[].name', kind: 'string' },
+  { path: 'forward_proxy_services[].header_policy.cache.bypass_request[].type', kind: 'enum' },
+  { path: 'forward_proxy_services[].header_policy.cache.collapsed_forwarding', kind: 'boolean' },
+  { path: 'forward_proxy_services[].header_policy.cache.default_ttl_ms', kind: 'integer' },
+  { path: 'forward_proxy_services[].header_policy.cache.grace_ms', kind: 'integer' },
+  { path: 'forward_proxy_services[].header_policy.cache.keep_ms', kind: 'integer' },
+  { path: 'forward_proxy_services[].header_policy.cache.key_components', kind: 'collection' },
+  { path: 'forward_proxy_services[].header_policy.cache.key_components[].name', kind: 'string' },
+  { path: 'forward_proxy_services[].header_policy.cache.key_components[].type', kind: 'enum' },
+  { path: 'forward_proxy_services[].header_policy.cache.methods', kind: 'string_list' },
+  { path: 'forward_proxy_services[].header_policy.cache.no_store_request', kind: 'collection' },
+  { path: 'forward_proxy_services[].header_policy.cache.no_store_request[].name', kind: 'string' },
+  { path: 'forward_proxy_services[].header_policy.cache.no_store_request[].type', kind: 'enum' },
+  { path: 'forward_proxy_services[].header_policy.cache.no_store_response', kind: 'collection' },
+  { path: 'forward_proxy_services[].header_policy.cache.no_store_response[].name', kind: 'string' },
+  { path: 'forward_proxy_services[].header_policy.cache.no_store_response[].type', kind: 'enum' },
+  { path: 'forward_proxy_services[].header_policy.cache.purge_authorization', kind: 'object' },
+  { path: 'forward_proxy_services[].header_policy.cache.purge_authorization.token_file_path', kind: 'string' },
+  { path: 'forward_proxy_services[].header_policy.cache.purge_authorization.type', kind: 'enum' },
+  { path: 'forward_proxy_services[].header_policy.cache.revalidate', kind: 'boolean' },
+  { path: 'forward_proxy_services[].header_policy.cache.set_cookie_policy', kind: 'enum' },
+  { path: 'forward_proxy_services[].header_policy.cache.stale_on', kind: 'enum' },
+  { path: 'forward_proxy_services[].header_policy.cache.status_ttls', kind: 'collection' },
+  { path: 'forward_proxy_services[].header_policy.cache.status_ttls[].status', kind: 'integer' },
+  { path: 'forward_proxy_services[].header_policy.cache.status_ttls[].ttl_ms', kind: 'integer' },
+  { path: 'forward_proxy_services[].header_policy.cache.store', kind: 'reference' },
+  { path: 'forward_proxy_services[].header_policy.cache.surrogate_tags', kind: 'object' },
+  { path: 'forward_proxy_services[].header_policy.cache.surrogate_tags.max_tag_bytes', kind: 'integer' },
+  { path: 'forward_proxy_services[].header_policy.cache.surrogate_tags.max_tags', kind: 'integer' },
+  { path: 'forward_proxy_services[].header_policy.cache.surrogate_tags.response_header', kind: 'string' },
+  { path: 'forward_proxy_services[].header_policy.cache.use_origin_cache_control', kind: 'boolean' },
+  { path: 'forward_proxy_services[].header_policy.cache.vary_policy', kind: 'enum' },
   { path: 'forward_proxy_services[].connect_timeout_ms', kind: 'integer' },
   { path: 'forward_proxy_services[].idle_timeout_ms', kind: 'integer' },
   { path: 'forward_proxy_services[].lifetime_timeout_ms', kind: 'integer' },
@@ -1699,12 +1820,43 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'rtmp_services[].applications[].recorders[].max_storage_bytes', kind: 'integer' },
   { path: 'rtmp_services[].applications[].recorders[].max_storage_files', kind: 'integer' },
   { path: 'rtmp_services[].applications[].recorders[].max_active_recorders', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].dash', kind: 'object' },
+  { path: 'rtmp_services[].applications[].dash.cleanup', kind: 'boolean' },
+  { path: 'rtmp_services[].applications[].dash.nested', kind: 'boolean' },
+  { path: 'rtmp_services[].applications[].dash.playlist_length_ms', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].dash.root_directory', kind: 'string' },
+  { path: 'rtmp_services[].applications[].dash.segment_duration_ms', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].hls', kind: 'object' },
+  { path: 'rtmp_services[].applications[].hls.cleanup', kind: 'boolean' },
+  { path: 'rtmp_services[].applications[].hls.fragment_naming', kind: 'enum' },
+  { path: 'rtmp_services[].applications[].hls.keys', kind: 'object' },
+  { path: 'rtmp_services[].applications[].hls.keys.rotation_segments', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].hls.keys.url_prefix', kind: 'string' },
+  { path: 'rtmp_services[].applications[].hls.max_active_streams', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].hls.max_queue_messages', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].hls.max_segment_bytes', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].hls.max_segment_duration_ms', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].hls.max_storage_bytes', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].hls.max_storage_files', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].hls.nested', kind: 'boolean' },
+  { path: 'rtmp_services[].applications[].hls.playlist_length_ms', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].hls.root_directory', kind: 'string' },
+  { path: 'rtmp_services[].applications[].hls.segment_duration_ms', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].hls.variants', kind: 'collection' },
+  { path: 'rtmp_services[].applications[].hls.variants[].bandwidth', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].hls.variants[].codecs', kind: 'string' },
+  { path: 'rtmp_services[].applications[].hls.variants[].height', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].hls.variants[].name', kind: 'string' },
+  { path: 'rtmp_services[].applications[].hls.variants[].width', kind: 'integer' },
   { path: 'l4_services', kind: 'collection' },
   { path: 'l4_services[].name', kind: 'string' },
   { path: 'l4_services[].upstream_pool', kind: 'reference' },
   { path: 'l4_services[].connect_timeout_ms', kind: 'integer' },
   { path: 'l4_services[].idle_timeout_ms', kind: 'integer' },
   { path: 'l4_services[].lifetime_timeout_ms', kind: 'integer' },
+  { path: 'l4_services[].proxy_protocol', kind: 'object' },
+  { path: 'l4_services[].proxy_protocol.timeout_ms', kind: 'integer' },
+  { path: 'l4_services[].proxy_protocol.version', kind: 'enum' },
   { path: 'l4_services[].udp', kind: 'object' },
   { path: 'l4_services[].udp.max_datagram_bytes', kind: 'integer' },
   { path: 'l4_services[].udp.max_sessions', kind: 'integer' },

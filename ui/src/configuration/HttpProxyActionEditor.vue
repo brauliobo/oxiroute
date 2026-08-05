@@ -29,6 +29,19 @@
           span Literal authority
           input(type="text" v-model="action.policy.upstream_host.value" placeholder="origin.example.test")
 
+    fieldset.object-block(data-field="http_services[].routes[].action.policy.upstream_path_rewrite")
+      legend Upstream path rewrite
+      label.enable-row
+        input(type="checkbox" :checked="action.policy.upstream_path_rewrite !== null" @change="toggleUpstreamPathRewrite")
+        span Rewrite the matched path before proxying
+      .field-grid(v-if="action.policy.upstream_path_rewrite")
+        label.field(data-field="http_services[].routes[].action.policy.upstream_path_rewrite.from")
+          span Source prefix
+          input(type="text" v-model="action.policy.upstream_path_rewrite.from" placeholder="/public")
+        label.field(data-field="http_services[].routes[].action.policy.upstream_path_rewrite.to")
+          span Destination prefix
+          input(type="text" v-model="action.policy.upstream_path_rewrite.to" placeholder="/internal")
+
     fieldset.route-list(data-field="http_services[].routes[].action.policy.request_headers")
       .route-heading
         legend Request header mutations
@@ -218,6 +231,12 @@ function setUnixFallback(event: Event): void {
   if (props.action.policy.upstream_host.type === 'endpoint') {
     props.action.policy.upstream_host.unix_fallback = (event.target as HTMLInputElement).value || null
   }
+}
+
+function toggleUpstreamPathRewrite(event: Event): void {
+  props.action.policy.upstream_path_rewrite = (event.target as HTMLInputElement).checked
+    ? { from: '/', to: '/' }
+    : null
 }
 
 function changeRequestOperation(index: number, event: Event): void {

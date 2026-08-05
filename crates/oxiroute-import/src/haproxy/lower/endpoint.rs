@@ -599,6 +599,7 @@ impl Lowerer<'_> {
                 protocol: mode.protocol,
                 service: Some(service_name.to_owned()),
                 tls_profile,
+                proxy_protocol: None,
                 max_connections,
                 downstream_timeouts: DownstreamTimeoutPolicy {
                     client_timeout_ms,
