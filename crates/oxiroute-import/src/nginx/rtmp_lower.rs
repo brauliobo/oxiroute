@@ -6,7 +6,8 @@ use std::{
 
 use oxiroute_config::{
     AccessLogPolicy, Config, DownstreamTimeoutPolicy, Listener, ListenerBind, Protocol,
-    RtmpAccessPolicy, RtmpAccessRule, RtmpApplication, RtmpFanoutPolicy, RtmpOutboundPolicy,
+    RtmpAccessPolicy, RtmpAccessRule, RtmpApplication, RtmpCallbackConfig, RtmpFanoutPolicy,
+    RtmpOutboundPolicy,
     RtmpExecEnvironment, RtmpExecFilesystemPolicy, RtmpExecNetworkPolicy, RtmpExecProfile,
     RtmpPushTarget, RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart,
     RtmpRecorderTimeBasis, RtmpRecorderTimezone, RtmpRelayPolicy, RtmpService, RtmpSessionCeilings,
@@ -288,7 +289,7 @@ impl Lowerer {
                 rtmp.access_log_path.clone().map(|path| AccessLogPolicy::File { path })
             },
             outbound_policy: RtmpOutboundPolicy::default(),
-            callbacks: Default::default(),
+            callbacks: RtmpCallbackConfig::default(),
             exec_profiles,
             applications,
         });
@@ -416,12 +417,11 @@ impl Lowerer {
                 self.lower_recorder(recorder, &application_path, recorder_index)
             })
             .collect();
-        let hls = application.policy.hls.clone().map(|hls| {
+        let hls = application.policy.hls.clone().inspect(|_| {
             self.provenance.push(CanonicalProvenance {
                 path: format!("{application_path}/hls"),
                 origins: vec![application.origin.clone()],
             });
-            hls
         });
         RtmpApplication {
             name,
@@ -472,7 +472,7 @@ impl Lowerer {
                 .collect(),
             pull_targets: Vec::new(),
             relay: RtmpRelayPolicy::default(),
-            callbacks: Default::default(),
+            callbacks: RtmpCallbackConfig::default(),
             fanout: RtmpFanoutPolicy {
                 max_subscribers: 1_024,
                 max_queue_messages_per_subscriber: 256,

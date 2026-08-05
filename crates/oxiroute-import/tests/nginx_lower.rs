@@ -87,7 +87,7 @@ fn fully_explicit_proxy_fixture_finalizes_with_canonical_routes() {
 #[test]
 fn lowers_proxy_pass_uri_replacement_and_accepts_explicit_expires_off() {
     let report = import_source(
-        r#"http {
+        r"http {
           expires off;
           proxy_http_version 1.1;
           proxy_buffering off;
@@ -99,7 +99,7 @@ fn lowers_proxy_pass_uri_replacement_and_accepts_explicit_expires_off() {
             location /api/ { proxy_pass http://backend/v1/; }
             location / { return 404; }
           }
-        }"#,
+        }",
     );
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
@@ -540,7 +540,7 @@ fn lowers_inherited_nginx_tls_policy_exactly() {
         TlsPolicy {
             cipher_list: Some("ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384".into()),
             dh_parameters_path: Some("/etc/letsencrypt/ssl-dhparams.pem".into()),
-            client_auth: Default::default(),
+            client_auth: oxiroute_config::TlsClientAuthPolicy::default(),
             session_cache: Some(TlsSessionCache {
                 name: "le_nginx_SSL".into(),
                 size_bytes: 10 * 1024 * 1024,

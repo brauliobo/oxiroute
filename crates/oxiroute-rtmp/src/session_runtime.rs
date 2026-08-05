@@ -932,6 +932,7 @@ impl RtmpServiceRuntime {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub(super) fn acquire_publisher_role(
         &self,
         key: StreamKey,
@@ -959,7 +960,7 @@ impl RtmpServiceRuntime {
             .admission(&key.application)
             .acquire(SessionCounter::Publishers)
             .map_err(PublisherRoleError::SessionLimit)?;
-        let _transaction = hub.lock_roles();
+        let transaction = hub.lock_roles();
         let lease = self.acquire_publisher_lease(&hub, &key, at_unix_ms)?;
         // Media output is best-effort; storage or worker failures must not reject RTMP publish.
         let media_publisher = media
@@ -1035,7 +1036,7 @@ impl RtmpServiceRuntime {
                 );
             }
         }
-        drop(_transaction);
+        drop(transaction);
         let exec_workers = exec_profiles.as_ref().map_or_else(Vec::new, |profiles| {
             profiles.start_publisher(&key.server_id, &key, session_id)
         });
@@ -1157,6 +1158,7 @@ impl RtmpServiceRuntime {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 pub(super) enum SessionRole {
     Publisher(PublishSession),
     Playback(PlaybackSession),

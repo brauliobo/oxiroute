@@ -80,6 +80,7 @@ use crate::{
 /// # Errors
 ///
 /// Returns an error when any configured value or cross-reference is invalid.
+#[allow(clippy::too_many_lines)]
 pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
     if config.version != 1 {
         return Err(ConfigError::UnsupportedVersion(config.version));
@@ -615,6 +616,7 @@ fn validate_tls_profiles(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn validate_tls_policy(profile: &mut TlsProfile) -> Result<(), ConfigError> {
     let client_auth = &profile.policy.client_auth;
     match client_auth.mode {
@@ -986,6 +988,7 @@ fn endpoint_exposes_management(endpoint: SocketAddr, management: SocketAddr) -> 
         && (endpoint_ip == canonical_ip(management.ip()) || endpoint_ip.is_unspecified())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_listeners(
     listeners: &[Listener],
     http_service_names: &HashSet<String>,
@@ -1476,6 +1479,7 @@ struct RtmpRecorderStorageLimits {
     active_recorders: u64,
 }
 
+#[allow(clippy::too_many_lines)]
 fn validate_rtmp_services(services: &mut [RtmpService]) -> Result<(), ConfigError> {
     if services.len() > MAX_RTMP_SERVICES {
         return Err(ConfigError::TooManyRtmpServices);
@@ -1714,6 +1718,7 @@ fn validate_rtmp_services(services: &mut [RtmpService]) -> Result<(), ConfigErro
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn validate_rtmp_application(
     service: &str,
     outbound_policy: &RtmpOutboundPolicy,
@@ -1778,18 +1783,18 @@ fn validate_rtmp_application(
             "push_targets[].scheme",
         )?;
         validate_rtmp_relay_stream_name(
-            &target.stream_name,
+            target.stream_name.as_ref(),
             true,
             &invalid,
             "push_targets[].stream_name",
         )?;
-        validate_rtmp_tc_url(&target.tc_url, &invalid, "push_targets[].tc_url")?;
+        validate_rtmp_tc_url(target.tc_url.as_ref(), &invalid, "push_targets[].tc_url")?;
         validate_rtmp_flash_version(
-            &target.flash_version,
+            target.flash_version.as_ref(),
             &invalid,
             "push_targets[].flash_version",
         )?;
-        validate_rtmp_credentials(&target.credentials, &invalid, "push_targets[].credentials")?;
+        validate_rtmp_credentials(target.credentials.as_ref(), &invalid, "push_targets[].credentials")?;
     }
     let mut pull_targets = HashSet::with_capacity(application.pull_targets.len());
     for target in &mut application.pull_targets {
@@ -1829,13 +1834,13 @@ fn validate_rtmp_application(
             target.scheme,
             "pull_targets[].scheme",
         )?;
-        validate_rtmp_tc_url(&target.tc_url, &invalid, "pull_targets[].tc_url")?;
+        validate_rtmp_tc_url(target.tc_url.as_ref(), &invalid, "pull_targets[].tc_url")?;
         validate_rtmp_flash_version(
-            &target.flash_version,
+            target.flash_version.as_ref(),
             &invalid,
             "pull_targets[].flash_version",
         )?;
-        validate_rtmp_credentials(&target.credentials, &invalid, "pull_targets[].credentials")?;
+        validate_rtmp_credentials(target.credentials.as_ref(), &invalid, "pull_targets[].credentials")?;
     }
     let fanout = application.fanout;
     if fanout.max_subscribers == 0 || fanout.max_subscribers > MAX_RTMP_SUBSCRIBERS {
@@ -1863,6 +1868,7 @@ fn validate_rtmp_application(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn validate_rtmp_exec_profile(
     service: &str,
     applications: &[crate::model::RtmpApplication],
@@ -2096,6 +2102,7 @@ fn is_shell_executable_name(name: &str) -> bool {
     )
 }
 
+#[allow(clippy::too_many_lines)]
 fn validate_rtmp_hls(
     service: &str,
     application: &str,
@@ -2652,11 +2659,11 @@ fn validate_rtmp_transport(
     transport: RtmpTransport,
     field: &'static str,
 ) -> Result<(), ConfigError> {
-    let valid = match (policy.rtmps, transport) {
+    let valid = !matches!(
+        (policy.rtmps, transport),
         (RtmpRtmpsPolicy::Disabled, RtmpTransport::Rtmps)
-        | (RtmpRtmpsPolicy::Required, RtmpTransport::Rtmp) => false,
-        _ => true,
-    };
+            | (RtmpRtmpsPolicy::Required, RtmpTransport::Rtmp)
+    );
     if !valid {
         return Err(invalid(
             field,
@@ -2667,7 +2674,7 @@ fn validate_rtmp_transport(
 }
 
 fn validate_rtmp_relay_stream_name(
-    stream_name: &Option<String>,
+    stream_name: Option<&String>,
     allow_dynamic_name: bool,
     invalid: &impl Fn(&'static str, &'static str) -> ConfigError,
     field: &'static str,
@@ -2688,7 +2695,7 @@ fn validate_rtmp_relay_stream_name(
 }
 
 fn validate_rtmp_tc_url(
-    tc_url: &Option<String>,
+    tc_url: Option<&String>,
     invalid: &impl Fn(&'static str, &'static str) -> ConfigError,
     field: &'static str,
 ) -> Result<(), ConfigError> {
@@ -2708,11 +2715,11 @@ fn validate_rtmp_tc_url(
 }
 
 fn validate_rtmp_flash_version(
-    flash_version: &Option<String>,
+    flash_version: Option<&String>,
     invalid: &impl Fn(&'static str, &'static str) -> ConfigError,
     field: &'static str,
 ) -> Result<(), ConfigError> {
-    if flash_version.as_deref().is_some_and(|value| {
+    if flash_version.is_some_and(|value| {
         value.is_empty() || value.len() > 128 || value.chars().any(char::is_control)
     }) {
         return Err(invalid(field, "must be 1..=128 non-control bytes"));
@@ -2721,7 +2728,7 @@ fn validate_rtmp_flash_version(
 }
 
 fn validate_rtmp_credentials(
-    credentials: &Option<RtmpCredentialReference>,
+    credentials: Option<&RtmpCredentialReference>,
     invalid: &impl Fn(&'static str, &'static str) -> ConfigError,
     field: &'static str,
 ) -> Result<(), ConfigError> {
@@ -2917,6 +2924,7 @@ fn valid_rtmp_network(value: &str) -> bool {
     prefix <= if address.is_ipv4() { 32 } else { 128 }
 }
 
+#[allow(clippy::too_many_lines)]
 fn validate_rtmp_recorder(
     service: &str,
     application: &str,

@@ -5142,6 +5142,7 @@ impl ProxyHarness {
         clippy::too_many_arguments,
         reason = "wire harness exposes canonical service policy"
     )]
+    #[allow(clippy::too_many_lines)]
     async fn start_with_features_and_cache(
         upstream_pools: Vec<UpstreamPool>,
         mut routes: Vec<HttpRoute>,

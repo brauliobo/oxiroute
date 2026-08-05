@@ -908,15 +908,17 @@ fn test_flv() -> Vec<u8> {
 
 fn append_flv_tag(bytes: &mut Vec<u8>, tag_type: u8, timestamp: u32, payload: &[u8]) {
     let size = u32::try_from(payload.len()).expect("test FLV payload size");
+    let size_bytes = size.to_be_bytes();
+    let timestamp_bytes = timestamp.to_be_bytes();
     bytes.push(tag_type);
     bytes.extend_from_slice(&[
-        (size >> 16) as u8,
-        (size >> 8) as u8,
-        size as u8,
-        (timestamp >> 16) as u8,
-        (timestamp >> 8) as u8,
-        timestamp as u8,
-        (timestamp >> 24) as u8,
+        size_bytes[1],
+        size_bytes[2],
+        size_bytes[3],
+        timestamp_bytes[1],
+        timestamp_bytes[2],
+        timestamp_bytes[3],
+        timestamp_bytes[0],
         0,
         0,
         0,

@@ -276,7 +276,7 @@ impl RtmpManagementApi {
         let catalog = self
             .generations
             .as_ref()
-            .and_then(|generations| generations.active())
+            .and_then(GenerationManager::active)
             .map(|generation| Arc::clone(&generation.plan().rtmp_vod_catalog))
             .or_else(|| self.vod_catalog.clone());
         let Some(catalog) = catalog else {
@@ -337,7 +337,7 @@ impl RtmpManagementApi {
         let catalog = self
             .generations
             .as_ref()
-            .and_then(|generations| generations.active())
+            .and_then(GenerationManager::active)
             .map(|generation| Arc::clone(&generation.plan().rtmp_media_catalog))
             .or_else(|| self.media_catalog.clone());
         let Some(catalog) = catalog else {
@@ -362,27 +362,20 @@ impl RtmpManagementApi {
             .headers
             .get("range")
             .and_then(|value| value.to_str().ok());
-        let range = match VodRange::parse(range_header, total) {
-            Ok(range) => range,
-            Err(VodError::InvalidRange) => {
-                return ApiResponse::error(
-                    416,
-                    "media_invalid_range",
-                    "the requested byte range is invalid",
-                )
-                .with_range(Some(format!("bytes */{total}")));
-            }
-            Err(_) => {
-                return ApiResponse::error(
-                    416,
-                    "media_invalid_range",
-                    "the requested byte range is invalid",
-                )
-                .with_range(Some(format!("bytes */{total}")));
-            }
+        let Ok(range) = VodRange::parse(range_header, total) else {
+            return ApiResponse::error(
+                416,
+                "media_invalid_range",
+                "the requested byte range is invalid",
+            )
+            .with_range(Some(format!("bytes */{total}")));
         };
         let body = match range {
-            Some(range) => object.body[range.start as usize..=range.end as usize].to_vec(),
+            Some(range) => {
+                let start = usize::try_from(range.start).expect("media range starts in object");
+                let end = usize::try_from(range.end).expect("media range ends in object");
+                object.body[start..=end].to_vec()
+            }
             None => Vec::new(),
         };
         let content_range = if range_header.is_some() {
@@ -431,6 +424,7 @@ impl RtmpManagementApi {
         None
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn api_response(&self, session: &mut ServerSession) -> ApiResponse {
         let (method, path, path_and_query) = {
             let request = session.req_header();
@@ -452,14 +446,14 @@ impl RtmpManagementApi {
         };
         if let Some(response) = self.authentication_error(&method, &path, &path_and_query, session)
         {
-            self.audit_api_operation(&method, &path, &context, &response);
+            Self::audit_api_operation(&method, &path, &context, &response);
             return response.with_correlation(context.correlation_id);
         }
         if let Some(route) = management::match_route(&path_and_query) {
             if let (Some(config), Some(management)) = (&self.config, &self.management) {
                 let _ = config;
                 let response = management.handle(route, &method, session, &context).await;
-                self.audit_api_operation(&method, &path, &context, &response);
+                Self::audit_api_operation(&method, &path, &context, &response);
                 return response.with_correlation(context.correlation_id);
             }
             return ApiResponse::route_not_found().with_correlation(context.correlation_id);
@@ -467,7 +461,7 @@ impl RtmpManagementApi {
         if let Some(route) = config::match_route(&path) {
             if let Some(config) = &self.config {
                 let response = config.handle_http(route, &method, session).await;
-                self.audit_api_operation(&method, &path, &context, &response);
+                Self::audit_api_operation(&method, &path, &context, &response);
                 return response.with_correlation(context.correlation_id);
             }
             return self
@@ -476,7 +470,7 @@ impl RtmpManagementApi {
         }
         if let Some(route) = rtmp::match_route(&path) {
             let response = rtmp::handle(route, &method, self.registry.as_ref(), Some(session));
-            self.audit_api_operation(&method, &path, &context, &response);
+            Self::audit_api_operation(&method, &path, &context, &response);
             return response.with_correlation(context.correlation_id);
         }
         if method != "GET" && streams::match_route(&path).is_some() {
@@ -525,7 +519,7 @@ impl RtmpManagementApi {
                         mutation.generation().registry(),
                         now_unix_ms,
                     );
-                    self.audit_api_operation(&method, &path, &context, &response);
+                    Self::audit_api_operation(&method, &path, &context, &response);
                     return response.with_correlation(context.correlation_id);
                 }
                 Err(response) => {
@@ -534,12 +528,11 @@ impl RtmpManagementApi {
             }
         }
         let response = self.handle_at_system_time(&method, &path);
-        self.audit_api_operation(&method, &path, &context, &response);
+        Self::audit_api_operation(&method, &path, &context, &response);
         response.with_correlation(context.correlation_id)
     }
 
     fn audit_api_operation(
-        &self,
         method: &str,
         path: &str,
         context: &AuditContext,
@@ -846,16 +839,17 @@ fn audited_api_operation(method: &str, path: &str) -> Option<(&'static str, Audi
         "/api/v1/process/shutdown" => ("process_shutdown", AuditCategory::Control),
         "/api/v1/listeners/administrative-state" => ("listener_control", AuditCategory::Control),
         "/api/v1/pools/administrative-state" => ("pool_control", AuditCategory::Control),
-        "/api/v1/servers/administrative-state" => ("server_control", AuditCategory::Control),
-        "/api/v1/servers/health-override" => ("server_control", AuditCategory::Control),
-        "/api/v1/servers/checks" => ("server_control", AuditCategory::Control),
-        "/api/v1/servers/max-connections" => ("server_control", AuditCategory::Control),
+        "/api/v1/servers/administrative-state"
+        | "/api/v1/servers/health-override"
+        | "/api/v1/servers/checks"
+        | "/api/v1/servers/max-connections" => ("server_control", AuditCategory::Control),
         "/api/v1/servers/refresh-dns" => ("server_dns_refresh", AuditCategory::Control),
         _ => return None,
     };
     Some((operation, category))
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn vod_error_response(error: VodError) -> ApiResponse {
     match error {
         VodError::SourceNotFound | VodError::NotFound => {
@@ -885,6 +879,7 @@ fn vod_error_response(error: VodError) -> ApiResponse {
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn media_error_response(error: MediaStoreError) -> ApiResponse {
     match error {
         MediaStoreError::NotFound | MediaStoreError::StaleIncarnation => {
@@ -923,6 +918,7 @@ fn media_error_response(error: MediaStoreError) -> ApiResponse {
     }
 }
 
+#[allow(clippy::case_sensitive_file_extension_comparisons)]
 fn vod_content_type(path: &str) -> &'static str {
     if path.ends_with(".mp4") {
         "video/mp4"
@@ -978,6 +974,7 @@ impl ServeHttp for RtmpManagementApi {
 
 #[async_trait]
 impl HttpServerApp for RtmpManagementHttpApp {
+    #[allow(clippy::too_many_lines)]
     async fn process_new_http(
         self: &Arc<Self>,
         mut session: ServerSession,
@@ -1093,8 +1090,7 @@ impl HttpServerApp for RtmpManagementHttpApp {
                     .vod_response(route, &session)
                     .await
                     .with_correlation(context.correlation_id.clone());
-                self.api
-                    .audit_api_operation(&method, &path, &context, &response);
+                RtmpManagementApi::audit_api_operation(&method, &path, &context, &response);
                 if !write_buffered_response(&mut session, response).await {
                     return None;
                 }
@@ -1134,8 +1130,7 @@ impl HttpServerApp for RtmpManagementHttpApp {
                     .media_response(route, &session)
                     .await
                     .with_correlation(context.correlation_id.clone());
-                self.api
-                    .audit_api_operation(&method, &path, &context, &response);
+                RtmpManagementApi::audit_api_operation(&method, &path, &context, &response);
                 if !write_buffered_response(&mut session, response).await {
                     return None;
                 }

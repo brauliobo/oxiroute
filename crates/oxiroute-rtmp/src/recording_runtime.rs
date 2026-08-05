@@ -463,6 +463,7 @@ impl RecorderController {
         true
     }
 
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn try_enqueue(
         self: &Arc<Self>,
         event: MediaEvent,

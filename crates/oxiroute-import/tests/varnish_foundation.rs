@@ -3,6 +3,7 @@ mod source;
 pub use source::{ByteRange, SourceFile, SourceId, Span};
 
 #[path = "../src/candidate.rs"]
+#[allow(dead_code)]
 mod candidate;
 pub use candidate::{
     CanonicalCandidate, CanonicalDraft, CanonicalProvenance, SourceImportMetadata,

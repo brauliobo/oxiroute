@@ -530,6 +530,7 @@ impl Cli {
 ///
 /// Returns a redacted validation or import failure. A report containing diagnostics is successful;
 /// preview output requires a fully finalized canonical configuration.
+#[allow(clippy::too_many_lines)]
 pub fn execute_offline(command: &Command) -> Result<Option<String>, Box<dyn Error>> {
     match command {
         Command::Version => Ok(Some(format!("{BUILD_VERSION}\n"))),

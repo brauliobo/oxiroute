@@ -1982,6 +1982,7 @@ impl Default for RtmpFanoutPolicy {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct RtmpRecorder {
     pub name: String,
     /// Omitted policies start recording continuously.

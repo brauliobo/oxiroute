@@ -197,9 +197,8 @@ fn drop_response(
     else {
         unreachable!("drop response requires a drop route")
     };
-    let session_id = match SessionId::from_str(session_id_text) {
-        Ok(session_id) => session_id,
-        Err(_) => return ApiResponse::error(400, "invalid_session_id", "session ID is invalid"),
+    let Ok(session_id) = SessionId::from_str(session_id_text) else {
+        return ApiResponse::error(400, "invalid_session_id", "session ID is invalid");
     };
     let expected_revision =
         match single_header(&session.req_header().headers, &IF_RTMP_SESSION_REVISION) {

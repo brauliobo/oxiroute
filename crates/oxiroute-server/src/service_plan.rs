@@ -1361,6 +1361,7 @@ fn compile_l4_services(
     Ok(l4_services)
 }
 
+#[allow(clippy::too_many_lines)]
 fn compile_rtmp_services(
     config: &Config,
 ) -> Result<HashMap<String, Arc<RtmpServicePlan>>, ServicePlanError> {
@@ -1862,14 +1863,13 @@ fn compile_rtmp_vod(
         .map_err(|_| ServicePlanError::RtmpVodPreflight {
             service: service.to_owned(),
             application: application.name.clone(),
-            source_name: policy
-                .sources
-                .first()
-                .map(|source| match source {
+            source_name: policy.sources.first().map_or_else(
+                || "unknown".into(),
+                |source| match source {
                     oxiroute_config::RtmpVodSource::Local { name, .. }
                     | oxiroute_config::RtmpVodSource::Http { name, .. } => name.clone(),
-                })
-                .unwrap_or_else(|| "unknown".into()),
+                },
+            ),
         })
 }
 

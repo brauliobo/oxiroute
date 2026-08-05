@@ -255,6 +255,7 @@ fn assert_private_key_redaction(plan: &RuntimePlan, config: &Config) {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn serves_active_topology_with_name_joined_runtime_overlays() {
     let temp = TempDir::new().expect("TLS temp directory");
     let config = topology_config(&temp);

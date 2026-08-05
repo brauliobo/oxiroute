@@ -853,6 +853,7 @@ impl ServerApp for RtmpIngest {
         Some(Box::new((generation, connection)))
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn process_new(
         self: &Arc<Self>,
         mut downstream: Stream,
@@ -1063,6 +1064,7 @@ async fn write_rtmp_packets(
     .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "RTMP write deadline exceeded"))?
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_management_api(
     registry: Arc<RtmpRegistry>,
     vod_catalog: Arc<VodCatalog>,

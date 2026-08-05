@@ -1433,6 +1433,7 @@ enum JobControl {
     Resume,
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn managed_error_response(error: crate::AcmeManagedError, message: &str) -> ApiResponse {
     let status = match &error {
         crate::AcmeManagedError::Protocol(

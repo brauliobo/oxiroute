@@ -379,7 +379,11 @@ impl AcmeManagedReconciler {
                 }
             });
         let paused = persisted.as_ref().is_some_and(|renewal| renewal.paused);
-        let next_action_unix_seconds = paused.then_some(None).unwrap_or(next_action_unix_seconds);
+        let next_action_unix_seconds = if paused {
+            None
+        } else {
+            next_action_unix_seconds
+        };
         let retry_attempt = persisted
             .as_ref()
             .map_or(0, |renewal| renewal.retry_attempt);
@@ -702,7 +706,7 @@ impl AcmeManagedReconciler {
             let material = self
                 .revisions
                 .load_current(&self.certificate)
-                .map_err(|source| AcmeManagedError::State(source))?;
+                .map_err(AcmeManagedError::State)?;
             let mut client = self.client_with_account(SystemAcmeTransport::default(), false)?;
             client
                 .revoke_certificate(&material.certificate_pem, reason)
@@ -792,6 +796,7 @@ impl AcmeManagedReconciler {
         result.map(|()| (outcome, job_id))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn renew_with_provider<T: AcmeTransport>(
         &self,
         transport: T,
@@ -943,7 +948,7 @@ impl AcmeManagedReconciler {
         result
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
     fn renew_inner<T: AcmeTransport>(
         &self,
         transport: T,
@@ -1239,6 +1244,11 @@ impl AcmeManagedReconciler {
         Ok(client)
     }
 
+    #[allow(
+        clippy::needless_pass_by_value,
+        clippy::too_many_arguments,
+        clippy::unused_self
+    )]
     fn complete_dns01_challenge<T: AcmeTransport>(
         &self,
         client: &mut AcmeClient<T>,
@@ -1482,7 +1492,7 @@ impl AcmeManagedReconciler {
             outcome,
             Some(correlation_id.into()),
         )
-        .map_err(|source| AcmeManagedError::State(source))
+        .map_err(AcmeManagedError::State)
     }
 
     fn set_outcome(&self, outcome: Option<&'static str>, error: Option<&'static str>) {

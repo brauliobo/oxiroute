@@ -778,6 +778,7 @@ impl Renderer {
         Ok(())
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     fn rtmp_hls_variant(&mut self, variant: &RtmpHlsVariant) -> Result<(), ConfigError> {
         self.string_field("name", &variant.name);
         self.integer_field("bandwidth", variant.bandwidth);
@@ -793,6 +794,7 @@ impl Renderer {
         Ok(())
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     fn rtmp_hls_keys(&mut self, keys: &RtmpHlsKeyPolicy) -> Result<(), ConfigError> {
         self.integer_field("rotation_segments", keys.rotation_segments);
         self.string_field("url_prefix", &keys.url_prefix);

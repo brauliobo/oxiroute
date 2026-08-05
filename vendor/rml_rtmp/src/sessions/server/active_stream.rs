@@ -5,6 +5,7 @@ pub enum StreamState {
 
     Publishing {
         stream_key: String,
+        #[allow(dead_code)]
         mode: PublishMode,
     },
 

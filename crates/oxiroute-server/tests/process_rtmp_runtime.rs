@@ -647,6 +647,7 @@ fn idle_runtime_config(management_address: SocketAddr, rtmp_address: SocketAddr)
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn handoff_runtime_config(
     management_address: SocketAddr,
     stats_addresses: [SocketAddr; 2],

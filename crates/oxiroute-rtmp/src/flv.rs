@@ -236,7 +236,6 @@ where
         validate_size(FlvTagType::Audio, payload)?;
         let size = match classify_audio(payload)? {
             AudioPacketKind::AacSequenceHeader if self.first_media_timestamp_ms.is_none() => 0,
-            AudioPacketKind::AacSequenceHeader => tag_size(payload),
             AudioPacketKind::AacRaw if !self.aac_sequence_header_seen => 0,
             AudioPacketKind::AacRaw | AudioPacketKind::Media if self.waiting_for_avc_keyframe => 0,
             AudioPacketKind::AacRaw | AudioPacketKind::Media
@@ -245,7 +244,9 @@ where
                 self.cached_codec_header_size()
                     .saturating_add(tag_size(payload))
             }
-            AudioPacketKind::AacRaw | AudioPacketKind::Media => tag_size(payload),
+            AudioPacketKind::AacRaw
+            | AudioPacketKind::Media
+            | AudioPacketKind::AacSequenceHeader => tag_size(payload),
         };
         Ok(size)
     }
@@ -254,30 +255,27 @@ where
         validate_size(FlvTagType::Video, payload)?;
         let size = match classify_video(payload)? {
             VideoPacketKind::AvcSequenceHeader if self.first_media_timestamp_ms.is_none() => 0,
-            VideoPacketKind::AvcSequenceHeader => tag_size(payload),
             VideoPacketKind::AvcKeyframe if !self.avc_sequence_header_seen => 0,
-            VideoPacketKind::AvcKeyframe if self.first_media_timestamp_ms.is_none() => self
-                .cached_codec_header_size()
-                .saturating_add(tag_size(payload)),
-            VideoPacketKind::AvcKeyframe => tag_size(payload),
             VideoPacketKind::AvcOther
                 if !self.avc_sequence_header_seen || self.waiting_for_avc_keyframe =>
             {
                 0
             }
-            VideoPacketKind::AvcOther if self.first_media_timestamp_ms.is_none() => self
-                .cached_codec_header_size()
-                .saturating_add(tag_size(payload)),
-            VideoPacketKind::AvcOther => tag_size(payload),
             VideoPacketKind::Media if self.waiting_for_avc_keyframe => 0,
-            VideoPacketKind::Media if self.first_media_timestamp_ms.is_none() => self
+            VideoPacketKind::AvcKeyframe
+            | VideoPacketKind::AvcOther
+            | VideoPacketKind::Media if self.first_media_timestamp_ms.is_none() => self
                 .cached_codec_header_size()
                 .saturating_add(tag_size(payload)),
-            VideoPacketKind::Media => tag_size(payload),
+            VideoPacketKind::AvcSequenceHeader
+            | VideoPacketKind::AvcKeyframe
+            | VideoPacketKind::AvcOther
+            | VideoPacketKind::Media => tag_size(payload),
         };
         Ok(size)
     }
 
+    #[allow(clippy::unused_self)]
     pub(crate) fn projected_metadata_size(&self, payload: &[u8]) -> Result<u64, FlvMuxerError> {
         validate_size(FlvTagType::Metadata, payload)?;
         Ok(tag_size(payload))

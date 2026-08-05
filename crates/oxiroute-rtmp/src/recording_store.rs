@@ -379,14 +379,6 @@ impl RecordingStore {
         })
     }
 
-    pub(crate) fn create_unless(
-        &self,
-        final_relative_name: &str,
-        cancelled: impl Fn() -> bool,
-    ) -> Result<RecordingFile, RecordingStoreError> {
-        self.create_inner(final_relative_name, cancelled, false, None)
-    }
-
     pub(crate) fn create_unless_with_options(
         &self,
         final_relative_name: &str,
@@ -535,13 +527,6 @@ impl RecordingStore {
 
     pub(crate) fn submit_finalization(&self, job: FinalizerJob) -> FinalizerTicket {
         self.shared.finalizer.submit(job)
-    }
-
-    pub(crate) fn resume(
-        &self,
-        relative_name: &str,
-    ) -> Result<RecordingResume, RecordingStoreError> {
-        self.resume_with_options(relative_name, false, None)
     }
 
     pub(crate) fn resume_with_options(
@@ -1797,7 +1782,9 @@ mod tests {
         flv.extend_from_slice(&11_u32.to_be_bytes());
         fs::write(root.path().join("camera.flv"), &flv).expect("existing FLV");
         let store = test_store(root.path());
-        let resumed = store.resume("camera.flv").expect("resumed recording");
+        let resumed = store
+            .resume_with_options("camera.flv", false, None)
+            .expect("resumed recording");
 
         fs::remove_file(root.path().join("camera.flv")).expect("remove resumed path");
         drop(resumed);

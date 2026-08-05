@@ -1,7 +1,7 @@
 use oxiroute_config::{ConfigError, render_lua, validate_config};
 use serde_json::{Value, json};
 
-fn config_with_application(media: Value) -> oxiroute_config::Config {
+fn config_with_application(media: &Value) -> oxiroute_config::Config {
     serde_json::from_value(json!({
         "version": 1,
         "listeners": [],
@@ -19,7 +19,7 @@ fn config_with_application(media: Value) -> oxiroute_config::Config {
 
 #[test]
 fn hls_defaults_are_bounded_and_rendered() {
-    let mut config = config_with_application(json!({
+    let mut config = config_with_application(&json!({
         "root_directory": "/var/lib/oxiroute/hls",
         "variants": [{
             "name": "main",
