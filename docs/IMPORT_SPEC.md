@@ -227,7 +227,8 @@ Blocking forms include listen options, overlapping sockets, duplicate scalar/app
 missing or insecure paths, recording without `live on`, bare `record manual`, partial
 audio/video/keyframe masks, manual intervals, unsupported suffix fields, enabled `record_append`,
 enabled `record_lock`, nonzero size/frame limits, enabled notify policy, named recorder blocks with
-unsupported effective fields, global RTMP policy, access, dynamic push/pull, callbacks, exec, VOD,
+unsupported effective fields, global RTMP policy, access, dynamic push/pull, callbacks, unsupported
+exec forms, VOD,
 HLS/DASH, file logs, stats, and native control behavior. This strict subset is not full nginx-RTMP
 compatibility and is not an audited-host claim unless the authoritative coverage manifest maps an
 audited fixture.

@@ -227,7 +227,7 @@ chunked upstream responses are rejected.
 - DASH output is available for validated AVC/AAC publishers. It writes bounded fragmented MP4
   segments and an MPD under the configured media quota; malformed or unsupported codec forms fail
   closed with no MPEG-TS masquerading as DASH. Native nginx-DASH lowering, richer callback fields,
-  broad control parity, isolated exec, and complete directive lowering remain future slices. Named
+  broad control parity and complete directive lowering remain future slices. Named
   local/HTTP VOD sources, bounded RTMP playback workers, and the
   authenticated management range endpoint are integrated. Native `allow`/`deny` and application `max_connections` have bounded
   lowering; canonical token rules and publisher/viewer ceilings are canonical-only.
