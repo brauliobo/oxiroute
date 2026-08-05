@@ -16,6 +16,39 @@ header.form-heading
     select(:value="service.access_log?.type ?? 'default'" @change="setAccessLog")
       option(value="default") Runtime default
       option(value="disabled") Disabled
+fieldset.object-block(data-field="rtmp_services[].auto_push")
+  legend Same-daemon worker auto-push
+  .field-grid
+    label.enable-row.compact-enable(data-field="rtmp_services[].auto_push.enabled")
+      input(type="checkbox" v-model="service.auto_push.enabled")
+      span Enable worker coordination
+    label.field(data-field="rtmp_services[].auto_push.socket_dir")
+      span Worker socket directory
+      input(type="text" v-model="service.auto_push.socket_dir")
+    label.field(data-field="rtmp_services[].auto_push.secret_file")
+      span Shared secret file
+      input(type="text" v-model="service.auto_push.secret_file")
+    label.field(data-field="rtmp_services[].auto_push.reconnect_ms")
+      span Reconnect interval (ms)
+      input(type="number" min="1" max="300000" step="1" v-model.number="service.auto_push.reconnect_ms")
+    label.field(data-field="rtmp_services[].auto_push.connect_timeout_ms")
+      span Connect timeout (ms)
+      input(type="number" min="1" max="30000" step="1" v-model.number="service.auto_push.connect_timeout_ms")
+    label.field(data-field="rtmp_services[].auto_push.handshake_timeout_ms")
+      span Handshake timeout (ms)
+      input(type="number" min="1" max="30000" step="1" v-model.number="service.auto_push.handshake_timeout_ms")
+    label.field(data-field="rtmp_services[].auto_push.max_peers")
+      span Maximum workers
+      input(type="number" min="1" max="64" step="1" v-model.number="service.auto_push.max_peers")
+    label.field(data-field="rtmp_services[].auto_push.max_queue_messages")
+      span Queue messages
+      input(type="number" min="1" max="4096" step="1" v-model.number="service.auto_push.max_queue_messages")
+    label.field(data-field="rtmp_services[].auto_push.max_queue_bytes")
+      span Queue bytes
+      input(type="number" min="1" max="67108864" step="1" v-model.number="service.auto_push.max_queue_bytes")
+    label.field(data-field="rtmp_services[].auto_push.max_streams")
+      span Maximum streams
+      input(type="number" min="1" max="4096" step="1" v-model.number="service.auto_push.max_streams")
 fieldset.object-block(data-field="rtmp_services[].outbound_policy")
   legend Outbound relay policy
   .field-grid

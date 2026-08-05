@@ -591,6 +591,7 @@ fn runtime_config(
             access_log: None,
             outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
             callbacks: oxiroute_config::RtmpCallbackConfig::default(),
+            auto_push: oxiroute_config::RtmpAutoPushPolicy::default(),
             exec_profiles: Vec::new(),
             applications: vec![
                 application("continuous", RtmpRecorderStart::Continuous, continuous_root),
@@ -624,6 +625,7 @@ fn idle_runtime_config(management_address: SocketAddr, rtmp_address: SocketAddr)
             access_log: None,
             outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
             callbacks: oxiroute_config::RtmpCallbackConfig::default(),
+            auto_push: oxiroute_config::RtmpAutoPushPolicy::default(),
             exec_profiles: Vec::new(),
             applications: vec![RtmpApplication {
                 name: "live".into(),
@@ -733,6 +735,7 @@ fn handoff_runtime_config(
             access_log: None,
             outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
             callbacks: oxiroute_config::RtmpCallbackConfig::default(),
+            auto_push: oxiroute_config::RtmpAutoPushPolicy::default(),
             exec_profiles: Vec::new(),
             applications: vec![RtmpApplication {
                 name: "live".into(),

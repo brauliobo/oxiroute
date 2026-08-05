@@ -191,6 +191,7 @@ fn recording_config(root_directory: &std::path::Path, start: RtmpRecorderStart) 
             access_log: None,
             outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
             callbacks: oxiroute_config::RtmpCallbackConfig::default(),
+            auto_push: oxiroute_config::RtmpAutoPushPolicy::default(),
             exec_profiles: Vec::new(),
             applications: vec![RtmpApplication {
                 name: "broadcast".into(),

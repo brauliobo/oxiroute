@@ -357,7 +357,12 @@ fn serves_active_topology_with_name_joined_runtime_overlays() {
             "allowedDnsNameCount": 1,
         })
     );
-    assert!(!status.body.windows("client-ca.pem".len()).any(|window| window == b"client-ca.pem"));
+    assert!(
+        !status
+            .body
+            .windows("client-ca.pem".len())
+            .any(|window| window == b"client-ca.pem")
+    );
     assert_eq!(api.handle("POST", "/api/v1/topology", 100).status, 405);
 
     web.mark_failed();
@@ -607,6 +612,7 @@ fn topology_config(temp: &TempDir) -> Config {
             access_log: None,
             outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
             callbacks: oxiroute_config::RtmpCallbackConfig::default(),
+            auto_push: oxiroute_config::RtmpAutoPushPolicy::default(),
             exec_profiles: Vec::new(),
             applications: vec![RtmpApplication {
                 name: "live".into(),

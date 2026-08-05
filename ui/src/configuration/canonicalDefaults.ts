@@ -4,6 +4,7 @@ import type {
   ForwardHttpVersion,
   ForwardProxyServiceConfig,
   HttpCachePolicyConfig,
+  RtmpAutoPushConfig,
 } from '../config'
 
 export const CACHE_STALE_TRIGGERS = [
@@ -133,6 +134,21 @@ export function defaultRtmpCallback() {
     notify_update_timeout_ms: 30_000,
     notify_update_strict: false,
     notify_relay_redirect: false,
+  }
+}
+
+export function defaultRtmpAutoPush(): RtmpAutoPushConfig {
+  return {
+    enabled: false,
+    socket_dir: '/tmp/oxiroute-rtmp',
+    secret_file: null,
+    reconnect_ms: 100,
+    connect_timeout_ms: 500,
+    handshake_timeout_ms: 2_000,
+    max_peers: 8,
+    max_queue_messages: 256,
+    max_queue_bytes: 8_388_608,
+    max_streams: 1_024,
   }
 }
 

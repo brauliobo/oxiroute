@@ -148,3 +148,57 @@ fn dash_rejects_malformed_duration_quota_and_unknown_fields() {
     }));
     assert!(unknown.is_err());
 }
+
+#[test]
+fn auto_push_defaults_are_bounded_and_rendered() {
+    let mut config: oxiroute_config::Config = serde_json::from_value(json!({
+        "version": 1,
+        "listeners": [],
+        "rtmp_services": [{
+            "name": "live",
+            "auto_push": {
+                "enabled": true,
+                "socket_dir": "/var/run/oxiroute/rtmp",
+                "reconnect_ms": 250
+            },
+            "applications": [{"name": "broadcast", "live": true}]
+        }]
+    }))
+    .expect("valid typed configuration");
+
+    validate_config(&mut config).expect("bounded auto-push configuration");
+    let policy = &config.rtmp_services[0].auto_push;
+    assert!(policy.enabled);
+    assert_eq!(policy.reconnect_ms, 250);
+    assert_eq!(policy.max_peers, 8);
+    assert_eq!(policy.max_queue_bytes, 8 * 1024 * 1024);
+    let lua = render_lua(&config).expect("rendered auto-push configuration");
+    assert!(lua.contains("auto_push = {"));
+    assert!(lua.contains("socket_dir = \"/var/run/oxiroute/rtmp\""));
+}
+
+#[test]
+fn auto_push_rejects_unsafe_paths_and_zero_bounds() {
+    let mut invalid: oxiroute_config::Config = serde_json::from_value(json!({
+        "version": 1,
+        "listeners": [],
+        "rtmp_services": [{
+            "name": "live",
+            "auto_push": {
+                "enabled": true,
+                "socket_dir": "relative",
+                "max_peers": 0
+            },
+            "applications": [{"name": "broadcast", "live": true}]
+        }]
+    }))
+    .expect("typed configuration");
+
+    assert!(matches!(
+        validate_config(&mut invalid),
+        Err(ConfigError::InvalidRtmpServicePolicy {
+            field: "auto_push.socket_dir",
+            ..
+        })
+    ));
+}

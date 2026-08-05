@@ -212,7 +212,10 @@ fn reports_http3_only_when_a_listener_is_active() {
 
     assert_eq!(response.status, 200);
     assert_eq!(body["http3"]["reverse"]["status"], "active");
-    assert_eq!(body["http3"]["reverse"]["listeners"], serde_json::json!(["reverse-h3"]));
+    assert_eq!(
+        body["http3"]["reverse"]["listeners"],
+        serde_json::json!(["reverse-h3"])
+    );
     assert_eq!(body["http3"]["reverse"]["fallback"], "none");
     assert_eq!(body["http3"]["forward"]["status"], "unconfigured");
 }
@@ -251,7 +254,10 @@ async fn serves_authenticated_vod_objects_and_single_ranges() {
         harness.address,
         "GET",
         path,
-        &[("Authorization", authorization.as_str()), ("Range", "bytes=2-5")],
+        &[
+            ("Authorization", authorization.as_str()),
+            ("Range", "bytes=2-5"),
+        ],
         &[],
     )
     .await;
@@ -298,8 +304,10 @@ async fn serves_authenticated_dash_manifests_segments_and_single_ranges() {
     publisher.publish_audio(0, &[0xaf, 0, 0x12, 0x10], 1_001);
     publisher.publish_video(
         0,
-        &[0x17, 0, 0, 0, 0, 1, 0x42, 0, 0x1e, 0xff, 0xe1, 0, 4, 0x67, 0x42, 0, 0x1e, 1,
-            0, 2, 0x68, 0xce],
+        &[
+            0x17, 0, 0, 0, 0, 1, 0x42, 0, 0x1e, 0xff, 0xe1, 0, 4, 0x67, 0x42, 0, 0x1e, 1, 0, 2,
+            0x68, 0xce,
+        ],
         1_002,
     );
     publisher.publish_video(0, &[0x17, 1, 0, 0, 0, 0, 0, 0, 2, 0x65, 1], 1_003);
@@ -314,10 +322,16 @@ async fn serves_authenticated_dash_manifests_segments_and_single_ranges() {
         if response.status == 200 {
             break response;
         }
-        assert!(Instant::now() < deadline, "DASH manifest publication timeout");
+        assert!(
+            Instant::now() < deadline,
+            "DASH manifest publication timeout"
+        );
         tokio::time::sleep(Duration::from_millis(10)).await;
     };
-    assert_eq!(manifest.header("content-type"), Some("application/dash+xml"));
+    assert_eq!(
+        manifest.header("content-type"),
+        Some("application/dash+xml")
+    );
     let manifest_body = String::from_utf8(manifest.body.clone()).expect("MPD UTF-8");
     assert!(manifest_body.contains("seg-0.m4s"));
     assert!(manifest_body.contains("type=\"dynamic\""));
@@ -333,15 +347,20 @@ async fn serves_authenticated_dash_manifests_segments_and_single_ranges() {
         harness.address,
         "GET",
         segment_path,
-        &[("Authorization", authorization.as_str()), ("Range", "bytes=0-7")],
+        &[
+            ("Authorization", authorization.as_str()),
+            ("Range", "bytes=0-7"),
+        ],
         &[],
     )
     .await;
     assert_eq!(ranged.status, 206);
     assert_eq!(ranged.body().len(), 8);
-    assert!(ranged
-        .header("content-range")
-        .is_some_and(|value| value.starts_with("bytes 0-7/")));
+    assert!(
+        ranged
+            .header("content-range")
+            .is_some_and(|value| value.starts_with("bytes 0-7/"))
+    );
 }
 
 #[test]
@@ -883,6 +902,7 @@ async fn config_api_redacts_rtmp_token_secrets_from_typed_and_rendered_views() {
         access_log: None,
         outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
         callbacks: oxiroute_config::RtmpCallbackConfig::default(),
+        auto_push: oxiroute_config::RtmpAutoPushPolicy::default(),
         exec_profiles: Vec::new(),
         applications: vec![RtmpApplication {
             name: "broadcast".into(),
@@ -1371,6 +1391,7 @@ fn candidate_config(active: &Config, listener_name: &str) -> Config {
         access_log: None,
         outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
         callbacks: oxiroute_config::RtmpCallbackConfig::default(),
+        auto_push: oxiroute_config::RtmpAutoPushPolicy::default(),
         exec_profiles: Vec::new(),
         applications: vec![RtmpApplication {
             name: "broadcast".into(),
@@ -1422,21 +1443,25 @@ impl ManagementHarness {
         let disk_revision = document.disk_revision.clone();
         let plan = runtime_plan(config).expect("active runtime plan");
         let registry = Arc::new(RtmpRegistry::new(plan.rtmp_capabilities));
-        let rtmp_runtime = plan.services.iter().find_map(|service| match &service.kind {
-            ServiceKind::Rtmp(service) => Some(
-                service
-                    .runtime(Arc::clone(&registry))
-                    .expect("RTMP test runtime"),
-            ),
-            _ => None,
-        });
+        let rtmp_runtime = plan
+            .services
+            .iter()
+            .find_map(|service| match &service.kind {
+                ServiceKind::Rtmp(service) => Some(
+                    service
+                        .runtime(Arc::clone(&registry))
+                        .expect("RTMP test runtime"),
+                ),
+                _ => None,
+            });
         let metrics = RuntimeMetrics::new();
         metrics.set_rtmp_recording_supported(plan.rtmp_recording_supported);
-        let api = RtmpManagementApi::new(Arc::clone(&registry), metrics, Arc::clone(&plan.topology))
-            .with_config_coordinator(coordinator, active_revision.clone(), TEST_TOKEN)
-            .expect("injected management token")
-            .with_vod_catalog(Arc::clone(&plan.rtmp_vod_catalog))
-            .with_media_catalog(Arc::clone(&plan.rtmp_media_catalog));
+        let api =
+            RtmpManagementApi::new(Arc::clone(&registry), metrics, Arc::clone(&plan.topology))
+                .with_config_coordinator(coordinator, active_revision.clone(), TEST_TOKEN)
+                .expect("injected management token")
+                .with_vod_catalog(Arc::clone(&plan.rtmp_vod_catalog))
+                .with_media_catalog(Arc::clone(&plan.rtmp_media_catalog));
 
         let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .expect("reserve management listener");

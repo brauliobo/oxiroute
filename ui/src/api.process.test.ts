@@ -222,6 +222,18 @@ describe('production API client against the built management process', () => {
               notify_update_strict: false,
               notify_relay_redirect: false,
             },
+            auto_push: {
+              enabled: false,
+              socket_dir: '/tmp/oxiroute-rtmp',
+              secret_file: null,
+              reconnect_ms: 100,
+              connect_timeout_ms: 500,
+              handshake_timeout_ms: 2_000,
+              max_peers: 8,
+              max_queue_messages: 256,
+              max_queue_bytes: 8_388_608,
+              max_streams: 1_024,
+            },
             exec_profiles: [],
             applications: [{
             name: 'broadcast',
