@@ -46,6 +46,7 @@ use crate::defaults::{
     default_rtmp_dash_max_storage_bytes, default_rtmp_dash_max_storage_files,
     default_rtmp_dash_segment_duration_ms,
     default_rtmp_hls_segment_duration_ms, default_acme_dns01_timeout_seconds,
+    default_acme_retained_revisions, default_acme_retention_days,
     default_proxy_protocol_timeout_ms, default_self_signed_validity_days, default_true,
     default_udp_max_datagram_bytes, default_udp_max_queue_bytes, default_udp_max_queue_datagrams,
     default_udp_max_session_bytes, default_udp_max_sessions, default_unhealthy_threshold,
@@ -106,6 +107,10 @@ pub enum CertificateSource {
         state_root: PathBuf,
         #[serde(default)]
         contacts: Vec<String>,
+        #[serde(default = "default_acme_retained_revisions")]
+        retained_revisions: u32,
+        #[serde(default = "default_acme_retention_days")]
+        retention_days: u32,
         terms_agreed: bool,
         #[serde(default)]
         challenge: AcmeChallengeType,
@@ -2448,6 +2453,8 @@ pub enum ConfigError {
     InvalidAcmeDns01Provider { certificate: String },
     #[error("managed ACME certificate `{certificate}` has an invalid DNS-01 credential file")]
     InvalidAcmeDns01Credentials { certificate: String },
+    #[error("managed ACME certificate `{certificate}` has invalid revision retention")]
+    InvalidAcmeRetention { certificate: String },
     #[error("managed ACME certificate `{certificate}` has an invalid DNS-01 timeout")]
     InvalidAcmeDns01Timeout { certificate: String },
     #[error("managed ACME certificate `{certificate}` has invalid contacts")]

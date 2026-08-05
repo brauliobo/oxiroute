@@ -67,6 +67,8 @@ const DEFAULT_FORWARD_RESOLVER_CONCURRENT_QUERIES: u64 = 256;
 const DEFAULT_FORWARD_RESOLVER_MAX_ADDRESSES: u64 = 16;
 const DEFAULT_FORWARD_RESOLVER_MIN_TTL_MS: u64 = 1_000;
 const DEFAULT_FORWARD_RESOLVER_MAX_TTL_MS: u64 = 300_000;
+const DEFAULT_ACME_RETAINED_REVISIONS: u32 = 3;
+const DEFAULT_ACME_RETENTION_DAYS: u32 = 30;
 const DEFAULT_FORWARD_RESOLVER_NEGATIVE_TTL_MS: u64 = 30_000;
 const DEFAULT_UDP_MAX_DATAGRAM_BYTES: u64 = 16 * 1024;
 const DEFAULT_UDP_MAX_SESSIONS: u64 = 4_096;
@@ -82,6 +84,8 @@ pub(crate) const MAX_HEALTH_TIMEOUT_MS: u64 = 30_000;
 pub(crate) const MAX_HEALTH_THRESHOLD: u16 = 100;
 pub(crate) const MAX_HEALTH_HOST_BYTES: usize = 255;
 pub(crate) const MAX_HEALTH_PATH_BYTES: usize = 2_048;
+pub(crate) const MAX_ACME_RETAINED_REVISIONS: u32 = 32;
+pub(crate) const MAX_ACME_RETENTION_DAYS: u32 = 3_650;
 pub(crate) const MAX_CERTIFICATES: usize = 256;
 pub(crate) const MAX_CERTIFICATE_DNS_NAMES: usize = 100;
 pub(crate) const MAX_ACME_CONTACTS: usize = 8;
@@ -304,6 +308,14 @@ pub(crate) const fn default_rtmp_dash_max_active_streams() -> u64 {
 
 pub(crate) const fn default_self_signed_validity_days() -> u32 {
     7
+}
+
+pub(crate) const fn default_acme_retained_revisions() -> u32 {
+    DEFAULT_ACME_RETAINED_REVISIONS
+}
+
+pub(crate) const fn default_acme_retention_days() -> u32 {
+    DEFAULT_ACME_RETENTION_DAYS
 }
 
 pub(crate) const fn default_upstream_io_timeout_ms() -> u64 {

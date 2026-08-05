@@ -245,6 +245,8 @@ impl Renderer {
                 terms_agreed,
                 challenge,
                 key_type,
+                retained_revisions,
+                retention_days,
                 allowed_dns_suffixes,
                 dns01,
             } => {
@@ -271,6 +273,8 @@ impl Renderer {
                         crate::model::AcmeKeyType::Rsa2048 => "rsa_2048",
                     },
                 );
+                self.integer_field("retained_revisions", u64::from(*retained_revisions));
+                self.integer_field("retention_days", u64::from(*retention_days));
                 self.string_list_field("allowed_dns_suffixes", allowed_dns_suffixes);
                 match dns01 {
                     Some(dns01) => {

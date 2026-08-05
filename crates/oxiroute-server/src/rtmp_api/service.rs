@@ -453,7 +453,7 @@ impl RtmpManagementApi {
         if let Some(route) = management::match_route(&path_and_query) {
             if let (Some(config), Some(management)) = (&self.config, &self.management) {
                 let _ = config;
-                let response = management.handle(route, &method, session).await;
+                let response = management.handle(route, &method, session, &context).await;
                 self.audit_api_operation(&method, &path, &context, &response);
                 return response.with_correlation(context.correlation_id);
             }
@@ -824,6 +824,14 @@ fn audited_api_operation(method: &str, path: &str) -> Option<(&'static str, Audi
         "/api/v1/generations/drain" => ("generation_drain", AuditCategory::Reload),
         "/api/v1/tls/reconcile" => ("certificate_reconcile", AuditCategory::Certificate),
         "/api/v1/tls/renew" => ("certificate_renew", AuditCategory::Certificate),
+        "/api/v1/tls/revoke" => ("certificate_revoke", AuditCategory::Certificate),
+        "/api/v1/tls/delete" => ("certificate_delete", AuditCategory::Certificate),
+        "/api/v1/tls/account/rollover" => {
+            ("account_key_rollover", AuditCategory::Certificate)
+        }
+        "/api/v1/tls/jobs/cancel"
+        | "/api/v1/tls/jobs/pause"
+        | "/api/v1/tls/jobs/resume" => ("certificate_job_control", AuditCategory::Certificate),
         "/api/v1/process/drain" => ("process_drain", AuditCategory::Control),
         "/api/v1/process/shutdown" => ("process_shutdown", AuditCategory::Control),
         "/api/v1/listeners/administrative-state" => ("listener_control", AuditCategory::Control),

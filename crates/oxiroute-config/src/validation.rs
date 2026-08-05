@@ -9,7 +9,8 @@ use http::{Uri, uri::PathAndQuery};
 use crate::{
     defaults::{
         MAX_ACME_CONTACTS, MAX_ACME_DIRECTORY_URL_BYTES, MAX_ACME_DNS01_PROVIDER_BYTES,
-        MAX_ACME_DNS01_TIMEOUT_SECONDS, MAX_ACME_DNS_SUFFIXES,
+        MAX_ACME_DNS01_TIMEOUT_SECONDS, MAX_ACME_DNS_SUFFIXES, MAX_ACME_RETAINED_REVISIONS,
+        MAX_ACME_RETENTION_DAYS,
         MAX_CERTIFICATE_DNS_NAMES, MAX_CERTIFICATES, MAX_ENDPOINTS_PER_POOL, MAX_HEALTH_HOST_BYTES,
         MAX_HEALTH_INTERVAL_MS, MAX_HEALTH_PATH_BYTES, MAX_HEALTH_THRESHOLD, MAX_HEALTH_TIMEOUT_MS,
         MAX_HTTP_TIMEOUT_MS, MAX_PROXY_PROTOCOL_TIMEOUT_MS, MAX_RECORDER_ACTIVE_RECORDERS,
@@ -309,6 +310,8 @@ fn validate_certificates(certificates: &mut [Certificate]) -> Result<(), ConfigE
             }
             CertificateSource::AcmeManaged {
                 directory_url,
+                retained_revisions,
+                retention_days,
                 state_root,
                 contacts,
                 terms_agreed,
@@ -322,6 +325,8 @@ fn validate_certificates(certificates: &mut [Certificate]) -> Result<(), ConfigE
                     directory_url,
                     state_root,
                     contacts,
+                    *retained_revisions,
+                    *retention_days,
                     *terms_agreed,
                     *challenge,
                     allowed_dns_suffixes,
@@ -352,6 +357,8 @@ fn validate_acme_source(
     directory_url: &str,
     state_root: &Path,
     contacts: &[String],
+    retained_revisions: u32,
+    retention_days: u32,
     terms_agreed: bool,
     challenge: crate::model::AcmeChallengeType,
     allowed_dns_suffixes: &[String],
@@ -433,6 +440,15 @@ fn validate_acme_source(
     }
     if allowed_dns_suffixes.is_empty() || allowed_dns_suffixes.len() > MAX_ACME_DNS_SUFFIXES {
         return Err(ConfigError::InvalidAcmeDnsSuffixes {
+            certificate: certificate.name.clone(),
+        });
+    }
+    if retained_revisions == 0
+        || retained_revisions > MAX_ACME_RETAINED_REVISIONS
+        || retention_days == 0
+        || retention_days > MAX_ACME_RETENTION_DAYS
+    {
+        return Err(ConfigError::InvalidAcmeRetention {
             certificate: certificate.name.clone(),
         });
     }

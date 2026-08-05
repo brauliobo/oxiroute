@@ -250,6 +250,8 @@ pub fn prepare_tls_with_dns01_providers(
                     challenge,
                     key_type,
                     allowed_dns_suffixes,
+                    retained_revisions,
+                    retention_days,
                     state_root,
                     dns01,
                     ..
@@ -311,6 +313,8 @@ pub fn prepare_tls_with_dns01_providers(
                             challenge: *challenge,
                             key_type: *key_type,
                             allowed_dns_suffixes: allowed_dns_suffixes.clone(),
+                            retained_revisions: *retained_revisions,
+                            retention_days: *retention_days,
                             dns01: dns01.clone(),
                         }),
                         dns_provider,

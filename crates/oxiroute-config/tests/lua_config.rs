@@ -689,6 +689,7 @@ fn managed_acme_source_round_trips_and_rejects_unsafe_policy_values() {
             "allowed_dns_suffixes",
             "allowed_dns_suffixes = { \"other.test\" }",
         ),
+        ("retained_revisions", "retained_revisions = 0"),
     ] {
         let error = load_lua(&with_acme_source(value)).expect_err("invalid managed ACME source");
         assert!(
@@ -699,6 +700,10 @@ fn managed_acme_source_round_trips_and_rejects_unsafe_policy_values() {
                     | (
                         "allowed_dns_suffixes",
                         ConfigError::AcmeIdentifierOutsidePolicy { .. }
+                    )
+                    | (
+                        "retained_revisions",
+                        ConfigError::InvalidAcmeRetention { .. }
                     )
             ),
             "unexpected error for {field}: {error:?}"

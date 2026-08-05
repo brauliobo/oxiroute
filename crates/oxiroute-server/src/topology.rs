@@ -1025,6 +1025,8 @@ fn certificate_source(source: &CertificateSource) -> Value {
             key_type,
             allowed_dns_suffixes,
             dns01,
+            retained_revisions,
+            retention_days,
         } => json!({
             "type": "acme_managed",
             "directoryUrl": directory_url,
@@ -1041,6 +1043,8 @@ fn certificate_source(source: &CertificateSource) -> Value {
                 oxiroute_config::AcmeKeyType::Rsa2048 => "rsa_2048",
             },
             "allowedDnsSuffixCount": allowed_dns_suffixes.len(),
+            "retainedRevisions": retained_revisions,
+            "retentionDays": retention_days,
             "dnsProvider": dns01.as_ref().map(|dns01| &dns01.provider),
         }),
         CertificateSource::SelfSignedDevelopment {

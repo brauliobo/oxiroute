@@ -17,13 +17,13 @@ use openssl::{
     rsa::Rsa,
     sign::Signer,
     stack::Stack,
-    x509::{extension::SubjectAlternativeName, X509NameBuilder, X509Req, X509ReqBuilder},
+    x509::{extension::SubjectAlternativeName, X509NameBuilder, X509Req, X509ReqBuilder, X509},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
 
-use crate::{Clock, Dns01Challenge, SecretBytes};
+use crate::{Clock, Dns01Cancellation, Dns01Challenge, SecretBytes};
 
 pub const MAX_ACME_BODY_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_ACME_URL_BYTES: usize = 2_048;
@@ -144,12 +144,22 @@ pub enum AcmeError {
     UnsupportedChallenge,
     #[error("ACME polling exceeded its bounded deadline")]
     PollTimeout,
+    #[error("ACME operation was cancelled")]
+    Cancelled,
     #[error("ACME retry guidance is invalid")]
     InvalidRetryAfter,
     #[error("ACME request exceeds the {limit}-byte bound")]
     RequestTooLarge { limit: usize },
     #[error("ACME account key could not be generated or used")]
     Key(#[source] ErrorStack),
+    #[error("ACME directory does not advertise certificate revocation")]
+    RevocationUnsupported,
+    #[error("ACME directory does not advertise account key rollover")]
+    KeyChangeUnsupported,
+    #[error("ACME certificate PEM is invalid")]
+    InvalidCertificate,
+    #[error("ACME revocation reason is invalid")]
+    InvalidRevocationReason,
     #[error("ACME JWS signature could not be created")]
     Signature(#[source] ErrorStack),
     #[error("ACME CSR could not be created")]
@@ -502,12 +512,13 @@ pub struct Http01Challenge {
     pub key_authorization: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct PollPolicy {
     pub max_attempts: usize,
     pub deadline_unix_seconds: u64,
     pub initial_delay_seconds: u64,
     pub max_delay_seconds: u64,
+    pub cancellation: Option<Dns01Cancellation>,
 }
 
 impl Default for PollPolicy {
@@ -517,6 +528,7 @@ impl Default for PollPolicy {
             deadline_unix_seconds: u64::MAX,
             initial_delay_seconds: 1,
             max_delay_seconds: MAX_POLL_DELAY_SECONDS,
+            cancellation: None,
         }
     }
 }
@@ -627,27 +639,85 @@ impl<T: AcmeTransport> AcmeClient<T> {
             .header("location")
             .ok_or(AcmeError::MissingField)?
             .to_owned();
-        self.policy.permits(&url)?;
         let value = bounded_json(&response.body, MAX_ACME_BODY_BYTES)?;
-        let status = required_string(&value, "status")?;
-        validate_account_status(&status)?;
-        let contacts = string_array(&value, "contact")?;
-        validate_account_contacts(&contacts)?;
-        let response_terms = value
-            .get("termsOfServiceAgreed")
-            .and_then(Value::as_bool)
-            .ok_or(AcmeError::MalformedResponse)?;
-        if request.terms_agreed && !response_terms {
-            return Err(AcmeError::TermsNotAgreed);
-        }
-        let account = Account {
-            url,
-            status,
-            contacts,
-            terms_agreed: response_terms,
-        };
+        let account = parse_account(&value, url, &self.policy, request.terms_agreed)?;
         self.account = Some(account.clone());
         Ok(account)
+    }
+
+    /// Revokes one leaf certificate using the configured account.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the directory does not advertise revocation, the PEM is malformed,
+    /// the reason is unsupported, or the ACME response is unsuccessful.
+    pub fn revoke_certificate(
+        &mut self,
+        certificate_pem: &[u8],
+        reason: Option<u8>,
+    ) -> Result<(), AcmeError> {
+        if reason.is_some_and(|reason| reason > 8) {
+            return Err(AcmeError::InvalidRevocationReason);
+        }
+        let endpoint = self
+            .directory
+            .document
+            .revoke_certificate
+            .as_deref()
+            .ok_or(AcmeError::RevocationUnsupported)?
+            .to_owned();
+        let certificates =
+            X509::stack_from_pem(certificate_pem).map_err(|_| AcmeError::InvalidCertificate)?;
+        let [certificate] = certificates.as_slice() else {
+            return Err(AcmeError::InvalidCertificate);
+        };
+        let certificate = certificate
+            .to_der()
+            .map_err(|_| AcmeError::InvalidCertificate)?;
+        let mut payload = serde_json::Map::new();
+        payload.insert(
+            "certificate".into(),
+            Value::String(URL_SAFE_NO_PAD.encode(certificate)),
+        );
+        if let Some(reason) = reason {
+            payload.insert("reason".into(), Value::from(reason));
+        }
+        let response = self.signed_account_request(&endpoint, &Value::Object(payload))?;
+        if response.status != 200 {
+            return Err(problem_or_status(&response));
+        }
+        Ok(())
+    }
+
+    /// Performs RFC 8555 account key rollover and installs the new key only after the CA accepts it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the directory does not advertise key rollover, the account response is
+    /// malformed, or the nested JWS request is rejected.
+    pub fn rollover_account_key(&mut self, new_key: AccountKey) -> Result<Account, AcmeError> {
+        let endpoint = self
+            .directory
+            .document
+            .key_change
+            .as_deref()
+            .ok_or(AcmeError::KeyChangeUnsupported)?
+            .to_owned();
+        let account = self.account.clone().ok_or(AcmeError::MissingField)?;
+        let inner_payload = json!({
+            "account": account.url,
+            "oldKey": self.key.jwk(),
+        });
+        let response =
+            self.key_change_request(&endpoint, &inner_payload, &new_key, &account.url)?;
+        if response.status != 200 {
+            return Err(problem_or_status(&response));
+        }
+        let value = bounded_json(&response.body, MAX_ACME_BODY_BYTES)?;
+        let replacement = parse_account(&value, account.url, &self.policy, account.terms_agreed)?;
+        self.key = new_key;
+        self.account = Some(replacement.clone());
+        Ok(replacement)
     }
 
     /// Creates an order for exactly the normalized configured DNS identifier set.
@@ -775,6 +845,13 @@ impl<T: AcmeTransport> AcmeClient<T> {
     ) -> Result<Authorization, AcmeError> {
         let (max_attempts, mut delay, max_delay) = bounded_poll_policy(poll);
         for attempt in 0..max_attempts {
+            if poll
+                .cancellation
+                .as_ref()
+                .is_some_and(Dns01Cancellation::is_cancelled)
+            {
+                return Err(AcmeError::Cancelled);
+            }
             if self.clock.now_unix_seconds() > poll.deadline_unix_seconds {
                 return Err(AcmeError::PollTimeout);
             }
@@ -786,6 +863,13 @@ impl<T: AcmeTransport> AcmeClient<T> {
                 | AuthorizationStatus::Revoked
                 | AuthorizationStatus::Valid => return Ok(authorization),
                 AuthorizationStatus::Pending | AuthorizationStatus::Processing => {}
+            }
+            if poll
+                .cancellation
+                .as_ref()
+                .is_some_and(Dns01Cancellation::is_cancelled)
+            {
+                return Err(AcmeError::Cancelled);
             }
             if attempt + 1 == max_attempts {
                 return Err(AcmeError::PollTimeout);
@@ -799,6 +883,13 @@ impl<T: AcmeTransport> AcmeClient<T> {
                 > poll.deadline_unix_seconds
             {
                 return Err(AcmeError::PollTimeout);
+            }
+            if poll
+                .cancellation
+                .as_ref()
+                .is_some_and(Dns01Cancellation::is_cancelled)
+            {
+                return Err(AcmeError::Cancelled);
             }
             self.clock.sleep_seconds(effective_delay);
             delay = effective_delay.saturating_mul(2).min(max_delay);
@@ -829,6 +920,13 @@ impl<T: AcmeTransport> AcmeClient<T> {
     pub fn poll_order(&mut self, url: &str, poll: &PollPolicy) -> Result<Order, AcmeError> {
         let (max_attempts, mut delay, max_delay) = bounded_poll_policy(poll);
         for attempt in 0..max_attempts {
+            if poll
+                .cancellation
+                .as_ref()
+                .is_some_and(Dns01Cancellation::is_cancelled)
+            {
+                return Err(AcmeError::Cancelled);
+            }
             if self.clock.now_unix_seconds() > poll.deadline_unix_seconds {
                 return Err(AcmeError::PollTimeout);
             }
@@ -856,6 +954,13 @@ impl<T: AcmeTransport> AcmeClient<T> {
                     > poll.deadline_unix_seconds
             {
                 return Err(AcmeError::PollTimeout);
+            }
+            if poll
+                .cancellation
+                .as_ref()
+                .is_some_and(Dns01Cancellation::is_cancelled)
+            {
+                return Err(AcmeError::Cancelled);
             }
             self.clock.sleep_seconds(effective_delay);
             delay = effective_delay.saturating_mul(2).min(max_delay);
@@ -944,16 +1049,25 @@ impl<T: AcmeTransport> AcmeClient<T> {
         payload: &Value,
         protected_key: ProtectedKey<'_>,
     ) -> Result<Vec<u8>, AcmeError> {
+        Self::jws_with_key(&self.key, url, nonce, payload, protected_key)
+    }
+
+    fn jws_with_key(
+        key: &AccountKey,
+        url: &str,
+        nonce: String,
+        payload: &Value,
+        protected_key: ProtectedKey<'_>,
+    ) -> Result<Vec<u8>, AcmeError> {
         let mut protected = BTreeMap::new();
-        protected.insert("alg", Value::String(self.key.protected_algorithm().into()));
+        protected.insert("alg", Value::String(key.protected_algorithm().into()));
         protected.insert("nonce", Value::String(nonce));
         protected.insert("url", Value::String(url.into()));
         match protected_key {
             ProtectedKey::Jwk => {
                 protected.insert(
                     "jwk",
-                    serde_json::to_value(self.key.jwk())
-                        .map_err(|_| AcmeError::MalformedResponse)?,
+                    serde_json::to_value(key.jwk()).map_err(|_| AcmeError::MalformedResponse)?,
                 );
             }
             ProtectedKey::Kid(kid) => {
@@ -969,13 +1083,59 @@ impl<T: AcmeTransport> AcmeClient<T> {
                 .encode(serde_json::to_vec(payload).map_err(|_| AcmeError::MalformedResponse)?)
         };
         let signing_input = format!("{protected}.{payload}");
-        let signature = URL_SAFE_NO_PAD.encode(self.key.sign(signing_input.as_bytes())?);
+        let signature = URL_SAFE_NO_PAD.encode(key.sign(signing_input.as_bytes())?);
         serde_json::to_vec(&json!({
             "protected": protected,
             "payload": payload,
             "signature": signature,
         }))
         .map_err(|_| AcmeError::MalformedResponse)
+    }
+
+    fn key_change_request(
+        &mut self,
+        url: &str,
+        inner_payload: &Value,
+        new_key: &AccountKey,
+        account_url: &str,
+    ) -> Result<HttpResponse, AcmeError> {
+        let mut retried_bad_nonce = false;
+        loop {
+            let nonce = self.take_nonce()?;
+            let inner = Self::jws_with_key(
+                new_key,
+                url,
+                nonce.clone(),
+                inner_payload,
+                ProtectedKey::Jwk,
+            )?;
+            let inner = serde_json::from_slice::<Value>(&inner)
+                .map_err(|_| AcmeError::MalformedResponse)?;
+            let body = self.jws(url, nonce, &inner, ProtectedKey::Kid(account_url))?;
+            if body.len() > MAX_ACME_BODY_BYTES {
+                return Err(AcmeError::RequestTooLarge {
+                    limit: MAX_ACME_BODY_BYTES,
+                });
+            }
+            let mut request = HttpRequest::new("POST", url, body);
+            request
+                .headers
+                .insert("content-type".into(), "application/jose+json".into());
+            let response = self
+                .transport
+                .request(request)
+                .map_err(AcmeError::Transport)?;
+            validate_response_url(url, &response, &self.policy)?;
+            self.record_nonce(&response)?;
+            if is_bad_nonce(&response) {
+                if retried_bad_nonce {
+                    return Err(AcmeError::BadNonceRetryExhausted);
+                }
+                retried_bad_nonce = true;
+                continue;
+            }
+            return Ok(response);
+        }
     }
 
     fn take_nonce(&mut self) -> Result<String, AcmeError> {
@@ -1164,6 +1324,32 @@ fn validate_account_status(status: &str) -> Result<(), AcmeError> {
         }),
         _ => Err(AcmeError::MalformedResponse),
     }
+}
+
+fn parse_account(
+    value: &Value,
+    url: String,
+    policy: &OriginPolicy,
+    terms_requested: bool,
+) -> Result<Account, AcmeError> {
+    policy.permits(&url)?;
+    let status = required_string(value, "status")?;
+    validate_account_status(&status)?;
+    let contacts = string_array(value, "contact")?;
+    validate_account_contacts(&contacts)?;
+    let terms_agreed = value
+        .get("termsOfServiceAgreed")
+        .and_then(Value::as_bool)
+        .ok_or(AcmeError::MalformedResponse)?;
+    if terms_requested && !terms_agreed {
+        return Err(AcmeError::TermsNotAgreed);
+    }
+    Ok(Account {
+        url,
+        status,
+        contacts,
+        terms_agreed,
+    })
 }
 
 fn validate_order_status(status: &str) -> Result<(), AcmeError> {
@@ -1615,6 +1801,14 @@ mod tests {
         )
     }
 
+    fn directory_with_actions(url: &str) -> HttpResponse {
+        HttpResponse::new(
+            200,
+            url,
+            br#"{"newNonce":"https://acme.test/acme/new-nonce","newAccount":"https://acme.test/acme/new-account","newOrder":"https://acme.test/acme/new-order","revokeCert":"https://acme.test/acme/revoke","keyChange":"https://acme.test/acme/key-change","meta":{"termsOfService":"https://acme.test/terms"}}"#.to_vec(),
+        )
+    }
+
     fn account() -> HttpResponse {
         HttpResponse::new(
             201,
@@ -1803,12 +1997,138 @@ mod tests {
     }
 
     #[test]
+    fn account_key_rollover_uses_old_outer_and_new_inner_signatures() {
+        let transport = ScriptedTransport::new([
+            directory_with_actions("https://acme.test/directory"),
+            HttpResponse::new(204, "https://acme.test/acme/new-nonce", Vec::new())
+                .with_header("replay-nonce", "nonce-account"),
+            account(),
+            HttpResponse::new(
+                200,
+                "https://acme.test/acme/key-change",
+                br#"{"status":"valid","contact":["mailto:ops@example.test"],"termsOfServiceAgreed":true}"#.to_vec(),
+            )
+            .with_header("replay-nonce", "nonce-rollover"),
+        ]);
+        let policy = OriginPolicy::strict("https://acme.test/directory").expect("policy");
+        let old_key = AccountKey::generate(AccountKeyAlgorithm::EcdsaP256).expect("old key");
+        let new_key = AccountKey::generate(AccountKeyAlgorithm::Rsa2048).expect("new key");
+        let old_thumbprint = old_key.thumbprint();
+        let mut client = AcmeClient::new(
+            transport.clone(),
+            "https://acme.test/directory",
+            policy,
+            old_key,
+            Arc::new(FakeClock::new(100)),
+        )
+        .expect("client");
+        client
+            .register_account(&AccountRequest {
+                contacts: vec!["mailto:ops@example.test".into()],
+                terms_agreed: true,
+            })
+            .expect("account");
+        client
+            .rollover_account_key(new_key)
+            .expect("rollover account");
+        assert_ne!(client.key.thumbprint(), old_thumbprint);
+
+        let requests = transport.requests();
+        let envelope: Value = serde_json::from_slice(&requests[3].body).expect("outer JWS");
+        let outer_protected = decode_jws_protected(&envelope);
+        assert!(outer_protected.get("kid").is_some());
+        let inner_payload = envelope
+            .get("payload")
+            .and_then(Value::as_str)
+            .expect("inner payload");
+        let inner: Value = serde_json::from_slice(
+            &URL_SAFE_NO_PAD
+                .decode(inner_payload)
+                .expect("inner JWS encoding"),
+        )
+        .expect("inner JWS");
+        let inner_protected = decode_jws_protected(&inner);
+        assert!(inner_protected.get("jwk").is_some());
+        assert!(inner.get("signature").and_then(Value::as_str).is_some());
+    }
+
+    #[test]
+    fn revocation_rejects_unknown_reason_codes() {
+        let transport =
+            ScriptedTransport::new([directory_with_actions("https://acme.test/directory")]);
+        let policy = OriginPolicy::strict("https://acme.test/directory").expect("policy");
+        let key = AccountKey::generate(AccountKeyAlgorithm::EcdsaP256).expect("key");
+        let mut client = AcmeClient::new(
+            transport,
+            "https://acme.test/directory",
+            policy,
+            key,
+            Arc::new(FakeClock::new(100)),
+        )
+        .expect("client");
+        assert!(matches!(
+            client.revoke_certificate(b"not a certificate", Some(9)),
+            Err(AcmeError::InvalidRevocationReason)
+        ));
+    }
+
+    #[test]
+    fn polling_cancellation_stops_before_the_next_request() {
+        let transport = ScriptedTransport::new([directory("https://acme.test/directory")]);
+        let policy = OriginPolicy::strict("https://acme.test/directory").expect("policy");
+        let key = AccountKey::generate(AccountKeyAlgorithm::EcdsaP256).expect("key");
+        let mut client = AcmeClient::new(
+            transport.clone(),
+            "https://acme.test/directory",
+            policy,
+            key,
+            Arc::new(FakeClock::new(100)),
+        )
+        .expect("client");
+        client
+            .set_account(Account {
+                url: "https://acme.test/acme/acct/1".into(),
+                status: "valid".into(),
+                contacts: vec!["mailto:ops@example.test".into()],
+                terms_agreed: true,
+            })
+            .expect("account");
+        let cancellation = Dns01Cancellation::new();
+        cancellation.cancel();
+        assert!(matches!(
+            client.poll_order(
+                "https://acme.test/acme/order/1",
+                &PollPolicy {
+                    cancellation: Some(cancellation),
+                    ..PollPolicy::default()
+                }
+            ),
+            Err(AcmeError::Cancelled)
+        ));
+        assert_eq!(transport.requests().len(), 1);
+    }
+
+    fn decode_jws_protected(envelope: &Value) -> Value {
+        let protected = envelope
+            .get("protected")
+            .and_then(Value::as_str)
+            .expect("protected header");
+        serde_json::from_slice(
+            &URL_SAFE_NO_PAD
+                .decode(protected)
+                .expect("protected encoding"),
+        )
+        .expect("protected JSON")
+    }
+
+    #[test]
     fn polling_bounds_cap_delay_and_accept_http_date_retry_guidance() {
         let (attempts, initial, maximum) = bounded_poll_policy(&PollPolicy {
             max_attempts: usize::MAX,
             deadline_unix_seconds: u64::MAX,
             initial_delay_seconds: u64::MAX,
             max_delay_seconds: u64::MAX,
+            cancellation: None,
         });
         assert_eq!(attempts, MAX_POLL_ATTEMPTS);
         assert_eq!(initial, MAX_POLL_DELAY_SECONDS);
@@ -1875,6 +2195,7 @@ mod tests {
                     deadline_unix_seconds: 110,
                     initial_delay_seconds: 1,
                     max_delay_seconds: 1,
+                    cancellation: None,
                 },
             )
             .expect("valid authorization");
