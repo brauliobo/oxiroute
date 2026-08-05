@@ -12,6 +12,7 @@ mod config;
 mod listeners;
 mod master;
 mod protocol;
+mod status;
 
 pub use config::{ConfigError, MasterConfig};
 pub use listeners::{ListenerOwnershipError, StableListeners};
@@ -23,4 +24,10 @@ pub use master::{
 pub use protocol::{
     CONTROL_PROTOCOL_VERSION, ControlOutcome, ControlPhase, ControlProtocolError, ControlRequest,
     MAX_MANIFEST_BYTES, WorkerControl,
+};
+pub use status::{
+    AggregatedWorkerEvent, MAX_AGGREGATED_EVENTS, MAX_STATUS_BYTES, MAX_STATUS_EVENTS,
+    MAX_STATUS_LISTENERS, StatusProtocolError, WorkerAdministrativeState, WorkerEventRecord,
+    WorkerGenerationStatus, WorkerLifecycle, WorkerListenerState, WorkerListenerStatus,
+    WorkerMetrics, WorkerStatus,
 };

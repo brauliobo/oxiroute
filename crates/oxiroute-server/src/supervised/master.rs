@@ -36,8 +36,9 @@ use thiserror::Error;
 
 use super::worker;
 
-// The package installs this fixed path. Unsupported configurations continue through the existing
-// generation runtime, and development installations without the package use the same fallback.
+// The package installs this fixed path. Unsupported descriptor topologies continue through the
+// existing generation runtime, and development installations without the package use the same
+// fallback.
 const PRODUCTION_LAUNCHER: &str = "/usr/lib/oxiroute/oxiroute-worker-launcher";
 const MASTER_INSTANCE_ID: &str = "oxiroute-stage-3";
 const INITIAL_GENERATION: GenerationId = GenerationId(1);
@@ -61,6 +62,9 @@ pub(crate) fn run_master(config_path: &Path) -> Result<(), Box<dyn Error>> {
 /// The fixed packaged launcher is the activation gate. An eligible configuration without that
 /// launcher preserves the direct generation runtime for development installations.
 pub(crate) fn run_if_supported(config_path: &Path) -> Result<(), Box<dyn Error>> {
+    if std::env::var_os("OXIROUTE_INTERNAL_TEST_DIRECT_RUNTIME").is_some() {
+        return crate::run(config_path);
+    }
     let coordinator = CanonicalConfigCoordinator::new(config_path)?;
     let document = load_document(&coordinator)?;
     match eligibility(&document.normalized_config) {
@@ -207,7 +211,8 @@ impl MasterRunner {
             .arg(identity.generation.to_string())
             .arg(encode_token(identity.instance))
             .arg(config_path)
-            .arg(revision.to_string());
+            .arg(revision.to_string())
+            .inherit_env("OXIROUTE_MANAGEMENT_TOKEN_FILE");
         Ok(command)
     }
 
@@ -267,9 +272,7 @@ impl MasterRunner {
                 MasterState::Running => {
                     let now = Instant::now();
                     let events = master.poll(now)?;
-                    if !events.is_empty() {
-                        info!("supervised master events: {events:?}");
-                    }
+                    log_master_events(&events);
                     reload_state.apply_events(&events);
                     let forced_reload = reload_state.pending.is_none()
                         && reload_requested.swap(false, Ordering::AcqRel);
@@ -285,9 +288,7 @@ impl MasterRunner {
                 }
                 _ => {
                     let events = master.poll(Instant::now())?;
-                    if !events.is_empty() {
-                        info!("supervised master events: {events:?}");
-                    }
+                    log_master_events(&events);
                     reload_state.apply_events(&events);
                     thread::sleep(MASTER_POLL_INTERVAL);
                 }
@@ -352,6 +353,15 @@ impl MasterRunner {
             config: document.normalized_config.clone(),
         });
         Ok(())
+    }
+}
+
+fn log_master_events(events: &[MasterEvent]) {
+    if events
+        .iter()
+        .any(|event| !matches!(event, MasterEvent::WorkerStatusUpdated { .. }))
+    {
+        info!("supervised master events: {events:?}");
     }
 }
 
@@ -751,18 +761,13 @@ mod tests {
     }
 
     #[test]
-    fn eligibility_keeps_management_on_the_direct_runtime() {
+    fn eligibility_accepts_authenticated_management_on_the_supervised_runtime() {
         let mut config = config();
         config.management = Some(Management {
             bind: SocketAddr::from(([127, 0, 0, 1], 9900)),
             ui_dir: None,
         });
-        assert_eq!(
-            eligibility(&config),
-            Err(UnsupportedConfig {
-                reason: "Stage 2 worker management API is not connected to the master",
-            })
-        );
+        assert_eq!(eligibility(&config), Ok(()));
     }
 
     #[test]

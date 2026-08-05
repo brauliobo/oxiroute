@@ -104,9 +104,11 @@ keeps stale data visible after refresh errors, and never renders secret-bearing 
 ## Supervision And Platform Boundaries
 
 `oxiroute-supervision` contains deterministic value types and replacement state machines with no I/O.
-The Unix crate validates descriptors and transports credentials. The master owns listener identity and
-worker replacement; the process crate performs authenticated worker spawning and launcher work. Linux
-specific process and `/proc` behavior stays behind platform modules.
+The Unix crate validates descriptors and transports credentials. The master owns listener identity,
+worker replacement, and the bounded generation-qualified event ring; workers send authenticated
+status observations for lifecycle, listener, metric, reload, degradation, and drain state. The
+process crate performs authenticated worker spawning and launcher work. Linux-specific process and
+`/proc` behavior stays behind platform modules.
 
 The cache crate, forward-proxy protocol foundations, Varnish IR, and future ACME components are useful
 code, but a public feature claim must follow their integration into the active generation path.

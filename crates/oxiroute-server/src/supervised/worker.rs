@@ -11,13 +11,16 @@ use std::{
 
 use oxiroute_config::{Config, ListenerBind, Protocol};
 use oxiroute_server::{
-    GenerationManager, RuntimeGeneration,
+    AdministrativeState, GenerationManager, ListenerRuntimeState, RuntimeGeneration,
+    RuntimeSnapshot, worker_event_page,
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, ConfigRevision},
 };
 use oxiroute_supervision::GenerationId;
 use oxiroute_supervision_unix::{InstanceToken, MAX_DESCRIPTOR_COUNT};
 use oxiroute_supervisor_master::{
-    CONTROL_PROTOCOL_VERSION, ControlOutcome, ControlPhase, WorkerControl,
+    CONTROL_PROTOCOL_VERSION, ControlOutcome, ControlPhase, MAX_STATUS_EVENTS,
+    WorkerAdministrativeState, WorkerControl, WorkerEventRecord, WorkerGenerationStatus,
+    WorkerLifecycle, WorkerListenerState, WorkerListenerStatus, WorkerMetrics, WorkerStatus,
 };
 use oxiroute_supervisor_process::WorkerIdentity;
 use pingora::apps::AcceptGateClose;
@@ -34,6 +37,7 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 // Keep worker lifecycle work below the master's ten-second quiesce/drain deadlines.
 const LIFECYCLE_PHASE_TIMEOUT: Duration = Duration::from_secs(9);
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
+const STATUS_INTERVAL: Duration = Duration::from_millis(250);
 const TEST_RUNTIME_FAILURE_ENV: &str = "OXIROUTE_INTERNAL_TEST_RUNTIME_FAILURE";
 
 #[allow(clippy::too_many_lines)]
@@ -122,13 +126,36 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
         control.acknowledge(&adoption, ControlOutcome::Rejected(REJECT_RUNTIME))?;
         return Err(error);
     }
+    let mut lifecycle = WorkerLifecycle::Ready;
+    let mut status_sequence = 1_u64;
+    let mut event_cursor = 0_u64;
     control.acknowledge(&adoption, ControlOutcome::Accepted)?;
+    report_status(
+        &mut control,
+        &mut status_sequence,
+        &mut event_cursor,
+        identity.generation,
+        &generation,
+        &manager,
+        lifecycle,
+    )?;
+    let mut last_status = Instant::now();
 
     let inject_runtime_failure = std::env::var_os(TEST_RUNTIME_FAILURE_ENV).is_some();
     loop {
         if generation.runtime_failed()
             || process.as_ref().is_some_and(GenerationProcess::is_finished)
         {
+            lifecycle = WorkerLifecycle::Failed;
+            let _ = report_status(
+                &mut control,
+                &mut status_sequence,
+                &mut event_cursor,
+                identity.generation,
+                &generation,
+                &manager,
+                lifecycle,
+            );
             drop(control);
             drop(startup.take());
             let _ = shutdown_generation_processes(
@@ -142,6 +169,18 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
         let request = match control.try_receive() {
             Ok(Some(request)) => request,
             Ok(None) => {
+                if last_status.elapsed() >= STATUS_INTERVAL {
+                    report_status(
+                        &mut control,
+                        &mut status_sequence,
+                        &mut event_cursor,
+                        identity.generation,
+                        &generation,
+                        &manager,
+                        lifecycle,
+                    )?;
+                    last_status = Instant::now();
+                }
                 thread::sleep(POLL_INTERVAL);
                 continue;
             }
@@ -161,13 +200,34 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
                 let activation = startup.take().expect("activation is pending").activate();
                 match activation {
                     Ok(_) => {
+                        lifecycle = WorkerLifecycle::Active;
                         control.acknowledge(&request, ControlOutcome::Accepted)?;
+                        report_status(
+                            &mut control,
+                            &mut status_sequence,
+                            &mut event_cursor,
+                            identity.generation,
+                            &generation,
+                            &manager,
+                            lifecycle,
+                        )?;
+                        last_status = Instant::now();
                         if inject_runtime_failure {
                             generation.mark_runtime_failed();
                         }
                     }
                     Err(error) => {
+                        lifecycle = WorkerLifecycle::Failed;
                         control.acknowledge(&request, ControlOutcome::Rejected(REJECT_RUNTIME))?;
+                        let _ = report_status(
+                            &mut control,
+                            &mut status_sequence,
+                            &mut event_cursor,
+                            identity.generation,
+                            &generation,
+                            &manager,
+                            lifecycle,
+                        );
                         let _ = shutdown_generation_processes(
                             &manager,
                             vec![process.take().expect("generation process is owned")],
@@ -178,6 +238,7 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
                 }
             }
             ControlPhase::Shutdown => {
+                lifecycle = WorkerLifecycle::Stopping;
                 drop(startup.take());
                 let clean = shutdown_generation_processes(
                     &manager,
@@ -190,6 +251,15 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
                     ControlOutcome::Rejected(REJECT_RUNTIME)
                 };
                 control.acknowledge(&request, outcome)?;
+                let _ = report_status(
+                    &mut control,
+                    &mut status_sequence,
+                    &mut event_cursor,
+                    identity.generation,
+                    &generation,
+                    &manager,
+                    lifecycle,
+                );
                 return if clean {
                     Ok(())
                 } else {
@@ -197,21 +267,276 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
                 };
             }
             ControlPhase::Quiesce => {
+                lifecycle = WorkerLifecycle::Quiescing;
                 let outcome = quiesce_active(&manager, &mut quiesced);
                 control.acknowledge(&request, outcome)?;
+                report_status(
+                    &mut control,
+                    &mut status_sequence,
+                    &mut event_cursor,
+                    identity.generation,
+                    &generation,
+                    &manager,
+                    lifecycle,
+                )?;
             }
             ControlPhase::Drain => {
+                lifecycle = WorkerLifecycle::Draining;
                 let outcome = drain_active(&manager);
                 control.acknowledge(&request, outcome)?;
+                report_status(
+                    &mut control,
+                    &mut status_sequence,
+                    &mut event_cursor,
+                    identity.generation,
+                    &generation,
+                    &manager,
+                    lifecycle,
+                )?;
             }
             ControlPhase::Reactivate => {
+                lifecycle = WorkerLifecycle::Reactivating;
                 let outcome = reactivate_active(&mut quiesced);
                 control.acknowledge(&request, outcome)?;
+                lifecycle = if matches!(outcome, ControlOutcome::Accepted) {
+                    WorkerLifecycle::Active
+                } else {
+                    WorkerLifecycle::Failed
+                };
+                report_status(
+                    &mut control,
+                    &mut status_sequence,
+                    &mut event_cursor,
+                    identity.generation,
+                    &generation,
+                    &manager,
+                    lifecycle,
+                )?;
             }
             ControlPhase::AdoptListeners | ControlPhase::Activate => {
                 control.acknowledge(&request, ControlOutcome::Rejected(REJECT_INVALID_STATE))?;
+                report_status(
+                    &mut control,
+                    &mut status_sequence,
+                    &mut event_cursor,
+                    identity.generation,
+                    &generation,
+                    &manager,
+                    lifecycle,
+                )?;
             }
         }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn report_status(
+    control: &mut WorkerControl,
+    sequence: &mut u64,
+    event_cursor: &mut u64,
+    generation_id: GenerationId,
+    generation: &RuntimeGeneration,
+    manager: &GenerationManager,
+    lifecycle: WorkerLifecycle,
+) -> Result<(), Box<dyn Error>> {
+    let generation_status = manager.status();
+    let runtime_snapshot = generation.metrics().snapshot();
+    let metrics = runtime_snapshot.as_ref().ok().map(metrics_status);
+    let mut listeners = runtime_snapshot
+        .as_ref()
+        .map_or_else(|_| Vec::new(), listener_statuses);
+    append_configured_listener_statuses(&mut listeners, generation);
+
+    let event_page = worker_event_page(*event_cursor, MAX_STATUS_EVENTS);
+    let events = event_page
+        .events
+        .iter()
+        .map(|event| WorkerEventRecord {
+            cursor: event.cursor,
+            timestamp_unix_ms: event.timestamp_unix_ms,
+            event: event.event.as_str().to_owned(),
+            outcome: event.outcome.as_str().to_owned(),
+            revision: event.revision.as_ref().map(ToString::to_string),
+            certificate: event.certificate.clone(),
+            correlation_id: event.correlation_id.clone(),
+            source: event.source.clone(),
+            operation: event.operation.clone(),
+        })
+        .collect::<Vec<_>>();
+    let next_event_cursor = if event_page.has_more {
+        event_page
+            .events
+            .last()
+            .map_or(*event_cursor, |event| event.cursor)
+    } else {
+        event_page.latest_cursor
+    };
+    let metrics_degraded = runtime_snapshot.is_err();
+    let degraded = generation_status.degraded
+        || generation.runtime_failed()
+        || metrics_degraded
+        || event_page.cursor_lost;
+    let degradation = if metrics_degraded {
+        Some("metrics_unavailable".to_owned())
+    } else if event_page.cursor_lost {
+        Some("event_cursor_lost".to_owned())
+    } else if generation_status.degraded {
+        generation_status.last_failure.map_or_else(
+            || Some("generation_degraded".to_owned()),
+            |value| Some(value.into()),
+        )
+    } else if generation.runtime_failed() {
+        Some("runtime_failed".to_owned())
+    } else {
+        None
+    };
+    let process_administrative_state = runtime_snapshot.as_ref().map_or_else(
+        |_| match lifecycle {
+            WorkerLifecycle::Quiescing | WorkerLifecycle::Draining | WorkerLifecycle::Stopping => {
+                WorkerAdministrativeState::Drain
+            }
+            _ => WorkerAdministrativeState::Ready,
+        },
+        |snapshot| administrative_state(snapshot.process.administrative_state),
+    );
+    let status = WorkerStatus {
+        sequence: *sequence,
+        generation_id,
+        lifecycle,
+        administrative_state: process_administrative_state,
+        accepting: generation.accepting(),
+        runtime_started: generation.runtime_started(),
+        runtime_failed: generation.runtime_failed(),
+        drained: generation.drained(),
+        generation: WorkerGenerationStatus {
+            disk_revision: generation_status
+                .disk_revision
+                .as_ref()
+                .map(ToString::to_string),
+            candidate_revision: generation_status
+                .candidate_revision
+                .as_ref()
+                .map(ToString::to_string),
+            active_revision: generation_status
+                .active_revision
+                .as_ref()
+                .map(ToString::to_string),
+            previous_revision: generation_status
+                .previous_revision
+                .as_ref()
+                .map(ToString::to_string),
+            quarantined_revision: generation_status
+                .quarantined_revision
+                .as_ref()
+                .map(ToString::to_string),
+            active_accepting: generation_status.active_accepting,
+            degraded: generation_status.degraded,
+            last_failure: generation_status.last_failure.map(str::to_owned),
+            prepares: generation_status.prepares,
+            activations: generation_status.activations,
+            failures: generation_status.failures,
+            rollbacks: generation_status.rollbacks,
+        },
+        metrics,
+        listeners,
+        degraded,
+        degradation,
+        event_cursor: next_event_cursor,
+        event_cursor_lost: event_page.cursor_lost,
+        events,
+    };
+    control.report_status(&status)?;
+    *sequence = (*sequence)
+        .checked_add(1)
+        .ok_or_else(|| io::Error::other("worker status sequence exhausted"))?;
+    *event_cursor = next_event_cursor;
+    Ok(())
+}
+
+fn metrics_status(snapshot: &RuntimeSnapshot) -> WorkerMetrics {
+    WorkerMetrics {
+        accepted_connections: snapshot.traffic.accepted_connections,
+        rejected_connections: snapshot.traffic.rejected_connections,
+        active_connections: snapshot.traffic.active_connections,
+        bytes_received: snapshot.traffic.bytes_received,
+        bytes_sent: snapshot.traffic.bytes_sent,
+    }
+}
+
+fn listener_statuses(snapshot: &RuntimeSnapshot) -> Vec<WorkerListenerStatus> {
+    snapshot
+        .listeners
+        .iter()
+        .map(|listener| WorkerListenerStatus {
+            name: listener.name.clone(),
+            protocol: listener.protocol.clone(),
+            bind: listener.bind.clone(),
+            administrative_state: administrative_state(listener.administrative_state),
+            state: listener_state(listener.state),
+            accepted_connections: listener.accepted_connections,
+            rejected_connections: listener.rejected_connections,
+            active_connections: listener.active_connections,
+            bytes_received: listener.bytes_received,
+            bytes_sent: listener.bytes_sent,
+        })
+        .collect()
+}
+
+fn append_configured_listener_statuses(
+    statuses: &mut Vec<WorkerListenerStatus>,
+    generation: &RuntimeGeneration,
+) {
+    let state = if generation.runtime_started() {
+        WorkerListenerState::Listening
+    } else {
+        WorkerListenerState::Configured
+    };
+    let mut append = |name: String, protocol: String, bind: String| {
+        if statuses.iter().any(|status| status.name == name) {
+            return;
+        }
+        statuses.push(WorkerListenerStatus {
+            name,
+            protocol,
+            bind,
+            administrative_state: WorkerAdministrativeState::Ready,
+            state,
+            accepted_connections: 0,
+            rejected_connections: 0,
+            active_connections: 0,
+            bytes_received: 0,
+            bytes_sent: 0,
+        });
+    };
+    let config = generation.config();
+    if let Some(management) = &config.management {
+        append(
+            "@management".into(),
+            "http".into(),
+            management.bind.to_string(),
+        );
+    }
+    if let Some(stats) = &config.stats {
+        for (index, bind) in stats.binds.iter().enumerate() {
+            append(format!("@stats-{index}"), "http".into(), bind.to_string());
+        }
+    }
+}
+
+const fn listener_state(state: ListenerRuntimeState) -> WorkerListenerState {
+    match state {
+        ListenerRuntimeState::Configured => WorkerListenerState::Configured,
+        ListenerRuntimeState::Listening => WorkerListenerState::Listening,
+        ListenerRuntimeState::Stopped => WorkerListenerState::Stopped,
+        ListenerRuntimeState::Failed => WorkerListenerState::Failed,
+    }
+}
+
+const fn administrative_state(state: AdministrativeState) -> WorkerAdministrativeState {
+    match state {
+        AdministrativeState::Ready => WorkerAdministrativeState::Ready,
+        AdministrativeState::Drain => WorkerAdministrativeState::Drain,
+        AdministrativeState::Maintenance => WorkerAdministrativeState::Maintenance,
     }
 }
 
@@ -251,9 +576,6 @@ impl RuntimeMetadata {
 }
 
 pub(super) fn validate_stage_one_config(config: &Config) -> Result<(), &'static str> {
-    if config.management.is_some() {
-        return Err("Stage 2 worker management API is not connected to the master");
-    }
     let descriptor_count = config
         .listeners
         .len()

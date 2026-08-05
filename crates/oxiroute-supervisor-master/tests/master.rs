@@ -255,6 +255,41 @@ fn replaces_a_with_b_using_the_same_tcp_and_unix_listener_identities() {
 }
 
 #[test]
+fn authenticated_worker_status_is_retained_without_creating_a_command_path() {
+    let harness = Harness::launch("normal");
+    let status = harness
+        .master
+        .worker_status(WorkerRole::Active)
+        .expect("active worker status");
+    assert_eq!(status.sequence, 2);
+    assert_eq!(status.generation_id, GenerationId(1));
+    assert_eq!(
+        status.lifecycle,
+        oxiroute_supervisor_master::WorkerLifecycle::Active
+    );
+    assert!(status.runtime_started);
+    assert!(!status.degraded);
+    let events = harness.master.worker_events(0, 64);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].generation_id, GenerationId(1));
+    assert_eq!(events[0].worker_event.cursor, 1);
+    drop(harness.shutdown());
+}
+
+#[test]
+fn malformed_worker_status_fails_closed_after_replacement_commit() {
+    let mut harness = Harness::launch("normal");
+    harness.replace("malformed-status-after-activate", 2);
+    let events = harness.until(|master| master.state() == MasterState::Failed);
+    assert!(events.iter().any(|event| matches!(
+        event,
+        MasterEvent::FailClosed {
+            phase: FailurePhase::Protocol
+        }
+    )));
+}
+
+#[test]
 fn initial_adoption_and_activation_fail_closed() {
     for (behavior, expected) in [
         ("reject-adopt", FailurePhase::ListenerAdoption),
