@@ -52,6 +52,8 @@ pub enum MediaStoreError {
     NotFound,
     #[error("media object cannot be read")]
     Read(#[source] io::Error),
+    #[error("media manifest is malformed")]
+    ManifestMalformed,
     #[error("media object cannot be published")]
     Publish(#[source] io::Error),
     #[error("media object cleanup failed")]
@@ -169,6 +171,27 @@ impl MediaStore {
         key: &StreamKey,
         incarnation: PublisherIncarnation,
     ) -> Result<PathBuf, MediaStoreError> {
+        self.attach_inner(key, incarnation, false)
+    }
+
+    /// Attaches a publisher while retaining the previous incarnation's media tree.
+    ///
+    /// The retained tree is renamed to the new incarnation path, so stale writers still fail the
+    /// incarnation check while a DASH worker can recover its manifest and sequence numbers.
+    pub(crate) fn attach_continuing(
+        &self,
+        key: &StreamKey,
+        incarnation: PublisherIncarnation,
+    ) -> Result<PathBuf, MediaStoreError> {
+        self.attach_inner(key, incarnation, true)
+    }
+
+    fn attach_inner(
+        &self,
+        key: &StreamKey,
+        incarnation: PublisherIncarnation,
+        preserve: bool,
+    ) -> Result<PathBuf, MediaStoreError> {
         let mut state = self.lock_state();
         let can_reuse = state.streams.contains_key(key);
         if !can_reuse && state.stats.active_streams >= self.shared.limits.max_active_streams {
@@ -176,9 +199,30 @@ impl MediaStore {
         }
 
         let stream_prefix = stream_prefix(key)?;
-        remove_tree(&self.shared.root.join(&stream_prefix))?;
         let relative_prefix = stream_prefix.join(format!("i{}", incarnation.value()));
-        create_directories(&self.shared.root, &relative_prefix)?;
+        if preserve {
+            let previous_prefix = state
+                .streams
+                .get(key)
+                .map(|stream| stream.relative_prefix.clone())
+                .or(find_latest_incarnation(&self.shared.root, &stream_prefix)?);
+            create_directories(
+                &self.shared.root,
+                relative_prefix.parent().unwrap_or(Path::new("")),
+            )?;
+            if let Some(previous_prefix) = previous_prefix {
+                let previous_path = safe_join(&self.shared.root, &previous_prefix)?;
+                let next_path = safe_join(&self.shared.root, &relative_prefix)?;
+                if previous_prefix != relative_prefix {
+                    fs::rename(previous_path, next_path).map_err(MediaStoreError::Cleanup)?;
+                }
+            } else {
+                create_directories(&self.shared.root, &relative_prefix)?;
+            }
+        } else {
+            remove_tree(&self.shared.root.join(&stream_prefix))?;
+            create_directories(&self.shared.root, &relative_prefix)?;
+        }
         state.streams.insert(
             key.clone(),
             ActiveMediaStream {
@@ -404,6 +448,40 @@ fn stream_prefix(key: &StreamKey) -> Result<PathBuf, MediaStoreError> {
     Ok(PathBuf::from(server).join(application).join(stream))
 }
 
+fn find_latest_incarnation(
+    root: &Path,
+    stream_prefix: &Path,
+) -> Result<Option<PathBuf>, MediaStoreError> {
+    let directory = root.join(stream_prefix);
+    let entries = match fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(MediaStoreError::RootScan(error)),
+    };
+    let mut latest = None;
+    for entry in entries {
+        let entry = entry.map_err(MediaStoreError::RootScan)?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(MediaStoreError::RootScan)?;
+        if metadata.file_type().is_symlink() {
+            return Err(MediaStoreError::RootNotExclusive);
+        }
+        if !metadata.file_type().is_dir() {
+            continue;
+        }
+        let entry_name = entry.file_name();
+        let name = entry_name.to_str().ok_or(MediaStoreError::InvalidPath)?;
+        let Some(value) = name.strip_prefix('i').and_then(|value| value.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        if latest.as_ref().is_none_or(|(current, _)| value > *current) {
+            latest = Some((value, stream_prefix.join(name)));
+        }
+    }
+    Ok(latest.map(|(_, path)| path))
+}
+
 fn safe_join(root: &Path, relative_path: &Path) -> Result<PathBuf, MediaStoreError> {
     if relative_path.as_os_str().len() > MAX_MEDIA_PATH_BYTES || relative_path.is_absolute() {
         return Err(MediaStoreError::InvalidPath);
@@ -595,5 +673,42 @@ mod tests {
             store.publish(&key, lease.incarnation(), &prefix.join("two.ts"), b"1"),
             Err(MediaStoreError::Quota)
         ));
+    }
+
+    #[test]
+    fn continuing_attach_preserves_media_across_publisher_restart() {
+        let root = tempdir().expect("temporary media root");
+        let store = MediaStore::open(root.path().join("dash"), limits()).expect("media store");
+        let hub = LiveHub::new(crate::LiveHubLimits::default());
+        let key = StreamKey::new("service", "application", "stream");
+        let first = hub.attach_publisher(key.clone()).expect("first publisher");
+        let first_incarnation = first.incarnation();
+        let first_prefix = store
+            .attach_continuing(&key, first_incarnation)
+            .expect("first media incarnation");
+        store
+            .publish(
+                &key,
+                first_incarnation,
+                &first_prefix.join("manifest.mpd"),
+                b"manifest",
+            )
+            .expect("manifest");
+        store.close(&key, first_incarnation);
+        drop(first);
+        drop(store);
+
+        let store = MediaStore::open(root.path().join("dash"), limits()).expect("reopened store");
+        let second = hub.attach_publisher(key.clone()).expect("second publisher");
+        let second_prefix = store
+            .attach_continuing(&key, second.incarnation())
+            .expect("continued media incarnation");
+        assert_ne!(first_prefix, second_prefix);
+        assert_eq!(
+            store
+                .read_relative(&second_prefix.join("manifest.mpd"), 64)
+                .expect("continued manifest"),
+            b"manifest"
+        );
     }
 }

@@ -227,6 +227,18 @@ impl RtmpSessionClient {
             .expect("audio packet");
         exchange(&mut self.client, &mut self.server, vec![packet], at_unix_ms);
     }
+
+    pub fn publish_video(&mut self, timestamp: u32, payload: &[u8], at_unix_ms: u64) {
+        let packet = self
+            .client
+            .publish_video_data(
+                Bytes::copy_from_slice(payload),
+                RtmpTimestamp::new(timestamp),
+                false,
+            )
+            .expect("video packet");
+        exchange(&mut self.client, &mut self.server, vec![packet], at_unix_ms);
+    }
 }
 
 fn connect_session(server: &mut RtmpSession, application: &str) -> ClientSession {

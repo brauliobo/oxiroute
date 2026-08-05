@@ -14,6 +14,7 @@ use std::{
 use openssl::{rand::rand_bytes, symm};
 
 use crate::{
+    dash_segmenter::{DashOutputConfig, DashSegmenter},
     media_storage::{MediaStore, MediaStoreError},
     MediaEvent, MediaEventKind, PublisherIncarnation, StreamKey,
 };
@@ -88,12 +89,13 @@ impl HlsOutputConfig {
 #[derive(Clone, Default)]
 pub struct MediaApplication {
     hls: Option<Arc<HlsOutputConfig>>,
+    dash: Option<Arc<DashOutputConfig>>,
 }
 
 impl MediaApplication {
     #[must_use]
     pub fn new(hls: Option<Arc<HlsOutputConfig>>) -> Self {
-        Self { hls }
+        Self { hls, dash: None }
     }
 
     #[must_use]
@@ -101,15 +103,26 @@ impl MediaApplication {
         self.hls.as_ref()
     }
 
+    #[must_use]
+    pub fn with_dash(mut self, dash: Option<Arc<DashOutputConfig>>) -> Self {
+        self.dash = dash;
+        self
+    }
+
+    #[must_use]
+    pub fn dash(&self) -> Option<&Arc<DashOutputConfig>> {
+        self.dash.as_ref()
+    }
+
     pub(crate) fn attach(
         &self,
         key: &StreamKey,
         incarnation: PublisherIncarnation,
     ) -> Result<Option<MediaPublisher>, MediaOutputError> {
-        let Some(hls) = &self.hls else {
+        if self.hls.is_none() && self.dash.is_none() {
             return Ok(None);
-        };
-        MediaPublisher::start(key, incarnation, Arc::clone(hls)).map(Some)
+        }
+        MediaPublisher::start(key, incarnation, self).map(Some)
     }
 }
 
@@ -160,20 +173,39 @@ impl MediaCatalog {
             .applications
             .get(&(service.to_owned(), application.to_owned()))
             .ok_or(MediaStoreError::NotFound)?;
-        let hls = media.hls.as_ref().ok_or(MediaStoreError::NotFound)?;
         let key = StreamKey::new(service, application, stream);
-        let prefix = hls
-            .store
-            .current_prefix(&key)
-            .ok_or(MediaStoreError::NotFound)?;
-        let (path, content_type) = resolve_public_path(hls, &prefix, object)?;
-        let body = hls
-            .store
-            .read_relative(&path, hls.store.limits().max_file_bytes)?;
-        Ok(MediaObject { body, content_type })
+        if let Some(dash) = &media.dash {
+            if let Some(prefix) = dash.store.current_prefix(&key) {
+                match resolve_dash_public_path(dash, &prefix, object) {
+                    Ok((path, content_type)) => {
+                        let body = dash
+                            .store
+                            .read_relative(&path, dash.store.limits().max_file_bytes)?;
+                        return Ok(MediaObject { body, content_type });
+                    }
+                    Err(MediaStoreError::InvalidPath) => {
+                        return Err(MediaStoreError::InvalidPath);
+                    }
+                    Err(MediaStoreError::NotFound) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        if let Some(hls) = &media.hls {
+            let prefix = hls
+                .store
+                .current_prefix(&key)
+                .ok_or(MediaStoreError::NotFound)?;
+            let (path, content_type) = resolve_public_path(hls, &prefix, object)?;
+            let body = hls
+                .store
+                .read_relative(&path, hls.store.limits().max_file_bytes)?;
+            return Ok(MediaObject { body, content_type });
+        }
+        Err(MediaStoreError::NotFound)
     }
 
-    /// Reads one bounded public HLS object for an active publisher incarnation.
+    /// Reads one bounded public HLS or DASH object for an active publisher incarnation.
     ///
     /// # Errors
     ///
@@ -223,28 +255,85 @@ enum MediaCommand {
     Close,
 }
 
+enum MediaWorker {
+    Hls(HlsSegmenter),
+    Dash(DashSegmenter),
+}
+
 impl MediaPublisher {
     fn start(
         key: &StreamKey,
         incarnation: PublisherIncarnation,
-        config: Arc<HlsOutputConfig>,
+        config: &MediaApplication,
     ) -> Result<Self, MediaOutputError> {
-        let store = Arc::clone(&config.store);
-        store.attach(key, incarnation)?;
-        let (sender, receiver) = mpsc::sync_channel(config.max_queue_messages);
+        let hls = config.hls.clone();
+        let dash = config.dash.clone();
+        let dash_store = dash.as_ref().map(|output| Arc::clone(&output.store));
+        let mut stores = Vec::<Arc<MediaStore>>::new();
+        for store in hls
+            .as_ref()
+            .map(|output| Arc::clone(&output.store))
+            .into_iter()
+            .chain(dash_store.clone())
+        {
+            if stores.iter().any(|current| Arc::ptr_eq(current, &store)) {
+                continue;
+            }
+            let preserve = dash_store
+                .as_ref()
+                .is_some_and(|dash_store| Arc::ptr_eq(dash_store, &store));
+            let attached = if preserve {
+                store.attach_continuing(key, incarnation)
+            } else {
+                store.attach(key, incarnation)
+            };
+            if let Err(error) = attached {
+                for attached_store in &stores {
+                    attached_store.close(key, incarnation);
+                }
+                return Err(MediaOutputError::Storage(error));
+            }
+            stores.push(store);
+        }
+        let queue_messages = hls
+            .as_ref()
+            .map_or(0, |output| output.max_queue_messages)
+            .max(dash.as_ref().map_or(0, |output| output.max_queue_messages));
+        let (sender, receiver) = mpsc::sync_channel(queue_messages.max(1));
         let closed = Arc::new(AtomicBool::new(false));
         let worker_key = key.clone();
-        let worker_store = Arc::clone(&store);
         let worker_closed = Arc::clone(&closed);
+        let mut workers = Vec::new();
+        if let Some(hls) = hls {
+            let store = Arc::clone(&hls.store);
+            workers.push(MediaWorker::Hls(HlsSegmenter::new(
+                worker_key.clone(),
+                incarnation,
+                store,
+                hls,
+            )));
+        }
+        if let Some(dash) = dash {
+            let store = Arc::clone(&dash.store);
+            match DashSegmenter::new(worker_key.clone(), incarnation, store, dash) {
+                Ok(segmenter) => workers.push(MediaWorker::Dash(segmenter)),
+                Err(error) => {
+                    for store in stores {
+                        store.close(key, incarnation);
+                    }
+                    return Err(MediaOutputError::Storage(error));
+                }
+            }
+        }
         thread::Builder::new()
             .name("oxiroute-rtmp-media".into())
             .spawn(move || {
-                let mut segmenter =
-                    HlsSegmenter::new(worker_key, incarnation, worker_store, config);
-                run_worker(&mut segmenter, &receiver, &worker_closed);
+                run_worker(&mut workers, &receiver, &worker_closed);
             })
             .map_err(|error| {
-                store.close(key, incarnation);
+                for store in stores {
+                    store.close(key, incarnation);
+                }
                 MediaOutputError::WorkerSpawn(error)
             })?;
         Ok(Self { sender, closed })
@@ -280,7 +369,7 @@ impl Drop for MediaPublisher {
 }
 
 fn run_worker(
-    segmenter: &mut HlsSegmenter,
+    workers: &mut [MediaWorker],
     receiver: &Receiver<MediaCommand>,
     closed: &Arc<AtomicBool>,
 ) {
@@ -290,19 +379,33 @@ fn run_worker(
                 event,
                 observed_at_unix_ms,
             } => {
-                segmenter.accept(&event, observed_at_unix_ms);
+                for worker in workers.iter_mut() {
+                    match worker {
+                        MediaWorker::Hls(segmenter) => segmenter.accept(&event, observed_at_unix_ms),
+                        MediaWorker::Dash(segmenter) => segmenter.accept(&event),
+                    }
+                }
                 if closed.load(Ordering::Acquire) {
-                    segmenter.finish(true);
+                    finish_workers(workers, true);
                     return;
                 }
             }
             MediaCommand::Close => {
-                segmenter.finish(true);
+                finish_workers(workers, true);
                 return;
             }
         }
     }
-    segmenter.finish(true);
+    finish_workers(workers, true);
+}
+
+fn finish_workers(workers: &mut [MediaWorker], end_list: bool) {
+    for worker in workers {
+        match worker {
+            MediaWorker::Hls(segmenter) => segmenter.finish(end_list),
+            MediaWorker::Dash(segmenter) => segmenter.finish(end_list),
+        }
+    }
 }
 
 struct HlsSegmenter {
@@ -742,6 +845,45 @@ fn resolve_public_path(
 
 const MAX_PUBLIC_OBJECT_BYTES: usize = 1_024;
 
+fn resolve_dash_public_path(
+    config: &DashOutputConfig,
+    prefix: &Path,
+    object: &str,
+) -> Result<(PathBuf, &'static str), MediaStoreError> {
+    if object.is_empty() || object.len() > MAX_PUBLIC_OBJECT_BYTES || object.contains('%') {
+        return Err(MediaStoreError::InvalidPath);
+    }
+    let components: Vec<_> = object.split('/').collect();
+    if components
+        .iter()
+        .any(|component| safe_public_component(component).is_err())
+    {
+        return Err(MediaStoreError::InvalidPath);
+    }
+    let directory = config.media_directory(prefix);
+    let relative = if config.nested {
+        object.strip_prefix("dash/").unwrap_or(object)
+    } else {
+        object
+    };
+    if relative == "manifest.mpd" || relative == "index.mpd" {
+        return Ok((directory.join("manifest.mpd"), "application/dash+xml"));
+    }
+    if relative == "init.mp4" {
+        return Ok((directory.join(relative), "video/mp4"));
+    }
+    if relative.starts_with("seg-") && has_extension(relative, "m4s") {
+        let sequence = relative
+            .strip_suffix(".m4s")
+            .and_then(|value| value.rsplit('-').next())
+            .and_then(|value| value.parse::<u64>().ok());
+        if relative.split('/').count() == 1 && sequence.is_some() {
+            return Ok((directory.join(relative), "video/iso.segment"));
+        }
+    }
+    Err(MediaStoreError::NotFound)
+}
+
 fn safe_public_component(component: &str) -> Result<(), MediaStoreError> {
     if component.is_empty()
         || component == "."
@@ -758,6 +900,10 @@ fn safe_public_component(component: &str) -> Result<(), MediaStoreError> {
 fn content_type(path: &str) -> &'static str {
     if has_extension(path, "ts") {
         "video/mp2t"
+    } else if has_extension(path, "mpd") {
+        "application/dash+xml"
+    } else if has_extension(path, "mp4") || has_extension(path, "m4s") {
+        "video/mp4"
     } else {
         "application/octet-stream"
     }
@@ -1208,7 +1354,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::{LiveHub, LiveHubLimits, MediaEvent, MediaStoreLimits};
+    use crate::{DashSegmentNaming, LiveHub, LiveHubLimits, MediaEvent, MediaStoreLimits};
 
     fn test_config(store: Arc<MediaStore>) -> Arc<HlsOutputConfig> {
         Arc::new(HlsOutputConfig {
@@ -1356,5 +1502,52 @@ mod tests {
             resolve_public_path(&config, &prefix, "../secret.ts"),
             Err(MediaStoreError::InvalidPath)
         ));
+    }
+
+    #[test]
+    fn releases_attached_stores_when_a_second_output_cannot_attach() {
+        let root = tempdir().expect("temporary media root");
+        let limits = MediaStoreLimits {
+            max_bytes: 1024 * 1024,
+            max_files: 16,
+            max_active_streams: 1,
+            max_file_bytes: 1024 * 1024,
+        };
+        let hls_store = Arc::new(
+            MediaStore::open(root.path().join("hls"), limits).expect("HLS store"),
+        );
+        let dash_store = Arc::new(
+            MediaStore::open(root.path().join("dash"), limits).expect("DASH store"),
+        );
+        let hub = LiveHub::new(LiveHubLimits::default());
+        let occupied_key = StreamKey::new("service", "application", "occupied");
+        let occupied = hub
+            .attach_publisher(occupied_key.clone())
+            .expect("occupied publisher");
+        dash_store
+            .attach(&occupied_key, occupied.incarnation())
+            .expect("occupied DASH incarnation");
+
+        let key = StreamKey::new("service", "application", "stream");
+        let lease = hub.attach_publisher(key.clone()).expect("publisher");
+        let dash = Arc::new(DashOutputConfig {
+            store: Arc::clone(&dash_store),
+            segment_duration: Duration::from_secs(1),
+            max_segment_duration: Duration::from_secs(2),
+            playlist_length: Duration::from_secs(4),
+            naming: DashSegmentNaming::Sequential,
+            nested: true,
+            cleanup: true,
+            max_segment_bytes: 1024 * 1024,
+            max_queue_messages: 16,
+        });
+        let application = MediaApplication::new(Some(test_config(Arc::clone(&hls_store))))
+            .with_dash(Some(dash));
+        assert!(matches!(
+            MediaPublisher::start(&key, lease.incarnation(), &application),
+            Err(MediaOutputError::Storage(MediaStoreError::ActiveStreamLimit))
+        ));
+        assert!(hls_store.current_prefix(&key).is_none());
+        dash_store.close(&occupied_key, occupied.incarnation());
     }
 }

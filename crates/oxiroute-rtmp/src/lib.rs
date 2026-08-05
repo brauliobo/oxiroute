@@ -4,6 +4,7 @@ pub const HANDSHAKE_BLOCK_SIZE: usize = 1536;
 mod callback;
 mod catalog;
 mod client;
+mod dash_segmenter;
 mod directives;
 mod flv;
 mod live;
@@ -22,6 +23,7 @@ pub use callback::{
     RtmpCallbackContext, RtmpCallbackEndpoint, RtmpCallbackError, RtmpCallbackEvent,
     RtmpCallbackMethod, RtmpCallbackPolicy,
 };
+pub use dash_segmenter::{DashOutputConfig, DashSegmentNaming};
 pub use catalog::{
     CatalogError, MAX_RTMP_APPLICATION_BYTES, MAX_RTMP_QUERY_BYTES, MAX_RTMP_STREAM_NAME_BYTES,
     MediaSnapshot, OperationId, PublisherRegistration, PublisherSnapshot, RecorderDefinition,

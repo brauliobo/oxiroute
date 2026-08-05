@@ -336,7 +336,7 @@ impl RtmpManagementApi {
             .map(|generation| Arc::clone(&generation.plan().rtmp_media_catalog))
             .or_else(|| self.media_catalog.clone());
         let Some(catalog) = catalog else {
-            return ApiResponse::error(503, "media_unavailable", "HLS media is not active");
+            return ApiResponse::error(503, "media_unavailable", "RTMP media output is not active");
         };
         let service = route.service.to_owned();
         let application = route.application.to_owned();
@@ -870,20 +870,25 @@ fn vod_error_response(error: VodError) -> ApiResponse {
 fn media_error_response(error: MediaStoreError) -> ApiResponse {
     match error {
         MediaStoreError::NotFound | MediaStoreError::StaleIncarnation => {
-            ApiResponse::error(404, "media_not_found", "the HLS object does not exist")
+            ApiResponse::error(404, "media_not_found", "the media object does not exist")
         }
         MediaStoreError::InvalidPath => {
-            ApiResponse::error(400, "media_invalid_path", "the HLS object path is invalid")
+            ApiResponse::error(400, "media_invalid_path", "the media object path is invalid")
         }
         MediaStoreError::FileTooLarge => ApiResponse::error(
             413,
             "media_too_large",
-            "the HLS object exceeds its configured bound",
+            "the media object exceeds its configured bound",
+        ),
+        MediaStoreError::ManifestMalformed => ApiResponse::error(
+            422,
+            "media_manifest_invalid",
+            "the persisted media manifest is malformed",
         ),
         MediaStoreError::Read(_) => ApiResponse::error(
             503,
             "media_unavailable",
-            "the HLS object cannot be read",
+            "the media object cannot be read",
         ),
         MediaStoreError::RootOpen(_)
         | MediaStoreError::RootNotExclusive
@@ -895,7 +900,7 @@ fn media_error_response(error: MediaStoreError) -> ApiResponse {
         | MediaStoreError::Cleanup(_) => ApiResponse::error(
             503,
             "media_unavailable",
-            "the HLS media store is unavailable",
+            "the media store is unavailable",
         ),
     }
 }

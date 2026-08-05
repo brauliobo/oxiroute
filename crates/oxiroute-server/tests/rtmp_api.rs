@@ -23,8 +23,9 @@ use std::{
 
 use oxiroute_config::{
     Certificate, CertificateSource, Config, Listener, Management, Protocol, RtmpAccessPolicy,
-    RtmpApplication, RtmpRecorderStart, RtmpService, RtmpSessionCeilings, RtmpTokenPolicy,
-    RtmpTokenSource, RtmpVodPolicy, RtmpVodSource, render_lua,
+    RtmpApplication, RtmpDashPolicy, RtmpDashSegmentNaming, RtmpRecorderStart, RtmpService,
+    RtmpSessionCeilings, RtmpTokenPolicy, RtmpTokenSource, RtmpVodPolicy, RtmpVodSource,
+    render_lua,
 };
 use oxiroute_rtmp::{
     LiveHub, LiveHubLimits, MediaSnapshot, RtmpApplication as RuntimeRtmpApplication,
@@ -33,7 +34,7 @@ use oxiroute_rtmp::{
     VideoCodecIdentifier,
 };
 use oxiroute_server::{
-    HttpListenerApp, RtmpManagementApi, RuntimeMetrics, TopologySnapshot,
+    HttpListenerApp, RtmpManagementApi, RuntimeMetrics, ServiceKind, TopologySnapshot,
     config_coordinator::{
         CanonicalConfigCoordinator, ConfigLoadOutcome, ConfigRevision, MAX_CANONICAL_CONFIG_BYTES,
     },
@@ -154,6 +155,81 @@ async fn serves_authenticated_vod_objects_and_single_ranges() {
     .await;
     assert_eq!(multiple.status, 416);
     assert_eq!(multiple.header("content-range"), Some("bytes */10"));
+}
+
+#[tokio::test]
+async fn serves_authenticated_dash_manifests_segments_and_single_ranges() {
+    let media_root = TempDir::new().expect("DASH media root");
+    let mut config = candidate_config(&empty_config(), "live");
+    config.rtmp_services[0].applications[0].dash = Some(RtmpDashPolicy {
+        root_directory: media_root.path().to_path_buf(),
+        segment_duration_ms: 1_000,
+        max_segment_duration_ms: 2_000,
+        playlist_length_ms: 6_000,
+        segment_naming: RtmpDashSegmentNaming::Sequential,
+        nested: true,
+        cleanup: true,
+        max_segment_bytes: 1024 * 1024,
+        max_queue_messages: 16,
+        max_storage_bytes: 4 * 1024 * 1024,
+        max_storage_files: 64,
+        max_active_streams: 2,
+    });
+    let harness = ManagementHarness::start(&config).await;
+    let mut publisher = RtmpSessionClient::connect(harness.rtmp_runtime(), "broadcast");
+    publisher.publish("camera", 1_000);
+    publisher.publish_audio(0, &[0xaf, 0, 0x12, 0x10], 1_001);
+    publisher.publish_video(
+        0,
+        &[
+            0x17, 0, 0, 0, 0, 1, 0x42, 0, 0x1e, 0xff, 0xe1, 0, 4, 0x67, 0x42, 0, 0x1e,
+            1, 0, 2, 0x68, 0xce,
+        ],
+        1_002,
+    );
+    publisher.publish_video(0, &[0x17, 1, 0, 0, 0, 0, 0, 0, 2, 0x65, 1], 1_003);
+    publisher.publish_audio(0, &[0xaf, 1, 2, 3, 4], 1_004);
+    publisher.publish_video(1_000, &[0x27, 1, 0, 0, 0, 0, 0, 0, 2, 0x41, 2], 1_005);
+    publisher.publish_video(2_000, &[0x17, 1, 0, 0, 0, 0, 0, 0, 2, 0x65, 3], 1_006);
+
+    let manifest_path = "/api/v1/rtmp/media/live/broadcast/camera/dash/manifest.mpd";
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let manifest = loop {
+        let response = harness.request("GET", manifest_path, None, None).await;
+        if response.status == 200 {
+            break response;
+        }
+        assert!(Instant::now() < deadline, "DASH manifest publication timeout");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    assert_eq!(manifest.header("content-type"), Some("application/dash+xml"));
+    let manifest_body = String::from_utf8(manifest.body.clone()).expect("MPD UTF-8");
+    assert!(manifest_body.contains("seg-0.m4s"));
+    assert!(manifest_body.contains("type=\"dynamic\""));
+
+    let unauthorized = harness
+        .request_with("GET", manifest_path, None, None, None, None)
+        .await;
+    assert_eq!(unauthorized.status, 401);
+
+    let segment_path = "/api/v1/rtmp/media/live/broadcast/camera/dash/seg-0.m4s";
+    let authorization = format!("Bearer {TEST_TOKEN}");
+    let ranged = http_request(
+        harness.address,
+        "GET",
+        segment_path,
+        &[
+            ("Authorization", authorization.as_str()),
+            ("Range", "bytes=0-7"),
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(ranged.status, 206);
+    assert_eq!(ranged.body().len(), 8);
+    assert!(ranged
+        .header("content-range")
+        .is_some_and(|value| value.starts_with("bytes 0-7/")));
 }
 
 #[test]
@@ -1209,6 +1285,7 @@ struct ManagementHarness {
     config_path: PathBuf,
     shutdown: watch::Sender<bool>,
     task: JoinHandle<()>,
+    rtmp_runtime: Option<RtmpServiceRuntime>,
     _directory: TempDir,
 }
 
@@ -1229,9 +1306,18 @@ impl ManagementHarness {
         let active_revision = document.candidate_revision.clone();
         let disk_revision = document.disk_revision.clone();
         let plan = runtime_plan(config).expect("active runtime plan");
+        let registry = Arc::new(RtmpRegistry::new(plan.rtmp_capabilities));
+        let rtmp_runtime = plan.services.iter().find_map(|service| match &service.kind {
+            ServiceKind::Rtmp(service) => Some(
+                service
+                    .runtime(Arc::clone(&registry))
+                    .expect("RTMP test runtime"),
+            ),
+            _ => None,
+        });
         let metrics = RuntimeMetrics::new();
         metrics.set_rtmp_recording_supported(plan.rtmp_recording_supported);
-        let api = RtmpManagementApi::new(empty_registry(), metrics, Arc::clone(&plan.topology))
+        let api = RtmpManagementApi::new(Arc::clone(&registry), metrics, Arc::clone(&plan.topology))
             .with_config_coordinator(coordinator, active_revision.clone(), TEST_TOKEN)
             .expect("injected management token")
             .with_vod_catalog(Arc::clone(&plan.rtmp_vod_catalog))
@@ -1262,8 +1348,15 @@ impl ManagementHarness {
             config_path,
             shutdown,
             task,
+            rtmp_runtime,
             _directory: directory,
         }
+    }
+
+    fn rtmp_runtime(&self) -> &RtmpServiceRuntime {
+        self.rtmp_runtime
+            .as_ref()
+            .expect("RTMP service runtime in test configuration")
     }
 
     async fn request(
