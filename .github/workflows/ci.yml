@@ -128,3 +128,99 @@ jobs:
       - name: Build UI
         run: pnpm build
         working-directory: ui
+
+  browser:
+    name: Deterministic dashboard browser tests
+    runs-on: ubuntu-24.04
+    env:
+      NO_PROXY: 127.0.0.1,localhost
+      no_proxy: 127.0.0.1,localhost
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.3.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('ui/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
+      - name: Install UI dependencies
+        run: pnpm install --frozen-lockfile --prefer-offline
+        working-directory: ui
+
+      - name: Type-check browser tests
+        run: pnpm typecheck:browser
+        working-directory: ui
+
+      - name: Install Chromium and Linux dependencies
+        run: pnpm exec playwright install --with-deps chromium
+        working-directory: ui
+
+      - name: Run browser tests with bounded workers
+        run: pnpm test:browser -- --workers=2
+        working-directory: ui
+
+      - name: Upload browser diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-browser-diagnostics
+          path: |
+            ui/test-results
+            ui/playwright-report
+
+  acme-local:
+    name: Scripted local ACME tests
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_BUILD_JOBS: 4
+      CARGO_INCREMENTAL: 0
+      OXIROUTE_ACME_DIRECTORY_URL: http://127.0.0.1:14000/directory
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.87
+        uses: dtolnay/rust-toolchain@1.87.0
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-acme-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-acme-
+
+      - name: Fetch locked Rust dependencies
+        run: cargo +1.87.0 fetch --locked
+
+      - name: Assert the ACME test endpoint is loopback-only
+        shell: bash
+        run: |
+          case "${OXIROUTE_ACME_DIRECTORY_URL}" in
+            http://127.0.0.1:14000/*) ;;
+            *) printf 'ACME tests must use the loopback fake endpoint\n' >&2; exit 1 ;;
+          esac
+
+      - name: Run scripted ACME tests without network access
+        run: cargo +1.87.0 test -p oxiroute-acme --locked --jobs 4
+        env:
+          CARGO_NET_OFFLINE: true

@@ -20,9 +20,10 @@ read them on filesystems without POSIX ACL support. Tighten them as described be
 
 The launcher at `/usr/lib/oxiroute/oxiroute-worker-launcher` activates the supervised master for
 configurations whose listener descriptors are supported by the authenticated stream-transfer
-contract. UDP, HTTP/3, and authenticated management configurations remain on the direct generation
-runtime; the service's packaged statistics-only configuration uses the supervised path. Management
-generation mutations are not yet master-coordinated, so the direct path is required for them.
+contract. UDP and HTTP/3 remain on the direct generation runtime. Authenticated management is
+supported by the supervised worker; its management API observes the active worker while the master
+retains listener ownership and publishes bounded worker status. Management generation mutations are
+still applied by the worker's active generation and are not arbitrary master commands.
 
 To enable the authenticated management client on the direct generation runtime, create the
 restrictive default token file:
@@ -79,11 +80,13 @@ The v0.3.0 archive includes the supervised launcher and related workspace crates
 archive before using the recipe, then keep the source checksum synchronized with that exact asset and
 regenerate `.SRCINFO`.
 
-From this repository, `./build-local.sh` recreates an archive from the current worktree and verifies it
-against the PKGBUILD checksum. Until the next release archive is published, that generated archive
-intentionally does not match the pinned v0.2.3 checksum because the current worktree contains the
-unreleased supervisor crates. Pass an existing matching archive as the first argument to verify and
-use a release artifact instead. Extra arguments are passed to `makepkg`.
+From this repository, `../../scripts/verify-release-version.sh` checks aligned release metadata and
+`../../scripts/create-release-archive.sh` recreates an archive from the current worktree. The archive
+verifier excludes benchmark reports and build artifacts, then `./build-local.sh` checks it against the
+PKGBUILD checksum before invoking `makepkg`. Until the next release archive is published, the
+generated archive may intentionally not match the currently pinned checksum. Pass an existing matching
+archive as the first argument to verify and use a release artifact instead. Extra arguments are passed
+to `makepkg`.
 
 Examples:
 

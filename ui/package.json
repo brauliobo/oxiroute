@@ -8,12 +8,16 @@
     "build": "vue-tsc --noEmit && vite build",
     "dev": "vite",
     "test": "vitest run",
-    "typecheck": "vue-tsc --noEmit"
+    "test:browser": "playwright test",
+    "test:browser:install": "playwright install --with-deps chromium",
+    "typecheck": "vue-tsc --noEmit",
+    "typecheck:browser": "tsc -p tsconfig.browser.json --noEmit"
   },
   "dependencies": {
     "vue": "^3.5.18"
   },
   "devDependencies": {
+    "@playwright/test": "1.62.1",
     "@vitejs/plugin-vue": "^6.0.0",
     "@types/node": "^24.0.0",
     "@vue/test-utils": "^2.4.6",

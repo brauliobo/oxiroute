@@ -1,0 +1,96 @@
+name: Release archive and provenance
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag or ref to archive and verify
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    name: Verify release archive and provenance
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_BUILD_JOBS: 4
+    steps:
+      - name: Check out release ref
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Install Rust 1.87
+        uses: dtolnay/rust-toolchain@1.87.0
+
+      - name: Verify locked workspace metadata at MSRV
+        run: cargo +1.87.0 metadata --format-version 1 --no-deps --locked
+
+      - name: Select release version
+        run: |
+          version="${{ inputs.tag || github.ref_name }}"
+          version="${version#v}"
+          printf 'RELEASE_VERSION=%s\n' "${version}" >> "${GITHUB_ENV}"
+
+      - name: Verify version metadata
+        run: ./scripts/verify-release-version.sh "${RELEASE_VERSION}"
+
+      - name: Create and verify deterministic source archive
+        run: |
+          mkdir -p release
+          ./scripts/create-release-archive.sh "release/oxiroute-${RELEASE_VERSION}.tar.gz" "${RELEASE_VERSION}"
+
+      - name: Verify PKGBUILD checksum matches the release archive
+        run: |
+          source packaging/arch/PKGBUILD
+          expected="${sha256sums[0]}"
+          actual="$(sha256sum "release/oxiroute-${RELEASE_VERSION}.tar.gz")"
+          actual="${actual%% *}"
+          [[ "${actual}" == "${expected}" ]] || {
+            printf 'PKGBUILD checksum is not synchronized with the generated archive\nexpected: %s\nactual:   %s\n' "${expected}" "${actual}" >&2
+            exit 1
+          }
+
+      - name: Write checksums and source provenance
+        run: |
+          archive="release/oxiroute-${RELEASE_VERSION}.tar.gz"
+          sha256sum "${archive}" > release/SHA256SUMS
+          commit="$(git rev-parse HEAD)"
+          source_date_epoch="$(git log -1 --format=%ct HEAD)"
+          checksum="$(cut -d' ' -f1 release/SHA256SUMS)"
+          printf '{\n  "schema": "oxiroute.release-provenance.v1",\n  "version": "%s",\n  "commit": "%s",\n  "source_date_epoch": %s,\n  "archive_sha256": "%s"\n}\n' \
+            "${RELEASE_VERSION}" "${commit}" "${source_date_epoch}" "${checksum}" > release/SOURCE-PROVENANCE.json
+
+      - name: Upload release verification files
+        uses: actions/upload-artifact@v4
+        with:
+          name: oxiroute-release-${{ inputs.tag || github.ref_name }}
+          path: release
+
+      - name: Attest release archive provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: release/oxiroute-*.tar.gz
+
+      - name: Publish tagged release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            release/oxiroute-*.tar.gz
+            release/SHA256SUMS
+            release/SOURCE-PROVENANCE.json

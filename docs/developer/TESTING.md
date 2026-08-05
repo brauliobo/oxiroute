@@ -11,6 +11,7 @@ cargo clippy --workspace --all-targets --jobs 4 -- -D warnings
 cargo test --workspace --jobs 4
 pnpm --dir ui test
 pnpm --dir ui build
+pnpm --dir ui test:browser -- --workers=2
 ```
 
 For a locked toolchain check when it is installed:
@@ -31,6 +32,7 @@ Build tasks should use at most four workers in constrained environments. For mak
 | Import conformance | Include graphs, provenance, decision ledgers, blockers, finalized candidate behavior, and sanitized live fixtures |
 | Protocol interoperability | Independent HTTP/TLS/H2/gRPC/WebSocket/RTMP clients and wire behavior |
 | UI contract/component | Exact API shapes, stale/conflict behavior, responsive controls, navigation, and redaction |
+| Real browser | Built dashboard desktop/mobile layout, in-memory token lifecycle, config writes/conflicts/external edits, SSE reconnect, controls, redaction, and provenance boundaries |
 
 ## Focused Commands
 
@@ -61,8 +63,19 @@ A capability should not move to `implemented` without the relevant:
 
 Checked-in bounded parser fuzz scaffolding lives under `fuzz/`; its optional smoke workflow does not
 claim fuzz coverage and skips execution when cargo-fuzz or nightly Rust is unavailable. The Linux
-workflow in `.github/workflows/ci.yml` enforces the Rust and UI gates plus coverage-manifest
-validation, but it does not imply browser, platform, or fuzz coverage.
+workflow in `.github/workflows/ci.yml` enforces the Rust and UI gates plus coverage-manifest and
+localhost-only browser validation. `.github/workflows/platform.yml` runs locked metadata on every
+listed platform and explicitly gates full builds to Linux until the platform boundary changes.
+
+The browser suite runs against the built static UI with Playwright route interception. Unexpected API
+or non-local requests fail the test, SSE responses are scripted locally, and no daemon, public
+endpoint, or ACME server is contacted. Install Chromium once with
+`pnpm --dir ui test:browser:install` when running the suite locally.
+
+Dependency and release gates live in `.github/workflows/audit.yml` and
+`.github/workflows/release.yml`. `deny.toml` denies unknown dependency sources and unapproved
+licenses; RustSec, cargo-deny, the UI lockfile audit, archive contents, and build provenance are
+separate checks rather than silent fallbacks.
 
 Read [`fuzz/README.md`](../../fuzz/README.md) before running a target. Keep parser harnesses
 isolated, deterministic, resource-bounded, and honest about unsupported protocol boundaries.

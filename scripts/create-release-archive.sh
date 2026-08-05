@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+archive=${1:-}
+version=${2:-}
+
+if [[ -z "${archive}" || -z "${version}" || "${archive}" == -* || "${version}" == -* ]]; then
+  printf 'usage: %s ARCHIVE VERSION\n' "${BASH_SOURCE[0]}" >&2
+  exit 2
+fi
+
+archive=$(realpath -m -- "${archive}")
+mkdir -p -- "$(dirname -- "${archive}")"
+source_date_epoch=${SOURCE_DATE_EPOCH:-$(git -C "${repo_dir}" log -1 --format=%ct HEAD)}
+export SOURCE_DATE_EPOCH=${source_date_epoch}
+temporary_archive=$(mktemp "${archive}.XXXXXX")
+trap 'rm -f -- "${temporary_archive}"' EXIT
+
+git -C "${repo_dir}" ls-files -z -- \
+  . \
+  ':(exclude)packaging/arch/**' \
+  ':(exclude)benchmarks/reports/**' \
+  ':(exclude)target/**' \
+  ':(exclude)**/target/**' \
+  ':(exclude)node_modules/**' \
+  ':(exclude)**/node_modules/**' \
+  ':(exclude)remotion/out/**' \
+  ':(exclude)test-results/**' | \
+  tar \
+    --directory="${repo_dir}" \
+    --null \
+    --files-from=- \
+    --sort=name \
+    --mtime="@${source_date_epoch}" \
+    --owner=0 \
+    --group=0 \
+    --numeric-owner \
+    --transform="s|^|oxiroute-${version}/|" \
+    --create \
+    --file=- | gzip -n >"${temporary_archive}"
+
+mv -- "${temporary_archive}" "${archive}"
+trap - EXIT
+"${repo_dir}/scripts/verify-release-archive.sh" "${archive}" "${version}" --compare-worktree
