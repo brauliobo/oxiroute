@@ -5,7 +5,7 @@ services from one typed configuration. It is built on [Cloudflare Pingora](https
 and is designed around explicit behavior, bounded inputs, observable runtime state, and safe
 configuration changes.
 
-**Current release line:** `0.3.0` (pre-alpha; `v0.2.3` is the latest repository tag)<br>
+**Current release line:** `0.4.0` (pre-alpha; `v0.4.0` is the current repository release)<br>
 **Project status:** pre-alpha; read the [compatibility matrix](docs/COMPATIBILITY.md) before using it
 for production traffic.<br>
 **Website:** [brauliobo.github.io/oxiroute](https://brauliobo.github.io/oxiroute/)
