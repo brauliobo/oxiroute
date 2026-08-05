@@ -9,7 +9,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::defaults::{
     MAX_CERTIFICATE_DNS_NAMES, MAX_CERTIFICATES, MAX_ENDPOINTS_PER_POOL,
     MAX_RTMP_APPLICATIONS_PER_SERVICE, MAX_RTMP_RECORDERS_PER_APPLICATION,
-    MAX_RTMP_HLS_OUTPUTS, MAX_RTMP_RECORDING_ROOTS, MAX_RTMP_SERVICES, MAX_SOURCE_BYTES,
+    MAX_RTMP_DASH_OUTPUTS, MAX_RTMP_HLS_OUTPUTS, MAX_RTMP_RECORDING_ROOTS, MAX_RTMP_SERVICES,
+    MAX_SOURCE_BYTES,
     MAX_TLS_PROFILES,
     MAX_TOTAL_ENDPOINTS, MAX_TOTAL_RTMP_RECORDERS, default_alpn, default_cache_grace_ms,
     default_cache_keep_ms, default_cache_key_components, default_cache_max_bytes,
@@ -40,6 +41,10 @@ use crate::defaults::{
     default_rtmp_hls_max_queue_messages, default_rtmp_hls_max_segment_bytes,
     default_rtmp_hls_max_segment_duration_ms, default_rtmp_hls_max_storage_bytes,
     default_rtmp_hls_max_storage_files, default_rtmp_hls_playlist_length_ms,
+    default_rtmp_dash_max_active_streams, default_rtmp_dash_max_queue_messages,
+    default_rtmp_dash_max_segment_bytes, default_rtmp_dash_max_segment_duration_ms,
+    default_rtmp_dash_max_storage_bytes, default_rtmp_dash_max_storage_files,
+    default_rtmp_dash_segment_duration_ms,
     default_rtmp_hls_segment_duration_ms, default_acme_dns01_timeout_seconds,
     default_proxy_protocol_timeout_ms, default_self_signed_validity_days, default_true,
     default_udp_max_datagram_bytes, default_udp_max_queue_bytes, default_udp_max_queue_datagrams,
@@ -1802,16 +1807,35 @@ pub struct RtmpDashPolicy {
     pub root_directory: PathBuf,
     #[serde(default = "default_rtmp_dash_segment_duration_ms")]
     pub segment_duration_ms: u64,
+    #[serde(default = "default_rtmp_dash_max_segment_duration_ms")]
+    pub max_segment_duration_ms: u64,
     #[serde(default = "default_rtmp_hls_playlist_length_ms")]
     pub playlist_length_ms: u64,
+    #[serde(default)]
+    pub segment_naming: RtmpDashSegmentNaming,
     #[serde(default)]
     pub nested: bool,
     #[serde(default = "default_true")]
     pub cleanup: bool,
+    #[serde(default = "default_rtmp_dash_max_segment_bytes")]
+    pub max_segment_bytes: u64,
+    #[serde(default = "default_rtmp_dash_max_queue_messages")]
+    pub max_queue_messages: u64,
+    #[serde(default = "default_rtmp_dash_max_storage_bytes")]
+    pub max_storage_bytes: u64,
+    #[serde(default = "default_rtmp_dash_max_storage_files")]
+    pub max_storage_files: u64,
+    #[serde(default = "default_rtmp_dash_max_active_streams")]
+    pub max_active_streams: u64,
 }
 
-fn default_rtmp_dash_segment_duration_ms() -> u64 {
-    5_000
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RtmpDashSegmentNaming {
+    #[default]
+    Sequential,
+    Timestamp,
+    System,
 }
 
 impl Default for RtmpFanoutPolicy {
@@ -2640,6 +2664,18 @@ pub enum ConfigError {
         "RTMP HLS outputs `{first_output}` and `{second_output}` use shared media root `{root_directory}` and must use identical storage limits"
     )]
     RtmpHlsStorageLimitsMismatch {
+        root_directory: String,
+        first_output: String,
+        second_output: String,
+    },
+    #[error("configuration exceeds the {MAX_RTMP_DASH_OUTPUTS}-DASH-output limit")]
+    TooManyRtmpDashOutputs,
+    #[error("configuration exceeds the {MAX_RTMP_DASH_OUTPUTS}-DASH-root limit")]
+    TooManyRtmpDashRoots,
+    #[error(
+        "RTMP DASH outputs `{first_output}` and `{second_output}` use shared media root `{root_directory}` and must use identical storage limits"
+    )]
+    RtmpDashStorageLimitsMismatch {
         root_directory: String,
         first_output: String,
         second_output: String,

@@ -29,6 +29,7 @@ use crate::{
          RtmpRecorderTimezone, RtmpRelayPolicy, RtmpRtmpsPolicy, RtmpService, RtmpSessionCeilings,
          RtmpTokenPolicy, RtmpTokenSource, RtmpTransport, RtmpVodPolicy, RtmpVodSource,
          RtmpHlsFragmentNaming, RtmpHlsKeyPolicy, RtmpHlsPolicy, RtmpHlsVariant, RtmpDashPolicy,
+         RtmpDashSegmentNaming,
          Stats,
         StatsPage, StatsPageAdminPolicy, TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm,
         UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls,
@@ -727,9 +728,23 @@ impl Renderer {
             utf8_path(&policy.root_directory, "RTMP DASH", "dash", "root_directory")?,
         );
         self.integer_field("segment_duration_ms", policy.segment_duration_ms);
+        self.integer_field("max_segment_duration_ms", policy.max_segment_duration_ms);
         self.integer_field("playlist_length_ms", policy.playlist_length_ms);
+        self.string_field(
+            "segment_naming",
+            match policy.segment_naming {
+                RtmpDashSegmentNaming::Sequential => "sequential",
+                RtmpDashSegmentNaming::Timestamp => "timestamp",
+                RtmpDashSegmentNaming::System => "system",
+            },
+        );
         self.boolean_field("nested", policy.nested);
         self.boolean_field("cleanup", policy.cleanup);
+        self.integer_field("max_segment_bytes", policy.max_segment_bytes);
+        self.integer_field("max_queue_messages", policy.max_queue_messages);
+        self.integer_field("max_storage_bytes", policy.max_storage_bytes);
+        self.integer_field("max_storage_files", policy.max_storage_files);
+        self.integer_field("max_active_streams", policy.max_active_streams);
         Ok(())
     }
 

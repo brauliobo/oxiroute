@@ -85,7 +85,7 @@ procedure are documented in `vendor/pingora-core/README.oxiroute.md`.
 | HTTP notify callbacks | partial: bounded HTTP/HTTPS authorization, teardown, and update callbacks with GET/POST methods, resolved-address policy checks, strict update handling, and redacted outcomes; richer nginx callback fields and redirect forwarding remain absent |
 | RTMP statistics/control API equivalents | planned RTMP slice 2 |
 | HLS H.264/AAC transmuxing and AES keys | partial: bounded MPEG-TS HLS output, variants, atomic storage, cleanup, and AES-128 key rotation are integrated; transcoding and broader origin/auth policy remain absent |
-| MPEG-DASH fragmented MP4 output | unsupported: configuration is rejected explicitly until a supported DASH muxer/container path is available |
+| MPEG-DASH fragmented MP4 output | partial: bounded authenticated AVC/AAC fragmented MP4 segments and MPD `SegmentList` output are active; unsupported codec forms and native nginx-DASH lowering remain explicitly blocked |
 | Isolated exec/transcode process integration | planned RTMP slice 3 |
 | Multi-worker auto-push equivalent | planned RTMP slice 3 |
 

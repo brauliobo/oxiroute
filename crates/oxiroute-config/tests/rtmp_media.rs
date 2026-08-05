@@ -50,7 +50,7 @@ fn hls_defaults_are_bounded_and_rendered() {
 }
 
 #[test]
-fn dash_is_rejected_without_a_supported_muxer() {
+fn dash_defaults_are_bounded_and_rendered() {
     let mut config = serde_json::from_value(json!({
         "version": 1,
         "listeners": [],
@@ -65,8 +65,86 @@ fn dash_is_rejected_without_a_supported_muxer() {
     }))
     .expect("valid typed configuration");
 
+    validate_config(&mut config).expect("bounded DASH configuration");
+    let dash = config.rtmp_services[0].applications[0]
+        .dash
+        .as_ref()
+        .expect("DASH policy");
+    assert_eq!(dash.segment_duration_ms, 5_000);
+    assert_eq!(dash.max_segment_duration_ms, 15_000);
+    assert_eq!(dash.playlist_length_ms, 30_000);
+    assert_eq!(dash.max_queue_messages, 256);
+    assert_eq!(dash.max_storage_files, 10_000);
+    let lua = render_lua(&config).expect("rendered DASH configuration");
+    assert!(lua.contains("dash = {"));
+    assert!(lua.contains("segment_naming = \"sequential\""));
+}
+
+#[test]
+fn dash_rejects_malformed_duration_quota_and_unknown_fields() {
+    let mut invalid = serde_json::from_value(json!({
+        "version": 1,
+        "listeners": [],
+        "rtmp_services": [{
+            "name": "live",
+            "applications": [{
+                "name": "broadcast",
+                "live": true,
+                "dash": {
+                    "root_directory": "/var/lib/oxiroute/dash",
+                    "segment_duration_ms": 0
+                }
+            }]
+        }]
+    }))
+    .expect("valid typed configuration");
     assert!(matches!(
-        validate_config(&mut config),
-        Err(ConfigError::UnsupportedRtmpDash { .. })
+        validate_config(&mut invalid),
+        Err(ConfigError::InvalidRtmpApplicationPolicy {
+            field: "dash.segment_duration_ms",
+            ..
+        })
     ));
+
+    let mut quota = serde_json::from_value(json!({
+        "version": 1,
+        "listeners": [],
+        "rtmp_services": [{
+            "name": "live",
+            "applications": [{
+                "name": "broadcast",
+                "live": true,
+                "dash": {
+                    "root_directory": "/var/lib/oxiroute/dash",
+                    "max_segment_bytes": 1024,
+                    "max_storage_bytes": 512
+                }
+            }]
+        }]
+    }))
+    .expect("valid typed configuration");
+    assert!(matches!(
+        validate_config(&mut quota),
+        Err(ConfigError::InvalidRtmpApplicationPolicy {
+            field: "dash.max_storage_bytes",
+            ..
+        })
+    ));
+
+    let unknown = serde_json::from_value::<oxiroute_config::Config>(json!({
+        "version": 1,
+        "listeners": [],
+        "rtmp_services": [{
+            "name": "live",
+            "applications": [{
+                "name": "broadcast",
+                "live": true,
+                "dash": {
+                    "root_directory": "/var/lib/oxiroute/dash",
+                    "not_a_dash_field": true
+                }
+            }]
+        }]
+    }));
+    assert!(unknown.is_err());
 }

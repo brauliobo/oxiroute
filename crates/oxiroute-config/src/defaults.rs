@@ -34,6 +34,13 @@ const DEFAULT_RTMP_HLS_MAX_QUEUE_MESSAGES: u64 = 256;
 const DEFAULT_RTMP_HLS_MAX_STORAGE_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_RTMP_HLS_MAX_STORAGE_FILES: u64 = 10_000;
 const DEFAULT_RTMP_HLS_MAX_ACTIVE_STREAMS: u64 = 1_024;
+const DEFAULT_RTMP_DASH_SEGMENT_DURATION_MS: u64 = 5_000;
+const DEFAULT_RTMP_DASH_MAX_SEGMENT_DURATION_MS: u64 = 15_000;
+const DEFAULT_RTMP_DASH_MAX_SEGMENT_BYTES: u64 = 8 * 1024 * 1024;
+const DEFAULT_RTMP_DASH_MAX_QUEUE_MESSAGES: u64 = 256;
+const DEFAULT_RTMP_DASH_MAX_STORAGE_BYTES: u64 = 512 * 1024 * 1024;
+const DEFAULT_RTMP_DASH_MAX_STORAGE_FILES: u64 = 10_000;
+const DEFAULT_RTMP_DASH_MAX_ACTIVE_STREAMS: u64 = 1_024;
 const DEFAULT_RECORDER_MAX_QUEUE_MESSAGES: u64 = 256;
 const DEFAULT_RECORDER_MAX_QUEUE_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_RECORDER_SHUTDOWN_TIMEOUT_MS: u64 = 5_000;
@@ -143,6 +150,14 @@ pub(crate) const MAX_RTMP_HLS_STORAGE_FILES: u64 = 1_000_000;
 pub(crate) const MAX_RTMP_HLS_ACTIVE_STREAMS: u64 = 100_000;
 pub(crate) const MAX_RTMP_HLS_KEY_URL_PREFIX_BYTES: usize = 512;
 pub(crate) const MAX_RTMP_HLS_KEY_ROTATION_SEGMENTS: u64 = 100_000;
+pub(crate) const MAX_RTMP_DASH_OUTPUTS: usize = 64;
+pub(crate) const MAX_RTMP_DASH_SEGMENT_DURATION_MS: u64 = 120_000;
+pub(crate) const MAX_RTMP_DASH_PLAYLIST_LENGTH_MS: u64 = 86_400_000;
+pub(crate) const MAX_RTMP_DASH_SEGMENT_BYTES: u64 = 64 * 1024 * 1024;
+pub(crate) const MAX_RTMP_DASH_QUEUE_MESSAGES: u64 = 65_536;
+pub(crate) const MAX_RTMP_DASH_STORAGE_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
+pub(crate) const MAX_RTMP_DASH_STORAGE_FILES: u64 = 1_000_000;
+pub(crate) const MAX_RTMP_DASH_ACTIVE_STREAMS: u64 = 100_000;
 pub(crate) const MAX_RECORDING_SUFFIX_TEMPLATE_BYTES: usize = 128;
 pub(crate) const MAX_RECORDER_ROTATION_INTERVAL_MS: u64 = (1 << 31) - 1;
 pub(crate) const MAX_RECORDER_QUEUE_MESSAGES: u64 = 65_536;
@@ -257,6 +272,34 @@ pub(crate) const fn default_rtmp_hls_max_storage_files() -> u64 {
 
 pub(crate) const fn default_rtmp_hls_max_active_streams() -> u64 {
     DEFAULT_RTMP_HLS_MAX_ACTIVE_STREAMS
+}
+
+pub(crate) const fn default_rtmp_dash_segment_duration_ms() -> u64 {
+    DEFAULT_RTMP_DASH_SEGMENT_DURATION_MS
+}
+
+pub(crate) const fn default_rtmp_dash_max_segment_duration_ms() -> u64 {
+    DEFAULT_RTMP_DASH_MAX_SEGMENT_DURATION_MS
+}
+
+pub(crate) const fn default_rtmp_dash_max_segment_bytes() -> u64 {
+    DEFAULT_RTMP_DASH_MAX_SEGMENT_BYTES
+}
+
+pub(crate) const fn default_rtmp_dash_max_queue_messages() -> u64 {
+    DEFAULT_RTMP_DASH_MAX_QUEUE_MESSAGES
+}
+
+pub(crate) const fn default_rtmp_dash_max_storage_bytes() -> u64 {
+    DEFAULT_RTMP_DASH_MAX_STORAGE_BYTES
+}
+
+pub(crate) const fn default_rtmp_dash_max_storage_files() -> u64 {
+    DEFAULT_RTMP_DASH_MAX_STORAGE_FILES
+}
+
+pub(crate) const fn default_rtmp_dash_max_active_streams() -> u64 {
+    DEFAULT_RTMP_DASH_MAX_ACTIVE_STREAMS
 }
 
 pub(crate) const fn default_self_signed_validity_days() -> u32 {

@@ -30,6 +30,10 @@ use crate::{
         MAX_RTMP_HLS_SEGMENT_DURATION_MS, MAX_RTMP_HLS_OUTPUTS, MAX_RTMP_HLS_QUEUE_MESSAGES,
         MAX_RTMP_HLS_SEGMENT_BYTES, MAX_RTMP_HLS_STORAGE_BYTES, MAX_RTMP_HLS_STORAGE_FILES,
         MAX_RTMP_HLS_VARIANTS, MAX_RTMP_HLS_NAME_BYTES, MAX_RTMP_HLS_PLAYLIST_LENGTH_MS,
+        MAX_RTMP_DASH_ACTIVE_STREAMS, MAX_RTMP_DASH_OUTPUTS, MAX_RTMP_DASH_QUEUE_MESSAGES,
+        MAX_RTMP_DASH_SEGMENT_BYTES, MAX_RTMP_DASH_SEGMENT_DURATION_MS,
+        MAX_RTMP_DASH_STORAGE_BYTES, MAX_RTMP_DASH_STORAGE_FILES,
+        MAX_RTMP_DASH_PLAYLIST_LENGTH_MS,
         MAX_RTMP_RELAY_BUFFER_MS, MAX_RTMP_RELAY_TIMEOUT_MS, MAX_RTMP_SECRET_FILE_BYTES,
         MAX_RTMP_SERVICES, MAX_RTMP_SUBSCRIBERS, MAX_RTMP_TOKEN_BYTES,
         MAX_RTMP_TOKEN_PARAMETER_BYTES, MAX_RTMP_VOD_DURATION_MS, MAX_RTMP_VOD_FILE_BYTES,
@@ -1382,6 +1386,9 @@ fn validate_rtmp_services(services: &mut [RtmpService]) -> Result<(), ConfigErro
     let mut roots = HashMap::<PathBuf, (RtmpRecorderStorageLimits, String)>::new();
     let mut hls_outputs = 0_usize;
     let mut hls_roots = HashMap::<PathBuf, ((u64, u64, u64, u64), String)>::new();
+    let mut dash_outputs = 0_usize;
+    let mut dash_roots = HashMap::<PathBuf, ((u64, u64, u64, u64), String)>::new();
+    let mut media_roots = HashMap::<PathBuf, ((u64, u64, u64, u64), String)>::new();
     for service in services {
         if service.outbound_chunk_size == 0
             || service.outbound_chunk_size > MAX_RTMP_OUTBOUND_CHUNK_SIZE
@@ -1422,12 +1429,6 @@ fn validate_rtmp_services(services: &mut [RtmpService]) -> Result<(), ConfigErro
                 });
             }
             validate_rtmp_application(&service.name, &service.outbound_policy, application)?;
-            if application.dash.is_some() {
-                return Err(ConfigError::UnsupportedRtmpDash {
-                    service: service.name.clone(),
-                    application: application.name.clone(),
-                });
-            }
             if let Some(hls) = &mut application.hls {
                 if !application.live {
                     return Err(ConfigError::InvalidRtmpApplicationPolicy {
@@ -1464,6 +1465,69 @@ fn validate_rtmp_services(services: &mut [RtmpService]) -> Result<(), ConfigErro
                         return Err(ConfigError::TooManyRtmpHlsRoots);
                     }
                     hls_roots.insert(hls.root_directory.clone(), (limits, identity));
+                }
+                if let Some((first_limits, first_output)) = media_roots.get(&hls.root_directory) {
+                    if *first_limits != limits {
+                        return Err(ConfigError::RtmpHlsStorageLimitsMismatch {
+                            root_directory: hls.root_directory.display().to_string(),
+                            first_output: first_output.clone(),
+                            second_output: format!("{}/{}", service.name, application.name),
+                        });
+                    }
+                } else {
+                    media_roots.insert(
+                        hls.root_directory.clone(),
+                        (limits, format!("{}/{}", service.name, application.name)),
+                    );
+                }
+            }
+            if let Some(dash) = &mut application.dash {
+                if !application.live {
+                    return Err(ConfigError::InvalidRtmpApplicationPolicy {
+                        service: service.name.clone(),
+                        application: application.name.clone(),
+                        field: "dash",
+                        detail: "requires live = true",
+                    });
+                }
+                dash_outputs = dash_outputs
+                    .checked_add(1)
+                    .ok_or(ConfigError::TooManyRtmpDashOutputs)?;
+                if dash_outputs > MAX_RTMP_DASH_OUTPUTS {
+                    return Err(ConfigError::TooManyRtmpDashOutputs);
+                }
+                validate_rtmp_dash(&service.name, &application.name, dash)?;
+                let limits = (
+                    dash.max_storage_bytes,
+                    dash.max_storage_files,
+                    dash.max_active_streams,
+                    dash.max_segment_bytes,
+                );
+                let identity = format!("{}/{}/dash", service.name, application.name);
+                if let Some((first_limits, first_output)) = dash_roots.get(&dash.root_directory) {
+                    if *first_limits != limits {
+                        return Err(ConfigError::RtmpDashStorageLimitsMismatch {
+                            root_directory: dash.root_directory.display().to_string(),
+                            first_output: first_output.clone(),
+                            second_output: identity.clone(),
+                        });
+                    }
+                } else {
+                    if dash_roots.len() >= MAX_RTMP_DASH_OUTPUTS {
+                        return Err(ConfigError::TooManyRtmpDashRoots);
+                    }
+                    dash_roots.insert(dash.root_directory.clone(), (limits, identity.clone()));
+                }
+                if let Some((first_limits, first_output)) = media_roots.get(&dash.root_directory) {
+                    if *first_limits != limits {
+                        return Err(ConfigError::RtmpDashStorageLimitsMismatch {
+                            root_directory: dash.root_directory.display().to_string(),
+                            first_output: first_output.clone(),
+                            second_output: identity,
+                        });
+                    }
+                } else {
+                    media_roots.insert(dash.root_directory.clone(), (limits, identity));
                 }
             }
             if application.recorders.len() > MAX_RTMP_RECORDERS_PER_APPLICATION {
@@ -1834,6 +1898,88 @@ fn validate_rtmp_hls(
                 "must be empty or an ASCII relative path prefix ending in `/`",
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_rtmp_dash(
+    service: &str,
+    application: &str,
+    dash: &mut crate::model::RtmpDashPolicy,
+) -> Result<(), ConfigError> {
+    let invalid = |field, detail| ConfigError::InvalidRtmpApplicationPolicy {
+        service: service.into(),
+        application: application.into(),
+        field,
+        detail,
+    };
+    normalize_absolute_directory(&mut dash.root_directory)
+        .map_err(|detail| invalid("dash.root_directory", detail))?;
+    if dash.segment_duration_ms == 0
+        || dash.segment_duration_ms > MAX_RTMP_DASH_SEGMENT_DURATION_MS
+    {
+        return Err(invalid(
+            "dash.segment_duration_ms",
+            "must be between 1 and 120000",
+        ));
+    }
+    if dash.max_segment_duration_ms < dash.segment_duration_ms
+        || dash.max_segment_duration_ms > MAX_RTMP_DASH_SEGMENT_DURATION_MS
+    {
+        return Err(invalid(
+            "dash.max_segment_duration_ms",
+            "must be at least segment_duration_ms and at most 120000",
+        ));
+    }
+    if dash.playlist_length_ms < dash.segment_duration_ms
+        || dash.playlist_length_ms > MAX_RTMP_DASH_PLAYLIST_LENGTH_MS
+    {
+        return Err(invalid(
+            "dash.playlist_length_ms",
+            "must be at least segment_duration_ms and at most 86400000",
+        ));
+    }
+    for (field, value, maximum, detail) in [
+        (
+            "dash.max_segment_bytes",
+            dash.max_segment_bytes,
+            MAX_RTMP_DASH_SEGMENT_BYTES,
+            "must be between 1 and 67108864",
+        ),
+        (
+            "dash.max_queue_messages",
+            dash.max_queue_messages,
+            MAX_RTMP_DASH_QUEUE_MESSAGES,
+            "must be between 1 and 65536",
+        ),
+        (
+            "dash.max_storage_bytes",
+            dash.max_storage_bytes,
+            MAX_RTMP_DASH_STORAGE_BYTES,
+            "must be between 1 and 1099511627776",
+        ),
+        (
+            "dash.max_storage_files",
+            dash.max_storage_files,
+            MAX_RTMP_DASH_STORAGE_FILES,
+            "must be between 1 and 1000000",
+        ),
+        (
+            "dash.max_active_streams",
+            dash.max_active_streams,
+            MAX_RTMP_DASH_ACTIVE_STREAMS,
+            "must be between 1 and 100000",
+        ),
+    ] {
+        if value == 0 || value > maximum {
+            return Err(invalid(field, detail));
+        }
+    }
+    if dash.max_storage_bytes < dash.max_segment_bytes {
+        return Err(invalid(
+            "dash.max_storage_bytes",
+            "must be at least max_segment_bytes",
+        ));
     }
     Ok(())
 }

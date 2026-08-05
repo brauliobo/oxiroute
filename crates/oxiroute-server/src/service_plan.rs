@@ -30,7 +30,8 @@ use oxiroute_config::{
     UdpPolicy,
 };
 use oxiroute_rtmp::{
-    HlsFragmentNaming, HlsKeyConfig, HlsOutputConfig, HlsVariant, LiveHub, LiveHubLimits,
+    DashOutputConfig, DashSegmentNaming, HlsFragmentNaming, HlsKeyConfig, HlsOutputConfig,
+    HlsVariant, LiveHub, LiveHubLimits,
     MediaApplication, MediaCatalog, MediaStore, MediaStoreLimits, RecorderMediaMask,
     RecorderWorkerConfig, RecordingPathPolicy, RecordingSegmentNaming, RecordingStore,
     RecordingStoreLimits, RecordingTimeBasis, RecordingTimezone, RtmpAccessAction,
@@ -439,6 +440,10 @@ pub enum ServicePlanError {
         "RTMP HLS output in application `{application}` of service `{service}` failed media-root preflight"
     )]
     HlsPreflight { service: String, application: String },
+    #[error(
+        "RTMP DASH output in application `{application}` of service `{service}` failed media-root preflight"
+    )]
+    DashPreflight { service: String, application: String },
     #[error(
         "RTMP push target {target} in application `{application}` of service `{service}` cannot be resolved safely"
     )]
@@ -1395,11 +1400,20 @@ fn compile_rtmp_services(
                 &outbound_policy,
             )?;
             let vod = compile_rtmp_vod(&service.name, application, &outbound_policy)?;
-            let media = compile_rtmp_hls(
+            let hls = compile_rtmp_hls(
                 &service.name,
                 application,
                 &mut media_stores,
             )?;
+            let dash = compile_rtmp_dash(&service.name, application, &mut media_stores)?;
+            let media = match (hls, dash) {
+                (None, None) => None,
+                (Some(hls), None) => Some(hls),
+                (None, Some(dash)) => Some(Arc::new(MediaApplication::new(None).with_dash(Some(dash)))),
+                (Some(hls), Some(dash)) => {
+                    Some(Arc::new((*hls).clone().with_dash(Some(dash))))
+                }
+            };
             let mut prepared_recorders = Vec::with_capacity(application.recorders.len());
             for recorder in &application.recorders {
                 prepared_recorders.push(compile_rtmp_recorder(
@@ -1872,6 +1886,51 @@ fn compile_rtmp_hls(
         max_queue_messages: usize::try_from(policy.max_queue_messages).map_err(|_| invalid())?,
     };
     Ok(Some(Arc::new(MediaApplication::new(Some(Arc::new(config))))))
+}
+
+fn compile_rtmp_dash(
+    service: &str,
+    application: &oxiroute_config::RtmpApplication,
+    stores: &mut HashMap<PathBuf, Arc<MediaStore>>,
+) -> Result<Option<Arc<DashOutputConfig>>, ServicePlanError> {
+    let Some(policy) = &application.dash else {
+        return Ok(None);
+    };
+    let invalid = || ServicePlanError::DashPreflight {
+        service: service.to_owned(),
+        application: application.name.clone(),
+    };
+    let limits = MediaStoreLimits {
+        max_bytes: policy.max_storage_bytes,
+        max_files: usize::try_from(policy.max_storage_files).map_err(|_| invalid())?,
+        max_active_streams: usize::try_from(policy.max_active_streams).map_err(|_| invalid())?,
+        max_file_bytes: usize::try_from(policy.max_segment_bytes).map_err(|_| invalid())?,
+    };
+    let store = if let Some(store) = stores.get(&policy.root_directory) {
+        Arc::clone(store)
+    } else {
+        let store = Arc::new(
+            MediaStore::open(&policy.root_directory, limits).map_err(|_| invalid())?,
+        );
+        stores.insert(policy.root_directory.clone(), Arc::clone(&store));
+        store
+    };
+    let config = DashOutputConfig {
+        store,
+        segment_duration: Duration::from_millis(policy.segment_duration_ms),
+        max_segment_duration: Duration::from_millis(policy.max_segment_duration_ms),
+        playlist_length: Duration::from_millis(policy.playlist_length_ms),
+        naming: match policy.segment_naming {
+            oxiroute_config::RtmpDashSegmentNaming::Sequential => DashSegmentNaming::Sequential,
+            oxiroute_config::RtmpDashSegmentNaming::Timestamp => DashSegmentNaming::Timestamp,
+            oxiroute_config::RtmpDashSegmentNaming::System => DashSegmentNaming::System,
+        },
+        nested: policy.nested,
+        cleanup: policy.cleanup,
+        max_segment_bytes: usize::try_from(policy.max_segment_bytes).map_err(|_| invalid())?,
+        max_queue_messages: usize::try_from(policy.max_queue_messages).map_err(|_| invalid())?,
+    };
+    Ok(Some(Arc::new(config)))
 }
 
 fn compile_rtmp_recorder(

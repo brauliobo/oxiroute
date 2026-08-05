@@ -224,9 +224,11 @@ chunked upstream responses are rejected.
   unbounded queue.
 - Continuous recording and exact-ID manual controls are integrated. Authenticated remote recorder
   administration and cross-process quota coordination are not.
-- DASH, richer callback fields, broad control parity, isolated exec, and complete directive lowering
-  remain future slices. A DASH policy is rejected explicitly because no supported DASH muxer is
-  available. Named local/HTTP VOD sources, bounded RTMP playback workers, and the
+- DASH output is available for validated AVC/AAC publishers. It writes bounded fragmented MP4
+  segments and an MPD under the configured media quota; malformed or unsupported codec forms fail
+  closed with no MPEG-TS masquerading as DASH. Native nginx-DASH lowering, richer callback fields,
+  broad control parity, isolated exec, and complete directive lowering remain future slices. Named
+  local/HTTP VOD sources, bounded RTMP playback workers, and the
   authenticated management range endpoint are integrated. Native `allow`/`deny` and application `max_connections` have bounded
   lowering; canonical token rules and publisher/viewer ceilings are canonical-only.
 - An RTMP parser accepting a directive does not mean the runtime enforces that directive. The

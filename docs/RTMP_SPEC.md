@@ -31,11 +31,12 @@ claiming that all 117 directive keys are enforced.
 The current runtime contract is intentionally narrower than the directive inventory. Bounded live
 publish/play, ordered application network ACLs, stream-query tokens, per-application session
 ceilings, fanout, bounded push/pull relay, bounded HTTP notify callbacks, canonical named
-continuous/manual recorders, legacy AVC/AAC FLV output, and bounded HLS AVC/AAC transmuxing are partial product capabilities. The live adapter enforces a fixed 1 MiB
+continuous/manual recorders, legacy AVC/AAC FLV output, bounded HLS AVC/AAC transmuxing, and
+bounded DASH AVC/AAC fragmented MP4 output are partial product capabilities. The live adapter enforces a fixed 1 MiB
 inbound chunk ceiling and fixed 8 MiB assembled inbound-message ceiling; the nginx `max_message`
-directive is parsed and classified but does not configure that ceiling. DASH, exec, broad control
-behavior, and full nginx-RTMP parity remain planned or unsupported; DASH configuration fails
-explicitly because no supported muxer is available.
+directive is parsed and classified but does not configure that ceiling. Exec remains unsupported;
+broad nginx-RTMP parity remains partial. Native nginx DASH directives remain inventory-only;
+canonical `dash` policies use the bounded runtime path described below.
 
 ## Context abbreviations and common values
 
@@ -347,9 +348,12 @@ are validated before being rendered into HTTP output.
 | `dash_cleanup` | R,S,A | flag | on |
 | `dash_nested` | R,S,A | flag | off |
 
-No fragmented-MP4 muxer is currently available. DASH directives remain an inventory-only parse
-surface and canonical DASH configuration is rejected explicitly rather than producing misleading
-MPD output.
+Canonical DASH policies accept validated AVC/AAC input only. They write an ISO-BMFF initialization
+segment, independent keyframe-aligned `moof`/`mdat` media segments, and a bounded MPD
+`SegmentList`; segment files and manifests are published atomically under the configured media
+quota. `segment_naming`, `max_segment_duration_ms`, `max_segment_bytes`, queue/storage quotas,
+nesting, cleanup, and restart continuity are canonical fields. Enhanced AVC, HEVC, AV1, malformed
+codec records, unsafe names, and native nginx-DASH lowering remain explicitly blocked.
 
 ### HTTP statistics and control: 3
 
@@ -493,14 +497,16 @@ The authenticated management API exposes the same source as
 range, rejects multiple ranges and chunked upstream responses, and never exposes source roots or
 origin credentials.
 
-HLS output is configured per live application and is served through the authenticated management API
+HLS and DASH output are configured per live application and served through the authenticated management API
 at `GET /api/v1/rtmp/media/{service}/{application}/{stream}/{object}`. The media worker uses a
 bounded queue and publisher-incarnation directory, publishes complete playlists/fragments by
 atomic rename, enforces byte/file/active-stream quotas, and removes old playlist objects when the
 configured retention window advances. Legacy AVC/AAC input is transmuxed to MPEG-TS; configured
 variants share the same media bytes. Optional AES-128 keys rotate by segment count and remain inside
-the bounded media root. DASH configuration is rejected until a supported fragmented-MP4 muxer is
-available.
+the bounded media root. DASH writes `init.mp4`, `.m4s` fragments, and `manifest.mpd` as real
+fragmented MP4 output, retains a bounded MPD window, preserves sequence continuity across a
+publisher restart, and supports authenticated single contiguous byte ranges. DASH media is never
+represented as MPEG-TS.
 
 Stop and disconnect transfer workers to a reaper with a bounded pending-task count. Submission
 backpressures when that bound is full, but waits outside registry and recorder-controller locks, so
@@ -556,7 +562,8 @@ and broad nginx-RTMP lowering remain.
 ### Slice 3: media/process parity
 
 HLS, DASH, isolated exec, limits, and multi-worker equivalents require dedicated storage,
-media, crash, and resource-exhaustion tests.
+media, crash, and resource-exhaustion tests. DASH's bounded fMP4/MPD, cleanup, quota, restart,
+range, authentication, and malformed-input tests are part of the current runtime coverage.
 
 ## Security requirements
 
