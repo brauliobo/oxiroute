@@ -9,9 +9,8 @@ the UI edits the same model through a revisioned API.
 The priorities are safe reloads, correct protocol behavior, diagnostics, and observable
 limits. Feature count comes after those invariants.
 
-The package currently declares `0.3.0`; `v0.2.3` is the latest repository tag and no `v0.3.0`
-tag is asserted. This roadmap describes the current pre-alpha working release line, not a 1.0
-commitment.
+The package currently declares `0.4.0`. This roadmap describes the current pre-alpha working
+release line, not a 1.0 commitment.
 
 Roadmap status is not current support. `stable` means part of the current narrow release
 contract; `partial` means an integrated slice still has compatibility or production gates;
@@ -76,12 +75,11 @@ Status: partial. The annotations below identify landed slices; Milestone 1 is no
 
 The original Milestone 1 boundary explicitly excluded UDP, forward proxying, caching, HTTP/3,
 native config importers, transparent interception, firewall management, and remote multi-user
-administration. The current `0.3.0` working release has partial HTTP/1 forward proxying, bounded
-HTTP caching, and bounded nginx, HAProxy, Squid, and nginx-RTMP import paths; that progress does not
-promote those subsets to complete compatibility or make foundations active capabilities. UDP,
-reverse HTTP/3 daemon listeners, transparent interception, firewall management, and remote
-multi-user administration remain outside the current release contract. The bounded `forward_http3`
-listener is now a partial exception documented in the compatibility matrix.
+administration. The current `0.4.0` working release has partial HTTP/1 and HTTP/3 proxying, UDP
+relay, bounded HTTP caching, and bounded nginx, HAProxy, Squid, and nginx-RTMP import paths; that
+progress does not promote those subsets to complete compatibility or make foundations active
+capabilities. Transparent interception, firewall management, and remote multi-user administration
+remain outside the current release contract.
 
 Release gates:
 

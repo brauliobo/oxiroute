@@ -182,10 +182,9 @@ complete Squid parity while such entries remain.
 
 ## Release definition
 
-The package currently declares version `0.3.0`; `v0.2.3` is the latest repository tag and there is
-no `v0.3.0` tag. The current release line is pre-alpha, not a 1.0 stability claim. The
-compatibility matrix records the supported narrow paths for this working release line, while the
-roadmap records work that is not yet available.
+The package currently declares version `0.4.0`. The current release line is pre-alpha, not a 1.0
+stability claim. The compatibility matrix records the supported narrow paths for this working
+release line, while the roadmap records work that is not yet available.
 
 The current contract is:
 
@@ -193,7 +192,7 @@ The current contract is:
   loopback management exposure, bearer protection for recognized management/API routes, public
   readiness and metrics probes, bounded event polling, and external Certbot lineage
   reconciliation.
-- `partial`: reverse HTTP and TCP/UDP relay with bounded explicit PROXY protocol propagation, HTTP/1 and forward HTTP/3 proxying, RTMP live/recording/relay slices,
+- `partial`: reverse HTTP and TCP/UDP relay with bounded explicit PROXY protocol propagation, HTTP/1 and reverse/forward HTTP/3 proxying, RTMP live/recording/relay slices,
    managed ACME HTTP-01/DNS-01 issuance, wildcard renewal, bounded reverse HTTP cache, structured access logs, native
   nginx/HAProxy/Squid/Varnish import subsets, and the Vue control plane.
 - `foundation`: forward HTTP/2 protocol components,
