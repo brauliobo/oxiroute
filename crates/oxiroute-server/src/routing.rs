@@ -83,9 +83,9 @@ impl PathMatcher {
                 value,
                 value == "/"
                     || path == value
-                    || path
-                        .strip_prefix(value)
-                        .is_some_and(|remainder| remainder.starts_with('/')),
+                    || path.strip_prefix(value).is_some_and(|remainder| {
+                        value.ends_with('/') || remainder.starts_with('/')
+                    }),
             ),
             Self::Exact(value) => (2, value, path == value),
             Self::AsciiCaseInsensitiveExact(value) => (2, value, path.eq_ignore_ascii_case(value)),
