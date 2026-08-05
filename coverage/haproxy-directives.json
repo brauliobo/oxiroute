@@ -6,7 +6,7 @@
     "value": "ca686e3",
     "documentation": "docs/UPSTREAM_ANALYSIS.md"
   },
-  "evidence": ["evidence.haproxy.import", "evidence.balance.least-connections"],
+  "evidence": ["evidence.haproxy.import", "evidence.balance.least-connections", "evidence.haproxy.acl-conjunction"],
   "entries": [
     { "id": "directive.haproxy.section.global", "key": "global", "form": "section header", "contexts": ["root"], "disposition": "classified", "target": "haproxy.effective_configuration", "required_tests": ["parse", "resolve", "failure"] },
     { "id": "directive.haproxy.section.defaults", "key": "defaults", "form": "named or unnamed section with optional from reference", "contexts": ["root"], "disposition": "classified", "target": "haproxy.effective_configuration", "required_tests": ["parse", "resolve", "failure"] },
@@ -61,6 +61,8 @@
     { "id": "directive.haproxy.acl.path-beg", "key": "acl", "form": "case-sensitive absolute path_beg byte-prefix criterion", "contexts": ["frontend"], "disposition": "lowered", "target": "http.router", "required_tests": ["parse", "resolve", "failure", "integration"] },
     { "id": "directive.haproxy.acl.hdr-host", "key": "acl", "form": "case-sensitive or -i ASCII case-insensitive exact hdr(host) authority criterion without port normalization", "contexts": ["frontend"], "disposition": "lowered", "target": "http.router", "required_tests": ["parse", "resolve", "failure", "integration"] },
     { "id": "directive.haproxy.use-backend", "key": "use_backend", "form": "ordered positive one-ACL if rule to a complete backend", "contexts": ["frontend", "listen"], "disposition": "lowered", "target": "http.router", "required_tests": ["parse", "resolve", "failure", "integration"] },
+    { "id": "directive.haproxy.use-backend.host-path-conjunction", "key": "use_backend", "form": "ordered positive if rule with one exact hdr(host) ACL and one case-sensitive path_beg ACL lowered to one canonical host-and-path route", "contexts": ["frontend", "listen"], "disposition": "lowered", "target": "http.router", "required_tests": ["parse", "resolve", "failure", "integration"] },
+    { "id": "directive.haproxy.use-backend.dynamic-expression", "key": "use_backend", "form": "sample-expression or brace ACL condition", "contexts": ["frontend", "listen"], "disposition": "blocked", "target": "import.blocking_diagnostic", "required_tests": ["parse", "resolve", "failure"] },
     { "id": "directive.haproxy.option.redispatch", "key": "option", "form": "redispatch under TCP mode or with an interval argument", "contexts": ["defaults", "backend", "listen"], "disposition": "blocked", "target": "import.blocking_diagnostic", "required_tests": ["parse", "resolve", "failure"] },
     { "id": "directive.haproxy.option.redispatch-bare-http", "key": "option", "form": "bare redispatch with one through three retries under the exact HTTP policy", "contexts": ["defaults", "backend", "listen"], "disposition": "lowered", "target": "http.proxy", "required_tests": ["parse", "resolve", "failure", "integration"] },
     { "id": "directive.haproxy.no-option.redispatch-tcp", "key": "no", "form": "option redispatch under effective TCP mode", "contexts": ["defaults", "backend", "listen"], "disposition": "lowered", "target": "haproxy.effective_configuration", "required_tests": ["parse", "resolve", "failure"] },

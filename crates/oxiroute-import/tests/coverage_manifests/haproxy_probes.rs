@@ -218,6 +218,7 @@ fn assert_haproxy_lowered_subset(entries: &[DirectiveForm]) {
         "directive.haproxy.http-response.set-header",
         "directive.haproxy.http-response.del-header",
         "directive.haproxy.stats-page",
+        "directive.haproxy.use-backend.host-path-conjunction",
     ]
     .into_iter()
     .collect();
@@ -502,6 +503,18 @@ fn haproxy_context_directives(entry: &DirectiveForm, context: &str) -> Vec<&'sta
         "directive.haproxy.acl.hdr-host" => {
             vec!["acl api hdr(host) api.example.test"]
         }
+        "directive.haproxy.use-backend.host-path-conjunction" if context == "listen" => vec![
+            "acl coverage_host hdr(host) -i api.example.test\nacl coverage_path path_beg /api\nuse_backend database_pool if coverage_host coverage_path",
+        ],
+        "directive.haproxy.use-backend.host-path-conjunction" => vec![
+            "acl coverage_host hdr(host) -i api.example.test\nacl coverage_path path_beg /api\nuse_backend api if coverage_host coverage_path",
+        ],
+        "directive.haproxy.use-backend.dynamic-expression" if context == "listen" => {
+            vec!["use_backend database_pool if { path /api }"]
+        }
+        "directive.haproxy.use-backend.dynamic-expression" => {
+            vec!["use_backend api if { path /api }"]
+        }
         "directive.haproxy.use-backend" if context == "listen" => {
             vec!["acl coverage path_beg /api\nuse_backend database_pool if coverage"]
         }
@@ -686,6 +699,8 @@ fn haproxy_http_form(id: &str) -> bool {
         || matches!(
             id,
             "directive.haproxy.use-backend"
+                | "directive.haproxy.use-backend.host-path-conjunction"
+                | "directive.haproxy.use-backend.dynamic-expression"
                 | "directive.haproxy.option.redispatch-bare-http"
                 | "directive.haproxy.option.forwardfor"
                 | "directive.haproxy.option.httpchk"
@@ -729,6 +744,15 @@ fn haproxy_probe_source(entry: &DirectiveForm) -> String {
             "acl api path_beg /api",
             "acl api hdr(host) api.example.test",
         ),
+        "directive.haproxy.use-backend.host-path-conjunction" => haproxy_http_base()
+            .replace(
+                "acl api path_beg /api",
+                "acl api_host hdr(host) -i api.example.test\n  acl api_path path_beg /api",
+            )
+            .replace("use_backend api if api", "use_backend api if api_host api_path"),
+        "directive.haproxy.use-backend.dynamic-expression" => {
+            haproxy_http_base().replace("use_backend api if api", "use_backend api if { path /api }")
+        }
         "directive.haproxy.http-request.return" => haproxy_terminal_return_base(),
         "directive.haproxy.http-request.redirect" => haproxy_terminal_redirect_base(),
         "directive.haproxy.http-request.set-header"
