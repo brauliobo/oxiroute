@@ -67,6 +67,36 @@ fn lowers_inherited_exact_rtmp_and_recorder_policy_without_accessing_the_root() 
 }
 
 #[test]
+fn lowers_exact_same_daemon_auto_push_policy() {
+    let report = import_source(
+        br"
+        rtmp_auto_push on;
+        rtmp_auto_push_reconnect 250ms;
+        rtmp_socket_dir /var/run/oxiroute/rtmp;
+        rtmp {
+          server {
+            listen 127.0.0.1:1935;
+            application live { live on; }
+          }
+        }
+        ",
+        &[],
+    );
+
+    let config = report.config.expect("exact auto-push configuration");
+    let policy = &config.rtmp_services[0].auto_push;
+    assert!(policy.enabled);
+    assert_eq!(policy.reconnect_ms, 250);
+    assert_eq!(policy.socket_dir, Path::new("/var/run/oxiroute/rtmp"));
+    assert!(
+        report
+            .provenance
+            .iter()
+            .any(|entry| { entry.path == "/rtmp_services/0/auto_push/enabled" })
+    );
+}
+
+#[test]
 fn lowers_one_absolute_rtmp_access_log_with_the_combined_format() {
     let report = import_source(
         br"
@@ -132,9 +162,12 @@ fn lowers_bounded_hls_policy_and_key_rotation() {
     let keys = hls.keys.as_ref().expect("HLS keys");
     assert_eq!(keys.rotation_segments, 7);
     assert_eq!(keys.url_prefix, "keys/");
-    assert!(report.provenance.iter().any(|entry| {
-        entry.path == "/rtmp_services/0/applications/0/hls"
-    }));
+    assert!(
+        report
+            .provenance
+            .iter()
+            .any(|entry| { entry.path == "/rtmp_services/0/applications/0/hls" })
+    );
 }
 
 #[test]
@@ -164,7 +197,10 @@ fn lowers_allowlisted_exec_profiles_with_typed_arguments_and_provenance() {
     assert_eq!(profiles[0].application, "camera");
     assert_eq!(profiles[0].executable, Path::new("/usr/bin/cat"));
     assert_eq!(profiles[0].arguments, ["--input", "raw"]);
-    assert_eq!(profiles[0].trigger, oxiroute_config::RtmpExecTrigger::Publisher);
+    assert_eq!(
+        profiles[0].trigger,
+        oxiroute_config::RtmpExecTrigger::Publisher
+    );
     assert!(profiles[0].respawn);
     assert_eq!(profiles[0].respawn_delay_ms, 2_000);
     assert_eq!(
@@ -394,7 +430,7 @@ fn enforces_exact_path_suffix_interval_and_listener_bounds() {
 }
 
 #[test]
-fn separate_entry_ignores_http_semantics_but_blocks_global_rtmp_policy() {
+fn separate_entry_ignores_http_semantics_and_lowers_global_rtmp_auto_push() {
     let separate = import_source(
         br"http { server { listen 80; location / { proxy_pass http://backend; } } } rtmp { server { listen 1935; application app {} } }",
         &[],
@@ -409,9 +445,9 @@ fn separate_entry_ignores_http_semantics_but_blocks_global_rtmp_policy() {
         br"rtmp_auto_push on; rtmp { server { listen 1935; application app {} } }",
         &[],
     );
-    assert!(global.config.is_none());
-    assert_eq!(global.blocked_services.len(), 1);
-    assert!(global.draft.rtmp_services.is_empty());
+    let config = global.config.expect("global auto-push policy");
+    assert!(global.blocked_services.is_empty());
+    assert!(config.rtmp_services[0].auto_push.enabled);
 }
 
 #[test]
@@ -433,14 +469,94 @@ fn duplicates_and_overlapping_listens_are_terminal_blockers() {
 #[test]
 fn lowers_extended_recorder_forms() {
     for (directive, audio, video, keyframes, append, lock, notify, max_size, max_frames) in [
-        ("record audio;", true, false, false, false, false, false, None, None),
-        ("record video;", false, true, false, false, false, false, None, None),
-        ("record keyframes;", false, true, true, false, false, false, None, None),
-        ("record_append on;", true, true, false, true, false, false, None, None),
-        ("record_lock on;", true, true, false, false, true, false, None, None),
-        ("record_notify on;", true, true, false, false, false, true, None, None),
-        ("record_max_size 1m;", true, true, false, false, false, false, Some(1_048_576), None),
-        ("record_max_frames 100;", true, true, false, false, false, false, None, Some(100)),
+        (
+            "record audio;",
+            true,
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+            None,
+        ),
+        (
+            "record video;",
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            None,
+            None,
+        ),
+        (
+            "record keyframes;",
+            false,
+            true,
+            true,
+            false,
+            false,
+            false,
+            None,
+            None,
+        ),
+        (
+            "record_append on;",
+            true,
+            true,
+            false,
+            true,
+            false,
+            false,
+            None,
+            None,
+        ),
+        (
+            "record_lock on;",
+            true,
+            true,
+            false,
+            false,
+            true,
+            false,
+            None,
+            None,
+        ),
+        (
+            "record_notify on;",
+            true,
+            true,
+            false,
+            false,
+            false,
+            true,
+            None,
+            None,
+        ),
+        (
+            "record_max_size 1m;",
+            true,
+            true,
+            false,
+            false,
+            false,
+            false,
+            Some(1_048_576),
+            None,
+        ),
+        (
+            "record_max_frames 100;",
+            true,
+            true,
+            false,
+            false,
+            false,
+            false,
+            None,
+            Some(100),
+        ),
     ] {
         let inherited_record = if directive.starts_with("record ") {
             ""
@@ -451,10 +567,7 @@ fn lowers_extended_recorder_forms() {
             "rtmp {{ server {{ listen 1935; application app {{ live on; {inherited_record} record_path /var/lib/recordings; {directive} }} }} }}"
         );
         let report = import_source(source.as_bytes(), &[]);
-        let recorder = &report
-            .config
-            .expect("extended recorder form")
-            .rtmp_services[0]
+        let recorder = &report.config.expect("extended recorder form").rtmp_services[0]
             .applications[0]
             .recorders[0];
         assert!(report.blocked_services.is_empty(), "{directive}");

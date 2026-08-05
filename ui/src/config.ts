@@ -755,12 +755,26 @@ export interface RtmpExecProfileConfig {
   max_respawns: number
 }
 
+export interface RtmpAutoPushConfig {
+  enabled: boolean
+  socket_dir: string
+  secret_file: string | null
+  reconnect_ms: number
+  connect_timeout_ms: number
+  handshake_timeout_ms: number
+  max_peers: number
+  max_queue_messages: number
+  max_queue_bytes: number
+  max_streams: number
+}
+
 export interface RtmpServiceConfig {
   name: string
   outbound_chunk_size: number
   access_log: AccessLogConfig | null
   outbound_policy: RtmpOutboundPolicyConfig
   callbacks: RtmpCallbackConfig
+  auto_push: RtmpAutoPushConfig
   exec_profiles?: RtmpExecProfileConfig[]
   applications: RtmpApplicationConfig[]
 }
@@ -1295,7 +1309,7 @@ function isResponseHeaderMutation(value: unknown): value is HttpResponseHeaderMu
 function isRtmpService(value: unknown): value is RtmpServiceConfig {
   return isRecord(value) && typeof value.name === 'string' && safeInteger(value.outbound_chunk_size) &&
     (value.access_log === null || isAccessLog(value.access_log)) && isRtmpOutboundPolicy(value.outbound_policy) &&
-    isRtmpCallbackConfig(value.callbacks) &&
+    isRtmpCallbackConfig(value.callbacks) && isRtmpAutoPushConfig(value.auto_push) &&
     (value.exec_profiles === undefined || arrayOf(value.exec_profiles, isRtmpExecProfile)) &&
     arrayOf(value.applications, (application) =>
     isRecord(application) && typeof application.name === 'string' && typeof application.live === 'boolean' &&
@@ -1311,6 +1325,14 @@ function isRtmpService(value: unknown): value is RtmpServiceConfig {
     (application.hls === undefined || application.hls === null || isRtmpHlsPolicy(application.hls)) &&
     (application.dash === undefined || application.dash === null || isRtmpDashPolicy(application.dash)) &&
     arrayOf(application.recorders, isRtmpRecorder))
+}
+
+function isRtmpAutoPushConfig(value: unknown): value is RtmpAutoPushConfig {
+  return isRecord(value) && typeof value.enabled === 'boolean' && typeof value.socket_dir === 'string' &&
+    nullableString(value.secret_file) && safeInteger(value.reconnect_ms) &&
+    safeInteger(value.connect_timeout_ms) && safeInteger(value.handshake_timeout_ms) &&
+    safeInteger(value.max_peers) && safeInteger(value.max_queue_messages) &&
+    safeInteger(value.max_queue_bytes) && safeInteger(value.max_streams)
 }
 
 function isRtmpCallbackConfig(value: unknown): value is RtmpCallbackConfig {
@@ -2061,6 +2083,17 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'rtmp_services[].callbacks.notify_update_timeout_ms', kind: 'integer' },
   { path: 'rtmp_services[].callbacks.notify_update_strict', kind: 'boolean' },
   { path: 'rtmp_services[].callbacks.notify_relay_redirect', kind: 'boolean' },
+  { path: 'rtmp_services[].auto_push', kind: 'object' },
+  { path: 'rtmp_services[].auto_push.enabled', kind: 'boolean' },
+  { path: 'rtmp_services[].auto_push.socket_dir', kind: 'string' },
+  { path: 'rtmp_services[].auto_push.secret_file', kind: 'string' },
+  { path: 'rtmp_services[].auto_push.reconnect_ms', kind: 'integer' },
+  { path: 'rtmp_services[].auto_push.connect_timeout_ms', kind: 'integer' },
+  { path: 'rtmp_services[].auto_push.handshake_timeout_ms', kind: 'integer' },
+  { path: 'rtmp_services[].auto_push.max_peers', kind: 'integer' },
+  { path: 'rtmp_services[].auto_push.max_queue_messages', kind: 'integer' },
+  { path: 'rtmp_services[].auto_push.max_queue_bytes', kind: 'integer' },
+  { path: 'rtmp_services[].auto_push.max_streams', kind: 'integer' },
   { path: 'rtmp_services[].applications[].pull_targets', kind: 'collection' },
   { path: 'rtmp_services[].applications[].pull_targets[].host', kind: 'string' },
   { path: 'rtmp_services[].applications[].pull_targets[].port', kind: 'integer' },

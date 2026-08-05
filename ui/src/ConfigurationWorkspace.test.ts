@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import ConfigurationWorkspace from './ConfigurationWorkspace.vue'
 import { CANONICAL_FIELD_REGISTRY } from './config'
-import { defaultRtmpCallback, defaultRtmpOutboundPolicy, defaultRtmpRelay } from './configuration/canonicalDefaults'
+import { defaultRtmpAutoPush, defaultRtmpCallback, defaultRtmpOutboundPolicy, defaultRtmpRelay } from './configuration/canonicalDefaults'
 import { contractConfigSnapshot, jsonResponse } from './test/contractFixtures'
 import type {
   CanonicalConfig,
@@ -201,6 +201,7 @@ function canonicalConfig(): CanonicalConfig {
         access_log: null,
         outbound_policy: defaultRtmpOutboundPolicy(),
         callbacks: defaultRtmpCallback(),
+        auto_push: defaultRtmpAutoPush(),
         applications: [
           {
             name: 'broadcast',
@@ -1049,6 +1050,7 @@ describe('ConfigurationWorkspace', () => {
       access_log: null,
       outbound_policy: defaultRtmpOutboundPolicy(),
       callbacks: defaultRtmpCallback(),
+      auto_push: defaultRtmpAutoPush(),
       applications: [{
         name: 'publish',
         live: true,
@@ -1154,6 +1156,7 @@ describe('ConfigurationWorkspace', () => {
         access_log: null,
         outbound_policy: defaultRtmpOutboundPolicy(),
         callbacks: defaultRtmpCallback(),
+        auto_push: defaultRtmpAutoPush(),
         applications: [{
           name: 'camera',
           live: true,

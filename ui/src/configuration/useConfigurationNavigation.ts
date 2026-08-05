@@ -10,6 +10,7 @@ import {
   defaultCacheStore,
   defaultForwardProxyService,
   defaultRtmpCallback,
+  defaultRtmpAutoPush,
   defaultRtmpOutboundPolicy,
   defaultRtmpRelay,
 } from './canonicalDefaults'
@@ -261,6 +262,7 @@ export function useConfigurationNavigation(
           access_log: null,
           outbound_policy: defaultRtmpOutboundPolicy(),
           callbacks: defaultRtmpCallback(),
+          auto_push: defaultRtmpAutoPush(),
           applications: [{
             name: '',
             live: true,

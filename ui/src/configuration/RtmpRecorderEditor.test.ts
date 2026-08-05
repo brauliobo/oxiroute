@@ -2,7 +2,7 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 
 import type { RtmpRecorderConfig, RtmpServiceConfig } from '../config'
-import { defaultRtmpCallback, defaultRtmpOutboundPolicy, defaultRtmpRelay } from './canonicalDefaults'
+import { defaultRtmpAutoPush, defaultRtmpCallback, defaultRtmpOutboundPolicy, defaultRtmpRelay } from './canonicalDefaults'
 import RtmpRecorderEditor from './RtmpRecorderEditor.vue'
 import RtmpServiceEditor from './RtmpServiceEditor.vue'
 
@@ -88,6 +88,7 @@ describe('RTMP recorder configuration editors', () => {
       access_log: null,
       outbound_policy: defaultRtmpOutboundPolicy(),
       callbacks: defaultRtmpCallback(),
+      auto_push: defaultRtmpAutoPush(),
       applications: [{ name: 'broadcast', live: true, idle_streams: true, publish: { rules: [], token: null }, play: { rules: [], token: null }, limits: { max_connections: 1_024, max_publishers: 256, max_viewers: 1_024 }, push_targets: [], pull_targets: [], relay: defaultRtmpRelay(), callbacks: defaultRtmpCallback(), fanout: { max_subscribers: 1_024, max_queue_messages_per_subscriber: 256, max_queue_bytes_per_subscriber: 8_388_608 }, vod: null, recorders: [] }],
     }
     const wrapper = mount(RtmpServiceEditor, { props: { service } })
@@ -115,6 +116,7 @@ describe('RTMP recorder configuration editors', () => {
           access_log: null,
           outbound_policy: defaultRtmpOutboundPolicy(),
           callbacks: defaultRtmpCallback(),
+          auto_push: defaultRtmpAutoPush(),
           applications: [{ name: 'playback', live: false, idle_streams: true, publish: { rules: [], token: null }, play: { rules: [], token: null }, limits: { max_connections: 1_024, max_publishers: 256, max_viewers: 1_024 }, push_targets: [], pull_targets: [], relay: defaultRtmpRelay(), callbacks: defaultRtmpCallback(), fanout: { max_subscribers: 1_024, max_queue_messages_per_subscriber: 256, max_queue_bytes_per_subscriber: 8_388_608 }, vod: null, recorders: [] }],
         },
       },
@@ -131,6 +133,7 @@ describe('RTMP recorder configuration editors', () => {
       access_log: null,
       outbound_policy: defaultRtmpOutboundPolicy(),
       callbacks: defaultRtmpCallback(),
+      auto_push: defaultRtmpAutoPush(),
       applications: [{
         name: 'broadcast',
         live: true,

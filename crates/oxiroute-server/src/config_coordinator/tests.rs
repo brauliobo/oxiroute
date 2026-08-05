@@ -1,19 +1,19 @@
 use std::{
     env, fs,
-    os::unix::fs::{symlink, MetadataExt as _, PermissionsExt as _},
+    os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink},
     path::{Path, PathBuf},
     process::{Child, Command},
-    sync::{mpsc, Arc, Barrier},
+    sync::{Arc, Barrier, mpsc},
     thread,
     time::{Duration, Instant},
 };
 
 use oxiroute_config::{
-    render_lua, Config, HttpHostSelector, HttpPathSelector, HttpProxyPolicy, HttpRoute,
-    HttpRouteAction, HttpService, HttpVersionPolicy, Listener, ListenerBind, Protocol,
-    RtmpApplication, RtmpService, UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool,
+    Config, HttpHostSelector, HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction,
+    HttpService, HttpVersionPolicy, Listener, ListenerBind, Protocol, RtmpApplication, RtmpService,
+    UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, render_lua,
 };
-use oxiroute_config_source::{render_config, ConfigFormat};
+use oxiroute_config_source::{ConfigFormat, render_config};
 use tempfile::TempDir;
 
 use super::{storage::StorageFailure, *};
@@ -64,10 +64,11 @@ fn rtmp_config(name: &str) -> Config {
         name: "rtmp-service".into(),
         outbound_chunk_size: 4_096,
         access_log: None,
-         outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
-         callbacks: oxiroute_config::RtmpCallbackConfig::default(),
-         exec_profiles: Vec::new(),
-         applications: vec![RtmpApplication {
+        outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
+        callbacks: oxiroute_config::RtmpCallbackConfig::default(),
+        auto_push: oxiroute_config::RtmpAutoPushPolicy::default(),
+        exec_profiles: Vec::new(),
+        applications: vec![RtmpApplication {
             name: "live".into(),
             live: true,
             idle_streams: true,
@@ -343,9 +344,11 @@ fn save_escapes_values_and_installs_a_secure_regular_file() {
 
     let bytes = fs::read(&path).unwrap();
     assert_eq!(bytes, saved.config_preview.as_bytes());
-    assert!(saved
-        .config_preview
-        .contains(r#"name = "edge \"quoted\" \\ slash café","#));
+    assert!(
+        saved
+            .config_preview
+            .contains(r#"name = "edge \"quoted\" \\ slash café","#)
+    );
     assert_eq!(fs::symlink_metadata(&path).unwrap().mode() & 0o7777, 0o600);
     assert!(fs::symlink_metadata(&path).unwrap().file_type().is_file());
     assert_eq!(loaded(coordinator.load()).normalized_config, draft);
@@ -821,10 +824,12 @@ fn symlink_and_special_file_targets_are_rejected_without_following() {
 
     assert!(matches!(outcome, ConfigSaveOutcome::Failed(_)));
     assert_eq!(fs::read_to_string(&outside).unwrap(), outside_bytes);
-    assert!(fs::symlink_metadata(&path)
-        .unwrap()
-        .file_type()
-        .is_symlink());
+    assert!(
+        fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
 
     fs::remove_file(&path).unwrap();
     fs::create_dir(&path).unwrap();
