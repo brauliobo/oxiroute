@@ -2533,6 +2533,7 @@ fn http_version(version: HttpVersion) -> &'static str {
     match version {
         HttpVersion::Http11 => "1.1",
         HttpVersion::Http2 => "2",
+        HttpVersion::Http3 => "3",
     }
 }
 

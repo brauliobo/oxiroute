@@ -2851,6 +2851,40 @@ pub(crate) fn remove_upstream_hop_by_hop_response_headers(
     Ok(())
 }
 
+pub(crate) fn remove_upstream_hop_by_hop_response_headers_map(
+    headers: &mut HeaderMap,
+) -> pingora::Result<()> {
+    let mut connection_headers = Vec::new();
+    for value in headers.get_all(CONNECTION) {
+        let value = value
+            .to_str()
+            .map_err(|_| Error::new_up(ErrorType::InvalidHTTPHeader))?;
+        for token in value.split(',') {
+            connection_headers.push(
+                HeaderName::from_bytes(token.trim().as_bytes())
+                    .map_err(|_| Error::new_up(ErrorType::InvalidHTTPHeader))?,
+            );
+        }
+    }
+    for name in connection_headers {
+        headers.remove(name);
+    }
+    for name in [
+        CONNECTION,
+        HeaderName::from_static("keep-alive"),
+        PROXY_AUTHENTICATE,
+        PROXY_AUTHORIZATION,
+        HeaderName::from_static("proxy-connection"),
+        TE,
+        TRAILER,
+        TRANSFER_ENCODING,
+        UPGRADE,
+    ] {
+        headers.remove(name);
+    }
+    Ok(())
+}
+
 pub(crate) fn apply_response_policy(
     response: &mut pingora::http::ResponseHeader,
     policy: &ProxyPolicyPlan,
@@ -2894,6 +2928,51 @@ pub(crate) fn apply_response_policy(
     response.remove_header(&SET_COOKIE);
     for cookie in cookies {
         response.append_header(SET_COOKIE, rewrite_cookie(&cookie, policy)?)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn apply_response_policy_map(
+    status: StatusCode,
+    headers: &mut HeaderMap,
+    policy: &ProxyPolicyPlan,
+) -> pingora::Result<()> {
+    for mutation in &policy.response_headers {
+        match mutation {
+            ResponseHeaderMutationPlan::Set {
+                name,
+                value,
+                always,
+            } => {
+                if *always || crate::http_action::nginx_add_header_status(status.as_u16()) {
+                    headers.insert(name.clone(), value.clone());
+                }
+            }
+            ResponseHeaderMutationPlan::Add {
+                name,
+                value,
+                always,
+            } => {
+                if *always || crate::http_action::nginx_add_header_status(status.as_u16()) {
+                    headers.append(name.clone(), value.clone());
+                }
+            }
+            ResponseHeaderMutationPlan::Remove { name } => {
+                headers.remove(name);
+            }
+        }
+    }
+    if policy.cookie_path_rewrites.is_empty() && policy.cookie_attributes.is_empty() {
+        return Ok(());
+    }
+    let cookies = headers
+        .get_all(SET_COOKIE)
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    headers.remove(SET_COOKIE);
+    for cookie in cookies {
+        headers.append(SET_COOKIE, rewrite_cookie(&cookie, policy)?);
     }
     Ok(())
 }

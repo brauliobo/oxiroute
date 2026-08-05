@@ -161,6 +161,11 @@ pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
         &config.upstream_pools,
         &cache_stores,
     )?;
+    validate_h3_upstream_usage(
+        &config.listeners,
+        &config.http_services,
+        &config.upstream_pools,
+    )?;
     let tls_upstream_pool_names = config
         .upstream_pools
         .iter()
@@ -1247,9 +1252,6 @@ fn validate_http3_listener(
                 if policy.cache.is_some() {
                     return Err(invalid("HTTP/3 reverse cache policy is not supported"));
                 }
-                if policy.retry.max_retries != 0 {
-                    return Err(invalid("HTTP/3 reverse retries are not supported"));
-                }
                 if policy.request_headers.iter().any(|mutation| {
                     matches!(
                         mutation,
@@ -1273,6 +1275,77 @@ fn validate_http3_listener(
             HttpRouteAction::FixedResponse { .. } | HttpRouteAction::Redirect { .. } => {}
             HttpRouteAction::StaticFiles { .. } => {
                 return Err(invalid("HTTP/3 reverse static files are not supported"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_h3_upstream_usage(
+    listeners: &[Listener],
+    services: &[HttpService],
+    upstream_pools: &[UpstreamPool],
+) -> Result<(), ConfigError> {
+    let pools = upstream_pools
+        .iter()
+        .map(|pool| (pool.name.as_str(), pool))
+        .collect::<HashMap<_, _>>();
+    for service in services {
+        let uses_h3_pool = service.routes.iter().any(|route| {
+            let HttpRouteAction::Proxy { upstream_pool, .. } = &route.action else {
+                return false;
+            };
+            pools
+                .get(upstream_pool.as_str())
+                .is_some_and(|pool| pool.http_versions.min == HttpVersion::Http3)
+        });
+        if !uses_h3_pool {
+            continue;
+        }
+        let service_listeners = listeners
+            .iter()
+            .filter(|listener| listener.service.as_deref() == Some(service.name.as_str()))
+            .collect::<Vec<_>>();
+        let Some(http3_listener) = service_listeners
+            .iter()
+            .find(|listener| listener.protocol == Protocol::Http3)
+        else {
+            if let Some(listener) = service_listeners.first() {
+                return Err(ConfigError::InvalidListenerTransport {
+                    listener: listener.name.clone(),
+                    protocol: listener.protocol,
+                    detail: "an HTTP/3 upstream pool requires an http3 listener",
+                });
+            }
+            continue;
+        };
+        if let Some(listener) = service_listeners
+            .iter()
+            .find(|listener| listener.protocol != Protocol::Http3)
+        {
+            return Err(ConfigError::InvalidListenerTransport {
+                listener: listener.name.clone(),
+                protocol: listener.protocol,
+                detail: "a service using an HTTP/3 upstream pool cannot be shared with a non-HTTP/3 listener",
+            });
+        }
+        for route in &service.routes {
+            let HttpRouteAction::Proxy {
+                upstream_pool,
+                policy,
+            } = &route.action
+            else {
+                continue;
+            };
+            let Some(pool) = pools.get(upstream_pool.as_str()) else {
+                continue;
+            };
+            if policy.retry.max_retries != 0 && pool.http_versions.min != HttpVersion::Http3 {
+                return Err(ConfigError::InvalidListenerTransport {
+                    listener: http3_listener.name.clone(),
+                    protocol: Protocol::Http3,
+                    detail: "HTTP/3 retries require an exact HTTP/3 upstream pool",
+                });
             }
         }
     }
@@ -2787,6 +2860,24 @@ fn validate_upstream_pool_definition(
             min: pool.http_versions.min.as_str(),
             max: pool.http_versions.max.as_str(),
         });
+    }
+    if pool.http_versions.min == HttpVersion::Http3
+        || pool.http_versions.max == HttpVersion::Http3
+    {
+        if pool.http_versions.min != HttpVersion::Http3
+            || pool.http_versions.max != HttpVersion::Http3
+        {
+            return Err(ConfigError::InvalidHttpVersionRange {
+                pool: pool.name.clone(),
+                min: pool.http_versions.min.as_str(),
+                max: pool.http_versions.max.as_str(),
+            });
+        }
+        if pool.tls.is_none() {
+            return Err(ConfigError::H3RequiresUpstreamTls {
+                pool: pool.name.clone(),
+            });
+        }
     }
     if pool.http_versions.max == HttpVersion::Http2 && pool.tls.is_none() {
         return Err(ConfigError::H2RequiresUpstreamTls {

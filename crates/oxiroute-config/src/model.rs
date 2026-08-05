@@ -559,6 +559,8 @@ pub enum HttpVersion {
     Http11,
     #[serde(rename = "2")]
     Http2,
+    #[serde(rename = "3")]
+    Http3,
 }
 
 impl HttpVersion {
@@ -566,6 +568,7 @@ impl HttpVersion {
         match self {
             Self::Http11 => "1.1",
             Self::Http2 => "2",
+            Self::Http3 => "3",
         }
     }
 }
@@ -2607,7 +2610,7 @@ pub enum ConfigError {
     #[error("upstream pool `{pool}` has invalid TLS server name `{server_name}`")]
     InvalidUpstreamTlsServerName { pool: String, server_name: String },
     #[error(
-        "upstream pool `{pool}` has invalid HTTP version range {min}/{max}; expected 1.1/1.1, 1.1/2, or 2/2"
+        "upstream pool `{pool}` has invalid HTTP version range {min}/{max}; expected 1.1/1.1, 1.1/2, 2/2, or 3/3"
     )]
     InvalidHttpVersionRange {
         pool: String,
@@ -2616,6 +2619,8 @@ pub enum ConfigError {
     },
     #[error("upstream pool `{pool}` enables HTTP/2 without TLS; plaintext h2c is not supported")]
     H2RequiresUpstreamTls { pool: String },
+    #[error("upstream pool `{pool}` enables HTTP/3 without TLS")]
+    H3RequiresUpstreamTls { pool: String },
     #[error("upstream pool `{pool}` combines `health_check` with `tls`, which is not supported")]
     UnsupportedTlsHealthCheck { pool: String },
     #[error("listener `{listener}` cannot terminate TLS profile `{profile}` on a Unix socket")]

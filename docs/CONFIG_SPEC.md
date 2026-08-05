@@ -668,9 +668,15 @@ upstream_pools = {
   trust anchors under strict partial-chain verification. Trust, SNI, hostname, CA content, and
   HTTP-version policy are included in upstream connection-reuse isolation.
 - `http_versions` defaults to `{ min = "1.1", max = "1.1" }`. The accepted ranges are `1.1/1.1`,
-  `1.1/2`, and `2/2`. Flexible `1.1/2` permits ALPN fallback to HTTP/1.1; `2/2` requires H2 and
-  rejects a downgrade before HTTP headers. Any range with `max = "2"` requires `tls`; upstream
-  h2c is not supported.
+  `1.1/2`, `2/2`, and exact `3/3`. Flexible `1.1/2` permits ALPN fallback to HTTP/1.1; `2/2`
+  requires H2 and rejects a downgrade before HTTP headers. Exact `3/3` requires `tls` and uses a
+  separate one-request-per-connection QUIC/H3 client with TLS 1.3, SNI, `h3` ALPN, disabled 0-RTT,
+  bounded request/response fields and bodies, deadlines, cancellation, response trailers, and
+  bounded safe retries. It never falls back to HTTP/1.1 or HTTP/2. Any range with `max = "2"`
+  requires `tls`; upstream h2c is not supported.
+- A service route using an exact `3/3` pool must be attached only to an `http3` listener. It cannot
+  share that service with a non-HTTP/3 listener. A route using an H3 pool with unsupported listener
+  or upstream semantics is rejected during configuration validation.
 - Upstream TLS always verifies both the certificate chain and hostname. A pinned, documented
   Pingora connector hook applies security level 2, a TLS 1.2 minimum, ECDHE+AEAD TLS 1.2 ciphers,
   and standard TLS 1.3 AEAD suites before handshake. The negotiated digest is checked again before
