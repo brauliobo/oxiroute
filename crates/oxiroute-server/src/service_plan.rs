@@ -23,15 +23,18 @@ use crate::{
 use http::{Method, Uri, uri::Authority};
 use oxiroute_cache::{Cache, CacheConfig, CacheTimeline, DiskCache, DiskCacheConfig};
 use oxiroute_config::{
-    AccessLogPolicy, CacheAuthorizationPolicy, CacheKeyComponent, CachePurgeAuthorization,
+    CacheAuthorizationPolicy, CacheKeyComponent, CachePurgeAuthorization,
     CacheSetCookiePolicy, CacheStore, CacheVaryPolicy, Config, DnsResolutionPolicy,
     HttpCachePolicy, HttpProxyPolicy, HttpRoute as ConfigHttpRoute, HttpRouteAction, ListenerBind,
-    Protocol, RtmpAccessPolicy as ConfigRtmpAccessPolicy, RtmpRecorderStart as ConfigRecorderStart,
-    UdpPolicy,
+    Protocol, RtmpAccessPolicy as ConfigRtmpAccessPolicy,
+    RtmpExecFilesystemPolicy as ConfigExecFilesystemPolicy,
+    RtmpExecMode as ConfigExecMode, RtmpExecNetworkPolicy as ConfigExecNetworkPolicy,
+    RtmpExecTrigger as ConfigExecTrigger, RtmpRecorderStart as ConfigRecorderStart, UdpPolicy,
 };
 use oxiroute_rtmp::{
-    DashOutputConfig, DashSegmentNaming, HlsFragmentNaming, HlsKeyConfig, HlsOutputConfig,
-    HlsVariant, LiveHub, LiveHubLimits,
+    DashOutputConfig, DashSegmentNaming, ExecEnvironment, ExecFilesystemPolicy, ExecLimits,
+    ExecMode, ExecNetworkPolicy, ExecProfile, ExecTrigger, HlsFragmentNaming, HlsKeyConfig,
+    HlsOutputConfig, HlsVariant, LiveHub, LiveHubLimits,
     MediaApplication, MediaCatalog, MediaStore, MediaStoreLimits, RecorderMediaMask,
     RecorderWorkerConfig, RecordingPathPolicy, RecordingSegmentNaming, RecordingStore,
     RecordingStoreLimits, RecordingTimeBasis, RecordingTimezone, RtmpAccessAction,
@@ -91,6 +94,7 @@ pub struct RtmpServicePlan {
     outbound_chunk_size: u32,
     hub: LiveHub,
     callbacks: RtmpCallbackPolicy,
+    access_log: Option<Arc<AccessLog>>,
     applications: Vec<PreparedRtmpApplication>,
     vod_catalog: Arc<VodCatalog>,
     media_catalog: Arc<MediaCatalog>,
@@ -109,6 +113,17 @@ impl RtmpServicePlan {
     #[must_use]
     pub fn service_id(&self) -> &str {
         &self.service_id
+    }
+
+    /// Writes one bounded RTMP access event when service access logging is enabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns the nonblocking access-log queue error when it is full or stopped.
+    pub fn write_access_event(&self, event: &serde_json::Value) -> std::io::Result<()> {
+        self.access_log
+            .as_ref()
+            .map_or(Ok(()), |access_log| access_log.write(event))
     }
 
     /// Opens this service's preflighted recording stores and creates its process runtime.
@@ -165,6 +180,7 @@ impl RtmpServicePlan {
                     .with_pull_targets(application.pull_targets.clone())
                     .with_vod(application.vod.clone())
                     .with_media(application.media.clone())
+                    .with_exec_profiles(application.exec_profiles.clone())
                     .with_callbacks(application.callbacks.clone())
                     .with_authorization(
                         application.publish_policy.clone(),
@@ -237,6 +253,7 @@ struct PreparedRtmpApplication {
     callbacks: RtmpCallbackPolicy,
     vod: Option<Arc<VodApplication>>,
     media: Option<Arc<MediaApplication>>,
+    exec_profiles: Vec<ExecProfile>,
     recorders: Vec<PreparedRtmpRecorder>,
 }
 
@@ -440,6 +457,14 @@ pub enum ServicePlanError {
         service: String,
         application: String,
         recorder: String,
+    },
+    #[error(
+        "RTMP exec profile `{profile}` in application `{application}` of service `{service}` has an invalid runtime policy"
+    )]
+    InvalidExecProfile {
+        service: String,
+        application: String,
+        profile: String,
     },
     #[error(
         "RTMP HLS output in application `{application}` of service `{service}` failed media-root preflight"
@@ -989,11 +1014,6 @@ fn reject_unimplemented_runtime_policies(config: &Config) -> Result<(), ServiceP
             }
         }
     }
-    for service in &config.rtmp_services {
-        if matches!(service.access_log, Some(AccessLogPolicy::File { .. })) {
-            return Err(unavailable("rtmp_services[].access_log.file"));
-        }
-    }
     Ok(())
 }
 
@@ -1427,6 +1447,12 @@ fn compile_rtmp_services(
                     Some(Arc::new((*hls).clone().with_dash(Some(dash))))
                 }
             };
+            let exec_profiles = service
+                .exec_profiles
+                .iter()
+                .filter(|profile| profile.application == application.name)
+                .map(|profile| compile_rtmp_exec_profile(&service.name, application, profile))
+                .collect::<Result<Vec<_>, _>>()?;
             let mut prepared_recorders = Vec::with_capacity(application.recorders.len());
             for recorder in &application.recorders {
                 prepared_recorders.push(compile_rtmp_recorder(
@@ -1449,6 +1475,7 @@ fn compile_rtmp_services(
                 callbacks,
                 vod,
                 media,
+                exec_profiles,
                 recorders: prepared_recorders,
             });
         }
@@ -1475,6 +1502,11 @@ fn compile_rtmp_services(
                 outbound_chunk_size: service.outbound_chunk_size,
                 hub: service_hub,
                 callbacks,
+                access_log: AccessLog::open(&service.name, service.access_log.as_ref())
+                    .map_err(|_| ServicePlanError::AccessLogPreflight {
+                        service: service.name.clone(),
+                    })?
+                    .map(Arc::new),
                 applications: prepared_applications,
                 vod_catalog,
                 media_catalog: Arc::new(media_catalog),
@@ -1944,6 +1976,63 @@ fn compile_rtmp_dash(
         max_queue_messages: usize::try_from(policy.max_queue_messages).map_err(|_| invalid())?,
     };
     Ok(Some(Arc::new(config)))
+}
+
+fn compile_rtmp_exec_profile(
+    service: &str,
+    application: &oxiroute_config::RtmpApplication,
+    profile: &oxiroute_config::RtmpExecProfile,
+) -> Result<ExecProfile, ServicePlanError> {
+    let invalid = || ServicePlanError::InvalidExecProfile {
+        service: service.to_owned(),
+        application: application.name.clone(),
+        profile: profile.name.clone(),
+    };
+    let environment = profile
+        .environment
+        .iter()
+        .map(|entry| ExecEnvironment::new(entry.name.clone(), entry.value.clone()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| invalid())?;
+    let limits = ExecLimits::new(
+        usize::try_from(profile.max_queue_messages).map_err(|_| invalid())?,
+        usize::try_from(profile.max_queue_bytes).map_err(|_| invalid())?,
+        usize::try_from(profile.max_stdout_bytes).map_err(|_| invalid())?,
+        usize::try_from(profile.max_stderr_bytes).map_err(|_| invalid())?,
+        Duration::from_millis(profile.timeout_ms),
+        Duration::from_millis(profile.shutdown_timeout_ms),
+        usize::try_from(profile.max_processes).map_err(|_| invalid())?,
+        Duration::from_millis(profile.respawn_delay_ms),
+        usize::try_from(profile.max_respawns).map_err(|_| invalid())?,
+    )
+    .map_err(|_| invalid())?;
+    ExecProfile::new(
+        profile.name.clone(),
+        profile.application.clone(),
+        match profile.mode {
+            ConfigExecMode::Command => ExecMode::Command,
+            ConfigExecMode::Transcode => ExecMode::Transcode,
+        },
+        match profile.trigger {
+            ConfigExecTrigger::Publisher => ExecTrigger::Publisher,
+            ConfigExecTrigger::PublishDone => ExecTrigger::PublishDone,
+        },
+        profile.executable.clone(),
+        profile.arguments.clone(),
+        environment,
+        profile.working_directory.clone(),
+        match profile.filesystem {
+            ConfigExecFilesystemPolicy::WorkingDirectory => ExecFilesystemPolicy::WorkingDirectory,
+            ConfigExecFilesystemPolicy::Host => return Err(invalid()),
+        },
+        match profile.network {
+            ConfigExecNetworkPolicy::Disabled => ExecNetworkPolicy::Disabled,
+            ConfigExecNetworkPolicy::Inherited => ExecNetworkPolicy::Inherited,
+        },
+        limits,
+        profile.respawn,
+    )
+    .map_err(|_| invalid())
 }
 
 fn compile_rtmp_recorder(

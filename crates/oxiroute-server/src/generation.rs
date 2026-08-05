@@ -1812,6 +1812,7 @@ mod tests {
             access_log: None,
             outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
             callbacks: oxiroute_config::RtmpCallbackConfig::default(),
+            exec_profiles: Vec::new(),
             applications: vec![oxiroute_config::RtmpApplication {
                 name: "live".into(),
                 live: true,

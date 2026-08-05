@@ -10,8 +10,9 @@ use oxiroute_config::{
     HttpRetryTarget, HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpService,
     HttpStaticMimePolicy, HttpStaticPathMapping, HttpUpstreamHost, HttpVersion, HttpVersionPolicy,
     L4Service, Listener, ListenerBind, Management, Protocol, RtmpAccessPolicy, RtmpApplication,
-    RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis,
-    RtmpRecorderTimezone, RtmpService, RtmpSessionCeilings, TlsClientAuthMode,
+    RtmpExecEnvironment, RtmpExecFilesystemPolicy, RtmpExecMode, RtmpExecNetworkPolicy,
+    RtmpExecProfile, RtmpExecTrigger, RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart,
+    RtmpRecorderTimeBasis, RtmpRecorderTimezone, RtmpService, RtmpSessionCeilings, TlsClientAuthMode,
     TlsClientAuthPolicy, TlsPolicy, TlsProfile, TlsSessionCache, TlsVersion, UdpPolicy,
     UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer,
     UpstreamTls, load_lua, render_lua, validate_config,
@@ -506,6 +507,7 @@ fn test_rtmp_services() -> Vec<RtmpService> {
         access_log: None,
         outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
         callbacks: oxiroute_config::RtmpCallbackConfig::default(),
+        exec_profiles: Vec::new(),
         applications: vec![RtmpApplication {
             name: "live".into(),
             live: true,
@@ -637,6 +639,41 @@ fn renders_and_round_trips_the_exact_http3_upstream_policy() {
     let (_, source) = normalized_round_trip(config);
     assert!(source.contains("min = \"3\""));
     assert!(source.contains("max = \"3\""));
+}
+
+#[test]
+fn round_trips_rtmp_exec_profiles_as_data_only_lua() {
+    let mut config = complete_config();
+    config.rtmp_services[0].exec_profiles = vec![RtmpExecProfile {
+        name: "capture".into(),
+        application: "live".into(),
+        mode: RtmpExecMode::Transcode,
+        trigger: RtmpExecTrigger::Publisher,
+        executable: "/usr/bin/cat".into(),
+        arguments: vec!["--raw".into()],
+        environment: vec![RtmpExecEnvironment {
+            name: "CAPTURE_MODE".into(),
+            value: "raw".into(),
+        }],
+        working_directory: "/var/empty".into(),
+        filesystem: RtmpExecFilesystemPolicy::WorkingDirectory,
+        network: RtmpExecNetworkPolicy::Inherited,
+        timeout_ms: 60_000,
+        shutdown_timeout_ms: 5_000,
+        max_processes: 2,
+        max_queue_messages: 256,
+        max_queue_bytes: 8 * 1024 * 1024,
+        max_stdout_bytes: 64 * 1024,
+        max_stderr_bytes: 64 * 1024,
+        respawn: true,
+        respawn_delay_ms: 250,
+        max_respawns: 3,
+    }];
+    validate_config(&mut config).expect("valid exec profile");
+    let source = render_lua(&config).expect("exec profile render");
+    assert!(source.contains("exec_profiles"));
+    assert!(source.contains("CAPTURE_MODE"));
+    assert_eq!(load_lua(&source).expect("exec profile reload"), config);
 }
 
 const RENDERED_FIELDS: &[&str] = &[

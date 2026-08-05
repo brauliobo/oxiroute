@@ -64,9 +64,10 @@ fn rtmp_config(name: &str) -> Config {
         name: "rtmp-service".into(),
         outbound_chunk_size: 4_096,
         access_log: None,
-        outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
-        callbacks: oxiroute_config::RtmpCallbackConfig::default(),
-        applications: vec![RtmpApplication {
+         outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
+         callbacks: oxiroute_config::RtmpCallbackConfig::default(),
+         exec_profiles: Vec::new(),
+         applications: vec![RtmpApplication {
             name: "live".into(),
             live: true,
             idle_streams: true,

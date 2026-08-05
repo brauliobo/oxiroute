@@ -44,9 +44,9 @@ pub use rtmp_lower::{
 };
 #[cfg(unix)]
 pub use rtmp_semantic::{
-    EffectiveRtmp, EffectiveRtmpApplication, EffectiveRtmpListen, EffectiveRtmpPolicy,
-    EffectiveRtmpPushTarget, EffectiveRtmpRecorder, EffectiveRtmpServer, RtmpRecordMode,
-    RtmpResolution, resolve_rtmp,
+    EffectiveRtmp, EffectiveRtmpApplication, EffectiveRtmpExecProfile, EffectiveRtmpListen,
+    EffectiveRtmpPolicy, EffectiveRtmpPushTarget, EffectiveRtmpRecorder, EffectiveRtmpServer,
+    RtmpRecordMode, RtmpResolution, resolve_rtmp,
 };
 #[cfg(unix)]
 pub use semantic::{

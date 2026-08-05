@@ -28,14 +28,21 @@ use crate::{
         MAX_RTMP_RECONNECT_MS, MAX_RTMP_RECORDERS_PER_APPLICATION, MAX_RTMP_RECORDING_ROOTS,
         MAX_RTMP_HLS_ACTIVE_STREAMS, MAX_RTMP_HLS_KEY_URL_PREFIX_BYTES,
         MAX_RTMP_HLS_KEY_ROTATION_SEGMENTS,
-        MAX_RTMP_HLS_SEGMENT_DURATION_MS, MAX_RTMP_HLS_OUTPUTS, MAX_RTMP_HLS_QUEUE_MESSAGES,
-        MAX_RTMP_HLS_SEGMENT_BYTES, MAX_RTMP_HLS_STORAGE_BYTES, MAX_RTMP_HLS_STORAGE_FILES,
-        MAX_RTMP_HLS_VARIANTS, MAX_RTMP_HLS_NAME_BYTES, MAX_RTMP_HLS_PLAYLIST_LENGTH_MS,
-        MAX_RTMP_DASH_ACTIVE_STREAMS, MAX_RTMP_DASH_OUTPUTS, MAX_RTMP_DASH_QUEUE_MESSAGES,
-        MAX_RTMP_DASH_SEGMENT_BYTES, MAX_RTMP_DASH_SEGMENT_DURATION_MS,
-        MAX_RTMP_DASH_STORAGE_BYTES, MAX_RTMP_DASH_STORAGE_FILES,
-        MAX_RTMP_DASH_PLAYLIST_LENGTH_MS,
-        MAX_RTMP_RELAY_BUFFER_MS, MAX_RTMP_RELAY_TIMEOUT_MS, MAX_RTMP_SECRET_FILE_BYTES,
+         MAX_RTMP_HLS_SEGMENT_DURATION_MS, MAX_RTMP_HLS_OUTPUTS, MAX_RTMP_HLS_QUEUE_MESSAGES,
+         MAX_RTMP_HLS_SEGMENT_BYTES, MAX_RTMP_HLS_STORAGE_BYTES, MAX_RTMP_HLS_STORAGE_FILES,
+         MAX_RTMP_HLS_VARIANTS, MAX_RTMP_HLS_NAME_BYTES, MAX_RTMP_HLS_PLAYLIST_LENGTH_MS,
+         MAX_RTMP_DASH_ACTIVE_STREAMS, MAX_RTMP_DASH_OUTPUTS, MAX_RTMP_DASH_QUEUE_MESSAGES,
+         MAX_RTMP_DASH_SEGMENT_BYTES, MAX_RTMP_DASH_SEGMENT_DURATION_MS,
+         MAX_RTMP_DASH_STORAGE_BYTES, MAX_RTMP_DASH_STORAGE_FILES,
+         MAX_RTMP_DASH_PLAYLIST_LENGTH_MS,
+         MAX_RTMP_EXEC_ARGUMENTS, MAX_RTMP_EXEC_ARGUMENT_BYTES, MAX_RTMP_EXEC_ARGV_BYTES,
+         MAX_RTMP_EXEC_ENVIRONMENT, MAX_RTMP_EXEC_ENV_NAME_BYTES, MAX_RTMP_EXEC_ENV_VALUE_BYTES,
+         MAX_RTMP_EXEC_ENV_BYTES, MAX_RTMP_EXEC_NAME_BYTES, MAX_RTMP_EXEC_PROCESSES,
+         MAX_RTMP_EXEC_PROFILES_PER_SERVICE, MAX_RTMP_EXEC_QUEUE_BYTES,
+         MAX_RTMP_EXEC_QUEUE_MESSAGES, MAX_RTMP_EXEC_RESPAWN_DELAY_MS, MAX_RTMP_EXEC_RESPAWNS,
+         MAX_RTMP_EXEC_SHUTDOWN_TIMEOUT_MS, MAX_RTMP_EXEC_STDERR_BYTES,
+         MAX_RTMP_EXEC_STDOUT_BYTES, MAX_RTMP_EXEC_TIMEOUT_MS, MAX_TOTAL_RTMP_EXEC_PROFILES,
+         MAX_RTMP_RELAY_BUFFER_MS, MAX_RTMP_RELAY_TIMEOUT_MS, MAX_RTMP_SECRET_FILE_BYTES,
         MAX_RTMP_SERVICES, MAX_RTMP_SUBSCRIBERS, MAX_RTMP_TOKEN_BYTES,
         MAX_RTMP_TOKEN_PARAMETER_BYTES, MAX_RTMP_VOD_DURATION_MS, MAX_RTMP_VOD_FILE_BYTES,
         MAX_RTMP_VOD_ORIGIN_BYTES, MAX_RTMP_VOD_SESSIONS, MAX_RTMP_VOD_SOURCE_NAME_BYTES,
@@ -58,9 +65,11 @@ use crate::{
          HttpRequestHeaderMutation, HttpResponseHeaderMutation, HttpRouteAction, HttpService,
          HttpVersion, L4Service, Listener,
         ListenerBind, Management, Protocol, RtmpAccessPolicy, RtmpCallbackConfig,
-        RtmpCredentialReference, RtmpOutboundPolicy, RtmpRecorder,
-        RtmpRelayPolicy, RtmpRtmpsPolicy, RtmpService, RtmpSessionCeilings, RtmpTokenSource,
-         RtmpTransport, RtmpVodSource, Stats, StatsPage, TlsClientAuthMode, TlsProfile, TlsVersion,
+         RtmpCredentialReference, RtmpOutboundPolicy, RtmpRecorder,
+         RtmpExecFilesystemPolicy, RtmpExecMode, RtmpExecProfile,
+         RtmpExecTrigger, RtmpRelayPolicy, RtmpRtmpsPolicy, RtmpService, RtmpSessionCeilings,
+         RtmpTokenSource,
+          RtmpTransport, RtmpVodSource, Stats, StatsPage, TlsClientAuthMode, TlsProfile, TlsVersion,
          UdpPolicy,
         UpstreamAlgorithm, UpstreamEndpoint, UpstreamPool, ProxyProtocolVersion,
     },
@@ -85,7 +94,7 @@ pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
     validate_management(config.management.as_ref())?;
     validate_stats(config.stats.as_ref())?;
     validate_certificates(&mut config.certificates)?;
-        validate_tls_profiles(&mut config.tls_profiles, &config.certificates)?;
+    validate_tls_profiles(&mut config.tls_profiles, &config.certificates)?;
     let cache_stores = crate::cache_validation::validate_cache_stores(&mut config.cache_stores)?;
     crate::forward_validation::validate_forward_proxy_services(
         &mut config.forward_proxy_services,
@@ -310,14 +319,14 @@ fn validate_certificates(certificates: &mut [Certificate]) -> Result<(), ConfigE
             }
             CertificateSource::AcmeManaged {
                 directory_url,
-                retained_revisions,
-                retention_days,
                 state_root,
                 contacts,
                 terms_agreed,
                 challenge,
                 allowed_dns_suffixes,
                 dns01,
+                retained_revisions,
+                retention_days,
                 ..
             } => {
                 validate_acme_source(
@@ -325,12 +334,12 @@ fn validate_certificates(certificates: &mut [Certificate]) -> Result<(), ConfigE
                     directory_url,
                     state_root,
                     contacts,
-                    *retained_revisions,
-                    *retention_days,
                     *terms_agreed,
                     *challenge,
                     allowed_dns_suffixes,
                     dns01.as_ref(),
+                    *retained_revisions,
+                    *retention_days,
                 )?;
             }
             CertificateSource::SelfSignedDevelopment { validity_days, .. } => {
@@ -357,12 +366,12 @@ fn validate_acme_source(
     directory_url: &str,
     state_root: &Path,
     contacts: &[String],
-    retained_revisions: u32,
-    retention_days: u32,
     terms_agreed: bool,
     challenge: crate::model::AcmeChallengeType,
     allowed_dns_suffixes: &[String],
     dns01: Option<&AcmeDns01Config>,
+    retained_revisions: u32,
+    retention_days: u32,
 ) -> Result<(), ConfigError> {
     if !certificate
         .name
@@ -1472,6 +1481,7 @@ fn validate_rtmp_services(services: &mut [RtmpService]) -> Result<(), ConfigErro
         return Err(ConfigError::TooManyRtmpServices);
     }
     let mut total_recorders = 0_usize;
+    let mut total_exec_profiles = 0_usize;
     let mut roots = HashMap::<PathBuf, (RtmpRecorderStorageLimits, String)>::new();
     let mut hls_outputs = 0_usize;
     let mut hls_roots = HashMap::<PathBuf, ((u64, u64, u64, u64), String)>::new();
@@ -1491,6 +1501,17 @@ fn validate_rtmp_services(services: &mut [RtmpService]) -> Result<(), ConfigErro
         validate_access_log("RTMP service", &service.name, service.access_log.as_ref())?;
         validate_rtmp_outbound_policy(&service.name, &mut service.outbound_policy)?;
         validate_rtmp_callbacks(&service.name, None, &service.callbacks)?;
+        if service.exec_profiles.len() > MAX_RTMP_EXEC_PROFILES_PER_SERVICE {
+            return Err(ConfigError::InvalidRtmpServicePolicy {
+                service: service.name.clone(),
+                field: "exec_profiles",
+                detail: "must contain at most 64 profiles",
+            });
+        }
+        validate_names(
+            "RTMP exec profile",
+            service.exec_profiles.iter().map(|profile| profile.name.as_str()),
+        )?;
         if service.applications.is_empty() {
             return Err(ConfigError::EmptyRtmpApplications {
                 service: service.name.clone(),
@@ -1508,6 +1529,23 @@ fn validate_rtmp_services(services: &mut [RtmpService]) -> Result<(), ConfigErro
                 .iter()
                 .map(|application| application.name.as_str()),
         )?;
+        for profile in &mut service.exec_profiles {
+            total_exec_profiles = total_exec_profiles
+                .checked_add(1)
+                .ok_or(ConfigError::InvalidRtmpServicePolicy {
+                    service: service.name.clone(),
+                    field: "exec_profiles",
+                    detail: "profile count overflow",
+                })?;
+            if total_exec_profiles > MAX_TOTAL_RTMP_EXEC_PROFILES {
+                return Err(ConfigError::InvalidRtmpServicePolicy {
+                    service: service.name.clone(),
+                    field: "exec_profiles",
+                    detail: "configuration exceeds the 256-profile limit",
+                });
+            }
+            validate_rtmp_exec_profile(&service.name, &service.applications, profile)?;
+        }
         for application in &mut service.applications {
             if application.name.len() > MAX_RTMP_APPLICATION_NAME_BYTES {
                 return Err(ConfigError::InvalidRtmpApplicationPolicy {
@@ -1825,6 +1863,239 @@ fn validate_rtmp_application(
     Ok(())
 }
 
+fn validate_rtmp_exec_profile(
+    service: &str,
+    applications: &[crate::model::RtmpApplication],
+    profile: &mut RtmpExecProfile,
+) -> Result<(), ConfigError> {
+    let invalid = |field, detail| ConfigError::InvalidRtmpServicePolicy {
+        service: service.into(),
+        field,
+        detail,
+    };
+    if profile.name.len() > MAX_RTMP_EXEC_NAME_BYTES {
+        return Err(invalid("exec_profiles[].name", "must be at most 64 bytes"));
+    }
+    if !applications
+        .iter()
+        .any(|application| application.name == profile.application)
+    {
+        return Err(invalid(
+            "exec_profiles[].application",
+            "must reference an exact application name",
+        ));
+    }
+    normalize_exec_path(&mut profile.executable)
+        .map_err(|detail| invalid("exec_profiles[].executable", detail))?;
+    normalize_absolute_directory(&mut profile.working_directory)
+        .map_err(|detail| invalid("exec_profiles[].working_directory", detail))?;
+    if profile.filesystem == RtmpExecFilesystemPolicy::Host {
+        return Err(invalid(
+            "exec_profiles[].filesystem",
+            "host filesystem access is not supported",
+        ));
+    }
+    if profile.mode == RtmpExecMode::Transcode
+        && profile.trigger != RtmpExecTrigger::Publisher
+    {
+        return Err(invalid(
+            "exec_profiles[].trigger",
+            "transcode profiles require the publisher trigger",
+        ));
+    }
+    if profile
+        .executable
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(is_shell_executable_name)
+    {
+        return Err(invalid(
+            "exec_profiles[].executable",
+            "shell interpreters are not allowed",
+        ));
+    }
+    let mut argv_bytes = 0_u64;
+    if profile.arguments.len() > MAX_RTMP_EXEC_ARGUMENTS {
+        return Err(invalid(
+            "exec_profiles[].arguments",
+            "must contain at most 64 arguments",
+        ));
+    }
+    for argument in &profile.arguments {
+        if argument.len() > MAX_RTMP_EXEC_ARGUMENT_BYTES
+            || argument.bytes().any(|byte| byte == 0 || byte.is_ascii_control())
+        {
+            return Err(invalid(
+                "exec_profiles[].arguments",
+                "arguments must be bounded UTF-8 without NUL or control bytes",
+            ));
+        }
+        argv_bytes = argv_bytes
+            .checked_add(u64::try_from(argument.len()).unwrap_or(u64::MAX))
+            .and_then(|bytes| bytes.checked_add(1))
+            .ok_or_else(|| invalid("exec_profiles[].arguments", "argument byte count overflow"))?;
+    }
+    if argv_bytes > MAX_RTMP_EXEC_ARGV_BYTES {
+        return Err(invalid(
+            "exec_profiles[].arguments",
+            "combined argument bytes exceed 16384",
+        ));
+    }
+    if profile.environment.len() > MAX_RTMP_EXEC_ENVIRONMENT {
+        return Err(invalid(
+            "exec_profiles[].environment",
+            "must contain at most 32 variables",
+        ));
+    }
+    let mut environment_bytes = 0_u64;
+    let mut environment_names = HashSet::new();
+    for environment in &profile.environment {
+        if environment.name.len() > MAX_RTMP_EXEC_ENV_NAME_BYTES
+            || !valid_exec_environment_name(&environment.name)
+            || is_forbidden_exec_environment_name(&environment.name)
+        {
+            return Err(invalid(
+                "exec_profiles[].environment[].name",
+                "must be an allowed ASCII environment name",
+            ));
+        }
+        if !environment_names.insert(&environment.name) {
+            return Err(invalid(
+                "exec_profiles[].environment",
+                "variable names must be unique",
+            ));
+        }
+        if environment.value.len() > MAX_RTMP_EXEC_ENV_VALUE_BYTES
+            || environment
+                .value
+                .bytes()
+                .any(|byte| byte == 0 || byte.is_ascii_control())
+        {
+            return Err(invalid(
+                "exec_profiles[].environment[].value",
+                "values must be bounded UTF-8 without NUL or control bytes",
+            ));
+        }
+        environment_bytes = environment_bytes
+            .checked_add(u64::try_from(environment.name.len()).unwrap_or(u64::MAX))
+            .and_then(|bytes| bytes.checked_add(1))
+            .and_then(|bytes| {
+                bytes
+                    .checked_add(u64::try_from(environment.value.len()).unwrap_or(u64::MAX))
+            })
+            .and_then(|bytes| bytes.checked_add(1))
+            .ok_or_else(|| invalid("exec_profiles[].environment", "environment byte count overflow"))?;
+    }
+    if environment_bytes > MAX_RTMP_EXEC_ENV_BYTES {
+        return Err(invalid(
+            "exec_profiles[].environment",
+            "combined environment bytes exceed 16384",
+        ));
+    }
+    for (field, value, maximum, detail) in [
+        (
+            "exec_profiles[].timeout_ms",
+            profile.timeout_ms,
+            MAX_RTMP_EXEC_TIMEOUT_MS,
+            "must be between 1 and 86400000",
+        ),
+        (
+            "exec_profiles[].shutdown_timeout_ms",
+            profile.shutdown_timeout_ms,
+            MAX_RTMP_EXEC_SHUTDOWN_TIMEOUT_MS,
+            "must be between 1 and 60000",
+        ),
+        (
+            "exec_profiles[].max_processes",
+            profile.max_processes,
+            MAX_RTMP_EXEC_PROCESSES,
+            "must be between 1 and 256",
+        ),
+        (
+            "exec_profiles[].max_queue_messages",
+            profile.max_queue_messages,
+            MAX_RTMP_EXEC_QUEUE_MESSAGES,
+            "must be between 1 and 65536",
+        ),
+        (
+            "exec_profiles[].max_queue_bytes",
+            profile.max_queue_bytes,
+            MAX_RTMP_EXEC_QUEUE_BYTES,
+            "must be between 1 and 1073741824",
+        ),
+        (
+            "exec_profiles[].max_stdout_bytes",
+            profile.max_stdout_bytes,
+            MAX_RTMP_EXEC_STDOUT_BYTES,
+            "must be between 1 and 16777216",
+        ),
+        (
+            "exec_profiles[].max_stderr_bytes",
+            profile.max_stderr_bytes,
+            MAX_RTMP_EXEC_STDERR_BYTES,
+            "must be between 1 and 16777216",
+        ),
+        (
+            "exec_profiles[].respawn_delay_ms",
+            profile.respawn_delay_ms,
+            MAX_RTMP_EXEC_RESPAWN_DELAY_MS,
+            "must be between 1 and 300000",
+        ),
+        (
+            "exec_profiles[].max_respawns",
+            profile.max_respawns,
+            MAX_RTMP_EXEC_RESPAWNS,
+            "must be between 0 and 64",
+        ),
+    ] {
+        if (field != "exec_profiles[].max_respawns" && value == 0) || value > maximum {
+            return Err(invalid(field, detail));
+        }
+    }
+    Ok(())
+}
+
+fn normalize_exec_path(path: &mut PathBuf) -> Result<(), &'static str> {
+    let value = path.to_str().ok_or("path must be valid UTF-8")?;
+    if !value.starts_with('/') {
+        return Err("path must be absolute");
+    }
+    if value.is_empty() || value.ends_with('/') || value.len() > 4_096 {
+        return Err("path must be a bounded executable path");
+    }
+    if value.bytes().any(|byte| byte == 0 || byte.is_ascii_control()) {
+        return Err("path must not contain NUL or control bytes");
+    }
+    if value.strip_prefix('/').is_none_or(|value| {
+        value
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+    }) {
+        return Err("path must not contain empty, `.` or `..` segments");
+    }
+    *path = value.into();
+    Ok(())
+}
+
+fn valid_exec_environment_name(name: &str) -> bool {
+    let mut characters = name.bytes();
+    matches!(characters.next(), Some(b'A'..=b'Z' | b'_'))
+        && characters.all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+fn is_forbidden_exec_environment_name(name: &str) -> bool {
+    matches!(name, "PATH" | "IFS" | "SHELL" | "LD_PRELOAD" | "LD_LIBRARY_PATH")
+        || name.starts_with("LD_")
+        || name.starts_with("DYLD_")
+}
+
+fn is_shell_executable_name(name: &str) -> bool {
+    matches!(
+        name,
+        "sh" | "bash" | "dash" | "zsh" | "fish" | "cmd" | "cmd.exe" | "powershell"
+    )
+}
+
 fn validate_rtmp_hls(
     service: &str,
     application: &str,
@@ -2004,9 +2275,7 @@ fn validate_rtmp_dash(
     };
     normalize_absolute_directory(&mut dash.root_directory)
         .map_err(|detail| invalid("dash.root_directory", detail))?;
-    if dash.segment_duration_ms == 0
-        || dash.segment_duration_ms > MAX_RTMP_DASH_SEGMENT_DURATION_MS
-    {
+    if dash.segment_duration_ms == 0 || dash.segment_duration_ms > MAX_RTMP_DASH_SEGMENT_DURATION_MS {
         return Err(invalid(
             "dash.segment_duration_ms",
             "must be between 1 and 120000",

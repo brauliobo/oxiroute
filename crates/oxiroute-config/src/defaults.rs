@@ -41,6 +41,15 @@ const DEFAULT_RTMP_DASH_MAX_QUEUE_MESSAGES: u64 = 256;
 const DEFAULT_RTMP_DASH_MAX_STORAGE_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_RTMP_DASH_MAX_STORAGE_FILES: u64 = 10_000;
 const DEFAULT_RTMP_DASH_MAX_ACTIVE_STREAMS: u64 = 1_024;
+const DEFAULT_RTMP_EXEC_TIMEOUT_MS: u64 = 60_000;
+const DEFAULT_RTMP_EXEC_SHUTDOWN_TIMEOUT_MS_VALUE: u64 = 5_000;
+const DEFAULT_RTMP_EXEC_MAX_PROCESSES: u64 = 8;
+const DEFAULT_RTMP_EXEC_MAX_QUEUE_MESSAGES: u64 = 256;
+const DEFAULT_RTMP_EXEC_MAX_QUEUE_BYTES: u64 = 8 * 1024 * 1024;
+const DEFAULT_RTMP_EXEC_MAX_STDOUT_BYTES: u64 = 64 * 1024;
+const DEFAULT_RTMP_EXEC_MAX_STDERR_BYTES: u64 = 64 * 1024;
+const DEFAULT_RTMP_EXEC_RESPAWN_DELAY_MS: u64 = 250;
+const DEFAULT_RTMP_EXEC_MAX_RESPAWNS: u64 = 3;
 const DEFAULT_RECORDER_MAX_QUEUE_MESSAGES: u64 = 256;
 const DEFAULT_RECORDER_MAX_QUEUE_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_RECORDER_SHUTDOWN_TIMEOUT_MS: u64 = 5_000;
@@ -67,8 +76,6 @@ const DEFAULT_FORWARD_RESOLVER_CONCURRENT_QUERIES: u64 = 256;
 const DEFAULT_FORWARD_RESOLVER_MAX_ADDRESSES: u64 = 16;
 const DEFAULT_FORWARD_RESOLVER_MIN_TTL_MS: u64 = 1_000;
 const DEFAULT_FORWARD_RESOLVER_MAX_TTL_MS: u64 = 300_000;
-const DEFAULT_ACME_RETAINED_REVISIONS: u32 = 3;
-const DEFAULT_ACME_RETENTION_DAYS: u32 = 30;
 const DEFAULT_FORWARD_RESOLVER_NEGATIVE_TTL_MS: u64 = 30_000;
 const DEFAULT_UDP_MAX_DATAGRAM_BYTES: u64 = 16 * 1024;
 const DEFAULT_UDP_MAX_SESSIONS: u64 = 4_096;
@@ -76,6 +83,8 @@ const DEFAULT_UDP_MAX_SESSION_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_UDP_MAX_QUEUE_DATAGRAMS: u64 = 64;
 const DEFAULT_UDP_MAX_QUEUE_BYTES: u64 = 1024 * 1024;
 const DEFAULT_ACME_DNS01_TIMEOUT_SECONDS: u64 = 300;
+const DEFAULT_ACME_RETAINED_REVISIONS: u32 = 3;
+const DEFAULT_ACME_RETENTION_DAYS: u32 = 30;
 const DEFAULT_PROXY_PROTOCOL_TIMEOUT_MS: u64 = 5_000;
 
 pub(crate) const MIN_HEALTH_INTERVAL_MS: u64 = 1_000;
@@ -84,8 +93,6 @@ pub(crate) const MAX_HEALTH_TIMEOUT_MS: u64 = 30_000;
 pub(crate) const MAX_HEALTH_THRESHOLD: u16 = 100;
 pub(crate) const MAX_HEALTH_HOST_BYTES: usize = 255;
 pub(crate) const MAX_HEALTH_PATH_BYTES: usize = 2_048;
-pub(crate) const MAX_ACME_RETAINED_REVISIONS: u32 = 32;
-pub(crate) const MAX_ACME_RETENTION_DAYS: u32 = 3_650;
 pub(crate) const MAX_CERTIFICATES: usize = 256;
 pub(crate) const MAX_CERTIFICATE_DNS_NAMES: usize = 100;
 pub(crate) const MAX_ACME_CONTACTS: usize = 8;
@@ -93,6 +100,8 @@ pub(crate) const MAX_ACME_DNS_SUFFIXES: usize = 16;
 pub(crate) const MAX_ACME_DIRECTORY_URL_BYTES: usize = 2_048;
 pub(crate) const MAX_ACME_DNS01_PROVIDER_BYTES: usize = 64;
 pub(crate) const MAX_ACME_DNS01_TIMEOUT_SECONDS: u64 = 600;
+pub(crate) const MAX_ACME_RETAINED_REVISIONS: u32 = 32;
+pub(crate) const MAX_ACME_RETENTION_DAYS: u32 = 3_650;
 pub(crate) const MIN_SELF_SIGNED_VALIDITY_DAYS: u32 = 1;
 pub(crate) const MAX_SELF_SIGNED_VALIDITY_DAYS: u32 = 30;
 pub(crate) const MAX_TLS_PROFILES: usize = 256;
@@ -138,6 +147,25 @@ pub(crate) const MAX_UDP_SESSION_BYTES: u64 = 1024 * 1024 * 1024;
 pub(crate) const MAX_UDP_QUEUE_DATAGRAMS: u64 = 4_096;
 pub(crate) const MAX_UDP_QUEUE_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const MAX_RTMP_SERVICES: usize = 64;
+pub(crate) const MAX_RTMP_EXEC_PROFILES_PER_SERVICE: usize = 64;
+pub(crate) const MAX_TOTAL_RTMP_EXEC_PROFILES: usize = 256;
+pub(crate) const MAX_RTMP_EXEC_NAME_BYTES: usize = 64;
+pub(crate) const MAX_RTMP_EXEC_ARGUMENTS: usize = 64;
+pub(crate) const MAX_RTMP_EXEC_ARGUMENT_BYTES: usize = 4_096;
+pub(crate) const MAX_RTMP_EXEC_ARGV_BYTES: u64 = 16 * 1024;
+pub(crate) const MAX_RTMP_EXEC_ENVIRONMENT: usize = 32;
+pub(crate) const MAX_RTMP_EXEC_ENV_NAME_BYTES: usize = 128;
+pub(crate) const MAX_RTMP_EXEC_ENV_VALUE_BYTES: usize = 4_096;
+pub(crate) const MAX_RTMP_EXEC_ENV_BYTES: u64 = 16 * 1024;
+pub(crate) const MAX_RTMP_EXEC_TIMEOUT_MS: u64 = 86_400_000;
+pub(crate) const MAX_RTMP_EXEC_SHUTDOWN_TIMEOUT_MS: u64 = 60_000;
+pub(crate) const MAX_RTMP_EXEC_PROCESSES: u64 = 256;
+pub(crate) const MAX_RTMP_EXEC_QUEUE_MESSAGES: u64 = 65_536;
+pub(crate) const MAX_RTMP_EXEC_QUEUE_BYTES: u64 = 1024 * 1024 * 1024;
+pub(crate) const MAX_RTMP_EXEC_STDOUT_BYTES: u64 = 16 * 1024 * 1024;
+pub(crate) const MAX_RTMP_EXEC_STDERR_BYTES: u64 = 16 * 1024 * 1024;
+pub(crate) const MAX_RTMP_EXEC_RESPAWN_DELAY_MS: u64 = 300_000;
+pub(crate) const MAX_RTMP_EXEC_RESPAWNS: u64 = 64;
 pub(crate) const MAX_RTMP_APPLICATIONS_PER_SERVICE: usize = 256;
 pub(crate) const MAX_RTMP_RECORDERS_PER_APPLICATION: usize = 8;
 pub(crate) const MAX_TOTAL_RTMP_RECORDERS: usize = 256;
@@ -310,14 +338,6 @@ pub(crate) const fn default_self_signed_validity_days() -> u32 {
     7
 }
 
-pub(crate) const fn default_acme_retained_revisions() -> u32 {
-    DEFAULT_ACME_RETAINED_REVISIONS
-}
-
-pub(crate) const fn default_acme_retention_days() -> u32 {
-    DEFAULT_ACME_RETENTION_DAYS
-}
-
 pub(crate) const fn default_upstream_io_timeout_ms() -> u64 {
     DEFAULT_UPSTREAM_IO_TIMEOUT_MS
 }
@@ -357,6 +377,14 @@ pub(crate) const fn default_udp_max_queue_bytes() -> u64 {
 
 pub(crate) const fn default_acme_dns01_timeout_seconds() -> u64 {
     DEFAULT_ACME_DNS01_TIMEOUT_SECONDS
+}
+
+pub(crate) const fn default_acme_retained_revisions() -> u32 {
+    DEFAULT_ACME_RETAINED_REVISIONS
+}
+
+pub(crate) const fn default_acme_retention_days() -> u32 {
+    DEFAULT_ACME_RETENTION_DAYS
 }
 
 pub(crate) const fn default_proxy_protocol_timeout_ms() -> u64 {
@@ -501,6 +529,42 @@ pub(crate) const fn default_recorder_shutdown_timeout_ms() -> u64 {
 
 pub(crate) const fn default_recorder_max_active_recorders() -> u64 {
     DEFAULT_RECORDER_MAX_ACTIVE_RECORDERS
+}
+
+pub(crate) const fn default_rtmp_exec_timeout_ms() -> u64 {
+    DEFAULT_RTMP_EXEC_TIMEOUT_MS
+}
+
+pub(crate) const fn default_rtmp_exec_shutdown_timeout_ms() -> u64 {
+    DEFAULT_RTMP_EXEC_SHUTDOWN_TIMEOUT_MS_VALUE
+}
+
+pub(crate) const fn default_rtmp_exec_max_processes() -> u64 {
+    DEFAULT_RTMP_EXEC_MAX_PROCESSES
+}
+
+pub(crate) const fn default_rtmp_exec_max_queue_messages() -> u64 {
+    DEFAULT_RTMP_EXEC_MAX_QUEUE_MESSAGES
+}
+
+pub(crate) const fn default_rtmp_exec_max_queue_bytes() -> u64 {
+    DEFAULT_RTMP_EXEC_MAX_QUEUE_BYTES
+}
+
+pub(crate) const fn default_rtmp_exec_max_stdout_bytes() -> u64 {
+    DEFAULT_RTMP_EXEC_MAX_STDOUT_BYTES
+}
+
+pub(crate) const fn default_rtmp_exec_max_stderr_bytes() -> u64 {
+    DEFAULT_RTMP_EXEC_MAX_STDERR_BYTES
+}
+
+pub(crate) const fn default_rtmp_exec_respawn_delay_ms() -> u64 {
+    DEFAULT_RTMP_EXEC_RESPAWN_DELAY_MS
+}
+
+pub(crate) const fn default_rtmp_exec_max_respawns() -> u64 {
+    DEFAULT_RTMP_EXEC_MAX_RESPAWNS
 }
 
 pub(crate) fn default_http_access_header_name() -> String {

@@ -9,6 +9,7 @@ use rml_rtmp::{
 use crate::{
     CatalogError, LiveHub, MediaEvent, MediaSnapshot, PublisherLease, PublisherRegistration,
     RtmpCallbackEvent, RtmpRegistry, SessionId, StreamId, StreamKey, VideoCodecIdentifier,
+    exec_worker::{ExecProfileSet, ExecWorker},
     recording_runtime::RecorderController, relay::RtmpRelayController,
 };
 
@@ -33,6 +34,8 @@ pub(super) struct PublishSession {
     recorders: Vec<(crate::RecorderId, Arc<RecorderController>)>,
     relays: Vec<Arc<RtmpRelayController>>,
     media_publisher: Option<crate::MediaPublisher>,
+    exec_profiles: Option<Arc<ExecProfileSet>>,
+    exec_workers: Vec<ExecWorker>,
 }
 
 pub(super) struct PublisherOutputs {
@@ -40,6 +43,8 @@ pub(super) struct PublisherOutputs {
     pub relays: Vec<Arc<RtmpRelayController>>,
     pub media: Option<crate::MediaPublisher>,
     pub session_lease: super::runtime::ApplicationSessionLease,
+    pub exec_profiles: Option<Arc<ExecProfileSet>>,
+    pub exec_workers: Vec<ExecWorker>,
 }
 
 impl PublishSession {
@@ -57,6 +62,8 @@ impl PublishSession {
             relays,
             media: media_publisher,
             session_lease,
+            exec_profiles,
+            exec_workers,
         } = outputs;
         let last_media_activity_at_unix_ms = registration.last_observed_at_unix_ms();
         Self {
@@ -73,6 +80,8 @@ impl PublishSession {
             recorders,
             relays,
             media_publisher,
+            exec_profiles,
+            exec_workers,
         }
     }
 
@@ -158,6 +167,8 @@ impl PublishSession {
     }
 
     pub(super) fn release(&mut self, at_unix_ms: u64) -> Result<(), CatalogError> {
+        let exec_profiles = self.exec_profiles.take();
+        let exec_workers = std::mem::take(&mut self.exec_workers);
         let hub = self.hub.clone();
         let shutdown = {
             let _transaction = hub.lock_roles();
@@ -167,14 +178,25 @@ impl PublishSession {
                 .map_or(Ok(None), |mut registration| {
                     registration.observe_at(at_unix_ms);
                     registration.release_deferred(at_unix_ms).map(Some)
-                })?;
+                });
             self.lease.take();
             shutdown
         };
-        if let Some(shutdown) = shutdown {
-            shutdown.shutdown(at_unix_ms);
+        let result = match shutdown {
+            Ok(Some(shutdown)) => {
+                shutdown.shutdown(at_unix_ms);
+                Ok(())
+            }
+            Ok(None) => Ok(()),
+            Err(error) => Err(error),
+        };
+        drop(exec_workers);
+        if result.is_ok() {
+            if let Some(exec_profiles) = exec_profiles {
+                exec_profiles.start_publish_done(&self.key.server_id, &self.key, self.session_id);
+            }
         }
-        Ok(())
+        result
     }
 
     fn stream_id(&self) -> StreamId {
@@ -214,6 +236,9 @@ impl PublishSession {
         for relay in &self.relays {
             relay.try_enqueue(event.clone());
         }
+        for worker in &self.exec_workers {
+            let _ = worker.try_enqueue(event);
+        }
         if let Some(media) = &self.media_publisher {
             let _ = media.try_enqueue(event.clone(), at_unix_ms);
         }
@@ -230,6 +255,8 @@ impl PublishSession {
 
 impl Drop for PublishSession {
     fn drop(&mut self) {
+        let exec_workers = std::mem::take(&mut self.exec_workers);
+        drop(exec_workers);
         if self.registration.is_none() && self.lease.is_none() {
             return;
         }
