@@ -708,6 +708,15 @@ where
                         capture.admissible = false;
                     }
                 }
+                if this
+                    .capture
+                    .as_ref()
+                    .is_some_and(ForwardCacheCapture::body_complete)
+                {
+                    if let Some(capture) = this.capture.take() {
+                        tokio::spawn(finish_forward_cache_capture(capture));
+                    }
+                }
                 Poll::Ready(Some(Ok(frame)))
             }
             Poll::Ready(Some(Err(error))) => {
@@ -738,7 +747,11 @@ where
 impl<B> Drop for ForwardCacheBody<B> {
     fn drop(&mut self) {
         if let Some(capture) = self.capture.take() {
-            capture.complete_without_store();
+            if capture.body_complete() {
+                tokio::spawn(finish_forward_cache_capture(capture));
+            } else {
+                capture.complete_without_store();
+            }
         }
     }
 }
@@ -754,6 +767,22 @@ impl ForwardCacheCapture {
             return;
         }
         self.body.extend_from_slice(data);
+    }
+
+    fn body_complete(&self) -> bool {
+        if !self.store_response || !self.admissible {
+            return false;
+        }
+        let mut lengths = self.headers.get_all(header::CONTENT_LENGTH).iter();
+        let Some(length) = lengths.next() else {
+            return false;
+        };
+        lengths.next().is_none()
+            && length
+                .to_str()
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                == Some(self.body.len())
     }
 
     fn complete_without_store(mut self) {
@@ -1432,6 +1461,7 @@ impl ForwardHttp1ServicePlan {
             }
         }
         *request.headers_mut() = headers;
+        let request_body_empty = request.body().size_hint().upper() == Some(0);
         let (parts, body) = request.into_parts();
         let (body, mut body_completion) = relay_request_body(
             body,
@@ -1464,7 +1494,7 @@ impl ForwardHttp1ServicePlan {
         });
         let response = sender.send_request(request);
         tokio::pin!(response);
-        let mut body_complete = false;
+        let mut body_complete = request_body_empty;
         let response_idle = tokio::time::sleep(self.idle_timeout);
         tokio::pin!(response_idle);
         let mut upstream_response = loop {
@@ -1655,11 +1685,7 @@ impl ForwardHttp1ServicePlan {
         if authenticated
             || !matches!(request.method(), &Method::GET | &Method::HEAD)
             || !plan.allows_method(request.method())
-            || request
-                .body()
-                .size_hint()
-                .upper()
-                .is_some_and(|length| length > 0)
+            || request.body().size_hint().upper() != Some(0)
             || request.headers().contains_key(header::AUTHORIZATION)
             || request.headers().contains_key(header::PROXY_AUTHORIZATION)
             || request.headers().contains_key(header::COOKIE)

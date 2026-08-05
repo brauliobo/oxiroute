@@ -274,6 +274,30 @@ async fn memory_cache_reuses_get_and_head_responses() {
 }
 
 #[tokio::test]
+async fn unknown_length_get_bodies_bypass_cache_admission() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = Origin::start("chunked-request", 2).await;
+        let proxy = ProxyHarness::start_with_memory_cache(
+            vec![pool("origin", &[origin.address])],
+            vec![cached_route(None, "/", "origin")],
+            2,
+        )
+        .await;
+        let request = b"GET /chunked HTTP/1.1\r\nHost: cache.test\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n7\r\npayload\r\n0\r\n\r\n";
+
+        for _ in 0..2 {
+            assert_origin_response(&proxy.request_bytes(request).await, "chunked-request");
+        }
+        assert_eq!(origin.accepted.load(Ordering::SeqCst), 2);
+
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("unknown-length cache bypass test timed out");
+}
+
+#[tokio::test]
 async fn disk_cache_survives_proxy_restart() {
     timeout(TEST_TIMEOUT, async {
         let temp = TempDir::new().expect("disk cache parent");
