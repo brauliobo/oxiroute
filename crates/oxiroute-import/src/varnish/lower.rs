@@ -55,6 +55,7 @@ const DEFAULT_IN_FLIGHT_FILLS: u64 = 1_024;
 const DEFAULT_FOLLOWERS_PER_FILL: u64 = 128;
 
 #[derive(Clone, Copy)]
+#[allow(clippy::struct_field_names)]
 struct RouteTiming {
     connect_ms: u64,
     read_ms: u64,
@@ -114,6 +115,7 @@ struct Lowerer<'a> {
 
 /// Lowers a complete semantic Varnish graph, retaining the semantic diagnostics accumulated by
 /// parsing and resolution. No runtime code is invoked during this pass.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn lower(
     graph: &SourceGraph,
     invocation: &InvocationFacts,
@@ -226,10 +228,15 @@ impl<'a> Lowerer<'a> {
             source_metadata,
             config,
         };
-        let (_, diagnostics) = crate::Report::new((), self.diagnostics).into_parts();
+        let ((), diagnostics) = crate::Report::new((), self.diagnostics).into_parts();
         (candidate, status, diagnostics)
     }
 
+    #[allow(
+        clippy::needless_borrow,
+        clippy::too_many_lines,
+        clippy::unnecessary_to_owned
+    )]
     fn scan_graph(&mut self) {
         if !self.graph.snapshot_stable {
             self.block(
@@ -373,6 +380,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn lower_invocation(&mut self) {
         if self.source_invocation.truncated {
             self.block(
@@ -577,6 +585,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    #[allow(clippy::unnecessary_to_owned)]
     fn lower_backends(&mut self) {
         for (index, backend) in self.backends.to_vec().into_iter().enumerate() {
             if let Some(info) = self.lower_backend(&backend) {
@@ -612,6 +621,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn lower_backend(&mut self, backend: &Backend) -> Option<BackendInfo> {
         let name = match String::from_utf8(backend.name.clone()) {
             Ok(name) if !name.is_empty() => name,
@@ -708,7 +718,7 @@ impl<'a> Lowerer<'a> {
                     return None;
                 };
                 let port = port.and_then(static_port).unwrap_or(80);
-                if let Some(address) = host.parse::<IpAddr>().ok() {
+                if let Ok(address) = host.parse::<IpAddr>() {
                     UpstreamEndpoint::Socket {
                         address: SocketAddr::new(address, port),
                     }
@@ -724,7 +734,10 @@ impl<'a> Lowerer<'a> {
             }
             BackendKind::Unix { path: kind_path } => {
                 let path = path.or(Some(kind_path));
-                let Some(path) = path.and_then(static_text).and_then(canonical_unix_path) else {
+                let Some(path) = path
+                    .and_then(static_text)
+                    .and_then(|value| canonical_unix_path(&value))
+                else {
                     self.block_backend(
                         backend,
                         "Unix backend path is not a safe absolute socket path",
@@ -749,7 +762,7 @@ impl<'a> Lowerer<'a> {
                 algorithm: UpstreamAlgorithm::RoundRobin,
                 health_check: None,
                 tls: None,
-                http_versions: Default::default(),
+                http_versions: oxiroute_config::HttpVersionPolicy::default(),
                 queue_timeout_ms: None,
                 connect_timeout_ms: None,
                 server_timeout_ms: None,
@@ -815,7 +828,7 @@ impl<'a> Lowerer<'a> {
                 algorithm,
                 health_check: None,
                 tls: None,
-                http_versions: Default::default(),
+                http_versions: oxiroute_config::HttpVersionPolicy::default(),
                 queue_timeout_ms: None,
                 connect_timeout_ms: None,
                 server_timeout_ms: None,
@@ -825,6 +838,7 @@ impl<'a> Lowerer<'a> {
         })
     }
 
+    #[allow(clippy::needless_borrow, clippy::too_many_lines)]
     fn lower_builtin_graph(&mut self) {
         let recv = self.phase(SubroutineKind::Recv);
         let mut selected = None;
@@ -1112,9 +1126,9 @@ impl<'a> Lowerer<'a> {
                 bypass_request: Vec::new(),
                 no_store_request: Vec::new(),
                 no_store_response: Vec::new(),
-                set_cookie_policy: Default::default(),
-                authorization_policy: Default::default(),
-                vary_policy: Default::default(),
+                set_cookie_policy: oxiroute_config::CacheSetCookiePolicy::default(),
+                authorization_policy: oxiroute_config::CacheAuthorizationPolicy::default(),
+                vary_policy: oxiroute_config::CacheVaryPolicy::default(),
                 surrogate_tags: None,
                 purge_authorization: None,
             }))
@@ -1147,7 +1161,7 @@ impl<'a> Lowerer<'a> {
                     response_headers,
                     response_cookie_path_rewrites: Vec::new(),
                     response_cookie_attributes: Vec::new(),
-                    retry: Default::default(),
+                    retry: oxiroute_config::HttpRetryPolicy::default(),
                     cache,
                 },
             },
@@ -1227,7 +1241,7 @@ impl<'a> Lowerer<'a> {
                 _ => self.block_statement(
                     LoweringBlocker::SemanticMismatch,
                     E_VCL_SEMANTIC_MISMATCH,
-                    &statement,
+                    statement,
                     "VCL hash phase is not the canonical URL/Host hash graph",
                 ),
             }
@@ -1509,7 +1523,7 @@ fn canonical_storage_path(value: &String) -> Option<PathBuf> {
     .then(|| path.to_path_buf())
 }
 
-fn canonical_unix_path(value: String) -> Option<PathBuf> {
+fn canonical_unix_path(value: &str) -> Option<PathBuf> {
     let mut output = String::new();
     for segment in value.split('/').filter(|segment| !segment.is_empty()) {
         if matches!(segment, "." | "..") {
@@ -1561,8 +1575,7 @@ fn is_host_name(value: &[u8]) -> bool {
 
 fn static_text(expression: &Expression) -> Option<String> {
     match &expression.kind {
-        ExpressionKind::Literal(super::Literal::String(value))
-        | ExpressionKind::Literal(super::Literal::Number(value)) => {
+        ExpressionKind::Literal(super::Literal::String(value) | super::Literal::Number(value)) => {
             String::from_utf8(value.bytes.clone()).ok()
         }
         _ => None,

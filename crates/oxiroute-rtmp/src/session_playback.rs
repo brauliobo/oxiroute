@@ -95,6 +95,7 @@ impl Drop for PlaybackSession {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(super) fn handle_request(
     session: &mut RtmpSession,
     request_id: u32,

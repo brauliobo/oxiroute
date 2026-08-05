@@ -27,6 +27,7 @@ use tokio::{
 const H3_ALPN: &[u8] = b"h3";
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn daemon_accepts_reverse_h3_and_reuses_the_http_service_pool() {
     let origin = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await

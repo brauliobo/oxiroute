@@ -1,3 +1,5 @@
+#![allow(clippy::result_large_err)]
+
 mod config;
 pub(crate) use config::read_config_body;
 mod management;

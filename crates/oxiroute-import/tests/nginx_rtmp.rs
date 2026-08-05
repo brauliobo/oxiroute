@@ -69,7 +69,7 @@ fn lowers_inherited_exact_rtmp_and_recorder_policy_without_accessing_the_root() 
 #[test]
 fn lowers_one_absolute_rtmp_access_log_with_the_combined_format() {
     let report = import_source(
-        br#"
+        br"
         rtmp {
           access_log /var/log/oxiroute/rtmp-access.jsonl combined;
           server {
@@ -77,7 +77,7 @@ fn lowers_one_absolute_rtmp_access_log_with_the_combined_format() {
             application live { live on; }
           }
         }
-        "#,
+        ",
         &[],
     );
 
@@ -140,7 +140,7 @@ fn lowers_bounded_hls_policy_and_key_rotation() {
 #[test]
 fn lowers_allowlisted_exec_profiles_with_typed_arguments_and_provenance() {
     let report = import_source(
-        br#"
+        br"
         rtmp {
           respawn on;
           respawn_timeout 2s;
@@ -153,7 +153,7 @@ fn lowers_allowlisted_exec_profiles_with_typed_arguments_and_provenance() {
             }
           }
         }
-        "#,
+        ",
         &[],
     );
 

@@ -120,9 +120,9 @@ impl MasterRunner {
         {
             use std::os::unix::fs::PermissionsExt as _;
 
-            return std::fs::metadata(PRODUCTION_LAUNCHER).is_ok_and(|metadata| {
+            std::fs::metadata(PRODUCTION_LAUNCHER).is_ok_and(|metadata| {
                 metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
-            });
+            })
         }
         #[cfg(not(unix))]
         {
@@ -216,6 +216,7 @@ impl MasterRunner {
         Ok(command)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn drive(
         &self,
         master: &mut Master,
@@ -242,6 +243,7 @@ impl MasterRunner {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn drive_inner(
         &self,
         master: &mut Master,

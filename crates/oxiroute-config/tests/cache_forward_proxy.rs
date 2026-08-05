@@ -240,7 +240,7 @@ fn renders_and_validates_forward_cache_policy() {
     );
     assert_eq!(
         value["forward_proxy_services"][0]["cache"]["default_ttl_ms"],
-        120000_u64
+        120_000_u64
     );
 
     let rendered = render_lua(&config).expect("rendered forward cache policy");

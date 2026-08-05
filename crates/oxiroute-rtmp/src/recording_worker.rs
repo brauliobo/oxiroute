@@ -72,8 +72,8 @@ impl RecorderMediaMask {
             MediaEventKind::AacSequenceHeader | MediaEventKind::Audio => self.audio,
             MediaEventKind::AvcSequenceHeader
             | MediaEventKind::HevcSequenceHeader
-            | MediaEventKind::Av1SequenceHeader => self.video,
-            MediaEventKind::VideoKeyframe => self.video,
+            | MediaEventKind::Av1SequenceHeader
+            | MediaEventKind::VideoKeyframe => self.video,
             MediaEventKind::VideoInterframe | MediaEventKind::VideoDisposable => {
                 self.video && !self.keyframes
             }
@@ -276,6 +276,7 @@ impl RecorderWorker {
     ///
     /// Returns an error for invalid queue/rotation limits, path rendering failure, or thread spawn
     /// failure.
+    #[allow(clippy::too_many_lines)]
     pub fn start(
         store: RecordingStore,
         path_policy: &RecordingPathPolicy,

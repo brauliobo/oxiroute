@@ -201,6 +201,11 @@ pub struct ParsedProxyHeader {
 /// `Ok(None)` means the input is a valid prefix but does not contain the complete header yet. No
 /// parser path allocates based on input-controlled lengths; v2 is capped by its 16-bit protocol
 /// payload length and v1 is capped by its 108-byte wire limit.
+///
+/// # Errors
+///
+/// Returns an error when the header is malformed, exceeds the protocol limit, or does not match
+/// the configured version or transport.
 pub fn parse_header(
     input: &[u8],
     configured_version: ProxyProtocolVersion,
@@ -284,10 +289,10 @@ fn parse_v1(
             ProxyProtocolErrorKind::InvalidSignature,
         ));
     }
-    let is_v4 = match fields[1] {
-        "TCP4" => true,
-        "TCP6" => false,
-        "UNKNOWN" => {
+    let is_v4 = match fields.get(1).copied() {
+        Some("TCP4") => true,
+        Some("TCP6") => false,
+        Some("UNKNOWN") => {
             return Err(ProxyProtocolError::new(
                 ProxyProtocolErrorKind::UnsupportedCommand,
             ));
@@ -431,6 +436,11 @@ fn parse_socket_addr(
 }
 
 /// Encodes a PROXY header without touching the source socket address.
+///
+/// # Errors
+///
+/// Returns an error when the addresses use different families, the version is unsupported for
+/// the transport, or the encoded header exceeds its protocol limit.
 pub fn encode_header(
     version: ProxyProtocolVersion,
     transport: ProxyProtocolTransport,
@@ -473,10 +483,13 @@ pub fn encode_header(
                 (false, ProxyProtocolTransport::Datagram) => 0x22,
             };
             let address_len = if source.is_ipv4() { 12 } else { 36 };
+            let encoded_address_len = u16::try_from(address_len).map_err(|_| {
+                ProxyProtocolError::new(ProxyProtocolErrorKind::HeaderTooLarge)
+            })?;
             let mut bytes = Vec::with_capacity(V2_HEADER_BYTES + address_len);
             bytes.extend_from_slice(V2_SIGNATURE);
             bytes.extend_from_slice(&[0x21, family]);
-            bytes.extend_from_slice(&(address_len as u16).to_be_bytes());
+            bytes.extend_from_slice(&encoded_address_len.to_be_bytes());
             match (source.ip(), destination.ip()) {
                 (IpAddr::V4(source), IpAddr::V4(destination)) => {
                     bytes.extend_from_slice(&source.octets());
@@ -566,6 +579,11 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for PrefixedStream<S> {
     }
 }
 
+///
+/// # Errors
+///
+/// Returns an error when the header is malformed, incomplete, timed out, or interrupted by
+/// shutdown.
 pub async fn accept_stream<S>(
     stream: S,
     policy: ProxyProtocolPolicy,
@@ -591,7 +609,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let mut collected = Vec::with_capacity(MAX_V2_HEADER_BYTES);
-    let mut scratch = [0_u8; MAX_V2_HEADER_BYTES];
+    let mut scratch = vec![0_u8; MAX_V2_HEADER_BYTES];
     loop {
         let read_limit = read_limit(&collected, version).ok_or_else(|| {
             ProxyProtocolError::new(ProxyProtocolErrorKind::HeaderTooLarge)
@@ -775,9 +793,13 @@ mod tests {
         let (mut client, server) = duplex(256);
         let (shutdown_tx, mut shutdown) = watch::channel(false);
         let task = tokio::spawn(async move {
-            accept_stream(server, policy(ProxyProtocolVersion::V1), &mut shutdown)
-                .await
-                .expect("accept header")
+            Box::pin(accept_stream(
+                server,
+                policy(ProxyProtocolVersion::V1),
+                &mut shutdown,
+            ))
+            .await
+            .expect("accept header")
         });
         client
             .write_all(b"PROXY TCP4 192.0.2.10 198.51.100.20 1234 443\r\nhello")
@@ -802,7 +824,7 @@ mod tests {
     async fn header_read_timeout_is_bounded() {
         let (_client, server) = duplex(16);
         let (_shutdown_tx, mut shutdown) = watch::channel(false);
-        let error = accept_stream(server, policy(ProxyProtocolVersion::V2), &mut shutdown)
+        let error = Box::pin(accept_stream(server, policy(ProxyProtocolVersion::V2), &mut shutdown))
             .await
             .err()
             .expect("incomplete header must time out");

@@ -124,7 +124,7 @@ fn reports_bounded_rtmp_global_and_live_stats_without_stream_queries() {
     assert_eq!(live["live"].as_array().map(Vec::len), Some(1));
     assert_eq!(live["live"][0]["application"], "live");
     assert_eq!(live["live"][0]["name"], "camera");
-    assert!(!live.to_string().contains("?"));
+    assert!(!live.to_string().contains('?'));
 }
 
 #[tokio::test]

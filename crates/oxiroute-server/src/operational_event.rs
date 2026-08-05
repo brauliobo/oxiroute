@@ -37,6 +37,7 @@ const MAX_AUDIT_RECORD_BYTES: usize = 64 * 1024;
 const MAX_AUDIT_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_AUDIT_TOTAL_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_AUDIT_ROTATED_FILES: usize = 7;
+#[allow(clippy::cast_possible_truncation)]
 const AUDIT_SCAN_LIMIT_BYTES: usize = MAX_AUDIT_FILE_BYTES as usize + 1;
 const CORRELATION_ID_MAX_BYTES: usize = 64;
 
@@ -247,6 +248,7 @@ pub(crate) struct AuditMetricSnapshot {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(clippy::struct_field_names)]
 pub(crate) struct AuditLimits {
     pub max_records: usize,
     pub max_record_bytes: usize,
@@ -294,7 +296,7 @@ impl AuditLimits {
             )
             .min(MAX_AUDIT_ROTATED_FILES),
         };
-        limits.valid().then_some(limits).unwrap_or(defaults)
+        if limits.valid() { limits } else { defaults }
     }
 
     fn valid(self) -> bool {
@@ -1264,15 +1266,6 @@ pub(crate) fn audit_metrics() -> AuditMetricSnapshot {
     current_audit_store().metric_snapshot()
 }
 
-pub(crate) fn audit_page(
-    after: u64,
-    limit: usize,
-    category: Option<AuditCategory>,
-    result: Option<AuditResult>,
-) -> AuditPage {
-    current_audit_store().page(after, limit, category, result)
-}
-
 pub(crate) fn emit(event: &str, outcome: &str, revision: Option<&ConfigRevision>) {
     emit_with_context(event, outcome, revision, &AuditContext::generated());
 }
@@ -1284,7 +1277,6 @@ pub fn emit_rtmp_access(event: &str, outcome: &str) {
         "publish" => "rtmp_publish",
         "play" => "rtmp_play",
         "disconnect" => "rtmp_disconnect",
-        "access" => "rtmp_access",
         _ => "rtmp_access",
     };
     let outcome = match outcome {
@@ -1485,6 +1477,7 @@ fn publish(
     value.clone()
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn persist(
     audit_value: OperationalEvent,
     context: &AuditContext,
@@ -1572,6 +1565,7 @@ pub(crate) fn page(after: u64, limit: usize) -> EventPage {
 }
 
 /// Returns a bounded, redacted event page without exposing internal event enums.
+#[must_use]
 pub fn worker_event_page(after: u64, limit: usize) -> WorkerEventPage {
     let EventPage {
         events,

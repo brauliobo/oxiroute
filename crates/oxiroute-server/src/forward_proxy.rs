@@ -413,6 +413,7 @@ impl RequestFailure {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum ForwardCacheDecision {
     Bypass,
     Respond(Response<ForwardProxyBody>),
@@ -1022,6 +1023,7 @@ async fn purge_forward_cache_base(
 }
 
 impl ForwardHttp1ServicePlan {
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn compile_with_cache(
         service: &ForwardProxyService,
         cache: Option<Arc<HttpCachePlan>>,
@@ -1381,8 +1383,7 @@ impl ForwardHttp1ServicePlan {
                             ),
                             None => log::info!(
                                 target: "oxiroute::forward_proxy",
-                                "event=forward_tunnel protocol=h1 destination={} outcome=cancelled bytes_left_to_right=0 bytes_right_to_left=0",
-                                tunnel_destination,
+                                "event=forward_tunnel protocol=h1 destination={tunnel_destination} outcome=cancelled bytes_left_to_right=0 bytes_right_to_left=0",
                             ),
                         }
                     }
@@ -1405,6 +1406,7 @@ impl ForwardHttp1ServicePlan {
         }
     }
 
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn handle_forward_request(
         &self,
         mut request: Request<Incoming>,
@@ -1688,6 +1690,7 @@ impl ForwardHttp1ServicePlan {
         output
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn prepare_forward_cache(
         &self,
         request: &Request<Incoming>,

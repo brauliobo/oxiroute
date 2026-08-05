@@ -548,7 +548,7 @@ impl ProxyHttp for HttpReverseProxy {
         let retry = ctx.replay_retryable
             && session.body_bytes_read() == 0
             && !session.was_upgraded()
-            && session.response_written().map_or(true, |response| {
+            && session.response_written().is_none_or(|response| {
                 response.status.is_informational()
                     && response.status != StatusCode::SWITCHING_PROTOCOLS
             })
@@ -770,6 +770,7 @@ impl ProxyHttp for HttpReverseProxy {
         Ok(PreparedUpstreamRequest::Owned(Box::new(upstream_request)))
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn upstream_response_filter(
         &self,
         session: &mut Session,
@@ -829,7 +830,7 @@ impl ProxyHttp for HttpReverseProxy {
                     return Err(Error::new_up(ErrorType::InvalidHTTPHeader));
                 }
                 let length = content_length(&response.headers)
-                    .map_err(|_| Error::new_up(ErrorType::InvalidHTTPHeader))?
+                    .map_err(|()| Error::new_up(ErrorType::InvalidHTTPHeader))?
                     .and_then(|length| usize::try_from(length).ok())
                     .ok_or_else(|| Error::new_up(ErrorType::InvalidHTTPHeader))?;
                 if length > limit {
@@ -3234,7 +3235,8 @@ mod tests {
         )
         .expect("rewritten request URI");
         assert_eq!(
-            uri.path_and_query().map(|value| value.as_str()),
+            uri.path_and_query()
+                .map(http::uri::PathAndQuery::as_str),
             Some("/v1/items?id=7")
         );
     }

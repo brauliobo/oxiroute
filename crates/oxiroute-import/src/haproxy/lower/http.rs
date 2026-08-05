@@ -675,6 +675,7 @@ impl Lowerer<'_> {
         deduplicate_routes(routes)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn lower_conditional_routes(
         &mut self,
         acls: &[EffectiveValue<AclDefinition>],

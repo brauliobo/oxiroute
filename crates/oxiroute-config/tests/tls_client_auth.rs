@@ -120,8 +120,10 @@ fn client_auth_rejects_wildcard_and_duplicate_identity_rules() {
         ));
         assert!(matches!(
             load_lua(&source),
-            Err(ConfigError::InvalidTlsClientAuthDnsName { .. })
-                | Err(ConfigError::DuplicateTlsClientAuthDnsName { .. })
+            Err(
+                ConfigError::InvalidTlsClientAuthDnsName { .. }
+                    | ConfigError::DuplicateTlsClientAuthDnsName { .. },
+            )
         ));
     }
 }

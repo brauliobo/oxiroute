@@ -295,7 +295,6 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
                 )?;
             }
             ControlPhase::Reactivate => {
-                lifecycle = WorkerLifecycle::Reactivating;
                 let outcome = reactivate_active(&mut quiesced);
                 control.acknowledge(&request, outcome)?;
                 lifecycle = if matches!(outcome, ControlOutcome::Accepted) {

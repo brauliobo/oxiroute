@@ -131,6 +131,7 @@ impl UdpRuntime {
 }
 
 #[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
 fn run(
     listener_name: &str,
     reservation: ListenerReservation,
@@ -479,7 +480,7 @@ impl std::fmt::Display for SessionEnd {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn run_session(
     listener: Arc<UdpSocket>,
     client: std::net::SocketAddr,

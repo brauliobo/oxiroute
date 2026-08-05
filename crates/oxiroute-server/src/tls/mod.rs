@@ -190,6 +190,7 @@ pub fn prepare_tls(config: &Config) -> Result<PreparedTls, TlsBuildError> {
 ///
 /// Returns the same build errors as [`prepare_tls`], plus an unsupported-provider error when a
 /// configured DNS-01 provider is not registered.
+#[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 pub fn prepare_tls_with_dns01_providers(
     config: &Config,
     dns01_providers: Dns01ProviderRegistry,

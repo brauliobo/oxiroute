@@ -45,6 +45,7 @@ impl UpstreamPlan {
         }
     }
 
+    #[cfg(test)]
     pub(crate) const fn with_policy(
         selector: Arc<RoundRobinPool>,
         tls: Option<Arc<UpstreamTlsPlan>>,

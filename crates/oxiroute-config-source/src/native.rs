@@ -149,7 +149,7 @@ pub(crate) fn decode_varnish(
             "varnish_server path must not be empty",
         ));
     }
-    if source.arguments.iter().any(|argument| argument.is_empty()) {
+    if source.arguments.iter().any(String::is_empty) {
         return Err(ConfigSourceError::parse(
             format,
             "varnish_server arguments must not contain empty values",

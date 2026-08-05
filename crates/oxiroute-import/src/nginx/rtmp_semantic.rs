@@ -127,6 +127,7 @@ enum AccessOperation {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct EffectiveRtmpRecorder {
     pub name: String,
     pub name_origin: DirectiveOrigin,
@@ -348,6 +349,7 @@ impl<'a> Resolver<'a> {
         )
     }
 
+    #[allow(clippy::too_many_lines)]
     fn resolve_rtmp_block(&mut self, directive: &ExpandedDirective) -> EffectiveRtmp {
         self.resolve_block_header(directive, DirectiveContext::NginxMain, "rtmp");
         let children = directive.children.as_deref().unwrap_or_default();
@@ -704,7 +706,9 @@ impl<'a> Resolver<'a> {
                     .then(|| policy.respawn.origin.clone())
                     .flatten();
                 profile.respawn_delay_ms = policy.respawn_timeout_ms.value;
-                profile.respawn_delay_origin = policy.respawn_timeout_ms.origin.clone();
+                profile
+                    .respawn_delay_origin
+                    .clone_from(&policy.respawn_timeout_ms.origin);
                 profile
             })
             .collect();
@@ -938,6 +942,7 @@ impl<'a> Resolver<'a> {
         policy
     }
 
+    #[allow(clippy::too_many_lines)]
     fn apply_policy(
         &mut self,
         child: &ExpandedDirective,
@@ -1125,7 +1130,7 @@ impl<'a> Resolver<'a> {
                         rotation_segments: 5,
                         url_prefix: String::new(),
                     });
-                    keys.url_prefix = value.to_owned();
+                    value.clone_into(&mut keys.url_prefix);
                     policy.hls.keys.replace(Some(keys), origin);
                 }
                 _ => self.block(
@@ -1206,8 +1211,9 @@ impl<'a> Resolver<'a> {
             return;
         }
         let (mode, trigger) = match name {
-            b"exec" | b"exec_push" => (RtmpExecMode::Command, RtmpExecTrigger::Publisher),
-            b"exec_publish" => (RtmpExecMode::Command, RtmpExecTrigger::Publisher),
+            b"exec" | b"exec_push" | b"exec_publish" => {
+                (RtmpExecMode::Command, RtmpExecTrigger::Publisher)
+            }
             b"exec_publish_done" => (RtmpExecMode::Command, RtmpExecTrigger::PublishDone),
             _ => unreachable!("exec directive was matched before lowering"),
         };
@@ -1251,17 +1257,6 @@ impl<'a> Resolver<'a> {
                 E_INVALID_VALUE,
                 "application max_connections is outside canonical RTMP bounds",
             ),
-        }
-    }
-
-    fn require_disabled_policy(
-        &mut self,
-        child: &ExpandedDirective,
-        argument: &[u8],
-        message: &'static str,
-    ) {
-        if argument != b"off" {
-            self.block(child.occurrence, E_SEMANTICS_NOT_REPRESENTABLE, message);
         }
     }
 
