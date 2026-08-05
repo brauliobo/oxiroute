@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 
 use crate::{
-    Diagnostic, DiagnosticStage, E_DUPLICATE_IDENTITY, E_UNRESOLVED_REFERENCE,
-    E_UNSUPPORTED_FEATURE, Report, Severity,
+    Diagnostic, DiagnosticStage, Report, Severity, E_DUPLICATE_IDENTITY, E_UNRESOLVED_REFERENCE,
+    E_UNSUPPORTED_FEATURE,
 };
 
 use super::super::{
-    E_UNCONSUMED_DIRECTIVE, E_UNKNOWN_DIRECTIVE, E_UNSUPPORTED_FORM, ExpandedDirective,
-    OccurrenceId, SourceGraph, Word, bytes,
+    bytes, ExpandedDirective, OccurrenceId, SourceGraph, Word, E_UNCONSUMED_DIRECTIVE,
+    E_UNKNOWN_DIRECTIVE, E_UNSUPPORTED_FORM,
 };
 use super::model::{
     AccessAction, AccessListKind, AccessPolicy, AccessRule, AclDefinition, AclMatcher,

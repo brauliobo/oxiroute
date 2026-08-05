@@ -1,6 +1,6 @@
 use crate::{
-    ByteRange, Diagnostic, DiagnosticStage, E_SOURCE_LIMIT, MAX_SOURCE_BYTES,
-    MAX_TOKENS_PER_SOURCE, Report, Severity, SourceFile, SourceId, Span,
+    ByteRange, Diagnostic, DiagnosticStage, Report, Severity, SourceFile, SourceId, Span,
+    E_SOURCE_LIMIT, MAX_SOURCE_BYTES, MAX_TOKENS_PER_SOURCE,
 };
 
 use super::{E_SYNTAX, MAX_WORDS_PER_LINE};

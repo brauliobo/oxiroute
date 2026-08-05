@@ -7,15 +7,15 @@ use std::{
 };
 
 use crate::{
-    Diagnostic, DiagnosticCode, DiagnosticStage, E_INCLUDE_CYCLE, E_INCLUDE_NOT_FOUND,
-    E_SOURCE_CHANGED, E_SOURCE_IO, E_SOURCE_LIMIT, E_UNSUPPORTED_FEATURE,
-    MAX_AGGREGATE_SOURCE_BYTES, MAX_DIRECTIVES_PER_SOURCE, MAX_EXPANDED_DIRECTIVES,
-    MAX_GLOB_MATCHES, MAX_SOURCE_BYTES, MAX_SOURCE_FILES, MAX_TOKENS_PER_SOURCE, Report, Severity,
-    SourceFile, SourceId, Span,
-    source::{FileFingerprint, StableReadFailure, read_stable_file, stable_file_changed},
+    source::{read_stable_file, stable_file_changed, FileFingerprint, StableReadFailure},
+    Diagnostic, DiagnosticCode, DiagnosticStage, Report, Severity, SourceFile, SourceId, Span,
+    E_INCLUDE_CYCLE, E_INCLUDE_NOT_FOUND, E_SOURCE_CHANGED, E_SOURCE_IO, E_SOURCE_LIMIT,
+    E_UNSUPPORTED_FEATURE, MAX_AGGREGATE_SOURCE_BYTES, MAX_DIRECTIVES_PER_SOURCE,
+    MAX_EXPANDED_DIRECTIVES, MAX_GLOB_MATCHES, MAX_SOURCE_BYTES, MAX_SOURCE_FILES,
+    MAX_TOKENS_PER_SOURCE,
 };
 
-use super::{Directive, Document, E_UNSUPPORTED_FORM, Word, parser::parse_with_limits};
+use super::{parser::parse_with_limits, Directive, Document, Word, E_UNSUPPORTED_FORM};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SquidLoadLimits {
@@ -941,7 +941,7 @@ mod tests {
 
     use crate::E_SOURCE_CHANGED;
 
-    use super::{SquidLoadLimits, glob_matches, load_inner};
+    use super::{glob_matches, load_inner, SquidLoadLimits};
 
     #[test]
     fn byte_glob_supports_squid_include_shapes() {
