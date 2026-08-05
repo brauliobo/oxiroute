@@ -387,3 +387,46 @@ fn report_exposes_blockers_requirements_and_satisfied_overlays() {
         })
     }));
 }
+
+#[test]
+fn apache_report_distinguishes_missing_optional_includes_and_retains_include_stacks() {
+    let directory = tempdir().expect("Apache report directory");
+    let root = directory.path().join("httpd.conf");
+    let included = directory.path().join("site.conf");
+    fs::write(
+        &root,
+        b"IncludeOptional conf.d/missing.conf\nInclude site.conf\n",
+    )
+    .expect("Apache root");
+    fs::write(
+        &included,
+        b"Listen 127.0.0.1:18086\n<VirtualHost 127.0.0.1:18086>\n  ServerName app.example\n  ProxyPass / http://127.0.0.1:8080/\n</VirtualHost>\n",
+    )
+    .expect("Apache included source");
+
+    let report = ImportReportEnvelope::from_apache(&import_apache(&root));
+    let value: Value = serde_json::from_str(&report.to_json().expect("Apache report JSON"))
+        .expect("Apache report object");
+    assert!(
+        value["sourceGraph"]["dependencies"]
+            .as_array()
+            .expect("Apache dependencies")
+            .iter()
+            .any(|dependency| dependency["status"] == "optional_missing")
+    );
+    assert!(
+        value["candidate"]["provenance"]
+            .as_array()
+            .expect("Apache provenance")
+            .iter()
+            .any(|entry| {
+                entry["origins"].as_array().is_some_and(|origins| {
+                    origins.iter().any(|origin| {
+                        origin["includeStack"]
+                            .as_array()
+                            .is_some_and(|stack| !stack.is_empty())
+                    })
+                })
+            })
+    );
+}

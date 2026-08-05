@@ -364,7 +364,7 @@ fn is_host_case_id(id: &str) -> bool {
     };
     matches!(
         prefix,
-        "IMP" | "HN" | "HH" | "PN" | "PR" | "PI" | "CI" | "BI" | "SQ" | "HV"
+        "IMP" | "HN" | "HH" | "HA" | "PN" | "PR" | "PI" | "CI" | "BI" | "SQ" | "HV"
     ) && ordinal.len() == 2
         && ordinal.bytes().all(|byte| byte.is_ascii_digit())
 }

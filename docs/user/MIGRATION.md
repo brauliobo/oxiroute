@@ -103,11 +103,14 @@ oxiroute import apache /etc/httpd/conf/httpd.conf \
   --output preview
 ```
 
-`Listen`, exact `VirtualHost` names, static `ProxyPass`, equal-weight `balancer://` pools, bounded
-`Include`/`IncludeOptional`, and TLS certificate/key paths are covered. Rewrites, `ProxyPassMatch`,
-`ProxyPassReverse`, directory/location merges, dynamic balancer state, and unsupported modules are
-blocking. Apache source references use `apache_server "..."` in KDL or the equivalent HOCON/UCI
-object and remain read-only compositional inputs.
+`Listen`, exact `VirtualHost` names, inherited server defaults, static `ProxyPass`, equal-weight
+`balancer://` pools, deterministic `Include`/`IncludeOptional` expansion, multi-address IP/port
+matching, and TLS certificate/key paths are covered. Apache first-match ProxyPass order is lowered
+only when it is equivalent to canonical longest-prefix routing. Rewrites, `ProxyPassMatch`,
+`ProxyPassReverse`, module scripts, authentication/authorization, directory/location merges,
+dynamic balancer state, and unsupported modules are blocking. Apache source references use
+`apache_server "..."` in KDL or the equivalent HOCON/UCI object and remain read-only compositional
+inputs.
 
 ## Composition And Native References
 

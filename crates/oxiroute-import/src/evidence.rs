@@ -829,7 +829,11 @@ fn apache_graph(graph: &crate::apache::SourceGraph) -> SourceGraphEvidence {
                     requested_path: bytes_string(&edge.pattern),
                     canonical_path: None,
                     optional: Some(edge.optional),
-                    status: "failed".into(),
+                    status: if edge.optional && edge.failure.is_none() {
+                        "optional_missing".into()
+                    } else {
+                        "failed".into()
+                    },
                     span: Some(span_evidence(edge.span)),
                     failure_code: edge.failure.map(|code| code.as_str().into()),
                     fingerprint_sha256: None,
@@ -1373,6 +1377,14 @@ fn apache_blockers(report: &crate::apache::ApacheImportReport) -> Vec<ImportBloc
         .iter()
         .flat_map(|blocked| {
             blocked.diagnostic_codes.iter().map(|code| {
+                let mut origins = vec![span_evidence(blocked.origin.span)];
+                origins.extend(
+                    blocked
+                        .origin
+                        .include_stack
+                        .iter()
+                        .map(|frame| span_evidence(frame.directive_span)),
+                );
                 typed_blocker(
                     format!("apache-vhost:{}:{}", blocked.address, code.as_str()),
                     "virtual_host",
@@ -1380,7 +1392,7 @@ fn apache_blockers(report: &crate::apache::ApacheImportReport) -> Vec<ImportBloc
                     message_for_code(&report.diagnostics, *code),
                     Some(blocked.address.to_string()),
                     Vec::new(),
-                    vec![span_evidence(blocked.origin.span)],
+                    origins,
                 )
             })
         })

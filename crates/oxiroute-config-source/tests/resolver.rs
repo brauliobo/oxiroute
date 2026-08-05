@@ -111,6 +111,37 @@ fn native_apache_imports_from_kdl_hocon_and_uci() {
 }
 
 #[test]
+fn native_apache_reference_retains_include_provenance_in_its_report() {
+    let directory = tempdir().expect("temporary Apache source");
+    let root = directory.path().join("httpd.conf");
+    let included = directory.path().join("site.conf");
+    fs::write(&root, b"Include site.conf\n").expect("Apache root");
+    fs::write(
+        &included,
+        b"Listen 127.0.0.1:18087\n<VirtualHost 127.0.0.1:18087>\n  ServerName app.example.test\n  ProxyPass / http://127.0.0.1:9000/\n</VirtualHost>\n",
+    )
+    .expect("Apache included source");
+    let source_path = directory.path().join("host.kdl");
+    let source = format!("apache_server {root:?}\n");
+
+    let resolved = resolve_source(&source_path, source.as_bytes()).expect("resolved Apache KDL");
+    let reference = &resolved.native_references[0];
+    assert_eq!(reference.evidence.source.product, "apache");
+    assert!(reference.evidence.candidate.provenance.iter().any(|entry| {
+        entry
+            .origins
+            .iter()
+            .any(|origin| !origin.include_stack.is_empty())
+    }));
+    assert!(
+        resolved
+            .dependencies
+            .iter()
+            .any(|dependency| dependency == &fs::canonicalize(&included).unwrap())
+    );
+}
+
+#[test]
 fn hocon_and_uci_import_a_complete_squid_forward_proxy_root() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../oxiroute-import/tests/fixtures/squid/hostrouter-sanitized.conf");

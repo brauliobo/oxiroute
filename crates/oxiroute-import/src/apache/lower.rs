@@ -120,7 +120,12 @@ impl Lowerer {
                 .resolution
                 .virtual_hosts
                 .iter()
-                .filter(|virtual_host| virtual_host.address == listen.address)
+                .filter(|virtual_host| {
+                    virtual_host
+                        .addresses
+                        .iter()
+                        .any(|address| socket_addresses_overlap(*address, listen.address))
+                })
                 .cloned()
                 .collect::<Vec<_>>();
             if virtual_hosts.is_empty() {
@@ -315,18 +320,48 @@ impl Lowerer {
         let host_selectors = virtual_host
             .names
             .iter()
-            .map(|name| Some(name.selector.clone()))
+            .map(Some)
             .chain(default_server.then_some(None))
             .collect::<Vec<_>>();
+        let preserve_origin = virtual_host.preserve_host_origin.as_ref().map(|origin| {
+            self.origin(
+                origin,
+                if virtual_host.preserve_host_inherited {
+                    ProvenanceRole::Inherited
+                } else {
+                    ProvenanceRole::Value
+                },
+            )
+        });
         for proxy in &virtual_host.proxy_passes {
             let (_pool_key, pool_name, pool_origins) = self.pool_for(proxy)?;
-            let proxy_origin = self.origin(&proxy.origin, ProvenanceRole::Value);
+            let proxy_origin = self.origin(
+                &proxy.origin,
+                if proxy.inherited {
+                    ProvenanceRole::Inherited
+                } else {
+                    ProvenanceRole::Value
+                },
+            );
             let mut route_sources = vec![vhost_origin.clone(), proxy_origin.clone()];
             route_sources.extend(pool_origins.clone());
+            if let Some(preserve_origin) = &preserve_origin {
+                route_sources.push(preserve_origin.clone());
+            }
             origins.extend(pool_origins);
             for host in &host_selectors {
+                let host_selector = host.map(|name| name.selector.clone());
+                let mut host_route_sources = route_sources.clone();
+                if let Some(name) = host {
+                    let role = if name.inherited {
+                        ProvenanceRole::Inherited
+                    } else {
+                        ProvenanceRole::Value
+                    };
+                    host_route_sources.push(self.origin(&name.origin, role));
+                }
                 routes.push(HttpRoute {
-                    host: host.clone(),
+                    host: host_selector,
                     path: HttpPathSelector::RawPrefix {
                         value: proxy.path.clone(),
                     },
@@ -354,7 +389,7 @@ impl Lowerer {
                         },
                     },
                 });
-                route_origins.push(route_sources.clone());
+                route_origins.push(host_route_sources);
             }
         }
         Some(LoweredVirtualHost {
@@ -382,7 +417,14 @@ impl Lowerer {
                 .map_or_else(Vec::new, |pool| pool.origins.clone());
             return Some((key, name.clone(), origins));
         }
-        let proxy_origin = self.origin(&proxy.origin, ProvenanceRole::Reference);
+        let proxy_origin = self.origin(
+            &proxy.origin,
+            if proxy.inherited {
+                ProvenanceRole::Inherited
+            } else {
+                ProvenanceRole::Reference
+            },
+        );
         let (name, pool, mut origins) = match &proxy.target {
             ProxyTarget::Direct {
                 scheme,
@@ -533,6 +575,7 @@ impl Lowerer {
         Some((key, name, origins))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn lower_tls(
         &mut self,
         virtual_hosts: &[EffectiveVirtualHost],
@@ -552,8 +595,32 @@ impl Lowerer {
             ) else {
                 continue;
             };
-            let chain_origin = self.origin(&chain.origin, ProvenanceRole::Value);
-            let key_origin = self.origin(&key.origin, ProvenanceRole::Value);
+            if let Some(engine_origin) = &virtual_host.tls.engine_origin {
+                origins.push(self.origin(
+                    engine_origin,
+                    if virtual_host.tls.engine_inherited {
+                        ProvenanceRole::Inherited
+                    } else {
+                        ProvenanceRole::Value
+                    },
+                ));
+            }
+            let chain_origin = self.origin(
+                &chain.origin,
+                if chain.inherited {
+                    ProvenanceRole::Inherited
+                } else {
+                    ProvenanceRole::Value
+                },
+            );
+            let key_origin = self.origin(
+                &key.origin,
+                if key.inherited {
+                    ProvenanceRole::Inherited
+                } else {
+                    ProvenanceRole::Value
+                },
+            );
             origins.extend([chain_origin.clone(), key_origin.clone()]);
             for (kind, path, origin) in [
                 ("certificate", &chain.path, chain_origin.clone()),
@@ -596,6 +663,14 @@ impl Lowerer {
                 if !certificate.dns_names.contains(&name.certificate_name) {
                     certificate.dns_names.push(name.certificate_name.clone());
                 }
+                origins.push(self.origin(
+                    &name.origin,
+                    if name.inherited {
+                        ProvenanceRole::Inherited
+                    } else {
+                        ProvenanceRole::Value
+                    },
+                ));
             }
         }
         let Some(default_certificate) = names.first().cloned() else {
@@ -864,7 +939,7 @@ fn proxy_order_is_canonical(
                         E_SEMANTICS_NOT_REPRESENTABLE,
                         Severity::Error,
                         DiagnosticStage::Lower,
-                        "ordered Apache ProxyPass rules would change under canonical longest-prefix routing",
+                        "ordered Apache ProxyPass first-match rules would change under canonical longest-prefix routing",
                     )
                     .with_primary_span(origin.span)
                     .with_related_span(first_origin.span, "earlier ProxyPass rule is here")
@@ -905,4 +980,11 @@ fn apache_origin(
         span: origin.span,
         include_stack: origin.provenance.include_stack.clone(),
     }
+}
+
+fn socket_addresses_overlap(first: std::net::SocketAddr, second: std::net::SocketAddr) -> bool {
+    first.port() == second.port()
+        && (first.ip() == second.ip()
+            || first.ip().is_unspecified()
+            || second.ip().is_unspecified())
 }

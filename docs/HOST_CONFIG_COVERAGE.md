@@ -79,6 +79,12 @@ Status values are `covered`, `partial`, `missing`, `external`, and `inactive`.
 | HH-12 | user/chroot/daemon process settings | external | Deployment unit or container owns these settings. |
 | HH-13 | Positive exact Host plus path-prefix ACL conjunction | partial | The non-audited host-shaped fixture lowers one `hdr(host) -i` and one case-sensitive `path_beg` condition to the existing canonical host-and-path route model with both ACL source spans retained. Runtime route precedence is already covered; dynamic samples, negation, duplicate criteria, and wider conjunctions remain fail-closed. |
 
+## Apache httpd cases
+
+| ID | Effective behavior | Status | Notes |
+| --- | --- | --- | --- |
+| HA-01 | Inherited defaults, multi-address virtual hosts, exact case-insensitive host authorities, and source-ordered ProxyPass rules | partial | Canonical lowering, include provenance, optional-include reporting, and CLI/native-reference evidence are covered. Apache first-match rules are lowered only when the existing canonical longest-prefix runtime is equivalent; unsafe overlaps remain blocking. |
+
 ## `phoenix.lan` nginx cases
 
 | ID | Effective behavior | Status | Notes |

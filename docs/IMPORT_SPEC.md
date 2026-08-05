@@ -123,12 +123,17 @@ activation of standalone import reports. Restricted Lua cannot declare native re
   canonical memory/disk cache timeline. VMODs, dynamic VCL, custom subroutines, invalidation,
   synthetic responses, and mismatched invocation/cache semantics remain blocking.
 - Apache httpd has a bounded byte-preserving source/include graph, parser, semantic resolver,
-  occurrence ledger, source-aware provenance, and strict canonical lowering for explicit IP
-  listeners, exact virtual-host names, static HTTP/HTTPS ProxyPass destinations, equal-weight
-  `balancer://` pools, and certificate/key path references. Include expansion is deterministic and
-  rechecked before finalization. Unsupported rewrites, regex proxying, directory/location merges,
-  ProxyPassReverse response rewriting, dynamic balancer state, and unsupported modules block the
-  affected candidate instead of disappearing.
+  occurrence ledger, source-aware provenance, and strict canonical lowering for explicit IP or
+  bounded wildcard listeners, multi-address virtual hosts, exact host authorities, inherited
+  server defaults, static HTTP/HTTPS ProxyPass destinations, equal-weight `balancer://` pools, and
+  certificate/key path references. Include and IncludeOptional expansion is byte-sorted,
+  deterministic, and rechecked before finalization; a missing optional match is recorded as
+  `optional_missing` without becoming an error. Global server directives are merged into each
+  virtual host with inherited provenance. Apache's first matching ProxyPass order is retained only
+  when it is equivalent to the canonical runtime's longest-prefix selector; unsafe overlaps block
+  the candidate. Unsupported rewrites, regex proxying, directory/location merges, module scripts,
+  authentication/authorization, ProxyPassReverse response rewriting, dynamic balancer state, and
+  unsupported modules block the affected candidate instead of disappearing.
 
 Coverage manifests and importer tests enforce that a candidate cannot finalize while any blocking
 error remains and that no fallback service or route is invented.
@@ -267,21 +272,24 @@ HAProxy `-f` file/directory ordering and named `defaults from` inheritance MUST 
 
 Target support:
 
-- `Listen`, `<VirtualHost>`, `ServerName`, and exact `ServerAlias`.
+- `Listen`, `<VirtualHost>` with explicit IP/port identities, `ServerName`, and exact `ServerAlias`.
 - `SSLEngine`, certificate file, and key file directives.
 - Static HTTP/HTTPS `ProxyPass`, `balancer://`, and `BalancerMember`.
 - Equal-weight `byrequests`.
-- `Include` and `IncludeOptional` ordering.
+- `Include` and `IncludeOptional` ordering, including silent missing optional matches.
+- Inherited server defaults for exact `ServerName`, `ProxyPreserveHost`, TLS paths, rewrite-off
+  state, and static `ProxyPass` rules.
 - Audited `LoadModule` deployment requirements.
 
 Blockers:
 
-- `ProxyPassMatch`, `ProxyPassReverse`, rewrites, complex `<Location>`/directory merges, and
-  balancer-manager state.
+- `ProxyPassMatch`, `ProxyPassReverse`, rewrites, module scripts, authentication/authorization,
+  complex `<Location>`/directory merges, and balancer-manager state.
 - Generic TCP/UDP because stock httpd does not provide equivalent listeners.
 
-The first matching `ProxyPass` behavior MUST not be converted into nginx-style longest
-prefix behavior.
+The first matching `ProxyPass` behavior MUST not be converted into nginx-style longest prefix
+behavior. The importer rejects an order whose result would differ from the canonical runtime;
+descending-prefix source order is the exact lowered subset.
 
 ## Squid
 

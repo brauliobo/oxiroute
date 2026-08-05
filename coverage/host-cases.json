@@ -306,6 +306,13 @@
     },
 
     {
+      "id": "HA-01",
+      "status": "partial",
+      "gates": { "canonical": true, "runtime": false, "failure": true, "tests": true, "native_lowering": true },
+      "evidence": ["crates/oxiroute-import/tests/apache.rs#inherited_defaults_and_multi_address_vhosts_lower_with_include_provenance", "crates/oxiroute-import/tests/apache.rs#apache_host_case_keeps_explicit_port_without_widening_the_authority", "crates/oxiroute-import/tests/apache.rs#ordered_proxy_passes_finalize_only_when_first_match_is_runtime_equivalent", "crates/oxiroute-server/tests/cli.rs#apache_cli_report_exposes_deterministic_include_provenance", "crates/oxiroute-config-source/tests/resolver.rs#native_apache_reference_retains_include_provenance_in_its_report"]
+    },
+
+    {
       "id": "PI-01",
       "status": "covered",
       "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": true },

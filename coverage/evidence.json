@@ -125,7 +125,17 @@
         "crates/oxiroute-import/tests/apache.rs#lowers_tls_paths_as_value_bearing_certificate_material",
         "crates/oxiroute-import/tests/apache.rs#unsupported_rewrite_blocks_finalization",
         "crates/oxiroute-import/tests/apache.rs#missing_root_is_reported_without_a_candidate",
-        "crates/oxiroute-config-source/tests/resolver.rs#native_apache_imports_from_kdl_hocon_and_uci"
+        "crates/oxiroute-import/tests/apache.rs#parser_retains_nested_directives_and_continuation_words",
+        "crates/oxiroute-import/tests/apache.rs#include_globs_are_byte_sorted_and_missing_optional_includes_are_silent",
+        "crates/oxiroute-import/tests/apache.rs#inherited_defaults_and_multi_address_vhosts_lower_with_include_provenance",
+        "crates/oxiroute-import/tests/apache.rs#apache_host_case_keeps_explicit_port_without_widening_the_authority",
+        "crates/oxiroute-import/tests/apache.rs#ordered_proxy_passes_finalize_only_when_first_match_is_runtime_equivalent",
+        "crates/oxiroute-import/tests/apache.rs#static_balancer_member_policy_rejects_weight_and_runtime_options",
+        "crates/oxiroute-import/tests/apache.rs#directory_scripts_auth_and_response_rewriting_fail_closed",
+        "crates/oxiroute-import/tests/import_report.rs#apache_report_distinguishes_missing_optional_includes_and_retains_include_stacks",
+        "crates/oxiroute-config-source/tests/resolver.rs#native_apache_imports_from_kdl_hocon_and_uci",
+        "crates/oxiroute-config-source/tests/resolver.rs#native_apache_reference_retains_include_provenance_in_its_report",
+        "crates/oxiroute-server/tests/cli.rs#apache_cli_report_exposes_deterministic_include_provenance"
       ]
     },
     {
