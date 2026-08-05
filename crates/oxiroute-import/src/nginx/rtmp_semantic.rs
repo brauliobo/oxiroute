@@ -1,6 +1,8 @@
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf};
 
-use oxiroute_config::{RtmpAclAction, RtmpRecordMask};
+use oxiroute_config::{
+    RtmpAclAction, RtmpHlsFragmentNaming, RtmpHlsKeyPolicy, RtmpHlsPolicy, RtmpRecordMask,
+};
 use oxiroute_rtmp::{DirectiveContext, DirectiveError, validate_directive};
 
 use crate::{
@@ -21,6 +23,11 @@ const MAX_OUTBOUND_CHUNK_SIZE: u32 = 1_048_576;
 const MAX_APPLICATION_CONNECTIONS: u64 = 100_000;
 const MAX_RECORDING_FILE_BYTES: u64 = 1_099_511_627_776;
 const MAX_RECORDING_FRAME_COUNT: u64 = 1_000_000_000;
+const DEFAULT_HLS_SEGMENT_DURATION_MS: u64 = 2_000;
+const DEFAULT_HLS_MAX_SEGMENT_DURATION_MS: u64 = 10_000;
+const DEFAULT_HLS_PLAYLIST_LENGTH_MS: u64 = 30_000;
+const MAX_HLS_DURATION_MS: u64 = 120_000;
+const MAX_HLS_PLAYLIST_LENGTH_MS: u64 = 86_400_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RtmpResolution {
@@ -81,6 +88,7 @@ pub struct EffectiveRtmpPolicy {
     pub play_access: Vec<EffectiveRtmpAccessRule>,
     pub max_connections: Option<u64>,
     pub max_connections_origin: Option<DirectiveOrigin>,
+    pub hls: Option<RtmpHlsPolicy>,
     pub recorders: Vec<EffectiveRtmpRecorder>,
 }
 
@@ -151,6 +159,20 @@ struct Policy {
     max_frames: Setting<Option<u64>>,
     notify: Setting<bool>,
     interval: Setting<Option<u64>>,
+    hls: HlsPolicy,
+}
+
+#[derive(Clone, Debug)]
+struct HlsPolicy {
+    enabled: Setting<bool>,
+    root_directory: Setting<Option<PathBuf>>,
+    segment_duration_ms: Setting<u64>,
+    max_segment_duration_ms: Setting<u64>,
+    playlist_length_ms: Setting<u64>,
+    fragment_naming: Setting<RtmpHlsFragmentNaming>,
+    nested: Setting<bool>,
+    cleanup: Setting<bool>,
+    keys: Setting<Option<RtmpHlsKeyPolicy>>,
 }
 
 #[derive(Clone, Debug)]
@@ -185,6 +207,23 @@ impl Default for Policy {
             max_frames: Setting::new(None),
             notify: Setting::new(false),
             interval: Setting::new(None),
+            hls: HlsPolicy::default(),
+        }
+    }
+}
+
+impl Default for HlsPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: Setting::new(false),
+            root_directory: Setting::new(None),
+            segment_duration_ms: Setting::new(DEFAULT_HLS_SEGMENT_DURATION_MS),
+            max_segment_duration_ms: Setting::new(DEFAULT_HLS_MAX_SEGMENT_DURATION_MS),
+            playlist_length_ms: Setting::new(DEFAULT_HLS_PLAYLIST_LENGTH_MS),
+            fragment_naming: Setting::new(RtmpHlsFragmentNaming::Sequential),
+            nested: Setting::new(false),
+            cleanup: Setting::new(true),
+            keys: Setting::new(None),
         }
     }
 }
@@ -626,9 +665,44 @@ impl<'a> Resolver<'a> {
                 play_access: policy.play_access.clone(),
                 max_connections: policy.max_connections.value,
                 max_connections_origin: policy.max_connections.origin,
+                hls: self.finish_hls_policy(&policy.hls, directive.occurrence),
                 recorders,
             },
         }
+    }
+
+    fn finish_hls_policy(
+        &mut self,
+        policy: &HlsPolicy,
+        occurrence: OccurrenceId,
+    ) -> Option<RtmpHlsPolicy> {
+        if !policy.enabled.value {
+            return None;
+        }
+        let Some(root_directory) = policy.root_directory.value.clone() else {
+            self.block(
+                occurrence,
+                E_SEMANTICS_NOT_REPRESENTABLE,
+                "hls on requires an absolute hls_path",
+            );
+            return None;
+        };
+        Some(RtmpHlsPolicy {
+            root_directory,
+            segment_duration_ms: policy.segment_duration_ms.value,
+            max_segment_duration_ms: policy.max_segment_duration_ms.value,
+            playlist_length_ms: policy.playlist_length_ms.value,
+            fragment_naming: policy.fragment_naming.value,
+            nested: policy.nested.value,
+            cleanup: policy.cleanup.value,
+            variants: Vec::new(),
+            keys: policy.keys.value.clone(),
+            max_segment_bytes: 8 * 1024 * 1024,
+            max_queue_messages: 256,
+            max_storage_bytes: 512 * 1024 * 1024,
+            max_storage_files: 10_000,
+            max_active_streams: 1_024,
+        })
     }
 
     fn resolve_recorder(
@@ -889,6 +963,113 @@ impl<'a> Resolver<'a> {
                 ),
             },
             b"record_notify" => policy.notify.replace(argument == b"on", origin),
+            b"hls" => policy.hls.enabled.replace(argument == b"on", origin),
+            b"hls_path" => match secure_recording_root(argument) {
+                Some(path) => policy.hls.root_directory.replace(Some(path), origin),
+                None => self.block(
+                    child.occurrence,
+                    E_INVALID_VALUE,
+                    "hls_path must be secure absolute UTF-8 directory syntax",
+                ),
+            },
+            b"hls_fragment" => match parse_nginx_milliseconds(argument) {
+                Some(value) if (1..=MAX_HLS_DURATION_MS).contains(&value) => {
+                    policy.hls.segment_duration_ms.replace(value, origin);
+                }
+                _ => self.block(
+                    child.occurrence,
+                    E_INVALID_VALUE,
+                    "hls_fragment is outside canonical millisecond bounds",
+                ),
+            },
+            b"hls_max_fragment" => match parse_nginx_milliseconds(argument) {
+                Some(value) if (1..=MAX_HLS_DURATION_MS).contains(&value) => {
+                    policy.hls.max_segment_duration_ms.replace(value, origin);
+                }
+                _ => self.block(
+                    child.occurrence,
+                    E_INVALID_VALUE,
+                    "hls_max_fragment is outside canonical millisecond bounds",
+                ),
+            },
+            b"hls_playlist_length" => match parse_nginx_milliseconds(argument) {
+                Some(value) if (1..=MAX_HLS_PLAYLIST_LENGTH_MS).contains(&value) => {
+                    policy.hls.playlist_length_ms.replace(value, origin);
+                }
+                _ => self.block(
+                    child.occurrence,
+                    E_INVALID_VALUE,
+                    "hls_playlist_length is outside canonical millisecond bounds",
+                ),
+            },
+            b"hls_nested" => policy.hls.nested.replace(argument == b"on", origin),
+            b"hls_cleanup" => policy.hls.cleanup.replace(argument == b"on", origin),
+            b"hls_fragment_naming" => {
+                let naming = match argument.as_slice() {
+                    b"sequential" => Some(RtmpHlsFragmentNaming::Sequential),
+                    b"timestamp" => Some(RtmpHlsFragmentNaming::Timestamp),
+                    b"system" => Some(RtmpHlsFragmentNaming::System),
+                    _ => None,
+                };
+                if let Some(naming) = naming {
+                    policy.hls.fragment_naming.replace(naming, origin);
+                } else {
+                    self.block(
+                        child.occurrence,
+                        E_INVALID_VALUE,
+                        "hls_fragment_naming is not a supported canonical value",
+                    );
+                }
+            }
+            b"hls_keys" => {
+                if argument == b"on" {
+                    let current_url_prefix = policy
+                        .hls
+                        .keys
+                        .value
+                        .as_ref()
+                        .map_or_else(String::new, |keys| keys.url_prefix.clone());
+                    policy.hls.keys.replace(
+                        Some(RtmpHlsKeyPolicy {
+                            rotation_segments: 5,
+                            url_prefix: current_url_prefix,
+                        }),
+                        origin,
+                    );
+                } else {
+                    policy.hls.keys.replace(None, origin);
+                }
+            }
+            b"hls_key_url" => match std::str::from_utf8(argument) {
+                Ok(value) if value.is_ascii() => {
+                    let mut keys = policy.hls.keys.value.clone().unwrap_or(RtmpHlsKeyPolicy {
+                        rotation_segments: 5,
+                        url_prefix: String::new(),
+                    });
+                    keys.url_prefix = value.to_owned();
+                    policy.hls.keys.replace(Some(keys), origin);
+                }
+                _ => self.block(
+                    child.occurrence,
+                    E_INVALID_VALUE,
+                    "hls_key_url must be ASCII",
+                ),
+            },
+            b"hls_fragments_per_key" => match parse_u64(argument) {
+                Some(value) if value <= 100_000 => {
+                    let mut keys = policy.hls.keys.value.clone().unwrap_or(RtmpHlsKeyPolicy {
+                        rotation_segments: 5,
+                        url_prefix: String::new(),
+                    });
+                    keys.rotation_segments = value.max(1);
+                    policy.hls.keys.replace(Some(keys), origin);
+                }
+                _ => self.block(
+                    child.occurrence,
+                    E_INVALID_VALUE,
+                    "hls_fragments_per_key is outside canonical bounds",
+                ),
+            },
             _ => unreachable!("supported policy name was matched"),
         }
     }
@@ -1249,6 +1430,17 @@ fn is_supported_policy(name: &[u8]) -> bool {
             | b"record_max_size"
             | b"record_max_frames"
             | b"record_notify"
+            | b"hls"
+            | b"hls_fragment"
+            | b"hls_max_fragment"
+            | b"hls_path"
+            | b"hls_playlist_length"
+            | b"hls_nested"
+            | b"hls_fragment_naming"
+            | b"hls_cleanup"
+            | b"hls_keys"
+            | b"hls_key_url"
+            | b"hls_fragments_per_key"
     )
 }
 

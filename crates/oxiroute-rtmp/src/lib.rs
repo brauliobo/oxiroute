@@ -7,6 +7,8 @@ mod client;
 mod directives;
 mod flv;
 mod live;
+mod media_segmenter;
+mod media_storage;
 mod nginx;
 mod recording_path;
 mod recording_runtime;
@@ -40,6 +42,13 @@ pub use live::{
     LiveHub, LiveHubError, LiveHubLimits, LiveHubStats, MediaEvent, MediaEventError,
     MediaEventKind, PlaybackSubscription, PublishReport, PublisherIncarnation, PublisherLease,
     VideoCodec, VideoCodecIdentifier,
+};
+pub use media_segmenter::{
+    HlsFragmentNaming, HlsKeyConfig, HlsOutputConfig, HlsVariant, MediaApplication, MediaCatalog,
+    MediaEnqueueResult, MediaObject, MediaOutputError, MediaPublisher,
+};
+pub use media_storage::{
+    MAX_MEDIA_PATH_BYTES, MediaStore, MediaStoreError, MediaStoreLimits, MediaStoreStats,
 };
 pub use nginx::{NginxDirective, NginxParseError, parse_nginx_config};
 pub use recording_path::{

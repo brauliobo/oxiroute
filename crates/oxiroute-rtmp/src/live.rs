@@ -442,6 +442,13 @@ pub enum LiveHubError {
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct PublisherIncarnation(u64);
 
+impl PublisherIncarnation {
+    #[must_use]
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
+
 /// Independent bounded live-stream fanout state.
 #[derive(Clone)]
 pub struct LiveHub {

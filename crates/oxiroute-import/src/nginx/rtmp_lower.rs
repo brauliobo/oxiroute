@@ -291,6 +291,7 @@ impl Lowerer {
                 protocol: Protocol::Rtmp,
                 service: Some(service_name.clone()),
                 tls_profile: None,
+                proxy_protocol: None,
                 max_connections: None,
                 downstream_timeouts: DownstreamTimeoutPolicy::default(),
             });
@@ -383,6 +384,13 @@ impl Lowerer {
                 self.lower_recorder(recorder, &application_path, recorder_index)
             })
             .collect();
+        let hls = application.policy.hls.clone().map(|hls| {
+            self.provenance.push(CanonicalProvenance {
+                path: format!("{application_path}/hls"),
+                origins: vec![application.origin.clone()],
+            });
+            hls
+        });
         RtmpApplication {
             name,
             live: application.policy.live,
@@ -439,6 +447,8 @@ impl Lowerer {
                 max_queue_bytes_per_subscriber: 8 * 1024 * 1024,
             },
             vod: None,
+            hls,
+            dash: None,
             recorders,
         }
     }

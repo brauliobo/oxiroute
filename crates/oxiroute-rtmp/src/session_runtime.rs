@@ -6,23 +6,24 @@ use std::{
 };
 
 use crate::{
-    CatalogError, LiveHub, LiveHubError, PublisherLease, RecorderDefinition, RtmpCallbackPolicy,
-    RtmpPullTarget, RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry, SessionId,
-    StreamKey, VodApplication, VodError,
     recording_runtime::{
         RecorderController, RecorderReaperHandle, RecorderReaperOwner, RecorderShutdownControl,
         RtmpRecorderShutdown,
     },
     relay::{RtmpPullController, RtmpRelayController},
+    CatalogError, LiveHub, LiveHubError, MediaApplication, PublisherLease, RecorderDefinition,
+    RtmpCallbackPolicy, RtmpPullTarget, RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart,
+    RtmpRegistry, SessionId, StreamKey, VodApplication, VodError,
 };
 use rml_rtmp::messages::Amf0Limits;
 
 use super::{
-    MAX_INBOUND_AMF0_CONTAINER_ENTRIES, MAX_INBOUND_AMF0_DEPTH, MAX_INBOUND_AMF0_STRING_BYTES,
-    MAX_INBOUND_AMF0_VALUES, MAX_INBOUND_CHUNK_SIZE, MAX_INBOUND_MESSAGE_SIZE, RtmpSession,
     playback::PlaybackSession,
     publish::{PublishSession, PublisherOutputs},
     vod_playback::{VodPlaybackSession, VodPlaybackStart},
+    RtmpSession, MAX_INBOUND_AMF0_CONTAINER_ENTRIES, MAX_INBOUND_AMF0_DEPTH,
+    MAX_INBOUND_AMF0_STRING_BYTES, MAX_INBOUND_AMF0_VALUES, MAX_INBOUND_CHUNK_SIZE,
+    MAX_INBOUND_MESSAGE_SIZE,
 };
 
 pub const RTMP_STALE_PUBLISHER_THRESHOLD_MS: u64 = 30_000;
@@ -394,6 +395,7 @@ pub struct RtmpApplication {
     pull_targets: Arc<Vec<RtmpPullTarget>>,
     callbacks: Arc<RtmpCallbackPolicy>,
     vod: Option<Arc<VodApplication>>,
+    media: Option<Arc<MediaApplication>>,
     recorders: Arc<Vec<RtmpRecorderPolicy>>,
 }
 
@@ -414,6 +416,7 @@ impl RtmpApplication {
             pull_targets: Arc::new(Vec::new()),
             callbacks: Arc::new(RtmpCallbackPolicy::default()),
             vod: None,
+            media: None,
             recorders: Arc::new(Vec::new()),
         }
     }
@@ -439,6 +442,7 @@ impl RtmpApplication {
             pull_targets: Arc::new(Vec::new()),
             callbacks: Arc::new(RtmpCallbackPolicy::default()),
             vod: None,
+            media: None,
             recorders: Arc::new(recorders.into_iter().collect()),
         }
     }
@@ -466,6 +470,7 @@ impl RtmpApplication {
             pull_targets: Arc::new(Vec::new()),
             callbacks: Arc::new(RtmpCallbackPolicy::default()),
             vod: None,
+            media: None,
             recorders: Arc::new(recorders.into_iter().collect()),
         }
     }
@@ -496,6 +501,12 @@ impl RtmpApplication {
     #[must_use]
     pub fn with_vod(mut self, vod: Option<Arc<VodApplication>>) -> Self {
         self.vod = vod;
+        self
+    }
+
+    #[must_use]
+    pub fn with_media(mut self, media: Option<Arc<MediaApplication>>) -> Self {
+        self.media = media;
         self
     }
 
@@ -543,6 +554,11 @@ impl RtmpApplication {
     #[must_use]
     pub fn vod(&self) -> Option<Arc<VodApplication>> {
         self.vod.clone()
+    }
+
+    #[must_use]
+    pub fn media(&self) -> Option<Arc<MediaApplication>> {
+        self.media.clone()
     }
 
     #[must_use]
@@ -914,12 +930,20 @@ impl RtmpServiceRuntime {
             .application(&key.application)
             .and_then(RtmpApplication::hub)
             .unwrap_or_else(|| self.hub.clone());
+        let media = self
+            .application(&key.application)
+            .and_then(RtmpApplication::media);
         let role_lease = self
             .admission(&key.application)
             .acquire(SessionCounter::Publishers)
             .map_err(PublisherRoleError::SessionLimit)?;
         let _transaction = hub.lock_roles();
         let lease = self.acquire_publisher_lease(&hub, &key, at_unix_ms)?;
+        // Media output is best-effort; storage or worker failures must not reject RTMP publish.
+        let media_publisher = media
+            .as_ref()
+            .and_then(|media| media.attach(&key, lease.incarnation()).ok())
+            .flatten();
         let policies = self
             .application(&key.application)
             .map_or(&[][..], RtmpApplication::recorder_policies);
@@ -1000,6 +1024,7 @@ impl RtmpServiceRuntime {
             PublisherOutputs {
                 recorders,
                 relays,
+                media: media_publisher,
                 session_lease: role_lease,
             },
         ))
@@ -1190,10 +1215,14 @@ mod tests {
     use std::{
         sync::{Arc, Barrier},
         thread,
+        time::Duration,
     };
 
     use super::*;
-    use crate::{LiveHubLimits, MediaEvent, RtmpCapabilities};
+    use crate::{
+        HlsFragmentNaming, HlsOutputConfig, LiveHubLimits, MediaApplication, MediaEvent,
+        MediaStore, MediaStoreLimits, RtmpCapabilities,
+    };
 
     #[test]
     fn publisher_reconnect_never_exposes_split_hub_and_catalog_ownership() {
@@ -1460,5 +1489,58 @@ mod tests {
             }))
         ));
         drop(viewer);
+    }
+
+    #[test]
+    fn media_store_limit_does_not_reject_publisher() {
+        let directory = tempfile::tempdir().expect("temporary media directory");
+        let store = Arc::new(
+            MediaStore::open(
+                directory.path(),
+                MediaStoreLimits {
+                    max_bytes: 1024 * 1024,
+                    max_files: 16,
+                    max_active_streams: 1,
+                    max_file_bytes: 1024 * 1024,
+                },
+            )
+            .expect("media store"),
+        );
+        let media = Arc::new(MediaApplication::new(Some(Arc::new(HlsOutputConfig {
+            store,
+            segment_duration: Duration::from_secs(1),
+            max_segment_duration: Duration::from_secs(2),
+            playlist_length: Duration::from_secs(6),
+            naming: HlsFragmentNaming::Sequential,
+            nested: false,
+            cleanup: true,
+            variants: Vec::new(),
+            keys: None,
+            max_segment_bytes: 1024 * 1024,
+            max_queue_messages: 8,
+        }))));
+        let application = RtmpApplication::new("broadcast", true, true).with_media(Some(media));
+        let runtime = RtmpServiceRuntime::new(
+            "live",
+            Arc::new(RtmpRegistry::new(RtmpCapabilities {
+                live_ingest: true,
+                manual_recording: false,
+            })),
+            LiveHub::new(LiveHubLimits::default()),
+            RtmpSessionPolicy::new([application]),
+        );
+
+        let first_key = StreamKey::new("live", "broadcast", "first");
+        let first = runtime
+            .acquire_publisher_role(first_key, SessionId::new(), 1)
+            .expect("first publisher");
+        let second_key = StreamKey::new("live", "broadcast", "second");
+        let second = runtime
+            .acquire_publisher_role(second_key.clone(), SessionId::new(), 2)
+            .expect("media failure must not reject publisher");
+
+        assert_eq!(runtime.publisher_presence(&second_key), (true, true));
+        drop(second);
+        drop(first);
     }
 }

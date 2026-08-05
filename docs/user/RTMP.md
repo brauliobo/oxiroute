@@ -1,7 +1,7 @@
 # RTMP Guide
 
-OxiRoute's current RTMP slice is a bounded live publish/play service with runtime visibility and
-legacy AVC/AAC FLV recording. It is not complete nginx-rtmp compatibility.
+OxiRoute's current RTMP slice is a bounded live publish/play service with runtime visibility,
+legacy AVC/AAC FLV recording, and HLS transmuxing. It is not complete nginx-rtmp compatibility.
 
 ## Configure A Live Application
 
@@ -120,6 +120,49 @@ an exclusive advisory lock while the segment is active. `max_size` and `max_fram
 segment; omission means no per-segment limit. Notifications retain only the latest bounded
 start/stop/failure outcome in the recorder snapshot.
 
+## Add HLS Output
+
+An application may publish bounded HLS output for legacy H.264/AAC streams. The worker uses a
+bounded asynchronous queue, writes MPEG-TS fragments atomically, and retains only the configured
+playlist/storage window. Multiple variants are metadata variants of the same transmuxed media; no
+transcoding process is started.
+
+```kdl
+(object)hls {
+  root_directory "/var/lib/oxiroute/hls"
+  segment_duration_ms 2000
+  max_segment_duration_ms 10000
+  playlist_length_ms 30000
+  fragment_naming "sequential"
+  nested #false
+  cleanup #true
+  max_segment_bytes 8388608
+  max_queue_messages 256
+  max_storage_bytes 536870912
+  max_storage_files 10000
+  max_active_streams 1024
+  (array)variants {
+    (object)- {
+      name "main"
+      bandwidth 1000000
+      codecs "avc1.42e01e,mp4a.40.2"
+      width 1280
+      height 720
+    }
+  }
+  (object)keys {
+    rotation_segments 5
+    url_prefix "keys/"
+  }
+}
+```
+
+The authenticated management endpoint is
+`/api/v1/rtmp/media/SERVICE/APPLICATION/STREAM/index.m3u8`. Multi-variant applications also expose
+`master.m3u8` and variant playlists; `.ts` fragments and rotated `.bin` AES-128 keys are served
+through the same bounded path. HLS output supports legacy AVC/AAC only and does not expose the
+filesystem root.
+
 Use the dashboard or the management client:
 
 ```sh
@@ -181,8 +224,9 @@ chunked upstream responses are rejected.
   unbounded queue.
 - Continuous recording and exact-ID manual controls are integrated. Authenticated remote recorder
   administration and cross-process quota coordination are not.
-- HLS, richer callback fields, broad control parity, isolated exec, and complete directive lowering
-  remain future slices. Named local/HTTP VOD sources, bounded RTMP playback workers, and the
+- DASH, richer callback fields, broad control parity, isolated exec, and complete directive lowering
+  remain future slices. A DASH policy is rejected explicitly because no supported DASH muxer is
+  available. Named local/HTTP VOD sources, bounded RTMP playback workers, and the
   authenticated management range endpoint are integrated. Native `allow`/`deny` and application `max_connections` have bounded
   lowering; canonical token rules and publisher/viewer ceilings are canonical-only.
 - An RTMP parser accepting a directive does not mean the runtime enforces that directive. The
