@@ -21,6 +21,11 @@ pub fn render_prometheus(
 ) -> Result<String, PrometheusError> {
     let runtime = metrics.snapshot()?;
     let rtmp = registry.snapshot();
+    let rtmp_clients = registry
+        .session_snapshots()
+        .into_iter()
+        .filter(|client| client.connected)
+        .count();
     let generation = generations.status();
     let audit = crate::operational_event::audit_metrics();
     let mut output = String::with_capacity(16 * 1024);
@@ -401,6 +406,7 @@ pub fn render_prometheus(
         }
     }
     sample(&mut output, "oxiroute_rtmp_streams", rtmp.streams.len())?;
+    sample(&mut output, "oxiroute_rtmp_clients", rtmp_clients)?;
     sample(
         &mut output,
         "oxiroute_rtmp_relay_attempts_total",

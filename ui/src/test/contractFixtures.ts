@@ -1,4 +1,4 @@
-import type { MonitoringSnapshot, RtmpCatalog, TopologySnapshot } from '../api'
+import type { MonitoringSnapshot, RtmpCatalog, RtmpStats, TopologySnapshot } from '../api'
 import type { ConfigSnapshot } from '../config'
 
 export const STREAM_ID = '2a130dea-5db7-43e0-afb8-f07c4bcb1814'
@@ -93,6 +93,36 @@ export function contractCatalog(): RtmpCatalog {
         recoverable_partial_name: 'live/.camera-002.partial',
       }],
     }],
+  }
+}
+
+export function contractRtmpStats(): RtmpStats {
+  return {
+    revision: '4',
+    asOfUnixMs: 1_750_000_000_000,
+    global: {
+      activeStreams: 1,
+      publishers: 1,
+      subscribers: 12,
+      audioPayloadBytes: '1024',
+      videoPayloadBytes: '4096',
+      liveIngest: true,
+      manualRecording: true,
+    },
+    live: [{
+      id: STREAM_ID,
+      service: 'edge',
+      application: 'live',
+      name: 'camera',
+      createdAtUnixMs: 1_750_000_000_000,
+      publisherSessionId: '750a865d-1b72-4a5f-a54b-a1d8510d055c',
+      subscriberCount: 12,
+      audioPayloadBytes: '1024',
+      videoPayloadBytes: '4096',
+    }],
+    clients: [],
+    liveTruncated: false,
+    clientsTruncated: false,
   }
 }
 

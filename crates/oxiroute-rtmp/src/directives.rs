@@ -267,6 +267,11 @@ const ACCESS_LOG_FORMS: &[DirectiveForm] = &[
         status: DisableOnly,
     },
     DirectiveForm {
+        form: "absolute access-log path with optional combined format at rtmp scope",
+        contexts: R,
+        status: Enforced,
+    },
+    DirectiveForm {
         form: "enabled or nested access logging",
         contexts: RSA,
         status: ParsedOnly,

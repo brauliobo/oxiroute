@@ -24,7 +24,8 @@ use hyper_util::rt::{TokioIo, TokioTimer};
 use log::{debug, error, info, warn};
 use oxiroute_config::ListenerBind;
 use oxiroute_rtmp::{
-    MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN, MediaCatalog, RtmpRegistry, RtmpServiceRuntime, VodCatalog,
+    MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN, MediaCatalog, RtmpClientSnapshot, RtmpRegistry,
+    RtmpServiceRuntime, RtmpSessionRole, VodCatalog,
 };
 use oxiroute_server::{
     AcmeManagedReconciler, CertbotWatcherConfig, CertbotWatcherSupervisor, ConfigWatcher,
@@ -32,11 +33,11 @@ use oxiroute_server::{
     ForwardConnectionLifecycle, ForwardHttp1ServicePlan, ForwardHttp2ServiceApp, GenerationManager,
     HaproxyStatsApi, HaproxyStatsPage, Http3Runtime, HttpDownstreamPolicyApp, HttpListenerApp,
     HttpReverseProxy, ListenerMetrics, ListenerReservation, MAX_HTTP_ATTEMPTS, MonitoredHttpApp,
-    RtmpManagementApi, RuntimeGeneration, RuntimeMetrics, RuntimeReferenceKind, ServiceKind,
-    TcpRelayCore, TlsProfilePlan, TopologySnapshot, UdpRuntime,
+    RtmpManagementApi, RtmpServicePlan, RuntimeGeneration, RuntimeMetrics, RuntimeReferenceKind,
+    ServiceKind, TcpRelayCore, TlsProfilePlan, TopologySnapshot, UdpRuntime,
     cli::{Cli, Command, ConfigCommand, execute_offline},
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, ConfigRevision},
-    emit_certificate,
+    emit_certificate, emit_rtmp_access,
 };
 use pingora::{
     apps::http_app::HttpServer,
@@ -66,6 +67,7 @@ mod supervised;
 
 const RTMP_READ_BUFFER_SIZE: usize = 16 * 1024;
 const RTMP_PLAYBACK_DRAIN_INTERVAL: Duration = Duration::from_millis(10);
+const RTMP_CONTROL_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const RTMP_PUBLISHER_LIVENESS_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 const RTMP_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 const TEST_LISTENER_DUPLICATION_FAILURE_ENV: &str =
@@ -806,11 +808,13 @@ struct RtmpIngest {
     generation: Arc<RuntimeGeneration>,
     metrics: ListenerMetrics,
     runtime: RtmpServiceRuntime,
+    service: Arc<RtmpServicePlan>,
 }
 
 impl RtmpIngest {
     fn new(
         runtime: RtmpServiceRuntime,
+        service: Arc<RtmpServicePlan>,
         metrics: ListenerMetrics,
         generation: Arc<RuntimeGeneration>,
     ) -> Self {
@@ -818,6 +822,7 @@ impl RtmpIngest {
             generation,
             metrics,
             runtime,
+            service,
         }
     }
 }
@@ -866,16 +871,25 @@ impl ServerApp for RtmpIngest {
             })
             .map(|address| address.ip());
         let mut session = self.runtime.session_with_peer_addr(peer_addr);
+        let mut previous_snapshot = session.client_snapshot();
         let mut buffer = [0; RTMP_READ_BUFFER_SIZE];
         let mut shutdown = shutdown.clone();
         let mut playback_drain = interval(RTMP_PLAYBACK_DRAIN_INTERVAL);
         playback_drain.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut control_poll = interval(RTMP_CONTROL_POLL_INTERVAL);
+        control_poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let mut publisher_liveness = interval(RTMP_PUBLISHER_LIVENESS_CHECK_INTERVAL);
         publisher_liveness.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         loop {
             let outbound = tokio::select! {
                 _ = shutdown.changed() => break,
+                _ = control_poll.tick() => {
+                    if session.take_control_action().is_some() {
+                        break;
+                    }
+                    Vec::new()
+                }
                 _ = publisher_liveness.tick() => {
                     let Some(now_unix_ms) = unix_time_ms() else {
                         warn!("closing RTMP session because the system clock is invalid");
@@ -929,6 +943,15 @@ impl ServerApp for RtmpIngest {
                     }
                 }
             };
+            if let Some(current_snapshot) = session.client_snapshot() {
+                log_rtmp_state_transition(
+                    &self.service,
+                    previous_snapshot.as_ref(),
+                    &current_snapshot,
+                    at_unix_ms,
+                );
+                previous_snapshot = Some(current_snapshot);
+            }
             if outbound.is_empty() {
                 continue;
             }
@@ -942,7 +965,71 @@ impl ServerApp for RtmpIngest {
         if let Err(error) = session.close(at_unix_ms) {
             warn!("could not detach RTMP media role: {error}");
         }
+        if let Some(snapshot) = session.client_snapshot() {
+            log_rtmp_access_event(
+                &self.service,
+                "access",
+                if snapshot.connected {
+                    "accepted"
+                } else {
+                    "rejected"
+                },
+                &snapshot,
+                at_unix_ms,
+            );
+            if snapshot.connected {
+                log_rtmp_access_event(&self.service, "disconnect", "closed", &snapshot, at_unix_ms);
+            }
+        }
         None
+    }
+}
+
+fn log_rtmp_state_transition(
+    service: &RtmpServicePlan,
+    previous: Option<&RtmpClientSnapshot>,
+    current: &RtmpClientSnapshot,
+    at_unix_ms: u64,
+) {
+    if !previous.is_some_and(|snapshot| snapshot.connected) && current.connected {
+        log_rtmp_access_event(service, "connect", "accepted", current, at_unix_ms);
+    }
+    let previous_role = previous.map_or(RtmpSessionRole::Client, |snapshot| snapshot.role);
+    if previous_role == current.role {
+        return;
+    }
+    match current.role {
+        RtmpSessionRole::Publisher => {
+            log_rtmp_access_event(service, "publish", "accepted", current, at_unix_ms);
+        }
+        RtmpSessionRole::Subscriber => {
+            log_rtmp_access_event(service, "play", "accepted", current, at_unix_ms);
+        }
+        RtmpSessionRole::Client => {}
+    }
+}
+
+fn log_rtmp_access_event(
+    service: &RtmpServicePlan,
+    event: &str,
+    outcome: &str,
+    snapshot: &RtmpClientSnapshot,
+    at_unix_ms: u64,
+) {
+    emit_rtmp_access(event, outcome);
+    let value = serde_json::json!({
+        "timestampUnixMs": at_unix_ms,
+        "event": event,
+        "outcome": outcome,
+        "service": service.service_id(),
+        "sessionId": snapshot.session_id.to_string(),
+        "application": snapshot.application,
+        "stream": snapshot.stream_name,
+        "role": snapshot.role.as_str(),
+        "clientIp": snapshot.peer_addr.map(|address| address.to_string()),
+    });
+    if let Err(error) = service.write_access_event(&value) {
+        warn!("RTMP access log write failed: {error}");
     }
 }
 
@@ -1931,7 +2018,12 @@ fn serve_generation(
                     .clone();
                 let mut service = Service::new(
                     service_name,
-                    RtmpIngest::new(runtime, metrics.clone(), Arc::clone(generation)),
+                    RtmpIngest::new(
+                        runtime,
+                        rtmp_service,
+                        metrics.clone(),
+                        Arc::clone(generation),
+                    ),
                 );
                 add_plain_listener(&mut service, &listener_name, &listener_bind)?;
                 server.add_service(
@@ -2323,9 +2415,10 @@ mod tests {
                 name: "live".into(),
                 outbound_chunk_size: 4_096,
                 access_log: None,
-                outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
-                callbacks: oxiroute_config::RtmpCallbackConfig::default(),
-                applications: vec![RtmpApplication {
+                 outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
+                 callbacks: oxiroute_config::RtmpCallbackConfig::default(),
+                 exec_profiles: Vec::new(),
+                 applications: vec![RtmpApplication {
                     name: "live".into(),
                     live: true,
                     idle_streams: true,

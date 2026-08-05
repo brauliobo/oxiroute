@@ -94,6 +94,9 @@ main.console-shell(:aria-busy="activeView !== 'configuration' && monitoring === 
   p.notice.loading-notice(v-else-if="activeView === 'overview' && !catalog && refreshing" role="status")
     strong Loading stream inventory.
     |  Waiting for the RTMP catalog.
+  p.notice.error-notice(v-if="activeView === 'overview' && rtmpStatsError" role="alert")
+    strong RTMP client control unavailable.
+    |  {{ rtmpStatsError }}
   p.notice.error-notice(v-if="activeView === 'overview' && topologyError" role="alert")
     strong {{ topology ? 'Topology refresh failed.' : 'Topology unavailable.' }}
     |  {{ topologyError }}{{ topology ? ' The last valid topology remains visible.' : '' }}
@@ -332,6 +335,13 @@ main.console-shell(:aria-busy="activeView !== 'configuration' && monitoring === 
           @control="controlRecorder(stream, $event)"
         )
 
+  RtmpClientPanel(
+    v-if="activeView === 'overview'"
+    :stats="rtmpStats"
+    :busy-session-id="busySessionId"
+    @drop="dropRtmpClient"
+  )
+
   KeepAlive
     ConfigurationWorkspace(v-if="activeView === 'configuration'")
 
@@ -349,6 +359,7 @@ import EventsWorkspace from './EventsWorkspace.vue'
 import HaproxyStatsDashboard from './HaproxyStatsDashboard.vue'
 import { formatBytes, formatCount, formatTelemetryDuration } from './formatters'
 import RtmpRecorderPanel from './RtmpRecorderPanel.vue'
+import RtmpClientPanel from './RtmpClientPanel.vue'
 import { recorderControlAction } from './recording'
 import { listenerStateLabels } from './runtimeStates'
 import TopologyView from './TopologyView.vue'
@@ -357,8 +368,10 @@ import ProvenanceWorkspace from './ProvenanceWorkspace.vue'
 import {
   ApiError,
   connectEventStream,
+  dropRtmpClient as requestRtmpClientDrop,
   fetchMonitoring,
   fetchRtmpCatalog,
+  fetchRtmpStats,
   fetchTopology,
   setRecording,
   type EndpointHealthState,
@@ -368,6 +381,9 @@ import {
   type MonitoringSnapshot,
   type RecorderSnapshot,
   type RtmpCatalog,
+  type RtmpClientControlTarget,
+  type RtmpClientSnapshot,
+  type RtmpStats,
   type StreamSnapshot,
   type TopologySnapshot,
   type TrackSnapshot,
@@ -419,12 +435,15 @@ const managementToken = ref('')
 const managementTokenInput = ref('')
 const monitoring = ref<MonitoringSnapshot | null>(null)
 const catalog = ref<RtmpCatalog | null>(null)
+const rtmpStats = ref<RtmpStats | null>(null)
 const topology = ref<TopologySnapshot | null>(null)
 const monitoringError = ref<string | null>(null)
 const catalogError = ref<string | null>(null)
+const rtmpStatsError = ref<string | null>(null)
 const topologyError = ref<string | null>(null)
 const refreshing = ref(true)
 const busyRecorder = ref<string | null>(null)
+const busySessionId = ref<string | null>(null)
 const currentUnixMs = ref(Date.now())
 let refreshTimer: number | undefined
 let activeController: AbortController | undefined
@@ -574,7 +593,7 @@ function stopEventStream(): void {
 async function refreshData(controller: AbortController): Promise<void> {
   const requests = [refreshMonitoring(controller)]
   if (activeView.value === 'overview') {
-    requests.push(refreshCatalog(controller), refreshTopology(controller))
+    requests.push(refreshCatalog(controller), refreshRtmpStats(controller), refreshTopology(controller))
   }
   await Promise.all(requests)
 }
@@ -600,6 +619,17 @@ async function refreshCatalog(controller: AbortController): Promise<void> {
     catalogError.value = null
   } catch (error) {
     if (activeController === controller) catalogError.value = errorMessage(error, 'Unable to load RTMP state')
+  }
+}
+
+async function refreshRtmpStats(controller: AbortController): Promise<void> {
+  try {
+    const result = await fetchRtmpStats(controller.signal, managementToken.value || undefined)
+    if (activeController !== controller) return
+    rtmpStats.value = result
+    rtmpStatsError.value = null
+  } catch (error) {
+    if (activeController === controller) rtmpStatsError.value = errorMessage(error, 'Unable to load RTMP client state')
   }
 }
 
@@ -661,6 +691,52 @@ async function controlRecorder(
     catalogError.value = controlError
   } finally {
     if (busyRecorder.value === recorder.id) busyRecorder.value = null
+  }
+}
+
+async function dropRtmpClient(
+  client: RtmpClientSnapshot,
+  target: RtmpClientControlTarget,
+): Promise<void> {
+  if (!managementToken.value) {
+    rtmpStatsError.value = 'Enter the management token before changing RTMP client state.'
+    return
+  }
+  busySessionId.value = client.id
+  rtmpStatsError.value = null
+  try {
+    const result = await requestRtmpClientDrop(client, target, managementToken.value)
+    if (result.sessionId !== client.id || result.target !== target) {
+      throw new Error('RTMP control returned a mismatched session identity.')
+    }
+    await refreshAfterClientCommand()
+  } catch (requestError) {
+    if (requestError instanceof ApiError && [404, 409].includes(requestError.status)) {
+      await refreshAfterClientCommand()
+    }
+    rtmpStatsError.value = rtmpControlError(requestError)
+  } finally {
+    if (busySessionId.value === client.id) busySessionId.value = null
+  }
+}
+
+async function refreshAfterClientCommand(): Promise<void> {
+  if (activeRefresh) await activeRefresh
+  await refresh()
+}
+
+function rtmpControlError(error: unknown): string {
+  if (!(error instanceof ApiError)) return errorMessage(error, 'RTMP client control failed')
+  switch (error.code) {
+    case 'session_not_found':
+      return 'The RTMP client ended before the control request was applied.'
+    case 'session_revision_conflict':
+    case 'session_role_conflict':
+      return 'The RTMP client state changed before the control request was applied. Refreshing the current state.'
+    case 'session_control_pending':
+      return 'A control request is already pending for this RTMP client.'
+    default:
+      return `RTMP client control failed. ${error.message}`
   }
 }
 

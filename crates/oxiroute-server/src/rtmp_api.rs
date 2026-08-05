@@ -3,6 +3,7 @@ pub(crate) use config::read_config_body;
 mod management;
 mod media;
 mod observability;
+mod rtmp;
 pub(crate) mod response;
 mod service;
 mod streams;

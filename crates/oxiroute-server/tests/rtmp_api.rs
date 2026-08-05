@@ -30,8 +30,8 @@ use oxiroute_config::{
 use oxiroute_rtmp::{
     LiveHub, LiveHubLimits, MediaSnapshot, RtmpApplication as RuntimeRtmpApplication,
     RtmpCapabilities, RtmpPushApplication, RtmpPushTarget, RtmpRegistry, RtmpRelayConfig,
-    RtmpServiceRuntime, RtmpSessionPolicy, SessionId, StreamKey, TrackSnapshot,
-    VideoCodecIdentifier,
+    RtmpServiceRuntime, RtmpSessionControlAction, RtmpSessionPolicy, SessionId, StreamKey,
+    TrackSnapshot, VideoCodecIdentifier,
 };
 use oxiroute_server::{
     HttpListenerApp, RtmpManagementApi, RuntimeMetrics, ServiceKind, TopologySnapshot,
@@ -79,6 +79,123 @@ fn reports_truthful_empty_capabilities_when_ingest_is_disabled() {
     assert_eq!(body["capabilities"]["live_ingest"], false);
     assert_eq!(body["capabilities"]["manual_recording"], false);
     assert_eq!(body["streams"], serde_json::json!([]));
+}
+
+#[test]
+fn reports_bounded_rtmp_global_and_live_stats_without_stream_queries() {
+    let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
+        live_ingest: true,
+        manual_recording: false,
+    }));
+    let publisher = SessionId::new();
+    let stream_id = registry
+        .attach_publisher(
+            StreamKey::new("edge", "live", "camera"),
+            publisher,
+            Vec::new(),
+            100,
+        )
+        .expect("publisher");
+    registry
+        .update_media_sample(
+            stream_id,
+            publisher,
+            1,
+            MediaSnapshot {
+                audio: TrackSnapshot {
+                    payload_bytes_received: 128,
+                    ..TrackSnapshot::default()
+                },
+                ..MediaSnapshot::default()
+            },
+            200,
+        )
+        .expect("media sample");
+    let api = management_api(registry, RuntimeMetrics::new());
+
+    let global = api.handle("GET", "/api/v1/rtmp/stats/global", 300);
+    let global: Value = serde_json::from_slice(&global.body).expect("global stats JSON");
+    assert_eq!(global["global"]["activeStreams"], 1);
+    assert_eq!(global["global"]["publishers"], 1);
+    assert_eq!(global["global"]["audioPayloadBytes"], "128");
+
+    let live = api.handle("GET", "/api/v1/rtmp/stats/live", 300);
+    let live: Value = serde_json::from_slice(&live.body).expect("live stats JSON");
+    assert_eq!(live["live"].as_array().map(Vec::len), Some(1));
+    assert_eq!(live["live"][0]["application"], "live");
+    assert_eq!(live["live"][0]["name"], "camera");
+    assert!(!live.to_string().contains("?"));
+}
+
+#[tokio::test]
+async fn queues_target_checked_publisher_disconnects_through_the_management_api() {
+    let active = editable_config();
+    let harness = ManagementHarness::start(&candidate_config(&active, "live")).await;
+    let mut client = RtmpSessionClient::connect(harness.rtmp_runtime(), "broadcast");
+    client.publish("camera", 100);
+    let snapshot = client.server.client_snapshot().expect("client snapshot");
+    assert_eq!(snapshot.role, oxiroute_rtmp::RtmpSessionRole::Publisher);
+
+    let stats = harness
+        .request("GET", "/api/v1/rtmp/stats/clients", None, None)
+        .await;
+    assert_eq!(stats.status, 200);
+    assert_eq!(
+        stats.json()["clients"][0]["id"],
+        snapshot.session_id.to_string()
+    );
+    assert_eq!(
+        stats.json()["clients"][0]["revision"],
+        snapshot.revision.to_string()
+    );
+
+    let control_path = format!(
+        "/api/v1/rtmp/clients/{}/publisher/drop",
+        snapshot.session_id
+    );
+    let authorization = format!("Bearer {TEST_TOKEN}");
+    let missing_revision = http_request(
+        harness.address,
+        "POST",
+        &control_path,
+        &[("Authorization", authorization.as_str())],
+        &[],
+    )
+    .await;
+    assert_eq!(missing_revision.status, 428);
+
+    let revision = snapshot.revision.to_string();
+    let stale_revision = snapshot.revision.saturating_add(1).to_string();
+    let stale = http_request(
+        harness.address,
+        "POST",
+        &control_path,
+        &[
+            ("Authorization", authorization.as_str()),
+            ("If-Rtmp-Session-Revision", stale_revision.as_str()),
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(stale.status, 409);
+
+    let response = http_request(
+        harness.address,
+        "POST",
+        &control_path,
+        &[
+            ("Authorization", authorization.as_str()),
+            ("If-Rtmp-Session-Revision", revision.as_str()),
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(response.status, 202);
+    assert_eq!(response.json()["target"], "publisher");
+    assert_eq!(
+        client.server.take_control_action(),
+        Some(RtmpSessionControlAction::Publisher)
+    );
 }
 
 #[test]
@@ -181,10 +298,8 @@ async fn serves_authenticated_dash_manifests_segments_and_single_ranges() {
     publisher.publish_audio(0, &[0xaf, 0, 0x12, 0x10], 1_001);
     publisher.publish_video(
         0,
-        &[
-            0x17, 0, 0, 0, 0, 1, 0x42, 0, 0x1e, 0xff, 0xe1, 0, 4, 0x67, 0x42, 0, 0x1e,
-            1, 0, 2, 0x68, 0xce,
-        ],
+        &[0x17, 0, 0, 0, 0, 1, 0x42, 0, 0x1e, 0xff, 0xe1, 0, 4, 0x67, 0x42, 0, 0x1e, 1,
+            0, 2, 0x68, 0xce],
         1_002,
     );
     publisher.publish_video(0, &[0x17, 1, 0, 0, 0, 0, 0, 0, 2, 0x65, 1], 1_003);
@@ -218,10 +333,7 @@ async fn serves_authenticated_dash_manifests_segments_and_single_ranges() {
         harness.address,
         "GET",
         segment_path,
-        &[
-            ("Authorization", authorization.as_str()),
-            ("Range", "bytes=0-7"),
-        ],
+        &[("Authorization", authorization.as_str()), ("Range", "bytes=0-7")],
         &[],
     )
     .await;
@@ -497,6 +609,7 @@ async fn config_routes_require_the_injected_bearer_token() {
         ("GET", "/api/v1/config"),
         ("POST", "/api/v1/config/validate"),
         ("PUT", "/api/v1/config"),
+        ("GET", "/api/v1/rtmp/stats"),
         ("GET", "/api/v1/audit"),
         ("GET", "/api/v1/audit/status"),
     ] {
@@ -770,6 +883,7 @@ async fn config_api_redacts_rtmp_token_secrets_from_typed_and_rendered_views() {
         access_log: None,
         outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
         callbacks: oxiroute_config::RtmpCallbackConfig::default(),
+        exec_profiles: Vec::new(),
         applications: vec![RtmpApplication {
             name: "broadcast".into(),
             live: true,
@@ -1257,6 +1371,7 @@ fn candidate_config(active: &Config, listener_name: &str) -> Config {
         access_log: None,
         outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
         callbacks: oxiroute_config::RtmpCallbackConfig::default(),
+        exec_profiles: Vec::new(),
         applications: vec![RtmpApplication {
             name: "broadcast".into(),
             live: true,

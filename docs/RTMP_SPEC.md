@@ -31,12 +31,18 @@ claiming that all 117 directive keys are enforced.
 The current runtime contract is intentionally narrower than the directive inventory. Bounded live
 publish/play, ordered application network ACLs, stream-query tokens, per-application session
 ceilings, fanout, bounded push/pull relay, bounded HTTP notify callbacks, canonical named
-continuous/manual recorders, legacy AVC/AAC FLV output, bounded HLS AVC/AAC transmuxing, and
-bounded DASH AVC/AAC fragmented MP4 output are partial product capabilities. The live adapter enforces a fixed 1 MiB
+continuous/manual recorders, legacy AVC/AAC FLV output, bounded HLS AVC/AAC transmuxing, bounded
+DASH AVC/AAC fragmented MP4 output, and allowlisted no-shell exec/transcode profiles are partial
+product capabilities. The live adapter enforces a fixed 1 MiB
 inbound chunk ceiling and fixed 8 MiB assembled inbound-message ceiling; the nginx `max_message`
-directive is parsed and classified but does not configure that ceiling. Exec remains unsupported;
-broad nginx-RTMP parity remains partial. Native nginx DASH directives remain inventory-only;
-canonical `dash` policies use the bounded runtime path described below.
+directive is parsed and classified but does not configure that ceiling. Broader exec directive
+parity remains partial;
+broad nginx-RTMP parity remains partial. The authenticated management API provides
+bounded RTMP statistics and session controls without exposing stream queries, credentials, or
+private paths. Native `rtmp_stat`/`rtmp_control` directives remain classified and blocked because
+their HTTP-location and XML/form semantics do not have an exact canonical route contract. Native
+nginx DASH directives remain inventory-only; canonical `dash` policies use the bounded runtime path
+described below.
 
 ## Context abbreviations and common values
 
@@ -169,6 +175,15 @@ Substitutions use `$name` or `${name}`. Common names are `app`, `flashver`, `swf
 OxiRoute MUST run allowed commands through an isolated no-shell worker with executable
 allowlists and resource limits. It does not reproduce reference pointer/filter defects.
 
+Canonical `rtmp_services[].exec_profiles` entries use one exact executable path, typed argv and
+environment entries, an explicit working directory, and bounded process, queue, output, timeout,
+respawn, and shutdown limits. Arguments are sent directly to the operating-system process API;
+shell parsing, redirection, inherited environment, loader variables, and shell interpreter
+executables are rejected. `network = "disabled"` is the default and fails closed when the daemon
+cannot provide a network namespace; `network = "inherited"` is an explicit less-isolated policy.
+`mode = "transcode"` accepts bounded typed media frames on the worker stdin queue. Worker status
+contains only redacted correlation, phase, counters, and failure categories.
+
 ### Recording: 11
 
 | Directive | Context | Accepted value | Effective default |
@@ -234,17 +249,44 @@ The finalizable subset is intentionally narrow:
   are retained in the canonical recorder list.
 - Canonical finite queue, shutdown, storage, file, and active-recorder defaults for imported
   recorders.
+- One RTMP-scope `access_log off` or one absolute `access_log <path> [combined]` form.
 
 Any applicable unsupported directive blocks its server; any blocking error prevents a finalized
 config, although other safe servers may remain visible in the draft. Blockers include global/server
 `max_connections`, listen options, overlapping listeners, duplicate scalar/application identities,
 non-live recording, missing/insecure paths, local-time suffix formats, manual intervals, partial
-recording bitmasks, push/pull, notify, exec, VOD, HLS/DASH, logging/stat/control behavior, enabled
-append/lock, nonzero size/frame limits, and named `recorder {}` blocks with unsupported effective
-fields. The `import_rtmp` entry point remains a Rust library without a separate `import rtmp`
+recording bitmasks, push/pull, notify, unsupported exec forms, VOD, HLS/DASH, `log_format`, nested or non-combined
+logging, stat/control behavior, enabled append/lock, nonzero size/frame limits, and named
+`recorder {}` blocks with unsupported effective fields. The `import_rtmp` entry point remains a Rust library without a separate `import rtmp`
 command, import API, or import UI. Complete nginx-root import does integrate the strict RTMP result:
 the CLI can report/preview it, and KDL/HOCON/UCI `nginx_server` references can compose it into the
 canonical resolver and watcher-driven generation path.
+
+### Management statistics and controls
+
+The bearer-authenticated management service exposes these bounded RTMP views:
+
+| Route | Method | Semantics |
+| --- | --- | --- |
+| `/api/v1/rtmp/stats` | `GET` | global, live, and connected-client views |
+| `/api/v1/rtmp/stats/global` | `GET` | aggregate stream/media counters |
+| `/api/v1/rtmp/stats/live` | `GET` | at most 1,024 stream identities without queries |
+| `/api/v1/rtmp/stats/clients` | `GET` | at most 1,024 connected sessions |
+| `/api/v1/rtmp/clients/<session-id>/drop` | `POST` | drop the whole client session |
+| `/api/v1/rtmp/clients/<session-id>/publisher/drop` | `POST` | drop only a publisher session |
+| `/api/v1/rtmp/clients/<session-id>/subscriber/drop` | `POST` | drop only a subscriber session |
+
+All revision fields are decimal strings. State-changing requests require exactly one
+`If-Rtmp-Session-Revision` header. The runtime checks the session revision and current role before
+queuing a disconnect; publisher catalog ownership remains session-ID qualified, so a stale request
+cannot terminate a replacement publisher. Controls are polled at a bounded 100 ms interval and
+return `202` when queued.
+
+The operational event stream recognizes `rtmp_connect`, `rtmp_publish`, `rtmp_play`,
+`rtmp_disconnect`, and `rtmp_access`. Enabled RTMP access logging reuses the bounded asynchronous
+JSONL worker and emits only timestamp, service, session ID, application, stream name, role, client
+IP, event, and outcome. Stream queries, credentials, recording roots, and private paths are never
+written.
 
 ### VOD and netcall: 5
 
@@ -563,7 +605,9 @@ and broad nginx-RTMP lowering remain.
 
 HLS, DASH, isolated exec, limits, and multi-worker equivalents require dedicated storage,
 media, crash, and resource-exhaustion tests. DASH's bounded fMP4/MPD, cleanup, quota, restart,
-range, authentication, and malformed-input tests are part of the current runtime coverage.
+range, authentication, and malformed-input tests are part of the current runtime coverage. The
+first exec slice has canonical profiles, typed native publisher/publish-done lowering, bounded
+process admission, and an isolated lifecycle worker; broader directive parity remains blocked.
 
 ## Security requirements
 
@@ -573,7 +617,8 @@ range, authentication, and malformed-input tests are part of the current runtime
 - Recognized management/API routes, including recorder controls, require the management bearer
   token except exact `GET /ready` and `GET /metrics`. The management listener remains loopback-only;
   a future remote mode MUST add explicit authorization and audit policy before exposure.
-- Exec is disabled until an isolated allowlisted worker exists.
+- Exec profiles are allowlisted, no-shell, bounded, and fail closed when the requested isolation
+  policy is unavailable.
 - Per-listener, application, publisher, subscriber, message, queue, and segment limits are explicit.
 - Malformed publisher input cannot produce unbounded subscriber memory or unsafe media files.
 

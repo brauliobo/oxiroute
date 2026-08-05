@@ -15,6 +15,10 @@ use crate::{
         RecorderReaperOwner, RecorderRuntimeStatus, RecorderStartFailure, recorder_error_code,
     },
     relay::{RtmpRelayController, RtmpRelayStatus},
+    session_control::{
+        RtmpClientSnapshot, RtmpSessionControl, RtmpSessionControlAction,
+        RtmpSessionControlError, RtmpSessionControlOutcome, MAX_RTMP_SESSION_CONTROLS,
+    },
 };
 
 pub const MAX_RTMP_APPLICATION_BYTES: usize = 128;
@@ -580,6 +584,7 @@ struct RegistryInner {
 pub struct RtmpRegistry {
     capabilities: RtmpCapabilities,
     inner: Mutex<RegistryInner>,
+    sessions: Mutex<HashMap<SessionId, Arc<RtmpSessionControl>>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -608,6 +613,7 @@ impl RtmpRegistry {
                 snapshot_dirty: false,
                 work_stats: RtmpRegistryWorkStats::default(),
             }),
+            sessions: Mutex::new(HashMap::new()),
         }
     }
 
@@ -629,6 +635,68 @@ impl RtmpRegistry {
     #[must_use]
     pub fn work_stats(&self) -> RtmpRegistryWorkStats {
         self.lock().work_stats
+    }
+
+    /// Returns bounded snapshots of currently registered RTMP client sessions.
+    #[must_use]
+    pub fn session_snapshots(&self) -> Vec<RtmpClientSnapshot> {
+        let sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut snapshots: Vec<_> = sessions
+            .values()
+            .map(|session| session.snapshot())
+            .collect();
+        snapshots.sort_by_key(|session| session.session_id);
+        snapshots
+    }
+
+    /// Queues a target-checked disconnect for one live RTMP session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the session disappeared, its revision changed, its role changed, or
+    /// another incompatible control request is pending.
+    pub fn request_session_control(
+        &self,
+        session_id: SessionId,
+        action: RtmpSessionControlAction,
+        expected_revision: u64,
+    ) -> Result<RtmpSessionControlOutcome, RtmpSessionControlError> {
+        let sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        sessions
+            .get(&session_id)
+            .ok_or(RtmpSessionControlError::NotFound)?
+            .request(action, expected_revision)
+    }
+
+    pub(crate) fn register_session(
+        self: &Arc<Self>,
+        session_id: SessionId,
+        service_id: &str,
+        peer_addr: Option<std::net::IpAddr>,
+    ) -> Option<Arc<RtmpSessionControl>> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if sessions.len() >= MAX_RTMP_SESSION_CONTROLS {
+            return None;
+        }
+        let control = RtmpSessionControl::new(session_id, service_id, peer_addr);
+        sessions.insert(session_id, Arc::clone(&control));
+        Some(control)
+    }
+
+    pub(crate) fn unregister_session(&self, session_id: SessionId) {
+        self.sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&session_id);
     }
 
     pub(crate) fn create_recorder_reaper(
