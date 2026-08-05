@@ -299,7 +299,13 @@ impl ImportReportEnvelope {
             squid_origin,
         );
         let mut envelope = Self::assemble(
-            source_metadata("squid", "squid-forward-http1"),
+            source_metadata_with_version(
+                "squid",
+                crate::squid::SQUID_CAPABILITY_PROFILE_ID,
+                crate::squid::SQUID_CAPABILITY_PROFILE_VERSION,
+                None,
+                None,
+            ),
             squid_graph(&report.source_graph),
             source_metadata_evidence(&graph_source_metadata(
                 report

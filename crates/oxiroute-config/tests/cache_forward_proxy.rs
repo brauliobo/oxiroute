@@ -195,6 +195,9 @@ fn applies_finite_forward_proxy_defaults() {
         serde_json::json!([443])
     );
     assert_eq!(service["auth"], serde_json::Value::Null);
+    assert_eq!(service["peer_policy"]["peers"], serde_json::json!([]));
+    assert_eq!(service["peer_policy"]["direct_fallback"], "allowed");
+    assert_eq!(service["peer_policy"]["max_retries"], 3_u64);
     assert_eq!(service["destination_policy"]["deny_private"], true);
     assert_eq!(
         service["destination_policy"]["allow_times"],
@@ -214,6 +217,45 @@ fn applies_finite_forward_proxy_defaults() {
     assert_eq!(service["resolver"]["max_cache_entries"], 4_096_u64);
     assert_eq!(service["resolver"]["max_concurrent_queries"], 256_u64);
     assert_eq!(service["resolver"]["revalidate_on_connect"], true);
+}
+
+#[test]
+fn renders_and_validates_ordered_static_peer_policy() {
+    let service = r#"{
+      name = "egress",
+      enabled_versions = { "h1" },
+      peer_policy = {
+        peers = {
+          { host = "Proxy.EXAMPLE.Test", port = 3128 },
+          { host = "192.0.2.44", port = 8080 },
+        },
+        direct_fallback = "denied",
+        max_retries = 1,
+      },
+    }"#;
+    let config = load_lua(&forward_config(service, "", "")).expect("static peer policy");
+    let value = serde_json::to_value(&config).expect("serialized peer policy");
+    let policy = &value["forward_proxy_services"][0]["peer_policy"];
+    assert_eq!(policy["peers"][0]["host"], "proxy.example.test");
+    assert_eq!(policy["peers"][0]["port"], 3128_u64);
+    assert_eq!(policy["peers"][1]["host"], "192.0.2.44");
+    assert_eq!(policy["direct_fallback"], "denied");
+    assert_eq!(policy["max_retries"], 1_u64);
+    let rendered = render_lua(&config).expect("rendered peer policy");
+    assert_eq!(load_lua(&rendered).expect("peer policy reload"), config);
+
+    for service in [
+        r#"{ name = "egress", peer_policy = { direct_fallback = "denied" } }"#,
+        r#"{ name = "egress", peer_policy = { peers = { { host = "0.0.0.0", port = 3128 } } } }"#,
+        r#"{ name = "egress", peer_policy = { peers = { { host = "peer.example", port = 0 } } } }"#,
+        r#"{ name = "egress", peer_policy = { peers = { { host = "Peer.Example", port = 3128 }, { host = "peer.example", port = 3128 } } } }"#,
+        r#"{ name = "egress", enabled_versions = { "h1", "h2" }, peer_policy = { peers = { { host = "peer.example", port = 3128 } } } }"#,
+    ] {
+        assert!(
+            !error(&forward_config(service, "", "")).is_empty(),
+            "accepted invalid peer policy: {service}"
+        );
+    }
 }
 
 #[test]

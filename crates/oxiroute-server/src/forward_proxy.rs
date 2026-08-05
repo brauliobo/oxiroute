@@ -35,8 +35,9 @@ use oxiroute_cache::{
 };
 use oxiroute_config::{
     ForwardAccessAction, ForwardAccessCondition, ForwardAccessMatcher, ForwardAccessPolicy,
-    ForwardAuditMode, ForwardHeaderPolicy, ForwardHttpVersion, ForwardProxyAuth,
-    ForwardProxyService, ForwardTimeRange, ForwardViaPolicy, ForwardWeekday, ForwardedForPolicy,
+    ForwardAuditMode, ForwardDirectFallback, ForwardHeaderPolicy, ForwardHttpVersion, ForwardPeer,
+    ForwardProxyAuth, ForwardProxyService, ForwardTimeRange, ForwardViaPolicy, ForwardWeekday,
+    ForwardedForPolicy,
 };
 use oxiroute_forward_proxy::{
     ApprovedDestination, BoundedTunnel, Destination, DestinationRules, ForwardScheme,
@@ -234,6 +235,9 @@ pub struct ForwardHttp1ServicePlan {
     connect_ports: Arc<[u16]>,
     connect_timeout: Duration,
     destination_policy: DestinationRules,
+    peer_direct_fallback: ForwardDirectFallback,
+    peer_max_retries: usize,
+    peers: Arc<[StaticPeerPlan]>,
     header_policy: ForwardHeaderPolicy,
     http_server_options: HttpServerOptions,
     idle_timeout: Duration,
@@ -275,6 +279,8 @@ pub enum ForwardPlanError {
     Tls,
     #[error("forward runtime limit exceeds this platform")]
     Limit,
+    #[error("forward static peer could not be prepared")]
+    Peer,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -446,6 +452,17 @@ struct ForwardCacheState {
     listener: crate::ListenerMetrics,
     revalidation: Option<ForwardCacheRevalidation>,
     store_response: bool,
+}
+
+#[derive(Clone, Debug)]
+struct StaticPeerPlan {
+    host: Host,
+    port: u16,
+}
+
+struct ConnectedHttp {
+    stream: BoxedIo,
+    via_peer: bool,
 }
 
 struct ForwardCacheCapture {
@@ -1079,6 +1096,12 @@ impl ForwardHttp1ServicePlan {
         })
         .map_err(|_| ForwardPlanError::DestinationPolicy)?;
         let resolver = resolver(service)?;
+        let peers = service
+            .peer_policy
+            .peers
+            .iter()
+            .map(static_peer_plan)
+            .collect::<Result<Vec<_>, _>>()?;
         let mut connector =
             SslConnector::builder(SslMethod::tls_client()).map_err(|_| ForwardPlanError::Tls)?;
         connector.set_verify(SslVerifyMode::PEER);
@@ -1126,6 +1149,9 @@ impl ForwardHttp1ServicePlan {
             connect_ports: service.connect.allowed_ports.clone().into(),
             connect_timeout: Duration::from_millis(service.connect_timeout_ms),
             destination_policy,
+            peer_direct_fallback: service.peer_policy.direct_fallback,
+            peer_max_retries: usize::from(service.peer_policy.max_retries),
+            peers: peers.into(),
             header_policy: service.header_policy.clone(),
             http_server_options,
             idle_timeout: Duration::from_millis(service.idle_timeout_ms),
@@ -1335,10 +1361,14 @@ impl ForwardHttp1ServicePlan {
         let connect_deadline = lifetime_deadline.min(Instant::now() + self.connect_timeout);
 
         match parsed {
-            ParsedTarget::Tunnel(_) => {
+            ParsedTarget::Tunnel(destination) => {
                 let upstream = match timeout_at(
                     lifetime_deadline,
-                    self.connect_tcp_until(approved.socket_addresses.as_ref(), connect_deadline),
+                    self.connect_tunnel_until(
+                        &destination,
+                        approved.socket_addresses.as_ref(),
+                        connect_deadline,
+                    ),
                 )
                 .await
                 {
@@ -1440,9 +1470,12 @@ impl ForwardHttp1ServicePlan {
             ForwardCacheDecision::Respond(response) => return response,
             ForwardCacheDecision::Continue(state) => Some(state),
         };
-        let upstream = match timeout_at(
+        let ConnectedHttp {
+            stream: upstream,
+            via_peer,
+        } = match timeout_at(
             lifetime_deadline,
-            self.connect_http(
+            self.connect_http_with_peers(
                 &target.destination,
                 target.scheme,
                 approved.socket_addresses.as_ref(),
@@ -1461,7 +1494,17 @@ impl ForwardHttp1ServicePlan {
                     .await;
             }
         };
-        *request.uri_mut() = target.origin_form.clone();
+        let request_uri = if via_peer && target.scheme == ForwardScheme::Http {
+            let Some(uri) = absolute_form(&target) else {
+                return self
+                    .forward_failure(&mut cache_state, RequestFailure::BadRequest)
+                    .await;
+            };
+            uri
+        } else {
+            target.origin_form.clone()
+        };
+        *request.uri_mut() = request_uri;
         let Ok(mut headers) = sanitize_request_headers(request.headers(), &target.destination)
         else {
             return self
@@ -2356,6 +2399,156 @@ impl ForwardHttp1ServicePlan {
         Err(RequestFailure::BadGateway)
     }
 
+    async fn connect_tunnel_until(
+        &self,
+        destination: &Destination,
+        direct_addresses: &[SocketAddr],
+        deadline: Instant,
+    ) -> Result<BoxedIo, RequestFailure> {
+        let mut last_error = RequestFailure::BadGateway;
+        if self.peer_direct_fallback != ForwardDirectFallback::Required {
+            let attempts = self
+                .peers
+                .len()
+                .min(self.peer_max_retries.saturating_add(1));
+            for peer in self.peers.iter().take(attempts) {
+                match self.connect_peer_tunnel(peer, destination, deadline).await {
+                    Ok(stream) => return Ok(stream),
+                    Err(error) => last_error = error,
+                }
+                if Instant::now() >= deadline {
+                    break;
+                }
+            }
+            if self.peer_direct_fallback == ForwardDirectFallback::Denied {
+                return Err(last_error);
+            }
+        }
+        self.connect_tcp_until(direct_addresses, deadline)
+            .await
+            .map(|stream| Box::new(stream) as BoxedIo)
+    }
+
+    async fn connect_peer_tunnel(
+        &self,
+        peer: &StaticPeerPlan,
+        destination: &Destination,
+        deadline: Instant,
+    ) -> Result<BoxedIo, RequestFailure> {
+        let stream = self.connect_peer_tcp(peer, deadline).await?;
+        self.connect_through_peer(stream, destination, deadline).await
+    }
+
+    async fn connect_peer_tcp(
+        &self,
+        peer: &StaticPeerPlan,
+        deadline: Instant,
+    ) -> Result<TcpStream, RequestFailure> {
+        let peer_destination = Destination {
+            host: peer.host.clone(),
+            port: peer.port,
+        };
+        let addresses = self.resolve(&peer_destination).await?;
+        let socket_addresses = addresses
+            .into_iter()
+            .map(|address| SocketAddr::new(address, peer.port))
+            .collect::<Vec<_>>();
+        self.connect_tcp_until(&socket_addresses, deadline).await
+    }
+
+    async fn connect_through_peer(
+        &self,
+        stream: TcpStream,
+        destination: &Destination,
+        deadline: Instant,
+    ) -> Result<BoxedIo, RequestFailure> {
+        let (mut sender, connection) = timeout_at(
+            deadline,
+            hyper::client::conn::http1::handshake(TokioIo::new(stream)),
+        )
+        .await
+        .map_err(|_| RequestFailure::GatewayTimeout)?
+        .map_err(|_| RequestFailure::BadGateway)?;
+        tokio::spawn(async move {
+            let _ = connection.with_upgrades().await;
+        });
+        let request = Request::builder()
+            .method(Method::CONNECT)
+            .uri(destination.authority())
+            .header(header::HOST, destination.authority())
+            .body(Full::new(Bytes::new()))
+            .map_err(|_| RequestFailure::BadRequest)?;
+        let response = timeout_at(deadline, sender.send_request(request))
+            .await
+            .map_err(|_| RequestFailure::GatewayTimeout)?
+            .map_err(|_| RequestFailure::BadGateway)?;
+        if response.status() != StatusCode::OK {
+            return Err(RequestFailure::BadGateway);
+        }
+        let upgraded = timeout_at(deadline, hyper::upgrade::on(response))
+            .await
+            .map_err(|_| RequestFailure::GatewayTimeout)?
+            .map_err(|_| RequestFailure::BadGateway)?;
+        Ok(Box::new(TokioIo::new(upgraded)))
+    }
+
+    async fn connect_http_with_peers(
+        &self,
+        destination: &Destination,
+        scheme: ForwardScheme,
+        direct_addresses: &[SocketAddr],
+        deadline: Instant,
+    ) -> Result<ConnectedHttp, RequestFailure> {
+        let mut last_error = RequestFailure::BadGateway;
+        if self.peer_direct_fallback != ForwardDirectFallback::Required {
+            let attempts = self
+                .peers
+                .len()
+                .min(self.peer_max_retries.saturating_add(1));
+            for peer in self.peers.iter().take(attempts) {
+                match self
+                    .connect_http_through_peer(peer, destination, scheme, deadline)
+                    .await
+                {
+                    Ok(stream) => {
+                        return Ok(ConnectedHttp {
+                            stream,
+                            via_peer: true,
+                        });
+                    }
+                    Err(error) => last_error = error,
+                }
+                if Instant::now() >= deadline {
+                    break;
+                }
+            }
+            if self.peer_direct_fallback == ForwardDirectFallback::Denied {
+                return Err(last_error);
+            }
+        }
+        self.connect_http(destination, scheme, direct_addresses, deadline)
+            .await
+            .map(|stream| ConnectedHttp {
+                stream,
+                via_peer: false,
+            })
+    }
+
+    async fn connect_http_through_peer(
+        &self,
+        peer: &StaticPeerPlan,
+        destination: &Destination,
+        scheme: ForwardScheme,
+        deadline: Instant,
+    ) -> Result<BoxedIo, RequestFailure> {
+        let stream = self.connect_peer_tcp(peer, deadline).await?;
+        if scheme == ForwardScheme::Http {
+            return Ok(Box::new(stream));
+        }
+        let tunnel = self.connect_through_peer(stream, destination, deadline).await?;
+        self.connect_tls_stream(destination, tunnel, deadline).await
+    }
+
     async fn connect_http(
         &self,
         destination: &Destination,
@@ -2367,6 +2560,16 @@ impl ForwardHttp1ServicePlan {
         if scheme == ForwardScheme::Http {
             return Ok(Box::new(stream));
         }
+        self.connect_tls_stream(destination, Box::new(stream), deadline)
+            .await
+    }
+
+    async fn connect_tls_stream(
+        &self,
+        destination: &Destination,
+        stream: BoxedIo,
+        deadline: Instant,
+    ) -> Result<BoxedIo, RequestFailure> {
         let tls_identity = match &destination.host {
             Host::Dns(host) => host.clone(),
             Host::Ip(address) => address.to_string(),
@@ -2677,6 +2880,33 @@ fn resolver(service: &ForwardProxyService) -> Result<TokioAsyncResolver, Forward
             options,
         ))
     }
+}
+
+fn static_peer_plan(peer: &ForwardPeer) -> Result<StaticPeerPlan, ForwardPlanError> {
+    if peer.host.is_empty() || peer.port == 0 {
+        return Err(ForwardPlanError::Peer);
+    }
+    let host = peer
+        .host
+        .parse::<IpAddr>()
+        .map_or_else(|_| Host::Dns(peer.host.clone()), Host::Ip);
+    Ok(StaticPeerPlan {
+        host,
+        port: peer.port,
+    })
+}
+
+fn absolute_form(target: &oxiroute_forward_proxy::ForwardTarget) -> Option<Uri> {
+    let path = target
+        .origin_form
+        .path_and_query()
+        .map_or(target.origin_form.path(), |value| value.as_str());
+    Uri::builder()
+        .scheme(target.scheme.as_str())
+        .authority(target.destination.authority())
+        .path_and_query(path)
+        .build()
+        .ok()
 }
 
 fn destination_time_windows(ranges: &[ForwardTimeRange]) -> Result<Vec<TimeWindow>, RuleError> {

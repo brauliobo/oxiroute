@@ -817,6 +817,109 @@ fn cache_peer_credentials_become_typed_secret_facts() {
 }
 
 #[test]
+fn static_parent_peers_and_global_never_direct_lower_in_source_order() {
+    let directory = tempdir().expect("fixture directory");
+    let root = directory.path().join("squid.conf");
+    fs::write(
+        &root,
+        b"http_port 3128\n\
+          access_log none\n\
+          forwarded_for delete\n\
+          via off\n\
+          acl ssl_ports port 443\n\
+          http_access deny CONNECT !ssl_ports\n\
+          http_access allow all\n\
+          cache_peer first.example.test parent 3128 0\n\
+          cache_peer 192.0.2.44 parent 8080 0\n\
+          never_direct allow all\n",
+    )
+    .expect("static peer source");
+
+    let report = import(&root);
+    let config = report.config.as_ref().expect("static peer candidate");
+    let policy = &config.forward_proxy_services[0].peer_policy;
+    assert_eq!(policy.peers.len(), 2);
+    assert_eq!(policy.peers[0].host, "first.example.test");
+    assert_eq!(policy.peers[0].port, 3128);
+    assert_eq!(policy.peers[1].host, "192.0.2.44");
+    assert_eq!(policy.peers[1].port, 8080);
+    assert_eq!(policy.direct_fallback, oxiroute_config::ForwardDirectFallback::Denied);
+    assert_eq!(policy.max_retries, 1);
+    assert!(report.blocked_capabilities.is_empty());
+    assert!(report.canonical_provenance.iter().any(|entry| {
+        entry.path == "/forward_proxy_services/0/peer_policy/peers/0/host"
+    }));
+    assert!(report.canonical_provenance.iter().any(|entry| {
+        entry.path == "/forward_proxy_services/0/peer_policy/direct_fallback"
+    }));
+    assert!(report.decision_ledger.decisions.iter().any(|decision| {
+        decision.name == b"cache_peer"
+            && matches!(
+                decision.outcome,
+                DecisionOutcome::Classified {
+                    activation: Activation::Structural,
+                    ..
+                }
+            )
+    }));
+}
+
+#[test]
+fn global_always_direct_lowers_to_required_direct_fallback() {
+    let directory = tempdir().expect("fixture directory");
+    let root = directory.path().join("squid.conf");
+    fs::write(
+        &root,
+        b"http_port 3128\naccess_log none\nforwarded_for delete\nvia off\nacl ssl_ports port 443\nhttp_access deny CONNECT !ssl_ports\nhttp_access allow all\nalways_direct allow all\n",
+    )
+    .expect("direct source");
+
+    let report = import(&root);
+    let config = report.config.as_ref().expect("direct candidate");
+    assert_eq!(
+        config.forward_proxy_services[0].peer_policy.direct_fallback,
+        oxiroute_config::ForwardDirectFallback::Required
+    );
+    assert!(config.forward_proxy_services[0].peer_policy.peers.is_empty());
+}
+
+#[test]
+fn unsupported_peer_and_direct_forms_keep_stable_blockers() {
+    let directory = tempdir().expect("fixture directory");
+    let base = "http_port 3128\naccess_log none\nforwarded_for delete\nvia off\nhttp_access allow all\n";
+    for (name, extra, expected_message) in [
+        (
+            "sibling",
+            "cache_peer peer.example.test sibling 3128 0\n",
+            "Squid cache_peer must be an ordered static parent with HTTP port, ICP port 0, and no options",
+        ),
+        (
+            "option",
+            "cache_peer peer.example.test parent 3128 0 no-query\n",
+            "Squid cache_peer must be an ordered static parent with HTTP port, ICP port 0, and no options",
+        ),
+        (
+            "icp",
+            "cache_peer peer.example.test parent 3128 3130\n",
+            "Squid cache_peer must be an ordered static parent with HTTP port, ICP port 0, and no options",
+        ),
+        (
+            "conditional-direct",
+            "acl target dstdomain example.test\nalways_direct allow target\n",
+            "Squid direct-routing form is outside the exact global direct-fallback subset",
+        ),
+    ] {
+        let root = directory.path().join(format!("{name}.conf"));
+        fs::write(&root, format!("{base}{extra}")).expect("unsupported source");
+        let report = import(&root);
+        assert!(report.config.is_none(), "{name} unexpectedly lowered");
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.message() == expected_message
+        }), "{name} lacks stable blocker message");
+    }
+}
+
+#[test]
 fn source_loading_stops_before_retaining_an_oversized_file() {
     let directory = tempdir().expect("temp directory");
     let root = directory.path().join("squid.conf");

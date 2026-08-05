@@ -104,7 +104,8 @@ The compatibility matrix MUST separately track:
 - Delay pools and traffic limits.
 - URL rewrite and external ACL helpers.
 - ICAP/eCAP adaptation.
-- Parent/sibling peers and peer selection.
+- Parent/sibling peers and peer selection, except the bounded static HTTP parent subset and global
+  direct-fallback rules explicitly listed in the compatibility registry.
 - Transparent interception and TLS bump.
 - Logging, management reports, and operational controls.
 - ICP, HTCP, WCCP, and other legacy integrations.

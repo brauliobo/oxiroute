@@ -501,6 +501,8 @@ fn squid_import_report_publishes_the_target_capability_registry() {
     let report_json: Value = serde_json::from_slice(&report.stdout).expect("Squid report JSON");
     assert_eq!(report_json["source"]["product"], "squid");
     assert_eq!(report_json["capabilities"]["targetVersion"], "6f4c814");
+    assert_eq!(report_json["capabilities"]["registryVersion"], 2);
+    assert_eq!(report_json["capabilities"]["profile"]["version"], 2);
     assert_eq!(report_json["capabilities"]["parity"], "partial");
     assert_eq!(report_json["capabilities"]["completeParity"], false);
     assert!(
@@ -509,6 +511,16 @@ fn squid_import_report_publishes_the_target_capability_registry() {
             .is_some_and(|families| families.iter().any(|family| {
                 family["id"] == "family.squid.cache" && family["status"] == "unsupported"
             }))
+    );
+    assert!(
+        report_json["capabilities"]["directives"]
+            .as_array()
+            .is_some_and(|directives| {
+                directives.iter().any(|directive| {
+                    directive["id"] == "directive.squid.cache-peer.static-parent"
+                        && directive["status"] == "compatible"
+                })
+            })
     );
 }
 

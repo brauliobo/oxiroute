@@ -9,15 +9,16 @@ use crate::{
         MAX_FORWARD_ACCESS_CONDITIONS, MAX_FORWARD_ACCESS_MATCHERS, MAX_FORWARD_ACCESS_RULES,
         MAX_FORWARD_BODY_BYTES, MAX_FORWARD_CIDRS, MAX_FORWARD_CONNECT_PORTS,
         MAX_FORWARD_CONNECTIONS, MAX_FORWARD_DOMAINS, MAX_FORWARD_HEADER_BYTES,
-        MAX_FORWARD_NAMESERVERS, MAX_FORWARD_PROXY_SERVICES, MAX_FORWARD_RESOLVER_ADDRESSES,
+        MAX_FORWARD_NAMESERVERS, MAX_FORWARD_PEER_RETRIES, MAX_FORWARD_PEERS,
+        MAX_FORWARD_PROXY_SERVICES, MAX_FORWARD_RESOLVER_ADDRESSES,
         MAX_FORWARD_RESOLVER_CACHE_ENTRIES, MAX_FORWARD_RESOLVER_CONCURRENT_QUERIES,
         MAX_FORWARD_TIME_RANGES, MAX_FORWARD_TIMEOUT_MS,
     },
-    lexical::{is_valid_certificate_dns_name, validate_file_path},
+    lexical::{is_valid_certificate_dns_name, is_valid_dns_name, validate_file_path},
     model::{
         CacheAuthorizationPolicy, CacheKeyComponent, CacheSetCookiePolicy, CacheVaryPolicy,
-        ConfigError, ForwardAccessMatcher, ForwardHttpVersion, ForwardProxyAuth,
-        ForwardProxyService, ForwardTimeRange, ForwardWeekday,
+        ConfigError, ForwardAccessMatcher, ForwardDirectFallback, ForwardHttpVersion,
+        ForwardProxyAuth, ForwardProxyService, ForwardTimeRange, ForwardWeekday,
     },
 };
 
@@ -61,6 +62,7 @@ fn validate_service(
     cache_stores: &HashMap<String, CacheStoreBounds>,
 ) -> Result<(), ConfigError> {
     validate_versions_and_connect(service)?;
+    validate_peer_policy(service)?;
     if let Some(auth) = &service.auth {
         match auth {
             ForwardProxyAuth::BearerTokenFile { token_file_path } => validate_file_path(
@@ -115,6 +117,83 @@ fn validate_service(
     validate_cache_policy(service, cache_stores)?;
     validate_resolver(service)?;
     validate_service_limits(service)
+}
+
+fn validate_peer_policy(service: &mut ForwardProxyService) -> Result<(), ConfigError> {
+    let policy = &mut service.peer_policy;
+    if policy.peers.len() > MAX_FORWARD_PEERS {
+        return Err(invalid(
+            &service.name,
+            "peer_policy.peers",
+            format!("must contain at most {MAX_FORWARD_PEERS} peers"),
+        ));
+    }
+    if policy.max_retries > MAX_FORWARD_PEER_RETRIES {
+        return Err(invalid(
+            &service.name,
+            "peer_policy.max_retries",
+            format!("must be at most {MAX_FORWARD_PEER_RETRIES}"),
+        ));
+    }
+    if policy.peers.is_empty() && policy.direct_fallback == ForwardDirectFallback::Denied {
+        return Err(invalid(
+            &service.name,
+            "peer_policy.direct_fallback",
+            "denied requires at least one static peer",
+        ));
+    }
+    if !policy.peers.is_empty()
+        && service
+            .enabled_versions
+            .iter()
+            .any(|version| *version != ForwardHttpVersion::H1)
+    {
+        return Err(invalid(
+            &service.name,
+            "peer_policy.peers",
+            "static peer selection is supported only with forward HTTP/1",
+        ));
+    }
+
+    let mut identities = HashSet::with_capacity(policy.peers.len());
+    for peer in &mut policy.peers {
+        if peer.port == 0 {
+            return Err(invalid(
+                &service.name,
+                "peer_policy.peers.port",
+                "must be nonzero",
+            ));
+        }
+        let identity = if let Ok(address) = peer.host.parse::<IpAddr>() {
+            if address.is_unspecified() || address.is_multicast() {
+                return Err(invalid(
+                    &service.name,
+                    "peer_policy.peers.host",
+                    "must be a specific unicast address or DNS name",
+                ));
+            }
+            peer.host = address.to_string();
+            peer.host.clone()
+        } else {
+            peer.host.make_ascii_lowercase();
+            if !is_valid_dns_name(&peer.host) {
+                return Err(invalid(
+                    &service.name,
+                    "peer_policy.peers.host",
+                    "must be a canonical DNS name or IP address",
+                ));
+            }
+            peer.host.clone()
+        };
+        if !identities.insert((identity, peer.port)) {
+            return Err(invalid(
+                &service.name,
+                "peer_policy.peers",
+                "must not contain duplicate host and port pairs",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_cache_policy(
