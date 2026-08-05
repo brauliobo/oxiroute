@@ -73,6 +73,8 @@ activation of standalone import reports. Restricted Lua cannot declare native re
   map from generated spans back to the covering original bytes. The finalizable subset covers HTTP and TCP,
   aggregate/listener/server admission, socket/DNS/Unix endpoints, `roundrobin`, `leastconn`, and
   `first`, reusable HTTP least-connections, healthy-startup checks with exact timeout preservation,
+  one literal `http-check send` GET request with a canonical URI, HTTP/1.0 or HTTP/1.1, and at most one
+  literal Host header,
   bounded retries with bare final redispatch, independent timeout scopes including upstream
   queue deadlines, source-CIDR `forwardfor` exceptions, cumulative inherited `default-server`
   health intervals/capacity, and server-close connection reuse. A backend-scoped, uniquely consumed
@@ -254,7 +256,8 @@ The current strict HTTP/TCP slice includes:
 Blockers:
 
 - Generic UDP, arbitrary sample expressions, maps, stick tables, Lua, and dynamic servers.
-- Complex health checks, runtime server state, SPOE, and unsupported QUIC modes.
+- Complex health checks beyond the literal `http-check send` request shape, arbitrary check headers or
+  bodies, runtime server state, SPOE, and unsupported QUIC modes.
 - Redispatch interval arguments, broader ACL expressions, unsupported stats/authentication forms,
   and server-selection options without an equivalent request-lifetime contract.
 

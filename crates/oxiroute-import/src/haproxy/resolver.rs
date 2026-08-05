@@ -34,7 +34,7 @@ mod http_directives;
 mod server;
 
 use http_directives::{
-    parse_acl, parse_forward_for, parse_http_check, parse_http_request_rule,
+    parse_acl, parse_forward_for, parse_http_check, parse_http_check_send, parse_http_request_rule,
     parse_http_response_rule, parse_status_ranges,
 };
 use server::{merge_server_defaults, parse_server};
@@ -304,6 +304,7 @@ pub struct ProxySettings {
     pub timeouts: Timeouts,
     pub forward_for: Option<EffectiveValue<OptionState<ForwardFor>>>,
     pub http_check: Option<EffectiveValue<OptionState<HttpCheck>>>,
+    pub http_check_send: Option<EffectiveValue<HttpCheck>>,
     pub http_check_expect: Option<EffectiveValue<Vec<StatusRange>>>,
     pub http_server_close: Option<EffectiveValue<bool>>,
     pub maxconn: Option<EffectiveValue<u64>>,
@@ -341,6 +342,7 @@ impl ProxySettings {
         inherit_value(&mut inherited.timeouts.http_keep_alive, step);
         inherit_value(&mut inherited.forward_for, step);
         inherit_value(&mut inherited.http_check, step);
+        inherit_value(&mut inherited.http_check_send, step);
         inherit_value(&mut inherited.http_check_expect, step);
         inherit_value(&mut inherited.http_server_close, step);
         inherit_value(&mut inherited.maxconn, step);
@@ -1363,7 +1365,7 @@ impl Resolver {
                     self.resolve_option(occurrence, directive, meta.section.kind, state);
                 }
                 b"http-check" if supports_backend_policy(meta.section.kind) => {
-                    self.resolve_http_check_expect(occurrence, directive, state);
+                    self.resolve_http_check(occurrence, directive, state);
                 }
                 b"retry-on" if supports_backend_policy(meta.section.kind) => {
                     self.track_and_reject_semantics(
@@ -2095,6 +2097,33 @@ impl Resolver {
         let conflict = self.set_setting(&mut state.settings.http_check_expect, value);
         if !self.finish_setting(occurrence, directive, conflict, &mut state.settings) {
             self.consume(occurrence, Consumption::Setting);
+        }
+    }
+
+    fn resolve_http_check(
+        &mut self,
+        occurrence: OccurrenceId,
+        directive: &Directive,
+        state: &mut SectionState,
+    ) {
+        match directive
+            .arguments
+            .first()
+            .map(|argument| argument.value.as_slice())
+        {
+            Some(b"expect") => self.resolve_http_check_expect(occurrence, directive, state),
+            Some(b"send") => {
+                let Some(check) = parse_http_check_send(&directive.arguments[1..]) else {
+                    self.unsupported_directive_form_for_occurrence(occurrence, directive);
+                    return;
+                };
+                let value = EffectiveValue::direct(check, occurrence, directive.span);
+                let conflict = self.set_setting(&mut state.settings.http_check_send, value);
+                if !self.finish_setting(occurrence, directive, conflict, &mut state.settings) {
+                    self.consume(occurrence, Consumption::Setting);
+                }
+            }
+            _ => self.unsupported_directive_form_for_occurrence(occurrence, directive),
         }
     }
 

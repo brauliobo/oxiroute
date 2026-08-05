@@ -137,7 +137,10 @@ tests named `positive_host_and_path_acl_conjunction_lowers_with_both_matchers_an
 case-insensitive Host route and fixed fallback, the non-audited host-shaped Host-plus-path fixture,
 ACL reference provenance, reusable least-connections, final redispatch, and exact
 listener/statistics-page timeout policy while retaining blockers for dynamic, negated, duplicate,
-and unsupported forms. Wire coverage checks page admission/request timeouts, DNS-rebinding and
+and unsupported forms. The `http-check send` tests additionally cover parser token retention,
+semantic consumption, canonical health-field provenance, native-reference composition, runtime-plan
+preparation, and blocking arbitrary headers or disabled-check contradictions. Wire coverage checks
+page admission/request timeouts, DNS-rebinding and
 forwarded-header rejection, Referer fallback, mapped-IPv4 loopback, and HEAD representation length.
 
 UI contract coverage includes the exact Vitest cases `accepts new canonical variants and rejects

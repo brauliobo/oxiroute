@@ -170,6 +170,7 @@ impl Lowerer<'_> {
             return;
         }
         let algorithm = algorithm.expect("representable pool has an algorithm");
+        let health_check_present = health_check.as_ref().is_some_and(Option::is_some);
 
         let pool_index = self.draft.upstream_pools.len();
         self.lowered_pools.insert(section.id);
@@ -200,6 +201,9 @@ impl Lowerer<'_> {
             extend_sources(&mut sources, &server.address.provenance);
         }
         self.record(pool_path.clone(), sources);
+        if health_check_present {
+            self.record_health_check_provenance(&pool_path, settings, servers);
+        }
         if let Some(queue_timeout) = &settings.timeouts.queue {
             self.record(
                 pool_path.field("queue_timeout_ms"),
@@ -422,40 +426,55 @@ impl Lowerer<'_> {
             return None;
         };
         let timeout_ms = interval_ms.max(1);
-        let (kind, path, host, http_version) = match settings.http_check.as_ref() {
-            Some(check_value) => match &check_value.value {
-                OptionState::Enabled(check) => {
-                    if check.method != b"GET" {
-                        self.block_value(
-                            check_value,
-                            "HAProxy HTTP health check method is not representable by the canonical GET health check",
-                        );
-                        return None;
-                    }
-                    let (Ok(path), Ok(host)) = (
-                        std::str::from_utf8(&check.uri),
-                        check.host.as_deref().map(std::str::from_utf8).transpose(),
-                    ) else {
-                        self.block_value(
-                            check_value,
-                            "HAProxy HTTP check path or host is not UTF-8",
-                        );
-                        return None;
-                    };
-                    let version = match check.version.as_slice() {
-                        b"HTTP/1.0" => Some(oxiroute_config::HealthHttpVersion::Http10),
-                        b"HTTP/1.1" => Some(oxiroute_config::HealthHttpVersion::Http11),
-                        _ => None,
-                    };
-                    (
-                        HealthCheckType::Http,
-                        Some(path.into()),
-                        host.map(str::to_owned),
-                        version,
-                    )
+        let request = match (
+            settings.http_check.as_ref().map(|value| &value.value),
+            settings.http_check_send.as_ref(),
+        ) {
+            (Some(OptionState::Disabled), Some(send)) => {
+                self.block_provenance(
+                    &send.provenance,
+                    "HAProxy HTTP health-check send cannot be combined with disabled option httpchk",
+                );
+                return None;
+            }
+            (_, Some(send)) => Some((&send.value, &send.provenance)),
+            (Some(OptionState::Enabled(check)), None) => settings
+                .http_check
+                .as_ref()
+                .map(|value| (check, &value.provenance)),
+            _ => None,
+        };
+        let (kind, path, host, http_version) = match request {
+            Some((check, provenance)) => {
+                if check.method != b"GET" {
+                    self.block_provenance(
+                        provenance,
+                        "HAProxy HTTP health check method is not representable by the canonical GET health check",
+                    );
+                    return None;
                 }
-                OptionState::Disabled => (HealthCheckType::Tcp, None, None, None),
-            },
+                let (Ok(path), Ok(host)) = (
+                    std::str::from_utf8(&check.uri),
+                    check.host.as_deref().map(std::str::from_utf8).transpose(),
+                ) else {
+                    self.block_provenance(
+                        provenance,
+                        "HAProxy HTTP check path or host is not UTF-8",
+                    );
+                    return None;
+                };
+                let version = match check.version.as_slice() {
+                    b"HTTP/1.0" => Some(oxiroute_config::HealthHttpVersion::Http10),
+                    b"HTTP/1.1" => Some(oxiroute_config::HealthHttpVersion::Http11),
+                    _ => None,
+                };
+                (
+                    HealthCheckType::Http,
+                    Some(path.into()),
+                    host.map(str::to_owned),
+                    version,
+                )
+            }
             None => (HealthCheckType::Tcp, None, None, None),
         };
         let expected_status = match (kind, settings.http_check_expect.as_ref()) {
@@ -492,6 +511,79 @@ impl Lowerer<'_> {
             expected_status,
             http_version,
         }))
+    }
+
+    fn record_health_check_provenance(
+        &mut self,
+        path: &CanonicalPath,
+        settings: &ProxySettings,
+        servers: &[EffectiveServer],
+    ) {
+        let request_sources = settings
+            .http_check_send
+            .as_ref()
+            .map(|value| &value.provenance)
+            .or_else(|| settings.http_check.as_ref().map(|value| &value.provenance));
+        if let Some(provenance) = request_sources {
+            let sources = provenance_sources(provenance);
+            for field in ["kind", "path", "host", "http_version"] {
+                self.record(path.field("health_check").field(field), sources.clone());
+            }
+        }
+        if let Some(expect) = &settings.http_check_expect {
+            self.record(
+                path.field("health_check").field("expected_status"),
+                provenance_sources(&expect.provenance),
+            );
+        }
+        self.record_server_sources(
+            path.field("health_check").field("interval_ms"),
+            servers,
+            |server| server.interval.as_ref(),
+        );
+        self.record_server_sources(
+            path.field("health_check").field("timeout_ms"),
+            servers,
+            |server| server.interval.as_ref(),
+        );
+        self.record_server_sources(
+            path.field("health_check").field("healthy_threshold"),
+            servers,
+            |server| server.rise.as_ref(),
+        );
+        self.record_server_sources(
+            path.field("health_check").field("unhealthy_threshold"),
+            servers,
+            |server| server.fall.as_ref(),
+        );
+        self.record_server_sources(
+            path.field("health_check").field("fast_interval_ms"),
+            servers,
+            |server| server.fast_interval.as_ref(),
+        );
+        self.record_server_sources(
+            path.field("health_check").field("down_interval_ms"),
+            servers,
+            |server| server.down_interval.as_ref(),
+        );
+    }
+
+    fn record_server_sources<T, F>(
+        &mut self,
+        path: CanonicalPath,
+        servers: &[EffectiveServer],
+        value: F,
+    ) where
+        F: for<'server> Fn(&'server EffectiveServer) -> Option<&'server EffectiveValue<T>>,
+    {
+        let sources = servers
+            .iter()
+            .filter_map(value)
+            .flat_map(|value| provenance_sources(&value.provenance))
+            .collect::<Vec<_>>();
+        if !sources.is_empty() {
+            self.record(path, sources);
+        }
     }
 
     fn duration_value_ms(duration: std::time::Duration) -> Option<u64> {

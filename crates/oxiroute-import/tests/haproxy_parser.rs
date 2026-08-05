@@ -217,6 +217,41 @@ fn parser_retains_ordered_acl_conjunction_words_and_source_span() {
 }
 
 #[test]
+fn parser_retains_http_check_send_tokens_and_source_span() {
+    let source = source(
+        b"backend app\n  http-check send meth GET uri /healthz ver HTTP/1.1 hdr Host app.internal\n",
+    );
+    let report = parse(&source);
+    let directive = &report.value().sections[0].directives[0];
+
+    assert!(report.diagnostics().is_empty());
+    assert_eq!(directive.name.value, b"http-check");
+    assert_eq!(
+        directive
+            .arguments
+            .iter()
+            .map(|word| word.value.as_slice())
+            .collect::<Vec<_>>(),
+        [
+            b"send".as_slice(),
+            b"meth".as_slice(),
+            b"GET".as_slice(),
+            b"uri".as_slice(),
+            b"/healthz".as_slice(),
+            b"ver".as_slice(),
+            b"HTTP/1.1".as_slice(),
+            b"hdr".as_slice(),
+            b"Host".as_slice(),
+            b"app.internal".as_slice(),
+        ]
+    );
+    assert_eq!(
+        &source.bytes()[directive.span.range().start()..directive.span.range().end()],
+        b"http-check send meth GET uri /healthz ver HTTP/1.1 hdr Host app.internal"
+    );
+}
+
+#[test]
 fn each_file_ends_its_section_in_multi_file_parsing() {
     let first = loaded(0, 0, "first.cfg", b"frontend public\n  mode http\n");
     let second = loaded(
