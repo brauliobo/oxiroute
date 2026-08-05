@@ -279,7 +279,7 @@ fn import_nginx_registration_fixture() -> NginxImportReport {
         directory.path().join("registered.conf"),
         render_nginx_fixture(NginxFixtureSpec {
             extra_http: "http2 on;\n  add_header X-Manifest manifest;",
-            extra_server: "location = /fixed { return 204; }\n    location = /redirect { return 308 https://example.test/new; }\n    location /static { root /srv/static; index index.html; error_page 404 /404.html; }\n    location = /404.html { root /srv/static; }\n    location /protected { auth_basic synthetic; auth_basic_user_file /tmp/synthetic-users; return 403; }",
+            extra_server: "location = /fixed { return 204; }\n    location = /redirect { return 308 https://example.test/new; }\n    location /static { root /srv/static; index index.html; error_page 404 /404.html; }\n    location /static-alias { alias /srv/static; expires off; }\n    location = /404.html { root /srv/static; }\n    location /protected { auth_basic synthetic; auth_basic_user_file /tmp/synthetic-users; return 403; }",
             ..standard_nginx_fixture()
         }),
     )
@@ -378,7 +378,9 @@ fn nginx_context_probe_source(entry: &DirectiveForm, context: &str, directory: &
     if entry.key == "location" && context == "location" {
         return nginx_nested_location_probe(entry.id.as_str());
     }
-    if matches!(entry.key.as_str(), "root" | "index") && context == "location" {
+    if matches!(entry.key.as_str(), "root" | "index" | "alias" | "expires")
+        && context == "location"
+    {
         return source;
     }
     if entry.contexts.len() == 1 || entry.contexts == ["any"] {
@@ -511,6 +513,14 @@ fn nginx_probe_source(id: &str, directory: &Path) -> String {
         id if id.starts_with("directive.nginx.auth-basic.") => nginx_auth_basic_probe(id),
         "directive.nginx.auth-basic-user-file" => nginx_auth_basic_probe(id),
         "directive.nginx.root.static" | "directive.nginx.index.static" => nginx_static_probe(),
+        "directive.nginx.alias.static" => render_nginx_fixture(standard_nginx_fixture()).replace(
+            "location / { proxy_pass http://app; }",
+            "location / {\n      alias /srv/static;\n    }",
+        ),
+        "directive.nginx.expires.off" => render_nginx_fixture(standard_nginx_fixture()).replace(
+            "location / { proxy_pass http://app; }",
+            "location / {\n      expires off;\n      proxy_pass http://app;\n    }",
+        ),
         "directive.nginx.http2" => render_nginx_fixture(NginxFixtureSpec {
             listen: "127.0.0.1:8443 ssl default_server",
             extra_http: "http2 on;",

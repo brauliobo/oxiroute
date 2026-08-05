@@ -540,6 +540,7 @@ fn lowers_inherited_nginx_tls_policy_exactly() {
         TlsPolicy {
             cipher_list: Some("ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384".into()),
             dh_parameters_path: Some("/etc/letsencrypt/ssl-dhparams.pem".into()),
+            client_auth: Default::default(),
             session_cache: Some(TlsSessionCache {
                 name: "le_nginx_SSL".into(),
                 size_bytes: 10 * 1024 * 1024,
