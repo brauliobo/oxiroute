@@ -155,12 +155,14 @@ behavior. Synthetic fixtures remain implementation evidence only.
 ### Protocol conformance and interoperability
 
 - HTTP semantics use standards-derived tests and independent clients/servers.
-- HTTP/2 versions are asserted from negotiation and wire behavior; the active `forward_http3`
-  listener is asserted through independent QUIC/H3 process-level wire tests, while reverse H3
-  remains planned.
+- HTTP/2 versions are asserted from negotiation and wire behavior; the active `forward_http3` and
+  reverse `http3` listeners are asserted through independent QUIC/H3 process-level wire tests.
+- Reverse H3 tests cover service-plan routing to an HTTP origin, TLS/`h3` negotiation, bounded
+  request policy validation, generation-owned UDP listener release, and no silent protocol fallback.
 - TLS tests use independent OpenSSL/rustls clients where applicable.
-- gRPC and WebSocket behavior use independent implementations. Forward proxy/CONNECT and PROXY
-  protocol conformance remain planned.
+- gRPC and WebSocket behavior use independent implementations. Bounded PROXY v1/v2 parser and
+  TCP/UDP integration tests cover malformed, timeout, mismatch, over-read, and quota boundaries;
+  broader interoperability conformance remains planned.
 
 Current Unix TLS/H2/gRPC coverage includes:
 

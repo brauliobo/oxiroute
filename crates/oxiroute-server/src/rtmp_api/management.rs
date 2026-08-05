@@ -1013,13 +1013,14 @@ fn find_pool(active: &RuntimeGeneration, name: &str) -> Option<Arc<crate::RoundR
 
 fn active_reference_count(active: &RuntimeGeneration) -> u64 {
     use crate::RuntimeReferenceKind::{
-        ForwardHttp1, ForwardHttp3, Http1, Http2, Rtmp, Tcp, Udp, WebSocket,
+        ForwardHttp1, ForwardHttp3, Http1, Http2, Http3, Rtmp, Tcp, Udp, WebSocket,
     };
     [
         ForwardHttp1,
         ForwardHttp3,
         Http1,
         Http2,
+        Http3,
         WebSocket,
         Tcp,
         Rtmp,

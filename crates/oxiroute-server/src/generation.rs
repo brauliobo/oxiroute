@@ -34,6 +34,7 @@ pub enum RuntimeReferenceKind {
     Rtmp,
     Udp,
     ForwardHttp3,
+    Http3,
 }
 
 impl RuntimeReferenceKind {
@@ -47,6 +48,7 @@ impl RuntimeReferenceKind {
             Self::Rtmp => 5,
             Self::Udp => 6,
             Self::ForwardHttp3 => 7,
+            Self::Http3 => 8,
         }
     }
 }
@@ -220,7 +222,7 @@ pub struct RuntimeGeneration {
     drain: (Mutex<()>, Condvar),
     metrics: RuntimeMetrics,
     plan: RuntimePlan,
-    references: [AtomicU64; 8],
+    references: [AtomicU64; 9],
     mutations: AtomicU64,
     reservations: ListenerReservations,
     revision: GenerationRevision,
@@ -1775,6 +1777,7 @@ mod tests {
             RuntimeReferenceKind::Tcp,
             RuntimeReferenceKind::Rtmp,
             RuntimeReferenceKind::Udp,
+            RuntimeReferenceKind::Http3,
         ]
         .map(|kind| generation.begin_reference(kind).expect("reference"));
         let draining = Arc::clone(&generation);
@@ -1799,6 +1802,7 @@ mod tests {
             protocol: oxiroute_config::Protocol::Rtmp,
             service: Some("live".into()),
             tls_profile: None,
+            proxy_protocol: None,
             max_connections: None,
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
         });
@@ -1821,6 +1825,8 @@ mod tests {
                 callbacks: oxiroute_config::RtmpCallbackConfig::default(),
                 fanout: oxiroute_config::RtmpFanoutPolicy::default(),
                 vod: None,
+                hls: None,
+                dash: None,
                 recorders: Vec::new(),
             }],
         });

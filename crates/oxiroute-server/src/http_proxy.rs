@@ -2558,7 +2558,7 @@ fn nginx_host(
     dynamic_header_value(&normalized)
 }
 
-fn selected_upstream_host(
+pub(crate) fn selected_upstream_host(
     endpoint: &RuntimeEndpoint,
     policy: HttpUpstreamHost,
     incoming: Option<&Authority>,
@@ -2817,7 +2817,7 @@ fn dynamic_header_value(value: &str) -> pingora::Result<HeaderValue> {
     HeaderValue::from_str(value).map_err(|_| Error::new_in(ErrorType::InvalidHTTPHeader))
 }
 
-fn remove_upstream_hop_by_hop_response_headers(
+pub(crate) fn remove_upstream_hop_by_hop_response_headers(
     response: &mut pingora::http::ResponseHeader,
 ) -> pingora::Result<()> {
     let mut connection_headers = Vec::new();
@@ -2851,7 +2851,7 @@ fn remove_upstream_hop_by_hop_response_headers(
     Ok(())
 }
 
-fn apply_response_policy(
+pub(crate) fn apply_response_policy(
     response: &mut pingora::http::ResponseHeader,
     policy: &ProxyPolicyPlan,
 ) -> pingora::Result<()> {

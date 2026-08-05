@@ -1,4 +1,5 @@
-use oxiroute_config::{ConfigError, HttpRouteAction, load_lua, render_lua, validate_config};
+use oxiroute_config::{Config, ConfigError, HttpRouteAction, load_lua, render_lua, validate_config};
+use serde_json::json;
 
 fn config(routes: &str, endpoint: &str) -> String {
     format!(
@@ -46,6 +47,61 @@ fn first_route(source: &str) -> serde_json::Value {
     let config = load_lua(source).expect("HTTP route configuration");
     serde_json::to_value(config).expect("serialized configuration")["http_services"][0]["routes"][0]
         .clone()
+}
+
+fn http3_config(request_buffering: bool, tls_profile: Option<&str>) -> Config {
+    serde_json::from_value(json!({
+        "version": 1,
+        "certificates": [{
+            "name": "local",
+            "dns_names": ["localhost"],
+            "source": {"type": "self_signed_development", "validity_days": 7}
+        }],
+        "tls_profiles": [{
+            "name": "h3",
+            "certificates": ["local"],
+            "default_certificate": "local",
+            "min_version": "1.3",
+            "alpn": ["h3"]
+        }],
+        "listeners": [{
+            "name": "h3",
+            "bind": {"type": "udp", "address": "127.0.0.1:9443"},
+            "protocol": "http3",
+            "service": "web",
+            "tls_profile": tls_profile
+        }],
+        "http_services": [{
+            "name": "web",
+            "routes": [{
+                "path": {"kind": "exact", "value": "/"},
+                "policy": {"request_buffering": request_buffering},
+                "action": {"type": "fixed_response", "status": 200, "body": "ok"}
+            }]
+        }]
+    }))
+    .expect("HTTP/3 test configuration")
+}
+
+#[test]
+fn accepts_a_bounded_reverse_http3_listener() {
+    validate_config(&mut http3_config(true, Some("h3"))).expect("valid reverse HTTP/3 config");
+}
+
+#[test]
+fn rejects_reverse_http3_without_request_buffering() {
+    let error = validate_config(&mut http3_config(false, Some("h3")))
+        .expect_err("unbuffered reverse HTTP/3 request");
+    assert!(error.to_string().contains("HTTP/3 requires request buffering"));
+}
+
+#[test]
+fn rejects_reverse_http3_without_tls_profile() {
+    let error = validate_config(&mut http3_config(true, None))
+        .expect_err("TLS-less reverse HTTP/3 listener");
+    assert!(error
+        .to_string()
+        .contains("HTTP/3 requires a TLS 1.3 profile advertising only h3"));
 }
 
 #[test]
