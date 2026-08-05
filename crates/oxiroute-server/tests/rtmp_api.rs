@@ -80,6 +80,25 @@ fn reports_truthful_empty_capabilities_when_ingest_is_disabled() {
     assert_eq!(body["streams"], serde_json::json!([]));
 }
 
+#[test]
+fn reports_http3_only_when_a_listener_is_active() {
+    let metrics = RuntimeMetrics::new();
+    let listener = metrics
+        .register_listener("reverse-h3", "http3", "127.0.0.1:9443", Some(64))
+        .expect("HTTP/3 listener metrics");
+    listener.mark_listening();
+    let api = management_api(empty_registry(), metrics);
+
+    let response = api.handle("GET", "/api/v1/capabilities", 100);
+    let body: Value = serde_json::from_slice(&response.body).expect("JSON response");
+
+    assert_eq!(response.status, 200);
+    assert_eq!(body["http3"]["reverse"]["status"], "active");
+    assert_eq!(body["http3"]["reverse"]["listeners"], serde_json::json!(["reverse-h3"]));
+    assert_eq!(body["http3"]["reverse"]["fallback"], "none");
+    assert_eq!(body["http3"]["forward"]["status"], "unconfigured");
+}
+
 #[tokio::test]
 async fn serves_authenticated_vod_objects_and_single_ranges() {
     let directory = TempDir::new().expect("VOD directory");
@@ -695,6 +714,8 @@ async fn config_api_redacts_rtmp_token_secrets_from_typed_and_rendered_views() {
             callbacks: oxiroute_config::RtmpCallbackConfig::default(),
             fanout: oxiroute_config::RtmpFanoutPolicy::default(),
             vod: None,
+            hls: None,
+            dash: None,
             recorders: Vec::new(),
         }],
     }];
@@ -1150,6 +1171,7 @@ fn candidate_config(active: &Config, listener_name: &str) -> Config {
         protocol: Protocol::Rtmp,
         service: Some("live".into()),
         tls_profile: None,
+        proxy_protocol: None,
         max_connections: Some(100),
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
     });
@@ -1172,6 +1194,8 @@ fn candidate_config(active: &Config, listener_name: &str) -> Config {
             callbacks: oxiroute_config::RtmpCallbackConfig::default(),
             fanout: oxiroute_config::RtmpFanoutPolicy::default(),
             vod: None,
+            hls: None,
+            dash: None,
             recorders: Vec::new(),
         }],
     });
@@ -1210,7 +1234,8 @@ impl ManagementHarness {
         let api = RtmpManagementApi::new(empty_registry(), metrics, Arc::clone(&plan.topology))
             .with_config_coordinator(coordinator, active_revision.clone(), TEST_TOKEN)
             .expect("injected management token")
-            .with_vod_catalog(Arc::clone(&plan.rtmp_vod_catalog));
+            .with_vod_catalog(Arc::clone(&plan.rtmp_vod_catalog))
+            .with_media_catalog(Arc::clone(&plan.rtmp_media_catalog));
 
         let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .expect("reserve management listener");

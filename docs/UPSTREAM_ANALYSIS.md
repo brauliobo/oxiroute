@@ -5,7 +5,7 @@ The reference repositories were cloned shallowly into `/home/braulio/Projects` o
 
 | Project | Checkout | Relevant finding |
 | --- | --- | --- |
-| Pingora | `e6e677f` | Strong HTTP/1 and HTTP/2 reverse-proxy, service, TLS, load-balancing, lifecycle, and observability primitives; no HTTP/3 or complete explicit forward proxy. |
+| Pingora | `e6e677f` | Strong HTTP/1 and HTTP/2 reverse-proxy, service, TLS, load-balancing, lifecycle, and observability primitives; no downstream HTTP/3, so OxiRoute owns the bounded QUIC/H3 frontend. |
 | Squid | `6f4c814` | Broad forward-proxy product with CONNECT, ACLs, auth helpers, persistent caching, adaptation, interception, peer protocols, and management features. Parity is a multi-year program. |
 | nginx | `eaac3d7` | Contextual directive registry, module-specific inheritance, HTTP virtual hosts, and stream TCP/UDP. Routing precedence cannot be reduced to source order. |
 | HAProxy | `ca686e3` | Ordered section and ACL model with mature HTTP/TCP load balancing and reload. It is not a generic UDP load balancer. |
@@ -27,9 +27,9 @@ Its `allow_connect_method_proxying` option permits CONNECT in the normal HTTP fl
 does not create a byte tunnel. A production explicit proxy needs a dedicated parser and
 stream-takeover path that preserves bytes read beyond the CONNECT headers.
 
-Pingora currently has no HTTP/3 implementation. The active forward HTTP/3 path therefore uses a
-separately tested QUIC/H3 frontend; reverse HTTP/3 still requires a separately selected service
-model or an upstream Pingora capability. Neither path may silently fall back to HTTP/2.
+Pingora currently has no downstream HTTP/3 implementation. The active forward and reverse HTTP/3
+paths therefore use separately tested QUIC/H3 frontends; reverse requests reuse Pingora's immutable
+upstream HTTP session and pool plans after H3 dispatch. Neither path may silently fall back to HTTP/2.
 
 Pingora's included memory cache is not a production persistent Squid-style store.
 Persistent cache indexing, eviction, recovery, collapsed forwarding, purge, and disk

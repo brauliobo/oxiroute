@@ -15,6 +15,7 @@ pub(super) enum Route {
     Metrics,
     Readiness,
     Status,
+    Capabilities,
 }
 
 pub(super) fn match_route(path: &str) -> Option<Route> {
@@ -22,6 +23,7 @@ pub(super) fn match_route(path: &str) -> Option<Route> {
         "/api/v1/topology" => Some(Route::Topology),
         "/api/v1/monitoring" => Some(Route::Monitoring),
         "/api/v1/status" => Some(Route::Status),
+        "/api/v1/capabilities" => Some(Route::Capabilities),
         "/ready" => Some(Route::Readiness),
         "/metrics" => Some(Route::Metrics),
         _ => None,
@@ -45,6 +47,7 @@ pub(super) fn handle(
         Route::Metrics => metrics_response(metrics, registry, generations),
         Route::Readiness => readiness_response(metrics, generations),
         Route::Status => status_response(metrics, generations, topology),
+        Route::Capabilities => capabilities_response(metrics),
     }
 }
 
@@ -86,10 +89,24 @@ fn status_response(
             "previousRevision": generation.as_ref().and_then(|status| status.previous_revision.as_ref()),
             "degraded": generation.as_ref().is_none_or(|status| status.degraded),
             "audit": crate::operational_event::audit_status(),
+            "capabilities": crate::http3::capability_snapshot(&listeners),
             "listeners": listeners,
             "tlsProfiles": tls_profiles,
         }),
     )
+}
+
+fn capabilities_response(metrics: &RuntimeMetrics) -> ApiResponse {
+    match metrics.snapshot() {
+        Ok(runtime) => {
+            ApiResponse::json(200, &crate::http3::capability_snapshot(&runtime.listeners))
+        }
+        Err(_) => ApiResponse::error(
+            503,
+            "capabilities_unavailable",
+            "runtime capabilities could not be sampled",
+        ),
+    }
 }
 
 fn readiness_response(
