@@ -33,6 +33,7 @@ pub fn render_prometheus(
         .count();
     let generation = generations.status();
     let audit = crate::operational_event::audit_metrics();
+    let transport_events = crate::monitoring::transport_event_snapshots();
     let mut output = String::with_capacity(16 * 1024);
 
     metric(
@@ -116,6 +117,39 @@ pub fn render_prometheus(
     }
     if let Some(value) = runtime.host.available_memory_bytes {
         sample(&mut output, "oxiroute_host_available_memory_bytes", value)?;
+    }
+
+    for operation in &runtime.transport_operations {
+        for outcome in &operation.outcomes {
+            labels(
+                &mut output,
+                "oxiroute_transport_operations_total",
+                &[
+                    ("transport", operation.transport.as_str()),
+                    ("outcome", outcome.outcome.as_str()),
+                ],
+                outcome.count,
+            )?;
+        }
+        render_transport_latency_histogram(
+            &mut output,
+            "oxiroute_transport_operation_duration_milliseconds",
+            operation.transport.as_str(),
+            &operation.latency,
+        )?;
+    }
+    for operation in transport_events {
+        for outcome in operation.outcomes {
+            labels(
+                &mut output,
+                "oxiroute_transport_events_total",
+                &[
+                    ("transport", operation.transport.as_str()),
+                    ("outcome", outcome.outcome.as_str()),
+                ],
+                outcome.count,
+            )?;
+        }
     }
 
     for listener in &runtime.listeners {
@@ -681,6 +715,35 @@ fn render_latency_histogram(
     labels(output, &sum_name, &[("listener", listener)], latency.sum_ms)
 }
 
+fn render_transport_latency_histogram(
+    output: &mut String,
+    name: &str,
+    transport: &str,
+    latency: &crate::LatencySnapshot,
+) -> fmt::Result {
+    let bucket_name = format!("{name}_bucket");
+    let count_name = format!("{name}_count");
+    let sum_name = format!("{name}_sum");
+    for bucket in &latency.buckets {
+        let upper_bound = bucket
+            .upper_bound_ms
+            .map_or_else(|| "+Inf".to_owned(), |value| value.to_string());
+        labels(
+            output,
+            &bucket_name,
+            &[("transport", transport), ("le", upper_bound.as_str())],
+            bucket.count,
+        )?;
+    }
+    labels(
+        output,
+        &count_name,
+        &[("transport", transport)],
+        latency.count,
+    )?;
+    labels(output, &sum_name, &[("transport", transport)], latency.sum_ms)
+}
+
 fn escape_label(output: &mut String, value: &str) {
     for character in value.chars() {
         match character {
@@ -813,6 +876,70 @@ mod tests {
             "oxiroute_tcp_relay_duration_milliseconds_bucket{listener=\"edge\",le=\"5000\"} 1"
         ));
         assert!(!output.contains("/sensitive?token="));
+    }
+
+    #[test]
+    fn exposition_uses_only_fixed_transport_outcome_labels() {
+        let metrics = RuntimeMetrics::new();
+        for transport in [
+            crate::ObservedTransport::Rtmp,
+            crate::ObservedTransport::Forward,
+            crate::ObservedTransport::Cache,
+            crate::ObservedTransport::Udp,
+            crate::ObservedTransport::H3,
+            crate::ObservedTransport::Acme,
+        ] {
+            metrics
+                .record_transport_operation(
+                    transport,
+                    crate::TransportOutcome::Timeout,
+                    std::time::Duration::from_millis(7),
+                )
+                .expect("transport result");
+        }
+        let registry = RtmpRegistry::new(RtmpCapabilities {
+            live_ingest: false,
+            manual_recording: false,
+        });
+
+        let output =
+            render_prometheus(&metrics, &registry, &GenerationManager::new()).expect("exposition");
+
+        assert!(output.contains(
+            "oxiroute_transport_operations_total{transport=\"rtmp\",outcome=\"timeout\"} 1"
+        ));
+        assert!(output.contains(
+            "oxiroute_transport_operation_duration_milliseconds_bucket{transport=\"h3\",le=\"10\"} 1"
+        ));
+        assert!(!output.contains("uri="));
+        assert!(!output.contains("query="));
+        assert!(!output.contains("body="));
+        assert!(!output.contains("credential="));
+    }
+
+    #[test]
+    fn exposition_includes_bounded_rtmp_and_acme_event_outcomes() {
+        crate::operational_event::emit_rtmp_access("publish", "accepted");
+        crate::operational_event::emit_certificate(
+            "certificate_renewal",
+            "failed",
+            "example.invalid",
+        );
+        let metrics = RuntimeMetrics::new();
+        let registry = RtmpRegistry::new(RtmpCapabilities {
+            live_ingest: false,
+            manual_recording: false,
+        });
+
+        let output =
+            render_prometheus(&metrics, &registry, &GenerationManager::new()).expect("exposition");
+
+        assert!(output.contains(
+            "oxiroute_transport_events_total{transport=\"rtmp\",outcome=\"success\"}"
+        ));
+        assert!(output.contains(
+            "oxiroute_transport_events_total{transport=\"acme\",outcome=\"upstream_error\"}"
+        ));
     }
 
     #[test]
