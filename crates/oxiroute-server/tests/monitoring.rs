@@ -3,7 +3,7 @@ use std::thread;
 use oxiroute_config::ListenerBind;
 use oxiroute_server::{
     CertbotWatcherHealth, CertbotWatcherSnapshot, HttpOperationResult, MetricsError,
-    RuntimeMetrics, TcpRelayResult,
+    ObservedTransport, RuntimeMetrics, TcpRelayResult, TransportOutcome,
 };
 
 #[test]
@@ -246,6 +246,67 @@ fn operation_snapshots_serialize_fixed_results_and_bounded_latency() {
     assert_eq!(
         json["listeners"][0]["tcpRelays"]["latency"]["buckets"][5]["count"],
         "1"
+    );
+}
+
+#[test]
+fn access_records_are_bounded_correlated_and_transport_only() {
+    let metrics = RuntimeMetrics::new();
+    let listener = metrics
+        .register_listener("udp-edge", "udp", "socket:192.0.2.10:9000", None)
+        .expect("listener");
+    let connection = listener.begin_connection().expect("connection");
+    connection
+        .record_bytes_received(12)
+        .expect("received bytes");
+    connection.record_bytes_sent(34).expect("sent bytes");
+    drop(connection);
+
+    let snapshot = metrics.snapshot().expect("snapshot");
+    assert_eq!(snapshot.access_records.len(), 1);
+    let record = &snapshot.access_records[0];
+    assert_eq!(record.transport, ObservedTransport::Udp);
+    assert_eq!(record.outcome, TransportOutcome::Success);
+    assert_eq!(record.bytes_received, 12);
+    assert_eq!(record.bytes_sent, 34);
+    assert!(record.correlation_id.starts_with("op-"));
+
+    let json = serde_json::to_string(&snapshot.access_records).expect("access JSON");
+    assert!(!json.contains("uri"));
+    assert!(!json.contains("query"));
+    assert!(!json.contains("body"));
+    assert!(!json.contains("credential"));
+}
+
+#[test]
+fn transport_metric_labels_are_fixed_and_cardinality_is_bounded() {
+    let metrics = RuntimeMetrics::new();
+    for transport in [
+        ObservedTransport::Http,
+        ObservedTransport::Rtmp,
+        ObservedTransport::Forward,
+        ObservedTransport::Cache,
+        ObservedTransport::Tcp,
+        ObservedTransport::Udp,
+        ObservedTransport::H3,
+        ObservedTransport::Acme,
+    ] {
+        metrics
+            .record_transport_operation(
+                transport,
+                TransportOutcome::UpstreamError,
+                std::time::Duration::from_millis(7),
+            )
+            .expect("transport operation");
+    }
+
+    let snapshot = metrics.snapshot().expect("snapshot");
+    assert_eq!(snapshot.transport_operations.len(), 8);
+    assert!(
+        snapshot
+            .transport_operations
+            .iter()
+            .all(|operation| operation.outcomes.len() == 9)
     );
 }
 

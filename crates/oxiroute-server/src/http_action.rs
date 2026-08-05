@@ -154,7 +154,7 @@ impl AccessLog {
     }
 
     pub(crate) fn write(&self, event: &serde_json::Value) -> std::io::Result<()> {
-        let line = serde_json::to_vec(event)?;
+        let line = serde_json::to_vec(&crate::logging::redact_access_record(event))?;
         self.sender
             .as_ref()
             .expect("access log sender exists until final drop")

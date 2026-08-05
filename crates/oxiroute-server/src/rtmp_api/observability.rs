@@ -56,15 +56,12 @@ fn status_response(
     generations: Option<&GenerationManager>,
     topology: &TopologySnapshot,
 ) -> ApiResponse {
-    let runtime = match metrics.snapshot() {
-        Ok(runtime) => runtime,
-        Err(_) => {
-            return ApiResponse::error(
-                503,
-                "status_unavailable",
-                "runtime status could not be sampled",
-            );
-        }
+    let Ok(runtime) = metrics.snapshot() else {
+        return ApiResponse::error(
+            503,
+            "status_unavailable",
+            "runtime status could not be sampled",
+        );
     };
     let listeners = runtime.listeners.clone();
     let generation = generations.map(GenerationManager::status);

@@ -1,10 +1,10 @@
 use std::{
-    collections::{hash_map::Entry, HashMap},
+    collections::{hash_map::Entry, HashMap, VecDeque},
     error::Error,
     fmt, io,
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
-        Arc, Mutex, RwLock,
+        Arc, Mutex, OnceLock, RwLock,
     },
     time::{Duration, Instant, SystemTime},
 };
@@ -280,6 +280,164 @@ impl TcpRelayResult {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservedTransport {
+    Http,
+    Rtmp,
+    Forward,
+    Cache,
+    Tcp,
+    Udp,
+    H3,
+    Acme,
+}
+
+impl ObservedTransport {
+    const ALL: [Self; 8] = [
+        Self::Http,
+        Self::Rtmp,
+        Self::Forward,
+        Self::Cache,
+        Self::Tcp,
+        Self::Udp,
+        Self::H3,
+        Self::Acme,
+    ];
+
+    const fn index(self) -> usize {
+        match self {
+            Self::Http => 0,
+            Self::Rtmp => 1,
+            Self::Forward => 2,
+            Self::Cache => 3,
+            Self::Tcp => 4,
+            Self::Udp => 5,
+            Self::H3 => 6,
+            Self::Acme => 7,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Rtmp => "rtmp",
+            Self::Forward => "forward",
+            Self::Cache => "cache",
+            Self::Tcp => "tcp",
+            Self::Udp => "udp",
+            Self::H3 => "h3",
+            Self::Acme => "acme",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportOutcome {
+    Success,
+    ClientError,
+    ServerError,
+    UpstreamError,
+    Timeout,
+    Rejected,
+    Cancelled,
+    InternalError,
+    Degraded,
+}
+
+impl TransportOutcome {
+    const ALL: [Self; 9] = [
+        Self::Success,
+        Self::ClientError,
+        Self::ServerError,
+        Self::UpstreamError,
+        Self::Timeout,
+        Self::Rejected,
+        Self::Cancelled,
+        Self::InternalError,
+        Self::Degraded,
+    ];
+
+    const fn index(self) -> usize {
+        match self {
+            Self::Success => 0,
+            Self::ClientError => 1,
+            Self::ServerError => 2,
+            Self::UpstreamError => 3,
+            Self::Timeout => 4,
+            Self::Rejected => 5,
+            Self::Cancelled => 6,
+            Self::InternalError => 7,
+            Self::Degraded => 8,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::ClientError => "client_error",
+            Self::ServerError => "server_error",
+            Self::UpstreamError => "upstream_error",
+            Self::Timeout => "timeout",
+            Self::Rejected => "rejected",
+            Self::Cancelled => "cancelled",
+            Self::InternalError => "internal_error",
+            Self::Degraded => "degraded",
+        }
+    }
+
+    const fn from_http(result: HttpOperationResult) -> Self {
+        match result {
+            HttpOperationResult::Success => Self::Success,
+            HttpOperationResult::ClientError => Self::ClientError,
+            HttpOperationResult::ServerError => Self::ServerError,
+            HttpOperationResult::UpstreamError => Self::UpstreamError,
+            HttpOperationResult::Timeout => Self::Timeout,
+            HttpOperationResult::Cancelled => Self::Cancelled,
+            HttpOperationResult::InternalError => Self::InternalError,
+        }
+    }
+
+    const fn from_tcp(result: TcpRelayResult) -> Self {
+        match result {
+            TcpRelayResult::Success => Self::Success,
+            TcpRelayResult::ConnectError
+            | TcpRelayResult::ConnectTimeout
+            | TcpRelayResult::IoError => Self::UpstreamError,
+            TcpRelayResult::IdleTimeout | TcpRelayResult::LifetimeTimeout => Self::Timeout,
+            TcpRelayResult::Cancelled => Self::Cancelled,
+            TcpRelayResult::AccountingError => Self::InternalError,
+            TcpRelayResult::ProxyProtocolError => Self::Rejected,
+        }
+    }
+}
+
+#[allow(clippy::cast_possible_truncation)]
+const fn transport_outcome_index(outcome: TransportOutcome) -> u8 {
+    outcome.index() as u8
+}
+
+pub const ACCESS_RECORD_CAPACITY: usize = 256;
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessRecord {
+    pub timestamp_unix_ms: u64,
+    pub correlation_id: String,
+    pub listener: String,
+    pub transport: ObservedTransport,
+    pub outcome: TransportOutcome,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub duration_ms: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub bytes_received: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub bytes_sent: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LatencyBucketSnapshot {
@@ -313,6 +471,22 @@ pub struct HttpOperationSnapshot {
     pub latency: LatencySnapshot,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransportOperationCountSnapshot {
+    pub outcome: TransportOutcome,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub count: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransportOperationSnapshot {
+    pub transport: ObservedTransport,
+    pub outcomes: Box<[TransportOperationCountSnapshot]>,
+    pub latency: LatencySnapshot,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CacheEvent {
     Hit,
@@ -331,6 +505,15 @@ impl CacheEvent {
             Self::Admission => 2,
             Self::Eviction => 3,
         }
+    }
+}
+
+const fn cache_event_outcome(event: CacheEvent) -> TransportOutcome {
+    match event {
+        CacheEvent::Hit | CacheEvent::Admission | CacheEvent::Eviction => {
+            TransportOutcome::Success
+        }
+        CacheEvent::Miss => TransportOutcome::UpstreamError,
     }
 }
 
@@ -402,6 +585,8 @@ pub struct ProcessRuntime {
 struct ProcessRuntimeInner {
     admission: Arc<ProcessAdmissionState>,
     listeners: Mutex<HashMap<String, Arc<SharedListenerMetricsState>>>,
+    transport_operations: Arc<TransportOperationsState>,
+    access_records: Arc<Mutex<VecDeque<AccessRecord>>>,
     started_at: Instant,
 }
 
@@ -412,6 +597,10 @@ impl ProcessRuntime {
             inner: Arc::new(ProcessRuntimeInner {
                 admission: Arc::new(ProcessAdmissionState::new(max_connections)),
                 listeners: Mutex::new(HashMap::new()),
+                transport_operations: Arc::new(TransportOperationsState::new()),
+                access_records: Arc::new(Mutex::new(VecDeque::with_capacity(
+                    ACCESS_RECORD_CAPACITY,
+                ))),
                 started_at: Instant::now(),
             }),
         }
@@ -428,12 +617,47 @@ impl ProcessRuntime {
             .lock()
             .map_err(|_| MetricsError::StatePoisoned("process listeners"))?;
         Ok(Arc::clone(listeners.entry(bind.to_owned()).or_insert_with(
-            || Arc::new(SharedListenerMetricsState::new(max_connections)),
+            || {
+                Arc::new(SharedListenerMetricsState::new(
+                    max_connections,
+                    self.transport_operations(),
+                    Arc::clone(&self.inner.access_records),
+                ))
+            },
         )))
     }
 
     fn activate_limit(&self, max_connections: Option<u64>) {
         self.inner.admission.set_limit(max_connections);
+    }
+
+    fn transport_operations(&self) -> Arc<TransportOperationsState> {
+        Arc::clone(&self.inner.transport_operations)
+    }
+
+    fn access_records_snapshot(&self) -> Result<Vec<AccessRecord>, MetricsError> {
+        Ok(self
+            .inner
+            .access_records
+            .lock()
+            .map_err(|_| MetricsError::StatePoisoned("access records"))?
+            .iter()
+            .cloned()
+            .collect())
+    }
+}
+
+fn append_access_record(records: &Mutex<VecDeque<AccessRecord>>, record: AccessRecord) {
+    let mut records = records
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if records.len() == ACCESS_RECORD_CAPACITY {
+        records.pop_front();
+    }
+    records.push_back(record.clone());
+    drop(records);
+    if let Ok(value) = serde_json::to_value(record) {
+        crate::logging::log_json("oxiroute::access", &value);
     }
 }
 
@@ -741,6 +965,27 @@ impl RuntimeMetrics {
         self.inner.rtmp_recording_supported.load(Ordering::Acquire)
     }
 
+    /// Records one bounded transport outcome and latency sample.
+    ///
+    /// The transport and outcome values are closed enums so this registry cannot grow with a
+    /// request URI, stream name, endpoint, or other unbounded request data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a counter or latency total would overflow.
+    pub fn record_transport_operation(
+        &self,
+        transport: ObservedTransport,
+        outcome: TransportOutcome,
+        duration: Duration,
+    ) -> Result<(), MetricsError> {
+        self.inner
+            .process_runtime
+            .inner
+            .transport_operations
+            .record(transport, outcome, Some(duration))
+    }
+
     /// Samples process, host, traffic, and listener metrics.
     ///
     /// CPU percent is `None` on the first successful sample and whenever no aggregate host CPU tick
@@ -766,6 +1011,13 @@ impl RuntimeMetrics {
             .lock()
             .map_err(|_| MetricsError::StatePoisoned("previous CPU sample"))?;
         let system = sample_system()?;
+        let transport_operations = self
+            .inner
+            .process_runtime
+            .inner
+            .transport_operations
+            .snapshots();
+        let access_records = self.inner.process_runtime.access_records_snapshot()?;
         let cpu_percent = (system.process_status.state == ComponentState::Healthy
             && system.host.status.state == ComponentState::Healthy)
             .then(|| cpu_percent(previous_cpu_sample.as_ref(), &system.cpu))
@@ -828,6 +1080,8 @@ impl RuntimeMetrics {
             traffic,
             listeners,
             upstream_pools,
+            transport_operations,
+            access_records,
             certbot_certificates,
             certbot_watcher,
             acme_managed_certificates,
@@ -1204,6 +1458,11 @@ impl ListenerMetrics {
             process: Some(process),
             state: Arc::clone(&self.state),
             releases_active_connection: true,
+            started_at: Instant::now(),
+            correlation_id: crate::logging::next_correlation_id(),
+            outcome: AtomicU8::new(transport_outcome_index(TransportOutcome::Success)),
+            received: AtomicU64::new(0),
+            sent: AtomicU64::new(0),
         })
     }
 
@@ -1217,6 +1476,11 @@ impl ListenerMetrics {
             process: None,
             state: Arc::clone(&self.state),
             releases_active_connection: false,
+            started_at: Instant::now(),
+            correlation_id: String::new(),
+            outcome: AtomicU8::new(transport_outcome_index(TransportOutcome::Success)),
+            received: AtomicU64::new(0),
+            sent: AtomicU64::new(0),
         }
     }
 
@@ -1257,11 +1521,21 @@ impl ListenerMetrics {
         result: HttpOperationResult,
         duration: Duration,
     ) -> Result<(), MetricsError> {
-        self.state.shared.record_http_operation(result, duration)
+        self.state.shared.record_http_operation(result, duration)?;
+        self.state.shared.transport_operations.record(
+            transport_for_protocol(&self.state.protocol),
+            TransportOutcome::from_http(result),
+            Some(duration),
+        )
     }
 
     pub(crate) fn record_cache_event(&self, event: CacheEvent) -> Result<(), MetricsError> {
-        self.state.shared.record_cache_event(event)
+        self.state.shared.record_cache_event(event)?;
+        self.state.shared.transport_operations.record(
+            ObservedTransport::Cache,
+            cache_event_outcome(event),
+            None,
+        )
     }
 
     /// Records one terminal TCP relay and its latency sample.
@@ -1274,7 +1548,12 @@ impl ListenerMetrics {
         result: TcpRelayResult,
         duration: Duration,
     ) -> Result<(), MetricsError> {
-        self.state.shared.record_tcp_relay(result, duration)
+        self.state.shared.record_tcp_relay(result, duration)?;
+        self.state.shared.transport_operations.record(
+            transport_for_protocol(&self.state.protocol),
+            TransportOutcome::from_tcp(result),
+            Some(duration),
+        )
     }
 
     /// Records one redacted PROXY protocol result category.
@@ -1291,6 +1570,11 @@ pub struct ConnectionGuard {
     process: Option<ProcessConnectionGuard>,
     state: Arc<ListenerMetricsState>,
     releases_active_connection: bool,
+    started_at: Instant,
+    correlation_id: String,
+    outcome: AtomicU8,
+    received: AtomicU64,
+    sent: AtomicU64,
 }
 
 impl ConnectionGuard {
@@ -1309,7 +1593,8 @@ impl ConnectionGuard {
             &self.state.shared.bytes_received,
             bytes,
             "listener.bytesReceived",
-        )
+        )?;
+        checked_atomic_add(&self.received, bytes, "access.bytesReceived")
     }
 
     /// Adds bytes written to this connection to its listener total.
@@ -1318,7 +1603,8 @@ impl ConnectionGuard {
     ///
     /// Returns an error if the byte counter would overflow.
     pub fn record_bytes_sent(&self, bytes: u64) -> Result<(), MetricsError> {
-        checked_atomic_add(&self.state.shared.bytes_sent, bytes, "listener.bytesSent")
+        checked_atomic_add(&self.state.shared.bytes_sent, bytes, "listener.bytesSent")?;
+        checked_atomic_add(&self.sent, bytes, "access.bytesSent")
     }
 
     /// Records one terminal TCP relay and its latency sample.
@@ -1331,7 +1617,17 @@ impl ConnectionGuard {
         result: TcpRelayResult,
         duration: Duration,
     ) -> Result<(), MetricsError> {
-        self.state.shared.record_tcp_relay(result, duration)
+        self.state.shared.record_tcp_relay(result, duration)?;
+        self.state.shared.transport_operations.record(
+            transport_for_protocol(&self.state.protocol),
+            TransportOutcome::from_tcp(result),
+            Some(duration),
+        )?;
+        self.outcome.store(
+            transport_outcome_index(TransportOutcome::from_tcp(result)),
+            Ordering::Release,
+        );
+        Ok(())
     }
 
     /// Records one redacted PROXY protocol result category.
@@ -1348,6 +1644,23 @@ impl Drop for ConnectionGuard {
     fn drop(&mut self) {
         if self.releases_active_connection {
             decrement_counter(&self.state.shared.active_connections);
+            let duration_ms = u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+            append_access_record(
+                &self.state.shared.access_records,
+                AccessRecord {
+                    timestamp_unix_ms: unix_time_ms().unwrap_or(0),
+                    correlation_id: self.correlation_id.clone(),
+                    listener: crate::logging::redact_identifier(&self.state.name),
+                    transport: transport_for_protocol(&self.state.protocol),
+                    outcome: TransportOutcome::ALL
+                        .get(self.outcome.load(Ordering::Acquire) as usize)
+                        .copied()
+                        .unwrap_or(TransportOutcome::InternalError),
+                    duration_ms,
+                    bytes_received: self.received.load(Ordering::Relaxed),
+                    bytes_sent: self.sent.load(Ordering::Relaxed),
+                },
+            );
         }
         self.process.take();
     }
@@ -1611,6 +1924,125 @@ impl OperationMetricsState {
     }
 }
 
+const TRANSPORT_OUTCOME_COUNT: usize = TransportOutcome::ALL.len();
+const TRANSPORT_LATENCY_BUCKET_COUNT: usize = OPERATION_LATENCY_BUCKETS_MS.len() + 1;
+
+struct TransportMetricState {
+    outcomes: [AtomicU64; TRANSPORT_OUTCOME_COUNT],
+    latency_buckets: [AtomicU64; TRANSPORT_LATENCY_BUCKET_COUNT],
+    latency_count: AtomicU64,
+    latency_sum_ms: AtomicU64,
+}
+
+impl TransportMetricState {
+    fn new() -> Self {
+        Self {
+            outcomes: std::array::from_fn(|_| AtomicU64::new(0)),
+            latency_buckets: std::array::from_fn(|_| AtomicU64::new(0)),
+            latency_count: AtomicU64::new(0),
+            latency_sum_ms: AtomicU64::new(0),
+        }
+    }
+
+    fn record(
+        &self,
+        outcome: TransportOutcome,
+        duration: Option<Duration>,
+    ) -> Result<(), MetricsError> {
+        checked_atomic_add(
+            &self.outcomes[outcome.index()],
+            1,
+            "transport.outcomes",
+        )?;
+        duration.map_or(Ok(()), |duration| {
+            record_latency(
+                duration,
+                &self.latency_buckets,
+                &self.latency_count,
+                &self.latency_sum_ms,
+                "transport.latency",
+            )
+        })
+    }
+
+    fn snapshot(&self, transport: ObservedTransport) -> Option<TransportOperationSnapshot> {
+        let latency = latency_snapshot(
+            &self.latency_buckets,
+            &self.latency_count,
+            &self.latency_sum_ms,
+        );
+        self.outcomes_present().then(|| TransportOperationSnapshot {
+            transport,
+            outcomes: TransportOutcome::ALL
+                .into_iter()
+                .zip(&self.outcomes)
+                .map(|(outcome, count)| TransportOperationCountSnapshot {
+                    outcome,
+                    count: count.load(Ordering::Relaxed),
+                })
+                .collect(),
+            latency,
+        })
+    }
+
+    fn outcomes_present(&self) -> bool {
+        self.outcomes
+            .iter()
+            .any(|count| count.load(Ordering::Relaxed) > 0)
+    }
+}
+
+struct TransportOperationsState {
+    metrics: [TransportMetricState; ObservedTransport::ALL.len()],
+}
+
+impl TransportOperationsState {
+    fn new() -> Self {
+        Self {
+            metrics: std::array::from_fn(|_| TransportMetricState::new()),
+        }
+    }
+
+    fn record(
+        &self,
+        transport: ObservedTransport,
+        outcome: TransportOutcome,
+        duration: Option<Duration>,
+    ) -> Result<(), MetricsError> {
+        self.metrics[transport.index()].record(outcome, duration)
+    }
+
+    fn snapshots(&self) -> Vec<TransportOperationSnapshot> {
+        ObservedTransport::ALL
+            .into_iter()
+            .filter_map(|transport| self.metrics[transport.index()].snapshot(transport))
+            .collect()
+    }
+}
+
+fn event_transport_operations() -> &'static TransportOperationsState {
+    static OPERATIONS: OnceLock<TransportOperationsState> = OnceLock::new();
+    OPERATIONS.get_or_init(TransportOperationsState::new)
+}
+
+pub(crate) fn record_transport_event(transport: ObservedTransport, outcome: TransportOutcome) {
+    let _ = event_transport_operations().record(transport, outcome, None);
+}
+
+pub(crate) fn transport_event_snapshots() -> Vec<TransportOperationSnapshot> {
+    event_transport_operations().snapshots()
+}
+
+fn transport_for_protocol(protocol: &str) -> ObservedTransport {
+    match protocol {
+        "forward_http1" | "forward_http2" | "forward_http3" => ObservedTransport::Forward,
+        "http3" => ObservedTransport::H3,
+        "udp" => ObservedTransport::Udp,
+        "tcp" => ObservedTransport::Tcp,
+        _ => ObservedTransport::Http,
+    }
+}
+
 struct SharedListenerMetricsState {
     administrative_state: AtomicU8,
     limit: AtomicU64,
@@ -1620,6 +2052,8 @@ struct SharedListenerMetricsState {
     bytes_received: AtomicU64,
     bytes_sent: AtomicU64,
     operations: OperationMetricsState,
+    transport_operations: Arc<TransportOperationsState>,
+    access_records: Arc<Mutex<VecDeque<AccessRecord>>>,
 }
 
 impl ListenerMetricsState {
@@ -1664,7 +2098,11 @@ impl ListenerMetricsState {
 }
 
 impl SharedListenerMetricsState {
-    fn new(max_connections: Option<u64>) -> Self {
+    fn new(
+        max_connections: Option<u64>,
+        transport_operations: Arc<TransportOperationsState>,
+        access_records: Arc<Mutex<VecDeque<AccessRecord>>>,
+    ) -> Self {
         Self {
             administrative_state: AtomicU8::new(AdministrativeState::Ready as u8),
             limit: AtomicU64::new(encode_limit(max_connections)),
@@ -1674,6 +2112,8 @@ impl SharedListenerMetricsState {
             bytes_received: AtomicU64::new(0),
             bytes_sent: AtomicU64::new(0),
             operations: OperationMetricsState::new(),
+            transport_operations,
+            access_records,
         }
     }
 
@@ -1757,6 +2197,8 @@ pub struct RuntimeSnapshot {
     pub traffic: TrafficSnapshot,
     pub listeners: Vec<ListenerSnapshot>,
     pub upstream_pools: Vec<PoolHealthSnapshot>,
+    pub transport_operations: Vec<TransportOperationSnapshot>,
+    pub access_records: Vec<AccessRecord>,
     pub certbot_certificates: Vec<CertbotCertificateSnapshot>,
     pub certbot_watcher: Option<CertbotWatcherSnapshot>,
     pub acme_managed_certificates: Vec<AcmeManagedCertificateSnapshot>,

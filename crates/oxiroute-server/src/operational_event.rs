@@ -20,6 +20,7 @@ use tokio::sync::Notify;
 
 use crate::config_coordinator::ConfigRevision;
 use crate::logging::{redact_identifier, redact_text};
+use crate::monitoring::{ObservedTransport, TransportOutcome};
 use crate::routing::HealthFailure;
 
 pub(crate) const EVENT_CAPACITY: usize = 2_048;
@@ -1272,6 +1273,14 @@ pub(crate) fn emit(event: &str, outcome: &str, revision: Option<&ConfigRevision>
 
 /// Emits a bounded, redacted RTMP lifecycle event without copying stream queries or credentials.
 pub fn emit_rtmp_access(event: &str, outcome: &str) {
+    crate::monitoring::record_transport_event(
+        ObservedTransport::Rtmp,
+        match outcome {
+            "accepted" | "closed" => TransportOutcome::Success,
+            "rejected" => TransportOutcome::Rejected,
+            _ => TransportOutcome::InternalError,
+        },
+    );
     let event = match event {
         "connect" => "rtmp_connect",
         "publish" => "rtmp_publish",
@@ -1296,6 +1305,15 @@ pub fn emit_rtmp_access(event: &str, outcome: &str) {
 }
 
 pub fn emit_certificate(event: &str, outcome: &str, certificate: &str) {
+    crate::monitoring::record_transport_event(
+        ObservedTransport::Acme,
+        match outcome {
+            "requested" | "activated" | "applied" => TransportOutcome::Success,
+            "failed" => TransportOutcome::UpstreamError,
+            "rejected" => TransportOutcome::Rejected,
+            _ => TransportOutcome::InternalError,
+        },
+    );
     emit_certificate_with_context(event, outcome, certificate, &AuditContext::generated());
 }
 
