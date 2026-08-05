@@ -16,11 +16,11 @@ use openssl::{
 use oxiroute_acme::{
     renewal_due, stable_renewal_time, Account, AccountKey, AccountKeyAlgorithm, AcmeClient,
     AcmeError, AcmeStateError, AcmeTransport, AuthorizationStatus, CertificateMaterial,
-    ChallengeRecord, ChallengeStore, ChallengeStoreError, ChallengeType, Dns01Challenge,
-    Dns01Credentials, Dns01Operation, Dns01Provider, Dns01ProviderError, JobState, JobStatus,
-    LeafKeyAlgorithm, OriginPolicy, PollPolicy, RedactedOutcome, RevisionMetadata, RevisionStore,
-    SecretBytes, StateStore, SystemAcmeTransport, SystemClock, MAX_DNS01_CREDENTIAL_BYTES,
-    MAX_JOB_BYTES,
+    ChallengeRecord, ChallengeStore, ChallengeStoreError, ChallengeType, Dns01Cancellation,
+    Dns01Challenge, Dns01Credentials, Dns01Operation, Dns01Provider, Dns01ProviderError, JobState,
+    JobStatus, LeafKeyAlgorithm, OriginPolicy, PollPolicy, RedactedOutcome, RevisionMetadata,
+    RevisionStore, SecretBytes, StateStore, SystemAcmeTransport, SystemClock,
+    MAX_DNS01_CREDENTIAL_BYTES, MAX_JOB_BYTES,
 };
 use oxiroute_config::{AcmeChallengeType, AcmeDns01Config, AcmeKeyType, SelfSignedKeyType};
 use serde::{Deserialize, Serialize};
@@ -38,6 +38,9 @@ pub enum AcmeManagedOutcome {
     Loaded,
     Unchanged,
     Activated,
+    Revoked,
+    AccountKeyRolledOver,
+    Deleted,
 }
 
 #[derive(Clone, Debug)]
@@ -48,6 +51,8 @@ pub struct AcmeManagedPolicy {
     pub challenge: AcmeChallengeType,
     pub key_type: AcmeKeyType,
     pub allowed_dns_suffixes: Vec<String>,
+    pub retained_revisions: u32,
+    pub retention_days: u32,
     pub dns01: Option<AcmeDns01Config>,
 }
 
@@ -55,6 +60,10 @@ pub struct AcmeManagedPolicy {
 pub enum AcmeManagedError {
     #[error("managed ACME job is already running")]
     Busy,
+    #[error("managed ACME job is paused")]
+    Paused,
+    #[error("managed ACME job is not running")]
+    NoJob,
     #[error("managed ACME state is unavailable")]
     State(#[source] AcmeStateError),
     #[error("managed ACME protocol operation failed")]
@@ -69,6 +78,8 @@ pub enum AcmeManagedError {
     CertificateMalformed,
     #[error("managed ACME account belongs to a different configured directory")]
     AccountDirectoryChanged,
+    #[error("managed ACME account is not configured")]
+    AccountNotConfigured,
     #[error("managed ACME publication lost its generation race")]
     Publication,
     #[error("managed ACME challenge could not be provisioned")]
@@ -88,11 +99,18 @@ impl AcmeManagedError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::Busy => "job_busy",
+            Self::Paused => "job_paused",
+            Self::NoJob => "job_not_running",
             Self::State(_) => "state_failed",
             Self::Protocol(error) => match error {
                 AcmeError::PollTimeout => "poll_timeout",
+                AcmeError::Cancelled => "job_cancelled",
                 AcmeError::Transport(_) => "transport_failed",
                 AcmeError::Problem { .. } => "acme_problem",
+                AcmeError::RevocationUnsupported => "revocation_unsupported",
+                AcmeError::KeyChangeUnsupported => "key_change_unsupported",
+                AcmeError::InvalidCertificate => "invalid_certificate",
+                AcmeError::InvalidRevocationReason => "invalid_revocation_reason",
                 _ => "protocol_failed",
             },
             Self::Tls(_) => "invalid_candidate",
@@ -100,6 +118,7 @@ impl AcmeManagedError {
             Self::OrderFailed => "order_failed",
             Self::CertificateMalformed => "certificate_malformed",
             Self::AccountDirectoryChanged => "account_directory_changed",
+            Self::AccountNotConfigured => "account_not_configured",
             Self::Publication => "publication_conflict",
             Self::Challenge(_) => "challenge_failed",
             Self::DnsProviderUnsupported => "dns_provider_unsupported",
@@ -121,6 +140,9 @@ impl AcmeManagedOutcome {
             Self::Loaded => "loaded",
             Self::Unchanged => "unchanged",
             Self::Activated => "activated",
+            Self::Revoked => "revoked",
+            Self::AccountKeyRolledOver => "account_key_rolled_over",
+            Self::Deleted => "deleted",
         }
     }
 }
@@ -141,6 +163,10 @@ pub struct AcmeManagedStatus {
     pub next_action_unix_seconds: Option<u64>,
     pub not_after: String,
     pub job_status: Option<JobStatus>,
+    pub job_id: Option<String>,
+    pub paused: bool,
+    pub retained_revisions: u32,
+    pub retention_days: u32,
     pub retry_attempt: u32,
     pub last_success_unix_seconds: Option<u64>,
     pub last_outcome: Option<&'static str>,
@@ -158,6 +184,8 @@ struct ReconcileState {
     account_url: Option<String>,
     renewal_info_url: Option<String>,
     job_status: Option<JobStatus>,
+    job_id: Option<String>,
+    paused: bool,
     last_success_unix_seconds: Option<u64>,
     last_outcome: Option<&'static str>,
     last_error_code: Option<String>,
@@ -189,6 +217,14 @@ struct PersistedRenewal {
     last_success_unix_seconds: Option<u64>,
     #[serde(default)]
     last_error_code: Option<String>,
+    #[serde(default)]
+    paused: bool,
+}
+
+#[derive(Default)]
+struct JobControl {
+    id: Option<String>,
+    cancellation: Option<Dns01Cancellation>,
 }
 
 /// Owns the managed state root for one certificate and publishes only validated revisions.
@@ -201,6 +237,7 @@ pub struct AcmeManagedReconciler {
     dns_provider: Option<Arc<dyn Dns01Provider>>,
     active: Arc<ActiveCertificateGeneration>,
     job: Mutex<()>,
+    control: Mutex<JobControl>,
     state: Mutex<ReconcileState>,
 }
 
@@ -341,6 +378,8 @@ impl AcmeManagedReconciler {
                     })
                 }
             });
+        let paused = persisted.as_ref().is_some_and(|renewal| renewal.paused);
+        let next_action_unix_seconds = paused.then_some(None).unwrap_or(next_action_unix_seconds);
         let retry_attempt = persisted
             .as_ref()
             .map_or(0, |renewal| renewal.retry_attempt);
@@ -374,6 +413,7 @@ impl AcmeManagedReconciler {
             dns_provider,
             active,
             job: Mutex::new(()),
+            control: Mutex::new(JobControl::default()),
             state: Mutex::new(ReconcileState {
                 disk_revision,
                 not_before_unix_seconds,
@@ -384,7 +424,9 @@ impl AcmeManagedReconciler {
                 suggested_renewal_unix_seconds,
                 account_url,
                 renewal_info_url,
-                job_status: None,
+                job_status: paused.then_some(JobStatus::Paused),
+                job_id: None,
+                paused,
                 last_success_unix_seconds,
                 last_outcome,
                 last_error_code,
@@ -431,6 +473,10 @@ impl AcmeManagedReconciler {
             next_action_unix_seconds: state.next_action_unix_seconds,
             not_after: generation.metadata().validity.not_after.clone(),
             job_status: state.job_status.clone(),
+            job_id: state.job_id.clone(),
+            paused: state.paused,
+            retained_revisions: self.policy.retained_revisions,
+            retention_days: self.policy.retention_days,
             retry_attempt: state.retry_attempt,
             last_success_unix_seconds: state.last_success_unix_seconds,
             last_outcome: state.last_outcome,
@@ -444,6 +490,9 @@ impl AcmeManagedReconciler {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.paused {
+            return false;
+        }
         if state
             .next_action_unix_seconds
             .is_some_and(|next| now_unix_seconds >= next)
@@ -525,7 +574,24 @@ impl AcmeManagedReconciler {
     /// Returns a redacted managed-job error when account, challenge, ACME, storage, or publication
     /// steps fail.
     pub fn renew_now(&self) -> Result<AcmeManagedOutcome, AcmeManagedError> {
-        self.renew_with_provider(SystemAcmeTransport::default(), self.dns_provider.clone())
+        self.renew_now_with_correlation("system")
+    }
+
+    /// Runs one bounded managed issuance or renewal and records the caller correlation ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redacted managed-job error when account, challenge, ACME, storage, or publication
+    /// steps fail.
+    pub fn renew_now_with_correlation(
+        &self,
+        correlation_id: impl Into<String>,
+    ) -> Result<AcmeManagedOutcome, AcmeManagedError> {
+        self.renew_with_provider(
+            SystemAcmeTransport::default(),
+            self.dns_provider.clone(),
+            correlation_id.into(),
+        )
     }
 
     /// Runs one bounded managed issuance or renewal with an injected transport.
@@ -541,33 +607,255 @@ impl AcmeManagedReconciler {
         &self,
         transport: T,
     ) -> Result<AcmeManagedOutcome, AcmeManagedError> {
-        self.renew_with_provider(transport, self.dns_provider.clone())
+        self.renew_with_provider(transport, self.dns_provider.clone(), "test".into())
+    }
+
+    /// Requests cooperative cancellation of the currently running job.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AcmeManagedError::NoJob`] when no managed job is running.
+    pub fn cancel_job(&self) -> Result<String, AcmeManagedError> {
+        let control = self
+            .control
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(id) = control.id.clone() else {
+            return Err(AcmeManagedError::NoJob);
+        };
+        if let Some(cancellation) = &control.cancellation {
+            cancellation.cancel();
+        }
+        Ok(id)
+    }
+
+    /// Pauses automatic issuance and cooperatively stops the current job, if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns a state error when the durable pause marker cannot be written.
+    pub fn pause(&self) -> Result<Option<String>, AcmeManagedError> {
+        let id = {
+            let control = self
+                .control
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(cancellation) = &control.cancellation {
+                cancellation.cancel();
+            }
+            control.id.clone()
+        };
+        {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.paused = true;
+            state.job_status = Some(JobStatus::Paused);
+            state.next_action_unix_seconds = None;
+        }
+        self.persist_renewal().map_err(AcmeManagedError::State)?;
+        Ok(id)
+    }
+
+    /// Resumes automatic issuance using the current certificate schedule.
+    ///
+    /// # Errors
+    ///
+    /// Returns a state error when the durable pause marker cannot be written.
+    pub fn resume(&self) -> Result<(), AcmeManagedError> {
+        {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.paused = false;
+            state.job_status = None;
+            state.next_action_unix_seconds = if state.disk_revision == "bootstrap" {
+                Some(0)
+            } else {
+                state.not_before_unix_seconds.and_then(|not_before| {
+                    state.not_after_unix_seconds.and_then(|not_after| {
+                        stable_renewal_time(not_before, not_after, &self.certificate)
+                    })
+                })
+            };
+        }
+        self.persist_renewal().map_err(AcmeManagedError::State)
+    }
+
+    /// Revokes the currently selected leaf certificate without removing its active material.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redacted managed-job error when the account, certificate, ACME endpoint, or state
+    /// operation fails.
+    pub fn revoke_now_with_correlation(
+        &self,
+        reason: Option<u8>,
+        correlation_id: impl Into<String>,
+    ) -> Result<(AcmeManagedOutcome, String), AcmeManagedError> {
+        let _job = self.try_lock_job()?;
+        let correlation_id = correlation_id.into();
+        let (job_id, now) = self.begin_action_job("revoke", &correlation_id)?;
+        let result = (|| {
+            let material = self
+                .revisions
+                .load_current(&self.certificate)
+                .map_err(|source| AcmeManagedError::State(source))?;
+            let mut client = self.client_with_account(SystemAcmeTransport::default(), false)?;
+            client
+                .revoke_certificate(&material.certificate_pem, reason)
+                .map_err(AcmeManagedError::Protocol)
+        })();
+        let outcome = AcmeManagedOutcome::Revoked;
+        let finish_result =
+            self.finish_action_job(&job_id, "revoke", now, &correlation_id, &result, outcome);
+        self.set_job_id(None);
+        finish_result?;
+        result.map(|()| (outcome, job_id))
+    }
+
+    /// Rolls the account key and persists it only after the ACME server accepts the nested JWS.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redacted managed-job error when the account, key, ACME endpoint, or state
+    /// operation fails.
+    pub fn rollover_account_key_with_correlation(
+        &self,
+        correlation_id: impl Into<String>,
+    ) -> Result<(AcmeManagedOutcome, String), AcmeManagedError> {
+        let _job = self.try_lock_job()?;
+        let correlation_id = correlation_id.into();
+        let (job_id, now) = self.begin_action_job("account_rollover", &correlation_id)?;
+        let result = (|| {
+            let new_key = AccountKey::generate(account_key_algorithm(self.policy.key_type))
+                .map_err(AcmeManagedError::Protocol)?;
+            let mut client = self.client_with_account(SystemAcmeTransport::default(), false)?;
+            let account = client
+                .rollover_account_key(new_key.clone())
+                .map_err(AcmeManagedError::Protocol)?;
+            self.revisions
+                .state()
+                .write_secret(
+                    &format!("accounts/{}/account-key.pem", self.certificate),
+                    new_key.private_key_pem(),
+                )
+                .map_err(AcmeManagedError::State)?;
+            self.revisions
+                .state()
+                .write_json(
+                    &format!("accounts/{}/account.json", self.certificate),
+                    &PersistedAccount {
+                        directory_url: self.policy.directory_url.clone(),
+                        account,
+                    },
+                )
+                .map_err(AcmeManagedError::State)
+        })();
+        let outcome = AcmeManagedOutcome::AccountKeyRolledOver;
+        let finish_result = self.finish_action_job(
+            &job_id,
+            "account_rollover",
+            now,
+            &correlation_id,
+            &result,
+            outcome,
+        );
+        self.set_job_id(None);
+        finish_result?;
+        result.map(|()| (outcome, job_id))
+    }
+
+    /// Deletes persisted managed ACME state after the caller has removed active references.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redacted managed-job error when the state cannot be deleted.
+    pub fn delete_state_with_correlation(
+        &self,
+        correlation_id: impl Into<String>,
+    ) -> Result<(AcmeManagedOutcome, String), AcmeManagedError> {
+        let _job = self.try_lock_job()?;
+        let correlation_id = correlation_id.into();
+        let (job_id, now) = self.begin_action_job("delete", &correlation_id)?;
+        let result = self
+            .revisions
+            .delete_certificate_state(&self.certificate)
+            .map_err(AcmeManagedError::State);
+        let outcome = AcmeManagedOutcome::Deleted;
+        let finish_result =
+            self.finish_action_job(&job_id, "delete", now, &correlation_id, &result, outcome);
+        self.set_job_id(None);
+        finish_result?;
+        result.map(|()| (outcome, job_id))
     }
 
     fn renew_with_provider<T: AcmeTransport>(
         &self,
         transport: T,
         provider: Option<Arc<dyn Dns01Provider>>,
+        correlation_id: String,
     ) -> Result<AcmeManagedOutcome, AcmeManagedError> {
         let _job = match self.job.try_lock() {
             Ok(job) => job,
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
             Err(TryLockError::WouldBlock) => return Err(AcmeManagedError::Busy),
         };
+        if self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .paused
+        {
+            return Err(AcmeManagedError::Paused);
+        }
         let now = unix_now();
         let sequence = NEXT_JOB_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let job_id = format!("renew-{now}-{sequence}");
+        let cancellation = Dns01Cancellation::new();
+        {
+            let mut control = self
+                .control
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            control.id = Some(job_id.clone());
+            control.cancellation = Some(cancellation.clone());
+        }
+        self.set_job_id(Some(job_id.clone()));
         self.set_job_status(Some(JobStatus::Queued));
-        self.write_job(&job_id, JobStatus::Queued, now, 0, None, None, None, None)
-            .map_err(AcmeManagedError::State)?;
-        let result = self.renew_inner(transport, &job_id, now, provider);
+        if let Err(error) = self.write_job(
+            &job_id,
+            "renew",
+            JobStatus::Queued,
+            now,
+            0,
+            None,
+            None,
+            None,
+            None,
+            Some(correlation_id.clone()),
+        ) {
+            self.clear_job_control(&job_id);
+            return Err(AcmeManagedError::State(error));
+        }
+        let result = self.renew_inner(
+            transport,
+            &job_id,
+            now,
+            provider,
+            cancellation,
+            &correlation_id,
+        );
         match &result {
             Ok(outcome) => {
                 let status = self.status();
                 self.set_outcome(Some(outcome.code()), None);
                 self.set_job_status(Some(JobStatus::Succeeded));
-                self.write_job(
+                let write_result = self.write_job(
                     &job_id,
+                    "renew",
                     JobStatus::Succeeded,
                     unix_now(),
                     1,
@@ -578,26 +866,61 @@ impl AcmeManagedReconciler {
                         outcome.code(),
                         "managed ACME renewal completed",
                     )),
-                )
-                .map_err(AcmeManagedError::State)?;
+                    Some(correlation_id.clone()),
+                );
+                if let Err(error) = write_result {
+                    self.clear_job_control(&job_id);
+                    return Err(AcmeManagedError::State(error));
+                }
             }
             Err(error) => {
-                self.set_outcome(None, Some(error.code()));
-                let retry_error = self.schedule_retry(unix_now()).err();
+                let paused = self.is_paused();
+                let cancelled = is_cancelled_error(error);
+                let retry_error = if paused || cancelled {
+                    None
+                } else {
+                    self.schedule_retry(unix_now()).err()
+                };
+                self.set_outcome(
+                    if paused {
+                        Some("paused")
+                    } else if cancelled {
+                        Some("cancelled")
+                    } else {
+                        None
+                    },
+                    if paused || cancelled {
+                        None
+                    } else {
+                        Some(error.code())
+                    },
+                );
                 if retry_error.is_some() {
                     self.set_outcome(None, Some("state_failed"));
                 }
-                self.set_job_status(Some(JobStatus::Failed));
+                let job_status = if paused {
+                    JobStatus::Paused
+                } else if cancelled {
+                    JobStatus::Cancelled
+                } else {
+                    JobStatus::Failed
+                };
+                self.set_job_status(Some(job_status.clone()));
                 let status = self.status();
                 let outcome_code = if retry_error.is_some() {
                     "state_failed"
+                } else if paused {
+                    "paused"
+                } else if cancelled {
+                    "cancelled"
                 } else {
                     error.code()
                 };
                 let job_error = self
                     .write_job(
                         &job_id,
-                        JobStatus::Failed,
+                        "renew",
+                        job_status,
                         unix_now(),
                         1,
                         None,
@@ -607,13 +930,16 @@ impl AcmeManagedReconciler {
                             outcome_code,
                             "managed ACME renewal failed",
                         )),
+                        Some(correlation_id),
                     )
                     .err();
                 if let Some(state_error) = retry_error.or(job_error) {
+                    self.clear_job_control(&job_id);
                     return Err(AcmeManagedError::State(state_error));
                 }
             }
         }
+        self.clear_job_control(&job_id);
         result
     }
 
@@ -624,9 +950,12 @@ impl AcmeManagedReconciler {
         job_id: &str,
         created_at: u64,
         dns_provider: Option<Arc<dyn Dns01Provider>>,
+        cancellation: Dns01Cancellation,
+        correlation_id: &str,
     ) -> Result<AcmeManagedOutcome, AcmeManagedError> {
         self.write_job(
             job_id,
+            "renew",
             JobStatus::Running,
             unix_now(),
             1,
@@ -634,74 +963,11 @@ impl AcmeManagedReconciler {
             None,
             None,
             None,
+            Some(correlation_id.into()),
         )
         .map_err(AcmeManagedError::State)?;
         self.set_job_status(Some(JobStatus::Running));
-        let key_algorithm = account_key_algorithm(self.policy.key_type);
-        let account_key_path = format!("accounts/{}/account-key.pem", self.certificate);
-        let account_key = match self
-            .revisions
-            .state()
-            .read_bounded(&account_key_path, oxiroute_acme::MAX_CERTIFICATE_BYTES)
-        {
-            Ok(bytes) => {
-                AccountKey::from_pem(SecretBytes::new(bytes)).map_err(AcmeManagedError::Protocol)?
-            }
-            Err(AcmeStateError::FileOpen(error)) if error.kind() == io::ErrorKind::NotFound => {
-                let key =
-                    AccountKey::generate(key_algorithm).map_err(AcmeManagedError::Protocol)?;
-                self.revisions
-                    .state()
-                    .write_secret(&account_key_path, key.private_key_pem())
-                    .map_err(AcmeManagedError::State)?;
-                key
-            }
-            Err(error) => return Err(AcmeManagedError::State(error)),
-        };
-        let origin =
-            OriginPolicy::strict(&self.policy.directory_url).map_err(AcmeManagedError::Protocol)?;
-        let mut client = AcmeClient::new(
-            transport,
-            &self.policy.directory_url,
-            origin,
-            account_key,
-            Arc::new(SystemClock),
-        )
-        .map_err(AcmeManagedError::Protocol)?;
-        let account_path = format!("accounts/{}/account.json", self.certificate);
-        match self
-            .revisions
-            .state()
-            .read_json::<PersistedAccount>(&account_path, oxiroute_acme::MAX_JOB_BYTES)
-        {
-            Ok(persisted) => {
-                if persisted.directory_url != self.policy.directory_url {
-                    return Err(AcmeManagedError::AccountDirectoryChanged);
-                }
-                client
-                    .set_account(persisted.account)
-                    .map_err(AcmeManagedError::Protocol)?;
-            }
-            Err(AcmeStateError::FileOpen(error)) if error.kind() == io::ErrorKind::NotFound => {
-                let account = client
-                    .register_account(&oxiroute_acme::AccountRequest {
-                        contacts: self.policy.contacts.clone(),
-                        terms_agreed: self.policy.terms_agreed,
-                    })
-                    .map_err(AcmeManagedError::Protocol)?;
-                self.revisions
-                    .state()
-                    .write_json(
-                        &account_path,
-                        &PersistedAccount {
-                            directory_url: self.policy.directory_url.clone(),
-                            account,
-                        },
-                    )
-                    .map_err(AcmeManagedError::State)?;
-            }
-            Err(error) => return Err(AcmeManagedError::State(error)),
-        }
+        let mut client = self.client_with_account(transport, true)?;
         let dns_context = match self.policy.challenge {
             AcmeChallengeType::Dns01 => {
                 let dns01 = self
@@ -736,6 +1002,7 @@ impl AcmeManagedReconciler {
             self.set_job_status(Some(JobStatus::WaitingForChallenge));
             self.write_job(
                 job_id,
+                "renew",
                 JobStatus::WaitingForChallenge,
                 unix_now(),
                 1,
@@ -743,6 +1010,7 @@ impl AcmeManagedReconciler {
                 None,
                 None,
                 None,
+                Some(correlation_id.into()),
             )
             .map_err(AcmeManagedError::State)?;
             let authorization = match self.policy.challenge {
@@ -784,6 +1052,7 @@ impl AcmeManagedReconciler {
                     provider.as_ref(),
                     credentials,
                     *timeout_seconds,
+                    cancellation.clone(),
                 )?;
                 continue;
             }
@@ -809,7 +1078,7 @@ impl AcmeManagedReconciler {
             let authorization = client
                 .poll_authorization(
                     &authorization.url,
-                    &poll_policy(unix_now().saturating_add(600)),
+                    &poll_policy(unix_now().saturating_add(600), Some(cancellation.clone())),
                 )
                 .map_err(AcmeManagedError::Protocol)?;
             lease.complete();
@@ -823,6 +1092,7 @@ impl AcmeManagedReconciler {
         self.set_job_status(Some(JobStatus::Finalizing));
         self.write_job(
             job_id,
+            "renew",
             JobStatus::Finalizing,
             unix_now(),
             1,
@@ -830,6 +1100,7 @@ impl AcmeManagedReconciler {
             None,
             None,
             None,
+            Some(correlation_id.into()),
         )
         .map_err(AcmeManagedError::State)?;
         let csr = oxiroute_acme::generate_leaf_csr(
@@ -841,7 +1112,10 @@ impl AcmeManagedReconciler {
             .finalize_order(&order, &csr.csr_der)
             .map_err(AcmeManagedError::Protocol)?;
         let valid_order = client
-            .poll_order(&finalized.url, &poll_policy(unix_now().saturating_add(600)))
+            .poll_order(
+                &finalized.url,
+                &poll_policy(unix_now().saturating_add(600), Some(cancellation)),
+            )
             .map_err(AcmeManagedError::Protocol)?;
         if valid_order.status != "valid" {
             return Err(AcmeManagedError::OrderFailed);
@@ -882,6 +1156,89 @@ impl AcmeManagedReconciler {
         Ok(outcome)
     }
 
+    fn client_with_account<T: AcmeTransport>(
+        &self,
+        transport: T,
+        register_if_missing: bool,
+    ) -> Result<AcmeClient<T>, AcmeManagedError> {
+        let key_algorithm = account_key_algorithm(self.policy.key_type);
+        let account_key_path = format!("accounts/{}/account-key.pem", self.certificate);
+        let account_key = match self
+            .revisions
+            .state()
+            .read_bounded(&account_key_path, oxiroute_acme::MAX_CERTIFICATE_BYTES)
+        {
+            Ok(bytes) => {
+                AccountKey::from_pem(SecretBytes::new(bytes)).map_err(AcmeManagedError::Protocol)?
+            }
+            Err(AcmeStateError::FileOpen(error))
+                if error.kind() == io::ErrorKind::NotFound && register_if_missing =>
+            {
+                let key =
+                    AccountKey::generate(key_algorithm).map_err(AcmeManagedError::Protocol)?;
+                self.revisions
+                    .state()
+                    .write_secret(&account_key_path, key.private_key_pem())
+                    .map_err(AcmeManagedError::State)?;
+                key
+            }
+            Err(AcmeStateError::FileOpen(error)) if error.kind() == io::ErrorKind::NotFound => {
+                return Err(AcmeManagedError::AccountNotConfigured);
+            }
+            Err(error) => return Err(AcmeManagedError::State(error)),
+        };
+        let origin =
+            OriginPolicy::strict(&self.policy.directory_url).map_err(AcmeManagedError::Protocol)?;
+        let mut client = AcmeClient::new(
+            transport,
+            &self.policy.directory_url,
+            origin,
+            account_key,
+            Arc::new(SystemClock),
+        )
+        .map_err(AcmeManagedError::Protocol)?;
+        let account_path = format!("accounts/{}/account.json", self.certificate);
+        match self
+            .revisions
+            .state()
+            .read_json::<PersistedAccount>(&account_path, oxiroute_acme::MAX_JOB_BYTES)
+        {
+            Ok(persisted) => {
+                if persisted.directory_url != self.policy.directory_url {
+                    return Err(AcmeManagedError::AccountDirectoryChanged);
+                }
+                client
+                    .set_account(persisted.account)
+                    .map_err(AcmeManagedError::Protocol)?;
+            }
+            Err(AcmeStateError::FileOpen(error))
+                if error.kind() == io::ErrorKind::NotFound && register_if_missing =>
+            {
+                let account = client
+                    .register_account(&oxiroute_acme::AccountRequest {
+                        contacts: self.policy.contacts.clone(),
+                        terms_agreed: self.policy.terms_agreed,
+                    })
+                    .map_err(AcmeManagedError::Protocol)?;
+                self.revisions
+                    .state()
+                    .write_json(
+                        &account_path,
+                        &PersistedAccount {
+                            directory_url: self.policy.directory_url.clone(),
+                            account,
+                        },
+                    )
+                    .map_err(AcmeManagedError::State)?;
+            }
+            Err(AcmeStateError::FileOpen(error)) if error.kind() == io::ErrorKind::NotFound => {
+                return Err(AcmeManagedError::AccountNotConfigured);
+            }
+            Err(error) => return Err(AcmeManagedError::State(error)),
+        }
+        Ok(client)
+    }
+
     fn complete_dns01_challenge<T: AcmeTransport>(
         &self,
         client: &mut AcmeClient<T>,
@@ -890,9 +1247,11 @@ impl AcmeManagedReconciler {
         provider: &dyn Dns01Provider,
         credentials: &Dns01Credentials,
         timeout_seconds: u64,
+        cancellation: Dns01Cancellation,
     ) -> Result<(), AcmeManagedError> {
         let timeout = Duration::from_secs(timeout_seconds);
-        let operation = Dns01Operation::new(timeout).map_err(AcmeManagedError::DnsProvider)?;
+        let operation = Dns01Operation::with_cancellation(timeout, cancellation.clone())
+            .map_err(AcmeManagedError::DnsProvider)?;
         operation.check().map_err(AcmeManagedError::DnsProvider)?;
         let record = provider
             .create_txt_record(challenge, credentials, &operation)
@@ -912,7 +1271,10 @@ impl AcmeManagedReconciler {
                     let authorization = client
                         .poll_authorization_for(
                             authorization_url,
-                            &poll_policy(unix_now().saturating_add(600)),
+                            &poll_policy(
+                                unix_now().saturating_add(600),
+                                Some(cancellation.clone()),
+                            ),
                             ChallengeType::Dns01,
                         )
                         .map_err(AcmeManagedError::Protocol)?;
@@ -1013,6 +1375,7 @@ impl AcmeManagedReconciler {
     fn write_job(
         &self,
         id: &str,
+        operation: &str,
         status: JobStatus,
         now: u64,
         attempt: u32,
@@ -1020,11 +1383,12 @@ impl AcmeManagedReconciler {
         disk_revision: Option<String>,
         active_revision: Option<String>,
         last_outcome: Option<RedactedOutcome>,
+        correlation_id: Option<String>,
     ) -> Result<(), AcmeStateError> {
         self.revisions.state().write_job(&JobState {
             id: id.into(),
             certificate: self.certificate.clone(),
-            operation: "renew".into(),
+            operation: operation.into(),
             status,
             created_at_unix_seconds: now,
             updated_at_unix_seconds: now,
@@ -1033,7 +1397,92 @@ impl AcmeManagedReconciler {
             disk_revision,
             active_revision,
             last_outcome,
+            correlation_id,
         })
+    }
+
+    fn try_lock_job(&self) -> Result<std::sync::MutexGuard<'_, ()>, AcmeManagedError> {
+        match self.job.try_lock() {
+            Ok(job) => Ok(job),
+            Err(TryLockError::Poisoned(poisoned)) => Ok(poisoned.into_inner()),
+            Err(TryLockError::WouldBlock) => Err(AcmeManagedError::Busy),
+        }
+    }
+
+    fn begin_action_job(
+        &self,
+        operation: &str,
+        correlation_id: &str,
+    ) -> Result<(String, u64), AcmeManagedError> {
+        let now = unix_now();
+        let sequence = NEXT_JOB_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let job_id = format!("{operation}-{now}-{sequence}");
+        self.set_job_id(Some(job_id.clone()));
+        self.set_job_status(Some(JobStatus::Queued));
+        if let Err(error) = self.write_job(
+            &job_id,
+            operation,
+            JobStatus::Queued,
+            now,
+            0,
+            None,
+            None,
+            None,
+            None,
+            Some(correlation_id.into()),
+        ) {
+            self.set_job_id(None);
+            self.set_job_status(None);
+            return Err(AcmeManagedError::State(error));
+        }
+        Ok((job_id, now))
+    }
+
+    fn finish_action_job(
+        &self,
+        job_id: &str,
+        operation: &str,
+        created_at: u64,
+        correlation_id: &str,
+        result: &Result<(), AcmeManagedError>,
+        success: AcmeManagedOutcome,
+    ) -> Result<(), AcmeManagedError> {
+        let status = self.status();
+        let (job_status, outcome_code, outcome, error_code) = match result {
+            Ok(()) => (
+                JobStatus::Succeeded,
+                success.code(),
+                Some(RedactedOutcome::new(
+                    success.code(),
+                    "managed ACME action completed",
+                )),
+                None,
+            ),
+            Err(error) => (
+                JobStatus::Failed,
+                error.code(),
+                Some(RedactedOutcome::new(
+                    error.code(),
+                    "managed ACME action failed",
+                )),
+                Some(error.code()),
+            ),
+        };
+        self.set_outcome(Some(outcome_code), error_code);
+        self.set_job_status(Some(job_status.clone()));
+        self.write_job(
+            job_id,
+            operation,
+            job_status,
+            created_at,
+            1,
+            None,
+            Some(status.disk_revision),
+            Some(status.active_revision),
+            outcome,
+            Some(correlation_id.into()),
+        )
+        .map_err(|source| AcmeManagedError::State(source))
     }
 
     fn set_outcome(&self, outcome: Option<&'static str>, error: Option<&'static str>) {
@@ -1050,6 +1499,32 @@ impl AcmeManagedReconciler {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .job_status = status;
+    }
+
+    fn set_job_id(&self, id: Option<String>) {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .job_id = id;
+    }
+
+    fn is_paused(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .paused
+    }
+
+    fn clear_job_control(&self, id: &str) {
+        let mut control = self
+            .control
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if control.id.as_deref() == Some(id) {
+            control.id = None;
+            control.cancellation = None;
+            self.set_job_id(None);
+        }
     }
 
     fn update_schedule(
@@ -1082,7 +1557,13 @@ impl AcmeManagedReconciler {
         state.last_outcome = Some(outcome);
         state.last_error_code = None;
         drop(state);
-        self.persist_renewal()
+        self.persist_renewal()?;
+        self.revisions.garbage_collect(
+            &self.certificate,
+            self.policy.retained_revisions as usize,
+            unix_now().saturating_sub(u64::from(self.policy.retention_days) * 86_400),
+        )?;
+        Ok(())
     }
 
     fn schedule_retry(&self, now_unix_seconds: u64) -> Result<(), AcmeStateError> {
@@ -1123,6 +1604,7 @@ impl AcmeManagedReconciler {
             renewal_info_url: state.renewal_info_url.clone(),
             last_success_unix_seconds: state.last_success_unix_seconds,
             last_error_code: state.last_error_code.clone(),
+            paused: state.paused,
         };
         drop(state);
         self.revisions.state().write_json(
@@ -1194,6 +1676,7 @@ fn is_known_error_code(code: &str) -> bool {
         "job_busy"
             | "state_failed"
             | "poll_timeout"
+            | "job_cancelled"
             | "transport_failed"
             | "acme_problem"
             | "protocol_failed"
@@ -1202,6 +1685,11 @@ fn is_known_error_code(code: &str) -> bool {
             | "order_failed"
             | "certificate_malformed"
             | "account_directory_changed"
+            | "account_not_configured"
+            | "revocation_unsupported"
+            | "key_change_unsupported"
+            | "invalid_certificate"
+            | "invalid_revocation_reason"
             | "publication_conflict"
             | "challenge_failed"
             | "dns_provider_unsupported"
@@ -1210,6 +1698,14 @@ fn is_known_error_code(code: &str) -> bool {
             | "dns_provider_cancelled"
             | "dns_provider_failed"
             | "dns_cleanup_failed"
+    )
+}
+
+fn is_cancelled_error(error: &AcmeManagedError) -> bool {
+    matches!(
+        error,
+        AcmeManagedError::Protocol(AcmeError::Cancelled)
+            | AcmeManagedError::DnsProvider(Dns01ProviderError::Cancelled)
     )
 }
 
@@ -1243,12 +1739,13 @@ fn bootstrap_key_type(key_type: AcmeKeyType) -> SelfSignedKeyType {
     }
 }
 
-fn poll_policy(deadline_unix_seconds: u64) -> PollPolicy {
+fn poll_policy(deadline_unix_seconds: u64, cancellation: Option<Dns01Cancellation>) -> PollPolicy {
     PollPolicy {
         max_attempts: 64,
         deadline_unix_seconds,
         initial_delay_seconds: 1,
         max_delay_seconds: 60,
+        cancellation,
     }
 }
 
@@ -1502,6 +1999,8 @@ mod tests {
                 challenge: AcmeChallengeType::Http01,
                 key_type: AcmeKeyType::EcdsaP256,
                 allowed_dns_suffixes: vec!["example.test".into()],
+                retained_revisions: 3,
+                retention_days: 30,
                 dns01: None,
             },
             revisions.clone(),
@@ -1592,6 +2091,8 @@ mod tests {
                 challenge: AcmeChallengeType::Dns01,
                 key_type: AcmeKeyType::EcdsaP256,
                 allowed_dns_suffixes: vec!["example.test".into()],
+                retained_revisions: 3,
+                retention_days: 30,
                 dns01: Some(AcmeDns01Config {
                     provider: "fake".into(),
                     credential_file: credentials,
@@ -1668,6 +2169,7 @@ mod tests {
                     renewal_info_url: None,
                     last_success_unix_seconds: Some(1_000),
                     last_error_code: Some("transport_failed".into()),
+                    paused: false,
                 },
             )
             .expect("renewal state");
@@ -1689,6 +2191,8 @@ mod tests {
                 challenge: AcmeChallengeType::Http01,
                 key_type: AcmeKeyType::EcdsaP256,
                 allowed_dns_suffixes: vec!["example.test".into()],
+                retained_revisions: 3,
+                retention_days: 30,
                 dns01: None,
             },
             RevisionStore::from_arc(state),

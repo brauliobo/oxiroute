@@ -13,7 +13,7 @@ use super::{ApiResponse, config::read_config_body};
 use crate::{
     AdministrativeState, GenerationManager, HealthOverride, RuntimeGeneration, RuntimeMetrics,
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome},
-    operational_event::{AuditCategory, AuditResult, AuditStore},
+    operational_event::{AuditCategory, AuditContext, AuditResult, AuditStore},
 };
 
 const MAX_BATCH_TARGETS: usize = 256;
@@ -51,6 +51,12 @@ pub(super) enum Route<'a> {
     Tls,
     TlsReconcile,
     TlsRenew,
+    TlsRevoke,
+    TlsDelete,
+    TlsAccountRollover,
+    TlsJobCancel,
+    TlsJobPause,
+    TlsJobResume,
     Audit(Option<&'a str>),
     AuditStatus,
     Events(Option<&'a str>),
@@ -81,6 +87,12 @@ pub(super) fn match_route(path_and_query: &str) -> Option<Route<'_>> {
         "/api/v1/tls" => Some(Route::Tls),
         "/api/v1/tls/reconcile" => Some(Route::TlsReconcile),
         "/api/v1/tls/renew" => Some(Route::TlsRenew),
+        "/api/v1/tls/revoke" => Some(Route::TlsRevoke),
+        "/api/v1/tls/delete" => Some(Route::TlsDelete),
+        "/api/v1/tls/account/rollover" => Some(Route::TlsAccountRollover),
+        "/api/v1/tls/jobs/cancel" => Some(Route::TlsJobCancel),
+        "/api/v1/tls/jobs/pause" => Some(Route::TlsJobPause),
+        "/api/v1/tls/jobs/resume" => Some(Route::TlsJobResume),
         "/api/v1/audit" => Some(Route::Audit(query)),
         "/api/v1/audit/status" => Some(Route::AuditStatus),
         "/api/v1/events" => Some(Route::Events(query)),
@@ -131,6 +143,7 @@ impl ManagementState {
         route: Route<'_>,
         method: &str,
         session: &mut ServerSession,
+        context: &AuditContext,
     ) -> ApiResponse {
         match (route, method) {
             (Route::Listeners, "GET") => self.listeners(),
@@ -151,7 +164,15 @@ impl ManagementState {
             (Route::GenerationDrain, "POST") => self.generation_drain(session).await,
             (Route::Tls, "GET") => self.tls(),
             (Route::TlsReconcile, "POST") => self.tls_reconcile(session).await,
-            (Route::TlsRenew, "POST") => self.tls_renew(session).await,
+            (Route::TlsRenew, "POST") => self.tls_renew(session, context).await,
+            (Route::TlsRevoke, "POST") => self.tls_revoke(session, context).await,
+            (Route::TlsDelete, "POST") => self.tls_delete(session, context).await,
+            (Route::TlsAccountRollover, "POST") => {
+                self.tls_account_rollover(session, context).await
+            }
+            (Route::TlsJobCancel, "POST") => self.tls_job_control(session, context, JobControl::Cancel).await,
+            (Route::TlsJobPause, "POST") => self.tls_job_control(session, context, JobControl::Pause).await,
+            (Route::TlsJobResume, "POST") => self.tls_job_control(session, context, JobControl::Resume).await,
             (Route::Audit(query), "GET") => self.audit(query),
             (Route::AuditStatus, "GET") => self.audit_status(),
             (Route::Events(query), "GET") => Self::events(query),
@@ -790,7 +811,11 @@ impl ManagementState {
         ApiResponse::json(200, &json!({ "outcomes": outcomes }))
     }
 
-    async fn tls_renew(&self, session: &mut ServerSession) -> ApiResponse {
+    async fn tls_renew(
+        &self,
+        session: &mut ServerSession,
+        context: &AuditContext,
+    ) -> ApiResponse {
         let request: TlsRequest = match body(session).await {
             Ok(request) => request,
             Err(response) => return response,
@@ -825,14 +850,16 @@ impl ManagementState {
             );
         };
         let certificate_name = reconciler.status().certificate;
-        crate::operational_event::emit_certificate(
+        crate::operational_event::emit_certificate_with_context(
             "certificate_renewal",
             "requested",
             &certificate_name,
+            context,
         );
         let worker_reconciler = Arc::clone(&reconciler);
+        let correlation_id = context.correlation_id.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let result = worker_reconciler.renew_now();
+            let result = worker_reconciler.renew_now_with_correlation(correlation_id);
             drop(mutation);
             result
         })
@@ -840,7 +867,7 @@ impl ManagementState {
         match result {
             Ok(Ok(outcome)) => {
                 let status = reconciler.status();
-                crate::operational_event::emit_certificate(
+                crate::operational_event::emit_certificate_with_context(
                     if outcome == crate::AcmeManagedOutcome::Activated {
                         "certificate_activated"
                     } else {
@@ -852,6 +879,7 @@ impl ManagementState {
                         "applied"
                     },
                     &status.certificate,
+                    context,
                 );
                 ApiResponse::json(
                     200,
@@ -864,14 +892,356 @@ impl ManagementState {
                 )
             }
             Ok(Err(error)) => {
-                crate::operational_event::emit_certificate(
+                crate::operational_event::emit_certificate_with_context(
                     "certificate_renewal",
                     "failed",
                     &certificate_name,
+                    context,
                 );
                 ApiResponse::error(503, error.code(), "managed ACME renewal failed")
             }
             Err(_) => ApiResponse::error(503, "renewal_worker_failed", "renewal worker failed"),
+        }
+    }
+
+    async fn tls_revoke(
+        &self,
+        session: &mut ServerSession,
+        context: &AuditContext,
+    ) -> ApiResponse {
+        let request: TlsRevokeRequest = match body(session).await {
+            Ok(request) => request,
+            Err(response) => return response,
+        };
+        let mutation = match self
+            .generations
+            .begin_mutation(&request.expected_active_revision)
+        {
+            Ok(mutation) => mutation,
+            Err(error) => return mutation_error(&error),
+        };
+        let reconciler = {
+            let active = mutation.generation();
+            active
+                .plan()
+                .tls
+                .acme_reconcilers()
+                .iter()
+                .find(|reconciler| reconciler.status().certificate == request.certificate)
+                .cloned()
+        };
+        let Some(reconciler) = reconciler else {
+            return ApiResponse::error(
+                404,
+                "managed_certificate_not_found",
+                "managed ACME certificate was not found",
+            );
+        };
+        let certificate = reconciler.status().certificate;
+        crate::operational_event::emit_certificate_with_context(
+            "certificate_revocation",
+            "requested",
+            &certificate,
+            context,
+        );
+        let worker_reconciler = Arc::clone(&reconciler);
+        let correlation_id = context.correlation_id.clone();
+        let reason = request.reason;
+        let result = tokio::task::spawn_blocking(move || {
+            let result = worker_reconciler.revoke_now_with_correlation(reason, correlation_id);
+            drop(mutation);
+            result
+        })
+        .await;
+        match result {
+            Ok(Ok((outcome, job_id))) => {
+                crate::operational_event::emit_certificate_with_context(
+                    "certificate_revocation",
+                    "applied",
+                    &certificate,
+                    context,
+                );
+                ApiResponse::json(
+                    200,
+                    &json!({
+                        "certificate": certificate,
+                        "outcome": outcome.code(),
+                        "jobId": job_id,
+                    }),
+                )
+            }
+            Ok(Err(error)) => {
+                crate::operational_event::emit_certificate_with_context(
+                    "certificate_revocation",
+                    "failed",
+                    &certificate,
+                    context,
+                );
+                managed_error_response(error, "managed ACME revocation failed")
+            }
+            Err(_) => ApiResponse::error(503, "revocation_worker_failed", "revocation worker failed"),
+        }
+    }
+
+    async fn tls_delete(
+        &self,
+        session: &mut ServerSession,
+        context: &AuditContext,
+    ) -> ApiResponse {
+        let request: TlsRequest = match body(session).await {
+            Ok(request) => request,
+            Err(response) => return response,
+        };
+        let Some(certificate) = request.certificate.as_deref() else {
+            return ApiResponse::error(
+                400,
+                "certificate_required",
+                "a managed certificate is required",
+            );
+        };
+        let mutation = match self
+            .generations
+            .begin_mutation(&request.expected_active_revision)
+        {
+            Ok(mutation) => mutation,
+            Err(error) => return mutation_error(&error),
+        };
+        let active = mutation.generation();
+        if active
+            .config()
+            .tls_profiles
+            .iter()
+            .any(|profile| {
+                profile.default_certificate == certificate
+                    || profile.certificates.iter().any(|name| name == certificate)
+            })
+        {
+            return ApiResponse::error(
+                409,
+                "certificate_in_use",
+                "managed certificate is still referenced by an active TLS profile",
+            );
+        }
+        let reconciler = active
+            .plan()
+            .tls
+            .acme_reconcilers()
+            .iter()
+            .find(|reconciler| reconciler.status().certificate == certificate)
+            .cloned();
+        let Some(reconciler) = reconciler else {
+            return ApiResponse::error(
+                404,
+                "managed_certificate_not_found",
+                "managed ACME certificate was not found",
+            );
+        };
+        let certificate = certificate.to_owned();
+        crate::operational_event::emit_certificate_with_context(
+            "certificate_deletion",
+            "requested",
+            &certificate,
+            context,
+        );
+        let worker_reconciler = Arc::clone(&reconciler);
+        let correlation_id = context.correlation_id.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let result = worker_reconciler.delete_state_with_correlation(correlation_id);
+            drop(mutation);
+            result
+        })
+        .await;
+        match result {
+            Ok(Ok((outcome, job_id))) => {
+                crate::operational_event::emit_certificate_with_context(
+                    "certificate_deletion",
+                    "applied",
+                    &certificate,
+                    context,
+                );
+                ApiResponse::json(
+                    200,
+                    &json!({
+                        "certificate": certificate,
+                        "outcome": outcome.code(),
+                        "jobId": job_id,
+                    }),
+                )
+            }
+            Ok(Err(error)) => {
+                crate::operational_event::emit_certificate_with_context(
+                    "certificate_deletion",
+                    "failed",
+                    &certificate,
+                    context,
+                );
+                managed_error_response(error, "managed ACME state deletion failed")
+            }
+            Err(_) => ApiResponse::error(503, "deletion_worker_failed", "deletion worker failed"),
+        }
+    }
+
+    async fn tls_account_rollover(
+        &self,
+        session: &mut ServerSession,
+        context: &AuditContext,
+    ) -> ApiResponse {
+        let request: TlsRequest = match body(session).await {
+            Ok(request) => request,
+            Err(response) => return response,
+        };
+        let mutation = match self
+            .generations
+            .begin_mutation(&request.expected_active_revision)
+        {
+            Ok(mutation) => mutation,
+            Err(error) => return mutation_error(&error),
+        };
+        let reconciler = {
+            let active = mutation.generation();
+            active
+                .plan()
+                .tls
+                .acme_reconcilers()
+                .iter()
+                .find(|reconciler| {
+                    request
+                        .certificate
+                        .as_deref()
+                        .is_none_or(|name| name == reconciler.status().certificate)
+                })
+                .cloned()
+        };
+        let Some(reconciler) = reconciler else {
+            return ApiResponse::error(
+                404,
+                "managed_certificate_not_found",
+                "managed ACME certificate was not found",
+            );
+        };
+        let certificate = reconciler.status().certificate;
+        crate::operational_event::emit_certificate_with_context(
+            "certificate_account_rollover",
+            "requested",
+            &certificate,
+            context,
+        );
+        let worker_reconciler = Arc::clone(&reconciler);
+        let correlation_id = context.correlation_id.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let result = worker_reconciler
+                .rollover_account_key_with_correlation(correlation_id);
+            drop(mutation);
+            result
+        })
+        .await;
+        match result {
+            Ok(Ok((outcome, job_id))) => {
+                crate::operational_event::emit_certificate_with_context(
+                    "certificate_account_rollover",
+                    "applied",
+                    &certificate,
+                    context,
+                );
+                ApiResponse::json(
+                    200,
+                    &json!({
+                        "certificate": certificate,
+                        "outcome": outcome.code(),
+                        "jobId": job_id,
+                    }),
+                )
+            }
+            Ok(Err(error)) => {
+                crate::operational_event::emit_certificate_with_context(
+                    "certificate_account_rollover",
+                    "failed",
+                    &certificate,
+                    context,
+                );
+                managed_error_response(error, "managed ACME account rollover failed")
+            }
+            Err(_) => ApiResponse::error(
+                503,
+                "account_rollover_worker_failed",
+                "account rollover worker failed",
+            ),
+        }
+    }
+
+    async fn tls_job_control(
+        &self,
+        session: &mut ServerSession,
+        context: &AuditContext,
+        control: JobControl,
+    ) -> ApiResponse {
+        let request: TlsRequest = match body(session).await {
+            Ok(request) => request,
+            Err(response) => return response,
+        };
+        let mutation = match self
+            .generations
+            .begin_mutation(&request.expected_active_revision)
+        {
+            Ok(mutation) => mutation,
+            Err(error) => return mutation_error(&error),
+        };
+        let reconciler = {
+            let active = mutation.generation();
+            active
+                .plan()
+                .tls
+                .acme_reconcilers()
+                .iter()
+                .find(|reconciler| {
+                    request
+                        .certificate
+                        .as_deref()
+                        .is_none_or(|name| name == reconciler.status().certificate)
+                })
+                .cloned()
+        };
+        drop(mutation);
+        let Some(reconciler) = reconciler else {
+            return ApiResponse::error(
+                404,
+                "managed_certificate_not_found",
+                "managed ACME certificate was not found",
+            );
+        };
+        let certificate = reconciler.status().certificate;
+        let result = match control {
+            JobControl::Cancel => reconciler.cancel_job().map(|job_id| {
+                crate::operational_event::emit_certificate_with_context(
+                    "certificate_job_control",
+                    "requested",
+                    &certificate,
+                    context,
+                );
+                json!({ "certificate": certificate, "outcome": "cancellation_requested", "jobId": job_id })
+            }),
+            JobControl::Pause => reconciler.pause().map(|job_id| {
+                crate::operational_event::emit_certificate_with_context(
+                    "certificate_job_control",
+                    "applied",
+                    &certificate,
+                    context,
+                );
+                json!({ "certificate": certificate, "outcome": "paused", "jobId": job_id })
+            }),
+            JobControl::Resume => reconciler.resume().map(|()| {
+                crate::operational_event::emit_certificate_with_context(
+                    "certificate_job_control",
+                    "applied",
+                    &certificate,
+                    context,
+                );
+                json!({ "certificate": certificate, "outcome": "resumed" })
+            }),
+        };
+        match result {
+            Ok(response) => ApiResponse::json(202, &response),
+            Err(error) => managed_error_response(error, "managed ACME job control failed"),
         }
     }
 
@@ -1056,6 +1426,26 @@ fn mutation_error(error: &crate::GenerationError) -> ApiResponse {
     )
 }
 
+#[derive(Clone, Copy)]
+enum JobControl {
+    Cancel,
+    Pause,
+    Resume,
+}
+
+fn managed_error_response(error: crate::AcmeManagedError, message: &str) -> ApiResponse {
+    let status = match &error {
+        crate::AcmeManagedError::Protocol(
+            oxiroute_acme::AcmeError::InvalidRevocationReason,
+        ) => 400,
+        crate::AcmeManagedError::Busy
+        | crate::AcmeManagedError::Paused
+        | crate::AcmeManagedError::NoJob => 409,
+        _ => 503,
+    };
+    ApiResponse::error(status, error.code(), message)
+}
+
 async fn body<T: for<'de> Deserialize<'de>>(session: &mut ServerSession) -> Result<T, ApiResponse> {
     let bytes = read_config_body(session).await?;
     serde_json::from_slice(&bytes)
@@ -1076,6 +1466,32 @@ mod tests {
             match_route("/api/v1/audit/status"),
             Some(Route::AuditStatus)
         ));
+    }
+
+    #[test]
+    fn managed_acme_lifecycle_routes_are_exact_and_post_only() {
+        for path in [
+            "/api/v1/tls/revoke",
+            "/api/v1/tls/delete",
+            "/api/v1/tls/account/rollover",
+            "/api/v1/tls/jobs/cancel",
+            "/api/v1/tls/jobs/pause",
+            "/api/v1/tls/jobs/resume",
+        ] {
+            assert!(match_route(path).is_some(), "route missing: {path}");
+            assert!(match_route(&format!("{path}/")).is_none());
+        }
+    }
+
+    #[test]
+    fn invalid_revocation_reason_is_a_client_error() {
+        let response = super::managed_error_response(
+            crate::AcmeManagedError::Protocol(
+                oxiroute_acme::AcmeError::InvalidRevocationReason,
+            ),
+            "revocation failed",
+        );
+        assert_eq!(response.status, 400);
     }
 }
 
@@ -1161,4 +1577,13 @@ struct TlsRequest {
     expected_active_revision: String,
     #[serde(default)]
     certificate: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TlsRevokeRequest {
+    expected_active_revision: String,
+    certificate: String,
+    #[serde(default)]
+    reason: Option<u8>,
 }

@@ -1,12 +1,12 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt,
     fs::{self, File},
     io::{self, Read, Write},
     path::{Component, Path, PathBuf},
     sync::{
-        Arc, Mutex, OnceLock, Weak,
         atomic::{AtomicU64, Ordering},
+        Arc, Mutex, OnceLock, Weak,
     },
 };
 
@@ -107,6 +107,7 @@ pub enum JobStatus {
     Running,
     WaitingForChallenge,
     Finalizing,
+    Paused,
     Succeeded,
     Failed,
     Cancelled,
@@ -135,6 +136,8 @@ pub struct JobState {
     pub id: String,
     pub certificate: String,
     pub operation: String,
+    #[serde(default)]
+    pub correlation_id: Option<String>,
     pub status: JobStatus,
     pub created_at_unix_seconds: u64,
     pub updated_at_unix_seconds: u64,
@@ -294,6 +297,15 @@ impl StateStore {
             || job.operation.len() > MAX_SLUG_BYTES
             || !is_safe_component(&job.operation)
         {
+            return Err(AcmeStateError::UnsafePath);
+        }
+        if job.correlation_id.as_deref().is_some_and(|correlation| {
+            correlation.is_empty()
+                || correlation.len() > 64
+                || !correlation.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
+                })
+        }) {
             return Err(AcmeStateError::UnsafePath);
         }
         self.write_json(&format!("jobs/{}.json", job.id), job)
@@ -482,6 +494,243 @@ impl RevisionStore {
             private_key_pem: private_key,
             metadata,
         })
+    }
+
+    /// Removes old complete revisions while always preserving the current pointer and the newest
+    /// configured revisions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the certificate namespace, current pointer, revision metadata, or
+    /// deletion path is unsafe or unavailable.
+    pub fn garbage_collect(
+        &self,
+        certificate: &str,
+        retain_revisions: usize,
+        retain_after_unix_seconds: u64,
+    ) -> Result<usize, AcmeStateError> {
+        validate_slug(certificate)?;
+        if retain_revisions == 0 {
+            return Err(AcmeStateError::InvalidRevision);
+        }
+        let revisions_relative = format!("certificates/{certificate}/revisions");
+        let revisions_path = self.state.safe_path(&revisions_relative)?;
+        let current = current_revision(&self.state, certificate)?;
+        let entries = match fs::read_dir(&revisions_path) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+            Err(error) => return Err(AcmeStateError::FileOpen(error)),
+        };
+        let mut revisions = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(AcmeStateError::FileOpen)?;
+            let revision = entry
+                .file_name()
+                .to_str()
+                .ok_or(AcmeStateError::UnsafePath)?
+                .to_owned();
+            validate_revision(&revision)?;
+            let metadata = entry.file_type().map_err(AcmeStateError::FileOpen)?;
+            if !metadata.is_dir() || metadata.is_symlink() {
+                return Err(AcmeStateError::UnsafeDirectory);
+            }
+            let relative = format!("{revisions_relative}/{revision}/metadata.json");
+            let metadata = self
+                .state
+                .read_json::<RevisionMetadata>(&relative, MAX_JOB_BYTES)?;
+            if metadata.certificate != certificate || metadata.revision != revision {
+                return Err(AcmeStateError::InvalidRevision);
+            }
+            revisions.push((revision, metadata.created_at_unix_seconds));
+        }
+        revisions.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| right.0.cmp(&left.0)));
+        let mut protected = BTreeSet::new();
+        if let Some(current) = current {
+            protected.insert(current);
+        }
+        protected.extend(
+            revisions
+                .iter()
+                .take(retain_revisions)
+                .map(|(revision, _)| revision.clone()),
+        );
+        let mut removed = 0;
+        for (revision, created_at) in revisions {
+            if protected.contains(&revision) || created_at >= retain_after_unix_seconds {
+                continue;
+            }
+            remove_revision(&self.state, certificate, &revision)?;
+            removed += 1;
+        }
+        if removed > 0 {
+            sync_directory(&revisions_path)?;
+        }
+        Ok(removed)
+    }
+
+    /// Deletes all persisted account and certificate state for one managed certificate.
+    ///
+    /// The active in-memory generation is owned by the server and is intentionally outside this
+    /// operation. A caller must ensure that the certificate is no longer referenced before calling
+    /// this method.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any namespace, entry, or deletion path is unsafe or unavailable.
+    pub fn delete_certificate_state(&self, certificate: &str) -> Result<(), AcmeStateError> {
+        validate_slug(certificate)?;
+        let certificate_relative = format!("certificates/{certificate}");
+        let certificate_path = self.state.safe_path(&certificate_relative)?;
+        let certificate_exists = match fs::symlink_metadata(&certificate_path) {
+            Ok(metadata) => {
+                if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                    return Err(AcmeStateError::UnsafeDirectory);
+                }
+                true
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(AcmeStateError::FileOpen(error)),
+        };
+        if certificate_exists {
+            let entries = fs::read_dir(&certificate_path).map_err(AcmeStateError::FileOpen)?;
+            for entry in entries {
+                let entry = entry.map_err(AcmeStateError::FileOpen)?;
+                let name = entry
+                    .file_name()
+                    .to_str()
+                    .ok_or(AcmeStateError::UnsafePath)?
+                    .to_owned();
+                match name.as_str() {
+                    "revisions" => {
+                        let revisions_path = entry.path();
+                        let metadata = entry.file_type().map_err(AcmeStateError::FileOpen)?;
+                        if !metadata.is_dir() || metadata.is_symlink() {
+                            return Err(AcmeStateError::UnsafeDirectory);
+                        }
+                        let revisions =
+                            fs::read_dir(&revisions_path).map_err(AcmeStateError::FileOpen)?;
+                        for revision in revisions {
+                            let revision = revision.map_err(AcmeStateError::FileOpen)?;
+                            let revision_name = revision
+                                .file_name()
+                                .to_str()
+                                .ok_or(AcmeStateError::UnsafePath)?
+                                .to_owned();
+                            validate_revision(&revision_name)?;
+                            if !revision
+                                .file_type()
+                                .map_err(AcmeStateError::FileOpen)?
+                                .is_dir()
+                            {
+                                return Err(AcmeStateError::UnsafeDirectory);
+                            }
+                            remove_revision(&self.state, certificate, &revision_name)?;
+                        }
+                        fs::remove_dir(revisions_path).map_err(AcmeStateError::FileWrite)?;
+                    }
+                    "current" | "renewal.json" => {
+                        remove_file_if_present(&entry.path())?;
+                    }
+                    _ => return Err(AcmeStateError::UnsafePath),
+                }
+            }
+            fs::remove_dir(&certificate_path).map_err(AcmeStateError::FileWrite)?;
+            if let Some(parent) = certificate_path.parent() {
+                sync_directory(parent)?;
+            }
+        }
+
+        let account_relative = format!("accounts/{certificate}");
+        let account_path = self.state.safe_path(&account_relative)?;
+        let account_exists = match fs::symlink_metadata(&account_path) {
+            Ok(metadata) => {
+                if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                    return Err(AcmeStateError::UnsafeDirectory);
+                }
+                true
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(AcmeStateError::FileOpen(error)),
+        };
+        if account_exists {
+            let entries = fs::read_dir(&account_path).map_err(AcmeStateError::FileOpen)?;
+            for entry in entries {
+                let entry = entry.map_err(AcmeStateError::FileOpen)?;
+                let name = entry
+                    .file_name()
+                    .to_str()
+                    .ok_or(AcmeStateError::UnsafePath)?
+                    .to_owned();
+                if !matches!(name.as_str(), "account-key.pem" | "account.json") {
+                    return Err(AcmeStateError::UnsafePath);
+                }
+                remove_file_if_present(&entry.path())?;
+            }
+            fs::remove_dir(&account_path).map_err(AcmeStateError::FileWrite)?;
+            if let Some(parent) = account_path.parent() {
+                sync_directory(parent)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn current_revision(
+    state: &StateStore,
+    certificate: &str,
+) -> Result<Option<String>, AcmeStateError> {
+    let current = format!("certificates/{certificate}/current");
+    let target = match fs::read_link(state.safe_path(&current)?) {
+        Ok(target) => target,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(AcmeStateError::FileOpen(error)),
+    };
+    let mut components = target.components();
+    let Some(Component::Normal(parent)) = components.next() else {
+        return Err(AcmeStateError::UnsafePath);
+    };
+    let Some(Component::Normal(revision)) = components.next() else {
+        return Err(AcmeStateError::UnsafePath);
+    };
+    if parent != "revisions" || components.next().is_some() {
+        return Err(AcmeStateError::UnsafePath);
+    }
+    let revision = revision.to_str().ok_or(AcmeStateError::UnsafePath)?;
+    validate_revision(revision)?;
+    Ok(Some(revision.to_owned()))
+}
+
+fn remove_revision(
+    state: &StateStore,
+    certificate: &str,
+    revision: &str,
+) -> Result<(), AcmeStateError> {
+    validate_slug(certificate)?;
+    validate_revision(revision)?;
+    let relative = format!("certificates/{certificate}/revisions/{revision}");
+    let path = state.safe_path(&relative)?;
+    for name in [
+        "cert.pem",
+        "chain.pem",
+        "fullchain.pem",
+        "privkey.pem",
+        "metadata.json",
+    ] {
+        let file = path.join(name);
+        match fs::remove_file(file) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(AcmeStateError::FileWrite(error)),
+        }
+    }
+    fs::remove_dir(&path).map_err(AcmeStateError::FileWrite)
+}
+
+fn remove_file_if_present(path: &Path) -> Result<(), AcmeStateError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(AcmeStateError::FileWrite(error)),
     }
 }
 
@@ -875,12 +1124,93 @@ mod tests {
                 .certificate_pem,
             b"new-cert"
         );
-        assert!(
-            directory
-                .path()
-                .join("state/certificates/edge/revisions/00000001/cert.pem")
-                .is_file()
+        assert!(directory
+            .path()
+            .join("state/certificates/edge/revisions/00000001/cert.pem")
+            .is_file());
+    }
+
+    #[test]
+    fn garbage_collection_preserves_current_and_newest_revisions() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let revision =
+            RevisionStore::new(StateStore::open(directory.path().join("state")).expect("state"));
+        for (revision_id, created_at) in [("00000001", 1), ("00000002", 2), ("00000003", 3)] {
+            let mut material = material();
+            material.metadata.revision = revision_id.into();
+            material.metadata.created_at_unix_seconds = created_at;
+            revision
+                .commit("edge", revision_id, &material)
+                .expect("revision");
+        }
+        assert_eq!(revision.garbage_collect("edge", 1, 3).expect("collect"), 2);
+        assert!(!directory
+            .path()
+            .join("state/certificates/edge/revisions/00000001")
+            .exists());
+        assert!(directory
+            .path()
+            .join("state/certificates/edge/revisions/00000003")
+            .is_dir());
+        assert_eq!(
+            revision
+                .load_current("edge")
+                .expect("active revision")
+                .metadata
+                .revision,
+            "00000003"
         );
+    }
+
+    #[test]
+    fn deleting_certificate_state_removes_account_and_revisions() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let revision =
+            RevisionStore::new(StateStore::open(directory.path().join("state")).expect("state"));
+        let material = material();
+        revision
+            .commit("edge", "0123abcd", &material)
+            .expect("revision");
+        revision
+            .state()
+            .write_secret(
+                "accounts/edge/account-key.pem",
+                &SecretBytes::new(b"key".to_vec()),
+            )
+            .expect("account key");
+        revision
+            .state()
+            .write_public("accounts/edge/account.json", b"{}")
+            .expect("account state");
+        revision
+            .delete_certificate_state("edge")
+            .expect("delete state");
+        assert!(!directory.path().join("state/certificates/edge").exists());
+        assert!(!directory.path().join("state/accounts/edge").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deleting_certificate_state_rejects_a_symlinked_revision_directory() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let revision =
+            RevisionStore::new(StateStore::open(directory.path().join("state")).expect("state"));
+        revision
+            .commit("edge", "0123abcd", &material())
+            .expect("revision");
+        let external = directory.path().join("external");
+        fs::create_dir(&external).expect("external directory");
+        let revisions = directory.path().join("state/certificates/edge/revisions");
+        fs::remove_dir_all(&revisions).expect("remove revisions");
+        symlink(&external, &revisions).expect("symlink revisions");
+
+        assert!(matches!(
+            revision.delete_certificate_state("edge"),
+            Err(AcmeStateError::UnsafeDirectory)
+        ));
+        assert!(external.is_dir());
     }
 
     #[test]
@@ -891,6 +1221,7 @@ mod tests {
             id: "job-1".into(),
             certificate: "edge".into(),
             operation: "renew".into(),
+            correlation_id: None,
             status: JobStatus::Failed,
             created_at_unix_seconds: 1,
             updated_at_unix_seconds: 2,

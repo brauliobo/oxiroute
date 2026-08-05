@@ -301,6 +301,8 @@ fn managed_acme_without_a_current_revision_uses_a_bootstrap_and_is_due() {
         challenge: AcmeChallengeType::Http01,
         key_type: AcmeKeyType::EcdsaP256,
         allowed_dns_suffixes: vec!["example.test".into()],
+        retained_revisions: 3,
+        retention_days: 30,
         dns01: None,
     };
 
