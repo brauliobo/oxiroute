@@ -27,6 +27,7 @@ const SYNTHETIC_UNIX_DNS_LEASTCONN: &[u8] =
     include_bytes!("fixtures/haproxy/synthetic-unix-dns-leastconn.cfg");
 const PHOENIX: &[u8] = include_bytes!("fixtures/haproxy/phoenix-dormant.cfg");
 const MINIMAL: &[u8] = include_bytes!("fixtures/haproxy/minimal-representable.cfg");
+const ACL_CONJUNCTION: &[u8] = include_bytes!("fixtures/haproxy/acl-conjunction.cfg");
 
 #[test]
 fn imported_http_services_disable_automatic_response_headers_in_canonical_rendering() {
@@ -930,6 +931,88 @@ backend app
 }
 
 #[test]
+fn positive_host_and_path_acl_conjunction_lowers_with_both_matchers_and_provenance() {
+    let imported = import_fixture("acl-conjunction.cfg", ACL_CONJUNCTION);
+    let candidate = imported.value();
+    let config = candidate
+        .config
+        .as_ref()
+        .expect("host/path ACL conjunction config");
+    let service = &config.http_services[0];
+
+    assert!(
+        imported.diagnostics().is_empty(),
+        "{:?}",
+        imported.diagnostics()
+    );
+    assert!(matches!(
+        service.routes[0].host,
+        Some(HttpHostSelector::AsciiCaseInsensitiveExactAuthority { ref value })
+            if value == "api.example.test"
+    ));
+    assert!(matches!(
+        service.routes[0].path,
+        HttpPathSelector::RawPrefix { ref value } if value == "/v1"
+    ));
+    assert!(matches!(
+        service.routes[0].action,
+        HttpRouteAction::Proxy { ref upstream_pool, .. } if upstream_pool == "api"
+    ));
+    assert!(matches!(
+        service.routes[1].action,
+        HttpRouteAction::Proxy { ref upstream_pool, .. } if upstream_pool == "fallback"
+    ));
+    let route = candidate
+        .provenance
+        .iter()
+        .find(|provenance| provenance.path == "/http_services/0/routes/0")
+        .expect("conjunction route provenance");
+    assert!(route.origins.len() >= 3);
+}
+
+#[test]
+fn non_equivalent_acl_conjunctions_fail_closed_without_fallback_routes() {
+    let duplicate_host = b"defaults web
+  mode http
+  retries 0
+  timeout connect 5s
+  timeout server 30s
+frontend public
+  bind 127.0.0.1:18080
+  acl first hdr(host) -i api.example.test
+  acl second hdr(host) -i admin.example.test
+  use_backend app if first second
+  default_backend fallback
+backend app
+  balance roundrobin
+  server app1 127.0.0.1:3000
+backend fallback
+  balance roundrobin
+  server fallback1 127.0.0.1:3001
+";
+    let duplicate = import_fixture("duplicate-acl-conjunction.cfg", duplicate_host);
+    assert!(duplicate.value().config.is_none());
+    assert!(duplicate.value().draft.http_services.is_empty());
+    assert!(diagnostic_contains(
+        duplicate.diagnostics(),
+        "cannot repeat the same Host or path criterion"
+    ));
+
+    let case_insensitive_path = String::from_utf8(ACL_CONJUNCTION.to_vec())
+        .expect("ACL fixture UTF-8")
+        .replace("path_beg /v1", "path_beg -i /v1");
+    let blocked = import_fixture(
+        "case-insensitive-acl-conjunction.cfg",
+        case_insensitive_path.as_bytes(),
+    );
+    assert!(blocked.value().config.is_none());
+    assert!(diagnostic_contains(
+        blocked.diagnostics(),
+        "case-insensitive HAProxy path prefix matching is not canonical"
+    ));
+}
+
+#[test]
 fn conditional_backend_without_default_appends_a_last_catch_all_503() {
     let source = b"defaults web
   mode http
@@ -1293,6 +1376,58 @@ fn explicit_preprocessing_records_environment_and_inactive_gpu_provenance() {
             .as_deref()
             .expect("GPU environment fingerprint"),
         without_gpu_fingerprint
+    );
+}
+
+#[test]
+fn preprocessing_is_deterministic_and_keeps_ordinary_source_snapshots() {
+    let directory = tempdir().expect("deterministic preprocessing directory");
+    let root = directory.path().join("haproxy.cfg");
+    fs::write(
+        &root,
+        b"defaults web
+  mode http
+  retries 0
+  timeout connect 5s
+  timeout client 30s
+  timeout server 30s
+frontend public
+  bind ${NODE_IP}:18080
+  default_backend app
+backend app
+  balance roundrobin
+  server app1 127.0.0.1:3000
+.if defined(GPU1)
+  server app2 127.0.0.1:3001
+.endif
+",
+    )
+    .expect("write deterministic preprocessing fixture");
+    let environment = PreprocessingEnvironment {
+        node_ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20)),
+        gpu1_defined: true,
+    };
+
+    let first = import_roots_with_environment(&[&root], environment);
+    let second = import_roots_with_environment(&[&root], environment);
+    assert_eq!(first.diagnostics(), second.diagnostics());
+    assert_eq!(first.value().config, second.value().config);
+    assert_eq!(
+        first.value().source_metadata,
+        second.value().source_metadata
+    );
+    assert_eq!(first.value().source_metadata.original_sources.len(), 1);
+    assert_eq!(
+        first.value().source_metadata.original_sources[0].bytes(),
+        fs::read(&root).expect("original HAProxy source")
+    );
+    assert_eq!(first.value().source_metadata.source_maps.len(), 1);
+    assert!(
+        first
+            .value()
+            .source_metadata
+            .environment_fingerprint_sha256
+            .is_some()
     );
 }
 

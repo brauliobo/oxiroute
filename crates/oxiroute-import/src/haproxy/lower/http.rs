@@ -708,35 +708,95 @@ impl Lowerer<'_> {
                 decision.require(false);
                 continue;
             };
-            for occurrence in &rule.value.condition.definitions {
-                let Some(acl) = definitions.get(occurrence) else {
-                    self.block_value(rule, "HAProxy use_backend ACL definition is unavailable");
-                    decision.require(false);
-                    continue;
-                };
-                for value in &acl.value.values {
-                    let Some(matcher) = self.lower_acl_matcher(acl, value) else {
+            if rule.value.conditions.is_empty() || rule.value.conditions.len() > 2 {
+                self.block_value(
+                    rule,
+                    "HAProxy use_backend ACL conjunctions support at most one exact Host and one path_beg criterion",
+                );
+                decision.require(false);
+                continue;
+            }
+            let mut has_host = false;
+            let mut has_path = false;
+            let mut variants = vec![(
+                RouteMatcher {
+                    host: None,
+                    path_prefix: "/".into(),
+                },
+                Vec::new(),
+            )];
+            for condition in &rule.value.conditions {
+                for occurrence in &condition.definitions {
+                    let Some(acl) = definitions.get(occurrence) else {
+                        self.block_value(rule, "HAProxy use_backend ACL definition is unavailable");
                         decision.require(false);
                         continue;
                     };
-                    let mut sources = provenance_sources(&rule.provenance);
-                    extend_sources(&mut sources, &acl.provenance);
-                    routes.push(LoweredRoute {
-                        route: HttpRoute {
-                            host: matcher.host.clone(),
-                            path: HttpPathSelector::RawPrefix {
-                                value: matcher.path_prefix.clone(),
-                            },
-                            methods: Vec::new(),
-                            access_policy: None,
-                            policy: HttpRoutePolicy::default(),
-                            action: proxy_action(pool.clone(), HttpProxyPolicy::default()),
-                        },
-                        matcher,
-                        target: Some(rule.value.backend.target),
-                        sources,
-                    });
+                    let duplicate = match acl.value.criterion {
+                        AclCriterion::HostExact => {
+                            let duplicate = has_host;
+                            has_host = true;
+                            duplicate
+                        }
+                        AclCriterion::PathPrefix => {
+                            let duplicate = has_path;
+                            has_path = true;
+                            duplicate
+                        }
+                        AclCriterion::PathExact => false,
+                    };
+                    if duplicate {
+                        self.block_value(
+                            acl,
+                            "HAProxy use_backend ACL conjunctions cannot repeat the same Host or path criterion",
+                        );
+                        decision.require(false);
+                        continue;
+                    }
+                    let acl_variants = acl
+                        .value
+                        .values
+                        .iter()
+                        .filter_map(|value| {
+                            self.lower_acl_matcher(acl, value)
+                                .map(|matcher| (matcher, provenance_sources(&acl.provenance)))
+                        })
+                        .collect::<Vec<_>>();
+                    if acl_variants.is_empty() {
+                        decision.require(false);
+                        continue;
+                    }
+                    let mut combined = Vec::new();
+                    for (base, base_sources) in &variants {
+                        for (matcher, acl_sources) in &acl_variants {
+                            let mut sources = base_sources.clone();
+                            sources.extend(acl_sources.clone());
+                            deduplicate_sources(&mut sources);
+                            combined.push((merge_route_matchers(base, matcher), sources));
+                        }
+                    }
+                    variants = combined;
                 }
+            }
+            for (matcher, matcher_sources) in variants {
+                let mut sources = provenance_sources(&rule.provenance);
+                sources.extend(matcher_sources);
+                deduplicate_sources(&mut sources);
+                routes.push(LoweredRoute {
+                    route: HttpRoute {
+                        host: matcher.host.clone(),
+                        path: HttpPathSelector::RawPrefix {
+                            value: matcher.path_prefix.clone(),
+                        },
+                        methods: Vec::new(),
+                        access_policy: None,
+                        policy: HttpRoutePolicy::default(),
+                        action: proxy_action(pool.clone(), HttpProxyPolicy::default()),
+                    },
+                    matcher,
+                    target: Some(rule.value.backend.target),
+                    sources,
+                });
             }
         }
         (routes, decision.is_complete())
@@ -933,6 +993,17 @@ fn matchers_overlap(left: &RouteMatcher, right: &RouteMatcher) -> bool {
         _ => true,
     };
     hosts_overlap && raw_prefixes_overlap(&left.path_prefix, &right.path_prefix)
+}
+
+fn merge_route_matchers(left: &RouteMatcher, right: &RouteMatcher) -> RouteMatcher {
+    RouteMatcher {
+        host: left.host.clone().or_else(|| right.host.clone()),
+        path_prefix: if left.path_prefix == "/" {
+            right.path_prefix.clone()
+        } else {
+            left.path_prefix.clone()
+        },
+    }
 }
 
 fn host_value(selector: &HttpHostSelector) -> Option<&str> {

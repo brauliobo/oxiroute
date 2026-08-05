@@ -106,6 +106,18 @@
       ]
     },
     {
+      "id": "evidence.haproxy.acl-conjunction",
+      "tests": [
+        "crates/oxiroute-import/tests/haproxy_parser.rs#parser_retains_ordered_acl_conjunction_words_and_source_span",
+        "crates/oxiroute-import/tests/haproxy_resolver.rs#resolves_positive_host_and_path_acl_conjunction_with_each_reference",
+        "crates/oxiroute-import/tests/haproxy_resolver.rs#dynamic_and_negated_acl_conditions_remain_fail_closed",
+        "crates/oxiroute-import/tests/haproxy_lower.rs#positive_host_and_path_acl_conjunction_lowers_with_both_matchers_and_provenance",
+        "crates/oxiroute-import/tests/haproxy_lower.rs#non_equivalent_acl_conjunctions_fail_closed_without_fallback_routes",
+        "crates/oxiroute-import/tests/import_report.rs#haproxy_report_identifies_strict_capability_and_retains_ordinary_source_provenance",
+        "crates/oxiroute-server/tests/cli.rs#haproxy_acl_conjunction_report_retains_capability_source_table_provenance_and_blockers"
+      ]
+    },
+    {
       "id": "evidence.apache.import",
       "tests": [
         "crates/oxiroute-import/tests/apache.rs#imports_an_included_static_virtual_host_with_provenance",

@@ -7,9 +7,9 @@ use std::{
 };
 
 use oxiroute_config::{
-    HttpHostSelector, HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpRetryTarget,
-    HttpRouteAction, ListenerBind, RtmpRecorderStart, StatsPageAdminPolicy, UpstreamAlgorithm,
-    UpstreamEndpoint, UpstreamTls,
+    HttpHostSelector, HttpPathSelector, HttpRequestHeaderMutation, HttpRequestHeaderValue,
+    HttpRetryTarget, HttpRouteAction, ListenerBind, RtmpRecorderStart, StatsPageAdminPolicy,
+    UpstreamAlgorithm, UpstreamEndpoint, UpstreamTls,
 };
 use oxiroute_import::{
     DiagnosticStage, OperationalOverlayKind,
@@ -488,6 +488,10 @@ fn validate_host_fixture_probes(manifest: &HostManifest) {
                         HostAuditStatus::LiveOriginHashedReadOnlyCaptured
                     );
                     assert_live_origin_hashed_fixture("back1", case);
+                }
+                "crates/oxiroute-import/tests/fixtures/haproxy/acl-conjunction.cfg" => {
+                    assert_eq!(fixture.status, HostAuditStatus::NonAudited);
+                    assert_haproxy_conjunction_host_case(case);
                 }
                 path => panic!("host fixture has no executable assertion: {path}"),
             }
@@ -1189,4 +1193,37 @@ fn assert_haproxy_host_case(case: &str) {
         "HH-12" => assert_eq!(diagnostic_count(diagnostics, E_PROCESS_OWNED), 3),
         id => panic!("HAProxy host case has no fixture assertion: {id}"),
     }
+}
+
+fn assert_haproxy_conjunction_host_case(case: &str) {
+    assert_eq!(case, "HH-13");
+    let source_path =
+        workspace_path("crates/oxiroute-import/tests/fixtures/haproxy/acl-conjunction.cfg");
+    let source = fs::read(&source_path)
+        .unwrap_or_else(|error| panic!("read HAProxy ACL conjunction fixture: {error}"));
+    let parsed = parse_haproxy_source("haproxy/acl-conjunction.cfg", &source);
+    let resolved = resolve_parsed(parsed.clone());
+    let lowered = import_parsed_with_options(parsed, &HaproxyImportOptions::default());
+
+    assert!(
+        resolved.diagnostics().is_empty(),
+        "{:?}",
+        resolved.diagnostics()
+    );
+    assert!(!lowered.has_errors(), "{:?}", lowered.diagnostics());
+    let config = lowered
+        .value()
+        .config
+        .as_ref()
+        .expect("ACL conjunction fixture config");
+    let route = &config.http_services[0].routes[0];
+    assert!(matches!(
+        route.host,
+        Some(HttpHostSelector::AsciiCaseInsensitiveExactAuthority { ref value })
+            if value == "api.example.test"
+    ));
+    assert!(matches!(
+        route.path,
+        HttpPathSelector::RawPrefix { ref value } if value == "/v1"
+    ));
 }

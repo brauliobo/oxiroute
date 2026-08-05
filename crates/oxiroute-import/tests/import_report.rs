@@ -94,6 +94,44 @@ fn report_json_is_deterministic_and_identifies_each_source_product() {
 }
 
 #[test]
+fn haproxy_report_identifies_strict_capability_and_retains_ordinary_source_provenance() {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/haproxy/acl-conjunction.cfg");
+    let report = ImportReportEnvelope::from_haproxy(
+        &import_roots(std::slice::from_ref(&path)),
+        std::slice::from_ref(&path),
+    );
+    let value: Value = serde_json::from_str(&report.to_json().expect("HAProxy report JSON"))
+        .expect("HAProxy report object");
+
+    assert_eq!(value["source"]["product"], "haproxy");
+    assert!(value["source"]["version"].is_null());
+    assert!(value["source"]["versionSource"].is_null());
+    assert_eq!(value["source"]["capabilityProfile"]["id"], "haproxy-strict");
+    assert_eq!(value["source"]["capabilityProfile"]["version"], 1);
+    assert_eq!(value["sourceGraph"]["dependenciesComplete"], false);
+    assert_eq!(value["sourceGraph"]["sources"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        value["sourceMetadata"]["originalSourceIds"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(value["candidate"]["finalized"], true);
+    assert!(
+        value["candidate"]["provenance"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["path"] == "/http_services/0/routes/0"
+                && entry["origins"]
+                    .as_array()
+                    .is_some_and(|origins| origins.len() >= 3))
+    );
+}
+
+#[test]
 fn squid_report_keeps_open_capability_entries_out_of_complete_parity_claims() {
     let squid_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/squid/hostrouter-sanitized.conf");

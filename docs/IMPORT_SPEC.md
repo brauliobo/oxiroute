@@ -78,11 +78,15 @@ activation of standalone import reports. Restricted Lua cannot declare native re
   health intervals/capacity, and server-close connection reuse. A backend-scoped, uniquely consumed
   one-request-per-connection overlay can provide the same lifecycle boundary when captured
   surrounding evidence, such as hostrouter's nginx HTTP/1.0/no-keepalive hop, establishes it. DNS
-  names remain canonical and are not resolved during import.
+  names remain canonical and are not resolved during import. A positive `use_backend` condition may
+  combine exactly one exact `hdr(host)` ACL, optionally with `-i`, and one case-sensitive `path_beg` ACL;
+  the conjunction lowers to one canonical route with both selectors and retains both ACL references.
 - The strict HTTP subset also preserves HAProxy's default three connection retries, exact
   `path -i` ACLs used by conditional fixed health responses; those lower to an ASCII case-insensitive
   exact canonical path selector ahead of the proxy fallback, and `hdr(host) -i` as an ASCII
-  case-insensitive exact authority without port widening. A conditional backend with no native
+  case-insensitive exact authority without port widening. Dynamic sample expressions, `unless`,
+  negated ACLs, duplicate Host/path criteria, unsupported ACL criteria, and conjunctions wider than
+  that exact two-criterion family block the affected candidate. A conditional backend with no native
   default receives one final fixed `503` catch-all so unmatched requests do not acquire a fabricated
   upstream destination. `unix@` listener binds retain the Unix path and explicit mode.
 - The synthetic `hostrouter-static-representable.cfg` fixture proves that an audited-shaped Unix
@@ -101,7 +105,10 @@ activation of standalone import reports. Restricted Lua cannot declare native re
   hide/version and other stats forms remain activation requirements, as does exact
   `http-request use-service prometheus-exporter if { path /metrics }`. The exact Prometheus form emits canonical OxiRoute stats
   only when a uniquely matched operator migration overlay explicitly accepts different metric
-  families and the broader OxiRoute stats routes.
+  families and the broader OxiRoute stats routes. Standalone HAProxy reports identify product
+  `haproxy` and capability profile `haproxy-strict`; native version remains null unless the caller
+  supplies version evidence, while ordinary imports retain every bounded source snapshot in the
+  report source table and preserve generated-to-original provenance when preprocessing is used.
 - Squid has a bounded source/include, parser, typed semantic report, and strict canonical lowering
   path for direct authenticated HTTP/1 forwarding. Final recheck verifies source bytes,
   root/include path identities, and include-glob result sets. The resulting candidate is integrated

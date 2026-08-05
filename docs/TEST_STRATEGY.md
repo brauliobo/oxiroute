@@ -15,8 +15,9 @@ The initial repository followed this sequence:
 
 ## Test layers
 
-The lists below distinguish checked-in coverage from planned release gates. There are currently no
-checked-in fuzz targets, real-browser test runner, or CI workflow.
+The lists below distinguish checked-in coverage from planned release gates. There are no checked-in
+fuzz targets; the real-browser runner and CI gates are checked in under `ui/tests/browser/` and
+`.github/workflows/`.
 
 ### Unit and property tests
 
@@ -125,15 +126,18 @@ metadata.
 
 HAProxy lowering tests include an error-free static TCP fixture with a Unix listener, DNS
 `leastconn` backend, exact per-listener admission, and no import-time DNS resolution, plus direct
-tests named `unmodified_live_hostrouter_finalizes_with_exact_compatibility_policy`,
+tests named `positive_host_and_path_acl_conjunction_lowers_with_both_matchers_and_provenance`,
+`non_equivalent_acl_conjunctions_fail_closed_without_fallback_routes`,
+`unmodified_live_hostrouter_finalizes_with_exact_compatibility_policy`,
 `dedicated_supported_stats_sections_lower_only_to_canonical_pages`,
 `stats_frontend_response_rules_fail_closed_instead_of_disappearing`,
 `bare_redispatch_lowers_to_delayed_same_server_retries_and_final_redispatch`, and
 `redispatch_interval_forms_remain_blocking`. They cover the live hostrouter page, `unix@` mode,
-case-insensitive Host route and fixed fallback, reusable least-connections, final redispatch, and
-exact listener/statistics-page timeout policy while retaining blockers for unsupported forms. Wire
-coverage checks page admission/request timeouts, DNS-rebinding and forwarded-header rejection,
-Referer fallback, mapped-IPv4 loopback, and HEAD representation length.
+case-insensitive Host route and fixed fallback, the non-audited host-shaped Host-plus-path fixture,
+ACL reference provenance, reusable least-connections, final redispatch, and exact
+listener/statistics-page timeout policy while retaining blockers for dynamic, negated, duplicate,
+and unsupported forms. Wire coverage checks page admission/request timeouts, DNS-rebinding and
+forwarded-header rejection, Referer fallback, mapped-IPv4 loopback, and HEAD representation length.
 
 UI contract coverage includes the exact Vitest cases `accepts new canonical variants and rejects
 invalid final redispatch shapes`, `edits ASCII case-insensitive authority matching and gates final
@@ -214,8 +218,12 @@ with Rust 1.87 without dependency churn.
 - Monitoring component tests cover pool availability, endpoint state/check totals, exact counters,
   failure labels, empty-pool rendering, and retention after transient failures.
 - Component tests exercise mobile controls and keyboard navigation in jsdom.
-- Real-browser save/file-change/conflict/certificate workflows and desktop/mobile viewport runs are
-  planned; no Playwright or Cypress runner is checked in.
+- `ui/tests/browser/dashboard.spec.ts` runs against the built static UI in desktop Chromium and a
+  mobile Chromium device profile. It covers dashboard layout, token unlock/relock, save/review,
+  revision conflict, dirty-draft external edits, SSE reconnect from `Last-Event-ID`, operational
+  controls, certificate redaction, and the offline import-report/provenance boundary.
+- The browser harness aborts non-local requests and scripts API/SSE responses; it does not start the
+  daemon or contact a production or ACME endpoint.
 
 ## Failure injection
 
@@ -236,10 +244,13 @@ cargo test --workspace
 cargo +1.87 test --workspace --locked
 pnpm --dir ui test
 pnpm --dir ui build
+pnpm --dir ui test:browser -- --workers=2
 ```
 
 The checked-in Linux workflow at `.github/workflows/ci.yml` enforces that set and separately runs the
-coverage-manifest validation test. Representative focused gates are
+coverage-manifest and browser tests. `.github/workflows/audit.yml` adds dependency, license, source,
+RustSec, and UI vulnerability checks; `.github/workflows/release.yml` verifies version metadata,
+archive contents/checksums, and build provenance. Representative focused gates are
 `cargo test -p oxiroute-config --test lua_config`,
 `cargo test -p oxiroute-import --test coverage_manifests`,
 `cargo test -p oxiroute-import --test nginx_rtmp`,
@@ -249,9 +260,9 @@ coverage-manifest validation test. Representative focused gates are
 `cargo test -p oxiroute-rtmp --test recorder_session --test recording_store --test recording_worker --test push_relay --test session_policy`,
 and `pnpm --dir ui test`.
 
-Future automation will add real-browser tests, local ACME integration, fuzz smoke corpora,
-dependency/license audit, and supported-platform builds. `pnpm --dir ui build` already runs
-`vue-tsc --noEmit` before the Vite build.
+Future automation may add local ACME integration, fuzz smoke corpora, and supported-platform full
+builds. Browser tests use fake local API/SSE responses and do not claim ACME protocol coverage.
+`pnpm --dir ui build` already runs `vue-tsc --noEmit` before the Vite build.
 
 A capability cannot move to `supported` in a public matrix while its failure-path,
 reload/rotation, observability, and interoperability tests are missing.

@@ -450,7 +450,7 @@ pub struct ServerOption {
     pub arguments: Vec<Vec<u8>>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum AclCriterion {
     HostExact,
     PathExact,
@@ -480,7 +480,7 @@ pub enum ConditionPolarity {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UseBackend {
     pub backend: BackendReference,
-    pub condition: AclReference,
+    pub conditions: Vec<AclReference>,
     pub polarity: ConditionPolarity,
     pub condition_negated: bool,
 }
@@ -740,8 +740,7 @@ struct PendingUseBackend {
     span: Span,
     backend_name: Vec<u8>,
     backend_span: Span,
-    acl_name: Vec<u8>,
-    acl_span: Span,
+    acl_conditions: Vec<PendingAclCondition>,
     polarity: ConditionPolarity,
     condition_negated: bool,
 }
@@ -1912,21 +1911,43 @@ impl Resolver {
                 return;
             }
         };
-        let (condition_negated, acl) = match rest {
-            [acl] => (false, acl),
-            [negation, acl] if negation.value == b"!" => (true, acl),
-            _ => {
+        if rest
+            .iter()
+            .any(|word| matches!(word.value.as_slice(), b"{" | b"}"))
+        {
+            self.unsupported_directive_form_for_occurrence(occurrence, directive);
+            return;
+        }
+        if rest.is_empty() {
+            self.unsupported_directive_form_for_occurrence(occurrence, directive);
+            return;
+        }
+        let mut condition_negated = false;
+        let mut acl_conditions = Vec::new();
+        let mut index = 0;
+        while index < rest.len() {
+            if rest[index].value == b"!" {
+                condition_negated = true;
+                index += 1;
+            }
+            let Some(acl) = rest.get(index) else {
                 self.unsupported_directive_form_for_occurrence(occurrence, directive);
                 return;
-            }
-        };
+            };
+            acl_conditions.push(PendingAclCondition {
+                name: acl.value.clone(),
+                span: acl.span,
+                polarity,
+                negated: false,
+            });
+            index += 1;
+        }
         state.pending_use_backends.push(PendingUseBackend {
             occurrence,
             span: directive.span,
             backend_name: backend.value.clone(),
             backend_span: backend.span,
-            acl_name: acl.value.clone(),
-            acl_span: acl.span,
+            acl_conditions,
             polarity,
             condition_negated,
         });
@@ -2159,50 +2180,57 @@ impl Resolver {
             ) else {
                 continue;
             };
-            let Some(acls) = definitions.get(&pending.acl_name) else {
-                self.unresolved_reference(
-                    pending.occurrence,
-                    pending.acl_span,
-                    "ACL",
-                    &pending.acl_name,
-                    &[],
-                    "is not defined in this section",
-                );
+            let mut conditions = Vec::with_capacity(pending.acl_conditions.len());
+            let mut references = vec![ReferenceProvenance {
+                use_span: pending.backend_span,
+                targets: vec![backend_target],
+            }];
+            let mut unresolved = false;
+            for condition in &pending.acl_conditions {
+                let Some(acls) = definitions.get(&condition.name) else {
+                    self.unresolved_reference(
+                        pending.occurrence,
+                        condition.span,
+                        "ACL",
+                        &condition.name,
+                        &[],
+                        "is not defined in this section",
+                    );
+                    unresolved = true;
+                    continue;
+                };
+                let acl_targets = acls
+                    .iter()
+                    .map(|acl| ReferenceTarget {
+                        occurrence: acl.provenance.origin,
+                        span: acl.provenance.origin_span,
+                    })
+                    .collect::<Vec<_>>();
+                conditions.push(AclReference {
+                    name: condition.name.clone(),
+                    definitions: acl_targets.iter().map(|target| target.occurrence).collect(),
+                });
+                references.push(ReferenceProvenance {
+                    use_span: condition.span,
+                    targets: acl_targets,
+                });
+            }
+            if unresolved {
                 continue;
-            };
-            let acl_targets = acls
-                .iter()
-                .map(|acl| ReferenceTarget {
-                    occurrence: acl.provenance.origin,
-                    span: acl.provenance.origin_span,
-                })
-                .collect::<Vec<_>>();
-            let definitions = acl_targets.iter().map(|target| target.occurrence).collect();
+            }
             state.use_backends.push(EffectiveValue::direct_references(
                 UseBackend {
                     backend: BackendReference {
                         name: pending.backend_name,
                         target,
                     },
-                    condition: AclReference {
-                        name: pending.acl_name,
-                        definitions,
-                    },
+                    conditions,
                     polarity: pending.polarity,
                     condition_negated: pending.condition_negated,
                 },
                 pending.occurrence,
                 pending.span,
-                vec![
-                    ReferenceProvenance {
-                        use_span: pending.backend_span,
-                        targets: vec![backend_target],
-                    },
-                    ReferenceProvenance {
-                        use_span: pending.acl_span,
-                        targets: acl_targets,
-                    },
-                ],
+                references,
             ));
             self.consume(pending.occurrence, Consumption::Reference);
         }

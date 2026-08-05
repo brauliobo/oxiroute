@@ -410,6 +410,86 @@ fn import_report_is_deterministic_json_and_preview_remains_canonical_output() {
 }
 
 #[test]
+fn haproxy_acl_conjunction_report_retains_capability_source_table_provenance_and_blockers() {
+    let conjunction_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../oxiroute-import/tests/fixtures/haproxy/acl-conjunction.cfg");
+    let report = cli()
+        .args(["import", "haproxy", conjunction_path.to_str().unwrap()])
+        .output()
+        .expect("HAProxy conjunction report");
+    assert!(report.status.success(), "{}", output_text(&report));
+    let report_json: Value = serde_json::from_slice(&report.stdout).expect("report JSON");
+    assert_eq!(report_json["source"]["product"], "haproxy");
+    assert!(report_json["source"]["version"].is_null());
+    assert!(report_json["source"]["versionSource"].is_null());
+    assert_eq!(
+        report_json["source"]["capabilityProfile"]["id"],
+        "haproxy-strict"
+    );
+    assert_eq!(report_json["source"]["capabilityProfile"]["version"], 1);
+    assert_eq!(
+        report_json["sourceGraph"]["sources"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        report_json["sourceMetadata"]["originalSourceIds"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(report_json["candidate"]["finalized"], true);
+    assert!(
+        report_json["candidate"]["provenance"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["path"] == "/http_services/0/routes/0"
+                && entry["origins"]
+                    .as_array()
+                    .is_some_and(|origins| origins.len() >= 3))
+    );
+
+    let directory = TempDir::new().expect("blocked HAProxy report directory");
+    let blocked_path = directory.path().join("blocked.cfg");
+    fs::write(
+        &blocked_path,
+        b"frontend public\n  mode http\n  bind 127.0.0.1:18080\n  use_backend app if { path /api }\nbackend app\n  balance roundrobin\n  server app1 127.0.0.1:3000\n",
+    )
+    .expect("blocked HAProxy source");
+    let blocked = cli()
+        .args(["import", "haproxy", blocked_path.to_str().unwrap()])
+        .output()
+        .expect("blocked HAProxy report");
+    assert!(blocked.status.success(), "{}", output_text(&blocked));
+    let blocked_json: Value = serde_json::from_slice(&blocked.stdout).expect("blocked report JSON");
+    assert_eq!(blocked_json["candidate"]["finalized"], false);
+    assert!(
+        blocked_json["blockers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|blocker| {
+                blocker["code"] == "E_UNSUPPORTED_FORM"
+                    && blocker["origins"]
+                        .as_array()
+                        .is_some_and(|origins| !origins.is_empty())
+            })
+    );
+    assert!(
+        blocked_json["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "E_UNSUPPORTED_FORM"
+                && diagnostic["stage"] == "resolve")
+    );
+}
+
+#[test]
 fn squid_import_report_publishes_the_target_capability_registry() {
     let squid_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../oxiroute-import/tests/fixtures/squid/hostrouter-sanitized.conf");

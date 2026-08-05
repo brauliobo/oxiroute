@@ -41,6 +41,11 @@
         "path": "crates/oxiroute-import/tests/fixtures/live/back1/metadata.json",
         "status": "live_origin_hashed_read_only_captured",
         "cases": ["BI-01"]
+      },
+      {
+        "path": "crates/oxiroute-import/tests/fixtures/haproxy/acl-conjunction.cfg",
+        "status": "non_audited",
+        "cases": ["HH-13"]
       }
     ]
   },
@@ -292,6 +297,12 @@
       "status": "external",
       "gates": { "canonical": false, "runtime": false, "failure": true, "tests": true, "native_lowering": true },
       "evidence": ["crates/oxiroute-import/src/haproxy/resolver.rs#is_process_owned", "crates/oxiroute-import/tests/haproxy_lower.rs#unmodified_live_hostrouter_finalizes_with_exact_compatibility_policy", "coverage/haproxy-directives.json"]
+    },
+    {
+      "id": "HH-13",
+      "status": "partial",
+      "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": true },
+      "evidence": ["crates/oxiroute-import/tests/fixtures/haproxy/acl-conjunction.cfg", "crates/oxiroute-import/tests/haproxy_resolver.rs#resolves_positive_host_and_path_acl_conjunction_with_each_reference", "crates/oxiroute-import/tests/haproxy_lower.rs#positive_host_and_path_acl_conjunction_lowers_with_both_matchers_and_provenance", "crates/oxiroute-import/tests/haproxy_lower.rs#non_equivalent_acl_conjunctions_fail_closed_without_fallback_routes", "crates/oxiroute-server/tests/http_proxy_routing.rs#selects_routes_by_host_path_and_method_over_real_http_connections"]
     },
 
     {

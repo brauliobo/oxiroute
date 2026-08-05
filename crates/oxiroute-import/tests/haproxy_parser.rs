@@ -188,6 +188,35 @@ fn directive_comment_line_and_section_spans_are_exact() {
 }
 
 #[test]
+fn parser_retains_ordered_acl_conjunction_words_and_source_span() {
+    let source = source(
+        b"frontend public\n  acl app_host hdr(host) -i api.example.test\n  acl app_path path_beg /api\n  use_backend app if app_host app_path\n",
+    );
+    let report = parse(&source);
+    let directive = &report.value().sections[0].directives[2];
+
+    assert!(report.diagnostics().is_empty());
+    assert_eq!(directive.name.value, b"use_backend");
+    assert_eq!(
+        directive
+            .arguments
+            .iter()
+            .map(|word| word.value.as_slice())
+            .collect::<Vec<_>>(),
+        [
+            b"app".as_slice(),
+            b"if".as_slice(),
+            b"app_host".as_slice(),
+            b"app_path".as_slice(),
+        ]
+    );
+    assert_eq!(
+        &source.bytes()[directive.span.range().start()..directive.span.range().end()],
+        b"use_backend app if app_host app_path"
+    );
+}
+
+#[test]
 fn each_file_ends_its_section_in_multi_file_parsing() {
     let first = loaded(0, 0, "first.cfg", b"frontend public\n  mode http\n");
     let second = loaded(
