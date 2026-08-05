@@ -250,6 +250,11 @@ fn deduplicate(addresses: Vec<IpAddr>) -> Vec<IpAddr> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     use async_trait::async_trait;
 
     use super::*;
@@ -282,6 +287,21 @@ mod tests {
         }
     }
 
+    struct RebindingResolver {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Resolver for RebindingResolver {
+        async fn resolve(&self, _name: &str) -> Result<Vec<IpAddr>, ResolveError> {
+            if self.calls.fetch_add(1, Ordering::Relaxed) == 0 {
+                Ok(vec!["93.184.216.34".parse().unwrap()])
+            } else {
+                Ok(vec!["127.0.0.1".parse().unwrap()])
+            }
+        }
+    }
+
     #[tokio::test]
     async fn decision_contains_approved_addresses_but_no_credentials() {
         let proxy = ForwardProxy::new(AllowAuth, PublicResolver, ForbiddenDestinationPolicy);
@@ -307,6 +327,36 @@ mod tests {
         assert!(!decision.headers.contains_key(header::PROXY_AUTHORIZATION));
         assert!(!format!("{decision:?}").contains("do-not-retain"));
         assert_eq!(decision.destination.socket_addresses.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn dns_answer_is_checked_once_and_pinned_for_connection() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let proxy = ForwardProxy::new(
+            AllowAuth,
+            RebindingResolver {
+                calls: Arc::clone(&calls),
+            },
+            ForbiddenDestinationPolicy,
+        );
+        let decision = proxy
+            .decide(IncomingRequest {
+                protocol: Protocol::Http1,
+                client_addr: "127.0.0.1:1234".parse().unwrap(),
+                method: &Method::GET,
+                target: "http://example.com/resource",
+                headers: &HeaderMap::new(),
+            })
+            .await
+            .expect("first DNS answer is approved");
+        let Decision::Forward(decision) = decision else {
+            panic!("forward decision expected");
+        };
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            decision.destination.socket_addresses.as_ref(),
+            &["93.184.216.34:80".parse().unwrap()]
+        );
     }
 
     #[tokio::test]
