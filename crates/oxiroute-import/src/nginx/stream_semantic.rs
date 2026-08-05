@@ -67,6 +67,8 @@ pub struct EffectiveStreamServer {
     pub connect_timeout_origin: Option<DirectiveOrigin>,
     pub idle_timeout_ms: Option<u64>,
     pub idle_timeout_origin: Option<DirectiveOrigin>,
+    pub proxy_protocol: bool,
+    pub proxy_protocol_origin: Option<DirectiveOrigin>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -76,6 +78,7 @@ pub struct EffectiveStreamListen {
     pub endpoint: Option<ListenEndpoint>,
     pub options: Vec<NginxValue>,
     pub default_server: bool,
+    pub proxy_protocol: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -415,6 +418,8 @@ impl<'a> Resolver<'a> {
         let mut connect_timeout_origin = None;
         let mut idle_timeout_ms = None;
         let mut idle_timeout_origin = None;
+        let mut proxy_protocol = false;
+        let mut proxy_protocol_origin = None;
         let mut scalar_policies = HashMap::new();
 
         for child in children {
@@ -458,7 +463,14 @@ impl<'a> Resolver<'a> {
                     self.resolve_off_only_flag(child, "nginx stream TLS preread is unsupported");
                 }
                 b"proxy_protocol" => {
-                    self.resolve_off_only_flag(child, "nginx stream PROXY protocol is unsupported");
+                    if self.resolve_on_or_off_flag(child, "nginx stream PROXY protocol") {
+                        proxy_protocol = child
+                            .directive
+                            .arguments
+                            .first()
+                            .is_some_and(|value| value.value == b"on");
+                        proxy_protocol_origin = Some(Self::origin(child));
+                    }
                 }
                 b"proxy_next_upstream" => self.resolve_off_only_flag(
                     child,
@@ -511,6 +523,13 @@ impl<'a> Resolver<'a> {
                 "nginx stream server requires one proxy_pass",
             );
         }
+        if proxy_protocol && listens.iter().any(|listen| !listen.proxy_protocol) {
+            self.block(
+                directive.occurrence,
+                E_UNSUPPORTED_FEATURE,
+                "nginx stream proxy_protocol on requires proxy_protocol on every listen endpoint for exact explicit propagation",
+            );
+        }
 
         EffectiveStreamServer {
             origin: Self::origin(directive),
@@ -520,6 +539,8 @@ impl<'a> Resolver<'a> {
             connect_timeout_origin,
             idle_timeout_ms,
             idle_timeout_origin,
+            proxy_protocol,
+            proxy_protocol_origin,
         }
     }
 
@@ -561,6 +582,7 @@ impl<'a> Resolver<'a> {
         }
 
         let mut default_server = false;
+        let mut proxy_protocol = false;
         let mut seen_options = HashSet::new();
         for option in &options {
             if !seen_options.insert(option.value.clone()) {
@@ -575,12 +597,13 @@ impl<'a> Resolver<'a> {
                         "nginx stream UDP listeners are outside the TCP importer subset",
                     ));
                 }
-                b"ssl" | b"proxy_protocol" => {
+                b"ssl" => {
                     outcome = Some((
                         E_UNSUPPORTED_FEATURE,
-                        "nginx stream listener TLS or PROXY protocol options are unsupported",
+                        "nginx stream listener TLS options are unsupported",
                     ));
                 }
+                b"proxy_protocol" => proxy_protocol = true,
                 _ => {
                     outcome = Some((
                         E_UNSUPPORTED_FEATURE,
@@ -596,6 +619,7 @@ impl<'a> Resolver<'a> {
             endpoint,
             options,
             default_server,
+            proxy_protocol,
         }
     }
 
@@ -705,6 +729,37 @@ impl<'a> Resolver<'a> {
             );
         } else {
             self.block(directive.occurrence, E_UNSUPPORTED_FEATURE, message);
+        }
+    }
+
+    fn resolve_on_or_off_flag(
+        &mut self,
+        directive: &ExpandedDirective,
+        context: &'static str,
+    ) -> bool {
+        if directive.children.is_none()
+            && directive.directive.arguments.len() == 1
+            && matches!(
+                directive.directive.arguments[0].value.as_slice(),
+                b"on" | b"off"
+            )
+        {
+            self.resolved(directive.occurrence);
+            true
+        } else if directive.children.is_some() || directive.directive.arguments.len() != 1 {
+            self.block(
+                directive.occurrence,
+                E_INVALID_VALUE,
+                "stream flag requires one literal value and a semicolon",
+            );
+            false
+        } else {
+            self.block(
+                directive.occurrence,
+                E_UNSUPPORTED_FEATURE,
+                context,
+            );
+            false
         }
     }
 

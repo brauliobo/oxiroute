@@ -6,8 +6,8 @@ use std::{
 
 use oxiroute_config::{
     Config, DnsResolutionPolicy, DownstreamTimeoutPolicy, HttpVersionPolicy, L4Service, Listener,
-    ListenerBind, Protocol, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint,
-    UpstreamPool, UpstreamServer, validate_config,
+    ListenerBind, Protocol, ProxyProtocolPolicy, ProxyProtocolVersion, UpstreamAlgorithm,
+    UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer, validate_config,
 };
 
 use crate::{
@@ -20,6 +20,8 @@ use super::{
     EffectiveStreamServer, EffectiveStreamUpstream, OccurrenceDecision, OccurrenceDisposition,
     OccurrenceId, SourceGraph, StaticEndpoint, StreamDestination, StreamResolution, load,
 };
+
+const NGINX_DEFAULT_PROXY_PROTOCOL_TIMEOUT_MS: u64 = 5_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BlockedStreamService {
@@ -181,6 +183,10 @@ impl Lowerer {
             connect_timeout_ms,
             idle_timeout_ms,
             lifetime_timeout_ms: None,
+            proxy_protocol: server.proxy_protocol.then_some(ProxyProtocolPolicy {
+                version: ProxyProtocolVersion::V1,
+                timeout_ms: NGINX_DEFAULT_PROXY_PROTOCOL_TIMEOUT_MS,
+            }),
             udp: None,
         });
         let service_path = format!("/l4_services/{service_index}");
@@ -223,6 +229,24 @@ impl Lowerer {
                     .unwrap_or_else(|| stream.origin.clone()),
             ],
         );
+        if server.proxy_protocol {
+            self.record(
+                format!("{service_path}/proxy_protocol"),
+                server
+                    .proxy_protocol_origin
+                    .clone()
+                    .into_iter()
+                    .collect(),
+            );
+            self.record(
+                format!("{service_path}/proxy_protocol/version"),
+                server
+                    .proxy_protocol_origin
+                    .clone()
+                    .into_iter()
+                    .collect(),
+            );
+        }
 
         for (listen_index, listen) in server.listens.iter().enumerate() {
             self.lower_listener(
@@ -258,6 +282,10 @@ impl Lowerer {
             protocol: Protocol::Tcp,
             service: Some(service_name.to_owned()),
             tls_profile: None,
+            proxy_protocol: listen.proxy_protocol.then_some(ProxyProtocolPolicy {
+                version: ProxyProtocolVersion::Auto,
+                timeout_ms: NGINX_DEFAULT_PROXY_PROTOCOL_TIMEOUT_MS,
+            }),
             max_connections: None,
             downstream_timeouts: DownstreamTimeoutPolicy::default(),
         });
@@ -267,6 +295,16 @@ impl Lowerer {
         self.record(listener_path.clone(), origins.clone());
         for suffix in ["/name", "/bind", "/bind/type", "/protocol", "/service"] {
             self.record(format!("{listener_path}{suffix}"), origins.clone());
+        }
+        if listen.proxy_protocol {
+            self.record(
+                format!("{listener_path}/proxy_protocol"),
+                origins.clone(),
+            );
+            self.record(
+                format!("{listener_path}/proxy_protocol/version"),
+                origins.clone(),
+            );
         }
         match endpoint {
             super::ListenEndpoint::Socket { .. } => {

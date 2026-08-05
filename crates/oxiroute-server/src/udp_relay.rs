@@ -11,7 +11,7 @@ use std::{
 };
 
 use log::{debug, error, warn};
-use oxiroute_config::UdpPolicy;
+use oxiroute_config::{ProxyProtocolPolicy, UdpPolicy};
 use tokio::{
     net::UdpSocket,
     runtime::Builder,
@@ -22,7 +22,9 @@ use tokio::{
 
 use crate::{
     ConnectionGuard, EndpointLease, HealthFailure, L4ServicePlan, ListenerMetrics,
-    ListenerReservation, RuntimeGeneration, RuntimeReferenceKind,
+    ListenerReservation, ProxyProtocolError, ProxyProtocolErrorKind, ProxyProtocolResult,
+    ProxyProtocolTransport, RuntimeGeneration, RuntimeReferenceKind, encode_header, parse_header,
+    MAX_V1_HEADER_BYTES, MAX_V2_HEADER_BYTES,
 };
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -46,6 +48,7 @@ impl UdpRuntime {
         service: Arc<L4ServicePlan>,
         generation: Arc<RuntimeGeneration>,
         metrics: ListenerMetrics,
+        proxy_protocol: Option<ProxyProtocolPolicy>,
         shutdown: watch::Receiver<bool>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
@@ -58,6 +61,7 @@ impl UdpRuntime {
                     service,
                     generation.clone(),
                     metrics,
+                    proxy_protocol,
                     shutdown,
                     ready_tx,
                 );
@@ -97,6 +101,7 @@ impl UdpRuntime {
         _service: Arc<L4ServicePlan>,
         _generation: Arc<RuntimeGeneration>,
         _metrics: ListenerMetrics,
+        _proxy_protocol: Option<ProxyProtocolPolicy>,
         _shutdown: watch::Receiver<bool>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Err(io::Error::new(
@@ -132,6 +137,7 @@ fn run(
     service: Arc<L4ServicePlan>,
     generation: Arc<RuntimeGeneration>,
     metrics: ListenerMetrics,
+    proxy_protocol: Option<ProxyProtocolPolicy>,
     shutdown: watch::Receiver<bool>,
     ready: std::sync::mpsc::SyncSender<Result<(), String>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -161,6 +167,7 @@ fn run(
             service,
             generation,
             metrics,
+            proxy_protocol,
             shutdown,
         )
         .await
@@ -263,6 +270,7 @@ async fn serve(
     service: Arc<L4ServicePlan>,
     generation: Arc<RuntimeGeneration>,
     metrics: ListenerMetrics,
+    proxy_protocol: Option<ProxyProtocolPolicy>,
     mut shutdown: watch::Receiver<bool>,
 ) -> io::Result<()> {
     let policy = service.udp_policy();
@@ -278,12 +286,22 @@ async fn serve(
             "UDP session limit is too large",
         )
     })?;
+    let proxy_header_bytes = proxy_protocol.map_or(0, |policy| match policy.version {
+        oxiroute_config::ProxyProtocolVersion::V1 => MAX_V1_HEADER_BYTES,
+        oxiroute_config::ProxyProtocolVersion::V2 | oxiroute_config::ProxyProtocolVersion::Auto => {
+            MAX_V2_HEADER_BYTES
+        }
+    });
+    let max_received_bytes = max_datagram_bytes
+        .checked_add(proxy_header_bytes)
+        .and_then(|bytes| bytes.checked_add(1))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "UDP receive limit overflowed"))?;
     let listener_is_ipv4 = socket.local_addr()?.is_ipv4();
     let socket = Arc::new(socket);
     let table: SessionTable = Arc::new(Mutex::new(HashMap::with_capacity(max_sessions)));
     let next_id = AtomicU64::new(0);
     let mut sessions = JoinSet::new();
-    let mut receive_buffer = vec![0_u8; max_datagram_bytes.saturating_add(1)];
+    let mut receive_buffer = vec![0_u8; max_received_bytes];
 
     loop {
         while sessions.try_join_next().is_some() {}
@@ -291,7 +309,7 @@ async fn serve(
             _ = shutdown.changed() => break,
             received = socket.recv_from(&mut receive_buffer) => {
                 let (length, client) = received?;
-                if length > max_datagram_bytes {
+                if length >= max_received_bytes {
                     debug!("UDP listener `{listener_name}` dropped an oversized datagram");
                     continue;
                 }
@@ -300,6 +318,10 @@ async fn serve(
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if let Some(entry) = table_guard.get(&client) {
+                    if length > max_datagram_bytes {
+                        debug!("UDP listener `{listener_name}` dropped an oversized session datagram");
+                        continue;
+                    }
                     match entry.queue.try_send(payload) {
                         QueueSendResult::Enqueued | QueueSendResult::Full => {}
                         QueueSendResult::Closed => {
@@ -318,6 +340,30 @@ async fn serve(
                     debug!("UDP listener `{listener_name}` rejected a new pseudo-session at its table limit");
                     continue;
                 }
+                let (payload, logical_client) = match proxy_protocol {
+                    Some(policy) => match parse_initial_datagram(
+                        &payload,
+                        policy,
+                        max_datagram_bytes,
+                    ) {
+                        Ok(parsed) => {
+                            if let Err(error) = metrics.record_proxy_protocol(
+                                ProxyProtocolResult::Accepted,
+                            ) {
+                                debug!("could not account for UDP PROXY protocol: {error}");
+                            }
+                            parsed
+                        }
+                        Err(error) => {
+                            if let Err(metric_error) = metrics.record_proxy_protocol(error.result()) {
+                                debug!("could not account for UDP PROXY protocol rejection: {metric_error}");
+                            }
+                            debug!("UDP listener `{listener_name}` rejected PROXY protocol: {error}");
+                            continue;
+                        }
+                    },
+                    None => (payload, Some(client)),
+                };
                 let Some(generation_reference) =
                     generation.begin_reference(RuntimeReferenceKind::Udp)
                 else {
@@ -356,6 +402,7 @@ async fn serve(
                         listener_connection,
                         generation_reference,
                         listener_is_ipv4,
+                        logical_client,
                         shutdown_for_task,
                     )
                     .await;
@@ -385,6 +432,26 @@ async fn serve(
     Ok(())
 }
 
+fn parse_initial_datagram(
+    input: &[u8],
+    policy: ProxyProtocolPolicy,
+    max_datagram_bytes: usize,
+) -> Result<(Vec<u8>, Option<std::net::SocketAddr>), ProxyProtocolError> {
+    let header = parse_header(
+        input,
+        policy.version,
+        ProxyProtocolTransport::Datagram,
+    )?
+    .ok_or_else(|| ProxyProtocolError::new(ProxyProtocolErrorKind::UnexpectedEof))?;
+    let payload = &input[header.consumed..];
+    if payload.len() > max_datagram_bytes {
+        return Err(ProxyProtocolError::new(
+            ProxyProtocolErrorKind::InvalidLength,
+        ));
+    }
+    Ok((payload.to_vec(), Some(header.source)))
+}
+
 #[derive(Debug)]
 enum SessionEnd {
     Cancelled,
@@ -392,6 +459,7 @@ enum SessionEnd {
     LifetimeTimeout,
     Connect(io::Error),
     Io(io::Error),
+    ProxyProtocol(ProxyProtocolError),
     Accounting,
     SessionBytesLimit,
 }
@@ -404,6 +472,7 @@ impl std::fmt::Display for SessionEnd {
             Self::LifetimeTimeout => formatter.write_str("lifetime_timeout"),
             Self::Connect(error) => write!(formatter, "connect_error: {error}"),
             Self::Io(error) => write!(formatter, "io_error: {error}"),
+            Self::ProxyProtocol(error) => write!(formatter, "proxy_protocol: {error}"),
             Self::Accounting => formatter.write_str("accounting_error"),
             Self::SessionBytesLimit => formatter.write_str("session_bytes_limit"),
         }
@@ -421,6 +490,7 @@ async fn run_session(
     connection: ConnectionGuard,
     _generation_reference: crate::GenerationReference,
     listener_is_ipv4: bool,
+    logical_client: Option<std::net::SocketAddr>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), SessionEnd> {
     let policy = service.udp_policy();
@@ -432,13 +502,13 @@ async fn run_session(
             "UDP upstream pool has no selectable endpoint",
         )))?,
     };
-    let upstream = match timeout(
+    let (upstream, destination) = match timeout(
         relay_policy.connect,
         connect_upstream(&lease, listener_is_ipv4),
     )
     .await
     {
-        Ok(Ok(socket)) => socket,
+        Ok(Ok(connection)) => connection,
         Ok(Err(error)) => {
             lease.record_passive_failure(HealthFailure::ConnectFailed);
             return Err(SessionEnd::Connect(error));
@@ -454,7 +524,40 @@ async fn run_session(
 
     let mut session_bytes = 0_u64;
     account_received(&connection, &mut session_bytes, initial.len(), policy)?;
-    upstream.send(&initial).await.map_err(SessionEnd::Io)?;
+    let outbound_proxy = service.proxy_protocol().zip(logical_client);
+    if let Some((proxy_policy, source)) = outbound_proxy {
+        let header = encode_header(
+            proxy_policy.version,
+            ProxyProtocolTransport::Datagram,
+            source,
+            destination,
+        )
+        .map_err(|error| {
+            let _ = connection.record_proxy_protocol(error.result());
+            SessionEnd::ProxyProtocol(error)
+        })?;
+        let mut datagram = Vec::with_capacity(header.len() + initial.len());
+        datagram.extend_from_slice(&header);
+        datagram.extend_from_slice(&initial);
+        send_proxy_datagram(
+            &upstream,
+            &datagram,
+            Duration::from_millis(proxy_policy.timeout_ms),
+            &mut shutdown,
+        )
+        .await
+        .map_err(|error| {
+            let _ = connection.record_proxy_protocol(error.result());
+            SessionEnd::ProxyProtocol(error)
+        })?;
+        connection
+            .record_proxy_protocol(ProxyProtocolResult::Sent)
+            .map_err(|_| SessionEnd::Accounting)?;
+    } else {
+        send_datagram(&upstream, &initial, None, &mut shutdown)
+            .await
+            .map_err(SessionEnd::Io)?;
+    }
 
     let mut idle = relay_policy.idle.map(|duration| Box::pin(sleep(duration)));
     let lifetime = wait_for_duration(relay_policy.lifetime);
@@ -470,7 +573,9 @@ async fn run_session(
             queued = queue_receiver.recv() => {
                 let Some(queued) = queued else { return Ok(()) };
                 account_received(&connection, &mut session_bytes, queued.payload.len(), policy)?;
-                upstream.send(&queued.payload).await.map_err(SessionEnd::Io)?;
+                send_datagram(&upstream, &queued.payload, None, &mut shutdown)
+                    .await
+                    .map_err(SessionEnd::Io)?;
                 reset_sleep(&mut idle, relay_policy.idle);
             }
             upstream_result = upstream.recv(&mut upstream_buffer) => {
@@ -540,7 +645,10 @@ async fn wait_for_duration(duration: Option<Duration>) {
     }
 }
 
-async fn connect_upstream(lease: &EndpointLease, listener_is_ipv4: bool) -> io::Result<UdpSocket> {
+async fn connect_upstream(
+    lease: &EndpointLease,
+    listener_is_ipv4: bool,
+) -> io::Result<(UdpSocket, std::net::SocketAddr)> {
     let addresses = lease.resolve_addresses().await?;
     let mut last_error = None;
     for address in addresses {
@@ -554,7 +662,7 @@ async fn connect_upstream(lease: &EndpointLease, listener_is_ipv4: bool) -> io::
         };
         let socket = UdpSocket::bind(local).await?;
         match socket.connect(address).await {
-            Ok(()) => return Ok(socket),
+            Ok(()) => return Ok((socket, address)),
             Err(error) => last_error = Some(error),
         }
     }
@@ -564,6 +672,56 @@ async fn connect_upstream(lease: &EndpointLease, listener_is_ipv4: bool) -> io::
             "UDP upstream has no address matching the listener address family",
         )
     }))
+}
+
+async fn send_datagram(
+    socket: &UdpSocket,
+    payload: &[u8],
+    timeout_duration: Option<Duration>,
+    shutdown: &mut watch::Receiver<bool>,
+) -> Result<(), io::Error> {
+    let send = async {
+        match timeout_duration {
+            Some(duration) => timeout(duration, socket.send(payload))
+                .await
+                .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "UDP send timed out"))?,
+            None => socket.send(payload).await,
+        }
+        .map(|_| ())
+    };
+    tokio::select! {
+        biased;
+        () = wait_for_shutdown(shutdown) => Err(io::Error::new(io::ErrorKind::Interrupted, "UDP send cancelled")),
+        result = send => result,
+    }
+}
+
+async fn send_proxy_datagram(
+    socket: &UdpSocket,
+    payload: &[u8],
+    timeout_duration: Duration,
+    shutdown: &mut watch::Receiver<bool>,
+) -> Result<(), ProxyProtocolError> {
+    tokio::select! {
+        biased;
+        () = wait_for_shutdown(shutdown) => Err(ProxyProtocolError::new(ProxyProtocolErrorKind::Cancelled)),
+        result = timeout(timeout_duration, socket.send(payload)) => match result {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(error)) => Err(ProxyProtocolError::io(error)),
+            Err(_) => Err(ProxyProtocolError::new(ProxyProtocolErrorKind::Timeout)),
+        },
+    }
+}
+
+async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
+    loop {
+        if *shutdown.borrow_and_update() {
+            return;
+        }
+        if shutdown.changed().await.is_err() {
+            return;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -688,6 +846,7 @@ mod tests {
             service,
             Arc::clone(&generation),
             metrics,
+            None,
             shutdown,
         )
         .expect("start UDP runtime");
@@ -737,6 +896,7 @@ mod tests {
                 protocol: Protocol::Udp,
                 service: Some("relay".into()),
                 tls_profile: None,
+                proxy_protocol: None,
                 max_connections: Some(8),
                 downstream_timeouts: DownstreamTimeoutPolicy::default(),
             }],
@@ -763,6 +923,7 @@ mod tests {
                 connect_timeout_ms: 1_000,
                 idle_timeout_ms: 10_000,
                 lifetime_timeout_ms: Some(30_000),
+                proxy_protocol: None,
                 udp: Some(policy()),
             }],
         }

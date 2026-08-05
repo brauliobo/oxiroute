@@ -123,7 +123,8 @@ runtime, failure-path, test, and native-lowering coverage all land.
 - Native source locations, include graphs, decision ledgers, provenance, and stable diagnostic
   codes (partial for nginx and HAProxy; capability profiles and other products remain).
 - UDP relay with bounded pseudo-sessions, per-client reply mapping, and expiry.
-- PROXY protocol v1/v2 for explicit client-address propagation.
+- Bounded PROXY protocol v1/v2 for explicit client-address propagation is implemented; broader wire
+  conformance remains.
 - Least-connections policy (implemented); weighted round-robin remains.
 - ACME DNS-01 through bounded statically linked provider implementations and wildcard certificate support
   (the provider seam and orchestrator are implemented; concrete provider deployments remain).
