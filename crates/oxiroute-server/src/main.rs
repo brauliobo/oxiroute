@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use futures_util::FutureExt as _;
 use hyper::{server::conn::http1, service::service_fn};
 use hyper_util::rt::{TokioIo, TokioTimer};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use oxiroute_config::ListenerBind;
 use oxiroute_rtmp::{
     MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN, MediaCatalog, RtmpRegistry, RtmpServiceRuntime, VodCatalog,
@@ -749,33 +749,53 @@ impl ServerApp for TcpRelay {
         downstream: Stream,
         shutdown: &ShutdownWatch,
     ) -> Option<Stream> {
-        let (downstream, client_address) = if let Some(policy) = self.proxy_protocol {
+        let physical_client_address = downstream
+            .get_socket_digest()
+            .and_then(|digest| {
+                digest
+                    .peer_addr()
+                    .and_then(|address| address.as_inet().copied())
+            });
+        let connection = self.metrics.traffic_accounting();
+        if let Some(policy) = self.proxy_protocol {
             let mut proxy_shutdown = shutdown.clone();
             let accepted =
                 match oxiroute_server::accept_stream(downstream, policy, &mut proxy_shutdown).await
                 {
                     Ok(accepted) => accepted,
                     Err(error) => {
-                        self.metrics.record_proxy_protocol(error.result());
+                        if let Err(metric_error) = self.metrics.record_proxy_protocol(error.result()) {
+                            debug!("could not account for TCP PROXY protocol rejection: {metric_error}");
+                        }
                         warn!("TCP PROXY protocol rejected: {error}");
                         return None;
                     }
                 };
-            self.metrics
-                .record_proxy_protocol(oxiroute_server::ProxyProtocolResult::Accepted);
-            (accepted.stream, Some(accepted.header.source))
+            if let Err(metric_error) = self
+                .metrics
+                .record_proxy_protocol(oxiroute_server::ProxyProtocolResult::Accepted)
+            {
+                debug!("could not account for TCP PROXY protocol: {metric_error}");
+            }
+            let Some(upstream) = self.service.select_wait().await else {
+                warn!("TCP pool has no healthy upstream");
+                return None;
+            };
+            let relay = TcpRelayCore::new(upstream, self.service.policy())
+                .with_proxy_protocol(self.service.proxy_protocol(), Some(accepted.header.source));
+            if let Err(error) = relay.relay(accepted.stream, &connection, shutdown.clone()).await {
+                warn!("TCP relay failed: {error}");
+            }
         } else {
-            (downstream, None)
-        };
-        let connection = self.metrics.traffic_accounting();
-        let Some(upstream) = self.service.select_wait().await else {
-            warn!("TCP pool has no healthy upstream");
-            return None;
-        };
-        let relay = TcpRelayCore::new(upstream, self.service.policy())
-            .with_proxy_protocol(self.service.proxy_protocol(), client_address);
-        if let Err(error) = relay.relay(downstream, &connection, shutdown.clone()).await {
-            warn!("TCP relay failed: {error}");
+            let Some(upstream) = self.service.select_wait().await else {
+                warn!("TCP pool has no healthy upstream");
+                return None;
+            };
+            let relay = TcpRelayCore::new(upstream, self.service.policy())
+                .with_proxy_protocol(self.service.proxy_protocol(), physical_client_address);
+            if let Err(error) = relay.relay(downstream, &connection, shutdown.clone()).await {
+                warn!("TCP relay failed: {error}");
+            }
         }
 
         None

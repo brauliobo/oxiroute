@@ -166,6 +166,19 @@ pub fn render_prometheus(
                 &tcp.latency,
             )?;
         }
+        if let Some(proxy_protocol) = &listener.proxy_protocol {
+            for outcome in &proxy_protocol.outcomes {
+                labels(
+                    &mut output,
+                    "oxiroute_proxy_protocol_total",
+                    &[
+                        ("listener", listener.name.as_str()),
+                        ("result", outcome.result.as_str()),
+                    ],
+                    outcome.count,
+                )?;
+            }
+        }
     }
 
     for pool in &runtime.upstream_pools {

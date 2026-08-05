@@ -2,7 +2,9 @@
 
 use std::{fs, net::SocketAddr, path::Path};
 
-use oxiroute_config::{ListenerBind, Protocol, UpstreamEndpoint};
+use oxiroute_config::{
+    ListenerBind, Protocol, ProxyProtocolVersion, UpstreamEndpoint,
+};
 use oxiroute_import::nginx::{
     OccurrenceDisposition, RootOccurrenceDisposition, StreamDeclaration, StreamDestination,
     import_root, import_stream_fragment, load, resolve_stream_fragment,
@@ -115,6 +117,47 @@ fn lowers_stream_tcp_service_with_inherited_and_local_timeouts() {
             .count(),
         report.source_graph.expanded_occurrences.len()
     );
+}
+
+#[test]
+fn lowers_exact_stream_proxy_protocol_acceptance_and_propagation() {
+    let directory = tempfile::tempdir().expect("stream PROXY fixture directory");
+    fs::write(
+        directory.path().join("nginx.conf"),
+        br"
+            stream {
+                upstream postgres { server 127.0.0.1:5432; }
+                server {
+                    proxy_protocol on;
+                    listen 127.0.0.1:15432 proxy_protocol;
+                    proxy_pass postgres;
+                }
+            }
+        ",
+    )
+    .expect("write stream PROXY fixture");
+    let report = import_stream_fragment(Path::new("nginx.conf"), directory.path());
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let config = report.config.expect("stream PROXY configuration");
+    assert_eq!(
+        config.listeners[0]
+            .proxy_protocol
+            .expect("listener PROXY policy")
+            .version,
+        ProxyProtocolVersion::Auto
+    );
+    assert_eq!(
+        config.l4_services[0]
+            .proxy_protocol
+            .expect("service PROXY policy")
+            .version,
+        ProxyProtocolVersion::V1
+    );
+    assert!(report
+        .provenance
+        .iter()
+        .any(|entry| entry.path == "/l4_services/0/proxy_protocol/version"));
 }
 
 #[test]

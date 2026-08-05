@@ -15,6 +15,7 @@ mod logging;
 mod monitoring;
 mod operational_event;
 mod prometheus;
+mod proxy_protocol;
 mod routing;
 mod rtmp_api;
 mod secure_bearer;
@@ -50,11 +51,17 @@ pub use monitoring::{
     DirectFileWatcherSnapshot, HostSnapshot, HttpOperationCountSnapshot, HttpOperationResult,
     HttpOperationSnapshot, LatencyBucketSnapshot, LatencySnapshot, ListenerMetrics,
     ListenerRuntimeState, ListenerSnapshot, MetricsError, ProcessConnectionGuard, ProcessRuntime,
-    ProcessSnapshot, RuntimeMetrics, RuntimeSnapshot, TcpRelayCountSnapshot, TcpRelayResult,
-    TcpRelaySnapshot, TrafficSnapshot, OPERATION_LATENCY_BUCKETS_MS,
+    ProcessSnapshot, ProxyProtocolCountSnapshot, ProxyProtocolSnapshot, RuntimeMetrics,
+    RuntimeSnapshot, TcpRelayCountSnapshot, TcpRelayResult, TcpRelaySnapshot, TrafficSnapshot,
+    OPERATION_LATENCY_BUCKETS_MS,
 };
 pub use operational_event::emit_certificate;
 pub use prometheus::{render_prometheus, PrometheusError};
+pub use proxy_protocol::{
+    AcceptedProxyStream, MAX_V1_HEADER_BYTES, MAX_V2_HEADER_BYTES, MAX_V2_PAYLOAD_BYTES,
+    ParsedProxyHeader, PrefixedStream, ProxyProtocolError, ProxyProtocolErrorKind,
+    ProxyProtocolResult, ProxyProtocolTransport, accept_stream, encode_header, parse_header,
+};
 pub use routing::{
     AdministrativeState, EndpointHealthSnapshot, EndpointHealthState, EndpointLease, EndpointPool,
     HealthFailure, HealthOverride, PassiveFailurePolicy, PoolAdminError, PoolError,

@@ -1,6 +1,7 @@
 use std::{error::Error, fmt, future::pending, io, time::Duration};
 
 use log::warn;
+use oxiroute_config::ProxyProtocolPolicy;
 use pingora::{protocols::Stream, server::ShutdownWatch};
 use tokio::{
     io::{split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -12,7 +13,9 @@ use tokio::{
 use tokio::net::UnixStream;
 
 use crate::{
-    ConnectionGuard, EndpointLease, HealthFailure, MetricsError, RuntimeEndpoint, TcpRelayResult,
+    encode_header, ConnectionGuard, EndpointLease, HealthFailure, MetricsError,
+    ProxyProtocolError, ProxyProtocolErrorKind, ProxyProtocolResult, ProxyProtocolTransport,
+    RuntimeEndpoint, TcpRelayResult,
 };
 
 /// Memory used for each direction of a relayed connection.
@@ -86,6 +89,7 @@ impl fmt::Display for RelayOperation {
 pub enum RelayFailureKind {
     Connect(io::Error),
     ConnectTimeout(Duration),
+    ProxyProtocol(ProxyProtocolError),
     IdleTimeout(Duration),
     LifetimeTimeout(Duration),
     Cancelled,
@@ -116,6 +120,9 @@ impl fmt::Display for RelayFailure {
                     "upstream connection timed out after {duration:?}"
                 )
             }
+            RelayFailureKind::ProxyProtocol(source) => {
+                write!(formatter, "TCP relay PROXY protocol failed: {source}")
+            }
             RelayFailureKind::IdleTimeout(duration) => {
                 write!(formatter, "TCP relay was idle for {duration:?}")
             }
@@ -145,6 +152,7 @@ impl Error for RelayFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match &self.kind {
             RelayFailureKind::Connect(source) | RelayFailureKind::Io { source, .. } => Some(source),
+            RelayFailureKind::ProxyProtocol(source) => Some(source),
             RelayFailureKind::Accounting(source) => Some(source),
             RelayFailureKind::ConnectTimeout(_)
             | RelayFailureKind::IdleTimeout(_)
@@ -159,6 +167,7 @@ impl TcpRelayResult {
         match kind {
             RelayFailureKind::Connect(_) => Self::ConnectError,
             RelayFailureKind::ConnectTimeout(_) => Self::ConnectTimeout,
+            RelayFailureKind::ProxyProtocol(_) => Self::ProxyProtocolError,
             RelayFailureKind::IdleTimeout(_) => Self::IdleTimeout,
             RelayFailureKind::LifetimeTimeout(_) => Self::LifetimeTimeout,
             RelayFailureKind::Cancelled => Self::Cancelled,
@@ -172,12 +181,27 @@ impl TcpRelayResult {
 pub struct TcpRelayCore {
     upstream: EndpointLease,
     policy: RelayPolicy,
+    proxy_protocol: Option<(ProxyProtocolPolicy, Option<std::net::SocketAddr>)>,
 }
 
 impl TcpRelayCore {
     #[must_use]
     pub const fn new(upstream: EndpointLease, policy: RelayPolicy) -> Self {
-        Self { upstream, policy }
+        Self {
+            upstream,
+            policy,
+            proxy_protocol: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_proxy_protocol(
+        mut self,
+        policy: Option<ProxyProtocolPolicy>,
+        client_address: Option<std::net::SocketAddr>,
+    ) -> Self {
+        self.proxy_protocol = policy.map(|policy| (policy, client_address));
+        self
     }
 
     /// Connects to the configured upstream and relays the Pingora stream.
@@ -186,12 +210,15 @@ impl TcpRelayCore {
     ///
     /// Returns a failure when connection establishment, transport I/O, accounting, a configured
     /// timeout, or shutdown prevents both directions from completing normally.
-    pub async fn relay(
+    pub async fn relay<D>(
         self,
-        downstream: Stream,
+        downstream: D,
         connection: &ConnectionGuard,
         mut shutdown: ShutdownWatch,
-    ) -> Result<RelayStats, RelayFailure> {
+    ) -> Result<RelayStats, RelayFailure>
+    where
+        D: AsyncRead + AsyncWrite + Unpin,
+    {
         let started_at = Instant::now();
         let upstream = tokio::select! {
             biased;
@@ -219,8 +246,33 @@ impl TcpRelayCore {
         };
 
         let result = match upstream {
-            Ok(upstream) => {
-                relay_streams(downstream, upstream, connection, shutdown, self.policy).await
+            Ok(mut upstream) => {
+                if let Err(error) = send_proxy_header(
+                    &mut upstream.stream,
+                    self.proxy_protocol,
+                    upstream.address,
+                    &mut shutdown,
+                )
+                .await
+                {
+                    let _ = connection.record_proxy_protocol(error.result());
+                    Err(failure(
+                        RelayFailureKind::ProxyProtocol(error),
+                        RelayStats::default(),
+                    ))
+                } else {
+                    if self.proxy_protocol.is_some() {
+                        let _ = connection.record_proxy_protocol(ProxyProtocolResult::Sent);
+                    }
+                    relay_streams(
+                        downstream,
+                        upstream.stream,
+                        connection,
+                        shutdown,
+                        self.policy,
+                    )
+                    .await
+                }
             }
             Err(failure) => Err(failure),
         };
@@ -237,6 +289,7 @@ impl TcpRelayCore {
                 | RelayFailureKind::LifetimeTimeout(_)
                 | RelayFailureKind::Cancelled
                 | RelayFailureKind::Io { .. }
+                | RelayFailureKind::ProxyProtocol(_)
                 | RelayFailureKind::Accounting(_) => {}
             }
         }
@@ -251,27 +304,35 @@ impl TcpRelayCore {
     }
 }
 
-async fn connect_upstream(upstream: &EndpointLease) -> io::Result<Stream> {
+struct ConnectedUpstream {
+    stream: Stream,
+    address: Option<std::net::SocketAddr>,
+}
+
+async fn connect_upstream(upstream: &EndpointLease) -> io::Result<ConnectedUpstream> {
     match upstream.endpoint() {
         RuntimeEndpoint::Socket { address } => {
             let stream = TcpStream::connect(address).await?;
-            Ok(Box::new(pingora::protocols::l4::stream::Stream::from(
-                stream,
-            )))
+            Ok(ConnectedUpstream {
+                stream: Box::new(pingora::protocols::l4::stream::Stream::from(stream)),
+                address: Some(*address),
+            })
         }
         RuntimeEndpoint::Dns { .. } => {
             let addresses = upstream.resolve_addresses().await?;
-            let stream = connect_addresses(&addresses).await?;
-            Ok(Box::new(pingora::protocols::l4::stream::Stream::from(
-                stream,
-            )))
+            let (stream, address) = connect_addresses(&addresses).await?;
+            Ok(ConnectedUpstream {
+                stream: Box::new(pingora::protocols::l4::stream::Stream::from(stream)),
+                address: Some(address),
+            })
         }
         #[cfg(unix)]
         RuntimeEndpoint::Unix { path } => {
             let stream = UnixStream::connect(path).await?;
-            Ok(Box::new(pingora::protocols::l4::stream::Stream::from(
-                stream,
-            )))
+            Ok(ConnectedUpstream {
+                stream: Box::new(pingora::protocols::l4::stream::Stream::from(stream)),
+                address: None,
+            })
         }
         #[cfg(not(unix))]
         RuntimeEndpoint::Unix { path } => Err(io::Error::new(
@@ -281,15 +342,49 @@ async fn connect_upstream(upstream: &EndpointLease) -> io::Result<Stream> {
     }
 }
 
-async fn connect_addresses(addresses: &[std::net::SocketAddr]) -> io::Result<TcpStream> {
+async fn connect_addresses(
+    addresses: &[std::net::SocketAddr],
+) -> io::Result<(TcpStream, std::net::SocketAddr)> {
     let mut last_error = None;
     for address in addresses {
         match TcpStream::connect(address).await {
-            Ok(stream) => return Ok(stream),
+            Ok(stream) => return Ok((stream, *address)),
             Err(error) => last_error = Some(error),
         }
     }
     Err(last_error.expect("resolved endpoint address sets are nonempty"))
+}
+
+async fn send_proxy_header(
+    upstream: &mut Stream,
+    propagation: Option<(ProxyProtocolPolicy, Option<std::net::SocketAddr>)>,
+    destination: Option<std::net::SocketAddr>,
+    shutdown: &mut ShutdownWatch,
+) -> Result<(), ProxyProtocolError> {
+    let Some((policy, source)) = propagation else {
+        return Ok(());
+    };
+    let source = source.ok_or_else(|| {
+        ProxyProtocolError::new(ProxyProtocolErrorKind::ProtocolMismatch)
+    })?;
+    let destination = destination.ok_or_else(|| {
+        ProxyProtocolError::new(ProxyProtocolErrorKind::ProtocolMismatch)
+    })?;
+    let header = encode_header(
+        policy.version,
+        ProxyProtocolTransport::Stream,
+        source,
+        destination,
+    )?;
+    tokio::select! {
+        biased;
+        () = wait_for_shutdown(shutdown) => Err(ProxyProtocolError::new(ProxyProtocolErrorKind::Cancelled)),
+        result = timeout(Duration::from_millis(policy.timeout_ms), upstream.write_all(&header)) => match result {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(ProxyProtocolError::io(error)),
+            Err(_) => Err(ProxyProtocolError::new(ProxyProtocolErrorKind::Timeout)),
+        },
+    }
 }
 
 /// Relays two established asynchronous streams until both directions reach EOF.
@@ -428,12 +523,13 @@ mod tests {
                 .expect("first address must be unused"),
         );
 
-        let connection = connect_addresses(&[first, second])
+        let (connection, address) = connect_addresses(&[first, second])
             .await
             .expect("second address connection");
         let (_accepted, _) = listener.accept().await.expect("second address accept");
 
         assert_eq!(connection.peer_addr().expect("connected peer"), second);
+        assert_eq!(address, second);
     }
 
     #[test]

@@ -18,7 +18,7 @@ use oxiroute_config::ListenerBind;
 
 use crate::{
     AcmeManagedReconciler, AdministrativeState, CertbotReconciler, CertbotWatcherMonitor,
-    FileReconciler, FileWatcherMonitor, PoolHealthSnapshot, RoundRobinPool,
+    FileReconciler, FileWatcherMonitor, PoolHealthSnapshot, ProxyProtocolResult, RoundRobinPool,
 };
 
 #[derive(Debug)]
@@ -201,10 +201,11 @@ pub enum TcpRelayResult {
     Cancelled,
     IoError,
     AccountingError,
+    ProxyProtocolError,
 }
 
 impl TcpRelayResult {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::Success,
         Self::ConnectError,
         Self::ConnectTimeout,
@@ -213,6 +214,7 @@ impl TcpRelayResult {
         Self::Cancelled,
         Self::IoError,
         Self::AccountingError,
+        Self::ProxyProtocolError,
     ];
 
     const fn index(self) -> usize {
@@ -225,6 +227,7 @@ impl TcpRelayResult {
             Self::Cancelled => 5,
             Self::IoError => 6,
             Self::AccountingError => 7,
+            Self::ProxyProtocolError => 8,
         }
     }
 
@@ -239,6 +242,7 @@ impl TcpRelayResult {
             Self::Cancelled => "cancelled",
             Self::IoError => "io_error",
             Self::AccountingError => "accounting_error",
+            Self::ProxyProtocolError => "proxy_protocol_error",
         }
     }
 }
@@ -323,6 +327,20 @@ pub struct TcpRelayCountSnapshot {
 pub struct TcpRelaySnapshot {
     pub outcomes: Box<[TcpRelayCountSnapshot]>,
     pub latency: LatencySnapshot,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyProtocolCountSnapshot {
+    pub result: ProxyProtocolResult,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    pub count: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyProtocolSnapshot {
+    pub outcomes: Box<[ProxyProtocolCountSnapshot]>,
 }
 
 #[derive(Clone)]
@@ -1209,6 +1227,15 @@ impl ListenerMetrics {
     ) -> Result<(), MetricsError> {
         self.state.shared.record_tcp_relay(result, duration)
     }
+
+    /// Records one redacted PROXY protocol result category.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the result counter would overflow.
+    pub fn record_proxy_protocol(&self, result: ProxyProtocolResult) -> Result<(), MetricsError> {
+        self.state.shared.record_proxy_protocol(result)
+    }
 }
 
 pub struct ConnectionGuard {
@@ -1256,6 +1283,15 @@ impl ConnectionGuard {
         duration: Duration,
     ) -> Result<(), MetricsError> {
         self.state.shared.record_tcp_relay(result, duration)
+    }
+
+    /// Records one redacted PROXY protocol result category.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the result counter would overflow.
+    pub fn record_proxy_protocol(&self, result: ProxyProtocolResult) -> Result<(), MetricsError> {
+        self.state.shared.record_proxy_protocol(result)
     }
 }
 
@@ -1384,6 +1420,7 @@ struct ListenerMetricsState {
 
 const HTTP_RESULT_COUNT: usize = HttpOperationResult::ALL.len();
 const TCP_RESULT_COUNT: usize = TcpRelayResult::ALL.len();
+const PROXY_PROTOCOL_RESULT_COUNT: usize = ProxyProtocolResult::ALL.len();
 const LATENCY_BUCKET_COUNT: usize = OPERATION_LATENCY_BUCKETS_MS.len() + 1;
 
 struct OperationMetricsState {
@@ -1395,6 +1432,7 @@ struct OperationMetricsState {
     tcp_latency_buckets: [AtomicU64; LATENCY_BUCKET_COUNT],
     tcp_latency_count: AtomicU64,
     tcp_latency_sum_ms: AtomicU64,
+    proxy_protocol_results: [AtomicU64; PROXY_PROTOCOL_RESULT_COUNT],
     cache_events: [AtomicU64; 4],
 }
 
@@ -1409,6 +1447,7 @@ impl OperationMetricsState {
             tcp_latency_buckets: std::array::from_fn(|_| AtomicU64::new(0)),
             tcp_latency_count: AtomicU64::new(0),
             tcp_latency_sum_ms: AtomicU64::new(0),
+            proxy_protocol_results: std::array::from_fn(|_| AtomicU64::new(0)),
             cache_events: std::array::from_fn(|_| AtomicU64::new(0)),
         }
     }
@@ -1464,6 +1503,29 @@ impl OperationMetricsState {
 
     fn record_cache_event(&self, event: CacheEvent) -> Result<(), MetricsError> {
         checked_atomic_add(&self.cache_events[event.index()], 1, "http.cache")
+    }
+
+    fn record_proxy_protocol(&self, result: ProxyProtocolResult) -> Result<(), MetricsError> {
+        checked_atomic_add(
+            &self.proxy_protocol_results[result.index()],
+            1,
+            "proxy_protocol.results",
+        )
+    }
+
+    fn proxy_protocol_snapshot(&self) -> Option<ProxyProtocolSnapshot> {
+        let values = ProxyProtocolResult::ALL.map(|result| {
+            (
+                result,
+                self.proxy_protocol_results[result.index()].load(Ordering::Relaxed),
+            )
+        });
+        values.iter().any(|(_, count)| *count > 0).then(|| ProxyProtocolSnapshot {
+            outcomes: values
+                .into_iter()
+                .map(|(result, count)| ProxyProtocolCountSnapshot { result, count })
+                .collect(),
+        })
     }
 
     fn cache_snapshot(&self) -> Option<CacheSnapshot> {
@@ -1546,6 +1608,7 @@ impl ListenerMetricsState {
             bytes_sent: self.shared.bytes_sent.load(Ordering::Relaxed),
             http_operations: self.shared.operations.http_snapshot(),
             tcp_relays: self.shared.operations.tcp_snapshot(),
+            proxy_protocol: self.shared.operations.proxy_protocol_snapshot(),
             cache: self.shared.operations.cache_snapshot(),
         }
     }
@@ -1591,6 +1654,10 @@ impl SharedListenerMetricsState {
         duration: Duration,
     ) -> Result<(), MetricsError> {
         self.operations.record_tcp_relay(result, duration)
+    }
+
+    fn record_proxy_protocol(&self, result: ProxyProtocolResult) -> Result<(), MetricsError> {
+        self.operations.record_proxy_protocol(result)
     }
 }
 
@@ -1796,6 +1863,7 @@ pub struct ListenerSnapshot {
     pub bytes_sent: u64,
     pub http_operations: Option<HttpOperationSnapshot>,
     pub tcp_relays: Option<TcpRelaySnapshot>,
+    pub proxy_protocol: Option<ProxyProtocolSnapshot>,
     pub cache: Option<CacheSnapshot>,
 }
 
