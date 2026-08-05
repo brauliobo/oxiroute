@@ -723,6 +723,7 @@ impl NativeReloadServer {
         .expect("nginx site");
         let child = Command::new(env!("CARGO_BIN_EXE_oxiroute"))
             .env("OXIROUTE_MANAGEMENT_TOKEN_FILE", &token_path)
+            .env("OXIROUTE_INTERNAL_TEST_DIRECT_RUNTIME", "1")
             .arg("serve")
             .arg(&config_path)
             .stdout(Stdio::null())
