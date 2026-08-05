@@ -346,6 +346,16 @@ Log variables: `connection`, `remote_addr`, `app`, `flashver`, `swfurl`, `tcurl`
 `session_time`, `session_readable_time`. Auto-push requires Unix-domain sockets and is
 platform-limited in the reference.
 
+OxiRoute lowers the Nginx main-scope auto-push subset into the bounded
+`rtmp_services[].auto_push` policy. Enabled workers create owner-only Unix sockets lazily on
+first publisher admission. A shared owner-only secret authenticates framed worker handshakes;
+the frame carries only the service, stream identity, publisher session/incarnation token, sequence,
+timestamp, event kind, and bounded media payload. Peer copies register as local-only publishers,
+never start configured relays/recorders/exec/media outputs, and never forward received frames.
+Queue overflow drops until a bounded metadata/header/keyframe bootstrap is available. Worker,
+session, incarnation, sequence, peer, stream, frame, authentication, and queue limits are validated
+before activation, with unsupported non-Unix and unsafe socket/credential paths failing closed.
+
 ### HLS: 22
 
 | Directive | Context | Accepted value | Effective default |
@@ -459,7 +469,8 @@ described below are implemented, not evidence that every listed component exists
 5. Ordered command middleware for connect, createStream, publish, play, closeStream, and deleteStream.
 6. Application stream registry with one publisher, subscribers, cached metadata/AAC/AVC headers, and keyframe state.
 7. Bounded per-subscriber output queues with priority/drop/resynchronization policy.
-8. Independent relay, record, VOD, callback, segmenter, exec, stats, and control components.
+8. Independent relay, record, VOD, callback, segmenter, exec, auto-push, stats, and control
+   components. Auto-push is a framed local-worker transport, not an arbitrary RTMP endpoint.
 
 The first compatibility mode uses one RTMP message stream per connection, ID 1, matching
 the reference assumption. Multi-message-stream support is a later explicit extension.

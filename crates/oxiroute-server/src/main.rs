@@ -1002,6 +1002,9 @@ fn log_rtmp_state_transition(
     match current.role {
         RtmpSessionRole::Publisher => {
             log_rtmp_access_event(service, "publish", "accepted", current, at_unix_ms);
+            if service.auto_push_enabled() {
+                log_rtmp_access_event(service, "auto_push", "source", current, at_unix_ms);
+            }
         }
         RtmpSessionRole::Subscriber => {
             log_rtmp_access_event(service, "play", "accepted", current, at_unix_ms);
@@ -2417,10 +2420,11 @@ mod tests {
                 name: "live".into(),
                 outbound_chunk_size: 4_096,
                 access_log: None,
-                 outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
-                 callbacks: oxiroute_config::RtmpCallbackConfig::default(),
-                 exec_profiles: Vec::new(),
-                 applications: vec![RtmpApplication {
+                outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
+                callbacks: oxiroute_config::RtmpCallbackConfig::default(),
+                auto_push: oxiroute_config::RtmpAutoPushPolicy::default(),
+                exec_profiles: Vec::new(),
+                applications: vec![RtmpApplication {
                     name: "live".into(),
                     live: true,
                     idle_streams: true,

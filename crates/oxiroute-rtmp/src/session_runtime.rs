@@ -6,26 +6,27 @@ use std::{
 };
 
 use crate::{
-    exec::{ExecProfile},
+    CatalogError, LiveHub, LiveHubError, MediaApplication, PublisherLease, RecorderDefinition,
+    RtmpAutoPushConfig, RtmpAutoPushError, RtmpAutoPushStatus, RtmpCallbackPolicy, RtmpPullTarget,
+    RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry, SessionId, StreamKey,
+    VodApplication, VodError,
+    auto_push::AutoPushCoordinator,
+    exec::ExecProfile,
     exec_worker::ExecProfileSet,
     recording_runtime::{
         RecorderController, RecorderReaperHandle, RecorderReaperOwner, RecorderShutdownControl,
         RtmpRecorderShutdown,
     },
     relay::{RtmpPullController, RtmpRelayController},
-    CatalogError, LiveHub, LiveHubError, MediaApplication, PublisherLease, RecorderDefinition,
-    RtmpCallbackPolicy, RtmpPullTarget, RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart,
-    RtmpRegistry, SessionId, StreamKey, VodApplication, VodError,
 };
 use rml_rtmp::messages::Amf0Limits;
 
 use super::{
+    MAX_INBOUND_AMF0_CONTAINER_ENTRIES, MAX_INBOUND_AMF0_DEPTH, MAX_INBOUND_AMF0_STRING_BYTES,
+    MAX_INBOUND_AMF0_VALUES, MAX_INBOUND_CHUNK_SIZE, MAX_INBOUND_MESSAGE_SIZE, RtmpSession,
     playback::PlaybackSession,
     publish::{PublishSession, PublisherOutputs},
     vod_playback::{VodPlaybackSession, VodPlaybackStart},
-    RtmpSession, MAX_INBOUND_AMF0_CONTAINER_ENTRIES, MAX_INBOUND_AMF0_DEPTH,
-    MAX_INBOUND_AMF0_STRING_BYTES, MAX_INBOUND_AMF0_VALUES, MAX_INBOUND_CHUNK_SIZE,
-    MAX_INBOUND_MESSAGE_SIZE,
 };
 
 pub const RTMP_STALE_PUBLISHER_THRESHOLD_MS: u64 = 30_000;
@@ -681,6 +682,7 @@ pub struct RtmpServiceRuntime {
     recorder_reaper_owner: Option<Arc<RecorderReaperOwner>>,
     pull_controllers: Arc<Vec<Arc<RtmpPullController>>>,
     callbacks: Arc<RtmpCallbackPolicy>,
+    auto_push: Option<Arc<AutoPushCoordinator>>,
 }
 
 /// Cheap, generation-independent ownership of one recorder shutdown lifecycle.
@@ -764,6 +766,7 @@ impl RtmpServiceRuntime {
             recorder_reaper_owner,
             pull_controllers: Arc::new(pull_controllers),
             callbacks: Arc::new(RtmpCallbackPolicy::default()),
+            auto_push: None,
         }
     }
 
@@ -771,6 +774,35 @@ impl RtmpServiceRuntime {
     pub fn with_callbacks(mut self, callbacks: RtmpCallbackPolicy) -> Self {
         self.callbacks = Arc::new(callbacks);
         self
+    }
+
+    /// Adds the configured auto-push coordinator to the runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an auto-push configuration error when the coordinator cannot be constructed.
+    pub fn with_auto_push(mut self, config: RtmpAutoPushConfig) -> Result<Self, RtmpAutoPushError> {
+        if config.enabled {
+            let application_hubs = self
+                .policy
+                .applications
+                .iter()
+                .map(|(name, application)| {
+                    (
+                        name.clone(),
+                        application.hub().unwrap_or_else(|| self.hub.clone()),
+                    )
+                })
+                .collect();
+            self.auto_push = Some(Arc::new(AutoPushCoordinator::new(
+                config,
+                Arc::clone(&self.service_id),
+                Arc::clone(&self.registry),
+                self.hub.clone(),
+                application_hubs,
+            )));
+        }
+        Ok(self)
     }
 
     #[must_use]
@@ -808,6 +840,9 @@ impl RtmpServiceRuntime {
         }
         *admission_open = false;
         self.registry.close_admission();
+        if let Some(auto_push) = &self.auto_push {
+            auto_push.close();
+        }
         for controller in self.pull_controllers.iter() {
             controller.deactivate();
         }
@@ -838,6 +873,13 @@ impl RtmpServiceRuntime {
         let shutdown = owner.initiate_shutdown(deadline);
         self.registry.initiate_recorder_shutdown(reaper);
         Some(shutdown)
+    }
+
+    #[must_use]
+    pub fn auto_push_status(&self) -> RtmpAutoPushStatus {
+        self.auto_push
+            .as_ref()
+            .map_or_else(RtmpAutoPushStatus::default, |auto_push| auto_push.status())
     }
 
     pub(super) const fn outbound_chunk_size(&self) -> u32 {
@@ -896,6 +938,7 @@ impl RtmpServiceRuntime {
             recorder_reaper_owner: self.recorder_reaper_owner.clone(),
             pull_controllers: Arc::clone(&self.pull_controllers),
             callbacks: Arc::clone(&self.callbacks),
+            auto_push: self.auto_push.clone(),
         }
     }
 
@@ -956,10 +999,16 @@ impl RtmpServiceRuntime {
         let exec_profiles = self
             .application(&key.application)
             .and_then(RtmpApplication::exec_profiles);
+        let auto_push = self.auto_push.clone();
         let role_lease = self
             .admission(&key.application)
             .acquire(SessionCounter::Publishers)
             .map_err(PublisherRoleError::SessionLimit)?;
+        if let Some(auto_push) = auto_push.as_ref() {
+            auto_push
+                .ensure_started()
+                .map_err(PublisherRoleError::AutoPush)?;
+        }
         let transaction = hub.lock_roles();
         let lease = self.acquire_publisher_lease(&hub, &key, at_unix_ms)?;
         // Media output is best-effort; storage or worker failures must not reject RTMP publish.
@@ -1020,6 +1069,18 @@ impl RtmpServiceRuntime {
                 return Err(PublisherRoleError::Catalog(error));
             }
         };
+        let auto_push_publisher = match auto_push.as_ref() {
+            Some(auto_push) => match auto_push.source(key.clone(), session_id, lease.incarnation())
+            {
+                Ok(publisher) => publisher,
+                Err(error) => {
+                    drop(registration);
+                    drop(lease);
+                    return Err(PublisherRoleError::AutoPush(error));
+                }
+            },
+            None => None,
+        };
         let recorders: Vec<_> = registration
             .recorder_ids()
             .iter()
@@ -1055,6 +1116,7 @@ impl RtmpServiceRuntime {
                 session_lease: role_lease,
                 exec_profiles,
                 exec_workers,
+                auto_push: auto_push_publisher,
             },
         ))
     }
@@ -1200,6 +1262,7 @@ pub(super) enum PublisherRoleError {
     SessionLimit(SessionLimitError),
     Hub(LiveHubError),
     Catalog(CatalogError),
+    AutoPush(RtmpAutoPushError),
 }
 
 #[derive(Debug)]
@@ -1572,5 +1635,51 @@ mod tests {
         assert_eq!(runtime.publisher_presence(&second_key), (true, true));
         drop(second);
         drop(first);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn auto_push_transport_starts_only_when_a_publisher_is_admitted() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("auto-push socket directory");
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("secure auto-push socket directory");
+        let runtime = RtmpServiceRuntime::new(
+            "live",
+            Arc::new(RtmpRegistry::new(RtmpCapabilities {
+                live_ingest: true,
+                manual_recording: false,
+            })),
+            LiveHub::new(LiveHubLimits::default()),
+            RtmpSessionPolicy::default(),
+        )
+        .with_auto_push(RtmpAutoPushConfig {
+            enabled: true,
+            socket_dir: directory.path().to_path_buf(),
+            secret_file: None,
+            reconnect_interval: Duration::from_millis(100),
+            connect_timeout: Duration::from_millis(500),
+            handshake_timeout: Duration::from_millis(500),
+            max_peers: 2,
+            max_queue_messages: 16,
+            max_queue_bytes: 1024 * 1024,
+            max_streams: 2,
+        })
+        .expect("auto-push runtime");
+
+        assert!(!runtime.auto_push_status().started);
+        let role = runtime
+            .acquire_publisher_role(
+                StreamKey::new("live", "broadcast", "camera"),
+                SessionId::new(),
+                1,
+            )
+            .expect("publisher role");
+        assert!(runtime.auto_push_status().started);
+        assert_eq!(runtime.auto_push_status().source_streams, 1);
+        drop(role);
+        assert_eq!(runtime.auto_push_status().source_streams, 0);
+        runtime.close_admission();
     }
 }

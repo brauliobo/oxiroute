@@ -8,52 +8,52 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::defaults::{
     MAX_CERTIFICATE_DNS_NAMES, MAX_CERTIFICATES, MAX_ENDPOINTS_PER_POOL,
-    MAX_RTMP_APPLICATIONS_PER_SERVICE, MAX_RTMP_RECORDERS_PER_APPLICATION,
-    MAX_RTMP_DASH_OUTPUTS, MAX_RTMP_HLS_OUTPUTS, MAX_RTMP_RECORDING_ROOTS, MAX_RTMP_SERVICES,
-    MAX_SOURCE_BYTES,
-    MAX_TLS_PROFILES,
-    MAX_TOTAL_ENDPOINTS, MAX_TOTAL_RTMP_RECORDERS, default_alpn, default_cache_grace_ms,
-    default_cache_keep_ms, default_cache_key_components, default_cache_max_bytes,
-    default_cache_max_entries, default_cache_max_followers_per_fill,
-    default_cache_max_header_bytes, default_cache_max_in_flight_fills, default_cache_max_key_bytes,
-    default_cache_max_object_bytes, default_cache_max_tag_bytes, default_cache_max_tags_per_object,
-    default_cache_methods, default_cache_ttl_ms, default_connect_timeout_ms,
-    default_disk_cache_max_bytes, default_disk_cache_max_files, default_forward_connect_ports,
-    default_forward_http_versions, default_forward_lifetime_timeout_ms,
-    default_forward_max_connections, default_forward_max_header_bytes,
-    default_forward_peer_max_retries,
+    MAX_RTMP_APPLICATIONS_PER_SERVICE, MAX_RTMP_DASH_OUTPUTS, MAX_RTMP_HLS_OUTPUTS,
+    MAX_RTMP_RECORDERS_PER_APPLICATION, MAX_RTMP_RECORDING_ROOTS, MAX_RTMP_SERVICES,
+    MAX_SOURCE_BYTES, MAX_TLS_PROFILES, MAX_TOTAL_ENDPOINTS, MAX_TOTAL_RTMP_RECORDERS,
+    default_acme_dns01_timeout_seconds, default_acme_retained_revisions,
+    default_acme_retention_days, default_alpn, default_cache_grace_ms, default_cache_keep_ms,
+    default_cache_key_components, default_cache_max_bytes, default_cache_max_entries,
+    default_cache_max_followers_per_fill, default_cache_max_header_bytes,
+    default_cache_max_in_flight_fills, default_cache_max_key_bytes, default_cache_max_object_bytes,
+    default_cache_max_tag_bytes, default_cache_max_tags_per_object, default_cache_methods,
+    default_cache_ttl_ms, default_connect_timeout_ms, default_disk_cache_max_bytes,
+    default_disk_cache_max_files, default_forward_connect_ports, default_forward_http_versions,
+    default_forward_lifetime_timeout_ms, default_forward_max_connections,
+    default_forward_max_header_bytes, default_forward_peer_max_retries,
     default_forward_resolver_cache_entries, default_forward_resolver_concurrent_queries,
     default_forward_resolver_max_addresses, default_forward_resolver_max_ttl_ms,
     default_forward_resolver_min_ttl_ms, default_forward_resolver_negative_ttl_ms,
     default_health_interval_ms, default_health_timeout_ms, default_healthy_threshold,
     default_http_access_header_name, default_http_redirect_status, default_http_retry_triggers,
     default_http_route_policy, default_http_static_index_files, default_idle_timeout_ms,
-    default_max_request_body_bytes, default_recorder_max_active_recorders,
-    default_recorder_max_queue_bytes, default_recorder_max_queue_messages,
-    default_recorder_shutdown_timeout_ms, default_recorder_suffix_template,
-     default_rtmp_callback_timeout_ms, default_rtmp_callback_update_timeout_ms,
-     default_rtmp_fanout_policy, default_rtmp_max_chain_depth, default_rtmp_outbound_chunk_size,
-     default_rtmp_outbound_policy, default_rtmp_pull_reconnect_ms, default_rtmp_push_reconnect_ms,
-     default_rtmp_relay_buffer_ms, default_rtmp_relay_connect_timeout_ms,
-     default_rtmp_relay_handshake_timeout_ms, default_rtmp_relay_policy,
-     default_rtmp_relay_queue_bytes, default_rtmp_relay_queue_messages,
-     default_rtmp_exec_max_processes, default_rtmp_exec_max_queue_bytes,
-     default_rtmp_exec_max_queue_messages, default_rtmp_exec_max_respawns,
-     default_rtmp_exec_max_stderr_bytes, default_rtmp_exec_max_stdout_bytes,
-     default_rtmp_exec_respawn_delay_ms, default_rtmp_exec_shutdown_timeout_ms,
-     default_rtmp_exec_timeout_ms,
-     default_rtmp_session_ceilings, default_rtmp_vod_duration_ms, default_rtmp_vod_file_bytes,
-    default_rtmp_vod_sessions, default_rtmp_hls_max_active_streams,
+    default_max_request_body_bytes, default_proxy_protocol_timeout_ms,
+    default_recorder_max_active_recorders, default_recorder_max_queue_bytes,
+    default_recorder_max_queue_messages, default_recorder_shutdown_timeout_ms,
+    default_recorder_suffix_template, default_rtmp_auto_push_connect_timeout_ms,
+    default_rtmp_auto_push_handshake_timeout_ms, default_rtmp_auto_push_max_peers,
+    default_rtmp_auto_push_max_queue_bytes, default_rtmp_auto_push_max_queue_messages,
+    default_rtmp_auto_push_max_streams, default_rtmp_auto_push_policy,
+    default_rtmp_auto_push_reconnect_ms, default_rtmp_callback_timeout_ms,
+    default_rtmp_callback_update_timeout_ms, default_rtmp_dash_max_active_streams,
+    default_rtmp_dash_max_queue_messages, default_rtmp_dash_max_segment_bytes,
+    default_rtmp_dash_max_segment_duration_ms, default_rtmp_dash_max_storage_bytes,
+    default_rtmp_dash_max_storage_files, default_rtmp_dash_segment_duration_ms,
+    default_rtmp_exec_max_processes, default_rtmp_exec_max_queue_bytes,
+    default_rtmp_exec_max_queue_messages, default_rtmp_exec_max_respawns,
+    default_rtmp_exec_max_stderr_bytes, default_rtmp_exec_max_stdout_bytes,
+    default_rtmp_exec_respawn_delay_ms, default_rtmp_exec_shutdown_timeout_ms,
+    default_rtmp_exec_timeout_ms, default_rtmp_fanout_policy, default_rtmp_hls_max_active_streams,
     default_rtmp_hls_max_queue_messages, default_rtmp_hls_max_segment_bytes,
-      default_rtmp_hls_max_segment_duration_ms, default_rtmp_hls_max_storage_bytes,
-     default_rtmp_hls_max_storage_files, default_rtmp_hls_playlist_length_ms,
-     default_rtmp_dash_max_active_streams, default_rtmp_dash_max_queue_messages,
-     default_rtmp_dash_max_segment_bytes, default_rtmp_dash_max_segment_duration_ms,
-     default_rtmp_dash_max_storage_bytes, default_rtmp_dash_max_storage_files,
-     default_rtmp_dash_segment_duration_ms,
-      default_rtmp_hls_segment_duration_ms, default_acme_dns01_timeout_seconds,
-     default_acme_retained_revisions, default_acme_retention_days,
-    default_proxy_protocol_timeout_ms, default_self_signed_validity_days, default_true,
+    default_rtmp_hls_max_segment_duration_ms, default_rtmp_hls_max_storage_bytes,
+    default_rtmp_hls_max_storage_files, default_rtmp_hls_playlist_length_ms,
+    default_rtmp_hls_segment_duration_ms, default_rtmp_max_chain_depth,
+    default_rtmp_outbound_chunk_size, default_rtmp_outbound_policy, default_rtmp_pull_reconnect_ms,
+    default_rtmp_push_reconnect_ms, default_rtmp_relay_buffer_ms,
+    default_rtmp_relay_connect_timeout_ms, default_rtmp_relay_handshake_timeout_ms,
+    default_rtmp_relay_policy, default_rtmp_relay_queue_bytes, default_rtmp_relay_queue_messages,
+    default_rtmp_session_ceilings, default_rtmp_vod_duration_ms, default_rtmp_vod_file_bytes,
+    default_rtmp_vod_sessions, default_self_signed_validity_days, default_true,
     default_udp_max_datagram_bytes, default_udp_max_queue_bytes, default_udp_max_queue_datagrams,
     default_udp_max_session_bytes, default_udp_max_sessions, default_unhealthy_threshold,
     default_upstream_io_timeout_ms,
@@ -1395,9 +1395,46 @@ pub struct RtmpService {
     pub outbound_policy: RtmpOutboundPolicy,
     #[serde(default)]
     pub callbacks: RtmpCallbackConfig,
+    #[serde(default = "default_rtmp_auto_push_policy")]
+    pub auto_push: RtmpAutoPushPolicy,
     #[serde(default)]
     pub exec_profiles: Vec<RtmpExecProfile>,
     pub applications: Vec<RtmpApplication>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RtmpAutoPushPolicy {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_rtmp_auto_push_socket_dir")]
+    pub socket_dir: PathBuf,
+    #[serde(default)]
+    pub secret_file: Option<PathBuf>,
+    #[serde(default = "default_rtmp_auto_push_reconnect_ms")]
+    pub reconnect_ms: u64,
+    #[serde(default = "default_rtmp_auto_push_connect_timeout_ms")]
+    pub connect_timeout_ms: u64,
+    #[serde(default = "default_rtmp_auto_push_handshake_timeout_ms")]
+    pub handshake_timeout_ms: u64,
+    #[serde(default = "default_rtmp_auto_push_max_peers")]
+    pub max_peers: u64,
+    #[serde(default = "default_rtmp_auto_push_max_queue_messages")]
+    pub max_queue_messages: u64,
+    #[serde(default = "default_rtmp_auto_push_max_queue_bytes")]
+    pub max_queue_bytes: u64,
+    #[serde(default = "default_rtmp_auto_push_max_streams")]
+    pub max_streams: u64,
+}
+
+fn default_rtmp_auto_push_socket_dir() -> PathBuf {
+    "/tmp/oxiroute-rtmp".into()
+}
+
+impl Default for RtmpAutoPushPolicy {
+    fn default() -> Self {
+        default_rtmp_auto_push_policy()
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]

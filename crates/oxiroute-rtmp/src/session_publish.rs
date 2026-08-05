@@ -9,8 +9,10 @@ use rml_rtmp::{
 use crate::{
     CatalogError, LiveHub, MediaEvent, MediaSnapshot, PublisherLease, PublisherRegistration,
     RtmpCallbackEvent, RtmpRegistry, SessionId, StreamId, StreamKey, VideoCodecIdentifier,
+    auto_push::AutoPushPublisher,
     exec_worker::{ExecProfileSet, ExecWorker},
-    recording_runtime::RecorderController, relay::RtmpRelayController,
+    recording_runtime::RecorderController,
+    relay::RtmpRelayController,
 };
 
 use super::{
@@ -36,6 +38,7 @@ pub(super) struct PublishSession {
     media_publisher: Option<crate::MediaPublisher>,
     exec_profiles: Option<Arc<ExecProfileSet>>,
     exec_workers: Vec<ExecWorker>,
+    auto_push: Option<AutoPushPublisher>,
 }
 
 pub(super) struct PublisherOutputs {
@@ -45,6 +48,7 @@ pub(super) struct PublisherOutputs {
     pub session_lease: super::runtime::ApplicationSessionLease,
     pub exec_profiles: Option<Arc<ExecProfileSet>>,
     pub exec_workers: Vec<ExecWorker>,
+    pub auto_push: Option<AutoPushPublisher>,
 }
 
 impl PublishSession {
@@ -64,6 +68,7 @@ impl PublishSession {
             session_lease,
             exec_profiles,
             exec_workers,
+            auto_push,
         } = outputs;
         let last_media_activity_at_unix_ms = registration.last_observed_at_unix_ms();
         Self {
@@ -82,6 +87,7 @@ impl PublishSession {
             media_publisher,
             exec_profiles,
             exec_workers,
+            auto_push,
         }
     }
 
@@ -238,6 +244,9 @@ impl PublishSession {
         }
         for worker in &self.exec_workers {
             let _ = worker.try_enqueue(event);
+        }
+        if let Some(auto_push) = &self.auto_push {
+            auto_push.publish(event, self.media_sequence);
         }
         if let Some(media) = &self.media_publisher {
             let _ = media.try_enqueue(event.clone(), at_unix_ms);

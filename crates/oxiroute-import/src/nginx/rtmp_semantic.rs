@@ -44,6 +44,12 @@ pub struct EffectiveRtmp {
     pub origin: DirectiveOrigin,
     pub outbound_chunk_size: u32,
     pub chunk_size_origin: Option<DirectiveOrigin>,
+    pub auto_push: bool,
+    pub auto_push_origin: Option<DirectiveOrigin>,
+    pub auto_push_reconnect_ms: u64,
+    pub auto_push_reconnect_origin: Option<DirectiveOrigin>,
+    pub auto_push_socket_dir: PathBuf,
+    pub auto_push_socket_origin: Option<DirectiveOrigin>,
     pub access_log_disabled: bool,
     pub access_log_path: Option<PathBuf>,
     pub access_log_origin: Option<DirectiveOrigin>,
@@ -182,6 +188,9 @@ struct Policy {
     exec_profiles: Vec<EffectiveRtmpExecProfile>,
     respawn: Setting<bool>,
     respawn_timeout_ms: Setting<u64>,
+    auto_push: Setting<bool>,
+    auto_push_reconnect_ms: Setting<u64>,
+    auto_push_socket_dir: Setting<PathBuf>,
     hls: HlsPolicy,
 }
 
@@ -233,6 +242,9 @@ impl Default for Policy {
             exec_profiles: Vec::new(),
             respawn: Setting::new(true),
             respawn_timeout_ms: Setting::new(DEFAULT_EXEC_RESPAWN_TIMEOUT_MS),
+            auto_push: Setting::new(false),
+            auto_push_reconnect_ms: Setting::new(100),
+            auto_push_socket_dir: Setting::new(PathBuf::from("/tmp")),
             hls: HlsPolicy::default(),
         }
     }
@@ -304,6 +316,7 @@ impl<'a> Resolver<'a> {
     fn run(mut self) -> Report<RtmpResolution> {
         let mut rtmp_blocks = Vec::new();
         let mut first_rtmp = None;
+        let root_auto_push = self.resolve_root_auto_push_policy();
 
         for directive in &self.graph.expanded_directives {
             if directive.directive.name.value == b"rtmp" {
@@ -317,7 +330,9 @@ impl<'a> Resolver<'a> {
                 } else {
                     first_rtmp = Some(directive.occurrence);
                 }
-                rtmp_blocks.push(self.resolve_rtmp_block(directive));
+                rtmp_blocks.push(self.resolve_rtmp_block(directive, &root_auto_push));
+            } else if is_root_auto_push_policy(&directive.directive.name.value) {
+                // The exact nginx directives are resolved once at Nginx-main scope above.
             } else if self.complete_root {
                 self.structural_subtree(directive);
             } else if Self::is_registered_in_context(directive, DirectiveContext::NginxMain) {
@@ -349,12 +364,30 @@ impl<'a> Resolver<'a> {
         )
     }
 
+    fn resolve_root_auto_push_policy(&mut self) -> Policy {
+        let directives: Vec<_> = self
+            .graph
+            .expanded_directives
+            .iter()
+            .filter(|directive| is_root_auto_push_policy(&directive.directive.name.value))
+            .cloned()
+            .collect();
+        self.resolve_local_policy(&directives, DirectiveContext::NginxMain, Policy::default())
+    }
+
     #[allow(clippy::too_many_lines)]
-    fn resolve_rtmp_block(&mut self, directive: &ExpandedDirective) -> EffectiveRtmp {
+    fn resolve_rtmp_block(
+        &mut self,
+        directive: &ExpandedDirective,
+        root_auto_push: &Policy,
+    ) -> EffectiveRtmp {
         self.resolve_block_header(directive, DirectiveContext::NginxMain, "rtmp");
         let children = directive.children.as_deref().unwrap_or_default();
-        let policy =
+        let mut policy =
             self.resolve_local_policy(children, DirectiveContext::RtmpMain, Policy::default());
+        policy.auto_push = root_auto_push.auto_push.clone();
+        policy.auto_push_reconnect_ms = root_auto_push.auto_push_reconnect_ms.clone();
+        policy.auto_push_socket_dir = root_auto_push.auto_push_socket_dir.clone();
         let mut servers = Vec::new();
         let mut outbound_chunk_size = 4_096;
         let mut chunk_size_origin = None;
@@ -453,10 +486,22 @@ impl<'a> Resolver<'a> {
                 "rtmp requires at least one server block",
             );
         }
+        let auto_push_socket_dir =
+            if policy.auto_push.value && policy.auto_push_socket_dir.origin.is_none() {
+                PathBuf::from("/tmp/oxiroute-rtmp")
+            } else {
+                policy.auto_push_socket_dir.value
+            };
         EffectiveRtmp {
             origin: Self::origin(directive),
             outbound_chunk_size,
             chunk_size_origin,
+            auto_push: policy.auto_push.value,
+            auto_push_origin: policy.auto_push.origin,
+            auto_push_reconnect_ms: policy.auto_push_reconnect_ms.value,
+            auto_push_reconnect_origin: policy.auto_push_reconnect_ms.origin,
+            auto_push_socket_dir,
+            auto_push_socket_origin: policy.auto_push_socket_dir.origin,
             access_log_disabled,
             access_log_path,
             access_log_origin,
@@ -988,6 +1033,33 @@ impl<'a> Resolver<'a> {
                     "respawn_timeout is outside canonical millisecond bounds",
                 ),
             },
+            b"rtmp_auto_push" => match argument.as_slice() {
+                b"on" => policy.auto_push.replace(true, origin),
+                b"off" => policy.auto_push.replace(false, origin),
+                _ => self.block(
+                    child.occurrence,
+                    E_INVALID_VALUE,
+                    "rtmp_auto_push must be on or off",
+                ),
+            },
+            b"rtmp_auto_push_reconnect" => match parse_nginx_milliseconds(argument) {
+                Some(value) if (1..=300_000).contains(&value) => {
+                    policy.auto_push_reconnect_ms.replace(value, origin);
+                }
+                _ => self.block(
+                    child.occurrence,
+                    E_INVALID_VALUE,
+                    "rtmp_auto_push_reconnect is outside canonical millisecond bounds",
+                ),
+            },
+            b"rtmp_socket_dir" => match secure_auto_push_root(argument) {
+                Some(path) => policy.auto_push_socket_dir.replace(path, origin),
+                None => self.block(
+                    child.occurrence,
+                    E_INVALID_VALUE,
+                    "rtmp_socket_dir must be a secure absolute UTF-8 directory path",
+                ),
+            },
             b"record" => match parse_record(&child.directive.arguments) {
                 Ok((value, mask)) => {
                     policy.record.replace(value, origin.clone());
@@ -1200,7 +1272,9 @@ impl<'a> Resolver<'a> {
             return;
         };
         if arguments.iter().any(|argument| {
-            argument.bytes().any(|byte| byte == 0 || byte.is_ascii_control())
+            argument
+                .bytes()
+                .any(|byte| byte == 0 || byte.is_ascii_control())
                 || argument.bytes().any(|byte| matches!(byte, b'<' | b'>'))
         }) {
             self.block(
@@ -1583,6 +1657,9 @@ fn is_supported_policy(name: &[u8]) -> bool {
             | b"record_max_size"
             | b"record_max_frames"
             | b"record_notify"
+            | b"rtmp_auto_push"
+            | b"rtmp_auto_push_reconnect"
+            | b"rtmp_socket_dir"
             | b"hls"
             | b"hls_fragment"
             | b"hls_max_fragment"
@@ -1594,6 +1671,13 @@ fn is_supported_policy(name: &[u8]) -> bool {
             | b"hls_keys"
             | b"hls_key_url"
             | b"hls_fragments_per_key"
+    )
+}
+
+fn is_root_auto_push_policy(name: &[u8]) -> bool {
+    matches!(
+        name,
+        b"rtmp_auto_push" | b"rtmp_auto_push_reconnect" | b"rtmp_socket_dir"
     )
 }
 
@@ -1779,6 +1863,22 @@ fn valid_canonical_name(value: &[u8]) -> bool {
 }
 
 fn secure_recording_root(value: &[u8]) -> Option<PathBuf> {
+    let value = std::str::from_utf8(value).ok()?;
+    if value.len() > MAX_RECORDING_ROOT_BYTES
+        || !value.starts_with('/')
+        || value == "/"
+        || value.ends_with('/')
+        || value.as_bytes().contains(&0)
+        || value
+            .split('/')
+            .any(|segment| matches!(segment, "." | ".."))
+    {
+        return None;
+    }
+    Some(PathBuf::from(value))
+}
+
+fn secure_auto_push_root(value: &[u8]) -> Option<PathBuf> {
     let value = std::str::from_utf8(value).ok()?;
     if value.len() > MAX_RECORDING_ROOT_BYTES
         || !value.starts_with('/')

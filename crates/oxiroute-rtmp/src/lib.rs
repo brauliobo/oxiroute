@@ -1,6 +1,7 @@
 pub const RTMP_VERSION: u8 = 3;
 pub const HANDSHAKE_BLOCK_SIZE: usize = 1536;
 
+mod auto_push;
 mod callback;
 mod catalog;
 mod client;
@@ -22,6 +23,7 @@ mod session;
 mod session_control;
 mod vod;
 
+pub use auto_push::{RtmpAutoPushConfig, RtmpAutoPushError, RtmpAutoPushStatus};
 pub use callback::{
     RtmpCallbackContext, RtmpCallbackEndpoint, RtmpCallbackError, RtmpCallbackEvent,
     RtmpCallbackMethod, RtmpCallbackPolicy,

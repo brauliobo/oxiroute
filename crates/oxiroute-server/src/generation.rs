@@ -11,7 +11,8 @@ use std::{
 use oxiroute_config::Config;
 use oxiroute_config_source::ConfigFormat;
 use oxiroute_rtmp::{
-    RtmpRecorderLifecycle, RtmpRecorderShutdown, RtmpRegistry, RtmpServiceRuntime,
+    RtmpAutoPushStatus, RtmpRecorderLifecycle, RtmpRecorderShutdown, RtmpRegistry,
+    RtmpServiceRuntime,
 };
 #[cfg(target_os = "linux")]
 use oxiroute_supervision_unix::DescriptorSet;
@@ -289,6 +290,32 @@ impl RuntimeGeneration {
     #[must_use]
     pub fn rtmp_runtime(&self, service: &str) -> Option<&RtmpServiceRuntime> {
         self.rtmp_runtimes.get(service)
+    }
+
+    #[must_use]
+    pub fn rtmp_auto_push_status(&self) -> RtmpAutoPushStatus {
+        self.rtmp_runtimes
+            .values()
+            .fold(RtmpAutoPushStatus::default(), |mut total, runtime| {
+                let status = runtime.auto_push_status();
+                total.enabled |= status.enabled;
+                total.started |= status.started;
+                total.peers = total.peers.saturating_add(status.peers);
+                total.source_streams = total.source_streams.saturating_add(status.source_streams);
+                total.remote_streams = total.remote_streams.saturating_add(status.remote_streams);
+                total.frames_sent = total.frames_sent.saturating_add(status.frames_sent);
+                total.frames_received =
+                    total.frames_received.saturating_add(status.frames_received);
+                total.frames_dropped = total.frames_dropped.saturating_add(status.frames_dropped);
+                total.authentication_failures = total
+                    .authentication_failures
+                    .saturating_add(status.authentication_failures);
+                total.reconnects = total.reconnects.saturating_add(status.reconnects);
+                total.queue_messages = total.queue_messages.saturating_add(status.queue_messages);
+                total.queue_bytes = total.queue_bytes.saturating_add(status.queue_bytes);
+                total.last_failure = total.last_failure.or(status.last_failure);
+                total
+            })
     }
 
     fn close_runtime_admission(&self) {
@@ -1812,6 +1839,7 @@ mod tests {
             access_log: None,
             outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
             callbacks: oxiroute_config::RtmpCallbackConfig::default(),
+            auto_push: oxiroute_config::RtmpAutoPushPolicy::default(),
             exec_profiles: Vec::new(),
             applications: vec![oxiroute_config::RtmpApplication {
                 name: "live".into(),
