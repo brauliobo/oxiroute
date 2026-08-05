@@ -10,6 +10,7 @@ use super::{
     ApiResponse,
     config::{self, ConfigApiState, Route as ConfigRoute},
     management::{self, ManagementState},
+    media::{self, Route as MediaRoute},
     observability::{self, Route as ObservabilityRoute},
     response::{system_time_ms, to_http_response},
     streams::{self, Route as StreamRoute},
@@ -28,7 +29,7 @@ use http::{
     Response,
     header::{ACCEPT, AUTHORIZATION, CACHE_CONTROL, HeaderName, TRANSFER_ENCODING},
 };
-use oxiroute_rtmp::{RtmpRegistry, VodCatalog, VodError, VodRange};
+use oxiroute_rtmp::{MediaCatalog, MediaStoreError, RtmpRegistry, VodCatalog, VodError, VodRange};
 use pingora::{
     apps::{HttpPersistentSettings, HttpServerApp, ReusedHttpStream, http_app::ServeHttp},
     http::ResponseHeader,
@@ -48,7 +49,8 @@ enum ApiRoute<'a> {
     Config(ConfigRoute),
     Observability(ObservabilityRoute),
     Stream(StreamRoute<'a>),
-    Vod(VodRoute<'a>),
+    Vod,
+    Media,
 }
 
 pub struct RtmpManagementApi {
@@ -62,6 +64,7 @@ pub struct RtmpManagementApi {
     ui: Option<UiAssets>,
     audit: Arc<AuditStore>,
     vod_catalog: Option<Arc<VodCatalog>>,
+    media_catalog: Option<Arc<MediaCatalog>>,
 }
 
 pub struct RtmpManagementHttpApp {
@@ -86,6 +89,7 @@ impl RtmpManagementApi {
             ui: None,
             audit: Arc::new(AuditStore::memory(AuditLimits::default())),
             vod_catalog: None,
+            media_catalog: None,
         }
     }
 
@@ -111,6 +115,7 @@ impl RtmpManagementApi {
             ui: Some(UiAssets::load(directory.as_ref())?),
             audit: Arc::new(AuditStore::memory(AuditLimits::default())),
             vod_catalog: None,
+            media_catalog: None,
         })
     }
 
@@ -122,6 +127,12 @@ impl RtmpManagementApi {
     #[must_use]
     pub fn with_vod_catalog(mut self, catalog: Arc<VodCatalog>) -> Self {
         self.vod_catalog = Some(catalog);
+        self
+    }
+
+    #[must_use]
+    pub fn with_media_catalog(mut self, catalog: Arc<MediaCatalog>) -> Self {
+        self.media_catalog = Some(catalog);
         self
     }
 
@@ -241,7 +252,7 @@ impl RtmpManagementApi {
             ApiRoute::Stream(route) => {
                 streams::handle(route, method, self.registry.as_ref(), now_unix_ms)
             }
-            ApiRoute::Vod(_) => ApiResponse::method_not_allowed("GET"),
+            ApiRoute::Vod | ApiRoute::Media => ApiResponse::method_not_allowed("GET"),
         };
         response.with_correlation(context.correlation_id)
     }
@@ -310,6 +321,74 @@ impl RtmpManagementApi {
             if range_header.is_some() { 206 } else { 200 },
             body,
             vod_content_type(&content_path),
+        )
+        .with_range(content_range)
+    }
+
+    async fn media_response(&self, route: MediaRoute<'_>, session: &ServerSession) -> ApiResponse {
+        if session.req_header().method.as_str() != "GET" {
+            return ApiResponse::method_not_allowed("GET");
+        }
+        let catalog = self
+            .generations
+            .as_ref()
+            .and_then(|generations| generations.active())
+            .map(|generation| Arc::clone(&generation.plan().rtmp_media_catalog))
+            .or_else(|| self.media_catalog.clone());
+        let Some(catalog) = catalog else {
+            return ApiResponse::error(503, "media_unavailable", "HLS media is not active");
+        };
+        let service = route.service.to_owned();
+        let application = route.application.to_owned();
+        let stream = route.stream.to_owned();
+        let object = route.object.to_owned();
+        let object = match tokio::task::spawn_blocking(move || {
+            catalog.read_object(&service, &application, &stream, &object)
+        })
+        .await
+        {
+            Ok(Ok(object)) => object,
+            Ok(Err(error)) => return media_error_response(error),
+            Err(_) => return ApiResponse::error(503, "media_unavailable", "media worker failed"),
+        };
+        let total = u64::try_from(object.body.len()).unwrap_or(u64::MAX);
+        let range_header = session
+            .req_header()
+            .headers
+            .get("range")
+            .and_then(|value| value.to_str().ok());
+        let range = match VodRange::parse(range_header, total) {
+            Ok(range) => range,
+            Err(VodError::InvalidRange) => {
+                return ApiResponse::error(
+                    416,
+                    "media_invalid_range",
+                    "the requested byte range is invalid",
+                )
+                .with_range(Some(format!("bytes */{total}")));
+            }
+            Err(_) => {
+                return ApiResponse::error(
+                    416,
+                    "media_invalid_range",
+                    "the requested byte range is invalid",
+                )
+                .with_range(Some(format!("bytes */{total}")));
+            }
+        };
+        let body = match range {
+            Some(range) => object.body[range.start as usize..=range.end as usize].to_vec(),
+            None => Vec::new(),
+        };
+        let content_range = if range_header.is_some() {
+            range.map(|range| format!("bytes {}-{}/{}", range.start, range.end, total))
+        } else {
+            None
+        };
+        ApiResponse::bytes(
+            if range_header.is_some() { 206 } else { 200 },
+            if range_header.is_some() { body } else { object.body },
+            object.content_type,
         )
         .with_range(content_range)
     }
@@ -788,6 +867,39 @@ fn vod_error_response(error: VodError) -> ApiResponse {
     }
 }
 
+fn media_error_response(error: MediaStoreError) -> ApiResponse {
+    match error {
+        MediaStoreError::NotFound | MediaStoreError::StaleIncarnation => {
+            ApiResponse::error(404, "media_not_found", "the HLS object does not exist")
+        }
+        MediaStoreError::InvalidPath => {
+            ApiResponse::error(400, "media_invalid_path", "the HLS object path is invalid")
+        }
+        MediaStoreError::FileTooLarge => ApiResponse::error(
+            413,
+            "media_too_large",
+            "the HLS object exceeds its configured bound",
+        ),
+        MediaStoreError::Read(_) => ApiResponse::error(
+            503,
+            "media_unavailable",
+            "the HLS object cannot be read",
+        ),
+        MediaStoreError::RootOpen(_)
+        | MediaStoreError::RootNotExclusive
+        | MediaStoreError::RootScan(_)
+        | MediaStoreError::ExistingUsageExceedsQuota
+        | MediaStoreError::ActiveStreamLimit
+        | MediaStoreError::Quota
+        | MediaStoreError::Publish(_)
+        | MediaStoreError::Cleanup(_) => ApiResponse::error(
+            503,
+            "media_unavailable",
+            "the HLS media store is unavailable",
+        ),
+    }
+}
+
 fn vod_content_type(path: &str) -> &'static str {
     if path.ends_with(".mp4") {
         "video/mp4"
@@ -965,6 +1077,47 @@ impl HttpServerApp for RtmpManagementHttpApp {
                 }
                 return finish_http_session(session).await;
             }
+            if let Some(route) = media::match_route(&path) {
+                let context = match request_context(&session) {
+                    Ok(context) => context,
+                    Err(response) => {
+                        if write_buffered_response(
+                            &mut session,
+                            response.with_correlation(AuditContext::generated().correlation_id),
+                        )
+                        .await
+                        {
+                            return finish_http_session(session).await;
+                        }
+                        return None;
+                    }
+                };
+                if let Some(response) =
+                    self.api
+                        .authentication_error(&method, &path, &path_and_query, &session)
+                {
+                    if write_buffered_response(
+                        &mut session,
+                        response.with_correlation(context.correlation_id.clone()),
+                    )
+                    .await
+                    {
+                        return finish_http_session(session).await;
+                    }
+                    return None;
+                }
+                let response = self
+                    .api
+                    .media_response(route, &session)
+                    .await
+                    .with_correlation(context.correlation_id.clone());
+                self.api
+                    .audit_api_operation(&method, &path, &context, &response);
+                if !write_buffered_response(&mut session, response).await {
+                    return None;
+                }
+                return finish_http_session(session).await;
+            }
         }
 
         let response = self.api.api_response(&mut session).await;
@@ -980,7 +1133,8 @@ fn match_api_route(path: &str) -> Option<ApiRoute<'_>> {
         .map(ApiRoute::Config)
         .or_else(|| observability::match_route(path).map(ApiRoute::Observability))
         .or_else(|| streams::match_route(path).map(ApiRoute::Stream))
-        .or_else(|| vod::match_route(path).map(ApiRoute::Vod))
+        .or_else(|| vod::match_route(path).map(|_| ApiRoute::Vod))
+        .or_else(|| media::match_route(path).map(|_| ApiRoute::Media))
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 
 use std::{fs, path::Path};
 
-use oxiroute_config::{Protocol, RtmpRecorderStart};
+use oxiroute_config::{Protocol, RtmpHlsFragmentNaming, RtmpRecorderStart};
 use oxiroute_import::{
     DiagnosticStage, E_DUPLICATE_IDENTITY, E_SEMANTICS_NOT_REPRESENTABLE, E_UNSUPPORTED_FEATURE,
     nginx::{OccurrenceDisposition, import_rtmp, import_rtmp_with_timezone, load, resolve_rtmp},
@@ -63,6 +63,52 @@ fn lowers_inherited_exact_rtmp_and_recorder_policy_without_accessing_the_root() 
     assert!(report.provenance.iter().any(|entry| {
         entry.path == "/rtmp_services/0/applications/0/live"
             && entry.origins[0].provenance.include_stack.is_empty()
+    }));
+}
+
+#[test]
+fn lowers_bounded_hls_policy_and_key_rotation() {
+    let report = import_source(
+        br"
+        rtmp {
+          hls on;
+          hls_path /var/lib/oxiroute/hls;
+          hls_fragment 2s;
+          hls_max_fragment 6s;
+          hls_playlist_length 30s;
+          hls_nested on;
+          hls_fragment_naming timestamp;
+          hls_cleanup off;
+          hls_keys on;
+          hls_key_url keys/;
+          hls_fragments_per_key 7;
+          server {
+            listen 127.0.0.1:1935;
+            application camera { live on; }
+          }
+        }
+        ",
+        &[],
+    );
+
+    let config = report.config.expect("exact HLS configuration");
+    assert!(report.blocked_services.is_empty());
+    let hls = config.rtmp_services[0].applications[0]
+        .hls
+        .as_ref()
+        .expect("HLS policy");
+    assert_eq!(hls.root_directory, Path::new("/var/lib/oxiroute/hls"));
+    assert_eq!(hls.segment_duration_ms, 2_000);
+    assert_eq!(hls.max_segment_duration_ms, 6_000);
+    assert_eq!(hls.playlist_length_ms, 30_000);
+    assert_eq!(hls.fragment_naming, RtmpHlsFragmentNaming::Timestamp);
+    assert!(hls.nested);
+    assert!(!hls.cleanup);
+    let keys = hls.keys.as_ref().expect("HLS keys");
+    assert_eq!(keys.rotation_segments, 7);
+    assert_eq!(keys.url_prefix, "keys/");
+    assert!(report.provenance.iter().any(|entry| {
+        entry.path == "/rtmp_services/0/applications/0/hls"
     }));
 }
 

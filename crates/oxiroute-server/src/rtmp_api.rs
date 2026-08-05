@@ -1,6 +1,7 @@
 mod config;
 pub(crate) use config::read_config_body;
 mod management;
+mod media;
 mod observability;
 pub(crate) mod response;
 mod service;

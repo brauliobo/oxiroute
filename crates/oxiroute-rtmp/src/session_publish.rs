@@ -32,11 +32,13 @@ pub(super) struct PublishSession {
     last_media_activity_at_unix_ms: u64,
     recorders: Vec<(crate::RecorderId, Arc<RecorderController>)>,
     relays: Vec<Arc<RtmpRelayController>>,
+    media_publisher: Option<crate::MediaPublisher>,
 }
 
 pub(super) struct PublisherOutputs {
     pub recorders: Vec<(crate::RecorderId, Arc<RecorderController>)>,
     pub relays: Vec<Arc<RtmpRelayController>>,
+    pub media: Option<crate::MediaPublisher>,
     pub session_lease: super::runtime::ApplicationSessionLease,
 }
 
@@ -53,6 +55,7 @@ impl PublishSession {
         let PublisherOutputs {
             recorders,
             relays,
+            media: media_publisher,
             session_lease,
         } = outputs;
         let last_media_activity_at_unix_ms = registration.last_observed_at_unix_ms();
@@ -69,6 +72,7 @@ impl PublishSession {
             last_media_activity_at_unix_ms,
             recorders,
             relays,
+            media_publisher,
         }
     }
 
@@ -209,6 +213,9 @@ impl PublishSession {
         }
         for relay in &self.relays {
             relay.try_enqueue(event.clone());
+        }
+        if let Some(media) = &self.media_publisher {
+            let _ = media.try_enqueue(event.clone(), at_unix_ms);
         }
         self.registry.update_media_sample(
             stream_id,
