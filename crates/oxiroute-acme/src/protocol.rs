@@ -467,6 +467,7 @@ pub struct Order {
 pub enum ChallengeType {
     Http01,
     Dns01,
+    TlsAlpn01,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -502,10 +503,19 @@ pub struct Authorization {
     pub status: AuthorizationStatus,
     pub challenge: Option<Http01Challenge>,
     pub dns01_challenge: Option<Dns01Challenge>,
+    pub tls_alpn01_challenge: Option<TlsAlpn01Challenge>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Http01Challenge {
+    pub authorization_url: String,
+    pub challenge_url: String,
+    pub token: String,
+    pub key_authorization: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TlsAlpn01Challenge {
     pub authorization_url: String,
     pub challenge_url: String,
     pub token: String,
@@ -793,6 +803,22 @@ impl<T: AcmeTransport> AcmeClient<T> {
     ///
     /// Returns an error for a malformed challenge URL or ACME failure.
     pub fn respond_to_challenge(&mut self, challenge: &Http01Challenge) -> Result<(), AcmeError> {
+        let response = self.signed_account_request(&challenge.challenge_url, &json!({}))?;
+        if response.status != 200 {
+            return Err(problem_or_status(&response));
+        }
+        Ok(())
+    }
+
+    /// Notifies the CA that a TLS-ALPN-01 challenge is provisioned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed challenge URL or ACME failure.
+    pub fn respond_to_tls_alpn01_challenge(
+        &mut self,
+        challenge: &TlsAlpn01Challenge,
+    ) -> Result<(), AcmeError> {
         let response = self.signed_account_request(&challenge.challenge_url, &json!({}))?;
         if response.status != 200 {
             return Err(problem_or_status(&response));
@@ -1459,6 +1485,7 @@ fn parse_order(response: &HttpResponse, policy: &OriginPolicy) -> Result<Order, 
     })
 }
 
+#[allow(clippy::too_many_lines)]
 fn parse_authorization(
     response: &HttpResponse,
     url: &str,
@@ -1528,9 +1555,34 @@ fn parse_authorization(
                 .map_err(|_| AcmeError::MalformedResponse)
         })
         .transpose()?;
+    let tls_alpn01_challenge = challenges
+        .iter()
+        .find(|challenge| challenge.get("type").and_then(Value::as_str) == Some("tls-alpn-01"))
+        .map(|challenge| {
+            let challenge_url = challenge
+                .get("url")
+                .and_then(Value::as_str)
+                .ok_or(AcmeError::MissingField)?
+                .to_owned();
+            policy.permits(&challenge_url)?;
+            let token = challenge
+                .get("token")
+                .and_then(Value::as_str)
+                .ok_or(AcmeError::MissingField)?
+                .to_owned();
+            validate_token(&token)?;
+            Ok(TlsAlpn01Challenge {
+                authorization_url: url.into(),
+                challenge_url,
+                token: token.clone(),
+                key_authorization: key.key_authorization(&token),
+            })
+        })
+        .transpose()?;
     let selected = match challenge_type {
         ChallengeType::Http01 => challenge.is_some(),
         ChallengeType::Dns01 => dns01_challenge.is_some(),
+        ChallengeType::TlsAlpn01 => tls_alpn01_challenge.is_some(),
     };
     if !selected
         && matches!(
@@ -1546,6 +1598,7 @@ fn parse_authorization(
         status,
         challenge,
         dns01_challenge,
+        tls_alpn01_challenge,
     })
 }
 
@@ -2200,6 +2253,35 @@ mod tests {
             )
             .expect("valid authorization");
         assert_eq!(authorization.status, AuthorizationStatus::Valid);
+    }
+
+    #[test]
+    fn tls_alpn01_authorization_selects_the_exact_challenge_and_key_authorization() {
+        let key = AccountKey::generate(AccountKeyAlgorithm::EcdsaP256).expect("key");
+        let policy = OriginPolicy::strict("https://acme.test/directory").expect("policy");
+        let response = HttpResponse::new(
+            200,
+            "https://acme.test/acme/authz/1",
+            br#"{"status":"pending","identifier":{"type":"dns","value":"EXAMPLE.TEST"},"challenges":[{"type":"tls-alpn-01","url":"https://acme.test/acme/challenge/1","token":"token-1"}]}"#.to_vec(),
+        );
+        let authorization = parse_authorization(
+            &response,
+            "https://acme.test/acme/authz/1",
+            &key,
+            &policy,
+            ChallengeType::TlsAlpn01,
+        )
+        .expect("TLS-ALPN-01 authorization");
+        let challenge = authorization
+            .tls_alpn01_challenge
+            .expect("TLS-ALPN-01 challenge");
+        assert_eq!(challenge.token, "token-1");
+        assert_eq!(
+            challenge.key_authorization,
+            key.key_authorization("token-1")
+        );
+        assert!(authorization.challenge.is_none());
+        assert!(authorization.dns01_challenge.is_none());
     }
 
     #[test]

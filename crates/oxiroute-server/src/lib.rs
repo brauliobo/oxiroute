@@ -88,8 +88,9 @@ pub use tls::{
     CertbotWatcherStatus, CertbotWatcherSupervisor, CertificateGeneration, CertificateMetadata,
     CertificatePublishError, CertificateValidity, FileReconcileError, FileReconcileOutcome,
     FileReconciler, FileReconcilerStatus, FileWatcherConfig, FileWatcherError, FileWatcherMonitor,
-    FileWatcherStatus, FileWatcherSupervisor, PreparedTls, TlsBuildError, TlsProfilePlan,
-    UpstreamTlsPlan,
+    FileWatcherStatus, FileWatcherSupervisor, PreparedTls, TlsAlpnChallenge,
+    TlsAlpnChallengeError, TlsAlpnChallengeIdentity, TlsAlpnChallengeLease, TlsAlpnChallengeStore,
+    TlsBuildError, TlsProfilePlan, UpstreamTlsPlan,
 };
 pub use topology::{
     TopologyEdge, TopologyEdgeKind, TopologyNode, TopologyNodeKind, TopologySnapshot,

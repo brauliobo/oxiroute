@@ -42,7 +42,7 @@ use oxiroute_config::{
 use oxiroute_server::{
     ActiveCertificateGeneration, CertbotReconciler, CertbotWatcherConfig, CertbotWatcherSupervisor,
     HttpListenerApp, HttpReverseProxy, MAX_HTTP_ATTEMPTS, MonitoredHttpApp, RuntimeMetrics,
-    ServiceKind, runtime_plan,
+    ServiceKind, TlsAlpnChallengeStore, runtime_plan,
 };
 use pingora::{
     proxy::http_proxy,
@@ -602,6 +602,7 @@ pub fn verified_upstream(server_name: &str, ca_fixture: &str) -> UpstreamTls {
 pub struct ProxyHarness {
     pub address: SocketAddr,
     pub active_certificate: Arc<ActiveCertificateGeneration>,
+    pub tls_alpn_challenges: TlsAlpnChallengeStore,
     active_certificates: BTreeMap<String, Arc<ActiveCertificateGeneration>>,
     certbot_reconcilers: BTreeMap<String, Arc<CertbotReconciler>>,
     certbot_watcher: Option<CertbotWatcherSupervisor>,
@@ -623,6 +624,7 @@ impl ProxyHarness {
             .start_certbot_watcher(CertbotWatcherConfig::default())
             .expect("wire Certbot watcher");
         let active_certificates = plan.tls.certificates().clone();
+        let tls_alpn_challenges = plan.tls.tls_alpn_challenge_store().clone();
         let active_certificate = Arc::clone(
             active_certificates
                 .get("downstream")
@@ -687,6 +689,7 @@ impl ProxyHarness {
         Self {
             address: reserved.address,
             active_certificate,
+            tls_alpn_challenges,
             active_certificates,
             certbot_reconcilers,
             certbot_watcher,
@@ -853,6 +856,54 @@ pub async fn openssl_tls_request_with_identity(
     .await
     .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "OpenSSL client request timed out"))?
     .map_err(|error| io::Error::other(format!("OpenSSL client request task failed: {error}")))?
+}
+
+pub struct OpenSslTlsHandshake {
+    pub peer_leaf: Vec<u8>,
+    pub negotiated_alpn: Option<Vec<u8>>,
+}
+
+pub async fn openssl_tls_alpn_handshake(
+    address: SocketAddr,
+    server_name: &str,
+    alpn: &[&[u8]],
+) -> Result<OpenSslTlsHandshake, Box<dyn Error + Send + Sync>> {
+    let server_name = server_name.to_owned();
+    let mut alpn_wire = Vec::new();
+    for protocol in alpn {
+        let length = u8::try_from(protocol.len())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "ALPN protocol too long"))?;
+        if length == 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty ALPN protocol").into());
+        }
+        alpn_wire.push(length);
+        alpn_wire.extend_from_slice(protocol);
+    }
+    timeout(
+        IO_TIMEOUT,
+        spawn_blocking(move || {
+            let mut connector = SslConnector::builder(SslMethod::tls_client())?;
+            connector.set_verify(SslVerifyMode::NONE);
+            connector.set_alpn_protos(&alpn_wire)?;
+            let stream = std::net::TcpStream::connect_timeout(&address, IO_TIMEOUT)?;
+            stream.set_read_timeout(Some(IO_TIMEOUT))?;
+            stream.set_write_timeout(Some(IO_TIMEOUT))?;
+            let stream = connector.build().connect(&server_name, stream)?;
+            let peer_leaf = stream
+                .ssl()
+                .peer_certificate()
+                .ok_or_else(|| io::Error::other("OpenSSL peer omitted certificate"))?
+                .to_der()?;
+            let negotiated_alpn = stream.ssl().selected_alpn_protocol().map(ToOwned::to_owned);
+            Ok::<_, Box<dyn Error + Send + Sync>>(OpenSslTlsHandshake {
+                peer_leaf,
+                negotiated_alpn,
+            })
+        }),
+    )
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "OpenSSL TLS-ALPN handshake timed out"))?
+    .map_err(|error| io::Error::other(format!("OpenSSL TLS-ALPN client task failed: {error}")))?
 }
 
 pub async fn tls_handshake(

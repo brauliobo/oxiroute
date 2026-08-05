@@ -20,6 +20,7 @@ mod certbot_watcher;
 mod certificate;
 mod file_reconcile;
 mod file_watcher;
+mod tls_alpn;
 mod upstream;
 
 pub use acme::{
@@ -46,6 +47,10 @@ pub use file_watcher::{
     FileWatcherConfig, FileWatcherError, FileWatcherMonitor, FileWatcherStatus,
     FileWatcherSupervisor,
 };
+pub use tls_alpn::{
+    TlsAlpnChallenge, TlsAlpnChallengeError, TlsAlpnChallengeIdentity, TlsAlpnChallengeLease,
+    TlsAlpnChallengeStore, TLS_ALPN_IDENTIFIER_OID, TLS_ALPN_PROTOCOL,
+};
 pub use upstream::{prepare_upstream_tls, UpstreamTlsPlan};
 
 pub const MAX_CERTIFICATE_CHAIN_BYTES: usize = 1024 * 1024;
@@ -64,6 +69,7 @@ pub struct PreparedTls {
     certificates: CertificateIdentityMap,
     acme_reconcilers: Vec<Arc<AcmeManagedReconciler>>,
     challenge_store: ChallengeStore,
+    tls_alpn_challenge_store: tls_alpn::TlsAlpnChallengeStore,
     certbot_reconcilers: Vec<Arc<CertbotReconciler>>,
     file_reconcilers: Vec<Arc<FileReconciler>>,
     profiles: TlsProfilePlanMap,
@@ -88,6 +94,11 @@ impl PreparedTls {
     #[must_use]
     pub const fn challenge_store(&self) -> &ChallengeStore {
         &self.challenge_store
+    }
+
+    #[must_use]
+    pub const fn tls_alpn_challenge_store(&self) -> &tls_alpn::TlsAlpnChallengeStore {
+        &self.tls_alpn_challenge_store
     }
 
     #[must_use]
@@ -160,6 +171,7 @@ impl std::fmt::Debug for PreparedTls {
             .field("certificates", &self.certificates)
             .field("acme_reconcilers", &self.acme_reconcilers)
             .field("challenge_store", &self.challenge_store)
+            .field("tls_alpn_challenge_store", &self.tls_alpn_challenge_store)
             .field("certbot_reconcilers", &self.certbot_reconcilers)
             .field("file_reconcilers", &self.file_reconcilers)
             .field("profiles", &self.profiles)
@@ -199,6 +211,7 @@ pub fn prepare_tls_with_dns01_providers(
     let mut acme_reconcilers = Vec::new();
     let mut acme_states = BTreeMap::new();
     let challenge_store = ChallengeStore::default();
+    let tls_alpn_challenge_store = tls_alpn::TlsAlpnChallengeStore::default();
     let mut certbot_reconcilers = Vec::new();
     let mut file_reconcilers = Vec::new();
     for certificate in &config.certificates {
@@ -359,7 +372,7 @@ pub fn prepare_tls_with_dns01_providers(
             Some(policy),
         ) = (managed_state, managed_policy)
         {
-            acme_reconcilers.push(Arc::new(AcmeManagedReconciler::new_with_dns_provider(
+            acme_reconcilers.push(Arc::new(AcmeManagedReconciler::new_with_challenge_stores(
                 certificate.name.clone(),
                 certificate.dns_names.clone(),
                 policy,
@@ -369,6 +382,7 @@ pub fn prepare_tls_with_dns01_providers(
                 not_after,
                 initial_issuance_due,
                 challenge_store.clone(),
+                tls_alpn_challenge_store.clone(),
                 dns_provider,
                 active,
             )));
@@ -403,7 +417,11 @@ pub fn prepare_tls_with_dns01_providers(
                 });
             }
         }
-        let plan = Arc::new(TlsProfilePlan::from_config(profile, active_generations)?);
+        let plan = Arc::new(TlsProfilePlan::from_config(
+            profile,
+            active_generations,
+            tls_alpn_challenge_store.clone(),
+        )?);
         if profiles.insert(profile.name.clone(), plan).is_some() {
             return Err(TlsBuildError::DuplicateTlsProfile {
                 name: profile.name.clone(),
@@ -415,6 +433,7 @@ pub fn prepare_tls_with_dns01_providers(
         certificates,
         acme_reconcilers,
         challenge_store,
+        tls_alpn_challenge_store,
         certbot_reconcilers,
         file_reconcilers,
         profiles,
@@ -810,6 +829,8 @@ pub enum TlsBuildError {
         #[source]
         source: Box<pingora::Error>,
     },
+    #[error("failed to initialize TLS-ALPN-01 certificate selection: {detail}")]
+    TlsAlpnSelectionIndex { detail: String },
     #[error("failed to apply OpenSSL settings for TLS profile `{profile}`")]
     TlsProfileSettings {
         profile: String,

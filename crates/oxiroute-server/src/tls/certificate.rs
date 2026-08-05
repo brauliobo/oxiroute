@@ -4,14 +4,15 @@ use std::{
     fmt,
     net::IpAddr,
     path::Path,
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 use super::{
     certificate_identity_sans, certificate_is_ca_capable, pem_labels, read_bounded_stable,
-    CertificateIdentitySan, CertificateIdentitySans, TlsBuildError, MAX_CERTIFICATES_IN_CHAIN,
-    MAX_CLIENT_CA_CERTIFICATES, MAX_CA_CERTIFICATE_BYTES, MAX_CERTIFICATE_CHAIN_BYTES,
-    MAX_DH_PARAMETERS_BYTES, MAX_PRIVATE_KEY_BYTES,
+    CertificateIdentitySan, CertificateIdentitySans, TlsAlpnChallengeIdentity,
+    TlsAlpnChallengeStore, TlsBuildError, MAX_CERTIFICATES_IN_CHAIN, MAX_CLIENT_CA_CERTIFICATES,
+    MAX_CA_CERTIFICATE_BYTES, MAX_CERTIFICATE_CHAIN_BYTES, MAX_DH_PARAMETERS_BYTES,
+    MAX_PRIVATE_KEY_BYTES,
 };
 use crate::encoding::lower_hex;
 use arc_swap::ArcSwap;
@@ -48,6 +49,7 @@ use pingora::{
     protocols::tls::CustomALPN,
     protocols::tls::TlsRef,
     tls::ext::{ssl_add_chain_cert, ssl_use_certificate, ssl_use_private_key},
+    tls::ssl::{AlpnError, Ssl as PingoraSsl},
 };
 use x509_parser::parse_x509_certificate;
 
@@ -821,6 +823,7 @@ pub struct TlsProfilePlan {
     policy: TlsPolicy,
     dh_parameters: Option<Dh<Params>>,
     client_auth: ClientAuthPlan,
+    tls_alpn_challenge_store: TlsAlpnChallengeStore,
     selector: Arc<CertificateSelector>,
 }
 
@@ -828,6 +831,7 @@ impl TlsProfilePlan {
     pub(crate) fn from_config(
         profile: &TlsProfile,
         active_generations: BTreeMap<String, Arc<ActiveCertificateGeneration>>,
+        tls_alpn_challenge_store: TlsAlpnChallengeStore,
     ) -> Result<Self, TlsBuildError> {
         let alpn = compile_alpn(&profile.name, &profile.alpn)?;
         let dh_parameters = profile
@@ -858,6 +862,7 @@ impl TlsProfilePlan {
             policy: profile.policy.clone(),
             dh_parameters,
             client_auth,
+            tls_alpn_challenge_store,
             selector,
         })
     }
@@ -998,7 +1003,18 @@ impl TlsProfilePlan {
         } else {
             settings.clear_options(SslOptions::CIPHER_SERVER_PREFERENCE);
         }
-        settings.set_alpn(self.alpn.clone());
+        let selection_index = tls_alpn_selection_index()?;
+        let normal_alpn = self.alpn.clone();
+        let challenge_store = self.tls_alpn_challenge_store.clone();
+        settings.set_alpn_select_callback(move |ssl, offered| {
+            select_alpn(
+                ssl,
+                offered,
+                &normal_alpn,
+                &challenge_store,
+                selection_index,
+            )
+        });
         self.client_auth.apply(&self.name, &mut settings)?;
         Ok(settings)
     }
@@ -1019,6 +1035,7 @@ impl fmt::Debug for TlsProfilePlan {
                 "client_auth_allowed_dns_name_count",
                 &self.client_auth.allowed_dns_name_count(),
             )
+            .field("tls_alpn_challenge_store", &self.tls_alpn_challenge_store)
             .field("default_certificate", &self.selector.default_certificate)
             .field("certificates", &self.selector.active_generations.keys())
             .finish()
@@ -1285,9 +1302,62 @@ struct GenerationTlsAccept {
     selector: Arc<CertificateSelector>,
 }
 
+enum TlsAlpnSelection {
+    Challenge(Arc<TlsAlpnChallengeIdentity>),
+}
+
+static TLS_ALPN_SELECTION_INDEX: OnceLock<
+    Result<openssl::ex_data::Index<PingoraSsl, TlsAlpnSelection>, String>,
+> = OnceLock::new();
+
+fn tls_alpn_selection_index(
+) -> Result<openssl::ex_data::Index<PingoraSsl, TlsAlpnSelection>, TlsBuildError> {
+    TLS_ALPN_SELECTION_INDEX
+        .get_or_init(|| PingoraSsl::new_ex_index().map_err(|error| error.to_string()))
+        .as_ref()
+        .copied()
+        .map_err(|detail| TlsBuildError::TlsAlpnSelectionIndex {
+            detail: detail.clone(),
+        })
+}
+
 #[async_trait]
 impl TlsAccept for GenerationTlsAccept {
     async fn certificate_callback(&self, ssl: &mut TlsRef) {
+        let selection_index = match tls_alpn_selection_index() {
+            Ok(index) => index,
+            Err(error) => {
+                log::error!(
+                    "failed to initialize TLS-ALPN-01 certificate selection for profile `{}`: {}",
+                    self.profile,
+                    error
+                );
+                return;
+            }
+        };
+        let challenge = ssl.ex_data(selection_index).map(|selection| match selection {
+            TlsAlpnSelection::Challenge(challenge) => Arc::clone(challenge),
+        });
+        if let Some(challenge) = challenge {
+            if !challenge.usable(super::tls_alpn::unix_now()) {
+                log::warn!(
+                    "TLS-ALPN-01 challenge identity expired or was cancelled for `{}`",
+                    challenge.identifier()
+                );
+                return;
+            }
+            let result = ssl_use_private_key(ssl, challenge.private_key());
+            let result = result.and_then(|()| ssl_use_certificate(ssl, challenge.certificate()));
+            if let Err(error) = result {
+                log::error!(
+                    "failed to install TLS-ALPN-01 challenge identity for profile `{}`: {}",
+                    self.profile,
+                    error
+                );
+            }
+            return;
+        }
+
         let generation = self
             .selector
             .select(ssl.servername(NameType::HOST_NAME))
@@ -1301,6 +1371,75 @@ impl TlsAccept for GenerationTlsAccept {
             );
         }
     }
+}
+
+fn select_alpn<'a>(
+    ssl: &mut TlsRef,
+    offered: &'a [u8],
+    normal_alpn: &ALPN,
+    challenge_store: &TlsAlpnChallengeStore,
+    selection_index: openssl::ex_data::Index<PingoraSsl, TlsAlpnSelection>,
+) -> Result<&'a [u8], AlpnError> {
+    let challenge_protocol = find_offered_protocol(offered, super::TLS_ALPN_PROTOCOL)?;
+    if let Some(challenge_protocol) = challenge_protocol {
+        let Some(server_name) = ssl.servername(NameType::HOST_NAME) else {
+            return Err(AlpnError::ALERT_FATAL);
+        };
+        let Some(challenge) = challenge_store.lookup(server_name, super::tls_alpn::unix_now())
+        else {
+            return Err(AlpnError::ALERT_FATAL);
+        };
+        ssl.set_ex_data(selection_index, TlsAlpnSelection::Challenge(challenge));
+        return Ok(challenge_protocol);
+    }
+
+    if !valid_alpn_wire(offered) {
+        return Err(AlpnError::ALERT_FATAL);
+    }
+    match select_normal_alpn(normal_alpn, offered)? {
+        Some(protocol) => Ok(protocol),
+        None if matches!(normal_alpn, ALPN::H2) => Err(AlpnError::ALERT_FATAL),
+        None => Err(AlpnError::NOACK),
+    }
+}
+
+fn select_normal_alpn<'a>(
+    alpn: &ALPN,
+    offered: &'a [u8],
+) -> Result<Option<&'a [u8]>, AlpnError> {
+    match alpn {
+        ALPN::H1 => find_offered_protocol(offered, b"http/1.1"),
+        ALPN::H2 => find_offered_protocol(offered, b"h2"),
+        ALPN::H2H1 => find_offered_protocol(offered, b"h2")?.map_or_else(
+            || find_offered_protocol(offered, b"http/1.1"),
+            |protocol| Ok(Some(protocol)),
+        ),
+        ALPN::Custom(custom) => find_offered_protocol(offered, custom.protocol()),
+    }
+}
+
+fn find_offered_protocol<'a>(
+    offered: &'a [u8],
+    wanted: &[u8],
+) -> Result<Option<&'a [u8]>, AlpnError> {
+    let mut cursor = 0;
+    while cursor < offered.len() {
+        let length = usize::from(offered[cursor]);
+        cursor += 1;
+        if length == 0 || cursor.saturating_add(length) > offered.len() {
+            return Err(AlpnError::ALERT_FATAL);
+        }
+        let protocol = &offered[cursor..cursor + length];
+        if protocol == wanted {
+            return Ok(Some(protocol));
+        }
+        cursor += length;
+    }
+    Ok(None)
+}
+
+fn valid_alpn_wire(offered: &[u8]) -> bool {
+    find_offered_protocol(offered, &[]).is_ok()
 }
 
 fn compile_alpn(profile: &str, protocols: &[AlpnProtocol]) -> Result<ALPN, TlsBuildError> {
