@@ -184,9 +184,13 @@ describe('local management workspaces', () => {
           notBeforeUnixSeconds: null,
           notAfterUnixSeconds: null,
           nextActionUnixSeconds: null,
-          notAfter: '2026-08-01T00:00:00Z',
-          jobStatus: null,
-          retryAttempt: 0,
+           notAfter: '2026-08-01T00:00:00Z',
+           jobStatus: null,
+           jobId: null,
+           paused: false,
+           retainedRevisions: 3,
+           retentionDays: 30,
+           retryAttempt: 0,
           lastSuccessUnixSeconds: null,
           lastOutcome: null,
           lastErrorCode: null,
@@ -205,6 +209,52 @@ describe('local management workspaces', () => {
     expect(JSON.stringify(inventory)).not.toContain('accountUrl')
     expect(JSON.stringify(inventory)).not.toContain('orderUrl')
     expect(JSON.stringify(inventory)).not.toContain('challenge-secret')
+  })
+
+  it('sends the active revision for confirmed managed ACME actions', async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = []
+    const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      requests.push({ url, init })
+      if (url === '/api/v1/tls') return Promise.resolve(jsonResponse(managementTlsInventory()))
+      if (url === '/api/v1/generations') return Promise.resolve(jsonResponse(managementGeneration()))
+      if (url.startsWith('/api/v1/events?')) {
+        return Promise.resolve(jsonResponse({ events: [], cursor: 0, hasMore: false, oldestCursor: null }))
+      }
+      if (url === '/api/v1/events/stream') {
+        return Promise.resolve(new Response('event: shutdown\ndata: {"reason":"server_shutdown"}\n\n', {
+          headers: { 'Content-Type': 'text/event-stream' },
+        }))
+      }
+      if (init?.method === 'POST') {
+        return Promise.resolve(jsonResponse({
+          certificate: 'managed-edge',
+          outcome: 'revoked',
+          jobId: 'revoke-job-1',
+        }))
+      }
+      throw new Error(`Unexpected request: ${url} ${init?.method ?? 'GET'}`)
+    })
+    const confirm = vi.fn(() => true)
+    vi.stubGlobal('fetch', fetch)
+    vi.stubGlobal('confirm', confirm)
+
+    const wrapper = mount(CertificatesWorkspace, { props: { token } })
+    await flushPromises()
+    const revokeButton = wrapper.findAll('button').find((button) => button.text() === 'Revoke certificate')
+    if (!revokeButton) throw new Error('revoke action was not rendered')
+
+    await revokeButton.trigger('click')
+    await flushPromises()
+
+    const request = requests.find(({ url, init }) => url === '/api/v1/tls/revoke' && init?.method === 'POST')
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Active revision'))
+    expect(request).toBeDefined()
+    expect(JSON.parse(String(request?.init?.body))).toEqual({
+      expectedActiveRevision: 'active-revision',
+      certificate: 'managed-edge',
+    })
+    wrapper.unmount()
   })
 })
 

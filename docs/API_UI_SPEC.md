@@ -42,6 +42,8 @@ Implemented and recognized endpoints:
 | `GET` | `/api/v1/tls` | Redacted certificate, managed ACME, and Certbot watcher status. |
 | `POST` | `/api/v1/tls/reconcile` | Revision-checked reconciliation of externally owned Certbot lineages. |
 | `POST` | `/api/v1/tls/renew` | Revision-checked immediate renewal of one managed ACME certificate. |
+| `POST` | `/api/v1/tls/revoke`, `/api/v1/tls/delete`, `/api/v1/tls/account/rollover` | Revision-checked authenticated ACME lifecycle actions. |
+| `POST` | `/api/v1/tls/jobs/cancel`, `/api/v1/tls/jobs/pause`, `/api/v1/tls/jobs/resume` | Revision-checked cooperative managed-job controls. |
 | `GET` | `/api/v1/audit?after={cursor}&limit={n}&category={category}&result={result}` | Authenticated durable redacted control-operation history with bounded cursor pagination and filters. |
 | `GET` | `/api/v1/audit/status` | Authenticated audit persistence, retention, corruption, and degradation status. |
 | `GET` | `/api/v1/events?after={cursor}&limit={n}` | Bounded cursor polling over the in-memory operational event ring. |
@@ -194,12 +196,18 @@ Exact paths are required; trailing slashes and repeated separators return `404`.
 Managed ACME inventory is exposed through authenticated `GET /api/v1/tls`. It includes the
 configured directory URL, selected challenge, allowlisted DNS provider name when configured, key
 type, suffix policy, disk/active revisions, expiry timestamps, next scheduled action, job phase,
-retry attempt, last success, and redacted last outcome/error. `POST /api/v1/tls/renew` accepts the same
+ retry attempt, job ID, pause state, retention policy, last success, and redacted last outcome/error.
+`POST /api/v1/tls/renew` accepts the same
 revision-checked body as reconciliation and optionally a certificate name. It provisions exact
 HTTP-01 or DNS-01 material before notifying the CA, cleans it after a terminal result, commits a complete
 revision, validates it through the TLS backend, and publishes it without interrupting existing
 connections. Account URLs, order URLs, tokens, and private keys are never returned; configured
 certificate identifiers and suffix-policy values follow the existing redacted inventory contract.
+Revocation accepts an optional numeric reason. Account rollover uses the RFC 8555 nested JWS and
+persists the replacement key only after CA acceptance. Delete removes persisted managed state only
+when no active TLS profile references the certificate; it does not edit configuration or unload the
+current in-memory generation. All lifecycle actions persist the safe request correlation ID in their
+bounded job and audit records.
 Lua-configured direct-file identities are prepared at startup and configured Certbot identities are
 watched and atomically reconciled.
 

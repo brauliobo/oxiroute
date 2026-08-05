@@ -864,6 +864,9 @@ must provide an exact statically linked provider name, a protected credential fi
 `timeout_seconds` value. A wildcard DNS name is valid only with DNS-01; the configured
 `allowed_dns_suffixes` policy applies to the wildcard's base name. Credential contents are never
 rendered into API, event, metric, or UI state.
+Managed sources may set `retained_revisions` (1-32,
+default 3) and `retention_days` (1-3650, default 30); garbage collection always preserves the active
+revision and the newest retained revisions.
 
 ### RTMP service and recorder
 
