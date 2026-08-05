@@ -73,10 +73,13 @@ pub struct EffectiveListen {
 pub struct EffectiveVirtualHost {
     pub origin: DirectiveOrigin,
     pub address: SocketAddr,
+    pub addresses: Vec<SocketAddr>,
     pub names: Vec<EffectiveServerName>,
     pub proxy_passes: Vec<EffectiveProxyPass>,
     pub tls: EffectiveTls,
     pub preserve_host: bool,
+    pub preserve_host_origin: Option<DirectiveOrigin>,
+    pub preserve_host_inherited: bool,
     pub blocked: Vec<DiagnosticCode>,
 }
 
@@ -85,11 +88,14 @@ pub struct EffectiveServerName {
     pub origin: DirectiveOrigin,
     pub selector: HttpHostSelector,
     pub certificate_name: String,
+    pub inherited: bool,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EffectiveTls {
     pub engine_on: bool,
+    pub engine_origin: Option<DirectiveOrigin>,
+    pub engine_inherited: bool,
     pub certificate_chain: Option<EffectivePath>,
     pub private_key: Option<EffectivePath>,
 }
@@ -98,6 +104,7 @@ pub struct EffectiveTls {
 pub struct EffectivePath {
     pub path: PathBuf,
     pub origin: DirectiveOrigin,
+    pub inherited: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -105,6 +112,7 @@ pub struct EffectiveProxyPass {
     pub origin: DirectiveOrigin,
     pub path: String,
     pub target: ProxyTarget,
+    pub inherited: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -161,6 +169,7 @@ pub fn resolve(loaded: Report<SourceGraph>) -> Report<ApacheResolution> {
 
 struct Resolver<'a> {
     graph: &'a SourceGraph,
+    defaults: ApacheDefaults,
     dispositions: HashMap<OccurrenceId, OccurrenceDisposition>,
     diagnostics: Vec<Diagnostic>,
     listens: Vec<EffectiveListen>,
@@ -169,10 +178,27 @@ struct Resolver<'a> {
     module_loads: Vec<EffectiveModuleLoad>,
 }
 
+#[derive(Clone, Debug, Default)]
+struct ApacheDefaults {
+    server_name: Option<DefaultServerName>,
+    proxy_passes: Vec<EffectiveProxyPass>,
+    tls: EffectiveTls,
+    preserve_host: bool,
+    preserve_host_origin: Option<DirectiveOrigin>,
+    rewrite_engine: Option<(bool, DirectiveOrigin)>,
+}
+
+#[derive(Clone, Debug)]
+struct DefaultServerName {
+    value: String,
+    origin: DirectiveOrigin,
+}
+
 impl<'a> Resolver<'a> {
     fn new(graph: &'a SourceGraph) -> Self {
         Self {
             graph,
+            defaults: ApacheDefaults::default(),
             dispositions: HashMap::new(),
             diagnostics: Vec::new(),
             listens: Vec::new(),
@@ -184,24 +210,13 @@ impl<'a> Resolver<'a> {
 
     fn run(mut self) -> Report<ApacheResolution> {
         for directive in self.graph.expanded_directives.clone() {
-            match lower_name(&directive.directive.name.value).as_str() {
-                "listen" => self.resolve_listen(&directive),
-                "virtualhost" => self.resolve_virtual_host(&directive),
-                "proxy" => self.resolve_balancer(&directive),
-                "loadmodule" => self.resolve_module_load(&directive),
-                "include" | "includeoptional" | "namevirtualhost" => {
-                    self.structural(directive.occurrence);
-                }
-                "balancerpersist" | "balancergrowth" | "balancerinherit" => self.block(
-                    &directive,
-                    E_DYNAMIC_BALANCER_MANAGER,
-                    "Apache balancer state is dynamic and cannot be imported from static source",
-                ),
-                _ => self.block_subtree(
-                    &directive,
-                    E_UNSUPPORTED_DIRECTIVE,
-                    "Apache directive is outside the static importer subset",
-                ),
+            if lower_name(&directive.directive.name.value) != "virtualhost" {
+                self.resolve_global(&directive);
+            }
+        }
+        for directive in self.graph.expanded_directives.clone() {
+            if lower_name(&directive.directive.name.value) == "virtualhost" {
+                self.resolve_virtual_host(&directive);
             }
         }
         self.check_listener_references();
@@ -237,6 +252,198 @@ impl<'a> Resolver<'a> {
         )
     }
 
+    fn resolve_global(&mut self, directive: &ExpandedDirective) {
+        match lower_name(&directive.directive.name.value).as_str() {
+            "listen" => self.resolve_listen(directive),
+            "proxy" => self.resolve_balancer(directive),
+            "loadmodule" => self.resolve_module_load(directive),
+            "servername" => self.resolve_global_server_name(directive),
+            "proxypass" => match parse_proxy_pass(directive) {
+                Ok(mut proxy) => {
+                    proxy.inherited = true;
+                    self.defaults.proxy_passes.push(proxy);
+                    self.resolved(directive.occurrence);
+                }
+                Err((code, message)) => self.block(directive, code, message),
+            },
+            "proxypreservehost" => match directive.directive.arguments.as_slice() {
+                [value] if value.value.eq_ignore_ascii_case(b"on") => {
+                    self.defaults.preserve_host = true;
+                    self.defaults.preserve_host_origin = Some(origin(directive));
+                    self.resolved(directive.occurrence);
+                }
+                [value] if value.value.eq_ignore_ascii_case(b"off") => {
+                    self.defaults.preserve_host = false;
+                    self.defaults.preserve_host_origin = Some(origin(directive));
+                    self.resolved(directive.occurrence);
+                }
+                _ => self.block(
+                    directive,
+                    E_INVALID_VALUE,
+                    "ProxyPreserveHost requires one explicit on or off policy",
+                ),
+            },
+            "sslengine" => match directive.directive.arguments.as_slice() {
+                [value] if value.value.eq_ignore_ascii_case(b"on") => {
+                    self.defaults.tls.engine_on = true;
+                    self.defaults.tls.engine_origin = Some(origin(directive));
+                    self.defaults.tls.engine_inherited = true;
+                    self.resolved(directive.occurrence);
+                }
+                [value] if value.value.eq_ignore_ascii_case(b"off") => {
+                    self.defaults.tls.engine_on = false;
+                    self.defaults.tls.engine_origin = Some(origin(directive));
+                    self.defaults.tls.engine_inherited = true;
+                    self.resolved(directive.occurrence);
+                }
+                _ => self.block(
+                    directive,
+                    E_INVALID_VALUE,
+                    "SSLEngine must be `on` or `off`",
+                ),
+            },
+            "sslcertificatefile" => {
+                self.resolve_global_certificate(directive, true);
+            }
+            "sslcertificatekeyfile" => {
+                self.resolve_global_certificate(directive, false);
+            }
+            "rewriteengine" => match directive.directive.arguments.as_slice() {
+                [value] if value.value.eq_ignore_ascii_case(b"on") => {
+                    self.defaults.rewrite_engine = Some((true, origin(directive)));
+                    self.resolved(directive.occurrence);
+                }
+                [value] if value.value.eq_ignore_ascii_case(b"off") => {
+                    self.defaults.rewrite_engine = Some((false, origin(directive)));
+                    self.resolved(directive.occurrence);
+                }
+                _ => self.block(
+                    directive,
+                    E_INVALID_VALUE,
+                    "RewriteEngine must be `on` or `off`",
+                ),
+            },
+            "rewritecond" | "rewritemap" | "rewriterule" => self.block(
+                directive,
+                E_REWRITE_UNSUPPORTED,
+                "Apache rewrite behavior is outside the static importer subset",
+            ),
+            "proxypassmatch" => self.block(
+                directive,
+                E_DYNAMIC_PROXY_PASS,
+                "ProxyPassMatch uses regular-expression routing and cannot be lowered",
+            ),
+            "proxypassreverse" => self.block(
+                directive,
+                E_UNSUPPORTED_DIRECTIVE,
+                "ProxyPassReverse response-location rewriting has no exact canonical field",
+            ),
+            "balancerpersist" | "balancergrowth" | "balancerinherit" => self.block(
+                directive,
+                E_DYNAMIC_BALANCER_MANAGER,
+                "Apache balancer state is dynamic and cannot be imported from static source",
+            ),
+            "include" | "includeoptional" | "namevirtualhost" => {
+                self.structural(directive.occurrence);
+            }
+            _ => self.block_subtree(
+                directive,
+                E_UNSUPPORTED_DIRECTIVE,
+                "Apache directive is outside the static importer subset",
+            ),
+        }
+    }
+
+    fn resolve_global_server_name(&mut self, directive: &ExpandedDirective) {
+        if directive.directive.arguments.len() != 1 {
+            self.block(
+                directive,
+                E_INVALID_VALUE,
+                "ServerName requires exactly one exact host name",
+            );
+            return;
+        }
+        let Some(value) = word_text(&directive.directive.arguments[0]) else {
+            self.block(directive, E_INVALID_VALUE, "Apache host name is not UTF-8");
+            return;
+        };
+        if value.is_empty() || has_dynamic(&value) || value.contains('*') {
+            self.block(
+                directive,
+                E_UNSUPPORTED_FEATURE,
+                "Apache ServerName must be an exact static host name",
+            );
+            return;
+        }
+        if split_host_port(&value)
+            .and_then(|(host, _)| canonical_host(&host))
+            .is_none()
+        {
+            self.block(
+                directive,
+                E_INVALID_VALUE,
+                "Apache ServerName is not a canonical host or authority",
+            );
+            return;
+        }
+        if self.defaults.server_name.is_some() {
+            self.block(
+                directive,
+                E_SEMANTICS_NOT_REPRESENTABLE,
+                "Apache global ServerName is declared more than once",
+            );
+            return;
+        }
+        self.defaults.server_name = Some(DefaultServerName {
+            value,
+            origin: origin(directive),
+        });
+        self.resolved(directive.occurrence);
+    }
+
+    fn resolve_global_certificate(&mut self, directive: &ExpandedDirective, chain: bool) {
+        if directive.directive.arguments.len() != 1 {
+            self.block(
+                directive,
+                E_SEMANTICS_NOT_REPRESENTABLE,
+                "Apache TLS requires one unambiguous certificate path",
+            );
+            return;
+        }
+        let Some(path) = absolute_path(&directive.directive.arguments[0]) else {
+            self.block(
+                directive,
+                E_INVALID_VALUE,
+                "Apache TLS path must be a canonical absolute UTF-8 path",
+            );
+            return;
+        };
+        let already_set = if chain {
+            self.defaults.tls.certificate_chain.is_some()
+        } else {
+            self.defaults.tls.private_key.is_some()
+        };
+        if already_set {
+            self.block(
+                directive,
+                E_SEMANTICS_NOT_REPRESENTABLE,
+                "Apache TLS requires one unambiguous certificate path",
+            );
+            return;
+        }
+        let effective_path = EffectivePath {
+            path,
+            origin: origin(directive),
+            inherited: true,
+        };
+        if chain {
+            self.defaults.tls.certificate_chain = Some(effective_path);
+        } else {
+            self.defaults.tls.private_key = Some(effective_path);
+        }
+        self.resolved(directive.occurrence);
+    }
+
     fn resolve_listen(&mut self, directive: &ExpandedDirective) {
         let Some(address) = parse_explicit_socket(&directive.directive.arguments) else {
             self.block(
@@ -246,7 +453,11 @@ impl<'a> Resolver<'a> {
             );
             return;
         };
-        if self.listens.iter().any(|listen| listen.address == address) {
+        if self
+            .listens
+            .iter()
+            .any(|listen| socket_addresses_overlap(listen.address, address))
+        {
             self.block(
                 directive,
                 E_DUPLICATE_IDENTITY,
@@ -298,24 +509,32 @@ impl<'a> Resolver<'a> {
 
     #[allow(clippy::too_many_lines)]
     fn resolve_virtual_host(&mut self, directive: &ExpandedDirective) {
-        let Some(address) = parse_explicit_socket(&directive.directive.arguments) else {
+        let Some(addresses) = parse_virtual_host_sockets(&directive.directive.arguments) else {
             self.block(
                 directive,
                 E_INVALID_VALUE,
-                "VirtualHost requires exactly one explicit IP address and port",
+                "VirtualHost requires one or more explicit IP addresses and ports",
             );
             return;
         };
+        let address = addresses[0];
         let Some(children) = directive.children.as_deref() else {
             self.block(directive, E_INVALID_VALUE, "VirtualHost must be a block");
             return;
         };
         let mut names = Vec::new();
         let mut server_name_count = 0;
-        let mut proxy_passes = Vec::new();
-        let mut tls = EffectiveTls::default();
-        let mut preserve_host = false;
+        let mut proxy_passes = self.defaults.proxy_passes.clone();
+        let mut tls = self.defaults.tls.clone();
+        let mut preserve_host = self.defaults.preserve_host;
+        let mut preserve_host_origin = self.defaults.preserve_host_origin.clone();
+        let mut preserve_host_inherited = preserve_host_origin.is_some();
         let mut preserve_host_set = false;
+        let mut ssl_engine_set = false;
+        let mut certificate_chain_set = false;
+        let mut private_key_set = false;
+        let mut rewrite_engine = self.defaults.rewrite_engine.clone();
+        let mut local_rewrite_engine_set = false;
 
         self.resolved(directive.occurrence);
         for child in children {
@@ -336,6 +555,7 @@ impl<'a> Resolver<'a> {
                             origin: origin(child),
                             selector: name.selector,
                             certificate_name: name.certificate_name,
+                            inherited: false,
                         }),
                         Err((code, message)) => self.block(child, code, message),
                     }
@@ -355,6 +575,7 @@ impl<'a> Resolver<'a> {
                                 origin: origin(child),
                                 selector: name.selector,
                                 certificate_name: name.certificate_name,
+                                inherited: false,
                             }),
                             Err((code, message)) => self.block(child, code, message),
                         }
@@ -362,18 +583,29 @@ impl<'a> Resolver<'a> {
                     self.resolved(child.occurrence);
                 }
                 "sslengine" => match child.directive.arguments.as_slice() {
-                    [value] if value.value.eq_ignore_ascii_case(b"on") => {
+                    [value] if value.value.eq_ignore_ascii_case(b"on") && !ssl_engine_set => {
                         tls.engine_on = true;
+                        tls.engine_origin = Some(origin(child));
+                        tls.engine_inherited = false;
+                        ssl_engine_set = true;
                         self.resolved(child.occurrence);
                     }
-                    [value] if value.value.eq_ignore_ascii_case(b"off") => {
+                    [value] if value.value.eq_ignore_ascii_case(b"off") && !ssl_engine_set => {
                         tls.engine_on = false;
+                        tls.engine_origin = Some(origin(child));
+                        tls.engine_inherited = false;
+                        ssl_engine_set = true;
                         self.resolved(child.occurrence);
                     }
+                    [..] if ssl_engine_set => self.block(
+                        child,
+                        E_SEMANTICS_NOT_REPRESENTABLE,
+                        "duplicate SSLEngine policy is not representable",
+                    ),
                     _ => self.block(child, E_INVALID_VALUE, "SSLEngine must be `on` or `off`"),
                 },
                 "sslcertificatefile" => {
-                    if child.directive.arguments.len() != 1 || tls.certificate_chain.is_some() {
+                    if child.directive.arguments.len() != 1 || certificate_chain_set {
                         self.block(
                             child,
                             E_SEMANTICS_NOT_REPRESENTABLE,
@@ -383,7 +615,9 @@ impl<'a> Resolver<'a> {
                         tls.certificate_chain = Some(EffectivePath {
                             path,
                             origin: origin(child),
+                            inherited: false,
                         });
+                        certificate_chain_set = true;
                         self.resolved(child.occurrence);
                     } else {
                         self.block(
@@ -394,7 +628,7 @@ impl<'a> Resolver<'a> {
                     }
                 }
                 "sslcertificatekeyfile" => {
-                    if child.directive.arguments.len() != 1 || tls.private_key.is_some() {
+                    if child.directive.arguments.len() != 1 || private_key_set {
                         self.block(
                             child,
                             E_SEMANTICS_NOT_REPRESENTABLE,
@@ -404,7 +638,9 @@ impl<'a> Resolver<'a> {
                         tls.private_key = Some(EffectivePath {
                             path,
                             origin: origin(child),
+                            inherited: false,
                         });
+                        private_key_set = true;
                         self.resolved(child.occurrence);
                     } else {
                         self.block(
@@ -414,7 +650,7 @@ impl<'a> Resolver<'a> {
                         );
                     }
                 }
-                "proxypass" => match parse_proxy_pass(child, address.port()) {
+                "proxypass" => match parse_proxy_pass(child) {
                     Ok(proxy) => {
                         proxy_passes.push(proxy);
                         self.resolved(child.occurrence);
@@ -434,10 +670,15 @@ impl<'a> Resolver<'a> {
                 "proxypreservehost" => match child.directive.arguments.as_slice() {
                     [value] if value.value.eq_ignore_ascii_case(b"on") && !preserve_host_set => {
                         preserve_host = true;
+                        preserve_host_origin = Some(origin(child));
+                        preserve_host_inherited = false;
                         preserve_host_set = true;
                         self.resolved(child.occurrence);
                     }
                     [value] if value.value.eq_ignore_ascii_case(b"off") && !preserve_host_set => {
+                        preserve_host = false;
+                        preserve_host_origin = Some(origin(child));
+                        preserve_host_inherited = false;
                         preserve_host_set = true;
                         self.resolved(child.occurrence);
                     }
@@ -447,15 +688,34 @@ impl<'a> Resolver<'a> {
                         "duplicate or invalid ProxyPreserveHost policy is not representable",
                     ),
                 },
-                "rewriteengine"
-                    if child.directive.arguments.len() == 1
-                        && child.directive.arguments[0]
-                            .value
-                            .eq_ignore_ascii_case(b"off") =>
-                {
-                    self.resolved(child.occurrence);
-                }
-                "rewriteengine" | "rewriterule" | "rewritecond" | "rewritemap" => self.block(
+                "rewriteengine" => match child.directive.arguments.as_slice() {
+                    [value]
+                        if !local_rewrite_engine_set
+                            && value.value.eq_ignore_ascii_case(b"off") =>
+                    {
+                        rewrite_engine = Some((false, origin(child)));
+                        local_rewrite_engine_set = true;
+                        self.resolved(child.occurrence);
+                    }
+                    [value]
+                        if !local_rewrite_engine_set && value.value.eq_ignore_ascii_case(b"on") =>
+                    {
+                        rewrite_engine = Some((true, origin(child)));
+                        local_rewrite_engine_set = true;
+                        self.resolved(child.occurrence);
+                    }
+                    [..] if local_rewrite_engine_set => self.block(
+                        child,
+                        E_SEMANTICS_NOT_REPRESENTABLE,
+                        "duplicate RewriteEngine policy is not representable",
+                    ),
+                    _ => self.block(
+                        child,
+                        E_INVALID_VALUE,
+                        "RewriteEngine must be `on` or `off`",
+                    ),
+                },
+                "rewriterule" | "rewritecond" | "rewritemap" => self.block(
                     child,
                     E_REWRITE_UNSUPPORTED,
                     "Apache rewrite behavior is outside the static importer subset",
@@ -496,11 +756,28 @@ impl<'a> Resolver<'a> {
             }
         }
 
-        if server_name_count != 1 {
+        if server_name_count == 0 {
+            if let Some(default) = &self.defaults.server_name {
+                match parse_server_name_text(&default.value, address.port()) {
+                    Ok(name) => names.push(EffectiveServerName {
+                        origin: default.origin.clone(),
+                        selector: name.selector,
+                        certificate_name: name.certificate_name,
+                        inherited: true,
+                    }),
+                    Err((code, message)) => self.block(
+                        directive,
+                        code,
+                        format!("inherited Apache ServerName is invalid: {message}"),
+                    ),
+                }
+            }
+        }
+        if server_name_count > 1 || names.is_empty() {
             self.block(
                 directive,
                 E_UNRESOLVED_REFERENCE,
-                "each Apache VirtualHost requires exactly one ServerName",
+                "each Apache VirtualHost requires exactly one effective ServerName",
             );
         }
         if proxy_passes.is_empty() {
@@ -517,12 +794,19 @@ impl<'a> Resolver<'a> {
                 "TLS-enabled Apache VirtualHost requires certificate and private-key references",
             );
         }
-        if !tls.engine_on && (tls.certificate_chain.is_some() || tls.private_key.is_some()) {
-            self.block(
-                directive,
-                E_SEMANTICS_NOT_REPRESENTABLE,
-                "Apache certificate references are present while SSLEngine is off",
-            );
+        if !tls.engine_on {
+            let has_local_certificate = tls
+                .certificate_chain
+                .as_ref()
+                .is_some_and(|path| !path.inherited)
+                || tls.private_key.as_ref().is_some_and(|path| !path.inherited);
+            if has_local_certificate {
+                self.block(
+                    directive,
+                    E_SEMANTICS_NOT_REPRESENTABLE,
+                    "Apache certificate references are present while SSLEngine is off",
+                );
+            }
         }
         if let (Some(chain), Some(key)) = (&tls.certificate_chain, &tls.private_key) {
             if chain.path == key.path {
@@ -532,6 +816,13 @@ impl<'a> Resolver<'a> {
                     "Apache certificate and private-key paths must differ",
                 );
             }
+        }
+        if rewrite_engine.as_ref().is_some_and(|(enabled, _)| *enabled) {
+            self.block(
+                directive,
+                E_REWRITE_UNSUPPORTED,
+                "Apache rewrite behavior is enabled by an inherited or local RewriteEngine",
+            );
         }
         let blocked = Self::subtree_occurrences(directive)
             .filter_map(|occurrence| {
@@ -547,10 +838,13 @@ impl<'a> Resolver<'a> {
         self.virtual_hosts.push(EffectiveVirtualHost {
             origin: origin(directive),
             address,
+            addresses,
             names,
             proxy_passes,
             tls,
             preserve_host,
+            preserve_host_origin,
+            preserve_host_inherited,
             blocked,
         });
     }
@@ -589,6 +883,14 @@ impl<'a> Resolver<'a> {
             );
             return;
         }
+        if self.balancers.iter().any(|balancer| balancer.name == name) {
+            self.block(
+                directive,
+                E_DUPLICATE_IDENTITY,
+                "duplicate Apache balancer identity",
+            );
+            return;
+        }
         let Some(children) = directive.children.as_deref() else {
             self.block(directive, E_INVALID_VALUE, "balancer Proxy must be a block");
             return;
@@ -614,7 +916,8 @@ impl<'a> Resolver<'a> {
                     };
                     if child.directive.arguments.len() > 2
                         || child.directive.arguments.get(1).is_some_and(|option| {
-                            word_text(option).as_deref() != Some("loadfactor=1")
+                            !word_text(option)
+                                .is_some_and(|value| value.eq_ignore_ascii_case("loadfactor=1"))
                         })
                     {
                         self.block(
@@ -689,13 +992,12 @@ impl<'a> Resolver<'a> {
     }
 
     fn check_listener_references(&mut self) {
-        let listen_addresses = self
-            .listens
-            .iter()
-            .map(|listen| listen.address)
-            .collect::<HashSet<_>>();
         for virtual_host in &mut self.virtual_hosts {
-            if !listen_addresses.contains(&virtual_host.address) {
+            if !virtual_host.addresses.iter().all(|address| {
+                self.listens
+                    .iter()
+                    .any(|listen| socket_addresses_overlap(listen.address, *address))
+            }) {
                 self.diagnostics.push(
                     Diagnostic::new(
                         E_UNRESOLVED_REFERENCE,
@@ -717,11 +1019,12 @@ impl<'a> Resolver<'a> {
             }
         }
         for listen in &self.listens {
-            if !self
-                .virtual_hosts
-                .iter()
-                .any(|virtual_host| virtual_host.address == listen.address)
-            {
+            if !self.virtual_hosts.iter().any(|virtual_host| {
+                virtual_host
+                    .addresses
+                    .iter()
+                    .any(|address| socket_addresses_overlap(*address, listen.address))
+            }) {
                 self.diagnostics.push(
                     Diagnostic::new(
                         E_UNRESOLVED_REFERENCE,
@@ -744,33 +1047,51 @@ impl<'a> Resolver<'a> {
     }
 
     fn check_virtual_host_identities(&mut self) {
-        let mut seen = HashMap::<(SocketAddr, String), usize>::new();
-        for index in 0..self.virtual_hosts.len() {
-            let address = self.virtual_hosts[index].address;
-            let names = self.virtual_hosts[index].names.clone();
-            for name in names {
-                let key = (address, selector_key(&name.selector));
-                if let Some(first) = seen.insert(key, index) {
-                    let first_origin = self.virtual_hosts[first].origin.clone();
-                    let origin = name.origin.clone();
-                    let diagnostic = Diagnostic::new(
-                        E_AMBIGUOUS_VHOST,
-                        Severity::Error,
-                        DiagnosticStage::Resolve,
-                        "Apache virtual hosts have an ambiguous listener and host identity",
-                    )
-                    .with_primary_span(origin.span)
-                    .with_related_span(first_origin.span, "first virtual host claim is here")
-                    .with_include_stack(
-                        origin
-                            .provenance
-                            .include_stack
+        for first in 0..self.virtual_hosts.len() {
+            for second in first + 1..self.virtual_hosts.len() {
+                if !self.virtual_hosts[first]
+                    .addresses
+                    .iter()
+                    .any(|first_address| {
+                        self.virtual_hosts[second]
+                            .addresses
                             .iter()
-                            .map(|frame| frame.directive_span),
-                    );
-                    self.diagnostics.push(diagnostic);
-                    self.virtual_hosts[index].blocked.push(E_AMBIGUOUS_VHOST);
-                    self.virtual_hosts[first].blocked.push(E_AMBIGUOUS_VHOST);
+                            .any(|second_address| {
+                                socket_addresses_overlap(*first_address, *second_address)
+                            })
+                    })
+                {
+                    continue;
+                }
+                let first_names = self.virtual_hosts[first].names.clone();
+                let second_names = self.virtual_hosts[second].names.clone();
+                for first_name in first_names {
+                    for second_name in &second_names {
+                        if selector_key(&first_name.selector) != selector_key(&second_name.selector)
+                        {
+                            continue;
+                        }
+                        let first_origin = self.virtual_hosts[first].origin.clone();
+                        let origin = second_name.origin.clone();
+                        let diagnostic = Diagnostic::new(
+                            E_AMBIGUOUS_VHOST,
+                            Severity::Error,
+                            DiagnosticStage::Resolve,
+                            "Apache virtual hosts have an ambiguous listener and host identity",
+                        )
+                        .with_primary_span(origin.span)
+                        .with_related_span(first_origin.span, "first virtual host claim is here")
+                        .with_include_stack(
+                            origin
+                                .provenance
+                                .include_stack
+                                .iter()
+                                .map(|frame| frame.directive_span),
+                        );
+                        self.diagnostics.push(diagnostic);
+                        self.virtual_hosts[second].blocked.push(E_AMBIGUOUS_VHOST);
+                        self.virtual_hosts[first].blocked.push(E_AMBIGUOUS_VHOST);
+                    }
                 }
             }
         }
@@ -891,11 +1212,35 @@ fn parse_explicit_socket(arguments: &[Word]) -> Option<SocketAddr> {
         return None;
     }
     let value = word_text(&arguments[0])?;
-    if value.contains('*') || value.contains('$') {
+    if value.contains('$') {
         return None;
     }
+    let value = value
+        .strip_prefix("*:")
+        .map_or_else(|| value.clone(), |port| format!("0.0.0.0:{port}"));
     let address = value.parse::<SocketAddr>().ok()?;
     (address.port() != 0).then_some(address)
+}
+
+fn parse_virtual_host_sockets(arguments: &[Word]) -> Option<Vec<SocketAddr>> {
+    if arguments.is_empty() {
+        return None;
+    }
+    let mut addresses = Vec::with_capacity(arguments.len());
+    for argument in arguments {
+        let address = parse_explicit_socket(std::slice::from_ref(argument))?;
+        if !addresses.contains(&address) {
+            addresses.push(address);
+        }
+    }
+    (!addresses.is_empty()).then_some(addresses)
+}
+
+fn socket_addresses_overlap(first: SocketAddr, second: SocketAddr) -> bool {
+    first.port() == second.port()
+        && (first.ip() == second.ip()
+            || first.ip().is_unspecified()
+            || second.ip().is_unspecified())
 }
 
 struct ParsedServerName {
@@ -909,13 +1254,20 @@ fn parse_server_name(
 ) -> Result<ParsedServerName, (DiagnosticCode, String)> {
     let value =
         word_text(word).ok_or_else(|| (E_INVALID_VALUE, "Apache host name is not UTF-8".into()))?;
-    if value.is_empty() || has_dynamic(&value) || value.contains('*') {
+    parse_server_name_text(&value, listener_port)
+}
+
+fn parse_server_name_text(
+    value: &str,
+    listener_port: u16,
+) -> Result<ParsedServerName, (DiagnosticCode, String)> {
+    if value.is_empty() || has_dynamic(value) || value.contains('*') {
         return Err((
             E_UNSUPPORTED_FEATURE,
             "Apache ServerName/ServerAlias must be an exact static host name".into(),
         ));
     }
-    let (host, port) = split_host_port(&value).ok_or_else(|| {
+    let (host, port) = split_host_port(value).ok_or_else(|| {
         (
             E_INVALID_VALUE,
             "Apache ServerName/ServerAlias is not a canonical host or authority".into(),
@@ -989,7 +1341,6 @@ fn format_authority(host: &str, port: u16) -> String {
 
 fn parse_proxy_pass(
     directive: &ExpandedDirective,
-    listener_port: u16,
 ) -> Result<EffectiveProxyPass, (DiagnosticCode, String)> {
     let arguments = &directive.directive.arguments;
     if arguments.len() != 2 {
@@ -1015,7 +1366,7 @@ fn parse_proxy_pass(
             "ProxyPass request path has ambiguous canonical normalization".into(),
         ));
     };
-    let target = parse_proxy_target(&arguments[1], listener_port)?;
+    let target = parse_proxy_target(&arguments[1])?;
     let target_path = match &target {
         ProxyTarget::Direct { target_path, .. } | ProxyTarget::Balancer { target_path, .. } => {
             target_path
@@ -1031,13 +1382,11 @@ fn parse_proxy_pass(
         origin: origin(directive),
         path,
         target,
+        inherited: false,
     })
 }
 
-fn parse_proxy_target(
-    word: &Word,
-    listener_port: u16,
-) -> Result<ProxyTarget, (DiagnosticCode, String)> {
+fn parse_proxy_target(word: &Word) -> Result<ProxyTarget, (DiagnosticCode, String)> {
     let value = word_text(word)
         .ok_or_else(|| (E_INVALID_VALUE, "ProxyPass destination is not UTF-8".into()))?;
     if has_dynamic(&value) || value.contains('?') || value.contains('#') {
@@ -1092,7 +1441,7 @@ fn parse_proxy_target(
         ProxyScheme::Http => 80,
         ProxyScheme::Https => 443,
     });
-    if port == 0 || port == listener_port && host.is_empty() {
+    if port == 0 {
         return Err((
             E_INVALID_VALUE,
             "ProxyPass destination port is invalid".into(),

@@ -349,6 +349,56 @@ fn import_previews_default_to_kdl_and_round_trip_every_format() {
 }
 
 #[test]
+fn apache_cli_report_exposes_deterministic_include_provenance() {
+    let directory = TempDir::new().expect("directory");
+    let root = directory.path().join("httpd.conf");
+    let included = directory.path().join("site.conf");
+    fs::write(&root, b"Include site.conf\n").expect("Apache root");
+    fs::write(
+        &included,
+        b"Listen 127.0.0.1:18088\n<VirtualHost 127.0.0.1:18088>\n  ServerName app.example.test\n  ProxyPass / http://127.0.0.1:9000/\n</VirtualHost>\n",
+    )
+    .expect("Apache included source");
+
+    let output = cli()
+        .args([
+            "import",
+            "apache",
+            root.to_str().unwrap(),
+            "--output",
+            "report",
+        ])
+        .output()
+        .expect("Apache CLI report");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).expect("Apache report JSON");
+    assert_eq!(report["candidate"]["finalized"], true);
+    assert_eq!(
+        report["sourceGraph"]["sources"].as_array().unwrap().len(),
+        2
+    );
+    assert!(
+        report["candidate"]["provenance"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| {
+                entry["origins"].as_array().is_some_and(|origins| {
+                    origins.iter().any(|origin| {
+                        origin["includeStack"]
+                            .as_array()
+                            .is_some_and(|stack| !stack.is_empty())
+                    })
+                })
+            })
+    );
+}
+
+#[test]
 fn import_report_output_is_unchanged_by_preview_format() {
     let haproxy_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../oxiroute-import/tests/fixtures/haproxy/minimal-representable.cfg");

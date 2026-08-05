@@ -15,15 +15,19 @@ use crate::support::{
     reference_parts, workspace_path,
 };
 
-const TEST_CATEGORIES: [&str; 14] = [
+const TEST_CATEGORIES: [&str; 18] = [
+    "cli",
     "decode",
     "differential",
     "failure",
+    "host_case",
     "integration",
     "interop",
     "normalize",
+    "native_reference",
     "observability",
     "parse",
+    "provenance",
     "reload",
     "render",
     "resolve",
