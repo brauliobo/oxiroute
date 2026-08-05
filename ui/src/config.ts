@@ -27,6 +27,10 @@ export type RtmpTokenSource = 'stream_query'
 export type RtmpNotifyMethod = 'get' | 'post'
 export type RtmpRtmpsPolicy = 'disabled' | 'allowed' | 'required'
 export type RtmpTransport = 'rtmp' | 'rtmps'
+export type RtmpExecMode = 'command' | 'transcode'
+export type RtmpExecTrigger = 'publisher' | 'publish_done'
+export type RtmpExecFilesystemPolicy = 'working_directory' | 'host'
+export type RtmpExecNetworkPolicy = 'disabled' | 'inherited'
 export type RtmpVodSource =
   | { type: 'local'; name: string; root_directory: string }
   | { type: 'http'; name: string; origin: string }
@@ -573,9 +577,16 @@ export interface RtmpHlsPolicyConfig {
 export interface RtmpDashPolicyConfig {
   root_directory: string
   segment_duration_ms: number
+  max_segment_duration_ms: number
   playlist_length_ms: number
+  segment_naming: 'sequential' | 'timestamp' | 'system'
   nested: boolean
   cleanup: boolean
+  max_segment_bytes: number
+  max_queue_messages: number
+  max_storage_bytes: number
+  max_storage_files: number
+  max_active_streams: number
 }
 
 export interface RtmpApplicationConfig {
@@ -716,12 +727,41 @@ export interface RtmpVodPolicyConfig {
   max_duration_ms: number
 }
 
+export interface RtmpExecEnvironmentConfig {
+  name: string
+  value: string
+}
+
+export interface RtmpExecProfileConfig {
+  name: string
+  application: string
+  mode: RtmpExecMode
+  trigger: RtmpExecTrigger
+  executable: string
+  arguments: string[]
+  environment: RtmpExecEnvironmentConfig[]
+  working_directory: string
+  filesystem: RtmpExecFilesystemPolicy
+  network: RtmpExecNetworkPolicy
+  timeout_ms: number
+  shutdown_timeout_ms: number
+  max_processes: number
+  max_queue_messages: number
+  max_queue_bytes: number
+  max_stdout_bytes: number
+  max_stderr_bytes: number
+  respawn: boolean
+  respawn_delay_ms: number
+  max_respawns: number
+}
+
 export interface RtmpServiceConfig {
   name: string
   outbound_chunk_size: number
   access_log: AccessLogConfig | null
   outbound_policy: RtmpOutboundPolicyConfig
   callbacks: RtmpCallbackConfig
+  exec_profiles?: RtmpExecProfileConfig[]
   applications: RtmpApplicationConfig[]
 }
 
@@ -1255,7 +1295,9 @@ function isResponseHeaderMutation(value: unknown): value is HttpResponseHeaderMu
 function isRtmpService(value: unknown): value is RtmpServiceConfig {
   return isRecord(value) && typeof value.name === 'string' && safeInteger(value.outbound_chunk_size) &&
     (value.access_log === null || isAccessLog(value.access_log)) && isRtmpOutboundPolicy(value.outbound_policy) &&
-    isRtmpCallbackConfig(value.callbacks) && arrayOf(value.applications, (application) =>
+    isRtmpCallbackConfig(value.callbacks) &&
+    (value.exec_profiles === undefined || arrayOf(value.exec_profiles, isRtmpExecProfile)) &&
+    arrayOf(value.applications, (application) =>
     isRecord(application) && typeof application.name === 'string' && typeof application.live === 'boolean' &&
     typeof application.idle_streams === 'boolean' && isRtmpAccessPolicy(application.publish) &&
     isRtmpAccessPolicy(application.play) && isRtmpSessionCeilings(application.limits) &&
@@ -1332,8 +1374,27 @@ function isRtmpHlsPolicy(value: unknown): value is RtmpHlsPolicyConfig {
 
 function isRtmpDashPolicy(value: unknown): value is RtmpDashPolicyConfig {
   return isRecord(value) && typeof value.root_directory === 'string' &&
-    safeInteger(value.segment_duration_ms) && safeInteger(value.playlist_length_ms) &&
-    typeof value.nested === 'boolean' && typeof value.cleanup === 'boolean'
+    safeInteger(value.segment_duration_ms) && safeInteger(value.max_segment_duration_ms) &&
+    safeInteger(value.playlist_length_ms) && ['sequential', 'timestamp', 'system'].includes(String(value.segment_naming)) &&
+    typeof value.nested === 'boolean' && typeof value.cleanup === 'boolean' &&
+    safeInteger(value.max_segment_bytes) && safeInteger(value.max_queue_messages) &&
+    safeInteger(value.max_storage_bytes) && safeInteger(value.max_storage_files) &&
+    safeInteger(value.max_active_streams)
+}
+
+function isRtmpExecProfile(value: unknown): value is RtmpExecProfileConfig {
+  return isRecord(value) && typeof value.name === 'string' && typeof value.application === 'string' &&
+    ['command', 'transcode'].includes(String(value.mode)) && ['publisher', 'publish_done'].includes(String(value.trigger)) &&
+    typeof value.executable === 'string' && arrayOf(value.arguments, isString) &&
+    arrayOf(value.environment, (environment) => isRecord(environment) && typeof environment.name === 'string' &&
+      typeof environment.value === 'string') && typeof value.working_directory === 'string' &&
+    ['working_directory', 'host'].includes(String(value.filesystem)) &&
+    ['disabled', 'inherited'].includes(String(value.network)) && safeInteger(value.timeout_ms) &&
+    safeInteger(value.shutdown_timeout_ms) && safeInteger(value.max_processes) &&
+    safeInteger(value.max_queue_messages) && safeInteger(value.max_queue_bytes) &&
+    safeInteger(value.max_stdout_bytes) && safeInteger(value.max_stderr_bytes) &&
+    typeof value.respawn === 'boolean' && safeInteger(value.respawn_delay_ms) &&
+    safeInteger(value.max_respawns)
 }
 
 function isRtmpVodSource(value: unknown): value is RtmpVodSource {
@@ -1812,6 +1873,13 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'rtmp_services[].applications[].limits.max_connections', kind: 'integer' },
   { path: 'rtmp_services[].applications[].limits.max_publishers', kind: 'integer' },
   { path: 'rtmp_services[].applications[].limits.max_viewers', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].dash.max_active_streams', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].dash.max_queue_messages', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].dash.max_segment_bytes', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].dash.max_segment_duration_ms', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].dash.max_storage_bytes', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].dash.max_storage_files', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].dash.segment_naming', kind: 'enum' },
   { path: 'rtmp_services[].applications[].recorders', kind: 'collection' },
   { path: 'rtmp_services[].applications[].recorders[].name', kind: 'string' },
   { path: 'rtmp_services[].applications[].recorders[].start', kind: 'enum' },
@@ -1853,6 +1921,29 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'rtmp_services[].applications[].hls.variants[].height', kind: 'integer' },
   { path: 'rtmp_services[].applications[].hls.variants[].name', kind: 'string' },
   { path: 'rtmp_services[].applications[].hls.variants[].width', kind: 'integer' },
+  { path: 'rtmp_services[].exec_profiles', kind: 'collection' },
+  { path: 'rtmp_services[].exec_profiles[].name', kind: 'string' },
+  { path: 'rtmp_services[].exec_profiles[].application', kind: 'string' },
+  { path: 'rtmp_services[].exec_profiles[].mode', kind: 'enum' },
+  { path: 'rtmp_services[].exec_profiles[].trigger', kind: 'enum' },
+  { path: 'rtmp_services[].exec_profiles[].executable', kind: 'string' },
+  { path: 'rtmp_services[].exec_profiles[].arguments', kind: 'string_list' },
+  { path: 'rtmp_services[].exec_profiles[].environment', kind: 'collection' },
+  { path: 'rtmp_services[].exec_profiles[].environment[].name', kind: 'string' },
+  { path: 'rtmp_services[].exec_profiles[].environment[].value', kind: 'string' },
+  { path: 'rtmp_services[].exec_profiles[].working_directory', kind: 'string' },
+  { path: 'rtmp_services[].exec_profiles[].filesystem', kind: 'enum' },
+  { path: 'rtmp_services[].exec_profiles[].network', kind: 'enum' },
+  { path: 'rtmp_services[].exec_profiles[].timeout_ms', kind: 'integer' },
+  { path: 'rtmp_services[].exec_profiles[].shutdown_timeout_ms', kind: 'integer' },
+  { path: 'rtmp_services[].exec_profiles[].max_processes', kind: 'integer' },
+  { path: 'rtmp_services[].exec_profiles[].max_queue_messages', kind: 'integer' },
+  { path: 'rtmp_services[].exec_profiles[].max_queue_bytes', kind: 'integer' },
+  { path: 'rtmp_services[].exec_profiles[].max_stdout_bytes', kind: 'integer' },
+  { path: 'rtmp_services[].exec_profiles[].max_stderr_bytes', kind: 'integer' },
+  { path: 'rtmp_services[].exec_profiles[].respawn', kind: 'boolean' },
+  { path: 'rtmp_services[].exec_profiles[].respawn_delay_ms', kind: 'integer' },
+  { path: 'rtmp_services[].exec_profiles[].max_respawns', kind: 'integer' },
   { path: 'l4_services', kind: 'collection' },
   { path: 'l4_services[].name', kind: 'string' },
   { path: 'l4_services[].upstream_pool', kind: 'reference' },
