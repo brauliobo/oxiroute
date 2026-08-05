@@ -222,6 +222,7 @@ describe('production API client against the built management process', () => {
               notify_update_strict: false,
               notify_relay_redirect: false,
             },
+            exec_profiles: [],
             applications: [{
             name: 'broadcast',
             live: true,

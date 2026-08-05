@@ -58,12 +58,12 @@ revision returns `409` and does not perform a last-writer-wins write.
 ## Response Rules
 
 - Cumulative `u64` values are decimal strings; gauges and bounded counts are JSON numbers.
-- ACME action responses contain only certificate names, categorical outcomes, job IDs, and disk/active
-  revisions where applicable. Account keys, account/order URLs, JWS bodies, challenge tokens, DNS TXT
-  values, and private certificate material are never returned.
 - Timestamps use RFC 3339 or explicitly named Unix-millisecond fields.
 - Topology is an active-generation graph with stable IDs, canonical config paths, and runtime overlays.
 - Sensitive paths and secret material are omitted or redacted.
+- ACME action responses contain only certificate names, categorical outcomes, job IDs, and disk/active
+  revisions where applicable. Account keys, account/order URLs, JWS bodies, challenge tokens, DNS TXT
+  values, and private certificate material are never returned.
 - Management responses return `X-Correlation-ID`; a valid caller-supplied value is retained within
   the 64-byte safe-character bound, otherwise the service generates one.
 - A `503` sampling or canonical-state error is not replaced with fabricated zeroes.
