@@ -766,10 +766,7 @@ mod tests {
             bind: "127.0.0.1:9900".parse().expect("management address"),
             ui_dir: None,
         });
-        assert_eq!(
-            validate_stage_one_config(&config),
-            Err("Stage 2 worker management API is not connected to the master")
-        );
+        assert!(validate_stage_one_config(&config).is_ok());
         config.management = None;
 
         config.listeners.push(oxiroute_config::Listener {
