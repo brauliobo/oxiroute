@@ -24,6 +24,8 @@ use quinn::crypto::rustls::QuicServerConfig;
 use quinn::{Endpoint, EndpointConfig, ServerConfig, TransportConfig, VarInt};
 use rustls::server::{ClientHello, ResolvesServerCert};
 use tokio::{
+    fs::File as TokioFile,
+    io::{AsyncReadExt as _, AsyncSeekExt as _},
     runtime::Builder,
     sync::{OwnedSemaphorePermit, Semaphore, watch},
     time::{Instant, timeout_at},
@@ -35,7 +37,7 @@ use crate::{
     RuntimeReferenceKind, TlsProfilePlan,
     http_action::{
         HttpActionPlan, ProxyActionPlan, ProxyPolicyPlan, RequestHeaderMutationPlan,
-        RequestHeaderValuePlan,
+        RequestHeaderValuePlan, StaticErrorTarget, StaticFile, StaticServeError, StaticTarget,
     },
     http_proxy::{
         apply_response_policy, apply_response_policy_map,
@@ -54,11 +56,13 @@ const H3_CONNECTION_RECEIVE_WINDOW: u32 = 8 * 1024 * 1024;
 const H3_INCOMING_BUFFER: u64 = 1024 * 1024;
 const H3_TOTAL_INCOMING_BUFFER: u64 = 16 * 1024 * 1024;
 pub(crate) const H3_MAX_FIELD_SECTION_BYTES: u64 = 16 * 1024;
+pub(crate) const H3_MAX_REQUEST_BODY_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) const H3_MAX_RESPONSE_BODY_BYTES: u64 = 64 * 1024 * 1024;
 const H3_CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
-const H3_CLOSE_CODE: VarInt = VarInt::from_u32(0);
+const H3_CLOSE_CODE: VarInt = VarInt::from_u32(0x100);
 const KEEP_ALIVE: HeaderName = HeaderName::from_static("keep-alive");
 const PROXY_CONNECTION: HeaderName = HeaderName::from_static("proxy-connection");
+const MAX_STATIC_REDIRECTS: usize = 10;
 
 pub struct Http3Runtime {
     thread: Option<JoinHandle<()>>,
@@ -488,16 +492,16 @@ async fn run_reverse_connection(
     let connector = Arc::new(Connector::new(None));
     let mut requests = tokio::task::JoinSet::new();
     let client_addr = Some(connection.remote_address());
-    loop {
+    let graceful = loop {
         tokio::select! {
-            _ = shutdown.changed() => break,
+            _ = shutdown.changed() => break true,
             accepted = h3.accept() => {
                 let resolver = match accepted {
                     Ok(Some(resolver)) => resolver,
-                    Ok(None) => break,
+                    Ok(None) => break false,
                     Err(error) => {
                         warn!("reverse HTTP/3 request acceptance failed: {error}");
-                        break;
+                        break false;
                     }
                 };
                 let service = Arc::clone(&service);
@@ -520,6 +524,9 @@ async fn run_reverse_connection(
                 });
             }
         }
+    };
+    if graceful {
+        drain_h3_connection(&mut h3).await;
     }
     connection.close(H3_CLOSE_CODE, b"generation draining");
     while let Some(result) = requests.join_next().await {
@@ -579,16 +586,16 @@ async fn run_connection(
         }
     };
     let mut requests = tokio::task::JoinSet::new();
-    loop {
+    let graceful = loop {
         tokio::select! {
-            _ = shutdown.changed() => break,
+            _ = shutdown.changed() => break true,
             accepted = h3.accept() => {
                 let resolver = match accepted {
                     Ok(Some(resolver)) => resolver,
-                    Ok(None) => break,
+                    Ok(None) => break false,
                     Err(error) => {
                         warn!("HTTP/3 request acceptance failed: {error}");
-                        break;
+                        break false;
                     }
                 };
                 let service = Arc::clone(&service);
@@ -598,6 +605,9 @@ async fn run_connection(
                 });
             }
         }
+    };
+    if graceful {
+        drain_h3_connection(&mut h3).await;
     }
     connection.close(H3_CLOSE_CODE, b"generation draining");
     while let Some(result) = requests.join_next().await {
@@ -608,6 +618,14 @@ async fn run_connection(
     drop(listener_connection);
     drop(generation_reference);
     drop(service_connection);
+}
+
+async fn drain_h3_connection<C>(connection: &mut h3::server::Connection<C, Bytes>)
+where
+    C: h3::quic::Connection<Bytes>,
+{
+    let _ = connection.shutdown(0).await;
+    while let Ok(Some(_)) = connection.accept().await {}
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -801,17 +819,20 @@ where
             .await
             .then_some(redirect.status);
         }
-        HttpActionPlan::Static(_) => {
-            return send_h3_error(
-                stream,
-                StatusCode::NOT_IMPLEMENTED,
-                b"static HTTP/3 reverse routes are not enabled\n",
-                deadline,
-            )
-            .await
-            .then_some(StatusCode::NOT_IMPLEMENTED.as_u16());
+        HttpActionPlan::Static(files) => {
+            return send_h3_static_request(stream, files, request, deadline).await;
         }
         HttpActionPlan::Proxy(proxy) => {
+            if proxy.pool.h3().is_none() {
+                return send_h3_error(
+                    stream,
+                    StatusCode::BAD_GATEWAY,
+                    b"HTTP/3 reverse routes require an exact HTTP/3 upstream pool\n",
+                    deadline,
+                )
+                .await
+                .then_some(StatusCode::BAD_GATEWAY.as_u16());
+            }
             let body_limit = match (
                 service.max_request_body_bytes(),
                 route.policy.max_request_body_bytes,
@@ -842,6 +863,7 @@ where
                 }
             };
             if content_length.is_some_and(|length| length > body_limit) {
+                stream.stop_sending(h3::error::Code::H3_REQUEST_CANCELLED);
                 return send_h3_error(
                     stream,
                     StatusCode::PAYLOAD_TOO_LARGE,
@@ -1360,6 +1382,24 @@ where
         .await;
         return Some(StatusCode::BAD_GATEWAY.as_u16());
     }
+    let body_length = u64::try_from(response.body.len()).unwrap_or(u64::MAX);
+    if sanitize_h3_response_headers(
+        &mut headers,
+        status,
+        body_length,
+        request.method() == Method::HEAD,
+    )
+    .is_err()
+    {
+        let _ = send_h3_error(
+            stream,
+            StatusCode::BAD_GATEWAY,
+            b"HTTP/3 upstream response cannot be represented safely\n",
+            deadline,
+        )
+        .await;
+        return Some(StatusCode::BAD_GATEWAY.as_u16());
+    }
     let mut response_head = Response::new(());
     *response_head.status_mut() = status;
     *response_head.headers_mut() = headers;
@@ -1374,7 +1414,6 @@ where
         StatusCode::NO_CONTENT | StatusCode::RESET_CONTENT | StatusCode::NOT_MODIFIED
     );
     if request.method() != Method::HEAD && !body_forbidden && !response.body.is_empty() {
-        let body_length = u64::try_from(response.body.len()).unwrap_or(u64::MAX);
         let _ = metrics.record_bytes_sent(body_length);
         if !matches!(
             timeout_at(deadline, stream.send_data(response.body)).await,
@@ -1383,14 +1422,16 @@ where
             return None;
         }
     }
-    if let Some(mut trailers) = response.trailers {
-        if remove_upstream_hop_by_hop_response_headers_map(&mut trailers).is_err()
-            || !matches!(
-                timeout_at(deadline, stream.send_trailers(trailers)).await,
-                Ok(Ok(()))
-            )
-        {
-            return None;
+    if request.method() != Method::HEAD {
+        if let Some(mut trailers) = response.trailers {
+            if sanitize_h3_trailers(&mut trailers).is_err()
+                || !matches!(
+                    timeout_at(deadline, stream.send_trailers(trailers)).await,
+                    Ok(Ok(()))
+                )
+            {
+                return None;
+            }
         }
     }
     if !matches!(timeout_at(deadline, stream.finish()).await, Ok(Ok(()))) {
@@ -1574,7 +1615,7 @@ fn header_bytes(headers: &HeaderMap) -> usize {
     })
 }
 
-fn request_content_length(headers: &HeaderMap) -> Result<Option<u64>, ()> {
+pub(crate) fn request_content_length(headers: &HeaderMap) -> Result<Option<u64>, ()> {
     let mut values = headers.get_all(CONTENT_LENGTH).iter();
     let length = values
         .next()
@@ -1667,6 +1708,502 @@ where
     .await
 }
 
+enum H3StaticErrorAction {
+    File {
+        file: StaticFile,
+        headers: Box<[(HeaderName, HeaderValue)]>,
+    },
+    InternalRedirect {
+        path: String,
+        headers: Box<[(HeaderName, HeaderValue)]>,
+    },
+    Literal {
+        body: Bytes,
+        headers: Box<[(HeaderName, HeaderValue)]>,
+    },
+    Empty,
+}
+
+async fn h3_static_error_action(
+    files: &crate::http_action::StaticFilesPlan,
+    status: u16,
+) -> H3StaticErrorAction {
+    match files.error_document(status).await {
+        Some(StaticErrorTarget::File { file, headers }) => {
+            H3StaticErrorAction::File { file, headers }
+        }
+        Some(StaticErrorTarget::InternalRedirect { path, headers }) => {
+            H3StaticErrorAction::InternalRedirect { path, headers }
+        }
+        Some(StaticErrorTarget::Literal { body, headers }) => {
+            H3StaticErrorAction::Literal { body, headers }
+        }
+        None => H3StaticErrorAction::Empty,
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+async fn send_h3_static_request<S>(
+    stream: &mut h3::server::RequestStream<S, Bytes>,
+    files: &crate::http_action::StaticFilesPlan,
+    request: &Request<()>,
+    deadline: Instant,
+) -> Option<u16>
+where
+    S: h3::quic::BidiStream<Bytes> + Send,
+{
+    let head = request.method() == Method::HEAD;
+    if request.method() != Method::GET && !head {
+        let headers = [(
+            HeaderName::from_static("allow"),
+            HeaderValue::from_static("GET, HEAD"),
+        )];
+        return send_h3_response(
+            stream,
+            StatusCode::METHOD_NOT_ALLOWED,
+            &headers,
+            Bytes::new(),
+            false,
+            deadline,
+        )
+        .await
+        .then_some(StatusCode::METHOD_NOT_ALLOWED.as_u16());
+    }
+
+    let mut path = request.uri().path().to_owned();
+    let mut status_override = None;
+    let mut pending_headers = Vec::new();
+    for _ in 0..=MAX_STATIC_REDIRECTS {
+        match files.serve(&path).await {
+            Ok(StaticTarget::File(file)) => {
+                let status = status_override.unwrap_or(200);
+                let range = if status == 200 {
+                    if let Ok(range) = requested_h3_range(request, file.size) {
+                        range
+                    } else {
+                        let headers = [
+                            (
+                                HeaderName::from_static("accept-ranges"),
+                                HeaderValue::from_static("bytes"),
+                            ),
+                            (
+                                HeaderName::from_static("content-range"),
+                                HeaderValue::from_str(&format!("bytes */{}", file.size))
+                                    .expect("static size is a valid header value"),
+                            ),
+                        ];
+                        let _ = send_h3_response(
+                            stream,
+                            StatusCode::RANGE_NOT_SATISFIABLE,
+                            &headers,
+                            Bytes::new(),
+                            head,
+                            deadline,
+                        )
+                        .await;
+                        return Some(StatusCode::RANGE_NOT_SATISFIABLE.as_u16());
+                    }
+                } else {
+                    None
+                };
+                return send_h3_static_file(
+                    stream,
+                    files,
+                    file,
+                    StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                    range,
+                    head,
+                    &pending_headers,
+                    deadline,
+                )
+                .await;
+            }
+            Ok(StaticTarget::Autoindex { body }) => {
+                let status = status_override.take().unwrap_or(200);
+                let mut headers = files.headers(status);
+                headers.extend(std::mem::take(&mut pending_headers));
+                headers.push((
+                    HeaderName::from_static("content-type"),
+                    HeaderValue::from_static("text/html; charset=utf-8"),
+                ));
+                return send_h3_response(
+                    stream,
+                    StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                    &headers,
+                    body,
+                    head,
+                    deadline,
+                )
+                .await
+                .then_some(status);
+            }
+            Ok(StaticTarget::DirectoryRedirect { path: redirect }) => {
+                let Ok(location) = HeaderValue::from_str(&redirect) else {
+                    return send_h3_error(
+                        stream,
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        b"static directory redirect is invalid\n",
+                        deadline,
+                    )
+                    .await
+                    .then_some(StatusCode::INTERNAL_SERVER_ERROR.as_u16());
+                };
+                let mut headers = files.headers(301);
+                headers.extend(std::mem::take(&mut pending_headers));
+                headers.push((HeaderName::from_static("location"), location));
+                return send_h3_response(
+                    stream,
+                    StatusCode::MOVED_PERMANENTLY,
+                    &headers,
+                    Bytes::new(),
+                    head,
+                    deadline,
+                )
+                .await
+                .then_some(StatusCode::MOVED_PERMANENTLY.as_u16());
+            }
+            Ok(StaticTarget::InternalRedirect { path: redirect }) => {
+                path = redirect;
+            }
+            Ok(StaticTarget::Status(status)) => {
+                if let Some(next) = apply_h3_static_error(
+                    stream,
+                    files,
+                    status,
+                    head,
+                    &mut path,
+                    &mut status_override,
+                    &mut pending_headers,
+                    deadline,
+                )
+                .await
+                {
+                    return Some(next);
+                }
+            }
+            Err(error) => {
+                let status = match error {
+                    StaticServeError::Unsafe => 403,
+                    StaticServeError::NotFound => 404,
+                    StaticServeError::TooLarge | StaticServeError::Unavailable => 500,
+                };
+                if let Some(next) = apply_h3_static_error(
+                    stream,
+                    files,
+                    status,
+                    head,
+                    &mut path,
+                    &mut status_override,
+                    &mut pending_headers,
+                    deadline,
+                )
+                .await
+                {
+                    return Some(next);
+                }
+            }
+        }
+    }
+    send_h3_error(
+        stream,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        b"static internal redirect limit exceeded\n",
+        deadline,
+    )
+    .await
+    .then_some(StatusCode::INTERNAL_SERVER_ERROR.as_u16())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_h3_static_error<S>(
+    stream: &mut h3::server::RequestStream<S, Bytes>,
+    files: &crate::http_action::StaticFilesPlan,
+    status: u16,
+    head: bool,
+    path: &mut String,
+    status_override: &mut Option<u16>,
+    pending_headers: &mut Vec<(HeaderName, HeaderValue)>,
+    deadline: Instant,
+) -> Option<u16>
+where
+    S: h3::quic::BidiStream<Bytes> + Send,
+{
+    match h3_static_error_action(files, status).await {
+        H3StaticErrorAction::File { file, headers } => {
+            let mut all_headers = headers.into_vec();
+            all_headers.extend(std::mem::take(pending_headers));
+            send_h3_static_file(
+                stream,
+                files,
+                file,
+                StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                None,
+                head,
+                &all_headers,
+                deadline,
+            )
+            .await
+        }
+        H3StaticErrorAction::InternalRedirect {
+            path: redirect,
+            headers,
+        } => {
+            *path = redirect;
+            *status_override = Some(status);
+            pending_headers.extend(headers.into_vec());
+            None
+        }
+        H3StaticErrorAction::Literal { body, headers } => {
+            let mut all_headers = files.headers(status);
+            all_headers.extend(headers.into_vec());
+            all_headers.extend(std::mem::take(pending_headers));
+            let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            let _ = send_h3_response(stream, status, &all_headers, body, head, deadline).await;
+            Some(status.as_u16())
+        }
+        H3StaticErrorAction::Empty => {
+            let mut all_headers = files.headers(status);
+            all_headers.extend(std::mem::take(pending_headers));
+            let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            let _ =
+                send_h3_response(stream, status, &all_headers, Bytes::new(), head, deadline).await;
+            Some(status.as_u16())
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+async fn send_h3_static_file<S>(
+    stream: &mut h3::server::RequestStream<S, Bytes>,
+    files: &crate::http_action::StaticFilesPlan,
+    file: StaticFile,
+    status: StatusCode,
+    range: Option<(u64, u64)>,
+    head: bool,
+    extra_headers: &[(HeaderName, HeaderValue)],
+    deadline: Instant,
+) -> Option<u16>
+where
+    S: h3::quic::BidiStream<Bytes> + Send,
+{
+    let status = if range.is_some() && status == StatusCode::OK {
+        StatusCode::PARTIAL_CONTENT
+    } else {
+        status
+    };
+    let (start, end) = range.unwrap_or_else(|| (0, file.size.saturating_sub(1)));
+    let length = if file.size == 0 { 0 } else { end - start + 1 };
+    if length > H3_MAX_RESPONSE_BODY_BYTES {
+        let _ = send_h3_error(
+            stream,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            b"static response body exceeds the HTTP/3 limit\n",
+            deadline,
+        )
+        .await;
+        return Some(StatusCode::PAYLOAD_TOO_LARGE.as_u16());
+    }
+
+    let mut headers = files.headers(status.as_u16());
+    headers.extend_from_slice(extra_headers);
+    if files.etag_enabled() {
+        headers.push((HeaderName::from_static("etag"), file.etag));
+    }
+    headers.push((
+        HeaderName::from_static("last-modified"),
+        HeaderValue::from_str(&httpdate::fmt_http_date(file.modified))
+            .expect("HTTP date is a valid header value"),
+    ));
+    headers.push((
+        HeaderName::from_static("content-type"),
+        files.content_type(&file.name),
+    ));
+    headers.push((
+        HeaderName::from_static("accept-ranges"),
+        HeaderValue::from_static("bytes"),
+    ));
+    headers.push((
+        CONTENT_LENGTH,
+        HeaderValue::from_str(&length.to_string()).expect("static length is a valid header"),
+    ));
+    if range.is_some() {
+        headers.push((
+            HeaderName::from_static("content-range"),
+            HeaderValue::from_str(&format!("bytes {start}-{end}/{}", file.size))
+                .expect("static range is a valid header"),
+        ));
+    }
+    let status_code = status.as_u16();
+    let mut response = Response::new(());
+    *response.status_mut() = status;
+    for (name, value) in headers {
+        response.headers_mut().append(name, value);
+    }
+    let mut response_headers = response.headers().clone();
+    if sanitize_h3_response_headers(&mut response_headers, status, length, head).is_err() {
+        let _ = send_h3_error(
+            stream,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            b"static response headers are invalid\n",
+            deadline,
+        )
+        .await;
+        return Some(StatusCode::INTERNAL_SERVER_ERROR.as_u16());
+    }
+    *response.headers_mut() = response_headers;
+    if !matches!(
+        timeout_at(deadline, stream.send_response(response)).await,
+        Ok(Ok(()))
+    ) {
+        return None;
+    }
+    if head || length == 0 {
+        if !matches!(timeout_at(deadline, stream.finish()).await, Ok(Ok(()))) {
+            return None;
+        }
+        return Some(status_code);
+    }
+
+    let mut file = TokioFile::from_std(file.file);
+    if file.seek(std::io::SeekFrom::Start(start)).await.is_err() {
+        return None;
+    }
+    let mut remaining = length;
+    let mut buffer = vec![0; 64 * 1024];
+    while remaining != 0 {
+        let chunk_size = usize::try_from(remaining.min(buffer.len() as u64)).expect("chunk bound");
+        let read = match timeout_at(deadline, file.read(&mut buffer[..chunk_size])).await {
+            Ok(Ok(read)) if read != 0 => read,
+            _ => return None,
+        };
+        remaining -= u64::try_from(read).expect("read length fits u64");
+        if !matches!(
+            timeout_at(
+                deadline,
+                stream.send_data(Bytes::copy_from_slice(&buffer[..read])),
+            )
+            .await,
+            Ok(Ok(()))
+        ) {
+            return None;
+        }
+    }
+    if !matches!(timeout_at(deadline, stream.finish()).await, Ok(Ok(()))) {
+        return None;
+    }
+    Some(status_code)
+}
+
+fn requested_h3_range(request: &Request<()>, size: u64) -> Result<Option<(u64, u64)>, ()> {
+    let Some(value) = request.headers().get("range") else {
+        return Ok(None);
+    };
+    let value = value.to_str().map_err(|_| ())?;
+    let Some(value) = value.strip_prefix("bytes=") else {
+        return Ok(None);
+    };
+    if value.contains(',') || size == 0 {
+        return Err(());
+    }
+    let (start, end) = value.split_once('-').ok_or(())?;
+    if start.is_empty() {
+        let suffix = end
+            .parse::<u64>()
+            .ok()
+            .filter(|value| *value != 0)
+            .ok_or(())?;
+        return Ok(Some((size.saturating_sub(suffix), size - 1)));
+    }
+    let start = start
+        .parse::<u64>()
+        .ok()
+        .filter(|value| *value < size)
+        .ok_or(())?;
+    let end = if end.is_empty() {
+        size - 1
+    } else {
+        end.parse::<u64>()
+            .ok()
+            .filter(|value| *value >= start)
+            .map_or(Err(()), |value| Ok(value.min(size - 1)))?
+    };
+    Ok(Some((start, end)))
+}
+
+fn strip_h3_hop_by_hop_headers(headers: &mut HeaderMap) -> Result<(), ()> {
+    let mut nominated = Vec::new();
+    for value in headers.get_all(CONNECTION) {
+        for token in value.to_str().map_err(|_| ())?.split(',') {
+            nominated.push(HeaderName::from_bytes(token.trim().as_bytes()).map_err(|_| ())?);
+        }
+    }
+    for name in nominated {
+        headers.remove(name);
+    }
+    for name in [
+        CONNECTION,
+        KEEP_ALIVE,
+        HeaderName::from_static("proxy-authenticate"),
+        HeaderName::from_static("proxy-authorization"),
+        PROXY_CONNECTION,
+        TE,
+        TRAILER,
+        TRANSFER_ENCODING,
+        UPGRADE,
+    ] {
+        headers.remove(name);
+    }
+    Ok(())
+}
+
+pub(crate) fn sanitize_h3_response_headers(
+    headers: &mut HeaderMap,
+    status: StatusCode,
+    body_length: u64,
+    head: bool,
+) -> Result<(), ()> {
+    if status.is_informational() || status == StatusCode::SWITCHING_PROTOCOLS {
+        return Err(());
+    }
+    let declared_length = request_content_length(headers)?;
+    strip_h3_hop_by_hop_headers(headers)?;
+    let body_forbidden = matches!(
+        status,
+        StatusCode::NO_CONTENT | StatusCode::RESET_CONTENT | StatusCode::NOT_MODIFIED
+    );
+    let representation_length = if head {
+        declared_length.unwrap_or(body_length)
+    } else {
+        body_length
+    };
+    if representation_length > H3_MAX_RESPONSE_BODY_BYTES {
+        return Err(());
+    }
+    if body_forbidden {
+        headers.remove(CONTENT_LENGTH);
+    } else {
+        headers.remove(CONTENT_LENGTH);
+        headers.insert(
+            CONTENT_LENGTH,
+            HeaderValue::from_str(&representation_length.to_string()).map_err(|_| ())?,
+        );
+    }
+    if !head && body_forbidden && body_length != 0 {
+        return Err(());
+    }
+    (header_bytes(headers) <= usize::try_from(H3_MAX_FIELD_SECTION_BYTES).map_err(|_| ())?)
+        .then_some(())
+        .ok_or(())
+}
+
+pub(crate) fn sanitize_h3_trailers(headers: &mut HeaderMap) -> Result<(), ()> {
+    strip_h3_hop_by_hop_headers(headers)?;
+    headers.remove(CONTENT_LENGTH);
+    (header_bytes(headers) <= usize::try_from(H3_MAX_FIELD_SECTION_BYTES).map_err(|_| ())?)
+        .then_some(())
+        .ok_or(())
+}
+
 async fn send_h3_response<S>(
     stream: &mut h3::server::RequestStream<S, Bytes>,
     status: StatusCode,
@@ -1682,20 +2219,18 @@ where
         status,
         StatusCode::NO_CONTENT | StatusCode::RESET_CONTENT | StatusCode::NOT_MODIFIED
     );
+    let body_length = u64::try_from(body.len()).map_err(|_| ()).ok();
+    let Some(body_length) = body_length else {
+        return false;
+    };
     let Ok(mut response) = Response::builder().status(status).body(()) else {
         return false;
     };
     for (name, value) in headers {
         response.headers_mut().append(name.clone(), value.clone());
     }
-    if body_forbidden {
-        response.headers_mut().remove(CONTENT_LENGTH);
-    } else if !response.headers().contains_key(CONTENT_LENGTH) {
-        let length = if head { 0 } else { body.len() };
-        response.headers_mut().insert(
-            CONTENT_LENGTH,
-            HeaderValue::from_str(&length.to_string()).expect("body length is a valid header"),
-        );
+    if sanitize_h3_response_headers(response.headers_mut(), status, body_length, head).is_err() {
+        return false;
     }
     if !matches!(
         timeout_at(deadline, stream.send_response(response)).await,
@@ -1986,8 +2521,24 @@ fn listener_capability(listeners: &[crate::ListenerSnapshot], protocol: &str) ->
     } else {
         "blocked"
     };
+    let blocked_reason = if status != "blocked" {
+        None
+    } else if configured
+        .iter()
+        .any(|listener| listener.state == ListenerRuntimeState::Failed)
+    {
+        Some("listener_runtime_failed")
+    } else if configured
+        .iter()
+        .any(|listener| listener.state == ListenerRuntimeState::Stopped)
+    {
+        Some("listener_stopped")
+    } else {
+        Some("listener_not_listening")
+    };
     serde_json::json!({
         "status": status,
+        "supported": true,
         "listeners": active,
         "configuredListeners": configured.iter().map(|listener| listener.name.clone()).collect::<Vec<_>>(),
         "transport": "quic",
@@ -1995,15 +2546,18 @@ fn listener_capability(listeners: &[crate::ListenerSnapshot], protocol: &str) ->
         "tlsMinVersion": "1.3",
         "zeroRtt": "disabled",
         "migration": "disabled",
+        "goAway": "graceful",
         "fallback": "none",
+        "unsupported": ["cache", "compression", "upgrades"],
         "limits": {
             "maxHandshakesAndConnections": H3_HANDSHAKE_LIMIT,
             "maxBidirectionalStreams": H3_BIDI_STREAM_LIMIT,
             "maxUnidirectionalStreams": H3_UNI_STREAM_LIMIT,
             "maxFieldSectionBytes": H3_MAX_FIELD_SECTION_BYTES,
+            "maxRequestBodyBytes": H3_MAX_REQUEST_BODY_BYTES,
             "maxResponseBodyBytes": H3_MAX_RESPONSE_BODY_BYTES,
         },
-        "blockedReason": (status == "blocked").then_some("listener is not listening"),
+        "blockedReason": blocked_reason,
     })
 }
 
@@ -2070,7 +2624,17 @@ mod tests {
 
         assert_eq!(value["http3"]["reverse"]["status"], "active");
         assert_eq!(value["http3"]["forward"]["status"], "unconfigured");
+        assert_eq!(value["http3"]["reverse"]["supported"], true);
+        assert_eq!(value["http3"]["reverse"]["goAway"], "graceful");
         assert_eq!(value["http3"]["reverse"]["fallback"], "none");
+        assert_eq!(
+            value["http3"]["reverse"]["unsupported"],
+            serde_json::json!(["cache", "compression", "upgrades"])
+        );
+        assert_eq!(
+            value["http3"]["reverse"]["limits"]["maxRequestBodyBytes"],
+            H3_MAX_REQUEST_BODY_BYTES
+        );
     }
 
     #[test]
@@ -2085,5 +2649,61 @@ mod tests {
         let mut invalid = HeaderMap::new();
         invalid.insert(CONTENT_LENGTH, HeaderValue::from_static("not-a-number"));
         assert_eq!(request_content_length(&invalid), Err(()));
+    }
+
+    #[test]
+    fn sanitizes_h3_response_framing_and_hop_by_hop_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONNECTION, HeaderValue::from_static("x-hop, keep-alive"));
+        headers.insert(
+            HeaderName::from_static("x-hop"),
+            HeaderValue::from_static("removed"),
+        );
+        headers.insert(CONTENT_LENGTH, HeaderValue::from_static("999"));
+        headers.insert(TE, HeaderValue::from_static("trailers"));
+
+        sanitize_h3_response_headers(&mut headers, StatusCode::OK, 3, false)
+            .expect("safe H3 response headers");
+
+        assert_eq!(headers[CONTENT_LENGTH], "3");
+        assert!(!headers.contains_key(CONNECTION));
+        assert!(!headers.contains_key("x-hop"));
+        assert!(!headers.contains_key(TE));
+
+        let mut head_headers = HeaderMap::new();
+        head_headers.insert(CONTENT_LENGTH, HeaderValue::from_static("9"));
+        sanitize_h3_response_headers(&mut head_headers, StatusCode::OK, 0, true)
+            .expect("safe H3 HEAD response headers");
+        assert_eq!(head_headers[CONTENT_LENGTH], "9");
+    }
+
+    #[test]
+    fn rejects_unrepresentable_h3_response_and_trailer_shapes() {
+        let mut headers = HeaderMap::new();
+        assert!(
+            sanitize_h3_response_headers(&mut headers, StatusCode::SWITCHING_PROTOCOLS, 0, false,)
+                .is_err()
+        );
+
+        let mut headers = HeaderMap::new();
+        assert!(
+            sanitize_h3_response_headers(&mut headers, StatusCode::NO_CONTENT, 1, false,).is_err()
+        );
+
+        let mut headers = HeaderMap::new();
+        assert!(
+            sanitize_h3_response_headers(
+                &mut headers,
+                StatusCode::OK,
+                H3_MAX_RESPONSE_BODY_BYTES + 1,
+                false,
+            )
+            .is_err()
+        );
+
+        let mut trailers = HeaderMap::new();
+        trailers.insert(CONTENT_LENGTH, HeaderValue::from_static("1"));
+        sanitize_h3_trailers(&mut trailers).expect("safe H3 trailers");
+        assert!(!trailers.contains_key(CONTENT_LENGTH));
     }
 }
