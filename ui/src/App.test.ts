@@ -5,12 +5,14 @@ import App from './App.vue'
 import {
   contractCatalog,
   contractMonitoring,
+  contractRtmpStats,
   contractTopology,
   jsonResponse,
 } from './test/contractFixtures'
 
 const exactHealthCounter = '18446744073709551615'
 const catalog = contractCatalog()
+const rtmpStats = contractRtmpStats()
 const topology = contractTopology()
 
 function monitoringSample() {
@@ -42,6 +44,7 @@ describe('monitoring dashboard', () => {
     const fetch = vi.fn((input: RequestInfo | URL) => {
       const url = String(input)
       if (url === '/api/v1/monitoring') return Promise.resolve(jsonResponse(monitoringSample()))
+      if (url === '/api/v1/rtmp/stats') return Promise.resolve(jsonResponse(rtmpStats))
       if (url === '/api/v1/topology') return Promise.resolve(jsonResponse(topology))
       return Promise.resolve(jsonResponse(catalog))
     })
@@ -64,6 +67,7 @@ describe('monitoring dashboard', () => {
       const url = String(input)
       if (url === '/api/v1/monitoring') return Promise.resolve(jsonResponse(monitoringSample()))
       if (url === '/api/v1/rtmp/streams') return Promise.resolve(jsonResponse(runtimeCatalog))
+      if (url === '/api/v1/rtmp/stats') return Promise.resolve(jsonResponse(rtmpStats))
       if (url === '/api/v1/topology') return Promise.resolve(jsonResponse(topology))
       if (url.endsWith('/start')) {
         return Promise.resolve(
@@ -145,11 +149,13 @@ describe('monitoring dashboard', () => {
   it('announces the first load without presenting placeholder data as telemetry', async () => {
     const pendingMonitoring = deferred<Response>()
     const pendingCatalog = deferred<Response>()
+    const pendingRtmpStats = deferred<Response>()
     const pendingTopology = deferred<Response>()
     const fetch = vi.fn((input: RequestInfo | URL) => {
       const url = String(input)
       if (url === '/api/v1/monitoring') return pendingMonitoring.promise
       if (url === '/api/v1/rtmp/streams') return pendingCatalog.promise
+      if (url === '/api/v1/rtmp/stats') return pendingRtmpStats.promise
       return pendingTopology.promise
     })
     vi.stubGlobal('fetch', fetch)
@@ -164,6 +170,7 @@ describe('monitoring dashboard', () => {
 
     pendingMonitoring.resolve(jsonResponse(monitoringSample()))
     pendingCatalog.resolve(jsonResponse(catalog))
+    pendingRtmpStats.resolve(jsonResponse(rtmpStats))
     pendingTopology.resolve(jsonResponse(topology))
     await flushPromises()
 
@@ -178,6 +185,7 @@ describe('monitoring dashboard', () => {
       const url = String(input)
       if (url === '/api/v1/monitoring') return Promise.resolve(jsonResponse(monitoringSample()))
       if (url === '/api/v1/topology') return Promise.resolve(jsonResponse(topology))
+      if (url === '/api/v1/rtmp/stats') return Promise.resolve(jsonResponse(rtmpStats))
       return pendingCatalog.promise
     })
     vi.stubGlobal('fetch', fetch)
@@ -211,7 +219,7 @@ describe('monitoring dashboard', () => {
     await wrapper.vm.$nextTick()
 
     await wrapper.get('a[href="#/configuration"]').trigger('click')
-    expect(firstSignals).toHaveLength(3)
+    expect(firstSignals).toHaveLength(4)
     expect(firstSignals.every((signal) => signal.aborted)).toBe(true)
 
     await wrapper.get('a[href="#/overview"]').trigger('click')
@@ -232,6 +240,7 @@ describe('monitoring dashboard', () => {
       const url = String(input)
       if (url === '/api/v1/monitoring') return Promise.resolve(jsonResponse(monitoringSample()))
       if (url === '/api/v1/rtmp/streams') return Promise.resolve(jsonResponse(recordingCatalog))
+      if (url === '/api/v1/rtmp/stats') return Promise.resolve(jsonResponse(rtmpStats))
       if (url === '/api/v1/topology') return Promise.resolve(jsonResponse(topology))
       if (url.endsWith('/stop')) {
         return Promise.resolve(jsonResponse({
@@ -266,6 +275,7 @@ describe('monitoring dashboard', () => {
       const url = String(input)
       if (url === '/api/v1/monitoring') return Promise.resolve(jsonResponse(monitoringSample()))
       if (url === '/api/v1/rtmp/streams') return Promise.resolve(jsonResponse(catalog))
+      if (url === '/api/v1/rtmp/stats') return Promise.resolve(jsonResponse(rtmpStats))
       if (url === '/api/v1/topology') return Promise.resolve(jsonResponse(topology))
       if (url.endsWith('/start')) {
         return Promise.resolve(jsonResponse({ error: { code, message } }, status))
@@ -294,6 +304,7 @@ describe('monitoring dashboard', () => {
       const url = String(input)
       if (url === '/api/v1/monitoring') return Promise.resolve(jsonResponse(monitoringSample()))
       if (url === '/api/v1/topology') return Promise.resolve(jsonResponse(topology))
+      if (url === '/api/v1/rtmp/stats') return Promise.resolve(jsonResponse(rtmpStats))
       if (url === '/api/v1/rtmp/streams') {
         catalogRequests += 1
         return Promise.resolve(jsonResponse(catalogRequests === 1 ? catalog : replacement))
@@ -326,6 +337,7 @@ describe('monitoring dashboard', () => {
       if (url === '/api/v1/monitoring') {
         return Promise.resolve(jsonResponse({ error: { message: 'metrics offline' } }, 503))
       }
+      if (url === '/api/v1/rtmp/stats') return Promise.resolve(jsonResponse(rtmpStats))
       return Promise.resolve(jsonResponse(url === '/api/v1/topology' ? topology : catalog))
     })
     vi.stubGlobal('fetch', fetch)
@@ -346,6 +358,7 @@ describe('monitoring dashboard', () => {
     const fetch = vi.fn((input: RequestInfo | URL) => {
       const url = String(input)
       if (url === '/api/v1/monitoring') return Promise.resolve(jsonResponse(sample))
+      if (url === '/api/v1/rtmp/stats') return Promise.resolve(jsonResponse(rtmpStats))
       return Promise.resolve(jsonResponse(url === '/api/v1/topology' ? topology : catalog))
     })
     vi.stubGlobal('fetch', fetch)
@@ -369,6 +382,7 @@ describe('monitoring dashboard', () => {
           ? Promise.resolve(jsonResponse(monitoringSample()))
           : pendingMonitoring.promise
       }
+      if (url === '/api/v1/rtmp/stats') return Promise.resolve(jsonResponse(rtmpStats))
       if (url === '/api/v1/topology') return Promise.resolve(jsonResponse(topology))
       return Promise.resolve(jsonResponse(catalog))
     })

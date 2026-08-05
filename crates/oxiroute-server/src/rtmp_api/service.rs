@@ -13,6 +13,7 @@ use super::{
     media::{self, Route as MediaRoute},
     observability::{self, Route as ObservabilityRoute},
     response::{system_time_ms, to_http_response},
+    rtmp::{self, Route as RtmpRoute},
     streams::{self, Route as StreamRoute},
     ui::UiAssets,
     vod::{self, Route as VodRoute},
@@ -48,6 +49,7 @@ const CORRELATION_ID: HeaderName = HeaderName::from_static("x-correlation-id");
 enum ApiRoute<'a> {
     Config(ConfigRoute),
     Observability(ObservabilityRoute),
+    Rtmp(RtmpRoute<'a>),
     Stream(StreamRoute<'a>),
     Vod,
     Media,
@@ -249,6 +251,9 @@ impl RtmpManagementApi {
                 self.topology.as_ref(),
                 self.generations.as_ref(),
             ),
+            ApiRoute::Rtmp(route) => {
+                rtmp::handle(route, method, self.registry.as_ref(), None)
+            }
             ApiRoute::Stream(route) => {
                 streams::handle(route, method, self.registry.as_ref(), now_unix_ms)
             }
@@ -468,6 +473,11 @@ impl RtmpManagementApi {
             return self
                 .handle_at_system_time(&method, &path)
                 .with_correlation(context.correlation_id);
+        }
+        if let Some(route) = rtmp::match_route(&path) {
+            let response = rtmp::handle(route, &method, self.registry.as_ref(), Some(session));
+            self.audit_api_operation(&method, &path, &context, &response);
+            return response.with_correlation(context.correlation_id);
         }
         if method != "GET" && streams::match_route(&path).is_some() {
             let route = streams::match_route(&path).expect("matched stream route");
@@ -1145,6 +1155,7 @@ fn match_api_route(path: &str) -> Option<ApiRoute<'_>> {
     config::match_route(path)
         .map(ApiRoute::Config)
         .or_else(|| observability::match_route(path).map(ApiRoute::Observability))
+        .or_else(|| rtmp::match_route(path).map(ApiRoute::Rtmp))
         .or_else(|| streams::match_route(path).map(ApiRoute::Stream))
         .or_else(|| vod::match_route(path).map(|_| ApiRoute::Vod))
         .or_else(|| media::match_route(path).map(|_| ApiRoute::Media))

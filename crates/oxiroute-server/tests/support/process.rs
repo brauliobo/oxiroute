@@ -217,6 +217,9 @@ fn spawn_server(config_path: &Path, token_path: Option<&Path>) -> Child {
         .env_remove("OXIROUTE_MANAGEMENT_TOKEN_FILE")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if token_path.is_some() {
+        command.env("OXIROUTE_INTERNAL_TEST_DIRECT_RUNTIME", "1");
+    }
     if let Some(token_path) = token_path {
         command.env("OXIROUTE_MANAGEMENT_TOKEN_FILE", token_path);
     }

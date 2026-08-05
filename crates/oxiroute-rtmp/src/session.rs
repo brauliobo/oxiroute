@@ -7,7 +7,8 @@ use rml_rtmp::{
 
 use crate::{
     CatalogError, LiveHub, RtmpCallbackContext, RtmpCallbackError, RtmpCallbackEvent,
-    RtmpCallbackPolicy, RtmpRegistry, SessionId,
+    RtmpCallbackPolicy, RtmpClientSnapshot, RtmpRegistry, RtmpSessionControlAction,
+    RtmpSessionRole, SessionId,
 };
 
 #[path = "session_identity.rs"]
@@ -32,6 +33,7 @@ pub use runtime::{
 pub use status::RtmpSessionError;
 
 use runtime::SessionRole;
+use crate::session_control::RtmpSessionControl;
 use status::{CONNECT_REJECTION_CODE, Rejection};
 
 pub const MAX_INBOUND_CHUNK_SIZE: u32 = 1024 * 1024;
@@ -51,6 +53,7 @@ pub struct RtmpSession {
     peer_addr: Option<IpAddr>,
     connection_lease: Option<runtime::ApplicationSessionLease>,
     connected_application: Option<Arc<str>>,
+    control: Option<Arc<RtmpSessionControl>>,
     last_callback_update_at_unix_ms: u64,
 }
 
@@ -68,15 +71,22 @@ impl RtmpSession {
     }
 
     pub(super) fn from_runtime(runtime: RtmpServiceRuntime, peer_addr: Option<IpAddr>) -> Self {
+        let session_id = SessionId::new();
+        let control = runtime.registry().register_session(
+            session_id,
+            runtime.service_id(),
+            peer_addr,
+        );
         Self {
             runtime,
-            session_id: SessionId::new(),
+            session_id,
             handshake: Some(Handshake::new(PeerType::Server)),
             protocol: None,
             role: None,
             peer_addr,
             connection_lease: None,
             connected_application: None,
+            control,
             last_callback_update_at_unix_ms: 0,
         }
     }
@@ -256,14 +266,19 @@ impl RtmpSession {
             ServerSessionEvent::ConnectionRequested {
                 request_id,
                 app_name,
-            } => self.handle_connection_request(request_id, &app_name),
+            } => self.handle_connection_request(request_id, &app_name, at_unix_ms),
             ServerSessionEvent::PublishStreamRequested {
                 request_id,
                 app_name,
                 stream_key,
                 mode,
             } => {
-                publish::handle_request(self, request_id, &app_name, &stream_key, &mode, at_unix_ms)
+                let result =
+                    publish::handle_request(self, request_id, &app_name, &stream_key, &mode, at_unix_ms);
+                if result.is_ok() {
+                    self.sync_control_state();
+                }
+                result
             }
             ServerSessionEvent::PublishStreamFinished {
                 app_name,
@@ -280,14 +295,20 @@ impl RtmpSession {
                 stream_key,
                 stream_id,
                 ..
-            } => playback::handle_request(
-                self,
-                request_id,
-                &app_name,
-                &stream_key,
-                stream_id,
-                at_unix_ms,
-            ),
+            } => {
+                let result = playback::handle_request(
+                    self,
+                    request_id,
+                    &app_name,
+                    &stream_key,
+                    stream_id,
+                    at_unix_ms,
+                );
+                if result.is_ok() {
+                    self.sync_control_state();
+                }
+                result
+            }
             ServerSessionEvent::PlayStreamFinished {
                 app_name,
                 stream_key,
@@ -345,6 +366,7 @@ impl RtmpSession {
         &mut self,
         request_id: u32,
         application: &str,
+        at_unix_ms: u64,
     ) -> Result<Vec<ServerSessionResult>, RtmpSessionError> {
         if let Err(error) = identity::validate_application(application) {
             return self.reject_request(request_id, status::connection_path(error));
@@ -373,6 +395,9 @@ impl RtmpSession {
             };
             self.connection_lease = Some(connection_lease);
             self.connected_application = Some(Arc::from(application));
+            if let Some(control) = &self.control {
+                control.connected(application, at_unix_ms);
+            }
             Ok(accepted)
         }
     }
@@ -388,11 +413,13 @@ impl RtmpSession {
     }
 
     fn detach_role(&mut self, at_unix_ms: u64) -> Result<(), CatalogError> {
-        self.role.take().map_or(Ok(()), |mut role| {
+        let result = self.role.take().map_or(Ok(()), |mut role| {
             let result = role.release(at_unix_ms);
             self.notify_role_callbacks(&role);
             result
-        })
+        });
+        self.sync_control_state();
+        result
     }
 
     fn observe_role_at(&mut self, at_unix_ms: u64) -> Result<(), RtmpSessionError> {
@@ -541,6 +568,44 @@ impl RtmpSession {
     pub(super) const fn peer_addr(&self) -> Option<IpAddr> {
         self.peer_addr
     }
+
+    /// Returns and consumes a valid pending management disconnect request.
+    #[must_use]
+    pub fn take_control_action(&self) -> Option<RtmpSessionControlAction> {
+        self.control
+            .as_ref()
+            .and_then(|control| control.take_action(self.control_role()))
+    }
+
+    /// Returns the current management snapshot for this connection.
+    #[must_use]
+    pub fn client_snapshot(&self) -> Option<RtmpClientSnapshot> {
+        self.control.as_ref().map(|control| control.snapshot())
+    }
+
+    fn control_role(&self) -> RtmpSessionRole {
+        match self.role {
+            Some(SessionRole::Publisher(_)) => RtmpSessionRole::Publisher,
+            Some(SessionRole::Playback(_) | SessionRole::VodPlayback(_)) => {
+                RtmpSessionRole::Subscriber
+            }
+            None => RtmpSessionRole::Client,
+        }
+    }
+
+    fn sync_control_state(&self) {
+        let Some(control) = &self.control else {
+            return;
+        };
+        let (application, stream_name) = self
+            .role
+            .as_ref()
+            .map(SessionRole::identity)
+            .map_or((self.connected_application.as_deref(), None), |(application, stream_name)| {
+                (Some(application), Some(stream_name))
+            });
+        control.set_role(self.control_role(), application, stream_name);
+    }
 }
 
 impl Drop for RtmpSession {
@@ -564,6 +629,7 @@ impl Drop for RtmpSession {
             }
         }
         self.role.take();
+        self.runtime.registry().unregister_session(self.session_id);
     }
 }
 

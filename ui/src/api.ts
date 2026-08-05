@@ -106,6 +106,59 @@ export interface RtmpCatalog {
   streams: StreamSnapshot[]
 }
 
+export type RtmpClientRole = 'client' | 'publisher' | 'subscriber'
+export type RtmpClientControlTarget = RtmpClientRole
+
+export interface RtmpClientSnapshot {
+  id: string
+  service: string
+  peerIp: string | null
+  connectedAtUnixMs: number
+  application: string | null
+  stream: string | null
+  role: RtmpClientRole
+  revision: string
+}
+
+export interface RtmpStatsGlobal {
+  activeStreams: number
+  publishers: number
+  subscribers: number
+  audioPayloadBytes: string
+  videoPayloadBytes: string
+  liveIngest: boolean
+  manualRecording: boolean
+}
+
+export interface RtmpLiveStat {
+  id: string
+  service: string
+  application: string
+  name: string
+  createdAtUnixMs: number
+  publisherSessionId: string | null
+  subscriberCount: number
+  audioPayloadBytes: string
+  videoPayloadBytes: string
+}
+
+export interface RtmpStats {
+  revision: string
+  asOfUnixMs: number
+  global: RtmpStatsGlobal
+  live: RtmpLiveStat[]
+  clients: RtmpClientSnapshot[]
+  liveTruncated: boolean
+  clientsTruncated: boolean
+}
+
+export interface RtmpControlResponse {
+  outcome: 'requested' | 'already_requested'
+  sessionId: string
+  target: RtmpClientControlTarget
+  sessionRevision: string
+}
+
 export interface MonitoringProcess {
   activeConnections: number
   administrativeState: AdministrativeState
@@ -1023,6 +1076,14 @@ export async function fetchRtmpCatalog(signal?: AbortSignal, token?: string): Pr
   }))
 }
 
+export async function fetchRtmpStats(signal?: AbortSignal, token?: string): Promise<RtmpStats> {
+  return parseRtmpStats(await request<unknown>('/api/v1/rtmp/stats', {
+    cache: 'no-store',
+    headers: token ? authorizationHeader(token) : undefined,
+    signal,
+  }))
+}
+
 export async function fetchMonitoring(signal?: AbortSignal, token?: string): Promise<MonitoringSnapshot> {
   return parseMonitoring(await request<unknown>('/api/v1/monitoring', {
     cache: 'no-store',
@@ -1162,6 +1223,24 @@ export async function drainGeneration(
   return postRevisionMutation('/api/v1/generations/drain', timeoutMs === undefined ? {} : { timeoutMs }, expectedActiveRevision, token)
 }
 
+export async function reconcileTls(
+  expectedActiveRevision: string, token: string, certificate?: string,
+): Promise<TlsReconcileResponse> {
+  return parseTlsReconcileResponse(await request<unknown>('/api/v1/tls/reconcile', {
+    method: 'POST', headers: mutationHeaders(token),
+    body: JSON.stringify({ expectedActiveRevision, ...(certificate ? { certificate } : {}) }),
+  }))
+}
+
+export async function renewManagedCertificate(
+  expectedActiveRevision: string, token: string, certificate: string,
+): Promise<TlsRenewResponse> {
+  return parseTlsRenewResponse(await request<unknown>('/api/v1/tls/renew', {
+    method: 'POST', headers: mutationHeaders(token),
+    body: JSON.stringify({ expectedActiveRevision, certificate }),
+  }))
+}
+
 export async function revokeManagedCertificate(
   expectedActiveRevision: string,
   token: string,
@@ -1210,24 +1289,6 @@ export async function resumeManagedJobs(
   expectedActiveRevision: string, token: string, certificate: string,
 ): Promise<TlsActionResponse> {
   return postTlsAction('/api/v1/tls/jobs/resume', expectedActiveRevision, token, certificate)
-}
-
-export async function reconcileTls(
-  expectedActiveRevision: string, token: string, certificate?: string,
-): Promise<TlsReconcileResponse> {
-  return parseTlsReconcileResponse(await request<unknown>('/api/v1/tls/reconcile', {
-    method: 'POST', headers: mutationHeaders(token),
-    body: JSON.stringify({ expectedActiveRevision, ...(certificate ? { certificate } : {}) }),
-  }))
-}
-
-export async function renewManagedCertificate(
-  expectedActiveRevision: string, token: string, certificate: string,
-): Promise<TlsRenewResponse> {
-  return parseTlsRenewResponse(await request<unknown>('/api/v1/tls/renew', {
-    method: 'POST', headers: mutationHeaders(token),
-    body: JSON.stringify({ expectedActiveRevision, certificate }),
-  }))
 }
 
 export async function drainProcess(expectedActiveRevision: string, token: string): Promise<MutationResponse> {
@@ -1293,6 +1354,25 @@ export async function setRecording(
   return parseRecorder(await request<unknown>(
     `/api/v1/rtmp/streams/${streamId}/recorders/${recorderId}/${action}`,
     { method: 'POST', headers },
+  ))
+}
+
+export async function dropRtmpClient(
+  client: RtmpClientSnapshot,
+  target: RtmpClientControlTarget,
+  token: string,
+): Promise<RtmpControlResponse> {
+  const suffix = target === 'client' ? 'drop' : `${target}/drop`
+  return parseRtmpControlResponse(await request<unknown>(
+    `/api/v1/rtmp/clients/${client.id}/${suffix}`,
+    {
+      method: 'POST',
+      headers: {
+        ...authorizationHeader(token),
+        'If-Rtmp-Session-Revision': client.revision,
+      },
+    },
+    202,
   ))
 }
 
@@ -1544,13 +1624,13 @@ function tlsMaterialStatus(value: unknown): value is Record<string, unknown> & T
 function tlsManagedCertificateStatus(value: unknown): value is Record<string, unknown> & TlsManagedCertificateStatus {
   return isRecord(value) && typeof value.certificate === 'string' && typeof value.directoryUrl === 'string' &&
     ['http01', 'dns01', 'tls_alpn01'].includes(String(value.challenge)) && nullableString(value.dnsProvider) &&
-     nullableString(value.jobId) && typeof value.paused === 'boolean' &&
-     safeInteger(value.retainedRevisions) && safeInteger(value.retentionDays) &&
     typeof value.keyType === 'string' && Array.isArray(value.allowedDnsSuffixes) && value.allowedDnsSuffixes.every((suffix) => typeof suffix === 'string') &&
     typeof value.diskRevision === 'string' && typeof value.activeRevision === 'string' &&
     nullableSafeInteger(value.notBeforeUnixSeconds) && nullableSafeInteger(value.notAfterUnixSeconds) &&
     nullableSafeInteger(value.nextActionUnixSeconds) && typeof value.notAfter === 'string' &&
-    (value.jobStatus === null || ['queued', 'running', 'waiting_for_challenge', 'finalizing', 'paused', 'succeeded', 'failed', 'cancelled'].includes(String(value.jobStatus))) &&
+     (value.jobStatus === null || ['queued', 'running', 'waiting_for_challenge', 'finalizing', 'paused', 'succeeded', 'failed', 'cancelled'].includes(String(value.jobStatus))) &&
+     nullableString(value.jobId) && typeof value.paused === 'boolean' &&
+     safeInteger(value.retainedRevisions) && safeInteger(value.retentionDays) &&
     safeInteger(value.retryAttempt) && nullableSafeInteger(value.lastSuccessUnixSeconds) &&
     nullableString(value.lastOutcome) && nullableString(value.lastErrorCode)
 }
@@ -1590,15 +1670,15 @@ function normalizeTlsManagedStatus(value: Record<string, unknown>): TlsManagedCe
     allowedDnsSuffixes: value.allowedDnsSuffixes as string[],
     diskRevision: value.diskRevision as string,
     activeRevision: value.activeRevision as string,
-    jobId: value.jobId as string | null,
-    paused: value.paused as boolean,
-    retainedRevisions: value.retainedRevisions as number,
-    retentionDays: value.retentionDays as number,
     notBeforeUnixSeconds: value.notBeforeUnixSeconds as number | null,
     notAfterUnixSeconds: value.notAfterUnixSeconds as number | null,
     nextActionUnixSeconds: value.nextActionUnixSeconds as number | null,
     notAfter: value.notAfter as string,
     jobStatus: value.jobStatus as TlsManagedCertificateStatus['jobStatus'],
+    jobId: value.jobId as string | null,
+    paused: value.paused as boolean,
+    retainedRevisions: value.retainedRevisions as number,
+    retentionDays: value.retentionDays as number,
     retryAttempt: value.retryAttempt as number,
     lastSuccessUnixSeconds: value.lastSuccessUnixSeconds as number | null,
     lastOutcome: value.lastOutcome as string | null,
@@ -1634,11 +1714,11 @@ function normalizeTlsOperationOutcome(value: Record<string, unknown>): TlsOperat
   return {
     certificate: value.certificate as string,
     outcome: value.outcome as string,
-    jobId: value.jobId as string | null | undefined ?? null,
     ...(value.previousArchiveRevision === undefined ? {} : { previousArchiveRevision: value.previousArchiveRevision as string | null }),
     ...(value.archiveRevision === undefined ? {} : { archiveRevision: value.archiveRevision as string }),
     ...(value.diskRevision === undefined ? {} : { diskRevision: value.diskRevision as string }),
     ...(value.activeRevision === undefined ? {} : { activeRevision: value.activeRevision as string }),
+    jobId: value.jobId as string | null | undefined ?? null,
   }
 }
 
@@ -1667,6 +1747,47 @@ function parseRtmpCatalog(value: unknown): RtmpCatalog {
     (stream.manual_recording && !manualRecording)
   )) return invalidPayload('RTMP catalog')
   return value as unknown as RtmpCatalog
+}
+
+function parseRtmpStats(value: unknown): RtmpStats {
+  if (!isRecord(value) || !decimalString(value.revision) || !safeInteger(value.asOfUnixMs) ||
+    !rtmpStatsGlobal(value.global) || !Array.isArray(value.live) || !value.live.every(rtmpLiveStat) ||
+    !Array.isArray(value.clients) || !value.clients.every(rtmpClientSnapshot) ||
+    typeof value.liveTruncated !== 'boolean' || typeof value.clientsTruncated !== 'boolean'
+  ) return invalidPayload('RTMP statistics')
+  return value as unknown as RtmpStats
+}
+
+function rtmpStatsGlobal(value: unknown): value is RtmpStatsGlobal {
+  return isRecord(value) && safeInteger(value.activeStreams) && safeInteger(value.publishers) &&
+    safeInteger(value.subscribers) && decimalString(value.audioPayloadBytes) &&
+    decimalString(value.videoPayloadBytes) && typeof value.liveIngest === 'boolean' &&
+    typeof value.manualRecording === 'boolean'
+}
+
+function rtmpLiveStat(value: unknown): value is RtmpLiveStat {
+  return isRecord(value) && typeof value.id === 'string' && typeof value.service === 'string' &&
+    typeof value.application === 'string' && typeof value.name === 'string' &&
+    safeInteger(value.createdAtUnixMs) && nullableString(value.publisherSessionId) &&
+    safeInteger(value.subscriberCount) && decimalString(value.audioPayloadBytes) &&
+    decimalString(value.videoPayloadBytes)
+}
+
+function rtmpClientSnapshot(value: unknown): value is RtmpClientSnapshot {
+  return isRecord(value) && typeof value.id === 'string' && typeof value.service === 'string' &&
+    nullableString(value.peerIp) && safeInteger(value.connectedAtUnixMs) &&
+    nullableString(value.application) && nullableString(value.stream) &&
+    (value.role === 'client' || value.role === 'publisher' || value.role === 'subscriber') &&
+    decimalString(value.revision)
+}
+
+function parseRtmpControlResponse(value: unknown): RtmpControlResponse {
+  if (!isRecord(value) || (value.outcome !== 'requested' && value.outcome !== 'already_requested') ||
+    typeof value.sessionId !== 'string' ||
+    (value.target !== 'client' && value.target !== 'publisher' && value.target !== 'subscriber') ||
+    !decimalString(value.sessionRevision)
+  ) return invalidPayload('RTMP control response')
+  return value as unknown as RtmpControlResponse
 }
 
 function parseMonitoring(value: unknown): MonitoringSnapshot {

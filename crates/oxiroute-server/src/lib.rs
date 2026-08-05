@@ -57,7 +57,8 @@ pub use monitoring::{
     RuntimeSnapshot, TcpRelayCountSnapshot, TcpRelayResult, TcpRelaySnapshot, TrafficSnapshot,
     OPERATION_LATENCY_BUCKETS_MS,
 };
-pub use operational_event::emit_certificate;
+pub use operational_event::{emit_certificate, emit_rtmp_access};
+pub use operational_event::{worker_event_page, WorkerEventPage, WorkerEventSnapshot};
 pub use prometheus::{render_prometheus, PrometheusError};
 pub use proxy_protocol::{
     AcceptedProxyStream, MAX_V1_HEADER_BYTES, MAX_V2_HEADER_BYTES, MAX_V2_PAYLOAD_BYTES,

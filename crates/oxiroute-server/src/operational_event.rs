@@ -986,6 +986,11 @@ pub(crate) enum EventName {
     ListenerAdministrativeState,
     PoolAdministrativeState,
     ServerUpdate,
+    RtmpConnect,
+    RtmpPublish,
+    RtmpPlay,
+    RtmpDisconnect,
+    RtmpAccess,
     CertificateRenewal,
     CertificateActivation,
     UpstreamEndpointEjection,
@@ -1008,6 +1013,11 @@ impl EventName {
             "listener_administrative_state" => Self::ListenerAdministrativeState,
             "pool_administrative_state" => Self::PoolAdministrativeState,
             "server_update" => Self::ServerUpdate,
+            "rtmp_connect" => Self::RtmpConnect,
+            "rtmp_publish" => Self::RtmpPublish,
+            "rtmp_play" => Self::RtmpPlay,
+            "rtmp_disconnect" => Self::RtmpDisconnect,
+            "rtmp_access" => Self::RtmpAccess,
             "certificate_renewal" => Self::CertificateRenewal,
             "certificate_activated" => Self::CertificateActivation,
             "upstream_endpoint_ejection" => Self::UpstreamEndpointEjection,
@@ -1030,6 +1040,11 @@ impl EventName {
             Self::ListenerAdministrativeState => "listener_administrative_state",
             Self::PoolAdministrativeState => "pool_administrative_state",
             Self::ServerUpdate => "server_update",
+            Self::RtmpConnect => "rtmp_connect",
+            Self::RtmpPublish => "rtmp_publish",
+            Self::RtmpPlay => "rtmp_play",
+            Self::RtmpDisconnect => "rtmp_disconnect",
+            Self::RtmpAccess => "rtmp_access",
             Self::CertificateRenewal => "certificate_renewal",
             Self::CertificateActivation => "certificate_activated",
             Self::UpstreamEndpointEjection => "upstream_endpoint_ejection",
@@ -1122,6 +1137,21 @@ impl Serialize for EventOutcome {
 }
 
 impl EventOutcome {
+    pub(crate) const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Prepared => "prepared",
+            Self::Rejected => "rejected",
+            Self::Activated => "activated",
+            Self::Quarantined => "quarantined",
+            Self::Requested => "requested",
+            Self::Applied => "applied",
+            Self::Failed => "failed",
+            Self::Ejected { .. } => "ejected",
+            Self::Recovered { .. } => "recovered",
+            Self::Unknown => "unknown",
+        }
+    }
+
     fn parse(value: &str) -> Self {
         match value {
             "prepared" => Self::Prepared,
@@ -1138,6 +1168,31 @@ impl EventOutcome {
 
 pub(crate) struct EventPage {
     pub events: Vec<OperationalEvent>,
+    pub cursor: u64,
+    pub has_more: bool,
+    pub oldest_cursor: Option<u64>,
+    pub latest_cursor: u64,
+    pub cursor_lost: bool,
+}
+
+/// Redacted event data safe to transfer to a supervised worker.
+#[derive(Clone, Debug)]
+pub struct WorkerEventSnapshot {
+    pub cursor: u64,
+    pub timestamp_unix_ms: Option<u64>,
+    pub event: String,
+    pub outcome: String,
+    pub revision: Option<String>,
+    pub certificate: Option<String>,
+    pub correlation_id: Option<String>,
+    pub source: Option<String>,
+    pub operation: Option<String>,
+}
+
+/// Bounded event page exposed to the supervised worker adapter.
+#[derive(Clone, Debug)]
+pub struct WorkerEventPage {
+    pub events: Vec<WorkerEventSnapshot>,
     pub cursor: u64,
     pub has_more: bool,
     pub oldest_cursor: Option<u64>,
@@ -1220,6 +1275,32 @@ pub(crate) fn audit_page(
 
 pub(crate) fn emit(event: &str, outcome: &str, revision: Option<&ConfigRevision>) {
     emit_with_context(event, outcome, revision, &AuditContext::generated());
+}
+
+/// Emits a bounded, redacted RTMP lifecycle event without copying stream queries or credentials.
+pub fn emit_rtmp_access(event: &str, outcome: &str) {
+    let event = match event {
+        "connect" => "rtmp_connect",
+        "publish" => "rtmp_publish",
+        "play" => "rtmp_play",
+        "disconnect" => "rtmp_disconnect",
+        "access" => "rtmp_access",
+        _ => "rtmp_access",
+    };
+    let outcome = match outcome {
+        "accepted" | "closed" => "applied",
+        "rejected" => "rejected",
+        _ => "failed",
+    };
+    emit_inner(
+        event,
+        outcome,
+        None,
+        None,
+        &AuditContext::generated(),
+        None,
+        None,
+    );
 }
 
 pub fn emit_certificate(event: &str, outcome: &str, certificate: &str) {
@@ -1450,6 +1531,11 @@ const fn category_for_event(event: EventName) -> AuditCategory {
         | EventName::ListenerAdministrativeState
         | EventName::PoolAdministrativeState
         | EventName::ServerUpdate
+        | EventName::RtmpConnect
+        | EventName::RtmpPublish
+        | EventName::RtmpPlay
+        | EventName::RtmpDisconnect
+        | EventName::RtmpAccess
         | EventName::UpstreamEndpointEjection
         | EventName::UpstreamEndpointRecovery
         | EventName::Unknown => AuditCategory::Control,
@@ -1483,6 +1569,39 @@ pub(crate) fn page(after: u64, limit: usize) -> EventPage {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     state.page(after, limit)
+}
+
+/// Returns a bounded, redacted event page without exposing internal event enums.
+pub fn worker_event_page(after: u64, limit: usize) -> WorkerEventPage {
+    let EventPage {
+        events,
+        cursor,
+        has_more,
+        oldest_cursor,
+        latest_cursor,
+        cursor_lost,
+    } = page(after, limit);
+    WorkerEventPage {
+        events: events
+            .into_iter()
+            .map(|event| WorkerEventSnapshot {
+                cursor: event.cursor,
+                timestamp_unix_ms: event.timestamp_unix_ms,
+                event: event.event.as_str().to_owned(),
+                outcome: event.outcome.as_str().to_owned(),
+                revision: event.revision.map(|revision| revision.to_string()),
+                certificate: event.certificate,
+                correlation_id: event.correlation_id,
+                source: event.source,
+                operation: event.operation,
+            })
+            .collect(),
+        cursor,
+        has_more,
+        oldest_cursor,
+        latest_cursor,
+        cursor_lost,
+    }
 }
 
 pub(crate) fn current_cursor() -> u64 {
