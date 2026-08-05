@@ -63,6 +63,21 @@ NullableLimitField(
   legend="Concurrent connection limit"
   input-label="Maximum active connections"
 )
+fieldset.object-block(data-field="listeners[].proxy_protocol")
+  legend Inbound PROXY protocol
+  label.enable-row
+    input(type="checkbox" :checked="listener.proxy_protocol != null" @change="toggleProxyProtocol")
+    span Accept a bounded PROXY header before application data
+  .field-grid(v-if="listener.proxy_protocol")
+    label.field(data-field="listeners[].proxy_protocol.version")
+      span Accepted version
+      select(v-model="listener.proxy_protocol.version")
+        option(value="auto") Auto-detect v1 or v2
+        option(value="v1") PROXY v1 only
+        option(value="v2") PROXY v2 only
+    label.field(data-field="listeners[].proxy_protocol.timeout_ms")
+      span Header timeout (ms)
+      input(type="number" min="1" max="60000" step="1" v-model.number="listener.proxy_protocol.timeout_ms")
 </template>
 
 <script setup lang="ts">
@@ -153,5 +168,11 @@ function updateUnixMode(event: Event): void {
   const mode = input.value.trim()
   props.listener.bind.mode = /^0?[0-7]{3}$/.test(mode) ? Number.parseInt(mode, 8) : null
   input.value = formatUnixMode(props.listener.bind.mode)
+}
+
+function toggleProxyProtocol(event: Event): void {
+  props.listener.proxy_protocol = (event.target as HTMLInputElement).checked
+    ? { version: 'auto', timeout_ms: 5_000 }
+    : null
 }
 </script>

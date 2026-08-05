@@ -633,6 +633,7 @@ fn listeners_only_config(tcp_address: SocketAddr, unix_path: PathBuf) -> Config 
         protocol: Protocol::Http,
         service: Some("fixed".into()),
         tls_profile: None,
+        proxy_protocol: None,
         max_connections: None,
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
     })

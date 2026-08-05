@@ -102,6 +102,7 @@ fn test_listeners() -> Vec<Listener> {
             protocol: Protocol::Http,
             service: Some("web".into()),
             tls_profile: Some("edge-tls".into()),
+            proxy_protocol: None,
             max_connections: Some(MAX_SAFE_INTEGER),
             downstream_timeouts: DownstreamTimeoutPolicy::default(),
         },
@@ -113,6 +114,7 @@ fn test_listeners() -> Vec<Listener> {
             protocol: Protocol::Http,
             service: Some("fallback".into()),
             tls_profile: None,
+            proxy_protocol: None,
             max_connections: Some(10_000),
             downstream_timeouts: DownstreamTimeoutPolicy::default(),
         },
@@ -124,6 +126,7 @@ fn test_listeners() -> Vec<Listener> {
             protocol: Protocol::Tcp,
             service: Some("database".into()),
             tls_profile: None,
+            proxy_protocol: None,
             max_connections: Some(2_000),
             downstream_timeouts: DownstreamTimeoutPolicy::default(),
         },
@@ -136,6 +139,7 @@ fn test_listeners() -> Vec<Listener> {
             protocol: Protocol::Rtmp,
             service: Some("live".into()),
             tls_profile: None,
+            proxy_protocol: None,
             max_connections: None,
             downstream_timeouts: DownstreamTimeoutPolicy::default(),
         },
@@ -474,6 +478,7 @@ fn test_l4_services() -> Vec<L4Service> {
             connect_timeout_ms: MAX_SAFE_INTEGER - 2,
             idle_timeout_ms: MAX_SAFE_INTEGER - 3,
             lifetime_timeout_ms: Some(MAX_SAFE_INTEGER - 4),
+            proxy_protocol: None,
             udp: Some(UdpPolicy {
                 max_datagram_bytes: 1_200,
                 max_sessions: 2_048,
@@ -488,6 +493,7 @@ fn test_l4_services() -> Vec<L4Service> {
             connect_timeout_ms: 1_000,
             idle_timeout_ms: 2_000,
             lifetime_timeout_ms: None,
+            proxy_protocol: None,
             udp: None,
         },
     ]
@@ -517,6 +523,8 @@ fn test_rtmp_services() -> Vec<RtmpService> {
                 max_queue_bytes_per_subscriber: 8 * 1_024 * 1_024,
             },
             vod: None,
+            hls: None,
+            dash: None,
             recorders: vec![
                 RtmpRecorder {
                     name: "continuous".into(),
@@ -1280,6 +1288,7 @@ fn rejects_rendered_sources_beyond_the_loader_limit() {
         protocol: Protocol::Rtmp,
         service: Some("live".into()),
         tls_profile: None,
+        proxy_protocol: None,
         max_connections: Some(1),
         downstream_timeouts: DownstreamTimeoutPolicy::default(),
     });

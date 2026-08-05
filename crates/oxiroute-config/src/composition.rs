@@ -241,6 +241,7 @@ mod tests {
             connect_timeout_ms: 5000,
             idle_timeout_ms: 60_000,
             lifetime_timeout_ms: None,
+            proxy_protocol: None,
             udp: None,
         });
         config.listeners.push(Listener {
@@ -251,6 +252,7 @@ mod tests {
             protocol: Protocol::Tcp,
             service: Some(service),
             tls_profile: None,
+            proxy_protocol: None,
             max_connections: None,
             downstream_timeouts: DownstreamTimeoutPolicy::default(),
         });

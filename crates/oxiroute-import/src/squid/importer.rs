@@ -488,6 +488,7 @@ fn lower(effective: &EffectiveConfiguration) -> Result<LoweredCanonical, Semanti
                 protocol: Protocol::ForwardHttp1,
                 service: Some(service_name.clone()),
                 tls_profile: None,
+                proxy_protocol: None,
                 max_connections: None,
                 downstream_timeouts: DownstreamTimeoutPolicy::default(),
             })

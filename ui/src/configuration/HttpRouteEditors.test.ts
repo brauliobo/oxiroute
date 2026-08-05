@@ -82,6 +82,7 @@ describe('canonical HTTP route editors', () => {
         upstream_pool: 'origins',
         policy: {
           upstream_host: { type: 'endpoint', unix_fallback: 'localhost' },
+          upstream_path_rewrite: null,
           request_headers: [{ operation: 'set', name: 'x-client-ip', value: { type: 'client_ip' } }],
           response_headers: [{ operation: 'set', name: 'cache-control', value: 'private', always: true }],
           response_cookie_path_rewrites: [{ from: '/internal', to: '/public' }],

@@ -101,6 +101,7 @@ async fn daemon_accepts_active_h3_absolute_form_and_releases_udp_listener() {
         protocol: Protocol::ForwardHttp3,
         service: Some("forward".into()),
         tls_profile: Some("downstream".into()),
+        proxy_protocol: None,
         max_connections: None,
         downstream_timeouts: DownstreamTimeoutPolicy::default(),
     });

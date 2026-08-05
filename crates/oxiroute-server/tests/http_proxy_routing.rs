@@ -5146,6 +5146,7 @@ impl ProxyHarness {
                 protocol: Protocol::Http,
                 service: Some("routing".into()),
                 tls_profile: None,
+                proxy_protocol: None,
                 max_connections: Some(max_connections),
                 downstream_timeouts,
             }],

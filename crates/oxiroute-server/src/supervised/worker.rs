@@ -316,9 +316,10 @@ fn wait_for_generation_marker(
 }
 
 fn config_listener_count(config: &Config) -> usize {
-    config.listeners.len().saturating_add(
-        config.stats.as_ref().map_or(0, |stats| stats.pages.len()),
-    )
+    config
+        .listeners
+        .len()
+        .saturating_add(config.stats.as_ref().map_or(0, |stats| stats.pages.len()))
 }
 
 fn parse_ascii(
@@ -457,6 +458,7 @@ mod tests {
             protocol: Protocol::Http,
             service: Some("http".into()),
             tls_profile: None,
+            proxy_protocol: None,
             max_connections: None,
             downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
         });

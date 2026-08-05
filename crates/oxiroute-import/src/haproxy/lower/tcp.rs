@@ -65,6 +65,7 @@ impl Lowerer<'_> {
             connect_timeout_ms,
             idle_timeout_ms,
             lifetime_timeout_ms: None,
+            proxy_protocol: None,
             udp: None,
         });
         let mut sources = section_sources(&frontend.section);
@@ -129,6 +130,7 @@ impl Lowerer<'_> {
             connect_timeout_ms,
             idle_timeout_ms,
             lifetime_timeout_ms: None,
+            proxy_protocol: None,
             udp: None,
         });
         let mut sources = section_sources(&listen.section);

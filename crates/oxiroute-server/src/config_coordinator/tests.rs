@@ -56,6 +56,7 @@ fn rtmp_config(name: &str) -> Config {
         protocol: Protocol::Rtmp,
         service: Some("rtmp-service".into()),
         tls_profile: None,
+        proxy_protocol: None,
         max_connections: Some(10_000),
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
     });
@@ -78,6 +79,8 @@ fn rtmp_config(name: &str) -> Config {
             callbacks: oxiroute_config::RtmpCallbackConfig::default(),
             fanout: oxiroute_config::RtmpFanoutPolicy::default(),
             vod: None,
+            hls: None,
+            dash: None,
             recorders: Vec::new(),
         }],
     });
@@ -92,6 +95,7 @@ fn normalizable_config() -> Config {
         protocol: Protocol::Http,
         service: Some("web-service".into()),
         tls_profile: None,
+        proxy_protocol: None,
         max_connections: Some(10_000),
         downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
     });
