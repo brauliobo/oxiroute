@@ -23,6 +23,7 @@ use crate::{
     StableListeners,
     listeners::ListenerOwnershipError,
     protocol::{ControlAck, decode_ack, encode_adopt_request, encode_request},
+    status::{AggregatedWorkerEvent, MAX_AGGREGATED_EVENTS, WorkerStatus, decode_status},
 };
 
 /// Factory boundary for worker command inputs. Production callers can use [`WorkerSpawner`].
@@ -348,6 +349,14 @@ pub enum MasterEvent {
     FailClosed { phase: FailurePhase },
     /// Fail-closed termination completed.
     Failed { phase: FailurePhase },
+    /// A newer authenticated worker status observation was retained.
+    WorkerStatusUpdated {
+        role: WorkerRole,
+        instance_id: InstanceId,
+        sequence: u64,
+    },
+    /// A worker status observation arrived after a newer observation was retained.
+    StaleStatus { role: WorkerRole, sequence: u64 },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -370,6 +379,8 @@ struct ManagedWorker {
     pending: Option<Pending>,
     state: WorkerState,
     channel_open: bool,
+    status: Option<WorkerStatus>,
+    last_event_cursor: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -402,9 +413,10 @@ enum Stage {
     Failed,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Observation {
     Ack(ControlAck),
+    Status(Box<WorkerStatus>),
     Exit(ExitStatus),
     Disconnected,
     ProtocolFailure,
@@ -429,6 +441,8 @@ pub struct Master<E: ActionExecutor = SystemActionExecutor> {
     stage: Stage,
     next_request_id: u64,
     events: VecDeque<MasterEvent>,
+    aggregated_events: VecDeque<AggregatedWorkerEvent>,
+    next_aggregated_event_cursor: u64,
 }
 
 impl Master<SystemActionExecutor> {
@@ -492,6 +506,8 @@ impl<E: ActionExecutor> Master<E> {
             stage: Stage::BootAdopting,
             next_request_id: 1,
             events: VecDeque::new(),
+            aggregated_events: VecDeque::new(),
+            next_aggregated_event_cursor: 1,
         };
         if let Err(error) = master.issue_adoption(WorkerRole::Active, now) {
             master.compensate_issue_error(
@@ -747,6 +763,23 @@ impl<E: ActionExecutor> Master<E> {
             .and_then(|worker| worker.process.process_group_id())
     }
 
+    /// Returns the latest authenticated status observation retained for `role`.
+    #[must_use]
+    pub fn worker_status(&self, role: WorkerRole) -> Option<&WorkerStatus> {
+        self.worker(role).and_then(|worker| worker.status.as_ref())
+    }
+
+    /// Returns bounded generation-qualified worker events newer than `after`.
+    #[must_use]
+    pub fn worker_events(&self, after: u64, limit: usize) -> Vec<AggregatedWorkerEvent> {
+        self.aggregated_events
+            .iter()
+            .filter(|event| event.cursor > after)
+            .take(limit.min(MAX_AGGREGATED_EVENTS))
+            .cloned()
+            .collect()
+    }
+
     /// Returns the stable listener manifest whose original descriptors remain master-owned.
     #[must_use]
     pub const fn listener_manifest(&self) -> &oxiroute_supervision_unix::DescriptorManifest {
@@ -947,9 +980,16 @@ impl<E: ActionExecutor> Master<E> {
             return Ok(None);
         }
         let observation = match worker.process.channel().try_receive() {
-            Ok(Some(frame)) => match decode_ack(&frame) {
-                Ok(ack) => Some(Observation::Ack(ack)),
-                Err(_) => Some(Observation::ProtocolFailure),
+            Ok(Some(frame)) => match frame.header().message_type() {
+                crate::protocol::ACK => match decode_ack(&frame) {
+                    Ok(ack) => Some(Observation::Ack(ack)),
+                    Err(_) => Some(Observation::ProtocolFailure),
+                },
+                crate::status::STATUS_MESSAGE => match decode_status(&frame) {
+                    Ok(status) => Some(Observation::Status(Box::new(status))),
+                    Err(_) => Some(Observation::ProtocolFailure),
+                },
+                _ => Some(Observation::ProtocolFailure),
             },
             Ok(None) => None,
             Err(AuthenticatedChannelError::WorkerGroupExited(status)) => {
@@ -975,12 +1015,66 @@ impl<E: ActionExecutor> Master<E> {
     ) -> Result<(), MasterError> {
         match observation {
             Observation::Ack(ack) => self.handle_ack(role, ack, now),
+            Observation::Status(status) => self.handle_status(role, &status),
             Observation::Exit(status) => self.handle_exit(role, status, now),
             Observation::Disconnected => self.handle_disconnect(role, now),
             Observation::ProtocolFailure => {
                 self.handle_phase_failure(role, FailurePhase::Protocol, now)
             }
         }
+    }
+
+    fn handle_status(
+        &mut self,
+        role: WorkerRole,
+        status: &WorkerStatus,
+    ) -> Result<(), MasterError> {
+        let (instance_id, generation, previous_sequence, previous_event_cursor) = {
+            let worker = self.worker(role).ok_or(MasterError::MissingWorker(role))?;
+            (
+                worker.instance_id.clone(),
+                worker.generation,
+                worker.status.as_ref().map_or(0, |status| status.sequence),
+                worker.last_event_cursor,
+            )
+        };
+        if status.sequence <= previous_sequence {
+            self.events.push_back(MasterEvent::StaleStatus {
+                role,
+                sequence: status.sequence,
+            });
+            return Ok(());
+        }
+        let mut event_cursor = previous_event_cursor;
+        for worker_event in &status.events {
+            if worker_event.cursor <= event_cursor {
+                continue;
+            }
+            let cursor = self.next_aggregated_event_cursor;
+            self.next_aggregated_event_cursor = cursor.saturating_add(1);
+            self.aggregated_events.push_back(AggregatedWorkerEvent {
+                cursor,
+                instance_id: instance_id.clone(),
+                generation_id: generation,
+                worker_event: worker_event.clone(),
+            });
+            while self.aggregated_events.len() > MAX_AGGREGATED_EVENTS {
+                self.aggregated_events.pop_front();
+            }
+            event_cursor = worker_event.cursor;
+        }
+        event_cursor = event_cursor.max(status.event_cursor);
+        let worker = self
+            .worker_mut(role)
+            .ok_or(MasterError::MissingWorker(role))?;
+        worker.last_event_cursor = event_cursor;
+        worker.status = Some(status.clone());
+        self.events.push_back(MasterEvent::WorkerStatusUpdated {
+            role,
+            instance_id,
+            sequence: status.sequence,
+        });
+        Ok(())
     }
 
     fn handle_ack(
@@ -1697,6 +1791,8 @@ impl ManagedWorker {
             pending: None,
             state: WorkerState::Running,
             channel_open: true,
+            status: None,
+            last_event_cursor: 0,
         }
     }
 }

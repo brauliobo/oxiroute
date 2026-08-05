@@ -19,6 +19,8 @@ use oxiroute_supervisor_process::{
 };
 use thiserror::Error;
 
+use crate::status::{STATUS_MESSAGE, StatusProtocolError, WorkerStatus, encode_status};
+
 /// Application protocol version used in the authenticated worker identity and every payload.
 pub const CONTROL_PROTOCOL_VERSION: u16 = 2;
 /// Maximum binary manifest bytes accepted by either endpoint.
@@ -30,7 +32,7 @@ const ACTIVATE: MessageType = MessageType(0x102);
 const DRAIN: MessageType = MessageType(0x103);
 const REACTIVATE: MessageType = MessageType(0x104);
 const SHUTDOWN: MessageType = MessageType(0x105);
-const ACK: MessageType = MessageType(0x180);
+pub(crate) const ACK: MessageType = MessageType(0x180);
 const PREFIX_SIZE: usize = 10;
 const ACK_SIZE: usize = 12;
 
@@ -200,6 +202,37 @@ impl WorkerControl {
         Ok(self
             .endpoint
             .send(ACK, FrameFlags::default(), &payload, &[])?)
+    }
+
+    /// Sends one authenticated worker status observation to the master.
+    ///
+    /// Status observations are bounded and cannot request a worker-side action.
+    ///
+    /// # Errors
+    ///
+    /// Returns a protocol or transport error when the status cannot be encoded or sent.
+    pub fn report_status(
+        &mut self,
+        status: &WorkerStatus,
+    ) -> Result<Sequence, ControlProtocolError> {
+        let payload = encode_status(status).map_err(ControlProtocolError::Status)?;
+        Ok(self
+            .endpoint
+            .send(STATUS_MESSAGE, FrameFlags::default(), &payload, &[])?)
+    }
+
+    /// Sends a raw status payload for protocol conformance fixtures.
+    ///
+    /// Production workers should use [`Self::report_status`] so application bounds are enforced
+    /// before the authenticated frame is sent.
+    ///
+    /// # Errors
+    ///
+    /// Returns a transport error when the bounded frame cannot be sent.
+    pub fn report_status_raw(&mut self, payload: &[u8]) -> Result<Sequence, ControlProtocolError> {
+        Ok(self
+            .endpoint
+            .send(STATUS_MESSAGE, FrameFlags::default(), payload, &[])?)
     }
 }
 
@@ -614,6 +647,9 @@ pub enum ControlProtocolError {
     /// A non-adoption frame transferred descriptors.
     #[error("control message transferred unexpected descriptors")]
     UnexpectedDescriptors,
+    /// A worker status observation failed its bounded application-level validation.
+    #[error(transparent)]
+    Status(#[from] StatusProtocolError),
 }
 
 #[cfg(test)]

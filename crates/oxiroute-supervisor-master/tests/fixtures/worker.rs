@@ -15,10 +15,12 @@ use std::{
 use oxiroute_supervision::GenerationId;
 use oxiroute_supervision_unix::{DescriptorSet, InstanceToken, SlotId};
 use oxiroute_supervisor_master::{
-    CONTROL_PROTOCOL_VERSION, ControlOutcome, ControlPhase, WorkerControl,
+    CONTROL_PROTOCOL_VERSION, ControlOutcome, ControlPhase, WorkerAdministrativeState,
+    WorkerControl, WorkerEventRecord, WorkerGenerationStatus, WorkerLifecycle, WorkerStatus,
 };
 use oxiroute_supervisor_process::WorkerIdentity;
 
+#[allow(clippy::too_many_lines)]
 fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let mut arguments = env::args().skip(1);
     let behavior = arguments.next().ok_or("missing behavior")?;
@@ -51,6 +53,7 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
     };
     let mut control = WorkerControl::adopt_at_process_entry(identity)?;
     let mut serving = None;
+    let mut status_sequence = 1_u64;
     loop {
         let mut request = control.receive()?;
         let phase = request.phase();
@@ -101,6 +104,71 @@ fn main() -> Result<ExitCode, Box<dyn std::error::Error>> {
             thread::sleep(Duration::from_millis(150));
         }
         control.acknowledge(&request, ControlOutcome::Accepted)?;
+        control.report_status(&WorkerStatus {
+            sequence: status_sequence,
+            generation_id: identity.generation,
+            lifecycle: match phase {
+                ControlPhase::AdoptListeners => WorkerLifecycle::Ready,
+                ControlPhase::Activate | ControlPhase::Reactivate => WorkerLifecycle::Active,
+                ControlPhase::Quiesce => WorkerLifecycle::Quiescing,
+                ControlPhase::Drain => WorkerLifecycle::Draining,
+                ControlPhase::Shutdown => WorkerLifecycle::Stopping,
+            },
+            administrative_state: if matches!(
+                phase,
+                ControlPhase::Quiesce | ControlPhase::Drain | ControlPhase::Shutdown
+            ) {
+                WorkerAdministrativeState::Drain
+            } else {
+                WorkerAdministrativeState::Ready
+            },
+            accepting: matches!(phase, ControlPhase::Activate | ControlPhase::Reactivate),
+            runtime_started: true,
+            runtime_failed: false,
+            drained: matches!(phase, ControlPhase::Drain | ControlPhase::Shutdown),
+            generation: WorkerGenerationStatus {
+                disk_revision: None,
+                candidate_revision: None,
+                active_revision: None,
+                previous_revision: None,
+                quarantined_revision: None,
+                active_accepting: matches!(
+                    phase,
+                    ControlPhase::Activate | ControlPhase::Reactivate
+                ),
+                degraded: false,
+                last_failure: None,
+                prepares: 0,
+                activations: 0,
+                failures: 0,
+                rollbacks: 0,
+            },
+            metrics: None,
+            listeners: Vec::new(),
+            degraded: false,
+            degradation: None,
+            event_cursor: u64::from(phase == ControlPhase::Activate),
+            event_cursor_lost: false,
+            events: if phase == ControlPhase::Activate {
+                vec![WorkerEventRecord {
+                    cursor: 1,
+                    timestamp_unix_ms: None,
+                    event: "generation_activate".into(),
+                    outcome: "applied".into(),
+                    revision: None,
+                    certificate: None,
+                    correlation_id: Some("fixture".into()),
+                    source: Some("worker".into()),
+                    operation: Some("generation_activate".into()),
+                }]
+            } else {
+                Vec::new()
+            },
+        })?;
+        status_sequence = status_sequence.saturating_add(1);
+        if behavior == "malformed-status-after-activate" && phase == ControlPhase::Activate {
+            control.report_status_raw(&[0, 1])?;
+        }
         if behavior == "crash-after-quiesce" && phase == ControlPhase::Quiesce {
             thread::sleep(Duration::from_millis(50));
             std::process::abort();
