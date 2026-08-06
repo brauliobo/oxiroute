@@ -6,8 +6,11 @@ use std::{
 };
 
 use openssl::sha::sha256;
-use oxiroute_config::{compose_configs, Config};
-use oxiroute_config_source::{render_config, resolve_source, ConfigFormat, ConfigSourceError};
+use oxiroute_config::{Config, compose_configs};
+use oxiroute_config_source::{
+    ConfigFormat, ConfigSourceError, NativeReferenceMetadata, ResolvedSource, render_config,
+    resolve_source,
+};
 use serde::Serialize;
 
 mod storage;
@@ -108,6 +111,22 @@ pub struct CanonicalConfigDocument {
     pub dependencies: Vec<PathBuf>,
     pub config_preview: String,
     pub diagnostics: Vec<ConfigDiagnostic>,
+}
+
+/// The native evidence retained by a resolved canonical source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeImportSourceDocument {
+    pub disk_revision: ConfigRevision,
+    pub candidate_revision: ConfigRevision,
+    pub format: ConfigFormat,
+    pub compositional: bool,
+    pub native_references: Vec<NativeReferenceMetadata>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NativeImportSourceOutcome {
+    Loaded(Box<NativeImportSourceDocument>),
+    Rejected(ConfigLoadRejection),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -233,29 +252,17 @@ impl CanonicalConfigCoordinator {
     /// Reads one stable no-follow snapshot and returns its normalized typed representation.
     #[must_use]
     pub fn load(&self) -> ConfigLoadOutcome {
-        let _operation = self
-            .operation_lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let storage = match CanonicalStorage::open(&self.canonical_path) {
-            Ok(storage) => storage,
-            Err(error) => return rejected_load(None, error.diagnostic()),
-        };
-        let disk = match storage.read() {
-            Ok(disk) => disk,
-            Err(error) => return rejected_load(None, error.diagnostic()),
-        };
-        let disk_revision = ConfigRevision::from_bytes(&disk);
-        let resolved = match resolve_source(&self.canonical_path, &disk) {
+        let (disk_revision, resolved) = match self.read_resolved_source() {
             Ok(resolved) => resolved,
-            Err(error) => {
-                return rejected_load(Some(disk_revision), source_error_diagnostic(&error));
-            }
+            Err(rejection) => return ConfigLoadOutcome::Rejected(rejection),
         };
         let config_preview = match render_config(resolved.format, &resolved.config) {
             Ok(preview) => preview,
             Err(error) => {
-                return rejected_load(Some(disk_revision), source_error_diagnostic(&error));
+                return ConfigLoadOutcome::Rejected(ConfigLoadRejection {
+                    disk_revision: Some(disk_revision),
+                    diagnostics: vec![source_error_diagnostic(&error)],
+                });
             }
         };
 
@@ -269,6 +276,47 @@ impl CanonicalConfigCoordinator {
             config_preview,
             diagnostics: Vec::new(),
         }))
+    }
+
+    /// Reads the same stable source snapshot as [`Self::load`] while retaining native import evidence.
+    #[must_use]
+    pub fn load_native_import_source(&self) -> NativeImportSourceOutcome {
+        let (disk_revision, resolved) = match self.read_resolved_source() {
+            Ok(resolved) => resolved,
+            Err(rejection) => return NativeImportSourceOutcome::Rejected(rejection),
+        };
+        NativeImportSourceOutcome::Loaded(Box::new(NativeImportSourceDocument {
+            disk_revision,
+            candidate_revision: ConfigRevision::from_bytes(resolved.canonical_kdl.as_bytes()),
+            format: resolved.format,
+            compositional: resolved.compositional,
+            native_references: resolved.native_references,
+        }))
+    }
+
+    fn read_resolved_source(
+        &self,
+    ) -> Result<(ConfigRevision, ResolvedSource), ConfigLoadRejection> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let storage =
+            CanonicalStorage::open(&self.canonical_path).map_err(|error| ConfigLoadRejection {
+                disk_revision: None,
+                diagnostics: vec![error.diagnostic()],
+            })?;
+        let disk = storage.read().map_err(|error| ConfigLoadRejection {
+            disk_revision: None,
+            diagnostics: vec![error.diagnostic()],
+        })?;
+        let disk_revision = ConfigRevision::from_bytes(&disk);
+        let resolved =
+            resolve_source(&self.canonical_path, &disk).map_err(|error| ConfigLoadRejection {
+                disk_revision: Some(disk_revision.clone()),
+                diagnostics: vec![source_error_diagnostic(&error)],
+            })?;
+        Ok((disk_revision, resolved))
     }
 
     /// Validates and normalizes a typed draft without reading or writing the canonical file.
@@ -537,16 +585,6 @@ fn failed_save(
         compositional,
         dependencies,
         config_preview,
-        diagnostics: vec![diagnostic],
-    })
-}
-
-fn rejected_load(
-    disk_revision: Option<ConfigRevision>,
-    diagnostic: ConfigDiagnostic,
-) -> ConfigLoadOutcome {
-    ConfigLoadOutcome::Rejected(ConfigLoadRejection {
-        disk_revision,
         diagnostics: vec![diagnostic],
     })
 }
