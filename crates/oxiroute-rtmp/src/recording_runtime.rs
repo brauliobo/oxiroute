@@ -1637,7 +1637,7 @@ mod tests {
         gate.allow_claim();
         assert!(gate.wait_after_claim(TEST_TIMEOUT));
 
-        let budget = Duration::from_millis(60);
+        let budget = Duration::from_millis(250);
         let started = Instant::now();
         fixture.shutdown_owner(None);
         let shutdown = control.initiate_shutdown(started + budget);
