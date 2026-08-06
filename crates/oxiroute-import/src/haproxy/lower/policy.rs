@@ -2,7 +2,7 @@ use std::{collections::HashSet, time::Duration};
 
 use oxiroute_config::{
     HttpProxyPolicy, HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpResponseHeaderMutation,
-    HttpRetryPolicy, HttpRetryTarget, HttpUpstreamHost, Protocol,
+    HttpRetryPolicy, HttpRetryTarget, HttpRetryTrigger, HttpUpstreamHost, Protocol,
 };
 
 use crate::{Diagnostic, DiagnosticStage, E_SEMANTICS_NOT_REPRESENTABLE, ProvenanceSpan, Severity};
@@ -11,7 +11,7 @@ use super::{Lowerer, Representability};
 use crate::haproxy::{
     EffectiveBind, EffectiveFrontend, EffectiveListen, EffectiveSection, EffectiveValue,
     HttpHeaderValue, HttpRequestRule, HttpResponseRule, OptionState, Provenance, ProxyMode,
-    ProxySettings, SectionId, SemanticBlockerKind,
+    ProxySettings, RetryOn, SectionId, SemanticBlockerKind,
 };
 
 use super::provenance::{deduplicate_sources, extend_sources, provenance_sources};
@@ -352,6 +352,9 @@ impl Lowerer<'_> {
             if let Some(retries) = &settings.retries {
                 extend_sources(&mut sources, &retries.provenance);
             }
+            if let Some(retry_on) = &settings.retry_on {
+                extend_sources(&mut sources, &retry_on.provenance);
+            }
             for rule in &settings.http_request_rules {
                 extend_sources(&mut sources, &rule.provenance);
             }
@@ -394,7 +397,7 @@ impl Lowerer<'_> {
                 self.lower_request_header_rules(frontend, &settings)?;
             request_headers.append(&mut explicit_request_headers);
             let response_headers = self.lower_response_header_rules(frontend, &settings)?;
-            let (max_retries, final_redispatch, delay_ms) =
+            let (max_retries, final_redispatch, delay_ms, triggers) =
                 self.http_retries(&section, &settings)?;
             policies.insert(
                 *target,
@@ -407,10 +410,7 @@ impl Lowerer<'_> {
                         target: HttpRetryTarget::SameServer,
                         delay_ms,
                         final_redispatch,
-                        triggers: vec![
-                            oxiroute_config::HttpRetryTrigger::ConnectFailure,
-                            oxiroute_config::HttpRetryTrigger::ConnectTimeout,
-                        ],
+                        triggers,
                         ..HttpRetryPolicy::default()
                     },
                     ..HttpProxyPolicy::default()
@@ -718,7 +718,7 @@ impl Lowerer<'_> {
         &mut self,
         _section: &EffectiveSection,
         settings: &ProxySettings,
-    ) -> Option<(u8, bool, u64)> {
+    ) -> Option<(u8, bool, u64, Vec<HttpRetryTrigger>)> {
         let redispatch = match settings.redispatch.as_ref().map(|value| &value.value) {
             Some(OptionState::Enabled(redispatch)) if redispatch.interval.is_none() => true,
             Some(OptionState::Enabled(_)) => {
@@ -748,7 +748,32 @@ impl Lowerer<'_> {
             .and_then(|timeout| crate::canonical::duration_milliseconds(timeout.value))
             .unwrap_or(1_000)
             .min(1_000);
-        Some((max_retries, redispatch && max_retries > 0, delay_ms))
+        let triggers = settings.retry_on.as_ref().map_or_else(
+            || {
+                vec![
+                    HttpRetryTrigger::ConnectFailure,
+                    HttpRetryTrigger::ConnectTimeout,
+                ]
+            },
+            |value| {
+                let mut triggers = Vec::new();
+                for trigger in value
+                    .value
+                    .iter()
+                    .map(|trigger| match trigger {
+                        RetryOn::ConnectFailure | RetryOn::ConnectRefused => {
+                            HttpRetryTrigger::ConnectFailure
+                        }
+                    })
+                {
+                    if !triggers.contains(&trigger) {
+                        triggers.push(trigger);
+                    }
+                }
+                triggers
+            },
+        );
+        Some((max_retries, redispatch && max_retries > 0, delay_ms, triggers))
     }
 
     pub(super) fn require_zero_retries(

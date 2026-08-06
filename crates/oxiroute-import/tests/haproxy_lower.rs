@@ -2139,6 +2139,94 @@ backend app
 }
 
 #[test]
+fn passive_server_policy_and_safe_retry_on_subset_lower_exactly() {
+    let source = b"defaults web
+  mode http
+  retries 2
+  retry-on conn-failure conn-refused
+  timeout connect 30s
+  timeout server 30s
+frontend public
+  bind 127.0.0.1:18080
+  maxconn 100
+  default_backend app
+backend app
+  balance roundrobin
+  default-server check observe layer7 error-limit 4 on-error mark-down
+  server app1 127.0.0.1:3000
+";
+    let lowered = import_fixture("passive-retry-subset.cfg", source);
+
+    assert!(lowered.diagnostics().is_empty(), "{:?}", lowered.diagnostics());
+    let config = lowered.value().config.as_ref().expect("finalized config");
+    let pool = &config.upstream_pools[0];
+    let passive = pool.passive_health.as_ref().expect("passive policy");
+    assert_eq!(passive.observe, oxiroute_config::PassiveObserve::Layer7);
+    assert_eq!(passive.on_error, oxiroute_config::PassiveOnError::MarkDown);
+    assert_eq!(passive.error_limit, 4);
+    assert!(passive.mark_down);
+    assert_has_provenance(
+        lowered.value(),
+        "/upstream_pools/0/passive_health/observe",
+    );
+    assert_has_provenance(
+        lowered.value(),
+        "/upstream_pools/0/passive_health/error_limit",
+    );
+    let HttpRouteAction::Proxy { policy, .. } = &config.http_services[0].routes[0].action else {
+        panic!("proxy action");
+    };
+    assert_eq!(policy.retry.max_retries, 2);
+    assert_eq!(
+        policy.retry.triggers,
+        vec![oxiroute_config::HttpRetryTrigger::ConnectFailure]
+    );
+}
+
+#[test]
+fn unsupported_retry_on_semantics_remain_blocking() {
+    let source = b"defaults web
+  mode http
+  retries 1
+  retry-on response-timeout
+  timeout connect 30s
+  timeout server 30s
+frontend public
+  bind 127.0.0.1:18080
+  default_backend app
+backend app
+  balance roundrobin
+  server app1 127.0.0.1:3000
+";
+    let lowered = import_fixture("unsupported-retry-on.cfg", source);
+
+    assert!(lowered.value().config.is_none());
+    assert_blocker(
+        lowered.diagnostics(),
+        "HAProxy retry semantics are broader than canonical safe retry policy",
+    );
+}
+
+#[test]
+fn duplicate_passive_server_options_remain_blocking() {
+    let source = b"defaults web
+  mode http
+  timeout connect 30s
+  timeout server 30s
+frontend public
+  bind 127.0.0.1:18080
+  default_backend app
+backend app
+  balance roundrobin
+  server app1 127.0.0.1:3000 observe layer7 observe layer7
+";
+    let lowered = import_fixture("duplicate-passive-option.cfg", source);
+
+    assert!(lowered.value().config.is_none());
+    assert!(lowered.has_errors());
+}
+
+#[test]
 fn unconditional_fixed_response_and_redirect_actions_finalize() {
     let fixed = b"frontend health
   mode http

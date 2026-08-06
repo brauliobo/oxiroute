@@ -14,6 +14,7 @@ use openssl::{
     pkey::{Id, PKey},
     x509::X509,
 };
+use oxiroute_config::{PassiveObserve, PassiveOnError};
 use rustls_pemfile::{Item, read_one};
 use x509_parser::{extensions::GeneralName, parse_x509_certificate};
 use zeroize::Zeroizing;
@@ -284,6 +285,12 @@ pub struct StatusRange {
     pub end: u16,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum RetryOn {
+    ConnectFailure,
+    ConnectRefused,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Timeouts {
     pub client: Option<EffectiveValue<Duration>>,
@@ -300,6 +307,7 @@ pub struct ProxySettings {
     pub default_backend: Option<EffectiveValue<BackendReference>>,
     pub balance: Option<EffectiveValue<BalanceAlgorithm>>,
     pub retries: Option<EffectiveValue<u32>>,
+    pub retry_on: Option<EffectiveValue<Vec<RetryOn>>>,
     pub redispatch: Option<EffectiveValue<OptionState<Redispatch>>>,
     pub timeouts: Timeouts,
     pub forward_for: Option<EffectiveValue<OptionState<ForwardFor>>>,
@@ -333,6 +341,7 @@ impl ProxySettings {
         inherit_value(&mut inherited.default_backend, step);
         inherit_value(&mut inherited.balance, step);
         inherit_value(&mut inherited.retries, step);
+        inherit_value(&mut inherited.retry_on, step);
         inherit_value(&mut inherited.redispatch, step);
         inherit_value(&mut inherited.timeouts.client, step);
         inherit_value(&mut inherited.timeouts.connect, step);
@@ -377,6 +386,9 @@ fn inherit_server_defaults(
     inherit_value(&mut defaults.rise, step);
     inherit_value(&mut defaults.fall, step);
     inherit_value(&mut defaults.max_connections, step);
+    inherit_value(&mut defaults.observe, step);
+    inherit_value(&mut defaults.error_limit, step);
+    inherit_value(&mut defaults.on_error, step);
     for option in &mut defaults.unsupported_options {
         option.provenance.inherit(step.clone());
     }
@@ -443,6 +455,9 @@ pub struct EffectiveServer {
     pub rise: Option<EffectiveValue<u32>>,
     pub fall: Option<EffectiveValue<u32>>,
     pub max_connections: Option<EffectiveValue<u64>>,
+    pub observe: Option<EffectiveValue<PassiveObserve>>,
+    pub error_limit: Option<EffectiveValue<u32>>,
+    pub on_error: Option<EffectiveValue<PassiveOnError>>,
     pub unsupported_options: Vec<EffectiveValue<ServerOption>>,
 }
 
@@ -1368,13 +1383,7 @@ impl Resolver {
                     self.resolve_http_check(occurrence, directive, state);
                 }
                 b"retry-on" if supports_backend_policy(meta.section.kind) => {
-                    self.track_and_reject_semantics(
-                        occurrence,
-                        directive,
-                        SemanticBlockerKind::Retry,
-                        state,
-                        "HAProxy retry-on semantics are not represented by canonical retry policy",
-                    );
+                    self.resolve_retry_on(occurrence, directive, state);
                 }
                 name if is_proxy_default_directive(name) => {
                     self.track_and_reject_semantics(
@@ -1658,6 +1667,15 @@ impl Resolver {
             if server.max_connections.is_none() {
                 server.max_connections.clone_from(&defaults.max_connections);
             }
+            if server.observe.is_none() {
+                server.observe.clone_from(&defaults.observe);
+            }
+            if server.error_limit.is_none() {
+                server.error_limit.clone_from(&defaults.error_limit);
+            }
+            if server.on_error.is_none() {
+                server.on_error.clone_from(&defaults.on_error);
+            }
             server
                 .unsupported_options
                 .extend(defaults.unsupported_options.iter().cloned());
@@ -1776,6 +1794,52 @@ impl Resolver {
         };
         let value = EffectiveValue::direct(value, occurrence, directive.arguments[0].span);
         let conflict = self.set_setting(&mut state.settings.retries, value);
+        if !self.finish_setting(occurrence, directive, conflict, &mut state.settings) {
+            self.consume(occurrence, Consumption::Setting);
+        }
+    }
+
+    fn resolve_retry_on(
+        &mut self,
+        occurrence: OccurrenceId,
+        directive: &Directive,
+        state: &mut SectionState,
+    ) {
+        if directive.arguments.is_empty() {
+            self.unsupported_directive_form_for_occurrence(occurrence, directive);
+            return;
+        }
+        let mut values = Vec::with_capacity(directive.arguments.len());
+        let mut seen = HashSet::new();
+        for argument in &directive.arguments {
+            let value = match argument.value.as_slice() {
+                b"conn-failure" => RetryOn::ConnectFailure,
+                b"conn-refused" => RetryOn::ConnectRefused,
+                _ => {
+                    self.track_and_reject_semantics(
+                        occurrence,
+                        directive,
+                        SemanticBlockerKind::Retry,
+                        state,
+                        "HAProxy retry-on includes response or transport semantics outside the canonical safe retry subset",
+                    );
+                    return;
+                }
+            };
+            if !seen.insert(value) {
+                self.track_and_reject_semantics(
+                    occurrence,
+                    directive,
+                    SemanticBlockerKind::Retry,
+                    state,
+                    "HAProxy retry-on repeats a trigger and cannot be represented uniquely",
+                );
+                return;
+            }
+            values.push(value);
+        }
+        let value = EffectiveValue::direct(values, occurrence, directive.span);
+        let conflict = self.set_setting(&mut state.settings.retry_on, value);
         if !self.finish_setting(occurrence, directive, conflict, &mut state.settings) {
             self.consume(occurrence, Consumption::Setting);
         }
