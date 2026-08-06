@@ -36,7 +36,7 @@ const TEST_CATEGORIES: [&str; 18] = [
     "validation",
 ];
 
-const TARGETS: [&str; 29] = [
+const TARGETS: [&str; 30] = [
     "config.loader",
     "deployment",
     "health.probe",
@@ -62,6 +62,7 @@ const TARGETS: [&str; 29] = [
     "rtmp.directive_registry",
     "rtmp.listener",
     "rtmp.recorder",
+    "rtmp.session",
     "schema",
     "apache.source_graph",
     "squid.semantic_ir",
