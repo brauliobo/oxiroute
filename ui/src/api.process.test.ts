@@ -131,9 +131,21 @@ describe('production API client against the built management process', () => {
       relayConnectionAttempts: '0',
       relayConnections: '0',
       relayReconnects: '0',
+      relayDnsRefreshAttempts: '0',
+      relayDnsRefreshSuccesses: '0',
+      relayDnsRefreshFailures: '0',
       relayEventsSent: '0',
       relayEventsDropped: '0',
       relayPayloadBytesSent: '0',
+      accessLog: {
+        queueCapacity: 1024,
+        queueDepth: '0',
+        enqueued: '0',
+        written: '0',
+        dropped: '0',
+        queueSaturated: '0',
+        writeFailures: '0',
+      },
       relays: [],
       recorders: [],
     })
@@ -197,6 +209,8 @@ describe('production API client against the built management process', () => {
           rtmp_services: [{
             name: 'live',
             outbound_chunk_size: 4_096,
+            max_inbound_message_size: 8_388_608,
+            ack_window_size: 5_000_000,
             access_log: null,
             outbound_policy: {
               allow_domains: [],
@@ -250,6 +264,7 @@ describe('production API client against the built management process', () => {
                 buffer_ms: 5_000,
                 push_reconnect_ms: 3_000,
                 pull_reconnect_ms: 3_000,
+                dns_refresh_ms: 60_000,
                 connect_timeout_ms: 500,
                 handshake_timeout_ms: 2_000,
               },
