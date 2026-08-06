@@ -558,6 +558,7 @@ pub fn proxy_config(
             endpoints: vec![socket_endpoint(origin_address)],
             algorithm: UpstreamAlgorithm::RoundRobin,
             health_check: None,
+            passive_health: None,
             tls: upstream_tls,
             http_versions: upstream_versions,
             queue_timeout_ms: None,

@@ -1854,6 +1854,7 @@ impl Lowerer {
                 endpoints: Vec::new(),
                 algorithm: oxiroute_config::UpstreamAlgorithm::RoundRobin,
                 health_check: None,
+                passive_health: None,
                 tls: upstream_tls,
                 http_versions: HttpVersionPolicy::default(),
                 queue_timeout_ms: None,

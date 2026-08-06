@@ -13,6 +13,10 @@ const DEFAULT_UPSTREAM_IO_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_MAX_REQUEST_BODY_BYTES: u64 = 10 * 1024 * 1024;
 const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 10_000;
 const DEFAULT_IDLE_TIMEOUT_MS: u64 = 300_000;
+const DEFAULT_PASSIVE_ERROR_LIMIT: u16 = 3;
+const DEFAULT_PASSIVE_INITIAL_BACKOFF_MS: u64 = 30_000;
+const DEFAULT_PASSIVE_MAX_BACKOFF_MS: u64 = 300_000;
+const DEFAULT_PASSIVE_RECOVERY_THRESHOLD: u16 = 1;
 const DEFAULT_HEALTH_INTERVAL_MS: u64 = 10_000;
 const DEFAULT_HEALTH_TIMEOUT_MS: u64 = 1_000;
 const DEFAULT_HEALTHY_THRESHOLD: u16 = 1;
@@ -122,6 +126,9 @@ pub(crate) const MAX_UNIX_SOCKET_PATH_BYTES: usize = 107;
 pub(crate) const MAX_ENDPOINTS_PER_POOL: usize = 256;
 pub(crate) const MAX_TOTAL_ENDPOINTS: usize = 1_024;
 pub(crate) const MAX_UPSTREAM_WEIGHT: u16 = 100;
+pub(crate) const MAX_PASSIVE_ERROR_LIMIT: u16 = 100;
+pub(crate) const MAX_PASSIVE_BACKOFF_MS: u64 = 86_400_000;
+pub(crate) const MAX_PASSIVE_RECOVERY_THRESHOLD: u16 = 100;
 pub(crate) const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 pub(crate) const MAX_HTTP_RETRIES: u8 = 3;
 pub(crate) const MAX_HTTP_METHODS_PER_ROUTE: usize = 16;
@@ -648,6 +655,22 @@ pub(crate) fn default_http_retry_triggers() -> Vec<HttpRetryTrigger> {
         HttpRetryTrigger::ConnectTimeout,
         HttpRetryTrigger::RefusedStream,
     ]
+}
+
+pub(crate) const fn default_passive_error_limit() -> u16 {
+    DEFAULT_PASSIVE_ERROR_LIMIT
+}
+
+pub(crate) const fn default_passive_initial_backoff_ms() -> u64 {
+    DEFAULT_PASSIVE_INITIAL_BACKOFF_MS
+}
+
+pub(crate) const fn default_passive_max_backoff_ms() -> u64 {
+    DEFAULT_PASSIVE_MAX_BACKOFF_MS
+}
+
+pub(crate) const fn default_passive_recovery_threshold() -> u16 {
+    DEFAULT_PASSIVE_RECOVERY_THRESHOLD
 }
 
 pub(crate) const fn default_http_redirect_status() -> u16 {

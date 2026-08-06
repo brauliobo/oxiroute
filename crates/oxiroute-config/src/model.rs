@@ -27,7 +27,9 @@ use crate::defaults::{
     default_health_interval_ms, default_health_timeout_ms, default_healthy_threshold,
     default_http_access_header_name, default_http_redirect_status, default_http_retry_triggers,
     default_http_route_policy, default_http_static_index_files, default_idle_timeout_ms,
-    default_max_request_body_bytes, default_proxy_protocol_timeout_ms,
+    default_max_request_body_bytes, default_passive_error_limit,
+    default_passive_initial_backoff_ms, default_passive_max_backoff_ms,
+    default_passive_recovery_threshold, default_proxy_protocol_timeout_ms,
     default_recorder_max_active_recorders, default_recorder_max_queue_bytes,
     default_recorder_max_queue_messages, default_recorder_shutdown_timeout_ms,
     default_recorder_suffix_template, default_rtmp_ack_window_size,
@@ -489,6 +491,8 @@ pub struct UpstreamPool {
     #[serde(default)]
     pub health_check: Option<HealthCheck>,
     #[serde(default)]
+    pub passive_health: Option<PassiveHealthPolicy>,
+    #[serde(default)]
     pub tls: Option<UpstreamTls>,
     #[serde(default)]
     pub http_versions: HttpVersionPolicy,
@@ -500,6 +504,59 @@ pub struct UpstreamPool {
     pub server_timeout_ms: Option<u64>,
     #[serde(default)]
     pub connection_reuse: UpstreamConnectionReuse,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PassiveHealthPolicy {
+    #[serde(default)]
+    pub observe: PassiveObserve,
+    #[serde(default)]
+    pub on_error: PassiveOnError,
+    #[serde(default = "default_passive_error_limit")]
+    pub error_limit: u16,
+    #[serde(default)]
+    pub mark_down: bool,
+    #[serde(default)]
+    pub mark_up: bool,
+    #[serde(default = "default_passive_initial_backoff_ms")]
+    pub initial_backoff_ms: u64,
+    #[serde(default = "default_passive_max_backoff_ms")]
+    pub max_backoff_ms: u64,
+    #[serde(default = "default_passive_recovery_threshold")]
+    pub recovery_threshold: u16,
+}
+
+impl Default for PassiveHealthPolicy {
+    fn default() -> Self {
+        Self {
+            observe: PassiveObserve::default(),
+            on_error: PassiveOnError::default(),
+            error_limit: default_passive_error_limit(),
+            mark_down: false,
+            mark_up: false,
+            initial_backoff_ms: default_passive_initial_backoff_ms(),
+            max_backoff_ms: default_passive_max_backoff_ms(),
+            recovery_threshold: default_passive_recovery_threshold(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PassiveObserve {
+    Layer4,
+    #[default]
+    Layer7,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PassiveOnError {
+    #[default]
+    Count,
+    Immediately,
+    MarkDown,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

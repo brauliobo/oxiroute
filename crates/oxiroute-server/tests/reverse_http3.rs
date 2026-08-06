@@ -111,6 +111,7 @@ async fn daemon_accepts_reverse_h3_and_reuses_the_http_service_pool() {
         endpoints: vec![support::socket_endpoint(origin_address)],
         algorithm: UpstreamAlgorithm::RoundRobin,
         health_check: None,
+        passive_health: None,
         tls: Some(UpstreamTls {
             server_name: support::ORIGIN_SERVER_NAME.into(),
             ca_certificate_path: Some(fixture_support::fixture("ca-a.pem")),

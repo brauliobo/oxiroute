@@ -855,6 +855,7 @@ fn udp_only_config(listener_address: SocketAddr, upstream_address: SocketAddr) -
             }],
             algorithm: UpstreamAlgorithm::RoundRobin,
             health_check: None,
+            passive_health: None,
             tls: None,
             http_versions: oxiroute_config::HttpVersionPolicy::default(),
             queue_timeout_ms: None,

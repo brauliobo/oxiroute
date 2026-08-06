@@ -9,6 +9,7 @@ use oxiroute_config::{
     HttpRetryPolicy, HttpRetryTarget, HttpRetryTrigger, HttpRoute, HttpRouteAction,
     HttpRoutePolicy, HttpService, HttpStaticMimePolicy, HttpStaticPathMapping, HttpUpstreamHost,
     HttpVersion, HttpVersionPolicy, L4Service, Listener, ListenerBind, Management, Protocol,
+    PassiveHealthPolicy, PassiveObserve, PassiveOnError,
     RtmpAccessPolicy, RtmpApplication, RtmpExecEnvironment, RtmpExecFilesystemPolicy, RtmpExecMode,
     RtmpExecNetworkPolicy, RtmpExecProfile, RtmpExecTrigger, RtmpRecorder,
     RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis, RtmpRecorderTimezone,
@@ -170,6 +171,16 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
             endpoints: Vec::new(),
             algorithm: UpstreamAlgorithm::RoundRobin,
             health_check: None,
+            passive_health: Some(PassiveHealthPolicy {
+                observe: PassiveObserve::Layer4,
+                on_error: PassiveOnError::MarkDown,
+                error_limit: 4,
+                mark_down: true,
+                mark_up: true,
+                initial_backoff_ms: 10_000,
+                max_backoff_ms: 60_000,
+                recovery_threshold: 2,
+            }),
             tls: Some(UpstreamTls {
                 server_name: "ORIGIN.EXAMPLE.TEST".into(),
                 ca_certificate_path: Some(PathBuf::from("/etc/oxiroute/origin-\"ca\".pem")),
@@ -216,6 +227,7 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
                 expected_status: Some(200),
                 http_version: Some(oxiroute_config::HealthHttpVersion::Http11),
             }),
+            passive_health: None,
             tls: None,
             http_versions: HttpVersionPolicy::default(),
             queue_timeout_ms: None,
@@ -247,6 +259,7 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
                 expected_status: None,
                 http_version: None,
             }),
+            passive_health: None,
             tls: None,
             http_versions: HttpVersionPolicy::default(),
             queue_timeout_ms: None,
@@ -265,6 +278,7 @@ fn test_upstream_pools() -> Vec<UpstreamPool> {
             endpoints: Vec::new(),
             algorithm: UpstreamAlgorithm::RoundRobin,
             health_check: None,
+            passive_health: None,
             tls: None,
             http_versions: HttpVersionPolicy::default(),
             queue_timeout_ms: None,
@@ -645,6 +659,25 @@ fn renders_and_round_trips_the_exact_http3_upstream_policy() {
 }
 
 #[test]
+fn rejects_invalid_passive_health_bounds() {
+    let mut pool = test_upstream_pools().remove(0);
+    pool.passive_health = Some(PassiveHealthPolicy {
+        error_limit: 0,
+        ..PassiveHealthPolicy::default()
+    });
+    let mut config = minimal_config();
+    config.upstream_pools.push(pool);
+
+    assert!(matches!(
+        validate_config(&mut config),
+        Err(ConfigError::InvalidUpstreamServer {
+            field: "passive_health.error_limit",
+            ..
+        })
+    ));
+}
+
+#[test]
 fn round_trips_rtmp_exec_profiles_as_data_only_lua() {
     let mut config = complete_config();
     config.rtmp_services[0].exec_profiles = vec![RtmpExecProfile {
@@ -724,6 +757,15 @@ const RENDERED_FIELDS: &[&str] = &[
     "servers",
     "algorithm",
     "health_check",
+    "passive_health",
+    "observe",
+    "on_error",
+    "error_limit",
+    "mark_down",
+    "mark_up",
+    "initial_backoff_ms",
+    "max_backoff_ms",
+    "recovery_threshold",
     "tls",
     "http_versions",
     "server_name",

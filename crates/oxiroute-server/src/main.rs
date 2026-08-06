@@ -2603,6 +2603,7 @@ mod tests {
                     expected_status: None,
                     http_version: None,
                 }),
+                passive_health: None,
                 tls: None,
                 http_versions: HttpVersionPolicy::default(),
                 queue_timeout_ms: None,

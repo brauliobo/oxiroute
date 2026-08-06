@@ -23,6 +23,7 @@ use crate::{
         HttpRouteAction, HttpRoutePolicy, HttpSameSite, HttpService, HttpStaticErrorResponse,
         HttpStaticMimePolicy, HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost,
         HttpVersion, HttpVersionPolicy, L4Service, Listener, ListenerBind, Management, Protocol,
+        PassiveHealthPolicy, PassiveObserve, PassiveOnError,
         ProxyProtocolPolicy, ProxyProtocolVersion, RtmpAccessPolicy, RtmpAccessRule, RtmpAclAction,
         RtmpApplication, RtmpCallbackConfig, RtmpDashPolicy, RtmpDashSegmentNaming,
         RtmpExecEnvironment, RtmpExecFilesystemPolicy, RtmpExecMode, RtmpExecNetworkPolicy,
@@ -1120,6 +1121,7 @@ impl Renderer {
             endpoints,
             algorithm,
             health_check,
+            passive_health,
             tls,
             http_versions,
             queue_timeout_ms,
@@ -1147,6 +1149,11 @@ impl Renderer {
             UpstreamAlgorithm::First => self.string_field("algorithm", "first"),
         }
         self.optional_table_field("health_check", health_check.as_ref(), Self::health_check);
+        self.optional_table_field(
+            "passive_health",
+            passive_health.as_ref(),
+            Self::passive_health,
+        );
         match tls {
             Some(tls) => {
                 self.begin_table_field("tls");
@@ -1266,6 +1273,30 @@ impl Renderer {
             Some(HealthHttpVersion::Http11) => self.string_field("http_version", "1.1"),
             None => self.nil_field("http_version"),
         }
+    }
+
+    fn passive_health(&mut self, policy: &PassiveHealthPolicy) {
+        self.string_field(
+            "observe",
+            match policy.observe {
+                PassiveObserve::Layer4 => "layer4",
+                PassiveObserve::Layer7 => "layer7",
+            },
+        );
+        self.string_field(
+            "on_error",
+            match policy.on_error {
+                PassiveOnError::Count => "count",
+                PassiveOnError::Immediately => "immediately",
+                PassiveOnError::MarkDown => "mark_down",
+            },
+        );
+        self.integer_field("error_limit", policy.error_limit);
+        self.boolean_field("mark_down", policy.mark_down);
+        self.boolean_field("mark_up", policy.mark_up);
+        self.integer_field("initial_backoff_ms", policy.initial_backoff_ms);
+        self.integer_field("max_backoff_ms", policy.max_backoff_ms);
+        self.integer_field("recovery_threshold", policy.recovery_threshold);
     }
 
     fn upstream_tls(&mut self, pool_name: &str, tls: &UpstreamTls) -> Result<(), ConfigError> {
