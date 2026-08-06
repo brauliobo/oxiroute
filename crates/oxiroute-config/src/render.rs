@@ -2059,9 +2059,15 @@ impl Renderer {
                     HttpRetryTrigger::ConnectFailure => "connect_failure",
                     HttpRetryTrigger::ConnectTimeout => "connect_timeout",
                     HttpRetryTrigger::RefusedStream => "refused_stream",
+                    HttpRetryTrigger::EmptyResponse => "empty_response",
+                    HttpRetryTrigger::ResponseTimeout => "response_timeout",
+                    HttpRetryTrigger::JunkResponse => "junk_response",
                 })
                 .collect::<Vec<_>>(),
         );
+        if !retry.response_statuses.is_empty() {
+            self.integer_list_field("response_statuses", &retry.response_statuses);
+        }
         self.string_field(
             "method_safety",
             match retry.method_safety {

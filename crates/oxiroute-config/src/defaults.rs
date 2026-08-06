@@ -131,6 +131,7 @@ pub(crate) const MAX_PASSIVE_BACKOFF_MS: u64 = 86_400_000;
 pub(crate) const MAX_PASSIVE_RECOVERY_THRESHOLD: u16 = 100;
 pub(crate) const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 pub(crate) const MAX_HTTP_RETRIES: u8 = 3;
+pub(crate) const MAX_HTTP_RETRY_RESPONSE_STATUSES: usize = 100;
 pub(crate) const MAX_HTTP_METHODS_PER_ROUTE: usize = 16;
 pub(crate) const MAX_HTTP_METHOD_BYTES: usize = 32;
 pub(crate) const MAX_HTTP_AUTHORITY_BYTES: usize = 255;

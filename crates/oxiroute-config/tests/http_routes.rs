@@ -989,12 +989,15 @@ fn validates_explicit_retry_triggers_and_safety_rules() {
 
     let mut default_config =
         load_lua(&config(&proxy_route("", ""), endpoint)).expect("default retry");
-    let HttpRouteAction::Proxy { policy, .. } =
-        &mut default_config.http_services[0].routes[0].action
-    else {
-        panic!("proxy action");
-    };
-    policy.retry.triggers.clear();
+    {
+        let HttpRouteAction::Proxy { policy, .. } =
+            &mut default_config.http_services[0].routes[0].action
+        else {
+            panic!("proxy action");
+        };
+        policy.retry.triggers.clear();
+        policy.retry.max_retries = 1;
+    }
     assert!(matches!(
         validate_config(&mut default_config),
         Err(ConfigError::InvalidHttpRoute {
@@ -1002,6 +1005,35 @@ fn validates_explicit_retry_triggers_and_safety_rules() {
             ..
         })
     ));
+    let HttpRouteAction::Proxy { policy, .. } =
+        &mut default_config.http_services[0].routes[0].action
+    else {
+        panic!("proxy action");
+    };
+    policy.retry.max_retries = 0;
+    validate_config(&mut default_config).expect("zero retries may disable all retry triggers");
+
+    let status_only = proxy_route(
+        "",
+        r#"              retry = {
+                max_retries = 1,
+                triggers = {},
+                response_statuses = { 503 },
+              },"#,
+    );
+    let status_only_config = load_lua(&config(&status_only, endpoint)).expect("status-only retry");
+    let HttpRouteAction::Proxy { policy, .. } =
+        &status_only_config.http_services[0].routes[0].action
+    else {
+        panic!("status-only proxy action");
+    };
+    assert!(policy.retry.triggers.is_empty());
+    assert_eq!(policy.retry.response_statuses, [503]);
+    let rendered = render_lua(&status_only_config).expect("render status-only retry");
+    assert_eq!(
+        load_lua(&rendered).expect("status-only retry roundtrip"),
+        status_only_config
+    );
 
     let route = proxy_route(
         "",

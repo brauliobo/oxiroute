@@ -4,7 +4,10 @@ use std::{
     path::PathBuf,
 };
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{
+    Deserialize, Deserializer, Serialize, Serializer,
+    de::{self, MapAccess, SeqAccess, Visitor},
+};
 
 use crate::defaults::{
     MAX_CERTIFICATE_DNS_NAMES, MAX_CERTIFICATES, MAX_ENDPOINTS_PER_POOL,
@@ -1362,8 +1365,13 @@ pub struct HttpProxyPathRewrite {
 pub struct HttpRetryPolicy {
     #[serde(default)]
     pub max_retries: u8,
-    #[serde(default = "default_http_retry_triggers")]
+    #[serde(
+        default = "default_http_retry_triggers",
+        deserialize_with = "deserialize_http_retry_triggers"
+    )]
     pub triggers: Vec<HttpRetryTrigger>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub response_statuses: Vec<u16>,
     #[serde(default)]
     pub method_safety: HttpRetryMethodSafety,
     #[serde(default)]
@@ -1376,11 +1384,66 @@ pub struct HttpRetryPolicy {
     pub final_redispatch: bool,
 }
 
+fn deserialize_http_retry_triggers<'de, D>(deserializer: D) -> Result<Vec<HttpRetryTrigger>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct RetryTriggersVisitor;
+
+    impl<'de> Visitor<'de> for RetryTriggersVisitor {
+        type Value = Vec<HttpRetryTrigger>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a sequence of HTTP retry triggers")
+        }
+
+        fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            let mut triggers = Vec::new();
+            while let Some(trigger) = sequence.next_element()? {
+                triggers.push(trigger);
+            }
+            Ok(triggers)
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            if map.next_entry::<de::IgnoredAny, de::IgnoredAny>()?.is_some() {
+                return Err(de::Error::custom(
+                    "HTTP retry triggers must be a sequence",
+                ));
+            }
+            Ok(Vec::new())
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(Vec::new())
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(Vec::new())
+        }
+    }
+
+    deserializer.deserialize_any(RetryTriggersVisitor)
+}
+
 impl Default for HttpRetryPolicy {
     fn default() -> Self {
         Self {
             max_retries: 0,
             triggers: default_http_retry_triggers(),
+            response_statuses: Vec::new(),
             method_safety: HttpRetryMethodSafety::default(),
             body_safety: HttpRetryBodySafety::default(),
             target: HttpRetryTarget::default(),
@@ -1404,6 +1467,9 @@ pub enum HttpRetryTrigger {
     ConnectFailure,
     ConnectTimeout,
     RefusedStream,
+    EmptyResponse,
+    ResponseTimeout,
+    JunkResponse,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]

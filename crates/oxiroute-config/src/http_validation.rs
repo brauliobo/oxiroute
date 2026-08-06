@@ -1041,12 +1041,12 @@ fn validate_retry(
             "final redispatch requires at least one same-server retry",
         ));
     }
-    if retry.triggers.is_empty() {
+    if retry.triggers.is_empty() && retry.max_retries != 0 && retry.response_statuses.is_empty() {
         return Err(invalid_route(
             service,
             route_index,
             "action.policy.retry.triggers",
-            "must not be empty",
+            "must not be empty when retries are enabled without response statuses",
         ));
     }
     let mut triggers = HashSet::with_capacity(retry.triggers.len());
@@ -1066,7 +1066,38 @@ fn validate_retry(
             HttpRetryTrigger::ConnectFailure => 0,
             HttpRetryTrigger::ConnectTimeout => 1,
             HttpRetryTrigger::RefusedStream => 2,
+            HttpRetryTrigger::EmptyResponse => 3,
+            HttpRetryTrigger::ResponseTimeout => 4,
+            HttpRetryTrigger::JunkResponse => 5,
         });
+    if retry.response_statuses.len() > crate::defaults::MAX_HTTP_RETRY_RESPONSE_STATUSES {
+        return Err(invalid_route(
+            service,
+            route_index,
+            "action.policy.retry.response_statuses",
+            "must contain at most 100 statuses",
+        ));
+    }
+    let mut response_statuses = HashSet::with_capacity(retry.response_statuses.len());
+    for status in &retry.response_statuses {
+        if !(500..=599).contains(status) {
+            return Err(invalid_route(
+                service,
+                route_index,
+                "action.policy.retry.response_statuses",
+                "must contain only 5xx statuses",
+            ));
+        }
+        if !response_statuses.insert(*status) {
+            return Err(invalid_route(
+                service,
+                route_index,
+                "action.policy.retry.response_statuses",
+                "must not contain duplicates",
+            ));
+        }
+    }
+    retry.response_statuses.sort_unstable();
     Ok(())
 }
 
