@@ -154,6 +154,7 @@ impl RtmpSession {
                 let mut config = ServerSessionConfig::new();
                 let limits = self.runtime.inbound_limits();
                 config.chunk_size = self.runtime.outbound_chunk_size();
+                config.window_ack_size = limits.window_ack_size;
                 config.max_inbound_chunk_size = limits.max_inbound_chunk_size as usize;
                 config.max_inbound_message_size = limits.max_inbound_message_size;
                 let (protocol, startup) =

@@ -285,6 +285,8 @@ impl Lowerer {
         self.draft.rtmp_services.push(RtmpService {
             name: service_name.clone(),
             outbound_chunk_size: rtmp.outbound_chunk_size,
+            max_inbound_message_size: rtmp.max_inbound_message_size,
+            ack_window_size: rtmp.ack_window_size,
             access_log: if rtmp.access_log_disabled {
                 Some(AccessLogPolicy::Disabled)
             } else {
@@ -307,6 +309,8 @@ impl Lowerer {
             path: format!("/rtmp_services/{service_index}"),
             origins: std::iter::once(server.origin.clone())
                 .chain(rtmp.chunk_size_origin.clone())
+                .chain(rtmp.max_message_origin.clone())
+                .chain(rtmp.ack_window_origin.clone())
                 .chain(rtmp.access_log_origin.clone())
                 .chain(rtmp.auto_push_origin.clone())
                 .chain(rtmp.auto_push_reconnect_origin.clone())
@@ -316,6 +320,18 @@ impl Lowerer {
         if let Some(origin) = &rtmp.chunk_size_origin {
             self.provenance.push(CanonicalProvenance {
                 path: format!("/rtmp_services/{service_index}/outbound_chunk_size"),
+                origins: vec![origin.clone()],
+            });
+        }
+        if let Some(origin) = &rtmp.max_message_origin {
+            self.provenance.push(CanonicalProvenance {
+                path: format!("/rtmp_services/{service_index}/max_inbound_message_size"),
+                origins: vec![origin.clone()],
+            });
+        }
+        if let Some(origin) = &rtmp.ack_window_origin {
+            self.provenance.push(CanonicalProvenance {
+                path: format!("/rtmp_services/{service_index}/ack_window_size"),
                 origins: vec![origin.clone()],
             });
         }

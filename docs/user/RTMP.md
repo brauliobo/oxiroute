@@ -24,6 +24,8 @@ The smallest shape is a listener, an RTMP service, and one live application:
 (array)rtmp_services {
   (object)- {
     name "live"
+    max_inbound_message_size 8388608
+    ack_window_size 5000000
     (array)applications {
       (object)- {
         name "live"
@@ -39,6 +41,10 @@ The smallest shape is a listener, an RTMP service, and one live application:
 
 Publish to `rtmp://127.0.0.1:1935/live/<stream-name>`. Viewers use the same application and stream
 name. The exact session and media behavior is defined in [RTMP_SPEC.md](../RTMP_SPEC.md).
+
+`max_inbound_message_size` defaults to 8 MiB and bounds assembled inbound messages before payload
+allocation. `ack_window_size` defaults to 5,000,000 bytes and is announced during session startup;
+both values are service-wide and validated as positive bounded integers.
 
 ## Restrict Publish And Play
 

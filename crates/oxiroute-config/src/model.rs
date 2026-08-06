@@ -30,7 +30,8 @@ use crate::defaults::{
     default_max_request_body_bytes, default_proxy_protocol_timeout_ms,
     default_recorder_max_active_recorders, default_recorder_max_queue_bytes,
     default_recorder_max_queue_messages, default_recorder_shutdown_timeout_ms,
-    default_recorder_suffix_template, default_rtmp_auto_push_connect_timeout_ms,
+    default_recorder_suffix_template, default_rtmp_ack_window_size,
+    default_rtmp_auto_push_connect_timeout_ms,
     default_rtmp_auto_push_handshake_timeout_ms, default_rtmp_auto_push_max_peers,
     default_rtmp_auto_push_max_queue_bytes, default_rtmp_auto_push_max_queue_messages,
     default_rtmp_auto_push_max_streams, default_rtmp_auto_push_policy,
@@ -48,7 +49,8 @@ use crate::defaults::{
     default_rtmp_hls_max_segment_duration_ms, default_rtmp_hls_max_storage_bytes,
     default_rtmp_hls_max_storage_files, default_rtmp_hls_playlist_length_ms,
     default_rtmp_hls_segment_duration_ms, default_rtmp_max_chain_depth,
-    default_rtmp_outbound_chunk_size, default_rtmp_outbound_policy, default_rtmp_pull_reconnect_ms,
+    default_rtmp_max_inbound_message_size, default_rtmp_outbound_chunk_size,
+    default_rtmp_outbound_policy, default_rtmp_pull_reconnect_ms,
     default_rtmp_push_reconnect_ms, default_rtmp_relay_buffer_ms,
     default_rtmp_relay_connect_timeout_ms, default_rtmp_relay_handshake_timeout_ms,
     default_rtmp_relay_policy, default_rtmp_relay_queue_bytes, default_rtmp_relay_queue_messages,
@@ -1389,6 +1391,12 @@ pub struct RtmpService {
     pub name: String,
     #[serde(default = "default_rtmp_outbound_chunk_size")]
     pub outbound_chunk_size: u32,
+    /// Largest assembled inbound RTMP message accepted by the session adapter.
+    #[serde(default = "default_rtmp_max_inbound_message_size")]
+    pub max_inbound_message_size: u64,
+    /// Bytes between server acknowledgement windows announced to the peer.
+    #[serde(default = "default_rtmp_ack_window_size")]
+    pub ack_window_size: u32,
     #[serde(default)]
     pub access_log: Option<AccessLogPolicy>,
     #[serde(default = "default_rtmp_outbound_policy")]

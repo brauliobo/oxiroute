@@ -18,6 +18,8 @@ const DEFAULT_HEALTH_TIMEOUT_MS: u64 = 1_000;
 const DEFAULT_HEALTHY_THRESHOLD: u16 = 1;
 const DEFAULT_UNHEALTHY_THRESHOLD: u16 = 3;
 const DEFAULT_RTMP_OUTBOUND_CHUNK_SIZE: u32 = 4_096;
+const DEFAULT_RTMP_MAX_INBOUND_MESSAGE_SIZE: u64 = 8 * 1_024 * 1_024;
+const DEFAULT_RTMP_ACK_WINDOW_SIZE: u32 = 5_000_000;
 const DEFAULT_RTMP_MAX_SUBSCRIBERS: u64 = 1_024;
 const DEFAULT_RTMP_FANOUT_QUEUE_MESSAGES: u64 = 256;
 const DEFAULT_RTMP_FANOUT_QUEUE_BYTES: u64 = 8 * 1_024 * 1_024;
@@ -211,6 +213,7 @@ pub(crate) const MAX_RECORDER_ACTIVE_RECORDERS: u64 = 256;
 pub(crate) const MAX_RECORDER_FILE_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
 pub(crate) const MAX_RECORDER_FRAME_COUNT: u64 = 1_000_000_000;
 pub(crate) const MAX_RTMP_OUTBOUND_CHUNK_SIZE: u32 = 1_048_576;
+pub(crate) const MAX_RTMP_INBOUND_MESSAGE_SIZE: u64 = 8 * 1_024 * 1_024;
 pub(crate) const MAX_RTMP_PUSH_TARGETS: usize = 16;
 pub(crate) const MAX_RTMP_PULL_TARGETS: usize = 16;
 pub(crate) const MAX_RTMP_APPLICATION_BYTES: usize = 255;
@@ -430,6 +433,14 @@ pub(crate) const fn default_http_route_policy() -> HttpRoutePolicy {
 
 pub(crate) const fn default_rtmp_outbound_chunk_size() -> u32 {
     DEFAULT_RTMP_OUTBOUND_CHUNK_SIZE
+}
+
+pub(crate) const fn default_rtmp_max_inbound_message_size() -> u64 {
+    DEFAULT_RTMP_MAX_INBOUND_MESSAGE_SIZE
+}
+
+pub(crate) const fn default_rtmp_ack_window_size() -> u32 {
+    DEFAULT_RTMP_ACK_WINDOW_SIZE
 }
 
 pub(crate) const fn default_rtmp_fanout_policy() -> RtmpFanoutPolicy {

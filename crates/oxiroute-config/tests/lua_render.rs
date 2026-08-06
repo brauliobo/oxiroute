@@ -504,6 +504,8 @@ fn test_rtmp_services() -> Vec<RtmpService> {
     vec![RtmpService {
         name: "live".into(),
         outbound_chunk_size: 4_096,
+        max_inbound_message_size: 8 * 1024 * 1024,
+        ack_window_size: 5_000_000,
         access_log: None,
         outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
         callbacks: oxiroute_config::RtmpCallbackConfig::default(),
@@ -1161,6 +1163,10 @@ fn service_mutations() -> Vec<Mutation> {
             config.l4_services[0].connect_timeout_ms = 3_000;
             config.l4_services[0].idle_timeout_ms = 4_000;
             config.l4_services[0].lifetime_timeout_ms = None;
+        }),
+        ("RTMP message and acknowledgement limits", |config| {
+            config.rtmp_services[0].max_inbound_message_size = 2 * 1024 * 1024;
+            config.rtmp_services[0].ack_window_size = 1_000_000;
         }),
     ]
 }

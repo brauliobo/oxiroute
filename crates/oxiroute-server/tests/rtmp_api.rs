@@ -920,6 +920,8 @@ async fn config_api_redacts_rtmp_token_secrets_from_typed_and_rendered_views() {
     active.rtmp_services = vec![RtmpService {
         name: "live".into(),
         outbound_chunk_size: 4_096,
+        max_inbound_message_size: 8 * 1024 * 1024,
+        ack_window_size: 5_000_000,
         access_log: None,
         outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
         callbacks: oxiroute_config::RtmpCallbackConfig::default(),
@@ -1409,6 +1411,8 @@ fn candidate_config(active: &Config, listener_name: &str) -> Config {
     candidate.rtmp_services.push(RtmpService {
         name: "live".into(),
         outbound_chunk_size: 4_096,
+        max_inbound_message_size: 8 * 1024 * 1024,
+        ack_window_size: 5_000_000,
         access_log: None,
         outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
         callbacks: oxiroute_config::RtmpCallbackConfig::default(),

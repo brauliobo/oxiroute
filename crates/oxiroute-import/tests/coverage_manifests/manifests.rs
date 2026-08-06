@@ -791,6 +791,8 @@ fn validate_rtmp_import_forms(manifest: &RtmpDirectiveManifest) {
         "import.nginx-rtmp.allow.bounded",
         "import.nginx-rtmp.deny.bounded",
         "import.nginx-rtmp.max-connections.application",
+        "import.nginx-rtmp.max-message.bounded",
+        "import.nginx-rtmp.ack-window.bounded",
         "import.nginx-rtmp.exec-publisher.typed",
         "import.nginx-rtmp.exec-alias.typed",
         "import.nginx-rtmp.exec-publish.typed",

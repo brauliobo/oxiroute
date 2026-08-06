@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use oxiroute_rtmp::{
     LiveHub, LiveHubLimits, MAX_INBOUND_CHUNK_SIZE, MAX_INBOUND_MESSAGE_SIZE, RtmpApplication,
-    RtmpCapabilities, RtmpRegistry, RtmpServiceRuntime, RtmpSession, RtmpSessionPolicy,
+    RtmpCapabilities, RtmpRegistry, RtmpServiceRuntime, RtmpSession, RtmpSessionLimits,
+    RtmpSessionPolicy,
 };
 use rml_rtmp::{
     chunk_io::ChunkDeserializer,
@@ -62,6 +63,42 @@ fn configured_outbound_chunk_size_is_announced_on_the_wire() {
 }
 
 #[test]
+fn configured_inbound_message_and_ack_limits_are_applied_on_the_wire() {
+    let limits = RtmpSessionLimits::default()
+        .with_max_inbound_message_size(2 * 1024 * 1024)
+        .with_window_ack_size(1_000_000);
+    let (mut server, startup) = connected_server_with_startup(limits);
+    let mut deserializer = ChunkDeserializer::new();
+    let mut acknowledged = None;
+    for packet in startup {
+        let mut input = packet.as_slice();
+        while let Some(payload) = deserializer
+            .get_next_message(input)
+            .expect("decode server startup packet")
+        {
+            input = &[];
+            match payload
+                .to_rtmp_message()
+                .expect("decode server startup message")
+            {
+                RtmpMessage::WindowAcknowledgement { size } => acknowledged = Some(size),
+                RtmpMessage::SetChunkSize { size } => deserializer
+                    .set_max_chunk_size(size as usize)
+                    .expect("apply announced chunk size"),
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(acknowledged, Some(1_000_000));
+
+    let message = vec![0x03, 0, 0, 0, 0x20, 0, 1, 9, 1, 0, 0, 0];
+    let error = server
+        .receive(&message, 3)
+        .expect_err("message over configured limit");
+    assert!(error.to_string().contains("message length"), "{error}");
+}
+
+#[test]
 fn inbound_wire_rejects_zero_and_over_limit_chunk_sizes_before_they_take_effect() {
     for size in [0, MAX_INBOUND_CHUNK_SIZE + 1] {
         let mut server = connected_server();
@@ -103,6 +140,10 @@ fn inbound_wire_rejects_zero_and_over_limit_message_lengths_before_payload_alloc
 }
 
 fn connected_server() -> RtmpSession {
+    connected_server_with_startup(RtmpSessionLimits::default()).0
+}
+
+fn connected_server_with_startup(limits: RtmpSessionLimits) -> (RtmpSession, Vec<Vec<u8>>) {
     let runtime = RtmpServiceRuntime::new(
         "edge",
         Arc::new(RtmpRegistry::new(RtmpCapabilities {
@@ -110,9 +151,10 @@ fn connected_server() -> RtmpSession {
             manual_recording: false,
         })),
         LiveHub::new(LiveHubLimits::default()),
-        RtmpSessionPolicy::with_outbound_chunk_size(
+        RtmpSessionPolicy::with_session_limits(
             [RtmpApplication::new("live", true, true)],
             8_192,
+            limits,
         ),
     );
     let mut server = runtime.session();
@@ -128,6 +170,6 @@ fn connected_server() -> RtmpSession {
         HandshakeProcessResult::Completed { response_bytes, .. } => response_bytes,
         HandshakeProcessResult::InProgress { .. } => panic!("incomplete client handshake"),
     };
-    server.receive(&finish, 2).expect("server startup packets");
-    server
+    let startup = server.receive(&finish, 2).expect("server startup packets");
+    (server, startup)
 }

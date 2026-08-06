@@ -21,6 +21,9 @@ const MAX_RECORDING_ROOT_BYTES: usize = 4_096;
 const MAX_SUFFIX_BYTES: usize = 128;
 const MAX_ROTATION_INTERVAL_MS: u64 = (1 << 31) - 1;
 const MAX_OUTBOUND_CHUNK_SIZE: u32 = 1_048_576;
+const DEFAULT_NGINX_MAX_MESSAGE_SIZE: u64 = 1_048_576;
+const MAX_INBOUND_MESSAGE_SIZE: u64 = 8 * 1_024 * 1_024;
+const DEFAULT_NGINX_ACK_WINDOW_SIZE: u32 = 5_000_000;
 const MAX_APPLICATION_CONNECTIONS: u64 = 100_000;
 const MAX_RECORDING_FILE_BYTES: u64 = 1_099_511_627_776;
 const MAX_RECORDING_FRAME_COUNT: u64 = 1_000_000_000;
@@ -44,6 +47,10 @@ pub struct EffectiveRtmp {
     pub origin: DirectiveOrigin,
     pub outbound_chunk_size: u32,
     pub chunk_size_origin: Option<DirectiveOrigin>,
+    pub max_inbound_message_size: u64,
+    pub max_message_origin: Option<DirectiveOrigin>,
+    pub ack_window_size: u32,
+    pub ack_window_origin: Option<DirectiveOrigin>,
     pub auto_push: bool,
     pub auto_push_origin: Option<DirectiveOrigin>,
     pub auto_push_reconnect_ms: u64,
@@ -61,6 +68,10 @@ pub struct EffectiveRtmpServer {
     pub origin: DirectiveOrigin,
     pub outbound_chunk_size: Option<u32>,
     pub chunk_size_origin: Option<DirectiveOrigin>,
+    pub max_inbound_message_size: Option<u64>,
+    pub max_message_origin: Option<DirectiveOrigin>,
+    pub ack_window_size: Option<u32>,
+    pub ack_window_origin: Option<DirectiveOrigin>,
     pub listens: Vec<EffectiveRtmpListen>,
     pub applications: Vec<EffectiveRtmpApplication>,
 }
@@ -391,6 +402,10 @@ impl<'a> Resolver<'a> {
         let mut servers = Vec::new();
         let mut outbound_chunk_size = 4_096;
         let mut chunk_size_origin = None;
+        let mut max_inbound_message_size = DEFAULT_NGINX_MAX_MESSAGE_SIZE;
+        let mut max_message_origin = None;
+        let mut ack_window_size = DEFAULT_NGINX_ACK_WINDOW_SIZE;
+        let mut ack_window_origin = None;
         let mut access_log_disabled = false;
         let mut access_log_path = None;
         let mut access_log_origin = None;
@@ -433,6 +448,20 @@ impl<'a> Resolver<'a> {
                             "chunk_size is outside canonical RTMP outbound chunk bounds",
                         ),
                     }
+                }
+            } else if child.directive.name.value == b"max_message" {
+                if let Some((value, origin)) =
+                    self.resolve_max_message_size(child, DirectiveContext::RtmpMain)
+                {
+                    max_inbound_message_size = value;
+                    max_message_origin = Some(origin);
+                }
+            } else if child.directive.name.value == b"ack_window" {
+                if let Some((value, origin)) =
+                    self.resolve_ack_window_size(child, DirectiveContext::RtmpMain)
+                {
+                    ack_window_size = value;
+                    ack_window_origin = Some(origin);
                 }
             } else if child.directive.name.value == b"access_log" {
                 if self
@@ -479,6 +508,70 @@ impl<'a> Resolver<'a> {
             }
         }
 
+        let mut effective_max_message_size = None;
+        let mut effective_max_message_origin = None;
+        let mut effective_ack_window_size = None;
+        let mut effective_ack_window_origin = None;
+        for server in &servers {
+            let server_max_message_size = server
+                .max_inbound_message_size
+                .unwrap_or(max_inbound_message_size);
+            let server_max_message_origin = server
+                .max_message_origin
+                .clone()
+                .or_else(|| max_message_origin.clone());
+            if let Some(effective) = effective_max_message_size {
+                if effective != server_max_message_size {
+                    self.block(
+                        server
+                            .max_message_origin
+                            .clone()
+                            .unwrap_or_else(|| server.origin.clone())
+                            .occurrence,
+                        E_SEMANTICS_NOT_REPRESENTABLE,
+                        "nginx-RTMP servers use different max_message values but canonical policy is service-wide",
+                    );
+                } else if server_max_message_origin.is_some() {
+                    effective_max_message_origin = server_max_message_origin;
+                }
+            } else {
+                effective_max_message_size = Some(server_max_message_size);
+                effective_max_message_origin = server_max_message_origin;
+            }
+
+            let server_ack_window_size = server.ack_window_size.unwrap_or(ack_window_size);
+            let server_ack_window_origin = server
+                .ack_window_origin
+                .clone()
+                .or_else(|| ack_window_origin.clone());
+            if let Some(effective) = effective_ack_window_size {
+                if effective != server_ack_window_size {
+                    self.block(
+                        server
+                            .ack_window_origin
+                            .clone()
+                            .unwrap_or_else(|| server.origin.clone())
+                            .occurrence,
+                        E_SEMANTICS_NOT_REPRESENTABLE,
+                        "nginx-RTMP servers use different ack_window values but canonical policy is service-wide",
+                    );
+                } else if server_ack_window_origin.is_some() {
+                    effective_ack_window_origin = server_ack_window_origin;
+                }
+            } else {
+                effective_ack_window_size = Some(server_ack_window_size);
+                effective_ack_window_origin = server_ack_window_origin;
+            }
+        }
+        if let Some(value) = effective_max_message_size {
+            max_inbound_message_size = value;
+            max_message_origin = effective_max_message_origin;
+        }
+        if let Some(value) = effective_ack_window_size {
+            ack_window_size = value;
+            ack_window_origin = effective_ack_window_origin;
+        }
+
         if servers.is_empty() {
             self.block(
                 directive.occurrence,
@@ -496,6 +589,10 @@ impl<'a> Resolver<'a> {
             origin: Self::origin(directive),
             outbound_chunk_size,
             chunk_size_origin,
+            max_inbound_message_size,
+            max_message_origin,
+            ack_window_size,
+            ack_window_origin,
             auto_push: policy.auto_push.value,
             auto_push_origin: policy.auto_push.origin,
             auto_push_reconnect_ms: policy.auto_push_reconnect_ms.value,
@@ -523,6 +620,10 @@ impl<'a> Resolver<'a> {
         let mut application_names = HashMap::new();
         let mut outbound_chunk_size = None;
         let mut chunk_size_origin = None;
+        let mut max_inbound_message_size = None;
+        let mut max_message_origin = None;
+        let mut ack_window_size = None;
+        let mut ack_window_origin = None;
 
         for child in children {
             match child.directive.name.value.as_slice() {
@@ -531,6 +632,22 @@ impl<'a> Resolver<'a> {
                     if let Some(value) = self.resolve_server_chunk_size(child) {
                         outbound_chunk_size = Some(value);
                         chunk_size_origin = Some(Self::origin(child));
+                    }
+                }
+                b"max_message" => {
+                    if let Some((value, origin)) =
+                        self.resolve_max_message_size(child, DirectiveContext::RtmpServer)
+                    {
+                        max_inbound_message_size = Some(value);
+                        max_message_origin = Some(origin);
+                    }
+                }
+                b"ack_window" => {
+                    if let Some((value, origin)) =
+                        self.resolve_ack_window_size(child, DirectiveContext::RtmpServer)
+                    {
+                        ack_window_size = Some(value);
+                        ack_window_origin = Some(origin);
                     }
                 }
                 b"application" => {
@@ -577,6 +694,10 @@ impl<'a> Resolver<'a> {
             origin: Self::origin(directive),
             outbound_chunk_size,
             chunk_size_origin,
+            max_inbound_message_size,
+            max_message_origin,
+            ack_window_size,
+            ack_window_origin,
             listens,
             applications,
         }
@@ -601,6 +722,62 @@ impl<'a> Resolver<'a> {
                     directive.occurrence,
                     E_INVALID_VALUE,
                     "chunk_size is outside canonical RTMP outbound chunk bounds",
+                );
+                None
+            }
+        }
+    }
+
+    fn resolve_max_message_size(
+        &mut self,
+        directive: &ExpandedDirective,
+        context: DirectiveContext,
+    ) -> Option<(u64, DirectiveOrigin)> {
+        if self.validate_registered(directive, context).is_err()
+            || directive.directive.children.is_some()
+            || directive.directive.arguments.len() != 1
+        {
+            return None;
+        }
+        match parse_nginx_size(&directive.directive.arguments[0].value) {
+            Some(value) if (1..=MAX_INBOUND_MESSAGE_SIZE).contains(&value) => {
+                let origin = Self::origin(directive);
+                self.resolved(directive.occurrence);
+                Some((value, origin))
+            }
+            _ => {
+                self.block(
+                    directive.occurrence,
+                    E_INVALID_VALUE,
+                    "max_message is outside canonical RTMP assembled-message bounds",
+                );
+                None
+            }
+        }
+    }
+
+    fn resolve_ack_window_size(
+        &mut self,
+        directive: &ExpandedDirective,
+        context: DirectiveContext,
+    ) -> Option<(u32, DirectiveOrigin)> {
+        if self.validate_registered(directive, context).is_err()
+            || directive.directive.children.is_some()
+            || directive.directive.arguments.len() != 1
+        {
+            return None;
+        }
+        match parse_u32(&directive.directive.arguments[0].value) {
+            Some(value) if value != 0 => {
+                let origin = Self::origin(directive);
+                self.resolved(directive.occurrence);
+                Some((value, origin))
+            }
+            _ => {
+                self.block(
+                    directive.occurrence,
+                    E_INVALID_VALUE,
+                    "ack_window must be a nonzero RTMP acknowledgement window",
                 );
                 None
             }

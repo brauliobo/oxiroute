@@ -158,6 +158,11 @@
       "id": "evidence.nginx-rtmp.import",
       "tests": [
         "crates/oxiroute-import/tests/nginx_rtmp.rs#lowers_inherited_exact_rtmp_and_recorder_policy_without_accessing_the_root",
+        "crates/oxiroute-import/tests/nginx_rtmp.rs#lowers_rtmp_message_and_acknowledgement_limits_with_provenance",
+        "crates/oxiroute-import/tests/nginx_rtmp.rs#lowers_server_scoped_rtmp_message_and_acknowledgement_limits",
+        "crates/oxiroute-import/tests/nginx_rtmp.rs#server_scoped_rtmp_limits_override_inherited_values",
+        "crates/oxiroute-import/tests/nginx_rtmp.rs#blocks_nonuniform_effective_rtmp_limits_across_servers",
+        "crates/oxiroute-import/tests/nginx_rtmp.rs#rejects_rtmp_transport_limits_outside_canonical_bounds",
         "crates/oxiroute-import/tests/nginx_rtmp.rs#applies_native_application_and_recorder_defaults_explicitly",
         "crates/oxiroute-import/tests/nginx_rtmp.rs#maps_only_nginx_manual_recording_that_also_selects_all_media",
         "crates/oxiroute-import/tests/nginx_rtmp.rs#enforces_exact_path_suffix_interval_and_listener_bounds",
@@ -170,7 +175,8 @@
     {
       "id": "evidence.rtmp.session-policy",
       "tests": [
-        "crates/oxiroute-rtmp/tests/session_policy.rs#inbound_wire_rejects_zero_and_over_limit_message_lengths_before_payload_allocation"
+        "crates/oxiroute-rtmp/tests/session_policy.rs#inbound_wire_rejects_zero_and_over_limit_message_lengths_before_payload_allocation",
+        "crates/oxiroute-rtmp/tests/session_policy.rs#configured_inbound_message_and_ack_limits_are_applied_on_the_wire"
       ]
     },
     {
