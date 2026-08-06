@@ -35,9 +35,9 @@ use tokio::{
 };
 
 use crate::{
-    ForwardHttp1ServicePlan, H3UpstreamError, HttpOperationResult, HttpServicePlan,
-    ListenerMetrics, ListenerReservation, ListenerRuntimeState, RuntimeGeneration, RuntimeMode,
-    RuntimeReferenceKind, TlsProfilePlan,
+    ForwardHttp1ServicePlan, H3UpstreamError, HealthFailure, HttpOperationResult,
+    HttpServicePlan, ListenerMetrics, ListenerReservation, ListenerRuntimeState, RuntimeGeneration,
+    RuntimeMode, RuntimeReferenceKind, TlsProfilePlan,
     http_action::{
         HttpActionPlan, ProxyActionPlan, ProxyPolicyPlan, RequestHeaderMutationPlan,
         RequestHeaderValuePlan, StaticErrorTarget, StaticFile, StaticServeError, StaticTarget,
@@ -1461,8 +1461,48 @@ where
             }
         }
         if let Some(response) = response {
+            if proxy.policy.retries_on_status(response.status.as_u16()) {
+                selected
+                    .observation()
+                    .record_passive_failure(HealthFailure::UnexpectedStatus);
+                let retry_target = proxy.policy.target_for_retry(attempted.len());
+                let target_available = match retry_target {
+                    HttpRetryTarget::SameServer => attempted.last().is_some(),
+                    HttpRetryTarget::NextServer => proxy.pool.has_unattempted(&attempted),
+                };
+                let retry = retry_safe
+                    && attempt.saturating_add(1) < max_attempts
+                    && target_available
+                    && Instant::now() < deadline;
+                if retry {
+                    let delay = proxy.policy.retry_delay;
+                    if !delay.is_zero() {
+                        if delay > deadline.saturating_duration_since(Instant::now()) {
+                            return send_h3_upstream_response(
+                                stream, request, response, proxy, metrics, deadline,
+                            )
+                            .await;
+                        }
+                        tokio::select! {
+                            changed = shutdown.changed() => {
+                                let _ = changed;
+                                return None;
+                            }
+                            () = tokio::time::sleep(delay) => {}
+                        }
+                    }
+                    if retry_target == HttpRetryTarget::SameServer {
+                        retry_server = attempted.last().cloned();
+                    }
+                    continue;
+                }
+            }
             return send_h3_upstream_response(stream, request, response, proxy, metrics, deadline)
                 .await;
+        }
+
+        if let Some(failure) = h3_passive_failure(&last_error) {
+            selected.observation().record_passive_failure(failure);
         }
 
         let trigger = h3_retry_trigger(&last_error);
@@ -1524,6 +1564,21 @@ fn h3_retry_trigger(error: &H3UpstreamError) -> HttpRetryTrigger {
         | H3UpstreamError::RequestBodyTooLarge
         | H3UpstreamError::ResourceExhausted
         | H3UpstreamError::MissingServerName => HttpRetryTrigger::ConnectFailure,
+    }
+}
+
+fn h3_passive_failure(error: &H3UpstreamError) -> Option<HealthFailure> {
+    match error {
+        H3UpstreamError::Connect => Some(HealthFailure::ConnectFailed),
+        H3UpstreamError::Timeout => Some(HealthFailure::Timeout),
+        H3UpstreamError::RefusedStream | H3UpstreamError::Protocol => {
+            Some(HealthFailure::ProtocolError)
+        }
+        H3UpstreamError::Cancelled
+        | H3UpstreamError::ResponseBodyTooLarge
+        | H3UpstreamError::RequestBodyTooLarge
+        | H3UpstreamError::ResourceExhausted
+        | H3UpstreamError::MissingServerName => None,
     }
 }
 

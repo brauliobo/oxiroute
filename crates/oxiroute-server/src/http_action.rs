@@ -254,6 +254,7 @@ pub(crate) struct ProxyPolicyPlan {
     pub(crate) cookie_attributes: Box<[HttpCookieAttributePolicy]>,
     pub(crate) max_retries: u8,
     pub(crate) retry_triggers: Box<[HttpRetryTrigger]>,
+    pub(crate) retry_response_statuses: Box<[u16]>,
     pub(crate) retry_target: HttpRetryTarget,
     pub(crate) retry_delay: Duration,
     pub(crate) final_redispatch: bool,
@@ -670,6 +671,7 @@ impl ProxyPolicyPlan {
             cookie_attributes: policy.response_cookie_attributes.clone().into_boxed_slice(),
             max_retries: policy.retry.max_retries,
             retry_triggers: policy.retry.triggers.clone().into_boxed_slice(),
+            retry_response_statuses: policy.retry.response_statuses.clone().into_boxed_slice(),
             retry_target: policy.retry.target,
             retry_delay: Duration::from_millis(policy.retry.delay_ms),
             final_redispatch: policy.retry.final_redispatch,
@@ -680,6 +682,10 @@ impl ProxyPolicyPlan {
 
     pub(crate) fn retries_on(&self, trigger: HttpRetryTrigger) -> bool {
         self.retry_triggers.contains(&trigger)
+    }
+
+    pub(crate) fn retries_on_status(&self, status: u16) -> bool {
+        self.retry_response_statuses.contains(&status)
     }
 
     pub(crate) fn target_for_retry(&self, attempts: usize) -> HttpRetryTarget {
