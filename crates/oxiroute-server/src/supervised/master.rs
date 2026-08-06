@@ -502,12 +502,13 @@ fn descriptor_manifest(config: &Config) -> Vec<(String, Protocol, ListenerBind)>
             .as_ref()
             .map_or(0, |stats| stats.binds.len() + stats.pages.len());
     let mut manifest = Vec::with_capacity(descriptor_count);
-    manifest.extend(
-        config
-            .listeners
-            .iter()
-            .map(|listener| (listener.name.clone(), listener.protocol, listener.bind.clone())),
-    );
+    manifest.extend(config.listeners.iter().map(|listener| {
+        (
+            listener.name.clone(),
+            listener.protocol,
+            listener.bind.clone(),
+        )
+    }));
     if let Some(management) = &config.management {
         manifest.push((
             "@management".into(),
@@ -732,12 +733,7 @@ mod tests {
         assert_eq!(eligibility(&config), Ok(()));
 
         config.listeners[0].protocol = Protocol::ForwardHttp3;
-        assert_eq!(
-            eligibility(&config),
-            Err(UnsupportedConfig {
-                reason: "Stage 2 worker does not support HTTP/3 listener descriptors",
-            })
-        );
+        assert_eq!(eligibility(&config), Ok(()));
 
         config.listeners[0].protocol = Protocol::Http;
         config.listeners[0].bind = ListenerBind::Udp {

@@ -167,9 +167,10 @@ impl DescriptorManifest {
             let compatible = matches!(
                 (slot.kind, slot.bind.as_ref()),
                 (_, None)
-                    | (DescriptorKind::TcpListener, Some(BindIdentity::Tcp(_)))
                     | (
-                        DescriptorKind::DatagramListener | DescriptorKind::QuicListener,
+                        DescriptorKind::TcpListener
+                            | DescriptorKind::DatagramListener
+                            | DescriptorKind::QuicListener,
                         Some(BindIdentity::Tcp(_)),
                     )
                     | (
@@ -415,6 +416,15 @@ fn validate_descriptor(
     if !FileType::from_raw_mode(stat.st_mode).is_socket() {
         return Err(DescriptorError::NotSocket { slot: slot.id });
     }
+    validate_socket_shape(slot, descriptor)?;
+    let address = inspect(slot.id, getsockname(descriptor))?;
+    validate_socket_address(slot, address)
+}
+
+fn validate_socket_shape(
+    slot: &DescriptorSlot,
+    descriptor: &impl AsFd,
+) -> Result<(), DescriptorError> {
     let socket_type = inspect(slot.id, sockopt::socket_type(descriptor))?;
     match slot.kind {
         DescriptorKind::TcpListener | DescriptorKind::UnixListener => {
@@ -432,83 +442,86 @@ fn validate_descriptor(
         }
         DescriptorKind::Opaque => unreachable!("opaque descriptors return before validation"),
     }
-    let address = inspect(slot.id, getsockname(descriptor))?;
+    Ok(())
+}
+
+fn validate_socket_address(
+    slot: &DescriptorSlot,
+    address: rustix::net::SocketAddrAny,
+) -> Result<(), DescriptorError> {
     match slot.kind {
-        DescriptorKind::TcpListener => {
-            if !matches!(
-                address.address_family(),
-                AddressFamily::INET | AddressFamily::INET6
-            ) {
-                return Err(DescriptorError::WrongAddressFamily { slot: slot.id });
-            }
-            if let Some(BindIdentity::Tcp(expected)) = &slot.bind {
-                let actual =
-                    SocketAddr::try_from(address).map_err(|source| DescriptorError::Inspect {
-                        slot: slot.id,
-                        source,
-                    })?;
-                if &actual != expected {
-                    return Err(DescriptorError::BindMismatch { slot: slot.id });
-                }
-            }
+        DescriptorKind::TcpListener
+        | DescriptorKind::DatagramListener
+        | DescriptorKind::QuicListener => {
+            validate_inet_bind(slot, address)?;
         }
         DescriptorKind::UnixListener => {
-            if address.address_family() != AddressFamily::UNIX {
-                return Err(DescriptorError::WrongAddressFamily { slot: slot.id });
-            }
-            let actual =
-                SocketAddrUnix::try_from(address).map_err(|source| DescriptorError::Inspect {
-                    slot: slot.id,
-                    source,
-                })?;
-            let matches = match &slot.bind {
-                None => true,
-                Some(BindIdentity::UnixPath(expected)) => {
-                    actual.path_bytes() == Some(expected.as_os_str().as_bytes())
-                }
-                Some(BindIdentity::UnixAbstract(expected)) => {
-                    actual.abstract_name() == Some(expected.as_slice())
-                }
-                Some(BindIdentity::Tcp(_)) => false,
-            };
-            if !matches {
-                return Err(DescriptorError::BindMismatch { slot: slot.id });
-            }
-            if let (Some(BindIdentity::UnixPath(path)), Some(expected)) = (&slot.bind, slot.mode) {
-                use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};
-
-                let metadata = std::fs::symlink_metadata(path).map_err(|source| {
-                    DescriptorError::InspectPath {
-                        slot: slot.id,
-                        source,
-                    }
-                })?;
-                if !metadata.file_type().is_socket()
-                    || metadata.permissions().mode() & 0o7777 != u32::from(expected)
-                {
-                    return Err(DescriptorError::ModeMismatch { slot: slot.id });
-                }
-            }
-        }
-        DescriptorKind::DatagramListener | DescriptorKind::QuicListener => {
-            if !matches!(
-                address.address_family(),
-                AddressFamily::INET | AddressFamily::INET6
-            ) {
-                return Err(DescriptorError::WrongAddressFamily { slot: slot.id });
-            }
-            if let Some(BindIdentity::Tcp(expected)) = &slot.bind {
-                let actual =
-                    SocketAddr::try_from(address).map_err(|source| DescriptorError::Inspect {
-                        slot: slot.id,
-                        source,
-                    })?;
-                if &actual != expected {
-                    return Err(DescriptorError::BindMismatch { slot: slot.id });
-                }
-            }
+            validate_unix_bind(slot, address)?;
         }
         DescriptorKind::Opaque => unreachable!("opaque descriptors return before validation"),
+    }
+    Ok(())
+}
+
+fn validate_inet_bind(
+    slot: &DescriptorSlot,
+    address: rustix::net::SocketAddrAny,
+) -> Result<(), DescriptorError> {
+    if !matches!(
+        address.address_family(),
+        AddressFamily::INET | AddressFamily::INET6
+    ) {
+        return Err(DescriptorError::WrongAddressFamily { slot: slot.id });
+    }
+    if let Some(BindIdentity::Tcp(expected)) = &slot.bind {
+        let actual = SocketAddr::try_from(address).map_err(|source| DescriptorError::Inspect {
+            slot: slot.id,
+            source,
+        })?;
+        if &actual != expected {
+            return Err(DescriptorError::BindMismatch { slot: slot.id });
+        }
+    }
+    Ok(())
+}
+
+fn validate_unix_bind(
+    slot: &DescriptorSlot,
+    address: rustix::net::SocketAddrAny,
+) -> Result<(), DescriptorError> {
+    if address.address_family() != AddressFamily::UNIX {
+        return Err(DescriptorError::WrongAddressFamily { slot: slot.id });
+    }
+    let actual = SocketAddrUnix::try_from(address).map_err(|source| DescriptorError::Inspect {
+        slot: slot.id,
+        source,
+    })?;
+    let matches = match &slot.bind {
+        None => true,
+        Some(BindIdentity::UnixPath(expected)) => {
+            actual.path_bytes() == Some(expected.as_os_str().as_bytes())
+        }
+        Some(BindIdentity::UnixAbstract(expected)) => {
+            actual.abstract_name() == Some(expected.as_slice())
+        }
+        Some(BindIdentity::Tcp(_)) => false,
+    };
+    if !matches {
+        return Err(DescriptorError::BindMismatch { slot: slot.id });
+    }
+    if let (Some(BindIdentity::UnixPath(path)), Some(expected)) = (&slot.bind, slot.mode) {
+        use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};
+
+        let metadata =
+            std::fs::symlink_metadata(path).map_err(|source| DescriptorError::InspectPath {
+                slot: slot.id,
+                source,
+            })?;
+        if !metadata.file_type().is_socket()
+            || metadata.permissions().mode() & 0o7777 != u32::from(expected)
+        {
+            return Err(DescriptorError::ModeMismatch { slot: slot.id });
+        }
     }
     Ok(())
 }

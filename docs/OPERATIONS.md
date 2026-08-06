@@ -75,8 +75,10 @@ libraries. Native references are the deliberate exception to no-I/O parsing: the
 nginx/HAProxy roots and their importer-defined include graphs with the daemon account's filesystem
 permissions. They do not execute native binaries, shell expansions, or infer process environment.
 
-This release does not claim cross-process inherited-file-descriptor upgrade. Listener reuse is
-strictly process-local.
+The supervised launcher transfers authenticated typed listener descriptors across the master/worker
+boundary for TCP, Unix, UDP, and QUIC/H3 listeners. It does not claim arbitrary inherited-file-
+descriptor upgrade; unsupported descriptor topologies remain on the direct runtime, and listener
+reuse during supervised replacement requires an unchanged typed manifest.
 
 ## Shutdown
 

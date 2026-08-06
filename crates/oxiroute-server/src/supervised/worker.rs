@@ -9,11 +9,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use oxiroute_config::{Config, Protocol};
+use oxiroute_config::Config;
 use oxiroute_server::{
     AdministrativeState, GenerationManager, ListenerRuntimeState, RuntimeGeneration,
-    RuntimeSnapshot, worker_event_page,
+    RuntimeSnapshot,
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome, ConfigRevision},
+    worker_event_page,
 };
 use oxiroute_supervision::GenerationId;
 use oxiroute_supervision_unix::{InstanceToken, MAX_DESCRIPTOR_COUNT};
@@ -587,13 +588,6 @@ pub(super) fn validate_stage_one_config(config: &Config) -> Result<(), &'static 
         );
     if descriptor_count > MAX_DESCRIPTOR_COUNT {
         return Err("Stage 2 worker listener descriptor limit is 64");
-    }
-    if config
-        .listeners
-        .iter()
-        .any(|listener| listener.protocol == Protocol::ForwardHttp3)
-    {
-        return Err("Stage 2 worker does not support HTTP/3 listener descriptors");
     }
     Ok(())
 }

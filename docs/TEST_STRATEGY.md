@@ -170,6 +170,9 @@ behavior. Synthetic fixtures remain implementation evidence only.
   admission, malformed input, cancellation, and disabled migration/0-RTT. Reverse H3 process tests
   cover fixed/redirect/static/proxy responses, GOAWAY drain, reload, generation-owned UDP listener
   release, exhaustion, malformed traffic, and no silent protocol fallback.
+- Supervised process tests transfer authenticated typed TCP, Unix, UDP, and QUIC descriptors, verify
+  close-on-exec ownership and worker status, exercise UDP relay and H3 wire serving, and cover
+  replacement, rollback, drain, listener-start failure, and worker crash recovery.
 - TLS tests use independent OpenSSL/rustls clients where applicable.
 - gRPC and WebSocket behavior use independent implementations. Bounded PROXY v1/v2 parser and
   TCP/UDP integration tests cover malformed, timeout, mismatch, over-read, and quota boundaries;

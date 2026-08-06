@@ -2503,7 +2503,7 @@ pub(crate) fn capability_snapshot(
                 "status": if mode == RuntimeMode::Supervised { "negotiated" } else { "not_used" },
                 "manifestVersion": 1,
                 "datagram": true,
-                "quic": false,
+                "quic": true,
             },
         },
         "udp": udp_listener_capability(listeners),
@@ -2687,7 +2687,7 @@ mod tests {
         assert_eq!(value["udp"]["status"], "unconfigured");
         assert_eq!(value["supervision"]["mode"], "direct");
         assert_eq!(value["supervision"]["descriptorAdoption"]["datagram"], true);
-        assert_eq!(value["supervision"]["descriptorAdoption"]["quic"], false);
+        assert_eq!(value["supervision"]["descriptorAdoption"]["quic"], true);
         assert_eq!(value["http3"]["reverse"]["supported"], true);
         assert_eq!(value["http3"]["reverse"]["goAway"], "graceful");
         assert_eq!(value["http3"]["reverse"]["fallback"], "none");
