@@ -39,7 +39,8 @@ use crate::{
         MAX_RTMP_HLS_KEY_URL_PREFIX_BYTES, MAX_RTMP_HLS_NAME_BYTES, MAX_RTMP_HLS_OUTPUTS,
         MAX_RTMP_HLS_PLAYLIST_LENGTH_MS, MAX_RTMP_HLS_QUEUE_MESSAGES, MAX_RTMP_HLS_SEGMENT_BYTES,
         MAX_RTMP_HLS_SEGMENT_DURATION_MS, MAX_RTMP_HLS_STORAGE_BYTES, MAX_RTMP_HLS_STORAGE_FILES,
-        MAX_RTMP_HLS_VARIANTS, MAX_RTMP_OUTBOUND_CHUNK_SIZE, MAX_RTMP_OUTBOUND_CIDRS,
+        MAX_RTMP_HLS_VARIANTS, MAX_RTMP_INBOUND_MESSAGE_SIZE, MAX_RTMP_OUTBOUND_CHUNK_SIZE,
+        MAX_RTMP_OUTBOUND_CIDRS,
         MAX_RTMP_OUTBOUND_DOMAINS, MAX_RTMP_PULL_TARGETS, MAX_RTMP_PUSH_TARGETS,
         MAX_RTMP_RECONNECT_MS, MAX_RTMP_RECORDERS_PER_APPLICATION, MAX_RTMP_RECORDING_ROOTS,
         MAX_RTMP_RELAY_BUFFER_MS, MAX_RTMP_RELAY_TIMEOUT_MS, MAX_RTMP_SECRET_FILE_BYTES,
@@ -1518,6 +1519,22 @@ fn validate_rtmp_services(services: &mut [RtmpService]) -> Result<(), ConfigErro
                 service: service.name.clone(),
                 field: "outbound_chunk_size",
                 detail: "must be between 1 and 1048576",
+            });
+        }
+        if service.max_inbound_message_size == 0
+            || service.max_inbound_message_size > MAX_RTMP_INBOUND_MESSAGE_SIZE
+        {
+            return Err(ConfigError::InvalidRtmpServicePolicy {
+                service: service.name.clone(),
+                field: "max_inbound_message_size",
+                detail: "must be between 1 and 8388608",
+            });
+        }
+        if service.ack_window_size == 0 {
+            return Err(ConfigError::InvalidRtmpServicePolicy {
+                service: service.name.clone(),
+                field: "ack_window_size",
+                detail: "must be nonzero",
             });
         }
         validate_access_log("RTMP service", &service.name, service.access_log.as_ref())?;

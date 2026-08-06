@@ -898,6 +898,8 @@ fn excludes_unreferenced_rtmp_services_from_active_capabilities() {
     config.rtmp_services.push(RtmpService {
         name: "orphan".into(),
         outbound_chunk_size: 4_096,
+        max_inbound_message_size: 8 * 1024 * 1024,
+        ack_window_size: 5_000_000,
         access_log: None,
         outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
         callbacks: oxiroute_config::RtmpCallbackConfig::default(),
@@ -1682,6 +1684,8 @@ fn canonical_config() -> Config {
         rtmp_services: vec![RtmpService {
             name: "live".into(),
             outbound_chunk_size: 4_096,
+            max_inbound_message_size: 8 * 1024 * 1024,
+            ack_window_size: 5_000_000,
             access_log: None,
             outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
             callbacks: oxiroute_config::RtmpCallbackConfig::default(),

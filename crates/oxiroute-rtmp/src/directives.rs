@@ -77,6 +77,30 @@ const CHUNK_SIZE_FORMS: &[DirectiveForm] = &[
         status: ParsedOnly,
     },
 ];
+const ACK_WINDOW_FORMS: &[DirectiveForm] = &[
+    DirectiveForm {
+        form: "bounded nonzero acknowledgement window",
+        contexts: RS,
+        status: Enforced,
+    },
+    DirectiveForm {
+        form: "zero acknowledgement window",
+        contexts: RS,
+        status: ParsedOnly,
+    },
+];
+const MAX_MESSAGE_FORMS: &[DirectiveForm] = &[
+    DirectiveForm {
+        form: "bounded assembled-message ceiling (1..=8388608)",
+        contexts: RS,
+        status: Enforced,
+    },
+    DirectiveForm {
+        form: "out-of-range assembled-message ceiling",
+        contexts: RS,
+        status: ParsedOnly,
+    },
+];
 const LIVE_FORMS: &[DirectiveForm] = &[
     DirectiveForm {
         form: "live on",
@@ -444,7 +468,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::Integer,
         Some("5000000"),
-        false
+        false;
+        ACK_WINDOW_FORMS
     ),
     directive!(
         "chunk_size",
@@ -463,7 +488,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::Size,
         Some("1M"),
-        false
+        false;
+        MAX_MESSAGE_FORMS
     ),
     directive!(
         "out_queue",

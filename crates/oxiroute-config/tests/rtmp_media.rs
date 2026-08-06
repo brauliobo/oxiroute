@@ -202,3 +202,26 @@ fn auto_push_rejects_unsafe_paths_and_zero_bounds() {
         })
     ));
 }
+
+#[test]
+fn rtmp_service_message_and_acknowledgement_bounds_are_validated() {
+    let mut message_invalid = config_with_application(&Value::Null);
+    message_invalid.rtmp_services[0].max_inbound_message_size = 0;
+    assert!(matches!(
+        validate_config(&mut message_invalid),
+        Err(ConfigError::InvalidRtmpServicePolicy {
+            field: "max_inbound_message_size",
+            ..
+        })
+    ));
+
+    let mut acknowledgement_invalid = config_with_application(&Value::Null);
+    acknowledgement_invalid.rtmp_services[0].ack_window_size = 0;
+    assert!(matches!(
+        validate_config(&mut acknowledgement_invalid),
+        Err(ConfigError::InvalidRtmpServicePolicy {
+            field: "ack_window_size",
+            ..
+        })
+    ));
+}

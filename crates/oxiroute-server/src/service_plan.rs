@@ -42,8 +42,9 @@ use oxiroute_rtmp::{
     RtmpCallbackEndpoint, RtmpCallbackMethod, RtmpCallbackPolicy, RtmpCapabilities,
     RtmpClientOptions, RtmpCredential, RtmpNetwork, RtmpOutboundPolicy, RtmpPullTarget,
     RtmpPushApplication, RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry,
-    RtmpRelayConfig, RtmpRtmpsMode, RtmpServiceRuntime, RtmpSessionCeilings, RtmpSessionPolicy,
-    RtmpTokenPolicy, RtmpTransport, VodApplication, VodCatalog, VodLimits, VodSourceDefinition,
+    RtmpRelayConfig, RtmpRtmpsMode, RtmpServiceRuntime, RtmpSessionCeilings, RtmpSessionLimits,
+    RtmpSessionPolicy, RtmpTokenPolicy, RtmpTransport, VodApplication, VodCatalog, VodLimits,
+    VodSourceDefinition,
 };
 
 static DISK_BACKEND_REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Weak<DiskBackend>>>> =
@@ -91,6 +92,7 @@ impl ServiceKind {
 pub struct RtmpServicePlan {
     service_id: String,
     outbound_chunk_size: u32,
+    inbound_limits: RtmpSessionLimits,
     hub: LiveHub,
     callbacks: RtmpCallbackPolicy,
     access_log: Option<Arc<AccessLog>>,
@@ -193,7 +195,11 @@ impl RtmpServicePlan {
             self.service_id.clone(),
             registry,
             self.hub.clone(),
-            RtmpSessionPolicy::with_outbound_chunk_size(applications, self.outbound_chunk_size),
+            RtmpSessionPolicy::with_session_limits(
+                applications,
+                self.outbound_chunk_size,
+                self.inbound_limits,
+            ),
         )
         .with_callbacks(self.callbacks.clone());
         if let Some(auto_push) = self.auto_push.clone() {
@@ -1394,6 +1400,15 @@ fn compile_rtmp_services(
     let mut services = HashMap::with_capacity(config.rtmp_services.len());
     for service in &config.rtmp_services {
         let outbound_policy = compile_rtmp_outbound_policy(&service.outbound_policy);
+        let inbound_limits = RtmpSessionLimits::default()
+            .with_max_inbound_message_size(
+                usize::try_from(service.max_inbound_message_size).map_err(|_| {
+                    ServicePlanError::RuntimePolicyUnavailable {
+                        policy: "rtmp_services[].max_inbound_message_size",
+                    }
+                })?,
+            )
+            .with_window_ack_size(service.ack_window_size);
         let auto_push = compile_rtmp_auto_push(&service.name, &service.auto_push)?;
         let callbacks =
             compile_rtmp_callbacks(&service.name, None, &service.callbacks, &outbound_policy)?;
@@ -1517,6 +1532,7 @@ fn compile_rtmp_services(
             Arc::new(RtmpServicePlan {
                 service_id: service.name.clone(),
                 outbound_chunk_size: service.outbound_chunk_size,
+                inbound_limits,
                 hub: service_hub,
                 callbacks,
                 access_log: AccessLog::open(&service.name, service.access_log.as_ref())

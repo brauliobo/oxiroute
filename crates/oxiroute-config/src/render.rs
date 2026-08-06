@@ -573,6 +573,8 @@ impl Renderer {
         let RtmpService {
             name,
             outbound_chunk_size,
+            max_inbound_message_size,
+            ack_window_size,
             access_log,
             outbound_policy,
             callbacks,
@@ -582,6 +584,8 @@ impl Renderer {
         } = service;
         self.string_field("name", name);
         self.integer_field("outbound_chunk_size", outbound_chunk_size);
+        self.integer_field("max_inbound_message_size", max_inbound_message_size);
+        self.integer_field("ack_window_size", ack_window_size);
         self.access_log_field("access_log", access_log.as_ref(), "RTMP service", name)?;
         self.begin_table_field("outbound_policy");
         self.rtmp_outbound_policy(outbound_policy);

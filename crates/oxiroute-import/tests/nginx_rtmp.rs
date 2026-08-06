@@ -36,6 +36,11 @@ fn lowers_inherited_exact_rtmp_and_recorder_policy_without_accessing_the_root() 
     assert_eq!(config.listeners.len(), 1);
     assert_eq!(config.listeners[0].protocol, Protocol::Rtmp);
     assert_eq!(config.listeners[0].bind.to_string(), "127.0.0.1:1935");
+    assert_eq!(
+        config.rtmp_services[0].max_inbound_message_size,
+        1_024 * 1_024
+    );
+    assert_eq!(config.rtmp_services[0].ack_window_size, 5_000_000);
     let application = &config.rtmp_services[0].applications[0];
     assert_eq!(application.name, "phoenix");
     assert!(application.live);
@@ -63,6 +68,144 @@ fn lowers_inherited_exact_rtmp_and_recorder_policy_without_accessing_the_root() 
     assert!(report.provenance.iter().any(|entry| {
         entry.path == "/rtmp_services/0/applications/0/live"
             && entry.origins[0].provenance.include_stack.is_empty()
+    }));
+}
+
+#[test]
+fn lowers_rtmp_message_and_acknowledgement_limits_with_provenance() {
+    let report = import_source(
+        br"
+        rtmp {
+          max_message 2m;
+          ack_window 1000000;
+          server {
+            listen 127.0.0.1:1935;
+            application live { live on; }
+          }
+        }
+        ",
+        &[],
+    );
+
+    let config = report.config.expect("RTMP transport limits");
+    let service = &config.rtmp_services[0];
+    assert_eq!(service.max_inbound_message_size, 2 * 1024 * 1024);
+    assert_eq!(service.ack_window_size, 1_000_000);
+    assert!(
+        report
+            .provenance
+            .iter()
+            .any(|entry| { entry.path == "/rtmp_services/0/max_inbound_message_size" })
+    );
+    assert!(
+        report
+            .provenance
+            .iter()
+            .any(|entry| { entry.path == "/rtmp_services/0/ack_window_size" })
+    );
+}
+
+#[test]
+fn lowers_server_scoped_rtmp_message_and_acknowledgement_limits() {
+    let report = import_source(
+        br"
+        rtmp {
+          server {
+            listen 127.0.0.1:1935;
+            max_message 3m;
+            ack_window 2000000;
+            application live { live on; }
+          }
+        }
+        ",
+        &[],
+    );
+
+    let config = report.config.expect("server-scoped RTMP limits");
+    let service = &config.rtmp_services[0];
+    assert_eq!(service.max_inbound_message_size, 3 * 1024 * 1024);
+    assert_eq!(service.ack_window_size, 2_000_000);
+}
+
+#[test]
+fn server_scoped_rtmp_limits_override_inherited_values() {
+    let report = import_source(
+        br"
+        rtmp {
+          max_message 1m;
+          ack_window 1000000;
+          server {
+            listen 127.0.0.1:1935;
+            max_message 3m;
+            ack_window 2000000;
+            application live { live on; }
+          }
+        }
+        ",
+        &[],
+    );
+
+    let config = report.config.expect("server override of RTMP limits");
+    let service = &config.rtmp_services[0];
+    assert_eq!(service.max_inbound_message_size, 3 * 1024 * 1024);
+    assert_eq!(service.ack_window_size, 2_000_000);
+}
+
+#[test]
+fn blocks_nonuniform_effective_rtmp_limits_across_servers() {
+    let report = import_source(
+        br"
+        rtmp {
+          server {
+            listen 127.0.0.1:1935;
+            application first { live on; }
+          }
+          server {
+            listen 127.0.0.1:1936;
+            max_message 2m;
+            ack_window 2000000;
+            application second { live on; }
+          }
+        }
+        ",
+        &[],
+    );
+
+    assert!(report.config.is_none());
+    assert!(report.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code() == E_SEMANTICS_NOT_REPRESENTABLE
+            && diagnostic.message().contains("max_message")
+    }));
+    assert!(report.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code() == E_SEMANTICS_NOT_REPRESENTABLE
+            && diagnostic.message().contains("ack_window")
+    }));
+}
+
+#[test]
+fn rejects_rtmp_transport_limits_outside_canonical_bounds() {
+    let report = import_source(
+        br"
+        rtmp {
+          max_message 9m;
+          ack_window 0;
+          server {
+            listen 127.0.0.1:1935;
+            application live { live on; }
+          }
+        }
+        ",
+        &[],
+    );
+
+    assert!(report.config.is_none());
+    assert!(report.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code() == oxiroute_import::E_INVALID_VALUE
+            && diagnostic.message().contains("max_message")
+    }));
+    assert!(report.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code() == oxiroute_import::E_INVALID_VALUE
+            && diagnostic.message().contains("ack_window")
     }));
 }
 

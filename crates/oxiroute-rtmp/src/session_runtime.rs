@@ -34,6 +34,7 @@ const MAX_RTMP_TOKEN_BYTES: usize = 128;
 const DEFAULT_RTMP_APPLICATION_CONNECTIONS: usize = 1_024;
 const DEFAULT_RTMP_APPLICATION_PUBLISHERS: usize = 256;
 const DEFAULT_RTMP_APPLICATION_VIEWERS: usize = 1_024;
+const DEFAULT_RTMP_ACK_WINDOW_SIZE: u32 = 5_000_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RtmpAccessAction {
@@ -334,6 +335,7 @@ pub(super) struct SessionLimitError {
 pub struct RtmpSessionLimits {
     pub max_inbound_chunk_size: u32,
     pub max_inbound_message_size: usize,
+    pub window_ack_size: u32,
     pub max_amf0_depth: usize,
     pub max_amf0_container_entries: usize,
     pub max_amf0_values: usize,
@@ -354,11 +356,24 @@ impl RtmpSessionLimits {
         Self {
             max_inbound_chunk_size,
             max_inbound_message_size,
+            window_ack_size: DEFAULT_RTMP_ACK_WINDOW_SIZE,
             max_amf0_depth,
             max_amf0_container_entries,
             max_amf0_values,
             max_amf0_string_bytes,
         }
+    }
+
+    #[must_use]
+    pub const fn with_window_ack_size(mut self, window_ack_size: u32) -> Self {
+        self.window_ack_size = window_ack_size;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_max_inbound_message_size(mut self, max_inbound_message_size: usize) -> Self {
+        self.max_inbound_message_size = max_inbound_message_size;
+        self
     }
 
     pub(super) fn amf0_limits(self) -> Amf0Limits {
@@ -644,6 +659,24 @@ impl RtmpSessionPolicy {
         let mut policy = Self::new(applications);
         policy.inbound_limits = inbound_limits;
         policy
+    }
+
+    #[must_use]
+    pub fn with_session_limits(
+        applications: impl IntoIterator<Item = RtmpApplication>,
+        outbound_chunk_size: u32,
+        inbound_limits: RtmpSessionLimits,
+    ) -> Self {
+        Self {
+            applications: Arc::new(
+                applications
+                    .into_iter()
+                    .map(|application| (application.name.clone(), application))
+                    .collect(),
+            ),
+            outbound_chunk_size,
+            inbound_limits,
+        }
     }
 
     fn application(&self, name: &str) -> Option<&RtmpApplication> {

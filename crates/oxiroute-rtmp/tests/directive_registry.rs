@@ -221,6 +221,16 @@ fn reports_enforced_live_push_recording_chunk_and_listener_forms() {
         DirectiveStatus::Enforced,
     );
     assert_form_status(
+        "ack_window",
+        "bounded nonzero acknowledgement window",
+        DirectiveStatus::Enforced,
+    );
+    assert_form_status(
+        "max_message",
+        "bounded assembled-message ceiling (1..=8388608)",
+        DirectiveStatus::Enforced,
+    );
+    assert_form_status(
         "listen",
         "numeric socket address without options",
         DirectiveStatus::Enforced,
@@ -253,6 +263,16 @@ fn reports_unsupported_forms_without_promoting_their_directives() {
     assert_form_status(
         "chunk_size",
         "out-of-range outbound chunk size",
+        DirectiveStatus::ParsedOnly,
+    );
+    assert_form_status(
+        "ack_window",
+        "zero acknowledgement window",
+        DirectiveStatus::ParsedOnly,
+    );
+    assert_form_status(
+        "max_message",
+        "out-of-range assembled-message ceiling",
         DirectiveStatus::ParsedOnly,
     );
     assert_form_status(

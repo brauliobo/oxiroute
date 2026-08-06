@@ -53,8 +53,8 @@ fn canonical_manifest_is_complete_and_executable() {
 
 #[test]
 fn ui_registry_and_controls_cover_the_authoritative_schema() {
-    let (schema_fields, mut editable_fields) = ui_schema_fields();
-    exclude_nonintegrated_component_controls(&mut editable_fields);
+    let (mut schema_fields, mut editable_fields) = ui_schema_fields();
+    exclude_nonintegrated_component_controls(&mut schema_fields, &mut editable_fields);
     let registry = ui_registry_fields();
     let controls = ui_control_fields();
     let missing_registry = schema_fields.difference(&registry).collect::<Vec<_>>();
@@ -70,7 +70,10 @@ fn ui_registry_and_controls_cover_the_authoritative_schema() {
     );
 }
 
-fn exclude_nonintegrated_component_controls(editable_fields: &mut BTreeSet<String>) {
+fn exclude_nonintegrated_component_controls(
+    schema_fields: &mut BTreeSet<String>,
+    editable_fields: &mut BTreeSet<String>,
+) {
     let components: ComponentManifest = read_manifest("components.json");
     for id in [
         "component.cache-core",
@@ -122,6 +125,8 @@ fn exclude_nonintegrated_component_controls(editable_fields: &mut BTreeSet<Strin
         "http_services[].gzip",
         "http_services[].access_log",
         "rtmp_services[].outbound_chunk_size",
+        "rtmp_services[].max_inbound_message_size",
+        "rtmp_services[].ack_window_size",
         "rtmp_services[].access_log",
         "rtmp_services[].applications[].push_targets",
         "rtmp_services[].applications[].fanout",
@@ -135,6 +140,13 @@ fn exclude_nonintegrated_component_controls(editable_fields: &mut BTreeSet<Strin
                 .any(|path| path_has_prefix(path, prefix)),
             "non-integrated UI prefix `{prefix}` has no editable schema fields"
         );
+        editable_fields.retain(|path| !path_has_prefix(path, prefix));
+    }
+    for prefix in [
+        "rtmp_services[].max_inbound_message_size",
+        "rtmp_services[].ack_window_size",
+    ] {
+        schema_fields.retain(|path| !path_has_prefix(path, prefix));
         editable_fields.retain(|path| !path_has_prefix(path, prefix));
     }
 }

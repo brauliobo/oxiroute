@@ -818,6 +818,11 @@ return {
     assert!(minimal.http_services.is_empty());
     assert!(minimal.rtmp_services[0].applications[0].idle_streams);
     assert_eq!(minimal.rtmp_services[0].outbound_chunk_size, 4_096);
+    assert_eq!(
+        minimal.rtmp_services[0].max_inbound_message_size,
+        8 * 1024 * 1024
+    );
+    assert_eq!(minimal.rtmp_services[0].ack_window_size, 5_000_000);
     assert_eq!(minimal.rtmp_services[0].access_log, None);
     assert_eq!(
         minimal.rtmp_services[0].applications[0]

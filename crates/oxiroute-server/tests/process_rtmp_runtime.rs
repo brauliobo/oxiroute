@@ -588,6 +588,8 @@ fn runtime_config(
         rtmp_services: vec![RtmpService {
             name: "wire-rtmp".into(),
             outbound_chunk_size: 4_096,
+            max_inbound_message_size: 8 * 1024 * 1024,
+            ack_window_size: 5_000_000,
             access_log: None,
             outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
             callbacks: oxiroute_config::RtmpCallbackConfig::default(),
@@ -622,6 +624,8 @@ fn idle_runtime_config(management_address: SocketAddr, rtmp_address: SocketAddr)
         rtmp_services: vec![RtmpService {
             name: "timer-rtmp".into(),
             outbound_chunk_size: 4_096,
+            max_inbound_message_size: 8 * 1024 * 1024,
+            ack_window_size: 5_000_000,
             access_log: None,
             outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
             callbacks: oxiroute_config::RtmpCallbackConfig::default(),
@@ -732,6 +736,8 @@ fn handoff_runtime_config(
         rtmp_services: vec![RtmpService {
             name: "handoff-rtmp".into(),
             outbound_chunk_size: 4_096,
+            max_inbound_message_size: 8 * 1024 * 1024,
+            ack_window_size: 5_000_000,
             access_log: None,
             outbound_policy: oxiroute_config::RtmpOutboundPolicy::default(),
             callbacks: oxiroute_config::RtmpCallbackConfig::default(),
