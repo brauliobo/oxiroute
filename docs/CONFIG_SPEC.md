@@ -623,6 +623,11 @@ The current certificate and profile rules are:
   configured CA bundle. Otherwise at least one exact normalized SAN must be listed. Wildcard client
   identities are rejected. Client-auth mode, CA presence, and allowed-identity count are reported
   in redacted topology/status output; CA paths, SAN values, PEM, and private key material are not.
+- The same `disabled`, `optional`, and `required` client-auth policy applies to reverse `http3` and
+  `forward_http3` listeners. Their Quinn/rustls TLS setup uses the immutable prepared CA and exact
+  SAN policy; it never rereads the CA path or infers client identity from HTTP request headers.
+  Missing certificates in `required` mode, invalid chains, untrusted issuers, disallowed SANs, and
+  malformed certificates fail the QUIC handshake before HTTP/3 request bytes are processed.
 - A shared `session_cache` has a 1-through-255-byte ASCII `name` and an exact `size_bytes`. Runtime
   planning estimates one session per 256 bytes, enables OpenSSL's bounded server cache, and derives
   a distinct 32-byte session-id context from the profile and cache names. DH parameter files are
