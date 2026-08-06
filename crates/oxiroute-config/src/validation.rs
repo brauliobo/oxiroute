@@ -71,7 +71,7 @@ use crate::{
         RtmpCredentialReference, RtmpExecFilesystemPolicy, RtmpExecMode, RtmpExecProfile,
         RtmpExecTrigger, RtmpOutboundPolicy, RtmpRecorder, RtmpRelayPolicy, RtmpRtmpsPolicy,
         RtmpService, RtmpSessionCeilings, RtmpTokenSource, RtmpTransport, RtmpVodSource, Stats,
-        StatsPage, TlsClientAuthMode, TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm,
+        StatsPage, TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm,
         UpstreamEndpoint, UpstreamPool,
     },
 };
@@ -1251,9 +1251,6 @@ fn validate_http3_listener(
         return Err(invalid(
             "HTTP/3 requires a TLS 1.3 profile advertising only h3",
         ));
-    }
-    if profile.policy.client_auth.mode != TlsClientAuthMode::Disabled {
-        return Err(invalid("HTTP/3 does not support downstream client authentication"));
     }
     if service.max_request_body_bytes.is_none() {
         return Err(invalid("HTTP/3 requires a bounded service request body"));
