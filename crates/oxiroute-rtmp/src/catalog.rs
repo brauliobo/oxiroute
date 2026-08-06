@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fmt::{Display, Formatter},
     str::FromStr,
     sync::{Arc, Mutex, MutexGuard},
@@ -16,8 +16,8 @@ use crate::{
     },
     relay::{RtmpRelayController, RtmpRelayStatus},
     session_control::{
-        RtmpClientSnapshot, RtmpSessionControl, RtmpSessionControlAction,
-        RtmpSessionControlError, RtmpSessionControlOutcome, MAX_RTMP_SESSION_CONTROLS,
+        MAX_RTMP_SESSION_CONTROLS, RtmpClientSnapshot, RtmpSessionControl,
+        RtmpSessionControlAction, RtmpSessionControlError, RtmpSessionControlOutcome,
     },
 };
 
@@ -522,7 +522,7 @@ struct MutableStream {
     created_at_unix_ms: u64,
     publisher: Option<PublisherSnapshot>,
     publisher_activity_at_unix_ms: u64,
-    subscribers: HashSet<SessionId>,
+    subscribers: HashMap<SessionId, usize>,
     media: MediaSnapshot,
     media_sample_sequence: u64,
     relays: Vec<MutableRelay>,
@@ -539,7 +539,7 @@ impl MutableStream {
             created_at_unix_ms: at_unix_ms,
             publisher: None,
             publisher_activity_at_unix_ms: 0,
-            subscribers: HashSet::new(),
+            subscribers: HashMap::new(),
             media: MediaSnapshot::default(),
             media_sample_sequence: 0,
             relays: Vec::new(),
@@ -562,7 +562,7 @@ impl MutableStream {
             key: self.key.clone(),
             created_at_unix_ms: self.created_at_unix_ms,
             publisher: self.publisher,
-            subscriber_count: self.subscribers.len(),
+            subscriber_count: self.subscribers.values().sum(),
             media: self.media,
             relays: self.relays.iter().map(MutableRelay::snapshot).collect(),
             recorders,
@@ -980,12 +980,11 @@ impl RtmpRegistry {
             .streams
             .get_mut(&stream_id)
             .ok_or(CatalogError::StreamNotFound(stream_id))?;
-        let changed = stream.subscribers.insert(session_id);
-        if changed {
-            stream.revision = stream.revision.saturating_add(1);
-            mark_mutation(&mut inner, at_unix_ms);
-            publish_snapshot_if_dirty(&mut inner, self.capabilities);
-        }
+        let count = stream.subscribers.entry(session_id).or_default();
+        *count = count.saturating_add(1);
+        stream.revision = stream.revision.saturating_add(1);
+        mark_mutation(&mut inner, at_unix_ms);
+        publish_snapshot_if_dirty(&mut inner, self.capabilities);
         Ok(stream_id)
     }
 
@@ -1038,11 +1037,21 @@ impl RtmpRegistry {
                 .streams
                 .get_mut(&stream_id)
                 .ok_or(CatalogError::StreamNotFound(stream_id))?;
-            if !stream.subscribers.remove(&session_id) {
-                return Err(CatalogError::SubscriberNotFound {
-                    stream_id,
-                    session_id,
-                });
+            let remove_session = match stream.subscribers.get_mut(&session_id) {
+                Some(count) if *count > 1 => {
+                    *count -= 1;
+                    false
+                }
+                Some(_) => true,
+                None => {
+                    return Err(CatalogError::SubscriberNotFound {
+                        stream_id,
+                        session_id,
+                    });
+                }
+            };
+            if remove_session {
+                stream.subscribers.remove(&session_id);
             }
             stream.revision = stream.revision.saturating_add(1);
             stream.publisher.is_none() && stream.subscribers.is_empty()

@@ -43,13 +43,25 @@ impl RtmpSessionControlAction {
     }
 
     #[must_use]
-    const fn matches_role(self, role: RtmpSessionRole) -> bool {
+    fn matches_streams(self, streams: &[RtmpMessageStreamSnapshot]) -> bool {
         match self {
             Self::Client => true,
-            Self::Publisher => matches!(role, RtmpSessionRole::Publisher),
-            Self::Subscriber => matches!(role, RtmpSessionRole::Subscriber),
+            Self::Publisher => streams
+                .iter()
+                .any(|stream| stream.role == RtmpSessionRole::Publisher),
+            Self::Subscriber => streams
+                .iter()
+                .any(|stream| stream.role == RtmpSessionRole::Subscriber),
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RtmpMessageStreamSnapshot {
+    pub message_stream_id: u32,
+    pub application: String,
+    pub stream_name: String,
+    pub role: RtmpSessionRole,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -62,6 +74,7 @@ pub struct RtmpClientSnapshot {
     pub application: Option<String>,
     pub stream_name: Option<String>,
     pub role: RtmpSessionRole,
+    pub message_streams: Vec<RtmpMessageStreamSnapshot>,
     pub revision: u64,
 }
 
@@ -99,6 +112,7 @@ struct ControlState {
     application: Option<String>,
     stream_name: Option<String>,
     role: RtmpSessionRole,
+    message_streams: Vec<RtmpMessageStreamSnapshot>,
     revision: u64,
     pending: Option<PendingControl>,
 }
@@ -124,6 +138,7 @@ impl RtmpSessionControl {
                 application: None,
                 stream_name: None,
                 role: RtmpSessionRole::Client,
+                message_streams: Vec::new(),
                 revision: 0,
                 pending: None,
             }),
@@ -137,25 +152,32 @@ impl RtmpSessionControl {
         state.application = Some(application.to_owned());
         state.stream_name = None;
         state.role = RtmpSessionRole::Client;
+        state.message_streams.clear();
         state.revision = state.revision.saturating_add(1);
         state.pending = None;
     }
 
-    pub(crate) fn set_role(
+    pub(crate) fn set_message_streams(
         &self,
-        role: RtmpSessionRole,
         application: Option<&str>,
-        stream_name: Option<&str>,
+        message_streams: &[RtmpMessageStreamSnapshot],
     ) {
         let mut state = self.lock();
-        let application_changed = state.application.as_deref() != application;
-        let stream_name_changed = state.stream_name.as_deref() != stream_name;
-        if state.role == role && !application_changed && !stream_name_changed {
+        let first_stream = message_streams.first();
+        let next_application = application.map(str::to_owned);
+        let next_stream_name = first_stream.map(|stream| stream.stream_name.clone());
+        let next_role = first_stream.map_or(RtmpSessionRole::Client, |stream| stream.role);
+        if state.application == next_application
+            && state.stream_name == next_stream_name
+            && state.role == next_role
+            && state.message_streams == message_streams
+        {
             return;
         }
-        state.application = application.map(str::to_owned);
-        state.stream_name = stream_name.map(str::to_owned);
-        state.role = role;
+        state.application = next_application;
+        state.stream_name = next_stream_name;
+        state.role = next_role;
+        state.message_streams = message_streams.to_vec();
         state.revision = state.revision.saturating_add(1);
         state.pending = None;
     }
@@ -172,7 +194,7 @@ impl RtmpSessionControl {
                 actual: state.revision,
             });
         }
-        if !action.matches_role(state.role) {
+        if !action.matches_streams(&state.message_streams) {
             return Err(RtmpSessionControlError::RoleMismatch {
                 target: action,
                 actual: state.role,
@@ -195,10 +217,13 @@ impl RtmpSessionControl {
         })
     }
 
-    pub(crate) fn take_action(&self, role: RtmpSessionRole) -> Option<RtmpSessionControlAction> {
+    pub(crate) fn take_action(
+        &self,
+        message_streams: &[RtmpMessageStreamSnapshot],
+    ) -> Option<RtmpSessionControlAction> {
         let mut state = self.lock();
         let pending = state.pending.take()?;
-        (pending.revision == state.revision && pending.action.matches_role(role))
+        (pending.revision == state.revision && pending.action.matches_streams(message_streams))
             .then_some(pending.action)
     }
 
@@ -213,6 +238,7 @@ impl RtmpSessionControl {
             application: state.application.clone(),
             stream_name: state.stream_name.clone(),
             role: state.role,
+            message_streams: state.message_streams.clone(),
             revision: state.revision,
         }
     }
@@ -234,7 +260,15 @@ mod tests {
         let control = RtmpSessionControl::new(session_id, "edge", None);
 
         control.connected("live", 10);
-        control.set_role(RtmpSessionRole::Publisher, Some("live"), Some("camera"));
+        control.set_message_streams(
+            Some("live"),
+            &[RtmpMessageStreamSnapshot {
+                message_stream_id: 1,
+                application: "live".into(),
+                stream_name: "camera".into(),
+                role: RtmpSessionRole::Publisher,
+            }],
+        );
         let snapshot = control.snapshot();
         assert_eq!(snapshot.revision, 2);
         assert_eq!(snapshot.role, RtmpSessionRole::Publisher);
@@ -249,10 +283,10 @@ mod tests {
                 .is_ok()
         );
         assert_eq!(
-            control.take_action(RtmpSessionRole::Publisher),
+            control.take_action(&snapshot.message_streams),
             Some(RtmpSessionControlAction::Publisher)
         );
-        assert_eq!(control.take_action(RtmpSessionRole::Publisher), None);
+        assert_eq!(control.take_action(&snapshot.message_streams), None);
         assert!(matches!(
             control.request(RtmpSessionControlAction::Publisher, 1),
             Err(RtmpSessionControlError::RevisionMismatch { .. })

@@ -1362,6 +1362,7 @@ fn rtmp_session_failure_code(error: &RtmpSessionError) -> &'static str {
         RtmpSessionError::NoActivePlayback => "playback_unavailable",
         RtmpSessionError::Callback(_) => "callback_failed",
         RtmpSessionError::Vod(_) => "vod_failed",
+        RtmpSessionError::MessageStream { .. } => "message_stream_failed",
     }
 }
 

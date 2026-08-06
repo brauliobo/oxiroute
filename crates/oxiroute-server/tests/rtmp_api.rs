@@ -30,8 +30,8 @@ use oxiroute_config::{
 use oxiroute_rtmp::{
     LiveHub, LiveHubLimits, MediaSnapshot, RtmpApplication as RuntimeRtmpApplication,
     RtmpCapabilities, RtmpPushApplication, RtmpPushTarget, RtmpRegistry, RtmpRelayConfig,
-    RtmpServiceRuntime, RtmpSessionControlAction, RtmpSessionPolicy, SessionId, StreamKey,
-    TrackSnapshot, VideoCodecIdentifier,
+    RtmpServiceRuntime, RtmpSession, RtmpSessionControlAction, RtmpSessionPolicy, SessionId,
+    StreamKey, TrackSnapshot, VideoCodecIdentifier,
 };
 use oxiroute_server::{
     HttpListenerApp, RtmpManagementApi, RuntimeMetrics, ServiceKind, TopologySnapshot,
@@ -47,6 +47,9 @@ use pingora::{
 use serde_json::Value;
 use tempfile::TempDir;
 
+use rml_rtmp::{
+    chunk_io::ChunkSerializer, messages::RtmpMessage, rml_amf0::Amf0Value, time::RtmpTimestamp,
+};
 use rtmp_support::RtmpSessionClient;
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -196,6 +199,51 @@ async fn queues_target_checked_publisher_disconnects_through_the_management_api(
         client.server.take_control_action(),
         Some(RtmpSessionControlAction::Publisher)
     );
+}
+
+#[tokio::test]
+async fn exposes_each_message_stream_in_client_stats() {
+    let active = editable_config();
+    let harness = ManagementHarness::start(&candidate_config(&active, "live")).await;
+    let mut client = RtmpSessionClient::connect(harness.rtmp_runtime(), "broadcast");
+    client.publish("camera-a", 100);
+
+    let mut serializer = ChunkSerializer::new();
+    send_raw_command(
+        &mut client.server,
+        &mut serializer,
+        "createStream",
+        0,
+        Vec::new(),
+        101,
+    );
+    send_raw_command(
+        &mut client.server,
+        &mut serializer,
+        "publish",
+        2,
+        vec![
+            Amf0Value::Utf8String("camera-b".into()),
+            Amf0Value::Utf8String("live".into()),
+        ],
+        102,
+    );
+
+    let snapshot = client.server.client_snapshot().expect("client snapshot");
+    assert_eq!(snapshot.message_streams.len(), 2);
+    let stats = harness
+        .request("GET", "/api/v1/rtmp/stats/clients", None, None)
+        .await;
+    assert_eq!(stats.status, 200);
+    let body = stats.json();
+    let streams = body["clients"][0]["messageStreams"]
+        .as_array()
+        .expect("message stream array");
+    assert_eq!(streams.len(), 2);
+    assert_eq!(streams[0]["messageStreamId"], 1);
+    assert_eq!(streams[1]["messageStreamId"], 2);
+    assert_eq!(streams[0]["role"], "publisher");
+    assert_eq!(streams[1]["role"], "publisher");
 }
 
 #[test]
@@ -1438,6 +1486,31 @@ async fn chunked_config_body_is_bounded_while_streaming() {
     let response = harness.raw_request(request).await;
     assert_eq!(response.status, 413);
     assert_eq!(response.json()["error"]["code"], "config_body_too_large");
+}
+
+fn send_raw_command(
+    server: &mut RtmpSession,
+    serializer: &mut ChunkSerializer,
+    command_name: &str,
+    message_stream_id: u32,
+    additional_arguments: Vec<Amf0Value>,
+    at_unix_ms: u64,
+) {
+    let message = RtmpMessage::Amf0Command {
+        command_name: command_name.to_owned(),
+        transaction_id: 0.0,
+        command_object: Amf0Value::Null,
+        additional_arguments,
+    };
+    let payload = message
+        .into_message_payload(RtmpTimestamp::new(0), message_stream_id)
+        .expect("raw command payload");
+    let packet = serializer
+        .serialize(&payload, false, false)
+        .expect("raw command packet");
+    server
+        .receive(&packet.bytes, at_unix_ms)
+        .expect("raw command");
 }
 
 fn empty_registry() -> Arc<RtmpRegistry> {

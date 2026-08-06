@@ -57,6 +57,7 @@ pub struct ServerSession {
     object_encoding: f64,
     active_streams: HashMap<u32, ActiveStream>,
     next_stream_id: u32,
+    max_active_streams: usize,
     peer_window_ack_size: Option<u32>,
     bytes_received: u64,
     bytes_received_since_last_ack: u32,
@@ -95,6 +96,7 @@ impl ServerSession {
             object_encoding: 0.0,
             active_streams: HashMap::new(),
             next_stream_id: 1,
+            max_active_streams: config.max_active_streams,
             peer_window_ack_size: None,
             bytes_received: 0,
             bytes_received_since_last_ack: 0,
@@ -486,9 +488,9 @@ impl ServerSession {
     ) -> Result<Vec<ServerSessionResult>, ServerSessionError> {
         let results = match name.as_str() {
             "connect" => self.handle_command_connect(transaction_id, command_object)?,
-            "closeStream" => self.handle_command_close_stream(additional_args)?,
+            "closeStream" => self.handle_command_close_stream(transaction_id, additional_args)?,
             "createStream" => self.handle_command_create_stream(transaction_id)?,
-            "deleteStream" => self.handle_command_delete_stream(additional_args)?,
+            "deleteStream" => self.handle_command_delete_stream(transaction_id, additional_args)?,
             "play" => self.handle_command_play(stream_id, transaction_id, additional_args)?,
             "publish" => self.handle_command_publish(stream_id, transaction_id, additional_args)?,
 
@@ -556,6 +558,7 @@ impl ServerSession {
 
     fn handle_command_close_stream(
         &mut self,
+        transaction_id: f64,
         mut arguments: Vec<Amf0Value>,
     ) -> Result<Vec<ServerSessionResult>, ServerSessionError> {
         if self.current_state != SessionState::Connected {
@@ -579,7 +582,15 @@ impl ServerSession {
 
         let stream = match self.active_streams.get_mut(&stream_id) {
             Some(x) => x,
-            None => return Ok(Vec::new()),
+            None => {
+                let packet = self.create_error_packet(
+                    "NetStream.InvalidStream",
+                    "Unknown RTMP message stream",
+                    transaction_id,
+                    0,
+                )?;
+                return Ok(vec![ServerSessionResult::OutboundResponse(packet)]);
+            }
         };
 
         // Before we change the stream state we need to grab the info from it for any
@@ -592,6 +603,7 @@ impl ServerSession {
                 let event = ServerSessionEvent::PublishStreamFinished {
                     app_name,
                     stream_key: stream_key.clone(),
+                    stream_id,
                 };
 
                 vec![ServerSessionResult::RaisedEvent(event)]
@@ -601,6 +613,7 @@ impl ServerSession {
                 let event = ServerSessionEvent::PlayStreamFinished {
                     app_name,
                     stream_key: stream_key.clone(),
+                    stream_id,
                 };
 
                 vec![ServerSessionResult::RaisedEvent(event)]
@@ -620,8 +633,35 @@ impl ServerSession {
         &mut self,
         transaction_id: f64,
     ) -> Result<Vec<ServerSessionResult>, ServerSessionError> {
+        if self.current_state != SessionState::Connected {
+            let packet = self.create_error_packet(
+                "NetConnection.CreateStream.Failed",
+                "Cannot create an RTMP message stream before connecting",
+                transaction_id,
+                0,
+            )?;
+            return Ok(vec![ServerSessionResult::OutboundResponse(packet)]);
+        }
+        if self.active_streams.len() >= self.max_active_streams {
+            let packet = self.create_error_packet(
+                "NetConnection.CreateStream.Failed",
+                "RTMP message stream limit reached",
+                transaction_id,
+                0,
+            )?;
+            return Ok(vec![ServerSessionResult::OutboundResponse(packet)]);
+        }
         let new_stream_id = self.next_stream_id;
-        self.next_stream_id = self.next_stream_id + 1;
+        let Some(next_stream_id) = self.next_stream_id.checked_add(1) else {
+            let packet = self.create_error_packet(
+                "NetConnection.CreateStream.Failed",
+                "RTMP message stream identity exhausted",
+                transaction_id,
+                0,
+            )?;
+            return Ok(vec![ServerSessionResult::OutboundResponse(packet)]);
+        };
+        self.next_stream_id = next_stream_id;
 
         let new_stream = ActiveStream {
             current_state: StreamState::Created,
@@ -641,6 +681,7 @@ impl ServerSession {
 
     fn handle_command_delete_stream(
         &mut self,
+        transaction_id: f64,
         mut arguments: Vec<Amf0Value>,
     ) -> Result<Vec<ServerSessionResult>, ServerSessionError> {
         // Not sure if I need to send a response
@@ -665,7 +706,15 @@ impl ServerSession {
 
         let stream = match self.active_streams.remove(&stream_id) {
             Some(stream) => stream,
-            None => return Ok(Vec::new()),
+            None => {
+                let packet = self.create_error_packet(
+                    "NetStream.InvalidStream",
+                    "Unknown RTMP message stream",
+                    transaction_id,
+                    0,
+                )?;
+                return Ok(vec![ServerSessionResult::OutboundResponse(packet)]);
+            }
         };
 
         let result = match stream.current_state {
@@ -676,6 +725,7 @@ impl ServerSession {
                 let event = ServerSessionEvent::PublishStreamFinished {
                     stream_key: stream_key.clone(),
                     app_name,
+                    stream_id,
                 };
 
                 vec![ServerSessionResult::RaisedEvent(event)]
@@ -685,6 +735,7 @@ impl ServerSession {
                 let event = ServerSessionEvent::PlayStreamFinished {
                     app_name,
                     stream_key: stream_key.clone(),
+                    stream_id,
                 };
 
                 vec![ServerSessionResult::RaisedEvent(event)]
@@ -733,6 +784,25 @@ impl ServerSession {
                 return Ok(vec![ServerSessionResult::OutboundResponse(packet)]);
             }
         };
+
+        let Some(active_stream) = self.active_streams.get(&stream_id) else {
+            let packet = self.create_error_packet(
+                "NetStream.Publish.BadName",
+                "Unknown RTMP message stream",
+                transaction_id,
+                stream_id,
+            )?;
+            return Ok(vec![ServerSessionResult::OutboundResponse(packet)]);
+        };
+        if !matches!(active_stream.current_state, StreamState::Created) {
+            let packet = self.create_error_packet(
+                "NetStream.Publish.BadName",
+                "RTMP message stream already has a role",
+                transaction_id,
+                stream_id,
+            )?;
+            return Ok(vec![ServerSessionResult::OutboundResponse(packet)]);
+        }
 
         let stream_key = match arguments.remove(0) {
             Amf0Value::Utf8String(stream_key) => stream_key,
@@ -795,6 +865,7 @@ impl ServerSession {
             app_name,
             stream_key,
             mode,
+            stream_id,
         };
 
         Ok(vec![ServerSessionResult::RaisedEvent(event)])
@@ -838,6 +909,25 @@ impl ServerSession {
                 return Ok(vec![ServerSessionResult::OutboundResponse(packet)]);
             }
         };
+
+        let Some(active_stream) = self.active_streams.get(&stream_id) else {
+            let packet = self.create_error_packet(
+                "NetStream.Play.Failed",
+                "Unknown RTMP message stream",
+                transaction_id,
+                stream_id,
+            )?;
+            return Ok(vec![ServerSessionResult::OutboundResponse(packet)]);
+        };
+        if !matches!(active_stream.current_state, StreamState::Created) {
+            let packet = self.create_error_packet(
+                "NetStream.Play.Failed",
+                "RTMP message stream already has a role",
+                transaction_id,
+                stream_id,
+            )?;
+            return Ok(vec![ServerSessionResult::OutboundResponse(packet)]);
+        }
 
         let stream_key = match arguments.remove(0) {
             Amf0Value::Utf8String(stream_key) => stream_key,
@@ -944,8 +1034,7 @@ impl ServerSession {
         stream_id: u32,
     ) -> Result<Vec<ServerSessionResult>, ServerSessionError> {
         if data.len() < 2 {
-            // We are expecting a "onMetaData" value and then a property with the actual metadata.  Since
-            // this wasn't provided we don't know how to deal with this message.
+            return Err(ServerSessionError::InvalidMessageStream { stream_id });
         }
 
         match data[0] {
@@ -954,26 +1043,24 @@ impl ServerSession {
         }
 
         if self.connected_app_name.is_none() {
-            return Ok(Vec::new()); // setDataFrame has no meaning until they are conneted and publishing
+            return Err(ServerSessionError::InvalidMessageStream { stream_id });
         }
 
         let app_name = match self.connected_app_name {
             Some(ref name) => name.clone(),
-            None => return Ok(Vec::new()), // Not connected on a known app name.  Shouldn't really happen.
+            None => return Err(ServerSessionError::InvalidMessageStream { stream_id }),
         };
 
         let publish_stream_key = match self.active_streams.get(&stream_id) {
-            Some(ref stream) => {
-                match stream.current_state {
-                    StreamState::Publishing {
-                        ref stream_key,
-                        mode: _,
-                    } => stream_key,
-                    _ => return Ok(Vec::new()), // Return nothing since we aren't publishing
-                }
-            }
+            Some(ref stream) => match stream.current_state {
+                StreamState::Publishing {
+                    ref stream_key,
+                    mode: _,
+                } => stream_key,
+                _ => return Err(ServerSessionError::InvalidMessageStream { stream_id }),
+            },
 
-            None => return Ok(Vec::new()), // Return nothing since this was not sent on an active stream
+            None => return Err(ServerSessionError::InvalidMessageStream { stream_id }),
         };
 
         let mut metadata = StreamMetadata::new();
@@ -988,6 +1075,7 @@ impl ServerSession {
             stream_key: publish_stream_key.clone(),
             app_name,
             metadata,
+            stream_id,
         };
 
         Ok(vec![ServerSessionResult::RaisedEvent(event)])
@@ -1000,27 +1088,24 @@ impl ServerSession {
         timestamp: RtmpTimestamp,
     ) -> Result<Vec<ServerSessionResult>, ServerSessionError> {
         if self.current_state != SessionState::Connected {
-            // Audio data sent before connected, just ignore it.
-            return Ok(Vec::new());
+            return Err(ServerSessionError::InvalidMessageStream { stream_id });
         }
 
         let app_name = match self.connected_app_name {
             Some(ref x) => x.clone(),
-            None => return Ok(Vec::new()), // No app name so we aren't in a valid connection state.
+            None => return Err(ServerSessionError::InvalidMessageStream { stream_id }),
         };
 
         let publish_stream_key = match self.active_streams.get(&stream_id) {
-            Some(ref stream) => {
-                match stream.current_state {
-                    StreamState::Publishing {
-                        ref stream_key,
-                        mode: _,
-                    } => stream_key.clone(),
-                    _ => return Ok(Vec::new()), // Not a publishing stream so ignore it
-                }
-            }
+            Some(ref stream) => match stream.current_state {
+                StreamState::Publishing {
+                    ref stream_key,
+                    mode: _,
+                } => stream_key.clone(),
+                _ => return Err(ServerSessionError::InvalidMessageStream { stream_id }),
+            },
 
-            None => return Ok(Vec::new()), // Audio sent over an invalid stream, ignore it
+            None => return Err(ServerSessionError::InvalidMessageStream { stream_id }),
         };
 
         let event = ServerSessionEvent::AudioDataReceived {
@@ -1028,6 +1113,7 @@ impl ServerSession {
             app_name,
             timestamp,
             data,
+            stream_id,
         };
 
         Ok(vec![ServerSessionResult::RaisedEvent(event)])
@@ -1087,27 +1173,24 @@ impl ServerSession {
         timestamp: RtmpTimestamp,
     ) -> Result<Vec<ServerSessionResult>, ServerSessionError> {
         if self.current_state != SessionState::Connected {
-            // Video data sent before connected, just ignore it.
-            return Ok(Vec::new());
+            return Err(ServerSessionError::InvalidMessageStream { stream_id });
         }
 
         let app_name = match self.connected_app_name {
             Some(ref x) => x.clone(),
-            None => return Ok(Vec::new()), // No app name so we aren't in a valid connection state.
+            None => return Err(ServerSessionError::InvalidMessageStream { stream_id }),
         };
 
         let publish_stream_key = match self.active_streams.get(&stream_id) {
-            Some(ref stream) => {
-                match stream.current_state {
-                    StreamState::Publishing {
-                        ref stream_key,
-                        mode: _,
-                    } => stream_key.clone(),
-                    _ => return Ok(Vec::new()), // Not a publishing stream so ignore it
-                }
-            }
+            Some(ref stream) => match stream.current_state {
+                StreamState::Publishing {
+                    ref stream_key,
+                    mode: _,
+                } => stream_key.clone(),
+                _ => return Err(ServerSessionError::InvalidMessageStream { stream_id }),
+            },
 
-            None => return Ok(Vec::new()), // Video sent over an invalid stream, ignore it
+            None => return Err(ServerSessionError::InvalidMessageStream { stream_id }),
         };
 
         let event = ServerSessionEvent::VideoDataReceived {
@@ -1115,6 +1198,7 @@ impl ServerSession {
             app_name,
             timestamp,
             data,
+            stream_id,
         };
 
         Ok(vec![ServerSessionResult::RaisedEvent(event)])

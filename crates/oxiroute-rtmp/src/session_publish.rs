@@ -294,6 +294,7 @@ pub(super) fn handle_request(
     application: &str,
     protocol_name: &str,
     mode: &PublishMode,
+    protocol_stream_id: u32,
     at_unix_ms: u64,
 ) -> Result<Vec<ServerSessionResult>, RtmpSessionError> {
     let identity =
@@ -316,6 +317,15 @@ pub(super) fn handle_request(
             ),
         );
     }
+    if session.connected_application.as_deref() != Some(application) {
+        return session.reject_request(
+            request_id,
+            Rejection::new(
+                PUBLISH_REJECTION_CODE,
+                "RTMP application does not match the connected application",
+            ),
+        );
+    }
     if let Err(error) = session.runtime.authorize(
         application,
         SessionOperation::Publish,
@@ -327,12 +337,21 @@ pub(super) fn handle_request(
             status::authorization(SessionOperation::Publish, error),
         );
     }
-    if session.role.is_some() {
+    if session.roles.contains_key(&protocol_stream_id) {
         return session.reject_request(
             request_id,
             Rejection::new(
                 PUBLISH_REJECTION_CODE,
                 "this connection already has an active media role",
+            ),
+        );
+    }
+    if session.roles.len() >= super::MAX_RTMP_MESSAGE_STREAMS {
+        return session.reject_request(
+            request_id,
+            Rejection::new(
+                PUBLISH_REJECTION_CODE,
+                "RTMP message stream limit reached for this connection",
             ),
         );
     }
@@ -366,6 +385,8 @@ pub(super) fn handle_request(
             return Err(error.into());
         }
     };
-    session.role = Some(SessionRole::Publisher(role));
+    session
+        .roles
+        .insert(protocol_stream_id, SessionRole::Publisher(role));
     Ok(accepted)
 }

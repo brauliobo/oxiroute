@@ -45,4 +45,8 @@ pub enum ServerSessionError {
     /// An action was attempted to be performed on a inactive stream
     #[error("The '{action}' action was attempted on non-existant stream id {stream_id}")]
     ActionAttemptedOnInactiveStream { action: String, stream_id: u32 },
+
+    /// Media or metadata was received on an inactive or non-publishing stream.
+    #[error("media was received on inactive or non-publishing stream id {stream_id}")]
+    InvalidMessageStream { stream_id: u32 },
 }
