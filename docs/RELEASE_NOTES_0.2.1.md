@@ -16,8 +16,8 @@ OxiRoute 0.2.1 adds the first integrated Squid-style explicit HTTP/1 forward-pro
 - Forward early origin responses without waiting for an unfinished upload and close that downstream
   connection; enforce body limits while uploads are relayed, include DNS queueing in the connect
   deadline, and bound initial-header and keep-alive waits by service limits.
-- Reject downstream TLS on forward-HTTP/1 listeners until its handshake can share the service's
-  finite idle and lifetime admission bounds.
+- Socket-bound forward-HTTP/1 listeners may terminate downstream TLS when the profile advertises
+  `http/1.1`; the handshake shares the service's finite idle and lifetime admission bounds.
 - Render imported candidates deterministically as KDL, Lua, HOCON, or UCI. Lua reserved-word field
   names now use bracketed keys and round-trip correctly.
 - Correct HAProxy direct import for the live hostrouter shape: page-only stats with localhost

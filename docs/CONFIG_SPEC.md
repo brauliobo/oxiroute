@@ -312,8 +312,10 @@ Current constraints:
 - HTTP, forward-HTTP/1, RTMP, and TCP listeners MUST reference an existing same-kind service. An
   RTMP service MUST contain between 1 and 256 unique applications, and one configuration accepts at
   most 64 RTMP services.
-- `tls_profile` is optional and accepted only on reverse HTTP listeners. Its named TLS profile and
-  that profile's named certificate MUST exist. Forward-HTTP/1, TCP, and RTMP listeners reject
+- `tls_profile` is accepted on HTTP, forward-HTTP, and HTTP/3 listeners. Its named TLS profile and
+  that profile's named certificate MUST exist. A socket-bound forward-HTTP/1 listener with
+  `tls_required = true` MUST reference a profile advertising `http/1.1`; a Unix forward-HTTP/1
+  listener remains no-TLS and MUST use `tls_required = false`. TCP and RTMP listeners reject
   `tls_profile` rather than implicitly changing protocol behavior.
 - `max_connections` omitted or set to `null` means unbounded admission. A configured limit MUST be
   positive and no greater than `9007199254740991` so the monitoring API and UI preserve it exactly.
@@ -363,7 +365,10 @@ Current constraints:
   accounting. Ejection and recovery remain generation-owned and never revoke an existing lease.
 - HTTP services MUST contain at least one route. Route pool references MUST resolve.
 - Forward HTTP/1 services support absolute-form requests and CONNECT only when H1 is enabled.
-  CONNECT ports are explicit. Authentication is absent, Bearer-token-file, or Basic htpasswd-file;
+  Socket-bound listeners may terminate downstream TLS when `tls_required = true` and their profile
+  advertises `http/1.1`; the TLS handshake and negotiated protocol are bounded before HTTP parsing.
+  Unix listeners remain plaintext. CONNECT ports are explicit. Authentication is absent,
+  Bearer-token-file, or Basic htpasswd-file;
   Basic username handling either preserves the client spelling or lowercases the client username
   before exact htpasswd lookup. An optional credential TTL caches a bounded, salted digest of each
   externally validated username/password pair; cache misses securely reload and verify the current

@@ -5,7 +5,7 @@ This directory contains the published `pingora-core 0.8.1` source from crates.io
 under its upstream Apache-2.0 license.
 
 OxiRoute's delta is intentionally limited to an OpenSSL-derived, per-peer TLS configure hook,
-pre-handshake application admission, a non-truncating certificate subject conversion, correct
+pre-handshake application admission and per-application handshake timeout, a non-truncating certificate subject conversion, correct
 HTTP/1 HEAD informational-response framing, owned HTTP/1 response preread payloads, borrowed HTTP/1
 upstream request writes, parser-owned HTTP/1 header names, an inline HTTP response task batch, an
 HTTP/2 test lifecycle correction, and stage-1 connection-pool experiments:
@@ -16,9 +16,10 @@ HTTP/2 test lifecycle correction, and stage-1 connection-pool experiments:
 - `connectors/tls/boringssl_openssl/mod.rs` invokes it after CA, verification,
   hostname, and ALPN setup, but before clearing the OpenSSL error stack and
   starting the handshake. Hook failures become `TLSHandshakeFailure` errors.
-- `apps/mod.rs` exposes an opaque connection-admission guard, and
+- `apps/mod.rs` exposes an opaque connection-admission guard and a transport-handshake timeout hook,
+  defaulting to 60 seconds, and
   `services/listening.rs` acquires it after TCP accept and retains it through the handshake and
-  application connection lifetime.
+  application connection lifetime while applying the owning app's timeout.
 - `utils/tls/boringssl_openssl.rs` uses OpenSSL's non-truncating subject string
   conversion instead of the deprecated conversion that stops at interior NULs.
 - `protocols/http/v1/client.rs` classifies informational responses before applying HEAD no-body
@@ -61,7 +62,7 @@ The normalized crates.io `Cargo.toml` is retained. Its optional `Cargo.toml.orig
 upstream packaging commentary; that non-build manifest is intentionally omitted here.
 
 When upgrading Pingora, replace this directory from the newly locked published crate, reapply and
-review the connector hook, admission guard, subject conversion, HTTP/1 HEAD informational-response,
+review the connector hook, admission guard and handshake-timeout hook, subject conversion, HTTP/1 HEAD informational-response,
 owned-preread, borrowed-request-write, parsed-header ownership, response-task batch, HTTP/2 test
 lifecycle, and connection-pool changes, then rerun the vendored connector pool, BodyReader, H1
 client, and H2 server suites, OxiRoute TLS and HTTP wire tests, and strict clippy checks.

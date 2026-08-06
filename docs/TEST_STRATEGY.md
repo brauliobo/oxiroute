@@ -200,7 +200,8 @@ service behavior. Synthetic fixtures remain implementation evidence only.
 Current Unix TLS/H2/gRPC coverage includes:
 
 - OpenSSL TLS 1.0/1.1 clients prove downstream rejection without HTTP bytes; rustls clients prove
-  verified downstream TLS/H1, a TLS 1.3-only listener minimum, TLS/H2 ALPN and a real H2 stream,
+  verified reverse and `forward_http1` downstream TLS/H1, bounded pre-handshake admission,
+  incompatible ALPN and invalid-client closure, a TLS 1.3-only listener minimum, TLS/H2 ALPN and a real H2 stream,
   full-chain delivery to a root-only client, ECDSA identity loading, pre-handshake connection caps,
   exact-over-wildcard SNI selection, no-SNI default selection, and H2-only no-ALPN closure before
   HTTP parsing.
