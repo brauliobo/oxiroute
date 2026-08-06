@@ -99,7 +99,7 @@ Status values are `covered`, `partial`, `missing`, `external`, and `inactive`.
 | PR-05 | Automatic FLV recording of all tracks | covered | The audited Phoenix root lowers continuous legacy AVC/AAC recording, and process restart plus publisher reconnect creates a new finalized segment without changing prior bytes; unsupported enhanced codecs remain fail-closed. |
 | PR-06 | Safe recording path, unique naming, interval rotation, suffix formatting | covered | The audited Phoenix root lowers its recording path, hourly rotation, Bahia timezone, native suffix, and collision policy; restart/reconnect and FLV-in-`.mp4` behavior are verified end to end. |
 | PR-07 | RTMP push relay to loopback port 1936 | partial | The typed client relay retries the initially absent port, recovers, bootstraps media, isolates bounded backpressure, exposes redacted counters, and lowers static `$name` targets. |
-| PR-08 | RTMP access-log suppression | partial | Explicit disabled policy runs without session access events and lowers natively; file RTMP access logging remains unsupported. |
+| PR-08 | RTMP access logging | covered | Explicit disabled policy emits no RTMP access records; file policy uses the bounded fixed redacted JSONL sink, records lifecycle outcomes, and lowers natively. |
 
 ## Inference-node HAProxy cases
 

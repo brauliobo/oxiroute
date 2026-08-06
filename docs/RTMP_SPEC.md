@@ -286,9 +286,12 @@ return `202` when queued.
 
 The operational event stream recognizes `rtmp_connect`, `rtmp_publish`, `rtmp_play`,
 `rtmp_disconnect`, and `rtmp_access`. Enabled RTMP access logging reuses the bounded asynchronous
-JSONL worker and emits only timestamp, service, session ID, application, stream name, role, client
-IP, event, and outcome. Stream queries, credentials, recording roots, and private paths are never
-written.
+no-follow JSONL worker but has a distinct fixed schema: event, result, listener/service/application/
+stream/session identifiers, role, bytes/messages, timestamp/duration, bounded failure code, and
+correlation ID. Stream queries, URLs, tokens, credentials, recording roots, private paths, raw
+payloads, and client addresses are never written. Connect/disconnect, publish/play, recorder, and
+relay outcomes are nonblocking; queue saturation and writer failures are exposed through bounded
+metrics, and normal sink destruction flushes queued records.
 
 ### VOD and netcall: 5
 

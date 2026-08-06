@@ -252,7 +252,7 @@ RTMP proceeds in independently releasable slices rather than waiting for HTTP/Sq
     dispatch, storage, bounded workers/reaping, observability, exact-ID bearer-protected controls,
     bounded access/callback policy, local/HTTP VOD, global/live/client statistics, and
     revision-checked session drop controls are integrated; enhanced codec recording, broader
-    callback/native parity, and RTMP access-log parity remain).
+    callback/native parity remains).
  4. Add HLS, MPEG-DASH, isolated exec workers, limits, and multi-worker equivalents (bounded HLS,
     DASH, exec, and same-daemon auto-push slices are implemented; broader native parity, crash and
     resource-exhaustion evidence, and multi-worker deployment evidence remain).

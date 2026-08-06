@@ -502,9 +502,13 @@ HAProxy directives:
   set; eligible representations still emit `Vary` when request version or `Via` policy suppresses
   compression. HTTP and RTMP access logs are either disabled or use the
   implementation's fixed structured format at one validated absolute path; custom format strings
-  are deliberately absent. HTTP JSONL logging uses a bounded asynchronous writer opened through
+  are deliberately absent. JSONL logging uses a bounded asynchronous writer opened through
   descriptor-pinned ancestors. HTTP access events omit URI, query, Authorization, Cookie, and
-  values derived from credentials.
+  values derived from credentials. RTMP events use a separate fixed schema containing only event,
+  result, listener/service/application/stream/session identifiers, role, byte/message counters,
+  timestamps/duration, a bounded failure code, and a safe correlation ID; they omit queries, tokens,
+  credentials, URLs, payloads, and client addresses. Queue saturation is nonblocking and exposed
+  through aggregate bounded metrics; no log rotation or retention policy is implied.
 
 Anonymous `endpoints` remain decode-only compatibility for current version-1 files. Validation
 assigns deterministic `endpoint-N` identities, clears the legacy collection, and deterministic
@@ -1028,7 +1032,8 @@ processes can collectively exceed the configured limits and require deployment-l
 The suffix does not select a container: recorder output remains FLV even when the suffix is `.mp4`.
 RTMP `access_log = { type = "disabled" }` explicitly emits no session access records while
 transport, protocol, relay, and recorder failures remain operationally observable. RTMP file access
-logging is rejected at runtime planning.
+logging uses the same safe no-follow parent preflight and bounded asynchronous sink as HTTP, with
+the distinct RTMP schema and shutdown flush behavior described above.
 
 ## Deterministic Rendering
 
