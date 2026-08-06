@@ -903,7 +903,12 @@ pub async fn openssl_tls_alpn_handshake(
         }),
     )
     .await
-    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "OpenSSL TLS-ALPN handshake timed out"))?
+    .map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "OpenSSL TLS-ALPN handshake timed out",
+        )
+    })?
     .map_err(|error| io::Error::other(format!("OpenSSL TLS-ALPN client task failed: {error}")))?
 }
 
@@ -1410,7 +1415,9 @@ where
 pub struct OriginObservations {
     accepted: AtomicUsize,
     completed_handshakes: AtomicUsize,
+    h2_send_errors: AtomicUsize,
     http_requests: AtomicUsize,
+    request_body_bytes: AtomicUsize,
     http_bytes: AtomicUsize,
     request_heads: Mutex<Vec<Vec<u8>>>,
     server_names: Mutex<Vec<String>>,
@@ -1426,6 +1433,14 @@ impl OriginObservations {
 
     pub fn http_requests(&self) -> usize {
         self.http_requests.load(Ordering::SeqCst)
+    }
+
+    pub fn h2_send_errors(&self) -> usize {
+        self.h2_send_errors.load(Ordering::SeqCst)
+    }
+
+    pub fn request_body_bytes(&self) -> usize {
+        self.request_body_bytes.load(Ordering::SeqCst)
     }
 
     pub fn http_bytes(&self) -> usize {
@@ -1694,7 +1709,20 @@ async fn serve_tls_h2(
         observations
             .http_bytes
             .fetch_add(request.uri().path().len(), Ordering::SeqCst);
-        respond_h2(request.uri().path(), respond)?;
+        let path = request.uri().path().to_owned();
+        if path == "/grpc/upload" {
+            let mut body = request.into_body();
+            while let Some(chunk) = body.data().await {
+                let chunk = chunk?;
+                observations
+                    .request_body_bytes
+                    .fetch_add(chunk.len(), Ordering::SeqCst);
+                body.flow_control().release_capacity(chunk.len())?;
+            }
+        }
+        if respond_h2(&path, respond).await.is_err() {
+            observations.h2_send_errors.fetch_add(1, Ordering::SeqCst);
+        }
     }
     Ok(())
 }
@@ -1715,7 +1743,10 @@ async fn serve_tls_h2_refusing_streams(
     Ok(())
 }
 
-fn respond_h2(path: &str, mut respond: h2::server::SendResponse<Bytes>) -> Result<(), BoxError> {
+async fn respond_h2(
+    path: &str,
+    mut respond: h2::server::SendResponse<Bytes>,
+) -> Result<(), BoxError> {
     match path {
         "/h2" => {
             let body = Bytes::from_static(b"h2-origin");
@@ -1726,6 +1757,43 @@ fn respond_h2(path: &str, mut respond: h2::server::SendResponse<Bytes>) -> Resul
                 .body(())?;
             let mut stream = respond.send_response(response, false)?;
             stream.send_data(body, true)?;
+        }
+        "/grpc/stream" => {
+            let response = Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/grpc")
+                .body(())?;
+            let mut stream = respond.send_response(response, false)?;
+            for body in [
+                Bytes::from_static(b"\0\0\0\0\x05hello"),
+                Bytes::from_static(b"\0\0\0\0\x05world"),
+                Bytes::from_static(b"\0\0\0\0\x05again"),
+            ] {
+                stream.send_data(body, false)?;
+                tokio::task::yield_now().await;
+            }
+            stream.send_trailers(grpc_trailers("0", "streamed", "stream"))?;
+        }
+        "/grpc/upload" => {
+            let response = Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/grpc")
+                .body(())?;
+            let mut stream = respond.send_response(response, false)?;
+            stream.send_data(Bytes::from_static(GRPC_BODY), false)?;
+            stream.send_trailers(grpc_trailers("0", "uploaded", "upload"))?;
+        }
+        "/grpc/large" => {
+            let response = Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/grpc")
+                .body(())?;
+            let mut stream = respond.send_response(response, false)?;
+            for _ in 0..256 {
+                stream.send_data(Bytes::from(vec![b'x'; 16 * 1024]), false)?;
+                tokio::task::yield_now().await;
+            }
+            stream.send_trailers(grpc_trailers("0", "large", "large"))?;
         }
         "/grpc/full" => {
             let response = Response::builder()
@@ -1743,6 +1811,27 @@ fn respond_h2(path: &str, mut respond: h2::server::SendResponse<Bytes>) -> Resul
                 .body(())?;
             let mut stream = respond.send_response(response, false)?;
             stream.send_trailers(grpc_trailers("7", "permission denied", "trailers-only"))?;
+        }
+        "/grpc/slow" => {
+            sleep(Duration::from_millis(250)).await;
+            let response = Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/grpc")
+                .body(())?;
+            let mut stream = respond.send_response(response, false)?;
+            stream.send_data(Bytes::from_static(GRPC_BODY), false)?;
+            stream.send_trailers(grpc_trailers("0", "slow", "slow"))?;
+        }
+        "/grpc/reset" => {
+            respond.send_reset(h2::Reason::CANCEL);
+        }
+        "/grpc/malformed" => {
+            let response = Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/grpc")
+                .header(header::CONTENT_LENGTH, "5")
+                .body(())?;
+            respond.send_response(response, true)?;
         }
         _ => {
             let response = Response::builder().status(StatusCode::NOT_FOUND).body(())?;
@@ -1795,17 +1884,54 @@ impl H2Client {
         self.request_inner(method, path, Some(body)).await
     }
 
+    pub async fn request_with_headers_and_body_chunks(
+        &mut self,
+        method: Method,
+        path: &str,
+        headers: HeaderMap,
+        body: Vec<Bytes>,
+    ) -> Result<H2Response, BoxError> {
+        self.request_inner_with_headers(method, path, headers, Some(body))
+            .await
+    }
+
+    pub async fn cancel_request(&mut self, method: Method, path: &str) -> Result<(), BoxError> {
+        let mut sender = self.sender.clone().ready().await?;
+        let request = Request::builder()
+            .method(method)
+            .uri(format!("https://{PROXY_SERVER_NAME}{path}"))
+            .body(())?;
+        let (response, mut request_body) = sender.send_request(request, false)?;
+        request_body.send_reset(h2::Reason::CANCEL);
+        match timeout(IO_TIMEOUT, response).await {
+            Ok(Ok(_)) => Err(io::Error::other("H2 request reset was not observed").into()),
+            Ok(Err(_)) | Err(_) => Ok(()),
+        }
+    }
+
     async fn request_inner(
         &mut self,
         method: Method,
         path: &str,
         body: Option<Vec<Bytes>>,
     ) -> Result<H2Response, BoxError> {
+        self.request_inner_with_headers(method, path, HeaderMap::new(), body)
+            .await
+    }
+
+    async fn request_inner_with_headers(
+        &mut self,
+        method: Method,
+        path: &str,
+        headers: HeaderMap,
+        body: Option<Vec<Bytes>>,
+    ) -> Result<H2Response, BoxError> {
         let mut sender = self.sender.clone().ready().await?;
-        let request = Request::builder()
+        let mut request = Request::builder()
             .method(method)
             .uri(format!("https://{PROXY_SERVER_NAME}{path}"))
             .body(())?;
+        *request.headers_mut() = headers;
         let (response, mut request_body) = sender.send_request(request, body.is_none())?;
         if let Some(body) = body {
             let chunk_count = body.len();

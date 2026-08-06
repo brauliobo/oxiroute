@@ -651,10 +651,17 @@ and certificate-management API actions also publish validated replacement genera
 direct-file, and self-signed replacement watchers remain absent.
 
 Downstream HTTP/2 is available only on a TLS listener whose ALPN policy includes `h2`. Plaintext
-HTTP listeners are HTTP/1.1-only; h2c is not supported. gRPC has no separate configuration object:
-it is proxied over a compatible downstream and upstream H2 path. An H2-only listener rejects an
-incompatible ALPN offer during negotiation. A client that omits ALPN can complete TLS, but OxiRoute
-closes the stream before HTTP parsing instead of allowing Pingora's HTTP/1.1 fallback.
+HTTP listeners are HTTP/1.1-only; h2c is not supported. Pingora advertises a 64 KiB decoded
+header-list limit and 100 concurrent streams. DATA reads and writes follow H2 flow control rather
+than buffering an entire request or response; configured request-body and listener connection
+limits remain active per stream and connection. H2 request-body read deadlines and response write
+deadlines are clamped to the active request deadline, and cancellation or timeout resets the
+affected upstream stream. gRPC has no separate configuration object: it is proxied over a
+compatible downstream and upstream H2 path, preserving DATA and trailing metadata. An H2-only
+listener rejects an incompatible ALPN offer during negotiation. A client that omits ALPN can
+complete TLS, but OxiRoute closes the stream before HTTP parsing instead of allowing Pingora's
+HTTP/1.1 fallback. HTTP/2 stream takeover and WebSocket-style upgrades are not interpreted as
+opaque H2 bodies.
 
 ### Upstream TLS and HTTP versions
 
@@ -692,7 +699,9 @@ upstream_pools = {
   HTTP-version policy are included in upstream connection-reuse isolation.
 - `http_versions` defaults to `{ min = "1.1", max = "1.1" }`. The accepted ranges are `1.1/1.1`,
   `1.1/2`, `2/2`, and exact `3/3`. Flexible `1.1/2` permits ALPN fallback to HTTP/1.1; `2/2`
-  requires H2 and rejects a downgrade before HTTP headers. Exact `3/3` requires `tls` and uses a
+  requires H2 and rejects a downgrade before HTTP headers. Under `2/2`, H2 DATA, trailers, stream
+  reset, flow-control, and deadline failures remain H2 failures and are never retried by changing
+  the request to HTTP/1.1. Exact `3/3` requires `tls` and uses a
   separate one-request-per-connection QUIC/H3 client with TLS 1.3, SNI, `h3` ALPN, disabled 0-RTT,
   bounded request/response fields and bodies, deadlines, cancellation, response trailers, and
   bounded safe retries. It never falls back to HTTP/1.1 or HTTP/2. Any range with `max = "2"`
