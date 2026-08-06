@@ -251,9 +251,7 @@ impl RtmpManagementApi {
                 self.topology.as_ref(),
                 self.generations.as_ref(),
             ),
-            ApiRoute::Rtmp(route) => {
-                rtmp::handle(route, method, self.registry.as_ref(), None)
-            }
+            ApiRoute::Rtmp(route) => rtmp::handle(route, method, self.registry.as_ref(), None),
             ApiRoute::Stream(route) => {
                 streams::handle(route, method, self.registry.as_ref(), now_unix_ms)
             }
@@ -305,8 +303,12 @@ impl RtmpManagementApi {
         let range = match VodRange::parse(range_header, total) {
             Ok(range) => range,
             Err(VodError::InvalidRange) => {
-                return ApiResponse::error(416, "invalid_range", "the requested byte range is invalid")
-                    .with_range(Some(format!("bytes */{total}")));
+                return ApiResponse::error(
+                    416,
+                    "invalid_range",
+                    "the requested byte range is invalid",
+                )
+                .with_range(Some(format!("bytes */{total}")));
             }
             Err(error) => return vod_error_response(error),
         };
@@ -385,7 +387,11 @@ impl RtmpManagementApi {
         };
         ApiResponse::bytes(
             if range_header.is_some() { 206 } else { 200 },
-            if range_header.is_some() { body } else { object.body },
+            if range_header.is_some() {
+                body
+            } else {
+                object.body
+            },
             object.content_type,
         )
         .with_range(content_range)
@@ -829,12 +835,10 @@ fn audited_api_operation(method: &str, path: &str) -> Option<(&'static str, Audi
         "/api/v1/tls/renew" => ("certificate_renew", AuditCategory::Certificate),
         "/api/v1/tls/revoke" => ("certificate_revoke", AuditCategory::Certificate),
         "/api/v1/tls/delete" => ("certificate_delete", AuditCategory::Certificate),
-        "/api/v1/tls/account/rollover" => {
-            ("account_key_rollover", AuditCategory::Certificate)
+        "/api/v1/tls/account/rollover" => ("account_key_rollover", AuditCategory::Certificate),
+        "/api/v1/tls/jobs/cancel" | "/api/v1/tls/jobs/pause" | "/api/v1/tls/jobs/resume" => {
+            ("certificate_job_control", AuditCategory::Certificate)
         }
-        "/api/v1/tls/jobs/cancel"
-        | "/api/v1/tls/jobs/pause"
-        | "/api/v1/tls/jobs/resume" => ("certificate_job_control", AuditCategory::Certificate),
         "/api/v1/process/drain" => ("process_drain", AuditCategory::Control),
         "/api/v1/process/shutdown" => ("process_shutdown", AuditCategory::Control),
         "/api/v1/listeners/administrative-state" => ("listener_control", AuditCategory::Control),
@@ -885,9 +889,11 @@ fn media_error_response(error: MediaStoreError) -> ApiResponse {
         MediaStoreError::NotFound | MediaStoreError::StaleIncarnation => {
             ApiResponse::error(404, "media_not_found", "the media object does not exist")
         }
-        MediaStoreError::InvalidPath => {
-            ApiResponse::error(400, "media_invalid_path", "the media object path is invalid")
-        }
+        MediaStoreError::InvalidPath => ApiResponse::error(
+            400,
+            "media_invalid_path",
+            "the media object path is invalid",
+        ),
         MediaStoreError::FileTooLarge => ApiResponse::error(
             413,
             "media_too_large",
@@ -898,11 +904,9 @@ fn media_error_response(error: MediaStoreError) -> ApiResponse {
             "media_manifest_invalid",
             "the persisted media manifest is malformed",
         ),
-        MediaStoreError::Read(_) => ApiResponse::error(
-            503,
-            "media_unavailable",
-            "the media object cannot be read",
-        ),
+        MediaStoreError::Read(_) => {
+            ApiResponse::error(503, "media_unavailable", "the media object cannot be read")
+        }
         MediaStoreError::RootOpen(_)
         | MediaStoreError::RootNotExclusive
         | MediaStoreError::RootScan(_)
@@ -910,11 +914,9 @@ fn media_error_response(error: MediaStoreError) -> ApiResponse {
         | MediaStoreError::ActiveStreamLimit
         | MediaStoreError::Quota
         | MediaStoreError::Publish(_)
-        | MediaStoreError::Cleanup(_) => ApiResponse::error(
-            503,
-            "media_unavailable",
-            "the media store is unavailable",
-        ),
+        | MediaStoreError::Cleanup(_) => {
+            ApiResponse::error(503, "media_unavailable", "the media store is unavailable")
+        }
     }
 }
 

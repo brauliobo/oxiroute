@@ -2208,7 +2208,11 @@ backend app
 ";
     let lowered = import_fixture("passive-retry-subset.cfg", source);
 
-    assert!(lowered.diagnostics().is_empty(), "{:?}", lowered.diagnostics());
+    assert!(
+        lowered.diagnostics().is_empty(),
+        "{:?}",
+        lowered.diagnostics()
+    );
     let config = lowered.value().config.as_ref().expect("finalized config");
     let pool = &config.upstream_pools[0];
     let passive = pool.passive_health.as_ref().expect("passive policy");
@@ -2216,10 +2220,7 @@ backend app
     assert_eq!(passive.on_error, oxiroute_config::PassiveOnError::MarkDown);
     assert_eq!(passive.error_limit, 4);
     assert!(passive.mark_down);
-    assert_has_provenance(
-        lowered.value(),
-        "/upstream_pools/0/passive_health/observe",
-    );
+    assert_has_provenance(lowered.value(), "/upstream_pools/0/passive_health/observe");
     assert_has_provenance(
         lowered.value(),
         "/upstream_pools/0/passive_health/error_limit",

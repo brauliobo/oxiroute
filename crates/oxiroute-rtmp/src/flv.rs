@@ -262,11 +262,12 @@ where
                 0
             }
             VideoPacketKind::Media if self.waiting_for_avc_keyframe => 0,
-            VideoPacketKind::AvcKeyframe
-            | VideoPacketKind::AvcOther
-            | VideoPacketKind::Media if self.first_media_timestamp_ms.is_none() => self
-                .cached_codec_header_size()
-                .saturating_add(tag_size(payload)),
+            VideoPacketKind::AvcKeyframe | VideoPacketKind::AvcOther | VideoPacketKind::Media
+                if self.first_media_timestamp_ms.is_none() =>
+            {
+                self.cached_codec_header_size()
+                    .saturating_add(tag_size(payload))
+            }
             VideoPacketKind::AvcSequenceHeader
             | VideoPacketKind::AvcKeyframe
             | VideoPacketKind::AvcOther

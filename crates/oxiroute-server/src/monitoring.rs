@@ -1,10 +1,10 @@
 use std::{
-    collections::{hash_map::Entry, HashMap, VecDeque},
+    collections::{HashMap, VecDeque, hash_map::Entry},
     error::Error,
     fmt, io,
     sync::{
-        atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
         Arc, Mutex, OnceLock, RwLock,
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
     time::{Duration, Instant, SystemTime},
 };
@@ -510,9 +510,7 @@ impl CacheEvent {
 
 const fn cache_event_outcome(event: CacheEvent) -> TransportOutcome {
     match event {
-        CacheEvent::Hit | CacheEvent::Admission | CacheEvent::Eviction => {
-            TransportOutcome::Success
-        }
+        CacheEvent::Hit | CacheEvent::Admission | CacheEvent::Eviction => TransportOutcome::Success,
         CacheEvent::Miss => TransportOutcome::UpstreamError,
     }
 }
@@ -1680,7 +1678,8 @@ impl Drop for ConnectionGuard {
     fn drop(&mut self) {
         if self.releases_active_connection {
             decrement_counter(&self.state.shared.active_connections);
-            let duration_ms = u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let duration_ms =
+                u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
             append_access_record(
                 &self.state.shared.access_records,
                 AccessRecord {
@@ -1918,12 +1917,15 @@ impl OperationMetricsState {
                 self.proxy_protocol_results[result.index()].load(Ordering::Relaxed),
             )
         });
-        values.iter().any(|(_, count)| *count > 0).then(|| ProxyProtocolSnapshot {
-            outcomes: values
-                .into_iter()
-                .map(|(result, count)| ProxyProtocolCountSnapshot { result, count })
-                .collect(),
-        })
+        values
+            .iter()
+            .any(|(_, count)| *count > 0)
+            .then(|| ProxyProtocolSnapshot {
+                outcomes: values
+                    .into_iter()
+                    .map(|(result, count)| ProxyProtocolCountSnapshot { result, count })
+                    .collect(),
+            })
     }
 
     fn cache_snapshot(&self) -> Option<CacheSnapshot> {
@@ -1985,11 +1987,7 @@ impl TransportMetricState {
         outcome: TransportOutcome,
         duration: Option<Duration>,
     ) -> Result<(), MetricsError> {
-        checked_atomic_add(
-            &self.outcomes[outcome.index()],
-            1,
-            "transport.outcomes",
-        )?;
+        checked_atomic_add(&self.outcomes[outcome.index()], 1, "transport.outcomes")?;
         duration.map_or(Ok(()), |duration| {
             record_latency(
                 duration,
@@ -2194,11 +2192,7 @@ const fn encode_limit(limit: Option<u64>) -> u64 {
 }
 
 const fn decode_limit(limit: u64) -> Option<u64> {
-    if limit == 0 {
-        None
-    } else {
-        Some(limit)
-    }
+    if limit == 0 { None } else { Some(limit) }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -2925,7 +2919,10 @@ mod platform_tests {
         assert_eq!(sample.host.load_average_1m, None);
     }
 
-    #[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
     #[test]
     fn linux_architecture_fixture_samples_process_and_host_metrics() {
         let sample = sample_system().expect("Linux process and host fixture");

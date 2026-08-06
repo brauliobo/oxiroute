@@ -12,12 +12,12 @@ use crate::{
         MAX_ACME_DNS01_PROVIDER_BYTES, MAX_ACME_DNS01_TIMEOUT_SECONDS, MAX_ACME_RETAINED_REVISIONS,
         MAX_ACME_RETENTION_DAYS, MAX_CERTIFICATE_DNS_NAMES, MAX_CERTIFICATES,
         MAX_ENDPOINTS_PER_POOL, MAX_HEALTH_HOST_BYTES, MAX_HEALTH_INTERVAL_MS,
-        MAX_HEALTH_PATH_BYTES, MAX_HEALTH_THRESHOLD, MAX_HEALTH_TIMEOUT_MS,
-        MAX_HTTP3_REQUEST_BODY_BYTES, MAX_HTTP_TIMEOUT_MS,
-        MAX_PROXY_PROTOCOL_TIMEOUT_MS, MAX_RECORDER_ACTIVE_RECORDERS, MAX_RECORDER_FILE_BYTES,
-        MAX_RECORDER_FRAME_COUNT, MAX_RECORDER_QUEUE_BYTES, MAX_RECORDER_QUEUE_MESSAGES,
-        MAX_RECORDER_ROTATION_INTERVAL_MS, MAX_RECORDER_SHUTDOWN_TIMEOUT_MS,
-        MAX_RECORDER_STORAGE_BYTES, MAX_RECORDER_STORAGE_FILES,
+        MAX_HEALTH_PATH_BYTES, MAX_HEALTH_THRESHOLD, MAX_HEALTH_TIMEOUT_MS, MAX_HTTP_TIMEOUT_MS,
+        MAX_HTTP3_REQUEST_BODY_BYTES, MAX_PASSIVE_BACKOFF_MS, MAX_PASSIVE_ERROR_LIMIT,
+        MAX_PASSIVE_RECOVERY_THRESHOLD, MAX_PROXY_PROTOCOL_TIMEOUT_MS,
+        MAX_RECORDER_ACTIVE_RECORDERS, MAX_RECORDER_FILE_BYTES, MAX_RECORDER_FRAME_COUNT,
+        MAX_RECORDER_QUEUE_BYTES, MAX_RECORDER_QUEUE_MESSAGES, MAX_RECORDER_ROTATION_INTERVAL_MS,
+        MAX_RECORDER_SHUTDOWN_TIMEOUT_MS, MAX_RECORDER_STORAGE_BYTES, MAX_RECORDER_STORAGE_FILES,
         MAX_RTMP_ACCESS_RULES_PER_OPERATION, MAX_RTMP_APPLICATION_BYTES,
         MAX_RTMP_APPLICATION_CONNECTIONS, MAX_RTMP_APPLICATION_NAME_BYTES,
         MAX_RTMP_APPLICATION_PUBLISHERS, MAX_RTMP_APPLICATION_VIEWERS,
@@ -28,23 +28,22 @@ use crate::{
         MAX_RTMP_DASH_ACTIVE_STREAMS, MAX_RTMP_DASH_OUTPUTS, MAX_RTMP_DASH_PLAYLIST_LENGTH_MS,
         MAX_RTMP_DASH_QUEUE_MESSAGES, MAX_RTMP_DASH_SEGMENT_BYTES,
         MAX_RTMP_DASH_SEGMENT_DURATION_MS, MAX_RTMP_DASH_STORAGE_BYTES,
-        MAX_RTMP_DASH_STORAGE_FILES, MAX_RTMP_EXEC_ARGUMENT_BYTES, MAX_RTMP_EXEC_ARGUMENTS,
-        MAX_RTMP_EXEC_ARGV_BYTES, MAX_RTMP_EXEC_ENV_BYTES, MAX_RTMP_EXEC_ENV_NAME_BYTES,
-        MAX_RTMP_EXEC_ENV_VALUE_BYTES, MAX_RTMP_EXEC_ENVIRONMENT, MAX_RTMP_EXEC_NAME_BYTES,
-        MAX_RTMP_EXEC_PROCESSES, MAX_RTMP_EXEC_PROFILES_PER_SERVICE, MAX_RTMP_EXEC_QUEUE_BYTES,
-        MAX_RTMP_EXEC_QUEUE_MESSAGES, MAX_RTMP_EXEC_RESPAWN_DELAY_MS, MAX_RTMP_EXEC_RESPAWNS,
-        MAX_RTMP_EXEC_SHUTDOWN_TIMEOUT_MS, MAX_RTMP_EXEC_STDERR_BYTES, MAX_RTMP_EXEC_STDOUT_BYTES,
-        MAX_RTMP_EXEC_TIMEOUT_MS, MAX_RTMP_FANOUT_QUEUE_BYTES, MAX_RTMP_FANOUT_QUEUE_MESSAGES,
-        MAX_RTMP_HLS_ACTIVE_STREAMS, MAX_RTMP_HLS_KEY_ROTATION_SEGMENTS,
-        MAX_RTMP_HLS_KEY_URL_PREFIX_BYTES, MAX_RTMP_HLS_NAME_BYTES, MAX_RTMP_HLS_OUTPUTS,
-        MAX_RTMP_HLS_PLAYLIST_LENGTH_MS, MAX_RTMP_HLS_QUEUE_MESSAGES, MAX_RTMP_HLS_SEGMENT_BYTES,
-        MAX_RTMP_HLS_SEGMENT_DURATION_MS, MAX_RTMP_HLS_STORAGE_BYTES, MAX_RTMP_HLS_STORAGE_FILES,
-        MAX_RTMP_HLS_VARIANTS, MAX_RTMP_INBOUND_MESSAGE_SIZE, MAX_RTMP_OUTBOUND_CHUNK_SIZE,
-        MAX_RTMP_OUTBOUND_CIDRS,
+        MAX_RTMP_DASH_STORAGE_FILES, MAX_RTMP_DNS_REFRESH_MS, MAX_RTMP_EXEC_ARGUMENT_BYTES,
+        MAX_RTMP_EXEC_ARGUMENTS, MAX_RTMP_EXEC_ARGV_BYTES, MAX_RTMP_EXEC_ENV_BYTES,
+        MAX_RTMP_EXEC_ENV_NAME_BYTES, MAX_RTMP_EXEC_ENV_VALUE_BYTES, MAX_RTMP_EXEC_ENVIRONMENT,
+        MAX_RTMP_EXEC_NAME_BYTES, MAX_RTMP_EXEC_PROCESSES, MAX_RTMP_EXEC_PROFILES_PER_SERVICE,
+        MAX_RTMP_EXEC_QUEUE_BYTES, MAX_RTMP_EXEC_QUEUE_MESSAGES, MAX_RTMP_EXEC_RESPAWN_DELAY_MS,
+        MAX_RTMP_EXEC_RESPAWNS, MAX_RTMP_EXEC_SHUTDOWN_TIMEOUT_MS, MAX_RTMP_EXEC_STDERR_BYTES,
+        MAX_RTMP_EXEC_STDOUT_BYTES, MAX_RTMP_EXEC_TIMEOUT_MS, MAX_RTMP_FANOUT_QUEUE_BYTES,
+        MAX_RTMP_FANOUT_QUEUE_MESSAGES, MAX_RTMP_HLS_ACTIVE_STREAMS,
+        MAX_RTMP_HLS_KEY_ROTATION_SEGMENTS, MAX_RTMP_HLS_KEY_URL_PREFIX_BYTES,
+        MAX_RTMP_HLS_NAME_BYTES, MAX_RTMP_HLS_OUTPUTS, MAX_RTMP_HLS_PLAYLIST_LENGTH_MS,
+        MAX_RTMP_HLS_QUEUE_MESSAGES, MAX_RTMP_HLS_SEGMENT_BYTES, MAX_RTMP_HLS_SEGMENT_DURATION_MS,
+        MAX_RTMP_HLS_STORAGE_BYTES, MAX_RTMP_HLS_STORAGE_FILES, MAX_RTMP_HLS_VARIANTS,
+        MAX_RTMP_INBOUND_MESSAGE_SIZE, MAX_RTMP_OUTBOUND_CHUNK_SIZE, MAX_RTMP_OUTBOUND_CIDRS,
         MAX_RTMP_OUTBOUND_DOMAINS, MAX_RTMP_PULL_TARGETS, MAX_RTMP_PUSH_TARGETS,
         MAX_RTMP_RECONNECT_MS, MAX_RTMP_RECORDERS_PER_APPLICATION, MAX_RTMP_RECORDING_ROOTS,
         MAX_RTMP_RELAY_BUFFER_MS, MAX_RTMP_RELAY_TIMEOUT_MS, MAX_RTMP_SECRET_FILE_BYTES,
-        MAX_RTMP_DNS_REFRESH_MS, MIN_RTMP_DNS_REFRESH_MS,
         MAX_RTMP_SERVICES, MAX_RTMP_SUBSCRIBERS, MAX_RTMP_TOKEN_BYTES,
         MAX_RTMP_TOKEN_PARAMETER_BYTES, MAX_RTMP_VOD_DURATION_MS, MAX_RTMP_VOD_FILE_BYTES,
         MAX_RTMP_VOD_ORIGIN_BYTES, MAX_RTMP_VOD_SESSIONS, MAX_RTMP_VOD_SOURCE_NAME_BYTES,
@@ -52,8 +51,7 @@ use crate::{
         MAX_TLS_PROFILES, MAX_TOTAL_ENDPOINTS, MAX_TOTAL_RTMP_EXEC_PROFILES,
         MAX_TOTAL_RTMP_RECORDERS, MAX_UDP_DATAGRAM_BYTES, MAX_UDP_QUEUE_BYTES,
         MAX_UDP_QUEUE_DATAGRAMS, MAX_UDP_SESSION_BYTES, MAX_UDP_SESSIONS, MAX_UPSTREAM_WEIGHT,
-        MAX_PASSIVE_BACKOFF_MS, MAX_PASSIVE_ERROR_LIMIT, MAX_PASSIVE_RECOVERY_THRESHOLD,
-        MIN_HEALTH_INTERVAL_MS, MIN_SELF_SIGNED_VALIDITY_DAYS,
+        MIN_HEALTH_INTERVAL_MS, MIN_RTMP_DNS_REFRESH_MS, MIN_SELF_SIGNED_VALIDITY_DAYS,
     },
     lexical::{
         authority_has_invalid_port, canonical_ip, is_unambiguous_http_path,
@@ -71,8 +69,8 @@ use crate::{
         RtmpCredentialReference, RtmpExecFilesystemPolicy, RtmpExecMode, RtmpExecProfile,
         RtmpExecTrigger, RtmpOutboundPolicy, RtmpRecorder, RtmpRelayPolicy, RtmpRtmpsPolicy,
         RtmpService, RtmpSessionCeilings, RtmpTokenSource, RtmpTransport, RtmpVodSource, Stats,
-        StatsPage, TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm,
-        UpstreamEndpoint, UpstreamPool,
+        StatsPage, TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm, UpstreamEndpoint,
+        UpstreamPool,
     },
 };
 
@@ -489,9 +487,7 @@ fn validate_acme_source(
         let policy_name = dns_name.strip_prefix("*.").unwrap_or(dns_name);
         if !suffixes
             .iter()
-            .any(|suffix| {
-                policy_name == suffix || policy_name.ends_with(&format!(".{suffix}"))
-            })
+            .any(|suffix| policy_name == suffix || policy_name.ends_with(&format!(".{suffix}")))
         {
             return Err(ConfigError::AcmeIdentifierOutsidePolicy {
                 certificate: certificate.name.clone(),
@@ -508,9 +504,10 @@ fn validate_acme_dns01_source(
 ) -> Result<(), ConfigError> {
     if dns01.provider.is_empty()
         || dns01.provider.len() > MAX_ACME_DNS01_PROVIDER_BYTES
-        || !dns01.provider.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
-        })
+        || !dns01
+            .provider
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
         || dns01.provider.starts_with('.')
         || dns01.provider.ends_with('.')
         || dns01.provider.eq_ignore_ascii_case("shell")
@@ -1196,8 +1193,7 @@ fn validate_listener_policies(listener: &Listener) -> Result<(), ConfigError> {
                 detail: "PROXY protocol is supported only by TCP and UDP listeners",
             });
         }
-        if listener.protocol == Protocol::Udp
-            && matches!(policy.version, ProxyProtocolVersion::V1)
+        if listener.protocol == Protocol::Udp && matches!(policy.version, ProxyProtocolVersion::V1)
         {
             return Err(ConfigError::InvalidProxyProtocolPolicy {
                 kind: "listener",
@@ -1210,10 +1206,10 @@ fn validate_listener_policies(listener: &Listener) -> Result<(), ConfigError> {
     if !matches!(
         listener.protocol,
         Protocol::Http
-        | Protocol::Http3
-        | Protocol::ForwardHttp1
-        | Protocol::ForwardHttp2
-        | Protocol::ForwardHttp3
+            | Protocol::Http3
+            | Protocol::ForwardHttp1
+            | Protocol::ForwardHttp2
+            | Protocol::ForwardHttp3
     ) && (listener.downstream_timeouts.request_timeout_ms.is_some()
         || listener.downstream_timeouts.keepalive_timeout_ms.is_some())
     {
@@ -1237,17 +1233,18 @@ fn validate_http3_listener(
         detail,
     };
     let Some(profile_name) = listener.tls_profile.as_deref() else {
-        return Err(invalid("HTTP/3 requires a TLS 1.3 profile advertising only h3"));
+        return Err(invalid(
+            "HTTP/3 requires a TLS 1.3 profile advertising only h3",
+        ));
     };
-    let profile = tls_profiles
-        .get(profile_name)
-        .ok_or_else(|| ConfigError::UnknownListenerTlsProfile {
-            listener: listener.name.clone(),
-            profile: profile_name.into(),
-        })?;
-    if profile.min_version != TlsVersion::Tls13
-        || profile.alpn.as_slice() != [AlpnProtocol::H3]
-    {
+    let profile =
+        tls_profiles
+            .get(profile_name)
+            .ok_or_else(|| ConfigError::UnknownListenerTlsProfile {
+                listener: listener.name.clone(),
+                profile: profile_name.into(),
+            })?;
+    if profile.min_version != TlsVersion::Tls13 || profile.alpn.as_slice() != [AlpnProtocol::H3] {
         return Err(invalid(
             "HTTP/3 requires a TLS 1.3 profile advertising only h3",
         ));
@@ -1259,10 +1256,14 @@ fn validate_http3_listener(
         .max_request_body_bytes
         .is_some_and(|value| value > MAX_HTTP3_REQUEST_BODY_BYTES)
     {
-        return Err(invalid("HTTP/3 service request body exceeds the 64 MiB limit"));
+        return Err(invalid(
+            "HTTP/3 service request body exceeds the 64 MiB limit",
+        ));
     }
     if service.gzip.is_some() {
-        return Err(invalid("HTTP/3 reverse response compression is not supported"));
+        return Err(invalid(
+            "HTTP/3 reverse response compression is not supported",
+        ));
     }
     for route in &service.routes {
         if route.policy.max_request_body_bytes.is_none() {
@@ -1273,7 +1274,9 @@ fn validate_http3_listener(
             .max_request_body_bytes
             .is_some_and(|value| value > MAX_HTTP3_REQUEST_BODY_BYTES)
         {
-            return Err(invalid("HTTP/3 route request body exceeds the 64 MiB limit"));
+            return Err(invalid(
+                "HTTP/3 route request body exceeds the 64 MiB limit",
+            ));
         }
         if !route.policy.request_buffering {
             return Err(invalid("HTTP/3 requires request buffering"));
@@ -1293,7 +1296,9 @@ fn validate_http3_listener(
                             if is_http3_hop_by_hop_header(name)
                     )
                 }) {
-                    return Err(invalid("HTTP/3 reverse hop-by-hop headers are not supported"));
+                    return Err(invalid(
+                        "HTTP/3 reverse hop-by-hop headers are not supported",
+                    ));
                 }
                 if policy.response_headers.iter().any(|mutation| {
                     let name = match mutation {
@@ -1303,7 +1308,9 @@ fn validate_http3_listener(
                     };
                     is_http3_hop_by_hop_header(name)
                 }) {
-                    return Err(invalid("HTTP/3 reverse hop-by-hop headers are not supported"));
+                    return Err(invalid(
+                        "HTTP/3 reverse hop-by-hop headers are not supported",
+                    ));
                 }
             }
             HttpRouteAction::FixedResponse { .. }
@@ -1413,7 +1420,7 @@ fn validate_forward_listener(
         Protocol::ForwardHttp2 => ForwardHttpVersion::H2,
         Protocol::ForwardHttp3 => ForwardHttpVersion::H3,
         Protocol::Http | Protocol::Http3 | Protocol::Rtmp | Protocol::Tcp | Protocol::Udp => {
-            return Ok(())
+            return Ok(());
         }
     };
     let invalid = |detail: String| ConfigError::InvalidForwardProxyListener {
@@ -1544,7 +1551,10 @@ fn validate_rtmp_services(services: &mut [RtmpService]) -> Result<(), ConfigErro
         }
         validate_names(
             "RTMP exec profile",
-            service.exec_profiles.iter().map(|profile| profile.name.as_str()),
+            service
+                .exec_profiles
+                .iter()
+                .map(|profile| profile.name.as_str()),
         )?;
         if service.applications.is_empty() {
             return Err(ConfigError::EmptyRtmpApplications {
@@ -1564,13 +1574,13 @@ fn validate_rtmp_services(services: &mut [RtmpService]) -> Result<(), ConfigErro
                 .map(|application| application.name.as_str()),
         )?;
         for profile in &mut service.exec_profiles {
-            total_exec_profiles = total_exec_profiles
-                .checked_add(1)
-                .ok_or(ConfigError::InvalidRtmpServicePolicy {
+            total_exec_profiles = total_exec_profiles.checked_add(1).ok_or(
+                ConfigError::InvalidRtmpServicePolicy {
                     service: service.name.clone(),
                     field: "exec_profiles",
                     detail: "profile count overflow",
-                })?;
+                },
+            )?;
             if total_exec_profiles > MAX_TOTAL_RTMP_EXEC_PROFILES {
                 return Err(ConfigError::InvalidRtmpServicePolicy {
                     service: service.name.clone(),
@@ -1824,7 +1834,11 @@ fn validate_rtmp_application(
             &invalid,
             "push_targets[].flash_version",
         )?;
-        validate_rtmp_credentials(target.credentials.as_ref(), &invalid, "push_targets[].credentials")?;
+        validate_rtmp_credentials(
+            target.credentials.as_ref(),
+            &invalid,
+            "push_targets[].credentials",
+        )?;
     }
     let mut pull_targets = HashSet::with_capacity(application.pull_targets.len());
     for target in &mut application.pull_targets {
@@ -1870,7 +1884,11 @@ fn validate_rtmp_application(
             &invalid,
             "pull_targets[].flash_version",
         )?;
-        validate_rtmp_credentials(target.credentials.as_ref(), &invalid, "pull_targets[].credentials")?;
+        validate_rtmp_credentials(
+            target.credentials.as_ref(),
+            &invalid,
+            "pull_targets[].credentials",
+        )?;
     }
     let fanout = application.fanout;
     if fanout.max_subscribers == 0 || fanout.max_subscribers > MAX_RTMP_SUBSCRIBERS {
@@ -1931,9 +1949,7 @@ fn validate_rtmp_exec_profile(
             "host filesystem access is not supported",
         ));
     }
-    if profile.mode == RtmpExecMode::Transcode
-        && profile.trigger != RtmpExecTrigger::Publisher
-    {
+    if profile.mode == RtmpExecMode::Transcode && profile.trigger != RtmpExecTrigger::Publisher {
         return Err(invalid(
             "exec_profiles[].trigger",
             "transcode profiles require the publisher trigger",
@@ -1959,7 +1975,9 @@ fn validate_rtmp_exec_profile(
     }
     for argument in &profile.arguments {
         if argument.len() > MAX_RTMP_EXEC_ARGUMENT_BYTES
-            || argument.bytes().any(|byte| byte == 0 || byte.is_ascii_control())
+            || argument
+                .bytes()
+                .any(|byte| byte == 0 || byte.is_ascii_control())
         {
             return Err(invalid(
                 "exec_profiles[].arguments",
@@ -2016,11 +2034,15 @@ fn validate_rtmp_exec_profile(
             .checked_add(u64::try_from(environment.name.len()).unwrap_or(u64::MAX))
             .and_then(|bytes| bytes.checked_add(1))
             .and_then(|bytes| {
-                bytes
-                    .checked_add(u64::try_from(environment.value.len()).unwrap_or(u64::MAX))
+                bytes.checked_add(u64::try_from(environment.value.len()).unwrap_or(u64::MAX))
             })
             .and_then(|bytes| bytes.checked_add(1))
-            .ok_or_else(|| invalid("exec_profiles[].environment", "environment byte count overflow"))?;
+            .ok_or_else(|| {
+                invalid(
+                    "exec_profiles[].environment",
+                    "environment byte count overflow",
+                )
+            })?;
     }
     if environment_bytes > MAX_RTMP_EXEC_ENV_BYTES {
         return Err(invalid(
@@ -2099,7 +2121,10 @@ fn normalize_exec_path(path: &mut PathBuf) -> Result<(), &'static str> {
     if value.is_empty() || value.ends_with('/') || value.len() > 4_096 {
         return Err("path must be a bounded executable path");
     }
-    if value.bytes().any(|byte| byte == 0 || byte.is_ascii_control()) {
+    if value
+        .bytes()
+        .any(|byte| byte == 0 || byte.is_ascii_control())
+    {
         return Err("path must not contain NUL or control bytes");
     }
     if value.strip_prefix('/').is_none_or(|value| {
@@ -2120,8 +2145,10 @@ fn valid_exec_environment_name(name: &str) -> bool {
 }
 
 fn is_forbidden_exec_environment_name(name: &str) -> bool {
-    matches!(name, "PATH" | "IFS" | "SHELL" | "LD_PRELOAD" | "LD_LIBRARY_PATH")
-        || name.starts_with("LD_")
+    matches!(
+        name,
+        "PATH" | "IFS" | "SHELL" | "LD_PRELOAD" | "LD_LIBRARY_PATH"
+    ) || name.starts_with("LD_")
         || name.starts_with("DYLD_")
 }
 
@@ -2146,9 +2173,7 @@ fn validate_rtmp_hls(
     };
     normalize_absolute_directory(&mut hls.root_directory)
         .map_err(|detail| invalid("hls.root_directory", detail))?;
-    if hls.segment_duration_ms == 0
-        || hls.segment_duration_ms > MAX_RTMP_HLS_SEGMENT_DURATION_MS
-    {
+    if hls.segment_duration_ms == 0 || hls.segment_duration_ms > MAX_RTMP_HLS_SEGMENT_DURATION_MS {
         return Err(invalid(
             "hls.segment_duration_ms",
             "must be between 1 and 120000",
@@ -2271,24 +2296,17 @@ fn validate_rtmp_hls(
         }
         if keys.url_prefix.len() > MAX_RTMP_HLS_KEY_URL_PREFIX_BYTES
             || !keys.url_prefix.is_ascii()
-            || keys
-                .url_prefix
-                .bytes()
-                .any(|byte| {
-                    byte.is_ascii_control()
-                        || matches!(byte, b'?' | b'#' | b'\\' | b'"' | b'%' | b' ')
-                })
+            || keys.url_prefix.bytes().any(|byte| {
+                byte.is_ascii_control() || matches!(byte, b'?' | b'#' | b'\\' | b'"' | b'%' | b' ')
+            })
             || (!keys.url_prefix.is_empty()
                 && (!keys.url_prefix.ends_with('/')
                     || keys.url_prefix.starts_with('/')
-                    || keys
-                        .url_prefix
-                        .strip_suffix('/')
-                        .is_none_or(|prefix| {
-                            prefix.split('/').any(|component| {
-                                component.is_empty() || component == "." || component == ".."
-                            })
-                        })))
+                    || keys.url_prefix.strip_suffix('/').is_none_or(|prefix| {
+                        prefix.split('/').any(|component| {
+                            component.is_empty() || component == "." || component == ".."
+                        })
+                    })))
         {
             return Err(invalid(
                 "hls.keys.url_prefix",
@@ -2312,7 +2330,8 @@ fn validate_rtmp_dash(
     };
     normalize_absolute_directory(&mut dash.root_directory)
         .map_err(|detail| invalid("dash.root_directory", detail))?;
-    if dash.segment_duration_ms == 0 || dash.segment_duration_ms > MAX_RTMP_DASH_SEGMENT_DURATION_MS {
+    if dash.segment_duration_ms == 0 || dash.segment_duration_ms > MAX_RTMP_DASH_SEGMENT_DURATION_MS
+    {
         return Err(invalid(
             "dash.segment_duration_ms",
             "must be between 1 and 120000",
@@ -3244,8 +3263,7 @@ fn validate_passive_health_config(
             "maximum backoff must not exceed 86400000 milliseconds",
         ));
     }
-    if policy.recovery_threshold == 0
-        || policy.recovery_threshold > MAX_PASSIVE_RECOVERY_THRESHOLD
+    if policy.recovery_threshold == 0 || policy.recovery_threshold > MAX_PASSIVE_RECOVERY_THRESHOLD
     {
         return Err(invalid(
             "passive_health.recovery_threshold",
@@ -3331,8 +3349,7 @@ fn validate_upstream_pool_definition(
             max: pool.http_versions.max.as_str(),
         });
     }
-    if pool.http_versions.min == HttpVersion::Http3
-        || pool.http_versions.max == HttpVersion::Http3
+    if pool.http_versions.min == HttpVersion::Http3 || pool.http_versions.max == HttpVersion::Http3
     {
         if pool.http_versions.min != HttpVersion::Http3
             || pool.http_versions.max != HttpVersion::Http3

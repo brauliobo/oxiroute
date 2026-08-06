@@ -12,7 +12,7 @@ use openssl::{
     error::ErrorStack,
     sha::sha256,
     ssl::SslVersion,
-    x509::{store::X509StoreBuilder, verify::X509VerifyFlags, X509PurposeId, X509},
+    x509::{X509, X509PurposeId, store::X509StoreBuilder, verify::X509VerifyFlags},
 };
 use oxiroute_config::{HttpVersion, UpstreamPool};
 use pingora::{
@@ -21,8 +21,8 @@ use pingora::{
 };
 
 use super::{
-    certificate_is_ca_capable, pem_labels, read_bounded_stable, TlsBuildError,
-    MAX_CA_CERTIFICATE_BYTES,
+    MAX_CA_CERTIFICATE_BYTES, TlsBuildError, certificate_is_ca_capable, pem_labels,
+    read_bounded_stable,
 };
 use crate::encoding::lower_hex;
 

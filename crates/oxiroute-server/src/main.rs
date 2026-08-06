@@ -25,8 +25,8 @@ use log::{debug, error, info, warn};
 use oxiroute_config::ListenerBind;
 use oxiroute_rtmp::{
     MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN, MediaCatalog, RecorderErrorCode, RecorderPhase,
-    RtmpClientSnapshot, RtmpRegistry, RtmpRelayFailure, RtmpServiceRuntime,
-    RtmpSessionError, RtmpSessionRole, VodCatalog,
+    RtmpClientSnapshot, RtmpRegistry, RtmpRelayFailure, RtmpServiceRuntime, RtmpSessionError,
+    RtmpSessionRole, VodCatalog,
 };
 use oxiroute_server::{
     AcmeManagedReconciler, CertbotWatcherConfig, CertbotWatcherSupervisor, ConfigWatcher,
@@ -766,13 +766,11 @@ impl ServerApp for TcpRelay {
         downstream: Stream,
         shutdown: &ShutdownWatch,
     ) -> Option<Stream> {
-        let physical_client_address = downstream
-            .get_socket_digest()
-            .and_then(|digest| {
-                digest
-                    .peer_addr()
-                    .and_then(|address| address.as_inet().copied())
-            });
+        let physical_client_address = downstream.get_socket_digest().and_then(|digest| {
+            digest
+                .peer_addr()
+                .and_then(|address| address.as_inet().copied())
+        });
         let connection = self.metrics.traffic_accounting();
         if let Some(policy) = self.proxy_protocol {
             let mut proxy_shutdown = shutdown.clone();
@@ -781,8 +779,12 @@ impl ServerApp for TcpRelay {
                 {
                     Ok(accepted) => accepted,
                     Err(error) => {
-                        if let Err(metric_error) = self.metrics.record_proxy_protocol(error.result()) {
-                            debug!("could not account for TCP PROXY protocol rejection: {metric_error}");
+                        if let Err(metric_error) =
+                            self.metrics.record_proxy_protocol(error.result())
+                        {
+                            debug!(
+                                "could not account for TCP PROXY protocol rejection: {metric_error}"
+                            );
                         }
                         warn!("TCP PROXY protocol rejected: {error}");
                         return None;
@@ -800,7 +802,10 @@ impl ServerApp for TcpRelay {
             };
             let relay = TcpRelayCore::new(upstream, self.service.policy())
                 .with_proxy_protocol(self.service.proxy_protocol(), Some(accepted.header.source));
-            if let Err(error) = relay.relay(accepted.stream, &connection, shutdown.clone()).await {
+            if let Err(error) = relay
+                .relay(accepted.stream, &connection, shutdown.clone())
+                .await
+            {
                 warn!("TCP relay failed: {error}");
             }
         } else {
@@ -1313,8 +1318,7 @@ fn log_rtmp_access_event(
     failure_code: Option<&str>,
 ) {
     emit_rtmp_access(event.as_str(), result.as_str());
-    let duration_ms =
-        u64::try_from(session_started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let duration_ms = u64::try_from(session_started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
     let value = serde_json::json!({
         "timestampUnixMs": at_unix_ms,
         "event": event.as_str(),
@@ -3070,8 +3074,8 @@ mod tests {
             runtime
                 .snapshot()
                 .expect("RTMP writer snapshot")
-            .traffic
-            .bytes_sent,
+                .traffic
+                .bytes_sent,
             12
         );
         assert_eq!(counters.bytes_sent, 12);

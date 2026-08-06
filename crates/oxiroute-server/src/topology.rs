@@ -7,9 +7,9 @@ use oxiroute_config::{
     UpstreamTls,
 };
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::{monitoring::RuntimeHealthSnapshot, ListenerRuntimeState, RoundRobinPool, ServiceSpec};
+use crate::{ListenerRuntimeState, RoundRobinPool, ServiceSpec, monitoring::RuntimeHealthSnapshot};
 
 pub const TOPOLOGY_SCHEMA_VERSION: u32 = 1;
 
@@ -352,6 +352,8 @@ impl TopologyBuilder {
                     "tlsRequired": service.tls_required,
                     "connectEnabled": service.connect.enabled,
                     "connectPortCount": service.connect.allowed_ports.len(),
+                    "connectUdpEnabled": service.connect_udp.enabled,
+                    "connectUdpPortCount": service.connect_udp.allowed_ports.len(),
                     "auth": match service.auth {
                         Some(oxiroute_config::ForwardProxyAuth::BearerTokenFile { .. }) => "bearer_token_file",
                         Some(oxiroute_config::ForwardProxyAuth::BasicHtpasswdFile { .. }) => "basic_htpasswd_file",
@@ -1077,9 +1079,7 @@ const fn alpn_protocol(protocol: AlpnProtocol) -> &'static str {
     }
 }
 
-const fn tls_client_auth_mode(
-    mode: oxiroute_config::TlsClientAuthMode,
-) -> &'static str {
+const fn tls_client_auth_mode(mode: oxiroute_config::TlsClientAuthMode) -> &'static str {
     match mode {
         oxiroute_config::TlsClientAuthMode::Disabled => "disabled",
         oxiroute_config::TlsClientAuthMode::Optional => "optional",

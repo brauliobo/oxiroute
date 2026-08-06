@@ -43,8 +43,8 @@ use oxiroute_rtmp::{
     RtmpClientOptions, RtmpCredential, RtmpDestinationResolver, RtmpDestinationResolverError,
     RtmpNetwork, RtmpOutboundPolicy, RtmpPullTarget, RtmpPushApplication, RtmpPushTarget,
     RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry, RtmpRelayConfig, RtmpRtmpsMode,
-    RtmpServiceRuntime, RtmpSessionCeilings, RtmpSessionLimits, RtmpSessionPolicy,
-    RtmpTokenPolicy, RtmpTransport, VodApplication, VodCatalog, VodLimits, VodSourceDefinition,
+    RtmpServiceRuntime, RtmpSessionCeilings, RtmpSessionLimits, RtmpSessionPolicy, RtmpTokenPolicy,
+    RtmpTransport, VodApplication, VodCatalog, VodLimits, VodSourceDefinition,
 };
 
 static DISK_BACKEND_REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Weak<DiskBackend>>>> =
@@ -499,11 +499,17 @@ pub enum ServicePlanError {
     #[error(
         "RTMP HLS output in application `{application}` of service `{service}` failed media-root preflight"
     )]
-    HlsPreflight { service: String, application: String },
+    HlsPreflight {
+        service: String,
+        application: String,
+    },
     #[error(
         "RTMP DASH output in application `{application}` of service `{service}` failed media-root preflight"
     )]
-    DashPreflight { service: String, application: String },
+    DashPreflight {
+        service: String,
+        application: String,
+    },
     #[error("RTMP auto-push for service `{service}` is unavailable")]
     AutoPushUnavailable { service: String },
     #[error(
@@ -1489,19 +1495,15 @@ fn compile_rtmp_services(
                 &outbound_policy,
             )?;
             let vod = compile_rtmp_vod(&service.name, application, &outbound_policy)?;
-            let hls = compile_rtmp_hls(
-                &service.name,
-                application,
-                &mut media_stores,
-            )?;
+            let hls = compile_rtmp_hls(&service.name, application, &mut media_stores)?;
             let dash = compile_rtmp_dash(&service.name, application, &mut media_stores)?;
             let media = match (hls, dash) {
                 (None, None) => None,
                 (Some(hls), None) => Some(hls),
-                (None, Some(dash)) => Some(Arc::new(MediaApplication::new(None).with_dash(Some(dash)))),
-                (Some(hls), Some(dash)) => {
-                    Some(Arc::new((*hls).clone().with_dash(Some(dash))))
+                (None, Some(dash)) => {
+                    Some(Arc::new(MediaApplication::new(None).with_dash(Some(dash))))
                 }
+                (Some(hls), Some(dash)) => Some(Arc::new((*hls).clone().with_dash(Some(dash)))),
             };
             let exec_profiles = service
                 .exec_profiles
@@ -1546,9 +1548,10 @@ fn compile_rtmp_services(
         );
         let media_catalog = MediaCatalog::from_applications(
             prepared_applications.iter().filter_map(|application| {
-                application.media.clone().map(|media| {
-                    (service.name.clone(), application.name.clone(), media)
-                })
+                application
+                    .media
+                    .clone()
+                    .map(|media| (service.name.clone(), application.name.clone(), media))
             }),
         );
         services.insert(
@@ -1671,13 +1674,11 @@ fn compile_rtmp_push_targets(
                 Duration::from_millis(relay.dns_refresh_ms),
             )
             .map_err(|error| match error {
-                RtmpDestinationResolverError::DirectLoop => {
-                    ServicePlanError::RtmpPushDirectLoop {
-                        service: service.to_owned(),
-                        application: application.name.clone(),
-                        target: target_index,
-                    }
-                }
+                RtmpDestinationResolverError::DirectLoop => ServicePlanError::RtmpPushDirectLoop {
+                    service: service.to_owned(),
+                    application: application.name.clone(),
+                    target: target_index,
+                },
                 RtmpDestinationResolverError::EmptyAnswer
                 | RtmpDestinationResolverError::TooManyAddresses
                 | RtmpDestinationResolverError::InvalidAddress
@@ -1984,7 +1985,8 @@ fn compile_rtmp_hls(
     let store = if let Some(store) = stores.get(&policy.root_directory) {
         Arc::clone(store)
     } else {
-        let store = Arc::new(MediaStore::open(&policy.root_directory, limits).map_err(|_| invalid())?);
+        let store =
+            Arc::new(MediaStore::open(&policy.root_directory, limits).map_err(|_| invalid())?);
         stores.insert(policy.root_directory.clone(), Arc::clone(&store));
         store
     };
@@ -2000,7 +2002,8 @@ fn compile_rtmp_hls(
         })
         .collect();
     let keys = policy.keys.as_ref().map(|keys| HlsKeyConfig {
-        rotation_segments: usize::try_from(keys.rotation_segments).expect("validated HLS key rotation fits usize"),
+        rotation_segments: usize::try_from(keys.rotation_segments)
+            .expect("validated HLS key rotation fits usize"),
         url_prefix: keys.url_prefix.clone(),
     });
     let config = HlsOutputConfig {
@@ -2020,7 +2023,9 @@ fn compile_rtmp_hls(
         max_segment_bytes: usize::try_from(policy.max_segment_bytes).map_err(|_| invalid())?,
         max_queue_messages: usize::try_from(policy.max_queue_messages).map_err(|_| invalid())?,
     };
-    Ok(Some(Arc::new(MediaApplication::new(Some(Arc::new(config))))))
+    Ok(Some(Arc::new(MediaApplication::new(Some(Arc::new(
+        config,
+    ))))))
 }
 
 fn compile_rtmp_dash(
@@ -2044,9 +2049,8 @@ fn compile_rtmp_dash(
     let store = if let Some(store) = stores.get(&policy.root_directory) {
         Arc::clone(store)
     } else {
-        let store = Arc::new(
-            MediaStore::open(&policy.root_directory, limits).map_err(|_| invalid())?,
-        );
+        let store =
+            Arc::new(MediaStore::open(&policy.root_directory, limits).map_err(|_| invalid())?);
         stores.insert(policy.root_directory.clone(), Arc::clone(&store));
         store
     };

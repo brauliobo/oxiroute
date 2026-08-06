@@ -28,7 +28,6 @@ pub use callback::{
     RtmpCallbackContext, RtmpCallbackEndpoint, RtmpCallbackError, RtmpCallbackEvent,
     RtmpCallbackMethod, RtmpCallbackPolicy,
 };
-pub use dash_segmenter::{DashOutputConfig, DashSegmentNaming};
 pub use catalog::{
     CatalogError, MAX_RTMP_APPLICATION_BYTES, MAX_RTMP_QUERY_BYTES, MAX_RTMP_STREAM_NAME_BYTES,
     MediaSnapshot, OperationId, PublisherRegistration, PublisherSnapshot, RecorderDefinition,
@@ -41,6 +40,7 @@ pub use client::{
     DestinationPolicyError, RtmpClientOptions, RtmpCredential, RtmpOutboundPolicy, RtmpRtmpsMode,
     RtmpTransport,
 };
+pub use dash_segmenter::{DashOutputConfig, DashSegmentNaming};
 pub use directives::{directive_compatibility_report, directive_specs, validate_directive};
 pub use exec::{
     ExecEnvironment, ExecFilesystemPolicy, ExecLimits, ExecMode, ExecNetworkPolicy, ExecProfile,
@@ -82,29 +82,27 @@ pub use recording_worker::{
     RecorderWorkerPhase, RecorderWorkerStartError, RecorderWorkerStatus, RecorderWorkerSupervisor,
 };
 pub use relay::{
-    RtmpDestination, RtmpDestinationResolver, RtmpDestinationResolverError, RtmpDnsResolver,
-    RtmpDnsRefreshFailure, RtmpPullTarget, RtmpPushApplication, RtmpPushTarget, RtmpRelayConfig,
+    RtmpDestination, RtmpDestinationResolver, RtmpDestinationResolverError, RtmpDnsRefreshFailure,
+    RtmpDnsResolver, RtmpPullTarget, RtmpPushApplication, RtmpPushTarget, RtmpRelayConfig,
     RtmpRelayFailure, RtmpRelayPhase, RtmpRelayStatus,
 };
 pub use rml_rtmp::sessions::StreamMetadata;
 pub use session::{
     MAX_INBOUND_AMF0_CONTAINER_ENTRIES, MAX_INBOUND_AMF0_DEPTH, MAX_INBOUND_AMF0_STRING_BYTES,
     MAX_INBOUND_AMF0_VALUES, MAX_INBOUND_CHUNK_SIZE, MAX_INBOUND_MESSAGE_SIZE,
-    MAX_RTMP_MESSAGE_STREAMS,
-    MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN, RTMP_STALE_PUBLISHER_THRESHOLD_MS, RtmpAccessAction,
-    RtmpAccessPolicy, RtmpAccessRule, RtmpApplication, RtmpNetwork, RtmpRecorderLifecycle,
-    RtmpServiceRuntime, RtmpSession, RtmpSessionCeilings, RtmpSessionError, RtmpSessionLimits,
-    RtmpSessionPolicy, RtmpTokenPolicy,
+    MAX_PLAYBACK_EVENTS_PER_DRAIN_TURN, MAX_RTMP_MESSAGE_STREAMS,
+    RTMP_STALE_PUBLISHER_THRESHOLD_MS, RtmpAccessAction, RtmpAccessPolicy, RtmpAccessRule,
+    RtmpApplication, RtmpNetwork, RtmpRecorderLifecycle, RtmpServiceRuntime, RtmpSession,
+    RtmpSessionCeilings, RtmpSessionError, RtmpSessionLimits, RtmpSessionPolicy, RtmpTokenPolicy,
 };
 pub use session_control::{
-    RtmpClientSnapshot, RtmpMessageStreamSnapshot, RtmpSessionControlAction,
-    RtmpSessionControlError,
-    RtmpSessionControlOutcome, RtmpSessionRole, MAX_RTMP_SESSION_CONTROLS,
+    MAX_RTMP_SESSION_CONTROLS, RtmpClientSnapshot, RtmpMessageStreamSnapshot,
+    RtmpSessionControlAction, RtmpSessionControlError, RtmpSessionControlOutcome, RtmpSessionRole,
 };
 pub use vod::{
     MAX_VOD_EVENTS, MAX_VOD_HTTP_HEADER_BYTES, MAX_VOD_ORIGIN_BYTES, MAX_VOD_PATH_BYTES,
-    MAX_VOD_REDIRECTS, MAX_VOD_SOURCE_NAME_BYTES, VodApplication, VodCatalog, VodError, VodLimits,
-    VodLease, VodObject, VodRange, VodSourceDefinition,
+    MAX_VOD_REDIRECTS, MAX_VOD_SOURCE_NAME_BYTES, VodApplication, VodCatalog, VodError, VodLease,
+    VodLimits, VodObject, VodRange, VodSourceDefinition,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

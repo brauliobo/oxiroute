@@ -1,4 +1,6 @@
-use oxiroute_config::{Config, ConfigError, HttpRouteAction, load_lua, render_lua, validate_config};
+use oxiroute_config::{
+    Config, ConfigError, HttpRouteAction, load_lua, render_lua, validate_config,
+};
 use serde_json::json;
 
 fn config(routes: &str, endpoint: &str) -> String {
@@ -105,17 +107,22 @@ fn rejects_reverse_http3_request_body_limits_above_the_runtime_bound() {
     let mut config = http3_config(true, Some("h3"));
     config.http_services[0].max_request_body_bytes = Some(64 * 1024 * 1024 + 1);
     let error = validate_config(&mut config).expect_err("oversized H3 service body limit");
-    assert!(error
-        .to_string()
-        .contains("HTTP/3 service request body exceeds the 64 MiB limit"));
+    assert!(
+        error
+            .to_string()
+            .contains("HTTP/3 service request body exceeds the 64 MiB limit")
+    );
 
     let mut config = http3_config(true, Some("h3"));
-    config.http_services[0].routes[0].policy.max_request_body_bytes =
-        Some(64 * 1024 * 1024 + 1);
+    config.http_services[0].routes[0]
+        .policy
+        .max_request_body_bytes = Some(64 * 1024 * 1024 + 1);
     let error = validate_config(&mut config).expect_err("oversized H3 route body limit");
-    assert!(error
-        .to_string()
-        .contains("HTTP/3 route request body exceeds the 64 MiB limit"));
+    assert!(
+        error
+            .to_string()
+            .contains("HTTP/3 route request body exceeds the 64 MiB limit")
+    );
 }
 
 #[test]
@@ -147,16 +154,22 @@ fn rejects_reverse_http3_routes_that_would_use_an_h1_pool() {
 fn rejects_reverse_http3_without_request_buffering() {
     let error = validate_config(&mut http3_config(false, Some("h3")))
         .expect_err("unbuffered reverse HTTP/3 request");
-    assert!(error.to_string().contains("HTTP/3 requires request buffering"));
+    assert!(
+        error
+            .to_string()
+            .contains("HTTP/3 requires request buffering")
+    );
 }
 
 #[test]
 fn rejects_reverse_http3_without_tls_profile() {
     let error = validate_config(&mut http3_config(true, None))
         .expect_err("TLS-less reverse HTTP/3 listener");
-    assert!(error
-        .to_string()
-        .contains("HTTP/3 requires a TLS 1.3 profile advertising only h3"));
+    assert!(
+        error
+            .to_string()
+            .contains("HTTP/3 requires a TLS 1.3 profile advertising only h3")
+    );
 }
 
 #[test]

@@ -4,8 +4,8 @@ use std::{
     fmt,
     net::IpAddr,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering},
         Arc, RwLock,
+        atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering},
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -18,8 +18,8 @@ use openssl::{
     nid::Nid,
     pkey::{PKey, Private},
     x509::{
+        X509, X509NameBuilder,
         extension::{BasicConstraints, ExtendedKeyUsage, KeyUsage, SubjectAlternativeName},
-        X509NameBuilder, X509,
     },
 };
 use x509_parser::parse_x509_certificate;

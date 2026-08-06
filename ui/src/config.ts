@@ -889,6 +889,7 @@ export interface ForwardProxyServiceConfig {
   allow_absolute_form: boolean
   tls_required: boolean
   connect: ForwardConnectPolicyConfig
+  connect_udp: ForwardConnectPolicyConfig
   peer_policy: ForwardPeerPolicyConfig
   auth: ForwardProxyAuthConfig | null
   access_policy: ForwardAccessPolicyConfig | null
@@ -1527,6 +1528,8 @@ function isForwardProxyService(value: unknown): value is ForwardProxyServiceConf
     typeof value.allow_absolute_form === 'boolean' && typeof value.tls_required === 'boolean' &&
     isRecord(value.connect) && typeof value.connect.enabled === 'boolean' &&
     arrayOf(value.connect.allowed_ports, safeInteger) &&
+    isRecord(value.connect_udp) && typeof value.connect_udp.enabled === 'boolean' &&
+    arrayOf(value.connect_udp.allowed_ports, safeInteger) &&
     isForwardPeerPolicy(value) &&
     (value.auth === null || isForwardProxyAuth(value.auth)) &&
     (value.access_policy === null || isForwardAccessPolicy(value.access_policy)) &&
@@ -1880,6 +1883,9 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'forward_proxy_services[].connect', kind: 'object' },
   { path: 'forward_proxy_services[].connect.enabled', kind: 'boolean' },
   { path: 'forward_proxy_services[].connect.allowed_ports', kind: 'collection' },
+  { path: 'forward_proxy_services[].connect_udp', kind: 'object' },
+  { path: 'forward_proxy_services[].connect_udp.enabled', kind: 'boolean' },
+  { path: 'forward_proxy_services[].connect_udp.allowed_ports', kind: 'collection' },
   { path: 'forward_proxy_services[].peer_policy', kind: 'object' },
   { path: 'forward_proxy_services[].peer_policy.peers', kind: 'collection' },
   { path: 'forward_proxy_services[].peer_policy.peers[].host', kind: 'string' },

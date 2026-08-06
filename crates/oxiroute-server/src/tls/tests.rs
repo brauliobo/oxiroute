@@ -225,7 +225,10 @@ fn client_auth_rejects_oversized_and_non_ca_bundles_before_listener_start() {
         certificate_chain_path: files.chain.clone(),
         private_key_path: files.key.clone(),
     };
-    config.tls_profiles[0].policy.client_auth.ca_certificate_path = Some(files.chain);
+    config.tls_profiles[0]
+        .policy
+        .client_auth
+        .ca_certificate_path = Some(files.chain);
     assert!(matches!(
         prepare_tls(&config),
         Err(TlsBuildError::NonCaClientCertificate { index: 0, .. })

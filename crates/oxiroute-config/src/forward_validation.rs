@@ -422,36 +422,50 @@ fn validate_versions_and_connect(service: &mut ForwardProxyService) -> Result<()
             ForwardHttpVersion::H3 => 3,
         });
 
-    if service.connect.allowed_ports.len() > MAX_FORWARD_CONNECT_PORTS
-        || (service.connect.enabled && service.connect.allowed_ports.is_empty())
+    validate_connect_policy(&service.name, "connect", &mut service.connect)?;
+    validate_connect_policy(&service.name, "connect_udp", &mut service.connect_udp)?;
+
+    Ok(())
+}
+
+fn validate_connect_policy(
+    service_name: &str,
+    field: &str,
+    policy: &mut crate::ForwardConnectPolicy,
+) -> Result<(), ConfigError> {
+    let ports_field = match field {
+        "connect" => "connect.allowed_ports",
+        "connect_udp" => "connect_udp.allowed_ports",
+        _ => unreachable!("validated forward tunnel policy field"),
+    };
+    if policy.allowed_ports.len() > MAX_FORWARD_CONNECT_PORTS
+        || (policy.enabled && policy.allowed_ports.is_empty())
     {
         return Err(invalid(
-            &service.name,
-            "connect.allowed_ports",
-            "must contain 1..=64 ports when CONNECT is enabled",
+            service_name,
+            ports_field,
+            "must contain 1..=64 ports when the tunnel policy is enabled",
         ));
     }
-    if service.connect.allowed_ports.contains(&0) {
+    if policy.allowed_ports.contains(&0) {
         return Err(invalid(
-            &service.name,
-            "connect.allowed_ports",
+            service_name,
+            ports_field,
             "must contain only nonzero ports",
         ));
     }
-    service.connect.allowed_ports.sort_unstable();
-    if service
-        .connect
+    policy.allowed_ports.sort_unstable();
+    if policy
         .allowed_ports
         .windows(2)
         .any(|pair| pair[0] == pair[1])
     {
         return Err(invalid(
-            &service.name,
-            "connect.allowed_ports",
+            service_name,
+            ports_field,
             "must not contain duplicates",
         ));
     }
-
     Ok(())
 }
 

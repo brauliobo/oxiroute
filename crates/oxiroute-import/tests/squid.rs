@@ -843,15 +843,24 @@ fn static_parent_peers_and_global_never_direct_lower_in_source_order() {
     assert_eq!(policy.peers[0].port, 3128);
     assert_eq!(policy.peers[1].host, "192.0.2.44");
     assert_eq!(policy.peers[1].port, 8080);
-    assert_eq!(policy.direct_fallback, oxiroute_config::ForwardDirectFallback::Denied);
+    assert_eq!(
+        policy.direct_fallback,
+        oxiroute_config::ForwardDirectFallback::Denied
+    );
     assert_eq!(policy.max_retries, 1);
     assert!(report.blocked_capabilities.is_empty());
-    assert!(report.canonical_provenance.iter().any(|entry| {
-        entry.path == "/forward_proxy_services/0/peer_policy/peers/0/host"
-    }));
-    assert!(report.canonical_provenance.iter().any(|entry| {
-        entry.path == "/forward_proxy_services/0/peer_policy/direct_fallback"
-    }));
+    assert!(
+        report
+            .canonical_provenance
+            .iter()
+            .any(|entry| { entry.path == "/forward_proxy_services/0/peer_policy/peers/0/host" })
+    );
+    assert!(
+        report
+            .canonical_provenance
+            .iter()
+            .any(|entry| { entry.path == "/forward_proxy_services/0/peer_policy/direct_fallback" })
+    );
     assert!(report.decision_ledger.decisions.iter().any(|decision| {
         decision.name == b"cache_peer"
             && matches!(
@@ -880,13 +889,19 @@ fn global_always_direct_lowers_to_required_direct_fallback() {
         config.forward_proxy_services[0].peer_policy.direct_fallback,
         oxiroute_config::ForwardDirectFallback::Required
     );
-    assert!(config.forward_proxy_services[0].peer_policy.peers.is_empty());
+    assert!(
+        config.forward_proxy_services[0]
+            .peer_policy
+            .peers
+            .is_empty()
+    );
 }
 
 #[test]
 fn unsupported_peer_and_direct_forms_keep_stable_blockers() {
     let directory = tempdir().expect("fixture directory");
-    let base = "http_port 3128\naccess_log none\nforwarded_for delete\nvia off\nhttp_access allow all\n";
+    let base =
+        "http_port 3128\naccess_log none\nforwarded_for delete\nvia off\nhttp_access allow all\n";
     for (name, extra, expected_message) in [
         (
             "sibling",
@@ -913,9 +928,13 @@ fn unsupported_peer_and_direct_forms_keep_stable_blockers() {
         fs::write(&root, format!("{base}{extra}")).expect("unsupported source");
         let report = import(&root);
         assert!(report.config.is_none(), "{name} unexpectedly lowered");
-        assert!(report.diagnostics.iter().any(|diagnostic| {
-            diagnostic.message() == expected_message
-        }), "{name} lacks stable blocker message");
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.message() == expected_message }),
+            "{name} lacks stable blocker message"
+        );
     }
 }
 

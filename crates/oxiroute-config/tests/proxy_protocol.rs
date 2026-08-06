@@ -59,7 +59,10 @@ fn proxy_protocol_bounds_and_transport_mismatches_fail_closed() {
     ));
 
     let udp_v1 = CONFIG
-        .replace("type = \"socket\", address = \"127.0.0.1:15432\"", "type = \"udp\", address = \"127.0.0.1:15432\"")
+        .replace(
+            "type = \"socket\", address = \"127.0.0.1:15432\"",
+            "type = \"udp\", address = \"127.0.0.1:15432\"",
+        )
         .replace("protocol = \"tcp\"", "protocol = \"udp\"")
         .replace("version = \"auto\"", "version = \"v1\"");
     assert!(matches!(

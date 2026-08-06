@@ -8,8 +8,8 @@ use std::{
 };
 
 use crate::{
-    media_storage::{MediaStore, MediaStoreError},
     MediaEvent, MediaEventKind, PublisherIncarnation, StreamKey,
+    media_storage::{MediaStore, MediaStoreError},
 };
 
 pub(crate) const MAX_DASH_SEGMENTS: usize = 512;
@@ -1334,9 +1334,11 @@ mod tests {
         segmenter.accept(&MediaEvent::video(0, Arc::<[u8]>::from(invalid)).expect("event"));
         segmenter.finish(true);
         let prefix = store.current_prefix(&key).expect("current prefix");
-        assert!(store
-            .read_relative(&prefix.join("dash/manifest.mpd"), 1024)
-            .is_err());
+        assert!(
+            store
+                .read_relative(&prefix.join("dash/manifest.mpd"), 1024)
+                .is_err()
+        );
     }
 
     #[test]

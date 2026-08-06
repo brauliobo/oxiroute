@@ -9,8 +9,8 @@ use pingora::{
         ServerApp,
     },
     protocols::{
-        http::{v2::server::H2Options, ServerSession},
-        Stream, ALPN,
+        ALPN, Stream,
+        http::{ServerSession, v2::server::H2Options},
     },
     server::ShutdownWatch,
 };
@@ -294,8 +294,8 @@ where
 #[cfg(test)]
 mod tests {
     use std::sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     };
 
     use pingora::{apps::ServerApp, protocols::Stream, server::ShutdownWatch};

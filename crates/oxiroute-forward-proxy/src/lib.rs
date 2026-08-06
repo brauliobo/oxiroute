@@ -24,7 +24,7 @@ pub use policy::{
 };
 pub use target::{
     Destination, ForwardScheme, ForwardTarget, Host, TargetError, parse_absolute_form,
-    parse_connect_authority,
+    parse_connect_authority, parse_connect_udp_path,
 };
 pub use tunnel::{
     BoundedTunnel, H2TunnelStream, OverreadIo, TunnelConfigError, TunnelEnd, TunnelLimits,

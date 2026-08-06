@@ -530,6 +530,7 @@ fn lower(effective: &EffectiveConfiguration) -> Result<LoweredCanonical, Semanti
             enabled: !connect_ports.is_empty(),
             allowed_ports: connect_ports,
         },
+        connect_udp: ForwardConnectPolicy::default(),
         peer_policy,
         auth,
         access_policy: Some(access_policy),

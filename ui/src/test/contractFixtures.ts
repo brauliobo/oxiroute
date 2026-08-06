@@ -700,6 +700,7 @@ export function contractConfigSnapshot(): ConfigSnapshot {
     allow_absolute_form: true,
     tls_required: true,
     connect: { enabled: true, allowed_ports: [443, 8443] },
+    connect_udp: { enabled: false, allowed_ports: [443] },
     peer_policy: { peers: [], direct_fallback: 'allowed', max_retries: 3 },
     auth: { type: 'bearer_token_file', token_file_path: '/run/oxiroute/forward.token' },
     access_policy: {

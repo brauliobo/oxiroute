@@ -120,10 +120,10 @@ fn trim_one_line_ending(bytes: &mut Vec<u8>) {
 mod tests {
     use std::{fs, os::unix::fs::PermissionsExt as _};
 
-    use http::{header::AUTHORIZATION, HeaderMap};
+    use http::{HeaderMap, header::AUTHORIZATION};
     use tempfile::tempdir;
 
-    use super::{single_header, HeaderCardinality, SecureBearerToken};
+    use super::{HeaderCardinality, SecureBearerToken, single_header};
 
     const TOKEN: &[u8] = b"0123456789abcdefghijklmnopqrstuv";
 

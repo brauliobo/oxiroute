@@ -8,11 +8,11 @@ use std::{
 };
 
 use super::{
-    certificate_identity_sans, certificate_is_ca_capable, pem_labels, read_bounded_stable,
-    CertificateIdentitySan, CertificateIdentitySans, TlsAlpnChallengeIdentity,
-    TlsAlpnChallengeStore, TlsBuildError, MAX_CERTIFICATES_IN_CHAIN, MAX_CLIENT_CA_CERTIFICATES,
-    MAX_CA_CERTIFICATE_BYTES, MAX_CERTIFICATE_CHAIN_BYTES, MAX_DH_PARAMETERS_BYTES,
-    MAX_PRIVATE_KEY_BYTES,
+    CertificateIdentitySan, CertificateIdentitySans, MAX_CA_CERTIFICATE_BYTES,
+    MAX_CERTIFICATE_CHAIN_BYTES, MAX_CERTIFICATES_IN_CHAIN, MAX_CLIENT_CA_CERTIFICATES,
+    MAX_DH_PARAMETERS_BYTES, MAX_PRIVATE_KEY_BYTES, TlsAlpnChallengeIdentity,
+    TlsAlpnChallengeStore, TlsBuildError, certificate_identity_sans, certificate_is_ca_capable,
+    pem_labels, read_bounded_stable,
 };
 use crate::encoding::lower_hex;
 use arc_swap::ArcSwap;
@@ -34,10 +34,10 @@ use openssl::{
     },
     stack::Stack,
     x509::{
+        X509, X509NameBuilder, X509PurposeId, X509StoreContext,
         extension::{BasicConstraints, ExtendedKeyUsage, KeyUsage, SubjectAlternativeName},
         store::X509StoreBuilder,
         verify::X509VerifyFlags,
-        X509NameBuilder, X509PurposeId, X509StoreContext, X509,
     },
 };
 use oxiroute_config::{
@@ -45,7 +45,7 @@ use oxiroute_config::{
     TlsVersion,
 };
 use pingora::{
-    listeners::{tls::TlsSettings, TlsAccept, ALPN},
+    listeners::{ALPN, TlsAccept, tls::TlsSettings},
     protocols::tls::CustomALPN,
     protocols::tls::TlsRef,
     tls::ext::{ssl_add_chain_cert, ssl_use_certificate, ssl_use_private_key},
@@ -692,12 +692,12 @@ impl ClientAuthPlan {
         let allowed_dns_names = client_auth
             .allowed_dns_names
             .iter()
-            .map(|dns_name| client_identity(dns_name).ok_or_else(|| {
-                TlsBuildError::InvalidTlsClientAuthPolicy {
+            .map(|dns_name| {
+                client_identity(dns_name).ok_or_else(|| TlsBuildError::InvalidTlsClientAuthPolicy {
                     profile: profile.name.clone(),
                     detail: "allowed_dns_names must contain exact DNS names or IP addresses",
-                }
-            }))
+                })
+            })
             .collect::<Result<Vec<_>, _>>()?;
 
         let (ca_certificates, rustls_roots) = match client_auth.mode {
@@ -741,7 +741,8 @@ impl ClientAuthPlan {
                 Some(Arc::new(ExactClientCertificateVerifier {
                     delegate,
                     allowed_dns_names: Arc::clone(&allowed_dns_names),
-                }) as Arc<dyn rustls::server::danger::ClientCertVerifier>)
+                })
+                    as Arc<dyn rustls::server::danger::ClientCertVerifier>)
             }
         };
 
@@ -753,11 +754,7 @@ impl ClientAuthPlan {
         })
     }
 
-    fn apply(
-        &self,
-        profile: &str,
-        settings: &mut TlsSettings,
-    ) -> Result<(), TlsBuildError> {
+    fn apply(&self, profile: &str, settings: &mut TlsSettings) -> Result<(), TlsBuildError> {
         let mode = match self.mode {
             TlsClientAuthMode::Disabled => {
                 settings.set_verify(SslVerifyMode::NONE);
@@ -802,13 +799,12 @@ impl ClientAuthPlan {
             source: Box::new(source),
         })?;
         for certificate in self.ca_certificates.iter() {
-            let name = certificate
-                .subject_name()
-                .to_owned()
-                .map_err(|source| TlsBuildError::ClientCaStore {
+            let name = certificate.subject_name().to_owned().map_err(|source| {
+                TlsBuildError::ClientCaStore {
                     profile: profile.into(),
                     source: Box::new(source),
-                })?;
+                }
+            })?;
             ca_names
                 .push(name)
                 .map_err(|source| TlsBuildError::ClientCaStore {
@@ -841,9 +837,7 @@ impl ClientAuthPlan {
         self.allowed_dns_names.len()
     }
 
-    fn h3_client_verifier(
-        &self,
-    ) -> Option<Arc<dyn rustls::server::danger::ClientCertVerifier>> {
+    fn h3_client_verifier(&self) -> Option<Arc<dyn rustls::server::danger::ClientCertVerifier>> {
         self.h3_client_verifier.clone()
     }
 }
@@ -1130,7 +1124,10 @@ impl fmt::Debug for TlsProfilePlan {
             .field("alpn", &self.alpn)
             .field("dh_parameters", &self.dh_parameters.is_some())
             .field("client_auth_mode", &self.client_auth.mode())
-            .field("client_auth_ca_configured", &self.client_auth.ca_configured())
+            .field(
+                "client_auth_ca_configured",
+                &self.client_auth.ca_configured(),
+            )
             .field(
                 "client_auth_allowed_dns_name_count",
                 &self.client_auth.allowed_dns_name_count(),
@@ -1148,8 +1145,7 @@ fn client_identity(value: &str) -> Option<CertificateIdentity> {
     }
     let mut value = value.to_owned();
     value.make_ascii_lowercase();
-    (valid_dns_name(&value) && !value.starts_with("*."))
-        .then_some(CertificateIdentity::Dns(value))
+    (valid_dns_name(&value) && !value.starts_with("*.")).then_some(CertificateIdentity::Dns(value))
 }
 
 fn load_client_ca_bundle(
@@ -1158,7 +1154,13 @@ fn load_client_ca_bundle(
 ) -> Result<(Arc<[X509]>, Arc<rustls::RootCertStore>), TlsBuildError> {
     const CLIENT_CA_FILE: &str = "client CA bundle";
 
-    let pem = read_bounded_stable(profile, CLIENT_CA_FILE, path, MAX_CA_CERTIFICATE_BYTES, false)?;
+    let pem = read_bounded_stable(
+        profile,
+        CLIENT_CA_FILE,
+        path,
+        MAX_CA_CERTIFICATE_BYTES,
+        false,
+    )?;
     let labels = pem_labels(profile, CLIENT_CA_FILE, path, &pem)?;
     if labels.iter().any(|label| *label != "CERTIFICATE") {
         return Err(TlsBuildError::InvalidPem {
@@ -1173,11 +1175,12 @@ fn load_client_ca_bundle(
             profile: profile.into(),
         });
     }
-    let certificates = X509::stack_from_pem(&pem).map_err(|source| TlsBuildError::ClientCaParse {
-        profile: profile.into(),
-        path: path.into(),
-        source,
-    })?;
+    let certificates =
+        X509::stack_from_pem(&pem).map_err(|source| TlsBuildError::ClientCaParse {
+            profile: profile.into(),
+            path: path.into(),
+            source,
+        })?;
     if certificates.len() != labels.len() {
         return Err(TlsBuildError::InvalidPem {
             owner: profile.into(),
@@ -1204,13 +1207,13 @@ fn load_client_ca_bundle(
                 index,
             });
         }
-        let der = certificate
-            .to_der()
-            .map_err(|source| TlsBuildError::ClientCaCertificateInspection {
+        let der = certificate.to_der().map_err(|source| {
+            TlsBuildError::ClientCaCertificateInspection {
                 profile: profile.into(),
                 index,
                 source: Box::new(source),
-            })?;
+            }
+        })?;
         if !unique_der.insert(der.clone()) {
             return Err(TlsBuildError::DuplicateClientCaCertificate {
                 profile: profile.into(),
@@ -1237,19 +1240,19 @@ fn validate_client_ca_current(
     index: usize,
     certificate: &X509,
 ) -> Result<(), TlsBuildError> {
-    let now = Asn1Time::days_from_now(0).map_err(|_| TlsBuildError::ClientCaCertificateInvalid {
-        profile: profile.into(),
-        index,
-        detail: "current validity could not be evaluated",
-    })?;
-    let not_before = certificate
-        .not_before()
-        .compare(&now)
-        .map_err(|_| TlsBuildError::ClientCaCertificateInvalid {
+    let now =
+        Asn1Time::days_from_now(0).map_err(|_| TlsBuildError::ClientCaCertificateInvalid {
             profile: profile.into(),
             index,
             detail: "current validity could not be evaluated",
         })?;
+    let not_before = certificate.not_before().compare(&now).map_err(|_| {
+        TlsBuildError::ClientCaCertificateInvalid {
+            profile: profile.into(),
+            index,
+            detail: "current validity could not be evaluated",
+        }
+    })?;
     if not_before == Ordering::Greater {
         return Err(TlsBuildError::ClientCaCertificateInvalid {
             profile: profile.into(),
@@ -1257,14 +1260,13 @@ fn validate_client_ca_current(
             detail: "certificate is not yet valid",
         });
     }
-    let not_after = certificate
-        .not_after()
-        .compare(&now)
-        .map_err(|_| TlsBuildError::ClientCaCertificateInvalid {
+    let not_after = certificate.not_after().compare(&now).map_err(|_| {
+        TlsBuildError::ClientCaCertificateInvalid {
             profile: profile.into(),
             index,
             detail: "current validity could not be evaluated",
-        })?;
+        }
+    })?;
     if not_after != Ordering::Greater {
         return Err(TlsBuildError::ClientCaCertificateInvalid {
             profile: profile.into(),
@@ -1275,10 +1277,7 @@ fn validate_client_ca_current(
     Ok(())
 }
 
-fn preflight_client_ca_store(
-    profile: &str,
-    certificates: &[X509],
-) -> Result<(), TlsBuildError> {
+fn preflight_client_ca_store(profile: &str, certificates: &[X509]) -> Result<(), TlsBuildError> {
     let mut store = X509StoreBuilder::new().map_err(|source| TlsBuildError::ClientCaStore {
         profile: profile.into(),
         source: Box::new(source),
@@ -1306,8 +1305,9 @@ fn client_certificate_matches(
     certificate: &openssl::x509::X509Ref,
     allowed_dns_names: &[CertificateIdentity],
 ) -> bool {
-    let CertificateIdentitySans::Names(sans) =
-        certificate_identity_sans(certificate).ok().unwrap_or(CertificateIdentitySans::Malformed)
+    let CertificateIdentitySans::Names(sans) = certificate_identity_sans(certificate)
+        .ok()
+        .unwrap_or(CertificateIdentitySans::Malformed)
     else {
         return false;
     };
@@ -1421,8 +1421,8 @@ static TLS_ALPN_SELECTION_INDEX: OnceLock<
     Result<openssl::ex_data::Index<PingoraSsl, TlsAlpnSelection>, String>,
 > = OnceLock::new();
 
-fn tls_alpn_selection_index(
-) -> Result<openssl::ex_data::Index<PingoraSsl, TlsAlpnSelection>, TlsBuildError> {
+fn tls_alpn_selection_index()
+-> Result<openssl::ex_data::Index<PingoraSsl, TlsAlpnSelection>, TlsBuildError> {
     TLS_ALPN_SELECTION_INDEX
         .get_or_init(|| PingoraSsl::new_ex_index().map_err(|error| error.to_string()))
         .as_ref()
@@ -1446,9 +1446,11 @@ impl TlsAccept for GenerationTlsAccept {
                 return;
             }
         };
-        let challenge = ssl.ex_data(selection_index).map(|selection| match selection {
-            TlsAlpnSelection::Challenge(challenge) => Arc::clone(challenge),
-        });
+        let challenge = ssl
+            .ex_data(selection_index)
+            .map(|selection| match selection {
+                TlsAlpnSelection::Challenge(challenge) => Arc::clone(challenge),
+            });
         if let Some(challenge) = challenge {
             if !challenge.usable(super::tls_alpn::unix_now()) {
                 log::warn!(
@@ -1514,10 +1516,7 @@ fn select_alpn<'a>(
     }
 }
 
-fn select_normal_alpn<'a>(
-    alpn: &ALPN,
-    offered: &'a [u8],
-) -> Result<Option<&'a [u8]>, AlpnError> {
+fn select_normal_alpn<'a>(alpn: &ALPN, offered: &'a [u8]) -> Result<Option<&'a [u8]>, AlpnError> {
     match alpn {
         ALPN::H1 => find_offered_protocol(offered, b"http/1.1"),
         ALPN::H2 => find_offered_protocol(offered, b"h2"),

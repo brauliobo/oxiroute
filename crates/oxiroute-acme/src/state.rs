@@ -5,8 +5,8 @@ use std::{
     io::{self, Read, Write},
     path::{Component, Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc, Mutex, OnceLock, Weak,
+        atomic::{AtomicU64, Ordering},
     },
 };
 
@@ -1167,10 +1167,12 @@ mod tests {
                 .certificate_pem,
             b"new-cert"
         );
-        assert!(directory
-            .path()
-            .join("state/certificates/edge/revisions/00000001/cert.pem")
-            .is_file());
+        assert!(
+            directory
+                .path()
+                .join("state/certificates/edge/revisions/00000001/cert.pem")
+                .is_file()
+        );
     }
 
     #[test]
@@ -1187,14 +1189,18 @@ mod tests {
                 .expect("revision");
         }
         assert_eq!(revision.garbage_collect("edge", 1, 3).expect("collect"), 2);
-        assert!(!directory
-            .path()
-            .join("state/certificates/edge/revisions/00000001")
-            .exists());
-        assert!(directory
-            .path()
-            .join("state/certificates/edge/revisions/00000003")
-            .is_dir());
+        assert!(
+            !directory
+                .path()
+                .join("state/certificates/edge/revisions/00000001")
+                .exists()
+        );
+        assert!(
+            directory
+                .path()
+                .join("state/certificates/edge/revisions/00000003")
+                .is_dir()
+        );
         assert_eq!(
             revision
                 .load_current("edge")

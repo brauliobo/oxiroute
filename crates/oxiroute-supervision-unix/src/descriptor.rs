@@ -205,9 +205,11 @@ impl DescriptorManifest {
     /// Returns the capabilities required by the ordered slots.
     #[must_use]
     pub fn capabilities(&self) -> DescriptorCapabilities {
-        self.slots.iter().fold(DescriptorCapabilities(0), |all, slot| {
-            all.union(slot.kind.capability())
-        })
+        self.slots
+            .iter()
+            .fold(DescriptorCapabilities(0), |all, slot| {
+                all.union(slot.kind.capability())
+            })
     }
 }
 

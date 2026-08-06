@@ -4,8 +4,8 @@ use std::{
     io::{self, Read, Write},
     path::{Component, Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
     },
 };
 
@@ -471,7 +471,9 @@ fn find_latest_incarnation(
         }
         let entry_name = entry.file_name();
         let name = entry_name.to_str().ok_or(MediaStoreError::InvalidPath)?;
-        let Some(value) = name.strip_prefix('i').and_then(|value| value.parse::<u64>().ok())
+        let Some(value) = name
+            .strip_prefix('i')
+            .and_then(|value| value.parse::<u64>().ok())
         else {
             continue;
         };

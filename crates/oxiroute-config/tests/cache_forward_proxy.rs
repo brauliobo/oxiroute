@@ -408,12 +408,14 @@ fn enforces_forward_listener_version_transport_tls_and_exact_service_kind() {
     );
     let incompatible_h1_profile =
         h1_profile.replace("alpn = { \"http/1.1\" }", "alpn = { \"h2\" }");
-    assert!(error(&forward_config(
-        &tls_service,
-        &h1_tls,
-        &incompatible_h1_profile
-    ))
-    .contains("required ALPN"));
+    assert!(
+        error(&forward_config(
+            &tls_service,
+            &h1_tls,
+            &incompatible_h1_profile
+        ))
+        .contains("required ALPN")
+    );
     let h1_udp = h1_tls.replace("type = \"socket\"", "type = \"udp\"");
     assert!(!error(&forward_config(&tls_service, &h1_udp, &h1_profile)).is_empty());
 

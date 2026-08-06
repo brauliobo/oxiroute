@@ -2,9 +2,9 @@ use std::{collections::HashMap, io, net::IpAddr, path::Path, sync::Arc};
 
 use async_trait::async_trait;
 use http::{
+    HeaderMap, HeaderValue, Response, Uri,
     header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, HOST, ORIGIN, REFERER},
     uri::Authority,
-    HeaderMap, HeaderValue, Response, Uri,
 };
 use oxiroute_config::{StatsPage, StatsPageAdminPolicy};
 use pingora::{apps::http_app::ServeHttp, protocols::http::ServerSession};
@@ -12,10 +12,10 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
+    ApiResponse, GenerationManager, RoundRobinPool, RuntimeMetrics,
     prometheus::render_prometheus,
     rtmp_api::response::to_http_response,
-    secure_bearer::{single_header, HeaderCardinality, SecureBearerToken},
-    ApiResponse, GenerationManager, RoundRobinPool, RuntimeMetrics,
+    secure_bearer::{HeaderCardinality, SecureBearerToken, single_header},
 };
 use oxiroute_rtmp::RtmpRegistry;
 
@@ -210,9 +210,9 @@ impl HaproxyStatsApi {
                 })
             },
         );
-        let active_generation_age_ms = runtime
-            .as_ref()
-            .map_or(Value::Null, |runtime| serde_json::json!(runtime.generation_age_ms));
+        let active_generation_age_ms = runtime.as_ref().map_or(Value::Null, |runtime| {
+            serde_json::json!(runtime.generation_age_ms)
+        });
         ApiResponse::json(
             200,
             &serde_json::json!({
@@ -880,8 +880,8 @@ mod tests {
     use std::{fs, os::unix::fs::PermissionsExt as _};
 
     use oxiroute_config::{
-        render_lua, Config, DnsResolutionPolicy, HttpVersionPolicy, UpstreamAlgorithm,
-        UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer,
+        Config, DnsResolutionPolicy, HttpVersionPolicy, UpstreamAlgorithm, UpstreamConnectionReuse,
+        UpstreamEndpoint, UpstreamPool, UpstreamServer, render_lua,
     };
     use oxiroute_rtmp::RtmpCapabilities;
     use tempfile::TempDir;
@@ -1068,9 +1068,11 @@ mod tests {
         assert_eq!(page.handle("GET", "/haprox", false).status, 404);
 
         let local = page.handle("GET", "/haproxy", true);
-        assert!(String::from_utf8(local.body)
-            .unwrap()
-            .contains("<form method=post"));
+        assert!(
+            String::from_utf8(local.body)
+                .unwrap()
+                .contains("<form method=post")
+        );
         assert!(page.handle("HEAD", "/haproxy", true).body.is_empty());
         for path in ["/metrics", "/ready", "/api/v1/status", "/stats"] {
             assert_eq!(page.handle("GET", path, true).status, 404, "{path}");
@@ -1130,10 +1132,10 @@ mod tests {
         assert_eq!(target.pool, "pool one");
         assert_eq!(target.server, "node+1");
         assert!(parse_stats_form(b"pool=one&pool=two").is_err());
-        assert!(parse_stats_form(
-            b"generation_revision=abc&pool=one&server=two&state=ready&extra=no"
-        )
-        .is_err());
+        assert!(
+            parse_stats_form(b"generation_revision=abc&pool=one&server=two&state=ready&extra=no")
+                .is_err()
+        );
 
         let mut headers = HeaderMap::new();
         headers.insert(HOST, HeaderValue::from_static("localhost:8404"));

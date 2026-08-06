@@ -2,9 +2,7 @@
 
 use std::{fs, net::SocketAddr, path::Path};
 
-use oxiroute_config::{
-    ListenerBind, Protocol, ProxyProtocolVersion, UpstreamEndpoint,
-};
+use oxiroute_config::{ListenerBind, Protocol, ProxyProtocolVersion, UpstreamEndpoint};
 use oxiroute_import::nginx::{
     OccurrenceDisposition, RootOccurrenceDisposition, StreamDeclaration, StreamDestination,
     import_root, import_stream_fragment, load, resolve_stream_fragment,
@@ -154,10 +152,12 @@ fn lowers_exact_stream_proxy_protocol_acceptance_and_propagation() {
             .version,
         ProxyProtocolVersion::V1
     );
-    assert!(report
-        .provenance
-        .iter()
-        .any(|entry| entry.path == "/l4_services/0/proxy_protocol/version"));
+    assert!(
+        report
+            .provenance
+            .iter()
+            .any(|entry| entry.path == "/l4_services/0/proxy_protocol/version")
+    );
 }
 
 #[test]

@@ -42,7 +42,7 @@ use oxiroute_config::{
 use oxiroute_forward_proxy::{
     ApprovedDestination, BoundedTunnel, Destination, DestinationRules, ForwardScheme,
     H2TunnelStream, Host, PolicyContext, Principal, Protocol, RuleError, TimeWindow, TunnelLimits,
-    parse_absolute_form, parse_connect_authority, sanitize_request_headers,
+    parse_absolute_form, parse_connect_authority, parse_connect_udp_path, sanitize_request_headers,
 };
 use pingora::{
     apps::{HttpServerApp, HttpServerOptions, ReusedHttpStream},
@@ -54,7 +54,7 @@ use pingora::{
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
-    net::TcpStream,
+    net::{TcpStream, UdpSocket},
     sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc, oneshot},
     time::{Instant, Sleep, timeout_at},
 };
@@ -62,6 +62,7 @@ use tokio_openssl::SslStream;
 
 use crate::{
     H3UpstreamError, H3UpstreamPlan,
+    capsule::relay_udp,
     http_action::{BasicHtpasswdAccess, CacheFill, CacheFillJoin, CacheRequest, HttpCachePlan},
     monitoring::CacheEvent,
     secure_bearer::{HeaderCardinality, SecureBearerToken, single_header},
@@ -70,6 +71,7 @@ use crate::{
 type BoxError = Box<dyn Error + Send + Sync>;
 pub type ForwardProxyBody = BoxBody<Bytes, BoxError>;
 const MAX_BASIC_CREDENTIAL_CACHE_ENTRIES: usize = 4_096;
+const CAPSULE_PROTOCOL: http::HeaderName = http::HeaderName::from_static("capsule-protocol");
 
 pub fn challenge_response(
     request: &Request<Incoming>,
@@ -233,6 +235,8 @@ pub struct ForwardHttp1ServicePlan {
     challenge: Option<HeaderValue>,
     connect_enabled: bool,
     connect_ports: Arc<[u16]>,
+    connect_udp_enabled: bool,
+    connect_udp_ports: Arc<[u16]>,
     connect_timeout: Duration,
     destination_policy: DestinationRules,
     peer_direct_fallback: ForwardDirectFallback,
@@ -429,6 +433,7 @@ enum ForwardCacheDecision {
 enum ParsedTarget {
     Forward(oxiroute_forward_proxy::ForwardTarget),
     Tunnel(Destination),
+    UdpTunnel(Destination),
 }
 
 struct AuthorizedRequest {
@@ -1147,6 +1152,8 @@ impl ForwardHttp1ServicePlan {
             challenge,
             connect_enabled: service.connect.enabled,
             connect_ports: service.connect.allowed_ports.clone().into(),
+            connect_udp_enabled: service.connect_udp.enabled,
+            connect_udp_ports: service.connect_udp.allowed_ports.clone().into(),
             connect_timeout: Duration::from_millis(service.connect_timeout_ms),
             destination_policy,
             peer_direct_fallback: service.peer_policy.direct_fallback,
@@ -1259,6 +1266,8 @@ impl ForwardHttp1ServicePlan {
         let target = request.uri().to_string();
         let parsed = if request.method() == Method::CONNECT {
             parse_connect_authority(&target).map(ParsedTarget::Tunnel)
+        } else if is_connect_udp_request(request) {
+            parse_connect_udp_path(&target).map(ParsedTarget::UdpTunnel)
         } else if self.allow_absolute_form {
             parse_absolute_form(&target).map(ParsedTarget::Forward)
         } else {
@@ -1268,10 +1277,16 @@ impl ForwardHttp1ServicePlan {
         let destination = match &parsed {
             ParsedTarget::Forward(target) => &target.destination,
             ParsedTarget::Tunnel(destination) => destination,
+            ParsedTarget::UdpTunnel(destination) => destination,
         };
         let lifetime_deadline = Instant::now() + self.lifetime_timeout;
         if matches!(parsed, ParsedTarget::Tunnel(_))
             && (!self.connect_enabled || !self.connect_ports.contains(&destination.port))
+        {
+            return Err(RequestFailure::Forbidden);
+        }
+        if matches!(parsed, ParsedTarget::UdpTunnel(_))
+            && (!self.connect_udp_enabled || !self.connect_udp_ports.contains(&destination.port))
         {
             return Err(RequestFailure::Forbidden);
         }
@@ -1419,6 +1434,49 @@ impl ForwardHttp1ServicePlan {
                     }
                 });
                 response(StatusCode::OK, Bytes::new())
+            }
+            ParsedTarget::UdpTunnel(_) => {
+                let socket = match timeout_at(
+                    lifetime_deadline,
+                    self.connect_udp_until(approved.socket_addresses.as_ref(), connect_deadline),
+                )
+                .await
+                {
+                    Ok(Ok(socket)) => socket,
+                    Ok(Err(error)) => return self.rejection(error),
+                    Err(_) => return self.rejection(RequestFailure::GatewayTimeout),
+                };
+                let upgrade = hyper::upgrade::on(&mut request);
+                let lifetime_timeout = lifetime_deadline.saturating_duration_since(Instant::now());
+                if lifetime_timeout.is_zero() {
+                    return self.rejection(RequestFailure::GatewayTimeout);
+                }
+                let tunnel_destination = approved.destination.authority();
+                let completion = lifecycle.start();
+                let limits = TunnelLimits {
+                    lifetime_timeout,
+                    ..TunnelLimits::default()
+                };
+                tokio::spawn(async move {
+                    let _completion = completion;
+                    let upgraded = tokio::select! {
+                        result = upgrade => result.ok(),
+                        _ = shutdown.changed() => None,
+                    };
+                    let Some(upgraded) = upgraded else {
+                        return;
+                    };
+                    let outcome = relay_udp(TokioIo::new(upgraded), socket, limits, shutdown).await;
+                    log::info!(
+                        target: "oxiroute::forward_proxy",
+                        "event=forward_udp_tunnel protocol=h1 destination={} outcome={} bytes_client_to_udp={} bytes_udp_to_client={}",
+                        tunnel_destination,
+                        outcome.end.as_str(),
+                        outcome.stats.client_to_udp,
+                        outcome.stats.udp_to_client,
+                    );
+                });
+                switching_protocols_response()
             }
             ParsedTarget::Forward(target) => {
                 self.handle_forward_request(
@@ -1906,6 +1964,14 @@ impl ForwardHttp1ServicePlan {
         };
 
         match parsed {
+            ParsedTarget::UdpTunnel(_) => {
+                let _ = send_h3_failure(
+                    &mut stream,
+                    RequestFailure::BadRequest,
+                    self.challenge.as_ref(),
+                )
+                .await;
+            }
             ParsedTarget::Tunnel(_) => {
                 let connect_deadline = lifetime_deadline.min(Instant::now() + self.connect_timeout);
                 let upstream = match timeout_at(
@@ -2414,6 +2480,34 @@ impl ForwardHttp1ServicePlan {
         Err(RequestFailure::BadGateway)
     }
 
+    async fn connect_udp_until(
+        &self,
+        addresses: &[SocketAddr],
+        deadline: Instant,
+    ) -> Result<UdpSocket, RequestFailure> {
+        for address in addresses {
+            let local = SocketAddr::new(
+                if address.is_ipv4() {
+                    IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
+                } else {
+                    IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED)
+                },
+                0,
+            );
+            let socket = match timeout_at(deadline, UdpSocket::bind(local)).await {
+                Ok(Ok(socket)) => socket,
+                Ok(Err(_)) => continue,
+                Err(_) => return Err(RequestFailure::GatewayTimeout),
+            };
+            match timeout_at(deadline, socket.connect(address)).await {
+                Ok(Ok(())) => return Ok(socket),
+                Ok(Err(_)) => {}
+                Err(_) => return Err(RequestFailure::GatewayTimeout),
+            }
+        }
+        Err(RequestFailure::BadGateway)
+    }
+
     async fn connect_tunnel_until(
         &self,
         destination: &Destination,
@@ -2451,7 +2545,8 @@ impl ForwardHttp1ServicePlan {
         deadline: Instant,
     ) -> Result<BoxedIo, RequestFailure> {
         let stream = self.connect_peer_tcp(peer, deadline).await?;
-        self.connect_through_peer(stream, destination, deadline).await
+        self.connect_through_peer(stream, destination, deadline)
+            .await
     }
 
     async fn connect_peer_tcp(
@@ -2560,7 +2655,9 @@ impl ForwardHttp1ServicePlan {
         if scheme == ForwardScheme::Http {
             return Ok(Box::new(stream));
         }
-        let tunnel = self.connect_through_peer(stream, destination, deadline).await?;
+        let tunnel = self
+            .connect_through_peer(stream, destination, deadline)
+            .await?;
         self.connect_tls_stream(destination, tunnel, deadline).await
     }
 
@@ -3002,6 +3099,65 @@ fn sanitize_response_headers(headers: &mut HeaderMap) -> Result<(), ()> {
     headers.remove("keep-alive");
     headers.remove("proxy-connection");
     Ok(())
+}
+
+fn is_connect_udp_request<B>(request: &Request<B>) -> bool {
+    if request.method() != Method::GET
+        || !header_has_token(request.headers(), &header::CONNECTION, "upgrade")
+    {
+        return false;
+    }
+    let mut upgrade = request.headers().get_all(header::UPGRADE).iter();
+    let Some(upgrade_value) = upgrade.next() else {
+        return false;
+    };
+    if upgrade.next().is_some()
+        || !upgrade_value
+            .to_str()
+            .ok()
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("connect-udp"))
+    {
+        return false;
+    }
+    let mut hosts = request.headers().get_all(header::HOST).iter();
+    let Some(host) = hosts.next() else {
+        return false;
+    };
+    if hosts.next().is_some() || host.as_bytes().is_empty() {
+        return false;
+    }
+    let mut capsule = request.headers().get_all(&CAPSULE_PROTOCOL).iter();
+    capsule.next().is_none_or(|value| {
+        capsule.next().is_none()
+            && value
+                .to_str()
+                .ok()
+                .is_some_and(|value| value.trim() == "?1")
+    })
+}
+
+fn header_has_token(headers: &HeaderMap, name: &http::HeaderName, expected: &str) -> bool {
+    headers.get_all(name).iter().any(|value| {
+        value.to_str().ok().is_some_and(|value| {
+            value
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case(expected))
+        })
+    })
+}
+
+fn switching_protocols_response() -> Response<ForwardProxyBody> {
+    let mut output = response(StatusCode::SWITCHING_PROTOCOLS, Bytes::new());
+    output
+        .headers_mut()
+        .insert(header::CONNECTION, HeaderValue::from_static("Upgrade"));
+    output
+        .headers_mut()
+        .insert(header::UPGRADE, HeaderValue::from_static("connect-udp"));
+    output
+        .headers_mut()
+        .insert(CAPSULE_PROTOCOL, HeaderValue::from_static("?1"));
+    output
 }
 
 fn response(status: StatusCode, body: Bytes) -> Response<ForwardProxyBody> {

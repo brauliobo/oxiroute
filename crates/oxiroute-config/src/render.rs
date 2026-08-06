@@ -22,19 +22,18 @@ use crate::{
         HttpRetryMethodSafety, HttpRetryPolicy, HttpRetryTarget, HttpRetryTrigger, HttpRoute,
         HttpRouteAction, HttpRoutePolicy, HttpSameSite, HttpService, HttpStaticErrorResponse,
         HttpStaticMimePolicy, HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost,
-        HttpVersion, HttpVersionPolicy, L4Service, Listener, ListenerBind, Management, Protocol,
-        PassiveHealthPolicy, PassiveObserve, PassiveOnError,
-        ProxyProtocolPolicy, ProxyProtocolVersion, RtmpAccessPolicy, RtmpAccessRule, RtmpAclAction,
-        RtmpApplication, RtmpCallbackConfig, RtmpDashPolicy, RtmpDashSegmentNaming,
-        RtmpExecEnvironment, RtmpExecFilesystemPolicy, RtmpExecMode, RtmpExecNetworkPolicy,
-        RtmpExecProfile, RtmpExecTrigger, RtmpFanoutPolicy, RtmpHlsFragmentNaming,
-        RtmpHlsKeyPolicy, RtmpHlsPolicy, RtmpHlsVariant, RtmpNotifyMethod, RtmpPullTarget,
-        RtmpPushTarget, RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart,
-        RtmpRecorderTimeBasis, RtmpRecorderTimezone, RtmpRelayPolicy, RtmpRtmpsPolicy, RtmpService,
-        RtmpSessionCeilings, RtmpTokenPolicy, RtmpTokenSource, RtmpTransport, RtmpVodPolicy,
-        RtmpVodSource, Stats, StatsPage, StatsPageAdminPolicy, TlsProfile, TlsVersion, UdpPolicy,
-        UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer,
-        UpstreamTls,
+        HttpVersion, HttpVersionPolicy, L4Service, Listener, ListenerBind, Management,
+        PassiveHealthPolicy, PassiveObserve, PassiveOnError, Protocol, ProxyProtocolPolicy,
+        ProxyProtocolVersion, RtmpAccessPolicy, RtmpAccessRule, RtmpAclAction, RtmpApplication,
+        RtmpCallbackConfig, RtmpDashPolicy, RtmpDashSegmentNaming, RtmpExecEnvironment,
+        RtmpExecFilesystemPolicy, RtmpExecMode, RtmpExecNetworkPolicy, RtmpExecProfile,
+        RtmpExecTrigger, RtmpFanoutPolicy, RtmpHlsFragmentNaming, RtmpHlsKeyPolicy, RtmpHlsPolicy,
+        RtmpHlsVariant, RtmpNotifyMethod, RtmpPullTarget, RtmpPushTarget, RtmpRecorder,
+        RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis, RtmpRecorderTimezone,
+        RtmpRelayPolicy, RtmpRtmpsPolicy, RtmpService, RtmpSessionCeilings, RtmpTokenPolicy,
+        RtmpTokenSource, RtmpTransport, RtmpVodPolicy, RtmpVodSource, Stats, StatsPage,
+        StatsPageAdminPolicy, TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm,
+        UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls,
     },
     validation::validate_config,
 };
@@ -631,7 +630,11 @@ impl Renderer {
             )?,
         );
         self.string_list_field("arguments", &profile.arguments);
-        self.table_list_field("environment", &profile.environment, Self::rtmp_exec_environment);
+        self.table_list_field(
+            "environment",
+            &profile.environment,
+            Self::rtmp_exec_environment,
+        );
         self.string_field(
             "working_directory",
             utf8_path(
@@ -842,7 +845,12 @@ impl Renderer {
     fn rtmp_dash_policy(&mut self, policy: &RtmpDashPolicy) -> Result<(), ConfigError> {
         self.string_field(
             "root_directory",
-            utf8_path(&policy.root_directory, "RTMP DASH", "dash", "root_directory")?,
+            utf8_path(
+                &policy.root_directory,
+                "RTMP DASH",
+                "dash",
+                "root_directory",
+            )?,
         );
         self.integer_field("segment_duration_ms", policy.segment_duration_ms);
         self.integer_field("max_segment_duration_ms", policy.max_segment_duration_ms);
@@ -2124,6 +2132,9 @@ impl Renderer {
         self.boolean_field("tls_required", service.tls_required);
         self.begin_table_field("connect");
         self.forward_connect_policy(&service.connect);
+        self.end_table();
+        self.begin_table_field("connect_udp");
+        self.forward_connect_policy(&service.connect_udp);
         self.end_table();
         self.begin_table_field("peer_policy");
         self.forward_peer_policy(&service.peer_policy);

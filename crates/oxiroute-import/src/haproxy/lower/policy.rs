@@ -397,7 +397,8 @@ impl Lowerer<'_> {
                 self.lower_request_header_rules(frontend, &settings)?;
             request_headers.append(&mut explicit_request_headers);
             let response_headers = self.lower_response_header_rules(frontend, &settings)?;
-            let (max_retries, final_redispatch, delay_ms) = self.http_retries(&section, &settings)?;
+            let (max_retries, final_redispatch, delay_ms) =
+                self.http_retries(&section, &settings)?;
             let (triggers, response_statuses) = Self::lower_retry_on(&settings);
             policies.insert(
                 *target,

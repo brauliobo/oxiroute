@@ -229,9 +229,7 @@ const fn relay_failure(failure: oxiroute_rtmp::RtmpRelayFailure) -> &'static str
     }
 }
 
-const fn relay_dns_refresh_failure(
-    failure: oxiroute_rtmp::RtmpDnsRefreshFailure,
-) -> &'static str {
+const fn relay_dns_refresh_failure(failure: oxiroute_rtmp::RtmpDnsRefreshFailure) -> &'static str {
     match failure {
         oxiroute_rtmp::RtmpDnsRefreshFailure::Resolution => "resolution",
         oxiroute_rtmp::RtmpDnsRefreshFailure::AddressSet => "address_set",

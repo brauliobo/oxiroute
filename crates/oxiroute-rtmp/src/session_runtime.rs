@@ -533,10 +533,7 @@ impl RtmpApplication {
     }
 
     #[must_use]
-    pub fn with_exec_profiles(
-        mut self,
-        profiles: impl IntoIterator<Item = ExecProfile>,
-    ) -> Self {
+    pub fn with_exec_profiles(mut self, profiles: impl IntoIterator<Item = ExecProfile>) -> Self {
         self.exec_profiles = ExecProfileSet::new(profiles);
         self
     }
@@ -1072,7 +1069,9 @@ impl RtmpServiceRuntime {
             .application(&key.application)
             .map_or(&[][..], RtmpApplication::push_targets)
             .iter()
-            .map(|target| RtmpRelayController::start(target.expand(&key.name), target.config.clone()))
+            .map(|target| {
+                RtmpRelayController::start(target.expand(&key.name), target.config.clone())
+            })
             .collect();
         let definitions = policies
             .iter()

@@ -48,10 +48,10 @@ pub use file_watcher::{
     FileWatcherSupervisor,
 };
 pub use tls_alpn::{
-    TlsAlpnChallenge, TlsAlpnChallengeError, TlsAlpnChallengeIdentity, TlsAlpnChallengeLease,
-    TlsAlpnChallengeStore, TLS_ALPN_IDENTIFIER_OID, TLS_ALPN_PROTOCOL,
+    TLS_ALPN_IDENTIFIER_OID, TLS_ALPN_PROTOCOL, TlsAlpnChallenge, TlsAlpnChallengeError,
+    TlsAlpnChallengeIdentity, TlsAlpnChallengeLease, TlsAlpnChallengeStore,
 };
-pub use upstream::{prepare_upstream_tls, UpstreamTlsPlan};
+pub use upstream::{UpstreamTlsPlan, prepare_upstream_tls};
 
 pub const MAX_CERTIFICATE_CHAIN_BYTES: usize = 1024 * 1024;
 pub const MAX_PRIVATE_KEY_BYTES: usize = 256 * 1024;
@@ -216,14 +216,7 @@ pub fn prepare_tls_with_dns01_providers(
     let mut file_reconcilers = Vec::new();
     for certificate in &config.certificates {
         let name = certificate.name.clone();
-        let (
-            generation,
-            certbot,
-            direct_files,
-            managed_state,
-            managed_policy,
-            dns_provider,
-        ) =
+        let (generation, certbot, direct_files, managed_state, managed_policy, dns_provider) =
             match &certificate.source {
                 CertificateSource::Files {
                     certificate_chain_path,
@@ -448,7 +441,9 @@ pub enum TlsBuildError {
         #[source]
         source: Box<oxiroute_acme::AcmeStateError>,
     },
-    #[error("managed ACME certificate `{certificate}` uses unsupported DNS-01 provider `{provider}`")]
+    #[error(
+        "managed ACME certificate `{certificate}` uses unsupported DNS-01 provider `{provider}`"
+    )]
     DnsProviderUnsupported {
         certificate: String,
         provider: String,
@@ -745,9 +740,7 @@ pub enum TlsBuildError {
         subject_index: usize,
         issuer_index: usize,
     },
-    #[error(
-        "failed to validate certificate `{certificate}` chain entry {subject_index} signature"
-    )]
+    #[error("failed to validate certificate `{certificate}` chain entry {subject_index} signature")]
     ChainSignatureValidation {
         certificate: String,
         subject_index: usize,
@@ -891,7 +884,9 @@ pub enum TlsBuildError {
         #[source]
         source: Box<openssl::error::ErrorStack>,
     },
-    #[error("failed to construct the rustls client certificate verifier for TLS profile `{profile}`: {detail}")]
+    #[error(
+        "failed to construct the rustls client certificate verifier for TLS profile `{profile}`: {detail}"
+    )]
     ClientCaRustlsVerifier { profile: String, detail: String },
     #[error("upstream pool `{pool}` has invalid TLS server name `{server_name}`")]
     InvalidUpstreamServerName { pool: String, server_name: String },
