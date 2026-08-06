@@ -30,6 +30,7 @@ const DEFAULT_RTMP_FANOUT_QUEUE_BYTES: u64 = 8 * 1_024 * 1_024;
 const DEFAULT_RTMP_RELAY_BUFFER_MS: u64 = 5_000;
 const DEFAULT_RTMP_PUSH_RECONNECT_MS: u64 = 3_000;
 const DEFAULT_RTMP_PULL_RECONNECT_MS: u64 = 3_000;
+const DEFAULT_RTMP_RELAY_DNS_REFRESH_MS: u64 = 60_000;
 const DEFAULT_RTMP_RELAY_CONNECT_TIMEOUT_MS: u64 = 500;
 const DEFAULT_RTMP_RELAY_HANDSHAKE_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_RTMP_AUTO_PUSH_RECONNECT_MS: u64 = 100;
@@ -240,6 +241,8 @@ pub(crate) const MAX_RTMP_FANOUT_QUEUE_MESSAGES: u64 = 65_536;
 pub(crate) const MAX_RTMP_FANOUT_QUEUE_BYTES: u64 = 1_024 * 1_024 * 1_024;
 pub(crate) const MAX_RTMP_RELAY_BUFFER_MS: u64 = 60_000;
 pub(crate) const MAX_RTMP_RECONNECT_MS: u64 = 300_000;
+pub(crate) const MIN_RTMP_DNS_REFRESH_MS: u64 = 1_000;
+pub(crate) const MAX_RTMP_DNS_REFRESH_MS: u64 = 300_000;
 pub(crate) const MAX_RTMP_RELAY_TIMEOUT_MS: u64 = 30_000;
 pub(crate) const MAX_RTMP_AUTO_PUSH_PEERS: u64 = 64;
 pub(crate) const MAX_RTMP_AUTO_PUSH_QUEUE_MESSAGES: u64 = 4_096;
@@ -474,6 +477,7 @@ pub(crate) const fn default_rtmp_relay_policy() -> RtmpRelayPolicy {
         buffer_ms: DEFAULT_RTMP_RELAY_BUFFER_MS,
         push_reconnect_ms: DEFAULT_RTMP_PUSH_RECONNECT_MS,
         pull_reconnect_ms: DEFAULT_RTMP_PULL_RECONNECT_MS,
+        dns_refresh_ms: DEFAULT_RTMP_RELAY_DNS_REFRESH_MS,
         connect_timeout_ms: DEFAULT_RTMP_RELAY_CONNECT_TIMEOUT_MS,
         handshake_timeout_ms: DEFAULT_RTMP_RELAY_HANDSHAKE_TIMEOUT_MS,
     }
@@ -540,6 +544,10 @@ pub(crate) const fn default_rtmp_push_reconnect_ms() -> u64 {
 
 pub(crate) const fn default_rtmp_pull_reconnect_ms() -> u64 {
     DEFAULT_RTMP_PULL_RECONNECT_MS
+}
+
+pub(crate) const fn default_rtmp_relay_dns_refresh_ms() -> u64 {
+    DEFAULT_RTMP_RELAY_DNS_REFRESH_MS
 }
 
 pub(crate) const fn default_rtmp_relay_connect_timeout_ms() -> u64 {

@@ -58,7 +58,8 @@ use crate::defaults::{
     default_rtmp_outbound_policy, default_rtmp_pull_reconnect_ms,
     default_rtmp_push_reconnect_ms, default_rtmp_relay_buffer_ms,
     default_rtmp_relay_connect_timeout_ms, default_rtmp_relay_handshake_timeout_ms,
-    default_rtmp_relay_policy, default_rtmp_relay_queue_bytes, default_rtmp_relay_queue_messages,
+    default_rtmp_relay_dns_refresh_ms, default_rtmp_relay_policy, default_rtmp_relay_queue_bytes,
+    default_rtmp_relay_queue_messages,
     default_rtmp_session_ceilings, default_rtmp_vod_duration_ms, default_rtmp_vod_file_bytes,
     default_rtmp_vod_sessions, default_self_signed_validity_days, default_true,
     default_udp_max_datagram_bytes, default_udp_max_queue_bytes, default_udp_max_queue_datagrams,
@@ -1818,6 +1819,8 @@ pub struct RtmpRelayPolicy {
     pub push_reconnect_ms: u64,
     #[serde(default = "default_rtmp_pull_reconnect_ms")]
     pub pull_reconnect_ms: u64,
+    #[serde(default = "default_rtmp_relay_dns_refresh_ms")]
+    pub dns_refresh_ms: u64,
     #[serde(default = "default_rtmp_relay_connect_timeout_ms")]
     pub connect_timeout_ms: u64,
     #[serde(default = "default_rtmp_relay_handshake_timeout_ms")]

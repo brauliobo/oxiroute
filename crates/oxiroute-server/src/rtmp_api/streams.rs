@@ -193,6 +193,13 @@ fn relay_json(relay: &RelaySnapshot) -> Value {
         "connection_attempts": relay.status.connection_attempts.to_string(),
         "connections": relay.status.connections.to_string(),
         "reconnects": relay.status.reconnects.to_string(),
+        "dns_refresh_attempts": relay.status.dns_refresh_attempts.to_string(),
+        "dns_refresh_successes": relay.status.dns_refresh_successes.to_string(),
+        "dns_refresh_failures": relay.status.dns_refresh_failures.to_string(),
+        "last_dns_refresh_failure": relay
+            .status
+            .last_dns_refresh_failure
+            .map(relay_dns_refresh_failure),
         "events_enqueued": relay.status.events_enqueued.to_string(),
         "events_sent": relay.status.events_sent.to_string(),
         "events_dropped": relay.status.events_dropped.to_string(),
@@ -219,6 +226,18 @@ const fn relay_failure(failure: oxiroute_rtmp::RtmpRelayFailure) -> &'static str
         oxiroute_rtmp::RtmpRelayFailure::Transport => "transport",
         oxiroute_rtmp::RtmpRelayFailure::Source => "source",
         oxiroute_rtmp::RtmpRelayFailure::Thread => "thread",
+    }
+}
+
+const fn relay_dns_refresh_failure(
+    failure: oxiroute_rtmp::RtmpDnsRefreshFailure,
+) -> &'static str {
+    match failure {
+        oxiroute_rtmp::RtmpDnsRefreshFailure::Resolution => "resolution",
+        oxiroute_rtmp::RtmpDnsRefreshFailure::AddressSet => "address_set",
+        oxiroute_rtmp::RtmpDnsRefreshFailure::Policy => "policy",
+        oxiroute_rtmp::RtmpDnsRefreshFailure::DirectLoop => "direct_loop",
+        oxiroute_rtmp::RtmpDnsRefreshFailure::FamilyMismatch => "family_mismatch",
     }
 }
 

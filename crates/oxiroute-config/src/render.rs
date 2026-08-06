@@ -941,6 +941,7 @@ impl Renderer {
         self.integer_field("buffer_ms", policy.buffer_ms);
         self.integer_field("push_reconnect_ms", policy.push_reconnect_ms);
         self.integer_field("pull_reconnect_ms", policy.pull_reconnect_ms);
+        self.integer_field("dns_refresh_ms", policy.dns_refresh_ms);
         self.integer_field("connect_timeout_ms", policy.connect_timeout_ms);
         self.integer_field("handshake_timeout_ms", policy.handshake_timeout_ms);
     }

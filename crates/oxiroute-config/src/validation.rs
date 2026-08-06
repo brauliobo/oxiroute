@@ -44,6 +44,7 @@ use crate::{
         MAX_RTMP_OUTBOUND_DOMAINS, MAX_RTMP_PULL_TARGETS, MAX_RTMP_PUSH_TARGETS,
         MAX_RTMP_RECONNECT_MS, MAX_RTMP_RECORDERS_PER_APPLICATION, MAX_RTMP_RECORDING_ROOTS,
         MAX_RTMP_RELAY_BUFFER_MS, MAX_RTMP_RELAY_TIMEOUT_MS, MAX_RTMP_SECRET_FILE_BYTES,
+        MAX_RTMP_DNS_REFRESH_MS, MIN_RTMP_DNS_REFRESH_MS,
         MAX_RTMP_SERVICES, MAX_RTMP_SUBSCRIBERS, MAX_RTMP_TOKEN_BYTES,
         MAX_RTMP_TOKEN_PARAMETER_BYTES, MAX_RTMP_VOD_DURATION_MS, MAX_RTMP_VOD_FILE_BYTES,
         MAX_RTMP_VOD_ORIGIN_BYTES, MAX_RTMP_VOD_SESSIONS, MAX_RTMP_VOD_SOURCE_NAME_BYTES,
@@ -2665,6 +2666,11 @@ fn validate_rtmp_relay_policy(
             "must be between 1 and 300000",
         ),
         (
+            "relay.dns_refresh_ms",
+            policy.dns_refresh_ms,
+            "must be between 1000 and 300000",
+        ),
+        (
             "relay.connect_timeout_ms",
             policy.connect_timeout_ms,
             "must be between 1 and 30000",
@@ -2680,10 +2686,16 @@ fn validate_rtmp_relay_policy(
             "relay.max_queue_bytes" => 1_073_741_824,
             "relay.buffer_ms" => MAX_RTMP_RELAY_BUFFER_MS,
             "relay.push_reconnect_ms" | "relay.pull_reconnect_ms" => MAX_RTMP_RECONNECT_MS,
+            "relay.dns_refresh_ms" => MAX_RTMP_DNS_REFRESH_MS,
             "relay.connect_timeout_ms" | "relay.handshake_timeout_ms" => MAX_RTMP_RELAY_TIMEOUT_MS,
             _ => unreachable!("RTMP relay policy field is closed"),
         };
-        if value == 0 || value > maximum {
+        let minimum = if field == "relay.dns_refresh_ms" {
+            MIN_RTMP_DNS_REFRESH_MS
+        } else {
+            1
+        };
+        if value < minimum || value > maximum {
             return Err(invalid(field, detail));
         }
     }
