@@ -228,9 +228,9 @@ required before the affected partial or foundation paths can become a broader su
   listener/deployment checks, failed challenge cleanup, rollback, and real certificate activation.
   TLS-ALPN challenge handling and DNS exact-record cleanup/recovery are implemented and tested;
   staging deployment and real-certificate evidence remain open.
-- UI/import exposure: native import remains an offline/compositional-source workflow, while the
-  backend/API exposes durable audit history and weighted-round-robin fields that the current
-  frontend does not browse/edit; passive health and retry controls are exposed in the frontend.
+- UI/import exposure: native import remains a read-only redacted report/compositional-source
+  workflow, while the backend/API exposes durable audit history and weighted-round-robin fields that
+  the current frontend does not browse/edit; passive health and retry controls are exposed in the frontend.
   These are exposure boundaries, not claims that the corresponding backend behavior is absent.
 - Interoperability: independent HTTP/H2/H3/TLS clients and origins, FFmpeg/OBS RTMP publish/play,
   and representative Apache, HAProxy, Squid, and Varnish migration cases beyond synthetic fixtures.

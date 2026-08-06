@@ -9,6 +9,7 @@ The current control plane is JSON over loopback HTTP. The base path for manageme
 | Group | Routes | Auth/current role |
 | --- | --- | --- |
 | Configuration | `GET /api/v1/config`, `POST /api/v1/config/validate`, `PUT /api/v1/config` | Management bearer token; typed drafts, preflight, revision-safe write |
+| Native import reports | `GET /api/v1/import-reports`, `GET /api/v1/import-reports/{index}` | Management bearer token; bounded redacted evidence and read-only finalized KDL preview |
 | Observability | `GET /api/v1/monitoring`, `/topology`, `/status` | Management bearer token; redacted active state |
 | Inventory | `GET /api/v1/listeners`, `/pools`, `/servers`, `/generations`, `/tls` | Management bearer token |
 | Listener/pool/server actions | `POST /api/v1/listeners/administrative-state`, `/pools/administrative-state`, `/servers/administrative-state`, `/servers/health-override`, `/servers/checks`; `PUT /api/v1/servers/max-connections` | Management bearer token and active-generation revision |
@@ -30,8 +31,9 @@ recognized API probes are exact `GET /ready` and `GET /metrics`. Separately conf
 `stats.pages[]` listeners are public page-only contracts with their own loopback same-origin form
 policy; they are not remote management routes.
 
-Native import is intentionally CLI/offline or compositional-source only. There is no import API or
-import UI workflow. Event SSE is bounded, bearer-authenticated, cursor-based, and backed only by
+Native source files remain CLI/offline or compositional-source inputs. The authenticated import-report
+routes and provenance workspace expose retained evidence only; they never rewrite native files or
+activate standalone reports. Event SSE is bounded, bearer-authenticated, cursor-based, and backed only by
 the in-memory ring; it is not durable audit storage. Audit history is queried separately through
 `/api/v1/audit` and never serves as an SSE fallback.
 

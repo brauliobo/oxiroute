@@ -2,110 +2,214 @@
 section.provenance-workspace(aria-labelledby="provenance-heading" :aria-busy="loading")
   header.workspace-heading
     div
-      p.eyebrow Source and provenance
+      p.eyebrow Native import evidence
       h2#provenance-heading Provenance
-      p.workspace-deck Show the source metadata the management API actually provides. Native import reports remain an offline CLI contract and are not fabricated here.
-    button.secondary-button(type="button" :disabled="loading || !token" @click="load") {{ loading ? 'Refreshing...' : 'Refresh source metadata' }}
+      p.workspace-deck Inspect bounded, redacted evidence retained by the native resolver. Source files remain read-only and canonical configuration remains the only editable surface.
+    button.secondary-button(type="button" :disabled="loading || !token" @click="load") {{ loading ? 'Refreshing...' : 'Refresh reports' }}
 
   .auth-panel(v-if="!token" role="status")
     span.capability-index AUTH
     div
       h3 Management token required
-      p Enter the in-memory bearer token above to inspect canonical source metadata.
+      p Enter the in-memory bearer token above to inspect native import evidence.
 
-  .loading-panel(v-else-if="loading && !snapshot" role="status" aria-live="polite")
+  .loading-panel(v-else-if="loading && !report" role="status" aria-live="polite")
     span.loading-mark(aria-hidden="true")
     div
-      strong Reading source metadata
-      p No provenance state is created until the configuration contract responds.
+      strong Reading import reports
+      p No source evidence is rendered until the authenticated contract responds.
 
   p.notice.error-notice(v-if="error" role="alert")
     strong Provenance unavailable.
     |  {{ error }}
 
-  template(v-if="token && snapshot")
-    section.metadata-panel(aria-labelledby="metadata-heading")
+  template(v-if="(token && !loading) || report")
+    section.selection-panel(v-if="reports.length" aria-labelledby="report-selection-heading")
       .section-heading
         div
-          p.eyebrow Backend contract
-          h3#metadata-heading Canonical source
-        span.source-chip {{ snapshot.configFormat.toUpperCase() }}
-      .metadata-grid
-        .metadata-card
-          span.label Composition
-          strong {{ snapshot.compositional ? 'Compositional root' : 'Standalone root' }}
-          small {{ snapshot.compositional ? 'Typed saves stay read-only.' : 'Typed saves can be reviewed in Configuration.' }}
-        .metadata-card
-          span.label Dependencies
-          strong {{ snapshot.dependencyCount }}
-          small {{ snapshot.dependencyCount === 1 ? 'native dependency' : 'native dependencies' }}
-        .metadata-card
-          span.label Disk revision
-          code {{ shortRevision(snapshot.diskRevision) }}
-          small Authoritative source revision
-        .metadata-card
-          span.label Candidate revision
-          code {{ shortRevision(snapshot.candidateRevision) }}
-          small Last server-normalized candidate
-        .metadata-card
-          span.label Active revision
-          code {{ shortRevision(snapshot.activeRevision) }}
-          small Generation currently serving traffic
-    section.inventory-panel(aria-labelledby="objects-heading")
-      header.panel-heading
-        div
-          p.eyebrow Redacted object inventory
-          h3#objects-heading Canonical objects
-        span.panel-note No source paths or secret values are rendered
-      .object-counts
-        .object-count(v-for="item in objectCounts" :key="item.label")
-          strong {{ item.count }}
-          span {{ item.label }}
-    section.diagnostics-panel(aria-labelledby="provenance-diagnostics-heading")
-      header.panel-heading
-        div
-          p.eyebrow Source diagnostics
-          h3#provenance-diagnostics-heading Diagnostics
-        span.panel-note {{ snapshot.diagnostics.length }}
-      p.empty-list(v-if="snapshot.diagnostics.length === 0") No source diagnostics were returned.
-      ol.diagnostic-list(v-else)
-        li.diagnostic(v-for="(diagnostic, index) in snapshot.diagnostics" :key="`${diagnostic.code}-${index}`" :class="`severity-${diagnostic.severity}`")
-          code {{ diagnostic.code }}
+          p.eyebrow Report inventory
+          h3#report-selection-heading Select a native source
+        span.panel-note {{ reports.length }} {{ reports.length === 1 ? 'report' : 'reports' }} retained
+      label.selection-label(for="import-report-selection") Native import report
+      select#import-report-selection(v-model.number="selectedIndex" :disabled="loading" @change="selectReport")
+        option(v-for="summary in reports" :key="summary.index" :value="summary.index")
+          | {{ summary.product }} / {{ summary.capabilityProfile.id }} / {{ summary.status }}
+
+    section.empty-panel(v-else-if="!loading" role="status")
+      p.eyebrow No native references
+      h3 No import reports are available
+      p The canonical source is either standalone or has no successfully resolved native references.
+
+    template(v-if="report")
+      p.stale-banner(v-if="stale" role="status")
+        strong disk revision changed.
+        |  The visible report is retained until a fresh, internally consistent selection is available.
+
+      section.report-panel(aria-labelledby="report-heading")
+        header.report-heading
+          div.report-identity
+            p.eyebrow {{ report.source.product }} import
+            h3#report-heading {{ report.source.capabilityProfile.id }}
+            p {{ report.source.version ? `Source version ${report.source.version}` : 'Source version not supplied' }}
+          span.status-chip(:class="`status-${selectedSummary?.status ?? 'draft'}`") {{ selectedSummary?.status ?? 'draft' }}
+        .report-metrics
+          .metric
+            span.label Sources
+            strong {{ report.sourceGraph.sources.length }}
+          .metric
+            span.label Dependencies
+            strong {{ report.sourceGraph.dependencies.length }}
+          .metric
+            span.label Provenance paths
+            strong {{ report.candidate.provenance.length }}
+          .metric
+            span.label Requirements
+            strong {{ requirementCount }}
+          .metric
+            span.label Diagnostics
+            strong {{ report.diagnostics.length }}
+
+      section.evidence-panel.panel(aria-labelledby="evidence-heading")
+        header.panel-heading
           div
-            strong {{ diagnostic.message }}
-            small {{ diagnostic.stage }}{{ diagnostic.path ? ` / ${diagnostic.path}` : '' }}
-    aside.boundary-note(role="note")
-      strong Native import report unavailable over management API.
-      p The backend exposes import reports through the offline CLI only. This view does not call an unsupported import route, and it does not claim conversion coverage or provenance that the API did not return.
+            p.eyebrow Source graph
+            h3#evidence-heading Resolved inputs
+          span.panel-note {{ report.sourceGraph.snapshotStable === false ? 'Snapshot changed during import' : 'Paths redacted at the API boundary' }}
+        ul.source-list
+          li(v-for="source in report.sourceGraph.sources" :key="source.id")
+            div
+              strong Source {{ source.id }}
+              small {{ source.name }}
+            code {{ source.byteLength }} bytes
+        p.empty-list(v-if="report.sourceGraph.sources.length === 0") No source graph entries were retained.
+        ul.evidence-list(v-if="report.sourceGraph.dependencies.length")
+          li(v-for="(dependency, index) in report.sourceGraph.dependencies" :key="`${dependency.sourceId}-${dependency.targetSourceId}-${index}`")
+            code {{ dependency.kind }}
+            div
+              strong Source {{ dependency.sourceId }} -> {{ dependency.targetSourceId === null ? 'unresolved' : `source ${dependency.targetSourceId}` }}
+              small {{ dependency.status }}{{ dependency.truncated ? ' / truncated' : '' }}
+
+      section.blockers-panel.panel(v-if="report.blockers.length" aria-labelledby="blockers-heading")
+        header.panel-heading
+          div
+            p.eyebrow Conversion boundary
+            h3#blockers-heading Blockers
+          span.panel-note Exact conversion is not claimed
+        ul.evidence-list
+          li(v-for="blocker in report.blockers" :key="blocker.id")
+            code {{ blocker.code }}
+            div
+              strong {{ blocker.message }}
+              small {{ blocker.scope || blocker.kind }}
+
+      section.requirements-panel.panel(aria-labelledby="requirements-heading")
+        header.panel-heading
+          div
+            p.eyebrow Deployment and activation
+            h3#requirements-heading Requirements
+          span.panel-note {{ requirementCount }} retained
+        ul.evidence-list(v-if="requirements.length")
+          li(v-for="(requirement, index) in requirements" :key="`${requirement.directive}-${index}`")
+            code {{ requirement.directive }}
+            div
+              strong {{ requirement.kind }}
+              small {{ requirement.values.length ? `${requirement.values.length} value${requirement.values.length === 1 ? '' : 's'} redacted` : 'No values supplied' }}
+        p.empty-list(v-else) No deployment or activation requirements were returned.
+
+      section.provenance-panel.panel(aria-labelledby="provenance-evidence-heading")
+        header.panel-heading
+          div
+            p.eyebrow Canonical field origins
+            h3#provenance-evidence-heading Provenance
+          span.panel-note {{ report.candidate.provenance.length }} fields
+        ul.evidence-list(v-if="report.candidate.provenance.length")
+          li(v-for="entry in report.candidate.provenance" :key="entry.path")
+            code {{ entry.path }}
+            div
+              strong {{ entry.origins.length }} {{ entry.origins.length === 1 ? 'origin' : 'origins' }}
+              small(v-if="entry.origins.length") {{ originLabel(entry.origins[0]) }}
+        p.empty-list(v-else) No canonical field provenance was retained.
+
+      section.overlays-panel.panel(v-if="report.overlays.length" aria-labelledby="overlays-heading")
+        header.panel-heading
+          div
+            p.eyebrow Operational overlays
+            h3#overlays-heading Overlays
+          span.panel-note Evidence values are redacted
+        ul.evidence-list
+          li(v-for="overlay in report.overlays" :key="overlay.id")
+            code {{ overlay.kind }}
+            div
+              strong {{ overlay.id }}
+              small {{ overlay.satisfied ? 'Satisfied' : 'Not satisfied' }}
+
+      section.diagnostics-panel.panel(aria-labelledby="provenance-diagnostics-heading")
+        header.panel-heading
+          div
+            p.eyebrow Import diagnostics
+            h3#provenance-diagnostics-heading Diagnostics
+          span.panel-note {{ report.diagnostics.length }}
+        p.empty-list(v-if="report.diagnostics.length === 0") No import diagnostics were returned.
+        ul.evidence-list(v-else)
+          li(v-for="(diagnostic, index) in report.diagnostics" :key="`${diagnostic.code}-${index}`")
+            code {{ diagnostic.code }}
+            div
+              strong {{ diagnostic.message }}
+              small {{ diagnostic.stage }} / {{ diagnostic.severity }}
+
+      section.preview-panel.panel(v-if="preview" aria-labelledby="preview-heading")
+        header.panel-heading
+          div
+            p.eyebrow Canonical preview
+            h3#preview-heading Read-only KDL preview
+          span.panel-note Candidate is finalized and unblocked
+        pre {{ preview.text }}
+
+      aside.blocked-preview(v-else-if="report.blockers.length" role="note")
+        strong No preview was produced.
+        p The candidate is blocked, so the UI does not imply an exact canonical conversion.
+
+      aside.boundary-note(role="note")
+        strong Native sources remain read-only.
+        p This view reports retained evidence only. Editing, rewrite behavior, and Lua output remain outside this workflow.
+
+    template(v-else-if="!loading")
+      aside.boundary-note(role="note")
+        strong Native sources remain read-only.
+        p This view reports retained evidence only. Editing, rewrite behavior, and Lua output remain outside this workflow.
 </template>
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-import { ApiError, fetchConfig } from './api'
-import type { ConfigSnapshot } from './config'
+import { ApiError, fetchImportReports } from './api'
+import type {
+  ImportReportEnvelope,
+  ImportReportOrigin,
+  ImportReportPreview,
+  ImportReportRequirement,
+  ImportReportSummary,
+} from './api'
 
 const props = defineProps<{ token: string }>()
 const emit = defineEmits<{ unauthorized: [] }>()
 
-const snapshot = ref<ConfigSnapshot | null>(null)
+const reports = ref<ImportReportSummary[]>([])
+const selectedIndex = ref<number | null>(null)
+const report = ref<ImportReportEnvelope | null>(null)
+const preview = ref<ImportReportPreview | null>(null)
+const visibleRevision = ref<string | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
+const stale = ref(false)
 let controller: AbortController | null = null
 
-const objectCounts = computed(() => {
-  const config = snapshot.value?.config
-  return [
-    { label: 'Certificates', count: config?.certificates.length ?? 0 },
-    { label: 'TLS profiles', count: config?.tls_profiles.length ?? 0 },
-    { label: 'Listeners', count: config?.listeners.length ?? 0 },
-    { label: 'Pools', count: config?.upstream_pools.length ?? 0 },
-    { label: 'HTTP services', count: config?.http_services.length ?? 0 },
-    { label: 'Forward proxy services', count: config?.forward_proxy_services.length ?? 0 },
-    { label: 'RTMP services', count: config?.rtmp_services.length ?? 0 },
-    { label: 'L4 services', count: config?.l4_services.length ?? 0 },
-  ]
-})
+const selectedSummary = computed(() => reports.value.find((summary) => summary.index === selectedIndex.value))
+const requirements = computed<ImportReportRequirement[]>(() => [
+  ...(report.value?.requirements.deployment ?? []),
+  ...(report.value?.requirements.activation ?? []),
+])
+const requirementCount = computed(() => requirements.value.length)
 
 async function load(): Promise<void> {
   if (!props.token || loading.value) return
@@ -115,28 +219,81 @@ async function load(): Promise<void> {
   loading.value = true
   error.value = null
   try {
-    const next = await fetchConfig(props.token, nextController.signal)
+    const inventory = await fetchImportReports(props.token, undefined, nextController.signal)
     if (nextController.signal.aborted) return
-    snapshot.value = next
+    reports.value = inventory.reports
+    if (inventory.reports.length === 0) {
+      selectedIndex.value = null
+      report.value = null
+      preview.value = null
+      visibleRevision.value = null
+      stale.value = false
+      return
+    }
+    const nextIndex = inventory.reports.some((summary) => summary.index === selectedIndex.value)
+      ? selectedIndex.value!
+      : inventory.reports[0]!.index
+    selectedIndex.value = nextIndex
+    await loadSelected(nextIndex, nextController, false)
   } catch (requestError) {
     if (nextController.signal.aborted) return
-    if (requestError instanceof ApiError && requestError.status === 401) emit('unauthorized')
-    error.value = requestError instanceof Error ? requestError.message : 'The configuration route did not respond.'
+    handleRequestError(requestError)
   } finally {
     if (controller === nextController) controller = null
     loading.value = false
   }
 }
 
-function shortRevision(revision: string | null): string {
-  if (!revision) return 'None'
-  return revision.length > 16 ? `${revision.slice(0, 12)}...${revision.slice(-4)}` : revision
+async function selectReport(): Promise<void> {
+  if (selectedIndex.value === null || !props.token || loading.value) return
+  controller?.abort()
+  const nextController = new AbortController()
+  controller = nextController
+  loading.value = true
+  error.value = null
+  try {
+    await loadSelected(selectedIndex.value, nextController, true)
+  } catch (requestError) {
+    if (nextController.signal.aborted) return
+    handleRequestError(requestError)
+  } finally {
+    if (controller === nextController) controller = null
+    loading.value = false
+  }
+}
+
+async function loadSelected(index: number, nextController: AbortController, retainOnRevisionChange: boolean): Promise<void> {
+  const next = await fetchImportReports(props.token, index, nextController.signal)
+  if (nextController.signal.aborted) return
+  if (retainOnRevisionChange && visibleRevision.value !== null && next.diskRevision !== visibleRevision.value) {
+    stale.value = true
+    return
+  }
+  report.value = next.report
+  preview.value = next.preview
+  visibleRevision.value = next.diskRevision
+  stale.value = false
+}
+
+function handleRequestError(requestError: unknown): void {
+  if (requestError instanceof ApiError && requestError.status === 401) emit('unauthorized')
+  error.value = requestError instanceof Error ? requestError.message : 'The import reports route did not respond.'
+}
+
+function originLabel(origin: ImportReportOrigin): string {
+  const role = origin.role ?? 'source origin'
+  return `${role} / source ${origin.sourceId}`
 }
 
 watch(() => props.token, (token) => {
   controller?.abort()
   if (!token) {
-    snapshot.value = null
+    reports.value = []
+    selectedIndex.value = null
+    report.value = null
+    preview.value = null
+    visibleRevision.value = null
+    stale.value = false
     error.value = null
     return
   }
@@ -159,16 +316,12 @@ onBeforeUnmount(() => {
 
 .workspace-heading,
 .section-heading,
-.panel-heading {
+.panel-heading,
+.report-heading {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.workspace-heading,
-.section-heading {
   align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
 }
 
 .workspace-heading {
@@ -208,7 +361,7 @@ h3 {
 }
 
 .workspace-deck {
-  max-width: 720px;
+  max-width: 760px;
   margin: 12px 0 0;
   color: #8e9686;
   line-height: 1.55;
@@ -216,11 +369,17 @@ h3 {
 
 .auth-panel,
 .loading-panel,
-.metadata-panel,
-.inventory-panel,
-.diagnostics-panel {
+.empty-panel,
+.panel {
   border: 1px solid #3a4034;
   background: rgb(16 19 14 / 86%);
+}
+
+.auth-panel,
+.loading-panel,
+.empty-panel {
+  min-height: 190px;
+  padding: clamp(24px, 5vw, 48px);
 }
 
 .auth-panel,
@@ -228,14 +387,14 @@ h3 {
   display: flex;
   align-items: center;
   gap: 22px;
-  min-height: 220px;
-  padding: clamp(24px, 5vw, 48px);
 }
 
 .auth-panel p,
-.loading-panel p {
-  margin: 7px 0 0;
+.loading-panel p,
+.empty-panel p {
+  margin: 8px 0 0;
   color: #8e9686;
+  line-height: 1.5;
 }
 
 .capability-index {
@@ -252,54 +411,120 @@ h3 {
   animation: provenance-spin 800ms linear infinite;
 }
 
-.notice {
+.notice,
+.stale-banner,
+.blocked-preview,
+.boundary-note {
   margin: 18px 0 0;
-  padding: 13px 16px;
-  border-left: 3px solid #ff745c;
-  background: #171a15;
+  padding: 14px 17px;
+  border-left: 3px solid #ffbf4b;
+  background: #1c1c15;
   color: #cdd2c5;
 }
 
-.metadata-panel,
-.inventory-panel,
-.diagnostics-panel {
+.error-notice {
+  border-left-color: #ff745c;
+  background: #171a15;
+}
+
+.stale-banner {
+  border-left-color: #ff745c;
+}
+
+.blocked-preview {
+  border-left-color: #ff745c;
+}
+
+.boundary-note p,
+.blocked-preview p {
+  margin: 7px 0 0;
+  color: #8e9686;
+  line-height: 1.55;
+}
+
+.selection-panel,
+.report-panel,
+.panel,
+.blocked-preview,
+.boundary-note {
   margin-top: 22px;
 }
 
-.metadata-panel {
-  padding: 22px;
+.selection-panel {
+  padding: 20px;
+  border: 1px solid #3a4034;
+  background: rgb(16 19 14 / 86%);
 }
 
-.source-chip,
 .panel-note,
 .empty-list,
-.boundary-note p,
-.diagnostic small {
+.source-list small,
+.evidence-list small,
+.metric strong,
+.report-heading p {
   color: #8e9686;
   font-size: 0.72rem;
 }
 
-.source-chip {
-  padding: 5px 8px;
-  border: 1px solid #5b7269;
-  color: #a7ded0;
-  font: 700 0.63rem/1 "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+.selection-label {
+  display: block;
+  margin: 20px 0 7px;
+  color: #aeb8a6;
+  font-size: 0.78rem;
+  font-weight: 700;
 }
 
-.metadata-grid,
-.object-counts {
+select {
+  width: 100%;
+  min-height: 42px;
+  padding: 9px 11px;
+  border: 1px solid #56604f;
+  color: #dce3d4;
+  background: #0e110d;
+  font: 0.78rem "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+.report-panel {
+  padding: 22px;
+  border: 1px solid #5b7269;
+  background: #111710;
+}
+
+.report-heading {
+  align-items: flex-start;
+}
+
+.report-heading p {
+  margin: 8px 0 0;
+}
+
+.status-chip {
+  padding: 6px 9px;
+  border: 1px solid #806f47;
+  color: #ffbf4b;
+  font: 700 0.65rem/1 "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  text-transform: uppercase;
+}
+
+.status-finalized {
+  border-color: #5b8962;
+  color: #b6ff51;
+}
+
+.status-blocked {
+  border-color: #8b5146;
+  color: #ff907e;
+}
+
+.report-metrics {
   display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 1px;
-  margin-top: 18px;
+  margin-top: 22px;
   background: #34392f;
 }
 
-.metadata-grid {
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-}
-
-.metadata-card,
-.object-count {
+.metric {
   display: grid;
   gap: 8px;
   min-width: 0;
@@ -307,38 +532,55 @@ h3 {
   background: #0e110d;
 }
 
-.metadata-card strong,
-.metadata-card code {
-  overflow-wrap: anywhere;
-  color: #dce3d4;
-  font: 0.78rem "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
-}
-
-.metadata-card small {
-  color: #777f70;
-  font-size: 0.7rem;
-  line-height: 1.4;
-}
-
-.panel-heading {
-  align-items: flex-end;
-  padding: 20px;
-  border-bottom: 1px solid #34392f;
-}
-
-.object-counts {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin: 0;
-}
-
-.object-count strong {
+.metric strong {
   color: #b6ff51;
   font: 1.45rem Georgia, "Times New Roman", serif;
 }
 
-.object-count span {
-  color: #8e9686;
-  font-size: 0.7rem;
+.panel-heading {
+  padding: 20px;
+  border-bottom: 1px solid #34392f;
+}
+
+.source-list,
+.evidence-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.source-list li,
+.evidence-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  padding: 16px 20px;
+  border-bottom: 1px solid #292e26;
+  background: #10130e;
+}
+
+.source-list div,
+.evidence-list div {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.source-list strong,
+.evidence-list strong {
+  color: #dce3d4;
+}
+
+.source-list small,
+.evidence-list small {
+  line-height: 1.4;
+}
+
+code,
+pre {
+  overflow-wrap: anywhere;
+  color: #dce3d4;
+  font: 0.72rem/1.5 "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
 }
 
 .empty-list {
@@ -346,52 +588,14 @@ h3 {
   padding: 22px 20px;
 }
 
-.diagnostic-list {
+.preview-panel pre {
+  max-height: 460px;
   margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.diagnostic {
-  display: grid;
-  grid-template-columns: 160px minmax(0, 1fr);
-  gap: 18px;
-  padding: 17px 20px;
-  border-bottom: 1px solid #292e26;
-  border-left: 3px solid #ffbf4b;
-  background: #10130e;
-}
-
-.diagnostic.severity-error {
-  border-left-color: #ff745c;
-}
-
-.diagnostic code {
-  color: #dce3d4;
-  font: 0.72rem "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
-}
-
-.diagnostic div {
-  display: grid;
-  gap: 6px;
-}
-
-.diagnostic small {
-  line-height: 1.4;
-}
-
-.boundary-note {
-  display: block;
-  margin-top: 22px;
-  padding: 16px 18px;
-  border-left: 3px solid #806f47;
-  background: #1c1c15;
-  color: #cdd2c5;
-}
-
-.boundary-note p {
-  margin: 7px 0 0;
-  line-height: 1.55;
+  padding: 20px;
+  overflow: auto;
+  background: #0a0d0a;
+  color: #c9e89a;
+  white-space: pre-wrap;
 }
 
 .secondary-button {
@@ -404,14 +608,16 @@ h3 {
   font-weight: 700;
 }
 
-button:disabled {
+button:disabled,
+select:disabled {
   border-color: #454b40;
   color: #777e71;
   background: #242820;
   cursor: not-allowed;
 }
 
-button:focus-visible {
+button:focus-visible,
+select:focus-visible {
   outline: 2px solid #fff;
   outline-offset: 2px;
 }
@@ -422,8 +628,8 @@ button:focus-visible {
   }
 }
 
-@media (max-width: 1000px) {
-  .metadata-grid {
+@media (max-width: 900px) {
+  .report-metrics {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
@@ -431,14 +637,10 @@ button:focus-visible {
 @media (max-width: 700px) {
   .workspace-heading,
   .section-heading,
-  .panel-heading {
+  .panel-heading,
+  .report-heading {
     align-items: flex-start;
     flex-direction: column;
-  }
-
-  .metadata-grid,
-  .object-counts {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .auth-panel,
@@ -447,15 +649,19 @@ button:focus-visible {
     flex-direction: column;
   }
 
-  .diagnostic {
+  .report-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .source-list li,
+  .evidence-list li {
     grid-template-columns: 1fr;
-    gap: 9px;
+    gap: 8px;
   }
 }
 
 @media (max-width: 420px) {
-  .metadata-grid,
-  .object-counts {
+  .report-metrics {
     grid-template-columns: 1fr;
   }
 }

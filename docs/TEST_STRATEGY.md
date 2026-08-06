@@ -247,14 +247,15 @@ the required release checks.
   outcomes, navigation, RTMP statistics/session controls, passive-health/retry editing, certificate
   actions, event parsing, and redaction. TLS-ALPN-01 is accepted by the backend schema but has no
   frontend challenge selector; weighted-round-robin weights, native import editing, and durable
-  audit browsing are also backend/API or offline surfaces rather than current frontend workflows.
+  audit browsing and native import editing are also backend/API or offline surfaces rather than current frontend workflows.
 - Monitoring component tests cover pool availability, endpoint state/check totals, exact counters,
   failure labels, empty-pool rendering, and retention after transient failures.
 - Component tests exercise mobile controls and keyboard navigation in jsdom.
 - `ui/tests/browser/dashboard.spec.ts` runs against the built static UI in desktop Chromium and a
   mobile Chromium device profile. It covers dashboard layout, token unlock/relock, save/review,
   revision conflict, dirty-draft external edits, SSE reconnect from `Last-Event-ID`, operational
-  controls, certificate redaction, and the offline import-report/provenance boundary.
+  controls, certificate redaction, native import report selection/blockers, stale revision retention,
+  and provenance redaction.
 - The browser harness aborts non-local requests and scripts API/SSE responses; it does not start the
   daemon or contact a production or ACME endpoint.
 
