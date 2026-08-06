@@ -47,12 +47,16 @@ Implemented and recognized endpoints:
 | `GET` | `/api/v1/audit?after={cursor}&limit={n}&category={category}&result={result}` | Authenticated durable redacted control-operation history with bounded cursor pagination and filters. |
 | `GET` | `/api/v1/audit/status` | Authenticated audit persistence, retention, corruption, and degradation status. |
 | `GET` | `/api/v1/events?after={cursor}&limit={n}` | Bounded cursor polling over the in-memory operational event ring. |
+| `GET` | `/api/v1/events/stream` | Bearer-authenticated bounded SSE over the same event ring; `/api/v1/events` with `Accept: text/event-stream` is equivalent. |
 | `POST` | `/api/v1/process/drain`, `/api/v1/process/shutdown` | Revision-checked process drain or shutdown requests. |
 | `GET` | `/api/v1/rtmp/streams` | Active RTMP catalog and runtime capabilities. |
 | `GET` | `/api/v1/rtmp/streams/{streamId}` | One exact-ID active stream snapshot. |
+| `GET` | `/api/v1/rtmp/stats`, `/api/v1/rtmp/stats/global`, `/api/v1/rtmp/stats/live`, `/api/v1/rtmp/stats/clients` | Bounded global, live-stream, and connected-client statistics without stream queries. |
+| `POST` | `/api/v1/rtmp/clients/{sessionId}/drop`, `/api/v1/rtmp/clients/{sessionId}/publisher/drop`, `/api/v1/rtmp/clients/{sessionId}/subscriber/drop` | Revision-checked session, publisher, or subscriber disconnect controls. |
 | `POST` | `/api/v1/rtmp/streams/{streamId}/recorders/{recorderId}/start` | Request one exact-ID manual recorder start. |
 | `POST` | `/api/v1/rtmp/streams/{streamId}/recorders/{recorderId}/stop` | Request one exact-ID manual recorder stop. |
 | `GET` | `/api/v1/rtmp/vod/{service}/{application}/{source}/{path}` | Read one bounded local/HTTP VOD object; one contiguous `Range` is accepted. |
+| `GET` | `/api/v1/rtmp/media/{service}/{application}/{stream}/{object}` | Read one bounded authenticated HLS or DASH playlist, fragment, key, or manifest object. |
 
 Every `/api/v1/...` route in this table requires the management bearer token. The only public
 recognized API probes are exact `GET /ready` and `GET /metrics`; wrong methods and unknown paths do
@@ -67,8 +71,8 @@ stream/header/body limits, graceful `goAway`, explicit `unsupported: ["cache", "
 "upgrades"]`, and `fallback: "none"`. A blocked listener also reports whether it failed, stopped,
 or never reached listening state.
 
-Native import routes and unbounded event streaming are not implemented. Bounded event polling is
-implemented and is not an SSE contract. Recorder routes control configured `start = "manual"`
+Native import routes and unbounded event streaming are not implemented. Bounded event polling and
+bounded SSE delivery are implemented over the same non-durable event ring. Recorder routes control configured `start = "manual"`
 workers in the active publisher incarnation and use the same bearer authorization as other
 recognized management routes.
 `capabilities.manual_recording` is true when the active config contains at least one manual
@@ -200,10 +204,14 @@ Exact paths are required; trailing slashes and repeated separators return `404`.
 Managed ACME inventory is exposed through authenticated `GET /api/v1/tls`. It includes the
 configured directory URL, selected challenge, allowlisted DNS provider name when configured, key
 type, suffix policy, disk/active revisions, expiry timestamps, next scheduled action, job phase,
- retry attempt, job ID, pause state, retention policy, last success, and redacted last outcome/error.
+ retry attempt, job ID, pause state, retention policy, last success, redacted last outcome/error, ARI
+ status, DNS provider deployment/health, and DNS cleanup recovery status. Provider health is an
+ observed lifecycle status, not a remote probe; `unsupported` is explicit when no registered provider
+ can perform the configured challenge.
 `POST /api/v1/tls/renew` accepts the same
 revision-checked body as reconciliation and optionally a certificate name. It provisions exact
-HTTP-01 or DNS-01 material before notifying the CA, cleans it after a terminal result, commits a complete
+HTTP-01, DNS-01, or TLS-ALPN-01 challenge material before notifying the CA, cleans it after a terminal
+result, commits a complete
 revision, validates it through the TLS backend, and publishes it without interrupting existing
 connections. Account URLs, order URLs, tokens, and private keys are never returned; configured
 certificate identifiers and suffix-policy values follow the existing redacted inventory contract.
@@ -214,6 +222,11 @@ current in-memory generation. All lifecycle actions persist the safe request cor
 bounded job and audit records.
 Lua-configured direct-file identities are prepared at startup and configured Certbot identities are
 watched and atomically reconciled.
+
+The backend canonical schema and TLS inventory accept managed `tls_alpn01` challenges. The current
+configuration editor exposes HTTP-01 and DNS-01 selectors only; an operator may validate or apply a
+TLS-ALPN-01 value through the backend/canonical configuration contract, while the frontend renders
+the resulting redacted status but does not provide a TLS-ALPN challenge form.
 
 The implemented monitoring snapshot contains daemon uptime, process CPU/RSS/virtual memory,
 threads, open file descriptors, host load averages and memory, aggregate/listener connection and
@@ -394,21 +407,27 @@ requires extending the allowlists; audit records remain a separate durable contr
 - No global state library until component scope proves it necessary.
 - Manually typed API client with component and exact canonical-field-registry tests.
 
-Planned product views:
+Current views and boundaries:
 
-- Overview: active/disk revisions, listeners, traffic, errors, and expiring certificates.
-- Services: listener, route, upstream, health, and timeout editor.
-- Certificates: source, names, issuer, validity, next renewal, job history, and manual renew.
-- Imports: source tree, support summary, diagnostics, and conversion preview.
-- Events/logs: bounded recent operational events, not raw unbounded log streaming.
+- Overview: runtime process/host telemetry, listener traffic, pool health, topology, RTMP catalog,
+  recorder visibility, and RTMP client controls.
+- Statistics: the HAProxy-oriented runtime statistics view backed by monitoring snapshots.
+- Operations: generation, listener, pool, server, drain, rollback, and process controls.
+- Certificates: redacted imported/Certbot/managed inventory, renewal/reconcile/revoke/delete,
+  account rollover, pause/resume/cancel, and bounded job history.
+- Events: bounded cursor history plus live bearer-authenticated SSE, reconnect, and resync handling.
+- Configuration: current canonical-field editing, server validation, format-preserving preview, and
+  revision-checked saves.
+- Provenance: redacted canonical source metadata and diagnostics. Native import reports and previews
+  remain offline CLI contracts; there is no import management API or native source editor.
 
-Current implementation status: the responsive runtime observatory, high-level topology schematic,
-RTMP broadcast desk, and canonical configuration workspace are implemented. The observatory covers
-host/process load, listener traffic, pool/endpoint health, active-stream, codec/media, viewer, and
-recorder visibility. Refreshes do not overlap, retain the last valid sample after transient
-failures, and expose loading/stale/error states. Manual controls call exact-ID routes and are
-available for configured manual recorder definitions on active publishers. The topology inspector
-exposes stable config paths and exact redacted attributes without recording roots.
+The responsive runtime observatory, high-level topology schematic, RTMP broadcast desk, operations,
+certificate, event, provenance, and canonical configuration workspaces are implemented. The
+observatory covers host/process load, listener traffic, pool/endpoint health, active-stream,
+codec/media, viewer, and recorder visibility. Refreshes do not overlap, retain the last valid sample
+after transient failures, and expose loading/stale/error states. Manual controls call exact-ID routes
+and are available for configured manual recorder definitions on active publishers. The topology
+inspector exposes stable config paths and exact redacted attributes without recording roots.
 
 The configuration workspace keeps its bearer token only in page memory, exposes every current
 canonical field, validates through the server, renders the format-preserving backend preview and
@@ -417,15 +436,18 @@ non-compositional. It consumes `configPreview` and `configFormat` for KDL, Lua, 
 uses `compositional` plus `dependencyCount` to make compositional roots inspectable and
 server-validatable but read-only. It preserves dirty drafts across refresh failures and `409`
  conflicts. The save response distinguishes pending activation from restart-required Unix listener
- changes; generation status is authoritative for publication completion. The UI does not yet provide
- SSE or durable event history. Certificate lifecycle management and imports remain planned views.
+  changes; generation status is authoritative for publication completion. The UI consumes bounded
+  SSE for event-driven refresh and exposes the bounded event history, but neither the SSE ring nor
+  the frontend history is durable. Native import editing remains unavailable, and TLS-ALPN challenge
+  selection is not exposed by the current certificate editor.
 
 ## File-change behavior
 
 - The backend watches the canonical root's parent directory, debounces events, and periodically
   reconciles the effective configuration, including native references.
-- The UI checks disk state on explicit load, unlock, or **Check disk revision**; it does not poll or
-  receive watcher events.
+- The UI checks disk state on explicit load, unlock, or **Check disk revision**, and receives the
+  current operational event set over bounded SSE to refresh monitoring, configuration, certificates,
+  and event history. It does not receive a durable native-watcher feed.
 - A clean explicit refresh loads an externally changed valid file.
 - A dirty explicit refresh is marked stale and offers discard/reload.
 - Save against a stale revision returns `409`; the server never performs last-writer-wins.

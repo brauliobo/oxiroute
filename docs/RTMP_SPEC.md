@@ -33,10 +33,12 @@ publish/play, ordered application network ACLs, stream-query tokens, per-applica
 ceilings, fanout, bounded push/pull relay, bounded HTTP notify callbacks, canonical named
 continuous/manual recorders, legacy AVC/AAC FLV output, bounded HLS AVC/AAC transmuxing, bounded
 DASH AVC/AAC fragmented MP4 output, and allowlisted no-shell exec/transcode profiles are partial
-product capabilities. The live adapter enforces a fixed 1 MiB
-inbound chunk ceiling and fixed 8 MiB assembled inbound-message ceiling; the nginx `max_message`
-directive is parsed and classified but does not configure that ceiling. Broader exec directive
-parity remains partial;
+product capabilities. The live adapter enforces a fixed 1 MiB inbound chunk ceiling, a bounded
+service-configured assembled inbound-message ceiling (8 MiB maximum), and the configured RTMP
+acknowledgement window. Canonical services default to an 8 MiB message ceiling and a 5,000,000-byte
+acknowledgement window; imported nginx services retain nginx's 1 MiB `max_message` default and
+inherit bounded `max_message` and `ack_window` values from the RTMP or server scope. Broader exec
+directive parity remains partial;
 broad nginx-RTMP parity remains partial. The authenticated management API provides
 bounded RTMP statistics and session controls without exposing stream queries, credentials, or
 private paths. Native `rtmp_stat`/`rtmp_control` directives remain classified and blocked because
@@ -590,11 +592,11 @@ implemented for the subset above; per-directive lowering and fixture completenes
 
 Status: partial. A pinned `rml_rtmp` 0.8.0 adapter now provides simple/complex handshakes, chunk
 transport, connect/createStream/live-publish/play command handling, duplicate-publisher rejection,
-bounds for inbound chunks and assembled messages, bounded media fanout, media observations, and
-lifecycle cleanup. The listener caps requested inbound chunks at 1 MiB and assembled inbound
-messages at 8 MiB. Manual FFmpeg publishing and native publish/play wire tests pass. Configurable
-`max_message`, checked-in process-level FFmpeg consume acceptance, exhaustive chunk fixtures, and
-OBS acceptance remain before this slice is complete.
+bounds for inbound chunks and service-configured assembled messages, configured acknowledgement
+windows, bounded media fanout, media observations, and lifecycle cleanup. The listener caps
+requested inbound chunks at 1 MiB and canonical assembled messages at 8 MiB. Manual FFmpeg
+publishing and native publish/play wire tests pass. Checked-in process-level FFmpeg consume
+acceptance, exhaustive chunk fixtures, and OBS acceptance remain before this slice is complete.
 
 - Simple and both Adobe complex handshake schemes.
 - Fragmented I/O, chunk formats 0-3, all CSID header widths, extended timestamps, and interleaving.
@@ -608,17 +610,19 @@ OBS acceptance remain before this slice is complete.
 
 Status: partial. Canonical continuous/manual recording, named recorders, live-session dispatch,
 catalog completion, storage, rotation, observability, exact-ID bearer-protected controls, access and
-notify policy, pull relay, and bounded local/HTTP VOD are integrated for legacy AVC/AAC FLV. Static
-push relay is integrated separately. Stats-page parity, enhanced codec recording, RTMP access logs,
-and broad nginx-RTMP lowering remain.
+notify policy, pull relay, bounded local/HTTP VOD, bounded HLS/DASH output, and same-daemon auto-push
+are integrated for legacy AVC/AAC media. Static push relay and the first isolated exec/transcode
+slice are integrated separately. Native stats-page/control parity, native access-log syntax,
+enhanced codec recording, broader exec directive parity, and broad nginx-RTMP lowering remain.
 
 ### Slice 3: media/process parity
 
-HLS, DASH, isolated exec, limits, and multi-worker equivalents require dedicated storage,
-media, crash, and resource-exhaustion tests. DASH's bounded fMP4/MPD, cleanup, quota, restart,
-range, authentication, and malformed-input tests are part of the current runtime coverage. The
-first exec slice has canonical profiles, typed native publisher/publish-done lowering, bounded
-process admission, and an isolated lifecycle worker; broader directive parity remains blocked.
+HLS, DASH, isolated exec, limits, and multi-worker equivalents require dedicated crash,
+resource-exhaustion, and active-traffic evidence before parity claims can expand. The current
+runtime coverage includes bounded HLS MPEG-TS output, DASH fMP4/MPD output, cleanup, quota, restart,
+range, authentication, and malformed-input tests. The first exec slice has canonical profiles,
+typed native publisher/publish-done lowering, bounded process admission, and an isolated lifecycle
+worker; broader directive parity and production crash campaigns remain blocked.
 
 ## Security requirements
 
@@ -636,8 +640,9 @@ process admission, and an isolated lifecycle worker; broader directive parity re
 ## Test strategy
 
 Current tests cover unit state machines, loopback integration, byte-exact media output, bounded
-fanout, native publish/play wire behavior, recording path/store/worker failure cases, and directive
-context/value validation. Captured differential traces, checked-in fuzz targets, process-level
-FFmpeg/OBS consume acceptance, and broader fake-clock/filesystem matrices remain planned. Every
-directive needs positive context/value fixtures and negative context/arity/value fixtures before
-the runtime matrix can claim full config compatibility.
+fanout, native publish/play wire behavior, recording path/store/worker failure cases, bounded HLS/DASH
+output, auto-push framing, isolated exec lifecycle, and directive context/value validation. The
+checked-in fuzz harnesses currently have bounded build/smoke coverage; captured differential traces,
+process-level FFmpeg/OBS consume acceptance, long-running fuzz/crash campaigns, and broader
+fake-clock/filesystem matrices remain open. Every directive needs positive context/value fixtures and
+negative context/arity/value fixtures before the runtime matrix can claim full config compatibility.

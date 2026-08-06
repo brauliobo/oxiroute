@@ -34,7 +34,7 @@ obsolete, or not planned. Only forms with both runtime integration and failure c
 | Runtime inventory | `listener`, `pool`, `server` | Read or safely mutate admission/health state |
 | TLS | `tls list|reconcile` | Inspect identities and invoke external-lineage reconciliation |
 | RTMP | `rtmp stream`, `rtmp recorder`, `rtmp relay` | Inspect live sessions and supported recorder actions |
-| Migration | `import nginx|haproxy|squid|apache` | Emit offline reports or finalized previews |
+| Migration | `import nginx|haproxy|squid|apache|varnish` | Emit offline reports or finalized previews |
 | Build | `version` | Print the build version |
 
 ## Output And Exit Categories
@@ -66,6 +66,7 @@ oxiroute import nginx /etc/nginx/nginx.conf --output report
 oxiroute import squid /etc/squid/squid.conf --output report
 oxiroute import apache /etc/httpd/conf/httpd.conf --output report
 oxiroute import apache /etc/httpd/conf/httpd.conf --shadow-port-offset 10000 --output preview
+oxiroute import varnish /etc/varnish/default.vcl --output report
 ```
 
 See [MANAGEMENT_CLI.md](../MANAGEMENT_CLI.md) for every subcommand, capability status, revision

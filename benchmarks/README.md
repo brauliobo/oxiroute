@@ -34,10 +34,11 @@ Measured reports:
   governor/kernel tuning and does not cover TLS, h2c, cache warming, remote clients, or uploads.
 
 `lanes.json` is the machine-readable lane contract. Cache, forward-proxy, H2, and H3 lanes are
-explicit skips. OxiRoute's current configuration schema describes cache and forward-proxy objects,
-but the daemon does not activate cache and its runtime planner rejects forward-proxy listeners.
-Reverse H2 requires TLS and a different client/configuration matrix; reverse H3 is not implemented.
-Those results must not be inferred from reverse H1.
+explicit skips. OxiRoute's reverse HTTP and eligible forward HTTP/1 paths activate bounded cache
+behavior, while the narrow forward-proxy listener and active reverse H3 service require different
+configuration and clients. Reverse H2 requires TLS and a different client/configuration matrix;
+reverse H3 is an active partial capability but has no benchmark lane here. Those results must not be
+inferred from reverse H1.
 
 ## Requirements
 
