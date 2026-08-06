@@ -112,6 +112,7 @@ function canonicalConfig(): CanonicalConfig {
           expected_status: null,
           http_version: null,
         },
+        passive_health: null,
         tls: null,
         http_versions: { min: '1.1', max: '1.1' },
         queue_timeout_ms: null,
@@ -124,6 +125,7 @@ function canonicalConfig(): CanonicalConfig {
         servers: [{ name: 'server-1', endpoint: { type: 'socket', address: '10.0.0.20:443' }, max_connections: null, dns_resolution: 'on_connect' }],
         algorithm: 'round_robin',
         health_check: null,
+        passive_health: null,
         tls: {
           server_name: 'origin.example.test',
           ca_certificate_path: '/etc/oxiroute/origin-ca.pem',
@@ -855,6 +857,17 @@ describe('ConfigurationWorkspace', () => {
     await wrapper.get('[data-field="upstream_pools[].health_check.unhealthy_threshold"] input').setValue(4)
     await wrapper.get('[data-field="upstream_pools[].health_check.host"] input').setValue('edge.example.test')
     await wrapper.get('[data-field="upstream_pools[].health_check.path"] input').setValue('/ready')
+    const passive = wrapper.get('[data-field="upstream_pools[].passive_health"]')
+    const passiveToggle = passive.find('.enable-row input')
+    await passiveToggle.setValue(true)
+    await wrapper.get('[data-field="upstream_pools[].passive_health.observe"] select').setValue('layer4')
+    await wrapper.get('[data-field="upstream_pools[].passive_health.on_error"] select').setValue('mark_down')
+    await wrapper.get('[data-field="upstream_pools[].passive_health.error_limit"] input').setValue(4)
+    await wrapper.get('[data-field="upstream_pools[].passive_health.mark_down"] input').setValue(true)
+    await wrapper.get('[data-field="upstream_pools[].passive_health.mark_up"] input').setValue(true)
+    await wrapper.get('[data-field="upstream_pools[].passive_health.initial_backoff_ms"] input').setValue(30_000)
+    await wrapper.get('[data-field="upstream_pools[].passive_health.max_backoff_ms"] input').setValue(300_000)
+    await wrapper.get('[data-field="upstream_pools[].passive_health.recovery_threshold"] input').setValue(2)
     await wrapper.get('[data-field="upstream_pools[].http_versions.min"] select').setValue('1.1')
     expect(wrapper.get('[data-field="upstream_pools[].http_versions.max"] option[value="2"]').attributes()).toHaveProperty('disabled')
 

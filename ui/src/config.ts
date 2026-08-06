@@ -227,6 +227,17 @@ export interface HealthCheckConfig {
   http_version: '1.0' | '1.1' | null
 }
 
+export interface PassiveHealthConfig {
+  observe: 'layer4' | 'layer7'
+  on_error: 'count' | 'immediately' | 'mark_down'
+  error_limit: number
+  mark_down: boolean
+  mark_up: boolean
+  initial_backoff_ms: number
+  max_backoff_ms: number
+  recovery_threshold: number
+}
+
 export interface UpstreamTlsConfig {
   server_name: string
   ca_certificate_path: string | null
@@ -271,6 +282,7 @@ export interface UpstreamPoolConfig {
   endpoints?: UpstreamEndpoint[]
   algorithm: UpstreamAlgorithm
   health_check: HealthCheckConfig | null
+  passive_health: PassiveHealthConfig | null
   tls: UpstreamTlsConfig | null
   http_versions: HttpVersionPolicyConfig
   queue_timeout_ms: number | null
@@ -1079,6 +1091,7 @@ function isUpstreamPool(value: unknown): value is UpstreamPoolConfig {
     (value.endpoints === undefined || arrayOf(value.endpoints, isEndpoint)) &&
     ['round_robin', 'least_connections', 'first'].includes(String(value.algorithm)) &&
     (value.health_check === null || isHealthCheck(value.health_check)) &&
+    (value.passive_health === null || isPassiveHealth(value.passive_health)) &&
     (value.tls === null || (isRecord(value.tls) && typeof value.tls.server_name === 'string' &&
       nullableString(value.tls.ca_certificate_path))) && isRecord(value.http_versions) &&
     ['1.1', '2'].includes(String(value.http_versions.min)) &&
@@ -1111,6 +1124,16 @@ function isHealthCheck(value: unknown): value is HealthCheckConfig {
     nullableString(value.host) && nullableString(value.path) &&
     nullableSafeInteger(value.expected_status) &&
     (value.http_version === null || ['1.0', '1.1'].includes(String(value.http_version)))
+}
+
+function isPassiveHealth(value: unknown): value is PassiveHealthConfig {
+  if (!isRecord(value) || !['layer4', 'layer7'].includes(String(value.observe)) ||
+    !['count', 'immediately', 'mark_down'].includes(String(value.on_error)) ||
+    !integerInRange(value.error_limit, 1, 100) || typeof value.mark_down !== 'boolean' ||
+    typeof value.mark_up !== 'boolean' || !integerInRange(value.initial_backoff_ms, 1, 86_400_000) ||
+    !integerInRange(value.max_backoff_ms, 1, 86_400_000) ||
+    !integerInRange(value.recovery_threshold, 1, 100)) return false
+  return value.max_backoff_ms >= value.initial_backoff_ms
 }
 
 function isStatsPage(value: unknown): value is StatsPageConfig {
@@ -1666,6 +1689,15 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'upstream_pools[].health_check.unhealthy_threshold', kind: 'integer' },
   { path: 'upstream_pools[].health_check.host', kind: 'string' },
   { path: 'upstream_pools[].health_check.path', kind: 'string' },
+  { path: 'upstream_pools[].passive_health', kind: 'object' },
+  { path: 'upstream_pools[].passive_health.observe', kind: 'enum' },
+  { path: 'upstream_pools[].passive_health.on_error', kind: 'enum' },
+  { path: 'upstream_pools[].passive_health.error_limit', kind: 'integer' },
+  { path: 'upstream_pools[].passive_health.mark_down', kind: 'boolean' },
+  { path: 'upstream_pools[].passive_health.mark_up', kind: 'boolean' },
+  { path: 'upstream_pools[].passive_health.initial_backoff_ms', kind: 'integer' },
+  { path: 'upstream_pools[].passive_health.max_backoff_ms', kind: 'integer' },
+  { path: 'upstream_pools[].passive_health.recovery_threshold', kind: 'integer' },
   { path: 'upstream_pools[].tls', kind: 'object' },
   { path: 'upstream_pools[].tls.server_name', kind: 'string' },
   { path: 'upstream_pools[].tls.ca_certificate_path', kind: 'string' },
