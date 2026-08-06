@@ -890,6 +890,57 @@ async fn config_writes_require_a_current_revision_and_return_authoritative_confl
 }
 
 #[tokio::test]
+async fn serves_authenticated_bounded_native_import_reports_without_exposing_paths() {
+    let directory = TempDir::new().expect("temporary Apache source");
+    let apache_root = directory.path().join("httpd.conf");
+    fs::write(
+        &apache_root,
+        b"Listen 127.0.0.1:18080\n<VirtualHost 127.0.0.1:18080>\n  ServerName app.example.test\n  ProxyPass / http://127.0.0.1:9000/\n</VirtualHost>\n",
+    )
+    .expect("Apache source");
+    let source = format!("apache_server {apache_root:?}\n");
+    let harness =
+        ManagementHarness::start_source(&editable_config(), "kdl", source.as_bytes()).await;
+
+    let unauthorized = harness
+        .request_with("GET", "/api/v1/import-reports", None, None, None, None)
+        .await;
+    assert_eq!(unauthorized.status, 401);
+
+    let list = harness
+        .request("GET", "/api/v1/import-reports", None, None)
+        .await;
+    assert_eq!(list.status, 200);
+    assert_eq!(list.json()["reports"].as_array().map(Vec::len), Some(1));
+    assert_eq!(list.json()["selection"], Value::Null);
+    assert_eq!(list.json()["report"], Value::Null);
+
+    let selected = harness
+        .request("GET", "/api/v1/import-reports/0", None, None)
+        .await;
+    assert_eq!(selected.status, 200);
+    let selected_json = selected.json();
+    assert_eq!(selected_json["report"]["source"]["product"], "apache");
+    assert!(
+        selected_json["report"]["sourceGraph"]["sources"][0]["name"]
+            .as_str()
+            .is_some_and(|name| name.starts_with("source-"))
+    );
+    assert_eq!(selected_json["preview"]["format"], "kdl");
+    assert!(selected.body().len() <= 2 * MAX_CANONICAL_CONFIG_BYTES);
+
+    let selected_text = String::from_utf8_lossy(selected.body());
+    assert!(!selected_text.contains(apache_root.to_string_lossy().as_ref()));
+    assert!(!selected_text.contains("httpd.conf"));
+
+    let missing = harness
+        .request("GET", "/api/v1/import-reports/1", None, None)
+        .await;
+    assert_eq!(missing.status, 404);
+    assert_eq!(missing.json()["error"]["code"], "import_report_not_found");
+}
+
+#[tokio::test]
 async fn config_api_reports_source_format_composition_and_native_preview_name() {
     let active = editable_config();
     let harness = ManagementHarness::start(&active).await;

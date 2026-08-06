@@ -3,6 +3,7 @@ use std::{io, path::Path, str::FromStr};
 use http::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE};
 use oxiroute_config::Config;
 use oxiroute_config_source::{ConfigFormat, render_config};
+use oxiroute_import::ImportReportEnvelope;
 use pingora::protocols::http::ServerSession;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -16,7 +17,7 @@ use crate::{
     config_coordinator::{
         CanonicalConfigCoordinator, ConfigConflict, ConfigDiagnostic, ConfigLoadOutcome,
         ConfigRevision, ConfigSaveFailure, ConfigSaveOutcome, ConfigValidationOutcome,
-        ValidatedConfigDraft,
+        NativeImportSourceOutcome, ValidatedConfigDraft,
     },
     listener_reservation::unix_listener_mode_change_requires_restart,
     runtime_plan,
@@ -24,11 +25,16 @@ use crate::{
 };
 
 const IF_CONFIG_REVISION: &str = "if-config-revision";
+const IMPORT_REPORTS_PATH: &str = "/api/v1/import-reports";
+const MAX_IMPORT_REPORTS: usize = 64;
+const MAX_IMPORT_REPORT_RESPONSE_BYTES: usize = MAX_CONFIG_REQUEST_BYTES * 2;
+const REDACTED_IMPORT_VALUE: &str = "<redacted>";
 
 #[derive(Clone, Copy)]
 pub(super) enum Route {
     Config,
     Validate,
+    ImportReports(Option<usize>),
 }
 
 pub(super) struct ConfigApiState {
@@ -81,8 +87,10 @@ impl ConfigApiState {
             (Route::Config, "GET" | "PUT") | (Route::Validate, "POST") => {
                 ApiResponse::unauthorized()
             }
+            (Route::ImportReports(_), "GET") => ApiResponse::unauthorized(),
             (Route::Config, _) => ApiResponse::method_not_allowed("GET, PUT"),
             (Route::Validate, _) => ApiResponse::method_not_allowed("POST"),
+            (Route::ImportReports(_), _) => ApiResponse::method_not_allowed("GET"),
         }
     }
 
@@ -130,6 +138,8 @@ impl ConfigApiState {
                 }
             }
             (Route::Validate, _) => ApiResponse::method_not_allowed("POST"),
+            (Route::ImportReports(index), "GET") => self.import_reports_response(index),
+            (Route::ImportReports(_), _) => ApiResponse::method_not_allowed("GET"),
         }
     }
 
@@ -174,6 +184,76 @@ impl ConfigApiState {
                 }),
             ),
         }
+    }
+
+    fn import_reports_response(&self, selection: Option<usize>) -> ApiResponse {
+        let source = match self.coordinator.load_native_import_source() {
+            NativeImportSourceOutcome::Loaded(source) => source,
+            NativeImportSourceOutcome::Rejected(rejection) => {
+                return ApiResponse::json(
+                    503,
+                    &json!({
+                        "schemaVersion": 1,
+                        "diskRevision": rejection.disk_revision,
+                        "activeRevision": self.active_revision(),
+                        "reports": [],
+                        "selection": null,
+                        "report": null,
+                        "preview": null,
+                        "diagnostics": rejection.diagnostics,
+                        "error": {
+                            "code": "canonical_config_unavailable",
+                            "message": "the persisted canonical configuration could not be loaded",
+                        },
+                    }),
+                );
+            }
+        };
+        if source.native_references.len() > MAX_IMPORT_REPORTS {
+            return ApiResponse::error(
+                413,
+                "import_report_limit_exceeded",
+                format!("native import reports are limited to {MAX_IMPORT_REPORTS} entries"),
+            );
+        }
+
+        let reports = source
+            .native_references
+            .iter()
+            .enumerate()
+            .map(|(index, reference)| {
+                let report = redacted_import_report(reference.evidence.clone());
+                import_report_summary(index, &report)
+            })
+            .collect::<Vec<_>>();
+        let selected = match selection {
+            Some(index) => {
+                let Some(reference) = source.native_references.get(index) else {
+                    return ApiResponse::error(
+                        404,
+                        "import_report_not_found",
+                        "the requested native import report does not exist",
+                    );
+                };
+                Some(redacted_import_report(reference.evidence.clone()))
+            }
+            None => None,
+        };
+        let preview = selected.as_ref().and_then(import_report_preview);
+        let response = json!({
+            "schemaVersion": 1,
+            "diskRevision": source.disk_revision,
+            "candidateRevision": source.candidate_revision,
+            "activeRevision": self.active_revision(),
+            "configFormat": source.format,
+            "compositional": source.compositional,
+            "reports": reports,
+            "selection": selection.map(|index| json!({ "index": index })),
+            "report": selected,
+            "preview": preview,
+            "diagnostics": [],
+        });
+        bounded_import_report_response(response)
     }
 
     fn validate_config_response(&self, body: &[u8], now_unix_ms: u64) -> ApiResponse {
@@ -474,7 +554,138 @@ pub(super) fn match_route(path: &str) -> Option<Route> {
     match path {
         "/api/v1/config" => Some(Route::Config),
         "/api/v1/config/validate" => Some(Route::Validate),
+        IMPORT_REPORTS_PATH => Some(Route::ImportReports(None)),
+        path if path.starts_with("/api/v1/import-reports/") => Some(Route::ImportReports(
+            path.strip_prefix("/api/v1/import-reports/")
+                .filter(|value| !value.is_empty() && !value.contains('/'))
+                .and_then(|value| value.parse().ok())
+                .or(Some(usize::MAX)),
+        )),
         _ => None,
+    }
+}
+
+fn import_report_summary(index: usize, report: &ImportReportEnvelope) -> Value {
+    let status = if !report.blockers.is_empty() {
+        "blocked"
+    } else if report.candidate.finalized {
+        "finalized"
+    } else {
+        "draft"
+    };
+    json!({
+        "index": index,
+        "product": report.source.product,
+        "version": report.source.version,
+        "versionSource": report.source.version_source,
+        "capabilityProfile": report.source.capability_profile,
+        "status": status,
+        "rootCount": report.source_graph.roots.len(),
+        "sourceCount": report.source_graph.sources.len(),
+        "dependencyCount": report.source_graph.dependencies.len(),
+        "blockerCount": report.blockers.len(),
+        "diagnosticCount": report.diagnostics.len(),
+        "provenanceCount": report.candidate.provenance.len(),
+        "requirementCount": report.requirements.deployment.len() + report.requirements.activation.len(),
+        "overlayCount": report.overlays.len(),
+        "previewAvailable": import_report_preview(report).is_some(),
+    })
+}
+
+fn import_report_preview(report: &ImportReportEnvelope) -> Option<Value> {
+    if !report.candidate.finalized || !report.blockers.is_empty() {
+        return None;
+    }
+    let config = report.candidate.config.as_ref()?;
+    let (_, text) = redacted_config_view(config.clone(), ConfigFormat::Kdl);
+    Some(json!({ "format": "kdl", "text": text }))
+}
+
+fn bounded_import_report_response(value: Value) -> ApiResponse {
+    let body = value.to_string().into_bytes();
+    if body.len() > MAX_IMPORT_REPORT_RESPONSE_BYTES {
+        return ApiResponse::error(
+            413,
+            "import_report_response_too_large",
+            format!(
+                "native import report response exceeds {MAX_IMPORT_REPORT_RESPONSE_BYTES} bytes"
+            ),
+        );
+    }
+    ApiResponse::bytes(200, body, "application/json")
+}
+
+fn redacted_import_report(mut report: ImportReportEnvelope) -> ImportReportEnvelope {
+    for root in &mut report.source_graph.roots {
+        root.path = root.path.as_ref().map(|_| REDACTED_IMPORT_VALUE.to_owned());
+    }
+    for source in &mut report.source_graph.sources {
+        source.name = format!("source-{}", source.id);
+        source.path = source
+            .path
+            .as_ref()
+            .map(|_| REDACTED_IMPORT_VALUE.to_owned());
+    }
+    for dependency in &mut report.source_graph.dependencies {
+        dependency.requested_path = dependency
+            .requested_path
+            .as_ref()
+            .map(|_| REDACTED_IMPORT_VALUE.to_owned());
+        dependency.canonical_path = dependency
+            .canonical_path
+            .as_ref()
+            .map(|_| REDACTED_IMPORT_VALUE.to_owned());
+    }
+    for provenance in &mut report.candidate.provenance {
+        for origin in &mut provenance.origins {
+            redact_origin(origin);
+        }
+    }
+    for requirement in report
+        .requirements
+        .deployment
+        .iter_mut()
+        .chain(report.requirements.activation.iter_mut())
+    {
+        requirement.values.fill(REDACTED_IMPORT_VALUE.to_owned());
+        for origin in &mut requirement.origins {
+            redact_origin(origin);
+        }
+    }
+    for overlay in &mut report.overlays {
+        overlay.values.fill(REDACTED_IMPORT_VALUE.to_owned());
+        if let Some(origin) = &mut overlay.origin {
+            redact_origin(origin);
+        }
+    }
+    for blocker in &mut report.blockers {
+        blocker.scope = blocker.scope.as_deref().map(redact_scope);
+    }
+    for diagnostic in &mut report.diagnostics {
+        diagnostic.help = diagnostic
+            .help
+            .as_ref()
+            .map(|_| REDACTED_IMPORT_VALUE.to_owned());
+    }
+    if let Some(config) = report.candidate.config.take() {
+        let (config, _) = redacted_config_view(config, ConfigFormat::Kdl);
+        report.candidate.config = Some(config);
+    }
+    report
+}
+
+fn redact_origin(origin: &mut oxiroute_import::OriginEvidence) {
+    origin.path = origin
+        .path
+        .as_ref()
+        .map(|_| REDACTED_IMPORT_VALUE.to_owned());
+}
+
+fn redact_scope(scope: &str) -> String {
+    if scope.contains('/') || scope.contains('\\') {
+        REDACTED_IMPORT_VALUE.to_owned()
+    } else {
+        scope.to_owned()
     }
 }
 

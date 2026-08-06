@@ -14,8 +14,8 @@ use rustix::{
 };
 
 use super::{
-    diagnostic, ConfigCoordinatorPathError, ConfigDiagnostic, ConfigDiagnosticStage,
-    ConfigRevision, MAX_CANONICAL_CONFIG_BYTES,
+    ConfigCoordinatorPathError, ConfigDiagnostic, ConfigDiagnosticStage, ConfigRevision,
+    MAX_CANONICAL_CONFIG_BYTES, diagnostic,
 };
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
