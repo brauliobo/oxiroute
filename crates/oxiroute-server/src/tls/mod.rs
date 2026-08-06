@@ -877,12 +877,22 @@ pub enum TlsBuildError {
     },
     #[error("client CA certificate {index} for TLS profile `{profile}` is duplicated")]
     DuplicateClientCaCertificate { profile: String, index: usize },
+    #[error(
+        "client CA certificate {index} for TLS profile `{profile}` is not usable by rustls: {detail}"
+    )]
+    ClientCaRustlsCertificate {
+        profile: String,
+        index: usize,
+        detail: String,
+    },
     #[error("failed to construct the client CA trust store for TLS profile `{profile}`")]
     ClientCaStore {
         profile: String,
         #[source]
         source: Box<openssl::error::ErrorStack>,
     },
+    #[error("failed to construct the rustls client certificate verifier for TLS profile `{profile}`: {detail}")]
+    ClientCaRustlsVerifier { profile: String, detail: String },
     #[error("upstream pool `{pool}` has invalid TLS server name `{server_name}`")]
     InvalidUpstreamServerName { pool: String, server_name: String },
     #[error("upstream pool `{pool}` has an invalid HTTP version range")]

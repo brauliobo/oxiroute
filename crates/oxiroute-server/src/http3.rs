@@ -335,10 +335,16 @@ fn server_config(
     let resolver = Arc::new(QuicCertificateResolver {
         profile: Arc::clone(tls),
     });
-    let mut crypto =
-        rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+    let crypto_builder =
+        rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]);
+    let mut crypto = match tls.h3_client_cert_verifier() {
+        Some(verifier) => crypto_builder
+            .with_client_cert_verifier(verifier)
+            .with_cert_resolver(resolver),
+        None => crypto_builder
             .with_no_client_auth()
-            .with_cert_resolver(resolver);
+            .with_cert_resolver(resolver),
+    };
     crypto.alpn_protocols = vec![b"h3".to_vec()];
     crypto.max_early_data_size = 0;
     let mut config = ServerConfig::with_crypto(Arc::new(

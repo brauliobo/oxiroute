@@ -683,6 +683,7 @@ struct ClientAuthPlan {
     mode: TlsClientAuthMode,
     ca_certificates: Arc<[X509]>,
     allowed_dns_names: Arc<[CertificateIdentity]>,
+    h3_client_verifier: Option<Arc<dyn rustls::server::danger::ClientCertVerifier>>,
 }
 
 impl ClientAuthPlan {
@@ -699,7 +700,7 @@ impl ClientAuthPlan {
             }))
             .collect::<Result<Vec<_>, _>>()?;
 
-        let ca_certificates = match client_auth.mode {
+        let (ca_certificates, rustls_roots) = match client_auth.mode {
             TlsClientAuthMode::Disabled => {
                 if client_auth.ca_certificate_path.is_some() || !allowed_dns_names.is_empty() {
                     return Err(TlsBuildError::InvalidTlsClientAuthPolicy {
@@ -707,7 +708,10 @@ impl ClientAuthPlan {
                         detail: "disabled client authentication cannot configure a CA or identities",
                     });
                 }
-                Arc::from(Vec::<X509>::new().into_boxed_slice())
+                (
+                    Arc::from(Vec::<X509>::new().into_boxed_slice()),
+                    Arc::new(rustls::RootCertStore::empty()),
+                )
             }
             TlsClientAuthMode::Optional | TlsClientAuthMode::Required => {
                 let path = client_auth.ca_certificate_path.as_deref().ok_or_else(|| {
@@ -720,10 +724,32 @@ impl ClientAuthPlan {
             }
         };
 
+        let allowed_dns_names = Arc::from(allowed_dns_names.into_boxed_slice());
+        let h3_client_verifier = match client_auth.mode {
+            TlsClientAuthMode::Disabled => None,
+            TlsClientAuthMode::Optional | TlsClientAuthMode::Required => {
+                let builder = rustls::server::WebPkiClientVerifier::builder(rustls_roots);
+                let delegate = match client_auth.mode {
+                    TlsClientAuthMode::Optional => builder.allow_unauthenticated().build(),
+                    TlsClientAuthMode::Required => builder.build(),
+                    TlsClientAuthMode::Disabled => unreachable!(),
+                }
+                .map_err(|error| TlsBuildError::ClientCaRustlsVerifier {
+                    profile: profile.name.clone(),
+                    detail: error.to_string(),
+                })?;
+                Some(Arc::new(ExactClientCertificateVerifier {
+                    delegate,
+                    allowed_dns_names: Arc::clone(&allowed_dns_names),
+                }) as Arc<dyn rustls::server::danger::ClientCertVerifier>)
+            }
+        };
+
         Ok(Self {
             mode: client_auth.mode,
             ca_certificates,
-            allowed_dns_names: Arc::from(allowed_dns_names.into_boxed_slice()),
+            allowed_dns_names,
+            h3_client_verifier,
         })
     }
 
@@ -814,6 +840,74 @@ impl ClientAuthPlan {
     fn allowed_dns_name_count(&self) -> usize {
         self.allowed_dns_names.len()
     }
+
+    fn h3_client_verifier(
+        &self,
+    ) -> Option<Arc<dyn rustls::server::danger::ClientCertVerifier>> {
+        self.h3_client_verifier.clone()
+    }
+}
+
+#[derive(Debug)]
+struct ExactClientCertificateVerifier {
+    delegate: Arc<dyn rustls::server::danger::ClientCertVerifier>,
+    allowed_dns_names: Arc<[CertificateIdentity]>,
+}
+
+impl rustls::server::danger::ClientCertVerifier for ExactClientCertificateVerifier {
+    fn offer_client_auth(&self) -> bool {
+        self.delegate.offer_client_auth()
+    }
+
+    fn client_auth_mandatory(&self) -> bool {
+        self.delegate.client_auth_mandatory()
+    }
+
+    fn root_hint_subjects(&self) -> &[rustls::DistinguishedName] {
+        self.delegate.root_hint_subjects()
+    }
+
+    fn verify_client_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::server::danger::ClientCertVerified, rustls::Error> {
+        let verified = self
+            .delegate
+            .verify_client_cert(end_entity, intermediates, now)?;
+        let certificate = X509::from_der(end_entity.as_ref()).map_err(|_| {
+            rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding)
+        })?;
+        if !client_certificate_matches(&certificate, &self.allowed_dns_names) {
+            return Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::NotValidForName,
+            ));
+        }
+        Ok(verified)
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.delegate.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.delegate.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.delegate.supported_verify_schemes()
+    }
 }
 
 pub struct TlsProfilePlan {
@@ -900,6 +994,12 @@ impl TlsProfilePlan {
     #[must_use]
     pub fn client_auth_allowed_dns_name_count(&self) -> usize {
         self.client_auth.allowed_dns_name_count()
+    }
+
+    pub(crate) fn h3_client_cert_verifier(
+        &self,
+    ) -> Option<Arc<dyn rustls::server::danger::ClientCertVerifier>> {
+        self.client_auth.h3_client_verifier()
     }
 
     #[must_use]
@@ -1055,7 +1155,7 @@ fn client_identity(value: &str) -> Option<CertificateIdentity> {
 fn load_client_ca_bundle(
     profile: &str,
     path: &Path,
-) -> Result<Arc<[X509]>, TlsBuildError> {
+) -> Result<(Arc<[X509]>, Arc<rustls::RootCertStore>), TlsBuildError> {
     const CLIENT_CA_FILE: &str = "client CA bundle";
 
     let pem = read_bounded_stable(profile, CLIENT_CA_FILE, path, MAX_CA_CERTIFICATE_BYTES, false)?;
@@ -1088,6 +1188,7 @@ fn load_client_ca_bundle(
     }
 
     let mut unique_der = HashSet::with_capacity(certificates.len());
+    let mut rustls_roots = rustls::RootCertStore::empty();
     for (index, certificate) in certificates.iter().enumerate() {
         validate_client_ca_current(profile, index, certificate)?;
         let ca_capable = certificate_is_ca_capable(certificate).map_err(|source| {
@@ -1110,15 +1211,25 @@ fn load_client_ca_bundle(
                 index,
                 source: Box::new(source),
             })?;
-        if !unique_der.insert(der) {
+        if !unique_der.insert(der.clone()) {
             return Err(TlsBuildError::DuplicateClientCaCertificate {
                 profile: profile.into(),
                 index,
             });
         }
+        rustls_roots
+            .add(rustls::pki_types::CertificateDer::from(der))
+            .map_err(|error| TlsBuildError::ClientCaRustlsCertificate {
+                profile: profile.into(),
+                index,
+                detail: error.to_string(),
+            })?;
     }
     preflight_client_ca_store(profile, &certificates)?;
-    Ok(Arc::from(certificates.into_boxed_slice()))
+    Ok((
+        Arc::from(certificates.into_boxed_slice()),
+        Arc::new(rustls_roots),
+    ))
 }
 
 fn validate_client_ca_current(
