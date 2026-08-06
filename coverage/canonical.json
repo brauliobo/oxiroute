@@ -636,6 +636,96 @@
       "required_tests": ["decode", "normalize", "validate", "failure", "integration"]
     },
     {
+      "id": "canonical.upstream-pools.passive-health",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health",
+      "editability": "operator",
+      "normalization": ["absence uses the bounded runtime passive-health defaults"],
+      "validation": ["optional bounded passive health policy"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.observe",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.observe",
+      "editability": "operator",
+      "normalization": ["lowercase observation layer token"],
+      "validation": ["closed layer4 or layer7 enum"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "integration"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.on-error",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.on_error",
+      "editability": "operator",
+      "normalization": ["lowercase error action token"],
+      "validation": ["closed count, immediately, or mark_down enum"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "integration"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.error-limit",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.error_limit",
+      "editability": "operator",
+      "normalization": ["default to 3"],
+      "validation": ["1 through 100 failures"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.mark-down",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.mark_down",
+      "editability": "operator",
+      "normalization": ["default to false"],
+      "validation": ["boolean transition policy"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.mark-up",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.mark_up",
+      "editability": "operator",
+      "normalization": ["default to false"],
+      "validation": ["boolean recovery policy"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.initial-backoff",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.initial_backoff_ms",
+      "editability": "operator",
+      "normalization": ["default to 30000"],
+      "validation": ["positive duration up to 86400000 milliseconds"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.max-backoff",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.max_backoff_ms",
+      "editability": "operator",
+      "normalization": ["default to 300000"],
+      "validation": ["not below initial backoff", "positive duration up to 86400000 milliseconds"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "integration", "observability"]
+    },
+    {
+      "id": "canonical.upstream-pools.passive-health.recovery-threshold",
+      "kind": "field",
+      "path": "upstream_pools[].passive_health.recovery_threshold",
+      "editability": "operator",
+      "normalization": ["default to 1"],
+      "validation": ["1 through 100 successful observations"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "integration", "observability"]
+    },
+    {
       "id": "canonical.upstream-pools.tls",
       "kind": "field",
       "path": "upstream_pools[].tls",
@@ -1594,6 +1684,76 @@
       "validation": ["host and path forbidden"],
       "runtime": { "target": "health.probe", "disposition": "lowered" },
       "required_tests": ["decode", "validate", "failure", "integration"]
+    },
+    {
+      "id": "canonical.enum.passive-observe",
+      "kind": "enum",
+      "path": "PassiveObserve",
+      "editability": "fixed",
+      "normalization": ["lowercase serde token"],
+      "validation": ["closed passive observation layer set"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure"]
+    },
+    {
+      "id": "canonical.enum.passive-observe.layer4",
+      "kind": "variant",
+      "path": "PassiveObserve::Layer4",
+      "editability": "operator",
+      "normalization": ["token layer4"],
+      "validation": ["observe transport connection failures and timeouts"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "integration"]
+    },
+    {
+      "id": "canonical.enum.passive-observe.layer7",
+      "kind": "variant",
+      "path": "PassiveObserve::Layer7",
+      "editability": "operator",
+      "normalization": ["token layer7"],
+      "validation": ["observe attributed upstream request failures"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure", "integration"]
+    },
+    {
+      "id": "canonical.enum.passive-on-error",
+      "kind": "enum",
+      "path": "PassiveOnError",
+      "editability": "fixed",
+      "normalization": ["lowercase serde token"],
+      "validation": ["closed passive error action set"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "failure"]
+    },
+    {
+      "id": "canonical.enum.passive-on-error.count",
+      "kind": "variant",
+      "path": "PassiveOnError::Count",
+      "editability": "operator",
+      "normalization": ["token count"],
+      "validation": ["eject after the configured error limit"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "integration"]
+    },
+    {
+      "id": "canonical.enum.passive-on-error.immediately",
+      "kind": "variant",
+      "path": "PassiveOnError::Immediately",
+      "editability": "operator",
+      "normalization": ["token immediately"],
+      "validation": ["eject after the first attributed error"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "integration"]
+    },
+    {
+      "id": "canonical.enum.passive-on-error.mark-down",
+      "kind": "variant",
+      "path": "PassiveOnError::MarkDown",
+      "editability": "operator",
+      "normalization": ["token mark_down"],
+      "validation": ["mark the endpoint unhealthy at the configured error limit"],
+      "runtime": { "target": "health.passive", "disposition": "lowered" },
+      "required_tests": ["decode", "validate", "integration", "observability"]
     },
     { "id": "canonical.enum.cache-store", "kind": "enum", "path": "CacheStore", "editability": "fixed", "normalization": ["internally tagged by type"], "validation": ["closed cache store variant set"], "runtime": { "target": "schema", "disposition": "classified" }, "required_tests": ["decode", "validate", "failure", "render"] },
     { "id": "canonical.enum.cache-store.memory", "kind": "variant", "path": "CacheStore::Memory", "editability": "operator", "normalization": ["type token memory"], "validation": ["bounded in-memory store fields only"], "runtime": { "target": "schema", "disposition": "classified" }, "required_tests": ["decode", "validate", "failure", "render"] },

@@ -75,9 +75,10 @@ activation of standalone import reports. Restricted Lua cannot declare native re
   `first`, reusable HTTP least-connections, healthy-startup checks with exact timeout preservation,
   one literal `http-check send` GET request with a canonical URI, HTTP/1.0 or HTTP/1.1, and at most one
   literal Host header,
-  bounded retries with bare final redispatch, independent timeout scopes including upstream
-  queue deadlines, source-CIDR `forwardfor` exceptions, cumulative inherited `default-server`
-  health intervals/capacity, and server-close connection reuse. A backend-scoped, uniquely consumed
+  bounded retries with the safe `retry-on conn-failure/conn-refused` subset and bare final
+  redispatch, independent timeout scopes including upstream queue deadlines, source-CIDR `forwardfor`
+  exceptions, cumulative inherited `default-server` health intervals/capacity and passive observation,
+  thresholds, and mark-down policy, and server-close connection reuse. A backend-scoped, uniquely consumed
   one-request-per-connection overlay can provide the same lifecycle boundary when captured
   surrounding evidence, such as hostrouter's nginx HTTP/1.0/no-keepalive hop, establishes it. DNS
   names remain canonical and are not resolved during import. A positive `use_backend` condition may

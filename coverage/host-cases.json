@@ -306,6 +306,13 @@
     },
 
     {
+      "id": "HH-14",
+      "status": "covered",
+      "gates": { "canonical": true, "runtime": true, "failure": true, "tests": true, "native_lowering": true },
+      "evidence": ["crates/oxiroute-import/tests/haproxy_lower.rs#passive_server_policy_and_safe_retry_on_subset_lower_exactly", "crates/oxiroute-import/tests/haproxy_lower.rs#unsupported_retry_on_semantics_remain_blocking", "crates/oxiroute-import/tests/haproxy_lower.rs#duplicate_passive_server_options_remain_blocking", "docs/HOST_CONFIG_COVERAGE.md#HH-14"]
+    },
+
+    {
       "id": "HA-01",
       "status": "partial",
       "gates": { "canonical": true, "runtime": false, "failure": true, "tests": true, "native_lowering": true },
