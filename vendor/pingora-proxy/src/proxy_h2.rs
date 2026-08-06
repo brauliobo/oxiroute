@@ -198,6 +198,12 @@ where
             pipe_up_to_down_response(client_session, tx)
         );
 
+        if ret.is_err() {
+            // A dropped downstream stream must stop an in-flight origin request as well. The h2
+            // client otherwise keeps the request DATA stream alive while its response task exits.
+            client_body.send_reset(h2::Reason::CANCEL);
+        }
+
         if let Some(custom_session) = session.downstream_session.as_custom_mut() {
             if let Some(downstream_custom_message_writer) = downstream_custom_message_writer {
                 match custom_session.restore_custom_message_writer(downstream_custom_message_writer)
@@ -212,15 +218,7 @@ where
 
         match ret {
             Ok((downstream_can_reuse, _upstream)) => (downstream_can_reuse, None),
-            Err(e) => {
-                // On application level upstream read timeouts, send RST_STREAM CANCEL,
-                // we know we have not received END_STREAM at this point since we read timed out
-                // TODO: implement for write timeouts?
-                if e.esource == ErrorSource::Upstream && matches!(e.etype, ReadTimedout) {
-                    client_body.send_reset(h2::Reason::CANCEL);
-                }
-                (false, Some(e))
-            }
+            Err(e) => (false, Some(e)),
         }
     }
 
@@ -376,6 +374,9 @@ where
                             downstream_state.maybe_finished(request_done);
                         },
                         Err(e) => {
+                            if e.esource == ErrorSource::Downstream {
+                                return Err(e);
+                            }
                             // mark request done, attempt to drain receive
                             warn!("Upstream h2 body send error: {e}");
                             // upstream is what actually errored but we don't want to continue
@@ -764,29 +765,43 @@ pub(crate) async fn pipe_up_to_down_response(
         .map_err(|e| e.into_up())?; // should we send the error as an HttpTask?
 
     let resp_header = Box::new(client.response_header().expect("just read").clone());
+    let req_header = client.request_header().expect("must have sent req");
+    let expected_body_length = if req_header.method == Method::HEAD
+        || matches!(
+            resp_header.status,
+            StatusCode::NO_CONTENT | StatusCode::RESET_CONTENT | StatusCode::NOT_MODIFIED
+        ) {
+        None
+    } else {
+        let mut lengths = resp_header.headers.get_all(CONTENT_LENGTH).iter();
+        lengths
+            .next()
+            .map(|value| {
+                let length = value
+                    .to_str()
+                    .ok()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .ok_or_else(|| {
+                        Error::explain(InvalidHTTPHeader, "invalid H2 content-length")
+                    })?;
+                if lengths.next().is_some() {
+                    return Error::e_explain(
+                        InvalidHTTPHeader,
+                        "duplicate H2 content-length headers",
+                    );
+                }
+                Ok(length)
+            })
+            .transpose()?
+    };
+    let mut body_length = 0usize;
 
     match client.check_response_end_or_error() {
         Ok(eos) => {
-            // XXX: the h2 crate won't check for content-length underflow
-            // if a header frame with END_STREAM is sent without data frames
-            // As stated by RFC, "204 or 304 responses contain no content,
-            // as does the response to a HEAD request"
-            // https://datatracker.ietf.org/doc/html/rfc9113#section-8.1.1
-            let req_header = client.request_header().expect("must have sent req");
-            if eos
-                && req_header.method != Method::HEAD
-                && resp_header.status != StatusCode::NO_CONTENT
-                && resp_header.status != StatusCode::NOT_MODIFIED
-                // RFC technically allows for leading zeroes
-                // https://datatracker.ietf.org/doc/html/rfc9110#name-content-length
-                && resp_header
-                    .headers
-                    .get(CONTENT_LENGTH)
-                    .is_some_and(|cl| cl.as_bytes().iter().any(|b| *b != b'0'))
-            {
+            if eos && expected_body_length.is_some_and(|length| length != 0) {
                 let _ = tx
                     .send(HttpTask::Failed(
-                        Error::explain(H2Error, "non-zero content-length on EOS headers frame")
+                        Error::explain(H2Error, "H2 response ended before content-length")
                             .into_up(),
                     ))
                     .await;
@@ -824,6 +839,26 @@ pub(crate) async fn pipe_up_to_down_response(
         match client.check_response_end_or_error() {
             Ok(eos) => {
                 let empty = data.is_empty();
+                let Some(new_body_length) = body_length.checked_add(data.len()) else {
+                    let _ = tx
+                        .send(HttpTask::Failed(
+                            Error::explain(H2Error, "H2 response body length overflow").into_up(),
+                        ))
+                        .await;
+                    return Ok(());
+                };
+                if expected_body_length.is_some_and(|expected| {
+                    new_body_length > expected || eos && new_body_length != expected
+                }) {
+                    let _ = tx
+                        .send(HttpTask::Failed(
+                            Error::explain(H2Error, "H2 response body violates content-length")
+                                .into_up(),
+                        ))
+                        .await;
+                    return Ok(());
+                }
+                body_length = new_body_length;
                 if empty && !eos {
                     /* it is normal to get 0 bytes because of multi-chunk
                      * don't write 0 bytes to downstream since it will be
@@ -850,6 +885,15 @@ pub(crate) async fn pipe_up_to_down_response(
                 return Ok(());
             }
         }
+    }
+
+    if expected_body_length.is_some_and(|expected| expected != body_length) {
+        let _ = tx
+            .send(HttpTask::Failed(
+                Error::explain(H2Error, "H2 response ended before content-length").into_up(),
+            ))
+            .await;
+        return Ok(());
     }
 
     // attempt to get trailers

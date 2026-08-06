@@ -115,6 +115,8 @@ pub struct HttpSession {
     body_read: usize,
     // How many (application, not wire) response body bytes have been sent so far.
     body_sent: usize,
+    /// The read timeout applied to request body reads and client cancellation waits.
+    read_timeout: Option<Duration>,
     // buffered request body for retry logic
     retry_buffer: Option<FixedBuffer>,
     // digest to record underlying connection info
@@ -163,6 +165,7 @@ impl HttpSession {
                 ended: false,
                 body_read: 0,
                 body_sent: 0,
+                read_timeout: None,
                 retry_buffer: None,
                 digest,
                 write_timeout: None,
@@ -190,7 +193,21 @@ impl HttpSession {
 
     /// Read request body bytes. `None` when there is no more body to read.
     pub async fn read_body_bytes(&mut self) -> Result<Option<Bytes>> {
-        // TODO: timeout
+        match self.read_timeout {
+            Some(timeout_duration) => {
+                match timeout(timeout_duration, self.read_body_bytes_inner()).await {
+                    Ok(result) => result,
+                    Err(_) => Error::e_explain(
+                        ErrorType::ReadTimedout,
+                        format!("reading downstream request body, timeout: {timeout_duration:?}"),
+                    ),
+                }
+            }
+            None => self.read_body_bytes_inner().await,
+        }
+    }
+
+    async fn read_body_bytes_inner(&mut self) -> Result<Option<Bytes>> {
         let data = self.request_body_reader.data().await.transpose().or_err(
             ErrorType::ReadError,
             "while reading downstream request body",
@@ -261,6 +278,16 @@ impl HttpSession {
     /// to write to the stream after `timeout`.
     pub fn set_write_timeout(&mut self, timeout: Option<Duration>) {
         self.write_timeout = timeout;
+    }
+
+    /// Sets the read timeout applied to request body reads and client cancellation waits.
+    pub fn set_read_timeout(&mut self, timeout: Option<Duration>) {
+        self.read_timeout = timeout;
+    }
+
+    /// Get the request body read timeout.
+    pub fn get_read_timeout(&self) -> Option<Duration> {
+        self.read_timeout
     }
 
     /// Get the write timeout.
@@ -502,8 +529,13 @@ impl HttpSession {
     ///
     /// This will send a `INTERNAL_ERROR` stream error to the client
     pub fn shutdown(&mut self) {
+        self.reset(h2::Reason::INTERNAL_ERROR);
+    }
+
+    /// End this stream with an explicit HTTP/2 reset reason.
+    pub fn reset(&mut self, reason: h2::Reason) {
         if !self.ended {
-            self.send_response.send_reset(h2::Reason::INTERNAL_ERROR);
+            self.send_response.send_reset(reason);
         }
     }
 
@@ -575,7 +607,20 @@ impl HttpSession {
     /// until the client closes the connection
     pub async fn read_body_or_idle(&mut self, no_body_expected: bool) -> Result<Option<Bytes>> {
         if no_body_expected || self.is_body_done() {
-            let reason = self.idle().await?;
+            let reason = match self.read_timeout {
+                Some(timeout_duration) => match timeout(timeout_duration, self.idle()).await {
+                    Ok(result) => result?,
+                    Err(_) => {
+                        return Error::e_explain(
+                            ErrorType::ReadTimedout,
+                            format!(
+                                "waiting for downstream cancellation, timeout: {timeout_duration:?}"
+                            ),
+                        );
+                    }
+                },
+                None => self.idle().await?,
+            };
             Error::e_explain(
                 ErrorType::H2Error,
                 format!("Client closed H2, reason: {reason}"),
