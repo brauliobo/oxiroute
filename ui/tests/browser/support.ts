@@ -101,6 +101,28 @@ export function configSnapshot(revision = 'disk-revision', version = 1): ConfigS
   }
 }
 
+export function managedAcmeConfigSnapshot(): ConfigSnapshot {
+  const snapshot = configSnapshot()
+  snapshot.config.certificates = [{
+    name: 'managed-edge',
+    dns_names: ['edge.example.test'],
+    source: {
+      type: 'acme_managed',
+      directory_url: 'https://acme.example.test/directory',
+      state_root: '/var/lib/oxiroute/acme',
+      contacts: ['mailto:ops@example.test'],
+      terms_agreed: true,
+      challenge: 'http01',
+      key_type: 'ecdsa_p256',
+      allowed_dns_suffixes: ['example.test'],
+      retained_revisions: 3,
+      retention_days: 30,
+      dns01: null,
+    },
+  }]
+  return snapshot
+}
+
 export function configValidation(config: CanonicalConfig): Record<string, unknown> {
   return {
     candidateRevision: 'candidate-revision',

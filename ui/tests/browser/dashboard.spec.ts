@@ -9,6 +9,7 @@ import {
   configValidation,
   dashboardResponse,
   installApiMock,
+  managedAcmeConfigSnapshot,
   json,
   managementEventPage,
   managementMonitoring,
@@ -113,6 +114,53 @@ test.describe('dashboard browser gates', () => {
     await expect(page.locator('.revision-banner.save-state')).toContainText('Configuration saved; activation pending.')
     expect(saves).toHaveLength(1)
     expect(saves[0]).toMatchObject({ revision: 'disk-revision', config: { version: 2 } })
+  })
+
+  test('selects TLS-ALPN-01 by keyboard on mobile without retaining DNS provider fields', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'mobile-chromium', 'This gate exercises the mobile selector.')
+    const validated: CanonicalConfig[] = []
+    await installApiMock(page, (request) => {
+      const path = requestPath(request)
+      if (path === '/api/v1/config' && request.method() === 'GET') return json(managedAcmeConfigSnapshot())
+      if (path === '/api/v1/config/validate') {
+        const body = requestBody<{ config: CanonicalConfig }>(request)
+        validated.push(body.config)
+        return json(configValidation(body.config))
+      }
+      if (path === '/api/v1/events/stream') return shutdownStream()
+      return undefined
+    })
+
+    await page.goto('/#/configuration')
+    await page.locator('#config-access-token').fill(CONFIG_TOKEN)
+    await page.getByRole('button', { name: 'Unlock configuration' }).click()
+    await page.locator('#mobile-object-navigation').selectOption('certificates:0')
+
+    const challenge = page.locator('[data-field="certificates[].source.challenge"] select')
+    await expect(challenge).toHaveValue('http01')
+    await expect(challenge.locator('option')).toHaveCount(3)
+    await challenge.focus()
+    await challenge.press('ArrowDown')
+    await expect(challenge).toHaveValue('dns01')
+    await page.locator('[data-field="certificates[].source.dns01.provider"] input').fill('route53')
+    await page.locator('[data-field="certificates[].source.dns01.credential_file"] input').fill('/run/dns-token')
+    await challenge.press('ArrowDown')
+    await expect(challenge).toHaveValue('tls_alpn01')
+    await expect(page.locator('.challenge-note')).toContainText('public TCP port 443')
+    await expect(page.locator('.challenge-note')).toContainText('does not create or deploy')
+    await expect(page.locator('[data-field="certificates[].source.dns01.provider"]')).toHaveCount(0)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+
+    await page.getByRole('button', { name: 'Validate candidate' }).click()
+    await expect(page.getByText('KDL configuration preview')).toBeVisible()
+    expect(validated).toHaveLength(1)
+    const submitted = validated[0]!
+    expect(submitted.certificates[0]?.source).toEqual(expect.objectContaining({
+      challenge: 'tls_alpn01',
+      dns01: null,
+    }))
+    expect(JSON.stringify(submitted)).not.toContain('route53')
+    expect(JSON.stringify(submitted)).not.toContain('/run/dns-token')
   })
 
   test('preserves a dirty draft on save conflict', async ({ page }) => {
@@ -275,6 +323,8 @@ test.describe('dashboard browser gates', () => {
     const managed = inventory.certificates.find((certificate) => certificate.name === 'managed-edge')
     if (managed?.status && 'directoryUrl' in managed.status) {
       Object.assign(managed.status, {
+        challenge: 'tls_alpn01',
+        dnsProvider: null,
         privateKey: 'PRIVATE-KEY-MATERIAL',
         accountUrl: 'https://acme.example.test/account/secret',
         orderUrl: 'https://acme.example.test/order/secret',
@@ -296,6 +346,7 @@ test.describe('dashboard browser gates', () => {
     await page.getByRole('button', { name: 'Unlock telemetry' }).click()
     await expect(page.getByRole('heading', { name: 'Configured certificates' })).toBeVisible()
     await expect(page.locator('.certificate-grid')).toContainText('managed-edge')
+    await expect(page.locator('.certificate-grid')).toContainText('tls_alpn01')
     const text = await page.locator('body').innerText()
     expect(text).not.toContain('PRIVATE-KEY-MATERIAL')
     expect(text).not.toContain('account/secret')

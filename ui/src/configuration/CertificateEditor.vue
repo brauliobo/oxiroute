@@ -56,9 +56,17 @@ fieldset.object-block(data-field="certificates[].source")
       input(type="checkbox" v-model="certificate.source.terms_agreed")
     label.field(data-field="certificates[].source.challenge")
       span Challenge
-      select(:value="certificate.source.challenge" @change="changeAcmeChallenge")
+      select(
+        :value="certificate.source.challenge"
+        :aria-describedby="certificate.source.challenge === 'tls_alpn01' ? 'tls-alpn-deployment-note' : undefined"
+        @change="changeAcmeChallenge"
+      )
         option(value="http01") HTTP-01
         option(value="dns01") DNS-01
+        option(value="tls_alpn01") TLS-ALPN-01
+      small#tls-alpn-deployment-note.challenge-note(v-if="certificate.source.challenge === 'tls_alpn01'")
+        | TLS-ALPN-01 requires a deployed listener reachable on public TCP port 443.
+        | Selecting it records the challenge choice only; it does not create or deploy that listener.
     label.field(data-field="certificates[].source.key_type")
       span Leaf key type
       select(v-model="certificate.source.key_type")

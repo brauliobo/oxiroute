@@ -2,7 +2,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import ConfigurationWorkspace from './ConfigurationWorkspace.vue'
-import { CANONICAL_FIELD_REGISTRY } from './config'
+import { CANONICAL_FIELD_REGISTRY, isCanonicalConfig } from './config'
 import { defaultRtmpAutoPush, defaultRtmpCallback, defaultRtmpOutboundPolicy, defaultRtmpRelay } from './configuration/canonicalDefaults'
 import { contractConfigSnapshot, jsonResponse } from './test/contractFixtures'
 import type {
@@ -1110,6 +1110,55 @@ describe('ConfigurationWorkspace', () => {
       lifetime_timeout_ms: 3_601_000,
       udp: null,
     })
+  })
+
+  it('serializes TLS-ALPN-01 without stale DNS provider state and passes the canonical guard', async () => {
+    const snapshot = configSnapshot()
+    snapshot.config.certificates[0]!.source = {
+      type: 'acme_managed',
+      directory_url: 'https://acme.example.test/directory',
+      state_root: '/var/lib/oxiroute/acme',
+      contacts: ['mailto:ops@example.test'],
+      terms_agreed: true,
+      challenge: 'http01',
+      key_type: 'ecdsa_p256',
+      allowed_dns_suffixes: ['example.test'],
+      retained_revisions: 3,
+      retention_days: 30,
+      dns01: null,
+    }
+    const fetch = installConfigFetch(undefined, 200, snapshot)
+    const wrapper = await mountUnlocked()
+    await wrapper.get('#mobile-object-navigation').setValue('certificates:0')
+
+    const challenge = wrapper.get('[data-field="certificates[].source.challenge"] select')
+    await challenge.setValue('dns01')
+    await wrapper.get('[data-field="certificates[].source.dns01.provider"] input').setValue('route53')
+    await wrapper.get('[data-field="certificates[].source.dns01.credential_file"] input').setValue('/run/dns-token')
+    await challenge.setValue('tls_alpn01')
+    expect(wrapper.find('[data-field="certificates[].source.dns01.provider"]').exists()).toBe(false)
+
+    await findButton(wrapper, 'Validate candidate').trigger('click')
+    await flushPromises()
+
+    const validationCall = fetch.mock.calls.find(([url]) => String(url) === '/api/v1/config/validate')
+    const submitted = JSON.parse(String(validationCall?.[1]?.body)).config as CanonicalConfig
+    expect(isCanonicalConfig(submitted)).toBe(true)
+    expect(submitted.certificates[0]?.source).toEqual({
+      type: 'acme_managed',
+      directory_url: 'https://acme.example.test/directory',
+      state_root: '/var/lib/oxiroute/acme',
+      contacts: ['mailto:ops@example.test'],
+      terms_agreed: true,
+      challenge: 'tls_alpn01',
+      key_type: 'ecdsa_p256',
+      allowed_dns_suffixes: ['example.test'],
+      retained_revisions: 3,
+      retention_days: 30,
+      dns01: null,
+    })
+    expect(JSON.stringify(submitted)).not.toContain('route53')
+    expect(JSON.stringify(submitted)).not.toContain('/run/dns-token')
   })
 
   it('edits RTMP listeners and every RTMP service field with protocol-aware references', async () => {
