@@ -74,6 +74,9 @@ parser round trips, and long-running media/supervision properties remain planned
   completion-based endpoint schedules, and the shared concurrency bound.
 - Health-aware HTTP routing returns `503` for a matched pool with no selectable endpoint; monitoring
   tests cover pool/endpoint state, timestamps, failure reasons, and exact decimal-string counters.
+- Passive-health tests cover layer-4 versus layer-7 observation, bounded error thresholds, immediate
+  and mark-down ejection, recovery thresholds, immutable generation ownership, and Prometheus/event
+  observability without revoking an existing lease.
 - TCP full duplex, half-close, slow readers, backpressure, and cancellation.
 - TCP connect/idle/lifetime deadlines and partial traffic accounting across failure paths.
 - TLS SNI/ALPN, upstream verification, certificate rotation, and expiry. Client authentication
@@ -144,6 +147,9 @@ semantic consumption, canonical health-field provenance, native-reference compos
 preparation, and blocking arbitrary headers or disabled-check contradictions. Wire coverage checks
 page admission/request timeouts, DNS-rebinding and
 forwarded-header rejection, Referer fallback, mapped-IPv4 loopback, and HEAD representation length.
+Passive HAProxy tests additionally pin exact `observe`, `error-limit`, `on-error mark-down`, and
+`retry-on conn-failure/conn-refused` lowering plus provenance, while broader retry-on tokens remain
+fail-closed.
 
 UI contract coverage includes the exact Vitest cases `accepts new canonical variants and rejects
 invalid final redispatch shapes`, `edits ASCII case-insensitive authority matching and gates final

@@ -351,6 +351,14 @@ Current constraints:
   remove exactly one waiter and advance the next head. Reusable HTTP retains the connector's
   reuse-first capacity path, so this FIFO guarantee does not apply to requests sharing upstream
   connections or HTTP/2 streams.
+- `passive_health` is optional per pool. `observe = "layer4"` counts only connect failures and
+  timeouts; `observe = "layer7"` counts every attributed upstream failure. `on_error = "count"`
+  ejects after `error_limit` consecutive observed failures, while `"immediately"` ejects on the
+  first failure and `"mark_down"` applies the mark-down action after the error limit. `mark_down`
+  controls whether ejection also marks the active health state down, and `mark_up` controls whether active recovery restores it. Initial and
+  maximum ejection backoff are bounded to one day, and `recovery_threshold` is bounded to 100.
+  Missing passive policy retains the bounded runtime defaults; it does not disable failure
+  accounting. Ejection and recovery remain generation-owned and never revoke an existing lease.
 - HTTP services MUST contain at least one route. Route pool references MUST resolve.
 - Forward HTTP/1 services support absolute-form requests and CONNECT only when H1 is enabled.
   CONNECT ports are explicit. Authentication is absent, Bearer-token-file, or Basic htpasswd-file;
