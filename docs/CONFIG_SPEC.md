@@ -436,10 +436,13 @@ Current constraints:
   `body_safety = "empty"` express that replay boundary. Every retry also requires the configured
   `target` to be selectable. `target = "next_server"` requires a distinct named server;
   `target = "same_server"` reselects the same named server. `delay_ms` defaults to `0`, is bounded to
-  `60000`, and is applied before each route retry. Trying alternate addresses for one DNS endpoint
-  is transport fallback and does not consume `max_retries`; route retry begins only after that
-  bounded address set is exhausted. Established-connection errors other than a refused stream,
-  response statuses, upgrades, and unsafe or body-bearing request replays are never retried. Each
+  `60000`, and is applied before each route retry. `response_statuses` optionally lists unique 5xx
+  statuses that trigger bounded retries; a status-only policy is valid when its trigger list is
+  empty. The `empty_response`, `response_timeout`, and `junk_response` triggers cover bounded
+  pre-body response failures. Trying alternate addresses for one DNS endpoint is transport fallback
+  and does not consume `max_retries`; route retry begins only after that bounded address set is
+  exhausted. Established-connection errors other than configured response/error triggers, upgrades,
+  and unsafe or body-bearing request replays are never retried. Each
   attempt is clamped to the remaining total request deadline, whose default upper bound is the
   service `upstream_io_timeout_ms` and which is reduced by the listener's active request timeout.
   `final_redispatch = true` changes only the last configured retry from `same_server` to

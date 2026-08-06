@@ -79,6 +79,7 @@ export function defaultHttpProxyPolicy(): HttpProxyPolicyConfig {
       delay_ms: 0,
       final_redispatch: false,
       triggers: [...HTTP_RETRY_TRIGGERS],
+      response_statuses: [],
       method_safety: 'get_head',
       body_safety: 'empty',
     },

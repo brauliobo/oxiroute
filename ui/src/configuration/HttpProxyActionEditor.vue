@@ -171,11 +171,23 @@
           input(
             type="checkbox"
             :checked="action.policy.retry.triggers.includes(trigger)"
-            :disabled="action.policy.retry.triggers.length === 1 && action.policy.retry.triggers.includes(trigger)"
-            :title="action.policy.retry.triggers.length === 1 && action.policy.retry.triggers.includes(trigger) ? 'The server requires at least one retry trigger.' : undefined"
+            :disabled="action.policy.retry.triggers.length === 1 && action.policy.retry.triggers.includes(trigger) && (action.policy.retry.response_statuses?.length ?? 0) === 0 && action.policy.retry.max_retries > 0"
+            :title="action.policy.retry.triggers.length === 1 && action.policy.retry.triggers.includes(trigger) && (action.policy.retry.response_statuses?.length ?? 0) === 0 && action.policy.retry.max_retries > 0 ? 'The server requires a retry trigger or response status.' : undefined"
             @change="toggleRetryTrigger(trigger, $event)"
           )
           span {{ retryTriggerLabels[trigger] }}
+      NumberListField(
+        :model-value="action.policy.retry.response_statuses ?? []"
+        label="Retry response statuses"
+        item-label="status"
+        field-path="http_services[].routes[].action.policy.retry.response_statuses"
+        :default-value="500"
+        :min="500"
+        :max="599"
+        :max-items="100"
+        hint="Retry only on explicitly selected upstream 5xx responses."
+        @update:model-value="action.policy.retry.response_statuses = $event"
+      )
 
     HttpCachePolicyEditor(:policy="action.policy" :store-names="cacheStoreNames")
 </template>
@@ -188,6 +200,7 @@ import type {
 } from '../config'
 import { HTTP_RETRY_TRIGGERS, defaultUpstreamHost } from './httpDefaults'
 import HttpCachePolicyEditor from './HttpCachePolicyEditor.vue'
+import NumberListField from './NumberListField.vue'
 
 const props = defineProps<{
   action: HttpProxyActionConfig
@@ -200,6 +213,9 @@ const retryTriggerLabels: Record<HttpRetryTrigger, string> = {
   connect_failure: 'Connection failure',
   connect_timeout: 'Connection timeout',
   refused_stream: 'HTTP/2 refused stream',
+  empty_response: 'Empty response',
+  response_timeout: 'Response timeout',
+  junk_response: 'Malformed response',
 }
 
 function setMaxRetries(event: Event): void {
@@ -334,7 +350,7 @@ function toggleRetryTrigger(trigger: HttpRetryTrigger, event: Event): void {
   const triggers = props.action.policy.retry.triggers
   if ((event.target as HTMLInputElement).checked) {
     if (!triggers.includes(trigger)) triggers.push(trigger)
-  } else if (triggers.length > 1) {
+  } else if (triggers.length > 1 || (props.action.policy.retry.response_statuses?.length ?? 0) > 0 || props.action.policy.retry.max_retries === 0) {
     props.action.policy.retry.triggers = triggers.filter((candidate) => candidate !== trigger)
   }
 }

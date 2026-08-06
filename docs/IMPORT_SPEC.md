@@ -75,10 +75,11 @@ activation of standalone import reports. Restricted Lua cannot declare native re
   `first`, reusable HTTP least-connections, healthy-startup checks with exact timeout preservation,
   one literal `http-check send` GET request with a canonical URI, HTTP/1.0 or HTTP/1.1, and at most one
   literal Host header,
-  bounded retries with the safe `retry-on conn-failure/conn-refused` subset and bare final
-  redispatch, independent timeout scopes including upstream queue deadlines, source-CIDR `forwardfor`
-  exceptions, cumulative inherited `default-server` health intervals/capacity and passive observation,
-  thresholds, and mark-down policy, and server-close connection reuse. A backend-scoped, uniquely consumed
+  bounded retries with `retry-on none`, connection/response triggers, explicit 5xx statuses, and
+  `all`/`all-retryable-errors`, plus bare final redispatch, independent timeout scopes including
+  upstream queue deadlines, source-CIDR `forwardfor` exceptions, cumulative inherited
+  `default-server` health intervals/capacity and passive observation, thresholds, and mark-down
+  policy, and server-close connection reuse. A backend-scoped, uniquely consumed
   one-request-per-connection overlay can provide the same lifecycle boundary when captured
   surrounding evidence, such as hostrouter's nginx HTTP/1.0/no-keepalive hop, establishes it. DNS
   names remain canonical and are not resolved during import. A positive `use_backend` condition may
@@ -255,17 +256,18 @@ The current strict HTTP/TCP slice includes:
 - Static socket, DNS, and Unix `server` endpoints and basic frontend/backend TLS where the canonical
   transport has equivalent semantics.
 - Dedicated supported stats pages, `unix@` listener modes, exact health timeout preservation,
-  reusable HTTP least-connections, and bare redispatch as delayed same-server retries with a final
-  immediate next-server attempt. Only same-server retries wait the imported
-  `min(timeout connect, 1s)` delay.
+  reusable HTTP least-connections, supported `retry-on` trigger/status forms, and bare redispatch as
+  delayed same-server retries with a final immediate next-server attempt. Only same-server retries
+  wait the imported `min(timeout connect, 1s)` delay.
 
 Blockers:
 
 - Generic UDP, arbitrary sample expressions, maps, stick tables, Lua, and dynamic servers.
 - Complex health checks beyond the literal `http-check send` request shape, arbitrary check headers or
   bodies, runtime server state, SPOE, and unsupported QUIC modes.
-- Redispatch interval arguments, broader ACL expressions, unsupported stats/authentication forms,
-  and server-selection options without an equivalent request-lifetime contract.
+- Redispatch interval arguments, broader ACL expressions, unsupported `retry-on` forms, unsupported
+  stats/authentication forms, and server-selection options without an equivalent request-lifetime
+  contract.
 
 HAProxy `-f` file/directory ordering and named `defaults from` inheritance MUST be retained.
 
