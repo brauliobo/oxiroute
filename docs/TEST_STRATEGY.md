@@ -98,8 +98,8 @@ parser round trips, and long-running media/supervision properties remain planned
   nullable capacities, transport-qualified binds, pool algorithms, active leases, and
   non-overlapping polling.
 
-UDP relay behavior, packaged supervised UDP/H3 replacement under active traffic, active-traffic
-generation reload/drain breadth, richer native dependency watching, downstream client certificate
+Broader UDP relay behavior, packaged supervised UDP/H3 replacement under active traffic,
+active-traffic generation reload/drain breadth, richer native dependency watching, downstream client certificate
 authentication, and managed ACME live/staging integration remain gates rather than complete release
 evidence. Managed ACME protocol, state, bootstrap, TLS-ALPN cleanup, DNS cleanup recovery, and
 scripted-transport paths are unit-tested. Durable audit persistence/reopen/filter behavior is tested
