@@ -549,6 +549,10 @@ fn nginx_probe_source(id: &str, directory: &Path) -> String {
         | "directive.nginx.ssl-certificate"
         | "directive.nginx.ssl-certificate-key"
         | "directive.nginx.ssl-protocols" => render_nginx_fixture(standard_nginx_fixture()),
+        "directive.nginx.upstream-server.weighted" => {
+            render_nginx_fixture(standard_nginx_fixture())
+                .replace("server 127.0.0.1:3000;", "server 127.0.0.1:3000 weight=50;")
+        }
         id => panic!("nginx manifest form has no executable probe: {id}"),
     }
 }

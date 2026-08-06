@@ -92,6 +92,8 @@ fn lowers_proxy_pass_uri_replacement_and_accepts_explicit_expires_off() {
           proxy_http_version 1.1;
           proxy_buffering off;
           proxy_request_buffering off;
+          proxy_next_upstream off;
+          proxy_next_upstream_tries 1;
           proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
           upstream backend { server 127.0.0.1:8080; }
           server {
@@ -133,6 +135,46 @@ fn lowers_proxy_pass_uri_replacement_and_accepts_explicit_expires_off() {
             .expect("rendered rewritten proxy config")
             .contains("upstream_path_rewrite")
     );
+}
+
+#[test]
+fn bounded_upstream_weights_lower_with_default_one_and_provenance() {
+    let report = import_source(
+        r"http {
+          proxy_http_version 1.1;
+          proxy_buffering off;
+          proxy_request_buffering off;
+          proxy_next_upstream off;
+          proxy_next_upstream_tries 1;
+          proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+          upstream backend {
+            server 127.0.0.1:8080 weight=50;
+            server 127.0.0.1:8081;
+          }
+          server {
+            listen 127.0.0.1:8088 default_server;
+            location / { proxy_pass http://backend; }
+          }
+        }",
+    );
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let config = report.config.as_ref().expect("weighted nginx config");
+    assert_eq!(
+        config.upstream_pools[0].algorithm,
+        oxiroute_config::UpstreamAlgorithm::WeightedRoundRobin {
+            weights: vec![50, 1]
+        }
+    );
+    for path in [
+        "/upstream_pools/0/algorithm/weights/0",
+        "/upstream_pools/0/algorithm/weights/1",
+    ] {
+        assert!(
+            report.provenance.iter().any(|entry| entry.path == path),
+            "{path}"
+        );
+    }
 }
 
 #[test]

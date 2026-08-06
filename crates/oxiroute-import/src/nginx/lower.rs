@@ -131,6 +131,7 @@ struct PoolCandidate {
     pool: UpstreamPool,
     origin: DirectiveOrigin,
     endpoint_origins: Vec<DirectiveOrigin>,
+    weight_origins: Option<Vec<DirectiveOrigin>>,
 }
 
 struct LowerIssue {

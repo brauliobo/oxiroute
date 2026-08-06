@@ -766,6 +766,7 @@ defaults shared
   mode http
   log-format custom
   default-server weight 20
+  default-server ssl
   retry-on 0rtt-rejected
   timeout queue 5s
 frontend public
@@ -812,13 +813,24 @@ backend app
     let server = &report.value().backends[0].servers[0];
     assert_eq!(server.max_connections.as_ref().unwrap().value, 10);
     assert_eq!(
+        report.value().defaults[0]
+            .server_defaults
+            .as_ref()
+            .expect("default-server weight")
+            .weight
+            .as_ref()
+            .expect("effective default-server weight")
+            .value,
+        20
+    );
+    assert_eq!(server.weight.as_ref().expect("server weight").value, 50);
+    assert_eq!(
         server
             .unsupported_options
             .iter()
             .map(|option| option.value.name.as_slice())
             .collect::<Vec<_>>(),
         [
-            b"weight".as_slice(),
             b"backup".as_slice(),
             b"ssl".as_slice(),
             b"verify".as_slice(),
@@ -827,6 +839,49 @@ backend app
             b"check-send-proxy".as_slice(),
         ]
     );
+}
+
+#[test]
+fn bounded_server_weights_resolve_as_effective_values() {
+    let contents = b"defaults shared
+  mode tcp
+  default-server weight 20
+backend app
+  balance roundrobin
+  server app1 127.0.0.1:3000 weight 50
+  server app2 127.0.0.1:3001
+";
+    let (_, report) = resolve_bytes(contents);
+    let servers = &report.value().backends[0].servers;
+
+    assert!(
+        report.diagnostics().is_empty(),
+        "{:?}",
+        report.diagnostics()
+    );
+    assert_eq!(servers[0].weight.as_ref().expect("direct weight").value, 50);
+    assert_eq!(
+        servers[1].weight.as_ref().expect("inherited weight").value,
+        20
+    );
+    assert!(
+        servers
+            .iter()
+            .all(|server| server.unsupported_options.is_empty())
+    );
+}
+
+#[test]
+fn invalid_server_weights_remain_blocking() {
+    for value in ["0", "101", "+5", "50%", "%[var(txn.weight)]"] {
+        let contents = format!(
+            "backend app\n  balance roundrobin\n  server app1 127.0.0.1:3000 weight {value}\n"
+        );
+        let (_, report) = resolve_bytes(contents.as_bytes());
+
+        assert!(report.has_errors(), "invalid weight resolved: {value}");
+        assert_eq!(code_count(&report, E_UNSUPPORTED_FORM), 1, "{value}");
+    }
 }
 
 #[test]
@@ -874,7 +929,8 @@ fn conflicting_server_options_are_reported_without_discarding_the_server() {
 
     assert_eq!(code_count(&report, E_CONFLICTING_DIRECTIVE), 2);
     assert_eq!(server.name.value, b"app1");
-    assert_eq!(server.unsupported_options.len(), 2);
+    assert_eq!(server.unsupported_options.len(), 1);
+    assert_eq!(server.unsupported_options[0].value.name, b"verify");
     assert_eq!(
         report.value().ledger.entries.last().unwrap().outcome,
         oxiroute_import::haproxy::DecisionOutcome::Blocked(BlockingReason::ConflictingDirective)

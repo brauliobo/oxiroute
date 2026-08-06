@@ -16,6 +16,8 @@ use super::{
     Provenance, SourceGraph, Word,
 };
 
+const MAX_UPSTREAM_WEIGHT: u16 = 100;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HttpResolution {
     pub http_blocks: Vec<EffectiveHttp>,
@@ -83,7 +85,14 @@ pub struct EffectiveUpstreamServer {
     pub origin: DirectiveOrigin,
     pub address: Option<NginxValue>,
     pub endpoint: Option<StaticEndpoint>,
+    pub weight: Option<EffectiveUpstreamWeight>,
     pub parameters: Vec<NginxValue>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EffectiveUpstreamWeight {
+    pub value: u16,
+    pub origin: DirectiveOrigin,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -447,6 +456,51 @@ impl<'a> Resolver<'a> {
             .as_ref()
             .and_then(|address| parse_static_endpoint(&address.value, 80));
 
+        let mut weight = None;
+        let mut weight_seen = false;
+        let mut parameter_issue: Option<(DiagnosticCode, &'static str)> = None;
+        for parameter in &parameters {
+            let Some(value) = parameter.value.strip_prefix(b"weight=") else {
+                parameter_issue.get_or_insert((
+                    E_UNSUPPORTED_FEATURE,
+                    "upstream server parameters are unsupported except for static weight",
+                ));
+                continue;
+            };
+            if weight_seen {
+                parameter_issue.get_or_insert((
+                    E_INVALID_VALUE,
+                    "upstream server weight may be specified only once",
+                ));
+                continue;
+            }
+            weight_seen = true;
+            if has_variable(value) {
+                parameter_issue.get_or_insert((
+                    E_UNSUPPORTED_FEATURE,
+                    "dynamic upstream server weights are unsupported",
+                ));
+                continue;
+            }
+            let parsed = std::str::from_utf8(value)
+                .ok()
+                .filter(|value| {
+                    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+                })
+                .and_then(|value| value.parse::<u16>().ok())
+                .filter(|weight| (1..=MAX_UPSTREAM_WEIGHT).contains(weight));
+            let Some(value) = parsed else {
+                parameter_issue.get_or_insert((
+                    E_INVALID_VALUE,
+                    "upstream server weight must be an integer between 1 and 100",
+                ));
+                continue;
+            };
+            let mut origin = Self::origin(directive);
+            origin.span = parameter.span;
+            weight = Some(EffectiveUpstreamWeight { value, origin });
+        }
+
         let outcome =
             if directive.directive.children.is_some() || directive.directive.arguments.is_empty() {
                 Some((
@@ -463,13 +517,8 @@ impl<'a> Resolver<'a> {
                 ))
             } else if endpoint.is_none() {
                 Some((E_INVALID_VALUE, "invalid static upstream server address"))
-            } else if !parameters.is_empty() {
-                Some((
-                    E_UNSUPPORTED_FEATURE,
-                    "upstream server parameters are unsupported",
-                ))
             } else {
-                None
+                parameter_issue
             };
         self.finish_occurrence(directive.occurrence, outcome);
 
@@ -477,6 +526,7 @@ impl<'a> Resolver<'a> {
             origin: Self::origin(directive),
             address,
             endpoint,
+            weight,
             parameters,
         }
     }

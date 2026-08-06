@@ -13,8 +13,8 @@ use oxiroute_config::{
     HttpResponseHeaderMutation, HttpRetryPolicy, HttpRetryTrigger, HttpRoute, HttpRouteAction,
     HttpRoutePolicy, HttpSameSite, HttpService, HttpStaticErrorResponse, HttpStaticMimePolicy,
     HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost, HttpVersionPolicy, Listener,
-    ListenerBind, Protocol, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool,
-    UpstreamServer, UpstreamTls, canonicalize_http_path,
+    ListenerBind, Protocol, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint,
+    UpstreamPool, UpstreamServer, UpstreamTls, canonicalize_http_path,
 };
 
 use crate::canonical::absolute_file_path;
@@ -1762,6 +1762,10 @@ impl Lowerer {
         })
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "endpoint, weighted policy, pool construction, and provenance stay atomic"
+    )]
     fn proxy_pool(
         http: &EffectiveHttp,
         proxy: &crate::nginx::EffectiveProxyPass,
@@ -1771,42 +1775,79 @@ impl Lowerer {
         upstream_tls: Option<UpstreamTls>,
         issues: &mut Vec<LowerIssue>,
     ) -> Option<PoolCandidate> {
-        let (endpoints, origin, endpoint_origins) = match proxy.upstream {
-            crate::nginx::UpstreamReference::Direct => (
-                proxy
-                    .direct_endpoint
-                    .as_ref()
-                    .map(|endpoint| {
-                        canonical_proxy_endpoint(endpoint, proxy, upstream_tls.is_some())
-                    })
-                    .into_iter()
-                    .collect(),
-                proxy.origin.clone(),
-                vec![proxy.origin.clone()],
-            ),
-            crate::nginx::UpstreamReference::Resolved(occurrence) => {
-                let upstream = http
-                    .upstreams
-                    .iter()
-                    .find(|upstream| upstream.origin.occurrence == occurrence)
-                    .expect("resolved upstream occurrence is retained");
-                let (endpoints, endpoint_origins) = upstream
-                    .servers
-                    .iter()
-                    .filter_map(|server| {
-                        server
-                            .endpoint
-                            .as_ref()
-                            .map(|endpoint| (canonical_endpoint(endpoint), server.origin.clone()))
-                    })
-                    .unzip();
-                (endpoints, upstream.origin.clone(), endpoint_origins)
-            }
-            crate::nginx::UpstreamReference::Unresolved
-            | crate::nginx::UpstreamReference::Variable => {
-                (Vec::new(), proxy.origin.clone(), Vec::new())
-            }
-        };
+        let (endpoints, origin, endpoint_origins, weight_origins, algorithm) =
+            match proxy.upstream {
+                crate::nginx::UpstreamReference::Direct => (
+                    proxy
+                        .direct_endpoint
+                        .as_ref()
+                        .map(|endpoint| {
+                            canonical_proxy_endpoint(endpoint, proxy, upstream_tls.is_some())
+                        })
+                        .into_iter()
+                        .collect(),
+                    proxy.origin.clone(),
+                    vec![proxy.origin.clone()],
+                    None,
+                    UpstreamAlgorithm::RoundRobin,
+                ),
+                crate::nginx::UpstreamReference::Resolved(occurrence) => {
+                    let upstream = http
+                        .upstreams
+                        .iter()
+                        .find(|upstream| upstream.origin.occurrence == occurrence)
+                        .expect("resolved upstream occurrence is retained");
+                    let has_weights = upstream
+                        .servers
+                        .iter()
+                        .any(|server| server.weight.is_some());
+                    let mut endpoints = Vec::new();
+                    let mut endpoint_origins = Vec::new();
+                    let mut weight_origins = has_weights.then(Vec::new);
+                    for server in &upstream.servers {
+                        let Some(endpoint) = server.endpoint.as_ref() else {
+                            continue;
+                        };
+                        endpoints.push(canonical_endpoint(endpoint));
+                        endpoint_origins.push(server.origin.clone());
+                        if let Some(origins) = &mut weight_origins {
+                            origins.push(server.weight.as_ref().map_or_else(
+                                || server.origin.clone(),
+                                |weight| weight.origin.clone(),
+                            ));
+                        }
+                    }
+                    (
+                        endpoints,
+                        upstream.origin.clone(),
+                        endpoint_origins,
+                        weight_origins,
+                        if has_weights {
+                            UpstreamAlgorithm::WeightedRoundRobin {
+                                weights: upstream
+                                    .servers
+                                    .iter()
+                                    .filter_map(|server| {
+                                        server.endpoint.as_ref().map(|_| {
+                                            server.weight.as_ref().map_or(1, |weight| weight.value)
+                                        })
+                                    })
+                                    .collect(),
+                            }
+                        } else {
+                            UpstreamAlgorithm::RoundRobin
+                        },
+                    )
+                }
+                crate::nginx::UpstreamReference::Unresolved
+                | crate::nginx::UpstreamReference::Variable => (
+                    Vec::new(),
+                    proxy.origin.clone(),
+                    Vec::new(),
+                    None,
+                    UpstreamAlgorithm::RoundRobin,
+                ),
+            };
         if endpoints.is_empty() {
             issues.push(issue(
                 &proxy.origin,
@@ -1852,7 +1893,7 @@ impl Lowerer {
                 name,
                 servers,
                 endpoints: Vec::new(),
-                algorithm: oxiroute_config::UpstreamAlgorithm::RoundRobin,
+                algorithm,
                 health_check: None,
                 passive_health: None,
                 tls: upstream_tls,
@@ -1864,6 +1905,7 @@ impl Lowerer {
             },
             origin,
             endpoint_origins,
+            weight_origins,
         })
     }
 

@@ -7,6 +7,8 @@ use super::{
     parse_host_port, parse_u32, parse_u64,
 };
 
+const MAX_UPSTREAM_WEIGHT: u16 = 100;
+
 fn parse_server_address(value: &[u8]) -> Option<ServerAddress> {
     if value.starts_with(b"/") {
         return Some(ServerAddress::Unix {
@@ -59,6 +61,9 @@ pub(super) fn merge_server_defaults(current: &mut EffectiveServer, incoming: Eff
     if incoming.on_error.is_some() {
         current.on_error = incoming.on_error;
     }
+    if incoming.weight.is_some() {
+        current.weight = incoming.weight;
+    }
 }
 
 #[expect(
@@ -86,6 +91,7 @@ pub(super) fn parse_server(
         observe: None,
         error_limit: None,
         on_error: None,
+        weight: None,
         unsupported_options: Vec::new(),
     };
     let mut seen: HashMap<Vec<u8>, (Vec<Vec<u8>>, Span)> = HashMap::new();
@@ -101,7 +107,10 @@ pub(super) fn parse_server(
             .collect::<Vec<_>>();
         if let Some((previous_arguments, previous_span)) = seen.get(&option.value) {
             if previous_arguments != &arguments
-                || matches!(option.value.as_slice(), b"observe" | b"error-limit" | b"on-error")
+                || matches!(
+                    option.value.as_slice(),
+                    b"observe" | b"error-limit" | b"on-error" | b"weight"
+                )
             {
                 conflicts.push(OptionConflict {
                     name: option.value.clone(),
@@ -186,6 +195,17 @@ pub(super) fn parse_server(
                     _ => return None,
                 };
                 server.on_error = Some(EffectiveValue::direct(on_error, occurrence, value.span));
+            }
+            b"weight" => {
+                let value = &option_arguments[0];
+                let weight = std::str::from_utf8(&value.value)
+                    .ok()
+                    .filter(|value| {
+                        !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+                    .and_then(|value| value.parse::<u16>().ok())
+                    .filter(|weight| (1..=MAX_UPSTREAM_WEIGHT).contains(weight))?;
+                server.weight = Some(EffectiveValue::direct(weight, occurrence, value.span));
             }
             _ => server.unsupported_options.push(EffectiveValue::direct(
                 ServerOption {

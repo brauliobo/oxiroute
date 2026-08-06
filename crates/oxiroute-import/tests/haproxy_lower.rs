@@ -475,6 +475,57 @@ backend app
 }
 
 #[test]
+fn bounded_server_weights_lower_with_effective_defaults_and_provenance() {
+    let source = b"defaults tcp_defaults
+  mode tcp
+  retries 0
+  timeout connect 10s
+  timeout queue 15s
+  timeout client 5m
+  timeout server 5m
+  default-server weight 20
+frontend postgres
+  bind 127.0.0.1:15432
+  maxconn 1000
+  default_backend postgres_pool
+backend postgres_pool
+  balance roundrobin
+  server primary 127.0.0.1:5432 weight 50
+  server secondary 127.0.0.1:5433
+";
+    let imported = import_fixture("weighted-servers.cfg", source);
+    let candidate = imported.value();
+    let config = candidate.config.as_ref().expect("weighted config");
+
+    assert_eq!(
+        config.upstream_pools[0].algorithm,
+        UpstreamAlgorithm::WeightedRoundRobin {
+            weights: vec![50, 20]
+        }
+    );
+    assert_has_provenance(candidate, "/upstream_pools/0/algorithm/weights/0");
+    assert_has_provenance(candidate, "/upstream_pools/0/algorithm/weights/1");
+}
+
+#[test]
+fn weighted_servers_require_roundrobin_balance() {
+    let source = String::from_utf8(MINIMAL.to_vec())
+        .expect("UTF-8 fixture")
+        .replace("balance roundrobin", "balance leastconn")
+        .replace(
+            "server primary 127.0.0.1:5432",
+            "server primary 127.0.0.1:5432 weight 50",
+        );
+    let imported = import_fixture("weighted-leastconn.cfg", source.as_bytes());
+
+    assert!(imported.value().config.is_none());
+    assert_blocker(
+        imported.diagnostics(),
+        "representable only with roundrobin balance",
+    );
+}
+
+#[test]
 fn http_check_send_lowers_to_the_existing_runtime_health_request() {
     let imported = import_fixture("http-check-send.cfg", HTTP_CHECK_SEND);
     assert!(!imported.has_errors(), "{:?}", imported.diagnostics());

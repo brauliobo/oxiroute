@@ -188,8 +188,10 @@ fn assert_haproxy_lowered_subset(entries: &[DirectiveForm]) {
         "directive.haproxy.server.dns-tcp",
         "directive.haproxy.server.static-ip-tcp",
         "directive.haproxy.server.unix-tcp",
+        "directive.haproxy.server.weighted-tcp",
         "directive.haproxy.server.health-options",
         "directive.haproxy.default-server.health-options",
+        "directive.haproxy.default-server.weighted-tcp",
         "directive.haproxy.server.passive-health",
         "directive.haproxy.default-server.passive-health",
         "directive.haproxy.maxconn.proxy-http",
@@ -203,6 +205,8 @@ fn assert_haproxy_lowered_subset(entries: &[DirectiveForm]) {
         "directive.haproxy.server.static-ip-http",
         "directive.haproxy.server.dns-http",
         "directive.haproxy.server.unix-http",
+        "directive.haproxy.server.weighted-http",
+        "directive.haproxy.default-server.weighted-http",
         "directive.haproxy.retries.zero-http",
         "directive.haproxy.retry-on.none",
         "directive.haproxy.retry-on.triggers",
@@ -488,11 +492,18 @@ fn haproxy_context_directives(entry: &DirectiveForm, context: &str) -> Vec<&'sta
         "directive.haproxy.server.unix-tcp" | "directive.haproxy.server.unix-http" => {
             vec!["server primary /run/database.sock"]
         }
+        "directive.haproxy.server.weighted-tcp" | "directive.haproxy.server.weighted-http" => {
+            vec!["server primary 127.0.0.1:5432 weight 50"]
+        }
         "directive.haproxy.server.health-options" => {
             vec!["server primary 127.0.0.1:5432 check inter 2s rise 2 fall 3"]
         }
         "directive.haproxy.default-server.health-options" => {
             vec!["default-server check inter 2s fastinter 1s downinter 5s rise 2 fall 3"]
+        }
+        "directive.haproxy.default-server.weighted-tcp"
+        | "directive.haproxy.default-server.weighted-http" => {
+            vec!["default-server weight 25"]
         }
         "directive.haproxy.server.passive-health" => {
             vec![
@@ -805,9 +816,23 @@ fn haproxy_probe_source(entry: &DirectiveForm) -> String {
             "server primary 127.0.0.1:5432",
             "server primary 127.0.0.1:5432 check inter 2s rise 2 fall 3",
         ),
+        "directive.haproxy.server.weighted-tcp" => haproxy_tcp_base().replace(
+            "server primary 127.0.0.1:5432",
+            "server primary 127.0.0.1:5432 weight 50",
+        ),
+        "directive.haproxy.server.weighted-http" => haproxy_http_base().replace(
+            "server api-1 127.0.0.1:3001",
+            "server api-1 127.0.0.1:3001 weight 50",
+        ),
         "directive.haproxy.default-server.health-options" => inject_haproxy_defaults(
             "default-server check inter 2s fastinter 1s downinter 5s rise 2 fall 3",
         ),
+        "directive.haproxy.default-server.weighted-tcp" => {
+            inject_haproxy_defaults("default-server weight 25")
+        }
+        "directive.haproxy.default-server.weighted-http" => {
+            inject_haproxy_http_defaults("default-server weight 25")
+        }
         "directive.haproxy.server.passive-health" => haproxy_tcp_base().replace(
             "server primary 127.0.0.1:5432",
             "server primary 127.0.0.1:5432 check observe layer4 error-limit 5 on-error mark-down",
