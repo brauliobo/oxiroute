@@ -17,6 +17,15 @@ Squid, RTMP, or any native proxy product.
   DASH output, VOD/recording controls, live statistics, and allowlisted isolated exec profiles.
 - Extend the management API and Vue dashboard for current RTMP, certificate, configuration, event,
   and operational controls, with deterministic component and browser coverage.
+- Add weighted-round-robin server weight editing with bounded validation and add an authenticated
+  durable audit workspace with filters, cursor pagination, and persistence status; the operational
+  event ring remains non-durable.
+- Add authenticated bounded native import report inventory/detail and a redacted Provenance workspace
+  with finalized read-only KDL previews; native source files remain read-only and are never rewritten.
+- Add bounded redacted RTMP JSONL access logging with lifecycle metrics and periodic relay DNS refresh
+  with policy/family/direct-loop checks and refresh outcomes.
+- Add targeted UDP relay passive failure attribution and bounded exhaustion coverage, plus bounded H3
+  resource-exhaustion coverage, while retaining the existing production-evidence gates.
 - Add bounded authenticated event SSE with cursor replay/resync, heartbeats, shutdown signaling, and
   frontend event-history/reconnect handling; the operational event ring remains in memory and
   non-durable, while redacted durable audit history is stored and queried separately.
@@ -31,10 +40,10 @@ Squid, RTMP, or any native proxy product.
 ## Compatibility Boundaries
 
 - **HTTP/3: partial.** The active reverse and forward listeners cover bounded routing/forwarding,
-  configured fixed/redirect/static actions, classic CONNECT forms, and implemented/tested
-  generation-owned GOAWAY drain. Cache, compression, upgrades, broad HTTP conformance,
-  active-traffic drain evidence, and arbitrary forward HTTP/2/HTTP/3 forms remain unsupported or
-  gated.
+  configured fixed/redirect/static actions, classic CONNECT forms, bounded resource exhaustion, and
+  implemented/tested generation-owned GOAWAY drain. Cache, compression, upgrades, broad HTTP
+  conformance, active-traffic drain evidence, and arbitrary forward HTTP/2/HTTP/3 forms remain
+  unsupported or gated.
 - **HTTP caching: partial.** Only the implemented reverse and eligible HTTP/1 forward GET/HEAD paths
   are cacheable. Broader HTTP cache conformance and Squid refresh/cache semantics are not provided.
 - **Squid: partial.** The importer lowers an audited direct HTTP/1 and CONNECT subset plus ordered
@@ -42,9 +51,10 @@ Squid, RTMP, or any native proxy product.
   peer hierarchy, helper protocols, ICAP/eCAP, transparent interception, TLS bump, legacy datagram
   protocols, and native cache-manager behavior remain unsupported.
 - **RTMP: partial.** Live publish/play, recording/VOD, HLS, DASH, relays, statistics/session
-  controls, allowlisted isolated exec profiles, and same-daemon Unix-worker auto-push are bounded
-  slices. Complete nginx-RTMP directive parity, transcoding, unsupported codecs, broader
-  callback/control parity, non-Unix worker topology, and wider multi-worker evidence remain absent.
+  controls, bounded redacted access logs, periodic relay DNS refresh, allowlisted isolated exec
+  profiles, and same-daemon Unix-worker auto-push are bounded slices. Complete nginx-RTMP directive
+  parity, transcoding, unsupported codecs, broader callback/control parity, non-Unix worker topology,
+  and wider multi-worker evidence remain absent.
 - **Supervision: partial.** The master, worker, launcher, authentication, typed TCP/Unix/UDP/QUIC
   descriptor adoption, status, drain, generic replacement/rollback, and crash-recovery paths are
   tested; initial supervised UDP/H3 serving is covered, while active UDP/H3 replacement and broader
@@ -55,11 +65,11 @@ Squid, RTMP, or any native proxy product.
   rollover, and job controls. Provider deployment, live staging evidence, and the frontend's TLS-ALPN
   challenge selector remain gaps.
 - **Control plane/UI: partial.** The backend exposes certificate lifecycle, RTMP statistics and
-  controls, bounded polling/SSE events, durable redacted audit history/status, operations, and
-  provenance; the Vue frontend consumes the operational event ring and current configuration/control
-  contracts but does not expose durable audit browsing. Native import editing, weighted-round-robin
-  weight editing, and TLS-ALPN challenge selection are backend/canonical-file capabilities only, not
-  frontend controls.
+  controls, bounded polling/SSE events, durable redacted audit history/status, native import reports,
+  operations, and provenance; the Vue frontend exposes durable audit browsing, weighted-round-robin
+  weight editing, native import report browsing, and the current configuration/control contracts.
+  Native-file editing and TLS-ALPN challenge selection remain backend/canonical-file capabilities
+  only, not frontend controls.
 - **Native import: partial.** Importers preserve provenance and fail closed for unsupported or lossy
   forms. No complete nginx, HAProxy, Squid, Varnish, Apache, or nginx-RTMP compatibility is claimed.
 

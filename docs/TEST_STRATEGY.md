@@ -160,6 +160,9 @@ invalid final redispatch shapes`, `edits ASCII case-insensitive authority matchi
 redispatch`, and `preserves and edits imported statistics pages and compatibility routing through
 save`.
 
+The configuration editor suite also covers bounded weighted-round-robin weight editing, including
+validation, server add/remove alignment, and algorithm switching.
+
 nginx HTTP conformance uses the explicit fragment API. Tests reject complete nginx files, require
 exact response-control suppression before proxy finalization, preserve nginx hide/pass defaults,
 share named upstream pools across routes/listeners, lower the bounded static-index subset without
@@ -245,18 +248,19 @@ the required release checks.
 
 - Vue component tests cover bearer unlock/re-lock, current canonical-field editing, validation,
   Lua/candidate review, clean refresh, dirty-draft retention, revision conflicts, exact save
-  outcomes, navigation, RTMP statistics/session controls, passive-health/retry editing, certificate
-  actions, event parsing, and redaction. TLS-ALPN-01 is accepted by the backend schema but has no
-  frontend challenge selector; weighted-round-robin weights, native import editing, and durable
-  audit browsing and native import editing are also backend/API or offline surfaces rather than current frontend workflows.
+  outcomes, navigation, RTMP statistics/session controls, passive-health/retry editing, bounded
+  weighted-round-robin weight editing, durable audit filtering/cursor pagination, native import
+  report selection/blockers, certificate actions, event parsing, and redaction. TLS-ALPN-01 is
+  accepted by the backend schema but has no frontend challenge selector; native-file editing remains
+  outside the frontend workflow.
 - Monitoring component tests cover pool availability, endpoint state/check totals, exact counters,
   failure labels, empty-pool rendering, and retention after transient failures.
 - Component tests exercise mobile controls and keyboard navigation in jsdom.
 - `ui/tests/browser/dashboard.spec.ts` runs against the built static UI in desktop Chromium and a
   mobile Chromium device profile. It covers dashboard layout, token unlock/relock, save/review,
   revision conflict, dirty-draft external edits, SSE reconnect from `Last-Event-ID`, operational
-  controls, certificate redaction, native import report selection/blockers, stale revision retention,
-  and provenance redaction.
+  controls, certificate redaction, durable audit browsing, and stale revision retention. Native import
+  report selection/blockers and provenance redaction are covered by the component suites.
 - The browser harness aborts non-local requests and scripts API/SSE responses; it does not start the
   daemon or contact a production or ACME endpoint.
 

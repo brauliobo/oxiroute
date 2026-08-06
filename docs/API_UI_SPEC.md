@@ -75,7 +75,7 @@ or never reached listening state.
 Native import routes expose evidence only; they do not edit native files or activate standalone
 reports. Unbounded event streaming is not implemented. Bounded event polling and
 bounded SSE delivery are implemented over the same non-durable event ring. Durable audit routes are
-implemented by the backend as a separate store, but the current frontend has no audit-history
+implemented by the backend as a separate store and are browsable through the authenticated audit
 workspace. Recorder routes control configured `start = "manual"`
 workers in the active publisher incarnation and use the same bearer authorization as other
 recognized management routes.
@@ -420,13 +420,16 @@ Current views and boundaries:
 - Certificates: redacted imported/Certbot/managed inventory, renewal/reconcile/revoke/delete,
   account rollover, pause/resume/cancel, and bounded job history.
 - Events: bounded cursor history plus live bearer-authenticated SSE, reconnect, and resync handling.
-- Configuration: current canonical-field editing, server validation, format-preserving preview, and
-  revision-checked saves.
-- Provenance: redacted canonical source metadata and diagnostics. Native import reports and previews
-  remain offline CLI contracts; there is no import management API or native source editor.
+- Audit: authenticated durable redacted control history with bounded filters, cursor pagination, and
+  persistence status; it never falls back to the operational event ring.
+- Configuration: current canonical-field editing, including weighted-round-robin weights, server
+  validation, format-preserving preview, and revision-checked saves.
+- Provenance: redacted canonical source metadata and diagnostics plus retained native import reports
+  and finalized read-only KDL previews. Native files remain read-only; there is no native source
+  editor or standalone report activation workflow.
 
 The responsive runtime observatory, high-level topology schematic, RTMP broadcast desk, operations,
-certificate, event, provenance, and canonical configuration workspaces are implemented. The
+certificate, event, audit, provenance, and canonical configuration workspaces are implemented. The
 observatory covers host/process load, listener traffic, pool/endpoint health, active-stream,
 codec/media, viewer, and recorder visibility. Refreshes do not overlap, retain the last valid sample
 after transient failures, and expose loading/stale/error states. Manual controls call exact-ID routes
@@ -442,9 +445,9 @@ server-validatable but read-only. It preserves dirty drafts across refresh failu
  conflicts. The save response distinguishes pending activation from restart-required Unix listener
   changes; generation status is authoritative for publication completion. The UI consumes bounded
   SSE for event-driven refresh and exposes the bounded event history, but neither the SSE ring nor
-  the frontend history is durable. Durable audit history remains a backend/API surface. Native
-  import editing, weighted-round-robin weight editing, and TLS-ALPN challenge selection are not
-  exposed by the current frontend.
+  the event workspace history is durable. Durable audit history is browsable through its separate
+  authenticated workspace. Native import reports are browsable as redacted evidence, but native-file
+  editing and TLS-ALPN challenge selection are not exposed by the current frontend.
 
 ## File-change behavior
 
@@ -472,8 +475,8 @@ server-validatable but read-only. It preserves dirty drafts across refresh failu
   CSRF protection if cookie authentication is introduced.
 - Certificate private-key bytes, ACME account keys, and DNS credentials never enter frontend state.
   The management bearer token is the explicit exception and is retained only in page memory.
-- A future import UI will keep unsupported constructs read-only and will not save a lossy conversion
-  without explicit ownership change.
+- Any future native-file editing workflow will keep unsupported constructs read-only and will not save
+  a lossy conversion without explicit ownership change.
 - The backend rejects typed saves to compositional roots, and the browser disables editing/save
   controls when `compositional` is true. Validation remains available without flattening source
   files.
