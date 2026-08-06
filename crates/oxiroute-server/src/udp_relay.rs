@@ -457,7 +457,12 @@ enum SessionEnd {
     IdleTimeout,
     LifetimeTimeout,
     Connect(io::Error),
-    Io(io::Error),
+    UpstreamConnect(io::Error),
+    UpstreamSend(io::Error),
+    UpstreamReceive(io::Error),
+    UpstreamProtocol(io::Error),
+    UpstreamProxyProtocol(ProxyProtocolError),
+    ClientSend(io::Error),
     ProxyProtocol(ProxyProtocolError),
     Accounting,
     SessionBytesLimit,
@@ -470,11 +475,62 @@ impl std::fmt::Display for SessionEnd {
             Self::IdleTimeout => formatter.write_str("idle_timeout"),
             Self::LifetimeTimeout => formatter.write_str("lifetime_timeout"),
             Self::Connect(error) => write!(formatter, "connect_error: {error}"),
-            Self::Io(error) => write!(formatter, "io_error: {error}"),
+            Self::UpstreamConnect(error) => write!(formatter, "upstream_connect_error: {error}"),
+            Self::UpstreamSend(error) => write!(formatter, "upstream_send_error: {error}"),
+            Self::UpstreamReceive(error) => write!(formatter, "upstream_receive_error: {error}"),
+            Self::UpstreamProtocol(error) => write!(formatter, "upstream_protocol_error: {error}"),
+            Self::UpstreamProxyProtocol(error) => {
+                write!(formatter, "upstream_proxy_protocol: {error}")
+            }
+            Self::ClientSend(error) => write!(formatter, "client_send_error: {error}"),
             Self::ProxyProtocol(error) => write!(formatter, "proxy_protocol: {error}"),
             Self::Accounting => formatter.write_str("accounting_error"),
             Self::SessionBytesLimit => formatter.write_str("session_bytes_limit"),
         }
+    }
+}
+
+impl SessionEnd {
+    fn passive_failure(&self) -> Option<HealthFailure> {
+        match self {
+            Self::UpstreamConnect(error) => classify_upstream_io(error, true),
+            Self::UpstreamSend(error) | Self::UpstreamReceive(error) => {
+                classify_upstream_io(error, false)
+            }
+            Self::UpstreamProtocol(_) => Some(HealthFailure::ProtocolError),
+            Self::UpstreamProxyProtocol(error) => match error.kind() {
+                ProxyProtocolErrorKind::Cancelled => None,
+                ProxyProtocolErrorKind::Timeout => Some(HealthFailure::Timeout),
+                ProxyProtocolErrorKind::Io
+                | ProxyProtocolErrorKind::UnexpectedEof
+                | ProxyProtocolErrorKind::InvalidSignature
+                | ProxyProtocolErrorKind::HeaderTooLarge
+                | ProxyProtocolErrorKind::InvalidVersion
+                | ProxyProtocolErrorKind::UnsupportedCommand
+                | ProxyProtocolErrorKind::UnsupportedFamily
+                | ProxyProtocolErrorKind::ProtocolMismatch
+                | ProxyProtocolErrorKind::InvalidAddress
+                | ProxyProtocolErrorKind::InvalidPort
+                | ProxyProtocolErrorKind::InvalidLength => Some(HealthFailure::ProtocolError),
+            },
+            Self::Cancelled
+            | Self::IdleTimeout
+            | Self::LifetimeTimeout
+            | Self::Connect(_)
+            | Self::ClientSend(_)
+            | Self::ProxyProtocol(_)
+            | Self::Accounting
+            | Self::SessionBytesLimit => None,
+        }
+    }
+}
+
+fn classify_upstream_io(error: &io::Error, connecting: bool) -> Option<HealthFailure> {
+    match error.kind() {
+        io::ErrorKind::Interrupted => None,
+        io::ErrorKind::TimedOut => Some(HealthFailure::Timeout),
+        _ if connecting => Some(HealthFailure::ConnectFailed),
+        _ => Some(HealthFailure::ProtocolError),
     }
 }
 
@@ -483,17 +539,15 @@ async fn run_session(
     listener: Arc<UdpSocket>,
     client: std::net::SocketAddr,
     initial: Vec<u8>,
-    mut queue_receiver: mpsc::Receiver<QueuedDatagram>,
+    queue_receiver: mpsc::Receiver<QueuedDatagram>,
     service: Arc<L4ServicePlan>,
-    _generation: Arc<RuntimeGeneration>,
+    generation: Arc<RuntimeGeneration>,
     connection: ConnectionGuard,
     _generation_reference: crate::GenerationReference,
     listener_is_ipv4: bool,
     logical_client: Option<std::net::SocketAddr>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), SessionEnd> {
-    let policy = service.udp_policy();
-    let relay_policy = service.policy();
     let lease = tokio::select! {
         _ = shutdown.changed() => return Err(SessionEnd::Cancelled),
         lease = service.select_wait() => lease.ok_or_else(|| SessionEnd::Connect(io::Error::new(
@@ -501,23 +555,56 @@ async fn run_session(
             "UDP upstream pool has no selectable endpoint",
         )))?,
     };
-    let (upstream, destination) = match timeout(
-        relay_policy.connect,
-        connect_upstream(&lease, listener_is_ipv4),
+    let result = relay_session(
+        &lease,
+        listener,
+        client,
+        initial,
+        queue_receiver,
+        &service,
+        connection,
+        listener_is_ipv4,
+        logical_client,
+        &mut shutdown,
     )
-    .await
-    {
-        Ok(Ok(connection)) => connection,
-        Ok(Err(error)) => {
-            lease.record_passive_failure(HealthFailure::ConnectFailed);
-            return Err(SessionEnd::Connect(error));
+    .await;
+    if generation.accepting() && !*shutdown.borrow() {
+        if let Err(outcome) = &result {
+            if let Some(failure) = outcome.passive_failure() {
+                lease.record_passive_failure(failure);
+            }
         }
-        Err(_) => {
-            lease.record_passive_failure(HealthFailure::Timeout);
-            return Err(SessionEnd::Connect(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "UDP upstream connect timed out",
-            )));
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+async fn relay_session(
+    lease: &EndpointLease,
+    listener: Arc<UdpSocket>,
+    client: std::net::SocketAddr,
+    initial: Vec<u8>,
+    mut queue_receiver: mpsc::Receiver<QueuedDatagram>,
+    service: &L4ServicePlan,
+    connection: ConnectionGuard,
+    listener_is_ipv4: bool,
+    logical_client: Option<std::net::SocketAddr>,
+    shutdown: &mut watch::Receiver<bool>,
+) -> Result<(), SessionEnd> {
+    let policy = service.udp_policy();
+    let relay_policy = service.policy();
+    let (upstream, destination) = tokio::select! {
+        biased;
+        () = wait_for_shutdown(shutdown) => return Err(SessionEnd::Cancelled),
+        result = timeout(relay_policy.connect, connect_upstream(lease, listener_is_ipv4)) => {
+            match result {
+                Ok(Ok(connection)) => connection,
+                Ok(Err(error)) => return Err(SessionEnd::UpstreamConnect(error)),
+                Err(_) => return Err(SessionEnd::UpstreamConnect(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "UDP upstream connect timed out",
+                ))),
+            }
         }
     };
 
@@ -542,20 +629,20 @@ async fn run_session(
             &upstream,
             &datagram,
             Duration::from_millis(proxy_policy.timeout_ms),
-            &mut shutdown,
+            shutdown,
         )
         .await
         .map_err(|error| {
             let _ = connection.record_proxy_protocol(error.result());
-            SessionEnd::ProxyProtocol(error)
+            SessionEnd::UpstreamProxyProtocol(error)
         })?;
         connection
             .record_proxy_protocol(ProxyProtocolResult::Sent)
             .map_err(|_| SessionEnd::Accounting)?;
     } else {
-        send_datagram(&upstream, &initial, None, &mut shutdown)
+        send_datagram(&upstream, &initial, None, shutdown)
             .await
-            .map_err(SessionEnd::Io)?;
+            .map_err(SessionEnd::UpstreamSend)?;
     }
 
     let mut idle = relay_policy.idle.map(|duration| Box::pin(sleep(duration)));
@@ -572,15 +659,15 @@ async fn run_session(
             queued = queue_receiver.recv() => {
                 let Some(queued) = queued else { return Ok(()) };
                 account_received(&connection, &mut session_bytes, queued.payload.len(), policy)?;
-                send_datagram(&upstream, &queued.payload, None, &mut shutdown)
+                send_datagram(&upstream, &queued.payload, None, shutdown)
                     .await
-                    .map_err(SessionEnd::Io)?;
+                    .map_err(SessionEnd::UpstreamSend)?;
                 reset_sleep(&mut idle, relay_policy.idle);
             }
             upstream_result = upstream.recv(&mut upstream_buffer) => {
-                let length = upstream_result.map_err(SessionEnd::Io)?;
+                let length = upstream_result.map_err(SessionEnd::UpstreamReceive)?;
                 if length > usize::try_from(policy.max_datagram_bytes).unwrap_or(65_507) {
-                    return Err(SessionEnd::Io(io::Error::new(
+                    return Err(SessionEnd::UpstreamProtocol(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "UDP upstream returned an oversized datagram",
                     )));
@@ -589,7 +676,7 @@ async fn run_session(
                 listener
                     .send_to(&upstream_buffer[..length], client)
                     .await
-                    .map_err(SessionEnd::Io)?;
+                    .map_err(SessionEnd::ClientSend)?;
                 connection
                     .record_bytes_sent(u64::try_from(length).unwrap_or(u64::MAX))
                     .map_err(|_| SessionEnd::Accounting)?;
@@ -728,9 +815,9 @@ mod tests {
     use std::net::{SocketAddr, UdpSocket as StdUdpSocket};
 
     use oxiroute_config::{
-        Config, DownstreamTimeoutPolicy, L4Service, Listener, ListenerBind, Protocol,
-        ProxyProtocolPolicy, ProxyProtocolVersion, UpstreamAlgorithm, UpstreamConnectionReuse,
-        UpstreamEndpoint, UpstreamPool,
+        Config, DownstreamTimeoutPolicy, L4Service, Listener, ListenerBind, PassiveHealthPolicy,
+        PassiveObserve, PassiveOnError, Protocol, ProxyProtocolPolicy, ProxyProtocolVersion,
+        UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool,
     };
     use oxiroute_config_source::ConfigFormat;
 
@@ -843,6 +930,58 @@ mod tests {
         assert_eq!(total, 64);
     }
 
+    #[test]
+    fn session_failure_attribution_only_observes_genuine_upstream_outcomes() {
+        assert_eq!(
+            SessionEnd::UpstreamConnect(io::Error::new(
+                io::ErrorKind::ConnectionRefused,
+                "refused"
+            ))
+            .passive_failure(),
+            Some(HealthFailure::ConnectFailed)
+        );
+        assert_eq!(
+            SessionEnd::UpstreamSend(io::Error::new(io::ErrorKind::ConnectionRefused, "refused"))
+                .passive_failure(),
+            Some(HealthFailure::ProtocolError)
+        );
+        assert_eq!(
+            SessionEnd::UpstreamReceive(io::Error::new(io::ErrorKind::TimedOut, "timed out"))
+                .passive_failure(),
+            Some(HealthFailure::Timeout)
+        );
+        assert_eq!(
+            SessionEnd::UpstreamProtocol(io::Error::new(io::ErrorKind::InvalidData, "oversized"))
+                .passive_failure(),
+            Some(HealthFailure::ProtocolError)
+        );
+        assert_eq!(
+            SessionEnd::UpstreamProxyProtocol(ProxyProtocolError::new(
+                ProxyProtocolErrorKind::Cancelled,
+            ))
+            .passive_failure(),
+            None
+        );
+
+        let excluded = [
+            SessionEnd::Cancelled,
+            SessionEnd::IdleTimeout,
+            SessionEnd::LifetimeTimeout,
+            SessionEnd::Connect(io::Error::other("pool unavailable")),
+            SessionEnd::ClientSend(io::Error::other("client closed")),
+            SessionEnd::ProxyProtocol(ProxyProtocolError::new(
+                ProxyProtocolErrorKind::InvalidLength,
+            )),
+            SessionEnd::Accounting,
+            SessionEnd::SessionBytesLimit,
+        ];
+        assert!(
+            excluded
+                .iter()
+                .all(|outcome| outcome.passive_failure().is_none())
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn runtime_routes_replies_and_releases_its_generation_reference() {
@@ -927,6 +1066,274 @@ mod tests {
         shutdown_tx.send(true).expect("shutdown UDP runtime");
         runtime.join().expect("join UDP runtime");
         assert_eq!(generation.active_references(RuntimeReferenceKind::Udp), 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn udp_connect_failure_records_one_passive_failure() {
+        let harness = start_harness_with_options(
+            policy(),
+            Duration::from_secs(10),
+            Some(Duration::from_secs(30)),
+            8,
+            None,
+            Some(passive_health(1, 1_000)),
+            Some(SocketAddr::new(
+                std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+                9,
+            )),
+            None,
+        )
+        .await;
+        let client = UdpSocket::bind(("127.0.0.1", 0))
+            .await
+            .expect("client socket");
+        client
+            .send_to(b"connect", harness.listener)
+            .await
+            .expect("connect failure datagram");
+        wait_for_udp_passive_failures(&harness.generation, 1).await;
+        wait_for_udp_references(&harness.generation, 0).await;
+
+        let endpoint = &harness.generation.plan().pools[0]
+            .health_snapshot()
+            .endpoints[0];
+        assert_eq!(endpoint.passive_failure_count, 1);
+        assert_eq!(
+            endpoint.passive_ejection_reason,
+            Some(HealthFailure::ConnectFailed)
+        );
+        assert!(endpoint.passive_ejected);
+        harness.stop();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn udp_upstream_send_failure_is_passively_classified() {
+        let peer = UdpSocket::bind(("127.0.0.1", 0))
+            .await
+            .expect("peer socket");
+        let socket = UdpSocket::bind(("127.0.0.1", 0))
+            .await
+            .expect("upstream socket");
+        socket
+            .connect(peer.local_addr().expect("peer address"))
+            .await
+            .expect("connect upstream socket");
+        let socket = socket.into_std().expect("convert upstream socket");
+        rustix::net::shutdown(&socket, rustix::net::Shutdown::Both).expect("close upstream socket");
+        let socket = UdpSocket::from_std(socket).expect("restore upstream socket");
+        let (_shutdown_sender, mut shutdown) = watch::channel(false);
+
+        let error = send_datagram(&socket, b"send-failure", None, &mut shutdown)
+            .await
+            .expect_err("closed upstream send");
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(
+            SessionEnd::UpstreamSend(error).passive_failure(),
+            Some(HealthFailure::ProtocolError)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn udp_upstream_receive_failure_records_one_passive_failure() {
+        let UdpHarness {
+            listener,
+            upstream,
+            generation,
+            shutdown,
+            runtime,
+        } = start_harness_with_options(
+            policy(),
+            Duration::from_secs(10),
+            Some(Duration::from_secs(30)),
+            8,
+            None,
+            Some(passive_health(1, 1_000)),
+            None,
+            None,
+        )
+        .await;
+        drop(upstream);
+        let client = UdpSocket::bind(("127.0.0.1", 0))
+            .await
+            .expect("client socket");
+        client
+            .send_to(b"recv", listener)
+            .await
+            .expect("receive failure datagram");
+        wait_for_udp_passive_failures(&generation, 1).await;
+        wait_for_udp_references(&generation, 0).await;
+
+        let endpoint = &generation.plan().pools[0].health_snapshot().endpoints[0];
+        assert_eq!(endpoint.passive_failure_count, 1);
+        assert_eq!(
+            endpoint.passive_ejection_reason,
+            Some(HealthFailure::ProtocolError)
+        );
+        shutdown.send(true).expect("shutdown UDP runtime");
+        runtime.join().expect("join UDP runtime");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn udp_oversized_reply_records_one_passive_failure() {
+        let mut udp_policy = policy();
+        udp_policy.max_datagram_bytes = 8;
+        let harness = start_harness_with_options(
+            udp_policy,
+            Duration::from_secs(10),
+            Some(Duration::from_secs(30)),
+            8,
+            None,
+            Some(passive_health(1, 1_000)),
+            None,
+            None,
+        )
+        .await;
+        let client = UdpSocket::bind(("127.0.0.1", 0))
+            .await
+            .expect("client socket");
+        client
+            .send_to(b"query", harness.listener)
+            .await
+            .expect("oversized reply datagram");
+        let mut received = [0_u8; 32];
+        let (_, peer) = timeout(
+            Duration::from_secs(2),
+            harness.upstream.recv_from(&mut received),
+        )
+        .await
+        .expect("upstream query timeout")
+        .expect("upstream query receive");
+        harness
+            .upstream
+            .send_to(&[0; 9], peer)
+            .await
+            .expect("oversized upstream reply");
+        wait_for_udp_passive_failures(&harness.generation, 1).await;
+        wait_for_udp_references(&harness.generation, 0).await;
+        assert!(
+            timeout(Duration::from_millis(100), client.recv_from(&mut received))
+                .await
+                .is_err(),
+            "oversized reply reached the client"
+        );
+
+        let endpoint = &harness.generation.plan().pools[0]
+            .health_snapshot()
+            .endpoints[0];
+        assert_eq!(endpoint.passive_failure_count, 1);
+        assert_eq!(
+            endpoint.passive_ejection_reason,
+            Some(HealthFailure::ProtocolError)
+        );
+        harness.stop();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn udp_passive_failure_threshold_ejects_and_expiry_readmits() {
+        let mut udp_policy = policy();
+        udp_policy.max_datagram_bytes = 8;
+        let harness = start_harness_with_options(
+            udp_policy,
+            Duration::from_secs(10),
+            Some(Duration::from_secs(30)),
+            8,
+            None,
+            Some(passive_health(2, 100)),
+            None,
+            None,
+        )
+        .await;
+        let mut received = [0_u8; 32];
+        for (failure_count, query) in [&b"first"[..], &b"second"[..]].into_iter().enumerate() {
+            let client = UdpSocket::bind(("127.0.0.1", 0))
+                .await
+                .expect("client socket");
+            client
+                .send_to(query, harness.listener)
+                .await
+                .expect("failure datagram");
+            let (_, peer) = timeout(
+                Duration::from_secs(2),
+                harness.upstream.recv_from(&mut received),
+            )
+            .await
+            .expect("upstream query timeout")
+            .expect("upstream query receive");
+            harness
+                .upstream
+                .send_to(&[0; 9], peer)
+                .await
+                .expect("oversized upstream reply");
+            wait_for_udp_passive_failures(
+                &harness.generation,
+                u64::try_from(failure_count + 1).expect("failure count"),
+            )
+            .await;
+            wait_for_udp_references(&harness.generation, 0).await;
+        }
+
+        let ejected = &harness.generation.plan().pools[0]
+            .health_snapshot()
+            .endpoints[0];
+        assert_eq!(ejected.passive_failure_count, 2);
+        assert_eq!(ejected.passive_ejection_count, 1);
+        assert!(ejected.passive_ejected);
+
+        let rejected = UdpSocket::bind(("127.0.0.1", 0))
+            .await
+            .expect("rejected client socket");
+        rejected
+            .send_to(b"rejected", harness.listener)
+            .await
+            .expect("rejected datagram");
+        assert!(
+            timeout(
+                Duration::from_millis(25),
+                harness.upstream.recv_from(&mut received),
+            )
+            .await
+            .is_err(),
+            "ejected endpoint received a new session"
+        );
+
+        sleep(Duration::from_millis(125)).await;
+        let recovered = UdpSocket::bind(("127.0.0.1", 0))
+            .await
+            .expect("recovered client socket");
+        recovered
+            .send_to(b"recover", harness.listener)
+            .await
+            .expect("recovered datagram");
+        let (length, peer) = timeout(
+            Duration::from_secs(2),
+            harness.upstream.recv_from(&mut received),
+        )
+        .await
+        .expect("recovered query timeout")
+        .expect("recovered query receive");
+        assert_eq!(&received[..length], b"recover");
+        harness
+            .upstream
+            .send_to(b"reply", peer)
+            .await
+            .expect("recovered reply");
+        let (length, _) = timeout(Duration::from_secs(2), recovered.recv_from(&mut received))
+            .await
+            .expect("recovered reply timeout")
+            .expect("recovered reply receive");
+        assert_eq!(&received[..length], b"reply");
+        assert!(
+            !harness.generation.plan().pools[0]
+                .health_snapshot()
+                .endpoints[0]
+                .passive_ejected
+        );
+        harness.stop();
     }
 
     #[cfg(unix)]
@@ -1039,6 +1446,7 @@ mod tests {
         assert_eq!(&received[..length], b"again");
         assert_eq!(peer, first_peer);
 
+        assert_eq!(udp_passive_failure_count(&harness.generation), 0);
         harness.stop();
     }
 
@@ -1113,6 +1521,7 @@ mod tests {
             "over-limit upstream datagram reached the client"
         );
         wait_for_udp_references(&harness.generation, 0).await;
+        assert_eq!(udp_passive_failure_count(&harness.generation), 0);
 
         harness.stop();
     }
@@ -1144,6 +1553,7 @@ mod tests {
         .expect("idle upstream timeout")
         .expect("idle upstream receive");
         wait_for_udp_references(&idle_harness.generation, 0).await;
+        assert_eq!(udp_passive_failure_count(&idle_harness.generation), 0);
         idle_harness.stop();
 
         let lifetime_harness = start_harness(
@@ -1170,6 +1580,7 @@ mod tests {
         .expect("lifetime upstream receive");
         sleep(Duration::from_millis(100)).await;
         wait_for_udp_references(&lifetime_harness.generation, 0).await;
+        assert_eq!(udp_passive_failure_count(&lifetime_harness.generation), 0);
         lifetime_harness.stop();
     }
 
@@ -1345,12 +1756,57 @@ mod tests {
 
         harness.shutdown.send(true).expect("shutdown UDP runtime");
         harness.runtime.join().expect("join UDP runtime");
+        assert_eq!(udp_passive_failure_count(&harness.generation), 0);
         assert_eq!(
             harness
                 .generation
                 .active_references(RuntimeReferenceKind::Udp),
             0
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn udp_administrative_drain_does_not_record_active_upstream_failure() {
+        let UdpHarness {
+            listener,
+            upstream,
+            generation,
+            shutdown,
+            runtime,
+        } = start_harness_with_options(
+            policy(),
+            Duration::from_secs(10),
+            Some(Duration::from_secs(30)),
+            8,
+            None,
+            Some(passive_health(1, 1_000)),
+            None,
+            None,
+        )
+        .await;
+        let client = UdpSocket::bind(("127.0.0.1", 0))
+            .await
+            .expect("client socket");
+        let mut received = [0_u8; 32];
+        client
+            .send_to(b"active", listener)
+            .await
+            .expect("active datagram");
+        timeout(Duration::from_secs(2), upstream.recv_from(&mut received))
+            .await
+            .expect("active upstream timeout")
+            .expect("active upstream receive");
+        generation.stop_accepting();
+        drop(upstream);
+        client
+            .send_to(b"again", listener)
+            .await
+            .expect("draining datagram");
+        wait_for_udp_references(&generation, 0).await;
+        assert_eq!(udp_passive_failure_count(&generation), 0);
+        shutdown.send(true).expect("shutdown UDP runtime");
+        runtime.join().expect("join UDP runtime");
     }
 
     #[cfg(unix)]
@@ -1371,6 +1827,20 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn passive_health(error_limit: u16, backoff_ms: u64) -> PassiveHealthPolicy {
+        PassiveHealthPolicy {
+            observe: PassiveObserve::Layer7,
+            on_error: PassiveOnError::Count,
+            error_limit,
+            mark_down: false,
+            mark_up: false,
+            initial_backoff_ms: backoff_ms,
+            max_backoff_ms: backoff_ms,
+            recovery_threshold: 1,
+        }
+    }
+
+    #[cfg(unix)]
     async fn start_harness(
         policy: UdpPolicy,
         idle_timeout: Duration,
@@ -1378,10 +1848,36 @@ mod tests {
         max_connections: u64,
         proxy_protocol: Option<ProxyProtocolPolicy>,
     ) -> UdpHarness {
+        start_harness_with_options(
+            policy,
+            idle_timeout,
+            lifetime_timeout,
+            max_connections,
+            proxy_protocol,
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    #[cfg(unix)]
+    #[allow(clippy::too_many_arguments)]
+    async fn start_harness_with_options(
+        policy: UdpPolicy,
+        idle_timeout: Duration,
+        lifetime_timeout: Option<Duration>,
+        max_connections: u64,
+        proxy_protocol: Option<ProxyProtocolPolicy>,
+        passive_health: Option<PassiveHealthPolicy>,
+        configured_upstream: Option<SocketAddr>,
+        upstream_proxy_protocol: Option<ProxyProtocolPolicy>,
+    ) -> UdpHarness {
         let upstream = UdpSocket::bind(("127.0.0.1", 0))
             .await
             .expect("upstream socket");
-        let upstream_address = upstream.local_addr().expect("upstream address");
+        let upstream_address =
+            configured_upstream.unwrap_or_else(|| upstream.local_addr().expect("upstream address"));
         let listener = StdUdpSocket::bind(("127.0.0.1", 0))
             .expect("listener probe")
             .local_addr()
@@ -1390,10 +1886,13 @@ mod tests {
         let mut config = udp_config(listener, upstream_address);
         config.listeners[0].max_connections = Some(max_connections);
         config.listeners[0].proxy_protocol = proxy_protocol;
-        config.l4_services[0].idle_timeout_ms = idle_timeout.as_millis() as u64;
-        config.l4_services[0].lifetime_timeout_ms =
-            lifetime_timeout.map(|value| value.as_millis() as u64);
+        config.l4_services[0].idle_timeout_ms =
+            u64::try_from(idle_timeout.as_millis()).expect("test idle timeout fits");
+        config.l4_services[0].lifetime_timeout_ms = lifetime_timeout
+            .map(|value| u64::try_from(value.as_millis()).expect("test lifetime fits"));
+        config.l4_services[0].proxy_protocol = upstream_proxy_protocol;
         config.l4_services[0].udp = Some(policy);
+        config.upstream_pools[0].passive_health = passive_health;
         let candidate = manager
             .prepare(document(config))
             .expect("prepare UDP generation");
@@ -1455,6 +1954,27 @@ mod tests {
         })
         .await
         .expect("UDP generation reference timeout");
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_udp_passive_failures(generation: &RuntimeGeneration, expected: u64) {
+        timeout(Duration::from_secs(2), async {
+            loop {
+                let failures =
+                    generation.plan().pools[0].health_snapshot().endpoints[0].passive_failure_count;
+                if failures >= expected {
+                    break;
+                }
+                sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("UDP passive failure timeout");
+    }
+
+    #[cfg(unix)]
+    fn udp_passive_failure_count(generation: &RuntimeGeneration) -> u64 {
+        generation.plan().pools[0].health_snapshot().endpoints[0].passive_failure_count
     }
 
     #[cfg(unix)]
