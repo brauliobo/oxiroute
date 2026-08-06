@@ -18,9 +18,10 @@ use std::{
 };
 
 use oxiroute_config::{
-    Config, HttpPathSelector, HttpRoute, HttpRouteAction, HttpService, HttpVersionPolicy,
-    L4Service, Listener, Management, Protocol, RtmpApplication, RtmpRecorderStart, RtmpService,
-    Stats, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool,
+    AccessLogPolicy, Config, HttpPathSelector, HttpRoute, HttpRouteAction, HttpService,
+    HttpVersionPolicy, L4Service, Listener, Management, Protocol, RtmpApplication,
+    RtmpRecorderStart, RtmpService, Stats, UpstreamAlgorithm, UpstreamConnectionReuse,
+    UpstreamEndpoint, UpstreamPool,
 };
 use rml_rtmp::sessions::ClientSessionEvent;
 use rustix::fs::{FlockOperation, flock};
@@ -349,6 +350,73 @@ async fn built_runtime_publishes_plays_and_records_continuous_and_manual_streams
 
     manual_publisher.close().await;
     server.shutdown();
+}
+
+#[tokio::test]
+async fn rtmp_file_access_log_emits_fixed_lifecycle_records_and_flushes_on_shutdown() {
+    let recording_directory = TempDir::new().expect("recording directory");
+    let continuous_root = create_secure_root(recording_directory.path(), "continuous-private-root");
+    let manual_root = create_secure_root(recording_directory.path(), "manual-private-root");
+    let log_directory = TempDir::new().expect("access log directory");
+    let access_log_path = log_directory.path().join("rtmp-access.jsonl");
+    let management_address = reserve_tcp_address();
+    let rtmp_address = reserve_tcp_address();
+    let mut config = runtime_config(
+        management_address,
+        rtmp_address,
+        &continuous_root,
+        &manual_root,
+    );
+    config.rtmp_services[0].access_log = Some(AccessLogPolicy::File {
+        path: access_log_path.clone(),
+    });
+
+    let mut server = ServerProcess::start(&config, Some(TOKEN));
+    server.wait_for_tcp(management_address).await;
+    server.wait_for_tcp(rtmp_address).await;
+
+    let mut publisher = RtmpWireClient::connect(rtmp_address, "continuous").await;
+    publisher.publish("camera?token=wire-access-secret").await;
+    let mut viewer = RtmpWireClient::connect(rtmp_address, "continuous").await;
+    viewer.play("camera?viewer=wire-viewer-secret").await;
+    viewer.close().await;
+    publisher.close().await;
+    server.shutdown();
+
+    let contents = fs::read_to_string(access_log_path).expect("flushed RTMP access log");
+    let events = contents
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("RTMP JSONL event"))
+        .collect::<Vec<_>>();
+    assert!(events.iter().any(|event| event["event"] == "connect"));
+    assert!(events.iter().any(|event| event["event"] == "publish"));
+    assert!(events.iter().any(|event| event["event"] == "play"));
+    assert!(events.iter().any(|event| event["event"] == "disconnect"));
+    assert!(events.iter().any(|event| event["event"] == "record"));
+    for event in &events {
+        assert!(matches!(
+            event["event"].as_str(),
+            Some("connect" | "disconnect" | "publish" | "play" | "record" | "relay")
+        ));
+        assert!(event["result"].is_string());
+        assert_eq!(event["listener"], "wire-rtmp");
+        assert_eq!(event["service"], "wire-rtmp");
+        assert!(event["sessionId"].is_string());
+        assert!(event["bytesReceived"].is_u64());
+        assert!(event["bytesSent"].is_u64());
+        assert!(event["messagesReceived"].is_u64());
+        assert!(event["messagesSent"].is_u64());
+        assert!(event["timestampUnixMs"].is_u64());
+        assert!(event["durationMs"].is_u64());
+        assert!(event["correlationId"].is_string());
+        assert!(event.get("clientIp").is_none());
+        assert!(event.get("query").is_none());
+        assert!(event.get("token").is_none());
+        assert!(event.get("payload").is_none());
+        assert!(event.get("outcome").is_none());
+    }
+    assert!(!contents.contains("wire-access-secret"));
+    assert!(!contents.contains("wire-viewer-secret"));
 }
 
 #[tokio::test]

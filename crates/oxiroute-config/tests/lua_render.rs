@@ -1,7 +1,8 @@
 use std::{net::SocketAddr, path::PathBuf};
 
 use oxiroute_config::{
-    AlpnProtocol, Certificate, CertificateSource, Config, ConfigError, DnsResolutionPolicy,
+    AccessLogPolicy, AlpnProtocol, Certificate, CertificateSource, Config, ConfigError,
+    DnsResolutionPolicy,
     DownstreamTimeoutPolicy, HealthCheck, HealthCheckType, HealthStartup, HttpAccessPolicy,
     HttpCookiePathRewrite, HttpHostSelector, HttpLiteralHeader, HttpPathSelector,
     HttpProxyPathRewrite, HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation,
@@ -1210,6 +1211,14 @@ fn service_mutations() -> Vec<Mutation> {
         ("RTMP message and acknowledgement limits", |config| {
             config.rtmp_services[0].max_inbound_message_size = 2 * 1024 * 1024;
             config.rtmp_services[0].ack_window_size = 1_000_000;
+        }),
+        ("RTMP access log file policy", |config| {
+            config.rtmp_services[0].access_log = Some(AccessLogPolicy::File {
+                path: "/var/log/oxiroute/rtmp-access.jsonl".into(),
+            });
+        }),
+        ("RTMP access log disabled policy", |config| {
+            config.rtmp_services[0].access_log = Some(AccessLogPolicy::Disabled);
         }),
     ]
 }
