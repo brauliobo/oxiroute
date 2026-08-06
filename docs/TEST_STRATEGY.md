@@ -35,7 +35,7 @@ harnesses and the real-browser runner are checked in under `fuzz/`, `ui/tests/br
   health-aware round-robin, weighted round-robin, and least-connections selection, deterministic
   weighted distribution and lease ties/release, bounded ordered DNS address fallback shared by
   probes and traffic, configurable retries/passive-health policy, and limits.
-- TCP timeout/half-close state and RTMP catalog, fanout, FLV, canonical recorder validation/rendering,
+- TCP timeout/half-close state, UDP passive failure attribution and exclusion classification, and RTMP catalog, fanout, FLV, canonical recorder validation/rendering,
   path/store/worker/controller/reaper state, bounded reaper backpressure outside registry/controller
   locks, and continuous/manual publisher integration.
 - Cache freshness, recovery, quota/eviction, collapsed fills, conditional/range admission,
@@ -98,10 +98,11 @@ parser round trips, and long-running media/supervision properties remain planned
   nullable capacities, transport-qualified binds, pool algorithms, active leases, and
   non-overlapping polling.
 
-Broader UDP relay behavior, packaged supervised UDP/H3 replacement under active traffic,
-active-traffic generation reload/drain breadth, richer native dependency watching, downstream client certificate
-authentication, and managed ACME live/staging integration remain gates rather than complete release
-evidence. Managed ACME protocol, state, bootstrap, TLS-ALPN cleanup, DNS cleanup recovery, and
+Packaged supervised UDP/H3 replacement under active traffic, broader active-traffic generation reload/drain
+breadth, richer native dependency watching, downstream client certificate authentication, and managed ACME
+live/staging integration remain gates rather than complete release evidence. UDP relay loopback coverage
+includes passive connect/send/receive/protocol attribution, bounded ejection/reentry, and non-poisoning
+client/lifecycle/limit paths; no active UDP health-check type is claimed. Managed ACME protocol, state, bootstrap, TLS-ALPN cleanup, DNS cleanup recovery, and
 scripted-transport paths are unit-tested. Durable audit persistence/reopen/filter behavior is tested
 separately from the non-durable operational event ring. Canonical watcher activation, route
 authentication, bounded event polling, SSE reconnect/resync, RTMP statistics and session controls,
