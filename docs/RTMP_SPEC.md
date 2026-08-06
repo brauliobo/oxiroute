@@ -148,6 +148,15 @@ options are `app=<string>`, `name=<string>`, `tcUrl=<string>`, `pageUrl=<string>
 `live`, `start`, `stop`, `static`. `static` is rejected for push and requires `name` for
 pull. Pull defaults are `flashVer=LNX.11,1,102,55`, numeric options zero, and non-static.
 
+Canonical applications may set `relay.dns_refresh_ms` to control bounded refresh of push and pull
+destination names. It defaults to 60,000 ms and is constrained to 1,000 through 300,000 ms. A due
+refresh runs before the next connection attempt, validates the complete answer through the existing
+outbound policy and direct-listener loop checks, and keeps the startup-selected address family. Empty,
+oversized, denied, looped, or family-incompatible answers do not replace the last valid address and
+are retried on the next interval. The canonical target remains unchanged; bounded refresh counters
+and the last failure category are available in relay state and Prometheus metrics without exposing
+credentials or private destination data.
+
 ### External execution: 13
 
 | Directive | Context | Accepted value | Effective default/scope |

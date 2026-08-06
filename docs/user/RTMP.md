@@ -182,6 +182,22 @@ oxiroute rtmp recorder stop STREAM_ID RECORDER_ID
 Start and stop transitions may return before the worker reaches its settled phase. Read the returned
 snapshot or refresh the stream before issuing a conflicting action.
 
+## Refresh Relay Destination DNS
+
+Push and pull targets resolve during runtime planning and retain their canonical hostname. To refresh
+DNS answers for relay reconnects, set the application relay interval:
+
+```kdl
+(object)relay {
+  dns_refresh_ms 60000
+}
+```
+
+The interval defaults to 60 seconds and accepts 1 through 300 seconds. A due refresh runs before a
+connection attempt, rechecks the full answer against the RTMP outbound policy, address family, and
+direct-listener loop protection, and retains the previous valid address if resolution fails. Relay
+state and Prometheus expose bounded refresh attempt, success, and failure counters.
+
 ## What Is Observable
 
 The catalog and monitoring API expose publisher/subscriber identity, codec observations, byte and

@@ -948,6 +948,9 @@ rtmp_services = {
           push_targets = {
             { host = "127.0.0.1", port = 1936, application = "$name" },
           },
+          relay = {
+            dns_refresh_ms = 60000,
+          },
           fanout = {
             max_subscribers = 1024,
             max_queue_messages_per_subscriber = 256,
@@ -982,7 +985,13 @@ are valid only for live applications. Application `$name` expands to the exact s
 the destination stream name is always the exact source stream name. Each publisher incarnation owns
 an independent bounded relay worker, while each pull target owns one bounded reconnecting source
 worker. An unavailable target retries every three seconds and can recover later; relay backpressure
-never blocks local viewers or recorders. Fanout limits default to 1024
+never blocks local viewers or recorders. `relay.dns_refresh_ms` defaults to 60,000 ms and accepts
+1,000 through 300,000 ms. Before each initial connection or reconnect, a due refresh resolves the
+canonical hostname again; the complete answer is bounded and rechecked against the outbound policy,
+selected address family, and direct-listener loop protection. A failed refresh retains the last valid
+address and is retried at the next interval. The canonical hostname and URL never change, and
+refresh attempts, successes, failures, and the last failure category are exposed only through the
+bounded RTMP state and metrics fields. Fanout limits default to 1024
 subscribers, 256 queued messages, and 8 MiB per subscriber and compile per application.
 Other `$` substitutions are rejected instead of being treated as implicit templates.
 
