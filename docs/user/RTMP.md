@@ -42,6 +42,17 @@ The smallest shape is a listener, an RTMP service, and one live application:
 Publish to `rtmp://127.0.0.1:1935/live/<stream-name>`. Viewers use the same application and stream
 name. The exact session and media behavior is defined in [RTMP_SPEC.md](../RTMP_SPEC.md).
 
+## Use Multiple Message Streams
+
+A single RTMP connection may create up to eight message streams. Each message-stream ID owns one
+publisher or subscriber role, so one connection can publish or play several stream names without
+mixing their media. Duplicate or conflicting role transitions, unknown IDs, and attempts beyond the
+bound are rejected without changing the active catalog.
+
+The client statistics response exposes the active roles as `messageStreams`, with each entry's
+message-stream ID, application, stream name without query arguments, and role. Teardown removes only
+the matching role and preserves the other roles on the connection.
+
 `max_inbound_message_size` defaults to 8 MiB and bounds assembled inbound messages before payload
 allocation. `ack_window_size` defaults to 5,000,000 bytes and is announced during session startup;
 both values are service-wide and validated as positive bounded integers.
@@ -200,10 +211,10 @@ state and Prometheus expose bounded refresh attempt, success, and failure counte
 
 ## What Is Observable
 
-The catalog and monitoring API expose publisher/subscriber identity, codec observations, byte and
-fanout totals, recorder phase, relative current/completed/recoverable names, segment counters,
-discontinuities, and relay state. They do not expose recording roots, stream query arguments, or
-private material.
+The catalog and monitoring API expose publisher/subscriber identity per active message stream, codec
+observations, byte and fanout totals, recorder phase, relative current/completed/recoverable names,
+segment counters, discontinuities, relay state, and bounded client `messageStreams` snapshots. They
+do not expose recording roots, stream query arguments, or private material.
 
 The dashboard disables manual controls when there is no publisher, no manual recorder, a transition
 is in progress, or an observed codec is not recordable.
