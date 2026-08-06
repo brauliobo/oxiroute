@@ -652,10 +652,18 @@ The current certificate and profile rules are:
   generation publication cannot mix key and chain material and existing connections retain their
   selected generation. Publication is independent per identity and requires the same certificate
   identity and exact declared DNS-name set.
-Direct-file identities remain startup snapshots. Configured Certbot identities have a process-lifetime
-watcher that validates and atomically publishes complete replacement generations. Managed ACME jobs
-and certificate-management API actions also publish validated replacement generations; canonical-config,
-direct-file, and self-signed replacement watchers remain absent.
+Direct-file identities are loaded into a startup generation and are then registered with a process-lifetime
+`FileReconciler`/`FileWatcherSupervisor`. The direct-file watcher observes the configured PEM parent
+directories, debounces events, periodically rescans, validates a stable complete certificate/key pair,
+and atomically publishes each valid replacement generation. An invalid or unstable candidate is not
+published: the last valid active generation is retained and direct-file watcher health becomes degraded
+until a later valid reconciliation succeeds. This watcher observes externally written PEM files only; it
+does not edit canonical configuration or provide direct-file certificate upload/edit API actions.
+Canonical configuration changes continue through the separate canonical configuration watcher and
+generation-activation path. Configured Certbot identities have their own process-lifetime lineage
+watcher that validates and atomically publishes complete replacement generations. Managed ACME jobs and
+certificate-management API actions also publish validated replacement generations. Self-signed
+development identities remain in-memory startup generations without a replacement watcher.
 
 Downstream HTTP/2 is available only on a TLS listener whose ALPN policy includes `h2`. Plaintext
 HTTP listeners are HTTP/1.1-only; h2c is not supported. Pingora advertises a 64 KiB decoded

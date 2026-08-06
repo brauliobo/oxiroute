@@ -10,10 +10,14 @@ standard; it will not copy Certbot or plugin code.
 OxiRoute will implement managed lifecycle orchestration, not cryptographic primitives. JWS, key,
 CSR, X.509, and TLS operations MUST use maintained Rust or system cryptography libraries.
 
-Current implementation boundary: strict direct-file startup loading and descriptor-relative Certbot
-lineage snapshots prepare immutable certificate generations. One process-lifetime Certbot watcher
-supervisor combines bounded filesystem-event coalescing with periodic full rescans, validates a
-complete lineage candidate, and atomically publishes each identity independently. Managed ACME now
+Current implementation boundary: strict direct-file startup loading and process-lifetime direct-file
+reconciliation, plus descriptor-relative Certbot lineage snapshots, prepare immutable certificate
+generations. Direct-file identities use a `FileReconciler`/`FileWatcherSupervisor` to validate stable
+complete PEM replacements and atomically publish valid generations; invalid or unstable candidates
+retain the last valid active generation and degrade direct-file watcher health until recovery. A separate
+process-lifetime Certbot watcher supervisor combines bounded filesystem-event coalescing with periodic
+full rescans, validates a complete lineage candidate, and atomically publishes each identity independently.
+Managed ACME now
 has bounded owner-only state, injected and production HTTPS transports, account/order/challenge
 orchestration, HTTP-01 routing, DNS-01 orchestration, TLS-ALPN-01 orchestration, wildcard support,
 authenticated renewal, a due-check supervisor, redacted monitoring, and UI configuration. TLS-ALPN-01
@@ -69,10 +73,16 @@ are required.
 
 ### Imported files
 
-The daemon reads operator-owned certificate, chain, and private-key paths. Continuous replacement
-watching is currently implemented only for configured Certbot lineages.
+The daemon reads operator-owned certificate, chain, and private-key paths. Direct-file identities are
+loaded at startup and registered with a process-lifetime `FileReconciler`/`FileWatcherSupervisor`. The
+watcher observes the PEM parent directories and performs periodic rescans, validates a stable complete replacement
+pair, and atomically publishes valid generations. Invalid or unstable candidates retain the last active
+valid generation and mark direct-file watcher health degraded until a later valid reconciliation succeeds.
+The watcher does not edit canonical configuration and does not provide a direct-file certificate
+upload/edit API.
 
-Certbot lineage startup loading and continuous reconciliation are implemented. They read the configured live
+Certbot lineage startup loading and continuous reconciliation are implemented by a separate lineage watcher.
+They read the configured live
 `fullchain.pem`, `cert.pem`, `chain.pem`, and `privkey.pem` symlinks. A snapshot is accepted only
 when all links resolve to one common numbered archive revision inside the configured archive.
 Archive artifacts are opened relative to a pinned directory descriptor with no-follow semantics,
@@ -86,8 +96,9 @@ mutate, chmod, or lock Certbot's lineage, renewal, archive, or account directori
 
 This mode is for local development and managed-ACME bootstrap only. The daemon generates a leaf key
 and certificate for explicit names and validity. Browsers will not trust it automatically. Managed
-bootstrap material is in-memory only and is replaced by the first validated ACME revision. The mode
-MUST be visibly labeled and SHOULD default to loopback/private use.
+bootstrap material is in-memory only and is replaced by the first validated ACME revision. Self-signed
+development remains an in-memory startup generation and has no replacement watcher. The mode MUST be
+visibly labeled and SHOULD default to loopback/private use.
 
 A future local-CA mode requires separate trust-distribution design and is not implied by
 self-signed support.

@@ -28,7 +28,7 @@ Implemented and recognized endpoints:
 | `GET` | `/api/v1/config` | Typed config, source format/composition metadata, disk/candidate/active revisions, format-preserving preview, and compact redacted diagnostics. |
 | `GET` | `/api/v1/import-reports`, `/api/v1/import-reports/{index}` | Bounded native import report inventory/evidence with redacted source paths and a read-only KDL preview only for finalized, unblocked candidates. |
 | `POST` | `/api/v1/config/validate` | Validate a typed draft without writing or activating it. |
-| `PUT` | `/api/v1/config` | Preflight and revision-checked durable canonical save; changed generations are queued for watcher-driven activation. |
+| `PUT` | `/api/v1/config` | Preflight and revision-checked durable canonical save; changed generations are queued for canonical config-watcher activation. |
 | `GET` | `/api/v1/topology` | Active redacted configuration graph with runtime health overlays. |
 | `GET` | `/api/v1/monitoring` | Runtime process, host load, listener traffic, pool/endpoint health, and RTMP activity snapshot. |
 | `GET` | `/api/v1/status` | Active generation, disk/candidate revisions, degradation, and listener status. |
@@ -142,7 +142,7 @@ contains `candidateRevision`, `normalizedConfig`, `configFormat`, `compositional
 format-preserving `configPreview`, diagnostics, `restartRequired`, and a candidate topology explicitly marked
 `not_active`. A restricted-Lua coordinator also returns the legacy `luaPreview` alias. Validation
 compiles the complete runtime plan,
-loads configured UI assets, starts then shuts down a candidate Certbot watcher, and performs a
+loads configured UI assets, checks the configured Certbot and direct-file watcher prerequisites, and performs a
 read-only recording-root ownership/quota preflight. Recorder preflight does not create an ownership
 lock, probe, partial, or recording file. Actual daemon activation separately opens and pins each
 store and can still fail if a root changes after validation.
@@ -178,7 +178,7 @@ three exact outcomes:
   `activationState` is `restart_required`, and `restartRequired` is `true`. The active generation
   remains unchanged until a process restart applies the complete saved candidate.
 
-There is no `202` API response. For a changed save, the file watcher observes the durable
+There is no `202` API response. For a changed save, the canonical configuration watcher observes the durable
 replacement, prepares a candidate, and the generation supervisor publishes it only after the new
 runtime reports ready. The `200 saved_pending_activation` response does not claim that publication
 has already completed; clients observe `activeRevision` or generation status for completion.
@@ -224,8 +224,11 @@ persists the replacement key only after CA acceptance. Delete removes persisted 
 when no active TLS profile references the certificate; it does not edit configuration or unload the
 current in-memory generation. All lifecycle actions persist the safe request correlation ID in their
 bounded job and audit records.
-Lua-configured direct-file identities are prepared at startup and configured Certbot identities are
-watched and atomically reconciled.
+Lua-configured direct-file identities are prepared at startup and then watched by a direct-file
+reconciler/supervisor; valid PEM replacements are atomically reconciled while invalid candidates retain
+the active generation and degrade direct-file watcher health until recovery. Configured Certbot identities
+have their separate lineage watcher and are also atomically reconciled. Direct-file watching observes
+externally written material; it does not provide a direct-file certificate editing API.
 
 The backend canonical schema and TLS inventory accept managed `tls_alpn01` challenges. The current
 configuration editor exposes HTTP-01, DNS-01, and TLS-ALPN-01 selectors. Selecting TLS-ALPN-01
@@ -237,9 +240,10 @@ The implemented monitoring snapshot contains daemon uptime, process CPU/RSS/virt
 threads, open file descriptors, host load averages and memory, aggregate/listener connection and
 byte counters, nullable per-listener connection capacities, pool algorithm and endpoint lease
 state, pool/endpoint health, and RTMP
-stream/publisher/subscriber/media totals. It also includes redacted `certbotCertificates` entries
-with identity name, active archive/content revision, expiry, and last outcome/error code, plus
-`certbotWatcher` health and bounded counters. Source paths, SAN labels, PEM, and private material
+stream/publisher/subscriber/media totals. It also includes redacted `certbotCertificates` and
+`directFileCertificates` entries with identity name, applicable active archive/content revision, expiry,
+and last outcome/error code, plus `certbotWatcher` and `directFileWatcher` health and bounded counters.
+Source paths, SAN labels, PEM, and private material
 are excluded. Managed entries additionally expose redacted disk/active revisions, expiry and
 scheduler timestamps, and bounded outcome/error codes. Process and host sampling reads Linux
 `/proc` on x86_64 and aarch64. On non-Linux platforms the snapshot remains available with
@@ -285,7 +289,7 @@ policy report selectable `unchecked` endpoints; health-enabled pools begin with 
 numbers or `null` before the corresponding event. `lastFailure` is `timeout`, `connect_failed`,
 `unexpected_status`, `protocol_error`, or `null`. To preserve every cumulative `u64` exactly in
 JavaScript, aggregate/listener accepted, rejected, and byte totals; endpoint leases/check totals;
-pool unavailable selections; RTMP media/recorder totals; and Certbot watcher counters are base-10
+pool unavailable selections; RTMP media/recorder totals; and Certbot/direct-file watcher counters are base-10
 integer strings. Current gauges, timestamps, and configuration-bounded counts remain JSON numbers.
 `activeLeases` counts
 currently held HTTP-request or L4-relay leases; `unavailableSelections` counts selection attempts

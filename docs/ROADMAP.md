@@ -64,9 +64,10 @@ Status: partial. The annotations below identify landed slices; Milestone 1 is no
   activation (bounded managed authenticators are implemented; live staging evidence and broader
   providers remain).
 - Imported PEM and generated self-signed certificates for development and bootstrap use (strict
-  imported-PEM startup preparation, self-signed generation, in-memory ACME bootstrap, Certbot
-  reconciliation, and atomic callback-publication are implemented; direct-file API activation and
-  reload remain).
+  imported-PEM startup preparation and direct-file watcher reconciliation, self-signed generation,
+  in-memory ACME bootstrap, Certbot reconciliation, and atomic callback-publication are implemented;
+  direct-file API activation/editing remains absent, while canonical configuration reload uses the
+  separate config watcher).
 - Loopback-only management API by default (recognized `/api/v1` routes use the bearer token;
   exact `GET /ready` and `GET /metrics` are the public probes; monitoring, topology, RTMP,
   generation, TLS, process, listener, pool, server, config, bounded event polling, and SSE routes
