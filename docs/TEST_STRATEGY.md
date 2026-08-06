@@ -203,7 +203,11 @@ Current Unix TLS/H2/gRPC coverage includes:
   configured SNI, verify an intermediate-only custom trust anchor, and cover H2-only success, H2
   ALPN mismatch, and flexible HTTP/1.1 fallback.
 - An independent H2 client/origin pair proves gRPC response DATA plus ordinary and trailers-only
-  trailing metadata survive the full downstream-proxy-upstream path.
+  trailing metadata survive the full downstream-proxy-upstream path. Additional H2/gRPC wire
+  cases prove multi-DATA request and response streaming, flow-control backpressure, bounded large
+  bodies, listener connection admission, read/write deadlines, downstream cancellation with an
+  upstream reset, upstream reset propagation, malformed content-length handling, required client
+  authentication, and no H2-to-H1 downgrade under an H2-only policy.
 - Rotation tests prove existing connections retain their certificate, new handshakes use a newly
   published complete generation without session resumption, rotating one SNI identity does not
   change another, and concurrent handshake waves switch completely after publication. A
@@ -218,11 +222,10 @@ Current Unix TLS/H2/gRPC coverage includes:
   is refused by OxiRoute's pre-handshake TLS 1.2/cipher policy without decrypted origin bytes;
   TLS 1.2 remains a positive control.
 
-Active-traffic reload/drain breadth, ACME CA-staging integration, downstream client authentication,
-H2 breadth, gRPC streaming/cancellation, fuzz/crash campaigns, and packaged supervised UDP/H3
-replacement under active traffic remain release gates rather than complete coverage. The canonical
-watcher, live generation activation, bounded event polling, SSE paths, and durable audit store are
-implemented but do not by themselves close those broader gates.
+Active-traffic reload/drain breadth, ACME CA-staging integration, broader HTTP/2 and gRPC
+conformance, fuzz/crash campaigns, and packaged supervised UDP/H3 replacement under active traffic
+remain release gates. The canonical watcher, live generation activation, bounded event polling, SSE
+paths, and durable audit store are implemented but do not by themselves close those broader gates.
 
 ### Checked-in fuzzing
 

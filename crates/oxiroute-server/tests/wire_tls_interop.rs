@@ -7,11 +7,11 @@ use std::{
     net::SocketAddr,
     os::unix::fs::PermissionsExt as _,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use bytes::Bytes;
-use http::{Method, StatusCode};
+use http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header};
 use oxiroute_config::{
     AlpnProtocol, Certificate, CertificateSource, HttpLiteralHeader, HttpRequestHeaderMutation,
     HttpRequestHeaderValue, HttpRetryPolicy, HttpRetryTrigger, HttpRouteAction,
@@ -33,10 +33,9 @@ use support::{
     PlainH1Origin, ProxyHarness, ReservedListener, TEST_TIMEOUT, TestCertbotLineage, TlsOrigin,
     certificate_chain_fixture, direct_legacy_tls_origin_handshake, fixture, fixture_leaf,
     generate_test_only_client_chain, generate_test_only_ecdsa_chain, h1_request, handshake_kind,
-    legacy_tls_handshake, negotiated_alpn, negotiated_tls_is_modern, peer_certificate_count,
-    openssl_tls_alpn_handshake, openssl_tls_request_with_identity, peer_leaf, private_key_fixture,
-    proxy_config,
-    socket_endpoint, tcp_connect, tls_client_config, tls_client_config_with_identity,
+    legacy_tls_handshake, negotiated_alpn, negotiated_tls_is_modern, openssl_tls_alpn_handshake,
+    openssl_tls_request_with_identity, peer_certificate_count, peer_leaf, private_key_fixture,
+    proxy_config, socket_endpoint, tcp_connect, tls_client_config, tls_client_config_with_identity,
     tls_client_config_with_versions, tls_connect, tls_connect_with_config, verified_upstream,
 };
 
@@ -119,14 +118,13 @@ async fn required_downstream_client_auth_rejects_no_certificate_before_http() {
         };
         let proxy = ProxyHarness::start(&config, reserved);
 
-        let no_certificate_rejected = match
-            tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"]).await
-        {
-            Ok(mut stream) => h1_request(&mut stream, "/without-client-cert", true)
-                .await
-                .is_err(),
-            Err(_) => true,
-        };
+        let no_certificate_rejected =
+            match tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"]).await {
+                Ok(mut stream) => h1_request(&mut stream, "/without-client-cert", true)
+                    .await
+                    .is_err(),
+                Err(_) => true,
+            };
         assert!(
             no_certificate_rejected,
             "required client auth accepted no certificate"
@@ -219,12 +217,12 @@ async fn optional_downstream_client_auth_validates_chain_and_san_when_present() 
             &[b"http/1.1"],
         )
         .expect("wrong SAN client certificate config");
-        let wrong_san_rejected = match
-            tls_connect_with_config(proxy.address, PROXY_SERVER_NAME, wrong_san_config).await
-        {
-            Ok(mut stream) => h1_request(&mut stream, "/wrong-san", true).await.is_err(),
-            Err(_) => true,
-        };
+        let wrong_san_rejected =
+            match tls_connect_with_config(proxy.address, PROXY_SERVER_NAME, wrong_san_config).await
+            {
+                Ok(mut stream) => h1_request(&mut stream, "/wrong-san", true).await.is_err(),
+                Err(_) => true,
+            };
         assert!(
             wrong_san_rejected,
             "optional client auth accepted a certificate with a disallowed SAN"
@@ -253,6 +251,73 @@ async fn optional_downstream_client_auth_validates_chain_and_san_when_present() 
     })
     .await
     .expect("optional client auth wire test timed out");
+}
+
+#[tokio::test]
+async fn required_downstream_client_auth_preserves_h2_alpn_and_grpc_transport() {
+    timeout(TEST_TIMEOUT, async {
+        let client_identity = generate_test_only_client_chain("client.example.test");
+        let origin = PlainH1Origin::start(b"h2-client-auth").await;
+        let reserved = ReservedListener::new();
+        let mut config = proxy_config(
+            reserved.address,
+            origin.address,
+            vec![AlpnProtocol::H2],
+            None,
+            HttpVersionPolicy::default(),
+        );
+        config.tls_profiles[0].policy.client_auth = TlsClientAuthPolicy {
+            mode: TlsClientAuthMode::Required,
+            ca_certificate_path: Some(client_identity.root_certificate_path.clone()),
+            allowed_dns_names: vec!["client.example.test".into()],
+        };
+        let proxy = ProxyHarness::start(&config, reserved);
+
+        let no_certificate_rejected =
+            match tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"h2"]).await {
+                Ok(stream) => match H2Client::from_tls(stream).await {
+                    Ok(mut client) => client
+                        .request(Method::POST, "/h2-client-auth")
+                        .await
+                        .is_err(),
+                    Err(_) => true,
+                },
+                Err(_) => true,
+            };
+        assert!(
+            no_certificate_rejected,
+            "required H2 client auth accepted no certificate"
+        );
+        assert_eq!(origin.requests(), 0);
+
+        let client_config = tls_client_config_with_identity(
+            &fixture("ca-a.pem"),
+            &client_identity.fullchain_path,
+            &client_identity.leaf_private_key_path,
+            &[b"h2"],
+        )
+        .expect("H2 client certificate config");
+        let stream = tls_connect_with_config(proxy.address, PROXY_SERVER_NAME, client_config)
+            .await
+            .expect("required H2 client auth connection");
+        assert_eq!(negotiated_alpn(&stream), Some(b"h2".as_slice()));
+        let mut client = H2Client::from_tls(stream)
+            .await
+            .expect("required H2 client auth client");
+        let response = client
+            .request(Method::POST, "/h2-client-auth")
+            .await
+            .expect("required H2 client auth response");
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.body.as_ref(), b"h2-client-auth");
+        origin.wait_for_requests(1).await;
+
+        client.finish().await;
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("required H2 client auth wire test timed out");
 }
 
 #[tokio::test]
@@ -466,9 +531,10 @@ async fn downstream_tls_alpn01_selects_only_owned_live_challenges() {
             HttpVersionPolicy::default(),
         );
         let proxy = ProxyHarness::start(&config, reserved);
-        let mut ordinary = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
-            .await
-            .expect("ordinary TLS connection before challenge");
+        let mut ordinary =
+            tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
+                .await
+                .expect("ordinary TLS connection before challenge");
         let ordinary_leaf = peer_leaf(&ordinary);
 
         let now = SystemTime::now()
@@ -491,56 +557,49 @@ async fn downstream_tls_alpn01_selects_only_owned_live_challenges() {
                 .expect("TLS-ALPN-01 challenge identity"),
             )
             .expect("provision TLS-ALPN-01 challenge");
-        assert!(proxy
-            .tls_alpn_challenges
-            .provision(
-                TlsAlpnChallenge::generate(
-                    PROXY_SERVER_NAME,
-                    "other.thumbprint",
-                    "account-2",
-                    "order-2",
-                    "authorization-2",
-                    "challenge-2",
-                    now,
-                    now + 300,
+        assert!(
+            proxy
+                .tls_alpn_challenges
+                .provision(
+                    TlsAlpnChallenge::generate(
+                        PROXY_SERVER_NAME,
+                        "other.thumbprint",
+                        "account-2",
+                        "order-2",
+                        "authorization-2",
+                        "challenge-2",
+                        now,
+                        now + 300,
+                    )
+                    .expect("second TLS-ALPN-01 identity"),
                 )
-                .expect("second TLS-ALPN-01 identity"),
-            )
-            .is_err());
+                .is_err()
+        );
         let challenge_leaf = lease
             .identity()
             .certificate()
             .to_der()
             .expect("challenge certificate DER");
-        let challenge_connection = openssl_tls_alpn_handshake(
-            proxy.address,
-            PROXY_SERVER_NAME,
-            &[b"acme-tls/1"],
-        )
-        .await
-        .expect("TLS-ALPN-01 handshake");
+        let challenge_connection =
+            openssl_tls_alpn_handshake(proxy.address, PROXY_SERVER_NAME, &[b"acme-tls/1"])
+                .await
+                .expect("TLS-ALPN-01 handshake");
         assert_eq!(
             challenge_connection.negotiated_alpn.as_deref(),
             Some(b"acme-tls/1".as_slice())
         );
         assert_eq!(challenge_connection.peer_leaf, challenge_leaf);
 
-        let mut wrong_alpn = tls_connect(
-            proxy.address,
-            PROXY_SERVER_NAME,
-            "ca-a.pem",
-            &[b"http/1.1"],
-        )
-        .await
-        .expect("ordinary ALPN remains on the normal certificate");
+        let mut wrong_alpn =
+            tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"http/1.1"])
+                .await
+                .expect("ordinary ALPN remains on the normal certificate");
         assert_eq!(peer_leaf(&wrong_alpn), ordinary_leaf);
-        assert!(openssl_tls_alpn_handshake(
-            proxy.address,
-            "wrong.example.test",
-            &[b"acme-tls/1"],
-        )
-        .await
-        .is_err());
+        assert!(
+            openssl_tls_alpn_handshake(proxy.address, "wrong.example.test", &[b"acme-tls/1"],)
+                .await
+                .is_err()
+        );
 
         lease.complete();
         let expired = proxy
@@ -559,13 +618,11 @@ async fn downstream_tls_alpn01_selects_only_owned_live_challenges() {
                 .expect("expired TLS-ALPN-01 identity"),
             )
             .expect("provision expired identity for expiry check");
-        assert!(openssl_tls_alpn_handshake(
-            proxy.address,
-            PROXY_SERVER_NAME,
-            &[b"acme-tls/1"],
-        )
-        .await
-        .is_err());
+        assert!(
+            openssl_tls_alpn_handshake(proxy.address, PROXY_SERVER_NAME, &[b"acme-tls/1"],)
+                .await
+                .is_err()
+        );
         expired.cancel();
 
         let response = h1_request(&mut ordinary, "/ordinary-after-challenge", true)
@@ -573,9 +630,11 @@ async fn downstream_tls_alpn01_selects_only_owned_live_challenges() {
             .expect("existing ordinary connection after challenge");
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"tls-alpn01");
-        assert!(h1_request(&mut wrong_alpn, "/ordinary-alpn", true)
-            .await
-            .is_ok());
+        assert!(
+            h1_request(&mut wrong_alpn, "/ordinary-alpn", true)
+                .await
+                .is_ok()
+        );
         origin.wait_for_requests(2).await;
 
         drop(ordinary);
@@ -1440,6 +1499,364 @@ async fn h2_only_upstream_preserves_grpc_data_and_trailers_without_h1_downgrade(
     })
     .await
     .expect("upstream H2/gRPC wire test timed out");
+}
+
+#[tokio::test]
+async fn h2_grpc_streaming_data_and_trailers_survive_without_downgrade() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = TlsOrigin::start_h2().await;
+        let reserved = ReservedListener::new();
+        let h2_only = HttpVersionPolicy {
+            min: HttpVersion::Http2,
+            max: HttpVersion::Http2,
+        };
+        let config = proxy_config(
+            reserved.address,
+            origin.address,
+            vec![AlpnProtocol::H2],
+            Some(verified_upstream(ORIGIN_SERVER_NAME, "ca-a.pem")),
+            h2_only,
+        );
+        let proxy = ProxyHarness::start(&config, reserved);
+        let stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"h2"])
+            .await
+            .expect("streaming gRPC downstream connection");
+        let mut client = H2Client::from_tls(stream)
+            .await
+            .expect("streaming gRPC H2 client");
+
+        let response = client
+            .request(Method::POST, "/grpc/stream")
+            .await
+            .expect("streaming gRPC response");
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.headers[header::CONTENT_TYPE], "application/grpc");
+        assert_eq!(
+            response.body,
+            Bytes::from_static(b"\0\0\0\0\x05hello\0\0\0\0\x05world\0\0\0\0\x05again")
+        );
+        let trailers = response.trailers.expect("streaming gRPC trailers");
+        assert_eq!(trailers["grpc-status"], "0");
+        assert_eq!(trailers["grpc-message"], "streamed");
+        assert_eq!(trailers["x-oxiroute-trailer"], "stream");
+        origin.observations.wait_for_http_requests(1).await;
+
+        client.finish().await;
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("streaming H2/gRPC wire test timed out");
+}
+
+#[tokio::test]
+async fn h2_grpc_request_data_streams_to_an_h2_origin() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = TlsOrigin::start_h2().await;
+        let reserved = ReservedListener::new();
+        let h2_only = HttpVersionPolicy {
+            min: HttpVersion::Http2,
+            max: HttpVersion::Http2,
+        };
+        let config = proxy_config(
+            reserved.address,
+            origin.address,
+            vec![AlpnProtocol::H2],
+            Some(verified_upstream(ORIGIN_SERVER_NAME, "ca-a.pem")),
+            h2_only,
+        );
+        let proxy = ProxyHarness::start(&config, reserved);
+        let stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"h2"])
+            .await
+            .expect("request-streaming H2 connection");
+        let mut client = H2Client::from_tls(stream)
+            .await
+            .expect("request-streaming H2 client");
+        let body = vec![
+            Bytes::from_static(b"\0\0\0\0\x05hello"),
+            Bytes::from_static(b"\0\0\0\0\x05world"),
+            Bytes::from_static(b"\0\0\0\0\x05again"),
+        ];
+        let expected_body_bytes = body.iter().map(Bytes::len).sum::<usize>();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/grpc"),
+        );
+        headers.insert(
+            header::CONTENT_LENGTH,
+            HeaderValue::from_str(&expected_body_bytes.to_string()).expect("body length header"),
+        );
+        let response = client
+            .request_with_headers_and_body_chunks(Method::POST, "/grpc/upload", headers, body)
+            .await
+            .expect("request-streaming gRPC response");
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.body, GRPC_BODY);
+        assert_eq!(
+            origin.observations.request_body_bytes(),
+            expected_body_bytes
+        );
+        let trailers = response.trailers.expect("request-streaming trailers");
+        assert_eq!(trailers["grpc-status"], "0");
+        assert_eq!(trailers["x-oxiroute-trailer"], "upload");
+
+        client.finish().await;
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("request-streaming H2/gRPC wire test timed out");
+}
+
+#[tokio::test]
+async fn downstream_h2_cancellation_resets_the_h2_origin_stream() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = TlsOrigin::start_h2().await;
+        let reserved = ReservedListener::new();
+        let h2_only = HttpVersionPolicy {
+            min: HttpVersion::Http2,
+            max: HttpVersion::Http2,
+        };
+        let config = proxy_config(
+            reserved.address,
+            origin.address,
+            vec![AlpnProtocol::H2],
+            Some(verified_upstream(ORIGIN_SERVER_NAME, "ca-a.pem")),
+            h2_only,
+        );
+        let proxy = ProxyHarness::start(&config, reserved);
+        let stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"h2"])
+            .await
+            .expect("cancellation H2 connection");
+        let mut client = H2Client::from_tls(stream)
+            .await
+            .expect("cancellation H2 client");
+
+        client
+            .cancel_request(Method::POST, "/grpc/slow")
+            .await
+            .expect("downstream cancellation reset");
+        origin.observations.wait_for_http_requests(1).await;
+        timeout(TEST_TIMEOUT, async {
+            while origin.observations.h2_send_errors() == 0 {
+                sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("upstream H2 stream was not reset after downstream cancellation");
+
+        client.finish().await;
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("H2 cancellation wire test timed out");
+}
+
+#[tokio::test]
+async fn downstream_h2_deadline_returns_bounded_upstream_error_and_resets_origin() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = TlsOrigin::start_h2().await;
+        let reserved = ReservedListener::new();
+        let h2_only = HttpVersionPolicy {
+            min: HttpVersion::Http2,
+            max: HttpVersion::Http2,
+        };
+        let mut config = proxy_config(
+            reserved.address,
+            origin.address,
+            vec![AlpnProtocol::H2],
+            Some(verified_upstream(ORIGIN_SERVER_NAME, "ca-a.pem")),
+            h2_only,
+        );
+        config.http_services[0].routes[0].policy.read_timeout_ms = 50;
+        let proxy = ProxyHarness::start(&config, reserved);
+        let stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"h2"])
+            .await
+            .expect("deadline H2 connection");
+        let mut client = H2Client::from_tls(stream)
+            .await
+            .expect("deadline H2 client");
+
+        let response = client
+            .request(Method::POST, "/grpc/slow")
+            .await
+            .expect("deadline error response");
+        assert_eq!(response.status, StatusCode::BAD_GATEWAY);
+        origin.observations.wait_for_http_requests(1).await;
+
+        client.finish().await;
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("H2 deadline wire test timed out");
+}
+
+#[tokio::test]
+async fn downstream_h2_large_bounded_body_returns_413_before_origin_admission() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = TlsOrigin::start_h2().await;
+        let reserved = ReservedListener::new();
+        let h2_only = HttpVersionPolicy {
+            min: HttpVersion::Http2,
+            max: HttpVersion::Http2,
+        };
+        let mut config = proxy_config(
+            reserved.address,
+            origin.address,
+            vec![AlpnProtocol::H2],
+            Some(verified_upstream(ORIGIN_SERVER_NAME, "ca-a.pem")),
+            h2_only,
+        );
+        config.http_services[0].routes[0]
+            .policy
+            .max_request_body_bytes = Some(8);
+        config.http_services[0].routes[0].policy.request_buffering = true;
+        let proxy = ProxyHarness::start(&config, reserved);
+        let stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"h2"])
+            .await
+            .expect("bounded-body H2 connection");
+        let mut client = H2Client::from_tls(stream)
+            .await
+            .expect("bounded-body H2 client");
+
+        let response = client
+            .request_with_body_chunks(
+                Method::POST,
+                "/grpc/upload",
+                vec![Bytes::from_static(b"123456789")],
+            )
+            .await
+            .expect("bounded-body response");
+        assert_eq!(response.status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(response.body.is_empty());
+        sleep(Duration::from_millis(25)).await;
+        assert_eq!(origin.observations.http_requests(), 0);
+
+        client.finish().await;
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("bounded-body H2 wire test timed out");
+}
+
+#[tokio::test]
+async fn upstream_h2_reset_and_malformed_flow_fail_closed_without_downgrade() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = TlsOrigin::start_h2().await;
+        let reserved = ReservedListener::new();
+        let h2_only = HttpVersionPolicy {
+            min: HttpVersion::Http2,
+            max: HttpVersion::Http2,
+        };
+        let config = proxy_config(
+            reserved.address,
+            origin.address,
+            vec![AlpnProtocol::H2],
+            Some(verified_upstream(ORIGIN_SERVER_NAME, "ca-a.pem")),
+            h2_only,
+        );
+        let proxy = ProxyHarness::start(&config, reserved);
+        let stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"h2"])
+            .await
+            .expect("reset H2 connection");
+        let mut client = H2Client::from_tls(stream).await.expect("reset H2 client");
+
+        let reset = client
+            .request(Method::POST, "/grpc/reset")
+            .await
+            .expect("reset response");
+        assert_eq!(reset.status, StatusCode::BAD_GATEWAY);
+        let malformed = client
+            .request(Method::POST, "/grpc/malformed")
+            .await
+            .expect("malformed-flow response");
+        assert_eq!(malformed.status, StatusCode::BAD_GATEWAY);
+        assert!(malformed.body.is_empty());
+        origin.observations.wait_for_http_requests(2).await;
+
+        client.finish().await;
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("upstream H2 reset/malformed wire test timed out");
+}
+
+#[tokio::test]
+async fn downstream_h2_flow_control_backpressures_a_large_grpc_stream() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = TlsOrigin::start_h2().await;
+        let reserved = ReservedListener::new();
+        let h2_only = HttpVersionPolicy {
+            min: HttpVersion::Http2,
+            max: HttpVersion::Http2,
+        };
+        let config = proxy_config(
+            reserved.address,
+            origin.address,
+            vec![AlpnProtocol::H2],
+            Some(verified_upstream(ORIGIN_SERVER_NAME, "ca-a.pem")),
+            h2_only,
+        );
+        let proxy = ProxyHarness::start(&config, reserved);
+        let stream = tls_connect(proxy.address, PROXY_SERVER_NAME, "ca-a.pem", &[b"h2"])
+            .await
+            .expect("flow-control H2 connection");
+        let mut builder = h2::client::Builder::new();
+        builder
+            .initial_window_size(1_024)
+            .initial_connection_window_size(1_024);
+        let (sender, connection) = builder
+            .handshake::<_, Bytes>(stream)
+            .await
+            .expect("H2 handshake");
+        let driver = tokio::spawn(connection);
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri(format!("https://{PROXY_SERVER_NAME}/grpc/large"))
+            .body(())
+            .expect("large-stream request");
+        let (response, _request_body) = sender
+            .ready()
+            .await
+            .expect("large-stream sender readiness")
+            .send_request(request, true)
+            .expect("large-stream request");
+        let response = timeout(TEST_TIMEOUT, response)
+            .await
+            .expect("large-stream response headers timeout")
+            .expect("large-stream response headers");
+        assert_eq!(response.status(), StatusCode::OK);
+        sleep(Duration::from_millis(25)).await;
+
+        let mut body = response.into_body();
+        let mut received = 0usize;
+        while let Some(chunk) = body.data().await {
+            let chunk = chunk.expect("large-stream DATA");
+            received += chunk.len();
+            body.flow_control()
+                .release_capacity(chunk.len())
+                .expect("large-stream flow-control release");
+        }
+        let trailers = body.trailers().await.expect("large-stream trailers");
+        assert_eq!(received, 256 * 16 * 1024);
+        assert_eq!(
+            trailers.expect("large-stream trailing metadata")["grpc-status"],
+            "0"
+        );
+        origin.observations.wait_for_http_requests(1).await;
+
+        driver.abort();
+        let _ = driver.await;
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("H2 flow-control wire test timed out");
 }
 
 #[tokio::test]
