@@ -234,6 +234,12 @@ struct RtmpMonitoring {
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     relay_reconnects: u64,
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    relay_dns_refresh_attempts: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    relay_dns_refresh_successes: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    relay_dns_refresh_failures: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     relay_events_sent: u64,
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     relay_events_dropped: u64,
@@ -327,6 +333,9 @@ fn rtmp_monitoring(
     let mut relay_connection_attempts = 0_u64;
     let mut relay_connections = 0_u64;
     let mut relay_reconnects = 0_u64;
+    let mut relay_dns_refresh_attempts = 0_u64;
+    let mut relay_dns_refresh_successes = 0_u64;
+    let mut relay_dns_refresh_failures = 0_u64;
     let mut relay_events_sent = 0_u64;
     let mut relay_events_dropped = 0_u64;
     let mut relay_payload_bytes_sent = 0_u64;
@@ -346,6 +355,12 @@ fn rtmp_monitoring(
                 relay_connection_attempts.checked_add(relay.status.connection_attempts)?;
             relay_connections = relay_connections.checked_add(relay.status.connections)?;
             relay_reconnects = relay_reconnects.checked_add(relay.status.reconnects)?;
+            relay_dns_refresh_attempts = relay_dns_refresh_attempts
+                .checked_add(relay.status.dns_refresh_attempts)?;
+            relay_dns_refresh_successes = relay_dns_refresh_successes
+                .checked_add(relay.status.dns_refresh_successes)?;
+            relay_dns_refresh_failures = relay_dns_refresh_failures
+                .checked_add(relay.status.dns_refresh_failures)?;
             relay_events_sent = relay_events_sent.checked_add(relay.status.events_sent)?;
             relay_events_dropped = relay_events_dropped.checked_add(relay.status.events_dropped)?;
             relay_payload_bytes_sent =
@@ -363,6 +378,13 @@ fn rtmp_monitoring(
                 "connectionAttempts": relay.status.connection_attempts.to_string(),
                 "connections": relay.status.connections.to_string(),
                 "reconnects": relay.status.reconnects.to_string(),
+                "dnsRefreshAttempts": relay.status.dns_refresh_attempts.to_string(),
+                "dnsRefreshSuccesses": relay.status.dns_refresh_successes.to_string(),
+                "dnsRefreshFailures": relay.status.dns_refresh_failures.to_string(),
+                "lastDnsRefreshFailure": relay
+                    .status
+                    .last_dns_refresh_failure
+                    .map(relay_dns_refresh_failure),
                 "eventsSent": relay.status.events_sent.to_string(),
                 "eventsDropped": relay.status.events_dropped.to_string(),
                 "payloadBytesSent": relay.status.payload_bytes_sent.to_string(),
@@ -407,6 +429,9 @@ fn rtmp_monitoring(
         relay_connection_attempts,
         relay_connections,
         relay_reconnects,
+        relay_dns_refresh_attempts,
+        relay_dns_refresh_successes,
+        relay_dns_refresh_failures,
         relay_events_sent,
         relay_events_dropped,
         relay_payload_bytes_sent,
@@ -443,6 +468,18 @@ const fn relay_failure(failure: oxiroute_rtmp::RtmpRelayFailure) -> &'static str
         oxiroute_rtmp::RtmpRelayFailure::Transport => "transport",
         oxiroute_rtmp::RtmpRelayFailure::Source => "source",
         oxiroute_rtmp::RtmpRelayFailure::Thread => "thread",
+    }
+}
+
+const fn relay_dns_refresh_failure(
+    failure: oxiroute_rtmp::RtmpDnsRefreshFailure,
+) -> &'static str {
+    match failure {
+        oxiroute_rtmp::RtmpDnsRefreshFailure::Resolution => "resolution",
+        oxiroute_rtmp::RtmpDnsRefreshFailure::AddressSet => "address_set",
+        oxiroute_rtmp::RtmpDnsRefreshFailure::Policy => "policy",
+        oxiroute_rtmp::RtmpDnsRefreshFailure::DirectLoop => "direct_loop",
+        oxiroute_rtmp::RtmpDnsRefreshFailure::FamilyMismatch => "family_mismatch",
     }
 }
 

@@ -519,6 +519,9 @@ pub fn render_prometheus(
 
     let mut relay_attempts = 0_u64;
     let mut relay_reconnects = 0_u64;
+    let mut relay_dns_refresh_attempts = 0_u64;
+    let mut relay_dns_refresh_successes = 0_u64;
+    let mut relay_dns_refresh_failures = 0_u64;
     let mut relay_drops = 0_u64;
     let mut recording_bytes = 0_u64;
     let mut recording_drops = 0_u64;
@@ -527,6 +530,12 @@ pub fn render_prometheus(
         for relay in &stream.relays {
             relay_attempts = relay_attempts.saturating_add(relay.status.connection_attempts);
             relay_reconnects = relay_reconnects.saturating_add(relay.status.reconnects);
+            relay_dns_refresh_attempts = relay_dns_refresh_attempts
+                .saturating_add(relay.status.dns_refresh_attempts);
+            relay_dns_refresh_successes = relay_dns_refresh_successes
+                .saturating_add(relay.status.dns_refresh_successes);
+            relay_dns_refresh_failures = relay_dns_refresh_failures
+                .saturating_add(relay.status.dns_refresh_failures);
             relay_drops = relay_drops.saturating_add(relay.status.events_dropped);
         }
         for recorder in &stream.recorders {
@@ -582,6 +591,21 @@ pub fn render_prometheus(
         &mut output,
         "oxiroute_rtmp_relay_reconnects_total",
         relay_reconnects,
+    )?;
+    sample(
+        &mut output,
+        "oxiroute_rtmp_relay_dns_refresh_attempts_total",
+        relay_dns_refresh_attempts,
+    )?;
+    sample(
+        &mut output,
+        "oxiroute_rtmp_relay_dns_refresh_successes_total",
+        relay_dns_refresh_successes,
+    )?;
+    sample(
+        &mut output,
+        "oxiroute_rtmp_relay_dns_refresh_failures_total",
+        relay_dns_refresh_failures,
     )?;
     sample(
         &mut output,
@@ -905,6 +929,9 @@ mod tests {
         assert!(output.contains(
             "oxiroute_audit_operations_total{category=\"reload\",result=\"requested\"} 0"
         ));
+        assert!(output.contains("oxiroute_rtmp_relay_dns_refresh_attempts_total 0"));
+        assert!(output.contains("oxiroute_rtmp_relay_dns_refresh_successes_total 0"));
+        assert!(output.contains("oxiroute_rtmp_relay_dns_refresh_failures_total 0"));
         assert!(!output.contains("192.0.2.10"));
         assert!(!output.contains("private-port"));
     }

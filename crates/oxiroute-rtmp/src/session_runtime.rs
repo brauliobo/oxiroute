@@ -1072,7 +1072,7 @@ impl RtmpServiceRuntime {
             .application(&key.application)
             .map_or(&[][..], RtmpApplication::push_targets)
             .iter()
-            .map(|target| RtmpRelayController::start(target.expand(&key.name), target.config))
+            .map(|target| RtmpRelayController::start(target.expand(&key.name), target.config.clone()))
             .collect();
         let definitions = policies
             .iter()

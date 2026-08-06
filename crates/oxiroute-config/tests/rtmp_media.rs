@@ -204,6 +204,41 @@ fn auto_push_rejects_unsafe_paths_and_zero_bounds() {
 }
 
 #[test]
+fn relay_dns_refresh_is_bounded_defaulted_and_rendered() {
+    let mut defaults = config_with_application(&Value::Null);
+    validate_config(&mut defaults).expect("default RTMP relay policy");
+    assert_eq!(
+        defaults.rtmp_services[0].applications[0]
+            .relay
+            .dns_refresh_ms,
+        60_000
+    );
+    let rendered = render_lua(&defaults).expect("rendered RTMP relay policy");
+    assert!(rendered.contains("dns_refresh_ms = 60000"));
+
+    let mut below_minimum: oxiroute_config::Config = serde_json::from_value(json!({
+        "version": 1,
+        "listeners": [],
+        "rtmp_services": [{
+            "name": "live",
+            "applications": [{
+                "name": "broadcast",
+                "live": true,
+                "relay": {"dns_refresh_ms": 999}
+            }]
+        }]
+    }))
+    .expect("typed RTMP relay policy");
+    assert!(matches!(
+        validate_config(&mut below_minimum),
+        Err(ConfigError::InvalidRtmpApplicationPolicy {
+            field: "relay.dns_refresh_ms",
+            ..
+        })
+    ));
+}
+
+#[test]
 fn rtmp_service_message_and_acknowledgement_bounds_are_validated() {
     let mut message_invalid = config_with_application(&Value::Null);
     message_invalid.rtmp_services[0].max_inbound_message_size = 0;

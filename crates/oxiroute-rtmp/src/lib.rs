@@ -82,7 +82,8 @@ pub use recording_worker::{
     RecorderWorkerPhase, RecorderWorkerStartError, RecorderWorkerStatus, RecorderWorkerSupervisor,
 };
 pub use relay::{
-    RtmpDestination, RtmpPullTarget, RtmpPushApplication, RtmpPushTarget, RtmpRelayConfig,
+    RtmpDestination, RtmpDestinationResolver, RtmpDestinationResolverError, RtmpDnsResolver,
+    RtmpDnsRefreshFailure, RtmpPullTarget, RtmpPushApplication, RtmpPushTarget, RtmpRelayConfig,
     RtmpRelayFailure, RtmpRelayPhase, RtmpRelayStatus,
 };
 pub use rml_rtmp::sessions::StreamMetadata;

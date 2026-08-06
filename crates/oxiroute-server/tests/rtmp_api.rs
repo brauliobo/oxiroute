@@ -595,11 +595,21 @@ fn relay_state_and_counters_are_observable_without_stream_queries() {
         catalog_json["streams"][0]["relays"][0]["destination"]["application"],
         "camera"
     );
+    assert_eq!(
+        catalog_json["streams"][0]["relays"][0]["dns_refresh_attempts"],
+        "0"
+    );
+    assert_eq!(
+        catalog_json["streams"][0]["relays"][0]["dns_refresh_failures"],
+        "0"
+    );
     assert!(
         monitoring_json["rtmp"]["relayConnectionAttempts"]
             .as_str()
             .is_some_and(|attempts| attempts.parse::<u64>().is_ok_and(|attempts| attempts >= 2))
     );
+    assert_eq!(monitoring_json["rtmp"]["relayDnsRefreshAttempts"], "0");
+    assert_eq!(monitoring_json["rtmp"]["relayDnsRefreshFailures"], "0");
     assert_eq!(
         monitoring_json["rtmp"]["relays"][0]["lastFailure"],
         "connect"

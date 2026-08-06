@@ -40,11 +40,11 @@ use oxiroute_rtmp::{
     RecordingTimezone, RtmpAccessAction, RtmpAccessPolicy as RuntimeRtmpAccessPolicy,
     RtmpAccessRule, RtmpApplication as RuntimeRtmpApplication, RtmpAutoPushConfig,
     RtmpCallbackEndpoint, RtmpCallbackMethod, RtmpCallbackPolicy, RtmpCapabilities,
-    RtmpClientOptions, RtmpCredential, RtmpNetwork, RtmpOutboundPolicy, RtmpPullTarget,
-    RtmpPushApplication, RtmpPushTarget, RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry,
-    RtmpRelayConfig, RtmpRtmpsMode, RtmpServiceRuntime, RtmpSessionCeilings, RtmpSessionLimits,
-    RtmpSessionPolicy, RtmpTokenPolicy, RtmpTransport, VodApplication, VodCatalog, VodLimits,
-    VodSourceDefinition,
+    RtmpClientOptions, RtmpCredential, RtmpDestinationResolver, RtmpDestinationResolverError,
+    RtmpNetwork, RtmpOutboundPolicy, RtmpPullTarget, RtmpPushApplication, RtmpPushTarget,
+    RtmpRecorderPolicy, RtmpRecorderStart, RtmpRegistry, RtmpRelayConfig, RtmpRtmpsMode,
+    RtmpServiceRuntime, RtmpSessionCeilings, RtmpSessionLimits, RtmpSessionPolicy,
+    RtmpTokenPolicy, RtmpTransport, VodApplication, VodCatalog, VodLimits, VodSourceDefinition,
 };
 
 static DISK_BACKEND_REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Weak<DiskBackend>>>> =
@@ -1655,34 +1655,38 @@ fn compile_rtmp_push_targets(
                 application: application.name.clone(),
                 target: target_index,
             };
-            let mut addresses: Vec<_> = (target.host.as_str(), target.port)
+            let addresses: Vec<_> = (target.host.as_str(), target.port)
                 .to_socket_addrs()
                 .map_err(|_| resolution())?
                 .take(33)
                 .collect();
-            if addresses.is_empty() || addresses.len() > 32 {
-                return Err(resolution());
-            }
-            addresses.sort_unstable();
-            addresses.dedup();
             let transport = compile_rtmp_transport(target.scheme);
-            outbound_policy
-                .validate_resolved(target.host.as_str(), &addresses)
-                .and_then(|()| outbound_policy.validate_transport(transport))
-                .map_err(|_| resolution())?;
-            if addresses.iter().any(|destination| {
-                listener_addresses
-                    .iter()
-                    .any(|listener| socket_listener_contains(*listener, *destination))
-            }) {
-                return Err(ServicePlanError::RtmpPushDirectLoop {
-                    service: service.to_owned(),
-                    application: application.name.clone(),
-                    target: target_index,
-                });
-            }
+            let resolver = RtmpDestinationResolver::from_startup(
+                target.host.clone(),
+                target.port,
+                transport,
+                addresses,
+                outbound_policy.clone(),
+                listener_addresses.iter().copied(),
+                Duration::from_millis(relay.dns_refresh_ms),
+            )
+            .map_err(|error| match error {
+                RtmpDestinationResolverError::DirectLoop => {
+                    ServicePlanError::RtmpPushDirectLoop {
+                        service: service.to_owned(),
+                        application: application.name.clone(),
+                        target: target_index,
+                    }
+                }
+                RtmpDestinationResolverError::EmptyAnswer
+                | RtmpDestinationResolverError::TooManyAddresses
+                | RtmpDestinationResolverError::InvalidAddress
+                | RtmpDestinationResolverError::Policy
+                | RtmpDestinationResolverError::FamilyMismatch
+                | RtmpDestinationResolverError::InvalidRefreshInterval => resolution(),
+            })?;
             Ok(RtmpPushTarget {
-                address: addresses[0],
+                address: resolver.address(),
                 host: target.host.clone(),
                 transport,
                 application: if target.application == "$name" {
@@ -1707,6 +1711,7 @@ fn compile_rtmp_push_targets(
                     handshake_timeout: Duration::from_millis(relay.handshake_timeout_ms),
                     reconnect_interval: Duration::from_millis(relay.push_reconnect_ms),
                     max_chain_depth: outbound_policy.max_chain_depth,
+                    dns_resolver: Some(Arc::new(resolver)),
                 },
             })
         })
@@ -1730,30 +1735,32 @@ fn compile_rtmp_pull_targets(
                 application: application.name.clone(),
                 target: target_index,
             };
-            let mut addresses: Vec<_> = (target.host.as_str(), target.port)
+            let addresses: Vec<_> = (target.host.as_str(), target.port)
                 .to_socket_addrs()
                 .map_err(|_| resolution())?
                 .take(33)
                 .collect();
-            if addresses.is_empty() || addresses.len() > 32 {
-                return Err(resolution());
-            }
-            addresses.sort_unstable();
-            addresses.dedup();
             let transport = compile_rtmp_transport(target.scheme);
-            outbound_policy
-                .validate_resolved(target.host.as_str(), &addresses)
-                .and_then(|()| outbound_policy.validate_transport(transport))
-                .map_err(|_| resolution())?;
-            if addresses.iter().any(|destination| {
-                listener_addresses
-                    .iter()
-                    .any(|listener| socket_listener_contains(*listener, *destination))
-            }) {
-                return Err(resolution());
-            }
+            let resolver = RtmpDestinationResolver::from_startup(
+                target.host.clone(),
+                target.port,
+                transport,
+                addresses,
+                outbound_policy.clone(),
+                listener_addresses.iter().copied(),
+                Duration::from_millis(relay.dns_refresh_ms),
+            )
+            .map_err(|error| match error {
+                RtmpDestinationResolverError::DirectLoop
+                | RtmpDestinationResolverError::EmptyAnswer
+                | RtmpDestinationResolverError::TooManyAddresses
+                | RtmpDestinationResolverError::InvalidAddress
+                | RtmpDestinationResolverError::Policy
+                | RtmpDestinationResolverError::FamilyMismatch
+                | RtmpDestinationResolverError::InvalidRefreshInterval => resolution(),
+            })?;
             Ok(RtmpPullTarget {
-                address: addresses[0],
+                address: resolver.address(),
                 host: target.host.clone(),
                 transport,
                 source_application: target.application.clone(),
@@ -1776,6 +1783,7 @@ fn compile_rtmp_pull_targets(
                     handshake_timeout: Duration::from_millis(relay.handshake_timeout_ms),
                     reconnect_interval: Duration::from_millis(relay.pull_reconnect_ms),
                     max_chain_depth: outbound_policy.max_chain_depth,
+                    dns_resolver: Some(Arc::new(resolver)),
                 },
             })
         })
@@ -2204,17 +2212,6 @@ fn compile_rtmp_recorder(
         worker_config,
         store_limits,
     })
-}
-
-fn socket_listener_contains(
-    listener: std::net::SocketAddr,
-    destination: std::net::SocketAddr,
-) -> bool {
-    if listener.port() != destination.port() {
-        return false;
-    }
-    listener.ip() == destination.ip()
-        || listener.ip().is_unspecified() && listener.is_ipv4() == destination.is_ipv4()
 }
 
 #[allow(clippy::too_many_lines)]

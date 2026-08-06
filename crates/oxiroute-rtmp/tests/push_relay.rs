@@ -1,17 +1,21 @@
 use std::{
     collections::VecDeque,
-    io::{Read, Write},
+    io::{self, Read, Write},
     net::{SocketAddr, TcpListener},
-    sync::Arc,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
 
 use bytes::Bytes;
 use oxiroute_rtmp::{
-    LiveHub, LiveHubLimits, RtmpApplication, RtmpCapabilities, RtmpPushApplication, RtmpPushTarget,
-    RtmpRegistry, RtmpRelayConfig, RtmpRelayFailure, RtmpRelayPhase, RtmpServiceRuntime,
-    RtmpSession, RtmpSessionPolicy, StreamMetadata,
+    LiveHub, LiveHubLimits, RtmpApplication, RtmpCapabilities, RtmpDestinationResolver,
+    RtmpDnsResolver, RtmpOutboundPolicy, RtmpPushApplication, RtmpPushTarget, RtmpRegistry,
+    RtmpRelayConfig, RtmpRelayFailure, RtmpRelayPhase, RtmpServiceRuntime, RtmpSession,
+    RtmpSessionPolicy, StreamMetadata,
 };
 use rml_rtmp::{
     handshake::{Handshake, HandshakeProcessResult, PeerType},
@@ -42,6 +46,7 @@ fn unavailable_push_retries_recovers_bootstraps_and_stays_isolated_in_a_bounded_
             reconnect_interval: Duration::from_millis(30),
             buffer_duration: Duration::from_secs(5),
             max_chain_depth: 4,
+            dns_resolver: None,
         },
     };
     let source = RtmpServiceRuntime::new(
@@ -125,6 +130,99 @@ fn unavailable_push_retries_recovers_bootstraps_and_stays_isolated_in_a_bounded_
     sink.join().expect("fake RTMP server");
 }
 
+#[test]
+fn push_reconnects_to_a_rotated_loopback_address_and_reports_dns_refresh_metrics() {
+    let first_listener = TcpListener::bind("127.0.0.1:0").expect("first relay listener");
+    let first_address = first_listener.local_addr().expect("first relay address");
+    let second_address: SocketAddr = format!("127.0.0.2:{}", first_address.port())
+        .parse()
+        .expect("second relay address");
+    let second_listener = TcpListener::bind(second_address).expect("second relay listener");
+
+    let sink_registry = Arc::new(RtmpRegistry::new(capabilities()));
+    let sink_runtime = RtmpServiceRuntime::new(
+        "sink",
+        Arc::clone(&sink_registry),
+        LiveHub::new(LiveHubLimits::default()),
+        RtmpSessionPolicy::new([RtmpApplication::new("camera", true, true)]),
+    );
+    let first_server = spawn_one_shot_server(
+        first_listener,
+        sink_runtime.clone(),
+        Arc::clone(&sink_registry),
+    );
+    let second_server =
+        spawn_one_shot_server(second_listener, sink_runtime, Arc::clone(&sink_registry));
+
+    let resolver = Arc::new(SequenceDnsResolver::new([
+        Ok(vec![first_address]),
+        Ok(vec![second_address]),
+    ]));
+    let destination_resolver = RtmpDestinationResolver::from_startup_with_resolver(
+        "rotating.example",
+        first_address.port(),
+        oxiroute_rtmp::RtmpTransport::Rtmp,
+        [first_address],
+        RtmpOutboundPolicy {
+            deny_private: false,
+            ..RtmpOutboundPolicy::default()
+        },
+        [],
+        Duration::from_millis(5),
+        resolver.clone(),
+    )
+    .expect("startup destination resolver");
+
+    let source_registry = Arc::new(RtmpRegistry::new(capabilities()));
+    let target = RtmpPushTarget {
+        address: first_address,
+        host: "rotating.example".into(),
+        transport: oxiroute_rtmp::RtmpTransport::Rtmp,
+        application: RtmpPushApplication::StreamName,
+        stream_name: None,
+        options: oxiroute_rtmp::RtmpClientOptions::default(),
+        config: RtmpRelayConfig {
+            connect_timeout: Duration::from_millis(30),
+            handshake_timeout: Duration::from_secs(1),
+            reconnect_interval: Duration::from_millis(20),
+            dns_resolver: Some(Arc::new(destination_resolver)),
+            ..RtmpRelayConfig::default()
+        },
+    };
+    let source = RtmpServiceRuntime::new(
+        "source",
+        Arc::clone(&source_registry),
+        LiveHub::new(LiveHubLimits::default()),
+        RtmpSessionPolicy::new([RtmpApplication::with_runtime(
+            "live",
+            true,
+            true,
+            LiveHub::new(LiveHubLimits::default()),
+            [target],
+            [],
+        )]),
+    );
+    let mut publisher = SessionClient::connect(&source, "live");
+    publisher.publish("camera");
+    publisher.metadata();
+    publisher.video(1, &[0x17, 0x00, 0, 0, 0, 0x01]);
+    publisher.video(2, &[0x17, 0x01, 0, 0, 0, 0x22]);
+
+    wait_until(Duration::from_secs(2), || {
+        relay_status(&source_registry).is_some_and(|status| {
+            status.connections >= 2
+                && status.destination.address == second_address
+                && status.dns_refresh_successes >= 2
+                && status.dns_refresh_failures == 0
+        })
+    });
+    assert!(resolver.calls() >= 2);
+    publisher.server.close(1_000).expect("publisher close");
+    drop(publisher);
+    first_server.join().expect("first relay server");
+    second_server.join().expect("second relay server");
+}
+
 fn capabilities() -> RtmpCapabilities {
     RtmpCapabilities {
         live_ingest: true,
@@ -171,6 +269,40 @@ fn spawn_fake_server(
     })
 }
 
+fn spawn_one_shot_server(
+    listener: TcpListener,
+    runtime: RtmpServiceRuntime,
+    registry: Arc<RtmpRegistry>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept one relay");
+        let mut session = runtime.session();
+        let mut buffer = [0; 16 * 1024];
+        let mut now = 1_u64;
+        loop {
+            let count = stream.read(&mut buffer).expect("read one relay");
+            if count == 0 {
+                break;
+            }
+            now += 1;
+            let packets = session
+                .receive(&buffer[..count], now)
+                .expect("process one relay protocol");
+            for packet in packets {
+                stream.write_all(&packet).expect("write one relay response");
+            }
+            stream.flush().expect("flush one relay response");
+            if registry.snapshot().streams.first().is_some_and(|stream| {
+                stream.media.video.payload_bytes_received > 0
+                    || stream.media.audio.payload_bytes_received > 0
+            }) {
+                break;
+            }
+        }
+        session.close(now).expect("close one relay session");
+    })
+}
+
 fn relay_status(registry: &RtmpRegistry) -> Option<oxiroute_rtmp::RtmpRelayStatus> {
     registry
         .snapshot()
@@ -179,6 +311,40 @@ fn relay_status(registry: &RtmpRegistry) -> Option<oxiroute_rtmp::RtmpRelayStatu
         .relays
         .first()
         .map(|relay| relay.status.clone())
+}
+
+struct SequenceDnsResolver {
+    answers: Mutex<VecDeque<Result<Vec<SocketAddr>, io::ErrorKind>>>,
+    calls: AtomicUsize,
+}
+
+impl SequenceDnsResolver {
+    fn new(answers: impl IntoIterator<Item = Result<Vec<SocketAddr>, io::ErrorKind>>) -> Self {
+        Self {
+            answers: Mutex::new(answers.into_iter().collect()),
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::Acquire)
+    }
+}
+
+impl RtmpDnsResolver for SequenceDnsResolver {
+    fn resolve(&self, _host: &str, _port: u16) -> io::Result<Vec<SocketAddr>> {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        match self
+            .answers
+            .lock()
+            .expect("sequence resolver mutex poisoned")
+            .pop_front()
+            .unwrap_or_else(|| Ok(Vec::new()))
+        {
+            Ok(addresses) => Ok(addresses),
+            Err(kind) => Err(io::Error::from(kind)),
+        }
+    }
 }
 
 fn wait_until(timeout: Duration, predicate: impl Fn() -> bool) {

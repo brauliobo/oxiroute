@@ -1,7 +1,8 @@
 use std::{
     collections::{BTreeMap, VecDeque},
+    fmt,
     io::{self, Read, Write},
-    net::SocketAddr,
+    net::{SocketAddr, ToSocketAddrs},
     sync::{
         Arc, Condvar, Mutex, MutexGuard, OnceLock,
         mpsc::{self, SyncSender, TrySendError},
@@ -21,8 +22,8 @@ use rml_rtmp::{
 };
 
 use crate::{
-    LiveHub, MediaEvent, MediaEventKind, MediaSnapshot, RtmpClientOptions, RtmpRegistry,
-    RtmpTransport, SessionId, StreamKey, VideoCodec,
+    LiveHub, MediaEvent, MediaEventKind, MediaSnapshot, RtmpClientOptions, RtmpOutboundPolicy,
+    RtmpRegistry, RtmpTransport, SessionId, StreamKey, VideoCodec,
     client::{self, RtmpStream},
 };
 
@@ -31,6 +32,308 @@ const RELAY_READ_BUFFER_BYTES: usize = 16 * 1_024;
 const RELAY_QUEUE_POLL: Duration = Duration::from_millis(20);
 pub const RTMP_RELAY_WORKER_THREADS: usize = 8;
 pub const MAX_QUEUED_RTMP_RELAYS: usize = 64;
+const MAX_RTMP_DESTINATION_ADDRESSES: usize = 32;
+
+/// Resolves one RTMP destination name without retaining resolver-specific state.
+pub trait RtmpDnsResolver: Send + Sync {
+    /// Resolves the canonical host and port into a bounded candidate answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the resolver cannot produce an answer.
+    fn resolve(&self, host: &str, port: u16) -> io::Result<Vec<SocketAddr>>;
+}
+
+#[derive(Debug, Default)]
+struct SystemRtmpDnsResolver;
+
+impl RtmpDnsResolver for SystemRtmpDnsResolver {
+    fn resolve(&self, host: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
+        Ok((host, port)
+            .to_socket_addrs()?
+            .take(MAX_RTMP_DESTINATION_ADDRESSES + 1)
+            .collect())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum RtmpDestinationResolverError {
+    #[error("destination DNS answer is empty")]
+    EmptyAnswer,
+    #[error("destination DNS answer exceeds the address limit")]
+    TooManyAddresses,
+    #[error("destination DNS answer contains an invalid address")]
+    InvalidAddress,
+    #[error("destination address is denied by RTMP outbound policy")]
+    Policy,
+    #[error("destination resolves to an active RTMP listener")]
+    DirectLoop,
+    #[error("destination DNS answer has no address in the selected family")]
+    FamilyMismatch,
+    #[error("destination DNS refresh interval must be nonzero")]
+    InvalidRefreshInterval,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RtmpDnsRefreshFailure {
+    Resolution,
+    AddressSet,
+    Policy,
+    DirectLoop,
+    FamilyMismatch,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RtmpDnsRefresh {
+    NotDue,
+    Refreshed(SocketAddr),
+    Failed(RtmpDnsRefreshFailure),
+}
+
+struct DestinationResolverState {
+    current_address: SocketAddr,
+    next_refresh_at: Instant,
+    refreshing: bool,
+}
+
+/// Shared, bounded DNS state for one compiled RTMP destination.
+pub struct RtmpDestinationResolver {
+    host: Arc<str>,
+    port: u16,
+    transport: RtmpTransport,
+    address_is_ipv4: bool,
+    policy: RtmpOutboundPolicy,
+    listener_addresses: Arc<[SocketAddr]>,
+    refresh_interval: Duration,
+    resolver: Arc<dyn RtmpDnsResolver>,
+    state: Arc<Mutex<DestinationResolverState>>,
+}
+
+impl fmt::Debug for RtmpDestinationResolver {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RtmpDestinationResolver")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("transport", &self.transport)
+            .field("address_is_ipv4", &self.address_is_ipv4)
+            .field("refresh_interval", &self.refresh_interval)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for RtmpDestinationResolver {
+    fn eq(&self, other: &Self) -> bool {
+        self.host == other.host
+            && self.port == other.port
+            && self.transport == other.transport
+            && self.address_is_ipv4 == other.address_is_ipv4
+            && self.policy == other.policy
+            && self.listener_addresses == other.listener_addresses
+            && self.refresh_interval == other.refresh_interval
+            && Arc::ptr_eq(&self.state, &other.state)
+    }
+}
+
+impl Eq for RtmpDestinationResolver {}
+
+impl RtmpDestinationResolver {
+    /// Compiles a destination from its already resolved startup answer.
+    ///
+    /// The complete startup answer is checked before the selected address is retained. Refreshes
+    /// use the same policy and listener-loop checks, and only an address in this initial family can
+    /// replace it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the startup answer or refresh interval is invalid.
+    pub fn from_startup(
+        host: impl Into<Arc<str>>,
+        port: u16,
+        transport: RtmpTransport,
+        addresses: impl IntoIterator<Item = SocketAddr>,
+        policy: RtmpOutboundPolicy,
+        listener_addresses: impl IntoIterator<Item = SocketAddr>,
+        refresh_interval: Duration,
+    ) -> Result<Self, RtmpDestinationResolverError> {
+        Self::from_startup_with_resolver(
+            host,
+            port,
+            transport,
+            addresses,
+            policy,
+            listener_addresses,
+            refresh_interval,
+            Arc::new(SystemRtmpDnsResolver),
+        )
+    }
+
+    /// Compiles a destination with an injected resolver, primarily for deterministic loopback tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the startup answer or refresh interval is invalid.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "startup resolver construction keeps destination policy inputs explicit"
+    )]
+    pub fn from_startup_with_resolver(
+        host: impl Into<Arc<str>>,
+        port: u16,
+        transport: RtmpTransport,
+        addresses: impl IntoIterator<Item = SocketAddr>,
+        policy: RtmpOutboundPolicy,
+        listener_addresses: impl IntoIterator<Item = SocketAddr>,
+        refresh_interval: Duration,
+        resolver: Arc<dyn RtmpDnsResolver>,
+    ) -> Result<Self, RtmpDestinationResolverError> {
+        if refresh_interval.is_zero() {
+            return Err(RtmpDestinationResolverError::InvalidRefreshInterval);
+        }
+        let host = host.into();
+        let listener_addresses: Arc<[SocketAddr]> = listener_addresses.into_iter().collect();
+        let address = validate_rtmp_destination_answer(
+            &host,
+            port,
+            transport,
+            &policy,
+            &listener_addresses,
+            addresses,
+            None,
+        )?;
+        Ok(Self {
+            host,
+            port,
+            transport,
+            address_is_ipv4: address.is_ipv4(),
+            policy,
+            listener_addresses,
+            refresh_interval,
+            resolver,
+            state: Arc::new(Mutex::new(DestinationResolverState {
+                current_address: address,
+                next_refresh_at: Instant::now() + refresh_interval,
+                refreshing: false,
+            })),
+        })
+    }
+
+    /// # Panics
+    ///
+    /// Panics if the resolver state mutex is poisoned.
+    #[must_use]
+    pub fn address(&self) -> SocketAddr {
+        self.state
+            .lock()
+            .expect("RTMP destination resolver mutex poisoned")
+            .current_address
+    }
+
+    fn refresh_if_due(&self) -> RtmpDnsRefresh {
+        let now = Instant::now();
+        {
+            let mut state = self
+                .state
+                .lock()
+                .expect("RTMP destination resolver mutex poisoned");
+            if state.refreshing || now < state.next_refresh_at {
+                return RtmpDnsRefresh::NotDue;
+            }
+            state.refreshing = true;
+        }
+
+        let result = self
+            .resolver
+            .resolve(&self.host, self.port)
+            .map_err(|_| RtmpDnsRefreshFailure::Resolution)
+            .and_then(|addresses| {
+                validate_rtmp_destination_answer(
+                    &self.host,
+                    self.port,
+                    self.transport,
+                    &self.policy,
+                    &self.listener_addresses,
+                    addresses,
+                    Some(self.address_is_ipv4),
+                )
+                .map_err(|error| match error {
+                    RtmpDestinationResolverError::EmptyAnswer
+                    | RtmpDestinationResolverError::TooManyAddresses
+                    | RtmpDestinationResolverError::InvalidAddress => {
+                        RtmpDnsRefreshFailure::AddressSet
+                    }
+                    RtmpDestinationResolverError::Policy
+                    | RtmpDestinationResolverError::InvalidRefreshInterval => {
+                        RtmpDnsRefreshFailure::Policy
+                    }
+                    RtmpDestinationResolverError::DirectLoop => RtmpDnsRefreshFailure::DirectLoop,
+                    RtmpDestinationResolverError::FamilyMismatch => {
+                        RtmpDnsRefreshFailure::FamilyMismatch
+                    }
+                })
+            });
+
+        let mut state = self
+            .state
+            .lock()
+            .expect("RTMP destination resolver mutex poisoned");
+        state.refreshing = false;
+        state.next_refresh_at = now
+            .checked_add(self.refresh_interval)
+            .unwrap_or_else(Instant::now);
+        match result {
+            Ok(address) => {
+                state.current_address = address;
+                RtmpDnsRefresh::Refreshed(address)
+            }
+            Err(error) => RtmpDnsRefresh::Failed(error),
+        }
+    }
+}
+
+fn validate_rtmp_destination_answer(
+    host: &str,
+    port: u16,
+    transport: RtmpTransport,
+    policy: &RtmpOutboundPolicy,
+    listener_addresses: &[SocketAddr],
+    addresses: impl IntoIterator<Item = SocketAddr>,
+    family: Option<bool>,
+) -> Result<SocketAddr, RtmpDestinationResolverError> {
+    let mut addresses: Vec<_> = addresses
+        .into_iter()
+        .take(MAX_RTMP_DESTINATION_ADDRESSES + 1)
+        .collect();
+    if addresses.is_empty() {
+        return Err(RtmpDestinationResolverError::EmptyAnswer);
+    }
+    if addresses.len() > MAX_RTMP_DESTINATION_ADDRESSES {
+        return Err(RtmpDestinationResolverError::TooManyAddresses);
+    }
+    if addresses.iter().any(|address| address.port() != port) {
+        return Err(RtmpDestinationResolverError::InvalidAddress);
+    }
+    addresses.sort_unstable();
+    addresses.dedup();
+    policy
+        .validate_resolved(host, &addresses)
+        .and_then(|()| policy.validate_transport(transport))
+        .map_err(|_| RtmpDestinationResolverError::Policy)?;
+    if addresses.iter().any(|destination| {
+        listener_addresses.iter().any(|listener| {
+            listener.port() == destination.port()
+                && (listener.ip() == destination.ip()
+                    || listener.ip().is_unspecified()
+                        && listener.is_ipv4() == destination.is_ipv4())
+        })
+    }) {
+        return Err(RtmpDestinationResolverError::DirectLoop);
+    }
+    addresses
+        .into_iter()
+        .find(|address| family.is_none_or(|is_ipv4| address.is_ipv4() == is_ipv4))
+        .ok_or(RtmpDestinationResolverError::FamilyMismatch)
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RtmpDestination {
@@ -92,7 +395,7 @@ pub enum RtmpPushApplication {
     StreamName,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RtmpRelayConfig {
     pub max_queue_messages: usize,
     pub max_queue_bytes: usize,
@@ -101,6 +404,7 @@ pub struct RtmpRelayConfig {
     pub handshake_timeout: Duration,
     pub reconnect_interval: Duration,
     pub max_chain_depth: u8,
+    pub dns_resolver: Option<Arc<RtmpDestinationResolver>>,
 }
 
 impl Default for RtmpRelayConfig {
@@ -113,6 +417,7 @@ impl Default for RtmpRelayConfig {
             handshake_timeout: Duration::from_secs(2),
             reconnect_interval: Duration::from_secs(3),
             max_chain_depth: 4,
+            dns_resolver: None,
         }
     }
 }
@@ -151,6 +456,10 @@ pub struct RtmpRelayStatus {
     pub events_sent: u64,
     pub events_dropped: u64,
     pub payload_bytes_sent: u64,
+    pub dns_refresh_attempts: u64,
+    pub dns_refresh_successes: u64,
+    pub dns_refresh_failures: u64,
+    pub last_dns_refresh_failure: Option<RtmpDnsRefreshFailure>,
 }
 
 pub(crate) struct RtmpRelayController {
@@ -160,6 +469,7 @@ pub(crate) struct RtmpRelayController {
 struct RelayShared {
     destination: RtmpDestination,
     config: RtmpRelayConfig,
+    resolver: Option<Arc<RtmpDestinationResolver>>,
     state: Mutex<RelayState>,
     available: Condvar,
 }
@@ -180,6 +490,10 @@ struct RelayState {
     events_sent: u64,
     events_dropped: u64,
     payload_bytes_sent: u64,
+    dns_refresh_attempts: u64,
+    dns_refresh_successes: u64,
+    dns_refresh_failures: u64,
+    last_dns_refresh_failure: Option<RtmpDnsRefreshFailure>,
 }
 
 #[derive(Default)]
@@ -193,9 +507,11 @@ struct RelayCache {
 
 impl RtmpRelayController {
     pub(crate) fn start(destination: RtmpDestination, config: RtmpRelayConfig) -> Arc<Self> {
+        let resolver = config.dns_resolver.clone();
         let shared = Arc::new(RelayShared {
             destination,
             config,
+            resolver,
             state: Mutex::new(RelayState {
                 accepting: true,
                 waiting_for_keyframe: false,
@@ -212,6 +528,10 @@ impl RtmpRelayController {
                 events_sent: 0,
                 events_dropped: 0,
                 payload_bytes_sent: 0,
+                dns_refresh_attempts: 0,
+                dns_refresh_successes: 0,
+                dns_refresh_failures: 0,
+                last_dns_refresh_failure: None,
             }),
             available: Condvar::new(),
         });
@@ -248,7 +568,7 @@ impl RtmpRelayController {
                 return;
             }
             let bootstrap = state.cache.bootstrap();
-            if fits_queue(&bootstrap, self.shared.config) {
+            if fits_queue(&bootstrap, &self.shared.config) {
                 for cached in bootstrap {
                     state.queue_bytes += cached.payload_len();
                     state.queue.push_back(cached);
@@ -278,7 +598,7 @@ impl RtmpRelayController {
             state.waiting_for_keyframe = !state.cache.video_headers.is_empty();
             if event.kind() == MediaEventKind::VideoKeyframe {
                 let bootstrap = state.cache.bootstrap();
-                if fits_queue(&bootstrap, self.shared.config) {
+                if fits_queue(&bootstrap, &self.shared.config) {
                     for cached in bootstrap {
                         state.queue_bytes += cached.payload_len();
                         state.queue.push_back(cached);
@@ -303,8 +623,12 @@ impl RtmpRelayController {
 
     pub(crate) fn status(&self) -> RtmpRelayStatus {
         let state = self.shared.lock();
+        let mut destination = self.shared.destination.clone();
+        if let Some(resolver) = &self.shared.resolver {
+            destination.address = resolver.address();
+        }
         RtmpRelayStatus {
-            destination: self.shared.destination.clone(),
+            destination,
             phase: state.phase,
             last_failure: state.last_failure,
             queue_messages: state.queue.len(),
@@ -316,6 +640,10 @@ impl RtmpRelayController {
             events_sent: state.events_sent,
             events_dropped: state.events_dropped,
             payload_bytes_sent: state.payload_bytes_sent,
+            dns_refresh_attempts: state.dns_refresh_attempts,
+            dns_refresh_successes: state.dns_refresh_successes,
+            dns_refresh_failures: state.dns_refresh_failures,
+            last_dns_refresh_failure: state.last_dns_refresh_failure,
         }
     }
 
@@ -346,6 +674,7 @@ pub(crate) struct RtmpPullController {
 struct PullShared {
     service_id: Arc<str>,
     target: RtmpPullTarget,
+    resolver: Option<Arc<RtmpDestinationResolver>>,
     registry: Arc<RtmpRegistry>,
     hub: LiveHub,
     state: Mutex<PullState>,
@@ -361,6 +690,10 @@ struct PullState {
     reconnects: u64,
     events_received: u64,
     payload_bytes_received: u64,
+    dns_refresh_attempts: u64,
+    dns_refresh_successes: u64,
+    dns_refresh_failures: u64,
+    last_dns_refresh_failure: Option<RtmpDnsRefreshFailure>,
 }
 
 impl RtmpPullController {
@@ -370,9 +703,11 @@ impl RtmpPullController {
         registry: Arc<RtmpRegistry>,
         hub: LiveHub,
     ) -> Arc<Self> {
+        let resolver = target.config.dns_resolver.clone();
         let shared = Arc::new(PullShared {
             service_id,
             target,
+            resolver,
             registry,
             hub,
             state: Mutex::new(PullState {
@@ -384,6 +719,10 @@ impl RtmpPullController {
                 reconnects: 0,
                 events_received: 0,
                 payload_bytes_received: 0,
+                dns_refresh_attempts: 0,
+                dns_refresh_successes: 0,
+                dns_refresh_failures: 0,
+                last_dns_refresh_failure: None,
             }),
             available: Condvar::new(),
         });
@@ -443,6 +782,28 @@ impl PullShared {
     fn set_phase(&self, phase: RtmpRelayPhase) {
         self.lock().phase = phase;
     }
+
+    fn refresh_address(&self) -> SocketAddr {
+        let Some(resolver) = &self.resolver else {
+            return self.target.address;
+        };
+        match resolver.refresh_if_due() {
+            RtmpDnsRefresh::NotDue => {}
+            RtmpDnsRefresh::Refreshed(_) => {
+                let mut state = self.lock();
+                state.dns_refresh_attempts = state.dns_refresh_attempts.saturating_add(1);
+                state.dns_refresh_successes = state.dns_refresh_successes.saturating_add(1);
+                state.last_dns_refresh_failure = None;
+            }
+            RtmpDnsRefresh::Failed(failure) => {
+                let mut state = self.lock();
+                state.dns_refresh_attempts = state.dns_refresh_attempts.saturating_add(1);
+                state.dns_refresh_failures = state.dns_refresh_failures.saturating_add(1);
+                state.last_dns_refresh_failure = Some(failure);
+            }
+        }
+        resolver.address()
+    }
 }
 
 struct PullExecutor {
@@ -499,9 +860,10 @@ fn run_pull(shared: &PullShared) {
             state.phase = RtmpRelayPhase::Connecting;
             state.connection_attempts = state.connection_attempts.saturating_add(1);
         }
+        let address = shared.refresh_address();
         let Ok(mut stream) = client::connect_stream(
             &shared.target.host,
-            shared.target.address,
+            address,
             shared.target.transport,
             shared.target.config.connect_timeout,
             shared.target.config.handshake_timeout,
@@ -672,7 +1034,9 @@ fn establish_pull_session(
     timeout: Duration,
 ) -> Result<ClientSession, RtmpRelayFailure> {
     let mut config = ClientSessionConfig::new();
-    config.flash_version.clone_from(&target.options.flash_version);
+    config
+        .flash_version
+        .clone_from(&target.options.flash_version);
     config.playback_buffer_length_ms = target.options.playback_buffer_ms;
     config.tc_url = Some(target.options.tc_url.clone().unwrap_or_else(|| {
         format!(
@@ -786,6 +1150,28 @@ impl RelayShared {
         let mut state = self.lock();
         state.last_failure = Some(failure);
         state.phase = RtmpRelayPhase::Backoff;
+    }
+
+    fn refresh_address(&self) -> SocketAddr {
+        let Some(resolver) = &self.resolver else {
+            return self.destination.address;
+        };
+        match resolver.refresh_if_due() {
+            RtmpDnsRefresh::NotDue => {}
+            RtmpDnsRefresh::Refreshed(_) => {
+                let mut state = self.lock();
+                state.dns_refresh_attempts = state.dns_refresh_attempts.saturating_add(1);
+                state.dns_refresh_successes = state.dns_refresh_successes.saturating_add(1);
+                state.last_dns_refresh_failure = None;
+            }
+            RtmpDnsRefresh::Failed(failure) => {
+                let mut state = self.lock();
+                state.dns_refresh_attempts = state.dns_refresh_attempts.saturating_add(1);
+                state.dns_refresh_failures = state.dns_refresh_failures.saturating_add(1);
+                state.last_dns_refresh_failure = Some(failure);
+            }
+        }
+        resolver.address()
     }
 
     fn wait_backoff(&self) -> bool {
@@ -929,7 +1315,7 @@ fn relay_executor() -> &'static RelayExecutor {
     EXECUTOR.get_or_init(RelayExecutor::new)
 }
 
-fn fits_queue(events: &[MediaEvent], config: RtmpRelayConfig) -> bool {
+fn fits_queue(events: &[MediaEvent], config: &RtmpRelayConfig) -> bool {
     events.len() <= config.max_queue_messages
         && events
             .iter()
@@ -946,9 +1332,10 @@ fn run_relay(shared: &RelayShared) {
             state.phase = RtmpRelayPhase::Connecting;
             state.connection_attempts = state.connection_attempts.saturating_add(1);
         }
+        let address = shared.refresh_address();
         let Ok(mut stream) = client::connect_stream(
             &shared.destination.host,
-            shared.destination.address,
+            address,
             shared.destination.transport,
             shared.config.connect_timeout,
             shared.config.handshake_timeout,
@@ -1055,7 +1442,8 @@ fn establish_publish_session(
     let mut config = ClientSessionConfig::new();
     config.chunk_size = 4_096;
     config.playback_buffer_length_ms = destination.options.playback_buffer_ms;
-    config.flash_version
+    config
+        .flash_version
         .clone_from(&destination.options.flash_version);
     config.tc_url = Some(destination.options.tc_url.clone().unwrap_or_else(|| {
         format!(
@@ -1225,7 +1613,180 @@ fn write_packets(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
+
+    struct SequenceResolver {
+        answers: Mutex<VecDeque<Result<Vec<SocketAddr>, io::ErrorKind>>>,
+        calls: AtomicUsize,
+    }
+
+    impl SequenceResolver {
+        fn new(answers: impl IntoIterator<Item = Result<Vec<SocketAddr>, io::ErrorKind>>) -> Self {
+            Self {
+                answers: Mutex::new(answers.into_iter().collect()),
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::Acquire)
+        }
+    }
+
+    impl RtmpDnsResolver for SequenceResolver {
+        fn resolve(&self, _host: &str, _port: u16) -> io::Result<Vec<SocketAddr>> {
+            self.calls.fetch_add(1, Ordering::AcqRel);
+            match self
+                .answers
+                .lock()
+                .expect("test resolver mutex poisoned")
+                .pop_front()
+                .unwrap_or(Err(io::ErrorKind::NotFound))
+            {
+                Ok(addresses) => Ok(addresses),
+                Err(kind) => Err(io::Error::from(kind)),
+            }
+        }
+    }
+
+    fn test_resolver(
+        initial: SocketAddr,
+        policy: RtmpOutboundPolicy,
+        listeners: impl IntoIterator<Item = SocketAddr>,
+        answers: impl IntoIterator<Item = Result<Vec<SocketAddr>, io::ErrorKind>>,
+    ) -> (RtmpDestinationResolver, Arc<SequenceResolver>) {
+        let resolver = Arc::new(SequenceResolver::new(answers));
+        let destination = RtmpDestinationResolver::from_startup_with_resolver(
+            "relay.example",
+            initial.port(),
+            RtmpTransport::Rtmp,
+            [initial],
+            policy,
+            listeners,
+            Duration::from_millis(5),
+            Arc::clone(&resolver) as Arc<dyn RtmpDnsResolver>,
+        )
+        .expect("startup destination");
+        (destination, resolver)
+    }
+
+    #[test]
+    fn dns_refresh_rotates_an_address_once_per_bounded_interval() {
+        let initial = "127.0.0.1:1935".parse().expect("initial address");
+        let rotated = "127.0.0.2:1935".parse().expect("rotated address");
+        let (resolver, queries) = test_resolver(
+            initial,
+            RtmpOutboundPolicy {
+                deny_private: false,
+                ..RtmpOutboundPolicy::default()
+            },
+            [],
+            [Ok(vec![rotated])],
+        );
+
+        thread::sleep(Duration::from_millis(10));
+        assert_eq!(
+            resolver.refresh_if_due(),
+            RtmpDnsRefresh::Refreshed(rotated)
+        );
+        assert_eq!(resolver.address(), rotated);
+        assert_eq!(resolver.refresh_if_due(), RtmpDnsRefresh::NotDue);
+        assert_eq!(queries.calls(), 1);
+    }
+
+    #[test]
+    fn failed_dns_refresh_retains_the_last_address_and_retries_later() {
+        let initial = "127.0.0.1:1935".parse().expect("initial address");
+        let rotated = "127.0.0.2:1935".parse().expect("rotated address");
+        let (resolver, queries) = test_resolver(
+            initial,
+            RtmpOutboundPolicy {
+                deny_private: false,
+                ..RtmpOutboundPolicy::default()
+            },
+            [],
+            [Err(io::ErrorKind::NotFound), Ok(vec![rotated])],
+        );
+
+        thread::sleep(Duration::from_millis(10));
+        assert_eq!(
+            resolver.refresh_if_due(),
+            RtmpDnsRefresh::Failed(RtmpDnsRefreshFailure::Resolution)
+        );
+        assert_eq!(resolver.address(), initial);
+        assert_eq!(resolver.refresh_if_due(), RtmpDnsRefresh::NotDue);
+        thread::sleep(Duration::from_millis(10));
+        assert_eq!(
+            resolver.refresh_if_due(),
+            RtmpDnsRefresh::Refreshed(rotated)
+        );
+        assert_eq!(queries.calls(), 2);
+    }
+
+    #[test]
+    fn dns_refresh_rejects_a_family_mismatch_without_switching_addresses() {
+        let initial = "127.0.0.1:1935".parse().expect("initial address");
+        let (resolver, _) = test_resolver(
+            initial,
+            RtmpOutboundPolicy {
+                deny_private: false,
+                ..RtmpOutboundPolicy::default()
+            },
+            [],
+            [Ok(vec!["[::1]:1935".parse().expect("IPv6 address")])],
+        );
+
+        thread::sleep(Duration::from_millis(10));
+        assert_eq!(
+            resolver.refresh_if_due(),
+            RtmpDnsRefresh::Failed(RtmpDnsRefreshFailure::FamilyMismatch)
+        );
+        assert_eq!(resolver.address(), initial);
+    }
+
+    #[test]
+    fn dns_refresh_rejects_a_direct_listener_loop_before_family_selection() {
+        let initial = "127.0.0.2:1935".parse().expect("initial address");
+        let listener = "127.0.0.1:1935".parse().expect("listener address");
+        let (resolver, _) = test_resolver(
+            initial,
+            RtmpOutboundPolicy {
+                deny_private: false,
+                ..RtmpOutboundPolicy::default()
+            },
+            [listener],
+            [Ok(vec![listener])],
+        );
+
+        thread::sleep(Duration::from_millis(10));
+        assert_eq!(
+            resolver.refresh_if_due(),
+            RtmpDnsRefresh::Failed(RtmpDnsRefreshFailure::DirectLoop)
+        );
+        assert_eq!(resolver.address(), initial);
+    }
+
+    #[test]
+    fn dns_refresh_rechecks_the_outbound_policy_for_new_answers() {
+        let initial = "198.51.100.10:1935".parse().expect("initial address");
+        let (resolver, _) = test_resolver(
+            initial,
+            RtmpOutboundPolicy::default(),
+            [],
+            [Ok(vec![
+                "127.0.0.1:1935".parse().expect("loopback address"),
+            ])],
+        );
+
+        thread::sleep(Duration::from_millis(10));
+        assert_eq!(
+            resolver.refresh_if_due(),
+            RtmpDnsRefresh::Failed(RtmpDnsRefreshFailure::Policy)
+        );
+        assert_eq!(resolver.address(), initial);
+    }
 
     #[test]
     fn overflow_and_codec_headers_gate_relay_output_until_a_matching_keyframe() {
@@ -1246,6 +1807,7 @@ mod tests {
                     max_chain_depth: 4,
                     ..RtmpRelayConfig::default()
                 },
+                resolver: None,
                 state: Mutex::new(RelayState {
                     accepting: true,
                     waiting_for_keyframe: false,
@@ -1262,6 +1824,10 @@ mod tests {
                     events_sent: 0,
                     events_dropped: 0,
                     payload_bytes_sent: 0,
+                    dns_refresh_attempts: 0,
+                    dns_refresh_successes: 0,
+                    dns_refresh_failures: 0,
+                    last_dns_refresh_failure: None,
                 }),
                 available: Condvar::new(),
             }),
@@ -1308,6 +1874,7 @@ mod tests {
                     buffer_duration: Duration::from_millis(1),
                     ..RtmpRelayConfig::default()
                 },
+                resolver: None,
                 state: Mutex::new(RelayState {
                     accepting: true,
                     waiting_for_keyframe: false,
@@ -1324,6 +1891,10 @@ mod tests {
                     events_sent: 0,
                     events_dropped: 0,
                     payload_bytes_sent: 0,
+                    dns_refresh_attempts: 0,
+                    dns_refresh_successes: 0,
+                    dns_refresh_failures: 0,
+                    last_dns_refresh_failure: None,
                 }),
                 available: Condvar::new(),
             }),
