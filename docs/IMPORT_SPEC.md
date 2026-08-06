@@ -23,8 +23,9 @@ security, TLS, listener, or upstream semantics cannot be represented.
 ## Current implementation boundary
 
 Import is implemented in `oxiroute-import` and exposed by the daemon binary as an offline report or
-preview command. There is no import management API or UI workflow; standalone preview is emitted
-only for a fully finalized candidate, defaults to deterministic KDL, and accepts
+preview command. The authenticated management API also exposes bounded, redacted native reports
+for the read-only provenance workspace; standalone preview is emitted only for a fully finalized
+candidate, defaults to deterministic KDL, and accepts
 `--format kdl|lua|uci|hocon`. The complete nginx root command includes the strict nginx-RTMP
 subset when that root contains an `rtmp` block.
 
@@ -60,8 +61,9 @@ activation of standalone import reports. Restricted Lua cannot declare native re
   and supported named `recorder` blocks. Import never accesses a configured recording root. Most
   directive families remain blocking. The complete nginx-root path composes the finalized HTTP and
   RTMP candidates, and KDL/HOCON/UCI `nginx_server` references feed that result into the normal
-  canonical resolver and watcher-driven generation path. There is no separate management import
-  API, import UI, or dedicated `import rtmp` daemon command.
+canonical resolver and watcher-driven generation path. There is no separate management import
+editing surface or dedicated `import rtmp` daemon command; the management API may expose a retained
+report through the read-only provenance workspace.
 - HAProxy has ordered `-f` file/directory loading, byte-preserving lexing/parsing, defaults and
   frontend/backend/listen resolution, a terminal decision ledger, stable diagnostics, provenance,
   and conservative canonical lowering.

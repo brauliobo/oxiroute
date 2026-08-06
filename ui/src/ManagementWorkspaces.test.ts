@@ -6,7 +6,7 @@ import CertificatesWorkspace from './CertificatesWorkspace.vue'
 import EventsWorkspace from './EventsWorkspace.vue'
 import OperationsWorkspace from './OperationsWorkspace.vue'
 import { fetchTlsInventory } from './api'
-import { contractConfigSnapshot, jsonResponse } from './test/contractFixtures'
+import { jsonResponse } from './test/contractFixtures'
 import {
   managementGeneration,
   managementListeners,
@@ -15,6 +15,7 @@ import {
   managementStatus,
   managementTlsInventory,
 } from './test/managementFixtures'
+import { importReportResponse } from './test/importFixtures'
 
 const token = 'management-ui-test-token'
 
@@ -27,8 +28,9 @@ afterEach(() => {
 })
 
 describe('local management workspaces', () => {
-  it('navigates to provenance without inventing an import endpoint', async () => {
+  it('navigates to provenance and renders the native import report contract', async () => {
     window.location.hash = '#/provenance'
+    const report = importReportResponse()
     const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url === '/api/v1/monitoring') return Promise.resolve(jsonResponse({
@@ -41,7 +43,7 @@ describe('local management workspaces', () => {
         listeners: [], upstreamPools: [], certbotCertificates: [], certbotWatcher: null, acmeManagedCertificates: [],
         rtmp: { activeStreams: 0, publishers: 0, subscribers: 0, mediaPayloadBytesReceived: '0', recordingSupported: false, manualRecording: false, recorderBytesWritten: '0', recorderSegmentsStarted: '0', recorderSegmentsCompleted: '0', recorderDiscontinuities: '0', relayConnectionAttempts: '0', relayConnections: '0', relayReconnects: '0', relayEventsSent: '0', relayEventsDropped: '0', relayPayloadBytesSent: '0', relays: [], recorders: [] },
       }))
-      if (url === '/api/v1/config') return Promise.resolve(jsonResponse(contractConfigSnapshot()))
+      if (url === '/api/v1/import-reports' || url === '/api/v1/import-reports/0') return Promise.resolve(jsonResponse(report))
       throw new Error(`Unexpected request: ${url} ${init?.method ?? 'GET'}`)
     })
     vi.stubGlobal('fetch', fetch)
@@ -53,8 +55,8 @@ describe('local management workspaces', () => {
     await flushPromises()
 
     expect(wrapper.get('a[href="#/provenance"]').attributes('aria-current')).toBe('page')
-    expect(wrapper.get('.provenance-workspace').text()).toContain('Native import report unavailable')
-    expect(fetch.mock.calls.some(([url]) => String(url).includes('/api/v1/import'))).toBe(false)
+    expect(wrapper.get('.provenance-workspace').text()).toContain('apache import')
+    expect(fetch.mock.calls.some(([url]) => String(url).includes('/api/v1/import-reports'))).toBe(true)
     wrapper.unmount()
   })
 

@@ -26,6 +26,7 @@ Implemented and recognized endpoints:
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/v1/config` | Typed config, source format/composition metadata, disk/candidate/active revisions, format-preserving preview, and compact redacted diagnostics. |
+| `GET` | `/api/v1/import-reports`, `/api/v1/import-reports/{index}` | Bounded native import report inventory/evidence with redacted source paths and a read-only KDL preview only for finalized, unblocked candidates. |
 | `POST` | `/api/v1/config/validate` | Validate a typed draft without writing or activating it. |
 | `PUT` | `/api/v1/config` | Preflight and revision-checked durable canonical save; changed generations are queued for watcher-driven activation. |
 | `GET` | `/api/v1/topology` | Active redacted configuration graph with runtime health overlays. |
@@ -71,7 +72,8 @@ stream/header/body limits, graceful `goAway`, explicit `unsupported: ["cache", "
 "upgrades"]`, and `fallback: "none"`. A blocked listener also reports whether it failed, stopped,
 or never reached listening state.
 
-Native import routes and unbounded event streaming are not implemented. Bounded event polling and
+Native import routes expose evidence only; they do not edit native files or activate standalone
+reports. Unbounded event streaming is not implemented. Bounded event polling and
 bounded SSE delivery are implemented over the same non-durable event ring. Durable audit routes are
 implemented by the backend as a separate store, but the current frontend has no audit-history
 workspace. Recorder routes control configured `start = "manual"`
