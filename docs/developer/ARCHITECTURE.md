@@ -101,6 +101,8 @@ Management handlers serialize typed JSON responses from the active generation, m
 topology builder, and configuration coordinator. Configuration writes use a disk revision precondition
 and complete preflight before durable replacement. The Vue client parses response shapes defensively,
 keeps stale data visible after refresh errors, and never renders secret-bearing backend values.
+Operational events use a bounded non-durable ring for polling and SSE; control operations also append
+bounded redacted records to the separate durable audit store.
 
 ## Supervision And Platform Boundaries
 

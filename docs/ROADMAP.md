@@ -47,8 +47,9 @@ Status: partial. The annotations below identify landed slices; Milestone 1 is no
   upstream version policies, and gRPC DATA/trailers are implemented and wire-tested; broader
   conformance remains).
 - Raw TCP relay with correct half-close, timeout, cancellation, and backpressure tests.
-- Tagged socket/DNS/Unix upstreams with round-robin and least-connections selection, plus active
-  TCP/HTTP health checks for non-Unix pools (implemented; Unix transports require Unix).
+- Tagged socket/DNS/Unix upstreams with round-robin, weighted round-robin, and least-connections
+  selection, plus active TCP/HTTP health checks for non-Unix pools (implemented; Unix transports
+  require Unix).
 - Request/connection limits, structured access logs, and Prometheus metrics (limits are
   implemented; HTTP structured JSONL access logs and Prometheus exposition are implemented for
   the current narrow surface, while protocol breadth and richer log contracts remain partial).
@@ -73,7 +74,10 @@ Status: partial. The annotations below identify landed slices; Milestone 1 is no
 - Minimal Vue 3 SPA using build-time Pug SFC templates (implemented).
 - UI for listeners, upstreams, validation diagnostics, active revision, basic metrics, managed
   certificate configuration, operations, bounded events, and source provenance (the current
-  runtime observatory and canonical-field workspace are implemented; native import editing remains).
+  runtime observatory and canonical-field workspace are implemented; passive-health/retry controls
+  are exposed, while weighted-round-robin weight editing, native import editing, TLS-ALPN challenge
+  selection, and durable audit browsing are not frontend surfaces; the event view remains the
+  non-durable operational ring).
 
 The original Milestone 1 boundary explicitly excluded UDP, forward proxying, caching, HTTP/3,
 native config importers, transparent interception, firewall management, and remote multi-user
@@ -138,7 +142,9 @@ runtime, failure-path, test, and native-lowering coverage all land.
 - UDP relay with bounded pseudo-sessions, per-client reply mapping, and expiry.
 - Bounded PROXY protocol v1/v2 for explicit client-address propagation is implemented; broader wire
   conformance remains.
-- Least-connections policy (implemented); weighted round-robin remains.
+- Least-connections and weighted round-robin policies are implemented and tested; the weighted
+  canonical/runtime path is current, while native importer lowering and frontend weight editing
+  remain outside the release surface.
 - ACME DNS-01/TLS-ALPN-01 through bounded authenticators and wildcard certificate support (the
   provider seam, challenge orchestration, and cleanup paths are implemented; concrete provider and
   CA-staging deployments remain).
@@ -192,24 +198,25 @@ Both H3 directions remain partial capabilities pending broader conformance.
 - Reverse QUIC/H3 frontend selected through a proof of compatibility with Pingora's service model
   and reusing immutable upstream service/pool plans.
 - HTTP/3 broader conformance and additional UDP resource-exhaustion tests remain; bounded response
-  conformance, graceful-drain code paths, cancellation, malformed-input, and reload coverage exist,
-  but passing active-traffic drain evidence remains a gate. Migration is disabled and 0-RTT is
-  disabled by policy.
+  conformance, generation-owned graceful GOAWAY drain, cancellation, malformed-input, and reload
+  coverage are implemented and tested, but passing active-traffic drain evidence remains a gate.
+  Migration is disabled and 0-RTT is disabled by policy.
 
 HTTP/3 must be advertised only when the active listener is actually QUIC-capable. It must
 never degrade silently to another HTTP version.
 
 ## Supervision workstream
 
-Status: foundation with a partial executable slice. The master, worker, launcher, authenticated
-typed descriptor protocol, status reporting, drain, rollback, and crash handling are implemented for
-TCP, Unix, UDP, and QUIC/H3 listener adoption. Process tests serve supervised UDP and H3 traffic,
-but the default public `serve` path remains direct and production replacement evidence for active
-UDP/H3 traffic is not complete.
+Status: partial. The master, worker, launcher, authenticated typed descriptor protocol, status
+reporting, drain, rollback, and crash handling are implemented for TCP, Unix, UDP, and QUIC/H3
+listener adoption. Process tests serve supervised UDP and H3 traffic, but the default public `serve`
+path remains direct and packaged production replacement evidence for active UDP/H3 traffic is not
+complete.
 
-Remaining supervision gates are packaged Linux deployment, active-traffic replacement and rollback,
-descriptor ownership across restart, bounded drain, listener-start failure, and crash recovery for
-both UDP and H3. Supervision must not be treated as broad inherited-file-descriptor compatibility.
+Remaining supervision gates are packaged Linux default deployment and active-traffic UDP/H3
+replacement, rollback, drain, restart, descriptor-ownership, and crash-recovery evidence. Generic
+TCP/Unix replacement, listener-start failure, and worker crash handling have focused tests;
+supervision must not be treated as broad inherited-file-descriptor compatibility.
 
 ## Future kernel integration
 
@@ -226,8 +233,8 @@ the main daemon.
 Status: partial. The current contract is bounded live publish/play, fanout, static push/pull relay,
 same-daemon auto-push, callbacks, local/HTTP VOD, legacy AVC/AAC FLV recording, RTMP
 statistics/session controls, HLS, DASH, and allowlisted isolated exec profiles. Canonical named
-recorders, exact-ID manual controls, and fixed inbound assembled-message protection are implemented;
-nginx-RTMP directive breadth and parity remain incomplete.
+recorders, exact-ID manual controls, and service-configured inbound assembled-message protection
+are implemented; nginx-RTMP directive breadth and parity remain incomplete.
 
 RTMP proceeds in independently releasable slices rather than waiting for HTTP/Squid parity:
 

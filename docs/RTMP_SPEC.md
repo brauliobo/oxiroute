@@ -465,8 +465,9 @@ described below are implemented, not evidence that every listed component exists
 1. Listener and optional PROXY protocol.
 2. RTMP version-3 simple/complex handshake state machine.
 3. Incremental chunk decoder/encoder for formats 0-3, CSID forms, extended timestamps, reassembly,
-   fixed inbound chunk/message limits, ACK, bandwidth, and ping. The current message ceiling is
-   fixed by the session adapter rather than configured per native directive.
+   fixed inbound chunk limits, a service-configured assembled-message ceiling, ACK, bandwidth, and
+   ping. The canonical message ceiling defaults to 8 MiB and is bounded to 8 MiB; imported nginx
+   services retain a 1 MiB default and lower bounded `max_message` values from RTMP or server scope.
 4. Bounded AMF0 codec and command decoder.
 5. Ordered command middleware for connect, createStream, publish, play, closeStream, and deleteStream.
 6. Application stream registry with one publisher, subscribers, cached metadata/AAC/AVC headers, and keyframe state.
@@ -600,7 +601,8 @@ acceptance, exhaustive chunk fixtures, and OBS acceptance remain before this sli
 
 - Simple and both Adobe complex handshake schemes.
 - Fragmented I/O, chunk formats 0-3, all CSID header widths, extended timestamps, and interleaving.
-- Dynamic inbound chunk size, max-message, ACK window, ping, and output queue bounds.
+- Bounded inbound chunk and service-configured `max_message` ceilings, ACK window, ping, and output
+  queue bounds.
 - AMF0 `connect`, `createStream`, `publish`, `play`, `closeStream`, `deleteStream`.
 - One publisher and many subscribers, duplicate-publisher rejection, idle subscribers.
 - Metadata/AAC/AVC header cache, future keyframe gating, queue saturation, and restart.

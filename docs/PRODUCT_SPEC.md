@@ -191,18 +191,20 @@ The current contract is:
 
 - `stable`: KDL 2.0 default authoring and deterministic rendering, strict typed configuration,
   loopback management exposure, bearer protection for recognized management/API routes, public
-  readiness and metrics probes, bounded event polling, and external Certbot lineage
-  reconciliation.
+  readiness and metrics probes, round-robin, weighted round-robin, least-connections, and first
+  selection, bounded configurable safe retry/passive-health policies, bounded event polling, durable
+  redacted audit history, and external Certbot lineage reconciliation.
 - `partial`: reverse HTTP and TCP/UDP relay with bounded explicit PROXY protocol propagation, HTTP/1 and reverse/forward HTTP/3 proxying, RTMP live/recording/relay slices,
   bounded authenticated SSE delivery, managed ACME HTTP-01/DNS-01/TLS-ALPN-01 issuance, wildcard
   renewal, bounded reverse HTTP cache, structured access logs, RTMP statistics/session controls,
   HLS/DASH/isolated-exec/auto-push slices, and native nginx/HAProxy/Apache/Squid/Varnish import
-  subsets with the Vue control plane.
-- `foundation`: forward HTTP/2 protocol components,
-  and supervised replacement components, including typed UDP and QUIC/H3 adoption, that are tested
-  but are not the default direct `serve` path.
-- `planned`: broader cache conformance, broader managed ACME authenticators, durable event history,
-  and broader protocol/import compatibility.
+  subsets with canonical provenance and a partial Vue control plane. Native import editing,
+  weighted-round-robin weight editing, TLS-ALPN challenge selection, and durable audit browsing are
+  not current frontend workflows.
+- `foundation`: forward HTTP/2 protocol components that are tested but are not an active daemon
+  capability.
+- `planned`: broader cache conformance, broader managed ACME authenticators, durable replay/history
+  for the non-durable operational event ring, and broader protocol/import compatibility.
 - `research`: remote administration, broader DNS provider policy, external key providers, and
   transparent interception through a separate privileged helper.
 - `not-planned`: unrestricted Lua and runtime user-provided templates.
@@ -220,13 +222,21 @@ required before the affected partial or foundation paths can become a broader su
 
 - Active traffic: reload and drain with long-lived HTTP, H2, H3, TCP, UDP, RTMP, and SSE activity,
   including no-new-work admission after GOAWAY/quiesce, deadline/cancellation behavior, and old
-  generation retention.
+  generation retention. H3 generation-owned GOAWAY drain is implemented and targeted-tested; this
+  gate is for active-traffic evidence across the supported transports.
 - ACME staging: CA-staging issuance and renewal for HTTP-01, DNS-01, and TLS-ALPN-01, including
   listener/deployment checks, failed challenge cleanup, rollback, and real certificate activation.
+  TLS-ALPN challenge handling and DNS exact-record cleanup/recovery are implemented and tested;
+  staging deployment and real-certificate evidence remain open.
+- UI/import exposure: native import remains an offline/compositional-source workflow, while the
+  backend/API exposes durable audit history and weighted-round-robin fields that the current
+  frontend does not browse/edit; passive health and retry controls are exposed in the frontend.
+  These are exposure boundaries, not claims that the corresponding backend behavior is absent.
 - Interoperability: independent HTTP/H2/H3/TLS clients and origins, FFmpeg/OBS RTMP publish/play,
   and representative Apache, HAProxy, Squid, and Varnish migration cases beyond synthetic fixtures.
 - Fuzz and crash: bounded runs of every checked-in parser harness, crash-corpus triage, and failure
   injection for media workers, exec workers, reload activation, and listener supervision.
 - Production supervision: packaged Linux master/worker replacement and rollback with active UDP and
-  H3 traffic, descriptor ownership, drain, restart, and crash recovery. Direct `serve` remains the
-  default until this evidence exists.
+  H3 traffic, descriptor ownership across restart, drain, restart, and crash recovery. Initial
+  supervised UDP/H3 serving and generic replacement/error paths are tested; direct `serve` remains
+  the default until active-traffic production evidence exists.
