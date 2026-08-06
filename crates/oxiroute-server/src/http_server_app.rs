@@ -14,6 +14,7 @@ use pingora::{
     },
     server::ShutdownWatch,
 };
+use tokio::sync::watch;
 
 use crate::{ListenerMetrics, RuntimeGeneration, RuntimeReferenceKind, TlsProfilePlan};
 
@@ -158,7 +159,7 @@ where
         mut downstream: Stream,
         shutdown: &ShutdownWatch,
     ) -> Option<Stream> {
-        let _h2_reference = if matches!(downstream.selected_alpn_proto(), Some(ALPN::H2)) {
+        let h2_reference = if matches!(downstream.selected_alpn_proto(), Some(ALPN::H2)) {
             self.generation
                 .as_ref()
                 .and_then(|generation| generation.begin_reference(RuntimeReferenceKind::Http2))
@@ -170,7 +171,58 @@ where
             downstream.shutdown().await;
             return None;
         }
-        self.inner.process_new(downstream, shutdown).await
+        let (h2_shutdown, h2_monitor) = if h2_reference.is_some() {
+            let generation = self
+                .generation
+                .as_ref()
+                .expect("H2 reference has a generation");
+            let mut gate = generation.accept_gate().register();
+            let (shutdown_tx, shutdown_rx) = watch::channel(false);
+            let mut process_shutdown = shutdown.clone();
+            let gate_state = gate.state();
+            if *process_shutdown.borrow() || !gate_state.accepting {
+                let _ = shutdown_tx.send(true);
+                if !gate_state.accepting {
+                    gate.acknowledge(gate_state.epoch);
+                }
+            }
+            let monitor = tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        changed = gate.changed() => {
+                            let Ok(state) = changed else { break };
+                            if !state.accepting {
+                                let _ = shutdown_tx.send(true);
+                                gate.acknowledge(state.epoch);
+                                break;
+                            }
+                        }
+                        changed = process_shutdown.changed() => {
+                            if changed.is_err() {
+                                break;
+                            }
+                            if *process_shutdown.borrow() {
+                                let _ = shutdown_tx.send(true);
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+            (Some(shutdown_rx), Some(monitor))
+        } else {
+            (None, None)
+        };
+        let result = match h2_shutdown.as_ref() {
+            Some(h2_shutdown) => self.inner.process_new(downstream, h2_shutdown).await,
+            None => self.inner.process_new(downstream, shutdown).await,
+        };
+        if let Some(monitor) = h2_monitor {
+            monitor.abort();
+            let _ = monitor.await;
+        }
+        drop(h2_reference);
+        result
     }
 
     async fn cleanup(&self) {
