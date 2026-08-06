@@ -72,7 +72,9 @@ The server crate owns listener admission and dispatches by protocol:
 
 - HTTP reverse proxy routes host/path/method requests into immutable service and pool plans.
 - Forward proxy parsing and policy are supplied by `oxiroute-forward-proxy`; the runtime authenticates,
-  resolves, authorizes, and connects only approved destinations.
+  resolves, authorizes, and connects only approved destinations. Socket-bound H1 listeners terminate
+  TLS before this policy path, require negotiated `http/1.1`, and bound the transport handshake by
+  the service's idle/lifetime minimum while retaining listener and generation admission.
 - TCP relay preserves opaque bytes with independent half-close, backpressure, and bounded deadlines.
 - TLS plans select exact/wildcard/default identities and explicit downstream/upstream protocol policy.
 - Health supervisors publish observed endpoint state to both selection and monitoring.
