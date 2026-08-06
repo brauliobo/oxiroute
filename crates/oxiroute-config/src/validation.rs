@@ -1460,11 +1460,6 @@ fn validate_forward_listener(
     let Some(profile_name) = listener.tls_profile.as_deref() else {
         return Ok(());
     };
-    if version == ForwardHttpVersion::H1 {
-        return Err(invalid(
-            "forward_http1 does not support downstream TLS yet".into(),
-        ));
-    }
     let profile =
         tls_profiles
             .get(profile_name)

@@ -395,10 +395,27 @@ fn enforces_forward_listener_version_transport_tls_and_exact_service_kind() {
         .replace("forward-h3", "forward-h1")
         .replace("min_version = \"1.3\"", "min_version = \"1.2\"")
         .replace("alpn = { \"h3\" }", "alpn = { \"http/1.1\" }");
-    assert!(
-        error(&forward_config(service, &h1_tls, &h1_profile))
-            .contains("does not support downstream TLS")
+    let tls_service = service.replace(" }", ", tls_required = true }");
+    load_lua(&forward_config(&tls_service, &h1_tls, &h1_profile))
+        .expect("socket H1 forward listener with downstream TLS");
+
+    let h1_socket = h1.replace(
+        "type = \"unix\", path = \"/run/oxiroute/forward.sock\"",
+        "type = \"socket\", address = \"127.0.0.1:3129\"",
     );
+    assert!(
+        error(&forward_config(&tls_service, &h1_socket, tls)).contains("requires a TLS profile")
+    );
+    let incompatible_h1_profile =
+        h1_profile.replace("alpn = { \"http/1.1\" }", "alpn = { \"h2\" }");
+    assert!(error(&forward_config(
+        &tls_service,
+        &h1_tls,
+        &incompatible_h1_profile
+    ))
+    .contains("required ALPN"));
+    let h1_udp = h1_tls.replace("type = \"socket\"", "type = \"udp\"");
+    assert!(!error(&forward_config(&tls_service, &h1_udp, &h1_profile)).is_empty());
 
     for listener in [
         h3.replace("type = \"udp\"", "type = \"socket\""),

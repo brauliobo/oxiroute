@@ -530,6 +530,11 @@ pub trait ServerApp {
         true
     }
 
+    /// Returns the maximum time allowed for a transport handshake.
+    fn handshake_timeout(&self) -> Duration {
+        Duration::from_secs(60)
+    }
+
     /// Acquires capacity before a transport handshake. Returning `None` rejects the connection.
     fn admit_connection(&self) -> Option<ConnectionAdmission> {
         Some(Box::new(()))
