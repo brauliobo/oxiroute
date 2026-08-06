@@ -9,7 +9,7 @@ use oxiroute_config::{Config, ListenerBind, Protocol};
 #[cfg(target_os = "linux")]
 use oxiroute_supervision_unix::{
     BindIdentity, DescriptorKind, DescriptorManifest, DescriptorRole, DescriptorSet,
-    DescriptorSlot, SlotId, MAX_DESCRIPTOR_COUNT,
+    DescriptorSlot, MAX_DESCRIPTOR_COUNT, SlotId,
 };
 #[cfg(target_os = "linux")]
 use oxiroute_supervisor_master::StableListeners;
@@ -856,12 +856,7 @@ fn descriptor_slot(
         ListenerBind::Udp { address } => {
             let kind = match protocol {
                 Some(Protocol::Udp) => DescriptorKind::DatagramListener,
-                Some(Protocol::ForwardHttp3 | Protocol::Http3) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Unsupported,
-                        format!("worker cannot adopt QUIC listener `{address}` yet"),
-                    ));
-                }
+                Some(Protocol::ForwardHttp3 | Protocol::Http3) => DescriptorKind::QuicListener,
                 _ => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
@@ -1236,9 +1231,11 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn descriptor_export_and_adoption_supports_udp_relay_listeners() {
-        let socket = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-            .expect("temporary UDP bind");
-        socket.set_nonblocking(true).expect("nonblocking UDP socket");
+        let socket =
+            std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("temporary UDP bind");
+        socket
+            .set_nonblocking(true)
+            .expect("nonblocking UDP socket");
         let address = socket.local_addr().expect("UDP address");
         drop(socket);
         let mut config = config("udp", address);
@@ -1258,6 +1255,36 @@ mod tests {
             .expect("adopted UDP reservation")
             .duplicate_udp_socket()
             .expect("adopted UDP duplicate");
+        assert_eq!(duplicate.local_addr().expect("duplicate address"), address);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn descriptor_export_and_adoption_supports_quic_listeners() {
+        let socket =
+            std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("temporary QUIC bind");
+        socket
+            .set_nonblocking(true)
+            .expect("nonblocking QUIC socket");
+        let address = socket.local_addr().expect("QUIC address");
+        drop(socket);
+        let mut config = config("h3", address);
+        config.listeners[0].bind = ListenerBind::Udp { address };
+        config.listeners[0].protocol = oxiroute_config::Protocol::Http3;
+        let reservations = ListenerReservations::prepare(&config, None).expect("reservations");
+        let (manifest, originals) = reservations
+            .export_descriptors(&config)
+            .expect("QUIC descriptor export");
+
+        assert_eq!(manifest.slots()[0].kind, DescriptorKind::QuicListener);
+        assert_eq!(manifest.slots()[0].bind, Some(BindIdentity::Tcp(address)));
+        let descriptors = DescriptorSet::new(&manifest, originals).expect("QUIC descriptor set");
+        let adopted = ListenerReservations::adopt(&config, descriptors).expect("QUIC adoption");
+        let duplicate = adopted
+            .get("h3")
+            .expect("adopted QUIC reservation")
+            .duplicate_udp_socket()
+            .expect("adopted QUIC duplicate");
         assert_eq!(duplicate.local_addr().expect("duplicate address"), address);
     }
 

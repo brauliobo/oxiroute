@@ -29,8 +29,7 @@ pub const MAX_MANIFEST_BYTES: usize = 16 * 1024;
 /// Version of the typed descriptor manifest payload.
 pub const DESCRIPTOR_MANIFEST_VERSION: u16 = 1;
 /// Descriptor capabilities implemented by this worker protocol.
-pub const SUPPORTED_DESCRIPTOR_CAPABILITIES: DescriptorCapabilities =
-    DescriptorCapabilities::STREAM_AND_DATAGRAM;
+pub const SUPPORTED_DESCRIPTOR_CAPABILITIES: DescriptorCapabilities = DescriptorCapabilities::ALL;
 
 const ADOPT: MessageType = MessageType(0x100);
 const QUIESCE: MessageType = MessageType(0x101);
@@ -772,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn binary_manifest_rejects_quic_before_worker_support_is_enabled() {
+    fn binary_manifest_accepts_quic_worker_support() {
         let manifest = DescriptorManifest::new(vec![DescriptorSlot {
             id: SlotId(1),
             role: DescriptorRole::Traffic("h3".into()),
@@ -783,14 +782,7 @@ mod tests {
         .unwrap();
         let payload = encode_adopt_request(1, &manifest).unwrap();
 
-        assert!(matches!(
-            decode_manifest(&payload[PREFIX_SIZE..]),
-            Err(ControlProtocolError::UnsupportedCapabilities {
-                required,
-                supported,
-            }) if required == DescriptorCapabilities::QUIC.bits()
-                && supported == SUPPORTED_DESCRIPTOR_CAPABILITIES.bits()
-        ));
+        assert_eq!(decode_manifest(&payload[PREFIX_SIZE..]).unwrap(), manifest);
     }
 
     #[test]

@@ -19,7 +19,8 @@ Squid, RTMP, or any native proxy product.
   and operational controls, with deterministic component and browser coverage.
 - Expand audited native configuration coverage across nginx/nginx-RTMP, HAProxy, Squid, Varnish, and
   Apache subsets while retaining blocking diagnostics for unsupported semantics.
-- Continue the bounded supervision master/worker and Arch launcher path with worker status and
+- Complete the bounded supervision master/worker and Arch launcher path for authenticated typed TCP,
+  Unix, UDP, and QUIC/H3 listener adoption, worker status, drain, rollback, crash recovery, and
   managed configuration support; the default public entry point remains direct `oxiroute serve`.
 
 ## Compatibility Boundaries
@@ -36,10 +37,10 @@ Squid, RTMP, or any native proxy product.
 - **RTMP: partial.** Live publish/play, recording/VOD, HLS, DASH, relays, and selected controls are
   bounded slices. Complete nginx-RTMP directive parity, transcoding, unsupported codecs, broader
   callback/control parity, and multi-worker auto-push remain absent.
-- **Supervision: partial/foundation.** The master, worker, launcher, authentication, status, drain,
-  and replacement foundations are tested, but the public default remains direct runtime operation;
-  UDP and HTTP/3 remain on their direct generation runtimes and broader production migration evidence
-  is still required.
+- **Supervision: partial.** The master, worker, launcher, authentication, typed TCP/Unix/UDP/QUIC
+  descriptor adoption, status, drain, rollback, replacement, and crash-recovery paths are tested;
+  the public default remains direct runtime operation and broader production migration evidence is
+  still required.
 - **Managed ACME: partial.** HTTP-01 and bounded DNS-01/wildcard lifecycle paths are implemented,
   including static exact-name provider registration and redacted state. Provider deployment,
   durable cleanup journaling, live staging evidence, and TLS-ALPN-01 remain gaps.

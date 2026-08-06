@@ -20,8 +20,9 @@ read them on filesystems without POSIX ACL support. Tighten them as described be
 
 The launcher at `/usr/lib/oxiroute/oxiroute-worker-launcher` activates the supervised master for
 configurations whose listener descriptors are supported by the authenticated stream-transfer
-contract. UDP and HTTP/3 remain on the direct generation runtime. Authenticated management is
-supported by the supervised worker; its management API observes the active worker while the master
+contract. TCP, Unix, UDP, and HTTP/3 listeners use typed descriptor adoption; configurations with
+unsupported descriptor topologies remain on the direct generation runtime. Authenticated management
+is supported by the supervised worker; its management API observes the active worker while the master
 retains listener ownership and publishes bounded worker status. Management generation mutations are
 still applied by the worker's active generation and are not arbitrary master commands.
 

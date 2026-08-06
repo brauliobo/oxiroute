@@ -31,7 +31,7 @@ Implemented and recognized endpoints:
 | `GET` | `/api/v1/topology` | Active redacted configuration graph with runtime health overlays. |
 | `GET` | `/api/v1/monitoring` | Runtime process, host load, listener traffic, pool/endpoint health, and RTMP activity snapshot. |
 | `GET` | `/api/v1/status` | Active generation, disk/candidate revisions, degradation, and listener status. |
-| `GET` | `/api/v1/capabilities` | Active HTTP/3 reverse and forward transport capabilities, limits, and listener truth. |
+| `GET` | `/api/v1/capabilities` | Active UDP and HTTP/3 transport capabilities, supervision mode, limits, and listener truth. |
 | `GET` | `/api/v1/listeners`, `/api/v1/pools`, `/api/v1/servers` | Active operational inventory. |
 | `POST` | `/api/v1/listeners/administrative-state`, `/api/v1/pools/administrative-state` | Revision-checked listener or pool admission state changes. |
 | `POST` | `/api/v1/servers/administrative-state`, `/api/v1/servers/health-override`, `/api/v1/servers/checks` | Revision-checked server state, observed-health override, or probe enablement changes. |
@@ -58,12 +58,14 @@ Every `/api/v1/...` route in this table requires the management bearer token. Th
 recognized API probes are exact `GET /ready` and `GET /metrics`; wrong methods and unknown paths do
 not create an authentication bypass.
 
-`GET /api/v1/capabilities` reports `active`, `blocked`, or `unconfigured` independently for reverse
-`http3` and forward `forward_http3` listeners. `active` requires a listening listener with ready
-administrative state. The response always reports direct QUIC transport, `h3` ALPN, TLS 1.3 minimum,
-disabled 0-RTT, disabled migration, bounded stream/header/body limits, graceful `goAway`, explicit
-`unsupported: ["cache", "compression", "upgrades"]`, and `fallback: "none"`. A blocked listener
-also reports whether it failed, stopped, or never reached listening state.
+`GET /api/v1/capabilities` reports `active`, `blocked`, or `unconfigured` independently for UDP,
+reverse `http3`, and forward `forward_http3` listeners. `active` requires a listening listener with
+ready administrative state. The response reports `supervision.mode` as `direct` or `supervised` and
+the typed descriptor-adoption manifest version and negotiated datagram/QUIC capabilities. H3 reports
+direct QUIC transport, `h3` ALPN, TLS 1.3 minimum, disabled 0-RTT, disabled migration, bounded
+stream/header/body limits, graceful `goAway`, explicit `unsupported: ["cache", "compression",
+"upgrades"]`, and `fallback: "none"`. A blocked listener also reports whether it failed, stopped,
+or never reached listening state.
 
 Native import routes and unbounded event streaming are not implemented. Bounded event polling is
 implemented and is not an SSE contract. Recorder routes control configured `start = "manual"`

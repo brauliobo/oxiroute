@@ -1,19 +1,26 @@
 #![cfg(target_os = "linux")]
 
+#[path = "support/fixtures.rs"]
+mod fixture_support;
+
 use std::{
     fs,
-    io::{Read, Write},
+    io::{self, Cursor, Read, Write},
     net::{Ipv4Addr, SocketAddr, TcpStream, UdpSocket as StdUdpSocket},
     os::{fd::AsRawFd as _, unix::net::UnixStream},
     path::{Path, PathBuf},
     process::Command,
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
 
+use bytes::{Buf as _, Bytes};
+use http::{Method, Request, StatusCode};
 use oxiroute_config::{
-    Config, DownstreamTimeoutPolicy, HttpPathSelector, HttpRoute, HttpRouteAction, HttpRoutePolicy,
-    HttpService, L4Service, Listener, ListenerBind, Protocol, UpstreamAlgorithm,
+    AlpnProtocol, Certificate, CertificateSource, Config, DownstreamTimeoutPolicy,
+    HttpPathSelector, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpService, L4Service,
+    Listener, ListenerBind, Protocol, TlsProfile, TlsVersion, UpstreamAlgorithm,
     UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool,
 };
 use oxiroute_config_source::{ConfigFormat, render_config};
@@ -28,7 +35,9 @@ use oxiroute_supervisor_master::{
     WorkerInput, WorkerRole,
 };
 use oxiroute_supervisor_process::{WorkerCommand, WorkerIdentity, WorkerSpawner};
+use quinn::crypto::rustls::QuicClientConfig;
 use rustix::fs::OFlags;
+use tokio::time::{sleep, timeout};
 
 const MARKER: &str = "--__oxiroute-worker-7f3c9d1e";
 const TEST_RUNTIME_FAILURE_ENV: &str = "OXIROUTE_INTERNAL_TEST_RUNTIME_FAILURE";
@@ -382,13 +391,97 @@ fn supervised_worker_adopts_udp_and_reports_datagram_status() {
         .send_to(b"supervised-udp", listener_address)
         .expect("send UDP datagram");
     let mut buffer = [0_u8; 128];
-    let (length, peer) = upstream.recv_from(&mut buffer).expect("receive upstream datagram");
+    let (length, peer) = upstream
+        .recv_from(&mut buffer)
+        .expect("receive upstream datagram");
     assert_eq!(&buffer[..length], b"supervised-udp");
     upstream
         .send_to(b"supervised-response", peer)
         .expect("send upstream response");
     let (length, _) = client.recv_from(&mut buffer).expect("receive UDP response");
     assert_eq!(&buffer[..length], b"supervised-response");
+
+    assert!(matches!(
+        harness.master.shutdown(Instant::now()).expect("shutdown"),
+        ShutdownProgress::Pending { .. }
+    ));
+    harness.poll_until(MasterState::Stopped);
+    harness.verify_reaped();
+}
+
+#[tokio::test]
+async fn supervised_worker_adopts_h3_and_serves_a_quic_request() {
+    let directory = tempfile::tempdir().expect("supervised H3 fixture directory");
+    let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .expect("H3 listener probe")
+        .local_addr()
+        .expect("H3 listener address");
+    let key = fixture_support::private_key_fixture("proxy-a-key.pem");
+    let config = h3_only_config(listener_address, key.path());
+    let path = directory.path().join("oxiroute.kdl");
+    fs::write(
+        &path,
+        render_config(ConfigFormat::Kdl, &config).expect("render H3 config"),
+    )
+    .expect("write H3 config");
+    let mut harness = Harness::launch_at(&path, canonical_revision(&path), false);
+
+    harness.poll_until(MasterState::Running);
+    verify_listener_descriptors(harness.worker_pid, &harness.listener_targets);
+    let status = harness
+        .master
+        .worker_status(WorkerRole::Active)
+        .expect("active H3 worker status");
+    assert_eq!(status.listeners.len(), 1);
+    assert_eq!(status.listeners[0].name, "h3");
+    assert_eq!(status.listeners[0].protocol, "http3");
+    assert_eq!(
+        status.listeners[0].state,
+        oxiroute_supervisor_master::WorkerListenerState::Listening
+    );
+
+    let endpoint = h3_client_endpoint().expect("H3 client endpoint");
+    let connection = timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(connecting) = endpoint.connect(listener_address, "proxy.example.test") {
+                if let Ok(connection) = connecting.await {
+                    break connection;
+                }
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("supervised H3 connection timeout");
+    let (driver, mut sender) = h3::client::new(h3_quinn::Connection::new(connection))
+        .await
+        .expect("H3 client connection");
+    let driver = tokio::spawn(async move {
+        let mut driver = driver;
+        let _ = std::future::poll_fn(|context| driver.poll_close(context)).await;
+    });
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri("https://proxy.example.test/")
+        .body(())
+        .expect("H3 request");
+    let mut stream = sender.send_request(request).await.expect("send H3 request");
+    stream.finish().await.expect("finish H3 request");
+    let response = stream.recv_response().await.expect("H3 response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = stream
+        .recv_data()
+        .await
+        .expect("H3 response body")
+        .expect("H3 response data");
+    let body = body.copy_to_bytes(body.remaining());
+    assert_eq!(body, Bytes::from_static(b"supervised-h3"));
+    assert!(stream.recv_data().await.expect("H3 response end").is_none());
+
+    drop(stream);
+    drop(sender);
+    endpoint.close(quinn::VarInt::from_u32(0), b"test complete");
+    driver.await.expect("H3 driver task");
 
     assert!(matches!(
         harness.master.shutdown(Instant::now()).expect("shutdown"),
@@ -782,6 +875,92 @@ fn udp_only_config(listener_address: SocketAddr, upstream_address: SocketAddr) -
             udp: Some(oxiroute_config::UdpPolicy::default()),
         }],
     }
+}
+
+fn h3_only_config(listener_address: SocketAddr, private_key_path: &Path) -> Config {
+    Config {
+        version: 1,
+        max_connections: None,
+        management: None,
+        stats: None,
+        certificates: vec![Certificate {
+            name: "downstream".into(),
+            dns_names: vec!["proxy.example.test".into()],
+            source: CertificateSource::Files {
+                certificate_chain_path: fixture_support::fixture("proxy-a.pem"),
+                private_key_path: private_key_path.to_owned(),
+            },
+        }],
+        tls_profiles: vec![TlsProfile {
+            name: "downstream".into(),
+            certificates: vec!["downstream".into()],
+            default_certificate: "downstream".into(),
+            min_version: TlsVersion::Tls13,
+            alpn: vec![AlpnProtocol::H3],
+            policy: oxiroute_config::TlsPolicy::default(),
+        }],
+        listeners: vec![Listener {
+            name: "h3".into(),
+            bind: ListenerBind::Udp {
+                address: listener_address,
+            },
+            protocol: Protocol::Http3,
+            service: Some("h3".into()),
+            tls_profile: Some("downstream".into()),
+            proxy_protocol: None,
+            max_connections: Some(8),
+            downstream_timeouts: DownstreamTimeoutPolicy::default(),
+        }],
+        cache_stores: Vec::new(),
+        upstream_pools: Vec::new(),
+        http_services: vec![HttpService {
+            name: "h3".into(),
+            routes: vec![HttpRoute {
+                host: None,
+                path: HttpPathSelector::SegmentPrefix { value: "/".into() },
+                methods: Vec::new(),
+                access_policy: None,
+                policy: HttpRoutePolicy {
+                    max_request_body_bytes: Some(64 * 1024),
+                    request_buffering: true,
+                    ..HttpRoutePolicy::default()
+                },
+                action: HttpRouteAction::FixedResponse {
+                    status: 200,
+                    body: "supervised-h3".into(),
+                    headers: Vec::new(),
+                },
+            }],
+            automatic_response_headers: true,
+            upstream_io_timeout_ms: 5_000,
+            max_request_body_bytes: Some(64 * 1024),
+            gzip: None,
+            access_log: None,
+        }],
+        forward_proxy_services: Vec::new(),
+        rtmp_services: Vec::new(),
+        l4_services: Vec::new(),
+    }
+}
+
+fn h3_client_endpoint() -> io::Result<quinn::Endpoint> {
+    let mut roots = rustls::RootCertStore::empty();
+    let ca = fs::read(fixture_support::fixture("ca-a.pem"))?;
+    for certificate in rustls_pemfile::certs(&mut Cursor::new(ca)) {
+        roots
+            .add(certificate.map_err(io::Error::other)?)
+            .map_err(io::Error::other)?;
+    }
+    let mut crypto = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    crypto.alpn_protocols = vec![b"h3".to_vec()];
+    let config = quinn::ClientConfig::new(Arc::new(
+        QuicClientConfig::try_from(crypto).map_err(io::Error::other)?,
+    ));
+    let mut endpoint = quinn::Endpoint::client((Ipv4Addr::LOCALHOST, 0).into())?;
+    endpoint.set_default_client_config(config);
+    Ok(endpoint)
 }
 
 fn config_path() -> &'static Path {

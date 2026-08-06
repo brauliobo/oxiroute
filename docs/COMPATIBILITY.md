@@ -157,7 +157,7 @@ forms are never treated as parity.
 | Delay pools and traffic shaping | unsupported | Squid hierarchical bandwidth accounting is absent. |
 | FTP proxy and listing behavior | not_planned | Outside the maintained direct HTTP/1 line. |
 | ICP, HTCP, WCCP, SNMP, and Cache Manager | not_planned | Legacy datagram, router, and native management protocols are not targets. |
-| Process, worker, and deployment controls | not_planned | Externalized or owned by OxiRoute supervision. |
+| Process, worker, and deployment controls | partial | OxiRoute supervision provides authenticated master/worker replacement with typed TCP, Unix, UDP, and QUIC/H3 listener descriptor adoption, bounded worker status, drain, rollback, and crash handling; broader deployment-manager parity remains externalized. |
 | ESI and content processing | not_planned | Cache-coupled content processing is outside this scope. |
 | Obsolete target-version directives | obsolete | Removed or replaced names are blocked. |
 

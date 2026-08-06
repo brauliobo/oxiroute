@@ -62,8 +62,9 @@ disk change or API draft
 
 Failed preparation, bind conflicts, invalid source changes, and failed activation preserve the active
 generation. The parent-directory watcher debounces events and periodically reconciles effective
-revisions. The cross-process supervision crates provide a staged master/worker replacement protocol;
-they do not change the default direct `serve` contract until the activation gate is enabled.
+revisions. The cross-process supervision crates provide a staged master/worker replacement protocol
+with authenticated typed TCP, Unix, UDP, and QUIC/H3 listener descriptor adoption; unsupported
+listener topologies remain on the direct runtime rather than using an untyped fallback.
 
 ## Data Plane
 
