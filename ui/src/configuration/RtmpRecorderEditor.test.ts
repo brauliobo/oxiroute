@@ -162,6 +162,8 @@ describe('RTMP recorder configuration editors', () => {
     await wrapper.get('[data-field="rtmp_services[].applications[].limits.max_connections"] input').setValue(64)
     await wrapper.get('[data-field="rtmp_services[].applications[].limits.max_publishers"] input').setValue(4)
     await wrapper.get('[data-field="rtmp_services[].applications[].limits.max_viewers"] input').setValue(128)
+    const dnsRefresh = wrapper.get('[data-field="rtmp_services[].applications[].relay.dns_refresh_ms"] input')
+    await dnsRefresh.setValue(120_000)
 
     expect(service.applications[0]).toMatchObject({
       publish: {
@@ -169,6 +171,8 @@ describe('RTMP recorder configuration editors', () => {
         token: { source: 'stream_query', parameter: 'access', secret: 'publish-secret' },
       },
       limits: { max_connections: 64, max_publishers: 4, max_viewers: 128 },
+      relay: { dns_refresh_ms: 120_000 },
     })
+    expect(dnsRefresh.attributes()).toMatchObject({ min: '1000', max: '300000', step: '1' })
   })
 })

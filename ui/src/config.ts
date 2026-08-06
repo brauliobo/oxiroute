@@ -715,6 +715,7 @@ export interface RtmpRelayPolicyConfig {
   buffer_ms: number
   push_reconnect_ms: number
   pull_reconnect_ms: number
+  dns_refresh_ms: number
   connect_timeout_ms: number
   handshake_timeout_ms: number
 }
@@ -1421,6 +1422,7 @@ function isRtmpOutboundPolicy(value: unknown): value is RtmpOutboundPolicyConfig
 function isRtmpRelayPolicy(value: unknown): value is RtmpRelayPolicyConfig {
   return isRecord(value) && safeInteger(value.max_queue_messages) && safeInteger(value.max_queue_bytes) &&
     safeInteger(value.buffer_ms) && safeInteger(value.push_reconnect_ms) && safeInteger(value.pull_reconnect_ms) &&
+    safeInteger(value.dns_refresh_ms) &&
     safeInteger(value.connect_timeout_ms) && safeInteger(value.handshake_timeout_ms)
 }
 
@@ -1736,7 +1738,6 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'upstream_pools[].endpoints[].port', kind: 'integer' },
   { path: 'upstream_pools[].endpoints[].path', kind: 'string' },
   { path: 'upstream_pools[].algorithm', kind: 'enum' },
-  { path: 'upstream_pools[].algorithm<weighted_round_robin>.weights[]', kind: 'integer' },
   { path: 'upstream_pools[].health_check', kind: 'object' },
   { path: 'upstream_pools[].health_check.type', kind: 'enum' },
   { path: 'upstream_pools[].health_check.interval_ms', kind: 'integer' },
@@ -2206,6 +2207,7 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'rtmp_services[].applications[].relay.buffer_ms', kind: 'integer' },
   { path: 'rtmp_services[].applications[].relay.push_reconnect_ms', kind: 'integer' },
   { path: 'rtmp_services[].applications[].relay.pull_reconnect_ms', kind: 'integer' },
+  { path: 'rtmp_services[].applications[].relay.dns_refresh_ms', kind: 'integer' },
   { path: 'rtmp_services[].applications[].relay.connect_timeout_ms', kind: 'integer' },
   { path: 'rtmp_services[].applications[].relay.handshake_timeout_ms', kind: 'integer' },
   { path: 'rtmp_services[].applications[].callbacks', kind: 'object' },

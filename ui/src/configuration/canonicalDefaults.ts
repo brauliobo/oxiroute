@@ -160,6 +160,7 @@ export function defaultRtmpRelay() {
     buffer_ms: 5_000,
     push_reconnect_ms: 3_000,
     pull_reconnect_ms: 3_000,
+    dns_refresh_ms: 60_000,
     connect_timeout_ms: 500,
     handshake_timeout_ms: 2_000,
   }
