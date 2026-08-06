@@ -54,9 +54,9 @@ listener reservations are process-owned and reused by later generations.
 
 Activation swaps active and previous generation references under one lock, closes the old logical
 accept gate, and retains the previous generation for explicit rollback. HTTP/1, HTTP/2, WebSocket,
-TCP, and RTMP references are counted independently and drained under a caller-supplied deadline.
-Failed candidates are dropped without changing active state. Canonical management writes remain
-revision-checked and invalid drafts do not alter disk.
+TCP, UDP pseudo-sessions, QUIC/H3 connections, and RTMP references are counted independently and
+drained under a caller-supplied deadline. Failed candidates are dropped without changing active
+state. Canonical management writes remain revision-checked and invalid drafts do not alter disk.
 
 The watcher observes the parent directory so rename-based replacement is visible, debounces event
 bursts, and periodically reconciles exact SHA-256 disk revisions. Invalid snapshots are rejected and
@@ -78,7 +78,12 @@ permissions. They do not execute native binaries, shell expansions, or infer pro
 The supervised launcher transfers authenticated typed listener descriptors across the master/worker
 boundary for TCP, Unix, UDP, and QUIC/H3 listeners. It does not claim arbitrary inherited-file-
 descriptor upgrade; unsupported descriptor topologies remain on the direct runtime, and listener
-reuse during supervised replacement requires an unchanged typed manifest.
+reuse during supervised replacement requires an unchanged typed manifest. During replacement, the
+old generation stops new admissions before the candidate activates. Existing UDP pseudo-sessions
+and H3 requests remain owned by the retired worker; H3 sends GOAWAY and rejects later requests,
+while UDP keeps the existing session on the retired generation and admits new sessions only after
+the candidate commits. A rejected candidate leaves the active worker and its listener ownership
+unchanged.
 
 ## Shutdown
 

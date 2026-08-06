@@ -209,14 +209,14 @@ never degrade silently to another HTTP version.
 
 Status: partial. The master, worker, launcher, authenticated typed descriptor protocol, status
 reporting, drain, rollback, and crash handling are implemented for TCP, Unix, UDP, and QUIC/H3
-listener adoption. Process tests serve supervised UDP and H3 traffic, but the default public `serve`
-path remains direct and packaged production replacement evidence for active UDP/H3 traffic is not
-complete.
+listener adoption. Process tests now cover active UDP and H3 replacement, including session/request
+drain, H3 GOAWAY admission closure, rollback, descriptor ownership, and worker reaping. The default
+public `serve` path remains direct, and packaged production deployment evidence is not complete.
 
-Remaining supervision gates are packaged Linux default deployment and active-traffic UDP/H3
-replacement, rollback, drain, restart, descriptor-ownership, and crash-recovery evidence. Generic
-TCP/Unix replacement, listener-start failure, and worker crash handling have focused tests;
-supervision must not be treated as broad inherited-file-descriptor compatibility.
+Remaining supervision gates are packaged Linux default deployment and packaged production
+restart/recovery evidence. Generic TCP/Unix replacement, listener-start failure, worker crash
+handling, descriptor ownership, and active UDP/H3 replacement have focused tests; supervision must
+not be treated as broad inherited-file-descriptor compatibility.
 
 ## Future kernel integration
 
