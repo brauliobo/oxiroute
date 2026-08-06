@@ -302,6 +302,9 @@ export const HTTP_RETRY_TRIGGERS = [
   'connect_failure',
   'connect_timeout',
   'refused_stream',
+  'empty_response',
+  'response_timeout',
+  'junk_response',
 ] as const
 export type HttpRetryTrigger = typeof HTTP_RETRY_TRIGGERS[number]
 
@@ -381,6 +384,7 @@ export interface HttpRetryPolicyConfig {
   delay_ms: number
   final_redispatch: boolean
   triggers: HttpRetryTrigger[]
+  response_statuses?: number[]
   method_safety: 'get_head'
   body_safety: 'empty'
 }
@@ -798,6 +802,17 @@ export interface ForwardConnectPolicyConfig {
   allowed_ports: number[]
 }
 
+export interface ForwardPeerConfig {
+  host: string
+  port: number
+}
+
+export interface ForwardPeerPolicyConfig {
+  peers: ForwardPeerConfig[]
+  direct_fallback: 'allowed' | 'denied' | 'required'
+  max_retries: number
+}
+
 export type ForwardProxyAuthConfig =
   | { type: 'bearer_token_file'; token_file_path: string }
   | {
@@ -863,6 +878,7 @@ export interface ForwardProxyServiceConfig {
   allow_absolute_form: boolean
   tls_required: boolean
   connect: ForwardConnectPolicyConfig
+  peer_policy: ForwardPeerPolicyConfig
   auth: ForwardProxyAuthConfig | null
   access_policy: ForwardAccessPolicyConfig | null
   destination_policy: ForwardDestinationPolicyConfig
@@ -1235,6 +1251,10 @@ function isHttpRedirectLocation(value: unknown): value is HttpRedirectLocationCo
 }
 
 function isHttpProxyPolicy(value: unknown): value is HttpProxyPolicyConfig {
+  const responseStatuses = value && isRecord(value) && isRecord(value.retry)
+    ? value.retry.response_statuses
+    : undefined
+  const hasResponseStatuses = Array.isArray(responseStatuses) && responseStatuses.length > 0
   return isRecord(value) && isHttpUpstreamHost(value.upstream_host) &&
     (value.upstream_path_rewrite === undefined || value.upstream_path_rewrite === null ||
       (isRecord(value.upstream_path_rewrite) && typeof value.upstream_path_rewrite.from === 'string' &&
@@ -1253,7 +1273,8 @@ function isHttpProxyPolicy(value: unknown): value is HttpProxyPolicyConfig {
     typeof value.retry.final_redispatch === 'boolean' &&
     (!value.retry.final_redispatch ||
       (value.retry.max_retries > 0 && value.retry.target === 'same_server')) &&
-    isHttpRetryTriggers(value.retry.triggers) &&
+    isHttpRetryStatuses(responseStatuses ?? []) &&
+    isHttpRetryTriggers(value.retry.triggers, hasResponseStatuses || value.retry.max_retries === 0) &&
     value.retry.method_safety === 'get_head' && value.retry.body_safety === 'empty' &&
     (value.cache === null || isHttpCachePolicy(value.cache))
 }
@@ -1291,9 +1312,15 @@ function isCachePredicate(value: unknown): value is CachePredicateConfig {
     typeof value.name === 'string'
 }
 
-function isHttpRetryTriggers(value: unknown): value is HttpRetryTrigger[] {
-  return Array.isArray(value) && value.length > 0 &&
+function isHttpRetryTriggers(value: unknown, allowEmpty = false): value is HttpRetryTrigger[] {
+  return Array.isArray(value) && (allowEmpty || value.length > 0) &&
     value.every((trigger) => HTTP_RETRY_TRIGGERS.includes(trigger as HttpRetryTrigger)) &&
+    new Set(value).size === value.length
+}
+
+function isHttpRetryStatuses(value: unknown): value is number[] {
+  return Array.isArray(value) && value.length <= 100 &&
+    value.every((status) => integerInRange(status, 500, 599)) &&
     new Set(value).size === value.length
 }
 
@@ -1481,6 +1508,7 @@ function isForwardProxyService(value: unknown): value is ForwardProxyServiceConf
     typeof value.allow_absolute_form === 'boolean' && typeof value.tls_required === 'boolean' &&
     isRecord(value.connect) && typeof value.connect.enabled === 'boolean' &&
     arrayOf(value.connect.allowed_ports, safeInteger) &&
+    isForwardPeerPolicy(value) &&
     (value.auth === null || isForwardProxyAuth(value.auth)) &&
     (value.access_policy === null || isForwardAccessPolicy(value.access_policy)) &&
     isRecord(value.destination_policy) &&
@@ -1512,6 +1540,16 @@ function isForwardProxyAuth(value: unknown): value is ForwardProxyAuthConfig {
     typeof value.htpasswd_file_path === 'string' && typeof value.realm === 'string' &&
     nullableSafeInteger(value.credential_ttl_ms) && typeof value.username_case_sensitive === 'boolean') ||
     (value.type === 'mutual_tls' && typeof value.client_ca_file_path === 'string'))
+}
+
+function isForwardPeerPolicy(value: unknown): boolean {
+  if (!isRecord(value) || !isRecord(value.peer_policy)) return false
+  const policy = value.peer_policy
+  return ['allowed', 'denied', 'required'].includes(String(policy.direct_fallback)) &&
+    integerInRange(policy.max_retries, 0, 15) &&
+    Array.isArray(policy.peers) && policy.peers.length <= 16 &&
+    policy.peers.every((peer: unknown) => isRecord(peer) && typeof peer.host === 'string' &&
+      integerInRange(peer.port, 1, 65_535))
 }
 
 function isForwardAccessPolicy(value: unknown): value is ForwardAccessPolicyConfig {
@@ -1753,6 +1791,7 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'http_services[].routes[].action.policy.retry.delay_ms', kind: 'integer' },
   { path: 'http_services[].routes[].action.policy.retry.final_redispatch', kind: 'boolean' },
   { path: 'http_services[].routes[].action.policy.retry.triggers', kind: 'enum' },
+  { path: 'http_services[].routes[].action.policy.retry.response_statuses', kind: 'collection' },
   { path: 'http_services[].routes[].action.policy.retry.method_safety', kind: 'enum' },
   { path: 'http_services[].routes[].action.policy.retry.body_safety', kind: 'enum' },
   { path: 'http_services[].routes[].action.policy.cache', kind: 'object' },
@@ -1822,6 +1861,12 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'forward_proxy_services[].connect', kind: 'object' },
   { path: 'forward_proxy_services[].connect.enabled', kind: 'boolean' },
   { path: 'forward_proxy_services[].connect.allowed_ports', kind: 'collection' },
+  { path: 'forward_proxy_services[].peer_policy', kind: 'object' },
+  { path: 'forward_proxy_services[].peer_policy.peers', kind: 'collection' },
+  { path: 'forward_proxy_services[].peer_policy.peers[].host', kind: 'string' },
+  { path: 'forward_proxy_services[].peer_policy.peers[].port', kind: 'integer' },
+  { path: 'forward_proxy_services[].peer_policy.direct_fallback', kind: 'enum' },
+  { path: 'forward_proxy_services[].peer_policy.max_retries', kind: 'integer' },
   { path: 'forward_proxy_services[].auth', kind: 'object' },
   { path: 'forward_proxy_services[].auth.type', kind: 'enum' },
   { path: 'forward_proxy_services[].auth.token_file_path', kind: 'string' },

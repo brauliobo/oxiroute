@@ -87,6 +87,7 @@ export function defaultForwardProxyService(): ForwardProxyServiceConfig {
     allow_absolute_form: true,
     tls_required: false,
     connect: { enabled: false, allowed_ports: [443] },
+    peer_policy: { peers: [], direct_fallback: 'allowed', max_retries: 3 },
     auth: null,
     access_policy: null,
     destination_policy: {

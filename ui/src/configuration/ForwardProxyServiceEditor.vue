@@ -45,6 +45,35 @@ fieldset.object-block(data-field="forward_proxy_services[].connect")
     hint="At least one unique nonzero port is required while CONNECT is enabled."
   )
 
+fieldset.object-block(data-field="forward_proxy_services[].peer_policy")
+  legend Static HTTP/1 peers
+  .field-grid
+    label.field(data-field="forward_proxy_services[].peer_policy.direct_fallback")
+      span Direct fallback
+      select(v-model="service.peer_policy.direct_fallback")
+        option(value="allowed") Allowed
+        option(value="denied") Denied
+        option(value="required") Required
+    label.field(data-field="forward_proxy_services[].peer_policy.max_retries")
+      span Peer retry budget
+      input(type="number" min="0" max="15" step="1" v-model.number="service.peer_policy.max_retries")
+  fieldset.route-list(data-field="forward_proxy_services[].peer_policy.peers")
+    .route-heading
+      legend Peer endpoints
+      button.add-row(type="button" :disabled="service.peer_policy.peers.length >= 16" @click="addPeer") + Add peer
+    p.empty-list(v-if="service.peer_policy.peers.length === 0") No static peers configured.
+    article.route-card(v-for="(peer, peerIndex) in service.peer_policy.peers" :key="peerIndex")
+      header.route-card-heading
+        strong Peer {{ peerIndex + 1 }}
+        button.danger-link(type="button" :aria-label="`Remove forward peer ${peerIndex + 1}`" @click="removePeer(peerIndex)") Remove
+      .field-grid
+        label.field(data-field="forward_proxy_services[].peer_policy.peers[].host")
+          span Peer host
+          input(type="text" v-model="peer.host" placeholder="proxy.example.test")
+        label.field(data-field="forward_proxy_services[].peer_policy.peers[].port")
+          span Peer port
+          input(type="number" min="1" max="65535" step="1" v-model.number="peer.port")
+
 fieldset.object-block(data-field="forward_proxy_services[].auth")
   legend Client authentication
   label.enable-row
@@ -421,7 +450,7 @@ import {
 import NumberListField from './NumberListField.vue'
 
 const props = defineProps<{ service: ForwardProxyServiceConfig }>()
-defineEmits<{ remove: [] }>()
+const emit = defineEmits<{ remove: []; changed: [] }>()
 
 function toggleVersion(version: ForwardHttpVersion, event: Event): void {
   if ((event.target as HTMLInputElement).checked) {
@@ -429,6 +458,17 @@ function toggleVersion(version: ForwardHttpVersion, event: Event): void {
   } else if (props.service.enabled_versions.length > 1) {
     props.service.enabled_versions = props.service.enabled_versions.filter((entry) => entry !== version)
   }
+}
+
+function addPeer(): void {
+  if (props.service.peer_policy.peers.length >= 16) return
+  props.service.peer_policy.peers.push({ host: '', port: 3128 })
+  emit('changed')
+}
+
+function removePeer(index: number): void {
+  props.service.peer_policy.peers.splice(index, 1)
+  emit('changed')
 }
 
 function toggleAuth(event: Event): void {

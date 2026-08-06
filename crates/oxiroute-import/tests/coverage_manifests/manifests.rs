@@ -68,7 +68,8 @@ const TARGETS: [&str; 29] = [
     "tls.identity",
 ];
 
-const ADDITIONAL_TARGETS: [&str; 21] = [
+const ADDITIONAL_TARGETS: [&str; 23] = [
+    "health.passive",
     "forward.access",
     "forward.admission",
     "forward.audit",
@@ -78,6 +79,7 @@ const ADDITIONAL_TARGETS: [&str; 21] = [
     "forward.headers",
     "forward.listener",
     "forward.protocol",
+    "forward.peer_policy",
     "forward.request",
     "forward.resolver",
     "forward.service",
@@ -441,10 +443,10 @@ fn directive_manifests_are_versioned_and_cover_registered_forms() {
     assert_eq!(squid.reference.value, "6f4c814");
     assert_eq!(squid.reference.documentation, "docs/UPSTREAM_ANALYSIS.md");
     assert!(workspace_path(&squid.reference.documentation).is_file());
-    assert_eq!(squid.registry_version, 1);
+    assert_eq!(squid.registry_version, 2);
     assert_eq!(squid.target_version, "6f4c814");
     assert_eq!(squid.profile.id, "squid-forward-http1");
-    assert_eq!(squid.profile.version, 1);
+    assert_eq!(squid.profile.version, 2);
     assert_eq!(squid.parity, CapabilityStatus::Partial);
     assert!(!squid.complete_parity);
     assert!(!squid.audit.complete_parity_claim);

@@ -580,6 +580,7 @@ export function contractConfigSnapshot(): ConfigSnapshot {
             delay_ms: 0,
             final_redispatch: false,
             triggers: ['connect_failure', 'connect_timeout', 'refused_stream'],
+            response_statuses: [],
             method_safety: 'get_head',
             body_safety: 'empty',
           },
@@ -699,6 +700,7 @@ export function contractConfigSnapshot(): ConfigSnapshot {
     allow_absolute_form: true,
     tls_required: true,
     connect: { enabled: true, allowed_ports: [443, 8443] },
+    peer_policy: { peers: [], direct_fallback: 'allowed', max_retries: 3 },
     auth: { type: 'bearer_token_file', token_file_path: '/run/oxiroute/forward.token' },
     access_policy: {
       rules: [{
