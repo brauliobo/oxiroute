@@ -1,4 +1,6 @@
 import type {
+  AuditPage,
+  AuditStatusResponse,
   GenerationResponse,
   ListenerInventoryResponse,
   PoolInventoryResponse,
@@ -102,5 +104,45 @@ export function managementTlsInventory(): TlsInventory {
         lastErrorCode: null,
       },
     }],
+  }
+}
+
+export function durableAuditPage(): AuditPage {
+  return {
+    records: [{
+      id: 12,
+      timestampUnixMs: 1_754_000_000_000,
+      correlationId: 'corr-redacted-12',
+      actor: 'actor-redacted',
+      source: 'management_api',
+      category: 'control',
+      operation: 'server_update',
+      result: 'succeeded',
+      revision: 'active-revision',
+    }],
+    cursor: 12,
+    latestCursor: 12,
+    hasMore: false,
+    oldestCursor: 12,
+  }
+}
+
+export function durableAuditStatus(): AuditStatusResponse {
+  return {
+    audit: {
+      state: 'healthy',
+      persistent: true,
+      degraded: false,
+      recordCount: 12,
+      bytes: 4_096,
+      rotatedFiles: 1,
+      maxRecords: 10_000,
+      maxRecordBytes: 4_096,
+      maxFileBytes: 1_048_576,
+      maxTotalBytes: 16_777_216,
+      maxRotatedFiles: 8,
+      writeFailures: 0,
+      corruptRecords: 0,
+    },
   }
 }

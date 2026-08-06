@@ -39,6 +39,11 @@ main.console-shell(:aria-busy="activeView !== 'configuration' && monitoring === 
       @click="activateView('events')"
     ) Events
     a(
+      href="#/audit"
+      :aria-current="activeView === 'audit' ? 'page' : undefined"
+      @click="activateView('audit')"
+    ) Audit
+    a(
       href="#/configuration"
       :aria-current="activeView === 'configuration' ? 'page' : undefined"
       @click="activateView('configuration')"
@@ -115,6 +120,8 @@ main.console-shell(:aria-busy="activeView !== 'configuration' && monitoring === 
   OperationsWorkspace(v-if="activeView === 'operations'" :token="managementToken" @unauthorized="clearManagementToken")
 
   EventsWorkspace(v-if="activeView === 'events'" :token="managementToken" @unauthorized="clearManagementToken")
+
+  AuditWorkspace(v-if="activeView === 'audit'" :token="managementToken" @unauthorized="clearManagementToken")
 
   CertificatesWorkspace(v-if="activeView === 'certificates'" :token="managementToken" @unauthorized="clearManagementToken")
 
@@ -354,6 +361,7 @@ main.console-shell(:aria-busy="activeView !== 'configuration' && monitoring === 
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 
 import ConfigurationWorkspace from './ConfigurationWorkspace.vue'
+import AuditWorkspace from './AuditWorkspace.vue'
 import CertificatesWorkspace from './CertificatesWorkspace.vue'
 import EventsWorkspace from './EventsWorkspace.vue'
 import HaproxyStatsDashboard from './HaproxyStatsDashboard.vue'
@@ -419,7 +427,7 @@ const listenerProtocolLabels: Record<ListenerProtocol, string> = {
   forward_http3: 'Forward H3',
 }
 
-type AppView = 'overview' | 'stats' | 'operations' | 'certificates' | 'events' | 'configuration' | 'provenance'
+type AppView = 'overview' | 'stats' | 'operations' | 'certificates' | 'events' | 'audit' | 'configuration' | 'provenance'
 
 const viewTitles: Record<AppView, string> = {
   overview: 'Runtime observatory',
@@ -427,6 +435,7 @@ const viewTitles: Record<AppView, string> = {
   operations: 'Local operations',
   certificates: 'Certificate inventory',
   events: 'Operational event history',
+  audit: 'Durable audit history',
   configuration: 'Canonical configuration',
   provenance: 'Source provenance',
 }
@@ -513,6 +522,7 @@ function viewFromHash(): AppView {
   if (window.location.hash === '#/operations') return 'operations'
   if (window.location.hash === '#/certificates') return 'certificates'
   if (window.location.hash === '#/events') return 'events'
+  if (window.location.hash === '#/audit') return 'audit'
   return window.location.hash === '#/provenance' ? 'provenance' : 'overview'
 }
 
