@@ -20,7 +20,17 @@ export type TlsVersion = '1.2' | '1.3'
 export type AlpnProtocol = 'h3' | 'h2' | 'http/1.1'
 export type HttpVersion = '1.1' | '2'
 export type HealthCheckType = 'http' | 'tcp'
-export type UpstreamAlgorithm = 'round_robin' | 'least_connections' | 'first'
+export const UPSTREAM_WEIGHT_MIN = 1
+export const UPSTREAM_WEIGHT_MAX = 100
+export interface WeightedRoundRobinAlgorithm {
+  type: 'weighted_round_robin'
+  weights: number[]
+}
+export type UpstreamAlgorithm =
+  | 'round_robin'
+  | 'least_connections'
+  | 'first'
+  | WeightedRoundRobinAlgorithm
 export type RtmpRecorderStart = 'continuous' | 'manual'
 export type RtmpAclAction = 'allow' | 'deny'
 export type RtmpTokenSource = 'stream_query'
@@ -1105,7 +1115,7 @@ function isProxyProtocolPolicy(value: unknown): value is ProxyProtocolPolicyConf
 function isUpstreamPool(value: unknown): value is UpstreamPoolConfig {
   return isRecord(value) && typeof value.name === 'string' && arrayOf(value.servers, isUpstreamServer) &&
     (value.endpoints === undefined || arrayOf(value.endpoints, isEndpoint)) &&
-    ['round_robin', 'least_connections', 'first'].includes(String(value.algorithm)) &&
+    isUpstreamAlgorithm(value.algorithm, value.servers.length) &&
     (value.health_check === null || isHealthCheck(value.health_check)) &&
     (value.passive_health === null || isPassiveHealth(value.passive_health)) &&
     (value.tls === null || (isRecord(value.tls) && typeof value.tls.server_name === 'string' &&
@@ -1115,6 +1125,13 @@ function isUpstreamPool(value: unknown): value is UpstreamPoolConfig {
     nullableSafeInteger(value.queue_timeout_ms) && nullableSafeInteger(value.connect_timeout_ms) &&
     nullableSafeInteger(value.server_timeout_ms) &&
     ['never', 'safe', 'always'].includes(String(value.connection_reuse))
+}
+
+function isUpstreamAlgorithm(value: unknown, serverCount: number): value is UpstreamAlgorithm {
+  if (['round_robin', 'least_connections', 'first'].includes(String(value))) return true
+  return isRecord(value) && value.type === 'weighted_round_robin' &&
+    Array.isArray(value.weights) && value.weights.length === serverCount &&
+    value.weights.every((weight) => integerInRange(weight, UPSTREAM_WEIGHT_MIN, UPSTREAM_WEIGHT_MAX))
 }
 
 function isUpstreamServer(value: unknown): value is UpstreamServerConfig {
@@ -1719,6 +1736,7 @@ export const CANONICAL_FIELD_REGISTRY = [
   { path: 'upstream_pools[].endpoints[].port', kind: 'integer' },
   { path: 'upstream_pools[].endpoints[].path', kind: 'string' },
   { path: 'upstream_pools[].algorithm', kind: 'enum' },
+  { path: 'upstream_pools[].algorithm<weighted_round_robin>.weights[]', kind: 'integer' },
   { path: 'upstream_pools[].health_check', kind: 'object' },
   { path: 'upstream_pools[].health_check.type', kind: 'enum' },
   { path: 'upstream_pools[].health_check.interval_ms', kind: 'integer' },

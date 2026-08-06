@@ -379,8 +379,9 @@ function forwardProxySummary(
 
 function poolSummary(pool: UpstreamPoolConfig | undefined): string {
   if (!pool) return ''
-  const algorithm = pool.algorithm === 'least_connections' ? 'least connections' :
-    pool.algorithm === 'first' ? 'first' : 'round robin'
+  const algorithm = typeof pool.algorithm === 'object' ? 'weighted round robin' :
+    pool.algorithm === 'least_connections' ? 'least connections' :
+      pool.algorithm === 'first' ? 'first' : 'round robin'
   return `${pool.servers.length} servers / ${algorithm}`
 }
 

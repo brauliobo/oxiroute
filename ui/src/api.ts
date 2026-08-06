@@ -315,7 +315,7 @@ export interface MonitoringPoolEndpoint {
 
 export interface MonitoringPool {
   name: string
-  algorithm: UpstreamAlgorithm
+  algorithm: MonitoringUpstreamAlgorithm
   availableEndpoints: number
   totalEndpoints: number
   unavailableSelections: string
@@ -325,6 +325,8 @@ export interface MonitoringPool {
   queueCancellations: string
   endpoints: MonitoringPoolEndpoint[]
 }
+
+export type MonitoringUpstreamAlgorithm = Extract<UpstreamAlgorithm, string> | 'weighted_round_robin'
 
 export interface MonitoringSnapshot {
   sampledAtUnixMs: number
@@ -2402,7 +2404,7 @@ function monitoringListener(value: unknown): boolean {
 
 function monitoringPool(value: unknown): boolean {
   return isRecord(value) && typeof value.name === 'string' &&
-    ['first', 'round_robin', 'least_connections'].includes(String(value.algorithm)) &&
+    ['first', 'round_robin', 'least_connections', 'weighted_round_robin'].includes(String(value.algorithm)) &&
     safeInteger(value.availableEndpoints) && safeInteger(value.totalEndpoints) &&
     decimalString(value.unavailableSelections) && safeInteger(value.queued) &&
     decimalString(value.queuedTotal) && decimalString(value.queueTimeouts) &&

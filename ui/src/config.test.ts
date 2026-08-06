@@ -97,6 +97,7 @@ const currentCanonicalFields = [
   'upstream_pools[].endpoints[].port',
   'upstream_pools[].endpoints[].path',
   'upstream_pools[].algorithm',
+  'upstream_pools[].algorithm<weighted_round_robin>.weights[]',
   'upstream_pools[].health_check',
   'upstream_pools[].health_check.type',
   'upstream_pools[].health_check.interval_ms',
@@ -390,6 +391,22 @@ describe('canonical field registry', () => {
     }
     expect(isCanonicalConfig(config)).toBe(true)
     route.action.policy.retry.target = 'next_server'
+    expect(isCanonicalConfig(config)).toBe(false)
+  })
+
+  it('accepts bounded weighted round-robin weights and rejects malformed shapes', () => {
+    const config = contractConfigSnapshot().config
+    const pool = config.upstream_pools[0]!
+    pool.algorithm = { type: 'weighted_round_robin', weights: [1] }
+    expect(isCanonicalConfig(config)).toBe(true)
+
+    pool.algorithm = { type: 'weighted_round_robin', weights: [0] }
+    expect(isCanonicalConfig(config)).toBe(false)
+    pool.algorithm = { type: 'weighted_round_robin', weights: [101] }
+    expect(isCanonicalConfig(config)).toBe(false)
+    pool.algorithm = { type: 'weighted_round_robin', weights: [1, 2] }
+    expect(isCanonicalConfig(config)).toBe(false)
+    pool.algorithm = { type: 'weighted_round_robin', weights: ['1'] as unknown as number[] }
     expect(isCanonicalConfig(config)).toBe(false)
   })
 })
