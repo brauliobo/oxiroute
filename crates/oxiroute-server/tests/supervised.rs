@@ -5,7 +5,7 @@ mod fixture_support;
 
 use std::{
     fs,
-    io::{self, Cursor, Read, Write},
+    io::{self, BufReader, Cursor, Read, Write},
     net::{Ipv4Addr, SocketAddr, TcpStream, UdpSocket as StdUdpSocket},
     os::{fd::AsRawFd as _, unix::net::UnixStream},
     path::{Path, PathBuf},
@@ -16,12 +16,13 @@ use std::{
 };
 
 use bytes::{Buf as _, Bytes};
-use http::{Method, Request, StatusCode};
+use http::{HeaderMap, HeaderValue, Method, Request, StatusCode};
 use oxiroute_config::{
     AlpnProtocol, Certificate, CertificateSource, Config, DownstreamTimeoutPolicy,
-    HttpPathSelector, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpService, L4Service,
-    Listener, ListenerBind, Protocol, TlsProfile, TlsVersion, UpstreamAlgorithm,
-    UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool,
+    HttpPathSelector, HttpProxyPolicy, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpService,
+    HttpVersion, HttpVersionPolicy, L4Service, Listener, ListenerBind, Protocol, TlsProfile,
+    TlsVersion, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool,
+    UpstreamTls,
 };
 use oxiroute_config_source::{ConfigFormat, render_config};
 use oxiroute_server::{
@@ -35,7 +36,7 @@ use oxiroute_supervisor_master::{
     WorkerInput, WorkerRole,
 };
 use oxiroute_supervisor_process::{WorkerCommand, WorkerIdentity, WorkerSpawner};
-use quinn::crypto::rustls::QuicClientConfig;
+use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
 use rustix::fs::OFlags;
 use tokio::time::{sleep, timeout};
 
@@ -489,6 +490,502 @@ async fn supervised_worker_adopts_h3_and_serves_a_quic_request() {
     ));
     harness.poll_until(MasterState::Stopped);
     harness.verify_reaped();
+}
+
+#[test]
+fn supervised_worker_replaces_an_active_udp_session_without_rebinding_or_leaking() {
+    let directory = tempfile::tempdir().expect("supervised UDP replacement directory");
+    let old_upstream = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("old UDP upstream");
+    old_upstream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("old UDP upstream timeout");
+    let new_upstream = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("new UDP upstream");
+    new_upstream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("new UDP upstream timeout");
+    let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .expect("UDP listener probe")
+        .local_addr()
+        .expect("UDP listener address");
+    let mut initial = udp_only_config(
+        listener_address,
+        old_upstream.local_addr().expect("old UDP upstream address"),
+    );
+    initial.l4_services[0].idle_timeout_ms = 30_000;
+    let mut candidate = initial.clone();
+    candidate.upstream_pools[0].endpoints = vec![UpstreamEndpoint::Socket {
+        address: new_upstream.local_addr().expect("new UDP upstream address"),
+    }];
+    let path = directory.path().join("oxiroute.kdl");
+    fs::write(
+        &path,
+        render_config(ConfigFormat::Kdl, &initial).expect("render initial UDP config"),
+    )
+    .expect("write initial UDP config");
+    let mut harness = Harness::launch_at(&path, canonical_revision(&path), false);
+    harness.poll_until(MasterState::Running);
+    let baseline_descriptors = matching_descriptor_count(&harness.listener_targets);
+    assert_eq!(baseline_descriptors, 2);
+
+    let client = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("active UDP client");
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("active UDP client timeout");
+    client
+        .send_to(b"old-generation", listener_address)
+        .expect("send active UDP datagram");
+    let mut buffer = [0_u8; 128];
+    let (length, old_peer) = old_upstream
+        .recv_from(&mut buffer)
+        .expect("receive active UDP datagram");
+    assert_eq!(&buffer[..length], b"old-generation");
+    let old_worker = harness
+        .master
+        .worker_id(WorkerRole::Active)
+        .expect("old worker pid");
+
+    fs::write(
+        &path,
+        render_config(ConfigFormat::Kdl, &candidate).expect("render candidate UDP config"),
+    )
+    .expect("write candidate UDP config");
+    replace_real_worker(
+        &mut harness.master,
+        &path,
+        canonical_revision(&path),
+        2,
+        false,
+    );
+    let quiesce_started = Instant::now();
+    loop {
+        harness
+            .master
+            .poll(Instant::now())
+            .expect("master poll during UDP quiesce");
+        if matches!(
+            harness.master.state(),
+            MasterState::Quiescing | MasterState::ActivatingCandidate
+        ) {
+            break;
+        }
+        assert!(
+            quiesce_started.elapsed() < TEST_TIMEOUT,
+            "UDP replacement skipped the quiesce barrier in {:?}",
+            harness.master.state()
+        );
+        thread::sleep(POLL_INTERVAL);
+    }
+
+    let rejected_client = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("new UDP client");
+    rejected_client
+        .send_to(b"during-quiesce", listener_address)
+        .expect("send quiescing UDP datagram");
+    assert_no_udp_datagram(&old_upstream);
+    assert_no_udp_datagram(&new_upstream);
+
+    harness.poll_until(MasterState::DrainingRetired);
+    assert_eq!(
+        harness.master.worker_id(WorkerRole::Retired),
+        Some(old_worker)
+    );
+    assert_eq!(
+        harness.master.worker_state(WorkerRole::Retired),
+        Some(oxiroute_supervisor_master::WorkerState::Running)
+    );
+
+    old_upstream
+        .send_to(b"old-response", old_peer)
+        .expect("finish active old UDP session");
+    let (length, _) = client
+        .recv_from(&mut buffer)
+        .expect("receive old UDP response");
+    assert_eq!(&buffer[..length], b"old-response");
+    harness.poll_until(MasterState::Running);
+    assert_eq!(
+        harness.master.active_instance().map(InstanceId::as_str),
+        Some("oxiroute-stage-2-candidate-2")
+    );
+    let candidate_worker = harness
+        .master
+        .worker_id(WorkerRole::Active)
+        .expect("candidate worker pid");
+    let candidate_launcher = harness
+        .master
+        .worker_process_group_id(WorkerRole::Active)
+        .expect("candidate launcher pid");
+    verify_listener_descriptors(candidate_worker, &harness.listener_targets);
+    assert_eq!(
+        matching_descriptor_count(&harness.listener_targets),
+        baseline_descriptors
+    );
+
+    let new_client = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("candidate UDP client");
+    new_client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("candidate UDP client timeout");
+    new_client
+        .send_to(b"new-generation", listener_address)
+        .expect("send candidate UDP datagram");
+    let (length, new_peer) = new_upstream
+        .recv_from(&mut buffer)
+        .expect("receive candidate UDP datagram");
+    assert_eq!(&buffer[..length], b"new-generation");
+    new_upstream
+        .send_to(b"new-response", new_peer)
+        .expect("send candidate UDP response");
+    let (length, _) = new_client
+        .recv_from(&mut buffer)
+        .expect("receive candidate UDP response");
+    assert_eq!(&buffer[..length], b"new-response");
+
+    assert_eq!(
+        StdUdpSocket::bind(listener_address)
+            .expect_err("master and candidate must own the UDP listener")
+            .kind(),
+        io::ErrorKind::AddrInUse
+    );
+    harness
+        .master
+        .shutdown(Instant::now())
+        .expect("UDP replacement shutdown");
+    harness.poll_until(MasterState::Stopped);
+    harness.verify_reaped();
+    wait_process_gone(candidate_worker);
+    wait_process_gone(candidate_launcher);
+    drop(harness);
+    StdUdpSocket::bind(listener_address).expect("UDP listener released after master drop");
+}
+
+#[test]
+fn supervised_udp_replacement_rolls_back_after_candidate_rejects_adoption() {
+    let directory = tempfile::tempdir().expect("supervised UDP rollback directory");
+    let upstream = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("UDP upstream");
+    upstream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("UDP upstream timeout");
+    let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .expect("UDP listener probe")
+        .local_addr()
+        .expect("UDP listener address");
+    let config = udp_only_config(
+        listener_address,
+        upstream.local_addr().expect("UDP upstream address"),
+    );
+    let path = directory.path().join("oxiroute.kdl");
+    fs::write(
+        &path,
+        render_config(ConfigFormat::Kdl, &config).expect("render UDP rollback config"),
+    )
+    .expect("write UDP rollback config");
+    let mut harness = Harness::launch_at(&path, canonical_revision(&path), false);
+    harness.poll_until(MasterState::Running);
+    let baseline_descriptors = matching_descriptor_count(&harness.listener_targets);
+    let active_worker = harness
+        .master
+        .worker_id(WorkerRole::Active)
+        .expect("active worker pid");
+
+    replace_real_worker(&mut harness.master, &path, "0".repeat(64), 2, false);
+    let candidate_worker = harness
+        .master
+        .worker_id(WorkerRole::Candidate)
+        .expect("rollback candidate pid");
+    harness.poll_until(MasterState::Running);
+    assert_eq!(
+        harness.master.active_instance().map(InstanceId::as_str),
+        Some("oxiroute-stage-2")
+    );
+    assert_eq!(
+        harness.master.worker_id(WorkerRole::Active),
+        Some(active_worker)
+    );
+    assert_eq!(
+        matching_descriptor_count(&harness.listener_targets),
+        baseline_descriptors
+    );
+    wait_process_gone(candidate_worker);
+
+    let client = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("rollback UDP client");
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("rollback UDP client timeout");
+    client
+        .send_to(b"rollback", listener_address)
+        .expect("send rollback UDP datagram");
+    let mut buffer = [0_u8; 128];
+    let (length, peer) = upstream
+        .recv_from(&mut buffer)
+        .expect("receive rollback UDP datagram");
+    assert_eq!(&buffer[..length], b"rollback");
+    upstream
+        .send_to(b"rollback-response", peer)
+        .expect("send rollback UDP response");
+    let (length, _) = client
+        .recv_from(&mut buffer)
+        .expect("receive rollback UDP response");
+    assert_eq!(&buffer[..length], b"rollback-response");
+
+    assert_eq!(
+        StdUdpSocket::bind(listener_address)
+            .expect_err("rollback must retain the reserved UDP listener")
+            .kind(),
+        io::ErrorKind::AddrInUse
+    );
+    let candidate_launcher = harness
+        .master
+        .worker_process_group_id(WorkerRole::Active)
+        .expect("active launcher pid");
+    harness
+        .master
+        .shutdown(Instant::now())
+        .expect("rollback shutdown");
+    harness.poll_until(MasterState::Stopped);
+    harness.verify_reaped();
+    wait_process_gone(candidate_launcher);
+    drop(harness);
+    StdUdpSocket::bind(listener_address).expect("rollback UDP listener released");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn supervised_worker_replaces_an_active_h3_request_with_goaway_and_owned_descriptors() {
+    let directory = tempfile::tempdir().expect("supervised H3 replacement directory");
+    let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .expect("H3 listener probe")
+        .local_addr()
+        .expect("H3 listener address");
+    let (origin_address, origin_started, release_origin, origin_task) = spawn_slow_h3_origin();
+    let key = fixture_support::private_key_fixture("proxy-a-key.pem");
+    let initial = h3_proxy_config(listener_address, key.path(), origin_address);
+    let mut candidate = initial.clone();
+    candidate.upstream_pools.clear();
+    candidate.http_services[0].routes[0].action = HttpRouteAction::FixedResponse {
+        status: 200,
+        body: "candidate-h3".into(),
+        headers: Vec::new(),
+    };
+    let path = directory.path().join("oxiroute.kdl");
+    fs::write(
+        &path,
+        render_config(ConfigFormat::Kdl, &initial).expect("render initial H3 config"),
+    )
+    .expect("write initial H3 config");
+    let mut harness = Harness::launch_at(&path, canonical_revision(&path), false);
+    poll_master_until_async(&mut harness, |master| {
+        master.state() == MasterState::Running
+    })
+    .await;
+    let baseline_descriptors = matching_descriptor_count(&harness.listener_targets);
+    assert_eq!(baseline_descriptors, 2);
+    let old_worker = harness
+        .master
+        .worker_id(WorkerRole::Active)
+        .expect("old H3 worker pid");
+
+    let endpoint = h3_client_endpoint().expect("old H3 client endpoint");
+    let connection = connect_h3(&endpoint, listener_address).await;
+    let (driver, mut sender) = h3::client::new(h3_quinn::Connection::new(connection))
+        .await
+        .expect("old H3 client connection");
+    let driver = tokio::spawn(async move {
+        let mut driver = driver;
+        let _ = std::future::poll_fn(|context| driver.poll_close(context)).await;
+    });
+    let mut old_stream = sender
+        .send_request(
+            Request::builder()
+                .method(Method::GET)
+                .uri("https://proxy.example.test/")
+                .body(())
+                .expect("old H3 request"),
+        )
+        .await
+        .expect("send old H3 request");
+    old_stream.finish().await.expect("finish old H3 request");
+    origin_started.await.expect("old H3 request reached origin");
+
+    fs::write(
+        &path,
+        render_config(ConfigFormat::Kdl, &candidate).expect("render candidate H3 config"),
+    )
+    .expect("write candidate H3 config");
+    replace_real_worker(
+        &mut harness.master,
+        &path,
+        canonical_revision(&path),
+        2,
+        false,
+    );
+    poll_master_until_async(&mut harness, |master| {
+        master.state() == MasterState::Quiescing
+    })
+    .await;
+
+    let quiesce_endpoint = h3_client_endpoint().expect("quiesce H3 client endpoint");
+    let connecting = quiesce_endpoint
+        .connect(listener_address, "proxy.example.test")
+        .expect("start quiesce H3 connection");
+    let quiesce_result = timeout(Duration::from_millis(500), connecting).await;
+    assert!(
+        !matches!(quiesce_result, Ok(Ok(_))),
+        "H3 accepted a new connection after quiesce"
+    );
+    quiesce_endpoint.close(quinn::VarInt::from_u32(0), b"quiesce probe");
+
+    poll_master_until_async(&mut harness, |master| {
+        master.state() == MasterState::DrainingRetired
+    })
+    .await;
+    assert_eq!(
+        harness.master.worker_id(WorkerRole::Retired),
+        Some(old_worker)
+    );
+    assert_eq!(
+        harness.master.worker_state(WorkerRole::Retired),
+        Some(oxiroute_supervisor_master::WorkerState::Running)
+    );
+    release_origin.send(()).expect("release active H3 request");
+
+    let response = timeout(Duration::from_secs(3), old_stream.recv_response())
+        .await
+        .expect("active H3 response timeout")
+        .expect("active H3 response");
+    let mut body = old_stream
+        .recv_data()
+        .await
+        .expect("active H3 response body")
+        .expect("active H3 response data");
+    let body = body.copy_to_bytes(body.remaining());
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "active H3 response body: {body:?}"
+    );
+    assert_eq!(body, Bytes::from_static(b"origin-active"));
+    assert!(
+        old_stream
+            .recv_data()
+            .await
+            .expect("active H3 response end")
+            .is_none()
+    );
+    assert_eq!(
+        old_stream
+            .recv_trailers()
+            .await
+            .expect("active H3 response trailers")
+            .expect("origin H3 response trailers")
+            .get("x-origin-trailer"),
+        Some(&HeaderValue::from_static("complete"))
+    );
+
+    let rejected_after_goaway = (timeout(Duration::from_secs(2), async {
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("https://proxy.example.test/")
+            .body(())
+            .expect("post-GOAWAY H3 request");
+        let Ok(mut stream) = sender.send_request(request).await else {
+            return true;
+        };
+        if stream.finish().await.is_err() {
+            return true;
+        }
+        stream.recv_response().await.is_err()
+    })
+    .await)
+        .unwrap_or(true);
+    assert!(
+        rejected_after_goaway,
+        "old H3 connection accepted work after GOAWAY"
+    );
+
+    let candidate_endpoint = h3_client_endpoint().expect("candidate H3 client endpoint");
+    let candidate_connection = connect_h3(&candidate_endpoint, listener_address).await;
+    let (candidate_driver, mut candidate_sender) =
+        h3::client::new(h3_quinn::Connection::new(candidate_connection))
+            .await
+            .expect("candidate H3 client connection");
+    let candidate_driver = tokio::spawn(async move {
+        let mut driver = candidate_driver;
+        let _ = std::future::poll_fn(|context| driver.poll_close(context)).await;
+    });
+    let mut candidate_stream = candidate_sender
+        .send_request(
+            Request::builder()
+                .method(Method::GET)
+                .uri("https://proxy.example.test/")
+                .body(())
+                .expect("candidate H3 request"),
+        )
+        .await
+        .expect("send candidate H3 request");
+    candidate_stream
+        .finish()
+        .await
+        .expect("finish candidate H3 request");
+    let response = candidate_stream
+        .recv_response()
+        .await
+        .expect("candidate H3 response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = candidate_stream
+        .recv_data()
+        .await
+        .expect("candidate H3 response body")
+        .expect("candidate H3 response data");
+    let body = body.copy_to_bytes(body.remaining());
+    assert_eq!(body, Bytes::from_static(b"candidate-h3"));
+    assert!(
+        candidate_stream
+            .recv_data()
+            .await
+            .expect("candidate H3 response end")
+            .is_none()
+    );
+
+    endpoint.close(quinn::VarInt::from_u32(0), b"old H3 complete");
+    candidate_endpoint.close(quinn::VarInt::from_u32(0), b"candidate H3 complete");
+    driver.await.expect("old H3 driver task");
+    candidate_driver.await.expect("candidate H3 driver task");
+    origin_task.await.expect("slow H3 origin task");
+
+    poll_master_until_async(&mut harness, |master| {
+        master.state() == MasterState::Running
+    })
+    .await;
+    let candidate_worker = harness
+        .master
+        .worker_id(WorkerRole::Active)
+        .expect("candidate H3 worker pid");
+    let candidate_launcher = harness
+        .master
+        .worker_process_group_id(WorkerRole::Active)
+        .expect("candidate H3 launcher pid");
+    verify_listener_descriptors(candidate_worker, &harness.listener_targets);
+    assert_eq!(
+        matching_descriptor_count(&harness.listener_targets),
+        baseline_descriptors
+    );
+    assert_eq!(
+        StdUdpSocket::bind(listener_address)
+            .expect_err("master and candidate must own the H3 listener")
+            .kind(),
+        io::ErrorKind::AddrInUse
+    );
+
+    harness
+        .master
+        .shutdown(Instant::now())
+        .expect("H3 replacement shutdown");
+    poll_master_until_async(&mut harness, |master| {
+        master.state() == MasterState::Stopped
+    })
+    .await;
+    harness.verify_reaped();
+    wait_process_gone(candidate_worker);
+    wait_process_gone(candidate_launcher);
+    drop(harness);
+    StdUdpSocket::bind(listener_address).expect("H3 listener released after master drop");
 }
 
 #[test]
@@ -962,6 +1459,238 @@ fn h3_client_endpoint() -> io::Result<quinn::Endpoint> {
     let mut endpoint = quinn::Endpoint::client((Ipv4Addr::LOCALHOST, 0).into())?;
     endpoint.set_default_client_config(config);
     Ok(endpoint)
+}
+
+fn h3_proxy_config(
+    listener_address: SocketAddr,
+    private_key_path: &Path,
+    origin_address: SocketAddr,
+) -> Config {
+    let mut config = h3_only_config(listener_address, private_key_path);
+    config.upstream_pools.push(UpstreamPool {
+        name: "origin".into(),
+        servers: Vec::new(),
+        endpoints: vec![UpstreamEndpoint::Socket {
+            address: origin_address,
+        }],
+        algorithm: UpstreamAlgorithm::RoundRobin,
+        health_check: None,
+        passive_health: None,
+        tls: Some(UpstreamTls {
+            server_name: "origin.example.test".into(),
+            ca_certificate_path: Some(fixture_support::fixture("ca-a.pem")),
+        }),
+        http_versions: HttpVersionPolicy {
+            min: HttpVersion::Http3,
+            max: HttpVersion::Http3,
+        },
+        queue_timeout_ms: None,
+        connect_timeout_ms: None,
+        server_timeout_ms: None,
+        connection_reuse: UpstreamConnectionReuse::default(),
+    });
+    config.http_services[0].routes[0].action = HttpRouteAction::Proxy {
+        upstream_pool: "origin".into(),
+        policy: HttpProxyPolicy::default(),
+    };
+    config
+}
+
+fn spawn_slow_h3_origin() -> (
+    SocketAddr,
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let endpoint = quinn::Endpoint::server(origin_server_config(), (Ipv4Addr::LOCALHOST, 0).into())
+        .expect("origin endpoint");
+    let address = endpoint.local_addr().expect("origin address");
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let incoming = endpoint.accept().await.expect("origin accept");
+        let connection = incoming.await.expect("origin QUIC connection");
+        let mut h3 = h3::server::builder()
+            .build(h3_quinn::Connection::new(connection))
+            .await
+            .expect("origin H3 connection");
+        let resolver = h3
+            .accept()
+            .await
+            .expect("origin H3 accept")
+            .expect("origin H3 request");
+        let (_request, mut stream) = resolver.resolve_request().await.expect("origin request");
+        assert!(
+            stream
+                .recv_data()
+                .await
+                .expect("origin request body")
+                .is_none()
+        );
+        started_tx.send(()).expect("signal origin request");
+        release_rx.await.expect("release origin request");
+        stream
+            .send_response(
+                http::Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-length", "13")
+                    .body(())
+                    .expect("origin response"),
+            )
+            .await
+            .expect("origin response headers");
+        stream
+            .send_data(Bytes::from_static(b"origin-active"))
+            .await
+            .expect("origin response body");
+        let mut trailers = HeaderMap::new();
+        trailers.insert("x-origin-trailer", HeaderValue::from_static("complete"));
+        stream
+            .send_trailers(trailers)
+            .await
+            .expect("origin response trailers");
+        stream.finish().await.expect("origin response finish");
+        let _ = h3.accept().await;
+    });
+    (address, started_rx, release_tx, task)
+}
+
+fn origin_server_config() -> quinn::ServerConfig {
+    let mut certificate_reader = BufReader::new(
+        fs::File::open(fixture_support::fixture("origin.pem")).expect("origin certificate"),
+    );
+    let certificates = rustls_pemfile::certs(&mut certificate_reader)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("origin certificate chain");
+    let mut key_reader = BufReader::new(
+        fs::File::open(fixture_support::fixture("origin-key.pem")).expect("origin key"),
+    );
+    let private_key = rustls_pemfile::private_key(&mut key_reader)
+        .expect("origin private key")
+        .expect("origin private key block");
+    let mut crypto =
+        rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+            .with_no_client_auth()
+            .with_single_cert(certificates, private_key)
+            .expect("origin TLS identity");
+    crypto.alpn_protocols = vec![b"h3".to_vec()];
+    crypto.max_early_data_size = 0;
+    let mut config = quinn::ServerConfig::with_crypto(Arc::new(
+        QuicServerConfig::try_from(crypto).expect("origin QUIC TLS configuration"),
+    ));
+    config.migration(false);
+    config
+}
+
+async fn connect_h3(endpoint: &quinn::Endpoint, address: SocketAddr) -> quinn::Connection {
+    timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(connecting) = endpoint.connect(address, "proxy.example.test") {
+                if let Ok(connection) = connecting.await {
+                    break connection;
+                }
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("H3 connection timeout")
+}
+
+fn replace_real_worker(
+    master: &mut Master,
+    config_path: &Path,
+    revision: String,
+    generation: u64,
+    inject_runtime_failure: bool,
+) {
+    let token_byte = u8::try_from(0x50_u64 + generation).expect("test generation token");
+    let token = [token_byte; 16];
+    let identity = WorkerIdentity {
+        instance: InstanceToken(token),
+        generation: GenerationId(generation),
+        protocol: CONTROL_PROTOCOL_VERSION,
+    };
+    let mut command = WorkerCommand::new(env!("CARGO_BIN_EXE_oxiroute"))
+        .expect("real oxiroute worker")
+        .arg(MARKER)
+        .arg(generation.to_string())
+        .arg(encode_token(token))
+        .arg(config_path)
+        .arg(revision);
+    if inject_runtime_failure {
+        command = command.env(TEST_RUNTIME_FAILURE_ENV, "1");
+    }
+    let mut factory = WorkerSpawner::new(
+        env!("CARGO_BIN_EXE_oxiroute-supervisor-launcher-fixture"),
+        Duration::from_secs(5),
+    )
+    .expect("production launcher implementation");
+    master
+        .replace(
+            &mut factory,
+            WorkerInput {
+                instance_id: InstanceId::new(&format!("oxiroute-stage-2-candidate-{generation}"))
+                    .expect("candidate identity"),
+                identity,
+                command,
+            },
+            Instant::now(),
+        )
+        .expect("start real replacement");
+}
+
+async fn poll_master_until_async(
+    harness: &mut Harness,
+    mut predicate: impl FnMut(&Master) -> bool,
+) -> Vec<MasterEvent> {
+    let started = Instant::now();
+    let mut events = Vec::new();
+    while !predicate(&harness.master) {
+        events.extend(harness.master.poll(Instant::now()).expect("master poll"));
+        assert!(
+            started.elapsed() < TEST_TIMEOUT,
+            "master remained in {:?}; events: {events:?}",
+            harness.master.state()
+        );
+        sleep(POLL_INTERVAL).await;
+    }
+    events.extend(
+        harness
+            .master
+            .poll(Instant::now())
+            .expect("final master poll"),
+    );
+    events
+}
+
+fn assert_no_udp_datagram(socket: &StdUdpSocket) {
+    socket
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .expect("UDP probe timeout");
+    let mut buffer = [0_u8; 128];
+    assert!(
+        socket.recv_from(&mut buffer).is_err(),
+        "UDP listener admitted work while quiescing"
+    );
+}
+
+fn matching_descriptor_count(targets: &[PathBuf]) -> usize {
+    fs::read_dir("/proc/self/fd")
+        .expect("master descriptors")
+        .filter_map(Result::ok)
+        .filter_map(|entry| fs::read_link(entry.path()).ok())
+        .filter(|target| targets.contains(target))
+        .count()
+}
+
+fn wait_process_gone(pid: u32) {
+    let path = PathBuf::from(format!("/proc/{pid}"));
+    let started = Instant::now();
+    while path.exists() && started.elapsed() < Duration::from_secs(2) {
+        thread::sleep(POLL_INTERVAL);
+    }
+    assert!(!path.exists(), "process {pid} was not reaped");
 }
 
 fn config_path() -> &'static Path {
