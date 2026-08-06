@@ -24,8 +24,8 @@ mod tls_alpn;
 mod upstream;
 
 pub use acme::{
-    AcmeManagedError, AcmeManagedOutcome, AcmeManagedPolicy, AcmeManagedReconciler,
-    AcmeManagedStatus,
+    AcmeDnsCleanupRecovery, AcmeManagedError, AcmeManagedOutcome, AcmeManagedPolicy,
+    AcmeManagedReconciler, AcmeManagedStatus,
 };
 pub use certbot::{CertbotCandidate, CertbotLineage};
 pub use certbot_reconcile::{

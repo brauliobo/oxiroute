@@ -1274,6 +1274,11 @@ impl RuntimeMetrics {
                     next_action_unix_seconds: status.next_action_unix_seconds,
                     last_outcome: status.last_outcome.map(str::to_owned),
                     last_error_code: status.last_error_code,
+                    renewal_information_status: status.renewal_information_status.into(),
+                    dns_provider: status.dns_provider,
+                    dns_provider_deployment: status.dns_provider_deployment.map(str::to_owned),
+                    dns_provider_health: status.dns_provider_health.map(str::to_owned),
+                    dns_cleanup_status: status.dns_cleanup_status.into(),
                 }
             })
             .collect())
@@ -2250,6 +2255,11 @@ pub struct AcmeManagedCertificateSnapshot {
     pub next_action_unix_seconds: Option<u64>,
     pub last_outcome: Option<String>,
     pub last_error_code: Option<String>,
+    pub renewal_information_status: String,
+    pub dns_provider: Option<String>,
+    pub dns_provider_deployment: Option<String>,
+    pub dns_provider_health: Option<String>,
+    pub dns_cleanup_status: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
