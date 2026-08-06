@@ -346,6 +346,7 @@ fn test_proxy_policy() -> HttpProxyPolicy {
                 HttpRetryTrigger::ConnectTimeout,
                 HttpRetryTrigger::RefusedStream,
             ],
+            response_statuses: Vec::new(),
             method_safety: HttpRetryMethodSafety::GetHead,
             body_safety: HttpRetryBodySafety::Empty,
             target: HttpRetryTarget::SameServer,
