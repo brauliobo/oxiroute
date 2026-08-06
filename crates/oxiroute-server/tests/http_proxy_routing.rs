@@ -2317,6 +2317,68 @@ async fn retries_a_bodyless_get_on_a_distinct_endpoint_after_connect_failure() {
 }
 
 #[tokio::test]
+async fn retries_a_bodyless_get_on_a_configured_origin_status() {
+    timeout(TEST_TIMEOUT, async {
+        let unavailable = Origin::start_status(503, "unavailable").await;
+        let healthy = Origin::start("status-retry-success", 1).await;
+        let mut retry_route = route(None, "/", &[], "retry");
+        let HttpRouteAction::Proxy { policy, .. } = &mut retry_route.action else {
+            panic!("proxy route");
+        };
+        policy.retry.response_statuses = vec![503];
+        let proxy = ProxyHarness::start_with_retries(
+            vec![pool("retry", &[unavailable.address, healthy.address])],
+            vec![retry_route],
+            1,
+            1,
+        )
+        .await;
+
+        let response = proxy
+            .request("GET / HTTP/1.1\r\nHost: retry.test\r\n")
+            .await;
+
+        assert_origin_response(&response, "status-retry-success");
+        proxy.wait_for_no_active_leases().await;
+        proxy.finish().await;
+        unavailable.finish().await;
+        healthy.finish().await;
+    })
+    .await
+    .expect("origin status retry test timed out");
+}
+
+#[tokio::test]
+async fn preserves_the_origin_status_when_status_retry_has_no_target() {
+    timeout(TEST_TIMEOUT, async {
+        let origin = Origin::start_status(503, "terminal-origin").await;
+        let mut retry_route = route(None, "/", &[], "retry");
+        let HttpRouteAction::Proxy { policy, .. } = &mut retry_route.action else {
+            panic!("proxy route");
+        };
+        policy.retry.response_statuses = vec![503];
+        let proxy = ProxyHarness::start_with_retries(
+            vec![pool("retry", &[origin.address])],
+            vec![retry_route],
+            1,
+            1,
+        )
+        .await;
+
+        let response = proxy
+            .request("GET / HTTP/1.1\r\nHost: retry.test\r\n")
+            .await;
+
+        assert_eq!(response.status, 503, "response: {}", response.text());
+        assert_eq!(response.body(), b"terminal-origin");
+        proxy.finish().await;
+        origin.finish().await;
+    })
+    .await
+    .expect("terminal origin status test timed out");
+}
+
+#[tokio::test]
 async fn delayed_same_server_retry_waits_and_reselects_the_original_server() {
     timeout(TEST_TIMEOUT, async {
         let reservation = TcpListener::bind("127.0.0.1:0")
@@ -2859,6 +2921,69 @@ async fn does_not_retry_after_an_upstream_connection_is_established() {
     })
     .await
     .expect("post-connect retry test timed out");
+}
+
+#[tokio::test]
+async fn retries_when_an_upstream_closes_before_sending_a_response() {
+    timeout(TEST_TIMEOUT, async {
+        let disconnecting = Origin::start_disconnecting().await;
+        let healthy = Origin::start("empty-response-retry", 1).await;
+        let mut retry_route = route(None, "/", &[], "retry");
+        let HttpRouteAction::Proxy { policy, .. } = &mut retry_route.action else {
+            panic!("proxy route");
+        };
+        policy.retry.triggers = vec![HttpRetryTrigger::EmptyResponse];
+        let proxy = ProxyHarness::start_with_retries(
+            vec![pool("retry", &[disconnecting.address, healthy.address])],
+            vec![retry_route],
+            1,
+            1,
+        )
+        .await;
+
+        let response = proxy
+            .request("GET / HTTP/1.1\r\nHost: retry.test\r\n")
+            .await;
+
+        assert_origin_response(&response, "empty-response-retry");
+        proxy.finish().await;
+        disconnecting.finish().await;
+        healthy.finish().await;
+    })
+    .await
+    .expect("empty response retry test timed out");
+}
+
+#[tokio::test]
+async fn retries_when_an_upstream_response_times_out() {
+    timeout(Duration::from_secs(6), async {
+        let silent = Origin::start_silent().await;
+        let healthy = Origin::start("response-timeout-retry", 1).await;
+        let mut retry_route = route(None, "/", &[], "retry");
+        retry_route.policy.read_timeout_ms = 50;
+        let HttpRouteAction::Proxy { policy, .. } = &mut retry_route.action else {
+            panic!("proxy route");
+        };
+        policy.retry.triggers = vec![HttpRetryTrigger::ResponseTimeout];
+        let proxy = ProxyHarness::start_with_retries(
+            vec![pool("retry", &[silent.address, healthy.address])],
+            vec![retry_route],
+            1,
+            1,
+        )
+        .await;
+
+        let response = proxy
+            .request("GET / HTTP/1.1\r\nHost: retry.test\r\n")
+            .await;
+
+        assert_origin_response(&response, "response-timeout-retry");
+        proxy.finish().await;
+        silent.finish().await;
+        healthy.finish().await;
+    })
+    .await
+    .expect("response timeout retry test timed out");
 }
 
 #[tokio::test]

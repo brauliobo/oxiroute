@@ -552,14 +552,9 @@ impl ProxyHttp for HttpReverseProxy {
                 .is_some_and(|pool| pool.has_unattempted(&ctx.attempted_upstreams)),
         };
         let retry = ctx.replay_retryable
-            && session.body_bytes_read() == 0
-            && !session.was_upgraded()
-            && session.response_written().is_none_or(|response| {
-                response.status.is_informational()
-                    && response.status != StatusCode::SWITCHING_PROTOCOLS
-            })
-            && is_refused_stream(&error)
-            && policy.retries_on(HttpRetryTrigger::RefusedStream)
+            && request_body_replayable(session)
+            && response_is_retryable(session)
+            && retryable_upstream_error(&error, session, policy)
             && has_budget
             && target_available
             && ctx.remaining(true).is_ok();
@@ -790,6 +785,15 @@ impl ProxyHttp for HttpReverseProxy {
             .get_write_timeout()
             .map_or(remaining, |timeout| timeout.min(remaining));
         session.set_write_timeout(Some(write_timeout));
+        let retries_on_status = proxy_policy(ctx).retries_on_status(response.status.as_u16());
+        if retries_on_status && response_status_retryable(session, ctx) {
+            let mut error = Error::new_up(ErrorType::HTTPStatus(response.status.as_u16()));
+            error.set_retry(true);
+            return Err(error);
+        }
+        if retries_on_status {
+            ctx.record_passive_failure(HealthFailure::UnexpectedStatus);
+        }
         let had_uncacheable_framing = response.headers.contains_key(TRANSFER_ENCODING)
             || response.headers.contains_key(TRAILER);
         if response.status != http::StatusCode::SWITCHING_PROTOCOLS {
@@ -1789,7 +1793,7 @@ async fn execute_route_action(
                     proxy.policy.max_retries > 0 && !session.is_upgrade_req();
                 ctx.replay_retryable = proxy.policy.max_retries > 0
                     && (method == Method::GET || method == Method::HEAD)
-                    && session.is_body_empty()
+                    && (session.is_body_empty() || route.policy.request_buffering)
                     && !session.is_upgrade_req();
                 ctx.pool = Some(Arc::clone(&proxy.pool));
                 return Ok(false);
@@ -3096,6 +3100,71 @@ fn connect_retry_trigger(error: &Error) -> Option<HttpRetryTrigger> {
         ErrorType::ConnectRefused | ErrorType::ConnectNoRoute | ErrorType::ConnectError => {
             Some(HttpRetryTrigger::ConnectFailure)
         }
+        _ => None,
+    }
+}
+
+fn response_status_retryable(session: &Session, ctx: &HttpRequestContext) -> bool {
+    if !ctx.replay_retryable
+        || !request_body_replayable(session)
+        || session.was_upgraded()
+        || !response_is_retryable(session)
+    {
+        return false;
+    }
+    let policy = proxy_policy(ctx);
+    let has_budget = ctx.attempted_upstreams.len() <= usize::from(policy.max_retries);
+    let retry_target = policy.target_for_retry(ctx.attempted_upstreams.len());
+    let target_available = match retry_target {
+        HttpRetryTarget::SameServer => ctx.attempted_upstreams.last().is_some(),
+        HttpRetryTarget::NextServer => ctx
+            .pool
+            .as_ref()
+            .is_some_and(|pool| pool.has_unattempted(&ctx.attempted_upstreams)),
+    };
+    has_budget && target_available && ctx.remaining(true).is_ok()
+}
+
+fn response_is_retryable(session: &Session) -> bool {
+    session.body_bytes_sent() == 0
+        && session.response_written().is_none_or(|response| {
+            response.status.is_informational() && response.status != StatusCode::SWITCHING_PROTOCOLS
+        })
+}
+
+fn request_body_replayable(session: &Session) -> bool {
+    session.body_bytes_read() == 0
+        || (!session.retry_buffer_truncated() && session.get_retry_buffer().is_some())
+}
+
+fn retryable_upstream_error(
+    error: &Error,
+    session: &Session,
+    policy: &ProxyPolicyPlan,
+) -> bool {
+    match error.etype() {
+        ErrorType::HTTPStatus(status) => policy.retries_on_status(*status),
+        _ => response_retry_trigger(error, session)
+            .is_some_and(|trigger| policy.retries_on(trigger)),
+    }
+}
+
+fn response_retry_trigger(error: &Error, session: &Session) -> Option<HttpRetryTrigger> {
+    if is_refused_stream(error) {
+        return Some(HttpRetryTrigger::RefusedStream);
+    }
+    match error.etype() {
+        ErrorType::ConnectionClosed if response_is_retryable(session) => {
+            Some(HttpRetryTrigger::EmptyResponse)
+        }
+        ErrorType::ReadError if response_is_retryable(session) => {
+            Some(HttpRetryTrigger::EmptyResponse)
+        }
+        ErrorType::ReadTimedout => Some(HttpRetryTrigger::ResponseTimeout),
+        ErrorType::InvalidHTTPHeader
+        | ErrorType::H1Error
+        | ErrorType::H2Error
+        | ErrorType::InvalidH2 => Some(HttpRetryTrigger::JunkResponse),
         _ => None,
     }
 }
