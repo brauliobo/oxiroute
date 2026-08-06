@@ -3,8 +3,8 @@ use std::{
     future::pending,
     io,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -17,14 +17,14 @@ use tokio::{
     runtime::Builder,
     sync::{mpsc, watch},
     task::JoinSet,
-    time::{sleep, timeout, Instant, Sleep},
+    time::{Instant, Sleep, sleep, timeout},
 };
 
 use crate::{
     ConnectionGuard, EndpointLease, HealthFailure, L4ServicePlan, ListenerMetrics,
-    ListenerReservation, ProxyProtocolError, ProxyProtocolErrorKind, ProxyProtocolResult,
-    ProxyProtocolTransport, RuntimeGeneration, RuntimeReferenceKind, encode_header, parse_header,
-    MAX_V1_HEADER_BYTES, MAX_V2_HEADER_BYTES,
+    ListenerReservation, MAX_V1_HEADER_BYTES, MAX_V2_HEADER_BYTES, ProxyProtocolError,
+    ProxyProtocolErrorKind, ProxyProtocolResult, ProxyProtocolTransport, RuntimeGeneration,
+    RuntimeReferenceKind, encode_header, parse_header,
 };
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -296,7 +296,9 @@ async fn serve(
     let max_received_bytes = max_datagram_bytes
         .checked_add(proxy_header_bytes)
         .and_then(|bytes| bytes.checked_add(1))
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "UDP receive limit overflowed"))?;
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "UDP receive limit overflowed")
+        })?;
     let listener_is_ipv4 = socket.local_addr()?.is_ipv4();
     let socket = Arc::new(socket);
     let table: SessionTable = Arc::new(Mutex::new(HashMap::with_capacity(max_sessions)));
@@ -368,7 +370,7 @@ async fn serve(
                 let Some(generation_reference) =
                     generation.begin_reference(RuntimeReferenceKind::Udp)
                 else {
-                    break;
+                    continue;
                 };
                 let listener_connection = match metrics.begin_connection() {
                     Ok(connection) => connection,
@@ -438,12 +440,8 @@ fn parse_initial_datagram(
     policy: ProxyProtocolPolicy,
     max_datagram_bytes: usize,
 ) -> Result<(Vec<u8>, Option<std::net::SocketAddr>), ProxyProtocolError> {
-    let header = parse_header(
-        input,
-        policy.version,
-        ProxyProtocolTransport::Datagram,
-    )?
-    .ok_or_else(|| ProxyProtocolError::new(ProxyProtocolErrorKind::UnexpectedEof))?;
+    let header = parse_header(input, policy.version, ProxyProtocolTransport::Datagram)?
+        .ok_or_else(|| ProxyProtocolError::new(ProxyProtocolErrorKind::UnexpectedEof))?;
     let payload = &input[header.consumed..];
     if payload.len() > max_datagram_bytes {
         return Err(ProxyProtocolError::new(
@@ -731,13 +729,14 @@ mod tests {
 
     use oxiroute_config::{
         Config, DownstreamTimeoutPolicy, L4Service, Listener, ListenerBind, Protocol,
-        UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool,
+        ProxyProtocolPolicy, ProxyProtocolVersion, UpstreamAlgorithm, UpstreamConnectionReuse,
+        UpstreamEndpoint, UpstreamPool,
     };
     use oxiroute_config_source::ConfigFormat;
 
     use crate::{
-        config_coordinator::{CanonicalConfigDocument, ConfigRevision},
         GenerationManager, RuntimeReferenceKind, ServiceKind,
+        config_coordinator::{CanonicalConfigDocument, ConfigRevision},
     };
 
     use super::*;
@@ -769,6 +768,54 @@ mod tests {
         drop(datagram);
         assert!(matches!(
             queue.try_send(vec![0; 4]),
+            QueueSendResult::Enqueued
+        ));
+    }
+
+    #[tokio::test]
+    async fn queue_rejects_datagrams_at_the_count_bound() {
+        let mut policy = policy();
+        policy.max_queue_datagrams = 2;
+        policy.max_queue_bytes = 64;
+        let (queue, mut receiver) = DatagramQueue::new(policy).expect("queue");
+
+        assert!(matches!(
+            queue.try_send(vec![0; 1]),
+            QueueSendResult::Enqueued
+        ));
+        assert!(matches!(
+            queue.try_send(vec![0; 1]),
+            QueueSendResult::Enqueued
+        ));
+        assert!(matches!(queue.try_send(vec![0; 1]), QueueSendResult::Full));
+
+        drop(receiver.recv().await.expect("first queued datagram"));
+        assert!(matches!(
+            queue.try_send(vec![0; 1]),
+            QueueSendResult::Enqueued
+        ));
+    }
+
+    #[tokio::test]
+    async fn queue_rejects_datagrams_at_the_byte_bound() {
+        let mut policy = policy();
+        policy.max_queue_datagrams = 4;
+        policy.max_queue_bytes = 5;
+        let (queue, mut receiver) = DatagramQueue::new(policy).expect("queue");
+
+        assert!(matches!(
+            queue.try_send(vec![0; 3]),
+            QueueSendResult::Enqueued
+        ));
+        assert!(matches!(
+            queue.try_send(vec![0; 2]),
+            QueueSendResult::Enqueued
+        ));
+        assert!(matches!(queue.try_send(vec![0; 1]), QueueSendResult::Full));
+
+        drop(receiver.recv().await.expect("first queued datagram"));
+        assert!(matches!(
+            queue.try_send(vec![0; 1]),
             QueueSendResult::Enqueued
         ));
     }
@@ -880,6 +927,534 @@ mod tests {
         shutdown_tx.send(true).expect("shutdown UDP runtime");
         runtime.join().expect("join UDP runtime");
         assert_eq!(generation.active_references(RuntimeReferenceKind::Udp), 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn oversized_datagrams_are_dropped_before_session_admission() {
+        let mut policy = policy();
+        policy.max_datagram_bytes = 4;
+        let harness = start_harness(
+            policy,
+            Duration::from_secs(10),
+            Some(Duration::from_secs(30)),
+            8,
+            None,
+        )
+        .await;
+        let client = UdpSocket::bind(("127.0.0.1", 0))
+            .await
+            .expect("client socket");
+
+        client
+            .send_to(b"12345", harness.listener)
+            .await
+            .expect("oversized datagram");
+        assert!(
+            timeout(
+                Duration::from_millis(100),
+                harness.upstream.recv_from(&mut [0; 32])
+            )
+            .await
+            .is_err(),
+            "oversized datagram reached the upstream"
+        );
+
+        client
+            .send_to(b"1234", harness.listener)
+            .await
+            .expect("bounded datagram");
+        let mut received = [0; 32];
+        let (length, _) = timeout(
+            Duration::from_secs(2),
+            harness.upstream.recv_from(&mut received),
+        )
+        .await
+        .expect("bounded datagram timeout")
+        .expect("bounded datagram receive");
+        assert_eq!(&received[..length], b"1234");
+
+        harness.stop();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn udp_session_table_rejects_new_clients_at_max_sessions() {
+        let mut policy = policy();
+        policy.max_sessions = 1;
+        let harness = start_harness(
+            policy,
+            Duration::from_secs(10),
+            Some(Duration::from_secs(30)),
+            8,
+            None,
+        )
+        .await;
+        let first = UdpSocket::bind(("127.0.0.1", 0))
+            .await
+            .expect("first client socket");
+        let second = UdpSocket::bind(("127.0.0.1", 0))
+            .await
+            .expect("second client socket");
+        let mut received = [0; 32];
+
+        first
+            .send_to(b"first", harness.listener)
+            .await
+            .expect("first session datagram");
+        let (length, first_peer) = timeout(
+            Duration::from_secs(2),
+            harness.upstream.recv_from(&mut received),
+        )
+        .await
+        .expect("first session timeout")
+        .expect("first session receive");
+        assert_eq!(&received[..length], b"first");
+
+        second
+            .send_to(b"second", harness.listener)
+            .await
+            .expect("second session datagram");
+        assert!(
+            timeout(
+                Duration::from_millis(100),
+                harness.upstream.recv_from(&mut received),
+            )
+            .await
+            .is_err(),
+            "table overflow reached the upstream"
+        );
+
+        first
+            .send_to(b"again", harness.listener)
+            .await
+            .expect("existing session datagram");
+        let (length, peer) = timeout(
+            Duration::from_secs(2),
+            harness.upstream.recv_from(&mut received),
+        )
+        .await
+        .expect("existing session timeout")
+        .expect("existing session receive");
+        assert_eq!(&received[..length], b"again");
+        assert_eq!(peer, first_peer);
+
+        harness.stop();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn udp_session_enforces_byte_cap_and_releases_table_entry() {
+        let mut policy = policy();
+        policy.max_session_bytes = 10;
+        let harness = start_harness(
+            policy,
+            Duration::from_secs(10),
+            Some(Duration::from_secs(30)),
+            8,
+            None,
+        )
+        .await;
+        let client = UdpSocket::bind(("127.0.0.1", 0))
+            .await
+            .expect("client socket");
+        let mut received = [0; 32];
+
+        client
+            .send_to(&[0; 6], harness.listener)
+            .await
+            .expect("initial datagram");
+        let (length, _) = timeout(
+            Duration::from_secs(2),
+            harness.upstream.recv_from(&mut received),
+        )
+        .await
+        .expect("initial datagram timeout")
+        .expect("initial datagram receive");
+        assert_eq!(length, 6);
+
+        client
+            .send_to(&[0; 5], harness.listener)
+            .await
+            .expect("over-limit datagram");
+        assert!(
+            timeout(
+                Duration::from_millis(100),
+                harness.upstream.recv_from(&mut received),
+            )
+            .await
+            .is_err(),
+            "over-limit session datagram reached the upstream"
+        );
+        wait_for_udp_references(&harness.generation, 0).await;
+
+        client
+            .send_to(&[0; 3], harness.listener)
+            .await
+            .expect("new session datagram");
+        let (length, peer) = timeout(
+            Duration::from_secs(2),
+            harness.upstream.recv_from(&mut received),
+        )
+        .await
+        .expect("new session timeout")
+        .expect("new session receive");
+        assert_eq!(length, 3);
+
+        harness
+            .upstream
+            .send_to(&[0; 8], peer)
+            .await
+            .expect("over-limit upstream datagram");
+        assert!(
+            timeout(Duration::from_millis(100), client.recv_from(&mut received))
+                .await
+                .is_err(),
+            "over-limit upstream datagram reached the client"
+        );
+        wait_for_udp_references(&harness.generation, 0).await;
+
+        harness.stop();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn udp_sessions_expire_after_idle_and_lifetime_deadlines() {
+        let idle_harness = start_harness(
+            policy(),
+            Duration::from_millis(40),
+            Some(Duration::from_secs(2)),
+            8,
+            None,
+        )
+        .await;
+        let idle_client = UdpSocket::bind(("127.0.0.1", 0))
+            .await
+            .expect("idle client socket");
+        idle_client
+            .send_to(b"idle", idle_harness.listener)
+            .await
+            .expect("idle datagram");
+        let mut received = [0; 32];
+        timeout(
+            Duration::from_secs(2),
+            idle_harness.upstream.recv_from(&mut received),
+        )
+        .await
+        .expect("idle upstream timeout")
+        .expect("idle upstream receive");
+        wait_for_udp_references(&idle_harness.generation, 0).await;
+        idle_harness.stop();
+
+        let lifetime_harness = start_harness(
+            policy(),
+            Duration::from_secs(2),
+            Some(Duration::from_millis(80)),
+            8,
+            None,
+        )
+        .await;
+        let lifetime_client = UdpSocket::bind(("127.0.0.1", 0))
+            .await
+            .expect("lifetime client socket");
+        lifetime_client
+            .send_to(b"life", lifetime_harness.listener)
+            .await
+            .expect("lifetime datagram");
+        timeout(
+            Duration::from_secs(2),
+            lifetime_harness.upstream.recv_from(&mut received),
+        )
+        .await
+        .expect("lifetime upstream timeout")
+        .expect("lifetime upstream receive");
+        sleep(Duration::from_millis(100)).await;
+        wait_for_udp_references(&lifetime_harness.generation, 0).await;
+        lifetime_harness.stop();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn udp_replies_keep_client_affinity_without_cross_client_leakage() {
+        let harness = start_harness(
+            policy(),
+            Duration::from_secs(10),
+            Some(Duration::from_secs(30)),
+            8,
+            None,
+        )
+        .await;
+        let first = UdpSocket::bind(("127.0.0.1", 0))
+            .await
+            .expect("first client socket");
+        let second = UdpSocket::bind(("127.0.0.1", 0))
+            .await
+            .expect("second client socket");
+        let mut received = [0; 32];
+
+        first
+            .send_to(b"one", harness.listener)
+            .await
+            .expect("first query");
+        second
+            .send_to(b"two", harness.listener)
+            .await
+            .expect("second query");
+        let mut peers = Vec::new();
+        for _ in 0..2 {
+            let (length, peer) = timeout(
+                Duration::from_secs(2),
+                harness.upstream.recv_from(&mut received),
+            )
+            .await
+            .expect("upstream query timeout")
+            .expect("upstream query receive");
+            peers.push((received[..length].to_vec(), peer));
+        }
+
+        for (query, peer) in peers {
+            let reply = if query == b"one" {
+                b"r-one".as_slice()
+            } else {
+                b"r-two".as_slice()
+            };
+            harness
+                .upstream
+                .send_to(reply, peer)
+                .await
+                .expect("upstream reply");
+        }
+
+        let (length, _) = timeout(Duration::from_secs(2), first.recv_from(&mut received))
+            .await
+            .expect("first reply timeout")
+            .expect("first reply receive");
+        assert_eq!(&received[..length], b"r-one");
+        let (length, _) = timeout(Duration::from_secs(2), second.recv_from(&mut received))
+            .await
+            .expect("second reply timeout")
+            .expect("second reply receive");
+        assert_eq!(&received[..length], b"r-two");
+        assert!(
+            timeout(Duration::from_millis(100), first.recv_from(&mut received))
+                .await
+                .is_err(),
+            "first client received a second client's reply"
+        );
+        assert!(
+            timeout(Duration::from_millis(100), second.recv_from(&mut received))
+                .await
+                .is_err(),
+            "second client received a first client's reply"
+        );
+
+        harness.stop();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn malformed_proxy_v2_datagrams_are_rejected_before_upstream_delivery() {
+        let harness = start_harness(
+            policy(),
+            Duration::from_secs(10),
+            Some(Duration::from_secs(30)),
+            8,
+            Some(ProxyProtocolPolicy {
+                version: ProxyProtocolVersion::V2,
+                timeout_ms: 1_000,
+            }),
+        )
+        .await;
+        let client = UdpSocket::bind(("127.0.0.1", 0))
+            .await
+            .expect("client socket");
+        client
+            .send_to(
+                &[0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x00, 0x00, 0x00],
+                harness.listener,
+            )
+            .await
+            .expect("malformed PROXY v2 datagram");
+
+        assert!(
+            timeout(
+                Duration::from_millis(100),
+                harness.upstream.recv_from(&mut [0; 32])
+            )
+            .await
+            .is_err(),
+            "malformed PROXY v2 datagram reached the upstream"
+        );
+        harness.stop();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn udp_reload_rejects_new_sessions_and_shutdown_cancels_active_sessions() {
+        let harness = start_harness(
+            policy(),
+            Duration::from_secs(10),
+            Some(Duration::from_secs(30)),
+            8,
+            None,
+        )
+        .await;
+        let active = UdpSocket::bind(("127.0.0.1", 0))
+            .await
+            .expect("active client socket");
+        let new_client = UdpSocket::bind(("127.0.0.1", 0))
+            .await
+            .expect("new client socket");
+        let mut received = [0; 32];
+
+        active
+            .send_to(b"active", harness.listener)
+            .await
+            .expect("active session datagram");
+        timeout(
+            Duration::from_secs(2),
+            harness.upstream.recv_from(&mut received),
+        )
+        .await
+        .expect("active session timeout")
+        .expect("active session receive");
+        harness.generation.stop_accepting();
+
+        new_client
+            .send_to(b"reload", harness.listener)
+            .await
+            .expect("reload datagram");
+        assert!(
+            timeout(
+                Duration::from_millis(100),
+                harness.upstream.recv_from(&mut received),
+            )
+            .await
+            .is_err(),
+            "reload admitted new UDP work"
+        );
+        sleep(Duration::from_millis(100)).await;
+        assert!(
+            !harness
+                .runtime
+                .thread
+                .as_ref()
+                .is_some_and(JoinHandle::is_finished),
+            "reload terminated the UDP listener before shutdown"
+        );
+
+        harness.shutdown.send(true).expect("shutdown UDP runtime");
+        harness.runtime.join().expect("join UDP runtime");
+        assert_eq!(
+            harness
+                .generation
+                .active_references(RuntimeReferenceKind::Udp),
+            0
+        );
+    }
+
+    #[cfg(unix)]
+    struct UdpHarness {
+        listener: SocketAddr,
+        upstream: UdpSocket,
+        generation: Arc<RuntimeGeneration>,
+        shutdown: watch::Sender<bool>,
+        runtime: UdpRuntime,
+    }
+
+    #[cfg(unix)]
+    impl UdpHarness {
+        fn stop(self) {
+            self.shutdown.send(true).expect("shutdown UDP runtime");
+            self.runtime.join().expect("join UDP runtime");
+        }
+    }
+
+    #[cfg(unix)]
+    async fn start_harness(
+        policy: UdpPolicy,
+        idle_timeout: Duration,
+        lifetime_timeout: Option<Duration>,
+        max_connections: u64,
+        proxy_protocol: Option<ProxyProtocolPolicy>,
+    ) -> UdpHarness {
+        let upstream = UdpSocket::bind(("127.0.0.1", 0))
+            .await
+            .expect("upstream socket");
+        let upstream_address = upstream.local_addr().expect("upstream address");
+        let listener = StdUdpSocket::bind(("127.0.0.1", 0))
+            .expect("listener probe")
+            .local_addr()
+            .expect("listener address");
+        let manager = GenerationManager::new();
+        let mut config = udp_config(listener, upstream_address);
+        config.listeners[0].max_connections = Some(max_connections);
+        config.listeners[0].proxy_protocol = proxy_protocol;
+        config.l4_services[0].idle_timeout_ms = idle_timeout.as_millis() as u64;
+        config.l4_services[0].lifetime_timeout_ms =
+            lifetime_timeout.map(|value| value.as_millis() as u64);
+        config.l4_services[0].udp = Some(policy);
+        let candidate = manager
+            .prepare(document(config))
+            .expect("prepare UDP generation");
+        let generation = manager
+            .activate(&candidate)
+            .expect("activate UDP generation");
+        generation
+            .metrics()
+            .register_configured_listener(
+                "relay",
+                "udp",
+                &ListenerBind::Udp { address: listener },
+                Some(max_connections),
+            )
+            .expect("register UDP listener metrics");
+        let service = match &generation.plan().services[0].kind {
+            ServiceKind::Udp(service) => Arc::clone(service),
+            _ => panic!("test service must be UDP"),
+        };
+        let reservation = generation
+            .reservations()
+            .get("relay")
+            .cloned()
+            .expect("UDP reservation");
+        let metrics = generation
+            .metrics()
+            .listener("relay")
+            .expect("listener metrics registry")
+            .expect("UDP listener metrics");
+        let (shutdown, shutdown_receiver) = watch::channel(false);
+        let runtime = UdpRuntime::start(
+            "relay".into(),
+            reservation,
+            service,
+            Arc::clone(&generation),
+            metrics,
+            proxy_protocol,
+            shutdown_receiver,
+        )
+        .expect("start UDP runtime");
+        UdpHarness {
+            listener,
+            upstream,
+            generation,
+            shutdown,
+            runtime,
+        }
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_udp_references(generation: &RuntimeGeneration, expected: u64) {
+        timeout(Duration::from_secs(2), async {
+            loop {
+                if generation.active_references(RuntimeReferenceKind::Udp) == expected {
+                    break;
+                }
+                sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("UDP generation reference timeout");
     }
 
     #[cfg(unix)]
