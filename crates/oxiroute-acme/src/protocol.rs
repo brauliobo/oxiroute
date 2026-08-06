@@ -22,6 +22,7 @@ use openssl::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::{Clock, Dns01Cancellation, Dns01Challenge, SecretBytes};
 
@@ -31,6 +32,8 @@ pub const MAX_NONCES: usize = 32;
 pub const MAX_IDENTIFIERS: usize = 100;
 pub const MAX_POLL_ATTEMPTS: usize = 64;
 pub const MAX_POLL_DELAY_SECONDS: u64 = 300;
+pub const MAX_RENEWAL_INFORMATION_WINDOW_SECONDS: u64 =
+    crate::clock::MAX_RENEWAL_INFORMATION_WINDOW_SECONDS;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HttpRequest {
@@ -136,6 +139,8 @@ pub enum AcmeError {
     ExternalAccountBindingRequired,
     #[error("ACME identifier set is invalid or unsupported")]
     UnsupportedIdentifier,
+    #[error("ACME IP identifiers are unsupported by the managed issuance path")]
+    IpIdentifierUnsupported,
     #[error("ACME order identifiers do not match the requested set")]
     OrderIdentifiersMismatch,
     #[error("ACME order returned an unsupported state: {status}")]
@@ -160,6 +165,8 @@ pub enum AcmeError {
     InvalidCertificate,
     #[error("ACME revocation reason is invalid")]
     InvalidRevocationReason,
+    #[error("ACME Renewal Information response is invalid")]
+    InvalidRenewalInformation,
     #[error("ACME JWS signature could not be created")]
     Signature(#[source] ErrorStack),
     #[error("ACME CSR could not be created")]
@@ -232,6 +239,12 @@ pub struct DirectoryDocument {
 pub struct Directory {
     pub url: String,
     pub document: DirectoryDocument,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RenewalInformation {
+    pub suggested_window_start_unix_seconds: u64,
+    pub suggested_window_end_unix_seconds: u64,
 }
 
 impl Directory {
@@ -1013,6 +1026,58 @@ impl<T: AcmeTransport> AcmeClient<T> {
         Ok(response.body)
     }
 
+    /// Fetches RFC 9773 Renewal Information for exactly one leaf certificate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the certificate, endpoint, response, or suggested window is invalid.
+    pub fn renewal_information(
+        &mut self,
+        certificate_pem: &[u8],
+    ) -> Result<Option<RenewalInformation>, AcmeError> {
+        let Some(endpoint) = self.directory.document.renewal_info.clone() else {
+            return Ok(None);
+        };
+        let certificates =
+            X509::stack_from_pem(certificate_pem).map_err(|_| AcmeError::InvalidCertificate)?;
+        let [certificate] = certificates.as_slice() else {
+            return Err(AcmeError::InvalidCertificate);
+        };
+        let certificate = certificate
+            .to_der()
+            .map_err(|_| AcmeError::InvalidCertificate)?;
+        let certificate_id = URL_SAFE_NO_PAD.encode(Sha256::digest(&certificate));
+        let endpoint = renewal_information_endpoint(&endpoint, &certificate_id)?;
+        let response = self.post_as_get(&endpoint)?;
+        if response.status != 200 {
+            return Err(problem_or_status(&response));
+        }
+        let value = bounded_json(&response.body, MAX_ACME_BODY_BYTES)?;
+        let window = value
+            .get("suggestedWindow")
+            .and_then(Value::as_object)
+            .ok_or(AcmeError::InvalidRenewalInformation)?;
+        let start = parse_renewal_timestamp(
+            window
+                .get("start")
+                .and_then(Value::as_str)
+                .ok_or(AcmeError::InvalidRenewalInformation)?,
+        )?;
+        let end = parse_renewal_timestamp(
+            window
+                .get("end")
+                .and_then(Value::as_str)
+                .ok_or(AcmeError::InvalidRenewalInformation)?,
+        )?;
+        if end <= start || end.saturating_sub(start) > MAX_RENEWAL_INFORMATION_WINDOW_SECONDS {
+            return Err(AcmeError::InvalidRenewalInformation);
+        }
+        Ok(Some(RenewalInformation {
+            suggested_window_start_unix_seconds: start,
+            suggested_window_end_unix_seconds: end,
+        }))
+    }
+
     fn signed_account_request(
         &mut self,
         url: &str,
@@ -1396,8 +1461,11 @@ fn normalize_identifiers(identifiers: &[String]) -> Result<Vec<String>, AcmeErro
     let mut normalized = BTreeSet::new();
     for identifier in identifiers {
         let identifier = identifier.trim().to_ascii_lowercase();
-        if identifier.is_empty() || identifier.len() > 253 || identifier.parse::<IpAddr>().is_ok() {
+        if identifier.is_empty() || identifier.len() > 253 {
             return Err(AcmeError::UnsupportedIdentifier);
+        }
+        if identifier.parse::<IpAddr>().is_ok() {
+            return Err(AcmeError::IpIdentifierUnsupported);
         }
         let dns_name = identifier.strip_prefix("*.").unwrap_or(&identifier);
         if identifier.contains('*') && !identifier.starts_with("*.") {
@@ -1438,8 +1506,10 @@ fn parse_order(response: &HttpResponse, policy: &OriginPolicy) -> Result<Order, 
         .ok_or(AcmeError::MissingField)?
         .iter()
         .map(|identifier| {
-            if identifier.get("type").and_then(Value::as_str) != Some("dns") {
-                return Err(AcmeError::UnsupportedIdentifier);
+            match identifier.get("type").and_then(Value::as_str) {
+                Some("dns") => {}
+                Some("ip") => return Err(AcmeError::IpIdentifierUnsupported),
+                _ => return Err(AcmeError::UnsupportedIdentifier),
             }
             identifier
                 .get("value")
@@ -1612,6 +1682,27 @@ fn validate_token(token: &str) -> Result<(), AcmeError> {
         return Err(AcmeError::MalformedResponse);
     }
     Ok(())
+}
+
+fn renewal_information_endpoint(base: &str, certificate_id: &str) -> Result<String, AcmeError> {
+    if base.contains(['?', '#']) {
+        return Err(AcmeError::InvalidRenewalInformation);
+    }
+    let separator = if base.ends_with('/') { "" } else { "/" };
+    let endpoint = format!("{base}{separator}{certificate_id}");
+    (endpoint.len() <= MAX_ACME_URL_BYTES)
+        .then_some(endpoint)
+        .ok_or(AcmeError::InvalidRenewalInformation)
+}
+
+fn parse_renewal_timestamp(value: &str) -> Result<u64, AcmeError> {
+    if value.is_empty() || value.len() > 64 || !value.is_ascii() {
+        return Err(AcmeError::InvalidRenewalInformation);
+    }
+    let timestamp = OffsetDateTime::parse(value, &Rfc3339)
+        .map_err(|_| AcmeError::InvalidRenewalInformation)?
+        .unix_timestamp();
+    u64::try_from(timestamp).map_err(|_| AcmeError::InvalidRenewalInformation)
 }
 
 fn validate_nonce(nonce: &str) -> Result<(), AcmeError> {
@@ -1813,6 +1904,7 @@ mod tests {
     };
 
     use crate::FakeClock;
+    use openssl::asn1::Asn1Time;
 
     use super::*;
 
@@ -1859,6 +1951,14 @@ mod tests {
             200,
             url,
             br#"{"newNonce":"https://acme.test/acme/new-nonce","newAccount":"https://acme.test/acme/new-account","newOrder":"https://acme.test/acme/new-order","revokeCert":"https://acme.test/acme/revoke","keyChange":"https://acme.test/acme/key-change","meta":{"termsOfService":"https://acme.test/terms"}}"#.to_vec(),
+        )
+    }
+
+    fn directory_with_renewal_info(url: &str) -> HttpResponse {
+        HttpResponse::new(
+            200,
+            url,
+            br#"{"newNonce":"https://acme.test/acme/new-nonce","newAccount":"https://acme.test/acme/new-account","newOrder":"https://acme.test/acme/new-order","renewalInfo":"https://acme.test/acme/renewal-info"}"#.to_vec(),
         )
     }
 
@@ -2159,6 +2259,142 @@ mod tests {
             Err(AcmeError::Cancelled)
         ));
         assert_eq!(transport.requests().len(), 1);
+    }
+
+    #[test]
+    fn renewal_information_uses_the_leaf_hash_and_bounded_window() {
+        let certificate = renewal_test_certificate();
+        let transport = ScriptedTransport::new([
+            directory_with_renewal_info("https://acme.test/directory"),
+            HttpResponse::new(204, "https://acme.test/acme/new-nonce", Vec::new())
+                .with_header("replay-nonce", "nonce-ari"),
+            HttpResponse::new(
+                200,
+                "https://acme.test/acme/renewal-info",
+                br#"{"suggestedWindow":{"start":"2026-08-10T00:00:00Z","end":"2026-08-20T00:00:00Z"}}"#.to_vec(),
+            )
+            .with_header("replay-nonce", "nonce-ari-response"),
+        ]);
+        let requests = transport.clone();
+        let policy = OriginPolicy::strict("https://acme.test/directory").expect("policy");
+        let key = AccountKey::generate(AccountKeyAlgorithm::EcdsaP256).expect("key");
+        let mut client = AcmeClient::new(
+            transport,
+            "https://acme.test/directory",
+            policy,
+            key,
+            Arc::new(FakeClock::new(100)),
+        )
+        .expect("client");
+        client
+            .set_account(Account {
+                url: "https://acme.test/acme/acct/1".into(),
+                status: "valid".into(),
+                contacts: vec!["mailto:ops@example.test".into()],
+                terms_agreed: true,
+            })
+            .expect("account");
+
+        let information = client
+            .renewal_information(&certificate)
+            .expect("renewal information")
+            .expect("advertised renewal information");
+        assert!(
+            information.suggested_window_start_unix_seconds
+                < information.suggested_window_end_unix_seconds
+        );
+        let requested = requests.requests();
+        assert!(
+            requested[2]
+                .url
+                .starts_with("https://acme.test/acme/renewal-info/")
+        );
+        assert_eq!(requested[2].method, "POST");
+    }
+
+    #[test]
+    fn renewal_information_rejects_an_unbounded_window() {
+        let certificate = renewal_test_certificate();
+        let transport = ScriptedTransport::new([
+            directory_with_renewal_info("https://acme.test/directory"),
+            HttpResponse::new(204, "https://acme.test/acme/new-nonce", Vec::new())
+                .with_header("replay-nonce", "nonce-ari"),
+            HttpResponse::new(
+                200,
+                "https://acme.test/acme/renewal-info",
+                br#"{"suggestedWindow":{"start":"2026-01-01T00:00:00Z","end":"2028-01-01T00:00:00Z"}}"#.to_vec(),
+            ),
+        ]);
+        let policy = OriginPolicy::strict("https://acme.test/directory").expect("policy");
+        let key = AccountKey::generate(AccountKeyAlgorithm::EcdsaP256).expect("key");
+        let mut client = AcmeClient::new(
+            transport,
+            "https://acme.test/directory",
+            policy,
+            key,
+            Arc::new(FakeClock::new(100)),
+        )
+        .expect("client");
+        client
+            .set_account(Account {
+                url: "https://acme.test/acme/acct/1".into(),
+                status: "valid".into(),
+                contacts: vec!["mailto:ops@example.test".into()],
+                terms_agreed: true,
+            })
+            .expect("account");
+        assert!(matches!(
+            client.renewal_information(&certificate),
+            Err(AcmeError::InvalidRenewalInformation)
+        ));
+    }
+
+    #[test]
+    fn ip_identifiers_are_explicitly_unsupported_for_orders_and_csrs() {
+        let transport = ScriptedTransport::new([directory("https://acme.test/directory")]);
+        let policy = OriginPolicy::strict("https://acme.test/directory").expect("policy");
+        let key = AccountKey::generate(AccountKeyAlgorithm::EcdsaP256).expect("key");
+        let mut client = AcmeClient::new(
+            transport,
+            "https://acme.test/directory",
+            policy,
+            key,
+            Arc::new(FakeClock::new(100)),
+        )
+        .expect("client");
+        assert!(matches!(
+            client.create_order(&CertificateRequest {
+                identifiers: vec!["192.0.2.10".into()],
+            }),
+            Err(AcmeError::IpIdentifierUnsupported)
+        ));
+        assert!(matches!(
+            generate_leaf_csr(&["2001:db8::1".into()], LeafKeyAlgorithm::EcdsaP256),
+            Err(AcmeError::IpIdentifierUnsupported)
+        ));
+    }
+
+    fn renewal_test_certificate() -> Vec<u8> {
+        let key = PKey::from_rsa(Rsa::generate(2048).expect("key")).expect("PKey");
+        let mut name = X509NameBuilder::new().expect("name");
+        name.append_entry_by_text("commonName", "ari.example.test")
+            .expect("common name");
+        let name = name.build();
+        let mut builder = X509::builder().expect("builder");
+        builder.set_version(2).expect("version");
+        builder.set_subject_name(&name).expect("subject");
+        builder.set_issuer_name(&name).expect("issuer");
+        builder.set_pubkey(&key).expect("public key");
+        builder
+            .set_not_before(&Asn1Time::days_from_now(0).expect("not before"))
+            .expect("not before");
+        builder
+            .set_not_after(&Asn1Time::days_from_now(30).expect("not after"))
+            .expect("not after");
+        builder
+            .sign(&key, MessageDigest::sha256())
+            .expect("signature");
+        builder.build().to_pem().expect("certificate")
     }
 
     fn decode_jws_protected(envelope: &Value) -> Value {

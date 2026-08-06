@@ -3,6 +3,8 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+pub const MAX_RENEWAL_INFORMATION_WINDOW_SECONDS: u64 = 366 * 24 * 60 * 60;
+
 /// Supplies Unix seconds to the lifecycle without coupling it to wall-clock reads.
 pub trait Clock: Send + Sync {
     fn now_unix_seconds(&self) -> u64;
@@ -98,6 +100,34 @@ pub fn stable_renewal_time(
     Some(start.saturating_add(offset))
 }
 
+/// Picks a deterministic time inside a bounded ARI window and the certificate validity interval.
+#[must_use]
+pub fn stable_renewal_time_in_window(
+    window_start_unix_seconds: u64,
+    window_end_unix_seconds: u64,
+    not_before_unix_seconds: u64,
+    not_after_unix_seconds: u64,
+    stable_identity: &str,
+) -> Option<u64> {
+    if window_end_unix_seconds <= window_start_unix_seconds
+        || window_end_unix_seconds.saturating_sub(window_start_unix_seconds)
+            > MAX_RENEWAL_INFORMATION_WINDOW_SECONDS
+        || not_after_unix_seconds <= not_before_unix_seconds.saturating_add(1)
+    {
+        return None;
+    }
+    let start = window_start_unix_seconds.max(not_before_unix_seconds);
+    let end = window_end_unix_seconds.min(not_after_unix_seconds.saturating_sub(1));
+    if end < start {
+        return None;
+    }
+    let digest = sha256(format!("ari:{stable_identity}").as_bytes());
+    let mut prefix = [0_u8; 8];
+    prefix.copy_from_slice(digest.get(..8).unwrap_or_default());
+    let offset = u64::from_be_bytes(prefix) % (end - start + 1);
+    Some(start + offset)
+}
+
 fn sha256(bytes: &[u8]) -> [u8; 32] {
     use sha2::{Digest as _, Sha256};
 
@@ -134,5 +164,23 @@ mod tests {
         assert!(first.is_some_and(|value| {
             (100 + 20 * 24 * 60 * 60..=100 + 30 * 24 * 60 * 60).contains(&value)
         }));
+    }
+
+    #[test]
+    fn ari_renewal_time_is_bounded_by_the_window_and_certificate() {
+        let start = 1_000;
+        let end = 2_000;
+        let selected = stable_renewal_time_in_window(start, end, 1_500, 1_750, "edge.example");
+        assert!(selected.is_some_and(|value| (1_500..=1_749).contains(&value)));
+        assert_eq!(
+            stable_renewal_time_in_window(
+                start,
+                start + MAX_RENEWAL_INFORMATION_WINDOW_SECONDS + 1,
+                1,
+                10_000,
+                "edge.example"
+            ),
+            None
+        );
     }
 }

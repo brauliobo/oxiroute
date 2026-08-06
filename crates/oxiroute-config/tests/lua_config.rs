@@ -750,6 +750,15 @@ fn managed_acme_source_round_trips_and_rejects_unsafe_policy_values() {
             .expect("reload DNS-01 source"),
         dns_config
     );
+
+    let ip_acme_config = with_acme_source("").replace(
+        "      dns_names = { \"WWW.EXAMPLE.TEST\" },",
+        "      dns_names = { \"192.0.2.10\" },",
+    );
+    assert!(matches!(
+        load_lua(&ip_acme_config),
+        Err(ConfigError::AcmeIdentifierUnsupported { .. })
+    ));
 }
 
 #[test]

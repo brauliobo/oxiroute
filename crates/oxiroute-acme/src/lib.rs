@@ -9,7 +9,9 @@ pub use challenge::{
     ChallengeHttpResponse, ChallengeLease, ChallengeRecord, ChallengeStore, ChallengeStoreError,
     MAX_CHALLENGE_TTL_SECONDS, MAX_CHALLENGES,
 };
-pub use clock::{Clock, FakeClock, SystemClock, renewal_due, stable_renewal_time};
+pub use clock::{
+    Clock, FakeClock, SystemClock, renewal_due, stable_renewal_time, stable_renewal_time_in_window,
+};
 pub use dns01::{
     Dns01Cancellation, Dns01Challenge, Dns01CredentialReference, Dns01Credentials,
     Dns01Operation, Dns01Record, Dns01Provider, Dns01ProviderAllowlist, Dns01ProviderError,
@@ -21,7 +23,8 @@ pub use protocol::{
     Account, AccountKey, AccountKeyAlgorithm, AccountRequest, AcmeClient, AcmeError, AcmeTransport,
     Authorization, AuthorizationStatus, ChallengeType, CertificateRequest, Directory,
     DirectoryDocument, Http01Challenge, HttpRequest, HttpResponse, LeafCsr, LeafKeyAlgorithm,
-    Order, OriginPolicy, PollPolicy, TlsAlpn01Challenge, TransportError, generate_leaf_csr,
+    MAX_RENEWAL_INFORMATION_WINDOW_SECONDS, Order, OriginPolicy, PollPolicy, RenewalInformation,
+    TlsAlpn01Challenge, TransportError, generate_leaf_csr,
 };
 pub use state::{
     AcmeStateError, CertificateMaterial, JobState, JobStatus, MAX_CERTIFICATE_BYTES, MAX_JOB_BYTES,
