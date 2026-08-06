@@ -40,12 +40,14 @@ pub enum ServerSessionEvent {
         app_name: String,
         stream_key: String,
         mode: PublishMode,
+        stream_id: u32,
     },
 
     /// The client is finished publishing on the specified stream key
     PublishStreamFinished {
         app_name: String,
         stream_key: String,
+        stream_id: u32,
     },
 
     /// The client is changing metadata properties of the stream being published
@@ -53,6 +55,7 @@ pub enum ServerSessionEvent {
         app_name: String,
         stream_key: String,
         metadata: StreamMetadata,
+        stream_id: u32,
     },
 
     /// Audio data was received from the client
@@ -61,6 +64,7 @@ pub enum ServerSessionEvent {
         stream_key: String,
         data: Bytes,
         timestamp: RtmpTimestamp,
+        stream_id: u32,
     },
 
     /// Video data received from the client
@@ -69,6 +73,7 @@ pub enum ServerSessionEvent {
         stream_key: String,
         data: Bytes,
         timestamp: RtmpTimestamp,
+        stream_id: u32,
     },
 
     /// The client sent an Amf0 command that was not able to be handled
@@ -94,6 +99,7 @@ pub enum ServerSessionEvent {
     PlayStreamFinished {
         app_name: String,
         stream_key: String,
+        stream_id: u32,
     },
 
     /// The client has sent an acknowledgement that they have received the specified number of bytes

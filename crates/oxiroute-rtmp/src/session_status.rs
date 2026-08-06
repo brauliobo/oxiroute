@@ -46,6 +46,8 @@ pub enum RtmpSessionError {
     Callback(#[from] crate::RtmpCallbackError),
     #[error("RTMP VOD playback failed: {0}")]
     Vod(#[from] VodError),
+    #[error("RTMP message stream {stream_id} is unknown or has a conflicting role")]
+    MessageStream { stream_id: u32 },
 }
 
 pub(super) fn connection_path(error: RtmpStreamPathError) -> Rejection {

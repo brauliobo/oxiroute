@@ -111,6 +111,15 @@ pub(super) fn handle_request(
                 Rejection::new(PLAY_NOT_FOUND_CODE, "RTMP application is not configured"),
             );
         }
+        if session.connected_application.as_deref() != Some(application) {
+            return session.reject_request(
+                request_id,
+                Rejection::new(
+                    PLAY_REJECTION_CODE,
+                    "RTMP application does not match the connected application",
+                ),
+            );
+        }
         if let Err(error) = session.runtime.authorize(
             application,
             SessionOperation::Play,
@@ -122,12 +131,21 @@ pub(super) fn handle_request(
                 status::authorization(SessionOperation::Play, error),
             );
         }
-        if session.role.is_some() {
+        if session.roles.contains_key(&protocol_stream_id) {
             return session.reject_request(
                 request_id,
                 Rejection::new(
                     PLAY_REJECTION_CODE,
                     "this connection already has an active media role",
+                ),
+            );
+        }
+        if session.roles.len() >= super::MAX_RTMP_MESSAGE_STREAMS {
+            return session.reject_request(
+                request_id,
+                Rejection::new(
+                    PLAY_REJECTION_CODE,
+                    "RTMP message stream limit reached for this connection",
                 ),
             );
         }
@@ -153,7 +171,9 @@ pub(super) fn handle_request(
             Ok(results) => results,
             Err(error) => return Err(error.into()),
         };
-        session.role = Some(SessionRole::VodPlayback(role));
+        session
+            .roles
+            .insert(protocol_stream_id, SessionRole::VodPlayback(role));
         return Ok(accepted);
     }
     let identity =
@@ -169,6 +189,15 @@ pub(super) fn handle_request(
             Rejection::new(PLAY_NOT_FOUND_CODE, "RTMP application is not configured"),
         );
     };
+    if session.connected_application.as_deref() != Some(application) {
+        return session.reject_request(
+            request_id,
+            Rejection::new(
+                PLAY_REJECTION_CODE,
+                "RTMP application does not match the connected application",
+            ),
+        );
+    }
     if !application_policy.live() {
         return session.reject_request(
             request_id,
@@ -186,12 +215,21 @@ pub(super) fn handle_request(
             status::authorization(SessionOperation::Play, error),
         );
     }
-    if session.role.is_some() {
+    if session.roles.contains_key(&protocol_stream_id) {
         return session.reject_request(
             request_id,
             Rejection::new(
                 PLAY_REJECTION_CODE,
                 "this connection already has an active media role",
+            ),
+        );
+    }
+    if session.roles.len() >= super::MAX_RTMP_MESSAGE_STREAMS {
+        return session.reject_request(
+            request_id,
+            Rejection::new(
+                PLAY_REJECTION_CODE,
+                "RTMP message stream limit reached for this connection",
             ),
         );
     }
@@ -223,7 +261,9 @@ pub(super) fn handle_request(
             return Err(error.into());
         }
     };
-    session.role = Some(SessionRole::Playback(role));
+    session
+        .roles
+        .insert(protocol_stream_id, SessionRole::Playback(role));
     Ok(accepted)
 }
 
@@ -231,23 +271,47 @@ pub(super) fn drain(
     session: &mut RtmpSession,
     maximum_events: usize,
 ) -> Result<Vec<Vec<u8>>, RtmpSessionError> {
-    if matches!(&session.role, Some(SessionRole::VodPlayback(_))) {
-        return session.drain_vod_playback(maximum_events);
-    }
-    let Some(SessionRole::Playback(playback)) = &session.role else {
+    if !session.is_playback_active() {
         return Err(RtmpSessionError::NoActivePlayback);
-    };
-    let protocol_stream_id = playback.protocol_stream_id;
-    let events = playback.take_events(maximum_events);
-    if events.is_empty() {
+    }
+    if maximum_events == 0 {
         return Ok(Vec::new());
     }
 
-    let protocol = session.protocol_mut();
-    events
-        .into_iter()
-        .map(|event| serialize_event(protocol, protocol_stream_id, &event))
-        .collect()
+    let stream_ids: Vec<_> = session.roles.keys().copied().collect();
+    let mut outbound = Vec::new();
+    for stream_id in stream_ids {
+        if outbound.len() >= maximum_events {
+            break;
+        }
+        let Some(role) = session.roles.get_mut(&stream_id) else {
+            continue;
+        };
+        let remaining = maximum_events - outbound.len();
+        let packets = match role {
+            SessionRole::Playback(playback) => {
+                let events = playback.take_events(remaining);
+                let protocol = session
+                    .protocol
+                    .as_mut()
+                    .expect("playback drain requires a protocol session");
+                events
+                    .into_iter()
+                    .map(|event| serialize_event(protocol, playback.protocol_stream_id, &event))
+                    .collect::<Result<Vec<_>, _>>()
+            }
+            SessionRole::VodPlayback(playback) => {
+                let protocol = session
+                    .protocol
+                    .as_mut()
+                    .expect("VOD playback drain requires a protocol session");
+                playback.drain(protocol, remaining)
+            }
+            SessionRole::Publisher(_) => Ok(Vec::new()),
+        }?;
+        outbound.extend(packets);
+    }
+    Ok(outbound)
 }
 
 pub(super) fn serialize_event(

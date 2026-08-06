@@ -378,6 +378,7 @@ fn can_accept_live_publishing_to_requested_stream_key() {
             ref stream_key,
             request_id: returned_request_id,
             mode: PublishMode::Live,
+            ..
         } if app_name == "some_app" && stream_key == "stream_key" => returned_request_id,
 
         _ => panic!("Unexpected first event found: {:?}", events[0]),
@@ -475,6 +476,7 @@ fn can_receive_and_raise_event_for_metadata_from_obs() {
             app_name,
             stream_key,
             metadata,
+            ..
         } => {
             assert_eq!(app_name, TEST_APP_NAME, "Unexpected metadata app name");
             assert_eq!(
@@ -562,6 +564,7 @@ fn can_receive_audio_data_on_published_stream() {
             stream_key,
             data,
             timestamp,
+            ..
         } => {
             assert_eq!(app_name, TEST_APP_NAME, "Unexpected app name");
             assert_eq!(stream_key, TEST_STREAM_KEY, "Unexpected stream key");
@@ -609,6 +612,7 @@ fn can_receive_video_data_on_published_stream() {
             stream_key,
             data,
             timestamp,
+            ..
         } => {
             assert_eq!(app_name, TEST_APP_NAME, "Unexpected app name");
             assert_eq!(stream_key, TEST_STREAM_KEY, "Unexpected stream key");
@@ -658,6 +662,7 @@ fn publish_finished_event_raised_when_delete_stream_invoked_on_publishing_stream
         ServerSessionEvent::PublishStreamFinished {
             app_name,
             stream_key,
+            ..
         } => {
             assert_eq!(app_name, TEST_APP_NAME, "Unexpected app name");
             assert_eq!(stream_key, TEST_STREAM_KEY, "Unexpected stream key");
@@ -708,6 +713,7 @@ fn publish_finished_event_raised_when_close_stream_invoked_on_publishing_stream(
         ServerSessionEvent::PublishStreamFinished {
             app_name,
             stream_key,
+            ..
         } => {
             assert_eq!(app_name, TEST_APP_NAME, "Unexpected app name");
             assert_eq!(stream_key, TEST_STREAM_KEY, "Unexpected stream key");
@@ -765,9 +771,11 @@ fn can_request_publishing_on_closed_stream() {
             ref stream_key,
             request_id: _,
             mode: PublishMode::Live,
+            stream_id: sid,
         } => {
             assert_eq!(app_name, &TEST_APP_NAME, "Unexpected app name");
             assert_eq!(stream_key, &TEST_STREAM_KEY, "Unexpected stream key");
+            assert_eq!(sid, stream_id, "Unexpected stream id");
         }
 
         _ => panic!("Unexpected first event found: {:?}", events[0]),
@@ -1011,6 +1019,7 @@ fn play_finished_event_when_close_stream_invoked() {
         ServerSessionEvent::PlayStreamFinished {
             app_name,
             stream_key,
+            ..
         } => {
             assert_eq!(app_name, TEST_APP_NAME, "Unexpected app name");
             assert_eq!(stream_key, TEST_STREAM_KEY, "Unexpected stream key");
@@ -1062,6 +1071,7 @@ fn play_finished_event_when_delete_stream_invoked_on_playing_stream() {
         ServerSessionEvent::PlayStreamFinished {
             app_name,
             stream_key,
+            ..
         } => {
             assert_eq!(app_name, TEST_APP_NAME, "Unexpected app name");
             assert_eq!(stream_key, TEST_STREAM_KEY, "Unexpected stream key");
@@ -1451,6 +1461,14 @@ fn sends_ack_after_receiving_window_ack_bytes() {
         &mut serializer,
         &mut deserializer,
     );
+    let stream_id = create_active_stream(&mut session, &mut serializer, &mut deserializer);
+    start_publishing(
+        TEST_STREAM_KEY,
+        stream_id,
+        &mut session,
+        &mut serializer,
+        &mut deserializer,
+    );
 
     let window_ack_message = RtmpMessage::WindowAcknowledgement { size: 100 };
     let window_ack_payload = window_ack_message
@@ -1468,7 +1486,7 @@ fn sends_ack_after_receiving_window_ack_bytes() {
         data: bytes.freeze(),
     };
     let video_payload = video_message
-        .into_message_payload(RtmpTimestamp::new(0), 0)
+        .into_message_payload(RtmpTimestamp::new(0), stream_id)
         .unwrap();
     let video_packet = serializer.serialize(&video_payload, false, false).unwrap();
     let results = session.handle_input(&video_packet.bytes[..]).unwrap();
@@ -1486,7 +1504,7 @@ fn sends_ack_after_receiving_window_ack_bytes() {
         data: bytes.freeze(),
     };
     let video_payload = video_message
-        .into_message_payload(RtmpTimestamp::new(0), 0)
+        .into_message_payload(RtmpTimestamp::new(0), stream_id)
         .unwrap();
     let video_packet = serializer.serialize(&video_payload, false, false).unwrap();
     let results = session.handle_input(&video_packet.bytes[..]).unwrap();
@@ -1499,7 +1517,7 @@ fn sends_ack_after_receiving_window_ack_bytes() {
         data: bytes.freeze(),
     };
     let video_payload = video_message
-        .into_message_payload(RtmpTimestamp::new(0), 0)
+        .into_message_payload(RtmpTimestamp::new(0), stream_id)
         .unwrap();
     let video_packet = serializer.serialize(&video_payload, false, false).unwrap();
     let results = session.handle_input(&video_packet.bytes[..]).unwrap();
@@ -1554,6 +1572,9 @@ fn get_basic_config() -> ServerSessionConfig {
         peer_bandwidth: DEFAULT_PEER_BANDWIDTH,
         window_ack_size: DEFAULT_WINDOW_ACK_SIZE,
         send_on_bw_done_message_on_start: true,
+        max_inbound_chunk_size: 2_147_483_647,
+        max_inbound_message_size: 16_777_215,
+        max_active_streams: 32,
     }
 }
 
@@ -1776,6 +1797,7 @@ fn start_publishing(
             ref stream_key,
             request_id: returned_request_id,
             mode: PublishMode::Live,
+            ..
         } if app_name == "some_app" && stream_key == "stream_key" => returned_request_id,
 
         _ => panic!("Unexpected first event found: {:?}", events[0]),

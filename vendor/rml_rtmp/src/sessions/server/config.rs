@@ -10,6 +10,8 @@ pub struct ServerSessionConfig {
     pub max_inbound_chunk_size: usize,
     /// Largest assembled inbound RTMP message accepted by this session.
     pub max_inbound_message_size: usize,
+    /// Maximum number of simultaneously created message streams.
+    pub max_active_streams: usize,
 }
 
 impl ServerSessionConfig {
@@ -23,6 +25,7 @@ impl ServerSessionConfig {
             send_on_bw_done_message_on_start: true,
             max_inbound_chunk_size: 2_147_483_647,
             max_inbound_message_size: 16_777_215,
+            max_active_streams: 32,
         }
     }
 }

@@ -1,4 +1,8 @@
-use std::{collections::VecDeque, net::IpAddr, sync::Arc};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    net::IpAddr,
+    sync::Arc,
+};
 
 use rml_rtmp::{
     handshake::{Handshake, HandshakeProcessResult, PeerType},
@@ -7,8 +11,8 @@ use rml_rtmp::{
 
 use crate::{
     CatalogError, LiveHub, RtmpCallbackContext, RtmpCallbackError, RtmpCallbackEvent,
-    RtmpCallbackPolicy, RtmpClientSnapshot, RtmpRegistry, RtmpSessionControlAction,
-    RtmpSessionRole, SessionId,
+    RtmpCallbackPolicy, RtmpClientSnapshot, RtmpMessageStreamSnapshot, RtmpRegistry,
+    RtmpSessionControlAction, RtmpSessionRole, SessionId,
 };
 
 #[path = "session_identity.rs"]
@@ -32,8 +36,8 @@ pub use runtime::{
 };
 pub use status::RtmpSessionError;
 
-use runtime::SessionRole;
 use crate::session_control::RtmpSessionControl;
+use runtime::SessionRole;
 use status::{CONNECT_REJECTION_CODE, Rejection};
 
 pub const MAX_INBOUND_CHUNK_SIZE: u32 = 1024 * 1024;
@@ -42,20 +46,21 @@ pub const MAX_INBOUND_AMF0_DEPTH: usize = 32;
 pub const MAX_INBOUND_AMF0_CONTAINER_ENTRIES: usize = 1_024;
 pub const MAX_INBOUND_AMF0_VALUES: usize = 4_096;
 pub const MAX_INBOUND_AMF0_STRING_BYTES: usize = u16::MAX as usize;
+pub const MAX_RTMP_MESSAGE_STREAMS: usize = 8;
 
-/// Incremental server-side RTMP connection with one live publisher or playback role.
+/// Incremental server-side RTMP connection with bounded message-stream roles.
 pub struct RtmpSession {
     runtime: RtmpServiceRuntime,
     session_id: SessionId,
     handshake: Option<Handshake>,
     protocol: Option<ServerSession>,
-    role: Option<SessionRole>,
+    roles: BTreeMap<u32, SessionRole>,
     peer_addr: Option<IpAddr>,
     connection_lease: Option<runtime::ApplicationSessionLease>,
     connected_application: Option<Arc<str>>,
     control: Option<Arc<RtmpSessionControl>>,
     last_rejection_code: Option<&'static str>,
-    last_callback_update_at_unix_ms: u64,
+    last_callback_update_at_unix_ms: BTreeMap<u32, u64>,
 }
 
 impl RtmpSession {
@@ -73,23 +78,22 @@ impl RtmpSession {
 
     pub(super) fn from_runtime(runtime: RtmpServiceRuntime, peer_addr: Option<IpAddr>) -> Self {
         let session_id = SessionId::new();
-        let control = runtime.registry().register_session(
-            session_id,
-            runtime.service_id(),
-            peer_addr,
-        );
+        let control =
+            runtime
+                .registry()
+                .register_session(session_id, runtime.service_id(), peer_addr);
         Self {
             runtime,
             session_id,
             handshake: Some(Handshake::new(PeerType::Server)),
             protocol: None,
-            role: None,
+            roles: BTreeMap::new(),
             peer_addr,
             connection_lease: None,
             connected_application: None,
             control,
             last_rejection_code: None,
-            last_callback_update_at_unix_ms: 0,
+            last_callback_update_at_unix_ms: BTreeMap::new(),
         }
     }
 
@@ -104,21 +108,19 @@ impl RtmpSession {
     /// request has established the role. [`Self::drain_playback`] remains strict and returns
     /// [`RtmpSessionError::NoActivePlayback`] when called without one.
     #[must_use]
-    pub const fn is_playback_active(&self) -> bool {
-        matches!(
-            self.role,
-            Some(SessionRole::Playback(_) | SessionRole::VodPlayback(_))
-        )
+    pub fn is_playback_active(&self) -> bool {
+        self.roles
+            .values()
+            .any(|role| matches!(role, SessionRole::Playback(_) | SessionRole::VodPlayback(_)))
     }
 
     /// Returns whether the active publisher has emitted no metadata or media for the stale
     /// publisher threshold.
     #[must_use]
     pub fn is_publisher_stale(&self, at_unix_ms: u64) -> bool {
-        matches!(
-            &self.role,
-            Some(SessionRole::Publisher(publisher)) if publisher.is_stale(at_unix_ms)
-        )
+        self.roles.values().any(|role| {
+            matches!(role, SessionRole::Publisher(publisher) if publisher.is_stale(at_unix_ms))
+        })
     }
 
     /// Processes arbitrary contiguous bytes from this connection in wire order.
@@ -159,6 +161,7 @@ impl RtmpSession {
                 config.window_ack_size = limits.window_ack_size;
                 config.max_inbound_chunk_size = limits.max_inbound_chunk_size as usize;
                 config.max_inbound_message_size = limits.max_inbound_message_size;
+                config.max_active_streams = MAX_RTMP_MESSAGE_STREAMS;
                 let (protocol, startup) =
                     ServerSession::new_with_amf0_limits(config, limits.amf0_limits())?;
                 self.protocol = Some(protocol);
@@ -187,25 +190,13 @@ impl RtmpSession {
         playback::drain(self, maximum_events)
     }
 
-    pub(super) fn drain_vod_playback(
-        &mut self,
-        maximum_events: usize,
-    ) -> Result<Vec<Vec<u8>>, RtmpSessionError> {
-        let Some(SessionRole::VodPlayback(mut playback)) = self.role.take() else {
-            return Err(RtmpSessionError::NoActivePlayback);
-        };
-        let result = playback.drain(self.protocol_mut(), maximum_events);
-        self.role = Some(SessionRole::VodPlayback(playback));
-        result
-    }
-
-    /// Detaches this connection's active publisher or viewer, if any.
+    /// Detaches every active message-stream role owned by this connection.
     ///
     /// # Errors
     ///
     /// Returns an error if the catalog no longer contains the role owned by this session.
     pub fn close(&mut self, at_unix_ms: u64) -> Result<(), CatalogError> {
-        let result = self.detach_role(at_unix_ms);
+        let result = self.detach_roles(at_unix_ms);
         if let Some(application) = self.connected_application.take() {
             let context = self.callback_context(&application, None, None);
             let _ = self
@@ -260,6 +251,7 @@ impl RtmpSession {
         Ok(outbound)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn handle_event(
         &mut self,
         event: ServerSessionEvent,
@@ -275,9 +267,17 @@ impl RtmpSession {
                 app_name,
                 stream_key,
                 mode,
+                stream_id,
             } => {
-                let result =
-                    publish::handle_request(self, request_id, &app_name, &stream_key, &mode, at_unix_ms);
+                let result = publish::handle_request(
+                    self,
+                    request_id,
+                    &app_name,
+                    &stream_key,
+                    &mode,
+                    stream_id,
+                    at_unix_ms,
+                );
                 if result.is_ok() {
                     self.sync_control_state();
                 }
@@ -286,12 +286,13 @@ impl RtmpSession {
             ServerSessionEvent::PublishStreamFinished {
                 app_name,
                 stream_key,
-            } => {
-                if self.publisher_matches(&app_name, &stream_key) {
-                    self.detach_role(at_unix_ms)?;
-                }
-                Ok(Vec::new())
+                stream_id,
             }
+            | ServerSessionEvent::PlayStreamFinished {
+                app_name,
+                stream_key,
+                stream_id,
+            } => self.detach_role_if_matches(stream_id, &app_name, &stream_key, at_unix_ms),
             ServerSessionEvent::PlayStreamRequested {
                 request_id,
                 app_name,
@@ -312,15 +313,6 @@ impl RtmpSession {
                 }
                 result
             }
-            ServerSessionEvent::PlayStreamFinished {
-                app_name,
-                stream_key,
-            } => {
-                if self.playback_matches(&app_name, &stream_key) {
-                    self.detach_role(at_unix_ms)?;
-                }
-                Ok(Vec::new())
-            }
             ServerSessionEvent::ClientChunkSizeChanged { new_chunk_size }
                 if new_chunk_size > self.runtime.inbound_limits().max_inbound_chunk_size =>
             {
@@ -330,8 +322,10 @@ impl RtmpSession {
                 app_name,
                 stream_key,
                 metadata,
-            } if self.publisher_matches(&app_name, &stream_key) => {
-                self.publisher_mut().handle_metadata(metadata, at_unix_ms)?;
+                stream_id,
+            } if self.publisher_matches(stream_id, &app_name, &stream_key) => {
+                self.publisher_mut(stream_id)
+                    .handle_metadata(metadata, at_unix_ms)?;
                 Ok(Vec::new())
             }
             ServerSessionEvent::AudioDataReceived {
@@ -339,8 +333,9 @@ impl RtmpSession {
                 stream_key,
                 data,
                 timestamp,
-            } if self.publisher_matches(&app_name, &stream_key) => {
-                self.publisher_mut()
+                stream_id,
+            } if self.publisher_matches(stream_id, &app_name, &stream_key) => {
+                self.publisher_mut(stream_id)
                     .handle_audio(&data, timestamp, at_unix_ms)?;
                 Ok(Vec::new())
             }
@@ -349,19 +344,22 @@ impl RtmpSession {
                 stream_key,
                 data,
                 timestamp,
-            } if self.publisher_matches(&app_name, &stream_key) => {
-                self.publisher_mut()
+                stream_id,
+            } if self.publisher_matches(stream_id, &app_name, &stream_key) => {
+                self.publisher_mut(stream_id)
                     .handle_video(&data, timestamp, at_unix_ms)?;
                 Ok(Vec::new())
             }
             ServerSessionEvent::ClientChunkSizeChanged { .. }
             | ServerSessionEvent::ReleaseStreamRequested { .. }
-            | ServerSessionEvent::StreamMetadataChanged { .. }
-            | ServerSessionEvent::AudioDataReceived { .. }
-            | ServerSessionEvent::VideoDataReceived { .. }
             | ServerSessionEvent::UnhandleableAmf0Command { .. }
             | ServerSessionEvent::AcknowledgementReceived { .. }
             | ServerSessionEvent::PingResponseReceived { .. } => Ok(Vec::new()),
+            ServerSessionEvent::StreamMetadataChanged { stream_id, .. }
+            | ServerSessionEvent::AudioDataReceived { stream_id, .. }
+            | ServerSessionEvent::VideoDataReceived { stream_id, .. } => {
+                Err(RtmpSessionError::MessageStream { stream_id })
+            }
         }
     }
 
@@ -373,6 +371,15 @@ impl RtmpSession {
     ) -> Result<Vec<ServerSessionResult>, RtmpSessionError> {
         if let Err(error) = identity::validate_application(application) {
             return self.reject_request(request_id, status::connection_path(error));
+        }
+        if self.connected_application.is_some() {
+            return self.reject_request(
+                request_id,
+                Rejection::new(
+                    CONNECT_REJECTION_CODE,
+                    "RTMP connection is already attached to an application",
+                ),
+            );
         }
         if self.runtime.application(application).is_none() {
             self.reject_request(
@@ -422,8 +429,9 @@ impl RtmpSession {
         self.last_rejection_code.take()
     }
 
-    fn detach_role(&mut self, at_unix_ms: u64) -> Result<(), CatalogError> {
-        let result = self.role.take().map_or(Ok(()), |mut role| {
+    fn detach_role(&mut self, stream_id: u32, at_unix_ms: u64) -> Result<(), CatalogError> {
+        self.last_callback_update_at_unix_ms.remove(&stream_id);
+        let result = self.roles.remove(&stream_id).map_or(Ok(()), |mut role| {
             let result = role.release(at_unix_ms);
             self.notify_role_callbacks(&role);
             result
@@ -432,15 +440,52 @@ impl RtmpSession {
         result
     }
 
-    fn observe_role_at(&mut self, at_unix_ms: u64) -> Result<(), RtmpSessionError> {
-        let identity = self
-            .role
-            .as_ref()
-            .map(|role| (role.identity().0.to_owned(), role.identity().1.to_owned()));
-        if let Some((application, stream_name)) = identity {
-            if let Some(role) = &mut self.role {
-                role.observe_at(at_unix_ms);
+    fn detach_roles(&mut self, at_unix_ms: u64) -> Result<(), CatalogError> {
+        let stream_ids: Vec<_> = self.roles.keys().copied().collect();
+        let mut first_error = None;
+        for stream_id in stream_ids {
+            self.last_callback_update_at_unix_ms.remove(&stream_id);
+            if let Some(mut role) = self.roles.remove(&stream_id) {
+                let result = role.release(at_unix_ms);
+                self.notify_role_callbacks(&role);
+                if first_error.is_none() {
+                    first_error = result.err();
+                }
             }
+        }
+        self.sync_control_state();
+        first_error.map_or(Ok(()), Err)
+    }
+
+    fn detach_role_if_matches(
+        &mut self,
+        stream_id: u32,
+        application: &str,
+        stream_name: &str,
+        at_unix_ms: u64,
+    ) -> Result<Vec<ServerSessionResult>, RtmpSessionError> {
+        if self.roles.contains_key(&stream_id) {
+            if !self.role_matches(stream_id, application, stream_name) {
+                return Err(RtmpSessionError::MessageStream { stream_id });
+            }
+            self.detach_role(stream_id, at_unix_ms)?;
+        }
+        Ok(Vec::new())
+    }
+
+    fn observe_role_at(&mut self, at_unix_ms: u64) -> Result<(), RtmpSessionError> {
+        for role in self.roles.values_mut() {
+            role.observe_at(at_unix_ms);
+        }
+        let identities: Vec<_> = self
+            .roles
+            .iter()
+            .map(|(stream_id, role)| {
+                let (application, stream_name) = role.identity();
+                (*stream_id, application.to_owned(), stream_name.to_owned())
+            })
+            .collect();
+        for (stream_id, application, stream_name) in identities {
             let service_policy = self.runtime.callbacks().clone();
             let application_policy = self
                 .runtime
@@ -453,10 +498,14 @@ impl RtmpSession {
                 .map(|policy| u64::try_from(policy.update_timeout.as_millis()).unwrap_or(u64::MAX))
                 .min()
                 .unwrap_or(0);
-            if interval_ms > 0
-                && at_unix_ms.saturating_sub(self.last_callback_update_at_unix_ms) >= interval_ms
-            {
-                self.last_callback_update_at_unix_ms = at_unix_ms;
+            let last_update_at = self
+                .last_callback_update_at_unix_ms
+                .get(&stream_id)
+                .copied()
+                .unwrap_or_default();
+            if interval_ms > 0 && at_unix_ms.saturating_sub(last_update_at) >= interval_ms {
+                self.last_callback_update_at_unix_ms
+                    .insert(stream_id, at_unix_ms);
                 let context = self.callback_context(&application, Some(&stream_name), None);
                 Self::update_callbacks(&context, &service_policy, application_policy.as_ref())?;
             }
@@ -544,26 +593,32 @@ impl RtmpSession {
         Ok(())
     }
 
-    fn publisher_matches(&self, application: &str, protocol_name: &str) -> bool {
+    fn role_matches(&self, stream_id: u32, application: &str, protocol_name: &str) -> bool {
         matches!(
-            &self.role,
+            self.roles.get(&stream_id),
+            Some(SessionRole::Publisher(publisher))
+                if publisher.matches(application, protocol_name)
+        ) || matches!(
+            self.roles.get(&stream_id),
+            Some(SessionRole::Playback(playback))
+                if playback.matches(application, protocol_name)
+        ) || matches!(
+            self.roles.get(&stream_id),
+            Some(SessionRole::VodPlayback(playback))
+                if playback.matches(application, protocol_name)
+        )
+    }
+
+    fn publisher_matches(&self, stream_id: u32, application: &str, protocol_name: &str) -> bool {
+        matches!(
+            self.roles.get(&stream_id),
             Some(SessionRole::Publisher(publisher))
                 if publisher.matches(application, protocol_name)
         )
     }
 
-    fn playback_matches(&self, application: &str, protocol_name: &str) -> bool {
-        match &self.role {
-            Some(SessionRole::Playback(playback)) => playback.matches(application, protocol_name),
-            Some(SessionRole::VodPlayback(playback)) => {
-                playback.matches(application, protocol_name)
-            }
-            Some(SessionRole::Publisher(_)) | None => false,
-        }
-    }
-
-    fn publisher_mut(&mut self) -> &mut publish::PublishSession {
-        let Some(SessionRole::Publisher(publisher)) = &mut self.role else {
+    fn publisher_mut(&mut self, stream_id: u32) -> &mut publish::PublishSession {
+        let Some(SessionRole::Publisher(publisher)) = self.roles.get_mut(&stream_id) else {
             unreachable!("matched publisher event requires an active publisher role");
         };
         publisher
@@ -582,9 +637,10 @@ impl RtmpSession {
     /// Returns and consumes a valid pending management disconnect request.
     #[must_use]
     pub fn take_control_action(&self) -> Option<RtmpSessionControlAction> {
+        let message_streams = self.message_stream_snapshots();
         self.control
             .as_ref()
-            .and_then(|control| control.take_action(self.control_role()))
+            .and_then(|control| control.take_action(&message_streams))
     }
 
     /// Returns the current management snapshot for this connection.
@@ -593,35 +649,40 @@ impl RtmpSession {
         self.control.as_ref().map(|control| control.snapshot())
     }
 
-    fn control_role(&self) -> RtmpSessionRole {
-        match self.role {
-            Some(SessionRole::Publisher(_)) => RtmpSessionRole::Publisher,
-            Some(SessionRole::Playback(_) | SessionRole::VodPlayback(_)) => {
-                RtmpSessionRole::Subscriber
-            }
-            None => RtmpSessionRole::Client,
-        }
+    fn message_stream_snapshots(&self) -> Vec<RtmpMessageStreamSnapshot> {
+        self.roles
+            .iter()
+            .map(|(message_stream_id, role)| {
+                let (application, stream_name) = role.identity();
+                let role = match role {
+                    SessionRole::Publisher(_) => RtmpSessionRole::Publisher,
+                    SessionRole::Playback(_) | SessionRole::VodPlayback(_) => {
+                        RtmpSessionRole::Subscriber
+                    }
+                };
+                RtmpMessageStreamSnapshot {
+                    message_stream_id: *message_stream_id,
+                    application: application.to_owned(),
+                    stream_name: stream_name.to_owned(),
+                    role,
+                }
+            })
+            .collect()
     }
 
     fn sync_control_state(&self) {
         let Some(control) = &self.control else {
             return;
         };
-        let (application, stream_name) = self
-            .role
-            .as_ref()
-            .map(SessionRole::identity)
-            .map_or((self.connected_application.as_deref(), None), |(application, stream_name)| {
-                (Some(application), Some(stream_name))
-            });
-        control.set_role(self.control_role(), application, stream_name);
+        let message_streams = self.message_stream_snapshots();
+        control.set_message_streams(self.connected_application.as_deref(), &message_streams);
     }
 }
 
 impl Drop for RtmpSession {
     fn drop(&mut self) {
         // Recorder controllers must submit their workers before the session releases its reaper.
-        if let Some(role) = self.role.as_ref() {
+        for role in self.roles.values() {
             self.notify_role_callbacks(role);
         }
         if let Some(application) = self.connected_application.as_deref() {
@@ -638,7 +699,7 @@ impl Drop for RtmpSession {
                 let _ = callbacks.notify(RtmpCallbackEvent::Disconnect, &context);
             }
         }
-        self.role.take();
+        self.roles.clear();
         self.runtime.registry().unregister_session(self.session_id);
     }
 }

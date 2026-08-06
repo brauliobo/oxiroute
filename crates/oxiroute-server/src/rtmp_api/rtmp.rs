@@ -181,6 +181,16 @@ fn client_json(client: &oxiroute_rtmp::RtmpClientSnapshot) -> Value {
         "application": client.application,
         "stream": client.stream_name,
         "role": client.role.as_str(),
+        "messageStreams": client
+            .message_streams
+            .iter()
+            .map(|stream| json!({
+                "messageStreamId": stream.message_stream_id,
+                "application": stream.application,
+                "stream": stream.stream_name,
+                "role": stream.role.as_str(),
+            }))
+            .collect::<Vec<_>>(),
         "revision": client.revision.to_string(),
     })
 }
