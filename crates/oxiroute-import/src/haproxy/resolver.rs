@@ -286,9 +286,20 @@ pub struct StatusRange {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum RetryOnTrigger {
+    ConnFailure,
+    EmptyResponse,
+    ResponseTimeout,
+    JunkResponse,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RetryOn {
-    ConnectFailure,
-    ConnectRefused,
+    None,
+    Rules {
+        triggers: Vec<RetryOnTrigger>,
+        response_statuses: Vec<u16>,
+    },
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -307,7 +318,7 @@ pub struct ProxySettings {
     pub default_backend: Option<EffectiveValue<BackendReference>>,
     pub balance: Option<EffectiveValue<BalanceAlgorithm>>,
     pub retries: Option<EffectiveValue<u32>>,
-    pub retry_on: Option<EffectiveValue<Vec<RetryOn>>>,
+    pub retry_on: Option<EffectiveValue<RetryOn>>,
     pub redispatch: Option<EffectiveValue<OptionState<Redispatch>>>,
     pub timeouts: Timeouts,
     pub forward_for: Option<EffectiveValue<OptionState<ForwardFor>>>,
@@ -1805,40 +1816,21 @@ impl Resolver {
         directive: &Directive,
         state: &mut SectionState,
     ) {
-        if directive.arguments.is_empty() {
-            self.unsupported_directive_form_for_occurrence(occurrence, directive);
-            return;
-        }
-        let mut values = Vec::with_capacity(directive.arguments.len());
-        let mut seen = HashSet::new();
-        for argument in &directive.arguments {
-            let value = match argument.value.as_slice() {
-                b"conn-failure" => RetryOn::ConnectFailure,
-                b"conn-refused" => RetryOn::ConnectRefused,
-                _ => {
-                    self.track_and_reject_semantics(
-                        occurrence,
-                        directive,
-                        SemanticBlockerKind::Retry,
-                        state,
-                        "HAProxy retry-on includes response or transport semantics outside the canonical safe retry subset",
-                    );
-                    return;
-                }
-            };
-            if !seen.insert(value) {
+        let retry_on = match parse_retry_on(&directive.arguments) {
+            Ok(retry_on) => retry_on,
+            Err(reason) => {
+                let message = format!("unsupported HAProxy retry-on form: {reason}");
                 self.track_and_reject_semantics(
                     occurrence,
                     directive,
                     SemanticBlockerKind::Retry,
                     state,
-                    "HAProxy retry-on repeats a trigger and cannot be represented uniquely",
+                    &message,
                 );
                 return;
             }
-            values.push(value);
-        }
-        let value = EffectiveValue::direct(values, occurrence, directive.span);
+        };
+        let value = EffectiveValue::direct(retry_on, occurrence, directive.span);
         let conflict = self.set_setting(&mut state.settings.retry_on, value);
         if !self.finish_setting(occurrence, directive, conflict, &mut state.settings) {
             self.consume(occurrence, Consumption::Setting);
@@ -3017,6 +3009,91 @@ fn parse_one_u64(directive: &Directive) -> Option<u64> {
 
 fn parse_u16(value: &[u8]) -> Option<u16> {
     std::str::from_utf8(value).ok()?.parse().ok()
+}
+
+fn parse_retry_on(arguments: &[super::Word]) -> Result<RetryOn, String> {
+    if arguments.is_empty() {
+        return Err("requires at least one error form".into());
+    }
+    if arguments.len() == 1 && arguments[0].value == b"none" {
+        return Ok(RetryOn::None);
+    }
+    if arguments.iter().any(|argument| argument.value == b"none") {
+        return Err("none cannot be combined with another error form".into());
+    }
+    if arguments
+        .iter()
+        .any(|argument| matches!(argument.value.as_slice(), b"all" | b"all-retryable-errors"))
+    {
+        if arguments.len() != 1 {
+            return Err(
+                "all and all-retryable-errors cannot be combined with another error form".into(),
+            );
+        }
+        return Ok(RetryOn::Rules {
+            triggers: vec![
+                RetryOnTrigger::ConnFailure,
+                RetryOnTrigger::EmptyResponse,
+                RetryOnTrigger::ResponseTimeout,
+                RetryOnTrigger::JunkResponse,
+            ],
+            response_statuses: (500..=599).collect(),
+        });
+    }
+
+    let mut seen = HashSet::new();
+    let mut triggers = Vec::new();
+    let mut response_statuses = Vec::new();
+    for argument in arguments {
+        if !seen.insert(argument.value.clone()) {
+            return Err(format!(
+                "duplicate error form `{}`",
+                display_bytes(&argument.value)
+            ));
+        }
+        let trigger = match argument.value.as_slice() {
+            b"conn-failure" | b"conn-refused" => Some(RetryOnTrigger::ConnFailure),
+            b"empty-response" => Some(RetryOnTrigger::EmptyResponse),
+            b"response-timeout" => Some(RetryOnTrigger::ResponseTimeout),
+            b"junk-response" => Some(RetryOnTrigger::JunkResponse),
+            b"all" | b"all-retryable-errors" => unreachable!("all forms returned above"),
+            b"0rtt-rejected" => {
+                return Err("0rtt-rejected is outside the supported retry trigger subset".into());
+            }
+            _ => None,
+        };
+        if let Some(trigger) = trigger {
+            triggers.push(trigger);
+            continue;
+        }
+
+        let status = parse_u16(&argument.value)
+            .filter(|_| argument.value.len() == 3 && argument.value.iter().all(u8::is_ascii_digit))
+            .ok_or_else(|| {
+                format!(
+                    "unsupported error form `{}`",
+                    display_bytes(&argument.value)
+                )
+            })?;
+        if !(500..=599).contains(&status) {
+            return Err(format!(
+                "status `{}` is not a supported 5xx retry status",
+                display_bytes(&argument.value)
+            ));
+        }
+        if response_statuses.contains(&status) {
+            return Err(format!(
+                "duplicate error form `{}`",
+                display_bytes(&argument.value)
+            ));
+        }
+        response_statuses.push(status);
+    }
+    response_statuses.sort_unstable();
+    Ok(RetryOn::Rules {
+        triggers,
+        response_statuses,
+    })
 }
 
 fn parse_u32(value: &[u8]) -> Option<u32> {
