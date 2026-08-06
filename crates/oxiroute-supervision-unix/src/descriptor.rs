@@ -10,6 +10,7 @@ use std::{
 
 use rustix::{
     fs::{FileType, OFlags, fcntl_getfl, fstat},
+    io::{FdFlags, fcntl_getfd, fcntl_setfd},
     net::{AddressFamily, SocketAddrUnix, SocketType, getsockname, sockopt},
 };
 use serde::{Deserialize, Serialize};
@@ -21,6 +22,50 @@ use crate::MAX_DESCRIPTOR_COUNT;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct SlotId(pub u16);
+
+/// Descriptor capabilities required by a typed manifest.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct DescriptorCapabilities(u16);
+
+impl DescriptorCapabilities {
+    /// Stream listener descriptors.
+    pub const STREAM: Self = Self(0x0001);
+    /// Generic datagram listener descriptors.
+    pub const DATAGRAM: Self = Self(0x0002);
+    /// QUIC listener descriptors.
+    pub const QUIC: Self = Self(0x0004);
+    /// Stream and generic datagram listener descriptors.
+    pub const STREAM_AND_DATAGRAM: Self = Self(Self::STREAM.0 | Self::DATAGRAM.0);
+    /// Every descriptor capability defined by this manifest protocol.
+    pub const ALL: Self = Self(Self::STREAM.0 | Self::DATAGRAM.0 | Self::QUIC.0);
+
+    /// Returns the wire representation.
+    #[must_use]
+    pub const fn bits(self) -> u16 {
+        self.0
+    }
+
+    /// Returns whether all capabilities in `required` are present.
+    #[must_use]
+    pub const fn contains(self, required: Self) -> bool {
+        self.0 & required.0 == required.0
+    }
+
+    /// Reconstructs capabilities from a bounded wire value.
+    #[must_use]
+    pub const fn from_bits(bits: u16) -> Option<Self> {
+        if bits & !Self::ALL.0 == 0 {
+            Some(Self(bits))
+        } else {
+            None
+        }
+    }
+
+    const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
 
 /// Semantic purpose of a transferred descriptor.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -48,8 +93,23 @@ pub enum DescriptorKind {
     TcpListener,
     /// Listening filesystem or abstract Unix stream socket under trusted exclusive ownership.
     UnixListener,
+    /// Listening IPv4 or IPv6 datagram socket for a UDP relay.
+    DatagramListener,
+    /// Listening IPv4 or IPv6 datagram socket reserved for QUIC/H3.
+    QuicListener,
     /// No listener-specific validation beyond manifest ownership.
     Opaque,
+}
+
+impl DescriptorKind {
+    const fn capability(self) -> DescriptorCapabilities {
+        match self {
+            Self::TcpListener | Self::UnixListener => DescriptorCapabilities::STREAM,
+            Self::DatagramListener => DescriptorCapabilities::DATAGRAM,
+            Self::QuicListener => DescriptorCapabilities::QUIC,
+            Self::Opaque => DescriptorCapabilities(0),
+        }
+    }
 }
 
 /// Optional exact local address expected for a listener descriptor.
@@ -109,6 +169,10 @@ impl DescriptorManifest {
                 (_, None)
                     | (DescriptorKind::TcpListener, Some(BindIdentity::Tcp(_)))
                     | (
+                        DescriptorKind::DatagramListener | DescriptorKind::QuicListener,
+                        Some(BindIdentity::Tcp(_)),
+                    )
+                    | (
                         DescriptorKind::UnixListener,
                         Some(BindIdentity::UnixPath(_) | BindIdentity::UnixAbstract(_))
                     )
@@ -135,6 +199,14 @@ impl DescriptorManifest {
     #[must_use]
     pub fn slots(&self) -> &[DescriptorSlot] {
         &self.slots
+    }
+
+    /// Returns the capabilities required by the ordered slots.
+    #[must_use]
+    pub fn capabilities(&self) -> DescriptorCapabilities {
+        self.slots.iter().fold(DescriptorCapabilities(0), |all, slot| {
+            all.union(slot.kind.capability())
+        })
     }
 }
 
@@ -187,6 +259,13 @@ impl DescriptorSet {
             });
         }
         for (slot, descriptor) in manifest.slots.iter().zip(&descriptors) {
+            let flags = inspect(slot.id, fcntl_getfd(descriptor))?;
+            if !flags.contains(FdFlags::CLOEXEC) {
+                inspect(slot.id, fcntl_setfd(descriptor, flags | FdFlags::CLOEXEC))?;
+            }
+            if !inspect(slot.id, fcntl_getfd(descriptor))?.contains(FdFlags::CLOEXEC) {
+                return Err(DescriptorError::CloexecUnavailable { slot: slot.id });
+            }
             validate_descriptor(slot, descriptor)?;
         }
         let entries = manifest
@@ -274,12 +353,18 @@ pub enum DescriptorError {
     /// Descriptor is not a stream socket.
     #[error("descriptor slot {slot:?} is not a stream socket")]
     NotStream { slot: SlotId },
+    /// Descriptor is not a datagram socket.
+    #[error("descriptor slot {slot:?} is not a datagram socket")]
+    NotDatagram { slot: SlotId },
     /// Descriptor is not in listening state.
     #[error("descriptor slot {slot:?} is not listening")]
     NotListening { slot: SlotId },
     /// Descriptor could not be confirmed nonblocking after setting `O_NONBLOCK`.
     #[error("descriptor slot {slot:?} could not be made nonblocking")]
     NonblockingUnavailable { slot: SlotId },
+    /// Descriptor could not be made close-on-exec.
+    #[error("descriptor slot {slot:?} could not be made close-on-exec")]
+    CloexecUnavailable { slot: SlotId },
     /// Descriptor address family does not match its kind.
     #[error("descriptor slot {slot:?} has the wrong address family")]
     WrongAddressFamily { slot: SlotId },
@@ -330,11 +415,22 @@ fn validate_descriptor(
     if !FileType::from_raw_mode(stat.st_mode).is_socket() {
         return Err(DescriptorError::NotSocket { slot: slot.id });
     }
-    if inspect(slot.id, sockopt::socket_type(descriptor))? != SocketType::STREAM {
-        return Err(DescriptorError::NotStream { slot: slot.id });
-    }
-    if !inspect(slot.id, sockopt::socket_acceptconn(descriptor))? {
-        return Err(DescriptorError::NotListening { slot: slot.id });
+    let socket_type = inspect(slot.id, sockopt::socket_type(descriptor))?;
+    match slot.kind {
+        DescriptorKind::TcpListener | DescriptorKind::UnixListener => {
+            if socket_type != SocketType::STREAM {
+                return Err(DescriptorError::NotStream { slot: slot.id });
+            }
+            if !inspect(slot.id, sockopt::socket_acceptconn(descriptor))? {
+                return Err(DescriptorError::NotListening { slot: slot.id });
+            }
+        }
+        DescriptorKind::DatagramListener | DescriptorKind::QuicListener => {
+            if socket_type != SocketType::DGRAM {
+                return Err(DescriptorError::NotDatagram { slot: slot.id });
+            }
+        }
+        DescriptorKind::Opaque => unreachable!("opaque descriptors return before validation"),
     }
     let address = inspect(slot.id, getsockname(descriptor))?;
     match slot.kind {
@@ -391,6 +487,24 @@ fn validate_descriptor(
                     || metadata.permissions().mode() & 0o7777 != u32::from(expected)
                 {
                     return Err(DescriptorError::ModeMismatch { slot: slot.id });
+                }
+            }
+        }
+        DescriptorKind::DatagramListener | DescriptorKind::QuicListener => {
+            if !matches!(
+                address.address_family(),
+                AddressFamily::INET | AddressFamily::INET6
+            ) {
+                return Err(DescriptorError::WrongAddressFamily { slot: slot.id });
+            }
+            if let Some(BindIdentity::Tcp(expected)) = &slot.bind {
+                let actual =
+                    SocketAddr::try_from(address).map_err(|source| DescriptorError::Inspect {
+                        slot: slot.id,
+                        source,
+                    })?;
+                if &actual != expected {
+                    return Err(DescriptorError::BindMismatch { slot: slot.id });
                 }
             }
         }

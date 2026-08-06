@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use oxiroute_config::{Config, ListenerBind, Protocol};
+use oxiroute_config::{Config, Protocol};
 use oxiroute_server::{
     AdministrativeState, GenerationManager, ListenerRuntimeState, RuntimeGeneration,
     RuntimeSnapshot, worker_event_page,
@@ -73,7 +73,7 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), B
         control.acknowledge(&adoption, ControlOutcome::Rejected(REJECT_UNSUPPORTED))?;
         return Err(error.into());
     }
-    let manager = GenerationManager::new();
+    let manager = GenerationManager::new_supervised();
     let candidate = match manager.prepare_adopted(*document, listeners) {
         Ok(candidate) => candidate,
         Err(error) => {
@@ -591,13 +591,6 @@ pub(super) fn validate_stage_one_config(config: &Config) -> Result<(), &'static 
     if config
         .listeners
         .iter()
-        .any(|listener| matches!(&listener.bind, ListenerBind::Udp { .. }))
-    {
-        return Err("Stage 2 worker cannot adopt UDP listener descriptors");
-    }
-    if config
-        .listeners
-        .iter()
         .any(|listener| listener.protocol == Protocol::ForwardHttp3)
     {
         return Err("Stage 2 worker does not support HTTP/3 listener descriptors");
@@ -719,7 +712,7 @@ fn reactivate_active(quiesced: &mut Option<AcceptGateClose>) -> ControlOutcome {
 
 #[cfg(test)]
 mod tests {
-    use oxiroute_config::Stats;
+    use oxiroute_config::{Protocol, Stats};
 
     use super::*;
 
@@ -792,9 +785,7 @@ mod tests {
         config.listeners[0].bind = oxiroute_config::ListenerBind::Udp {
             address: "127.0.0.1:8080".parse().expect("UDP address"),
         };
-        assert_eq!(
-            validate_stage_one_config(&config),
-            Err("Stage 2 worker cannot adopt UDP listener descriptors")
-        );
+        config.listeners[0].protocol = Protocol::Udp;
+        assert!(validate_stage_one_config(&config).is_ok());
     }
 }

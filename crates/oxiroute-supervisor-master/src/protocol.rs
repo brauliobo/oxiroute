@@ -10,8 +10,9 @@ use std::{
 
 use oxiroute_supervision::Sequence;
 use oxiroute_supervision_unix::{
-    BindIdentity, DescriptorError, DescriptorKind, DescriptorManifest, DescriptorRole,
-    DescriptorSet, DescriptorSlot, FrameFlags, MAX_DESCRIPTOR_COUNT, MessageType, SlotId,
+    BindIdentity, DescriptorCapabilities, DescriptorError, DescriptorKind, DescriptorManifest,
+    DescriptorRole, DescriptorSet, DescriptorSlot, FrameFlags, MAX_DESCRIPTOR_COUNT, MessageType,
+    SlotId,
 };
 use oxiroute_supervisor_process::{
     AuthenticatedChannelError, AuthenticatedFrame, ChildHandshakeError, WorkerEndpoint,
@@ -25,6 +26,11 @@ use crate::status::{STATUS_MESSAGE, StatusProtocolError, WorkerStatus, encode_st
 pub const CONTROL_PROTOCOL_VERSION: u16 = 2;
 /// Maximum binary manifest bytes accepted by either endpoint.
 pub const MAX_MANIFEST_BYTES: usize = 16 * 1024;
+/// Version of the typed descriptor manifest payload.
+pub const DESCRIPTOR_MANIFEST_VERSION: u16 = 1;
+/// Descriptor capabilities implemented by this worker protocol.
+pub const SUPPORTED_DESCRIPTOR_CAPABILITIES: DescriptorCapabilities =
+    DescriptorCapabilities::STREAM_AND_DATAGRAM;
 
 const ADOPT: MessageType = MessageType(0x100);
 const QUIESCE: MessageType = MessageType(0x101);
@@ -318,6 +324,8 @@ fn encode_manifest(
     encoder: &mut BoundedEncoder,
     manifest: &DescriptorManifest,
 ) -> Result<(), ControlProtocolError> {
+    encoder.u16(DESCRIPTOR_MANIFEST_VERSION)?;
+    encoder.u16(manifest.capabilities().bits())?;
     encoder.u16(
         u16::try_from(manifest.slots().len()).map_err(|_| ControlProtocolError::InvalidPayload)?,
     )?;
@@ -344,6 +352,8 @@ fn encode_manifest(
             DescriptorKind::TcpListener => 1,
             DescriptorKind::UnixListener => 2,
             DescriptorKind::Opaque => 3,
+            DescriptorKind::DatagramListener => 4,
+            DescriptorKind::QuicListener => 5,
         })?;
         encode_bind(encoder, slot.bind.as_ref())?;
         match slot.mode {
@@ -402,6 +412,20 @@ fn decode_manifest(payload: &[u8]) -> Result<DescriptorManifest, ControlProtocol
         });
     }
     let mut decoder = Decoder::new(payload);
+    let manifest_version = decoder.u16()?;
+    if manifest_version != DESCRIPTOR_MANIFEST_VERSION {
+        return Err(ControlProtocolError::ManifestVersionMismatch {
+            expected: DESCRIPTOR_MANIFEST_VERSION,
+            actual: manifest_version,
+        });
+    }
+    let encoded_capabilities = decoder.u16()?;
+    let capabilities = DescriptorCapabilities::from_bits(encoded_capabilities).ok_or(
+        ControlProtocolError::UnsupportedCapabilities {
+            required: encoded_capabilities,
+            supported: SUPPORTED_DESCRIPTOR_CAPABILITIES.bits(),
+        },
+    )?;
     let slot_count = usize::from(decoder.u16()?);
     if slot_count > MAX_DESCRIPTOR_COUNT {
         return Err(ControlProtocolError::InvalidPayload);
@@ -429,6 +453,8 @@ fn decode_manifest(payload: &[u8]) -> Result<DescriptorManifest, ControlProtocol
             1 => DescriptorKind::TcpListener,
             2 => DescriptorKind::UnixListener,
             3 => DescriptorKind::Opaque,
+            4 => DescriptorKind::DatagramListener,
+            5 => DescriptorKind::QuicListener,
             _ => return Err(ControlProtocolError::InvalidPayload),
         };
         let bind = decode_bind(&mut decoder)?;
@@ -446,7 +472,17 @@ fn decode_manifest(payload: &[u8]) -> Result<DescriptorManifest, ControlProtocol
         });
     }
     decoder.finish()?;
-    Ok(DescriptorManifest::new(slots)?)
+    let manifest = DescriptorManifest::new(slots)?;
+    if manifest.capabilities() != capabilities {
+        return Err(ControlProtocolError::InvalidPayload);
+    }
+    if !SUPPORTED_DESCRIPTOR_CAPABILITIES.contains(capabilities) {
+        return Err(ControlProtocolError::UnsupportedCapabilities {
+            required: capabilities.bits(),
+            supported: SUPPORTED_DESCRIPTOR_CAPABILITIES.bits(),
+        });
+    }
+    Ok(manifest)
 }
 
 fn decode_bind(decoder: &mut Decoder<'_>) -> Result<Option<BindIdentity>, ControlProtocolError> {
@@ -629,6 +665,12 @@ pub enum ControlProtocolError {
     /// Payload protocol version did not match.
     #[error("control protocol version {actual} does not match {expected}")]
     VersionMismatch { expected: u16, actual: u16 },
+    /// Typed descriptor manifest version did not match.
+    #[error("descriptor manifest version {actual} does not match {expected}")]
+    ManifestVersionMismatch { expected: u16, actual: u16 },
+    /// Typed descriptor capabilities were not implemented by this worker.
+    #[error("descriptor capabilities {required:#x} exceed worker capabilities {supported:#x}")]
+    UnsupportedCapabilities { required: u16, supported: u16 },
     /// Message type is not part of this protocol.
     #[error("unexpected control message type {0}")]
     UnexpectedMessage(u16),
@@ -689,9 +731,65 @@ mod tests {
 
     #[test]
     fn binary_manifest_rejects_slot_count_before_reserving() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&DESCRIPTOR_MANIFEST_VERSION.to_be_bytes());
+        payload.extend_from_slice(&0_u16.to_be_bytes());
+        payload.extend_from_slice(&u16::MAX.to_be_bytes());
         assert!(matches!(
-            decode_manifest(&u16::MAX.to_be_bytes()),
+            decode_manifest(&payload),
             Err(ControlProtocolError::InvalidPayload)
+        ));
+    }
+
+    #[test]
+    fn binary_manifest_rejects_an_unknown_manifest_version() {
+        assert!(matches!(
+            decode_manifest(&[0, 2, 0, 0, 0, 0]),
+            Err(ControlProtocolError::ManifestVersionMismatch {
+                expected: DESCRIPTOR_MANIFEST_VERSION,
+                actual: 2,
+            })
+        ));
+    }
+
+    #[test]
+    fn binary_manifest_rejects_capability_metadata_that_does_not_match_slots() {
+        let manifest = DescriptorManifest::new(vec![DescriptorSlot {
+            id: SlotId(1),
+            role: DescriptorRole::Traffic("udp".into()),
+            kind: DescriptorKind::DatagramListener,
+            bind: Some(BindIdentity::Tcp("127.0.0.1:9999".parse().unwrap())),
+            mode: None,
+        }])
+        .unwrap();
+        let mut payload = encode_adopt_request(1, &manifest).unwrap();
+        payload[PREFIX_SIZE + 2..PREFIX_SIZE + 4]
+            .copy_from_slice(&DescriptorCapabilities::STREAM.bits().to_be_bytes());
+        assert!(matches!(
+            decode_manifest(&payload[PREFIX_SIZE..]),
+            Err(ControlProtocolError::InvalidPayload)
+        ));
+    }
+
+    #[test]
+    fn binary_manifest_rejects_quic_before_worker_support_is_enabled() {
+        let manifest = DescriptorManifest::new(vec![DescriptorSlot {
+            id: SlotId(1),
+            role: DescriptorRole::Traffic("h3".into()),
+            kind: DescriptorKind::QuicListener,
+            bind: Some(BindIdentity::Tcp("127.0.0.1:9999".parse().unwrap())),
+            mode: None,
+        }])
+        .unwrap();
+        let payload = encode_adopt_request(1, &manifest).unwrap();
+
+        assert!(matches!(
+            decode_manifest(&payload[PREFIX_SIZE..]),
+            Err(ControlProtocolError::UnsupportedCapabilities {
+                required,
+                supported,
+            }) if required == DescriptorCapabilities::QUIC.bits()
+                && supported == SUPPORTED_DESCRIPTOR_CAPABILITIES.bits()
         ));
     }
 

@@ -3,7 +3,7 @@
 use std::{
     fs,
     io::{Read, Write},
-    net::{Ipv4Addr, SocketAddr, TcpStream},
+    net::{Ipv4Addr, SocketAddr, TcpStream, UdpSocket as StdUdpSocket},
     os::{fd::AsRawFd as _, unix::net::UnixStream},
     path::{Path, PathBuf},
     process::Command,
@@ -12,8 +12,9 @@ use std::{
 };
 
 use oxiroute_config::{
-    Config, HttpPathSelector, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpService, Listener,
-    ListenerBind, Protocol,
+    Config, DownstreamTimeoutPolicy, HttpPathSelector, HttpRoute, HttpRouteAction, HttpRoutePolicy,
+    HttpService, L4Service, Listener, ListenerBind, Protocol, UpstreamAlgorithm,
+    UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool,
 };
 use oxiroute_config_source::{ConfigFormat, render_config};
 use oxiroute_server::{
@@ -337,6 +338,64 @@ fn supervised_worker_serves_tcp_and_unix_http_from_transferred_descriptors() {
         !marker.exists(),
         "master did not clean up its namespace marker"
     );
+}
+
+#[test]
+fn supervised_worker_adopts_udp_and_reports_datagram_status() {
+    let directory = tempfile::tempdir().expect("supervised UDP fixture directory");
+    let upstream = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("UDP upstream");
+    upstream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("UDP upstream timeout");
+    let upstream_address = upstream.local_addr().expect("UDP upstream address");
+    let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .expect("UDP listener probe")
+        .local_addr()
+        .expect("UDP listener address");
+    let config = udp_only_config(listener_address, upstream_address);
+    let path = directory.path().join("oxiroute.kdl");
+    fs::write(
+        &path,
+        render_config(ConfigFormat::Kdl, &config).expect("render UDP config"),
+    )
+    .expect("write UDP config");
+    let mut harness = Harness::launch_at(&path, canonical_revision(&path), false);
+
+    harness.poll_until(MasterState::Running);
+    let status = harness
+        .master
+        .worker_status(WorkerRole::Active)
+        .expect("active UDP worker status");
+    assert_eq!(status.listeners.len(), 1);
+    assert_eq!(status.listeners[0].name, "relay");
+    assert_eq!(status.listeners[0].protocol, "udp");
+    assert_eq!(
+        status.listeners[0].state,
+        oxiroute_supervisor_master::WorkerListenerState::Listening
+    );
+
+    let client = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("UDP client");
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("UDP client timeout");
+    client
+        .send_to(b"supervised-udp", listener_address)
+        .expect("send UDP datagram");
+    let mut buffer = [0_u8; 128];
+    let (length, peer) = upstream.recv_from(&mut buffer).expect("receive upstream datagram");
+    assert_eq!(&buffer[..length], b"supervised-udp");
+    upstream
+        .send_to(b"supervised-response", peer)
+        .expect("send upstream response");
+    let (length, _) = client.recv_from(&mut buffer).expect("receive UDP response");
+    assert_eq!(&buffer[..length], b"supervised-response");
+
+    assert!(matches!(
+        harness.master.shutdown(Instant::now()).expect("shutdown"),
+        ShutdownProgress::Pending { .. }
+    ));
+    harness.poll_until(MasterState::Stopped);
+    harness.verify_reaped();
 }
 
 #[test]
@@ -671,6 +730,57 @@ fn listeners_only_config(tcp_address: SocketAddr, unix_path: PathBuf) -> Config 
         forward_proxy_services: Vec::new(),
         rtmp_services: Vec::new(),
         l4_services: Vec::new(),
+    }
+}
+
+fn udp_only_config(listener_address: SocketAddr, upstream_address: SocketAddr) -> Config {
+    Config {
+        version: 1,
+        max_connections: None,
+        management: None,
+        stats: None,
+        certificates: Vec::new(),
+        tls_profiles: Vec::new(),
+        listeners: vec![Listener {
+            name: "relay".into(),
+            bind: ListenerBind::Udp {
+                address: listener_address,
+            },
+            protocol: Protocol::Udp,
+            service: Some("relay".into()),
+            tls_profile: None,
+            proxy_protocol: None,
+            max_connections: Some(8),
+            downstream_timeouts: DownstreamTimeoutPolicy::default(),
+        }],
+        cache_stores: Vec::new(),
+        upstream_pools: vec![UpstreamPool {
+            name: "upstream".into(),
+            servers: Vec::new(),
+            endpoints: vec![UpstreamEndpoint::Socket {
+                address: upstream_address,
+            }],
+            algorithm: UpstreamAlgorithm::RoundRobin,
+            health_check: None,
+            tls: None,
+            http_versions: oxiroute_config::HttpVersionPolicy::default(),
+            queue_timeout_ms: None,
+            connect_timeout_ms: None,
+            server_timeout_ms: None,
+            connection_reuse: UpstreamConnectionReuse::default(),
+        }],
+        http_services: Vec::new(),
+        forward_proxy_services: Vec::new(),
+        rtmp_services: Vec::new(),
+        l4_services: vec![L4Service {
+            name: "relay".into(),
+            upstream_pool: "upstream".into(),
+            connect_timeout_ms: 1_000,
+            idle_timeout_ms: 10_000,
+            lifetime_timeout_ms: Some(30_000),
+            proxy_protocol: None,
+            udp: Some(oxiroute_config::UdpPolicy::default()),
+        }],
     }
 }
 

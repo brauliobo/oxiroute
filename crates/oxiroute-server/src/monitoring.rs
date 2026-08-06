@@ -564,6 +564,14 @@ pub struct RuntimeMetrics {
     inner: Arc<RuntimeMetricsInner>,
 }
 
+/// Process execution mode reported by the management capability surface.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeMode {
+    Direct,
+    Supervised,
+}
+
 struct RuntimeMetricsInner {
     process_admission: Arc<ProcessAdmissionState>,
     process_runtime: ProcessRuntime,
@@ -587,12 +595,23 @@ struct ProcessRuntimeInner {
     listeners: Mutex<HashMap<String, Arc<SharedListenerMetricsState>>>,
     transport_operations: Arc<TransportOperationsState>,
     access_records: Arc<Mutex<VecDeque<AccessRecord>>>,
+    mode: RuntimeMode,
     started_at: Instant,
 }
 
 impl ProcessRuntime {
     #[must_use]
     pub fn new(max_connections: Option<u64>) -> Self {
+        Self::with_mode(max_connections, RuntimeMode::Direct)
+    }
+
+    /// Creates process metrics for a worker using authenticated listener adoption.
+    #[must_use]
+    pub fn supervised(max_connections: Option<u64>) -> Self {
+        Self::with_mode(max_connections, RuntimeMode::Supervised)
+    }
+
+    fn with_mode(max_connections: Option<u64>, mode: RuntimeMode) -> Self {
         Self {
             inner: Arc::new(ProcessRuntimeInner {
                 admission: Arc::new(ProcessAdmissionState::new(max_connections)),
@@ -601,6 +620,7 @@ impl ProcessRuntime {
                 access_records: Arc::new(Mutex::new(VecDeque::with_capacity(
                     ACCESS_RECORD_CAPACITY,
                 ))),
+                mode,
                 started_at: Instant::now(),
             }),
         }
@@ -644,6 +664,11 @@ impl ProcessRuntime {
             .iter()
             .cloned()
             .collect())
+    }
+
+    #[must_use]
+    pub fn mode(&self) -> RuntimeMode {
+        self.inner.mode
     }
 }
 
@@ -705,6 +730,12 @@ impl RuntimeMetrics {
                 generation_started_at: Instant::now(),
             }),
         }
+    }
+
+    /// Returns whether this process is serving directly or through the supervisor.
+    #[must_use]
+    pub fn supervision_mode(&self) -> RuntimeMode {
+        self.inner.process_runtime.mode()
     }
 
     pub(crate) fn activate_limits(&self, max_connections: Option<u64>) {

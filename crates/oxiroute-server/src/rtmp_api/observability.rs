@@ -100,7 +100,7 @@ fn status_response(
                 "directFiles": runtime.direct_file_certificates,
             },
             "audit": audit,
-            "capabilities": crate::http3::capability_snapshot(&listeners),
+            "capabilities": crate::http3::capability_snapshot(&listeners, metrics.supervision_mode()),
             "listeners": listeners,
             "tlsProfiles": tls_profiles,
         }),
@@ -126,7 +126,10 @@ fn generation_component_status(
 fn capabilities_response(metrics: &RuntimeMetrics) -> ApiResponse {
     match metrics.snapshot() {
         Ok(runtime) => {
-            ApiResponse::json(200, &crate::http3::capability_snapshot(&runtime.listeners))
+            ApiResponse::json(
+                200,
+                &crate::http3::capability_snapshot(&runtime.listeners, metrics.supervision_mode()),
+            )
         }
         Err(_) => ApiResponse::error(
             503,

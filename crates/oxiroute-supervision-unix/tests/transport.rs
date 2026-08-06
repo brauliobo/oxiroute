@@ -12,7 +12,8 @@ use std::{
 
 use oxiroute_supervision::GenerationId;
 use oxiroute_supervision_unix::{
-    BindIdentity, DescriptorError, DescriptorKind, DescriptorManifest, DescriptorRole,
+    BindIdentity, DescriptorCapabilities, DescriptorError, DescriptorKind, DescriptorManifest,
+    DescriptorRole,
     DescriptorSet, DescriptorSlot, FRAME_HEADER_SIZE, FrameFlags, InstanceToken,
     MAX_DESCRIPTOR_COUNT, MAX_FRAME_SIZE, MAX_PAYLOAD_SIZE, MessageType, SeqpacketEndpoint, SlotId,
     SpawnHandshakeNonce, TransportError,
@@ -236,6 +237,54 @@ fn transfers_tcp_and_unix_listeners_with_cloexec_and_consume_once_slots() {
             Err(error) => panic!("Unix accept failed: {error}"),
         }
     }
+}
+
+#[test]
+fn transfers_typed_datagram_and_quic_listeners_with_exact_bind_identity() {
+    let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
+    udp.set_nonblocking(true).unwrap();
+    let quic = UdpSocket::bind("127.0.0.1:0").unwrap();
+    quic.set_nonblocking(true).unwrap();
+    let udp_address = udp.local_addr().unwrap();
+    let quic_address = quic.local_addr().unwrap();
+    let manifest = DescriptorManifest::new(vec![
+        DescriptorSlot {
+            id: SlotId(21),
+            role: DescriptorRole::Traffic("udp".into()),
+            kind: DescriptorKind::DatagramListener,
+            bind: Some(BindIdentity::Tcp(udp_address)),
+            mode: None,
+        },
+        DescriptorSlot {
+            id: SlotId(22),
+            role: DescriptorRole::Traffic("quic".into()),
+            kind: DescriptorKind::QuicListener,
+            bind: Some(BindIdentity::Tcp(quic_address)),
+            mode: None,
+        },
+    ])
+    .unwrap();
+    assert!(manifest.capabilities().contains(DescriptorCapabilities::DATAGRAM));
+    assert!(manifest.capabilities().contains(DescriptorCapabilities::QUIC));
+
+    let (mut sender, mut receiver) = SeqpacketEndpoint::pair().unwrap();
+    sender
+        .send(
+            MessageType(3),
+            FrameFlags::default(),
+            INSTANCE,
+            GenerationId(5),
+            b"datagram manifest",
+            &[udp.as_fd(), quic.as_fd()],
+        )
+        .unwrap();
+    let descriptors = receiver.receive().unwrap().into_parts().2;
+    let mut set = DescriptorSet::new(&manifest, descriptors).unwrap();
+    let adopted_udp = UdpSocket::from(set.take(SlotId(21)).unwrap());
+    let adopted_quic = UdpSocket::from(set.take(SlotId(22)).unwrap());
+    assert_eq!(adopted_udp.local_addr().unwrap(), udp_address);
+    assert_eq!(adopted_quic.local_addr().unwrap(), quic_address);
+    assert_eq!(set.remaining(), 0);
 }
 
 #[test]
