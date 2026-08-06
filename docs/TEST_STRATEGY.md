@@ -161,7 +161,8 @@ redispatch`, and `preserves and edits imported statistics pages and compatibilit
 save`.
 
 The configuration editor suite also covers bounded weighted-round-robin weight editing, including
-validation, server add/remove alignment, and algorithm switching.
+validation, server add/remove alignment, and algorithm switching, plus the bounded RTMP relay DNS
+refresh control.
 
 nginx HTTP conformance uses the explicit fragment API. Tests reject complete nginx files, require
 exact response-control suppression before proxy finalization, preserve nginx hide/pass defaults,

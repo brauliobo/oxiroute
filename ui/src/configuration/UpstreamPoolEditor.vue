@@ -33,10 +33,7 @@ fieldset.route-list.endpoint-editor(data-field="upstream_pools[].servers")
       @update:endpoint="replaceEndpoint(serverIndex, $event)"
       @remove="removeServer(serverIndex)"
     )
-    label.field.weight-field(
-      v-if="weightedRoundRobin"
-      data-field="upstream_pools[].algorithm<weighted_round_robin>.weights[]"
-    )
+    label.field.weight-field(v-if="weightedRoundRobin")
       span Server weight
       input(
         :value="weightFor(serverIndex)"

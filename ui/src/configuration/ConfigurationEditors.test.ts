@@ -100,7 +100,7 @@ describe('configuration editor fields', () => {
     }
     const wrapper = mount(UpstreamPoolEditor, { props: { pool, l4Services: [] } })
 
-    const weights = wrapper.findAll('[data-field^="upstream_pools[].algorithm<weighted_round_robin>.weights"] input')
+    const weights = wrapper.findAll('.weight-field input')
     expect(weights).toHaveLength(2)
     expect(weights[0]?.attributes()).toMatchObject({ min: '1', max: '100', step: '1' })
 
@@ -117,7 +117,7 @@ describe('configuration editor fields', () => {
     expect(pool.algorithm).toEqual({ type: 'weighted_round_robin', weights: [1, 1] })
 
     await wrapper.get('[data-field="upstream_pools[].algorithm"] select').setValue('round_robin')
-    expect(wrapper.findAll('[data-field^="upstream_pools[].algorithm<weighted_round_robin>.weights"]').length).toBe(0)
+    expect(wrapper.findAll('.weight-field input')).toHaveLength(0)
     expect(pool.algorithm).toBe('round_robin')
   })
 })
