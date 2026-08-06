@@ -17,6 +17,7 @@ use http::{
 };
 use oxiroute_config::{
     canonicalize_http_path, HealthStartup, HttpHostSelector, HttpPathSelector, UpstreamAlgorithm,
+    PassiveHealthPolicy as ConfigPassiveHealthPolicy, PassiveObserve, PassiveOnError,
     UpstreamEndpoint,
 };
 use serde::{Deserialize, Serialize, Serializer};
@@ -584,6 +585,11 @@ pub struct PassiveFailurePolicy {
     pub consecutive_failure_threshold: u16,
     pub initial_ejection_duration: Duration,
     pub max_ejection_duration: Duration,
+    pub observe: PassiveObserve,
+    pub on_error: PassiveOnError,
+    pub mark_down: bool,
+    pub mark_up: bool,
+    pub recovery_threshold: u16,
 }
 
 impl PassiveFailurePolicy {
@@ -597,7 +603,42 @@ impl PassiveFailurePolicy {
             consecutive_failure_threshold,
             initial_ejection_duration,
             max_ejection_duration,
+            observe: PassiveObserve::Layer7,
+            on_error: PassiveOnError::Count,
+            mark_down: false,
+            mark_up: false,
+            recovery_threshold: 1,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn from_config(policy: &ConfigPassiveHealthPolicy) -> Self {
+        Self {
+            consecutive_failure_threshold: match policy.on_error {
+                PassiveOnError::Count | PassiveOnError::MarkDown => policy.error_limit,
+                PassiveOnError::Immediately => 1,
+            },
+            initial_ejection_duration: Duration::from_millis(policy.initial_backoff_ms),
+            max_ejection_duration: Duration::from_millis(policy.max_backoff_ms),
+            observe: policy.observe,
+            on_error: policy.on_error,
+            mark_down: policy.mark_down,
+            mark_up: policy.mark_up,
+            recovery_threshold: policy.recovery_threshold,
+        }
+    }
+
+    fn observes(self, failure: HealthFailure) -> bool {
+        match self.observe {
+            PassiveObserve::Layer4 => {
+                matches!(failure, HealthFailure::ConnectFailed | HealthFailure::Timeout)
+            }
+            PassiveObserve::Layer7 => true,
+        }
+    }
+
+    fn marks_down(self) -> bool {
+        self.mark_down || matches!(self.on_error, PassiveOnError::MarkDown)
     }
 
     fn validate(self) -> Result<(), PoolError> {
@@ -621,6 +662,11 @@ impl PassiveFailurePolicy {
         if self.max_ejection_duration > MAX_PASSIVE_EJECTION_DURATION {
             return Err(PoolError::InvalidPassivePolicy {
                 detail: "maximum ejection duration must not exceed 24 hours",
+            });
+        }
+        if self.recovery_threshold == 0 || self.recovery_threshold > MAX_PASSIVE_FAILURE_THRESHOLD {
+            return Err(PoolError::InvalidPassivePolicy {
+                detail: "recovery threshold must be between 1 and 100",
             });
         }
         Ok(())
@@ -945,6 +991,7 @@ impl PoolEndpoint {
         at_unix_ms: Option<u64>,
         healthy_threshold: u16,
         unhealthy_threshold: u16,
+        passive_policy: PassiveFailurePolicy,
     ) -> HealthUpdate {
         if let Some(at_unix_ms) = at_unix_ms {
             self.last_checked_at_unix_ms
@@ -1003,8 +1050,12 @@ impl PoolEndpoint {
         };
         let passive_recovery = healthy
             .then_some(consecutive)
-            .filter(|consecutive| *consecutive >= u64::from(healthy_threshold))
-            .and_then(|_| self.recover_passive(at_unix_ms.unwrap_or_else(now_unix_ms)));
+            .filter(|consecutive| {
+                *consecutive >= u64::from(healthy_threshold.max(passive_policy.recovery_threshold))
+            })
+            .and_then(|_| {
+                self.recover_passive(at_unix_ms.unwrap_or_else(now_unix_ms), passive_policy)
+            });
         HealthUpdate {
             transition,
             passive_recovery,
@@ -1017,6 +1068,9 @@ impl PoolEndpoint {
         at_unix_ms: u64,
         policy: PassiveFailurePolicy,
     ) -> Option<PassiveEjection> {
+        if !policy.observes(failure) {
+            return None;
+        }
         let failure_count = increment_saturating(&self.passive_failure_count);
         let consecutive = increment_saturating(&self.passive_consecutive_failures);
         self.passive_last_failure
@@ -1039,6 +1093,16 @@ impl PoolEndpoint {
             .store(at_unix_ms, Ordering::Relaxed);
         self.passive_ejection_until_unix_ms
             .store(ejection_until_unix_ms, Ordering::Release);
+        if policy.marks_down() {
+            let previous = EndpointHealthState::from_u8(
+                self.state
+                    .swap(EndpointHealthState::Unhealthy as u8, Ordering::AcqRel),
+            );
+            if previous != EndpointHealthState::Unhealthy {
+                self.last_transition_at_unix_ms
+                    .store(at_unix_ms, Ordering::Relaxed);
+            }
+        }
         Some(PassiveEjection {
             reason: failure,
             failure_count,
@@ -1048,7 +1112,11 @@ impl PoolEndpoint {
         })
     }
 
-    fn recover_passive(&self, at_unix_ms: u64) -> Option<PassiveRecovery> {
+    fn recover_passive(
+        &self,
+        at_unix_ms: u64,
+        policy: PassiveFailurePolicy,
+    ) -> Option<PassiveRecovery> {
         if !self.passive_ejected.swap(false, Ordering::AcqRel) {
             return None;
         }
@@ -1058,6 +1126,16 @@ impl PoolEndpoint {
         self.passive_backoff_step.store(0, Ordering::Relaxed);
         self.passive_last_recovery_at_unix_ms
             .store(at_unix_ms, Ordering::Relaxed);
+        if policy.mark_up {
+            let previous = EndpointHealthState::from_u8(
+                self.state
+                    .swap(EndpointHealthState::Healthy as u8, Ordering::AcqRel),
+            );
+            if previous != EndpointHealthState::Healthy {
+                self.last_transition_at_unix_ms
+                    .store(at_unix_ms, Ordering::Relaxed);
+            }
+        }
         Some(PassiveRecovery {
             reason: HealthFailure::from_u8(self.passive_last_failure.load(Ordering::Relaxed)),
             recovery_count,
@@ -1352,6 +1430,7 @@ impl PoolHealthState {
                 at_unix_ms,
                 healthy_threshold,
                 unhealthy_threshold,
+                self.passive_policy,
             );
             self.health_version.fetch_add(1, Ordering::Release);
             update
@@ -4193,6 +4272,56 @@ mod tests {
             pool.select().expect("expired endpoint").server_name(),
             "only"
         );
+    }
+
+    #[test]
+    fn configured_passive_observation_filters_layer_seven_failures() {
+        let mut policy = PassiveFailurePolicy::from_config(&oxiroute_config::PassiveHealthPolicy {
+            observe: PassiveObserve::Layer4,
+            on_error: PassiveOnError::Immediately,
+            ..oxiroute_config::PassiveHealthPolicy::default()
+        });
+        policy.initial_ejection_duration = Duration::from_secs(60);
+        policy.max_ejection_duration = Duration::from_secs(60);
+        let pool = RoundRobinPool::new_named_servers_with_policy(
+            "passive-observe".into(),
+            [runtime_server("only", 3000, None)],
+            UpstreamAlgorithm::First,
+            Some(HealthStartup::Healthy),
+            None,
+            policy,
+        )
+        .expect("passive observe pool");
+
+        pool.record_passive_failure_at(0, HealthFailure::ProtocolError, now_unix_ms());
+        assert!(!pool.health_snapshot().endpoints[0].passive_ejected);
+        pool.record_passive_failure_at(0, HealthFailure::ConnectFailed, now_unix_ms());
+        assert!(pool.health_snapshot().endpoints[0].passive_ejected);
+    }
+
+    #[test]
+    fn configured_mark_down_honors_the_error_limit_before_ejecting() {
+        let policy = PassiveFailurePolicy::from_config(&oxiroute_config::PassiveHealthPolicy {
+            on_error: PassiveOnError::MarkDown,
+            error_limit: 2,
+            ..oxiroute_config::PassiveHealthPolicy::default()
+        });
+        let pool = RoundRobinPool::new_named_servers_with_policy(
+            "passive-mark-down".into(),
+            [runtime_server("only", 3000, None)],
+            UpstreamAlgorithm::First,
+            Some(HealthStartup::Healthy),
+            None,
+            policy,
+        )
+        .expect("passive mark-down pool");
+
+        pool.record_passive_failure_at(0, HealthFailure::ConnectFailed, now_unix_ms());
+        assert!(!pool.health_snapshot().endpoints[0].passive_ejected);
+        pool.record_passive_failure_at(0, HealthFailure::ConnectFailed, now_unix_ms());
+        let endpoint = &pool.health_snapshot().endpoints[0];
+        assert!(endpoint.passive_ejected);
+        assert_eq!(endpoint.state, EndpointHealthState::Unhealthy);
     }
 
     #[test]

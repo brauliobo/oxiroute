@@ -592,7 +592,7 @@ impl RuntimePlan {
 ///
 /// Returns an error when a pool, route, reference, or health probe cannot be compiled.
 pub fn runtime_plan(config: &Config) -> Result<RuntimePlan, ServicePlanError> {
-    runtime_plan_with_passive_failure_policy(config, PassiveFailurePolicy::default())
+    runtime_plan_with_passive_failure_policy_internal(config, None)
 }
 
 /// Compiles one immutable runtime generation with an explicit passive endpoint policy.
@@ -604,6 +604,13 @@ pub fn runtime_plan(config: &Config) -> Result<RuntimePlan, ServicePlanError> {
 pub fn runtime_plan_with_passive_failure_policy(
     config: &Config,
     passive_policy: PassiveFailurePolicy,
+) -> Result<RuntimePlan, ServicePlanError> {
+    runtime_plan_with_passive_failure_policy_internal(config, Some(passive_policy))
+}
+
+fn runtime_plan_with_passive_failure_policy_internal(
+    config: &Config,
+    passive_policy: Option<PassiveFailurePolicy>,
 ) -> Result<RuntimePlan, ServicePlanError> {
     reject_unimplemented_runtime_policies(config)?;
     let mut config = config.clone();
@@ -721,7 +728,7 @@ struct CompiledPools {
 )]
 fn compile_pools(
     config: &Config,
-    passive_policy: PassiveFailurePolicy,
+    passive_policy_override: Option<PassiveFailurePolicy>,
 ) -> Result<CompiledPools, ServicePlanError> {
     let protected_addresses: Arc<[std::net::SocketAddr]> = config
         .management
@@ -739,6 +746,12 @@ fn compile_pools(
     let mut health_groups = Vec::new();
     let mut ordered = Vec::with_capacity(config.upstream_pools.len());
     for pool in &config.upstream_pools {
+        let passive_policy = passive_policy_override.unwrap_or_else(|| {
+            pool.passive_health
+                .as_ref()
+                .map(PassiveFailurePolicy::from_config)
+                .unwrap_or_default()
+        });
         let servers = pool
             .servers
             .iter()
