@@ -26,10 +26,16 @@ when `cargo-fuzz` or nightly Rust is unavailable.
 | `rtmp_handshake` | Incremental public `rml_rtmp` handshake parser | 128 KiB |
 | `rtmp_chunk` | Bounded `rml_rtmp` chunk and message decoding, including AMF message forms | 256 KiB |
 | `rtmp_amf` | Direct AMF0 and RTMP AMF message decoding | 32 KiB |
+| `proxy_protocol` | Public PROXY v1/v2 stream parsing, encoding, and incremental acceptance | 128 KiB |
+| `udp_datagram` | Public PROXY v2 datagram-header parsing on bounded datagram inputs | 131,059 B |
+| `tls_client_hello` | Public rustls `ServerConnection` ClientHello parsing and resolver normalization | 64 KiB |
+| `http1` | Public Pingora HTTP/1 request/response parsing, normalization, and body framing | 128 KiB |
 
 Each parser receives a fresh state per input. The RTMP target limits are intentionally below the
 production protocol ceilings so a local smoke run remains bounded; the production parser limits
-remain the owning behavior.
+remain the owning behavior. Transport targets use only deterministic in-memory IO. PROXY stream
+acceptance and HTTP/1 sessions use bounded fragmented `tokio-test` streams; they never create a
+socket or connect to a peer.
 
 ## Commands
 
@@ -54,13 +60,17 @@ binary protocol seeds reviewable as text.
 
 ## Deliberate Gaps
 
-- UDP datagram parsing is unsupported because OxiRoute has no public UDP datagram parser; UDP is
-  currently a configuration/listener validation boundary rather than an active datagram path.
-- TLS ClientHello parsing is unsupported because the runtime delegates it to private Pingora/OpenSSL
-  integration and exposes no standalone public parser API.
-- PROXY protocol parsing is unsupported because no public OxiRoute PROXY protocol parser exists.
-- Full HTTP/1 wire parsing remains outside these targets because the runtime parser is owned by
-  Pingora/Hyper. The public target parser and over-read adapter are fuzzed directly without network
-  I/O.
+- `udp_datagram` covers the public PROXY v2 datagram-header parser on bounded datagram inputs only.
+  The UDP payload-limit enforcement, session table, admission policy, and private
+  `parse_initial_datagram` helper remain deliberate gaps rather than being exposed solely for
+  fuzzing.
+- `tls_client_hello` covers rustls's public ClientHello wire parser and the public SNI/ALPN resolver
+  view used by the HTTP/3 path. The TCP listener's private Pingora/OpenSSL ClientHello integration
+  is not claimed.
+- `proxy_protocol` covers the public v1/v2 parser, encoder, and incremental stream acceptor. It
+  does not claim daemon listener lifecycle, socket behavior, or source-address spoofing behavior.
+- `http1` covers Pingora's public HTTP/1 request and response sessions, header normalization, and
+  body/chunk framing over memory streams. It does not claim daemon application routing, connection
+  lifecycle, or socket-level wire interoperability.
 
-These gaps are recorded boundaries, not coverage claims.
+These boundaries are recorded limits, not coverage claims.
