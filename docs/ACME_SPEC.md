@@ -341,7 +341,9 @@ deployment/health, cleanup recovery, and categorical outcome/error fields. Retry
 phases remain available through the authenticated TLS inventory.
 
 Future metrics include active revision age, per-operation and directory-class totals, challenge
-attempt duration, retry counters, activation/rollback outcomes, and durable audit records.
+attempt duration, retry counters, and activation/rollback outcomes. Durable redacted audit records
+are already exposed through the separate management audit contract rather than treated as an ACME
+metric.
 
 Metric labels MUST not include unbounded token, order URL, serial, or full domain-set data.
 Audit events identify the certificate by configured stable name.

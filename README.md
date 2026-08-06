@@ -32,10 +32,10 @@ visual overview; the repository documents are the detailed, versioned contracts.
 OxiRoute is deliberately honest about the difference between a useful narrow slice and a product
 goal. These are the current building blocks:
 
-- **HTTP reverse proxy:** deterministic host/path/method routing, health-aware pools, round-robin and
-  least-connections selection, active TCP/HTTP checks, bounded connect-failure retries, request and
-  connection limits, WebSocket upgrades, downstream TLS, verified upstream TLS/SNI, and a tested
-  HTTP/2/gRPC slice.
+- **HTTP reverse proxy:** deterministic host/path/method routing, health-aware pools, round-robin,
+  weighted round-robin, and least-connections selection, active TCP/HTTP checks, bounded configurable
+  retries/passive health, request and connection limits, WebSocket upgrades, downstream TLS, verified
+  upstream TLS/SNI, and a tested HTTP/2/gRPC slice.
 - **Explicit forward proxy:** a narrow HTTP/1 absolute-form and CONNECT path with authentication,
   resolved-address destination policy, header privacy, bounded tunnels, and an opt-in bounded
   memory/persistent cache for eligible GET/HEAD requests. It is partial, not a general Squid
@@ -47,19 +47,20 @@ goal. These are the current building blocks:
   revision-checked configuration writes. KDL is the canonical current format; restricted Lua is a
   supported compatibility adapter, not the canonical format.
 - **Runtime observability:** loopback management API, topology graph, monitoring snapshots, Prometheus
-  metrics, readiness, bounded event polling, redacted HTTP JSONL access logs, HAProxy-oriented
-  statistics, and a responsive Vue 3/Pug dashboard.
+  metrics, readiness, bounded event polling, separate durable redacted audit history, redacted HTTP
+  JSONL access logs, HAProxy-oriented statistics, and a responsive Vue 3/Pug dashboard.
 - **RTMP live path:** publish/play, simple and complex handshakes, bounded fanout, keyframe gating,
   stream inventory, legacy AVC/AAC FLV recording, named continuous/manual recorder policies, bounded
-  HLS/DASH output, bounded VOD, same-daemon auto-push, isolated exec profiles, a fixed 8 MiB inbound
-  assembled-message ceiling, static push relay, and exact-ID bearer-protected local controls.
+  HLS/DASH output, bounded VOD, same-daemon auto-push, isolated exec profiles, a service-configured
+  inbound assembled-message ceiling up to 8 MiB, static push relay, and exact-ID bearer-protected
+  local controls.
 - **Native migration:** bounded nginx, HAProxy, Apache, Squid, and Varnish import/report/preview
   paths, with source provenance and blocking diagnostics rather than silent lossy conversion.
   Complete nginx roots can compose the strict nginx-RTMP subset into the canonical runtime through
   native references.
-- **Supervision foundations:** platform-neutral replacement state machines and a staged Linux master,
-  worker, and launcher path. The default public entry point remains direct `oxiroute serve` while the
-  supervised production path is gated.
+- **Supervision:** platform-neutral replacement state machines and a tested Linux master, worker, and
+  launcher slice for typed listener adoption. The default public entry point remains direct
+  `oxiroute serve` while packaged active-traffic supervised replacement is gated.
 
 ## Five-Minute Local Run
 
@@ -172,9 +173,9 @@ Use these labels consistently in issues, docs, and deployment decisions:
 
 The important current exclusions are:
 
-- No UDP relay or complete forward-proxy HTTP/2 runtime. The `http3` reverse listener and
-  `forward_http3` listener are active partial capabilities through separate bounded Quinn/H3
-  services; the forward HTTP/2 crate remains a foundation.
+- UDP relay remains partial, and there is no complete forward-proxy HTTP/2 runtime. The `http3`
+  reverse listener and `forward_http3` listener are active partial capabilities through separate
+  bounded Quinn/H3 services; the forward HTTP/2 crate remains a foundation.
 - HTTP caching is partial: bounded memory and persistent GET/HEAD caching, revalidation, collapsed
   fills, authenticated purge, and listener cache metrics are active for reverse HTTP and eligible
   HTTP/1 forward requests; broader conformance remains.

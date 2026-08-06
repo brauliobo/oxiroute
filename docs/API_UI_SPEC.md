@@ -72,7 +72,9 @@ stream/header/body limits, graceful `goAway`, explicit `unsupported: ["cache", "
 or never reached listening state.
 
 Native import routes and unbounded event streaming are not implemented. Bounded event polling and
-bounded SSE delivery are implemented over the same non-durable event ring. Recorder routes control configured `start = "manual"`
+bounded SSE delivery are implemented over the same non-durable event ring. Durable audit routes are
+implemented by the backend as a separate store, but the current frontend has no audit-history
+workspace. Recorder routes control configured `start = "manual"`
 workers in the active publisher incarnation and use the same bearer authorization as other
 recognized management routes.
 `capabilities.manual_recording` is true when the active config contains at least one manual
@@ -429,17 +431,18 @@ after transient failures, and expose loading/stale/error states. Manual controls
 and are available for configured manual recorder definitions on active publishers. The topology
 inspector exposes stable config paths and exact redacted attributes without recording roots.
 
-The configuration workspace keeps its bearer token only in page memory, exposes every current
-canonical field, validates through the server, renders the format-preserving backend preview and
-candidate topology for review, and saves with `If-Config-Revision` when the root is
+The configuration workspace keeps its bearer token only in page memory, exposes every field in the
+current frontend canonical-field registry, validates through the server, renders the format-preserving
+backend preview and candidate topology for review, and saves with `If-Config-Revision` when the root is
 non-compositional. It consumes `configPreview` and `configFormat` for KDL, Lua, HOCON, and UCI, and
 uses `compositional` plus `dependencyCount` to make compositional roots inspectable and
 server-validatable but read-only. It preserves dirty drafts across refresh failures and `409`
  conflicts. The save response distinguishes pending activation from restart-required Unix listener
   changes; generation status is authoritative for publication completion. The UI consumes bounded
   SSE for event-driven refresh and exposes the bounded event history, but neither the SSE ring nor
-  the frontend history is durable. Native import editing remains unavailable, and TLS-ALPN challenge
-  selection is not exposed by the current certificate editor.
+  the frontend history is durable. Durable audit history remains a backend/API surface. Native
+  import editing, weighted-round-robin weight editing, and TLS-ALPN challenge selection are not
+  exposed by the current frontend.
 
 ## File-change behavior
 

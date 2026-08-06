@@ -32,9 +32,9 @@ harnesses and the real-browser runner are checked in under `fuzz/`, `ui/tests/br
 - Certificate/TLS-profile decoding, DNS/path/cardinality bounds, references, ALPN policy, upstream
   SNI/custom-CA fields, HTTP version ranges, and TLS/health/L4 incompatibilities.
 - Route precedence including ASCII case-insensitive exact authority, health-state thresholds,
-  health-aware round-robin and least-connections
-  selection, deterministic lease ties/release, bounded ordered DNS address fallback shared by
-  probes and traffic, retries, and limits.
+  health-aware round-robin, weighted round-robin, and least-connections selection, deterministic
+  weighted distribution and lease ties/release, bounded ordered DNS address fallback shared by
+  probes and traffic, configurable retries/passive-health policy, and limits.
 - TCP timeout/half-close state and RTMP catalog, fanout, FLV, canonical recorder validation/rendering,
   path/store/worker/controller/reaper state, bounded reaper backpressure outside registry/controller
   locks, and continuous/manual publisher integration.
@@ -74,9 +74,10 @@ parser round trips, and long-running media/supervision properties remain planned
   completion-based endpoint schedules, and the shared concurrency bound.
 - Health-aware HTTP routing returns `503` for a matched pool with no selectable endpoint; monitoring
   tests cover pool/endpoint state, timestamps, failure reasons, and exact decimal-string counters.
-- Passive-health tests cover layer-4 versus layer-7 observation, bounded error thresholds, immediate
-  and mark-down ejection, recovery thresholds, immutable generation ownership, and Prometheus/event
-  observability without revoking an existing lease.
+- Passive-health tests cover canonical configuration bounds, layer-4 versus layer-7 observation,
+  bounded error thresholds, immediate and mark-down ejection, recovery thresholds, immutable
+  generation ownership, UI field editing, and Prometheus/event observability without revoking an
+  existing lease.
 - TCP full duplex, half-close, slow readers, backpressure, and cancellation.
 - TCP connect/idle/lifetime deadlines and partial traffic accounting across failure paths.
 - TLS SNI/ALPN, upstream verification, certificate rotation, and expiry. Client authentication
@@ -97,12 +98,14 @@ parser round trips, and long-running media/supervision properties remain planned
   nullable capacities, transport-qualified binds, pool algorithms, active leases, and
   non-overlapping polling.
 
-UDP relay behavior, supervised UDP/H3 adoption, active-traffic generation reload/drain breadth,
-richer native dependency watching, downstream client certificate authentication, and managed ACME
-live/staging integration remain gates rather than complete release evidence. Managed ACME protocol,
-state, bootstrap, TLS-ALPN cleanup, and scripted-transport paths are unit-tested. Canonical watcher
-activation, route authentication, bounded event polling, SSE reconnect/resync, RTMP statistics and
-session controls, and fixed RTMP assembled-message rejection are current tested paths.
+UDP relay behavior, packaged supervised UDP/H3 replacement under active traffic, active-traffic
+generation reload/drain breadth, richer native dependency watching, downstream client certificate
+authentication, and managed ACME live/staging integration remain gates rather than complete release
+evidence. Managed ACME protocol, state, bootstrap, TLS-ALPN cleanup, DNS cleanup recovery, and
+scripted-transport paths are unit-tested. Durable audit persistence/reopen/filter behavior is tested
+separately from the non-durable operational event ring. Canonical watcher activation, route
+authentication, bounded event polling, SSE reconnect/resync, RTMP statistics and session controls,
+and fixed RTMP assembled-message rejection are current tested paths.
 
 ### Import conformance
 
@@ -177,9 +180,9 @@ service behavior. Synthetic fixtures remain implementation evidence only.
 - H3 upstream unit/wire tests use an independent QUIC origin to assert TLS/SNI/`h3` negotiation,
   request bodies, safe response framing and trailers, no-ALPN rejection, bounded request/response
   admission, malformed input, cancellation, and disabled migration/0-RTT. Reverse H3 process tests
-  specify fixed/redirect/static/proxy responses, GOAWAY drain, reload, generation-owned UDP listener
-  release, exhaustion, malformed traffic, and no silent protocol fallback; passing active-traffic
-  drain evidence remains a gate.
+  implement and test fixed/redirect/static/proxy responses, generation-owned GOAWAY drain, reload,
+  generation-owned UDP listener release, exhaustion, malformed traffic, and no silent protocol
+  fallback; passing active-traffic drain evidence remains a gate.
 - Supervised process tests transfer authenticated typed TCP, Unix, UDP, and QUIC descriptors, verify
   close-on-exec ownership and worker status, exercise UDP relay and H3 wire serving, and cover
   generic replacement, rollback, drain, listener-start failure, and worker crash recovery; typed
@@ -217,9 +220,9 @@ Current Unix TLS/H2/gRPC coverage includes:
 
 Active-traffic reload/drain breadth, ACME CA-staging integration, downstream client authentication,
 H2 breadth, gRPC streaming/cancellation, fuzz/crash campaigns, and packaged supervised UDP/H3
-replacement remain release gates rather than complete coverage. The canonical watcher, live
-generation activation, bounded event polling, and SSE paths are implemented but do not by themselves
-close those broader gates.
+replacement under active traffic remain release gates rather than complete coverage. The canonical
+watcher, live generation activation, bounded event polling, SSE paths, and durable audit store are
+implemented but do not by themselves close those broader gates.
 
 ### Checked-in fuzzing
 
@@ -238,8 +241,10 @@ the required release checks.
 
 - Vue component tests cover bearer unlock/re-lock, current canonical-field editing, validation,
   Lua/candidate review, clean refresh, dirty-draft retention, revision conflicts, exact save
-  outcomes, navigation, RTMP statistics/session controls, certificate actions, event parsing, and
-  redaction. TLS-ALPN-01 is accepted by the backend schema but has no frontend challenge selector.
+  outcomes, navigation, RTMP statistics/session controls, passive-health/retry editing, certificate
+  actions, event parsing, and redaction. TLS-ALPN-01 is accepted by the backend schema but has no
+  frontend challenge selector; weighted-round-robin weights, native import editing, and durable
+  audit browsing are also backend/API or offline surfaces rather than current frontend workflows.
 - Monitoring component tests cover pool availability, endpoint state/check totals, exact counters,
   failure labels, empty-pool rendering, and retention after transient failures.
 - Component tests exercise mobile controls and keyboard navigation in jsdom.

@@ -339,8 +339,10 @@ Current constraints:
 - Server names and endpoints MUST both be unique after socket, DNS-name, and Unix-path normalization. A socket endpoint
   cannot directly target the loopback management endpoint because that would bypass its exposure
   boundary. Pools containing any Unix endpoint cannot enable upstream TLS or active health checks.
-- `algorithm` accepts `round_robin` (the default), `least_connections`, or `first`. All skip unavailable and
-  request-excluded servers. `first` chooses the first healthy administrative server with capacity.
+- `algorithm` accepts `round_robin` (the default), bounded `weighted_round_robin` with one weight
+  from 1 through 100 per server, `least_connections`, or `first`. All skip unavailable and
+  request-excluded servers. Weighted round-robin preserves server order and distributes turns by
+  the configured weights. `first` chooses the first healthy administrative server with capacity.
   Least-connections selects the eligible named server with the least active work and rotates
   deterministic ties from the pool cursor. A capacity permit is acquired before connection
   preparation and, for reusable HTTP, remains held by the physical upstream socket through idle
@@ -508,8 +510,9 @@ rendering emits only `servers`.
 The server runtime enforces aggregate/listener admission, Unix modes, downstream and route-local
 policies, nginx suffix routing, bounded headers/auth/cookies, static extensions, gzip and HTTP
 logging, named-server capacity and bounded queue waits, pool deadlines/reuse, startup/on-connect DNS,
-all three balancing algorithms, and the extended health policy. Buffering-on and active cache
-policies fail startup. RTMP relay/fanout controls and canonical named-recorder policies compile into
+all four balancing algorithms, configurable passive health, and the extended health policy.
+Buffering-on and active cache policies fail startup. RTMP relay/fanout controls and canonical
+named-recorder policies compile into
 the current runtime, including bounded HLS/DASH media, same-daemon auto-push, and isolated RTMP
 exec profiles; unsupported native RTMP semantics and enhanced codecs remain blocked. Importers
 remain separate adapters, except that finalized nginx/HAProxy/Apache/Squid/Varnish references can be
@@ -832,8 +835,9 @@ schema.
 ### Upstream pool
 
 - Protocol and endpoint list.
-- Endpoint weight, additional algorithms beyond round robin and least connections, passive health
-  policy, TLS, SNI, and verification.
+- Further endpoint-selection algorithms beyond the current `round_robin`, bounded
+  `weighted_round_robin`, `least_connections`, and `first` set; broader passive-health and
+  circuit-breaker behavior; TLS, SNI, and verification.
 - HTTP minimum and maximum versions.
 - Retry and circuit-breaker limits.
 
