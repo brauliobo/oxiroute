@@ -62,14 +62,16 @@ Squid, RTMP, or any native proxy product.
 - **Managed ACME: partial.** HTTP-01, bounded DNS-01/wildcard, and TLS-ALPN-01 lifecycle paths are
   implemented, including static exact-name provider registration, in-memory challenge certificates,
   redacted state, renewal, Renewal Information scheduling, durable DNS cleanup recovery, revocation,
-  rollover, and job controls. Provider deployment, live staging evidence, and the frontend's TLS-ALPN
-  challenge selector remain gaps.
+  rollover, and job controls. The frontend's TLS-ALPN challenge selector and listener-deployment
+  guidance are implemented; selecting the challenge does not deploy the required listener. Provider
+  deployment, listener deployment, and live CA-staging evidence remain open gates.
 - **Control plane/UI: partial.** The backend exposes certificate lifecycle, RTMP statistics and
   controls, bounded polling/SSE events, durable redacted audit history/status, native import reports,
   operations, and provenance; the Vue frontend exposes durable audit browsing, weighted-round-robin
   weight editing, native import report browsing, and the current configuration/control contracts.
-  Native-file editing and TLS-ALPN challenge selection remain backend/canonical-file capabilities
-  only, not frontend controls.
+  Native-file editing remains outside the frontend. TLS-ALPN challenge selection and
+  listener-deployment guidance are exposed as frontend controls, but selecting it does not deploy
+  the required listener; listener deployment and CA-staging evidence remain gates.
 - **Native import: partial.** Importers preserve provenance and fail closed for unsupported or lossy
   forms. No complete nginx, HAProxy, Squid, Varnish, Apache, or nginx-RTMP compatibility is claimed.
 

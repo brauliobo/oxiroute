@@ -76,8 +76,10 @@ Status: partial. The annotations below identify landed slices; Milestone 1 is no
   certificate configuration, operations, bounded events, audit history, native import reports, and
   source provenance (the current runtime observatory and canonical-field workspace are implemented;
   passive-health/retry controls, weighted-round-robin weight editing, and durable audit browsing are
-  exposed, while native source editing and TLS-ALPN challenge selection remain outside the frontend;
-  the event view remains the non-durable operational ring).
+  exposed. Native source editing remains outside the frontend; TLS-ALPN challenge selection and
+  listener-deployment guidance are exposed, but selection does not deploy the required listener.
+  Listener deployment and CA-staging evidence remain gates; the event view remains the non-durable
+  operational ring).
 
 The original Milestone 1 boundary explicitly excluded UDP, forward proxying, caching, HTTP/3,
 native config importers, transparent interception, firewall management, and remote multi-user
