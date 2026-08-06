@@ -7,6 +7,7 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use http::{
+    HeaderMap, HeaderName, HeaderValue, Method, StatusCode,
     header::{
         ACCEPT_RANGES, ALLOW, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE,
         CONTENT_TYPE, ETAG, HOST, IF_MATCH, IF_MODIFIED_SINCE, IF_NONE_MATCH, IF_RANGE,
@@ -14,7 +15,6 @@ use http::{
         RANGE, SERVER, SET_COOKIE, TE, TRAILER, TRANSFER_ENCODING, UPGRADE, WWW_AUTHENTICATE,
     },
     uri::Authority,
-    HeaderMap, HeaderName, HeaderValue, Method, StatusCode,
 };
 use log::warn;
 use oxiroute_acme::ChallengeStore;
@@ -23,20 +23,22 @@ use oxiroute_cache::{
     StoreOutcome, Validators,
 };
 use oxiroute_config::{
-    is_unambiguous_http_path, HttpGzipMinimumVersion, HttpProxyPathRewrite, HttpRedirectLocation,
-    HttpRetryTarget, HttpRetryTrigger, HttpSameSite, HttpUpstreamHost,
+    HttpGzipMinimumVersion, HttpProxyPathRewrite, HttpRedirectLocation, HttpRetryTarget,
+    HttpRetryTrigger, HttpSameSite, HttpUpstreamHost, is_unambiguous_http_path,
 };
 use pingora::{
+    Error, ErrorSource, ErrorType,
     modules::http::{HttpModule, HttpModuleBuilder, HttpModules, Module},
-    protocols::http::compression::{Algorithm, ResponseCompressionCtx},
     protocols::Digest,
+    protocols::http::compression::{Algorithm, ResponseCompressionCtx},
     proxy::{FailToProxy, PreparedUpstreamRequest, ProxyHttp, Session},
     upstreams::peer::HttpPeer,
-    Error, ErrorSource, ErrorType,
 };
 
 use crate::routing::EndpointObservation;
 use crate::{
+    GenerationReference, HealthFailure, HttpOperationResult, HttpServicePlan, ListenerMetrics,
+    RuntimeEndpoint, RuntimeGeneration, RuntimeReferenceKind,
     http_action::{
         CacheFill, CacheFillJoin, CacheRequest, HttpActionPlan, HttpCachePlan, HttpGzipPlan,
         HttpRoutePlan, ProxyPolicyPlan, RequestHeaderMutationPlan, RequestHeaderValuePlan,
@@ -44,10 +46,8 @@ use crate::{
     },
     monitoring::CacheEvent,
     upstream_peer::{
-        enforce_http_version, validate_tls_connection, SelectedEndpoint, UpstreamPlan,
+        SelectedEndpoint, UpstreamPlan, enforce_http_version, validate_tls_connection,
     },
-    GenerationReference, HealthFailure, HttpOperationResult, HttpServicePlan, ListenerMetrics,
-    RuntimeEndpoint, RuntimeGeneration, RuntimeReferenceKind,
 };
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
@@ -291,6 +291,12 @@ impl ProxyHttp for HttpReverseProxy {
         let write_timeout = session
             .get_write_timeout()
             .map_or(remaining, |timeout| timeout.min(remaining));
+        if session.is_http2() {
+            let read_timeout = session
+                .get_read_timeout()
+                .map_or(remaining, |timeout| timeout.min(remaining));
+            session.set_read_timeout(Some(read_timeout));
+        }
         session.set_total_drain_timeout(Some(remaining));
         session.set_write_timeout(Some(write_timeout));
         if let Some(response) = self.challenge_response(session) {
@@ -664,10 +670,12 @@ impl ProxyHttp for HttpReverseProxy {
             return Ok(());
         }
         let remaining = ctx.remaining(false)?;
-        if let Some(read_timeout) = session.get_read_timeout() {
-            session.set_read_timeout(Some(read_timeout.min(remaining)));
-        } else {
-            session.set_read_timeout(Some(remaining));
+        if session.is_http2() {
+            if let Some(read_timeout) = session.get_read_timeout() {
+                session.set_read_timeout(Some(read_timeout.min(remaining)));
+            } else {
+                session.set_read_timeout(Some(remaining));
+            }
         }
         if u64::try_from(session.body_bytes_read()).is_ok_and(|bytes| {
             ctx.route
@@ -3207,8 +3215,8 @@ mod tests {
         collections::HashMap,
         net::SocketAddr,
         sync::{
-            atomic::{AtomicUsize, Ordering},
             Arc,
+            atomic::{AtomicUsize, Ordering},
         },
         time::Duration,
     };
@@ -3235,8 +3243,7 @@ mod tests {
         )
         .expect("rewritten request URI");
         assert_eq!(
-            uri.path_and_query()
-                .map(http::uri::PathAndQuery::as_str),
+            uri.path_and_query().map(http::uri::PathAndQuery::as_str),
             Some("/v1/items?id=7")
         );
     }
@@ -3983,10 +3990,12 @@ mod tests {
 
         proxy.init_downstream_modules(&mut modules);
 
-        assert!(modules
-            .build_ctx()
-            .get::<pingora::modules::http::compression::ResponseCompression>()
-            .is_none());
+        assert!(
+            modules
+                .build_ctx()
+                .get::<pingora::modules::http::compression::ResponseCompression>()
+                .is_none()
+        );
     }
 
     #[tokio::test]
