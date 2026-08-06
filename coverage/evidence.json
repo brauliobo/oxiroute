@@ -176,7 +176,9 @@
       "id": "evidence.rtmp.session-policy",
       "tests": [
         "crates/oxiroute-rtmp/tests/session_policy.rs#inbound_wire_rejects_zero_and_over_limit_message_lengths_before_payload_allocation",
-        "crates/oxiroute-rtmp/tests/session_policy.rs#configured_inbound_message_and_ack_limits_are_applied_on_the_wire"
+        "crates/oxiroute-rtmp/tests/session_policy.rs#configured_inbound_message_and_ack_limits_are_applied_on_the_wire",
+        "crates/oxiroute-rtmp/tests/chunk_interop.rs#fragmented_input_round_trips_header_formats_zero_through_three",
+        "crates/oxiroute-rtmp/tests/chunk_interop.rs#fragmented_payload_and_extended_timestamp_round_trip"
       ]
     },
     {
