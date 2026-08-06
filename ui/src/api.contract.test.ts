@@ -4,6 +4,8 @@ import type { AddressInfo } from 'node:net'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import {
+  fetchAudit,
+  fetchAuditStatus,
   fetchConfig,
   fetchMonitoring,
   fetchTopology,
@@ -15,6 +17,7 @@ import {
   contractTopology,
   emptyConfigSnapshot,
 } from './test/contractFixtures'
+import { durableAuditPage, durableAuditStatus } from './test/managementFixtures'
 
 const token = 'contract-test-token'
 const responseOverrides = new Map<string, unknown>()
@@ -177,6 +180,32 @@ describe('API contracts over HTTP', () => {
     await expect(fetchTopology()).rejects.toThrow('invalid response payload')
     responseOverrides.clear()
   })
+
+  it('parses durable audit pages and status with bounded fixed fields', async () => {
+    const page = durableAuditPage()
+    Object.assign(page.records[0]!, { endpointAddress: '10.0.0.8:443', requestQuery: 'secret=value' })
+    const status = durableAuditStatus()
+    responseOverrides.set('GET /api/v1/audit?after=4&limit=2&category=control&result=succeeded', page)
+    responseOverrides.set('GET /api/v1/audit/status', status)
+
+    const parsed = await fetchAudit({ after: 4, limit: 2, category: 'control', result: 'succeeded' }, token)
+    expect(parsed.records).toEqual(durableAuditPage().records)
+    expect(JSON.stringify(parsed)).not.toContain('10.0.0.8')
+    expect(JSON.stringify(parsed)).not.toContain('secret=value')
+    await expect(fetchAuditStatus(token)).resolves.toEqual(status)
+    responseOverrides.clear()
+  })
+
+  it('rejects malformed durable audit records and persistence status', async () => {
+    const page = durableAuditPage()
+    page.records[0]!.actor = 42 as unknown as string
+    responseOverrides.set('GET /api/v1/audit?after=0&limit=100', page)
+    await expect(fetchAudit({ after: 0, limit: 100 }, token)).rejects.toThrow('invalid response payload')
+
+    responseOverrides.set('GET /api/v1/audit/status', { audit: { state: 'healthy', persistent: true } })
+    await expect(fetchAuditStatus(token)).rejects.toThrow('invalid response payload')
+    responseOverrides.clear()
+  })
 })
 
 function route(request: IncomingMessage, response: ServerResponse): void {
@@ -206,6 +235,8 @@ function route(request: IncomingMessage, response: ServerResponse): void {
   }
   if (request.method === 'GET' && path === '/api/v1/monitoring') return json(response, contractMonitoring())
   if (request.method === 'GET' && path === '/api/v1/topology') return json(response, contractTopology())
+  if (request.method === 'GET' && path === '/api/v1/audit/status') return json(response, durableAuditStatus())
+  if (request.method === 'GET' && path?.startsWith('/api/v1/audit?')) return json(response, durableAuditPage())
   json(response, { error: { code: 'route_not_found', message: 'route does not exist' } }, 404)
 }
 
