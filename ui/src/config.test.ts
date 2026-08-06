@@ -105,6 +105,15 @@ const currentCanonicalFields = [
   'upstream_pools[].health_check.unhealthy_threshold',
   'upstream_pools[].health_check.host',
   'upstream_pools[].health_check.path',
+  'upstream_pools[].passive_health',
+  'upstream_pools[].passive_health.observe',
+  'upstream_pools[].passive_health.on_error',
+  'upstream_pools[].passive_health.error_limit',
+  'upstream_pools[].passive_health.mark_down',
+  'upstream_pools[].passive_health.mark_up',
+  'upstream_pools[].passive_health.initial_backoff_ms',
+  'upstream_pools[].passive_health.max_backoff_ms',
+  'upstream_pools[].passive_health.recovery_threshold',
   'upstream_pools[].tls',
   'upstream_pools[].tls.server_name',
   'upstream_pools[].tls.ca_certificate_path',
@@ -353,6 +362,20 @@ describe('canonical field registry', () => {
     }
 
     expect(isCanonicalConfig(config)).toBe(true)
+    config.upstream_pools[0]!.passive_health = {
+      observe: 'layer7',
+      on_error: 'count',
+      error_limit: 3,
+      mark_down: false,
+      mark_up: false,
+      initial_backoff_ms: 30_000,
+      max_backoff_ms: 300_000,
+      recovery_threshold: 1,
+    }
+    expect(isCanonicalConfig(config)).toBe(true)
+    config.upstream_pools[0]!.passive_health.max_backoff_ms = 29_999
+    expect(isCanonicalConfig(config)).toBe(false)
+    config.upstream_pools[0]!.passive_health.max_backoff_ms = 300_000
     config.certificates[0]!.source = {
       type: 'self_signed_development',
       validity_days: 7,

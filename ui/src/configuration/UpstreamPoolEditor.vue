@@ -68,6 +68,42 @@ fieldset.object-block(data-field="upstream_pools[].health_check")
       label.field(data-field="upstream_pools[].health_check.path")
         span Probe path
         input(type="text" :value="pool.health_check.path ?? ''" @input="pool.health_check.path = nullableInput($event)")
+fieldset.object-block(data-field="upstream_pools[].passive_health")
+  legend Passive health
+  label.enable-row
+    input(type="checkbox" :checked="pool.passive_health !== null" @change="togglePassiveHealth")
+    span Enable passive health tracking
+  template(v-if="pool.passive_health")
+    .field-grid
+      label.field(data-field="upstream_pools[].passive_health.observe")
+        span Observe
+        select(v-model="pool.passive_health.observe")
+          option(value="layer4") Layer 4
+          option(value="layer7") Layer 7
+      label.field(data-field="upstream_pools[].passive_health.on_error")
+        span On error
+        select(v-model="pool.passive_health.on_error")
+          option(value="count") Count
+          option(value="immediately") Immediately
+          option(value="mark_down") Mark down
+      label.field(data-field="upstream_pools[].passive_health.error_limit")
+        span Error limit
+        input(type="number" min="1" max="100" step="1" v-model.number="pool.passive_health.error_limit")
+      label.enable-row(data-field="upstream_pools[].passive_health.mark_down")
+        input(type="checkbox" v-model="pool.passive_health.mark_down")
+        span Mark down on threshold
+      label.enable-row(data-field="upstream_pools[].passive_health.mark_up")
+        input(type="checkbox" v-model="pool.passive_health.mark_up")
+        span Mark up after recovery
+      label.field(data-field="upstream_pools[].passive_health.initial_backoff_ms")
+        span Initial backoff (ms)
+        input(type="number" min="1" max="86400000" step="1" v-model.number="pool.passive_health.initial_backoff_ms")
+      label.field(data-field="upstream_pools[].passive_health.max_backoff_ms")
+        span Maximum backoff (ms)
+        input(type="number" min="1" max="86400000" step="1" v-model.number="pool.passive_health.max_backoff_ms")
+      label.field(data-field="upstream_pools[].passive_health.recovery_threshold")
+        span Recovery threshold
+        input(type="number" min="1" max="100" step="1" v-model.number="pool.passive_health.recovery_threshold")
 fieldset.object-block(data-field="upstream_pools[].tls")
   legend Upstream TLS
   label.enable-row
@@ -184,6 +220,22 @@ function toggleHealthCheck(event: Event): void {
         path: null,
         expected_status: null,
         http_version: null,
+      }
+    : null
+}
+
+function togglePassiveHealth(event: Event): void {
+  const enabled = (event.target as HTMLInputElement).checked
+  props.pool.passive_health = enabled
+    ? {
+        observe: 'layer7',
+        on_error: 'count',
+        error_limit: 3,
+        mark_down: false,
+        mark_up: false,
+        initial_backoff_ms: 30_000,
+        max_backoff_ms: 300_000,
+        recovery_threshold: 1,
       }
     : null
 }

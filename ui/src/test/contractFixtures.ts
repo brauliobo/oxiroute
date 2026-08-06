@@ -528,6 +528,7 @@ export function contractConfigSnapshot(): ConfigSnapshot {
     servers: [{ name: 'server-1', endpoint: { type: 'socket', address: '127.0.0.1:3000' }, max_connections: null, dns_resolution: 'on_connect' }],
     algorithm: 'round_robin',
     health_check: null,
+    passive_health: null,
     tls: null,
     http_versions: { min: '1.1', max: '1.1' },
     queue_timeout_ms: null,

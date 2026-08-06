@@ -233,6 +233,7 @@ export function useConfigurationNavigation(
           }],
           algorithm: 'round_robin',
           health_check: null,
+          passive_health: null,
           tls: null,
           http_versions: { min: '1.1', max: '1.1' },
           queue_timeout_ms: null,
