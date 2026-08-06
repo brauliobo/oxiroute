@@ -2199,6 +2199,7 @@ fn rejects_non_utf8_file_paths() {
         endpoints: Vec::new(),
         algorithm: UpstreamAlgorithm::RoundRobin,
         health_check: None,
+        passive_health: None,
         tls: Some(UpstreamTls {
             server_name: "backend.example.com".into(),
             ca_certificate_path: Some(PathBuf::from(OsString::from_vec(

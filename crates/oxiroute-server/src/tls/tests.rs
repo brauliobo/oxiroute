@@ -2821,6 +2821,7 @@ fn upstream_pool(
         }],
         algorithm: UpstreamAlgorithm::RoundRobin,
         health_check: None,
+        passive_health: None,
         tls: Some(UpstreamTls {
             server_name: "Origin.Example.Test".into(),
             ca_certificate_path,

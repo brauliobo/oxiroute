@@ -908,6 +908,7 @@ mod tests {
                 endpoints: vec![UpstreamEndpoint::Socket { address: upstream }],
                 algorithm: UpstreamAlgorithm::RoundRobin,
                 health_check: None,
+                passive_health: None,
                 tls: None,
                 http_versions: oxiroute_config::HttpVersionPolicy::default(),
                 queue_timeout_ms: None,

@@ -228,6 +228,7 @@ mod tests {
             endpoints: Vec::new(),
             algorithm: UpstreamAlgorithm::default(),
             health_check: None,
+            passive_health: None,
             tls: None,
             http_versions: HttpVersionPolicy::default(),
             queue_timeout_ms: None,

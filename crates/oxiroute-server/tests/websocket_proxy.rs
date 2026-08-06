@@ -214,6 +214,7 @@ fn websocket_config(proxy_address: SocketAddr, origin_address: SocketAddr) -> Co
             endpoints: vec![socket_endpoint(origin_address)],
             algorithm: UpstreamAlgorithm::RoundRobin,
             health_check: None,
+            passive_health: None,
             tls: None,
             http_versions: HttpVersionPolicy::default(),
             queue_timeout_ms: None,

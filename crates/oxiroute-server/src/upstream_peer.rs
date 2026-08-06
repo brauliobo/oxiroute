@@ -651,6 +651,7 @@ mod tests {
             }],
             algorithm: UpstreamAlgorithm::RoundRobin,
             health_check: None,
+            passive_health: None,
             tls: Some(UpstreamTls {
                 server_name: server_name.into(),
                 ca_certificate_path: None,

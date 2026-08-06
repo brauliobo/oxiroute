@@ -51,6 +51,7 @@ use crate::{
         MAX_TLS_PROFILES, MAX_TOTAL_ENDPOINTS, MAX_TOTAL_RTMP_EXEC_PROFILES,
         MAX_TOTAL_RTMP_RECORDERS, MAX_UDP_DATAGRAM_BYTES, MAX_UDP_QUEUE_BYTES,
         MAX_UDP_QUEUE_DATAGRAMS, MAX_UDP_SESSION_BYTES, MAX_UDP_SESSIONS, MAX_UPSTREAM_WEIGHT,
+        MAX_PASSIVE_BACKOFF_MS, MAX_PASSIVE_ERROR_LIMIT, MAX_PASSIVE_RECOVERY_THRESHOLD,
         MIN_HEALTH_INTERVAL_MS, MIN_SELF_SIGNED_VALIDITY_DAYS,
     },
     lexical::{
@@ -3197,8 +3198,56 @@ pub fn validate_upstream_pools(
         if let Some(health_check) = &pool.health_check {
             validate_health_check_config(&pool.name, health_check)?;
         }
+        if let Some(passive_health) = &pool.passive_health {
+            validate_passive_health_config(&pool.name, passive_health)?;
+        }
     }
 
+    Ok(())
+}
+
+fn validate_passive_health_config(
+    pool: &str,
+    policy: &crate::model::PassiveHealthPolicy,
+) -> Result<(), ConfigError> {
+    let invalid = |field, detail| ConfigError::InvalidUpstreamServer {
+        pool: pool.to_owned(),
+        server: "<pool>".into(),
+        field,
+        detail,
+    };
+    if policy.error_limit == 0 || policy.error_limit > MAX_PASSIVE_ERROR_LIMIT {
+        return Err(invalid(
+            "passive_health.error_limit",
+            "error limit must be between 1 and 100",
+        ));
+    }
+    if policy.initial_backoff_ms == 0 {
+        return Err(invalid(
+            "passive_health.initial_backoff_ms",
+            "initial backoff must be nonzero",
+        ));
+    }
+    if policy.initial_backoff_ms > policy.max_backoff_ms {
+        return Err(invalid(
+            "passive_health.max_backoff_ms",
+            "maximum backoff must not be shorter than the initial backoff",
+        ));
+    }
+    if policy.max_backoff_ms > MAX_PASSIVE_BACKOFF_MS {
+        return Err(invalid(
+            "passive_health.max_backoff_ms",
+            "maximum backoff must not exceed 86400000 milliseconds",
+        ));
+    }
+    if policy.recovery_threshold == 0
+        || policy.recovery_threshold > MAX_PASSIVE_RECOVERY_THRESHOLD
+    {
+        return Err(invalid(
+            "passive_health.recovery_threshold",
+            "recovery threshold must be between 1 and 100",
+        ));
+    }
     Ok(())
 }
 
