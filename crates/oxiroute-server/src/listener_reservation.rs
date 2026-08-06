@@ -5,7 +5,7 @@ use std::{
     sync::Arc,
 };
 
-use oxiroute_config::{Config, ListenerBind};
+use oxiroute_config::{Config, ListenerBind, Protocol};
 #[cfg(target_os = "linux")]
 use oxiroute_supervision_unix::{
     BindIdentity, DescriptorKind, DescriptorManifest, DescriptorRole, DescriptorSet,
@@ -726,42 +726,36 @@ fn descriptor_plan(config: &Config) -> io::Result<Vec<(ReservationKey, Descripto
     for listener in &config.listeners {
         entries.push((
             ReservationKey::Traffic(listener.name.clone()),
-            (
-                DescriptorRole::Traffic(listener.name.clone()),
-                listener.bind.clone(),
-            ),
+            DescriptorRole::Traffic(listener.name.clone()),
+            Some(listener.protocol),
+            listener.bind.clone(),
         ));
     }
     if let Some(management) = &config.management {
         entries.push((
             ReservationKey::Management,
-            (
-                DescriptorRole::Management,
-                ListenerBind::Socket {
-                    address: management.bind,
-                },
-            ),
+            DescriptorRole::Management,
+            None,
+            ListenerBind::Socket {
+                address: management.bind,
+            },
         ));
     }
     if let Some(stats) = &config.stats {
         for (index, address) in stats.binds.iter().enumerate() {
             entries.push((
                 ReservationKey::Stats(index),
-                (
-                    DescriptorRole::Stats(u16::try_from(index).expect("descriptor limit checked")),
-                    ListenerBind::Socket { address: *address },
-                ),
+                DescriptorRole::Stats(u16::try_from(index).expect("descriptor limit checked")),
+                None,
+                ListenerBind::Socket { address: *address },
             ));
         }
         for (index, page) in stats.pages.iter().enumerate() {
             entries.push((
                 ReservationKey::StatsPage(index),
-                (
-                    DescriptorRole::StatsPage(
-                        u16::try_from(index).expect("descriptor limit checked"),
-                    ),
-                    ListenerBind::Socket { address: page.bind },
-                ),
+                DescriptorRole::StatsPage(u16::try_from(index).expect("descriptor limit checked")),
+                None,
+                ListenerBind::Socket { address: page.bind },
             ));
         }
     }
@@ -769,12 +763,13 @@ fn descriptor_plan(config: &Config) -> io::Result<Vec<(ReservationKey, Descripto
     entries
         .into_iter()
         .enumerate()
-        .map(|(index, (key, (role, bind)))| {
+        .map(|(index, (key, role, protocol, bind))| {
             Ok((
                 key,
                 descriptor_slot(
                     SlotId(u16::try_from(index).expect("descriptor limit checked")),
                     role,
+                    protocol,
                     &bind,
                 )?,
             ))
@@ -844,6 +839,7 @@ fn preflight_descriptor_capacity(plan: &[(ReservationKey, DescriptorSlot)]) -> i
 fn descriptor_slot(
     id: SlotId,
     role: DescriptorRole,
+    protocol: Option<Protocol>,
     bind: &ListenerBind,
 ) -> io::Result<DescriptorSlot> {
     let (kind, bind, mode) = match bind {
@@ -858,10 +854,22 @@ fn descriptor_slot(
             *mode,
         ),
         ListenerBind::Udp { address } => {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                format!("worker cannot adopt UDP listener `{address}`"),
-            ));
+            let kind = match protocol {
+                Some(Protocol::Udp) => DescriptorKind::DatagramListener,
+                Some(Protocol::ForwardHttp3 | Protocol::Http3) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        format!("worker cannot adopt QUIC listener `{address}` yet"),
+                    ));
+                }
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("UDP listener `{address}` has an unsupported protocol"),
+                    ));
+                }
+            };
+            (kind, Some(BindIdentity::Tcp(*address)), None)
         }
     };
     Ok(DescriptorSlot {
@@ -885,6 +893,10 @@ fn listener_bind_from_slot(slot: &DescriptorSlot) -> io::Result<ListenerBind> {
                 mode: slot.mode,
             })
         }
+        (
+            DescriptorKind::DatagramListener | DescriptorKind::QuicListener,
+            Some(BindIdentity::Tcp(address)),
+        ) => Ok(ListenerBind::Udp { address: *address }),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
@@ -1219,6 +1231,34 @@ mod tests {
                 .expect("descriptor flags")
                 .contains(FdFlags::CLOEXEC)
         }));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn descriptor_export_and_adoption_supports_udp_relay_listeners() {
+        let socket = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .expect("temporary UDP bind");
+        socket.set_nonblocking(true).expect("nonblocking UDP socket");
+        let address = socket.local_addr().expect("UDP address");
+        drop(socket);
+        let mut config = config("udp", address);
+        config.listeners[0].bind = ListenerBind::Udp { address };
+        config.listeners[0].protocol = oxiroute_config::Protocol::Udp;
+        let reservations = ListenerReservations::prepare(&config, None).expect("reservations");
+        let (manifest, originals) = reservations
+            .export_descriptors(&config)
+            .expect("UDP descriptor export");
+
+        assert_eq!(manifest.slots()[0].kind, DescriptorKind::DatagramListener);
+        assert_eq!(manifest.slots()[0].bind, Some(BindIdentity::Tcp(address)));
+        let descriptors = DescriptorSet::new(&manifest, originals).expect("UDP descriptor set");
+        let adopted = ListenerReservations::adopt(&config, descriptors).expect("UDP adoption");
+        let duplicate = adopted
+            .get("udp")
+            .expect("adopted UDP reservation")
+            .duplicate_udp_socket()
+            .expect("adopted UDP duplicate");
+        assert_eq!(duplicate.local_addr().expect("duplicate address"), address);
     }
 
     #[cfg(target_os = "linux")]

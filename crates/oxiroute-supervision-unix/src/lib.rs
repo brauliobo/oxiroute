@@ -14,8 +14,8 @@ mod transport;
 
 #[cfg(target_os = "linux")]
 pub use descriptor::{
-    BindIdentity, DescriptorError, DescriptorKind, DescriptorManifest, DescriptorRole,
-    DescriptorSet, DescriptorSlot, SlotId,
+    BindIdentity, DescriptorCapabilities, DescriptorError, DescriptorKind, DescriptorManifest,
+    DescriptorRole, DescriptorSet, DescriptorSlot, SlotId,
 };
 #[cfg(target_os = "linux")]
 pub use identity::{PeerIdentity, SpawnHandshakeNonce};

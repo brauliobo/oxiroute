@@ -15,7 +15,7 @@ use std::{
 
 use log::{info, warn};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
-use oxiroute_config::{Config, ListenerBind};
+use oxiroute_config::{Config, ListenerBind, Protocol};
 use oxiroute_server::{
     ListenerReservations,
     config_coordinator::{
@@ -494,7 +494,7 @@ fn same_listener_manifest(active: &Config, candidate: &Config) -> bool {
     descriptor_manifest(active) == descriptor_manifest(candidate)
 }
 
-fn descriptor_manifest(config: &Config) -> Vec<(String, ListenerBind)> {
+fn descriptor_manifest(config: &Config) -> Vec<(String, Protocol, ListenerBind)> {
     let descriptor_count = config.listeners.len()
         + usize::from(config.management.is_some())
         + config
@@ -506,11 +506,12 @@ fn descriptor_manifest(config: &Config) -> Vec<(String, ListenerBind)> {
         config
             .listeners
             .iter()
-            .map(|listener| (listener.name.clone(), listener.bind.clone())),
+            .map(|listener| (listener.name.clone(), listener.protocol, listener.bind.clone())),
     );
     if let Some(management) = &config.management {
         manifest.push((
             "@management".into(),
+            Protocol::Http,
             ListenerBind::Socket {
                 address: management.bind,
             },
@@ -520,12 +521,14 @@ fn descriptor_manifest(config: &Config) -> Vec<(String, ListenerBind)> {
         manifest.extend(stats.binds.iter().enumerate().map(|(index, address)| {
             (
                 format!("@stats-{index}"),
+                Protocol::Http,
                 ListenerBind::Socket { address: *address },
             )
         }));
         manifest.extend(stats.pages.iter().enumerate().map(|(index, page)| {
             (
                 format!("@stats-page-{index}"),
+                Protocol::Http,
                 ListenerBind::Socket { address: page.bind },
             )
         }));
@@ -740,12 +743,8 @@ mod tests {
         config.listeners[0].bind = ListenerBind::Udp {
             address: SocketAddr::from(([127, 0, 0, 1], 8080)),
         };
-        assert_eq!(
-            eligibility(&config),
-            Err(UnsupportedConfig {
-                reason: "Stage 2 worker cannot adopt UDP listener descriptors",
-            })
-        );
+        config.listeners[0].protocol = Protocol::Udp;
+        assert_eq!(eligibility(&config), Ok(()));
     }
 
     #[test]

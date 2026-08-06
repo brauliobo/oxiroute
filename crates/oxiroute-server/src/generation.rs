@@ -684,6 +684,14 @@ impl GenerationManager {
         }
     }
 
+    /// Creates a generation manager for a worker using authenticated listener adoption.
+    #[must_use]
+    pub fn new_supervised() -> Self {
+        let mut manager = Self::new();
+        manager.process = ProcessRuntime::supervised(None);
+        manager
+    }
+
     /// Fully prepares a candidate without writing the canonical configuration or publishing it.
     ///
     /// # Errors

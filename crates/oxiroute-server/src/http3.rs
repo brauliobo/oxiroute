@@ -33,7 +33,7 @@ use tokio::{
 
 use crate::{
     ForwardHttp1ServicePlan, H3UpstreamError, HttpOperationResult, HttpServicePlan,
-    ListenerMetrics, ListenerReservation, ListenerRuntimeState, RuntimeGeneration,
+    ListenerMetrics, ListenerReservation, ListenerRuntimeState, RuntimeGeneration, RuntimeMode,
     RuntimeReferenceKind, TlsProfilePlan,
     http_action::{
         HttpActionPlan, ProxyActionPlan, ProxyPolicyPlan, RequestHeaderMutationPlan,
@@ -2491,13 +2491,73 @@ fn unix_time_ms() -> Option<u64> {
         .and_then(|duration| u64::try_from(duration.as_millis()).ok())
 }
 
-pub(crate) fn capability_snapshot(listeners: &[crate::ListenerSnapshot]) -> serde_json::Value {
+pub(crate) fn capability_snapshot(
+    listeners: &[crate::ListenerSnapshot],
+    mode: RuntimeMode,
+) -> serde_json::Value {
     serde_json::json!({
         "schemaVersion": 1,
+        "supervision": {
+            "mode": mode,
+            "descriptorAdoption": {
+                "status": if mode == RuntimeMode::Supervised { "negotiated" } else { "not_used" },
+                "manifestVersion": 1,
+                "datagram": true,
+                "quic": false,
+            },
+        },
+        "udp": udp_listener_capability(listeners),
         "http3": {
             "reverse": listener_capability(listeners, "http3"),
             "forward": listener_capability(listeners, "forward_http3"),
         },
+    })
+}
+
+fn udp_listener_capability(listeners: &[crate::ListenerSnapshot]) -> serde_json::Value {
+    let configured = listeners
+        .iter()
+        .filter(|listener| listener.protocol == "udp")
+        .collect::<Vec<_>>();
+    let active = configured
+        .iter()
+        .filter(|listener| {
+            listener.state == ListenerRuntimeState::Listening
+                && listener.administrative_state == crate::AdministrativeState::Ready
+        })
+        .map(|listener| listener.name.clone())
+        .collect::<Vec<_>>();
+    let status = if !active.is_empty() {
+        "active"
+    } else if configured.is_empty() {
+        "unconfigured"
+    } else {
+        "blocked"
+    };
+    let blocked_reason = if status != "blocked" {
+        None
+    } else if configured
+        .iter()
+        .any(|listener| listener.state == ListenerRuntimeState::Failed)
+    {
+        Some("listener_runtime_failed")
+    } else if configured
+        .iter()
+        .any(|listener| listener.state == ListenerRuntimeState::Stopped)
+    {
+        Some("listener_stopped")
+    } else {
+        Some("listener_not_listening")
+    };
+    serde_json::json!({
+        "status": status,
+        "supported": true,
+        "listeners": active,
+        "configuredListeners": configured.iter().map(|listener| listener.name.clone()).collect::<Vec<_>>(),
+        "transport": "udp",
+        "drain": "graceful",
+        "fallback": "none",
+        "blockedReason": blocked_reason,
     })
 }
 
@@ -2620,10 +2680,14 @@ mod tests {
             proxy_protocol: None,
             cache: None,
         }];
-        let value = capability_snapshot(&listeners);
+        let value = capability_snapshot(&listeners, RuntimeMode::Direct);
 
         assert_eq!(value["http3"]["reverse"]["status"], "active");
         assert_eq!(value["http3"]["forward"]["status"], "unconfigured");
+        assert_eq!(value["udp"]["status"], "unconfigured");
+        assert_eq!(value["supervision"]["mode"], "direct");
+        assert_eq!(value["supervision"]["descriptorAdoption"]["datagram"], true);
+        assert_eq!(value["supervision"]["descriptorAdoption"]["quic"], false);
         assert_eq!(value["http3"]["reverse"]["supported"], true);
         assert_eq!(value["http3"]["reverse"]["goAway"], "graceful");
         assert_eq!(value["http3"]["reverse"]["fallback"], "none");

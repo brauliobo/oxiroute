@@ -23,7 +23,8 @@ pub use master::{
 };
 pub use protocol::{
     CONTROL_PROTOCOL_VERSION, ControlOutcome, ControlPhase, ControlProtocolError, ControlRequest,
-    MAX_MANIFEST_BYTES, WorkerControl,
+    DESCRIPTOR_MANIFEST_VERSION, MAX_MANIFEST_BYTES, SUPPORTED_DESCRIPTOR_CAPABILITIES,
+    WorkerControl,
 };
 pub use status::{
     AggregatedWorkerEvent, MAX_AGGREGATED_EVENTS, MAX_STATUS_BYTES, MAX_STATUS_EVENTS,
