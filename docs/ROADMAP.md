@@ -73,11 +73,11 @@ Status: partial. The annotations below identify landed slices; Milestone 1 is no
   are implemented or partial as documented).
 - Minimal Vue 3 SPA using build-time Pug SFC templates (implemented).
 - UI for listeners, upstreams, validation diagnostics, active revision, basic metrics, managed
-  certificate configuration, operations, bounded events, and source provenance (the current
-  runtime observatory and canonical-field workspace are implemented; passive-health/retry controls
-  are exposed, while weighted-round-robin weight editing, native import editing, TLS-ALPN challenge
-  selection, and durable audit browsing are not frontend surfaces; the event view remains the
-  non-durable operational ring).
+  certificate configuration, operations, bounded events, audit history, native import reports, and
+  source provenance (the current runtime observatory and canonical-field workspace are implemented;
+  passive-health/retry controls, weighted-round-robin weight editing, and durable audit browsing are
+  exposed, while native source editing and TLS-ALPN challenge selection remain outside the frontend;
+  the event view remains the non-durable operational ring).
 
 The original Milestone 1 boundary explicitly excluded UDP, forward proxying, caching, HTTP/3,
 native config importers, transparent interception, firewall management, and remote multi-user
@@ -143,8 +143,8 @@ runtime, failure-path, test, and native-lowering coverage all land.
 - Bounded PROXY protocol v1/v2 for explicit client-address propagation is implemented; broader wire
   conformance remains.
 - Least-connections and weighted round-robin policies are implemented and tested; the weighted
-  canonical/runtime path is current, while native importer lowering and frontend weight editing
-  remain outside the release surface.
+  canonical/runtime path and frontend weight editing are current, while native importer lowering
+  remains outside the release surface.
 - ACME DNS-01/TLS-ALPN-01 through bounded authenticators and wildcard certificate support (the
   provider seam, challenge orchestration, and cleanup paths are implemented; concrete provider and
   CA-staging deployments remain).
@@ -197,9 +197,9 @@ Both H3 directions remain partial capabilities pending broader conformance.
   explicitly unsupported.
 - Reverse QUIC/H3 frontend selected through a proof of compatibility with Pingora's service model
   and reusing immutable upstream service/pool plans.
-- HTTP/3 broader conformance and additional UDP resource-exhaustion tests remain; bounded response
-  conformance, generation-owned graceful GOAWAY drain, cancellation, malformed-input, and reload
-  coverage are implemented and tested, but passing active-traffic drain evidence remains a gate.
+- HTTP/3 broader conformance remains; bounded response conformance, resource-exhaustion,
+  generation-owned graceful GOAWAY drain, cancellation, malformed-input, and reload coverage are
+  implemented and tested, but passing active-traffic drain evidence remains a gate.
   Migration is disabled and 0-RTT is disabled by policy.
 
 HTTP/3 must be advertised only when the active listener is actually QUIC-capable. It must

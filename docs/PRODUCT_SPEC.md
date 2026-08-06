@@ -198,9 +198,10 @@ The current contract is:
   bounded authenticated SSE delivery, managed ACME HTTP-01/DNS-01/TLS-ALPN-01 issuance, wildcard
   renewal, bounded reverse HTTP cache, structured access logs, RTMP statistics/session controls,
   HLS/DASH/isolated-exec/auto-push slices, and native nginx/HAProxy/Apache/Squid/Varnish import
-  subsets with canonical provenance and a partial Vue control plane. Native import editing,
-  weighted-round-robin weight editing, TLS-ALPN challenge selection, and durable audit browsing are
-  not current frontend workflows.
+  subsets with canonical provenance and a partial Vue control plane. Native import reports are
+  browsable as read-only evidence, weighted-round-robin weight editing and durable audit browsing
+  are current frontend workflows, while native source editing and TLS-ALPN challenge selection are
+  not.
 - `foundation`: forward HTTP/2 protocol components that are tested but are not an active daemon
   capability.
 - `planned`: broader cache conformance, broader managed ACME authenticators, durable replay/history
@@ -229,8 +230,10 @@ required before the affected partial or foundation paths can become a broader su
   TLS-ALPN challenge handling and DNS exact-record cleanup/recovery are implemented and tested;
   staging deployment and real-certificate evidence remain open.
 - UI/import exposure: native import remains a read-only redacted report/compositional-source
-  workflow, while the backend/API exposes durable audit history and weighted-round-robin fields that
-  the current frontend does not browse/edit; passive health and retry controls are exposed in the frontend.
+  workflow, while the frontend exposes durable audit browsing and weighted-round-robin fields.
+  Native-file editing remains intentionally absent, and TLS-ALPN challenge selection remains a
+  backend/canonical configuration capability rather than a frontend control; passive health and
+  retry controls are exposed in the frontend.
   These are exposure boundaries, not claims that the corresponding backend behavior is absent.
 - Interoperability: independent HTTP/H2/H3/TLS clients and origins, FFmpeg/OBS RTMP publish/play,
   and representative Apache, HAProxy, Squid, and Varnish migration cases beyond synthetic fixtures.

@@ -33,7 +33,9 @@ policy; they are not remote management routes.
 
 Native source files remain CLI/offline or compositional-source inputs. The authenticated import-report
 routes and provenance workspace expose retained evidence only; they never rewrite native files or
-activate standalone reports. Event SSE is bounded, bearer-authenticated, cursor-based, and backed only by
+activate standalone reports. The audit routes are browsed by the separate authenticated audit
+workspace and never use the event ring as a fallback. Event SSE is bounded, bearer-authenticated,
+cursor-based, and backed only by
 the in-memory ring; it is not durable audit storage. Audit history is queried separately through
 `/api/v1/audit` and never serves as an SSE fallback.
 

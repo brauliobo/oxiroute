@@ -268,10 +268,11 @@ config, although other safe servers may remain visible in the draft. Blockers in
 non-live recording, missing/insecure paths, local-time suffix formats, manual intervals, partial
 recording bitmasks, push/pull, notify, unsupported exec forms, VOD, HLS/DASH, `log_format`, nested or non-combined
 logging, stat/control behavior, enabled append/lock, nonzero size/frame limits, and named
-`recorder {}` blocks with unsupported effective fields. The `import_rtmp` entry point remains a Rust library without a separate `import rtmp`
-command, import API, or import UI. Complete nginx-root import does integrate the strict RTMP result:
-the CLI can report/preview it, and KDL/HOCON/UCI `nginx_server` references can compose it into the
-canonical resolver and watcher-driven generation path.
+`recorder {}` blocks with unsupported effective fields. The `import_rtmp` entry point remains a Rust
+library without a separate `import rtmp` command. Complete nginx-root import does integrate the
+strict RTMP result: the CLI can report/preview it, the authenticated management API/UI can expose
+retained redacted evidence, and KDL/HOCON/UCI `nginx_server` references can compose it into the
+canonical resolver and watcher-driven generation path. Native files remain read-only.
 
 ### Management statistics and controls
 
@@ -626,7 +627,7 @@ Status: partial. Canonical continuous/manual recording, named recorders, live-se
 catalog completion, storage, rotation, observability, exact-ID bearer-protected controls, access and
 notify policy, pull relay, bounded local/HTTP VOD, bounded HLS/DASH output, and same-daemon auto-push
 are integrated for legacy AVC/AAC media. Static push relay and the first isolated exec/transcode
-slice are integrated separately. Native stats-page/control parity, native access-log syntax,
+slice are integrated separately. Native stats-page/control parity, broader native access-log syntax,
 enhanced codec recording, broader exec directive parity, and broad nginx-RTMP lowering remain.
 
 ### Slice 3: media/process parity

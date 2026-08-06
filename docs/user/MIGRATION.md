@@ -125,10 +125,11 @@ oxiroute config compose --format hocon edge.kdl legacy.lua
 
 KDL, HOCON, and UCI may instead declare strict `nginx_server`, `haproxy_server`, `squid_server`,
 `apache_server`, or `varnish_server` references. Varnish references may include repeated explicit
-`arguments` for the `varnishd` invocation facts. Those roots remain compositional: the browser can inspect and validate them, but typed
-save refuses to flatten them accidentally. A KDL/HOCON/UCI native reference re-resolves its complete
-source graph during watcher reconciliation; it is native-source integration, not an import management
-API or UI workflow.
+`arguments` for the `varnishd` invocation facts. Those roots remain compositional: the browser can
+inspect and validate them, but typed save refuses to flatten them accidentally. A KDL/HOCON/UCI
+native reference re-resolves its complete source graph during watcher reconciliation; retained
+redacted reports are available through the authenticated management API/UI, while native source
+files remain read-only and no native source editor is provided.
 
 ## Cutover Checklist
 

@@ -20,7 +20,7 @@ workflow are recorded in the [documentation plan](DOCUMENTATION_PLAN.md).
 ## User Guides
 
 - [Getting started](user/GETTING_STARTED.md): install/build, run the example, and verify traffic.
-- [Dashboard](user/DASHBOARD.md): understand Overview, Statistics, topology, RTMP, and Configuration.
+- [Dashboard](user/DASHBOARD.md): understand Overview, Statistics, Operations, Audit, Provenance, topology, RTMP, and Configuration.
 - [Operations](user/OPERATING.md): health, generations, drains, server state, metrics, and recovery.
 - [Migration](user/MIGRATION.md): report versus preview, native references, composition, and cutover.
 - [RTMP](user/RTMP.md): live publish/play, fanout, recording, HLS/DASH, VOD, and current codec limits.

@@ -14,7 +14,12 @@ not a production daemon or secret-bearing screenshot.
 | --- | --- | --- |
 | **Overview** | Is the process, listener, origin pool, topology, or RTMP catalog healthy? | Monitoring, topology, and RTMP catalog snapshots |
 | **Statistics** | What are the process, listener, backend, queue, and server counters? | The active runtime monitoring snapshot |
+| **Operations** | What can be drained, reloaded, rolled back, or changed administratively? | Authenticated generation and runtime action APIs |
+| **Certificates** | Which imported, Certbot, or managed identities are active and what lifecycle actions are available? | Authenticated TLS inventory and job APIs |
+| **Events** | What bounded operational events are available now? | The non-durable event ring and SSE delivery |
+| **Audit** | What redacted control operations were durably retained? | Authenticated durable audit history and status |
 | **Configuration** | What is on disk, what is active, and what would a typed draft render as? | Authenticated config API and candidate validation |
+| **Provenance** | Which native reports, blockers, requirements, and canonical fields were retained? | Authenticated redacted import-report API |
 
 ## Overview
 
@@ -79,6 +84,20 @@ Important states:
 
 The preview is rendered by the backend in the root's authored format. The browser does not generate
 Lua, KDL, HOCON, or UCI source itself.
+
+For a `weighted_round_robin` pool, the configuration workspace exposes one bounded integer weight
+per server and keeps the weight list aligned when servers are added or removed. Native source files
+remain read-only.
+
+## Audit And Provenance
+
+The Audit view reads the separate durable redacted control-history store. It supports category/result
+filters, cursor pagination, persistence status, and degraded-store warnings. It never substitutes the
+non-durable Events view when the durable route is unavailable.
+
+The Provenance view reads retained native import reports through the authenticated API. It shows
+redacted source graphs, blockers, requirements, diagnostics, canonical field origins, and finalized
+read-only KDL previews. It does not rewrite native files or activate standalone reports.
 
 ## RTMP Controls
 

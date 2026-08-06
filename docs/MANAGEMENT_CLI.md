@@ -19,8 +19,9 @@ symlinked, oversized, incorrectly permissioned, unstable while read, or contains
 
 This CLI table describes current command ownership, not broad product compatibility. `Supported`
 means the current runtime owns the operation; it does not promote a foundation or partial protocol
-to stable parity. Native import remains an offline or compositional-source adapter, and the current
-management listener stays loopback-only.
+to stable parity. Native import commands remain offline or compositional-source adapters; retained
+redacted reports are also available through the authenticated management API/UI, while native files
+remain read-only. The current management listener stays loopback-only.
 
 The management listener is configuration-owned and is restricted to a loopback address. Configure
 it as `127.0.0.1:9900` to use the client default. `--output json` emits one JSON value on stdout;
@@ -55,7 +56,7 @@ Status meanings:
 | Config | diff | Supported | `oxiroute config diff FILE`; local structural JSON comparison against normalized active config. |
 | Config | validate | Supported | `oxiroute config validate FILE` |
 | Config | apply | Supported | `oxiroute config apply FILE`; uses the current disk revision as a precondition. |
-| Config | native import | Config generation | `oxiroute import nginx|haproxy|squid|apache|varnish ...`; import remains an offline evidence-producing operation. Varnish accepts repeated `--arg` options for explicit varnishd facts. |
+| Config | native import | Config generation | `oxiroute import nginx|haproxy|squid|apache|varnish ...`; the CLI remains an offline evidence-producing operation, while retained redacted reports are available through the authenticated management API/UI. Varnish accepts repeated `--arg` options for explicit varnishd facts. |
 | Listener | list/show | Supported | `oxiroute listener list|show NAME` |
 | Listener | ready/drain/maintenance | Supported | Admission state; existing connections are not revoked. |
 | Listener | capacity visibility | Supported | List/show includes configured maximum and active/rejected counters. |
