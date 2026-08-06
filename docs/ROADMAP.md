@@ -129,10 +129,10 @@ runtime, failure-path, test, and native-lowering coverage all land.
   into a watched runtime generation; stream lowering, broader semantics, and audited candidates
   remain partial or blocked).
 - HAProxy importer for static HTTP/TCP frontends and backends (ordered roots, semantic resolution,
-  strict socket/DNS/Unix transport lowering, HTTP balancing/routing/retry/health policy, and the
-  audited live hostrouter candidate now finalize; broader ACLs, redispatch interval forms,
-  unsupported stats forms, and server policy remain blocked, while log/process policy is a
-  deployment warning).
+  strict socket/DNS/Unix transport lowering, HTTP balancing/routing/retry/health policy, bounded
+  static server weights with `default-server` inheritance under `roundrobin`, and the audited live
+  hostrouter candidate now finalize; broader ACLs, redispatch interval forms, unsupported stats
+  forms, and other server policy remain blocked, while log/process policy is a deployment warning).
 - Apache virtual-host importer for static HTTP/HTTPS proxy rules, inherited defaults, exact
   authorities, equal-weight balancers, deterministic optional includes, and blocking diagnostics
   (integrated for the strict subset; broader httpd semantics remain blocked).
@@ -143,8 +143,8 @@ runtime, failure-path, test, and native-lowering coverage all land.
 - Bounded PROXY protocol v1/v2 for explicit client-address propagation is implemented; broader wire
   conformance remains.
 - Least-connections and weighted round-robin policies are implemented and tested; the weighted
-  canonical/runtime path and frontend weight editing are current, while native importer lowering
-  remains outside the release surface.
+  canonical/runtime path, frontend weight editing, and bounded static HAProxy/nginx HTTP importer
+  lowering are current, while broader native weighting semantics remain outside the release surface.
 - ACME DNS-01/TLS-ALPN-01 through bounded authenticators and wildcard certificate support (the
   provider seam, challenge orchestration, and cleanup paths are implemented; concrete provider and
   CA-staging deployments remain).

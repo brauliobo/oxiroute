@@ -27,10 +27,10 @@ Status values are `covered`, `partial`, `missing`, `external`, and `inactive`.
 | ID | Source behavior | Status | Required iteration |
 | --- | --- | --- | --- |
 | IMP-01 | nginx source files, deterministic includes, spans, and diagnostics | partial | Frontend implemented; canonical/runtime/native-lowering gates remain. |
-| IMP-02 | nginx HTTP inheritance and virtual-server lowering | partial | The fragment and complete-root APIs can finalize a strict subset; broader semantics, audited candidates, and daemon integration remain blocked. |
+| IMP-02 | nginx HTTP inheritance and virtual-server lowering | partial | The fragment and complete-root APIs can finalize a strict subset, including bounded static upstream weights; broader semantics, audited candidates, and daemon integration remain blocked. |
 | IMP-03 | nginx-RTMP include resolution, inheritance, and plan lowering | partial | Listener/application, chunk/log suppression, recording, and static push lowering can finalize; broad directive and audited gates remain. |
 | IMP-04 | HAProxy ordered `-f` roots and directory expansion | partial | Ordered immutable loading is implemented and feeds finalized live-host candidates; broader native source forms remain outside the strict subset. |
-| IMP-05 | HAProxy defaults/frontend/backend/listen resolution | partial | HTTP/TCP lowering, deterministic preprocessing, capacity, exact health/retry/timeout/reuse policy, the safe `retry-on` connection subset, per-server passive observation/threshold/mark-down policy, case-insensitive Host routing, one exact Host-plus-path ACL conjunction, fixed fallback, and dedicated stats-page lowering finalize the live hostrouter shape; broader ACL, stats, and server policy remains blocked. |
+| IMP-05 | HAProxy defaults/frontend/backend/listen resolution | partial | HTTP/TCP lowering, deterministic preprocessing, capacity, exact health/retry/timeout/reuse policy, the safe `retry-on` connection subset, bounded static server weights with `default-server` inheritance under `roundrobin`, per-server passive observation/threshold/mark-down policy, case-insensitive Host routing, one exact Host-plus-path ACL conjunction, fixed fallback, and dedicated stats-page lowering finalize the live hostrouter shape; broader ACL, stats, and server policy remains blocked. |
 | IMP-06 | Stable blocking diagnostics and provenance in canonical candidates | partial | Canonical provenance plus typed deployment, activation, secret-overlay, environment-fingerprint, and inactive-source records exist. |
 
 ## `hostrouter.lan` nginx cases
