@@ -255,6 +255,20 @@ impl StateStore {
         self.write_atomic(relative, &bytes, PUBLIC_MODE)
     }
 
+    /// Serializes and atomically writes a bounded secret JSON state document with owner-only mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when serialization, the path, bound, permissions, or atomic write fails.
+    pub fn write_secret_json<T: Serialize>(
+        &self,
+        relative: &str,
+        value: &T,
+    ) -> Result<(), AcmeStateError> {
+        let bytes = serde_json::to_vec(value).map_err(AcmeStateError::Json)?;
+        self.write_atomic(relative, &bytes, SECRET_MODE)
+    }
+
     /// Reads a regular no-follow file twice and accepts it only when both bounded reads match.
     ///
     /// # Errors
@@ -282,6 +296,35 @@ impl StateStore {
     ) -> Result<T, AcmeStateError> {
         let bytes = self.read_bounded(relative, limit)?;
         serde_json::from_slice(&bytes).map_err(AcmeStateError::Json)
+    }
+
+    /// Reads and deserializes a bounded stable secret JSON state document.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the file cannot be read stably or contains invalid JSON.
+    pub fn read_secret_json<T: for<'de> Deserialize<'de>>(
+        &self,
+        relative: &str,
+        limit: usize,
+    ) -> Result<T, AcmeStateError> {
+        self.read_json(relative, limit)
+    }
+
+    /// Removes one managed state file and synchronizes its parent directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the path is unsafe, the file cannot be removed, or the parent cannot be
+    /// synchronized.
+    pub fn remove_file(&self, relative: &str) -> Result<(), AcmeStateError> {
+        let path = self.safe_path(relative)?;
+        let parent = path.parent().ok_or(AcmeStateError::UnsafePath)?;
+        match fs::remove_file(&path) {
+            Ok(()) => sync_directory(parent),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(AcmeStateError::FileWrite(error)),
+        }
     }
 
     /// Persists one redacted lifecycle job document under the bounded jobs namespace.
@@ -628,7 +671,7 @@ impl RevisionStore {
                         }
                         fs::remove_dir(revisions_path).map_err(AcmeStateError::FileWrite)?;
                     }
-                    "current" | "renewal.json" => {
+                    "current" | "renewal.json" | "dns-cleanup.json" => {
                         remove_file_if_present(&entry.path())?;
                     }
                     _ => return Err(AcmeStateError::UnsafePath),

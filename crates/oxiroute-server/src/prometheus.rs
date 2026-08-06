@@ -471,6 +471,50 @@ pub fn render_prometheus(
                 1,
             )?;
         }
+        labels(
+            &mut output,
+            "oxiroute_acme_renewal_information_status",
+            &[
+                ("certificate", certificate.name.as_str()),
+                ("status", certificate.renewal_information_status.as_str()),
+            ],
+            1,
+        )?;
+        labels(
+            &mut output,
+            "oxiroute_acme_dns_cleanup_status",
+            &[
+                ("certificate", certificate.name.as_str()),
+                ("status", certificate.dns_cleanup_status.as_str()),
+            ],
+            1,
+        )?;
+        if let Some(provider) = certificate.dns_provider.as_deref() {
+            if let Some(deployment) = certificate.dns_provider_deployment.as_deref() {
+                labels(
+                    &mut output,
+                    "oxiroute_acme_dns_provider_deployment",
+                    &[
+                        ("certificate", certificate.name.as_str()),
+                        ("provider", provider),
+                        ("status", deployment),
+                    ],
+                    1,
+                )?;
+            }
+            if let Some(health) = certificate.dns_provider_health.as_deref() {
+                labels(
+                    &mut output,
+                    "oxiroute_acme_dns_provider_health",
+                    &[
+                        ("certificate", certificate.name.as_str()),
+                        ("provider", provider),
+                        ("status", health),
+                    ],
+                    1,
+                )?;
+            }
+        }
     }
 
     let mut relay_attempts = 0_u64;

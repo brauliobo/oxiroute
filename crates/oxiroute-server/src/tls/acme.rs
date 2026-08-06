@@ -14,13 +14,13 @@ use openssl::{
     x509::X509,
 };
 use oxiroute_acme::{
-    renewal_due, stable_renewal_time, Account, AccountKey, AccountKeyAlgorithm, AcmeClient,
-    AcmeError, AcmeStateError, AcmeTransport, AuthorizationStatus, CertificateMaterial,
-    ChallengeRecord, ChallengeStore, ChallengeStoreError, ChallengeType, Dns01Cancellation,
-    Dns01Challenge, Dns01Credentials, Dns01Operation, Dns01Provider, Dns01ProviderError, JobState,
-    JobStatus, LeafKeyAlgorithm, OriginPolicy, PollPolicy, RedactedOutcome, RevisionMetadata,
-    RevisionStore, SecretBytes, StateStore, SystemAcmeTransport, SystemClock,
-    MAX_DNS01_CREDENTIAL_BYTES, MAX_JOB_BYTES,
+    renewal_due, stable_renewal_time, stable_renewal_time_in_window, Account, AccountKey,
+    AccountKeyAlgorithm, AcmeClient, AcmeError, AcmeStateError, AcmeTransport, AuthorizationStatus,
+    CertificateMaterial, ChallengeRecord, ChallengeStore, ChallengeStoreError, ChallengeType,
+    Dns01Cancellation, Dns01Challenge, Dns01Credentials, Dns01Operation, Dns01Provider,
+    Dns01ProviderError, JobState, JobStatus, LeafKeyAlgorithm, OriginPolicy, PollPolicy,
+    RedactedOutcome, RenewalInformation, RevisionMetadata, RevisionStore, SecretBytes, StateStore,
+    SystemAcmeTransport, SystemClock, MAX_DNS01_CREDENTIAL_BYTES, MAX_JOB_BYTES,
 };
 use oxiroute_config::{AcmeChallengeType, AcmeDns01Config, AcmeKeyType, SelfSignedKeyType};
 use serde::{Deserialize, Serialize};
@@ -114,6 +114,8 @@ impl AcmeManagedError {
                 AcmeError::KeyChangeUnsupported => "key_change_unsupported",
                 AcmeError::InvalidCertificate => "invalid_certificate",
                 AcmeError::InvalidRevocationReason => "invalid_revocation_reason",
+                AcmeError::IpIdentifierUnsupported => "ip_identifier_unsupported",
+                AcmeError::InvalidRenewalInformation => "renewal_information_invalid",
                 _ => "protocol_failed",
             },
             Self::Tls(_) => "invalid_candidate",
@@ -174,6 +176,10 @@ pub struct AcmeManagedStatus {
     pub last_success_unix_seconds: Option<u64>,
     pub last_outcome: Option<&'static str>,
     pub last_error_code: Option<String>,
+    pub renewal_information_status: &'static str,
+    pub dns_provider_deployment: Option<&'static str>,
+    pub dns_provider_health: Option<&'static str>,
+    pub dns_cleanup_status: &'static str,
 }
 
 struct ReconcileState {
@@ -192,6 +198,9 @@ struct ReconcileState {
     last_success_unix_seconds: Option<u64>,
     last_outcome: Option<&'static str>,
     last_error_code: Option<String>,
+    renewal_information_status: &'static str,
+    dns_provider_health: &'static str,
+    dns_cleanup_status: &'static str,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -220,8 +229,29 @@ struct PersistedRenewal {
     last_success_unix_seconds: Option<u64>,
     #[serde(default)]
     last_error_code: Option<String>,
+    #[serde(default = "default_renewal_information_status")]
+    renewal_information_status: String,
     #[serde(default)]
     paused: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PersistedDnsCleanup {
+    certificate: String,
+    provider: String,
+    identifier: String,
+    challenge_url: String,
+    record_name: String,
+    record_value: String,
+    provider_record_id: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AcmeDnsCleanupRecovery {
+    NotPending,
+    Recovered,
+    Deferred,
 }
 
 #[derive(Default)]
@@ -371,7 +401,7 @@ impl AcmeManagedReconciler {
     }
 
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub(super) fn new_with_challenge_stores(
         certificate: impl Into<String>,
         declared_dns_names: Vec<String>,
@@ -435,6 +465,16 @@ impl AcmeManagedReconciler {
         let renewal_info_url = persisted
             .as_ref()
             .and_then(|renewal| renewal.renewal_info_url.clone());
+        let renewal_information_status = persisted
+            .as_ref()
+            .and_then(|renewal| {
+                normalized_renewal_information_status(&renewal.renewal_information_status)
+            })
+            .unwrap_or(if renewal_info_url.is_some() {
+                "pending"
+            } else {
+                "not_advertised"
+            });
         let last_success_unix_seconds = persisted
             .as_ref()
             .and_then(|renewal| renewal.last_success_unix_seconds);
@@ -444,7 +484,21 @@ impl AcmeManagedReconciler {
             .filter(|code| is_known_error_code(code))
             .map(str::to_owned);
         let last_outcome = Some(AcmeManagedOutcome::Loaded.code());
-        Self {
+        let dns_cleanup_status = if policy.challenge == AcmeChallengeType::Dns01 {
+            persisted_dns_cleanup_status(&revisions, &certificate)
+        } else {
+            "not_applicable"
+        };
+        let dns_provider_health = if policy.challenge != AcmeChallengeType::Dns01 {
+            "not_applicable"
+        } else if dns_provider.is_none() {
+            "unsupported"
+        } else if matches!(dns_cleanup_status, "pending" | "failed") {
+            "degraded"
+        } else {
+            "unknown"
+        };
+        let reconciler = Self {
             certificate,
             declared_dns_names,
             policy,
@@ -471,8 +525,15 @@ impl AcmeManagedReconciler {
                 last_success_unix_seconds,
                 last_outcome,
                 last_error_code,
+                renewal_information_status,
+                dns_provider_health,
+                dns_cleanup_status,
             }),
+        };
+        if reconciler.dns_provider.is_some() {
+            let _ = reconciler.recover_pending_dns_cleanup();
         }
+        reconciler
     }
 
     #[must_use]
@@ -522,6 +583,17 @@ impl AcmeManagedReconciler {
             last_success_unix_seconds: state.last_success_unix_seconds,
             last_outcome: state.last_outcome,
             last_error_code: state.last_error_code.clone(),
+            renewal_information_status: state.renewal_information_status,
+            dns_provider_deployment: (self.policy.challenge == AcmeChallengeType::Dns01).then_some(
+                if self.dns_provider.is_some() {
+                    "registered"
+                } else {
+                    "unsupported"
+                },
+            ),
+            dns_provider_health: (self.policy.challenge == AcmeChallengeType::Dns01)
+                .then_some(state.dns_provider_health),
+            dns_cleanup_status: state.dns_cleanup_status,
         }
     }
 
@@ -1009,6 +1081,13 @@ impl AcmeManagedReconciler {
         )
         .map_err(AcmeManagedError::State)?;
         self.set_job_status(Some(JobStatus::Running));
+        if self.policy.challenge == AcmeChallengeType::Dns01
+            && self.recover_pending_dns_cleanup() == AcmeDnsCleanupRecovery::Deferred
+        {
+            return Err(AcmeManagedError::DnsCleanup(
+                Dns01ProviderError::CleanupFailed,
+            ));
+        }
         let mut client = self.client_with_account(transport, true)?;
         let dns_context = match self.policy.challenge {
             AcmeChallengeType::Dns01 => {
@@ -1207,6 +1286,32 @@ impl AcmeManagedReconciler {
             .metadata
             .revision
             .clone_from(&candidate.metadata().revision);
+        let (renewal_information, renewal_information_status) =
+            match client.renewal_information(&material.certificate_pem) {
+                Ok(Some(information)) => {
+                    let usable = material
+                        .metadata
+                        .not_before_unix_seconds
+                        .zip(material.metadata.not_after_unix_seconds)
+                        .is_some_and(|(not_before, not_after)| {
+                            stable_renewal_time_in_window(
+                                information.suggested_window_start_unix_seconds,
+                                information.suggested_window_end_unix_seconds,
+                                not_before,
+                                not_after,
+                                &self.certificate,
+                            )
+                            .is_some()
+                        });
+                    (
+                        Some(information),
+                        if usable { "applied" } else { "invalid" },
+                    )
+                }
+                Ok(None) => (None, "not_advertised"),
+                Err(AcmeError::InvalidRenewalInformation) => (None, "invalid"),
+                Err(_) => (None, "unavailable"),
+            };
         let revision = material.metadata.revision.clone();
         self.revisions
             .commit(&self.certificate, &revision, &material)
@@ -1227,6 +1332,8 @@ impl AcmeManagedReconciler {
             outcome.code(),
             client.account().map(|account| account.url.clone()),
             client.directory().document.renewal_info.clone(),
+            renewal_information.as_ref(),
+            renewal_information_status,
         )
         .map_err(AcmeManagedError::State)?;
         Ok(outcome)
@@ -1315,6 +1422,82 @@ impl AcmeManagedReconciler {
         Ok(client)
     }
 
+    /// Attempts one bounded recovery of a durable DNS-01 cleanup journal.
+    #[must_use]
+    pub fn recover_pending_dns_cleanup(&self) -> AcmeDnsCleanupRecovery {
+        if self.policy.challenge != AcmeChallengeType::Dns01 {
+            return AcmeDnsCleanupRecovery::NotPending;
+        }
+        let journal = match self
+            .revisions
+            .state()
+            .read_secret_json::<PersistedDnsCleanup>(
+                &dns_cleanup_path(&self.certificate),
+                MAX_JOB_BYTES,
+            ) {
+            Ok(journal) => journal,
+            Err(AcmeStateError::FileOpen(error)) if error.kind() == io::ErrorKind::NotFound => {
+                let cleanup_failed = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .dns_cleanup_status
+                    == "failed";
+                return if cleanup_failed {
+                    AcmeDnsCleanupRecovery::Deferred
+                } else {
+                    AcmeDnsCleanupRecovery::NotPending
+                };
+            }
+            Err(_) => {
+                self.set_dns_status("failed", "degraded");
+                return AcmeDnsCleanupRecovery::Deferred;
+            }
+        };
+        let Some(provider) = self.dns_provider.as_ref() else {
+            self.set_dns_status("failed", "unsupported");
+            return AcmeDnsCleanupRecovery::Deferred;
+        };
+        let Some(dns01) = self.policy.dns01.as_ref() else {
+            self.set_dns_status("failed", "unsupported");
+            return AcmeDnsCleanupRecovery::Deferred;
+        };
+        if journal.provider != dns01.provider || provider.name() != journal.provider {
+            self.set_dns_status("failed", "degraded");
+            return AcmeDnsCleanupRecovery::Deferred;
+        }
+        let Ok(record) = persisted_dns_record(&self.certificate, &journal) else {
+            self.set_dns_status("failed", "degraded");
+            return AcmeDnsCleanupRecovery::Deferred;
+        };
+        let Ok(credentials) = load_dns_credentials(&dns01.credential_file, &self.certificate) else {
+            self.set_dns_status("failed", "degraded");
+            return AcmeDnsCleanupRecovery::Deferred;
+        };
+        let Ok(operation) = Dns01Operation::new(Duration::from_secs(dns01.timeout_seconds)) else {
+            self.set_dns_status("failed", "degraded");
+            return AcmeDnsCleanupRecovery::Deferred;
+        };
+        if provider
+            .cleanup_txt_record(&record, &credentials, &operation)
+            .is_err()
+        {
+            self.set_dns_status("failed", "degraded");
+            return AcmeDnsCleanupRecovery::Deferred;
+        }
+        if self
+            .revisions
+            .state()
+            .remove_file(&dns_cleanup_path(&self.certificate))
+            .is_err()
+        {
+            self.set_dns_status("failed", "degraded");
+            return AcmeDnsCleanupRecovery::Deferred;
+        }
+        self.set_dns_status("recovered", "healthy");
+        AcmeDnsCleanupRecovery::Recovered
+    }
+
     #[allow(
         clippy::needless_pass_by_value,
         clippy::too_many_arguments,
@@ -1331,21 +1514,47 @@ impl AcmeManagedReconciler {
         cancellation: Dns01Cancellation,
     ) -> Result<(), AcmeManagedError> {
         let timeout = Duration::from_secs(timeout_seconds);
-        let operation = Dns01Operation::with_cancellation(timeout, cancellation.clone())
-            .map_err(AcmeManagedError::DnsProvider)?;
-        operation.check().map_err(AcmeManagedError::DnsProvider)?;
+        let operation =
+            Dns01Operation::with_cancellation(timeout, cancellation.clone()).map_err(|error| {
+                self.set_dns_status("none", "degraded");
+                AcmeManagedError::DnsProvider(error)
+            })?;
+        operation.check().map_err(|error| {
+            self.set_dns_status("none", "degraded");
+            AcmeManagedError::DnsProvider(error)
+        })?;
         let record = provider
             .create_txt_record(challenge, credentials, &operation)
-            .map_err(AcmeManagedError::DnsProvider)?;
+            .map_err(|error| {
+                self.set_dns_status("none", "degraded");
+                AcmeManagedError::DnsProvider(error)
+            })?;
         if !record.matches(challenge, provider.name()) {
+            self.set_dns_status("none", "degraded");
             return Err(AcmeManagedError::DnsProvider(
                 Dns01ProviderError::InvalidRecord,
             ));
         }
+        self.persist_dns_cleanup(challenge, &record)
+            .inspect_err(|_| {
+                self.set_dns_status("failed", "degraded");
+                let cleanup_operation = Dns01Operation::new(timeout);
+                if let Ok(cleanup_operation) = cleanup_operation {
+                    if provider
+                        .cleanup_txt_record(&record, credentials, &cleanup_operation)
+                        .is_ok()
+                    {
+                        self.set_dns_status("recovered", "healthy");
+                    }
+                }
+            })?;
         let authorization_result =
             match provider.wait_for_propagation(challenge, &record, credentials, &operation) {
                 Ok(()) => (|| {
-                    operation.check().map_err(AcmeManagedError::DnsProvider)?;
+                    operation.check().map_err(|error| {
+                        self.set_dns_status("failed", "degraded");
+                        AcmeManagedError::DnsProvider(error)
+                    })?;
                     client
                         .respond_to_dns01_challenge(challenge)
                         .map_err(AcmeManagedError::Protocol)?;
@@ -1364,18 +1573,77 @@ impl AcmeManagedReconciler {
                     }
                     Ok(())
                 })(),
-                Err(error) => Err(AcmeManagedError::DnsProvider(error)),
+                Err(error) => {
+                    self.set_dns_status("failed", "degraded");
+                    Err(AcmeManagedError::DnsProvider(error))
+                }
             };
 
-        let cleanup_operation =
-            Dns01Operation::new(timeout).map_err(AcmeManagedError::DnsCleanup)?;
-        cleanup_operation
-            .check()
-            .map_err(AcmeManagedError::DnsCleanup)?;
-        provider
-            .cleanup_txt_record(&record, credentials, &cleanup_operation)
-            .map_err(AcmeManagedError::DnsCleanup)?;
+        self.cleanup_dns_record(provider, credentials, &record, timeout)?;
         authorization_result
+    }
+
+    fn persist_dns_cleanup(
+        &self,
+        challenge: &Dns01Challenge,
+        record: &oxiroute_acme::Dns01Record,
+    ) -> Result<(), AcmeManagedError> {
+        self.revisions
+            .state()
+            .write_secret_json(
+                &dns_cleanup_path(&self.certificate),
+                &PersistedDnsCleanup {
+                    certificate: self.certificate.clone(),
+                    provider: record.provider().into(),
+                    identifier: challenge.identifier().into(),
+                    challenge_url: challenge.challenge_url().into(),
+                    record_name: challenge.record_name().into(),
+                    record_value: challenge.record_value().into(),
+                    provider_record_id: record.provider_record_id().into(),
+                },
+            )
+            .map_err(AcmeManagedError::State)
+    }
+
+    fn cleanup_dns_record(
+        &self,
+        provider: &dyn Dns01Provider,
+        credentials: &Dns01Credentials,
+        record: &oxiroute_acme::Dns01Record,
+        timeout: Duration,
+    ) -> Result<(), AcmeManagedError> {
+        let cleanup_operation = Dns01Operation::new(timeout).map_err(|error| {
+            self.set_dns_status("failed", "degraded");
+            AcmeManagedError::DnsCleanup(error)
+        })?;
+        cleanup_operation.check().map_err(|error| {
+            self.set_dns_status("failed", "degraded");
+            AcmeManagedError::DnsCleanup(error)
+        })?;
+        provider
+            .cleanup_txt_record(record, credentials, &cleanup_operation)
+            .map_err(|error| {
+                self.set_dns_status("failed", "degraded");
+                AcmeManagedError::DnsCleanup(error)
+            })?;
+        self.revisions
+            .state()
+            .remove_file(&dns_cleanup_path(&self.certificate))
+            .map_err(|error| {
+                self.set_dns_status("failed", "degraded");
+                AcmeManagedError::State(error)
+            })?;
+        self.set_dns_status("recovered", "healthy");
+        Ok(())
+    }
+
+    fn set_dns_status(&self, cleanup_status: &'static str, provider_health: &'static str) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.dns_cleanup_status = cleanup_status;
+        state.dns_provider_health = provider_health;
     }
 
     fn certificate_material(
@@ -1608,6 +1876,7 @@ impl AcmeManagedReconciler {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn update_schedule(
         &self,
         not_before_unix_seconds: Option<u64>,
@@ -1616,11 +1885,26 @@ impl AcmeManagedReconciler {
         outcome: &'static str,
         account_url: Option<String>,
         renewal_info_url: Option<String>,
+        renewal_information: Option<&RenewalInformation>,
+        renewal_information_status: &'static str,
     ) -> Result<(), AcmeStateError> {
-        let next_action_unix_seconds = not_before_unix_seconds.and_then(|not_before| {
+        let local_next_action_unix_seconds = not_before_unix_seconds.and_then(|not_before| {
             not_after_unix_seconds
                 .and_then(|not_after| stable_renewal_time(not_before, not_after, &self.certificate))
         });
+        let suggested_renewal_unix_seconds = renewal_information
+            .zip(not_before_unix_seconds.zip(not_after_unix_seconds))
+            .and_then(|(information, (not_before, not_after))| {
+                stable_renewal_time_in_window(
+                    information.suggested_window_start_unix_seconds,
+                    information.suggested_window_end_unix_seconds,
+                    not_before,
+                    not_after,
+                    &self.certificate,
+                )
+            });
+        let next_action_unix_seconds =
+            suggested_renewal_unix_seconds.or(local_next_action_unix_seconds);
         let mut state = self
             .state
             .lock()
@@ -1631,9 +1915,10 @@ impl AcmeManagedReconciler {
         state.next_action_unix_seconds = next_action_unix_seconds;
         state.retry_attempt = 0;
         state.retry_at_unix_seconds = None;
-        state.suggested_renewal_unix_seconds = None;
+        state.suggested_renewal_unix_seconds = suggested_renewal_unix_seconds;
         state.account_url = account_url.or_else(|| state.account_url.clone());
         state.renewal_info_url = renewal_info_url.or_else(|| state.renewal_info_url.clone());
+        state.renewal_information_status = renewal_information_status;
         state.last_success_unix_seconds = Some(unix_now());
         state.last_outcome = Some(outcome);
         state.last_error_code = None;
@@ -1685,6 +1970,7 @@ impl AcmeManagedReconciler {
             renewal_info_url: state.renewal_info_url.clone(),
             last_success_unix_seconds: state.last_success_unix_seconds,
             last_error_code: state.last_error_code.clone(),
+            renewal_information_status: state.renewal_information_status.into(),
             paused: state.paused,
         };
         drop(state);
@@ -1721,6 +2007,47 @@ fn load_dns_credentials(
     )
     .map_err(|source| AcmeManagedError::DnsCredentials(Box::new(source)))?;
     Dns01Credentials::new(bytes.to_vec()).map_err(AcmeManagedError::DnsProvider)
+}
+
+fn dns_cleanup_path(certificate: &str) -> String {
+    format!("certificates/{certificate}/dns-cleanup.json")
+}
+
+fn persisted_dns_cleanup_status(revisions: &RevisionStore, certificate: &str) -> &'static str {
+    match revisions
+        .state()
+        .read_secret_json::<PersistedDnsCleanup>(&dns_cleanup_path(certificate), MAX_JOB_BYTES)
+    {
+        Ok(_) => "pending",
+        Err(AcmeStateError::FileOpen(error)) if error.kind() == io::ErrorKind::NotFound => "none",
+        Err(_) => "failed",
+    }
+}
+
+fn persisted_dns_record(
+    certificate: &str,
+    journal: &PersistedDnsCleanup,
+) -> Result<oxiroute_acme::Dns01Record, Dns01ProviderError> {
+    if journal.certificate != certificate {
+        return Err(Dns01ProviderError::InvalidRecord);
+    }
+    let challenge = Dns01Challenge::new(
+        &journal.identifier,
+        &journal.challenge_url,
+        &journal.record_name,
+        &journal.record_value,
+    )?;
+    let record = oxiroute_acme::Dns01Record::new(
+        &journal.provider,
+        &journal.challenge_url,
+        &journal.record_name,
+        journal.record_value.as_bytes().to_vec(),
+        &journal.provider_record_id,
+    )?;
+    if !record.matches(&challenge, &journal.provider) {
+        return Err(Dns01ProviderError::InvalidRecord);
+    }
+    Ok(record)
 }
 
 fn read_persisted_renewal(
@@ -1771,6 +2098,8 @@ fn is_known_error_code(code: &str) -> bool {
             | "key_change_unsupported"
             | "invalid_certificate"
             | "invalid_revocation_reason"
+            | "ip_identifier_unsupported"
+            | "renewal_information_invalid"
             | "publication_conflict"
             | "challenge_failed"
             | "dns_provider_unsupported"
@@ -1780,6 +2109,21 @@ fn is_known_error_code(code: &str) -> bool {
             | "dns_provider_failed"
             | "dns_cleanup_failed"
     )
+}
+
+fn default_renewal_information_status() -> String {
+    "not_advertised".into()
+}
+
+fn normalized_renewal_information_status(status: &str) -> Option<&'static str> {
+    match status {
+        "not_advertised" => Some("not_advertised"),
+        "pending" => Some("pending"),
+        "applied" => Some("applied"),
+        "unavailable" => Some("unavailable"),
+        "invalid" => Some("invalid"),
+        _ => None,
+    }
 }
 
 fn is_cancelled_error(error: &AcmeManagedError) -> bool {
@@ -1901,7 +2245,10 @@ mod tests {
     use std::{
         collections::VecDeque,
         fs,
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
     };
 
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -1995,6 +2342,7 @@ mod tests {
         created: Arc<Mutex<Vec<String>>>,
         propagated: Arc<Mutex<Vec<String>>>,
         cleaned: Arc<Mutex<Vec<String>>>,
+        cleanup_fail: Arc<AtomicBool>,
     }
 
     impl Dns01Provider for FakeDnsProvider {
@@ -2048,6 +2396,9 @@ mod tests {
         ) -> Result<(), Dns01ProviderError> {
             operation.check()?;
             assert_eq!(credentials.as_bytes(), b"dns-secret");
+            if self.cleanup_fail.load(Ordering::Acquire) {
+                return Err(Dns01ProviderError::CleanupFailed);
+            }
             self.cleaned
                 .lock()
                 .expect("cleaned records")
@@ -2375,6 +2726,104 @@ mod tests {
     }
 
     #[test]
+    fn restart_recovers_a_durable_dns_cleanup_journal_and_retries_failures() {
+        let temp = TempDir::new().expect("state directory");
+        let credentials = temp.path().join("dns-credentials");
+        fs::write(&credentials, b"dns-secret").expect("credentials");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            fs::set_permissions(&credentials, fs::Permissions::from_mode(0o600))
+                .expect("credential permissions");
+        }
+        let state = Arc::new(StateStore::open(temp.path().join("state")).expect("state"));
+        let journal = PersistedDnsCleanup {
+            certificate: "managed-recovery".into(),
+            provider: "fake".into(),
+            identifier: "*.example.test".into(),
+            challenge_url: "https://acme.test/challenge/1".into(),
+            record_name: "_acme-challenge.example.test".into(),
+            record_value: "txt-value".into(),
+            provider_record_id: "fake-record-1".into(),
+        };
+        state
+            .write_secret_json("certificates/managed-recovery/dns-cleanup.json", &journal)
+            .expect("cleanup journal");
+        let revisions = RevisionStore::from_arc(Arc::clone(&state));
+        let bootstrap = CertificateGeneration::self_signed_development(
+            "managed-recovery",
+            &["*.example.test".into()],
+            1,
+            SelfSignedKeyType::EcdsaP256,
+        )
+        .expect("bootstrap");
+        let active = Arc::new(ActiveCertificateGeneration::new(Arc::new(bootstrap)));
+        let provider = Arc::new(FakeDnsProvider::default());
+        let cleanup_fail = Arc::clone(&provider.cleanup_fail);
+        let cleaned = Arc::clone(&provider.cleaned);
+        let reconciler = AcmeManagedReconciler::new_with_dns_provider(
+            "managed-recovery",
+            vec!["*.example.test".into()],
+            AcmeManagedPolicy {
+                directory_url: "https://acme.test/directory".into(),
+                contacts: vec!["mailto:ops@example.test".into()],
+                terms_agreed: true,
+                challenge: AcmeChallengeType::Dns01,
+                key_type: AcmeKeyType::EcdsaP256,
+                allowed_dns_suffixes: vec!["example.test".into()],
+                retained_revisions: 3,
+                retention_days: 30,
+                dns01: Some(AcmeDns01Config {
+                    provider: "fake".into(),
+                    credential_file: credentials,
+                    timeout_seconds: 30,
+                }),
+            },
+            revisions.clone(),
+            "bootstrap".into(),
+            None,
+            None,
+            true,
+            ChallengeStore::default(),
+            Some(provider),
+            Arc::clone(&active),
+        );
+        assert_eq!(
+            cleaned.lock().expect("cleaned records").as_slice(),
+            ["fake-record-1".to_owned()]
+        );
+        assert!(
+            !temp
+                .path()
+                .join("state/certificates/managed-recovery/dns-cleanup.json")
+                .exists()
+        );
+        assert_eq!(reconciler.status().dns_cleanup_status, "recovered");
+        assert_eq!(reconciler.status().dns_provider_health, Some("healthy"));
+
+        state
+            .write_secret_json("certificates/managed-recovery/dns-cleanup.json", &journal)
+            .expect("second cleanup journal");
+        cleanup_fail.store(true, Ordering::Release);
+        assert_eq!(
+            reconciler.recover_pending_dns_cleanup(),
+            AcmeDnsCleanupRecovery::Deferred
+        );
+        assert_eq!(reconciler.status().dns_cleanup_status, "failed");
+        assert!(
+            temp.path()
+                .join("state/certificates/managed-recovery/dns-cleanup.json")
+                .is_file()
+        );
+        cleanup_fail.store(false, Ordering::Release);
+        assert_eq!(
+            reconciler.recover_pending_dns_cleanup(),
+            AcmeDnsCleanupRecovery::Recovered
+        );
+    }
+
+    #[test]
     fn restart_retains_bounded_retry_state_and_redacted_error_code() {
         let temp = TempDir::new().expect("state directory");
         let state = Arc::new(StateStore::open(temp.path().join("state")).expect("state"));
@@ -2396,6 +2845,7 @@ mod tests {
                     renewal_info_url: None,
                     last_success_unix_seconds: Some(1_000),
                     last_error_code: Some("transport_failed".into()),
+                    renewal_information_status: "not_advertised".into(),
                     paused: false,
                 },
             )

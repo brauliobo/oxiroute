@@ -84,6 +84,7 @@ pub use tcp_relay::{
     RelayStats, TcpRelayCore, RELAY_BUFFER_SIZE,
 };
 pub use tls::{
+    AcmeDnsCleanupRecovery,
     AcmeManagedError, AcmeManagedOutcome, AcmeManagedPolicy, AcmeManagedReconciler,
     AcmeManagedStatus, ActiveCertificateGeneration, CertbotActivationDirection, CertbotCandidate,
     CertbotLineage, CertbotReconcileError, CertbotReconcileOutcome, CertbotReconciler,
