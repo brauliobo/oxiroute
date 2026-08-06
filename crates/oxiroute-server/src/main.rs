@@ -43,7 +43,7 @@ use oxiroute_server::{
 use pingora::{
     apps::http_app::HttpServer,
     apps::{AcceptGate, ConnectionAdmission, ServerApp},
-    protocols::Stream,
+    protocols::{ALPN, Stream},
     proxy::http_proxy,
     server::{
         RunArgs, Server, ShutdownSignal, ShutdownSignalWatch, ShutdownWatch,
@@ -377,6 +377,7 @@ struct TcpRelay {
 struct ForwardHttp1App {
     generation: Arc<RuntimeGeneration>,
     metrics: ListenerMetrics,
+    require_h1_alpn: bool,
     request_timeout: Option<Duration>,
     service: Arc<ForwardHttp1ServicePlan>,
     challenge_store: oxiroute_acme::ChallengeStore,
@@ -512,11 +513,13 @@ impl ForwardHttp1App {
         metrics: ListenerMetrics,
         generation: Arc<RuntimeGeneration>,
         request_timeout: Option<Duration>,
+        require_h1_alpn: bool,
         challenge_store: oxiroute_acme::ChallengeStore,
     ) -> Self {
         Self {
             generation,
             metrics,
+            require_h1_alpn,
             request_timeout,
             service,
             challenge_store,
@@ -532,6 +535,12 @@ impl ServerApp for ForwardHttp1App {
 
     fn accepting(&self) -> bool {
         self.metrics.accepting() && self.generation.accepting()
+    }
+
+    fn handshake_timeout(&self) -> Duration {
+        self.service
+            .idle_timeout()
+            .min(self.service.lifetime_timeout())
     }
 
     fn admit_connection(&self) -> Option<ConnectionAdmission> {
@@ -566,9 +575,14 @@ impl ServerApp for ForwardHttp1App {
 
     async fn process_new(
         self: &Arc<Self>,
-        downstream: Stream,
+        mut downstream: Stream,
         shutdown: &ShutdownWatch,
     ) -> Option<Stream> {
+        if self.require_h1_alpn && !matches!(downstream.selected_alpn_proto(), Some(ALPN::H1)) {
+            // A TLS forward-HTTP/1 listener must not accept an unnegotiated protocol.
+            let _ = downstream.shutdown().await;
+            return None;
+        }
         let client_addr = downstream.get_socket_digest().and_then(|digest| {
             digest
                 .peer_addr()
@@ -2310,6 +2324,7 @@ fn serve_generation(
                         downstream_timeouts
                             .request_timeout_ms
                             .map(Duration::from_millis),
+                        listener_tls.is_some(),
                         challenge_store.clone(),
                     ),
                 );

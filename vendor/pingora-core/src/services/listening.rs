@@ -38,7 +38,6 @@ use pingora_runtime::current_handle;
 use pingora_timeout::timeout;
 use std::fs::Permissions;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// The type of service that is associated with a list of listening endpoints and a particular application
 pub struct Service<A> {
@@ -257,7 +256,7 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
                                 current_handle().spawn(async move {
                                     let _admission = admission;
                                     let peer_addr = io.peer_addr();
-                                    match timeout(Duration::from_secs(60), io.handshake()).await {
+                                    match timeout(app.handshake_timeout(), io.handshake()).await {
                                         Ok(handshake) => match handshake {
                                             Ok(io) => Self::handle_event(io, app, shutdown).await,
                                             Err(e) => {
@@ -308,7 +307,7 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
                     current_handle().spawn(async move {
                         let _admission = admission;
                         let peer_addr = io.peer_addr();
-                        match timeout(Duration::from_secs(60), io.handshake()).await {
+                        match timeout(app.handshake_timeout(), io.handshake()).await {
                             Ok(handshake) => {
                                 match handshake {
                                     Ok(io) => Self::handle_event(io, app, shutdown).await,
