@@ -11,7 +11,7 @@ use super::{Lowerer, Representability};
 use crate::haproxy::{
     EffectiveBind, EffectiveFrontend, EffectiveListen, EffectiveSection, EffectiveValue,
     HttpHeaderValue, HttpRequestRule, HttpResponseRule, OptionState, Provenance, ProxyMode,
-    ProxySettings, RetryOn, SectionId, SemanticBlockerKind,
+    ProxySettings, RetryOn, RetryOnTrigger, SectionId, SemanticBlockerKind,
 };
 
 use super::provenance::{deduplicate_sources, extend_sources, provenance_sources};
@@ -397,8 +397,8 @@ impl Lowerer<'_> {
                 self.lower_request_header_rules(frontend, &settings)?;
             request_headers.append(&mut explicit_request_headers);
             let response_headers = self.lower_response_header_rules(frontend, &settings)?;
-            let (max_retries, final_redispatch, delay_ms, triggers) =
-                self.http_retries(&section, &settings)?;
+            let (max_retries, final_redispatch, delay_ms) = self.http_retries(&section, &settings)?;
+            let (triggers, response_statuses) = Self::lower_retry_on(&settings);
             policies.insert(
                 *target,
                 HttpProxyPolicy {
@@ -411,6 +411,7 @@ impl Lowerer<'_> {
                         delay_ms,
                         final_redispatch,
                         triggers,
+                        response_statuses,
                         ..HttpRetryPolicy::default()
                     },
                     ..HttpProxyPolicy::default()
@@ -624,6 +625,13 @@ impl Lowerer<'_> {
         decision.require(!self.block_forward_for(frontend));
         decision.require(!self.block_forward_for(backend));
         decision.require(!self.block_redispatch(backend));
+        if let Some(retry_on) = &backend.retry_on {
+            self.block_value(
+                retry_on,
+                "HAProxy retry-on has no canonical TCP retry policy equivalent",
+            );
+            decision.require(false);
+        }
         decision.require(self.require_zero_retries(section, backend));
         for timeout in [
             frontend.timeouts.http_request.as_ref(),
@@ -718,7 +726,7 @@ impl Lowerer<'_> {
         &mut self,
         _section: &EffectiveSection,
         settings: &ProxySettings,
-    ) -> Option<(u8, bool, u64, Vec<HttpRetryTrigger>)> {
+    ) -> Option<(u8, bool, u64)> {
         let redispatch = match settings.redispatch.as_ref().map(|value| &value.value) {
             Some(OptionState::Enabled(redispatch)) if redispatch.interval.is_none() => true,
             Some(OptionState::Enabled(_)) => {
@@ -730,7 +738,7 @@ impl Lowerer<'_> {
             }
             Some(OptionState::Disabled) | None => false,
         };
-        let max_retries = if let Some(retries) = &settings.retries {
+        let configured_max_retries = if let Some(retries) = &settings.retries {
             match u8::try_from(retries.value) {
                 Ok(value) if value <= 3 => value,
                 _ => {
@@ -741,6 +749,14 @@ impl Lowerer<'_> {
         } else {
             3
         };
+        let max_retries = if matches!(
+            settings.retry_on.as_ref().map(|value| &value.value),
+            Some(RetryOn::None)
+        ) {
+            0
+        } else {
+            configured_max_retries
+        };
         let delay_ms = settings
             .timeouts
             .connect
@@ -748,32 +764,48 @@ impl Lowerer<'_> {
             .and_then(|timeout| crate::canonical::duration_milliseconds(timeout.value))
             .unwrap_or(1_000)
             .min(1_000);
-        let triggers = settings.retry_on.as_ref().map_or_else(
-            || {
+        Some((max_retries, redispatch && max_retries > 0, delay_ms))
+    }
+
+    fn lower_retry_on(settings: &ProxySettings) -> (Vec<HttpRetryTrigger>, Vec<u16>) {
+        match settings.retry_on.as_ref().map(|value| &value.value) {
+            None => (
                 vec![
                     HttpRetryTrigger::ConnectFailure,
                     HttpRetryTrigger::ConnectTimeout,
-                ]
-            },
-            |value| {
-                let mut triggers = Vec::new();
-                for trigger in value
-                    .value
-                    .iter()
-                    .map(|trigger| match trigger {
-                        RetryOn::ConnectFailure | RetryOn::ConnectRefused => {
-                            HttpRetryTrigger::ConnectFailure
+                ],
+                Vec::new(),
+            ),
+            Some(RetryOn::None) => (Vec::new(), Vec::new()),
+            Some(RetryOn::Rules {
+                triggers,
+                response_statuses,
+            }) => {
+                let mut lowered = Vec::new();
+                for trigger in triggers {
+                    match trigger {
+                        RetryOnTrigger::ConnFailure => {
+                            if !lowered.contains(&HttpRetryTrigger::ConnectFailure) {
+                                lowered.extend([
+                                    HttpRetryTrigger::ConnectFailure,
+                                    HttpRetryTrigger::ConnectTimeout,
+                                ]);
+                            }
                         }
-                    })
-                {
-                    if !triggers.contains(&trigger) {
-                        triggers.push(trigger);
+                        RetryOnTrigger::EmptyResponse => {
+                            lowered.push(HttpRetryTrigger::EmptyResponse)
+                        }
+                        RetryOnTrigger::ResponseTimeout => {
+                            lowered.push(HttpRetryTrigger::ResponseTimeout)
+                        }
+                        RetryOnTrigger::JunkResponse => {
+                            lowered.push(HttpRetryTrigger::JunkResponse)
+                        }
                     }
                 }
-                triggers
-            },
-        );
-        Some((max_retries, redispatch && max_retries > 0, delay_ms, triggers))
+                (lowered, response_statuses.clone())
+            }
+        }
     }
 
     pub(super) fn require_zero_retries(
@@ -884,7 +916,7 @@ pub(super) const fn semantic_blocker_message(kind: SemanticBlockerKind) -> &'sta
             "HAProxy proxy default changes behavior that is not represented canonically"
         }
         SemanticBlockerKind::Retry => {
-            "HAProxy retry semantics are broader than canonical safe retry policy"
+            "HAProxy retry-on form is not represented by supported canonical retry policy"
         }
         SemanticBlockerKind::Timeout => "HAProxy timeout class has no canonical timeout scope",
         SemanticBlockerKind::Tls => {

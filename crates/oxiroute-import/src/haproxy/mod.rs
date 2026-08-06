@@ -30,8 +30,8 @@ pub use resolver::{
     EffectiveServer, EffectiveValue, Externalization, ForwardFor, HttpCheck, HttpHeaderValue,
     HttpRequestCondition, HttpRequestRule, HttpResponseRule, InheritanceStep, OccurrenceId,
     OptionState, Provenance, ProxyMode, ProxySettings, Redispatch, ReferenceProvenance,
-    ReferenceTarget, RetryOn, SectionId, SemanticBlocker, SemanticBlockerKind, ServerAddress,
-    ServerOption, StatsAdminPolicy, StatsSettings, StatusRange, Timeouts, TlsAlpn,
+    ReferenceTarget, RetryOn, RetryOnTrigger, SectionId, SemanticBlocker, SemanticBlockerKind,
+    ServerAddress, ServerOption, StatsAdminPolicy, StatsSettings, StatusRange, Timeouts, TlsAlpn,
     TlsMinimumVersion, UseBackend,
 };
 pub use source_roots::{

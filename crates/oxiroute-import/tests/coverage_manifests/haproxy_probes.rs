@@ -190,6 +190,8 @@ fn assert_haproxy_lowered_subset(entries: &[DirectiveForm]) {
         "directive.haproxy.server.unix-tcp",
         "directive.haproxy.server.health-options",
         "directive.haproxy.default-server.health-options",
+        "directive.haproxy.server.passive-health",
+        "directive.haproxy.default-server.passive-health",
         "directive.haproxy.maxconn.proxy-http",
         "directive.haproxy.mode.http",
         "directive.haproxy.bind.http",
@@ -202,6 +204,10 @@ fn assert_haproxy_lowered_subset(entries: &[DirectiveForm]) {
         "directive.haproxy.server.dns-http",
         "directive.haproxy.server.unix-http",
         "directive.haproxy.retries.zero-http",
+        "directive.haproxy.retry-on.none",
+        "directive.haproxy.retry-on.triggers",
+        "directive.haproxy.retry-on.statuses",
+        "directive.haproxy.retry-on.all",
         "directive.haproxy.acl.path-beg",
         "directive.haproxy.acl.hdr-host",
         "directive.haproxy.use-backend",
@@ -488,10 +494,24 @@ fn haproxy_context_directives(entry: &DirectiveForm, context: &str) -> Vec<&'sta
         "directive.haproxy.default-server.health-options" => {
             vec!["default-server check inter 2s fastinter 1s downinter 5s rise 2 fall 3"]
         }
+        "directive.haproxy.server.passive-health" => {
+            vec![
+                "server primary 127.0.0.1:5432 check observe layer4 error-limit 5 on-error mark-down",
+            ]
+        }
+        "directive.haproxy.default-server.passive-health" => {
+            vec!["default-server check observe layer4 error-limit 5 on-error mark-down"]
+        }
         "directive.haproxy.retries.zero-tcp" | "directive.haproxy.retries.zero-http" => {
             vec!["retries 0"]
         }
         "directive.haproxy.retries.positive" => vec!["retries 3"],
+        "directive.haproxy.retry-on.none" => vec!["retry-on none"],
+        "directive.haproxy.retry-on.triggers" => {
+            vec!["retry-on conn-failure empty-response response-timeout junk-response"]
+        }
+        "directive.haproxy.retry-on.statuses" => vec!["retry-on 500 502 504"],
+        "directive.haproxy.retry-on.all" => vec!["retry-on all"],
         "directive.haproxy.timeout" => vec![
             "timeout client 30s",
             "timeout connect 30s",
@@ -752,6 +772,10 @@ fn haproxy_http_form(id: &str) -> bool {
                 | "directive.haproxy.option.forwardfor"
                 | "directive.haproxy.option.httpchk"
                 | "directive.haproxy.option.http-server-close"
+                | "directive.haproxy.retry-on.none"
+                | "directive.haproxy.retry-on.triggers"
+                | "directive.haproxy.retry-on.statuses"
+                | "directive.haproxy.retry-on.all"
                 | "directive.haproxy.http-check.expect-status"
                 | "directive.haproxy.http-check.send"
         )
@@ -784,9 +808,24 @@ fn haproxy_probe_source(entry: &DirectiveForm) -> String {
         "directive.haproxy.default-server.health-options" => inject_haproxy_defaults(
             "default-server check inter 2s fastinter 1s downinter 5s rise 2 fall 3",
         ),
+        "directive.haproxy.server.passive-health" => haproxy_tcp_base().replace(
+            "server primary 127.0.0.1:5432",
+            "server primary 127.0.0.1:5432 check observe layer4 error-limit 5 on-error mark-down",
+        ),
+        "directive.haproxy.default-server.passive-health" => inject_haproxy_defaults(
+            "default-server check observe layer4 error-limit 5 on-error mark-down",
+        ),
         "directive.haproxy.retries.positive" => {
             haproxy_tcp_base().replace("retries 0", "retries 3")
         }
+        "directive.haproxy.retry-on.none" => inject_haproxy_http_defaults("retry-on none"),
+        "directive.haproxy.retry-on.triggers" => inject_haproxy_http_defaults(
+            "retry-on conn-failure empty-response response-timeout junk-response",
+        ),
+        "directive.haproxy.retry-on.statuses" => {
+            inject_haproxy_http_defaults("retry-on 500 502 504")
+        }
+        "directive.haproxy.retry-on.all" => inject_haproxy_http_defaults("retry-on all"),
         "directive.haproxy.acl.path-beg" | "directive.haproxy.use-backend" => haproxy_http_base(),
         "directive.haproxy.acl.hdr-host" => haproxy_http_base().replace(
             "acl api path_beg /api",

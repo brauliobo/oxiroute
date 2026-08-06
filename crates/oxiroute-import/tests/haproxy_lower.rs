@@ -2179,8 +2179,72 @@ backend app
     assert_eq!(policy.retry.max_retries, 2);
     assert_eq!(
         policy.retry.triggers,
-        vec![oxiroute_config::HttpRetryTrigger::ConnectFailure]
+        vec![
+            oxiroute_config::HttpRetryTrigger::ConnectFailure,
+            oxiroute_config::HttpRetryTrigger::ConnectTimeout,
+        ]
     );
+}
+
+#[test]
+fn retry_on_status_and_response_forms_lower_to_the_canonical_policy() {
+    let source = b"defaults web
+  mode http
+  retries 2
+  retry-on conn-failure empty-response response-timeout junk-response
+  timeout connect 30s
+  timeout server 30s
+frontend public
+  bind 127.0.0.1:18080
+  default_backend app
+backend app
+  balance roundrobin
+  server app1 127.0.0.1:3000
+  server app2 127.0.0.1:3001
+";
+    let trigger = import_fixture("retry-on-triggers.cfg", source);
+    let config = trigger.value().config.as_ref().expect("trigger config");
+    let HttpRouteAction::Proxy { policy, .. } = &config.http_services[0].routes[0].action else {
+        panic!("proxy action");
+    };
+    assert_eq!(
+        policy.retry.triggers,
+        [
+            oxiroute_config::HttpRetryTrigger::ConnectFailure,
+            oxiroute_config::HttpRetryTrigger::ConnectTimeout,
+            oxiroute_config::HttpRetryTrigger::EmptyResponse,
+            oxiroute_config::HttpRetryTrigger::ResponseTimeout,
+            oxiroute_config::HttpRetryTrigger::JunkResponse,
+        ]
+    );
+    assert!(policy.retry.response_statuses.is_empty());
+
+    let status_source = String::from_utf8(source.to_vec())
+        .expect("trigger source")
+        .replace(
+            "retry-on conn-failure empty-response response-timeout junk-response",
+            "retry-on 500 502 504",
+        );
+    let status = import_fixture("retry-on-statuses.cfg", status_source.as_bytes());
+    let config = status.value().config.as_ref().expect("status config");
+    let HttpRouteAction::Proxy { policy, .. } = &config.http_services[0].routes[0].action else {
+        panic!("proxy action");
+    };
+    assert!(policy.retry.triggers.is_empty());
+    assert_eq!(policy.retry.response_statuses, [500, 502, 504]);
+    assert_has_provenance(
+        status.value(),
+        "/http_services/0/routes/0/action/policy/retry/response_statuses",
+    );
+
+    let all_source = status_source.replace("retry-on 500 502 504", "retry-on all");
+    let all = import_fixture("retry-on-all.cfg", all_source.as_bytes());
+    let config = all.value().config.as_ref().expect("all config");
+    let HttpRouteAction::Proxy { policy, .. } = &config.http_services[0].routes[0].action else {
+        panic!("proxy action");
+    };
+    assert_eq!(policy.retry.triggers.len(), 5);
+    assert_eq!(policy.retry.response_statuses.len(), 100);
 }
 
 #[test]
@@ -2188,7 +2252,7 @@ fn unsupported_retry_on_semantics_remain_blocking() {
     let source = b"defaults web
   mode http
   retries 1
-  retry-on response-timeout
+  retry-on 0rtt-rejected
   timeout connect 30s
   timeout server 30s
 frontend public
@@ -2203,7 +2267,7 @@ backend app
     assert!(lowered.value().config.is_none());
     assert_blocker(
         lowered.diagnostics(),
-        "HAProxy retry semantics are broader than canonical safe retry policy",
+        "HAProxy retry-on form is not represented by supported canonical retry policy",
     );
 }
 

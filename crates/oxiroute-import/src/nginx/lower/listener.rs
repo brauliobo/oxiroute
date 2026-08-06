@@ -2232,6 +2232,9 @@ impl Lowerer {
             HttpRetryTrigger::ConnectFailure => 0,
             HttpRetryTrigger::ConnectTimeout => 1,
             HttpRetryTrigger::RefusedStream => 2,
+            HttpRetryTrigger::EmptyResponse => 3,
+            HttpRetryTrigger::ResponseTimeout => 4,
+            HttpRetryTrigger::JunkResponse => 5,
         });
         triggers.dedup();
         let configured_tries =

@@ -766,7 +766,7 @@ defaults shared
   mode http
   log-format custom
   default-server weight 20
-  retry-on response-timeout
+  retry-on 0rtt-rejected
   timeout queue 5s
 frontend public
   bind 127.0.0.1:8080

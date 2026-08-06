@@ -279,6 +279,10 @@ impl Lowerer<'_> {
                         policy_path.field("retry").field("triggers"),
                         sources.clone(),
                     );
+                    self.record(
+                        policy_path.field("retry").field("response_statuses"),
+                        sources.clone(),
+                    );
                 }
                 HttpRouteAction::FixedResponse { .. } => {
                     for field in ["status", "body", "headers"] {
@@ -357,6 +361,12 @@ impl Lowerer<'_> {
                 self.record(retry_path.field("body_safety"), sources.to_vec());
                 for index in 0..policy.retry.triggers.len() {
                     self.record(retry_path.field("triggers").index(index), sources.to_vec());
+                }
+                for index in 0..policy.retry.response_statuses.len() {
+                    self.record(
+                        retry_path.field("response_statuses").index(index),
+                        sources.to_vec(),
+                    );
                 }
             }
             HttpRouteAction::FixedResponse { headers, .. } => {
