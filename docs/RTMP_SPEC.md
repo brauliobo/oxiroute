@@ -288,6 +288,11 @@ The bearer-authenticated management service exposes these bounded RTMP views:
 | `/api/v1/rtmp/clients/<session-id>/publisher/drop` | `POST` | drop only a publisher session |
 | `/api/v1/rtmp/clients/<session-id>/subscriber/drop` | `POST` | drop only a subscriber session |
 
+Client responses include a bounded `messageStreams` array. Each entry contains the RTMP message-stream
+ID, application, stream name without query arguments, and `publisher` or `subscriber` role. A client
+may own at most eight message streams; one ID may have only one role, and duplicate, conflicting, or
+unknown IDs fail closed without changing catalog ownership.
+
 All revision fields are decimal strings. State-changing requests require exactly one
 `If-Rtmp-Session-Revision` header. The runtime checks the session revision and current role before
 queuing a disconnect; publisher catalog ownership remains session-ID qualified, so a stale request
@@ -483,22 +488,25 @@ described below are implemented, not evidence that every listed component exists
    services retain a 1 MiB default and lower bounded `max_message` values from RTMP or server scope.
 4. Bounded AMF0 codec and command decoder.
 5. Ordered command middleware for connect, createStream, publish, play, closeStream, and deleteStream.
-6. Application stream registry with one publisher, subscribers, cached metadata/AAC/AVC headers, and keyframe state.
+6. Application stream registry with publisher and subscriber roles, cached metadata/AAC/AVC headers,
+   keyframe state, and per-message-stream ownership.
 7. Bounded per-subscriber output queues with priority/drop/resynchronization policy.
 8. Independent relay, record, VOD, callback, segmenter, exec, auto-push, stats, and control
    components. Auto-push is a framed local-worker transport, not an arbitrary RTMP endpoint.
 
-The first compatibility mode uses one RTMP message stream per connection, ID 1, matching
-the reference assumption. Multi-message-stream support is a later explicit extension.
+Each connection may own at most eight RTMP message streams. The vendored `rml_rtmp` adapter exposes
+the message-stream ID on publish/play lifecycle and media events; the session adapter keys every
+role, callback update, fanout subscription, catalog registration, teardown, and management snapshot
+by that ID. A message stream cannot be reused for a second role until its first role has finished.
 
 The runtime catalog publishes immutable active-stream snapshots with
 restart-safe stream/session/recorder identities, publisher/subscriber counts, absolute media
-samples, and configured recorder transitions. The Pingora RTMP listener accepts one live
-publisher or viewer role per connection for explicitly configured applications. A bounded fanout
-hub caches metadata/AAC/AVC headers, gates viewers on future keyframes, resynchronizes saturated
-viewers independently, resets on publisher restart, and detaches both roles on stop, disconnect,
-shutdown, or protocol failure. Playback serialization happens after queue extraction, outside hub
-locks, in bounded drain turns with transport write deadlines.
+samples, and configured recorder transitions. The Pingora RTMP listener accepts multiple bounded
+live publisher or viewer roles per connection for explicitly configured applications. A bounded
+fanout hub caches metadata/AAC/AVC headers, gates viewers on future keyframes, resynchronizes
+saturated viewers independently, resets on publisher restart, and detaches each role by
+message-stream ID on stop, disconnect, shutdown, or protocol failure. Playback serialization happens
+after queue extraction, outside hub locks, in bounded drain turns with transport write deadlines.
 
 Each publisher incarnation receives the configured recorder definitions. Continuous recorders enter
 `starting` during publisher registration and open output on the first recordable media. Manual
@@ -605,9 +613,10 @@ implemented for the subset above; per-directive lowering and fixture completenes
 ### Slice 1: live interoperability
 
 Status: partial. A pinned `rml_rtmp` 0.8.0 adapter now provides simple/complex handshakes, chunk
-transport, connect/createStream/live-publish/play command handling, duplicate-publisher rejection,
-bounds for inbound chunks and service-configured assembled messages, configured acknowledgement
-windows, bounded media fanout, media observations, and lifecycle cleanup. The listener caps
+transport, connect/createStream/live-publish/play command handling, bounded multi-message-stream
+publisher/subscriber roles, duplicate-publisher rejection, bounds for inbound chunks and
+service-configured assembled messages, configured acknowledgement windows, bounded media fanout,
+media observations, and lifecycle cleanup. The listener caps
 requested inbound chunks at 1 MiB and canonical assembled messages at 8 MiB. Manual FFmpeg
 publishing and native publish/play wire tests pass. Checked-in process-level FFmpeg consume
 acceptance, exhaustive chunk fixtures, and OBS acceptance remain before this slice is complete.
@@ -617,7 +626,8 @@ acceptance, exhaustive chunk fixtures, and OBS acceptance remain before this sli
 - Bounded inbound chunk and service-configured `max_message` ceilings, ACK window, ping, and output
   queue bounds.
 - AMF0 `connect`, `createStream`, `publish`, `play`, `closeStream`, `deleteStream`.
-- One publisher and many subscribers, duplicate-publisher rejection, idle subscribers.
+- Bounded publisher/subscriber roles across multiple message-stream IDs, duplicate/conflicting-role
+  rejection, exact teardown, idle subscribers, and no cross-stream media leakage.
 - Metadata/AAC/AVC header cache, future keyframe gating, queue saturation, and restart.
 - OBS/FFmpeg publish and FFmpeg/ffplay consume interoperability.
 
@@ -650,6 +660,7 @@ worker; broader directive parity and production crash campaigns remain blocked.
 - Exec profiles are allowlisted, no-shell, bounded, and fail closed when the requested isolation
   policy is unavailable.
 - Per-listener, application, publisher, subscriber, message, queue, and segment limits are explicit.
+- RTMP message streams are bounded per connection; malformed or unknown stream IDs fail closed.
 - Malformed publisher input cannot produce unbounded subscriber memory or unsafe media files.
 
 ## Test strategy
