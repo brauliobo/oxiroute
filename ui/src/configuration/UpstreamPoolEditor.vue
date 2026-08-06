@@ -10,9 +10,11 @@ header.form-heading
     input(type="text" v-model="pool.name")
   label.field(data-field="upstream_pools[].algorithm")
     span Selection algorithm
-    select(v-model="pool.algorithm")
+    select(:value="algorithmType" @change="setAlgorithm")
       option(value="round_robin") Round robin
+      option(value="weighted_round_robin") Weighted round robin
       option(value="least_connections") Least connections
+      option(value="first") First server
 fieldset.route-list.endpoint-editor(data-field="upstream_pools[].servers")
   .route-heading
     legend Servers
@@ -31,6 +33,26 @@ fieldset.route-list.endpoint-editor(data-field="upstream_pools[].servers")
       @update:endpoint="replaceEndpoint(serverIndex, $event)"
       @remove="removeServer(serverIndex)"
     )
+    label.field.weight-field(
+      v-if="weightedRoundRobin"
+      data-field="upstream_pools[].algorithm<weighted_round_robin>.weights[]"
+    )
+      span Server weight
+      input(
+        :value="weightFor(serverIndex)"
+        type="number"
+        inputmode="numeric"
+        :min="UPSTREAM_WEIGHT_MIN"
+        :max="UPSTREAM_WEIGHT_MAX"
+        step="1"
+        required
+        :aria-describedby="weightErrors[serverIndex] ? `server-weight-error-${serverIndex}` : undefined"
+        :aria-invalid="weightErrors[serverIndex] ? 'true' : undefined"
+        @input="clearWeightError(serverIndex, $event)"
+        @change="setWeight(serverIndex, $event)"
+      )
+      small Relative capacity for weighted round robin. Use an integer from 1 to 100.
+      p.field-error(v-if="weightErrors[serverIndex]" :id="`server-weight-error-${serverIndex}`" role="alert") {{ weightErrors[serverIndex] }}
 fieldset.object-block(data-field="upstream_pools[].health_check")
   legend Health check
   label.enable-row
@@ -138,9 +160,18 @@ fieldset.object-block(data-field="upstream_pools[].http_versions")
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 
-import type { L4ServiceConfig, UpstreamEndpoint, UpstreamPoolConfig, UpstreamServerConfig } from '../config'
+import {
+  UPSTREAM_WEIGHT_MAX,
+  UPSTREAM_WEIGHT_MIN,
+  type L4ServiceConfig,
+  type UpstreamAlgorithm,
+  type UpstreamEndpoint,
+  type UpstreamPoolConfig,
+  type UpstreamServerConfig,
+  type WeightedRoundRobinAlgorithm,
+} from '../config'
 import UpstreamEndpointField from './UpstreamEndpointField.vue'
 
 const props = defineProps<{
@@ -153,7 +184,12 @@ const emit = defineEmits<{
   remove: []
 }>()
 
+const weightErrors = ref<Record<number, string>>({})
 const hasUnixEndpoint = computed(() => props.pool.servers.some(({ endpoint }) => endpoint.type === 'unix'))
+const weightedRoundRobin = computed(() => isWeightedRoundRobin(props.pool.algorithm))
+const algorithmType = computed(() => weightedRoundRobin.value
+  ? 'weighted_round_robin'
+  : props.pool.algorithm)
 const healthCheckDisabledReason = computed(() => {
   if (hasUnixEndpoint.value) return 'The server does not support health checks for Unix endpoints.'
   if (props.pool.tls !== null) return 'The server does not support active health checks with upstream TLS.'
@@ -176,12 +212,58 @@ function newServer(): UpstreamServerConfig {
 
 function addServer(): void {
   props.pool.servers.push(newServer())
+  if (isWeightedRoundRobin(props.pool.algorithm)) props.pool.algorithm.weights.push(UPSTREAM_WEIGHT_MIN)
   emit('changed')
 }
 
 function removeServer(index: number): void {
   props.pool.servers.splice(index, 1)
+  if (isWeightedRoundRobin(props.pool.algorithm)) props.pool.algorithm.weights.splice(index, 1)
+  weightErrors.value = {}
   normalizeEndpointRestrictions()
+  emit('changed')
+}
+
+function setAlgorithm(event: Event): void {
+  const value = (event.target as HTMLSelectElement).value
+  if (value === 'weighted_round_robin') {
+    props.pool.algorithm = {
+      type: 'weighted_round_robin',
+      weights: props.pool.servers.map(() => UPSTREAM_WEIGHT_MIN),
+    }
+  } else if (value === 'round_robin' || value === 'least_connections' || value === 'first') {
+    props.pool.algorithm = value
+  }
+  weightErrors.value = {}
+  emit('changed')
+}
+
+function weightFor(index: number): number {
+  return isWeightedRoundRobin(props.pool.algorithm)
+    ? props.pool.algorithm.weights[index] ?? UPSTREAM_WEIGHT_MIN
+    : UPSTREAM_WEIGHT_MIN
+}
+
+function clearWeightError(index: number, event: Event): void {
+  const input = event.target as HTMLInputElement
+  delete weightErrors.value[index]
+  input.setCustomValidity('')
+}
+
+function setWeight(index: number, event: Event): void {
+  const input = event.target as HTMLInputElement
+  const value = Number(input.value)
+  if (!Number.isInteger(value) || value < UPSTREAM_WEIGHT_MIN || value > UPSTREAM_WEIGHT_MAX) {
+    const message = `Weight must be an integer from ${UPSTREAM_WEIGHT_MIN} to ${UPSTREAM_WEIGHT_MAX}.`
+    weightErrors.value[index] = message
+    input.setCustomValidity(message)
+    return
+  }
+  if (!weightedRoundRobin.value) return
+  delete weightErrors.value[index]
+  input.setCustomValidity('')
+  if (!isWeightedRoundRobin(props.pool.algorithm)) return
+  props.pool.algorithm.weights[index] = value
   emit('changed')
 }
 
@@ -280,4 +362,28 @@ function normalizeHttpVersions(changed: 'min' | 'max'): void {
 function nullableInput(event: Event): string | null {
   return (event.target as HTMLInputElement).value || null
 }
+
+function isWeightedRoundRobin(algorithm: UpstreamAlgorithm): algorithm is WeightedRoundRobinAlgorithm {
+  return typeof algorithm === 'object' && algorithm.type === 'weighted_round_robin'
+}
 </script>
+
+<style scoped>
+.weight-field {
+  margin-top: 16px;
+}
+
+.field-error {
+  margin: 0;
+  color: #ff9b88;
+  font-size: 0.7rem;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.45;
+  text-transform: none;
+}
+
+.weight-field input:invalid {
+  border-color: #ff745c;
+}
+</style>

@@ -80,4 +80,44 @@ describe('configuration editor fields', () => {
     expect(wrapper.get('[data-field="upstream_pools[].health_check"] input').attributes()).toHaveProperty('disabled')
     expect(wrapper.get('[data-field="upstream_pools[].tls"] input').attributes()).toHaveProperty('disabled')
   })
+
+  it('edits bounded weights only for weighted round-robin pools', async () => {
+    const pool: UpstreamPoolConfig = {
+      name: 'weighted-origins',
+      servers: [
+        { name: 'primary', endpoint: { type: 'socket', address: '127.0.0.1:3000' }, max_connections: null, dns_resolution: 'on_connect' },
+        { name: 'secondary', endpoint: { type: 'socket', address: '127.0.0.1:3001' }, max_connections: null, dns_resolution: 'on_connect' },
+      ],
+      algorithm: { type: 'weighted_round_robin', weights: [3, 1] },
+      health_check: null,
+      passive_health: null,
+      tls: null,
+      http_versions: { min: '1.1', max: '1.1' },
+      queue_timeout_ms: null,
+      connect_timeout_ms: null,
+      server_timeout_ms: null,
+      connection_reuse: 'safe',
+    }
+    const wrapper = mount(UpstreamPoolEditor, { props: { pool, l4Services: [] } })
+
+    const weights = wrapper.findAll('[data-field^="upstream_pools[].algorithm<weighted_round_robin>.weights"] input')
+    expect(weights).toHaveLength(2)
+    expect(weights[0]?.attributes()).toMatchObject({ min: '1', max: '100', step: '1' })
+
+    await weights[0]!.setValue(101)
+    expect(pool.algorithm).toEqual({ type: 'weighted_round_robin', weights: [3, 1] })
+    expect(wrapper.get('.field-error').text()).toContain('1 to 100')
+
+    await weights[0]!.setValue(25)
+    expect(pool.algorithm).toEqual({ type: 'weighted_round_robin', weights: [25, 1] })
+
+    await wrapper.get('.endpoint-editor .add-row').trigger('click')
+    expect(pool.algorithm).toEqual({ type: 'weighted_round_robin', weights: [25, 1, 1] })
+    await wrapper.get('.endpoint-editor .route-card .danger-link').trigger('click')
+    expect(pool.algorithm).toEqual({ type: 'weighted_round_robin', weights: [1, 1] })
+
+    await wrapper.get('[data-field="upstream_pools[].algorithm"] select').setValue('round_robin')
+    expect(wrapper.findAll('[data-field^="upstream_pools[].algorithm<weighted_round_robin>.weights"]').length).toBe(0)
+    expect(pool.algorithm).toBe('round_robin')
+  })
 })

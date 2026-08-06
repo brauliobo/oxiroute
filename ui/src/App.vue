@@ -406,6 +406,7 @@ const healthFailureLabels: Record<HealthFailure, string> = {
 }
 const poolAlgorithmLabels: Record<MonitoringPool['algorithm'], string> = {
   round_robin:       'Round robin',
+  weighted_round_robin: 'Weighted round robin',
   least_connections: 'Least connections',
   first:             'First server',
 }
