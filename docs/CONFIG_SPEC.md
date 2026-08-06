@@ -502,14 +502,17 @@ policies, nginx suffix routing, bounded headers/auth/cookies, static extensions,
 logging, named-server capacity and bounded queue waits, pool deadlines/reuse, startup/on-connect DNS,
 all three balancing algorithms, and the extended health policy. Buffering-on and active cache
 policies fail startup. RTMP relay/fanout controls and canonical named-recorder policies compile into
-the current runtime; unsupported native RTMP semantics and enhanced codecs remain blocked. Importers
-remain separate adapters, except that finalized nginx/HAProxy/Squid references can be composed by
+the current runtime, including bounded HLS/DASH media, same-daemon auto-push, and isolated RTMP
+exec profiles; unsupported native RTMP semantics and enhanced codecs remain blocked. Importers
+remain separate adapters, except that finalized nginx/HAProxy/Apache/Squid/Varnish references can be
+composed by
 the declarative source resolver where documented.
 
 ### Downstream certificates and TLS profiles
 
-`certificates` and `tls_profiles` default to empty collections. A certificate source is either a
-direct file pair or an operator-owned Certbot live/archive lineage:
+`certificates` and `tls_profiles` default to empty collections. A certificate source may be a direct
+file pair, an operator-owned Certbot live/archive lineage, a managed ACME state root, or a labeled
+self-signed development identity:
 
 ```lua
 certificates = {
@@ -631,10 +634,10 @@ The current certificate and profile rules are:
   generation publication cannot mix key and chain material and existing connections retain their
   selected generation. Publication is independent per identity and requires the same certificate
   identity and exact declared DNS-name set.
-  Direct-file identities remain startup snapshots. Configured Certbot identities have a
-  process-lifetime watcher that validates and atomically publishes complete replacement
-  generations. No canonical-config watcher, direct-file watcher, self-signed generator, managed
-  ACME job, or certificate-management API currently publishes replacements.
+Direct-file identities remain startup snapshots. Configured Certbot identities have a process-lifetime
+watcher that validates and atomically publishes complete replacement generations. Managed ACME jobs
+and certificate-management API actions also publish validated replacement generations; canonical-config,
+direct-file, and self-signed replacement watchers remain absent.
 
 Downstream HTTP/2 is available only on a TLS listener whose ALPN policy includes `h2`. Plaintext
 HTTP listeners are HTTP/1.1-only; h2c is not supported. gRPC has no separate configuration object:
@@ -772,7 +775,7 @@ are not admitted to the cache.
 This schema is pre-release and may change without compatibility code until a public release
 persists it.
 
-## Future canonical model
+## Canonical model and future extensions
 
 The model will grow only as a milestone needs each field:
 
@@ -844,13 +847,17 @@ listener behavior.
 certificates = {
   {
     name = "public-example",
-    source = "acme", -- acme | files | self_signed
-    domains = { "example.com", "www.example.com" },
-    acme = {
-      directory = "https://acme-v02.api.letsencrypt.org/directory",
-      email = "ops@example.com",
-      challenge = "http-01",
+    source = {
+      type = "acme_managed",
+      directory_url = "https://acme-v02.api.letsencrypt.org/directory",
+      state_root = "/var/lib/oxiroute/acme",
+      contacts = { "mailto:ops@example.com" },
+      terms_agreed = true,
+      challenge = "tls_alpn01",
+      key_type = "ecdsa_p256",
+      allowed_dns_suffixes = { "example.com" },
     },
+    dns_names = { "example.com", "www.example.com" },
   },
 }
 
@@ -868,7 +875,7 @@ tls_profiles = {
 Secrets SHOULD be references to protected files, environment-independent secret stores,
 or plugin credentials. Canonical output MUST NOT inline private keys or DNS API tokens.
 
-The canonical managed source uses `challenge = "http01"` or `challenge = "dns01"`. DNS-01 sources
+The canonical managed source uses `challenge = "http01"`, `"dns01"`, or `"tls_alpn01"`. DNS-01 sources
 must provide an exact statically linked provider name, a protected credential file, and a bounded
 `timeout_seconds` value. A wildcard DNS name is valid only with DNS-01; the configured
 `allowed_dns_suffixes` policy applies to the wildcard's base name. Credential contents are never
@@ -879,8 +886,9 @@ revision and the newest retained revisions.
 ### RTMP service and recorder
 
 The current RTMP model supports live applications, structured push/pull targets, bounded fanout,
-service outbound policy, bounded HTTP callbacks, named local/HTTP VOD sources, and canonical
-recorder policies. Media segmenters remain future fields. The strict nginx-RTMP
+service outbound policy, bounded HTTP callbacks, named local/HTTP VOD sources, HLS/DASH media
+segmenter policies, same-daemon auto-push, isolated exec profiles, and canonical recorder policies.
+The strict nginx-RTMP
 importer retains source tokens, effective inheritance, terminal decisions, and provenance for its
 supported subset as defined in `RTMP_SPEC.md`.
 
@@ -901,6 +909,8 @@ rtmp_services = {
   {
     name = "live",
     outbound_chunk_size = 4096,
+    max_inbound_message_size = 8388608,
+    ack_window_size = 5000000,
     access_log = { type = "disabled" },
     applications = {
       {
@@ -935,7 +945,10 @@ recorders, one configuration accepts at most 256 recorders and 64 normalized rec
 recorders require `live = true`.
 
 `outbound_chunk_size` defaults to 4096, is bounded to 1 MiB, and is announced by the server session
-on wire. Push and pull targets are unique structured host, port, application, and stream tuples;
+on wire. `max_inbound_message_size` defaults to 8 MiB, is bounded to 8 MiB, and rejects an
+assembled inbound RTMP message before its payload is allocated. `ack_window_size` defaults to
+5,000,000 bytes and is announced to the peer during session startup. Push and pull targets are
+unique structured host, port, application, and stream tuples;
 they are resolved and pinned during runtime planning, reject any resolved direct listener loop, and
 are valid only for live applications. Application `$name` expands to the exact source stream name;
 the destination stream name is always the exact source stream name. Each publisher incarnation owns

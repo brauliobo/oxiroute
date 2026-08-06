@@ -194,13 +194,16 @@ The current contract is:
   readiness and metrics probes, bounded event polling, and external Certbot lineage
   reconciliation.
 - `partial`: reverse HTTP and TCP/UDP relay with bounded explicit PROXY protocol propagation, HTTP/1 and reverse/forward HTTP/3 proxying, RTMP live/recording/relay slices,
-   managed ACME HTTP-01/DNS-01 issuance, wildcard renewal, bounded reverse HTTP cache, structured access logs, native
-  nginx/HAProxy/Squid/Varnish import subsets, and the Vue control plane.
+  bounded authenticated SSE delivery, managed ACME HTTP-01/DNS-01/TLS-ALPN-01 issuance, wildcard
+  renewal, bounded reverse HTTP cache, structured access logs, RTMP statistics/session controls,
+  HLS/DASH/isolated-exec/auto-push slices, and native nginx/HAProxy/Apache/Squid/Varnish import
+  subsets with the Vue control plane.
 - `foundation`: forward HTTP/2 protocol components,
-  and supervised replacement components that are not the default direct `serve` path.
-- `planned`: broader cache conformance, broader managed ACME authenticators, SSE, and broader
-  protocol/import compatibility.
-- `research`: remote administration, broader DNS provider policy, TLS-ALPN-01, external key providers, and
+  and supervised replacement components, including typed UDP and QUIC/H3 adoption, that are tested
+  but are not the default direct `serve` path.
+- `planned`: broader cache conformance, broader managed ACME authenticators, durable event history,
+  and broader protocol/import compatibility.
+- `research`: remote administration, broader DNS provider policy, external key providers, and
   transparent interception through a separate privileged helper.
 - `not-planned`: unrestricted Lua and runtime user-provided templates.
 - `out-of-scope`: firewalling, NAT, packet forwarding, source spoofing, and other kernel-owned
@@ -209,3 +212,21 @@ The current contract is:
 Broader goals above remain specifications, not current capability claims. A feature moves to
 `stable` only when its implementation, failure behavior, observability, reload/rotation behavior,
 and interoperability evidence meet the applicable release gate.
+
+## Remaining release gates
+
+The current narrow implementation is not a production-parity claim. The following evidence is
+required before the affected partial or foundation paths can become a broader supported contract:
+
+- Active traffic: reload and drain with long-lived HTTP, H2, H3, TCP, UDP, RTMP, and SSE activity,
+  including no-new-work admission after GOAWAY/quiesce, deadline/cancellation behavior, and old
+  generation retention.
+- ACME staging: CA-staging issuance and renewal for HTTP-01, DNS-01, and TLS-ALPN-01, including
+  listener/deployment checks, failed challenge cleanup, rollback, and real certificate activation.
+- Interoperability: independent HTTP/H2/H3/TLS clients and origins, FFmpeg/OBS RTMP publish/play,
+  and representative Apache, HAProxy, Squid, and Varnish migration cases beyond synthetic fixtures.
+- Fuzz and crash: bounded runs of every checked-in parser harness, crash-corpus triage, and failure
+  injection for media workers, exec workers, reload activation, and listener supervision.
+- Production supervision: packaged Linux master/worker replacement and rollback with active UDP and
+  H3 traffic, descriptor ownership, drain, restart, and crash recovery. Direct `serve` remains the
+  default until this evidence exists.

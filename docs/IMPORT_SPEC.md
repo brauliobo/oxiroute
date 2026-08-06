@@ -270,7 +270,7 @@ HAProxy `-f` file/directory ordering and named `defaults from` inheritance MUST 
 
 ## Apache httpd
 
-Target support:
+Current strict subset:
 
 - `Listen`, `<VirtualHost>` with explicit IP/port identities, `ServerName`, and exact `ServerAlias`.
 - `SSLEngine`, certificate file, and key file directives.
@@ -332,8 +332,9 @@ When native binaries are available, the importer SHOULD optionally run their rea
 validators (`nginx -t`, `haproxy -c`, `httpd -t`) before translation. Native validation is
 additional evidence, not proof that translated behavior is equivalent.
 
-The planned complete corpus groups fixtures by product and category: `valid`, `invalid`,
-`unsupported`, and `edge`. Each fixture will record its expected include graph, canonical model,
-diagnostics, and optional native-validator output. Current synthetic nginx, HAProxy, Squid, and
-Varnish fixtures live under `crates/oxiroute-import/tests/fixtures/<product>/`; authenticated
-sanitized host trees and metadata live under `crates/oxiroute-import/tests/fixtures/live/<host>/`.
+The bounded corpus groups fixtures by product and category: `valid`, `invalid`, `unsupported`, and
+`edge`. Each fixture records its expected include graph, canonical model, diagnostics, and optional
+native-validator output. Current synthetic nginx, HAProxy, Squid, Apache, and Varnish fixtures live
+under `crates/oxiroute-import/tests/fixtures/<product>/`; authenticated sanitized host trees and
+metadata live under `crates/oxiroute-import/tests/fixtures/live/<host>/`. Coverage manifests and
+focused importer tests remain the evidence boundary; they do not claim complete native parity.

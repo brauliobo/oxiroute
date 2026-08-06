@@ -40,8 +40,8 @@ arguments.
 
 KDL, HOCON, and UCI are bounded declarative formats. Lua is text-only and runs without standard
 libraries, filesystem, process, network, package, dynamic-load, or debug facilities. Native
-references are an explicit exception: they read named nginx, HAProxy, or Squid source graphs with
-the daemon's filesystem permissions. They do not invoke a shell or native binary.
+references are an explicit exception: they read named nginx, HAProxy, Apache, Squid, or Varnish source
+graphs with the daemon's filesystem permissions. They do not invoke a shell or native binary.
 
 ## Network Policy
 

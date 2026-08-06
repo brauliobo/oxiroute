@@ -18,7 +18,7 @@ for production traffic.<br>
 | Run a local reverse proxy | [User quickstart](docs/user/GETTING_STARTED.md) |
 | Operate a running daemon | [Operations guide](docs/user/OPERATING.md) and [management CLI](docs/MANAGEMENT_CLI.md) |
 | Understand the browser dashboard | [Dashboard guide](docs/user/DASHBOARD.md) |
-| Migrate nginx, HAProxy, or Squid | [Migration guide](docs/user/MIGRATION.md) and [import specification](docs/IMPORT_SPEC.md) |
+| Migrate nginx, HAProxy, Apache, Squid, or Varnish | [Migration guide](docs/user/MIGRATION.md) and [import specification](docs/IMPORT_SPEC.md) |
 | Publish or record RTMP | [RTMP guide](docs/user/RTMP.md) and [RTMP specification](docs/RTMP_SPEC.md) |
 | Integrate with the control plane | [API reference](docs/reference/API.md) and [API/UI specification](docs/API_UI_SPEC.md) |
 | Change the code | [Developer guide](docs/developer/README.md) |
@@ -50,12 +50,13 @@ goal. These are the current building blocks:
   metrics, readiness, bounded event polling, redacted HTTP JSONL access logs, HAProxy-oriented
   statistics, and a responsive Vue 3/Pug dashboard.
 - **RTMP live path:** publish/play, simple and complex handshakes, bounded fanout, keyframe gating,
-  stream inventory, legacy AVC/AAC FLV recording, named continuous/manual recorder policies, a
-  fixed 8 MiB inbound assembled-message ceiling, static push relay, and exact-ID bearer-protected
-  local controls.
-- **Native migration:** bounded nginx, HAProxy, and Squid import/report/preview paths, with source
-  provenance and blocking diagnostics rather than silent lossy conversion. Complete nginx roots
-  can compose the strict nginx-RTMP subset into the canonical runtime through native references.
+  stream inventory, legacy AVC/AAC FLV recording, named continuous/manual recorder policies, bounded
+  HLS/DASH output, bounded VOD, same-daemon auto-push, isolated exec profiles, a fixed 8 MiB inbound
+  assembled-message ceiling, static push relay, and exact-ID bearer-protected local controls.
+- **Native migration:** bounded nginx, HAProxy, Apache, Squid, and Varnish import/report/preview
+  paths, with source provenance and blocking diagnostics rather than silent lossy conversion.
+  Complete nginx roots can compose the strict nginx-RTMP subset into the canonical runtime through
+  native references.
 - **Supervision foundations:** platform-neutral replacement state machines and a staged Linux master,
   worker, and launcher path. The default public entry point remains direct `oxiroute serve` while the
   supervised production path is gated.
@@ -177,10 +178,10 @@ The important current exclusions are:
 - HTTP caching is partial: bounded memory and persistent GET/HEAD caching, revalidation, collapsed
   fills, authenticated purge, and listener cache metrics are active for reverse HTTP and eligible
   HTTP/1 forward requests; broader conformance remains.
-- Managed ACME is partial: HTTP-01 issuance/renewal, certificate status, and configuration UI are
-  implemented; certificate upload and DNS-01/TLS-ALPN-01 remain absent. External Certbot lineage
-  reconciliation is also implemented.
-- No complete nginx, HAProxy, Squid, Varnish, or nginx-RTMP compatibility. Importers finalize only
+- Managed ACME is partial: HTTP-01, DNS-01, and TLS-ALPN-01 orchestration, certificate status,
+  renewal controls, and configuration UI are implemented; CA-staging and production active-traffic
+  evidence remain release gates. External Certbot lineage reconciliation is also implemented.
+- No complete nginx, HAProxy, Apache, Squid, Varnish, or nginx-RTMP compatibility. Importers finalize only
   audited, representable subsets and fail closed for blocking semantics; strict nginx-RTMP results
   are integrated through complete-root import and native references where documented.
 - No remote multi-user management mode. Recognized management/API routes require bearer
@@ -197,7 +198,7 @@ See [COMPATIBILITY.md](docs/COMPATIBILITY.md) for the capability-by-capability m
 | `crates/oxiroute-server` | CLI, daemon, listeners, generations, API, monitoring, topology, TLS, and runtime wiring |
 | `crates/oxiroute-config` | Typed canonical model, defaults, validation, and restricted Lua |
 | `crates/oxiroute-config-source` | KDL, HOCON, UCI, templates, native-reference resolution, and rendering |
-| `crates/oxiroute-import` | nginx, HAProxy, Squid, Varnish, provenance, diagnostics, and lowering |
+| `crates/oxiroute-import` | nginx, HAProxy, Apache, Squid, Varnish, provenance, diagnostics, and lowering |
 | `crates/oxiroute-forward-proxy` | Protocol-neutral target parsing, authentication, destination policy, and bounded tunnels |
 | `crates/oxiroute-rtmp` | RTMP sessions, fanout, recorder store/workers, FLV, directives, and relays |
 | `crates/oxiroute-cache` | Bounded RFC-aware memory and persistent cache core used by reverse HTTP and eligible forward HTTP/1 requests |

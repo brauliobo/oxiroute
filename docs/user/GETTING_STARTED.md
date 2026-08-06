@@ -44,9 +44,12 @@ binds `127.0.0.1:8080` and uses an active HTTP health check against `/healthz` o
 ## Verify It
 
 ```sh
+TOKEN=$(tr -d '\r\n' < /tmp/oxiroute-management.token)
 curl -i http://127.0.0.1:8080/healthz
-curl -s http://127.0.0.1:9080/api/v1/monitoring | jq .
-curl -s http://127.0.0.1:9080/api/v1/topology | jq '.state, (.nodes | length), (.edges | length)'
+curl -s -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:9080/api/v1/monitoring | jq .
+curl -s -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:9080/api/v1/topology | jq '.state, (.nodes | length), (.edges | length)'
 ```
 
 Open `http://127.0.0.1:9080/` for the dashboard. The first page is the runtime observatory. The

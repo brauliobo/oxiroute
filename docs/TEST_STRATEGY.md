@@ -15,9 +15,9 @@ The initial repository followed this sequence:
 
 ## Test layers
 
-The lists below distinguish checked-in coverage from planned release gates. There are no checked-in
-fuzz targets; the real-browser runner and CI gates are checked in under `ui/tests/browser/` and
-`.github/workflows/`.
+The lists below distinguish checked-in coverage from planned release gates. Bounded parser fuzz
+harnesses and the real-browser runner are checked in under `fuzz/`, `ui/tests/browser/`, and
+`.github/workflows/`; an optional fuzz smoke is not a full fuzz campaign.
 
 ### Unit and property tests
 
@@ -42,7 +42,7 @@ fuzz targets; the real-browser runner and CI gates are checked in under `ui/test
   surrogate-tag purge, and rejection of foreign prepared entries before memory or disk admission.
   Reverse HTTP integration covers memory reuse, persistent restart reuse, revalidation, and
   streaming bypass.
-- nginx, HAProxy, Squid, and Varnish parser tokens, ordered source/include graphs,
+- nginx, HAProxy, Apache, Squid, and Varnish parser tokens, ordered source/include graphs,
   inheritance/resolution, diagnostics, decision accounting, provenance, and conservative semantic
    conversion. Squid additionally covers canonical direct-forward lowering, cross-format native
    references, static parent peer ordering/fallback, DNS/SSRF answer pinning, authenticated
@@ -50,9 +50,9 @@ fuzz targets; the real-browser runner and CI gates are checked in under `ui/test
   Varnish exact canonical lowering, native-reference evidence, report, preview, and fail-closed
   invocation tests cover the finalized subset.
 
-Current property-style coverage includes deterministic rendering, revision behavior, and bounded
-parser/runtime cases. ACME state machines and renewal windows, UDP pseudo-sessions, and broader
-parser round-trip properties remain planned.
+Current property-style coverage includes deterministic rendering, revision behavior, bounded
+parser/runtime cases, and ACME renewal-window state logic. UDP pseudo-session properties, broader
+parser round trips, and long-running media/supervision properties remain planned.
 
 ### Integration tests
 
@@ -94,16 +94,16 @@ parser round-trip properties remain planned.
   nullable capacities, transport-qualified binds, pool algorithms, active leases, and
   non-overlapping polling.
 
-UDP behavior, active-traffic generation reload/drain breadth, richer native dependency watching,
-SSE reconnect, downstream client certificate authentication, and managed ACME live/staging
-integration are planned gates rather than current complete release evidence. Managed ACME protocol,
-state, bootstrap, and scripted-transport paths are unit-tested. Canonical watcher activation, route
-authentication, bounded event polling, and fixed RTMP assembled-message rejection are current tested
-paths.
+UDP relay behavior, supervised UDP/H3 adoption, active-traffic generation reload/drain breadth,
+richer native dependency watching, downstream client certificate authentication, and managed ACME
+live/staging integration remain gates rather than complete release evidence. Managed ACME protocol,
+state, bootstrap, TLS-ALPN cleanup, and scripted-transport paths are unit-tested. Canonical watcher
+activation, route authentication, bounded event polling, SSE reconnect/resync, RTMP statistics and
+session controls, and fixed RTMP assembled-message rejection are current tested paths.
 
 ### Import conformance
 
-Current nginx and HAProxy fixtures live under:
+Current nginx, HAProxy, Apache, Squid, and Varnish fixtures live under:
 
 ```text
 crates/oxiroute-import/tests/fixtures/<product>/
@@ -120,7 +120,9 @@ cryptographic signer. Tests also require stable complete source graphs, determin
 terminal accounting without treating remaining semantic blockers as a finalized-candidate claim.
 
 The current suite combines source files with parser/semantic/lowering assertions and repository
-coverage manifests. The product/category layout, capability profiles, expected-model sidecars, and
+coverage manifests. Apache vhost merge, HAProxy strict HTTP/TCP/stats, Squid static parent-peer and
+direct-fallback, and Varnish exact static-cache paths have executable tests; their broader product
+parity remains open. The product/category layout, capability profiles, expected-model sidecars, and
 optional native-validator output remain target fixture structure. Synthetic fixtures do not count
 as live-host evidence unless `coverage/host-cases.json` explicitly maps them to live-origin hashed
 metadata.
@@ -154,11 +156,12 @@ share named upstream pools across routes/listeners, lower the bounded static-ind
 rerunning nginx location selection, and carry only semantic first-wins host claims into routes.
 
 nginx-RTMP conformance tests cover deterministic include inheritance, strict listener/application
-lowering, continuous and all-media manual recording, supported named recorder blocks, native
-defaults, complete-root HTTP+RTMP composition, no import-time root access, path/suffix/interval
-boundaries, provenance, one terminal decision per occurrence, and fail-closed blocking of partial
-masks, local-time suffixes, unsupported recorder fields, global policy, and unsupported service
-behavior. Synthetic fixtures remain implementation evidence only.
+lowering, continuous and all-media manual recording, supported named recorder blocks, bounded HLS
+and key rotation, allowlisted exec profiles, same-daemon auto-push policy, native defaults,
+complete-root HTTP+RTMP composition, no import-time root access, path/suffix/interval boundaries,
+provenance, one terminal decision per occurrence, and fail-closed blocking of partial masks,
+local-time suffixes, unsupported recorder fields, global policy, native DASH, and unsupported
+service behavior. Synthetic fixtures remain implementation evidence only.
 
 ### Protocol conformance and interoperability
 
@@ -168,11 +171,13 @@ behavior. Synthetic fixtures remain implementation evidence only.
 - H3 upstream unit/wire tests use an independent QUIC origin to assert TLS/SNI/`h3` negotiation,
   request bodies, safe response framing and trailers, no-ALPN rejection, bounded request/response
   admission, malformed input, cancellation, and disabled migration/0-RTT. Reverse H3 process tests
-  cover fixed/redirect/static/proxy responses, GOAWAY drain, reload, generation-owned UDP listener
-  release, exhaustion, malformed traffic, and no silent protocol fallback.
+  specify fixed/redirect/static/proxy responses, GOAWAY drain, reload, generation-owned UDP listener
+  release, exhaustion, malformed traffic, and no silent protocol fallback; passing active-traffic
+  drain evidence remains a gate.
 - Supervised process tests transfer authenticated typed TCP, Unix, UDP, and QUIC descriptors, verify
   close-on-exec ownership and worker status, exercise UDP relay and H3 wire serving, and cover
-  replacement, rollback, drain, listener-start failure, and worker crash recovery.
+  generic replacement, rollback, drain, listener-start failure, and worker crash recovery; typed
+  UDP/H3 replacement under active traffic remains a production gate.
 - TLS tests use independent OpenSSL/rustls clients where applicable.
 - gRPC and WebSocket behavior use independent implementations. Bounded PROXY v1/v2 parser and
   TCP/UDP integration tests cover malformed, timeout, mismatch, over-read, and quota boundaries;
@@ -204,27 +209,31 @@ Current Unix TLS/H2/gRPC coverage includes:
   is refused by OxiRoute's pre-handshake TLS 1.2/cipher policy without decrypted origin bytes;
   TLS 1.2 remains a positive control.
 
-Active-traffic reload/drain breadth, ACME, downstream client authentication, H2 breadth, and gRPC
-streaming/cancellation remain release gates rather than complete coverage. The canonical watcher,
-live generation activation, and bounded event polling paths are implemented but do not by themselves
+Active-traffic reload/drain breadth, ACME CA-staging integration, downstream client authentication,
+H2 breadth, gRPC streaming/cancellation, fuzz/crash campaigns, and packaged supervised UDP/H3
+replacement remain release gates rather than complete coverage. The canonical watcher, live
+generation activation, bounded event polling, and SSE paths are implemented but do not by themselves
 close those broader gates.
 
-### Planned fuzzing
+### Checked-in fuzzing
 
-No fuzz target is checked in. Planned targets cover Lua value decoding limits, native config
-parsers, HTTP/1 forward-proxy target parsing, CONNECT over-read handling, TLS ClientHello
-inspection, PROXY protocol, and UDP pseudo-session input, each with allocation and execution
-bounds.
+Checked-in bounded harnesses cover configuration/native source parsing, forward targets, over-read
+I/O, RTMP handshake/chunk/AMF decoding, and the current public parser surfaces. `cargo check` and
+the optional `fuzz/smoke.sh` workflow prove buildability and a bounded smoke path; they do not claim
+coverage, corpus stability, or crash-free long-running execution. TLS ClientHello, PROXY protocol,
+UDP datagrams, and full HTTP/1 wire parsing remain deliberate harness gaps.
 
 The release workflow deliberately does not install `cargo-fuzz` or add a fuzzing dependency. This
 remains a follow-up until an isolated parser/protocol target can compile and run deterministically
-with Rust 1.87 without dependency churn.
+with Rust 1.87 without dependency churn; the optional smoke workflow is intentionally separate from
+the required release checks.
 
 ### UI end-to-end
 
-- Vue component tests cover bearer unlock/re-lock, complete canonical-field editing, validation,
+- Vue component tests cover bearer unlock/re-lock, current canonical-field editing, validation,
   Lua/candidate review, clean refresh, dirty-draft retention, revision conflicts, exact save
-  outcomes, navigation, and redaction.
+  outcomes, navigation, RTMP statistics/session controls, certificate actions, event parsing, and
+  redaction. TLS-ALPN-01 is accepted by the backend schema but has no frontend challenge selector.
 - Monitoring component tests cover pool availability, endpoint state/check totals, exact counters,
   failure labels, empty-pool rendering, and retention after transient failures.
 - Component tests exercise mobile controls and keyboard navigation in jsdom.
@@ -240,8 +249,8 @@ with Rust 1.87 without dependency churn.
 Canonical storage, certificate publication, and recording storage/worker tests inject failures
 around read-only preflight, activation open, ownership, quota sharing, write, sync,
 replacement/publication, cleanup, worker start, nonblocking queue discontinuity, bounded reaper
-backpressure/cancellation, and shutdown. Cross-process quota coordination, broader runtime
-activation, and crash-injection matrices remain planned.
+backpressure/cancellation, and shutdown. Cross-process quota coordination, broader runtime activation,
+typed UDP/H3 replacement, and crash-injection matrices remain planned release evidence.
 
 ## Release gates
 
@@ -252,13 +261,18 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo +1.87 test --workspace --locked
+cargo fmt --manifest-path fuzz/Cargo.toml --check
+cargo check --manifest-path fuzz/Cargo.toml --locked --jobs 4
+bash fuzz/smoke.sh
 pnpm --dir ui test
 pnpm --dir ui build
 pnpm --dir ui test:browser -- --workers=2
 ```
 
 The checked-in Linux workflow at `.github/workflows/ci.yml` enforces that set and separately runs the
-coverage-manifest and browser tests. `.github/workflows/audit.yml` adds dependency, license, source,
+coverage-manifest, browser, and ACME scripted tests. The optional `.github/workflows/fuzz-smoke.yml`
+compiles the isolated fuzz workspace and runs its bounded smoke when tooling is available.
+`.github/workflows/audit.yml` adds dependency, license, source,
 RustSec, and UI vulnerability checks; `.github/workflows/release.yml` verifies version metadata,
 archive contents/checksums, and build provenance. Representative focused gates are
 `cargo test -p oxiroute-config --test lua_config`,
@@ -270,9 +284,15 @@ archive contents/checksums, and build provenance. Representative focused gates a
 `cargo test -p oxiroute-rtmp --test recorder_session --test recording_store --test recording_worker --test push_relay --test session_policy`,
 and `pnpm --dir ui test`.
 
-Future automation may add local ACME integration, fuzz smoke corpora, and supported-platform full
-builds. Browser tests use fake local API/SSE responses and do not claim ACME protocol coverage.
+Future automation may add CA-staging ACME integration, longer fuzz campaigns, crash-corpus retention,
+and supported-platform full builds. Browser tests use fake local API/SSE responses and do not claim
+ACME protocol or active-daemon interoperability coverage.
 `pnpm --dir ui build` already runs `vue-tsc --noEmit` before the Vite build.
+
+The release gates still open are explicit: active-traffic reload/drain across HTTP, H2, H3, TCP, UDP,
+RTMP, and SSE; CA-staging issuance and renewal for all three managed challenge types; independent
+protocol/import interoperability; bounded fuzz runs and crash triage; and packaged supervised UDP/H3
+replacement, rollback, drain, restart, and crash recovery under traffic.
 
 A capability cannot move to `supported` in a public matrix while its failure-path,
 reload/rotation, observability, and interoperability tests are missing.

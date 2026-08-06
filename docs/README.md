@@ -23,7 +23,7 @@ workflow are recorded in the [documentation plan](DOCUMENTATION_PLAN.md).
 - [Dashboard](user/DASHBOARD.md): understand Overview, Statistics, topology, RTMP, and Configuration.
 - [Operations](user/OPERATING.md): health, generations, drains, server state, metrics, and recovery.
 - [Migration](user/MIGRATION.md): report versus preview, native references, composition, and cutover.
-- [RTMP](user/RTMP.md): live publish/play, fanout, recording, and current codec limits.
+- [RTMP](user/RTMP.md): live publish/play, fanout, recording, HLS/DASH, VOD, and current codec limits.
 - [Troubleshooting](user/TROUBLESHOOTING.md): symptoms, evidence, and safe next actions.
 - [Security](user/SECURITY.md): loopback boundaries, token files, source trust, and redaction.
 
@@ -50,7 +50,7 @@ workflow are recorded in the [documentation plan](DOCUMENTATION_PLAN.md).
 - [Operations contract](OPERATIONS.md): generations, watcher behavior, shutdown, readiness, and metrics.
 - [Import specification](IMPORT_SPEC.md): native source boundaries and provenance requirements.
 - [RTMP specification](RTMP_SPEC.md): directive inventory, runtime behavior, and compatibility status.
-- [ACME specification](ACME_SPEC.md): current Certbot lineage behavior and future managed lifecycle.
+- [ACME specification](ACME_SPEC.md): managed lifecycle, challenge types, Certbot lineage behavior, and release gates.
 - [Test strategy](TEST_STRATEGY.md): repository-wide test policy and release gates.
 - [Roadmap](ROADMAP.md): milestones and future work, not a support promise.
 

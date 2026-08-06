@@ -111,5 +111,5 @@ status observations for lifecycle, listener, metric, reload, degradation, and dr
 process crate performs authenticated worker spawning and launcher work. Linux-specific process and
 `/proc` behavior stays behind platform modules.
 
-The cache crate, forward-proxy protocol foundations, Varnish IR, and future ACME components are useful
-code, but a public feature claim must follow their integration into the active generation path.
+The cache crate, forward-proxy protocol foundations, Varnish IR, and managed ACME components are
+useful code, but a public feature claim must follow their integration into the active generation path.

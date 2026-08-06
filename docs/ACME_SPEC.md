@@ -2,7 +2,7 @@
 
 ## Objective
 
-The future managed-certificate target is a Certbot-like lifecycle inside OxiRoute: account
+The managed-certificate target is a Certbot-like lifecycle inside OxiRoute: account
 registration, certificate requests, challenge completion, secure storage, installation,
 monitoring, and automatic renewal. That implementation will be independent and use the ACME
 standard; it will not copy Certbot or plugin code.
@@ -49,9 +49,11 @@ The current implementation covers bounded HTTP-01, DNS-01, and TLS-ALPN-01 issua
 - Configurable revision retention with automatic garbage collection that always preserves the active
   pointer and newest retained revisions. State deletion is guarded by active TLS-profile usage.
 
-The implementation does not yet fetch or apply ACME Renewal Information responses or provide durable
-DNS cleanup journaling. Those remain future contract work and must not be inferred from the current
-status fields.
+The implementation fetches and applies bounded ACME Renewal Information responses when the directory
+advertises `renewalInfo`; malformed or non-overlapping windows are rejected from scheduling and
+transient endpoint failures retain the local policy with a categorical status. DNS-01 cleanup is
+journaled as owner-only secret state before propagation/authorization continues, and startup retries
+exact-record cleanup after a crash or restart.
 
 ## Certificate sources
 
@@ -59,7 +61,11 @@ status fields.
 
 The daemon owns issuance and renewal through an ACME v2 directory. Managed certificates support
 HTTP-01, DNS-01, and TLS-ALPN-01; wildcard identifiers require DNS-01. IP identifiers remain
-unsupported. Explicit terms agreement and a configured DNS-suffix policy are required.
+explicitly unsupported by managed issuance. The certificate/TLS model can load IP SANs for
+file-backed identities, but the ACME order, authorization, CSR, and managed-candidate validation
+path is DNS-only; configuration and protocol validation reject IP identifiers before issuance rather
+than approximating them as DNS names. Explicit terms agreement and a configured DNS-suffix policy
+are required.
 
 ### Imported files
 
@@ -119,7 +125,7 @@ Otherwise the local renewal policy applies.
 
 ## Challenge types
 
-### HTTP-01: implemented first release
+### HTTP-01: implemented
 
 - OxiRoute will own an explicit port-80 HTTP listener or an explicitly delegated challenge route.
 - `/.well-known/acme-challenge/<token>` is matched before redirects and normal routes.
@@ -143,6 +149,10 @@ Otherwise the local renewal policy applies.
   the CA. Cleanup runs after propagation, notification, polling, timeout, or ACME failure.
 - Provider-specific CNAME/NS delegation and authoritative DNS policy remain provider responsibilities;
   the orchestrator never guesses them.
+- Provider deployment is reported as `registered` or `unsupported`; health is an observed lifecycle
+  status (`unknown`, `healthy`, `degraded`, or `unsupported`), not an invented remote health probe.
+  A pending or failed cleanup journal keeps the provider degraded and blocks a new DNS-01 issuance
+  until exact cleanup recovery succeeds.
 
 ### TLS-ALPN-01
 
@@ -160,10 +170,10 @@ Otherwise the local renewal policy applies.
   lease, and removed on completion, cancellation, expiry, or every renewal failure path. Concurrent
   challenges for the same exact name are rejected.
 
-## Planned domain and authorization policy
+## Current domain and authorization policy
 
 - Identifiers MUST be normalized and deduplicated before order creation.
-- IP-address certificates are unsupported until both CA and implementation behavior are explicitly tested.
+- IP-address managed issuance is explicitly unsupported; file-backed identities may still contain IP SANs.
 - Wildcards require DNS-01.
 - The management authorization policy MUST restrict which DNS suffixes an operator or automation identity may request.
 - Imported native config MUST NOT automatically trigger public issuance without explicit certificate-management consent.
@@ -171,9 +181,9 @@ Otherwise the local renewal policy applies.
 - Directory redirects and every advertised ACME endpoint remain inside configured outbound-origin policy; private/local endpoints require an explicit development allowlist.
 - When a directory requires external account binding, registration uses an opaque EAB secret reference or fails before creating an account.
 
-## Planned key management and storage
+## Current key management and storage
 
-Planned default state layout:
+Current managed state layout:
 
 ```text
 state/
@@ -206,16 +216,16 @@ state/
   an active-generation check that no TLS profile references the certificate.
 - Shared/network filesystems and multiple daemons writing one state root are unsupported in the first release.
 
-`account.json` will persist the exact directory URL, account URL/JWS key ID, status, contacts,
+`account.json` persists the exact directory URL, account URL/JWS key ID, status, contacts,
 terms record, and public-key fingerprint. `directory-id` is a collision-resistant hash of
 the canonical full URL; staging and production accounts are never shared implicitly.
 
-`renewal.json` will persist exact identifiers, directory and account references, authenticator
+`renewal.json` persists exact identifiers, directory and account references, authenticator
 and non-secret options, opaque credential references, key policy, last result, and
 scheduler/renewal-information state. It is certificate-level state rather than revision
 metadata.
 
-Planned initial key policies:
+Current key policies:
 
 - ECDSA P-256 default where the TLS backend supports it.
 - RSA 2048+ optional for compatibility.
@@ -254,15 +264,23 @@ status checks and configurable clock-skew policy are not yet implemented.
 - Operators may pause/resume automatic renewal or cancel an in-flight polling job. Cancellation and
   pause cleanup paths retain the active certificate and run DNS cleanup independently of the cancelled
   operation.
-- The directory's Renewal Information endpoint is recorded when advertised but is not yet fetched or
-  applied to scheduling; the local policy remains authoritative until that work is implemented.
+- When advertised, the directory's Renewal Information endpoint is queried with a signed POST-as-GET
+  request for the exact leaf certificate hash. Suggested RFC3339 windows are bounded, must overlap
+  the certificate validity interval, and select a deterministic renewal time. Invalid windows are
+  ignored with a redacted categorical status; endpoint failures retain the bounded local policy.
+  The selected ARI time is persisted and restored across restart.
+- DNS-01 creates and persists an owner-only cleanup journal containing only the exact bounded provider
+  identity and challenge material needed for cleanup. The journal is removed only after provider
+  cleanup and durable deletion succeed; if cleanup or deletion fails it remains for bounded startup
+  recovery. No cleanup is approximated from a record name or token.
 - Warning thresholds and escalating expiry events remain future work.
 
 ## Current zero-downtime installation
 
 Challenge authenticators only provision and clean authorization material. The OxiRoute activator
-validates and publishes Pingora TLS generations. The current release has HTTP-01 routing and a
-statically registered DNS-01 provider seam; it does not discover general web-server installers or
+validates and publishes Pingora TLS generations. The current release has HTTP-01 routing, a
+statically registered DNS-01 provider seam, and TLS-ALPN-01 challenge identity handling; it does not
+discover general web-server installers or
 maintain server-configuration checkpoints. The existing Certbot watcher uses the same
 generation-publication seam but is not an ACME authenticator or scheduler.
 
@@ -306,7 +324,8 @@ Actions:
 
 The current API exposes the configured directory, challenge and non-secret provider name, key type,
 suffix policy, disk/active revisions, expiry, next action, job status, retry attempt, last success,
-  redacted outcome/error, job ID/correlation, pause state, and lineage retention policy. Production
+redacted outcome/error, ARI status, provider deployment/health, DNS cleanup status, job ID/correlation,
+pause state, and lineage retention policy. Production
 confirmation and staging/dry-validation gating remain operator policy rather than an implicit API
 fallback.
 
@@ -317,10 +336,9 @@ Implemented metrics include:
 - Certificate presence and seconds until expiry.
 - Renewal due state and the last bounded job result or error code.
 
-The current bounded monitoring snapshot intentionally exposes only stable revision, expiry, scheduler,
-and categorical outcome/error fields. Retry counters and job phases are available through the
-authenticated TLS inventory; they are not added to the shared monitoring snapshot until its broader
-wire contract is versioned.
+The current bounded monitoring snapshot exposes stable revision, expiry, scheduler, ARI, provider
+deployment/health, cleanup recovery, and categorical outcome/error fields. Retry counters and job
+phases remain available through the authenticated TLS inventory.
 
 Future metrics include active revision age, per-operation and directory-class totals, challenge
 attempt duration, retry counters, activation/rollback outcomes, and durable audit records.
@@ -357,6 +375,8 @@ license grants use of its trademarks.
 - New account, existing account, terms failure, external-account-binding fixture when supported.
 - HTTP-01 success, wrong token, unreachable listener, redirect coexistence, and cleanup.
 - DNS-01 provider success, propagation timeout, credential error, and cleanup failure.
+- TLS-ALPN-01 certificate extension, exact SNI/ALPN selection, ownership expiry, cancellation, and
+  no-fallback handshake failure.
 - Nonce retry, order invalidation, polling timeout, rate limit, malformed chain, and key mismatch.
 - Renewal-window and stable-jitter property tests with a fake clock.
 - Crash/failure injection before and after every durable rename and runtime activation.
