@@ -622,6 +622,10 @@ impl DirectionState {
                     ),
                 });
             }
+            writer.flush().await.map_err(|source| DirectionIoError {
+                operation: RelayOperation::Write,
+                source,
+            })?;
             self.written += bytes;
             return Ok(DirectionProgress::Written(bytes));
         }
