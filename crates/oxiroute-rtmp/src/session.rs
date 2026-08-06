@@ -54,6 +54,7 @@ pub struct RtmpSession {
     connection_lease: Option<runtime::ApplicationSessionLease>,
     connected_application: Option<Arc<str>>,
     control: Option<Arc<RtmpSessionControl>>,
+    last_rejection_code: Option<&'static str>,
     last_callback_update_at_unix_ms: u64,
 }
 
@@ -87,6 +88,7 @@ impl RtmpSession {
             connection_lease: None,
             connected_application: None,
             control,
+            last_rejection_code: None,
             last_callback_update_at_unix_ms: 0,
         }
     }
@@ -408,9 +410,16 @@ impl RtmpSession {
         request_id: u32,
         rejection: Rejection,
     ) -> Result<Vec<ServerSessionResult>, RtmpSessionError> {
+        self.last_rejection_code = Some(rejection.code);
         Ok(self
             .protocol_mut()
             .reject_request(request_id, rejection.code, rejection.description)?)
+    }
+
+    /// Returns and clears the bounded protocol category for the latest rejected request.
+    #[must_use]
+    pub fn take_access_failure_code(&mut self) -> Option<&'static str> {
+        self.last_rejection_code.take()
     }
 
     fn detach_role(&mut self, at_unix_ms: u64) -> Result<(), CatalogError> {

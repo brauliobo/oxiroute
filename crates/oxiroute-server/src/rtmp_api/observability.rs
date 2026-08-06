@@ -239,8 +239,27 @@ struct RtmpMonitoring {
     relay_events_dropped: u64,
     #[serde(serialize_with = "crate::wire::serialize_u64_string")]
     relay_payload_bytes_sent: u64,
+    access_log: RtmpAccessLogMonitoring,
     relays: Vec<Value>,
     recorders: Vec<Value>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RtmpAccessLogMonitoring {
+    queue_capacity: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    queue_depth: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    enqueued: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    written: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    dropped: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    queue_saturated: u64,
+    #[serde(serialize_with = "crate::wire::serialize_u64_string")]
+    write_failures: u64,
 }
 
 fn monitoring_response(metrics: &RuntimeMetrics, registry: &RtmpRegistry) -> ApiResponse {
@@ -313,6 +332,7 @@ fn rtmp_monitoring(
     let mut relay_payload_bytes_sent = 0_u64;
     let mut relays = Vec::new();
     let mut recorders = Vec::new();
+    let access_log = crate::logging::rtmp_access_log_snapshot();
     for stream in &snapshot.streams {
         if stream.publisher.is_some() {
             publishers = publishers.checked_add(1)?;
@@ -390,6 +410,15 @@ fn rtmp_monitoring(
         relay_events_sent,
         relay_events_dropped,
         relay_payload_bytes_sent,
+        access_log: RtmpAccessLogMonitoring {
+            queue_capacity: crate::logging::RTMP_ACCESS_LOG_QUEUE_CAPACITY,
+            queue_depth: access_log.queue_depth,
+            enqueued: access_log.enqueued,
+            written: access_log.written,
+            dropped: access_log.dropped,
+            queue_saturated: access_log.queue_saturated,
+            write_failures: access_log.write_failures,
+        },
         relays,
         recorders,
     })

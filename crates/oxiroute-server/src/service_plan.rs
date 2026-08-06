@@ -128,6 +128,17 @@ impl RtmpServicePlan {
             .map_or(Ok(()), |access_log| access_log.write(event))
     }
 
+    /// Writes one fixed-field, redacted RTMP access event without blocking the session task.
+    ///
+    /// # Errors
+    ///
+    /// Returns the nonblocking RTMP access-log queue error when it is full or stopped.
+    pub fn write_rtmp_access_event(&self, event: &serde_json::Value) -> std::io::Result<()> {
+        self.access_log
+            .as_ref()
+            .map_or(Ok(()), |access_log| access_log.write_rtmp(event))
+    }
+
     /// Opens this service's preflighted recording stores and creates its process runtime.
     ///
     /// # Errors
@@ -1548,7 +1559,7 @@ fn compile_rtmp_services(
                 inbound_limits,
                 hub: service_hub,
                 callbacks,
-                access_log: AccessLog::open(&service.name, service.access_log.as_ref())
+                access_log: AccessLog::open_rtmp(&service.name, service.access_log.as_ref())
                     .map_err(|_| ServicePlanError::AccessLogPreflight {
                         service: service.name.clone(),
                     })?

@@ -537,6 +537,42 @@ pub fn render_prometheus(
     }
     sample(&mut output, "oxiroute_rtmp_streams", rtmp.streams.len())?;
     sample(&mut output, "oxiroute_rtmp_clients", rtmp_clients)?;
+    let access_log = crate::logging::rtmp_access_log_snapshot();
+    sample(
+        &mut output,
+        "oxiroute_rtmp_access_log_queue_capacity",
+        crate::logging::RTMP_ACCESS_LOG_QUEUE_CAPACITY,
+    )?;
+    sample(
+        &mut output,
+        "oxiroute_rtmp_access_log_queue_depth",
+        access_log.queue_depth,
+    )?;
+    sample(
+        &mut output,
+        "oxiroute_rtmp_access_log_events_enqueued_total",
+        access_log.enqueued,
+    )?;
+    sample(
+        &mut output,
+        "oxiroute_rtmp_access_log_events_written_total",
+        access_log.written,
+    )?;
+    sample(
+        &mut output,
+        "oxiroute_rtmp_access_log_events_dropped_total",
+        access_log.dropped,
+    )?;
+    sample(
+        &mut output,
+        "oxiroute_rtmp_access_log_queue_saturation_total",
+        access_log.queue_saturated,
+    )?;
+    sample(
+        &mut output,
+        "oxiroute_rtmp_access_log_write_failures_total",
+        access_log.write_failures,
+    )?;
     sample(
         &mut output,
         "oxiroute_rtmp_relay_attempts_total",
@@ -984,6 +1020,26 @@ mod tests {
         assert!(output.contains(
             "oxiroute_transport_events_total{transport=\"acme\",outcome=\"upstream_error\"}"
         ));
+    }
+
+    #[test]
+    fn exposition_includes_bounded_rtmp_access_log_counters_without_labels() {
+        let metrics = RuntimeMetrics::new();
+        let registry = RtmpRegistry::new(RtmpCapabilities {
+            live_ingest: false,
+            manual_recording: false,
+        });
+
+        let output =
+            render_prometheus(&metrics, &registry, &GenerationManager::new()).expect("exposition");
+
+        assert!(output.contains("oxiroute_rtmp_access_log_queue_capacity 1024"));
+        assert!(output.contains("oxiroute_rtmp_access_log_queue_depth 0"));
+        assert!(output.contains("oxiroute_rtmp_access_log_events_dropped_total"));
+        assert!(output.contains("oxiroute_rtmp_access_log_queue_saturation_total"));
+        assert!(output.contains("oxiroute_rtmp_access_log_write_failures_total"));
+        assert!(!output.contains("sessionId="));
+        assert!(!output.contains("path="));
     }
 
     #[test]

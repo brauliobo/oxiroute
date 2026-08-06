@@ -525,6 +525,20 @@ fn exposes_runtime_listener_and_rtmp_monitoring() {
 }
 
 #[test]
+fn monitoring_exposes_fixed_rtmp_access_log_metrics_without_sink_identity() {
+    let api = management_api(empty_registry(), RuntimeMetrics::new());
+    let response = api.handle("GET", "/api/v1/monitoring", 100);
+    let body: Value = serde_json::from_slice(&response.body).expect("JSON response");
+
+    assert_eq!(response.status, 200);
+    assert_eq!(body["rtmp"]["accessLog"]["queueCapacity"], 1_024);
+    assert_eq!(body["rtmp"]["accessLog"]["queueDepth"], "0");
+    assert_eq!(body["rtmp"]["accessLog"]["dropped"], "0");
+    assert!(body["rtmp"]["accessLog"].get("path").is_none());
+    assert!(body["rtmp"]["accessLog"].get("service").is_none());
+}
+
+#[test]
 fn relay_state_and_counters_are_observable_without_stream_queries() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve absent relay port");
     let destination = listener.local_addr().expect("relay destination");

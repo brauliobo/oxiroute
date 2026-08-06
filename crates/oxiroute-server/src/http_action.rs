@@ -100,6 +100,7 @@ impl HttpGzipPlan {
 pub(crate) struct AccessLog {
     sender: Option<SyncSender<Vec<u8>>>,
     service: String,
+    rtmp_metrics: Option<Arc<crate::logging::RtmpAccessLogMetrics>>,
     worker: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -116,6 +117,25 @@ impl AccessLog {
     pub(crate) fn open(
         service: &str,
         policy: Option<&AccessLogPolicy>,
+    ) -> Result<Option<Self>, AccessPreflightError> {
+        Self::open_with_rtmp_metrics(service, policy, None)
+    }
+
+    pub(crate) fn open_rtmp(
+        service: &str,
+        policy: Option<&AccessLogPolicy>,
+    ) -> Result<Option<Self>, AccessPreflightError> {
+        Self::open_with_rtmp_metrics(
+            service,
+            policy,
+            Some(crate::logging::rtmp_access_log_metrics()),
+        )
+    }
+
+    fn open_with_rtmp_metrics(
+        service: &str,
+        policy: Option<&AccessLogPolicy>,
+        rtmp_metrics: Option<Arc<crate::logging::RtmpAccessLogMetrics>>,
     ) -> Result<Option<Self>, AccessPreflightError> {
         let Some(AccessLogPolicy::File { path }) = policy else {
             return Ok(None);
@@ -135,13 +155,31 @@ impl AccessLog {
             return Err(AccessPreflightError);
         }
         let (sender, receiver) = mpsc::sync_channel::<Vec<u8>>(ACCESS_LOG_QUEUE_CAPACITY);
+        let worker_metrics = rtmp_metrics.clone();
+        let worker_name = if rtmp_metrics.is_some() {
+            "rtmp-access-log"
+        } else {
+            "http-access-log"
+        };
         let worker = std::thread::Builder::new()
-            .name(format!("http-access-log-{service}"))
+            .name(format!("{worker_name}-{service}"))
             .spawn(move || {
                 let mut file = File::from(descriptor);
                 while let Ok(line) = receiver.recv() {
+                    if let Some(metrics) = &worker_metrics {
+                        metrics.worker_received();
+                    }
                     if file.write_all(&line).is_err() || file.write_all(b"\n").is_err() {
+                        if let Some(metrics) = &worker_metrics {
+                            metrics.worker_failed();
+                            for _ in receiver.try_iter() {
+                                metrics.worker_received();
+                            }
+                        }
                         break;
+                    }
+                    if let Some(metrics) = &worker_metrics {
+                        metrics.worker_written();
                     }
                 }
             })
@@ -149,21 +187,38 @@ impl AccessLog {
         Ok(Some(Self {
             sender: Some(sender),
             service: service.to_owned(),
+            rtmp_metrics,
             worker: Mutex::new(Some(worker)),
         }))
     }
 
     pub(crate) fn write(&self, event: &serde_json::Value) -> std::io::Result<()> {
-        let line = serde_json::to_vec(&crate::logging::redact_access_record(event))?;
+        self.enqueue(serde_json::to_vec(&crate::logging::redact_access_record(event))?)
+    }
+
+    pub(crate) fn write_rtmp(&self, event: &serde_json::Value) -> std::io::Result<()> {
+        self.enqueue(serde_json::to_vec(&crate::logging::redact_rtmp_access_record(event))?)
+    }
+
+    fn enqueue(&self, line: Vec<u8>) -> std::io::Result<()> {
+        if let Some(metrics) = &self.rtmp_metrics {
+            metrics.queue_event();
+        }
         self.sender
             .as_ref()
             .expect("access log sender exists until final drop")
             .try_send(line)
             .map_err(|error| match error {
                 TrySendError::Full(_) => {
+                    if let Some(metrics) = &self.rtmp_metrics {
+                        metrics.queue_event_rejected(true);
+                    }
                     std::io::Error::new(std::io::ErrorKind::WouldBlock, "access log queue is full")
                 }
                 TrySendError::Disconnected(_) => {
+                    if let Some(metrics) = &self.rtmp_metrics {
+                        metrics.queue_event_rejected(false);
+                    }
                     std::io::Error::new(std::io::ErrorKind::BrokenPipe, "access log writer stopped")
                 }
             })
@@ -2325,6 +2380,7 @@ mod access_log_tests {
         let access_log = AccessLog {
             sender: Some(sender),
             service: "test".into(),
+            rtmp_metrics: None,
             worker: Mutex::new(None),
         };
         let event = serde_json::json!({"status": 200});
@@ -2332,5 +2388,71 @@ mod access_log_tests {
         access_log.write(&event).expect("first queued event");
         let error = access_log.write(&event).expect_err("full queue rejected");
         assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+    }
+
+    #[test]
+    fn rtmp_access_log_queue_saturation_counts_nonblocking_drops() {
+        let (sender, _receiver) = mpsc::sync_channel(1);
+        let metrics = Arc::new(crate::logging::RtmpAccessLogMetrics::default());
+        let access_log = AccessLog {
+            sender: Some(sender),
+            service: "test".into(),
+            rtmp_metrics: Some(Arc::clone(&metrics)),
+            worker: Mutex::new(None),
+        };
+        let event = serde_json::json!({"event": "connect"});
+
+        access_log.write_rtmp(&event).expect("first queued event");
+        let error = access_log
+            .write_rtmp(&event)
+            .expect_err("full RTMP queue rejected");
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.enqueued, 1);
+        assert_eq!(snapshot.dropped, 1);
+        assert_eq!(snapshot.queue_saturated, 1);
+    }
+
+    #[test]
+    fn rtmp_access_log_drop_flushes_the_bounded_redacted_record() {
+        let directory = tempfile::tempdir().expect("RTMP access log directory");
+        let path = directory.path().join("rtmp-access.jsonl");
+        let access_log = AccessLog::open_rtmp(
+            "live",
+            Some(&AccessLogPolicy::File { path: path.clone() }),
+        )
+        .expect("RTMP access log preflight")
+        .expect("RTMP file sink");
+        access_log
+            .write_rtmp(&serde_json::json!({
+                "timestampUnixMs": 1,
+                "event": "publish",
+                "result": "accepted",
+                "listener": "live-listener",
+                "service": "live",
+                "application": "camera",
+                "stream": "feed",
+                "sessionId": "session-1",
+                "role": "publisher",
+                "bytesReceived": 2,
+                "bytesSent": 3,
+                "messagesReceived": 4,
+                "messagesSent": 5,
+                "durationMs": 6,
+                "failureCode": null,
+                "query": "token=secret",
+                "clientIp": "192.0.2.1",
+            }))
+            .expect("queue RTMP access event");
+        drop(access_log);
+
+        let contents = std::fs::read_to_string(path).expect("flushed RTMP access log");
+        let record: serde_json::Value =
+            serde_json::from_str(contents.trim()).expect("JSONL record");
+        assert_eq!(record["event"], "publish");
+        assert_eq!(record["messagesSent"], 5);
+        assert!(record.get("query").is_none());
+        assert!(record.get("clientIp").is_none());
+        assert!(!contents.contains("secret"));
     }
 }
