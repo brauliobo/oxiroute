@@ -35,9 +35,9 @@ use tokio::{
 };
 
 use crate::{
-    ForwardHttp1ServicePlan, H3UpstreamError, HealthFailure, HttpOperationResult,
-    HttpServicePlan, ListenerMetrics, ListenerReservation, ListenerRuntimeState, RuntimeGeneration,
-    RuntimeMode, RuntimeReferenceKind, TlsProfilePlan,
+    ForwardHttp1ServicePlan, H3UpstreamError, HealthFailure, HttpOperationResult, HttpServicePlan,
+    ListenerMetrics, ListenerReservation, ListenerRuntimeState, RuntimeGeneration, RuntimeMode,
+    RuntimeReferenceKind, TlsProfilePlan,
     http_action::{
         HttpActionPlan, ProxyActionPlan, ProxyPolicyPlan, RequestHeaderMutationPlan,
         RequestHeaderValuePlan, StaticErrorTarget, StaticFile, StaticServeError, StaticTarget,
@@ -2924,6 +2924,19 @@ mod tests {
             value["http3"]["reverse"]["limits"]["maxRequestBodyBytes"],
             H3_MAX_REQUEST_BODY_BYTES
         );
+    }
+
+    #[test]
+    fn exposes_the_bounded_h3_quic_and_message_contract() {
+        let value = capability_snapshot(&[], RuntimeMode::Direct);
+        let limits = &value["http3"]["reverse"]["limits"];
+
+        assert_eq!(limits["maxHandshakesAndConnections"], H3_HANDSHAKE_LIMIT);
+        assert_eq!(limits["maxBidirectionalStreams"], H3_BIDI_STREAM_LIMIT);
+        assert_eq!(limits["maxUnidirectionalStreams"], H3_UNI_STREAM_LIMIT);
+        assert_eq!(limits["maxFieldSectionBytes"], H3_MAX_FIELD_SECTION_BYTES);
+        assert_eq!(limits["maxRequestBodyBytes"], H3_MAX_REQUEST_BODY_BYTES);
+        assert_eq!(limits["maxResponseBodyBytes"], H3_MAX_RESPONSE_BODY_BYTES);
     }
 
     #[tokio::test]
