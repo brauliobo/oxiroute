@@ -454,6 +454,27 @@ async fn daemon_serves_bounded_reverse_h3_static_files_and_ranges() {
     .await
     .expect("H3 generation reload timeout");
 
+    let idle_connection = timeout(Duration::from_secs(10), async {
+        loop {
+            let Ok(connecting) = endpoint.connect(listener_address, support::PROXY_SERVER_NAME)
+            else {
+                sleep(Duration::from_millis(25)).await;
+                continue;
+            };
+            if let Ok(connection) = connecting.await {
+                break connection;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("idle H3 connection timeout");
+    let (idle_driver, mut idle_sender) =
+        h3::client::new(h3_quinn::Connection::new(idle_connection))
+            .await
+            .expect("idle H3 client connection");
+    let idle_driver = drive_client(idle_driver);
+
     let shutdown = tokio::task::spawn_blocking(move || server.shutdown_gracefully());
     timeout(Duration::from_secs(10), shutdown)
         .await
@@ -472,13 +493,28 @@ async fn daemon_serves_bounded_reverse_h3_static_files_and_ranges() {
             .is_err(),
         "H3 accepted a request after GOAWAY"
     );
+    assert!(
+        idle_sender
+            .send_request(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("https://example.test/after-goaway-idle")
+                    .body(())
+                    .expect("post-GOAWAY idle request"),
+            )
+            .await
+            .is_err(),
+        "H3 accepted a first request after GOAWAY"
+    );
 
     drop(success);
     drop(head);
     drop(range);
     drop(sender);
+    drop(idle_sender);
     endpoint.close(quinn::VarInt::from_u32(0), b"test complete");
     driver.await.expect("H3 driver task");
+    idle_driver.await.expect("idle H3 driver task");
 }
 
 fn client_endpoint() -> std::io::Result<quinn::Endpoint> {

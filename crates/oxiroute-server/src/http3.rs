@@ -8,7 +8,10 @@ use std::{
 };
 
 use bytes::{Buf as _, Bytes};
-use h3::server::RequestResolver;
+use h3::{
+    quic::{RecvStream as _, SendStream as _},
+    server::RequestResolver,
+};
 use http::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri,
     header::{CONNECTION, CONTENT_LENGTH, HOST, TE, TRAILER, TRANSFER_ENCODING, UPGRADE},
@@ -19,7 +22,7 @@ use oxiroute_config::{
     DownstreamTimeoutPolicy, HttpRedirectLocation, HttpRetryTarget, HttpRetryTrigger,
     is_unambiguous_http_path,
 };
-use pingora::{connectors::http::Connector, http::RequestHeader};
+use pingora::{apps::AcceptGateParticipant, connectors::http::Connector, http::RequestHeader};
 use quinn::crypto::rustls::QuicServerConfig;
 use quinn::{Endpoint, EndpointConfig, ServerConfig, TransportConfig, VarInt};
 use rustls::server::{ClientHello, ResolvesServerCert};
@@ -59,6 +62,7 @@ pub(crate) const H3_MAX_FIELD_SECTION_BYTES: u64 = 16 * 1024;
 pub(crate) const H3_MAX_REQUEST_BODY_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) const H3_MAX_RESPONSE_BODY_BYTES: u64 = 64 * 1024 * 1024;
 const H3_CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const H3_GRACEFUL_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const H3_CLOSE_CODE: VarInt = VarInt::from_u32(0x100);
 const KEEP_ALIVE: HeaderName = HeaderName::from_static("keep-alive");
 const PROXY_CONNECTION: HeaderName = HeaderName::from_static("proxy-connection");
@@ -249,6 +253,7 @@ fn run_forward(
             .send(Ok(()))
             .map_err(|_| io::Error::other("HTTP/3 startup receiver was dropped"))?;
         let listener_metrics = metrics.clone();
+        let accept_gate = generation.accept_gate().register();
         let orderly = serve_endpoint(
             listener_name,
             endpoint,
@@ -256,6 +261,7 @@ fn run_forward(
             generation,
             metrics,
             shutdown,
+            accept_gate,
         )
         .await;
         if orderly {
@@ -300,6 +306,7 @@ fn run_reverse(
             .send(Ok(()))
             .map_err(|_| io::Error::other("reverse HTTP/3 startup receiver was dropped"))?;
         let listener_metrics = metrics.clone();
+        let accept_gate = generation.accept_gate().register();
         let orderly = serve_reverse_endpoint(
             listener_name,
             endpoint,
@@ -308,6 +315,7 @@ fn run_reverse(
             metrics,
             downstream_timeouts,
             shutdown,
+            accept_gate,
         )
         .await;
         if orderly {
@@ -366,14 +374,35 @@ async fn serve_endpoint(
     generation: Arc<RuntimeGeneration>,
     metrics: ListenerMetrics,
     mut shutdown: watch::Receiver<bool>,
+    mut accept_gate: AcceptGateParticipant,
 ) -> bool {
     let handshakes = Arc::new(Semaphore::new(H3_HANDSHAKE_LIMIT));
     let mut connections = tokio::task::JoinSet::new();
+    let (drain_tx, drain_rx) = watch::channel(false);
+    let mut gate_state = accept_gate.state();
     let orderly = loop {
         tokio::select! {
-            _ = shutdown.changed() => break true,
+            state = accept_gate.changed() => {
+                let Ok(state) = state else { break false };
+                let gate_closed = !state.accepting && state.epoch > gate_state.epoch;
+                gate_state = state;
+                accept_gate.acknowledge(state.epoch);
+                if gate_closed {
+                    let _ = drain_tx.send(true);
+                    break true;
+                }
+            }
+            _ = shutdown.changed() => {
+                accept_gate.acknowledge(accept_gate.state().epoch);
+                let _ = drain_tx.send(true);
+                break true;
+            }
             incoming = endpoint.accept() => {
                 let Some(incoming) = incoming else { break false };
+                if !accept_gate.state().accepting || *drain_rx.borrow() || *shutdown.borrow() {
+                    incoming.refuse();
+                    continue;
+                }
                 let Ok(handshake) = Arc::clone(&handshakes).try_acquire_owned() else {
                     incoming.refuse();
                     continue;
@@ -382,21 +411,27 @@ async fn serve_endpoint(
                 let generation = Arc::clone(&generation);
                 let metrics = metrics.clone();
                 let shutdown = shutdown.clone();
+                let drain = drain_rx.clone();
                 connections.spawn(async move {
-                    run_connection(incoming, service, generation, metrics, shutdown, handshake).await;
+                    run_connection(
+                        incoming,
+                        service,
+                        generation,
+                        metrics,
+                        shutdown,
+                        drain,
+                        handshake,
+                    )
+                    .await;
                 });
             }
         }
     };
-    endpoint.close(H3_CLOSE_CODE, b"generation draining");
-    while let Some(result) = connections.join_next().await {
-        if let Err(error) = result {
-            warn!("HTTP/3 listener `{listener_name}` connection task failed: {error}");
-        }
-    }
+    finish_h3_connections(listener_name, &endpoint, &mut connections).await;
     orderly
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve_reverse_endpoint(
     listener_name: &str,
     endpoint: Endpoint,
@@ -405,14 +440,35 @@ async fn serve_reverse_endpoint(
     metrics: ListenerMetrics,
     downstream_timeouts: DownstreamTimeoutPolicy,
     mut shutdown: watch::Receiver<bool>,
+    mut accept_gate: AcceptGateParticipant,
 ) -> bool {
     let handshakes = Arc::new(Semaphore::new(H3_HANDSHAKE_LIMIT));
     let mut connections = tokio::task::JoinSet::new();
+    let (drain_tx, drain_rx) = watch::channel(false);
+    let mut gate_state = accept_gate.state();
     let orderly = loop {
         tokio::select! {
-            _ = shutdown.changed() => break true,
+            state = accept_gate.changed() => {
+                let Ok(state) = state else { break false };
+                let gate_closed = !state.accepting && state.epoch > gate_state.epoch;
+                gate_state = state;
+                accept_gate.acknowledge(state.epoch);
+                if gate_closed {
+                    let _ = drain_tx.send(true);
+                    break true;
+                }
+            }
+            _ = shutdown.changed() => {
+                accept_gate.acknowledge(accept_gate.state().epoch);
+                let _ = drain_tx.send(true);
+                break true;
+            }
             incoming = endpoint.accept() => {
                 let Some(incoming) = incoming else { break false };
+                if !accept_gate.state().accepting || *drain_rx.borrow() || *shutdown.borrow() {
+                    incoming.refuse();
+                    continue;
+                }
                 let Ok(handshake) = Arc::clone(&handshakes).try_acquire_owned() else {
                     incoming.refuse();
                     continue;
@@ -421,6 +477,7 @@ async fn serve_reverse_endpoint(
                 let generation = Arc::clone(&generation);
                 let metrics = metrics.clone();
                 let shutdown = shutdown.clone();
+                let drain = drain_rx.clone();
                 connections.spawn(async move {
                     run_reverse_connection(
                         incoming,
@@ -429,6 +486,7 @@ async fn serve_reverse_endpoint(
                         metrics,
                         downstream_timeouts,
                         shutdown,
+                        drain,
                         handshake,
                     )
                     .await;
@@ -436,13 +494,45 @@ async fn serve_reverse_endpoint(
             }
         }
     };
-    endpoint.close(H3_CLOSE_CODE, b"generation draining");
-    while let Some(result) = connections.join_next().await {
-        if let Err(error) = result {
-            warn!("reverse HTTP/3 listener `{listener_name}` connection task failed: {error}");
+    finish_h3_connections(listener_name, &endpoint, &mut connections).await;
+    orderly
+}
+
+async fn finish_h3_connections(
+    listener_name: &str,
+    endpoint: &Endpoint,
+    connections: &mut tokio::task::JoinSet<()>,
+) {
+    let deadline = Instant::now() + H3_GRACEFUL_DRAIN_TIMEOUT;
+    let mut timed_out = false;
+    loop {
+        match timeout_at(deadline, connections.join_next()).await {
+            Ok(Some(result)) => {
+                if let Err(error) = result {
+                    if !error.is_cancelled() {
+                        warn!("HTTP/3 listener `{listener_name}` connection task failed: {error}");
+                    }
+                }
+            }
+            Ok(None) => break,
+            Err(_) => {
+                timed_out = true;
+                warn!("HTTP/3 listener `{listener_name}` drain deadline expired");
+                break;
+            }
         }
     }
-    orderly
+    endpoint.close(H3_CLOSE_CODE, b"generation draining");
+    if timed_out {
+        connections.abort_all();
+    }
+    while let Some(result) = connections.join_next().await {
+        if let Err(error) = result {
+            if !error.is_cancelled() {
+                warn!("HTTP/3 listener `{listener_name}` connection task failed: {error}");
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -453,6 +543,7 @@ async fn run_reverse_connection(
     metrics: ListenerMetrics,
     downstream_timeouts: DownstreamTimeoutPolicy,
     mut shutdown: watch::Receiver<bool>,
+    mut drain: watch::Receiver<bool>,
     _handshake: OwnedSemaphorePermit,
 ) {
     let connection = match incoming.await {
@@ -491,9 +582,11 @@ async fn run_reverse_connection(
     let request_slots = Arc::new(Semaphore::new(H3_BIDI_STREAM_LIMIT as usize));
     let connector = Arc::new(Connector::new(None));
     let mut requests = tokio::task::JoinSet::new();
+    let (request_cancel_tx, request_cancel_rx) = watch::channel(false);
     let client_addr = Some(connection.remote_address());
     let graceful = loop {
         tokio::select! {
+            _ = drain.changed() => break true,
             _ = shutdown.changed() => break true,
             accepted = h3.accept() => {
                 let resolver = match accepted {
@@ -504,10 +597,14 @@ async fn run_reverse_connection(
                         break false;
                     }
                 };
+                if *drain.borrow() || *shutdown.borrow() {
+                    reject_h3_resolver(resolver);
+                    break true;
+                }
                 let service = Arc::clone(&service);
                 let connector = Arc::clone(&connector);
                 let metrics = metrics.clone();
-                let shutdown = shutdown.clone();
+                let request_cancel = request_cancel_rx.clone();
                 let request_slots = Arc::clone(&request_slots);
                 requests.spawn(async move {
                     handle_reverse_request(
@@ -517,7 +614,7 @@ async fn run_reverse_connection(
                         metrics,
                         client_addr,
                         downstream_timeouts,
-                        shutdown,
+                        request_cancel,
                         request_slots,
                     )
                     .await;
@@ -525,15 +622,24 @@ async fn run_reverse_connection(
             }
         }
     };
-    if graceful {
-        drain_h3_connection(&mut h3).await;
+    let deadline = Instant::now() + H3_GRACEFUL_DRAIN_TIMEOUT;
+    let goaway_sent = if graceful {
+        drain_h3_connection(&mut h3, deadline).await
+    } else {
+        false
+    };
+    if !goaway_sent {
+        let _ = request_cancel_tx.send(true);
+        requests.abort_all();
     }
+    join_h3_requests(
+        "reverse HTTP/3",
+        &mut requests,
+        &request_cancel_tx,
+        deadline,
+    )
+    .await;
     connection.close(H3_CLOSE_CODE, b"generation draining");
-    while let Some(result) = requests.join_next().await {
-        if let Err(error) = result {
-            warn!("reverse HTTP/3 request task failed: {error}");
-        }
-    }
     drop(listener_connection);
     drop(generation_reference);
 }
@@ -544,6 +650,7 @@ async fn run_connection(
     generation: Arc<RuntimeGeneration>,
     metrics: ListenerMetrics,
     mut shutdown: watch::Receiver<bool>,
+    mut drain: watch::Receiver<bool>,
     _handshake: tokio::sync::OwnedSemaphorePermit,
 ) {
     let connection = match incoming.await {
@@ -586,8 +693,10 @@ async fn run_connection(
         }
     };
     let mut requests = tokio::task::JoinSet::new();
+    let (request_cancel_tx, request_cancel_rx) = watch::channel(false);
     let graceful = loop {
         tokio::select! {
+            _ = drain.changed() => break true,
             _ = shutdown.changed() => break true,
             accepted = h3.accept() => {
                 let resolver = match accepted {
@@ -598,34 +707,95 @@ async fn run_connection(
                         break false;
                     }
                 };
+                if *drain.borrow() || *shutdown.borrow() {
+                    reject_h3_resolver(resolver);
+                    break true;
+                }
                 let service = Arc::clone(&service);
-                let shutdown = shutdown.clone();
+                let request_cancel = request_cancel_rx.clone();
                 requests.spawn(async move {
-                    handle_request(resolver, service, client_addr, shutdown).await;
+                    handle_request(resolver, service, client_addr, request_cancel).await;
                 });
             }
         }
     };
-    if graceful {
-        drain_h3_connection(&mut h3).await;
+    let deadline = Instant::now() + H3_GRACEFUL_DRAIN_TIMEOUT;
+    let goaway_sent = if graceful {
+        drain_h3_connection(&mut h3, deadline).await
+    } else {
+        false
+    };
+    if !goaway_sent {
+        let _ = request_cancel_tx.send(true);
+        requests.abort_all();
     }
+    join_h3_requests("HTTP/3", &mut requests, &request_cancel_tx, deadline).await;
     connection.close(H3_CLOSE_CODE, b"generation draining");
-    while let Some(result) = requests.join_next().await {
-        if let Err(error) = result {
-            warn!("HTTP/3 request task failed: {error}");
-        }
-    }
     drop(listener_connection);
     drop(generation_reference);
     drop(service_connection);
 }
 
-async fn drain_h3_connection<C>(connection: &mut h3::server::Connection<C, Bytes>)
+async fn drain_h3_connection<C>(
+    connection: &mut h3::server::Connection<C, Bytes>,
+    deadline: Instant,
+) -> bool
 where
     C: h3::quic::Connection<Bytes>,
 {
-    let _ = connection.shutdown(0).await;
-    while let Ok(Some(_)) = connection.accept().await {}
+    if !matches!(
+        timeout_at(deadline, connection.shutdown(0)).await,
+        Ok(Ok(()))
+    ) {
+        return false;
+    }
+    true
+}
+
+fn reject_h3_resolver<C>(mut resolver: RequestResolver<C, Bytes>)
+where
+    C: h3::quic::Connection<Bytes>,
+{
+    let code = h3::error::Code::H3_REQUEST_REJECTED.value();
+    resolver.frame_stream.reset(code);
+    resolver.frame_stream.stream.stop_sending(code);
+}
+
+async fn join_h3_requests(
+    protocol: &str,
+    requests: &mut tokio::task::JoinSet<()>,
+    request_cancel: &watch::Sender<bool>,
+    deadline: Instant,
+) {
+    let mut timed_out = false;
+    loop {
+        match timeout_at(deadline, requests.join_next()).await {
+            Ok(Some(result)) => {
+                if let Err(error) = result {
+                    if !error.is_cancelled() {
+                        warn!("{protocol} request task failed: {error}");
+                    }
+                }
+            }
+            Ok(None) => break,
+            Err(_) => {
+                timed_out = true;
+                warn!("{protocol} request drain deadline expired");
+                break;
+            }
+        }
+    }
+    if timed_out {
+        let _ = request_cancel.send(true);
+        requests.abort_all();
+        while let Some(result) = requests.join_next().await {
+            if let Err(error) = result {
+                if !error.is_cancelled() {
+                    warn!("{protocol} request task failed: {error}");
+                }
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2699,6 +2869,55 @@ mod tests {
             value["http3"]["reverse"]["limits"]["maxRequestBodyBytes"],
             H3_MAX_REQUEST_BODY_BYTES
         );
+    }
+
+    #[tokio::test]
+    async fn h3_drain_waits_for_admitted_requests_to_finish() {
+        let (request_cancel, cancelled) = watch::channel(false);
+        let mut requests = tokio::task::JoinSet::new();
+        requests.spawn(async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        });
+
+        join_h3_requests(
+            "test HTTP/3",
+            &mut requests,
+            &request_cancel,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .await;
+
+        assert!(!*cancelled.borrow(), "completed request was cancelled");
+    }
+
+    #[tokio::test]
+    async fn h3_drain_cancels_admitted_requests_at_the_deadline() {
+        let (request_cancel, cancelled) = watch::channel(false);
+        let mut requests = tokio::task::JoinSet::new();
+        requests.spawn(std::future::pending::<()>());
+
+        join_h3_requests(
+            "test HTTP/3",
+            &mut requests,
+            &request_cancel,
+            Instant::now() + Duration::from_millis(10),
+        )
+        .await;
+
+        assert!(*cancelled.borrow(), "timed-out request was not cancelled");
+    }
+
+    #[tokio::test]
+    async fn h3_accept_gate_close_is_acknowledged_for_drain() {
+        let gate = pingora::apps::AcceptGate::closed();
+        gate.enable();
+        let mut participant = gate.register();
+        let close = gate.close();
+        let state = participant.changed().await.expect("accept gate change");
+
+        assert!(!state.accepting);
+        participant.acknowledge(state.epoch);
+        assert!(close.wait(Duration::from_secs(1)));
     }
 
     #[test]
