@@ -273,7 +273,12 @@ impl Lowerer {
             }
             let index = self.draft.upstream_pools.len();
             self.draft.upstream_pools.push(pool.pool);
-            self.record_pool_provenance(index, &pool.origin, pool.endpoint_origins);
+            self.record_pool_provenance(
+                index,
+                &pool.origin,
+                pool.endpoint_origins,
+                pool.weight_origins,
+            );
         }
         let service_index = self.draft.http_services.len();
         let gzip_enabled = candidate.service.gzip.is_some();
@@ -400,6 +405,7 @@ impl Lowerer {
         index: usize,
         origin: &crate::nginx::DirectiveOrigin,
         endpoint_origins: Vec<crate::nginx::DirectiveOrigin>,
+        weight_origins: Option<Vec<crate::nginx::DirectiveOrigin>>,
     ) {
         let path = format!("/upstream_pools/{index}");
         for suffix in ["", "/name", "/algorithm", "/http_versions"] {
@@ -421,6 +427,14 @@ impl Lowerer {
             };
             for suffix in suffixes {
                 self.record(format!("{endpoint_path}{suffix}"), vec![origin.clone()]);
+            }
+        }
+        if let Some(weight_origins) = weight_origins {
+            for (weight_index, origin) in weight_origins.into_iter().enumerate() {
+                self.record(
+                    format!("{path}/algorithm/weights/{weight_index}"),
+                    vec![origin],
+                );
             }
         }
     }

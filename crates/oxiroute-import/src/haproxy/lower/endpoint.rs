@@ -5,9 +5,8 @@ use std::{
 
 use oxiroute_config::{
     DnsResolutionPolicy, DownstreamTimeoutPolicy, HealthCheck, HealthCheckType, HealthStartup,
-    HttpVersionPolicy, Listener, ListenerBind, UpstreamAlgorithm, UpstreamConnectionReuse,
-    PassiveHealthPolicy, PassiveObserve, PassiveOnError, UpstreamEndpoint, UpstreamPool,
-    UpstreamServer,
+    HttpVersionPolicy, Listener, ListenerBind, PassiveHealthPolicy, PassiveObserve, PassiveOnError,
+    UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer,
 };
 
 use super::{Lowerer, Representability};
@@ -90,6 +89,7 @@ impl Lowerer<'_> {
             section,
             settings.balance.as_ref(),
             settings.mode.as_ref(),
+            servers,
             &lowered_servers
                 .iter()
                 .map(|server| server.endpoint.clone())
@@ -177,6 +177,7 @@ impl Lowerer<'_> {
         let algorithm = algorithm.expect("representable pool has an algorithm");
         let health_check_present = health_check.as_ref().is_some_and(Option::is_some);
         let passive_health_present = passive_health.as_ref().is_some_and(Option::is_some);
+        let has_weights = servers.iter().any(|server| server.weight.is_some());
 
         let pool_index = self.draft.upstream_pools.len();
         self.lowered_pools.insert(section.id);
@@ -226,6 +227,16 @@ impl Lowerer<'_> {
                 provenance_sources(&balance.provenance),
             );
         }
+        if has_weights {
+            let weights_path = pool_path.field("algorithm").field("weights");
+            for (index, server) in servers.iter().enumerate() {
+                let origins = server.weight.as_ref().map_or_else(
+                    || provenance_sources(&server.address.provenance),
+                    |weight| provenance_sources(&weight.provenance),
+                );
+                self.record(weights_path.index(index), origins);
+            }
+        }
         let servers_path = pool_path.field("servers");
         for (endpoint_index, server) in servers.iter().enumerate() {
             let path = servers_path.index(endpoint_index);
@@ -255,8 +266,33 @@ impl Lowerer<'_> {
         section: &EffectiveSection,
         balance: Option<&EffectiveValue<BalanceAlgorithm>>,
         _mode: Option<&EffectiveValue<ProxyMode>>,
+        servers: &[EffectiveServer],
         endpoints: &[UpstreamEndpoint],
     ) -> Option<UpstreamAlgorithm> {
+        if servers.iter().any(|server| server.weight.is_some()) {
+            let Some(balance) = balance else {
+                self.block_section(
+                    section,
+                    "HAProxy weighted servers require an explicit roundrobin balance policy",
+                );
+                return None;
+            };
+            if balance.value != BalanceAlgorithm::RoundRobin {
+                if let Some(weight) = servers.iter().find_map(|server| server.weight.as_ref()) {
+                    self.block_value(
+                        weight,
+                        "HAProxy server weights are representable only with roundrobin balance",
+                    );
+                }
+                return None;
+            }
+            return Some(UpstreamAlgorithm::WeightedRoundRobin {
+                weights: servers
+                    .iter()
+                    .map(|server| server.weight.as_ref().map_or(1, |weight| weight.value))
+                    .collect(),
+            });
+        }
         match balance {
             Some(balance) if balance.value == BalanceAlgorithm::RoundRobin => {
                 Some(UpstreamAlgorithm::RoundRobin)

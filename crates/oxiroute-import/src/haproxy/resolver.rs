@@ -400,6 +400,7 @@ fn inherit_server_defaults(
     inherit_value(&mut defaults.observe, step);
     inherit_value(&mut defaults.error_limit, step);
     inherit_value(&mut defaults.on_error, step);
+    inherit_value(&mut defaults.weight, step);
     for option in &mut defaults.unsupported_options {
         option.provenance.inherit(step.clone());
     }
@@ -469,6 +470,7 @@ pub struct EffectiveServer {
     pub observe: Option<EffectiveValue<PassiveObserve>>,
     pub error_limit: Option<EffectiveValue<u32>>,
     pub on_error: Option<EffectiveValue<PassiveOnError>>,
+    pub weight: Option<EffectiveValue<u16>>,
     pub unsupported_options: Vec<EffectiveValue<ServerOption>>,
 }
 
@@ -1686,6 +1688,9 @@ impl Resolver {
             }
             if server.on_error.is_none() {
                 server.on_error.clone_from(&defaults.on_error);
+            }
+            if server.weight.is_none() {
+                server.weight.clone_from(&defaults.weight);
             }
             server
                 .unsupported_options

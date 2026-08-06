@@ -202,6 +202,67 @@ fn resolves_forward_upstream_references_and_preserves_declaration_and_endpoint_o
 }
 
 #[test]
+fn resolves_bounded_upstream_weights_and_keeps_default_weight_implicit() {
+    let source = br"
+        http {
+            upstream weighted {
+                server 10.0.0.2:8082 weight=50;
+                server 10.0.0.1:8081;
+            }
+        }
+    ";
+    let resolved = resolve_source(source, &[]);
+    let servers = &resolved.value().http_blocks[0].upstreams[0].servers;
+
+    assert!(
+        resolved.diagnostics().is_empty(),
+        "{:?}",
+        resolved.diagnostics()
+    );
+    assert_eq!(
+        servers[0].weight.as_ref().expect("explicit weight").value,
+        50
+    );
+    assert!(
+        servers[0]
+            .weight
+            .as_ref()
+            .expect("weight origin")
+            .origin
+            .span
+            .range()
+            .start()
+            < servers[0].origin.span.range().end()
+    );
+    assert!(servers[1].weight.is_none());
+}
+
+#[test]
+fn invalid_or_unsupported_upstream_weights_remain_blocking() {
+    for parameter in [
+        "weight=0",
+        "weight=101",
+        "weight=+5",
+        "weight=$weight",
+        "weight=10 weight=20",
+        "backup",
+    ] {
+        let source =
+            format!("http {{ upstream backend {{ server 127.0.0.1:8080 {parameter}; }} }}");
+        let resolved = resolve_source(source.as_bytes(), &[]);
+
+        assert!(
+            resolved.has_errors(),
+            "upstream parameter resolved: {parameter}"
+        );
+        assert!(resolved.value().decisions.iter().any(|decision| {
+            decision.name.value == b"server"
+                && matches!(decision.disposition, OccurrenceDisposition::Blocking(_))
+        }));
+    }
+}
+
+#[test]
 fn retains_dns_and_unix_upstream_endpoints_without_resolution_or_substitution() {
     let source = br"
         http {

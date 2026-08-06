@@ -52,9 +52,10 @@ pub use rtmp_semantic::{
 pub use semantic::{
     BoundServerName, DefaultServerSelection, DirectiveOrigin, EffectiveBind, EffectiveHttp,
     EffectiveListen, EffectiveLocation, EffectiveProxyPass, EffectiveServer, EffectiveServerName,
-    EffectiveUpstream, EffectiveUpstreamServer, HttpDeclaration, HttpResolution, ListenEndpoint,
-    LocationKind, NginxValue, OccurrenceDecision, OccurrenceDisposition, ProxyPassScheme,
-    ServerDeclaration, ServerNameKind, StaticEndpoint, UpstreamReference, resolve_http_fragment,
+    EffectiveUpstream, EffectiveUpstreamServer, EffectiveUpstreamWeight, HttpDeclaration,
+    HttpResolution, ListenEndpoint, LocationKind, NginxValue, OccurrenceDecision,
+    OccurrenceDisposition, ProxyPassScheme, ServerDeclaration, ServerNameKind, StaticEndpoint,
+    UpstreamReference, resolve_http_fragment,
 };
 #[cfg(unix)]
 pub use stream_lower::{BlockedStreamService, StreamImportReport, import_stream_fragment};
