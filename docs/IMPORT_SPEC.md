@@ -56,7 +56,7 @@ activation of standalone import reports. Restricted Lua cannot declare native re
 - nginx-RTMP has an independent 117-directive parser/registry plus deterministic include expansion,
   effective inheritance, a terminal occurrence ledger, provenance, blocked-service reporting, and
   strict conditional canonical finalization for an exact listener/application/recording subset,
-  including outbound chunk size, disabled access logging, bounded suffixes tied to an explicit
+  including outbound chunk size, disabled or fixed-file access logging, bounded suffixes tied to an explicit
   host IANA timezone overlay, static RTMP push targets whose application is literal or `$name`,
   and supported named `recorder` blocks. Import never accesses a configured recording root. Most
   directive families remain blocking. The complete nginx-root path composes the finalized HTTP and
