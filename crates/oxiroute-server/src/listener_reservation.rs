@@ -203,7 +203,7 @@ fn unix_socket_marker_path(path: &Path) -> io::Result<PathBuf> {
 fn remove_stale_unix_socket(path: &Path) -> io::Result<()> {
     use rustix::{
         io::Errno,
-        net::{connect, socket_with, AddressFamily, SocketAddrUnix, SocketFlags, SocketType},
+        net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType, connect, socket_with},
     };
     use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
 
@@ -1166,7 +1166,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn descriptor_export_is_canonical_typed_and_cloexec() {
-        use rustix::io::{fcntl_getfd, FdFlags};
+        use rustix::io::{FdFlags, fcntl_getfd};
 
         let traffic = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .expect("traffic temporary bind")
@@ -1523,14 +1523,16 @@ mod tests {
         let active_path = directory.path().join("active.sock");
         let active =
             std::os::unix::net::UnixListener::bind(&active_path).expect("active Unix bind");
-        assert!(ListenerReservation::bind(
-            "active",
-            &ListenerBind::Unix {
-                path: active_path.clone(),
-                mode: None,
-            },
-        )
-        .is_err());
+        assert!(
+            ListenerReservation::bind(
+                "active",
+                &ListenerBind::Unix {
+                    path: active_path.clone(),
+                    mode: None,
+                },
+            )
+            .is_err()
+        );
         assert!(active_path.exists());
         drop(active);
     }

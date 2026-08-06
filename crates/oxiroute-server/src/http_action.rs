@@ -7,16 +7,16 @@ use std::{
     os::unix::ffi::OsStringExt as _,
     path::{Component, Path},
     sync::{
-        mpsc::{self, SyncSender, TrySendError},
         Arc, Mutex, OnceLock,
+        mpsc::{self, SyncSender, TrySendError},
     },
     thread::JoinHandle,
     time::Duration,
 };
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use bytes::Bytes;
-use http::{header::AUTHORIZATION, HeaderMap, HeaderName, HeaderValue, Method};
+use http::{HeaderMap, HeaderName, HeaderValue, Method, header::AUTHORIZATION};
 use openssl::{
     hash::{Hasher, MessageDigest},
     memcmp,
@@ -193,11 +193,15 @@ impl AccessLog {
     }
 
     pub(crate) fn write(&self, event: &serde_json::Value) -> std::io::Result<()> {
-        self.enqueue(serde_json::to_vec(&crate::logging::redact_access_record(event))?)
+        self.enqueue(serde_json::to_vec(&crate::logging::redact_access_record(
+            event,
+        ))?)
     }
 
     pub(crate) fn write_rtmp(&self, event: &serde_json::Value) -> std::io::Result<()> {
-        self.enqueue(serde_json::to_vec(&crate::logging::redact_rtmp_access_record(event))?)
+        self.enqueue(serde_json::to_vec(
+            &crate::logging::redact_rtmp_access_record(event),
+        )?)
     }
 
     fn enqueue(&self, line: Vec<u8>) -> std::io::Result<()> {
@@ -2295,7 +2299,7 @@ fn trim_one_line_ending(bytes: &mut Vec<u8>) {
 
 #[cfg(test)]
 mod access_log_tests {
-    use std::os::unix::fs::{symlink, PermissionsExt as _};
+    use std::os::unix::fs::{PermissionsExt as _, symlink};
 
     use super::*;
 
@@ -2417,12 +2421,10 @@ mod access_log_tests {
     fn rtmp_access_log_drop_flushes_the_bounded_redacted_record() {
         let directory = tempfile::tempdir().expect("RTMP access log directory");
         let path = directory.path().join("rtmp-access.jsonl");
-        let access_log = AccessLog::open_rtmp(
-            "live",
-            Some(&AccessLogPolicy::File { path: path.clone() }),
-        )
-        .expect("RTMP access log preflight")
-        .expect("RTMP file sink");
+        let access_log =
+            AccessLog::open_rtmp("live", Some(&AccessLogPolicy::File { path: path.clone() }))
+                .expect("RTMP access log preflight")
+                .expect("RTMP file sink");
         access_log
             .write_rtmp(&serde_json::json!({
                 "timestampUnixMs": 1,

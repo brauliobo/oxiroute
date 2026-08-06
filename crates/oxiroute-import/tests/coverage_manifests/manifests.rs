@@ -4,8 +4,8 @@ use std::{
 };
 
 use oxiroute_rtmp::{
-    directive_specs, validate_directive, DirectiveContext, DirectiveError, DirectiveSpec,
-    RelayKind, RuntimeSupport, ValueKind,
+    DirectiveContext, DirectiveError, DirectiveSpec, RelayKind, RuntimeSupport, ValueKind,
+    directive_specs, validate_directive,
 };
 use serde::Deserialize;
 use syn::{Attribute, Item};

@@ -5,7 +5,7 @@ use std::{
     sync::Arc,
 };
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use openssl::{
     bn::BigNumContext,
     ec::{EcGroup, EcKey, PointConversionForm},
@@ -17,10 +17,10 @@ use openssl::{
     rsa::Rsa,
     sign::Signer,
     stack::Stack,
-    x509::{extension::SubjectAlternativeName, X509NameBuilder, X509Req, X509ReqBuilder, X509},
+    x509::{X509, X509NameBuilder, X509Req, X509ReqBuilder, extension::SubjectAlternativeName},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 

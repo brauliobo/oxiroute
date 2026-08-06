@@ -5,25 +5,25 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     sync::{
-        atomic::{fence, AtomicBool, AtomicU64, AtomicU8, Ordering},
         Arc, Mutex, RwLock,
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering, fence},
     },
     time::{Duration, SystemTime},
 };
 
 use http::{
-    uri::{Authority, PathAndQuery},
     Method, Uri,
+    uri::{Authority, PathAndQuery},
 };
 use oxiroute_config::{
-    canonicalize_http_path, HealthStartup, HttpHostSelector, HttpPathSelector, UpstreamAlgorithm,
+    HealthStartup, HttpHostSelector, HttpPathSelector,
     PassiveHealthPolicy as ConfigPassiveHealthPolicy, PassiveObserve, PassiveOnError,
-    UpstreamEndpoint,
+    UpstreamAlgorithm, UpstreamEndpoint, canonicalize_http_path,
 };
 use serde::{Deserialize, Serialize, Serializer};
 use tokio::{
     sync::Notify,
-    time::{timeout_at, Instant},
+    time::{Instant, timeout_at},
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -631,7 +631,10 @@ impl PassiveFailurePolicy {
     fn observes(self, failure: HealthFailure) -> bool {
         match self.observe {
             PassiveObserve::Layer4 => {
-                matches!(failure, HealthFailure::ConnectFailed | HealthFailure::Timeout)
+                matches!(
+                    failure,
+                    HealthFailure::ConnectFailed | HealthFailure::Timeout
+                )
             }
             PassiveObserve::Layer7 => true,
         }
@@ -1210,11 +1213,7 @@ struct PassiveRecovery {
 }
 
 const fn nonzero(value: u64) -> Option<u64> {
-    if value == 0 {
-        None
-    } else {
-        Some(value)
-    }
+    if value == 0 { None } else { Some(value) }
 }
 
 fn increment_saturating(counter: &AtomicU64) -> u64 {
@@ -2565,7 +2564,7 @@ impl Error for PoolError {}
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::{mpsc, Arc, Barrier},
+        sync::{Arc, Barrier, mpsc},
         thread,
         time::Duration,
     };
@@ -2573,7 +2572,7 @@ mod tests {
     use pingora::{
         connectors::http::Connector as HttpConnector,
         http::RequestHeader,
-        protocols::{http::client::HttpSession, ConnectionLifetime as _},
+        protocols::{ConnectionLifetime as _, http::client::HttpSession},
         upstreams::peer::HttpPeer,
     };
     use tokio::{
@@ -2663,9 +2662,11 @@ mod tests {
             .expect_err("address overflow must fail");
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert!(error
-            .to_string()
-            .contains("returned more than 16 addresses"));
+        assert!(
+            error
+                .to_string()
+                .contains("returned more than 16 addresses")
+        );
     }
 
     fn resolved_addresses(count: usize) -> Vec<SocketAddr> {
@@ -3437,10 +3438,12 @@ mod tests {
         assert_eq!(pool.queue.lifetime_waiters.load(Ordering::Relaxed), 0);
         drop(second_session);
         server.abort();
-        assert!(server
-            .await
-            .expect_err("H2 server cancelled")
-            .is_cancelled());
+        assert!(
+            server
+                .await
+                .expect_err("H2 server cancelled")
+                .is_cancelled()
+        );
     }
 
     #[tokio::test]
@@ -3596,19 +3599,23 @@ mod tests {
         assert_eq!(combined_snapshot.queue_cancellations, 0);
 
         hidden_waiter.abort();
-        assert!(hidden_waiter
-            .await
-            .expect_err("hidden waiter cancelled")
-            .is_cancelled());
+        assert!(
+            hidden_waiter
+                .await
+                .expect_err("hidden waiter cancelled")
+                .is_cancelled()
+        );
         wait_for_lifetime_waiters(&pool, 0).await;
         assert_eq!(pool.health_snapshot().queued, 1);
         assert_eq!(pool.health_snapshot().queue_cancellations, 0);
 
         selector_waiter.abort();
-        assert!(selector_waiter
-            .await
-            .expect_err("selector waiter cancelled")
-            .is_cancelled());
+        assert!(
+            selector_waiter
+                .await
+                .expect_err("selector waiter cancelled")
+                .is_cancelled()
+        );
         let final_snapshot = pool.health_snapshot();
         assert_eq!(final_snapshot.queued, 0);
         assert_eq!(final_snapshot.queued_total, 1);
@@ -3918,9 +3925,11 @@ mod tests {
                 .expect("selection receiver");
         });
         barrier.wait();
-        assert!(selection_rx
-            .recv_timeout(Duration::from_millis(20))
-            .is_err());
+        assert!(
+            selection_rx
+                .recv_timeout(Duration::from_millis(20))
+                .is_err()
+        );
 
         pool.endpoints[0]
             .state

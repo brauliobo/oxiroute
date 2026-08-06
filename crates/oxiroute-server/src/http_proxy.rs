@@ -3137,15 +3137,12 @@ fn request_body_replayable(session: &Session) -> bool {
         || (!session.retry_buffer_truncated() && session.get_retry_buffer().is_some())
 }
 
-fn retryable_upstream_error(
-    error: &Error,
-    session: &Session,
-    policy: &ProxyPolicyPlan,
-) -> bool {
+fn retryable_upstream_error(error: &Error, session: &Session, policy: &ProxyPolicyPlan) -> bool {
     match error.etype() {
         ErrorType::HTTPStatus(status) => policy.retries_on_status(*status),
-        _ => response_retry_trigger(error, session)
-            .is_some_and(|trigger| policy.retries_on(trigger)),
+        _ => {
+            response_retry_trigger(error, session).is_some_and(|trigger| policy.retries_on(trigger))
+        }
     }
 }
 

@@ -3,8 +3,8 @@ use std::{
     io,
     path::Path,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc, Mutex, TryLockError,
+        atomic::{AtomicU64, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -14,20 +14,21 @@ use openssl::{
     x509::X509,
 };
 use oxiroute_acme::{
-    renewal_due, stable_renewal_time, stable_renewal_time_in_window, Account, AccountKey,
-    AccountKeyAlgorithm, AcmeClient, AcmeError, AcmeStateError, AcmeTransport, AuthorizationStatus,
-    CertificateMaterial, ChallengeRecord, ChallengeStore, ChallengeStoreError, ChallengeType,
-    Dns01Cancellation, Dns01Challenge, Dns01Credentials, Dns01Operation, Dns01Provider,
-    Dns01ProviderError, JobState, JobStatus, LeafKeyAlgorithm, OriginPolicy, PollPolicy,
-    RedactedOutcome, RenewalInformation, RevisionMetadata, RevisionStore, SecretBytes, StateStore,
-    SystemAcmeTransport, SystemClock, MAX_DNS01_CREDENTIAL_BYTES, MAX_JOB_BYTES,
+    Account, AccountKey, AccountKeyAlgorithm, AcmeClient, AcmeError, AcmeStateError, AcmeTransport,
+    AuthorizationStatus, CertificateMaterial, ChallengeRecord, ChallengeStore, ChallengeStoreError,
+    ChallengeType, Dns01Cancellation, Dns01Challenge, Dns01Credentials, Dns01Operation,
+    Dns01Provider, Dns01ProviderError, JobState, JobStatus, LeafKeyAlgorithm,
+    MAX_DNS01_CREDENTIAL_BYTES, MAX_JOB_BYTES, OriginPolicy, PollPolicy, RedactedOutcome,
+    RenewalInformation, RevisionMetadata, RevisionStore, SecretBytes, StateStore,
+    SystemAcmeTransport, SystemClock, renewal_due, stable_renewal_time,
+    stable_renewal_time_in_window,
 };
 use oxiroute_config::{AcmeChallengeType, AcmeDns01Config, AcmeKeyType, SelfSignedKeyType};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ActiveCertificateGeneration, CertificateGeneration, TlsAlpnChallenge, TlsAlpnChallengeStore,
-    TlsBuildError, MAX_CERTIFICATE_CHAIN_BYTES,
+    ActiveCertificateGeneration, CertificateGeneration, MAX_CERTIFICATE_CHAIN_BYTES,
+    TlsAlpnChallenge, TlsAlpnChallengeStore, TlsBuildError,
 };
 
 static NEXT_JOB_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -1470,7 +1471,8 @@ impl AcmeManagedReconciler {
             self.set_dns_status("failed", "degraded");
             return AcmeDnsCleanupRecovery::Deferred;
         };
-        let Ok(credentials) = load_dns_credentials(&dns01.credential_file, &self.certificate) else {
+        let Ok(credentials) = load_dns_credentials(&dns01.credential_file, &self.certificate)
+        else {
             self.set_dns_status("failed", "degraded");
             return AcmeDnsCleanupRecovery::Deferred;
         };
@@ -2251,7 +2253,7 @@ mod tests {
         },
     };
 
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use openssl::{
         asn1::Asn1Time,
         bn::{BigNum, MsbOption},
@@ -2260,11 +2262,11 @@ mod tests {
         nid::Nid,
         pkey::{PKey, Private},
         x509::{
+            X509, X509NameBuilder, X509Req,
             extension::{
                 AuthorityKeyIdentifier, BasicConstraints, ExtendedKeyUsage, KeyUsage,
                 SubjectAlternativeName, SubjectKeyIdentifier,
             },
-            X509NameBuilder, X509Req, X509,
         },
     };
     use oxiroute_acme::{
@@ -2478,11 +2480,13 @@ mod tests {
             fs::read_to_string(temp.path().join("state/certificates/managed/renewal.json"))
                 .expect("renewal schedule");
         assert!(renewal.contains("proxy.example.test"));
-        assert!(requests
-            .lock()
-            .expect("request log")
-            .iter()
-            .all(|url| url.starts_with("https://acme.test/")));
+        assert!(
+            requests
+                .lock()
+                .expect("request log")
+                .iter()
+                .all(|url| url.starts_with("https://acme.test/"))
+        );
     }
 
     #[test]

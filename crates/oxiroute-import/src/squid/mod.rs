@@ -12,10 +12,10 @@ mod source;
 use crate::DiagnosticCode;
 
 pub use capabilities::{
-    squid_capability_report, squid_directive_capabilities, SquidCapabilityFamily,
+    SQUID_CAPABILITY_PROFILE_ID, SQUID_CAPABILITY_PROFILE_VERSION,
+    SQUID_CAPABILITY_REGISTRY_VERSION, SQUID_TARGET_VERSION, SquidCapabilityFamily,
     SquidCapabilityProfile, SquidCapabilityReference, SquidCapabilityReport, SquidCapabilityStatus,
-    SquidDirectiveCapability, SQUID_CAPABILITY_PROFILE_ID, SQUID_CAPABILITY_PROFILE_VERSION,
-    SQUID_CAPABILITY_REGISTRY_VERSION, SQUID_TARGET_VERSION,
+    SquidDirectiveCapability, squid_capability_report, squid_directive_capabilities,
 };
 pub use importer::{
     BlockedCapability, ImportReport, LoweringView, SelectedImportReport, SquidLoweringAdapter,

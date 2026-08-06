@@ -1,3 +1,4 @@
+mod capsule;
 pub mod cli;
 pub mod config_coordinator;
 mod config_watcher;
@@ -31,9 +32,9 @@ mod wire;
 
 pub use config_watcher::{ConfigWatcher, ConfigWatcherOptions, ConfigWatcherStatus};
 pub use forward_proxy::{
-    challenge_response, ForwardAccessMetricsSnapshot, ForwardAccessResult,
-    ForwardConnectionLifecycle, ForwardHttp1ServicePlan, ForwardHttp2ServiceApp,
-    ForwardHttp2ServicePlan, ForwardProxyBody,
+    ForwardAccessMetricsSnapshot, ForwardAccessResult, ForwardConnectionLifecycle,
+    ForwardHttp1ServicePlan, ForwardHttp2ServiceApp, ForwardHttp2ServicePlan, ForwardProxyBody,
+    challenge_response,
 };
 pub use generation::{
     GenerationAdmission, GenerationCandidate, GenerationError, GenerationManager,
@@ -41,28 +42,27 @@ pub use generation::{
     PreparedGeneration, RuntimeGeneration, RuntimeReferenceKind,
 };
 pub use health::{HealthBuildError, HealthSupervisor};
-pub use http3::Http3Runtime;
-pub(crate) use http3_upstream::{H3UpstreamBuildError, H3UpstreamError, H3UpstreamPlan};
 pub use http_proxy::{HttpRequestContext, HttpReverseProxy};
 pub use http_server_app::{HttpDownstreamPolicyApp, HttpListenerApp, MonitoredHttpApp};
+pub use http3::Http3Runtime;
+pub(crate) use http3_upstream::{H3UpstreamBuildError, H3UpstreamError, H3UpstreamPlan};
 pub use l4_service::L4ServicePlan;
 pub use listener_reservation::{ListenerReservation, ListenerReservations};
 pub use monitoring::{
-    AccessRecord, AcmeManagedCertificateSnapshot, CacheSnapshot, CertbotCertificateSnapshot,
-    CertbotWatcherHealth, CertbotWatcherSnapshot, ComponentState, ComponentStatus, ConnectionGuard,
-    DirectFileCertificateSnapshot, DirectFileWatcherSnapshot, HostSnapshot,
-    HttpOperationCountSnapshot, HttpOperationResult, HttpOperationSnapshot, LatencyBucketSnapshot,
-    LatencySnapshot, ListenerMetrics, ListenerRuntimeState, ListenerSnapshot, MetricsError,
-    ObservedTransport, ProcessConnectionGuard, ProcessRuntime, ProcessSnapshot,
-    ProxyProtocolCountSnapshot, ProxyProtocolSnapshot, RuntimeMetrics, RuntimeMode,
-    RuntimeSnapshot,
-    TcpRelayCountSnapshot, TcpRelayResult, TcpRelaySnapshot, TrafficSnapshot, TransportOutcome,
-    TransportOperationCountSnapshot, TransportOperationSnapshot, ACCESS_RECORD_CAPACITY,
-    OPERATION_LATENCY_BUCKETS_MS,
+    ACCESS_RECORD_CAPACITY, AccessRecord, AcmeManagedCertificateSnapshot, CacheSnapshot,
+    CertbotCertificateSnapshot, CertbotWatcherHealth, CertbotWatcherSnapshot, ComponentState,
+    ComponentStatus, ConnectionGuard, DirectFileCertificateSnapshot, DirectFileWatcherSnapshot,
+    HostSnapshot, HttpOperationCountSnapshot, HttpOperationResult, HttpOperationSnapshot,
+    LatencyBucketSnapshot, LatencySnapshot, ListenerMetrics, ListenerRuntimeState,
+    ListenerSnapshot, MetricsError, OPERATION_LATENCY_BUCKETS_MS, ObservedTransport,
+    ProcessConnectionGuard, ProcessRuntime, ProcessSnapshot, ProxyProtocolCountSnapshot,
+    ProxyProtocolSnapshot, RuntimeMetrics, RuntimeMode, RuntimeSnapshot, TcpRelayCountSnapshot,
+    TcpRelayResult, TcpRelaySnapshot, TrafficSnapshot, TransportOperationCountSnapshot,
+    TransportOperationSnapshot, TransportOutcome,
 };
+pub use operational_event::{WorkerEventPage, WorkerEventSnapshot, worker_event_page};
 pub use operational_event::{emit_certificate, emit_rtmp_access};
-pub use operational_event::{worker_event_page, WorkerEventPage, WorkerEventSnapshot};
-pub use prometheus::{render_prometheus, PrometheusError};
+pub use prometheus::{PrometheusError, render_prometheus};
 pub use proxy_protocol::{
     AcceptedProxyStream, MAX_V1_HEADER_BYTES, MAX_V2_HEADER_BYTES, MAX_V2_PAYLOAD_BYTES,
     ParsedProxyHeader, PrefixedStream, ProxyProtocolError, ProxyProtocolErrorKind,
@@ -75,30 +75,30 @@ pub use routing::{
 };
 pub use rtmp_api::{ApiResponse, RtmpManagementApi, RtmpManagementHttpApp};
 pub use service_plan::{
-    runtime_plan, runtime_plan_with_passive_failure_policy, service_specs, HttpServicePlan,
-    RtmpServicePlan, RuntimePlan, ServiceKind, ServicePlanError, ServiceSpec,
+    HttpServicePlan, RtmpServicePlan, RuntimePlan, ServiceKind, ServicePlanError, ServiceSpec,
+    runtime_plan, runtime_plan_with_passive_failure_policy, service_specs,
 };
 pub use stats::{HaproxyStatsApi, HaproxyStatsPage};
 pub use tcp_relay::{
-    relay_streams, RelayDirection, RelayFailure, RelayFailureKind, RelayOperation, RelayPolicy,
-    RelayStats, TcpRelayCore, RELAY_BUFFER_SIZE,
+    RELAY_BUFFER_SIZE, RelayDirection, RelayFailure, RelayFailureKind, RelayOperation, RelayPolicy,
+    RelayStats, TcpRelayCore, relay_streams,
 };
 pub use tls::{
-    AcmeDnsCleanupRecovery,
-    AcmeManagedError, AcmeManagedOutcome, AcmeManagedPolicy, AcmeManagedReconciler,
-    AcmeManagedStatus, ActiveCertificateGeneration, CertbotActivationDirection, CertbotCandidate,
-    CertbotLineage, CertbotReconcileError, CertbotReconcileOutcome, CertbotReconciler,
-    CertbotReconcilerStatus, CertbotWatcherConfig, CertbotWatcherError, CertbotWatcherMonitor,
-    CertbotWatcherStatus, CertbotWatcherSupervisor, CertificateGeneration, CertificateMetadata,
-    CertificatePublishError, CertificateValidity, FileReconcileError, FileReconcileOutcome,
-    FileReconciler, FileReconcilerStatus, FileWatcherConfig, FileWatcherError, FileWatcherMonitor,
-    FileWatcherStatus, FileWatcherSupervisor, PreparedTls, TlsAlpnChallenge,
-    TlsAlpnChallengeError, TlsAlpnChallengeIdentity, TlsAlpnChallengeLease, TlsAlpnChallengeStore,
-    TlsBuildError, TlsProfilePlan, UpstreamTlsPlan,
+    AcmeDnsCleanupRecovery, AcmeManagedError, AcmeManagedOutcome, AcmeManagedPolicy,
+    AcmeManagedReconciler, AcmeManagedStatus, ActiveCertificateGeneration,
+    CertbotActivationDirection, CertbotCandidate, CertbotLineage, CertbotReconcileError,
+    CertbotReconcileOutcome, CertbotReconciler, CertbotReconcilerStatus, CertbotWatcherConfig,
+    CertbotWatcherError, CertbotWatcherMonitor, CertbotWatcherStatus, CertbotWatcherSupervisor,
+    CertificateGeneration, CertificateMetadata, CertificatePublishError, CertificateValidity,
+    FileReconcileError, FileReconcileOutcome, FileReconciler, FileReconcilerStatus,
+    FileWatcherConfig, FileWatcherError, FileWatcherMonitor, FileWatcherStatus,
+    FileWatcherSupervisor, PreparedTls, TlsAlpnChallenge, TlsAlpnChallengeError,
+    TlsAlpnChallengeIdentity, TlsAlpnChallengeLease, TlsAlpnChallengeStore, TlsBuildError,
+    TlsProfilePlan, UpstreamTlsPlan,
 };
 pub use topology::{
-    TopologyEdge, TopologyEdgeKind, TopologyNode, TopologyNodeKind, TopologySnapshot,
-    TOPOLOGY_SCHEMA_VERSION,
+    TOPOLOGY_SCHEMA_VERSION, TopologyEdge, TopologyEdgeKind, TopologyNode, TopologyNodeKind,
+    TopologySnapshot,
 };
 pub use udp_relay::UdpRuntime;
 

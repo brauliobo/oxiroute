@@ -233,7 +233,7 @@ failure-path, observable-state, and interoperability coverage as part of support
 - [Developer guides](docs/developer/README.md)
 - [Reference index](docs/reference/README.md)
 - [Compatibility matrix](docs/COMPATIBILITY.md)
-- [Release notes](docs/RELEASE_NOTES_0.4.0.md)
+- [Release notes](docs/RELEASE_NOTES_0.4.1.md)
 
 ## License
 

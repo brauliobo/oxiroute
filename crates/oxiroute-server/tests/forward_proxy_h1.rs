@@ -22,7 +22,7 @@ use oxiroute_import::squid::import;
 use tempfile::tempdir;
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
-    net::{TcpListener, TcpStream},
+    net::{TcpListener, TcpStream, UdpSocket},
     time::{Duration, timeout},
 };
 
@@ -97,6 +97,7 @@ async fn downstream_tls_h1_forwards_absolute_form_and_connect_on_a_real_listener
             enabled: true,
             allowed_ports: vec![origin_address.port()],
         },
+        connect_udp: ForwardConnectPolicy::default(),
         peer_policy: ForwardPeerPolicy::default(),
         auth: Some(ForwardProxyAuth::BearerTokenFile {
             token_file_path: token_path,
@@ -365,6 +366,7 @@ async fn basic_authenticated_absolute_form_and_connect_cross_the_runtime_listene
             enabled: true,
             allowed_ports: vec![origin_address.port()],
         },
+        connect_udp: ForwardConnectPolicy::default(),
         peer_policy: ForwardPeerPolicy::default(),
         auth: Some(ForwardProxyAuth::BasicHtpasswdFile {
             htpasswd_file_path: htpasswd.clone(),
@@ -641,6 +643,7 @@ async fn static_peers_retry_in_order_and_receive_absolute_form() {
         allow_absolute_form: true,
         tls_required: false,
         connect: ForwardConnectPolicy::default(),
+        connect_udp: ForwardConnectPolicy::default(),
         peer_policy: ForwardPeerPolicy {
             peers: vec![
                 ForwardPeer {
@@ -725,6 +728,7 @@ async fn failed_static_peer_can_fall_back_to_direct_http() {
         allow_absolute_form: true,
         tls_required: false,
         connect: ForwardConnectPolicy::default(),
+        connect_udp: ForwardConnectPolicy::default(),
         peer_policy: ForwardPeerPolicy {
             peers: vec![ForwardPeer {
                 host: unavailable_peer.ip().to_string(),
@@ -978,6 +982,100 @@ async fn imported_squid_authentication_rejects_missing_credentials() {
     assert!(accepted.starts_with(b"HTTP/1.1 200"));
 
     origin_task.await.expect("origin task");
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn connect_udp_upgrade_relays_capsule_datagrams_on_a_real_listener() {
+    let echo = UdpSocket::bind("127.0.0.1:0").await.expect("UDP echo bind");
+    let echo_address = echo.local_addr().expect("UDP echo address");
+    let echo_task = tokio::spawn(async move {
+        let mut payload = [0; 64];
+        let (length, client) = echo
+            .recv_from(&mut payload)
+            .await
+            .expect("UDP echo receive");
+        assert_eq!(&payload[..length], b"ping");
+        echo.send_to(b"pong", client).await.expect("UDP echo send");
+    });
+
+    let proxy_address = process_support::reserve_tcp_address();
+    let mut config = config_support::empty_config();
+    config.forward_proxy_services.push(ForwardProxyService {
+        name: "forward".into(),
+        enabled_versions: vec![ForwardHttpVersion::H1],
+        allow_absolute_form: true,
+        tls_required: false,
+        connect: ForwardConnectPolicy::default(),
+        connect_udp: ForwardConnectPolicy {
+            enabled: true,
+            allowed_ports: vec![echo_address.port()],
+        },
+        peer_policy: ForwardPeerPolicy::default(),
+        auth: None,
+        access_policy: None,
+        destination_policy: ForwardDestinationPolicy {
+            deny_private: false,
+            ..ForwardDestinationPolicy::default()
+        },
+        header_policy: ForwardHeaderPolicy::default(),
+        connect_timeout_ms: 1_000,
+        idle_timeout_ms: 1_000,
+        lifetime_timeout_ms: 5_000,
+        max_request_body_bytes: Some(64 * 1024),
+        max_header_bytes: 8_192,
+        max_connections: 4,
+        resolver: ForwardResolverPolicy::default(),
+        audit_mode: ForwardAuditMode::Off,
+    });
+    config.listeners.push(Listener {
+        name: "forward".into(),
+        bind: config_support::socket_bind(proxy_address),
+        protocol: Protocol::ForwardHttp1,
+        service: Some("forward".into()),
+        tls_profile: None,
+        proxy_protocol: None,
+        max_connections: None,
+        downstream_timeouts: oxiroute_config::DownstreamTimeoutPolicy::default(),
+    });
+    let mut server = process_support::ServerProcess::start(&config, None);
+    server.wait_for_tcp(proxy_address).await;
+
+    let mut client = TcpStream::connect(proxy_address)
+        .await
+        .expect("proxy connect");
+    client
+        .write_all(
+            format!(
+                "GET http://proxy.example.test/.well-known/masque/udp/127.0.0.1/{}/ HTTP/1.1\r\nHost: proxy.example.test\r\nConnection: Upgrade\r\nUpgrade: connect-udp\r\nCapsule-Protocol: ?1\r\n\r\n",
+                echo_address.port()
+            )
+            .as_bytes(),
+        )
+        .await
+        .expect("CONNECT-UDP request");
+    let mut response = Vec::new();
+    while !response.windows(4).any(|window| window == b"\r\n\r\n") {
+        response.push(client.read_u8().await.expect("CONNECT-UDP response"));
+    }
+    let response_text = String::from_utf8_lossy(&response).to_ascii_lowercase();
+    assert!(response.starts_with(b"HTTP/1.1 101"));
+    assert!(response_text.contains("upgrade: connect-udp"));
+    assert!(response_text.contains("capsule-protocol: ?1"));
+
+    client
+        .write_all(&[0, 5, 0, b'p', b'i', b'n', b'g'])
+        .await
+        .expect("UDP datagram capsule");
+    let mut capsule = [0; 7];
+    client
+        .read_exact(&mut capsule)
+        .await
+        .expect("UDP response capsule");
+    assert_eq!(&capsule, &[0, 5, 0, b'p', b'o', b'n', b'g']);
+
+    drop(client);
+    echo_task.await.expect("UDP echo task");
     server.shutdown();
 }
 

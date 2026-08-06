@@ -107,9 +107,7 @@ fn status_response(
     )
 }
 
-fn generation_component_status(
-    generation: Option<&crate::GenerationStatus>,
-) -> serde_json::Value {
+fn generation_component_status(generation: Option<&crate::GenerationStatus>) -> serde_json::Value {
     match generation {
         Some(status) if status.degraded => json!({
             "state": "degraded",
@@ -125,12 +123,10 @@ fn generation_component_status(
 
 fn capabilities_response(metrics: &RuntimeMetrics) -> ApiResponse {
     match metrics.snapshot() {
-        Ok(runtime) => {
-            ApiResponse::json(
-                200,
-                &crate::http3::capability_snapshot(&runtime.listeners, metrics.supervision_mode()),
-            )
-        }
+        Ok(runtime) => ApiResponse::json(
+            200,
+            &crate::http3::capability_snapshot(&runtime.listeners, metrics.supervision_mode()),
+        ),
         Err(_) => ApiResponse::error(
             503,
             "capabilities_unavailable",
@@ -355,12 +351,12 @@ fn rtmp_monitoring(
                 relay_connection_attempts.checked_add(relay.status.connection_attempts)?;
             relay_connections = relay_connections.checked_add(relay.status.connections)?;
             relay_reconnects = relay_reconnects.checked_add(relay.status.reconnects)?;
-            relay_dns_refresh_attempts = relay_dns_refresh_attempts
-                .checked_add(relay.status.dns_refresh_attempts)?;
-            relay_dns_refresh_successes = relay_dns_refresh_successes
-                .checked_add(relay.status.dns_refresh_successes)?;
-            relay_dns_refresh_failures = relay_dns_refresh_failures
-                .checked_add(relay.status.dns_refresh_failures)?;
+            relay_dns_refresh_attempts =
+                relay_dns_refresh_attempts.checked_add(relay.status.dns_refresh_attempts)?;
+            relay_dns_refresh_successes =
+                relay_dns_refresh_successes.checked_add(relay.status.dns_refresh_successes)?;
+            relay_dns_refresh_failures =
+                relay_dns_refresh_failures.checked_add(relay.status.dns_refresh_failures)?;
             relay_events_sent = relay_events_sent.checked_add(relay.status.events_sent)?;
             relay_events_dropped = relay_events_dropped.checked_add(relay.status.events_dropped)?;
             relay_payload_bytes_sent =
@@ -471,9 +467,7 @@ const fn relay_failure(failure: oxiroute_rtmp::RtmpRelayFailure) -> &'static str
     }
 }
 
-const fn relay_dns_refresh_failure(
-    failure: oxiroute_rtmp::RtmpDnsRefreshFailure,
-) -> &'static str {
+const fn relay_dns_refresh_failure(failure: oxiroute_rtmp::RtmpDnsRefreshFailure) -> &'static str {
     match failure {
         oxiroute_rtmp::RtmpDnsRefreshFailure::Resolution => "resolution",
         oxiroute_rtmp::RtmpDnsRefreshFailure::AddressSet => "address_set",

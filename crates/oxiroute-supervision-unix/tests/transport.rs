@@ -13,8 +13,7 @@ use std::{
 use oxiroute_supervision::GenerationId;
 use oxiroute_supervision_unix::{
     BindIdentity, DescriptorCapabilities, DescriptorError, DescriptorKind, DescriptorManifest,
-    DescriptorRole,
-    DescriptorSet, DescriptorSlot, FRAME_HEADER_SIZE, FrameFlags, InstanceToken,
+    DescriptorRole, DescriptorSet, DescriptorSlot, FRAME_HEADER_SIZE, FrameFlags, InstanceToken,
     MAX_DESCRIPTOR_COUNT, MAX_FRAME_SIZE, MAX_PAYLOAD_SIZE, MessageType, SeqpacketEndpoint, SlotId,
     SpawnHandshakeNonce, TransportError,
 };
@@ -264,8 +263,16 @@ fn transfers_typed_datagram_and_quic_listeners_with_exact_bind_identity() {
         },
     ])
     .unwrap();
-    assert!(manifest.capabilities().contains(DescriptorCapabilities::DATAGRAM));
-    assert!(manifest.capabilities().contains(DescriptorCapabilities::QUIC));
+    assert!(
+        manifest
+            .capabilities()
+            .contains(DescriptorCapabilities::DATAGRAM)
+    );
+    assert!(
+        manifest
+            .capabilities()
+            .contains(DescriptorCapabilities::QUIC)
+    );
 
     let (mut sender, mut receiver) = SeqpacketEndpoint::pair().unwrap();
     sender

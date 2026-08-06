@@ -36,30 +36,29 @@ use crate::defaults::{
     default_recorder_max_active_recorders, default_recorder_max_queue_bytes,
     default_recorder_max_queue_messages, default_recorder_shutdown_timeout_ms,
     default_recorder_suffix_template, default_rtmp_ack_window_size,
-    default_rtmp_auto_push_connect_timeout_ms,
-    default_rtmp_auto_push_handshake_timeout_ms, default_rtmp_auto_push_max_peers,
-    default_rtmp_auto_push_max_queue_bytes, default_rtmp_auto_push_max_queue_messages,
-    default_rtmp_auto_push_max_streams, default_rtmp_auto_push_policy,
-    default_rtmp_auto_push_reconnect_ms, default_rtmp_callback_timeout_ms,
-    default_rtmp_callback_update_timeout_ms, default_rtmp_dash_max_active_streams,
-    default_rtmp_dash_max_queue_messages, default_rtmp_dash_max_segment_bytes,
-    default_rtmp_dash_max_segment_duration_ms, default_rtmp_dash_max_storage_bytes,
-    default_rtmp_dash_max_storage_files, default_rtmp_dash_segment_duration_ms,
-    default_rtmp_exec_max_processes, default_rtmp_exec_max_queue_bytes,
-    default_rtmp_exec_max_queue_messages, default_rtmp_exec_max_respawns,
-    default_rtmp_exec_max_stderr_bytes, default_rtmp_exec_max_stdout_bytes,
-    default_rtmp_exec_respawn_delay_ms, default_rtmp_exec_shutdown_timeout_ms,
-    default_rtmp_exec_timeout_ms, default_rtmp_fanout_policy, default_rtmp_hls_max_active_streams,
+    default_rtmp_auto_push_connect_timeout_ms, default_rtmp_auto_push_handshake_timeout_ms,
+    default_rtmp_auto_push_max_peers, default_rtmp_auto_push_max_queue_bytes,
+    default_rtmp_auto_push_max_queue_messages, default_rtmp_auto_push_max_streams,
+    default_rtmp_auto_push_policy, default_rtmp_auto_push_reconnect_ms,
+    default_rtmp_callback_timeout_ms, default_rtmp_callback_update_timeout_ms,
+    default_rtmp_dash_max_active_streams, default_rtmp_dash_max_queue_messages,
+    default_rtmp_dash_max_segment_bytes, default_rtmp_dash_max_segment_duration_ms,
+    default_rtmp_dash_max_storage_bytes, default_rtmp_dash_max_storage_files,
+    default_rtmp_dash_segment_duration_ms, default_rtmp_exec_max_processes,
+    default_rtmp_exec_max_queue_bytes, default_rtmp_exec_max_queue_messages,
+    default_rtmp_exec_max_respawns, default_rtmp_exec_max_stderr_bytes,
+    default_rtmp_exec_max_stdout_bytes, default_rtmp_exec_respawn_delay_ms,
+    default_rtmp_exec_shutdown_timeout_ms, default_rtmp_exec_timeout_ms,
+    default_rtmp_fanout_policy, default_rtmp_hls_max_active_streams,
     default_rtmp_hls_max_queue_messages, default_rtmp_hls_max_segment_bytes,
     default_rtmp_hls_max_segment_duration_ms, default_rtmp_hls_max_storage_bytes,
     default_rtmp_hls_max_storage_files, default_rtmp_hls_playlist_length_ms,
     default_rtmp_hls_segment_duration_ms, default_rtmp_max_chain_depth,
     default_rtmp_max_inbound_message_size, default_rtmp_outbound_chunk_size,
-    default_rtmp_outbound_policy, default_rtmp_pull_reconnect_ms,
-    default_rtmp_push_reconnect_ms, default_rtmp_relay_buffer_ms,
-    default_rtmp_relay_connect_timeout_ms, default_rtmp_relay_handshake_timeout_ms,
-    default_rtmp_relay_dns_refresh_ms, default_rtmp_relay_policy, default_rtmp_relay_queue_bytes,
-    default_rtmp_relay_queue_messages,
+    default_rtmp_outbound_policy, default_rtmp_pull_reconnect_ms, default_rtmp_push_reconnect_ms,
+    default_rtmp_relay_buffer_ms, default_rtmp_relay_connect_timeout_ms,
+    default_rtmp_relay_dns_refresh_ms, default_rtmp_relay_handshake_timeout_ms,
+    default_rtmp_relay_policy, default_rtmp_relay_queue_bytes, default_rtmp_relay_queue_messages,
     default_rtmp_session_ceilings, default_rtmp_vod_duration_ms, default_rtmp_vod_file_bytes,
     default_rtmp_vod_sessions, default_self_signed_validity_days, default_true,
     default_udp_max_datagram_bytes, default_udp_max_queue_bytes, default_udp_max_queue_datagrams,
@@ -260,7 +259,10 @@ impl fmt::Debug for TlsClientAuthPolicy {
         formatter
             .debug_struct("TlsClientAuthPolicy")
             .field("mode", &self.mode)
-            .field("ca_certificate_configured", &self.ca_certificate_path.is_some())
+            .field(
+                "ca_certificate_configured",
+                &self.ca_certificate_path.is_some(),
+            )
             .field("allowed_dns_name_count", &self.allowed_dns_names.len())
             .finish()
     }
@@ -1385,7 +1387,9 @@ pub struct HttpRetryPolicy {
     pub final_redispatch: bool,
 }
 
-fn deserialize_http_retry_triggers<'de, D>(deserializer: D) -> Result<Vec<HttpRetryTrigger>, D::Error>
+fn deserialize_http_retry_triggers<'de, D>(
+    deserializer: D,
+) -> Result<Vec<HttpRetryTrigger>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -1413,10 +1417,11 @@ where
         where
             A: MapAccess<'de>,
         {
-            if map.next_entry::<de::IgnoredAny, de::IgnoredAny>()?.is_some() {
-                return Err(de::Error::custom(
-                    "HTTP retry triggers must be a sequence",
-                ));
+            if map
+                .next_entry::<de::IgnoredAny, de::IgnoredAny>()?
+                .is_some()
+            {
+                return Err(de::Error::custom("HTTP retry triggers must be a sequence"));
             }
             Ok(Vec::new())
         }
@@ -1619,7 +1624,10 @@ impl fmt::Debug for RtmpExecProfile {
             .field("mode", &self.mode)
             .field("trigger", &self.trigger)
             .field("executable", &"<redacted>")
-            .field("arguments", &format_args!("<{} redacted>", self.arguments.len()))
+            .field(
+                "arguments",
+                &format_args!("<{} redacted>", self.arguments.len()),
+            )
             .field(
                 "environment",
                 &format_args!("<{} redacted>", self.environment.len()),
@@ -2302,6 +2310,7 @@ pub struct ForwardProxyService {
     pub allow_absolute_form: bool,
     pub tls_required: bool,
     pub connect: ForwardConnectPolicy,
+    pub connect_udp: ForwardConnectPolicy,
     pub peer_policy: ForwardPeerPolicy,
     pub auth: Option<ForwardProxyAuth>,
     pub access_policy: Option<ForwardAccessPolicy>,
@@ -2329,6 +2338,8 @@ struct ForwardProxyServiceWire {
     tls_required: bool,
     #[serde(default)]
     connect: ForwardConnectPolicy,
+    #[serde(default)]
+    connect_udp: ForwardConnectPolicy,
     #[serde(default)]
     peer_policy: ForwardPeerPolicy,
     #[serde(default)]
@@ -2373,6 +2384,7 @@ impl<'de> Deserialize<'de> for ForwardProxyService {
             allow_absolute_form: wire.allow_absolute_form,
             tls_required: wire.tls_required,
             connect: wire.connect,
+            connect_udp: wire.connect_udp,
             peer_policy: wire.peer_policy,
             auth: wire.auth,
             access_policy: wire.access_policy,
@@ -2403,6 +2415,7 @@ impl Serialize for ForwardProxyService {
             allow_absolute_form: self.allow_absolute_form,
             tls_required: self.tls_required,
             connect: self.connect.clone(),
+            connect_udp: self.connect_udp.clone(),
             peer_policy: self.peer_policy.clone(),
             auth: self.auth.clone(),
             access_policy: self.access_policy.clone(),

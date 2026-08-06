@@ -1,11 +1,4 @@
-use std::{
-    collections::VecDeque,
-    fs,
-    net::IpAddr,
-    sync::Arc,
-    thread,
-    time::Duration,
-};
+use std::{collections::VecDeque, fs, net::IpAddr, sync::Arc, thread, time::Duration};
 
 use bytes::Bytes;
 use oxiroute_rtmp::{
@@ -159,9 +152,11 @@ fn vod_playback_emits_flv_media_and_completes() {
         .request_playback("archive/movie.flv".into())
         .expect("VOD play request");
     let accepted = exchange(&mut client, &mut server, vec![play], 9_000);
-    assert!(accepted
-        .iter()
-        .any(|event| matches!(event, ClientSessionEvent::PlaybackRequestAccepted)));
+    assert!(
+        accepted
+            .iter()
+            .any(|event| matches!(event, ClientSessionEvent::PlaybackRequestAccepted))
+    );
 
     let mut received = Vec::new();
     let mut completed = false;

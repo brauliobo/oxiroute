@@ -1,6 +1,6 @@
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
     Arc, OnceLock,
+    atomic::{AtomicU64, Ordering},
 };
 
 use serde_json::{Map, Value};
@@ -61,9 +61,9 @@ pub(crate) fn next_correlation_id() -> String {
 pub(crate) fn valid_correlation_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 64
-        && value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
-        })
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
 }
 
 #[derive(Debug, Default)]
@@ -263,11 +263,11 @@ pub(crate) fn log_json(target: &'static str, value: &Value) {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     use super::{
-        redact_access_record, redact_identifier, redact_rtmp_access_record, redact_text,
-        valid_correlation_id, RtmpAccessLogMetrics, REDACTED,
+        REDACTED, RtmpAccessLogMetrics, redact_access_record, redact_identifier,
+        redact_rtmp_access_record, redact_text, valid_correlation_id,
     };
 
     #[test]
@@ -312,7 +312,9 @@ mod tests {
         assert!(record.get("query").is_none());
         assert!(record.get("requestBody").is_none());
         assert!(record.get("authorization").is_none());
-        assert!(valid_correlation_id(record["correlationId"].as_str().expect("correlation ID")));
+        assert!(valid_correlation_id(
+            record["correlationId"].as_str().expect("correlation ID")
+        ));
         assert!(!record.to_string().contains("secret"));
     }
 

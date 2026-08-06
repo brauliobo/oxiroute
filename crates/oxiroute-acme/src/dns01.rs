@@ -2,8 +2,8 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };

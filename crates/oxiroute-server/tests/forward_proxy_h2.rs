@@ -64,6 +64,7 @@ async fn daemon_accepts_tls_h2_connect_and_relays_stream_data() {
             enabled: true,
             allowed_ports: vec![origin_address.port()],
         },
+        connect_udp: ForwardConnectPolicy::default(),
         peer_policy: ForwardPeerPolicy::default(),
         auth: None,
         access_policy: None,

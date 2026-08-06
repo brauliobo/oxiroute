@@ -527,10 +527,7 @@ mod tests {
             assert_eq!(request.method(), Method::POST);
             assert_eq!(request.uri().path(), "/h3");
             assert_eq!(
-                request
-                    .uri()
-                    .authority()
-                    .map(http::uri::Authority::as_str),
+                request.uri().authority().map(http::uri::Authority::as_str),
                 Some(ORIGIN_SERVER_NAME)
             );
             let mut body = Vec::new();

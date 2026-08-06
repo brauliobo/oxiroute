@@ -1,6 +1,5 @@
 use std::{
-    fmt,
-    io,
+    fmt, io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     pin::Pin,
     task::{Context, Poll},
@@ -105,9 +104,7 @@ impl ProxyProtocolErrorKind {
         match self {
             Self::Cancelled => ProxyProtocolResult::Cancelled,
             Self::Timeout => ProxyProtocolResult::Timeout,
-            Self::UnsupportedCommand | Self::UnsupportedFamily => {
-                ProxyProtocolResult::Unsupported
-            }
+            Self::UnsupportedCommand | Self::UnsupportedFamily => ProxyProtocolResult::Unsupported,
             Self::ProtocolMismatch => ProxyProtocolResult::Mismatch,
             Self::Io => ProxyProtocolResult::IoError,
             Self::UnexpectedEof
@@ -149,10 +146,7 @@ pub struct ProxyProtocolError {
 impl ProxyProtocolError {
     #[must_use]
     pub const fn new(kind: ProxyProtocolErrorKind) -> Self {
-        Self {
-            kind,
-            source: None,
-        }
+        Self { kind, source: None }
     }
 
     #[must_use]
@@ -275,9 +269,8 @@ fn parse_v1(
             ProxyProtocolErrorKind::HeaderTooLarge,
         ));
     }
-    let line = std::str::from_utf8(&input[..line_end]).map_err(|_| {
-        ProxyProtocolError::new(ProxyProtocolErrorKind::InvalidSignature)
-    })?;
+    let line = std::str::from_utf8(&input[..line_end])
+        .map_err(|_| ProxyProtocolError::new(ProxyProtocolErrorKind::InvalidSignature))?;
     let fields = line.split(' ').collect::<Vec<_>>();
     if fields.len() == 2 && fields[0] == "PROXY" && fields[1] == "UNKNOWN" {
         return Err(ProxyProtocolError::new(
@@ -483,9 +476,8 @@ pub fn encode_header(
                 (false, ProxyProtocolTransport::Datagram) => 0x22,
             };
             let address_len = if source.is_ipv4() { 12 } else { 36 };
-            let encoded_address_len = u16::try_from(address_len).map_err(|_| {
-                ProxyProtocolError::new(ProxyProtocolErrorKind::HeaderTooLarge)
-            })?;
+            let encoded_address_len = u16::try_from(address_len)
+                .map_err(|_| ProxyProtocolError::new(ProxyProtocolErrorKind::HeaderTooLarge))?;
             let mut bytes = Vec::with_capacity(V2_HEADER_BYTES + address_len);
             bytes.extend_from_slice(V2_SIGNATURE);
             bytes.extend_from_slice(&[0x21, family]);
@@ -564,17 +556,11 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for PrefixedStream<S> {
         Pin::new(&mut self.inner).poll_write(context, buffer)
     }
 
-    fn poll_flush(
-        mut self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-    ) -> Poll<io::Result<()>> {
+    fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.inner).poll_flush(context)
     }
 
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-    ) -> Poll<io::Result<()>> {
+    fn poll_shutdown(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.inner).poll_shutdown(context)
     }
 }
@@ -611,9 +597,8 @@ where
     let mut collected = Vec::with_capacity(MAX_V2_HEADER_BYTES);
     let mut scratch = vec![0_u8; MAX_V2_HEADER_BYTES];
     loop {
-        let read_limit = read_limit(&collected, version).ok_or_else(|| {
-            ProxyProtocolError::new(ProxyProtocolErrorKind::HeaderTooLarge)
-        })?;
+        let read_limit = read_limit(&collected, version)
+            .ok_or_else(|| ProxyProtocolError::new(ProxyProtocolErrorKind::HeaderTooLarge))?;
         let read = tokio::select! {
             biased;
             () = wait_for_shutdown(shutdown) => {
@@ -648,7 +633,9 @@ fn read_limit(input: &[u8], version: ProxyProtocolVersion) -> Option<usize> {
     } else {
         maximum
     };
-    expected.checked_sub(input.len()).filter(|remaining| *remaining > 0)
+    expected
+        .checked_sub(input.len())
+        .filter(|remaining| *remaining > 0)
 }
 
 async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
@@ -677,10 +664,8 @@ mod tests {
     const V4_SOURCE: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)), 1234);
     const V4_DESTINATION: SocketAddr =
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 20)), 443);
-    const V6_SOURCE: SocketAddr =
-        SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 1234);
-    const V6_DESTINATION: SocketAddr =
-        SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 8443);
+    const V6_SOURCE: SocketAddr = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 1234);
+    const V6_DESTINATION: SocketAddr = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 8443);
 
     fn policy(version: ProxyProtocolVersion) -> ProxyProtocolPolicy {
         ProxyProtocolPolicy {
@@ -713,13 +698,8 @@ mod tests {
             (ProxyProtocolTransport::Stream, V6_SOURCE, V6_DESTINATION),
             (ProxyProtocolTransport::Datagram, V6_SOURCE, V6_DESTINATION),
         ] {
-            let encoded = encode_header(
-                ProxyProtocolVersion::V2,
-                transport,
-                source,
-                destination,
-            )
-            .expect("v2 encode");
+            let encoded = encode_header(ProxyProtocolVersion::V2, transport, source, destination)
+                .expect("v2 encode");
             let parsed = parse_header(&encoded, ProxyProtocolVersion::V2, transport)
                 .expect("v2 parse")
                 .expect("complete header");
@@ -824,10 +804,14 @@ mod tests {
     async fn header_read_timeout_is_bounded() {
         let (_client, server) = duplex(16);
         let (_shutdown_tx, mut shutdown) = watch::channel(false);
-        let error = Box::pin(accept_stream(server, policy(ProxyProtocolVersion::V2), &mut shutdown))
-            .await
-            .err()
-            .expect("incomplete header must time out");
+        let error = Box::pin(accept_stream(
+            server,
+            policy(ProxyProtocolVersion::V2),
+            &mut shutdown,
+        ))
+        .await
+        .err()
+        .expect("incomplete header must time out");
         assert_eq!(error.kind(), ProxyProtocolErrorKind::Timeout);
     }
 }

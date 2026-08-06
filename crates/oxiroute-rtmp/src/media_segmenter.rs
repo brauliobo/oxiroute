@@ -3,9 +3,9 @@ use std::{
     fmt::Write as _,
     path::{Path, PathBuf},
     sync::{
+        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, SyncSender, TrySendError},
-        Arc,
     },
     thread,
     time::Duration,
@@ -14,9 +14,9 @@ use std::{
 use openssl::{rand::rand_bytes, symm};
 
 use crate::{
+    MediaEvent, MediaEventKind, PublisherIncarnation, StreamKey,
     dash_segmenter::{DashOutputConfig, DashSegmenter},
     media_storage::{MediaStore, MediaStoreError},
-    MediaEvent, MediaEventKind, PublisherIncarnation, StreamKey,
 };
 
 const TS_PACKET_BYTES: usize = 188;
@@ -381,7 +381,9 @@ fn run_worker(
             } => {
                 for worker in workers.iter_mut() {
                     match worker {
-                        MediaWorker::Hls(segmenter) => segmenter.accept(&event, observed_at_unix_ms),
+                        MediaWorker::Hls(segmenter) => {
+                            segmenter.accept(&event, observed_at_unix_ms)
+                        }
                         MediaWorker::Dash(segmenter) => segmenter.accept(&event),
                     }
                 }
@@ -937,7 +939,7 @@ fn render_master_playlist(config: &HlsOutputConfig, variants: &[HlsVariant]) -> 
         output.push_str("#EXT-X-STREAM-INF:BANDWIDTH=");
         output.push_str(&variant.bandwidth.to_string());
         if let Some(codecs) = &variant.codecs {
-        output.push_str(",CODECS=\"");
+            output.push_str(",CODECS=\"");
             output.push_str(codecs);
             output.push('"');
         }
@@ -1513,12 +1515,10 @@ mod tests {
             max_active_streams: 1,
             max_file_bytes: 1024 * 1024,
         };
-        let hls_store = Arc::new(
-            MediaStore::open(root.path().join("hls"), limits).expect("HLS store"),
-        );
-        let dash_store = Arc::new(
-            MediaStore::open(root.path().join("dash"), limits).expect("DASH store"),
-        );
+        let hls_store =
+            Arc::new(MediaStore::open(root.path().join("hls"), limits).expect("HLS store"));
+        let dash_store =
+            Arc::new(MediaStore::open(root.path().join("dash"), limits).expect("DASH store"));
         let hub = LiveHub::new(LiveHubLimits::default());
         let occupied_key = StreamKey::new("service", "application", "occupied");
         let occupied = hub
@@ -1541,11 +1541,13 @@ mod tests {
             max_segment_bytes: 1024 * 1024,
             max_queue_messages: 16,
         });
-        let application = MediaApplication::new(Some(test_config(Arc::clone(&hls_store))))
-            .with_dash(Some(dash));
+        let application =
+            MediaApplication::new(Some(test_config(Arc::clone(&hls_store)))).with_dash(Some(dash));
         assert!(matches!(
             MediaPublisher::start(&key, lease.incarnation(), &application),
-            Err(MediaOutputError::Storage(MediaStoreError::ActiveStreamLimit))
+            Err(MediaOutputError::Storage(
+                MediaStoreError::ActiveStreamLimit
+            ))
         ));
         assert!(hls_store.current_prefix(&key).is_none());
         dash_store.close(&occupied_key, occupied.incarnation());

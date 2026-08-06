@@ -5,8 +5,8 @@ use std::{
 };
 
 use super::{
-    certbot_reconcile::PublicationGate, ActiveCertificateGeneration, CertificateGeneration,
-    TlsBuildError,
+    ActiveCertificateGeneration, CertificateGeneration, TlsBuildError,
+    certbot_reconcile::PublicationGate,
 };
 
 const MAX_CAS_REREADS: usize = 4;

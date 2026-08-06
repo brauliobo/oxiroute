@@ -81,18 +81,10 @@ pub fn render_prometheus(
         runtime.process.retry_attempts,
     )?;
     if let Some(value) = runtime.process.resident_memory_bytes {
-        sample(
-            &mut output,
-            "oxiroute_process_resident_memory_bytes",
-            value,
-        )?;
+        sample(&mut output, "oxiroute_process_resident_memory_bytes", value)?;
     }
     if let Some(value) = runtime.process.virtual_memory_bytes {
-        sample(
-            &mut output,
-            "oxiroute_process_virtual_memory_bytes",
-            value,
-        )?;
+        sample(&mut output, "oxiroute_process_virtual_memory_bytes", value)?;
     }
     if let Some(value) = runtime.process.thread_count {
         sample(&mut output, "oxiroute_process_threads", value)?;
@@ -530,12 +522,12 @@ pub fn render_prometheus(
         for relay in &stream.relays {
             relay_attempts = relay_attempts.saturating_add(relay.status.connection_attempts);
             relay_reconnects = relay_reconnects.saturating_add(relay.status.reconnects);
-            relay_dns_refresh_attempts = relay_dns_refresh_attempts
-                .saturating_add(relay.status.dns_refresh_attempts);
-            relay_dns_refresh_successes = relay_dns_refresh_successes
-                .saturating_add(relay.status.dns_refresh_successes);
-            relay_dns_refresh_failures = relay_dns_refresh_failures
-                .saturating_add(relay.status.dns_refresh_failures);
+            relay_dns_refresh_attempts =
+                relay_dns_refresh_attempts.saturating_add(relay.status.dns_refresh_attempts);
+            relay_dns_refresh_successes =
+                relay_dns_refresh_successes.saturating_add(relay.status.dns_refresh_successes);
+            relay_dns_refresh_failures =
+                relay_dns_refresh_failures.saturating_add(relay.status.dns_refresh_failures);
             relay_drops = relay_drops.saturating_add(relay.status.events_dropped);
         }
         for recorder in &stream.recorders {
@@ -845,7 +837,12 @@ fn render_transport_latency_histogram(
         &[("transport", transport)],
         latency.count,
     )?;
-    labels(output, &sum_name, &[("transport", transport)], latency.sum_ms)
+    labels(
+        output,
+        &sum_name,
+        &[("transport", transport)],
+        latency.sum_ms,
+    )
 }
 
 fn escape_label(output: &mut String, value: &str) {
@@ -977,8 +974,10 @@ mod tests {
         assert!(output.contains(
             "oxiroute_http_request_duration_milliseconds_bucket{listener=\"edge\",le=\"10\"} 1"
         ));
-        assert!(output
-            .contains("oxiroute_tcp_relays_total{listener=\"edge\",result=\"idle_timeout\"} 1"));
+        assert!(
+            output
+                .contains("oxiroute_tcp_relays_total{listener=\"edge\",result=\"idle_timeout\"} 1")
+        );
         assert!(output.contains(
             "oxiroute_tcp_relay_duration_milliseconds_bucket{listener=\"edge\",le=\"5000\"} 1"
         ));
@@ -1041,9 +1040,11 @@ mod tests {
         let output =
             render_prometheus(&metrics, &registry, &GenerationManager::new()).expect("exposition");
 
-        assert!(output.contains(
-            "oxiroute_transport_events_total{transport=\"rtmp\",outcome=\"success\"}"
-        ));
+        assert!(
+            output.contains(
+                "oxiroute_transport_events_total{transport=\"rtmp\",outcome=\"success\"}"
+            )
+        );
         assert!(output.contains(
             "oxiroute_transport_events_total{transport=\"acme\",outcome=\"upstream_error\"}"
         ));

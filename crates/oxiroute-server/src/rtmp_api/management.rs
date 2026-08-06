@@ -170,9 +170,18 @@ impl ManagementState {
             (Route::TlsAccountRollover, "POST") => {
                 self.tls_account_rollover(session, context).await
             }
-            (Route::TlsJobCancel, "POST") => self.tls_job_control(session, context, JobControl::Cancel).await,
-            (Route::TlsJobPause, "POST") => self.tls_job_control(session, context, JobControl::Pause).await,
-            (Route::TlsJobResume, "POST") => self.tls_job_control(session, context, JobControl::Resume).await,
+            (Route::TlsJobCancel, "POST") => {
+                self.tls_job_control(session, context, JobControl::Cancel)
+                    .await
+            }
+            (Route::TlsJobPause, "POST") => {
+                self.tls_job_control(session, context, JobControl::Pause)
+                    .await
+            }
+            (Route::TlsJobResume, "POST") => {
+                self.tls_job_control(session, context, JobControl::Resume)
+                    .await
+            }
             (Route::Audit(query), "GET") => self.audit(query),
             (Route::AuditStatus, "GET") => self.audit_status(),
             (Route::Events(query), "GET") => Self::events(query),
@@ -811,11 +820,7 @@ impl ManagementState {
         ApiResponse::json(200, &json!({ "outcomes": outcomes }))
     }
 
-    async fn tls_renew(
-        &self,
-        session: &mut ServerSession,
-        context: &AuditContext,
-    ) -> ApiResponse {
+    async fn tls_renew(&self, session: &mut ServerSession, context: &AuditContext) -> ApiResponse {
         let request: TlsRequest = match body(session).await {
             Ok(request) => request,
             Err(response) => return response,
@@ -904,11 +909,7 @@ impl ManagementState {
         }
     }
 
-    async fn tls_revoke(
-        &self,
-        session: &mut ServerSession,
-        context: &AuditContext,
-    ) -> ApiResponse {
+    async fn tls_revoke(&self, session: &mut ServerSession, context: &AuditContext) -> ApiResponse {
         let request: TlsRevokeRequest = match body(session).await {
             Ok(request) => request,
             Err(response) => return response,
@@ -979,15 +980,13 @@ impl ManagementState {
                 );
                 managed_error_response(error, "managed ACME revocation failed")
             }
-            Err(_) => ApiResponse::error(503, "revocation_worker_failed", "revocation worker failed"),
+            Err(_) => {
+                ApiResponse::error(503, "revocation_worker_failed", "revocation worker failed")
+            }
         }
     }
 
-    async fn tls_delete(
-        &self,
-        session: &mut ServerSession,
-        context: &AuditContext,
-    ) -> ApiResponse {
+    async fn tls_delete(&self, session: &mut ServerSession, context: &AuditContext) -> ApiResponse {
         let request: TlsRequest = match body(session).await {
             Ok(request) => request,
             Err(response) => return response,
@@ -1007,15 +1006,10 @@ impl ManagementState {
             Err(error) => return mutation_error(&error),
         };
         let active = mutation.generation();
-        if active
-            .config()
-            .tls_profiles
-            .iter()
-            .any(|profile| {
-                profile.default_certificate == certificate
-                    || profile.certificates.iter().any(|name| name == certificate)
-            })
-        {
+        if active.config().tls_profiles.iter().any(|profile| {
+            profile.default_certificate == certificate
+                || profile.certificates.iter().any(|name| name == certificate)
+        }) {
             return ApiResponse::error(
                 409,
                 "certificate_in_use",
@@ -1129,8 +1123,7 @@ impl ManagementState {
         let worker_reconciler = Arc::clone(&reconciler);
         let correlation_id = context.correlation_id.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let result = worker_reconciler
-                .rollover_account_key_with_correlation(correlation_id);
+            let result = worker_reconciler.rollover_account_key_with_correlation(correlation_id);
             drop(mutation);
             result
         })
@@ -1436,9 +1429,7 @@ enum JobControl {
 #[allow(clippy::needless_pass_by_value)]
 fn managed_error_response(error: crate::AcmeManagedError, message: &str) -> ApiResponse {
     let status = match &error {
-        crate::AcmeManagedError::Protocol(
-            oxiroute_acme::AcmeError::InvalidRevocationReason,
-        ) => 400,
+        crate::AcmeManagedError::Protocol(oxiroute_acme::AcmeError::InvalidRevocationReason) => 400,
         crate::AcmeManagedError::Busy
         | crate::AcmeManagedError::Paused
         | crate::AcmeManagedError::NoJob => 409,
@@ -1487,9 +1478,7 @@ mod tests {
     #[test]
     fn invalid_revocation_reason_is_a_client_error() {
         let response = super::managed_error_response(
-            crate::AcmeManagedError::Protocol(
-                oxiroute_acme::AcmeError::InvalidRevocationReason,
-            ),
+            crate::AcmeManagedError::Protocol(oxiroute_acme::AcmeError::InvalidRevocationReason),
             "revocation failed",
         );
         assert_eq!(response.status, 400);

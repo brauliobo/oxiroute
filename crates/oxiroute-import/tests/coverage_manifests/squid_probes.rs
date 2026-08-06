@@ -95,14 +95,18 @@ fn squid_registry_matches_target_manifest_and_never_claims_complete_parity() {
     assert!(!registry.complete_parity);
     assert!(registry.has_open_entries());
     assert!(!registry.allows_complete_parity());
-    assert!(registry
-        .families
-        .iter()
-        .any(|family| family.status == SquidCapabilityStatus::Partial));
-    assert!(registry
-        .families
-        .iter()
-        .any(|family| family.status == SquidCapabilityStatus::Unsupported));
+    assert!(
+        registry
+            .families
+            .iter()
+            .any(|family| family.status == SquidCapabilityStatus::Partial)
+    );
+    assert!(
+        registry
+            .families
+            .iter()
+            .any(|family| family.status == SquidCapabilityStatus::Unsupported)
+    );
 
     assert_eq!(registry.families.len(), manifest.families.len());
     for family in registry.families {

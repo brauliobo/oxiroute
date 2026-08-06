@@ -45,6 +45,23 @@ fieldset.object-block(data-field="forward_proxy_services[].connect")
     hint="At least one unique nonzero port is required while CONNECT is enabled."
   )
 
+fieldset.object-block(data-field="forward_proxy_services[].connect_udp")
+  legend CONNECT-UDP tunneling
+  label.enable-row(data-field="forward_proxy_services[].connect_udp.enabled")
+    input(type="checkbox" v-model="service.connect_udp.enabled")
+    span Enable CONNECT-UDP tunneling
+  NumberListField(
+    v-model="service.connect_udp.allowed_ports"
+    label="Allowed CONNECT-UDP ports"
+    item-label="port"
+    field-path="forward_proxy_services[].connect_udp.allowed_ports"
+    :default-value="443"
+    :max="65535"
+    :max-items="64"
+    :min-items="service.connect_udp.enabled ? 1 : 0"
+    hint="At least one unique nonzero port is required while CONNECT-UDP is enabled."
+  )
+
 fieldset.object-block(data-field="forward_proxy_services[].peer_policy")
   legend Static HTTP/1 peers
   .field-grid

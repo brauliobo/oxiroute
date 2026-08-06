@@ -70,6 +70,7 @@ async fn daemon_rejects_h3_plain_http_without_fallback_and_releases_udp_listener
         allow_absolute_form: true,
         tls_required: true,
         connect: ForwardConnectPolicy::default(),
+        connect_udp: ForwardConnectPolicy::default(),
         peer_policy: ForwardPeerPolicy::default(),
         auth: None,
         access_policy: None,

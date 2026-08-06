@@ -5,8 +5,8 @@ use std::{
     os::fd::OwnedFd,
     path::{Component, Path},
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc, Mutex, OnceLock, RwLock,
+        atomic::{AtomicU64, Ordering},
     },
     time::SystemTime,
 };
@@ -15,7 +15,7 @@ use rustix::{
     fs::{self as rustix_fs, AtFlags, FileType, Mode, OFlags, RenameFlags},
     io::Errno,
 };
-use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
 use tokio::sync::Notify;
 
 use crate::config_coordinator::ConfigRevision;

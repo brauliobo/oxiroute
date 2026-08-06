@@ -6,7 +6,7 @@ use std::{
 
 use rml_rtmp::sessions::ServerSession;
 
-use crate::{vod::parse_flv_events, MediaEvent, VodApplication, VodError, VodLease};
+use crate::{MediaEvent, VodApplication, VodError, VodLease, vod::parse_flv_events};
 
 use super::{runtime::ApplicationSessionLease, status::RtmpSessionError};
 

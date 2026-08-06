@@ -2,8 +2,9 @@ use std::{
     collections::HashSet,
     path::{Path, PathBuf},
     sync::{
+        Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc, Arc,
+        mpsc,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -12,9 +13,9 @@ use std::{
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 
 use crate::{
+    GenerationManager,
     config_coordinator::{CanonicalConfigCoordinator, ConfigLoadOutcome},
     listener_reservation::unix_listener_mode_change_requires_restart,
-    GenerationManager,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -290,13 +291,13 @@ mod tests {
     use std::{fs, sync::mpsc::TryRecvError, time::Instant};
 
     use notify::{
+        Event, EventKind,
         event::{
             AccessKind, AccessMode, CreateKind, DataChange, Flag, ModifyKind, RemoveKind,
             RenameMode,
         },
-        Event, EventKind,
     };
-    use oxiroute_config::{render_lua, Config};
+    use oxiroute_config::{Config, render_lua};
     use tempfile::TempDir;
 
     use super::*;

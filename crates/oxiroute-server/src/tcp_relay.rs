@@ -4,18 +4,18 @@ use log::warn;
 use oxiroute_config::ProxyProtocolPolicy;
 use pingora::{protocols::Stream, server::ShutdownWatch};
 use tokio::{
-    io::{split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, split},
     net::TcpStream,
-    time::{sleep_until, timeout, Instant},
+    time::{Instant, sleep_until, timeout},
 };
 
 #[cfg(unix)]
 use tokio::net::UnixStream;
 
 use crate::{
-    encode_header, ConnectionGuard, EndpointLease, HealthFailure, MetricsError,
-    ProxyProtocolError, ProxyProtocolErrorKind, ProxyProtocolResult, ProxyProtocolTransport,
-    RuntimeEndpoint, TcpRelayResult,
+    ConnectionGuard, EndpointLease, HealthFailure, MetricsError, ProxyProtocolError,
+    ProxyProtocolErrorKind, ProxyProtocolResult, ProxyProtocolTransport, RuntimeEndpoint,
+    TcpRelayResult, encode_header,
 };
 
 /// Memory used for each direction of a relayed connection.
@@ -364,12 +364,10 @@ async fn send_proxy_header(
     let Some((policy, source)) = propagation else {
         return Ok(());
     };
-    let source = source.ok_or_else(|| {
-        ProxyProtocolError::new(ProxyProtocolErrorKind::ProtocolMismatch)
-    })?;
-    let destination = destination.ok_or_else(|| {
-        ProxyProtocolError::new(ProxyProtocolErrorKind::ProtocolMismatch)
-    })?;
+    let source =
+        source.ok_or_else(|| ProxyProtocolError::new(ProxyProtocolErrorKind::ProtocolMismatch))?;
+    let destination = destination
+        .ok_or_else(|| ProxyProtocolError::new(ProxyProtocolErrorKind::ProtocolMismatch))?;
     let header = encode_header(
         policy.version,
         ProxyProtocolTransport::Stream,

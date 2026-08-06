@@ -232,19 +232,11 @@ impl Lowerer {
         if server.proxy_protocol {
             self.record(
                 format!("{service_path}/proxy_protocol"),
-                server
-                    .proxy_protocol_origin
-                    .clone()
-                    .into_iter()
-                    .collect(),
+                server.proxy_protocol_origin.clone().into_iter().collect(),
             );
             self.record(
                 format!("{service_path}/proxy_protocol/version"),
-                server
-                    .proxy_protocol_origin
-                    .clone()
-                    .into_iter()
-                    .collect(),
+                server.proxy_protocol_origin.clone().into_iter().collect(),
             );
         }
 
@@ -297,10 +289,7 @@ impl Lowerer {
             self.record(format!("{listener_path}{suffix}"), origins.clone());
         }
         if listen.proxy_protocol {
-            self.record(
-                format!("{listener_path}/proxy_protocol"),
-                origins.clone(),
-            );
+            self.record(format!("{listener_path}/proxy_protocol"), origins.clone());
             self.record(
                 format!("{listener_path}/proxy_protocol/version"),
                 origins.clone(),

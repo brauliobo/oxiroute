@@ -754,11 +754,7 @@ impl<'a> Resolver<'a> {
             );
             false
         } else {
-            self.block(
-                directive.occurrence,
-                E_UNSUPPORTED_FEATURE,
-                context,
-            );
+            self.block(directive.occurrence, E_UNSUPPORTED_FEATURE, context);
             false
         }
     }

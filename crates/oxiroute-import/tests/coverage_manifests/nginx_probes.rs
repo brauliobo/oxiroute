@@ -378,8 +378,7 @@ fn nginx_context_probe_source(entry: &DirectiveForm, context: &str, directory: &
     if entry.key == "location" && context == "location" {
         return nginx_nested_location_probe(entry.id.as_str());
     }
-    if matches!(entry.key.as_str(), "root" | "index" | "alias" | "expires")
-        && context == "location"
+    if matches!(entry.key.as_str(), "root" | "index" | "alias" | "expires") && context == "location"
     {
         return source;
     }

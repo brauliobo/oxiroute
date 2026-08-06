@@ -76,6 +76,8 @@ pub enum TargetError {
     InvalidAuthority,
     #[error("CONNECT requires host:port authority-form")]
     ConnectAuthorityRequired,
+    #[error("CONNECT-UDP requires a valid MASQUE target path")]
+    ConnectUdpPathRequired,
     #[error("destination port must be nonzero")]
     ZeroPort,
     #[error("DNS name is invalid or not normalized safely")]
@@ -133,6 +135,40 @@ pub fn parse_connect_authority(raw: &str) -> Result<Destination, TargetError> {
         }
         _ => TargetError::ConnectAuthorityRequired,
     })
+}
+
+/// Parses the RFC 9298 default HTTP/1.1 MASQUE target path.
+///
+/// The target may be carried in an origin-form or absolute-form request-target. IPv6 colons are
+/// percent-encoded in the path and are decoded before strict authority validation.
+///
+/// # Errors
+///
+/// Returns [`TargetError::ConnectUdpPathRequired`] when the target does not use the registered
+/// MASQUE path shape.
+pub fn parse_connect_udp_path(raw: &str) -> Result<Destination, TargetError> {
+    const PREFIX: &str = "/.well-known/masque/udp/";
+
+    let uri = raw.parse::<Uri>().map_err(|_| TargetError::InvalidUri)?;
+    if uri.query().is_some() {
+        return Err(TargetError::ConnectUdpPathRequired);
+    }
+    let suffix = uri
+        .path()
+        .strip_prefix(PREFIX)
+        .and_then(|value| value.strip_suffix('/'))
+        .ok_or(TargetError::ConnectUdpPathRequired)?;
+    let (encoded_host, port) = suffix
+        .rsplit_once('/')
+        .filter(|(host, port)| !host.is_empty() && !port.is_empty())
+        .ok_or(TargetError::ConnectUdpPathRequired)?;
+    let host = percent_decode_segment(encoded_host)?;
+    let authority = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    parse_connect_authority(&authority).map_err(|_| TargetError::ConnectUdpPathRequired)
 }
 
 fn parse_authority(
@@ -210,6 +246,39 @@ fn normalize_host(raw: &str) -> Result<Host, TargetError> {
     Ok(Host::Dns(normalized.to_owned()))
 }
 
+fn percent_decode_segment(raw: &str) -> Result<String, TargetError> {
+    let mut decoded = Vec::with_capacity(raw.len());
+    let mut bytes = raw.bytes();
+    while let Some(byte) = bytes.next() {
+        if byte != b'%' {
+            if byte.is_ascii_control() || byte == b' ' {
+                return Err(TargetError::ConnectUdpPathRequired);
+            }
+            decoded.push(byte);
+            continue;
+        }
+        let high = bytes
+            .next()
+            .and_then(hex_value)
+            .ok_or(TargetError::ConnectUdpPathRequired)?;
+        let low = bytes
+            .next()
+            .and_then(hex_value)
+            .ok_or(TargetError::ConnectUdpPathRequired)?;
+        decoded.push((high << 4) | low);
+    }
+    String::from_utf8(decoded).map_err(|_| TargetError::ConnectUdpPathRequired)
+}
+
+const fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv6Addr};
@@ -256,5 +325,37 @@ mod tests {
             Err(TargetError::InvalidAuthority)
         );
         assert!(parse_connect_authority("example.com:65536").is_err());
+    }
+
+    #[test]
+    fn parses_connect_udp_targets_from_origin_and_absolute_forms() {
+        let origin = parse_connect_udp_path("/.well-known/masque/udp/example.com/443/")
+            .expect("origin-form CONNECT-UDP target");
+        assert_eq!(origin.authority(), "example.com:443");
+
+        let absolute = parse_connect_udp_path(
+            "https://proxy.example.test/.well-known/masque/udp/example.com/443/",
+        )
+        .expect("absolute-form CONNECT-UDP target");
+        assert_eq!(absolute.authority(), "example.com:443");
+    }
+
+    #[test]
+    fn decodes_percent_encoded_ipv6_connect_udp_targets() {
+        let target = parse_connect_udp_path("/.well-known/masque/udp/2001%3Adb8%3A%3A42/443/")
+            .expect("percent-encoded IPv6 target");
+        assert_eq!(target.authority(), "[2001:db8::42]:443");
+    }
+
+    #[test]
+    fn rejects_malformed_connect_udp_paths() {
+        for target in [
+            "/.well-known/masque/udp/example.com/0/",
+            "/.well-known/masque/udp/example.com/443",
+            "/.well-known/masque/udp/example.com/443/?query=1",
+            "/.well-known/masque/udp/2001%3Adb8/443/",
+        ] {
+            assert!(parse_connect_udp_path(target).is_err(), "accepted {target}");
+        }
     }
 }
