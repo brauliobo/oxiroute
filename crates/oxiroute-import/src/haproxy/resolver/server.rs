@@ -50,8 +50,21 @@ pub(super) fn merge_server_defaults(current: &mut EffectiveServer, incoming: Eff
     if incoming.max_connections.is_some() {
         current.max_connections = incoming.max_connections;
     }
+    if incoming.observe.is_some() {
+        current.observe = incoming.observe;
+    }
+    if incoming.error_limit.is_some() {
+        current.error_limit = incoming.error_limit;
+    }
+    if incoming.on_error.is_some() {
+        current.on_error = incoming.on_error;
+    }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one parser transaction resolves all effective server options and provenance"
+)]
 pub(super) fn parse_server(
     directive: &Directive,
     occurrence: OccurrenceId,
@@ -70,6 +83,9 @@ pub(super) fn parse_server(
         rise: None,
         fall: None,
         max_connections: None,
+        observe: None,
+        error_limit: None,
+        on_error: None,
         unsupported_options: Vec::new(),
     };
     let mut seen: HashMap<Vec<u8>, (Vec<Vec<u8>>, Span)> = HashMap::new();
@@ -84,7 +100,9 @@ pub(super) fn parse_server(
             .map(|argument| argument.value.clone())
             .collect::<Vec<_>>();
         if let Some((previous_arguments, previous_span)) = seen.get(&option.value) {
-            if previous_arguments != &arguments {
+            if previous_arguments != &arguments
+                || matches!(option.value.as_slice(), b"observe" | b"error-limit" | b"on-error")
+            {
                 conflicts.push(OptionConflict {
                     name: option.value.clone(),
                     current_span: option.span,
@@ -143,6 +161,31 @@ pub(super) fn parse_server(
                     occurrence,
                     value.span,
                 ));
+            }
+            b"observe" => {
+                let value = &option_arguments[0];
+                let observe = match value.value.as_slice() {
+                    b"layer4" => super::PassiveObserve::Layer4,
+                    b"layer7" => super::PassiveObserve::Layer7,
+                    _ => return None,
+                };
+                server.observe = Some(EffectiveValue::direct(observe, occurrence, value.span));
+            }
+            b"error-limit" => {
+                let value = &option_arguments[0];
+                server.error_limit = Some(EffectiveValue::direct(
+                    parse_u32(&value.value)?,
+                    occurrence,
+                    value.span,
+                ));
+            }
+            b"on-error" => {
+                let value = &option_arguments[0];
+                let on_error = match value.value.as_slice() {
+                    b"mark-down" => super::PassiveOnError::MarkDown,
+                    _ => return None,
+                };
+                server.on_error = Some(EffectiveValue::direct(on_error, occurrence, value.span));
             }
             _ => server.unsupported_options.push(EffectiveValue::direct(
                 ServerOption {

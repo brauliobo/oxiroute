@@ -6,7 +6,8 @@ use std::{
 use oxiroute_config::{
     DnsResolutionPolicy, DownstreamTimeoutPolicy, HealthCheck, HealthCheckType, HealthStartup,
     HttpVersionPolicy, Listener, ListenerBind, UpstreamAlgorithm, UpstreamConnectionReuse,
-    UpstreamEndpoint, UpstreamPool, UpstreamServer,
+    PassiveHealthPolicy, PassiveObserve, PassiveOnError, UpstreamEndpoint, UpstreamPool,
+    UpstreamServer,
 };
 
 use super::{Lowerer, Representability};
@@ -20,6 +21,8 @@ use super::{
     policy::ModeSelection,
     provenance::{CanonicalPath, extend_sources, provenance_sources, section_sources},
 };
+
+const HAPROXY_DEFAULT_PASSIVE_ERROR_LIMIT: u16 = 10;
 
 impl Lowerer<'_> {
     #[allow(clippy::too_many_lines)]
@@ -95,6 +98,8 @@ impl Lowerer<'_> {
         decision.require(algorithm.is_some());
         let health_check = self.lower_health_check(section, settings, servers);
         decision.require(health_check.is_some());
+        let passive_health = self.lower_passive_health(section, settings, servers);
+        decision.require(passive_health.is_some());
         let queue_timeout_ms = settings
             .timeouts
             .queue
@@ -171,6 +176,7 @@ impl Lowerer<'_> {
         }
         let algorithm = algorithm.expect("representable pool has an algorithm");
         let health_check_present = health_check.as_ref().is_some_and(Option::is_some);
+        let passive_health_present = passive_health.as_ref().is_some_and(Option::is_some);
 
         let pool_index = self.draft.upstream_pools.len();
         self.lowered_pools.insert(section.id);
@@ -180,6 +186,7 @@ impl Lowerer<'_> {
             endpoints: Vec::new(),
             algorithm,
             health_check: health_check.flatten(),
+            passive_health: passive_health.flatten(),
             tls: None,
             http_versions: HttpVersionPolicy::default(),
             queue_timeout_ms,
@@ -203,6 +210,9 @@ impl Lowerer<'_> {
         self.record(pool_path.clone(), sources);
         if health_check_present {
             self.record_health_check_provenance(&pool_path, settings, servers);
+        }
+        if passive_health_present {
+            self.record_passive_health_provenance(&pool_path, servers);
         }
         if let Some(queue_timeout) = &settings.timeouts.queue {
             self.record(
@@ -314,6 +324,129 @@ impl Lowerer<'_> {
             );
         }
         !server.unsupported_options.is_empty()
+    }
+
+    #[expect(
+        clippy::option_option,
+        reason = "the outer option distinguishes an unrepresentable policy from an absent policy"
+    )]
+    fn lower_passive_health(
+        &mut self,
+        section: &EffectiveSection,
+        settings: &ProxySettings,
+        servers: &[EffectiveServer],
+    ) -> Option<Option<PassiveHealthPolicy>> {
+        let has_passive_policy = servers.iter().any(|server| {
+            server.observe.is_some() || server.error_limit.is_some() || server.on_error.is_some()
+        });
+        if !has_passive_policy {
+            return Some(None);
+        }
+        if servers.iter().any(|server| server.observe.is_none()) {
+            self.block_section(
+                section,
+                "HAProxy passive error-limit/on-error settings require an effective observe policy",
+            );
+            return None;
+        }
+        if servers
+            .iter()
+            .any(|server| !server.check.as_ref().is_some_and(|check| check.value))
+        {
+            self.block_section(
+                section,
+                "HAProxy passive observation requires health checks on every server",
+            );
+            return None;
+        }
+        let observe = if let Ok(value) = Self::common_server_option(servers, |server| {
+            server.observe.as_ref().map(|value| value.value)
+        }) {
+            value.unwrap_or(PassiveObserve::Layer7)
+        } else {
+            self.block_section(
+                section,
+                "HAProxy servers have non-uniform effective passive observe policies",
+            );
+            return None;
+        };
+        if matches!(observe, PassiveObserve::Layer7)
+            && !settings
+                .mode
+                .as_ref()
+                .is_some_and(|mode| mode.value == ProxyMode::Http)
+        {
+            self.block_section(
+                section,
+                "HAProxy layer7 passive observation requires an HTTP backend",
+            );
+            return None;
+        }
+        let error_limit = if let Ok(value) = Self::common_server_option(servers, |server| {
+            server.error_limit.as_ref().map(|value| value.value)
+        }) {
+            value.unwrap_or(u32::from(HAPROXY_DEFAULT_PASSIVE_ERROR_LIMIT))
+        } else {
+            self.block_section(
+                section,
+                "HAProxy servers have non-uniform effective passive error limits",
+            );
+            return None;
+        };
+        let Some(error_limit) = u16::try_from(error_limit).ok() else {
+            self.block_section(
+                section,
+                "HAProxy passive error limit exceeds the canonical bounded policy",
+            );
+            return None;
+        };
+        let Some(on_error) = (if let Ok(value) = Self::common_server_option(servers, |server| {
+            server.on_error.as_ref().map(|value| value.value)
+        }) {
+            value
+        } else {
+            self.block_section(
+                section,
+                "HAProxy servers have non-uniform effective passive error actions",
+            );
+            return None;
+        }) else {
+            self.block_section(
+                section,
+                "HAProxy passive observation requires an explicit supported on-error action",
+            );
+            return None;
+        };
+        Some(Some(PassiveHealthPolicy {
+            observe,
+            on_error,
+            error_limit,
+            mark_down: matches!(on_error, PassiveOnError::MarkDown),
+            mark_up: false,
+            ..PassiveHealthPolicy::default()
+        }))
+    }
+
+    fn record_passive_health_provenance(
+        &mut self,
+        path: &CanonicalPath,
+        servers: &[EffectiveServer],
+    ) {
+        self.record_server_sources(
+            path.field("passive_health").field("observe"),
+            servers,
+            |server| server.observe.as_ref(),
+        );
+        self.record_server_sources(
+            path.field("passive_health").field("error_limit"),
+            servers,
+            |server| server.error_limit.as_ref(),
+        );
+        self.record_server_sources(
+            path.field("passive_health").field("on_error"),
+            servers,
+            |server| server.on_error.as_ref(),
+        );
     }
 
     #[expect(
@@ -596,6 +729,22 @@ impl Lowerer<'_> {
     ) -> Option<u64> {
         let values = servers.iter().filter_map(value).collect::<HashSet<_>>();
         (values.len() == 1).then(|| *values.iter().next().expect("one value"))
+    }
+
+    fn common_server_option<T, F>(servers: &[EffectiveServer], value: F) -> Result<Option<T>, ()>
+    where
+        T: Clone + Eq,
+        F: Fn(&EffectiveServer) -> Option<T>,
+    {
+        let mut values = servers.iter().map(value);
+        let Some(first) = values.next() else {
+            return Ok(None);
+        };
+        if values.all(|value| value == first) {
+            Ok(first)
+        } else {
+            Err(())
+        }
     }
 
     fn common_server_u16(
