@@ -250,9 +250,10 @@ the required release checks.
   Lua/candidate review, clean refresh, dirty-draft retention, revision conflicts, exact save
   outcomes, navigation, RTMP statistics/session controls, passive-health/retry editing, bounded
   weighted-round-robin weight editing, durable audit filtering/cursor pagination, native import
-  report selection/blockers, certificate actions, event parsing, and redaction. TLS-ALPN-01 is
-  accepted by the backend schema but has no frontend challenge selector; native-file editing remains
-  outside the frontend workflow.
+  report selection/blockers, certificate actions, event parsing, and redaction. TLS-ALPN-01 selection
+  and its guidance that a listener on public TCP port 443 must already be deployed are covered;
+  selecting it does not deploy the listener, and listener deployment plus CA-staging evidence remain
+  release gates. Native-file editing remains outside the frontend workflow.
 - Monitoring component tests cover pool availability, endpoint state/check totals, exact counters,
   failure labels, empty-pool rendering, and retention after transient failures.
 - Component tests exercise mobile controls and keyboard navigation in jsdom.

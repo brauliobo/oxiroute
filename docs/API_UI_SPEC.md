@@ -228,9 +228,10 @@ Lua-configured direct-file identities are prepared at startup and configured Cer
 watched and atomically reconciled.
 
 The backend canonical schema and TLS inventory accept managed `tls_alpn01` challenges. The current
-configuration editor exposes HTTP-01 and DNS-01 selectors only; an operator may validate or apply a
-TLS-ALPN-01 value through the backend/canonical configuration contract, while the frontend renders
-the resulting redacted status but does not provide a TLS-ALPN challenge form.
+configuration editor exposes HTTP-01, DNS-01, and TLS-ALPN-01 selectors. Selecting TLS-ALPN-01
+records the challenge choice and displays guidance that a deployed listener reachable on public TCP
+port 443 is required; it does not create or deploy that listener. Listener deployment and live
+CA-staging evidence remain gates.
 
 The implemented monitoring snapshot contains daemon uptime, process CPU/RSS/virtual memory,
 threads, open file descriptors, host load averages and memory, aggregate/listener connection and
@@ -447,7 +448,9 @@ server-validatable but read-only. It preserves dirty drafts across refresh failu
   SSE for event-driven refresh and exposes the bounded event history, but neither the SSE ring nor
   the event workspace history is durable. Durable audit history is browsable through its separate
   authenticated workspace. Native import reports are browsable as redacted evidence, but native-file
-  editing and TLS-ALPN challenge selection are not exposed by the current frontend.
+  editing remains outside the frontend. TLS-ALPN challenge selection and its listener-deployment
+  guidance are exposed; selecting it does not deploy the required listener, and listener deployment
+  plus CA-staging evidence remain gates.
 
 ## File-change behavior
 

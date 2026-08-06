@@ -200,8 +200,9 @@ The current contract is:
   HLS/DASH/isolated-exec/auto-push slices, and native nginx/HAProxy/Apache/Squid/Varnish import
   subsets with canonical provenance and a partial Vue control plane. Native import reports are
   browsable as read-only evidence, weighted-round-robin weight editing and durable audit browsing
-  are current frontend workflows, while native source editing and TLS-ALPN challenge selection are
-  not.
+  are current frontend workflows, while native source editing remains outside the frontend. TLS-ALPN
+  challenge selection and listener-deployment guidance are exposed; listener deployment and
+  CA-staging evidence remain gates.
 - `foundation`: forward HTTP/2 protocol components that are tested but are not an active daemon
   capability.
 - `planned`: broader cache conformance, broader managed ACME authenticators, durable replay/history
@@ -231,9 +232,9 @@ required before the affected partial or foundation paths can become a broader su
   staging deployment and real-certificate evidence remain open.
 - UI/import exposure: native import remains a read-only redacted report/compositional-source
   workflow, while the frontend exposes durable audit browsing and weighted-round-robin fields.
-  Native-file editing remains intentionally absent, and TLS-ALPN challenge selection remains a
-  backend/canonical configuration capability rather than a frontend control; passive health and
-  retry controls are exposed in the frontend.
+  Native-file editing remains intentionally absent. TLS-ALPN challenge selection and its
+  listener-deployment guidance are exposed in the frontend; listener deployment and CA-staging
+  evidence remain open gates. Passive health and retry controls are exposed in the frontend.
   These are exposure boundaries, not claims that the corresponding backend behavior is absent.
 - Interoperability: independent HTTP/H2/H3/TLS clients and origins, FFmpeg/OBS RTMP publish/play,
   and representative Apache, HAProxy, Squid, and Varnish migration cases beyond synthetic fixtures.
