@@ -75,6 +75,20 @@ fn connection_limits_reject_excess_sessions_without_hiding_accepts() {
     assert_eq!(limited.traffic.rejected_connections, 1);
     assert_eq!(limited.traffic.active_connections, 1);
     assert_eq!(limited.listeners[0].max_connections, Some(1));
+    let tcp = limited
+        .transport_operations
+        .iter()
+        .find(|operation| operation.transport == ObservedTransport::Tcp)
+        .expect("TCP transport operation");
+    assert_eq!(tcp.latency.count, 1);
+    assert_eq!(
+        tcp.outcomes
+            .iter()
+            .find(|outcome| outcome.outcome == TransportOutcome::Rejected)
+            .expect("TCP admission rejection")
+            .count,
+        1
+    );
 
     drop(connection);
     assert_eq!(
@@ -85,6 +99,38 @@ fn connection_limits_reject_excess_sessions_without_hiding_accepts() {
             .active_connections,
         0
     );
+}
+
+#[test]
+fn h3_connection_limit_rejections_have_terminal_transport_accounting() {
+    let metrics = RuntimeMetrics::new();
+    let listener = metrics
+        .register_listener("h3", "http3", "udp:192.0.2.10:8443", Some(1))
+        .expect("listener registration");
+    let held = listener.begin_connection().expect("first connection");
+
+    assert!(matches!(
+        listener.begin_connection(),
+        Err(MetricsError::ConnectionLimitReached { limit: 1, .. })
+    ));
+
+    let snapshot = metrics.snapshot().expect("snapshot");
+    let h3 = snapshot
+        .transport_operations
+        .iter()
+        .find(|operation| operation.transport == ObservedTransport::H3)
+        .expect("H3 transport operation");
+    assert_eq!(h3.latency.count, 1);
+    assert_eq!(
+        h3.outcomes
+            .iter()
+            .find(|outcome| outcome.outcome == TransportOutcome::Rejected)
+            .expect("H3 admission rejection")
+            .count,
+        1
+    );
+
+    drop(held);
 }
 
 #[test]
@@ -270,6 +316,20 @@ fn access_records_are_bounded_correlated_and_transport_only() {
     assert_eq!(record.bytes_received, 12);
     assert_eq!(record.bytes_sent, 34);
     assert!(record.correlation_id.starts_with("op-"));
+    let udp = snapshot
+        .transport_operations
+        .iter()
+        .find(|operation| operation.transport == ObservedTransport::Udp)
+        .expect("UDP transport operation");
+    assert_eq!(udp.latency.count, 1);
+    assert_eq!(
+        udp.outcomes
+            .iter()
+            .find(|outcome| outcome.outcome == TransportOutcome::Success)
+            .expect("UDP terminal outcome")
+            .count,
+        1
+    );
 
     let json = serde_json::to_string(&snapshot.access_records).expect("access JSON");
     assert!(!json.contains("uri"));

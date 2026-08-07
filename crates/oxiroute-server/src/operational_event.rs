@@ -340,7 +340,9 @@ struct AuditState {
     corrupt_records: u64,
     last_error: Option<&'static str>,
     degraded: bool,
+    // Prometheus `_total` families must not fall when retained records are evicted.
     operation_counts: [[u64; 7]; 4],
+    operation_counts_initialized: bool,
 }
 
 impl AuditState {
@@ -355,6 +357,7 @@ impl AuditState {
             last_error: None,
             degraded: false,
             operation_counts: [[0; 7]; 4],
+            operation_counts_initialized: false,
         }
     }
 }
@@ -451,11 +454,6 @@ impl AuditStore {
                         let Some(oldest) = state.records.pop_front() else {
                             break;
                         };
-                        decrement_operation_count(
-                            &mut state.operation_counts,
-                            oldest.category,
-                            oldest.result,
-                        );
                         let bytes = serde_json::to_vec(&oldest)
                             .map(|value| {
                                 u64::try_from(value.len().saturating_add(1)).unwrap_or(u64::MAX)
@@ -464,6 +462,7 @@ impl AuditStore {
                         state.bytes = state.bytes.saturating_sub(bytes);
                     }
                 } else {
+                    increment_operation_count(&mut state.operation_counts, category, result);
                     while state.records.len() > self.limits.max_records {
                         state.records.pop_front();
                     }
@@ -661,9 +660,17 @@ impl AuditStore {
         state.records = records.into_iter().collect();
         state.next_sequence = max_sequence;
         state.corrupt_records = state.corrupt_records.saturating_add(corrupt);
-        state.operation_counts = [[0; 7]; 4];
+        let mut retained_operation_counts = [[0; 7]; 4];
         for record in &state.records {
-            increment_operation_count(&mut state.operation_counts, record.category, record.result);
+            increment_operation_count(
+                &mut retained_operation_counts,
+                record.category,
+                record.result,
+            );
+        }
+        if !state.operation_counts_initialized {
+            state.operation_counts = retained_operation_counts;
+            state.operation_counts_initialized = true;
         }
         state.bytes = total_bytes(root, self.limits.max_rotated_files)?;
         state.rotated_files = rotated_file_count(root, self.limits.max_rotated_files)?;
@@ -943,15 +950,6 @@ fn increment_operation_count(
 ) {
     let count = &mut counts[category.index()][result.index()];
     *count = count.saturating_add(1);
-}
-
-fn decrement_operation_count(
-    counts: &mut [[u64; 7]; 4],
-    category: AuditCategory,
-    result: AuditResult,
-) {
-    let count = &mut counts[category.index()][result.index()];
-    *count = count.saturating_sub(1);
 }
 
 #[derive(Clone, Serialize)]
@@ -1760,6 +1758,44 @@ mod tests {
         assert_eq!(page.records[1].id, 3);
         assert_eq!(page.records[0].actor, "management_bearer");
         assert_eq!(page.records[0].source, "management_api");
+    }
+
+    #[test]
+    fn audit_operation_totals_remain_monotonic_after_retention() {
+        let store = AuditStore::memory(audit_limits());
+        let context = AuditContext::generated();
+
+        for _ in 0..2 {
+            store
+                .append(
+                    &context,
+                    AuditCategory::Reload,
+                    "generation_reload",
+                    AuditResult::Requested,
+                    None,
+                )
+                .expect("reload record");
+        }
+        store
+            .append(
+                &context,
+                AuditCategory::Control,
+                "process_shutdown",
+                AuditResult::Rejected,
+                None,
+            )
+            .expect("control record");
+
+        let metrics = store.metric_snapshot();
+        assert_eq!(metrics.status.record_count, 2);
+        assert_eq!(
+            metrics.operation_counts[AuditCategory::Reload.index()][AuditResult::Requested.index()],
+            2
+        );
+        assert_eq!(
+            metrics.operation_counts[AuditCategory::Control.index()][AuditResult::Rejected.index()],
+            1
+        );
     }
 
     #[test]

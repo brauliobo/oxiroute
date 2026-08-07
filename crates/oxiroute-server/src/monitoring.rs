@@ -413,6 +413,15 @@ impl TransportOutcome {
             TcpRelayResult::ProxyProtocolError => Self::Rejected,
         }
     }
+
+    const fn from_admission(error: &MetricsError) -> Self {
+        match error {
+            MetricsError::ConnectionLimitReached { .. }
+            | MetricsError::ProcessConnectionLimitReached { .. }
+            | MetricsError::AdministrativeDrain { .. } => Self::Rejected,
+            _ => Self::InternalError,
+        }
+    }
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -1404,6 +1413,7 @@ impl ListenerMetrics {
     /// Returns an error if a configured connection cap is reached or the accepted or active
     /// connection counter would overflow.
     pub fn begin_connection(&self) -> Result<ConnectionGuard, MetricsError> {
+        let started_at = Instant::now();
         if AdministrativeState::from_u8(
             self.state
                 .shared
@@ -1411,29 +1421,41 @@ impl ListenerMetrics {
                 .load(Ordering::Acquire),
         ) != AdministrativeState::Ready
         {
-            checked_atomic_add(
+            if let Err(error) = checked_atomic_add(
                 &self.state.shared.rejected_connections,
                 1,
                 "listener.rejectedConnections",
-            )?;
-            return Err(MetricsError::AdministrativeDrain {
+            ) {
+                self.record_admission_failure(&error, started_at);
+                return Err(error);
+            }
+            let error = MetricsError::AdministrativeDrain {
                 resource: "listener",
                 name: self.state.name.clone(),
-            });
+            };
+            self.record_admission_failure(&error, started_at);
+            return Err(error);
         }
-        checked_atomic_add(
+        if let Err(error) = checked_atomic_add(
             &self.state.shared.accepted_connections,
             1,
             "listener.acceptedConnections",
-        )?;
+        ) {
+            self.record_admission_failure(&error, started_at);
+            return Err(error);
+        }
         let process = match self.process.acquire() {
             Ok(process) => process,
             Err(error) => {
-                checked_atomic_add(
+                if let Err(accounting_error) = checked_atomic_add(
                     &self.state.shared.rejected_connections,
                     1,
                     "listener.rejectedConnections",
-                )?;
+                ) {
+                    self.record_admission_failure(&accounting_error, started_at);
+                    return Err(accounting_error);
+                }
+                self.record_admission_failure(&error, started_at);
                 return Err(error);
             }
         };
@@ -1453,12 +1475,7 @@ impl ListenerMetrics {
             },
         );
         if let Err(current) = admission {
-            checked_atomic_add(
-                &self.state.shared.rejected_connections,
-                1,
-                "listener.rejectedConnections",
-            )?;
-            return Err(
+            let error =
                 if let Some(limit) = self.state.shared.limit().filter(|limit| current >= *limit) {
                     MetricsError::ConnectionLimitReached {
                         listener: self.state.name.clone(),
@@ -1466,8 +1483,17 @@ impl ListenerMetrics {
                     }
                 } else {
                     MetricsError::CounterOverflow("listener.activeConnections")
-                },
-            );
+                };
+            if let Err(accounting_error) = checked_atomic_add(
+                &self.state.shared.rejected_connections,
+                1,
+                "listener.rejectedConnections",
+            ) {
+                self.record_admission_failure(&accounting_error, started_at);
+                return Err(accounting_error);
+            }
+            self.record_admission_failure(&error, started_at);
+            return Err(error);
         }
         if AdministrativeState::from_u8(
             self.state
@@ -1477,16 +1503,22 @@ impl ListenerMetrics {
         ) != AdministrativeState::Ready
         {
             decrement_counter(&self.state.shared.active_connections);
-            checked_atomic_add(
+            let error = MetricsError::AdministrativeDrain {
+                resource: "listener",
+                name: self.state.name.clone(),
+            };
+            if let Err(accounting_error) = checked_atomic_add(
                 &self.state.shared.rejected_connections,
                 1,
                 "listener.rejectedConnections",
-            )?;
+            ) {
+                self.record_admission_failure(&accounting_error, started_at);
+                drop(process);
+                return Err(accounting_error);
+            }
+            self.record_admission_failure(&error, started_at);
             drop(process);
-            return Err(MetricsError::AdministrativeDrain {
-                resource: "listener",
-                name: self.state.name.clone(),
-            });
+            return Err(error);
         }
         Ok(ConnectionGuard {
             process: Some(process),
@@ -1495,6 +1527,7 @@ impl ListenerMetrics {
             started_at: Instant::now(),
             correlation_id: crate::logging::next_correlation_id(),
             outcome: AtomicU8::new(transport_outcome_index(TransportOutcome::Success)),
+            terminal_recorded: AtomicBool::new(false),
             received: AtomicU64::new(0),
             sent: AtomicU64::new(0),
         })
@@ -1513,6 +1546,7 @@ impl ListenerMetrics {
             started_at: Instant::now(),
             correlation_id: String::new(),
             outcome: AtomicU8::new(transport_outcome_index(TransportOutcome::Success)),
+            terminal_recorded: AtomicBool::new(false),
             received: AtomicU64::new(0),
             sent: AtomicU64::new(0),
         }
@@ -1542,7 +1576,11 @@ impl ListenerMetrics {
 
     /// Accounts for a retry that the HTTP proxy handed back to Pingora.
     pub fn record_retry_attempt(&self) {
-        self.process.retry_attempts.fetch_add(1, Ordering::Relaxed);
+        let _ = self.process.retry_attempts.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(current.saturating_add(1)),
+        );
     }
 
     /// Records one terminal reverse-proxy HTTP operation and its latency sample.
@@ -1598,6 +1636,14 @@ impl ListenerMetrics {
     pub fn record_proxy_protocol(&self, result: ProxyProtocolResult) -> Result<(), MetricsError> {
         self.state.shared.record_proxy_protocol(result)
     }
+
+    fn record_admission_failure(&self, error: &MetricsError, started_at: Instant) {
+        let _ = self.state.shared.transport_operations.record(
+            transport_for_protocol(&self.state.protocol),
+            TransportOutcome::from_admission(error),
+            Some(started_at.elapsed()),
+        );
+    }
 }
 
 pub struct ConnectionGuard {
@@ -1607,6 +1653,7 @@ pub struct ConnectionGuard {
     started_at: Instant,
     correlation_id: String,
     outcome: AtomicU8,
+    terminal_recorded: AtomicBool,
     received: AtomicU64,
     sent: AtomicU64,
 }
@@ -1651,16 +1698,23 @@ impl ConnectionGuard {
         result: TcpRelayResult,
         duration: Duration,
     ) -> Result<(), MetricsError> {
+        let outcome = TransportOutcome::from_tcp(result);
         self.state.shared.record_tcp_relay(result, duration)?;
-        self.state.shared.transport_operations.record(
+        if let Err(error) = self.state.shared.transport_operations.record(
             transport_for_protocol(&self.state.protocol),
-            TransportOutcome::from_tcp(result),
+            outcome,
             Some(duration),
-        )?;
-        self.outcome.store(
-            transport_outcome_index(TransportOutcome::from_tcp(result)),
-            Ordering::Release,
-        );
+        ) {
+            self.terminal_recorded.store(true, Ordering::Release);
+            self.outcome.store(
+                transport_outcome_index(TransportOutcome::InternalError),
+                Ordering::Release,
+            );
+            return Err(error);
+        }
+        self.terminal_recorded.store(true, Ordering::Release);
+        self.outcome
+            .store(transport_outcome_index(outcome), Ordering::Release);
         Ok(())
     }
 
@@ -1678,19 +1732,30 @@ impl Drop for ConnectionGuard {
     fn drop(&mut self) {
         if self.releases_active_connection {
             decrement_counter(&self.state.shared.active_connections);
-            let duration_ms =
-                u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let duration = self.started_at.elapsed();
+            let duration_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+            let transport = transport_for_protocol(&self.state.protocol);
+            let outcome = TransportOutcome::ALL
+                .get(self.outcome.load(Ordering::Acquire) as usize)
+                .copied()
+                .unwrap_or(TransportOutcome::InternalError);
+            if transport == ObservedTransport::Udp
+                && !self.terminal_recorded.swap(true, Ordering::AcqRel)
+            {
+                let _ = self.state.shared.transport_operations.record(
+                    transport,
+                    outcome,
+                    Some(duration),
+                );
+            }
             append_access_record(
                 &self.state.shared.access_records,
                 AccessRecord {
                     timestamp_unix_ms: unix_time_ms().unwrap_or(0),
                     correlation_id: self.correlation_id.clone(),
                     listener: crate::logging::redact_identifier(&self.state.name),
-                    transport: transport_for_protocol(&self.state.protocol),
-                    outcome: TransportOutcome::ALL
-                        .get(self.outcome.load(Ordering::Acquire) as usize)
-                        .copied()
-                        .unwrap_or(TransportOutcome::InternalError),
+                    transport,
+                    outcome,
                     duration_ms,
                     bytes_received: self.received.load(Ordering::Relaxed),
                     bytes_sent: self.sent.load(Ordering::Relaxed),
@@ -3007,6 +3072,25 @@ mod tests {
                 .rejected
                 .load(Ordering::Relaxed),
             1
+        );
+    }
+
+    #[test]
+    fn retry_attempts_saturate_without_wrapping() {
+        let runtime = RuntimeMetrics::new();
+        let listener = runtime
+            .register_listener("http", "http", "socket:127.0.0.1:8080", None)
+            .expect("listener");
+        listener
+            .process
+            .retry_attempts
+            .store(u64::MAX, Ordering::Relaxed);
+
+        listener.record_retry_attempt();
+
+        assert_eq!(
+            runtime.snapshot().expect("snapshot").process.retry_attempts,
+            u64::MAX
         );
     }
 

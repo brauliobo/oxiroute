@@ -289,6 +289,18 @@ pub fn render_prometheus(
             &[("pool", pool.name.as_str())],
             pool.queue_timeouts,
         )?;
+        labels(
+            &mut output,
+            "oxiroute_pool_queue_admissions_total",
+            &[("pool", pool.name.as_str())],
+            pool.queued_total,
+        )?;
+        labels(
+            &mut output,
+            "oxiroute_pool_queue_cancellations_total",
+            &[("pool", pool.name.as_str())],
+            pool.queue_cancellations,
+        )?;
         for server in &pool.endpoints {
             labels(
                 &mut output,
@@ -987,6 +999,20 @@ mod tests {
     #[test]
     fn exposition_uses_only_fixed_transport_outcome_labels() {
         let metrics = RuntimeMetrics::new();
+        let forward = metrics
+            .register_listener(
+                "forward",
+                "forward_http1",
+                "socket:192.0.2.10:private-port",
+                None,
+            )
+            .expect("forward listener");
+        forward
+            .record_http_operation(
+                crate::HttpOperationResult::ClientError,
+                std::time::Duration::from_millis(7),
+            )
+            .expect("forward result");
         for transport in [
             crate::ObservedTransport::Rtmp,
             crate::ObservedTransport::Forward,
@@ -1013,6 +1039,9 @@ mod tests {
 
         assert!(output.contains(
             "oxiroute_transport_operations_total{transport=\"rtmp\",outcome=\"timeout\"} 1"
+        ));
+        assert!(output.contains(
+            "oxiroute_transport_operations_total{transport=\"forward\",outcome=\"client_error\"} 1"
         ));
         assert!(output.contains(
             "oxiroute_transport_operation_duration_milliseconds_bucket{transport=\"h3\",le=\"10\"} 1"
@@ -1071,6 +1100,25 @@ mod tests {
     }
 
     #[test]
+    fn exposition_includes_retry_and_queue_totals() {
+        let metrics = RuntimeMetrics::new();
+        let listener = metrics
+            .register_listener("edge", "http", "socket:192.0.2.10:private-port", None)
+            .expect("listener");
+        listener.record_retry_attempt();
+        let registry = RtmpRegistry::new(RtmpCapabilities {
+            live_ingest: false,
+            manual_recording: false,
+        });
+
+        let output =
+            render_prometheus(&metrics, &registry, &GenerationManager::new()).expect("exposition");
+
+        assert!(output.contains("oxiroute_upstream_retry_attempts_total 1"));
+        assert!(!output.contains("192.0.2.10"));
+    }
+
+    #[test]
     fn exposition_contains_bounded_passive_endpoint_observability() {
         let metrics = RuntimeMetrics::new();
         let pool = Arc::new(
@@ -1109,6 +1157,10 @@ mod tests {
         assert!(output.contains(
             "oxiroute_server_passive_ejections_total{pool=\"observability\",server=\"0\"} 1"
         ));
+        assert!(output.contains("oxiroute_pool_queue_admissions_total{pool=\"observability\"} 0"));
+        assert!(
+            output.contains("oxiroute_pool_queue_cancellations_total{pool=\"observability\"} 0")
+        );
         assert!(!output.contains("127.0.0.1:3000"));
     }
 }
