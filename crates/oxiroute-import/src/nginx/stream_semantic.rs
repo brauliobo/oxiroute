@@ -174,6 +174,10 @@ impl<'a> Resolver<'a> {
         )
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "stream declarations and representability blockers resolve in source order"
+    )]
     fn resolve_stream_block(&mut self, directive: &ExpandedDirective) -> EffectiveStream {
         if directive.directive.arguments.is_empty() && directive.children.is_some() {
             self.resolved(directive.occurrence);
