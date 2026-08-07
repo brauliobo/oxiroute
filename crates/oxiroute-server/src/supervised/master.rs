@@ -1,6 +1,7 @@
 use std::{
     collections::HashSet,
     error::Error,
+    ffi::OsString,
     fs::File,
     io::{self, Read as _},
     path::{Path, PathBuf},
@@ -206,13 +207,37 @@ impl MasterRunner {
         revision: &ConfigRevision,
         identity: WorkerIdentity,
     ) -> Result<WorkerCommand, Box<dyn Error>> {
-        let command = WorkerCommand::new(&self.executable_path)?
+        self.build_worker_command_with_environment(config_path, revision, identity, |key: &str| {
+            std::env::var_os(key)
+        })
+    }
+
+    fn build_worker_command_with_environment(
+        &self,
+        config_path: &Path,
+        revision: &ConfigRevision,
+        identity: WorkerIdentity,
+        environment: impl Fn(&str) -> Option<OsString>,
+    ) -> Result<WorkerCommand, Box<dyn Error>> {
+        let mut command = WorkerCommand::new(&self.executable_path)?
             .arg(super::MARKER)
             .arg(identity.generation.to_string())
             .arg(encode_token(identity.instance))
             .arg(config_path)
-            .arg(revision.to_string())
-            .inherit_env("OXIROUTE_MANAGEMENT_TOKEN_FILE");
+            .arg(revision.to_string());
+        for key in [
+            "OXIROUTE_MANAGEMENT_TOKEN_FILE",
+            "OXIROUTE_AUDIT_DIR",
+            "OXIROUTE_AUDIT_MAX_RECORDS",
+            "OXIROUTE_AUDIT_MAX_RECORD_BYTES",
+            "OXIROUTE_AUDIT_MAX_FILE_BYTES",
+            "OXIROUTE_AUDIT_MAX_TOTAL_BYTES",
+            "OXIROUTE_AUDIT_MAX_ROTATED_FILES",
+        ] {
+            if let Some(value) = environment(key) {
+                command = command.env(key, value);
+            }
+        }
         Ok(command)
     }
 
@@ -857,5 +882,40 @@ mod tests {
         assert!(debug.contains("/etc/oxiroute/oxiroute.kdl"));
         assert!(debug.contains(&"a".repeat(64)));
         assert!(!debug.contains(launcher.to_string_lossy().as_ref()));
+
+        let command = runner
+            .build_worker_command_with_environment(
+                Path::new("/etc/oxiroute/oxiroute.kdl"),
+                &revision,
+                identity,
+                |key| match key {
+                    "OXIROUTE_MANAGEMENT_TOKEN_FILE" => {
+                        Some(OsString::from("/etc/oxiroute/management.token"))
+                    }
+                    "OXIROUTE_AUDIT_DIR" => Some(OsString::from("/var/lib/oxiroute/audit")),
+                    "OXIROUTE_AUDIT_MAX_RECORDS" => Some(OsString::from("10000")),
+                    "OXIROUTE_AUDIT_MAX_RECORD_BYTES" => Some(OsString::from("16384")),
+                    "OXIROUTE_AUDIT_MAX_FILE_BYTES" => Some(OsString::from("1048576")),
+                    "OXIROUTE_AUDIT_MAX_TOTAL_BYTES" => Some(OsString::from("8388608")),
+                    "OXIROUTE_AUDIT_MAX_ROTATED_FILES" => Some(OsString::from("7")),
+                    _ => None,
+                },
+            )
+            .expect("worker environment");
+        let debug = format!("{command:?}");
+        for expected in [
+            "/etc/oxiroute/management.token",
+            "/var/lib/oxiroute/audit",
+            "10000",
+            "16384",
+            "1048576",
+            "8388608",
+            "7",
+        ] {
+            assert!(
+                debug.contains(expected),
+                "worker command omitted {expected}"
+            );
+        }
     }
 }
