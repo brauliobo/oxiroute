@@ -191,6 +191,7 @@ return {
       allow_absolute_form = true,
       tls_required = false,
       connect = { enabled = true, allowed_ports = { 443 } },
+      connect_udp = { enabled = true, allowed_ports = { 443 } },
       peer_policy = {
         peers = {
           { host = "proxy.example.test", port = 3128 },
@@ -364,7 +365,12 @@ Current constraints:
   Missing passive policy retains the bounded runtime defaults; it does not disable failure
   accounting. Ejection and recovery remain generation-owned and never revoke an existing lease.
 - HTTP services MUST contain at least one route. Route pool references MUST resolve.
-- Forward HTTP/1 services support absolute-form requests and CONNECT only when H1 is enabled.
+- Forward HTTP/1 services support absolute-form requests and classic CONNECT only when H1 is enabled.
+  Opt-in RFC 9298 CONNECT-UDP uses an HTTP/1.1 Upgrade request and bounded Capsule Protocol
+  DATAGRAM relay; the policy defaults to disabled, and `connect_udp = { enabled = true, allowed_ports = { 443 } }`
+  requires H1 in `enabled_versions` and is honored only by a `forward_http1` listener. When enabled,
+  its allowed-port list must contain 1 through 64 unique nonzero ports. This does not enable
+  CONNECT-UDP on H2 or H3.
   Socket-bound listeners may terminate downstream TLS when `tls_required = true` and their profile
   advertises `http/1.1`; the TLS handshake and negotiated protocol are bounded before HTTP parsing.
   Unix listeners remain plaintext. CONNECT ports are explicit. Authentication is absent,
@@ -376,11 +382,13 @@ Current constraints:
   rules use method, source CIDR, destination-port, authenticated, local, link-local, manager, and
   all matchers with optional negation. Destination domain/CIDR rules apply to the complete DNS
   answer, deny rules override allow rules, and `deny_private` rejects non-public addresses. Resolver
-   cache/query/address/TTL limits, connection/body/header limits, connect/idle/lifetime deadlines,
-   header privacy, and metadata-only audit mode are explicit. H2 labels fail preparation because no
-   integrated listener implements them. Reverse H3 uses the UDP `http3` listener contract; forward
-   H3 uses `forward_http3`. Both require TLS 1.3 with only `h3` ALPN, and neither silently falls back
-   to another downstream protocol.
+  cache/query/address/TTL limits, connection/body/header limits, connect/idle/lifetime deadlines,
+  header privacy, and metadata-only audit mode are explicit. Forward HTTP/2 listeners implement
+  only authority-only classic CONNECT and reject non-CONNECT or arbitrary forwarding forms. Forward
+  HTTP/3 listeners currently expose only authority-only classic CONNECT; CONNECT-UDP and H3
+  absolute-form forwarding are not advertised capabilities. Reverse H3 uses the UDP `http3`
+  listener contract; forward H3 uses `forward_http3`. Both require TLS 1.3 with only `h3` ALPN, and
+  neither silently falls back to another downstream protocol.
 - A forward service's optional `cache` references a named memory or persistent `cache_store`. Only
   absolute-form H1 GET/HEAD requests with a safe request shape are eligible. CONNECT, unsafe methods,
   ranges, conditionals, proxy/authenticated requests, cookies, private or `Set-Cookie` responses,

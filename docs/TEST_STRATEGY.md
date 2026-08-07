@@ -45,8 +45,8 @@ harnesses and the real-browser runner are checked in under `fuzz/`, `ui/tests/br
 - nginx, HAProxy, Apache, Squid, and Varnish parser tokens, ordered source/include graphs,
   inheritance/resolution, diagnostics, decision accounting, provenance, and conservative semantic
    conversion. Squid additionally covers canonical direct-forward lowering, cross-format native
-   references, static parent peer ordering/fallback, DNS/SSRF answer pinning, authenticated
-   absolute-form/CONNECT daemon wires, and bounded tunnel flushing;
+  references, static parent peer ordering/fallback, DNS/SSRF answer pinning, authenticated
+  absolute-form/CONNECT daemon wires, HTTP/1 CONNECT-UDP Capsule datagrams, and bounded tunnel flushing;
   Varnish exact canonical lowering, native-reference evidence, report, preview, and fail-closed
   invocation tests cover the finalized subset.
 
@@ -99,8 +99,9 @@ parser round trips, and long-running media/supervision properties remain planned
   non-overlapping polling.
 
 Packaged supervised UDP/H3 replacement under active traffic, broader active-traffic generation reload/drain
-breadth, richer native dependency watching, downstream client certificate authentication, and managed ACME
-live/staging integration remain gates rather than complete release evidence. UDP relay loopback coverage
+breadth, downstream client certificate authentication, and managed ACME live/staging integration remain
+gates rather than complete release evidence. Native dependency paths are watched and periodically
+re-resolved in the configuration reload paths. UDP relay loopback coverage
 includes passive connect/send/receive/protocol attribution, bounded ejection/reentry, and non-poisoning
 client/lifecycle/limit paths; no active UDP health-check type is claimed. Managed ACME protocol, state, bootstrap, TLS-ALPN cleanup, DNS cleanup recovery, and
 scripted-transport paths are unit-tested. Durable audit persistence/reopen/filter behavior is tested
@@ -180,8 +181,10 @@ service behavior. Synthetic fixtures remain implementation evidence only.
 ### Protocol conformance and interoperability
 
 - HTTP semantics use standards-derived tests and independent clients/servers.
-- HTTP/2 versions are asserted from negotiation and wire behavior; the active `forward_http3` and
-  reverse `http3` listeners are asserted through independent QUIC/H3 process-level wire tests.
+- HTTP/2 versions are asserted from negotiation and wire behavior, including the active forward
+  listener's authority-only classic CONNECT path and rejection of arbitrary request forms. The active
+  `forward_http3` listener is asserted through independent QUIC/H3 process-level tests for authority-only
+  classic CONNECT and bounded failure paths; no positive H3 absolute-form forwarding claim is made.
 - H3 upstream unit/wire tests use an independent QUIC origin to assert TLS/SNI/`h3` negotiation,
   request bodies, safe response framing and trailers, no-ALPN rejection, bounded request/response
   admission, malformed input, cancellation, and disabled migration/0-RTT. Reverse H3 process tests
@@ -236,15 +239,15 @@ paths, and durable audit store are implemented but do not by themselves close th
 ### Checked-in fuzzing
 
 Checked-in bounded harnesses cover configuration/native source parsing, forward targets, over-read
-I/O, RTMP handshake/chunk/AMF decoding, and the current public parser surfaces. `cargo check` and
-the optional `fuzz/smoke.sh` workflow prove buildability and a bounded smoke path; they do not claim
-coverage, corpus stability, or crash-free long-running execution. TLS ClientHello, PROXY protocol,
-UDP datagrams, and full HTTP/1 wire parsing remain deliberate harness gaps.
+I/O, RTMP handshake/chunk/AMF decoding, TLS ClientHello, PROXY v1/v2, bounded UDP datagram headers,
+HTTP/1 parsing, and the current public parser surfaces. `cargo check` and the optional `fuzz/smoke.sh`
+workflow prove buildability and a bounded smoke path; they do not claim coverage, corpus stability,
+or crash-free long-running execution. Daemon routing, socket/session lifecycle, private integration
+helpers, and full protocol wire sessions remain deliberate harness boundaries.
 
-The release workflow deliberately does not install `cargo-fuzz` or add a fuzzing dependency. This
-remains a follow-up until an isolated parser/protocol target can compile and run deterministically
-with Rust 1.87 without dependency churn; the optional smoke workflow is intentionally separate from
-the required release checks.
+The release workflow does not require a full `cargo-fuzz` campaign. It compiles the isolated fuzz
+workspace and the optional smoke workflow runs when `cargo-fuzz` and nightly tooling are available;
+full bounded campaigns, corpus triage, and long-running crash evidence remain separate release gates.
 
 ### UI end-to-end
 

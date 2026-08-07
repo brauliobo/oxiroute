@@ -8,6 +8,17 @@ unit=${1:-"${package_dir}/oxiroute.service"}
   printf 'service unit not found: %s\n' "${unit}" >&2
   exit 1
 }
+install_script=${package_dir}/oxiroute.install
+[[ -f "${install_script}" ]] || {
+  printf 'package install script not found: %s\n' "${install_script}" >&2
+  exit 1
+}
+bash -n "${install_script}"
+command -v systemd-analyze >/dev/null 2>&1 || {
+  printf 'systemd-analyze is required to validate %s\n' "${unit}" >&2
+  exit 1
+}
+systemd-analyze verify "${unit}"
 
 exec_start=
 exec_reload=

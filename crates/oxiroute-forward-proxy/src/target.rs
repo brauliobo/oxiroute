@@ -162,6 +162,9 @@ pub fn parse_connect_udp_path(raw: &str) -> Result<Destination, TargetError> {
         .rsplit_once('/')
         .filter(|(host, port)| !host.is_empty() && !port.is_empty())
         .ok_or(TargetError::ConnectUdpPathRequired)?;
+    if encoded_host.contains(':') {
+        return Err(TargetError::ConnectUdpPathRequired);
+    }
     let host = percent_decode_segment(encoded_host)?;
     let authority = if host.contains(':') {
         format!("[{host}]:{port}")
@@ -354,6 +357,7 @@ mod tests {
             "/.well-known/masque/udp/example.com/443",
             "/.well-known/masque/udp/example.com/443/?query=1",
             "/.well-known/masque/udp/2001%3Adb8/443/",
+            "/.well-known/masque/udp/2001:db8::42/443/",
         ] {
             assert!(parse_connect_udp_path(target).is_err(), "accepted {target}");
         }

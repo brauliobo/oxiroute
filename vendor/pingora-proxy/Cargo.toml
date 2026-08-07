@@ -212,6 +212,7 @@ default-features = false
 
 [dev-dependencies.prometheus]
 version = "0"
+default-features = false
 
 [dev-dependencies.reqwest]
 version = "0.12"

@@ -103,6 +103,22 @@ async fn daemon_accepts_tls_h2_connect_and_relays_stream_data() {
         .expect("H2 client handshake");
     let driver = tokio::spawn(async move { connection.await.expect("H2 client driver") });
 
+    let unsupported = Request::builder()
+        .method(Method::GET)
+        .uri(format!("http://{origin_address}/unsupported"))
+        .body(())
+        .expect("unsupported H2 forward request");
+    let (unsupported_response, _) = client
+        .send_request(unsupported, true)
+        .expect("send unsupported H2 forward request");
+    assert_eq!(
+        unsupported_response
+            .await
+            .expect("receive unsupported H2 forward response")
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+
     let request = Request::builder()
         .method(Method::CONNECT)
         .uri(origin_address.to_string())

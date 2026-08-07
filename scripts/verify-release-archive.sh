@@ -43,7 +43,8 @@ entries=$(mktemp)
 sorted_entries=$(mktemp)
 expected_entries=$(mktemp)
 sorted_expected=$(mktemp)
-trap 'rm -f -- "${entries}" "${sorted_entries}" "${expected_entries}" "${sorted_expected}"' EXIT
+private_key_entries=$(mktemp)
+trap 'rm -f -- "${entries}" "${sorted_entries}" "${expected_entries}" "${sorted_expected}" "${private_key_entries}"' EXIT
 
 tar -tzf "${archive}" >"${entries}"
 [[ -s "${entries}" ]] || {
@@ -70,6 +71,21 @@ while IFS= read -r entry; do
     exit 1
   }
   case "${relative}" in
+    crates/oxiroute-import/tests/fixtures/haproxy/tls-chain.pem.key|\
+    crates/oxiroute-import/tests/fixtures/haproxy/tls-no-identities.pem.key|\
+    crates/oxiroute-import/tests/fixtures/nginx/proxy-key.pem|\
+    crates/oxiroute-import/tests/fixtures/nginx/proxy-mismatched-key.pem|\
+    crates/oxiroute-server/src/tls/tests.rs|\
+    crates/oxiroute-server/tests/fixtures/origin-key.pem|\
+    crates/oxiroute-server/tests/fixtures/proxy-a-key.pem|\
+    crates/oxiroute-server/tests/fixtures/proxy-b-key.pem|\
+    vendor/pingora-core/examples/keys/client-ca/key.pem|\
+    vendor/pingora-core/examples/keys/clients/invalid-key.pem|\
+    vendor/pingora-core/examples/keys/clients/key-1.pem|\
+    vendor/pingora-core/examples/keys/clients/key-2.pem|\
+    vendor/pingora-core/examples/keys/server/key.pem)
+      # These deterministic test fixtures shipped in v0.4.1; keep the allowlist exact.
+      ;;
     target|target/*|*/target|*/target/*|node_modules|node_modules/*|*/node_modules|*/node_modules/*)
       printf 'release archive contains a build artifact or secret-shaped path: %s\n' "${entry}" >&2
       exit 1
@@ -82,7 +98,7 @@ while IFS= read -r entry; do
       printf 'release archive contains a build artifact or secret-shaped path: %s\n' "${entry}" >&2
       exit 1
       ;;
-    *.env|*.token|*credentials*|*.p12|*.pfx|*/id_rsa|*/id_ed25519)
+    *.env|*.token|*credentials*|*.key|*.p12|*.pfx|*/id_rsa|*/id_ed25519)
       printf 'release archive contains a build artifact or secret-shaped path: %s\n' "${entry}" >&2
       exit 1
       ;;
@@ -94,6 +110,42 @@ while IFS= read -r entry; do
     ui/pnpm-lock.yaml) has_ui_lock=true ;;
   esac
 done <"${sorted_entries}"
+
+tar \
+  --extract \
+  --gzip \
+  --file="${archive}" \
+  --to-command='if [ "${TAR_FILETYPE:-}" = f ] && LC_ALL=C grep -aE -- "-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----" >/dev/null; then printf "%s\n" "${TAR_FILENAME}"; fi; exit 0' \
+  >"${private_key_entries}"
+while IFS= read -r entry; do
+  case "${entry}" in
+    "${root}"/*) relative=${entry#"${root}/"} ;;
+    *)
+      printf 'private-key scan returned an entry outside %s/: %s\n' "${root}" "${entry}" >&2
+      exit 1
+      ;;
+  esac
+  case "${relative}" in
+    crates/oxiroute-import/tests/fixtures/haproxy/tls-chain.pem.key|\
+    crates/oxiroute-import/tests/fixtures/haproxy/tls-no-identities.pem.key|\
+    crates/oxiroute-import/tests/fixtures/nginx/proxy-key.pem|\
+    crates/oxiroute-import/tests/fixtures/nginx/proxy-mismatched-key.pem|\
+    crates/oxiroute-server/src/tls/tests.rs|\
+    crates/oxiroute-server/tests/fixtures/origin-key.pem|\
+    crates/oxiroute-server/tests/fixtures/proxy-a-key.pem|\
+    crates/oxiroute-server/tests/fixtures/proxy-b-key.pem|\
+    vendor/pingora-core/examples/keys/client-ca/key.pem|\
+    vendor/pingora-core/examples/keys/clients/invalid-key.pem|\
+    vendor/pingora-core/examples/keys/clients/key-1.pem|\
+    vendor/pingora-core/examples/keys/clients/key-2.pem|\
+    vendor/pingora-core/examples/keys/server/key.pem)
+      ;;
+    *)
+      printf 'release archive contains unallowlisted private-key material: %s\n' "${entry}" >&2
+      exit 1
+      ;;
+  esac
+done <"${private_key_entries}"
 
 ${has_cargo_lock} || { printf 'archive is missing Cargo.lock\n' >&2; exit 1; }
 ${has_cargo_toml} || { printf 'archive is missing Cargo.toml\n' >&2; exit 1; }

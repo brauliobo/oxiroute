@@ -242,8 +242,10 @@
         "crates/oxiroute-forward-proxy/tests/h1_wire.rs#h1_connect_ipv6_authority_crosses_a_real_http_connection",
         "crates/oxiroute-server/tests/forward_proxy_h1.rs#basic_authenticated_absolute_form_and_connect_cross_the_runtime_listener",
         "crates/oxiroute-forward-proxy/tests/h2_wire.rs#h2_forward_and_connect_cross_real_frames",
+        "crates/oxiroute-server/tests/forward_proxy_h2.rs#daemon_accepts_tls_h2_connect_and_relays_stream_data",
         "crates/oxiroute-forward-proxy/tests/h3_wire.rs#h3_absolute_target_crosses_quic_tls_and_h3_frames",
-        "crates/oxiroute-forward-proxy/tests/h3_wire.rs#classic_connect_maps_authentication_and_policy_rejections_without_opening_tunnels"
+        "crates/oxiroute-forward-proxy/tests/h3_wire.rs#classic_connect_maps_authentication_and_policy_rejections_without_opening_tunnels",
+        "crates/oxiroute-server/tests/forward_proxy_h3.rs#daemon_rejects_h3_plain_http_without_fallback_and_releases_udp_listener"
       ]
     },
     {

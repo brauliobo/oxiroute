@@ -9,7 +9,7 @@ the UI edits the same model through a revisioned API.
 The priorities are safe reloads, correct protocol behavior, diagnostics, and observable
 limits. Feature count comes after those invariants.
 
-The package currently declares `0.4.0`. This roadmap describes the current pre-alpha working
+The package currently declares `0.4.1`. This roadmap describes the current pre-alpha working
 release line, not a 1.0 commitment.
 
 Roadmap status is not current support. `stable` means part of the current narrow release
@@ -58,8 +58,8 @@ Status: partial. The annotations below identify landed slices; Milestone 1 is no
   periodic reconciliation, and in-process generation activation are implemented; broader
   active-traffic drain evidence remains a gate).
 - Parent-directory file watcher with content-hash revisions (implemented for the canonical root,
-  including periodic re-resolution of native references; direct watches for every resolved native
-  dependency and richer dependency registration remain planned).
+  resolved native dependency paths, include/glob parent directories, and periodic re-resolution;
+  broader active-traffic reload evidence remains a gate).
 - ACME HTTP-01/DNS-01/TLS-ALPN-01 certificate issuance, wildcard renewal scheduling, and zero-downtime
   activation (bounded managed authenticators are implemented; live staging evidence and broader
   providers remain).
@@ -84,8 +84,9 @@ Status: partial. The annotations below identify landed slices; Milestone 1 is no
 
 The original Milestone 1 boundary explicitly excluded UDP, forward proxying, caching, HTTP/3,
 native config importers, transparent interception, firewall management, and remote multi-user
-administration. The current `0.4.0` working release has partial HTTP/1 and HTTP/3 proxying, UDP
-relay, bounded HTTP caching, and bounded nginx, HAProxy, Apache, Squid, and Varnish import paths;
+administration. The current `0.4.1` working release has partial HTTP/1 forward proxying, H2/H3
+classic CONNECT, reverse H3, UDP relay, bounded HTTP caching, and bounded nginx, HAProxy, Apache,
+Squid, and Varnish import paths;
 that progress does not promote those subsets to complete compatibility or make foundations active
 capabilities. Transparent interception, firewall management, and remote multi-user administration
 remain outside the current release contract.
@@ -110,7 +111,8 @@ Release gates:
 - Independent interoperability for H3/TLS and FFmpeg/OBS RTMP paths, plus representative Apache,
   HAProxy, Squid, and Varnish migration cases beyond synthetic fixtures.
 - Bounded runs of every checked-in fuzz target, crash-corpus triage, and fault injection for media,
-  exec, reload, and supervision workers.
+  exec, reload, and supervision workers. The isolated fuzz workspace and targets are checked in;
+  the release gate is evidence, not target availability.
 - Packaged production supervision with active UDP/H3 replacement, rollback, drain, restart, and
   crash recovery. The direct `serve` path remains the default until this gate closes.
 
@@ -157,11 +159,15 @@ listener semantics must block the affected service.
 
 ## Milestone 3: explicit forward proxy
 
-Status: partial. The HTTP/1, HTTP/2 classic CONNECT, forward HTTP/3, and reverse HTTP/3 daemon paths
-are integrated; arbitrary HTTP/2 forwarding remains outside the daemon contract.
+Status: partial. HTTP/1 absolute-form, CONNECT, and opt-in CONNECT-UDP, HTTP/2 classic CONNECT,
+forward HTTP/3 classic CONNECT, and reverse HTTP/3 daemon paths are integrated; arbitrary H2/H3
+forwarding forms remain outside the daemon contract.
 
 - Dedicated HTTP/1 absolute-form parser and bounded CONNECT tunnel with over-read preservation
   (integrated for the HTTP/1 daemon listener; broader conformance remains).
+- Opt-in HTTP/1 RFC 9298 CONNECT-UDP upgrade with bounded Capsule DATAGRAM relay and explicit
+  destination-port policy (integrated for the HTTP/1 daemon listener; H2/H3 CONNECT-UDP remains
+  unsupported).
 - Ordered first-match ACL engine for identity, source, destination, method, and port (integrated for
   the audited Squid subset); canonical destination domains and bounded UTC time windows are also
   available, while imported time/domain ACL lowering and helper-backed predicates remain.
@@ -176,10 +182,11 @@ are integrated; arbitrary HTTP/2 forwarding remains outside the daemon contract.
   rules, CLI/native references, and daemon runtime are integrated; cache/refresh semantics remain
   explicitly non-equivalent).
 - HTTP/2 classic CONNECT with dedicated stream takeover, flow-control, half-close, timeout, reset,
-  and cancellation conformance coverage (integrated; arbitrary H2 forward requests remain blocked).
-- Bounded forward HTTP/3 absolute-form and classic CONNECT through a separate UDP listener, with
-  TLS 1.3/`h3` negotiation, shared forward policy, and generation-aware drain (integrated; broader
-  conformance remains).
+  and cancellation conformance coverage (integrated; non-CONNECT and arbitrary H2 forward requests
+  remain blocked).
+- Bounded forward HTTP/3 through a separate UDP listener with TLS 1.3/`h3` negotiation, shared
+  forward policy, generation-aware drain, and authority-only classic CONNECT (integrated; H3
+  absolute-form forwarding and broader request-form conformance remain unsupported or unadvertised).
 - Opt-in bounded memory/persistent caching for eligible HTTP/1 forward GET/HEAD requests, with
   collapsed fills, origin revalidation, fail-closed privacy admission, authenticated purge, and
   listener cache outcome metrics (integrated; broader HTTP cache conformance remains).

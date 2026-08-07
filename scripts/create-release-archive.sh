@@ -40,6 +40,6 @@ git -C "${repo_dir}" ls-files -z -- \
     --create \
     --file=- | gzip -n >"${temporary_archive}"
 
+"${repo_dir}/scripts/verify-release-archive.sh" "${temporary_archive}" "${version}" --compare-worktree
 mv -- "${temporary_archive}" "${archive}"
 trap - EXIT
-"${repo_dir}/scripts/verify-release-archive.sh" "${archive}" "${version}" --compare-worktree
