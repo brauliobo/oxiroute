@@ -1300,7 +1300,9 @@ impl Builder {
                 action: Vec::new(),
             });
         };
-        if function == b"pass" && let [duration] = arguments {
+        if function == b"pass"
+            && let [duration] = arguments
+        {
             if first_call(duration).is_some() {
                 return self.unsupported_expression_call(expression);
             }
@@ -1559,8 +1561,7 @@ impl Builder {
         if matches!(
             operator,
             ConditionOperator::Match | ConditionOperator::NotMatch
-        )
-            && let Some(name) = expression_name(right)
+        ) && let Some(name) = expression_name(right)
             && self.acl_names.contains_key(name)
         {
             return Condition::Acl {

@@ -200,7 +200,8 @@ impl<'a> Resolver<'a> {
                 b"upstream" => {
                     declaration_order.push(StreamDeclaration::Upstream(child.occurrence));
                     let upstream = self.resolve_upstream(child);
-                    if child.directive.arguments.len() == 1 && child.children.is_some()
+                    if child.directive.arguments.len() == 1
+                        && child.children.is_some()
                         && let Some(name) = &upstream.name
                     {
                         let normalized = ascii_lowercase(&name.value);

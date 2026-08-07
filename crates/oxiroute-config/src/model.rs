@@ -653,7 +653,9 @@ impl HttpVersion {
 pub enum UpstreamAlgorithm {
     #[default]
     RoundRobin,
-    WeightedRoundRobin { weights: Vec<u16> },
+    WeightedRoundRobin {
+        weights: Vec<u16>,
+    },
     LeastConnections,
     First,
 }
