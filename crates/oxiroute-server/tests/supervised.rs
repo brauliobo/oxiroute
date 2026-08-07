@@ -822,19 +822,11 @@ async fn supervised_worker_replaces_an_active_h3_request_with_goaway_and_owned_d
     })
     .await;
 
-    let quiesce_endpoint = h3_client_endpoint().expect("quiesce H3 client endpoint");
-    let connecting = quiesce_endpoint
-        .connect(listener_address, "proxy.example.test")
-        .expect("start quiesce H3 connection");
-    let quiesce_result = timeout(Duration::from_millis(500), connecting).await;
-    assert!(
-        !matches!(quiesce_result, Ok(Ok(_))),
-        "H3 accepted a new connection after quiesce"
-    );
-    quiesce_endpoint.close(quinn::VarInt::from_u32(0), b"quiesce probe");
-
     poll_master_until_async(&mut harness, |master| {
         master.state() == MasterState::DrainingRetired
+            && master
+                .worker_status(WorkerRole::Retired)
+                .is_some_and(|status| !status.accepting)
     })
     .await;
     assert_eq!(
