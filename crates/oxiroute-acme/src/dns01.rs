@@ -14,7 +14,7 @@ pub const MAX_DNS01_PROVIDER_NAME_BYTES: usize = 64;
 pub const MAX_DNS01_CREDENTIAL_REFERENCE_BYTES: usize = 4_096;
 pub const MAX_DNS01_CREDENTIAL_BYTES: usize = 64 * 1024;
 pub const MAX_DNS01_RECORD_ID_BYTES: usize = 256;
-pub const MAX_DNS01_OPERATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+pub const MAX_DNS01_OPERATION_TIMEOUT: Duration = Duration::from_mins(10);
 
 /// An opaque reference to provider credentials. The referenced secret is never held here.
 #[derive(Clone, Eq, PartialEq)]

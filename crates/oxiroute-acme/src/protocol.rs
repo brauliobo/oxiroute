@@ -1905,10 +1905,10 @@ fn origin_of(url: &str) -> Result<String, AcmeError> {
     if host.is_empty() || host.len() > 253 || host.eq_ignore_ascii_case("localhost") {
         return Err(AcmeError::InvalidDirectoryUrl);
     }
-    if let Some(port) = port {
-        if port.is_empty() || port.parse::<u16>().is_err() {
-            return Err(AcmeError::InvalidDirectoryUrl);
-        }
+    if let Some(port) = port
+        && (port.is_empty() || port.parse::<u16>().is_err())
+    {
+        return Err(AcmeError::InvalidDirectoryUrl);
     }
     Ok(format!("https://{}", authority.to_ascii_lowercase()))
 }

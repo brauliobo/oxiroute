@@ -56,10 +56,10 @@ fn exit_status(event: Option<WorkerEvent>) -> ExitStatus {
 fn wait_for_file(path: &std::path::Path) -> String {
     let started = Instant::now();
     loop {
-        if let Ok(value) = fs::read_to_string(path) {
-            if !value.trim().is_empty() {
-                return value;
-            }
+        if let Ok(value) = fs::read_to_string(path)
+            && !value.trim().is_empty()
+        {
+            return value;
         }
         assert!(started.elapsed() < Duration::from_secs(2));
         thread::sleep(Duration::from_millis(5));

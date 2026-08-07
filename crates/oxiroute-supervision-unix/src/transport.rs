@@ -404,10 +404,10 @@ impl SeqpacketEndpoint {
         for message in ancillary.drain() {
             match message {
                 RecvAncillaryMessage::ScmRights(received_fds) => descriptors.extend(received_fds),
-                RecvAncillaryMessage::ScmCredentials(received) => {
-                    if credentials.replace(received).is_some() {
-                        return Err(TransportError::MultipleCredentials);
-                    }
+                RecvAncillaryMessage::ScmCredentials(received)
+                    if credentials.replace(received).is_some() =>
+                {
+                    return Err(TransportError::MultipleCredentials);
                 }
                 _ => {}
             }
