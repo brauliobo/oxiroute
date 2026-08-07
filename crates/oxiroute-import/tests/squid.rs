@@ -15,8 +15,8 @@ use oxiroute_import::{
         AccessAction, AccessEvaluation, AclReferenceResolution, AclType, Activation,
         AuthenticationValue, BuiltinAcl, DecisionOutcome, DirectiveFamily, DirectiveResolution,
         DirectiveSemantics, E_UNCONSUMED_DIRECTIVE, E_UNKNOWN_DIRECTIVE, E_UNSUPPORTED_FORM,
-        ForwardedForMode, LogDestination, PeerOption, PortEndpoint, PrivacyDirective,
-        RootSelectionSource, SecretKind, SemanticBlockerKind, SquidLoadLimits,
+        ForwardedForMode, IncludeTargetStatus, LogDestination, PeerOption, PortEndpoint,
+        PrivacyDirective, RootSelectionSource, SecretKind, SemanticBlockerKind, SquidLoadLimits,
         SquidLoweringAdapter, discover_root, import, import_selected, lex, load, load_with_limits,
         parse,
     },
@@ -668,7 +668,7 @@ fn include_graph_expands_globs_in_byte_sorted_parse_order_with_provenance() {
     let root = directory.path().join("squid.conf");
     fs::write(
         &root,
-        b"acl root src 192.0.2.10\ninclude conf.d/10-*.conf conf.d/20-*.conf\nhttp_access allow root\n",
+        b"acl root src 192.0.2.10\ninclude conf.d/*.conf\nhttp_access allow root\n",
     )
     .expect("root source");
 
@@ -678,6 +678,29 @@ fn include_graph_expands_globs_in_byte_sorted_parse_order_with_provenance() {
     assert_eq!(graph.sources.len(), 3);
     assert_eq!(graph.includes.len(), 1);
     assert_eq!(graph.includes[0].targets.len(), 2);
+    assert!(graph.snapshot_stable);
+    assert!(matches!(
+        graph.includes[0].targets[0].status,
+        IncludeTargetStatus::Expanded(source) if source == SourceId::new(1)
+    ));
+    assert!(matches!(
+        graph.includes[0].targets[1].status,
+        IncludeTargetStatus::Expanded(source) if source == SourceId::new(2)
+    ));
+    assert_eq!(
+        graph.includes[0].targets[0]
+            .canonical_path
+            .as_ref()
+            .expect("first canonical include"),
+        &fs::canonicalize(includes.join("10-first.conf")).expect("first canonical path")
+    );
+    assert_eq!(
+        graph.includes[0].targets[1]
+            .canonical_path
+            .as_ref()
+            .expect("second canonical include"),
+        &fs::canonicalize(includes.join("20-second.conf")).expect("second canonical path")
+    );
     assert_eq!(graph.expanded_directives.len(), 5);
     let names = graph
         .expanded_directives
@@ -712,6 +735,15 @@ fn include_graph_expands_globs_in_byte_sorted_parse_order_with_provenance() {
     assert!(graph.expanded_directives[3].provenance.include_stack.len() == 1);
     let analyzed = oxiroute_import::squid::analyze(graph);
     assert!(analyzed.diagnostics().is_empty());
+    assert!(matches!(
+        analyzed.value().ledger.decisions[1].outcome,
+        DecisionOutcome::Classified {
+            family: DirectiveFamily::Include,
+            semantics: DirectiveSemantics::Include,
+            resolution: DirectiveResolution::Structural,
+            activation: Activation::Structural,
+        }
+    ));
     assert_eq!(
         analyzed.value().acl_definitions[1]
             .origin
@@ -720,6 +752,40 @@ fn include_graph_expands_globs_in_byte_sorted_parse_order_with_provenance() {
             .len(),
         1
     );
+}
+
+#[test]
+fn regular_file_include_boundary_rejects_directories_and_missing_paths() {
+    let directory = tempdir().expect("temp directory");
+    fs::create_dir(directory.path().join("include-dir")).expect("include directory");
+    let root = directory.path().join("squid.conf");
+    fs::write(&root, b"include include-dir\ninclude missing.conf\n").expect("root source");
+
+    let loaded = load(&root);
+    assert_eq!(loaded.value().sources.len(), 1);
+    assert_eq!(loaded.value().includes.len(), 2);
+    assert!(loaded.value().includes.iter().all(|edge| {
+        edge.targets.is_empty() && edge.failure == Some(oxiroute_import::E_INCLUDE_NOT_FOUND)
+    }));
+    assert_eq!(
+        loaded
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.code() == oxiroute_import::E_INCLUDE_NOT_FOUND)
+            .count(),
+        2
+    );
+
+    let imported = import(&root);
+    assert!(imported.config.is_none());
+    assert!(imported.blocked_capabilities.iter().any(|blocked| {
+        blocked.kind == SemanticBlockerKind::IncludeExpansion
+            && blocked.occurrences
+                == [
+                    oxiroute_import::squid::OccurrenceId::new(0),
+                    oxiroute_import::squid::OccurrenceId::new(1),
+                ]
+    }));
 }
 
 #[test]

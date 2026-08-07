@@ -147,6 +147,34 @@ fn squid_registry_matches_target_manifest_and_never_claims_complete_parity() {
     }
 }
 
+#[test]
+fn squid_include_boundary_promotes_only_the_bounded_form() {
+    let registry = squid_capability_report();
+    let family = registry
+        .families
+        .iter()
+        .find(|family| family.id == "family.squid.includes")
+        .expect("Squid include family");
+    let directive = registry
+        .directives
+        .iter()
+        .find(|directive| directive.id == "directive.squid.include.path")
+        .expect("Squid include form");
+
+    assert_eq!(family.status, SquidCapabilityStatus::Partial);
+    assert_eq!(
+        family.required_tests,
+        ["parse", "resolve", "failure", "integration", "provenance"]
+    );
+    assert_eq!(directive.status, SquidCapabilityStatus::Compatible);
+    assert_eq!(directive.importer_disposition, "classified");
+    assert_eq!(directive.target, "squid.semantic_ir");
+    assert_eq!(
+        directive.required_tests,
+        ["parse", "resolve", "failure", "integration", "provenance"]
+    );
+}
+
 fn capability_status_name(status: CapabilityStatus) -> &'static str {
     match status {
         CapabilityStatus::Compatible => "compatible",
