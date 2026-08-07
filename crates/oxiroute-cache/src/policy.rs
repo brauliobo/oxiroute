@@ -694,10 +694,10 @@ fn directive(item: &[u8]) -> Result<(&[u8], Option<&[u8]>), ParseError> {
     if name.is_empty() || !name.iter().copied().all(is_token) {
         return Err(ParseError::InvalidDirective);
     }
-    if let Some(value) = value {
-        if value.is_empty() || !valid_directive_value(value) {
-            return Err(ParseError::InvalidDirective);
-        }
+    if let Some(value) = value
+        && (value.is_empty() || !valid_directive_value(value))
+    {
+        return Err(ParseError::InvalidDirective);
     }
     Ok((name, value))
 }

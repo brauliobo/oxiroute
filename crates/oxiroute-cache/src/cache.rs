@@ -54,7 +54,7 @@ impl Default for CacheConfig {
             max_tag_bytes: 256,
             max_in_flight: 1_024,
             max_followers_per_fill: 1_024,
-            max_heuristic_freshness: Duration::from_secs(24 * 60 * 60),
+            max_heuristic_freshness: Duration::from_hours(24),
         }
     }
 }
@@ -976,10 +976,8 @@ fn remove_expired_entry(state: &mut State, key: &CacheKey, now: MonoTime) -> boo
                 age > stored.entry.policy.freshness_lifetime.saturating_add(keep)
             })
         });
-    if expired {
-        if let Some(stored) = state.entries.remove(key) {
-            state.bytes_used = state.bytes_used.saturating_sub(stored.entry.charge);
-        }
+    if expired && let Some(stored) = state.entries.remove(key) {
+        state.bytes_used = state.bytes_used.saturating_sub(stored.entry.charge);
     }
     expired
 }
