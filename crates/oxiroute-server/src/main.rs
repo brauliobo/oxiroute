@@ -796,7 +796,9 @@ impl ServerApp for TcpRelay {
             {
                 debug!("could not account for TCP PROXY protocol: {metric_error}");
             }
-            let Some(upstream) = self.service.select_wait().await else {
+            let Some(upstream) =
+                oxiroute_server::select_upstream_with_shutdown(&self.service, shutdown).await
+            else {
                 warn!("TCP pool has no healthy upstream");
                 return None;
             };
@@ -809,7 +811,9 @@ impl ServerApp for TcpRelay {
                 warn!("TCP relay failed: {error}");
             }
         } else {
-            let Some(upstream) = self.service.select_wait().await else {
+            let Some(upstream) =
+                oxiroute_server::select_upstream_with_shutdown(&self.service, shutdown).await
+            else {
                 warn!("TCP pool has no healthy upstream");
                 return None;
             };
@@ -2352,7 +2356,8 @@ fn serve_generation(
                             downstream_timeouts,
                         ),
                         listener_tls.as_deref(),
-                    ),
+                    )
+                    .with_generation(Arc::clone(generation)),
                     metrics.clone(),
                     Arc::clone(generation),
                 );

@@ -24,9 +24,12 @@ use std::{
 use bytes::{Bytes, BytesMut};
 use http::{Method, Request, StatusCode};
 use oxiroute_config::{
-    Config, DownstreamTimeoutPolicy, HttpPathSelector, HttpRoute, HttpRouteAction, HttpRoutePolicy,
-    HttpService, HttpVersionPolicy, L4Service, Listener, Management, Protocol, RtmpApplication,
-    RtmpService, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamPool,
+    AlpnProtocol, Certificate, CertificateSource, Config, DownstreamTimeoutPolicy,
+    ForwardAuditMode, ForwardConnectPolicy, ForwardDestinationPolicy, ForwardHeaderPolicy,
+    ForwardHttpVersion, ForwardPeerPolicy, ForwardProxyService, ForwardResolverPolicy,
+    HttpPathSelector, HttpRoute, HttpRouteAction, HttpRoutePolicy, HttpService, HttpVersionPolicy,
+    L4Service, Listener, Management, Protocol, RtmpApplication, RtmpService, TlsProfile,
+    TlsVersion, UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamPool,
 };
 use rml_rtmp::handshake::{Handshake, PeerType};
 use serde_json::{Value, json};
@@ -174,6 +177,65 @@ async fn h2_reload_sends_goaway_while_the_candidate_serves_new_connections() {
     old_connection.finish().await;
 
     server.shutdown();
+    assert_listener_released([management_address, listener_address]);
+}
+
+#[tokio::test]
+async fn forward_h2_reload_sends_goaway_while_the_candidate_serves_new_connections() {
+    let management_address = reserve_tcp_address();
+    let listener_address = reserve_tcp_address();
+    let (origin_address, origin_task) = start_echo_upstream().await;
+    let mut initial = forward_h2_config(management_address, listener_address, origin_address);
+    let mut server = ServerProcess::start(&initial, Some(TOKEN));
+    server.wait_for_tcp(management_address).await;
+    server.wait_for_tcp(listener_address).await;
+
+    let mut old_connection = H2Connection::try_connect(listener_address)
+        .await
+        .expect("old forward H2 connection");
+    assert_eq!(
+        old_connection
+            .connect(origin_address, b"old-forward-h2")
+            .await
+            .expect("old forward H2 tunnel")
+            .as_ref(),
+        b"old-forward-h2"
+    );
+    let authorization = format!("Bearer {TOKEN}");
+    let original_revision = active_revision(management_address, &authorization).await;
+
+    initial.max_connections = Some(17);
+    write_config(&server.config_path, &initial);
+    wait_for_new_revision(management_address, &authorization, &original_revision).await;
+
+    let old_request = timeout(
+        WIRE_TIMEOUT,
+        old_connection.connect(origin_address, b"old-after-reload"),
+    )
+    .await
+    .expect("old forward H2 request remained pending after GOAWAY");
+    assert!(
+        old_request.is_err(),
+        "old forward H2 connection accepted a stream after generation quiesce"
+    );
+
+    let mut new_connection = H2Connection::try_connect(listener_address)
+        .await
+        .expect("candidate forward H2 connection");
+    assert_eq!(
+        new_connection
+            .connect(origin_address, b"new-forward-h2")
+            .await
+            .expect("candidate forward H2 tunnel")
+            .as_ref(),
+        b"new-forward-h2"
+    );
+    new_connection.finish().await;
+    old_connection.finish().await;
+
+    server.shutdown();
+    origin_task.abort();
+    let _ = origin_task.await;
     assert_listener_released([management_address, listener_address]);
 }
 
@@ -433,6 +495,70 @@ fn http_config(management_address: SocketAddr, listener_address: SocketAddr, bod
             max_request_body_bytes: Some(1_024),
             gzip: None,
             access_log: None,
+        }],
+        ..empty_config()
+    }
+}
+
+fn forward_h2_config(
+    management_address: SocketAddr,
+    listener_address: SocketAddr,
+    origin_address: SocketAddr,
+) -> Config {
+    Config {
+        management: Some(management(management_address)),
+        certificates: vec![Certificate {
+            name: "downstream".into(),
+            dns_names: vec![wire_support::PROXY_SERVER_NAME.into()],
+            source: CertificateSource::Files {
+                certificate_chain_path: fixture_support::fixture("proxy-a.pem"),
+                private_key_path: fixture_support::fixture("proxy-a-key.pem"),
+            },
+        }],
+        tls_profiles: vec![TlsProfile {
+            name: "downstream".into(),
+            certificates: vec!["downstream".into()],
+            default_certificate: "downstream".into(),
+            min_version: TlsVersion::Tls12,
+            alpn: vec![AlpnProtocol::H2],
+            policy: oxiroute_config::TlsPolicy::default(),
+        }],
+        forward_proxy_services: vec![ForwardProxyService {
+            name: "forward".into(),
+            enabled_versions: vec![ForwardHttpVersion::H2],
+            allow_absolute_form: false,
+            tls_required: true,
+            connect: ForwardConnectPolicy {
+                enabled: true,
+                allowed_ports: vec![origin_address.port()],
+            },
+            connect_udp: ForwardConnectPolicy::default(),
+            peer_policy: ForwardPeerPolicy::default(),
+            auth: None,
+            access_policy: None,
+            destination_policy: ForwardDestinationPolicy {
+                deny_private: false,
+                ..ForwardDestinationPolicy::default()
+            },
+            header_policy: ForwardHeaderPolicy::default(),
+            connect_timeout_ms: 1_000,
+            idle_timeout_ms: 1_000,
+            lifetime_timeout_ms: 5_000,
+            max_request_body_bytes: Some(64 * 1024),
+            max_header_bytes: 8_192,
+            max_connections: 4,
+            resolver: ForwardResolverPolicy::default(),
+            audit_mode: ForwardAuditMode::Off,
+        }],
+        listeners: vec![Listener {
+            name: "forward".into(),
+            bind: socket_bind(listener_address),
+            protocol: Protocol::ForwardHttp2,
+            service: Some("forward".into()),
+            tls_profile: Some("downstream".into()),
+            proxy_protocol: None,
+            max_connections: None,
+            downstream_timeouts: DownstreamTimeoutPolicy::default(),
         }],
         ..empty_config()
     }
@@ -879,6 +1005,34 @@ impl H2Connection {
             bytes.extend_from_slice(&chunk);
         }
         Ok(bytes.freeze())
+    }
+
+    async fn connect(
+        &mut self,
+        destination: SocketAddr,
+        payload: &[u8],
+    ) -> Result<Bytes, BoxError> {
+        let mut sender = self.sender.clone().ready().await?;
+        let request = Request::builder()
+            .method(Method::CONNECT)
+            .uri(destination.to_string())
+            .body(())?;
+        let (response, mut request_body) = sender.send_request(request, false)?;
+        request_body.send_data(Bytes::copy_from_slice(payload), true)?;
+        let response = timeout(WIRE_TIMEOUT, response).await??;
+        if response.status() != StatusCode::OK {
+            return Err(io::Error::other(format!(
+                "unexpected forward H2 status {}",
+                response.status()
+            ))
+            .into());
+        }
+        let mut body = response.into_body();
+        let chunk = timeout(WIRE_TIMEOUT, body.data())
+            .await?
+            .ok_or_else(|| io::Error::other("forward H2 tunnel ended early"))??;
+        body.flow_control().release_capacity(chunk.len())?;
+        Ok(chunk)
     }
 
     async fn finish(self) {
