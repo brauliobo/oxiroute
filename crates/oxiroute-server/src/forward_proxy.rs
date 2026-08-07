@@ -18,8 +18,9 @@ use std::{
 use async_trait::async_trait;
 use bytes::{Buf as _, Bytes, BytesMut};
 use hickory_resolver::{
-    TokioAsyncResolver,
-    config::{LookupIpStrategy, NameServerConfigGroup, ResolverConfig, ResolverOpts},
+    TokioResolver,
+    config::{LookupIpStrategy, NameServerConfig, ResolverConfig, ResolverOpts},
+    net::runtime::TokioRuntimeProvider,
 };
 use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode, Uri, header};
 use http_body_util::{BodyExt as _, Full, Limited, combinators::BoxBody};
@@ -250,7 +251,7 @@ pub struct ForwardHttp1ServicePlan {
     max_header_bytes: usize,
     max_request_body_bytes: usize,
     name: String,
-    resolver: TokioAsyncResolver,
+    resolver: TokioResolver,
     resolver_addresses: usize,
     resolver_revalidate_on_connect: bool,
     resolver_queries: Arc<Semaphore>,
@@ -1270,6 +1271,13 @@ impl ForwardHttp1ServicePlan {
         protocol: Protocol,
         client_addr: Option<SocketAddr>,
     ) -> Result<AuthorizedRequest, RequestFailure> {
+        if protocol == Protocol::Http3
+            && request.method() == Method::CONNECT
+            && request.extensions().get::<h3::ext::Protocol>().is_some()
+        {
+            // Extended CONNECT is not an authority-only TCP tunnel in this listener.
+            return Err(RequestFailure::BadRequest);
+        }
         let target = request.uri().to_string();
         let connect_udp = classify_connect_udp_request(request);
         let parsed = if request.method() == Method::CONNECT {
@@ -2989,27 +2997,35 @@ fn h2_request(session: &ServerSession) -> Result<Request<()>, ()> {
     Ok(request)
 }
 
-fn resolver(service: &ForwardProxyService) -> Result<TokioAsyncResolver, ForwardPlanError> {
+fn resolver(service: &ForwardProxyService) -> Result<TokioResolver, ForwardPlanError> {
     let mut options = ResolverOpts::default();
     options.ip_strategy = LookupIpStrategy::Ipv4thenIpv6;
-    options.cache_size =
-        usize::try_from(service.resolver.max_cache_entries).map_err(|_| ForwardPlanError::Limit)?;
+    options.cache_size = service.resolver.max_cache_entries;
     options.positive_min_ttl = Some(Duration::from_millis(service.resolver.min_ttl_ms));
     options.positive_max_ttl = Some(Duration::from_millis(service.resolver.max_ttl_ms));
     options.negative_min_ttl = Some(Duration::from_millis(service.resolver.negative_ttl_ms));
     options.negative_max_ttl = Some(Duration::from_millis(service.resolver.negative_ttl_ms));
-    if service.resolver.nameservers.is_empty() {
+    let builder = if service.resolver.nameservers.is_empty() {
         let (config, _) = hickory_resolver::system_conf::read_system_conf()
             .map_err(|_| ForwardPlanError::Resolver)?;
-        Ok(TokioAsyncResolver::tokio(config, options))
+        TokioResolver::builder_with_config(config, TokioRuntimeProvider::default())
     } else {
-        let nameservers =
-            NameServerConfigGroup::from_ips_clear(&service.resolver.nameservers, 53, true);
-        Ok(TokioAsyncResolver::tokio(
+        let nameservers = service
+            .resolver
+            .nameservers
+            .iter()
+            .copied()
+            .map(NameServerConfig::udp_and_tcp)
+            .collect();
+        TokioResolver::builder_with_config(
             ResolverConfig::from_parts(None, Vec::new(), nameservers),
-            options,
-        ))
-    }
+            TokioRuntimeProvider::default(),
+        )
+    };
+    builder
+        .with_options(options)
+        .build()
+        .map_err(|_| ForwardPlanError::Resolver)
 }
 
 fn static_peer_plan(peer: &ForwardPeer) -> Result<StaticPeerPlan, ForwardPlanError> {

@@ -12,13 +12,16 @@ use http::{Method, Request, StatusCode};
 use oxiroute_config::{
     AlpnProtocol, Certificate, CertificateSource, DownstreamTimeoutPolicy, ForwardAuditMode,
     ForwardConnectPolicy, ForwardDestinationPolicy, ForwardHeaderPolicy, ForwardHttpVersion,
-    ForwardPeerPolicy, ForwardProxyService, ForwardResolverPolicy, Listener, Protocol, TlsProfile,
-    TlsVersion,
+    ForwardPeerPolicy, ForwardProxyAuth, ForwardProxyService, ForwardResolverPolicy, Listener,
+    Protocol, TlsProfile, TlsVersion,
 };
+use tempfile::tempdir;
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::TcpListener,
 };
+
+const TOKEN: &str = "0123456789abcdefghijklmnopqrstuv";
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
@@ -37,6 +40,13 @@ async fn daemon_accepts_tls_h2_connect_and_relays_stream_data() {
     });
 
     let key = fixture_support::private_key_fixture("proxy-a-key.pem");
+    let token_directory = tempdir().expect("H2 token directory");
+    let token_path = fixture_support::write_file_with_mode(
+        token_directory.path(),
+        "proxy.token",
+        format!("{TOKEN}\n").as_bytes(),
+        0o600,
+    );
     let proxy_address = process_support::reserve_tcp_address();
     let mut config = support::empty_config();
     config.certificates.push(Certificate {
@@ -66,7 +76,9 @@ async fn daemon_accepts_tls_h2_connect_and_relays_stream_data() {
         },
         connect_udp: ForwardConnectPolicy::default(),
         peer_policy: ForwardPeerPolicy::default(),
-        auth: None,
+        auth: Some(ForwardProxyAuth::BearerTokenFile {
+            token_file_path: token_path,
+        }),
         access_policy: None,
         destination_policy: ForwardDestinationPolicy {
             deny_private: false,
@@ -119,9 +131,27 @@ async fn daemon_accepts_tls_h2_connect_and_relays_stream_data() {
         StatusCode::BAD_REQUEST
     );
 
+    let missing_auth = Request::builder()
+        .method(Method::CONNECT)
+        .uri(origin_address.to_string())
+        .body(())
+        .expect("unauthenticated H2 CONNECT request");
+    let (missing_response, _) = client
+        .send_request(missing_auth, true)
+        .expect("send unauthenticated H2 CONNECT");
+    let missing_response = missing_response
+        .await
+        .expect("receive unauthenticated H2 CONNECT");
+    assert_eq!(
+        missing_response.status(),
+        StatusCode::PROXY_AUTHENTICATION_REQUIRED
+    );
+    assert_eq!(missing_response.headers()["proxy-authenticate"], "Bearer");
+
     let request = Request::builder()
         .method(Method::CONNECT)
         .uri(origin_address.to_string())
+        .header("proxy-authorization", format!("Bearer {TOKEN}"))
         .body(())
         .expect("H2 CONNECT request");
     let (response, mut request_body) = client
@@ -148,6 +178,7 @@ async fn daemon_accepts_tls_h2_connect_and_relays_stream_data() {
     let denied = Request::builder()
         .method(Method::CONNECT)
         .uri(format!("127.0.0.1:{denied_port}"))
+        .header("proxy-authorization", format!("Bearer {TOKEN}"))
         .body(())
         .expect("denied H2 CONNECT request");
     let (denied_response, _) = client
