@@ -19,6 +19,7 @@
         <nav class="site-nav" aria-label="Primary navigation">
           <a href="#choose">Choose a path</a>
           <a href="#capabilities">Capabilities</a>
+          <a href="#evidence">Progress</a>
           <a href="#dashboard">Dashboard</a>
           <a href="#docs">Docs</a>
         </nav>
@@ -44,7 +45,7 @@
           <div class="hero-console" aria-label="Illustration of a prepared runtime generation">
             <div class="console-bar"><span>generation / active</span><span class="mono">rev 0f4d...a92c</span></div>
             <div class="console-body">
-              <div class="console-status"><span class="status-chip status-implemented">ACTIVE</span><span>all traffic surfaces ready</span></div>
+              <div class="console-status"><span class="status-chip status-implemented">LOCAL</span><span>narrow path verified</span></div>
               <div class="console-route">
                 <div class="route-node route-client"><span class="node-icon">01</span><strong>listener</strong><small>127.0.0.1:8080</small></div>
                 <span class="route-line" aria-hidden="true">&#8203;</span>
@@ -110,7 +111,7 @@
               <div class="path-panel-list"><span>01 / <strong>Getting started</strong></span><span>02 / <strong>Dashboard</strong></span><span>03 / <strong>Operations</strong></span><span>04 / <strong>Security</strong></span></div>
             </article>
             <article class="tab-panel" role="tabpanel" id="role-migrator" aria-labelledby="tab-migrator" data-panel hidden>
-              <div class="path-panel-copy"><p class="eyebrow">Migration path</p><h3>Evidence before equivalence.</h3><p>Run a report, resolve blockers, render only finalized candidates, and keep the original source untouched. Import is an adapter, not a silent compatibility claim.</p><a class="text-link" href="https://github.com/brauliobo/oxiroute/blob/main/docs/user/MIGRATION.md">Open migration guide <span aria-hidden="true">-></span></a></div>
+              <div class="path-panel-copy"><p class="eyebrow">Migration path</p><h3>Evidence before equivalence.</h3><p>Run a report, retain provenance, resolve blockers, render only finalized candidates, and keep the original source untouched. nginx, HAProxy, Apache, Squid, and Varnish remain strict subsets, not silent compatibility claims.</p><a class="text-link" href="https://github.com/brauliobo/oxiroute/blob/main/docs/user/MIGRATION.md">Open migration guide <span aria-hidden="true">-></span></a></div>
               <div class="path-panel-list"><span>01 / <strong>nginx</strong></span><span>02 / <strong>HAProxy</strong></span><span>03 / <strong>Squid</strong></span><span>04 / <strong>Shadow validate</strong></span></div>
             </article>
             <article class="tab-panel" role="tabpanel" id="role-developer" aria-labelledby="tab-developer" data-panel hidden>
@@ -143,13 +144,13 @@
               <div class="boundary-strip"><strong>Not implied:</strong> complete parity. HTTP/3, UDP relay, and cache are bounded partial paths with separate protocol and conformance limits.</div>
             </article>
             <article class="tab-panel" role="tabpanel" id="cap-control" aria-labelledby="tab-control" data-panel hidden>
-              <div class="capability-heading"><div><span class="status-chip status-implemented">IMPLEMENTED</span><h3>Inspect the generation before editing the source.</h3></div><span class="panel-index">02</span></div>
+              <div class="capability-heading"><div><span class="status-chip status-partial">PARTIAL</span><h3>Inspect the generation before editing the source.</h3></div><span class="panel-index">02</span></div>
               <div class="feature-grid">
                 <div class="feature-card"><span class="feature-icon">API</span><h4>Loopback management</h4><p>Typed JSON for status, monitoring, topology, configuration validation, revision-safe saves, and generation actions.</p></div>
                 <div class="feature-card"><span class="feature-icon">UI</span><h4>Runtime observatory</h4><p>Vue 3 and build-time Pug expose process, listener, pool, endpoint, topology, and RTMP state with stale/error labels.</p></div>
                 <div class="feature-card"><span class="feature-icon">REV</span><h4>Prepare then activate</h4><p>Complete candidates publish behind a readiness gate. A failed candidate leaves the active generation unchanged.</p></div>
               </div>
-              <div class="boundary-strip"><strong>Security boundary:</strong> configuration writes need the bearer token and disk revision. The management schema remains loopback-only.</div>
+              <div class="boundary-strip"><strong>Security boundary:</strong> configuration writes need the bearer token and disk revision. The management schema remains loopback-only; broader deployment and CA-staging evidence remain open.</div>
             </article>
             <article class="tab-panel" role="tabpanel" id="cap-media" aria-labelledby="tab-media" data-panel hidden>
               <div class="capability-heading"><div><span class="status-chip status-partial">PARTIAL</span><h3>Publish, fan out, and record the media you can explain.</h3></div><span class="panel-index">03</span></div>
@@ -170,14 +171,38 @@
               <div class="boundary-strip"><strong>Cutover rule:</strong> `report` is evidence, `preview` is a finalized candidate, and neither command rewrites the native source tree.</div>
             </article>
             <article class="tab-panel" role="tabpanel" id="cap-supervision" aria-labelledby="tab-supervision" data-panel hidden>
-              <div class="capability-heading"><div><span class="status-chip status-planned">STAGED</span><h3>Make replacement a protocol, not a best-effort restart.</h3></div><span class="panel-index">05</span></div>
+              <div class="capability-heading"><div><span class="status-chip status-partial">PARTIAL</span><h3>Make replacement a protocol, not a best-effort restart.</h3></div><span class="panel-index">05</span></div>
               <div class="feature-grid">
                 <div class="feature-card"><span class="feature-icon">FSM</span><h4>Deterministic states</h4><p>Platform-neutral lifecycle and replacement state machines carry bounded identities, revisions, and outcomes.</p></div>
                 <div class="feature-card"><span class="feature-icon">UNX</span><h4>Unix transport</h4><p>Descriptor validation, credential transport, and safe ownership boundaries support the Linux path.</p></div>
-                <div class="feature-card"><span class="feature-icon">M/W</span><h4>Master and worker</h4><p>Cross-process listener ownership and authenticated replacement are staged for a future production gate.</p></div>
+                <div class="feature-card"><span class="feature-icon">M/W</span><h4>Master and worker</h4><p>Cross-process listener ownership and authenticated replacement are process-tested; packaged active-traffic replacement remains a production gate.</p></div>
               </div>
               <div class="boundary-strip"><strong>Default today:</strong> the public production entry point remains direct `oxiroute serve`; the supervised path is not silently selected.</div>
             </article>
+          </div>
+        </section>
+
+        <section class="section section-evidence" id="evidence" aria-labelledby="evidence-title">
+          <div class="section-intro split-intro">
+            <div><p class="eyebrow">Current worktree checkpoint</p><h2 id="evidence-title">Proof has a boundary.</h2></div>
+            <p>These are verified local slices from the current worktree, not a claim of production parity. The status stays partial wherever an external or broader compatibility gate remains.</p>
+          </div>
+          <div class="evidence-grid">
+            <article class="feature-card"><span class="feature-icon">IMP</span><h4>Importer provenance</h4><p>Varnish report tests retain source fingerprints, declared version, canonical provenance, and blockers for finalized and blocked fixtures.</p></article>
+            <article class="feature-card"><span class="feature-icon">RTP</span><h4>RTMP hardening</h4><p>Malformed AMF commands fail without panics, and byte-fragmented interleaving keeps two chunk-stream states isolated.</p></article>
+            <article class="feature-card"><span class="feature-icon">UDP</span><h4>UDP lifecycle</h4><p>Reload and drain coverage retains existing sessions, rejects new work, cancels at the deadline, and releases the listener.</p></article>
+            <article class="feature-card"><span class="feature-icon">UI</span><h4>UI contract</h4><p>Component and desktop/mobile browser checks cover redacted native reports, provenance, preview, read-only GETs, and responsive layout.</p></article>
+          </div>
+          <div class="boundary-strip"><strong>Local verification:</strong> Rust 1.97.1 format, clippy, and locked workspace tests plus UI unit, type-check, build, and browser gates pass. GitNexus reports zero import cycles. Direct PEM parsing uses <code>rustls-pki-types</code>; the bounded fuzz check passes, and optional smoke skips without <code>cargo-fuzz</code>.</div>
+          <div class="status-table-wrap">
+            <table class="status-table">
+              <caption>Current verification boundary</caption>
+              <thead><tr><th scope="col">Surface</th><th scope="col">Status</th><th scope="col">Boundary now</th></tr></thead>
+              <tbody>
+                <tr><th scope="row">Local Rust and UI gates</th><td><span class="status-chip status-implemented">VERIFIED</span></td><td>Local evidence only. The browser matrix has 21 passed tests and one existing desktop-only skip.</td></tr>
+                <tr><th scope="row">External and release gates</th><td><span class="status-chip status-partial">OPEN</span></td><td>CA staging, active production traffic and supervised drain, FFmpeg/OBS process interoperability, long-running fuzz and crash triage, and dependency audit remain open. Direct PEM parsing is migrated; <code>cargo audit -D warnings</code> still denies three Pingora-transitive unmaintained dependencies.</td></tr>
+              </tbody>
+            </table>
           </div>
         </section>
 

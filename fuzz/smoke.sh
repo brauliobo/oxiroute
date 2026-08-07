@@ -35,6 +35,8 @@ for target in config_source native_source forward_target overread_io rtmp_handsh
     esac
     cargo +nightly fuzz run "$target" -- \
         -runs=32 \
+        -seed=1 \
+        -print_final_stats=1 \
         -max_len="$max_len" \
         -timeout=2 \
         -rss_limit_mb=256 \

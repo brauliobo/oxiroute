@@ -18,6 +18,27 @@ contract; `partial` means an integrated slice still has compatibility or product
 work; `research` needs a product or design decision; `not-planned` is a deliberate exclusion; and
 `out-of-scope` belongs to another product boundary.
 
+## Current worktree checkpoint
+
+The current worktree has local evidence for importer provenance and Varnish report behavior,
+RTMP malformed-AMF hardening and interleaved fragmented-chunk handling, UDP reload/session
+retention and drain behavior, and UI contract plus desktop/mobile browser coverage. The
+`coverage/evidence.json` manifest includes the deterministic Varnish report/provenance cases,
+and the GitNexus structural check reports zero import cycles.
+
+The Rust 1.97.1 format/lint/locked workspace gates and UI unit, type-check, build, and browser
+gates pass locally; the browser matrix has its existing one desktop-only skip. The bounded fuzz
+workspace check passes and the optional smoke command exits without execution when `cargo-fuzz`
+is unavailable. Application PEM parsing now uses the maintained `rustls-pki-types` API; the
+remaining advisory findings are confined to the pinned Pingora dependency graph. These are local
+checks, not production interoperability evidence.
+
+The remaining gates are CA-staging issuance and renewal, active production-traffic reload/drain
+and supervised replacement, process-level FFmpeg/OBS interoperability, long-running fuzz and
+crash-corpus evidence, and a clean dependency audit. `cargo audit -D warnings` and the pinned
+`cargo-deny` gate currently deny three unmaintained Pingora-transitive dependencies, so no
+dependency-audit pass is claimed here.
+
 ## Milestone 0: executable skeleton
 
 Status: foundation. The skeleton is implemented and tested, but it is not a release boundary.
@@ -80,7 +101,8 @@ Status: partial. The annotations below identify landed slices; Milestone 1 is no
   exposed. Native source editing remains outside the frontend; TLS-ALPN challenge selection and
   listener-deployment guidance are exposed, but selection does not deploy the required listener.
   Listener deployment and CA-staging evidence remain gates; the event view remains the non-durable
-  operational ring).
+  operational ring. Browser coverage now exercises redacted native report selection, provenance,
+  preview, read-only boundaries, and responsive desktop/mobile states).
 
 The original Milestone 1 boundary explicitly excluded UDP, forward proxying, caching, HTTP/3,
 native config importers, transparent interception, firewall management, and remote multi-user
@@ -106,6 +128,9 @@ Release gates:
 - No root requirement and no outbound destination inferred from request input.
 - Active-traffic reload and drain across long-lived HTTP, H2, H3, TCP, UDP, RTMP, and SSE
   connections, including no-new-work behavior after GOAWAY/quiesce and old-generation retention.
+  A direct UDP process test now covers reload, session retention, new-work rejection after drain,
+  deadline cancellation, and listener release; active production-traffic and packaged supervised
+  replacement evidence remain open.
 - CA-staging HTTP-01, DNS-01, and TLS-ALPN-01 issuance and renewal with listener deployment,
   cleanup, failure, rollback, and real certificate activation evidence.
 - Independent interoperability for H3/TLS and FFmpeg/OBS RTMP paths, plus representative Apache,
@@ -113,6 +138,8 @@ Release gates:
 - Bounded runs of every checked-in fuzz target, crash-corpus triage, and fault injection for media,
   exec, reload, and supervision workers. The isolated fuzz workspace and targets are checked in;
   the release gate is evidence, not target availability.
+- Passing dependency, license, and security audits. The current `cargo audit -D warnings` result
+  still contains three denied unmaintained-dependency warnings, so this gate remains open.
 - Packaged production supervision with active UDP/H3 replacement, rollback, drain, restart, and
   crash recovery. The direct `serve` path remains the default until this gate closes.
 
@@ -143,7 +170,8 @@ runtime, failure-path, test, and native-lowering coverage all land.
   (integrated for the strict subset; broader httpd semantics remain blocked).
 - Native source locations, include graphs, decision ledgers, provenance, capability profiles, and
   stable diagnostic codes (partial for the current nginx, HAProxy, Apache, Squid, and Varnish
-  subsets; broader product semantics remain).
+  subsets; deterministic finalized and blocked Varnish report/provenance cases are covered, while
+  broader product semantics remain).
 - UDP relay with bounded pseudo-sessions, per-client reply mapping, and expiry.
 - Bounded PROXY protocol v1/v2 for explicit client-address propagation is implemented; broader wire
   conformance remains.
@@ -255,8 +283,9 @@ RTMP proceeds in independently releasable slices rather than waiting for HTTP/Sq
    broad lowering remains).
 2. Implement handshake, chunk transport, AMF0 connect/createStream, live publish/play,
    metadata/codec headers, keyframe gating, and bounded fanout (narrow live listener path and
-    bounded service-configured assembled-message and acknowledgement-window ceilings are implemented;
-    broader conformance and exhaustive chunk coverage remain).
+   bounded service-configured assembled-message and acknowledgement-window ceilings are implemented;
+   malformed AMF command inputs are panic-free and interleaved fragmented chunk streams are covered;
+   broader conformance and exhaustive chunk coverage remain).
  3. Add access, callbacks, push/pull relay, FLV recording, VOD, statistics, control, and logging
     (canonical continuous/manual legacy AVC/AAC FLV recording, canonical named recorders, session
     dispatch, storage, bounded workers/reaping, observability, exact-ID bearer-protected controls,

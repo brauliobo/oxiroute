@@ -15,7 +15,7 @@ use openssl::{
     x509::X509,
 };
 use oxiroute_config::{PassiveObserve, PassiveOnError};
-use rustls_pemfile::{Item, read_one};
+use rustls_pki_types::pem::{self, SectionKind as PemSectionKind};
 use x509_parser::{extensions::GeneralName, parse_x509_certificate};
 use zeroize::Zeroizing;
 
@@ -3401,41 +3401,52 @@ fn load_bind_tls(
     })
 }
 
-fn read_pem_items(path: &std::path::Path, kind: &str) -> Result<Vec<Item>, String> {
+fn read_pem_items(
+    path: &std::path::Path,
+    kind: &str,
+) -> Result<Vec<(PemSectionKind, Vec<u8>)>, String> {
     let bytes = read_stable_pem(path, kind)?;
     let mut reader = BufReader::new(bytes.as_slice());
     let mut items = Vec::new();
-    while let Some(item) = read_one(&mut reader)
+    while let Some((kind, data)) = pem::from_buf(&mut reader)
         .map_err(|error| format!("cannot parse HAProxy {kind} `{}`: {error}", path.display()))?
     {
-        items.push(item);
+        if matches!(
+            kind,
+            PemSectionKind::Certificate
+                | PemSectionKind::PublicKey
+                | PemSectionKind::RsaPrivateKey
+                | PemSectionKind::PrivateKey
+                | PemSectionKind::EcPrivateKey
+                | PemSectionKind::Crl
+                | PemSectionKind::Csr
+        ) {
+            items.push((kind, data));
+        }
     }
     Ok(items)
 }
 
 fn certificate_metadata(
     path: &std::path::Path,
-    items: &[Item],
+    items: &[(PemSectionKind, Vec<u8>)],
 ) -> Result<(Vec<String>, Vec<u8>, usize), String> {
     let mut dns_names = Vec::new();
     let mut leaf_certificate = None;
     let mut certificate_count = 0usize;
     let mut private_key_count = 0usize;
-    for item in items {
-        match item {
-            Item::X509Certificate(certificate) => {
+    for (kind, data) in items {
+        match kind {
+            PemSectionKind::Certificate => {
                 if certificate_count == 0 {
-                    leaf_certificate = Some(certificate.as_ref().to_vec());
+                    leaf_certificate = Some(data.clone());
                 }
-                collect_certificate_metadata(
-                    path,
-                    certificate.as_ref(),
-                    certificate_count,
-                    &mut dns_names,
-                )?;
+                collect_certificate_metadata(path, data, certificate_count, &mut dns_names)?;
                 certificate_count += 1;
             }
-            Item::Pkcs1Key(_) | Item::Pkcs8Key(_) | Item::Sec1Key(_) => private_key_count += 1,
+            PemSectionKind::RsaPrivateKey
+            | PemSectionKind::PrivateKey
+            | PemSectionKind::EcPrivateKey => private_key_count += 1,
             _ => {
                 return Err(format!(
                     "HAProxy crt PEM `{}` contains an unsupported PEM item",
@@ -3549,20 +3560,33 @@ fn validate_sidecar_key(path: &std::path::Path, leaf_certificate: &[u8]) -> Resu
     let bytes = Zeroizing::new(read_stable_pem(path, "crt sidecar key")?);
     let mut reader = BufReader::new(bytes.as_slice());
     let mut items = Vec::new();
-    while let Some(item) = read_one(&mut reader).map_err(|error| {
+    while let Some((kind, data)) = pem::from_buf(&mut reader).map_err(|error| {
         format!(
             "cannot parse HAProxy crt sidecar key `{}`: {error}",
             path.display()
         )
     })? {
-        items.push(item);
+        if matches!(
+            kind,
+            PemSectionKind::Certificate
+                | PemSectionKind::PublicKey
+                | PemSectionKind::RsaPrivateKey
+                | PemSectionKind::PrivateKey
+                | PemSectionKind::EcPrivateKey
+                | PemSectionKind::Crl
+                | PemSectionKind::Csr
+        ) {
+            items.push((kind, data));
+        }
     }
     let key_count = items
         .iter()
-        .filter(|item| {
+        .filter(|(kind, _)| {
             matches!(
-                item,
-                Item::Pkcs1Key(_) | Item::Pkcs8Key(_) | Item::Sec1Key(_)
+                *kind,
+                PemSectionKind::RsaPrivateKey
+                    | PemSectionKind::PrivateKey
+                    | PemSectionKind::EcPrivateKey
             )
         })
         .count();

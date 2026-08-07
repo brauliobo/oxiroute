@@ -7,6 +7,8 @@ use std::{
 
 use uuid::Uuid;
 
+pub use crate::session_control::SessionId;
+
 use crate::{
     RecorderEnqueueResult, RecorderNotification, RecorderWorkerPhase, RecorderWorkerStatus,
     live::VideoCodecIdentifier,
@@ -60,7 +62,6 @@ macro_rules! id_type {
 }
 
 id_type!(StreamId);
-id_type!(SessionId);
 id_type!(RecorderId);
 id_type!(RelayId);
 id_type!(OperationId);

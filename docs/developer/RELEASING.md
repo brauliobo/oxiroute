@@ -6,6 +6,8 @@ the test strategy.
 ## Before A Release
 
 - Run the full Rust and UI gates in [TESTING.md](TESTING.md).
+- Run `./scripts/verify-lockfiles.sh` so every Cargo and pnpm manifest is checked against its
+  committed lockfile.
 - Re-check [COMPATIBILITY.md](../COMPATIBILITY.md) against the active runtime, not just crate code.
 - Update the relevant user/reference pages and add release notes under `docs/`.
 - Render the dashboard GIFs if UI labels or product states changed.
@@ -24,11 +26,11 @@ Keep all three aligned.
 
 `scripts/create-release-archive.sh` creates a deterministic source archive from Git-tracked files,
 excluding the Arch recipe and benchmark report artifacts. `scripts/verify-release-archive.sh` checks
-the root prefix, required locks/license, forbidden artifact and secret-shaped paths, and optional
-worktree file-list equality. `packaging/arch/build-local.sh` reuses those checks before invoking
-`makepkg`; it still checks the recipe checksum. The package installs the daemon, management client,
-importer, service metadata, examples, and documentation but does not enable or start systemd
-automatically.
+the root prefix, every committed lock/license input, forbidden artifact and secret-shaped paths,
+private-key and high-signal credential content, and optional worktree file-list equality.
+`packaging/arch/build-local.sh` reuses those checks before invoking `makepkg`; it still checks the
+recipe checksum. The package installs the daemon, management client, importer, service metadata,
+examples, and documentation but does not enable or start systemd automatically.
 
 Before creating an archive, verify the version metadata and release notes:
 
@@ -49,10 +51,12 @@ attests the archive. The tag workflow does not run a full fuzz campaign.
 It publishes GitHub release assets only for a tag; manual runs verify a supplied tag or ref without
 publishing. A checksum mismatch is a deliberate release blocker, not a fallback.
 
-`.github/workflows/audit.yml` runs pinned RustSec and cargo-deny checks plus a high-severity UI audit.
-`deny.toml` rejects unknown registries and Git sources except the pinned h3 repository. Existing
-advisories remain visible and fail the gate until their owning dependency is updated or the release is
-explicitly held.
+`.github/workflows/audit.yml` runs pinned cargo-deny advisory, ban, license, and source checks plus
+`cargo audit -D warnings`, all committed lockfile checks, and high-severity audits for the UI and
+Remotion dependency roots. `deny.toml` rejects unknown registries and Git sources except the pinned
+h3 repository and intentionally has no RustSec exceptions. The three current Pingora-blocked
+findings and their fail-closed disposition are recorded in
+[SECURITY_AUDIT.md](SECURITY_AUDIT.md).
 
 `.github/workflows/pages.yml` uploads the `website/` directory using the official Pages artifact and
 deployment actions. It runs on pushes to `main` and can be started manually. Repository Pages settings

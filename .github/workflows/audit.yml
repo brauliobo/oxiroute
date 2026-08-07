@@ -19,8 +19,35 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  lockfiles:
+    name: Cargo and pnpm lockfile drift
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.3.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: |
+            ui/pnpm-lock.yaml
+            remotion/pnpm-lock.yaml
+
+      - name: Verify all committed lockfiles are current
+        run: ./scripts/verify-lockfiles.sh
+
   cargo-policy:
-    name: Rust dependency, license, and source policy
+    name: Rust dependency, advisory, license, and source policy
     runs-on: ubuntu-24.04
     steps:
       - name: Check out repository
@@ -35,8 +62,10 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.cargo/advisory-dbs
+            ~/.cargo/bin/cargo-deny
             target
-          key: ${{ runner.os }}-cargo-policy-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-policy-${{ hashFiles('Cargo.lock', 'deny.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-policy-
 
@@ -44,10 +73,10 @@ jobs:
         run: cargo +1.97.1 fetch --locked
 
       - name: Install pinned cargo-deny
-        run: cargo +1.97.1 install cargo-deny --version 0.18.3 --locked
+        run: cargo +1.97.1 install cargo-deny --version 0.20.2 --locked
 
-      - name: Check bans, licenses, and sources
-        run: cargo deny check bans licenses sources --disable-fetch --hide-inclusion-graph
+      - name: Check advisories, bans, licenses, and sources
+        run: cargo deny check advisories bans licenses sources --hide-inclusion-graph
 
   cargo-audit:
     name: RustSec audit database scan
@@ -67,19 +96,36 @@ jobs:
             ~/.cargo/git
             ~/.cargo/advisory-db
             ~/.cargo/bin/cargo-audit
-          key: ${{ runner.os }}-cargo-audit-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-audit-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock', 'benchmarks/loadgen/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-audit-
 
       - name: Install pinned cargo-audit
         run: cargo +1.97.1 install cargo-audit --version 0.22.1 --locked
 
-      - name: Deny vulnerabilities and audit warnings
-        run: cargo audit -D warnings
+      - name: Deny vulnerabilities and audit warnings in every Cargo lockfile
+        run: |
+          result=0
+          for lockfile in Cargo.lock fuzz/Cargo.lock benchmarks/loadgen/Cargo.lock; do
+            if ! cargo audit -D warnings --file "${lockfile}"; then
+              result=1
+            fi
+          done
+          exit "${result}"
 
   ui-dependencies:
-    name: UI lockfile and vulnerability audit
+    name: JavaScript lockfile and vulnerability audit (${{ matrix.label }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - directory: ui
+            label: dashboard UI
+            lockfile: ui/pnpm-lock.yaml
+          - directory: remotion
+            label: Remotion media
+            lockfile: remotion/pnpm-lock.yaml
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -94,12 +140,12 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: ui/pnpm-lock.yaml
+          cache-dependency-path: ${{ matrix.lockfile }}
 
-      - name: Install locked UI dependencies
+      - name: Install locked ${{ matrix.label }} dependencies
         run: pnpm install --frozen-lockfile --prefer-offline
-        working-directory: ui
+        working-directory: ${{ matrix.directory }}
 
-      - name: Audit high and critical UI advisories
+      - name: Audit high and critical JavaScript advisories
         run: pnpm audit --audit-level high
-        working-directory: ui
+        working-directory: ${{ matrix.directory }}

@@ -13,6 +13,24 @@ The initial repository followed this sequence:
 3. Runtime planning compiled and failed at its stub.
 4. Protocol-specific Pingora service planning made that test pass.
 
+## Current worktree evidence
+
+The current worktree adds or verifies the following bounded slices without promoting their
+partial capabilities to parity:
+
+- Import report tests retain deterministic source fingerprints, declared Varnish version,
+  canonical provenance, and blockers for both finalized and blocked Varnish cases. The matching
+  Varnish report cases are recorded in `coverage/evidence.json`.
+- RTMP hardening rejects malformed AMF command payloads without panicking, and chunk tests feed
+  two fragmented message streams one byte at a time while preserving per-stream state.
+- `crates/oxiroute-server/tests/process_udp_drain.rs` covers UDP reload, existing-session
+  retention, rejection of new work after drain, deadline cancellation, and listener release.
+- UI contract/component coverage and the desktop/mobile browser suite cover redacted native report
+  selection, provenance, preview, read-only GET boundaries, and responsive layout. The browser
+  run passes with 21 tests and one existing desktop-only skip.
+- GitNexus reports zero import cycles. This is a structural check, not protocol or production
+  interoperability evidence.
+
 ## Test layers
 
 The lists below distinguish checked-in coverage from planned release gates. Bounded parser fuzz
@@ -101,14 +119,16 @@ parser round trips, and long-running media/supervision properties remain planned
 
 Packaged supervised UDP/H3 replacement under active traffic, broader active-traffic generation reload/drain
 breadth, and managed ACME live/staging integration remain gates rather than complete release evidence.
-Native dependency paths are watched and periodically
-re-resolved in the configuration reload paths. UDP relay loopback coverage
-includes passive connect/send/receive/protocol attribution, bounded ejection/reentry, and non-poisoning
-client/lifecycle/limit paths; no active UDP health-check type is claimed. Managed ACME protocol, state, bootstrap, TLS-ALPN cleanup, DNS cleanup recovery, and
-scripted-transport paths are unit-tested. Durable audit persistence/reopen/filter behavior is tested
-separately from the non-durable operational event ring. Canonical watcher activation, route
-authentication, bounded event polling, SSE reconnect/resync, RTMP statistics and session controls,
-and fixed RTMP assembled-message rejection are current tested paths.
+Native dependency paths are watched and periodically re-resolved in the configuration reload paths.
+UDP relay loopback coverage includes passive connect/send/receive/protocol attribution, bounded
+ejection/reentry, and non-poisoning client/lifecycle/limit paths; no active UDP health-check type is
+claimed. The direct UDP reload/drain process test also covers session retention, new-work rejection,
+deadline cancellation, and listener release. Managed ACME protocol, state, bootstrap, TLS-ALPN
+cleanup, DNS cleanup recovery, and scripted-transport paths are unit-tested. Durable audit
+persistence/reopen/filter behavior is tested separately from the non-durable operational event ring.
+Canonical watcher activation, route authentication, bounded event polling, SSE reconnect/resync,
+RTMP statistics and session controls, malformed-AMF command handling, interleaved fragmented chunk
+state, and fixed RTMP assembled-message rejection are current tested paths.
 
 ### Import conformance
 
@@ -130,8 +150,9 @@ terminal accounting without treating remaining semantic blockers as a finalized-
 
 The current suite combines source files with parser/semantic/lowering assertions and repository
 coverage manifests. Apache vhost merge, HAProxy strict HTTP/TCP/stats, Squid static parent-peer and
-direct-fallback, and Varnish exact static-cache paths have executable tests; their broader product
-parity remains open. The product/category layout, capability profiles, expected-model sidecars, and
+direct-fallback, and Varnish exact static-cache paths have executable tests; Varnish report tests
+also prove deterministic provenance and blocked-candidate preservation. Their broader product parity
+remains open. The product/category layout, capability profiles, expected-model sidecars, and
 optional native-validator output remain target fixture structure. Synthetic fixtures do not count
 as live-host evidence unless `coverage/host-cases.json` explicitly maps them to live-origin hashed
 metadata.
@@ -160,7 +181,8 @@ fail-closed.
 UI contract coverage includes the exact Vitest cases `accepts new canonical variants and rejects
 invalid final redispatch shapes`, `edits ASCII case-insensitive authority matching and gates final
 redispatch`, and `preserves and edits imported statistics pages and compatibility routing through
-save`.
+save`. The provenance workspace tests also cover redacted source graphs, canonical field
+provenance, preview rendering, selection retention, and authenticated report requests.
 
 The configuration editor suite also covers bounded weighted-round-robin weight editing, including
 validation, server add/remove alignment, and algorithm switching, plus the bounded RTMP relay DNS
@@ -267,8 +289,10 @@ long-running crash evidence remain separate release gates.
 - `ui/tests/browser/dashboard.spec.ts` runs against the built static UI in desktop Chromium and a
   mobile Chromium device profile. It covers dashboard layout, token unlock/relock, save/review,
   revision conflict, dirty-draft external edits, SSE reconnect from `Last-Event-ID`, operational
-  controls, certificate redaction, durable audit browsing, and stale revision retention. Native import
-  report selection/blockers and provenance redaction are covered by the component suites.
+  controls, certificate redaction, durable audit browsing, stale revision retention, and redacted
+  native import report selection/provenance/preview through authenticated GET-only requests. It
+  asserts the read-only boundary and responsive report layout. The browser run passes with 21 tests
+  and one existing desktop-only skip.
 - The browser harness aborts non-local requests and scripts API/SSE responses; it does not start the
   daemon or contact a production or ACME endpoint.
 
@@ -285,19 +309,22 @@ typed UDP/H3 replacement, and crash-injection matrices remain planned release ev
 The current full local check set is:
 
 ```sh
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo +1.97.1 fmt --all --check
+cargo +1.97.1 clippy --workspace --all-targets --locked --jobs 4 -- -D warnings
 cargo +1.97.1 test --workspace --locked
-cargo fmt --manifest-path fuzz/Cargo.toml --check
-cargo check --manifest-path fuzz/Cargo.toml --locked --jobs 4
+cargo +1.97.1 fmt --manifest-path fuzz/Cargo.toml --check
+cargo +1.97.1 check --manifest-path fuzz/Cargo.toml --locked --jobs 4
 bash fuzz/smoke.sh
 pnpm --dir ui test
 pnpm --dir ui build
 pnpm --dir ui test:browser -- --workers=2
 ```
 
-The locked commands above use the current Rust 1.97.1 gate. The checked-in Linux workflow at
+The current worktree run passes the Rust 1.97.1 format, clippy, and locked workspace-test gates,
+the fuzz format/check gates, and the UI unit, browser type-check, build, and browser gates. The
+browser matrix reports 21 passed tests and one existing desktop-only skip. `bash fuzz/smoke.sh`
+exits successfully but skips execution because `cargo-fuzz` is unavailable; this is not long-running
+fuzz or crash-corpus evidence. The checked-in Linux workflow at
 `.github/workflows/ci.yml` enforces the workspace format/lint/tests, locked Rust 1.97.1 tests,
 coverage-manifest, package metadata, UI, browser, and local ACME jobs. It does not run the fuzz
 commands. The separate optional `.github/workflows/fuzz-smoke.yml` compiles the isolated fuzz
@@ -319,10 +346,12 @@ and supported-platform full builds. Browser tests use fake local API/SSE respons
 ACME protocol or active-daemon interoperability coverage.
 `pnpm --dir ui build` already runs `vue-tsc --noEmit` before the Vite build.
 
-The release gates still open are explicit: active-traffic reload/drain across HTTP, H2, H3, TCP, UDP,
-RTMP, and SSE; CA-staging issuance and renewal for all three managed challenge types; independent
-protocol/import interoperability; bounded fuzz runs and crash triage; and packaged supervised UDP/H3
-replacement, rollback, drain, restart, and crash recovery under traffic.
+The release gates still open are explicit: CA-staging issuance and renewal for all three managed
+challenge types; active production-traffic reload/drain and packaged supervised replacement,
+rollback, restart, and crash recovery under traffic; process-level FFmpeg/OBS interoperability;
+long-running fuzz runs and crash-corpus triage; broader independent protocol/import interoperability;
+and a clean dependency audit. `cargo audit -D warnings` currently denies three unmaintained-
+dependency warnings, so no audit pass is claimed.
 
 A capability cannot move to `stable` in a public matrix while its failure-path,
 reload/rotation, observability, and interoperability tests are missing.

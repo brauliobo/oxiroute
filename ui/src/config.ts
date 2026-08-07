@@ -1,4 +1,3 @@
-import type { CandidateTopologySnapshot } from './api'
 import {
   arrayOf,
   integerInRange,
@@ -974,19 +973,6 @@ export interface ConfigSnapshot {
   configPreview: string
   luaPreview?: string
   diagnostics: ConfigDiagnostic[]
-}
-
-export interface ConfigValidationResponse {
-  candidateRevision: string
-  normalizedConfig: CanonicalConfig
-  configFormat: ConfigFormat
-  compositional: boolean
-  dependencyCount: number
-  configPreview: string
-  luaPreview?: string
-  diagnostics: ConfigDiagnostic[]
-  restartRequired: boolean
-  topology: CandidateTopologySnapshot
 }
 
 export type ConfigSaveOutcome = 'saved_pending_activation' | 'saved_restart_required' | 'unchanged_active'

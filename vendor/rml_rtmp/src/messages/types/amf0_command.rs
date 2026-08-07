@@ -32,6 +32,9 @@ pub fn deserialize_with_limits(
     limits: &Amf0Limits,
 ) -> Result<RtmpMessage, MessageDeserializationError> {
     let mut arguments = super::super::amf0::deserialize(data.as_ref(), limits)?;
+    if arguments.len() < 3 {
+        return Err(MessageDeserializationError::InvalidMessageFormat);
+    }
 
     let command_name: String;
     let transaction_id: f64;

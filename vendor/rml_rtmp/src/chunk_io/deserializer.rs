@@ -27,6 +27,7 @@ pub struct ChunkDeserializer {
     current_payload_data: BytesMut,
     buffer: BytesMut,
     previous_headers: HashMap<u32, ChunkHeader>,
+    previous_payloads: HashMap<u32, BytesMut>,
 }
 
 enum ParsedValue<T> {
@@ -73,6 +74,7 @@ impl ChunkDeserializer {
             current_stage: ParseStage::Csid,
             buffer: BytesMut::with_capacity(4096),
             previous_headers: HashMap::new(),
+            previous_payloads: HashMap::new(),
             current_payload: MessagePayload::new(),
             current_payload_data: BytesMut::new(),
         }
@@ -227,15 +229,33 @@ impl ChunkDeserializer {
 
         self.current_header = match self.current_header_format {
             ChunkHeaderFormat::Full => {
+                self.previous_payloads.remove(&csid);
                 let mut new_header = ChunkHeader::new();
                 new_header.chunk_stream_id = csid;
                 new_header
             }
 
-            _ => match self.previous_headers.remove(&csid) {
-                None => return Err(ChunkDeserializationError::NoPreviousChunkOnStream { csid }),
-                Some(header) => header,
-            },
+            ChunkHeaderFormat::Empty => {
+                self.current_payload_data =
+                    self.previous_payloads.remove(&csid).unwrap_or_default();
+                match self.previous_headers.remove(&csid) {
+                    None => {
+                        return Err(ChunkDeserializationError::NoPreviousChunkOnStream { csid })
+                    }
+                    Some(header) => header,
+                }
+            }
+
+            _ => {
+                self.previous_payloads.remove(&csid);
+                self.current_payload_data = BytesMut::new();
+                match self.previous_headers.remove(&csid) {
+                    None => {
+                        return Err(ChunkDeserializationError::NoPreviousChunkOnStream { csid })
+                    }
+                    Some(header) => header,
+                }
+            }
         };
 
         let _ = self.buffer.split_to(next_index as usize);
@@ -427,8 +447,15 @@ impl ChunkDeserializer {
 
         // This completes the current chunk, so cycle the header into the map and start a new one
         let current_header = mem::replace(&mut self.current_header, ChunkHeader::new());
+        let chunk_stream_id = current_header.chunk_stream_id;
         self.previous_headers
-            .insert(current_header.chunk_stream_id, current_header);
+            .insert(chunk_stream_id, current_header);
+        if self.current_payload_data.is_empty() {
+            self.previous_payloads.remove(&chunk_stream_id);
+        } else {
+            let payload = mem::replace(&mut self.current_payload_data, BytesMut::new());
+            self.previous_payloads.insert(chunk_stream_id, payload);
+        }
         self.current_stage = ParseStage::Csid;
         Ok(ParseStageResult::Success)
     }

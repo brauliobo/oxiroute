@@ -8,11 +8,13 @@ use oxiroute_import::{
     haproxy::{PreprocessingEnvironment, import_roots, import_roots_with_environment},
     nginx::{NginxImportOptions, import_root as import_nginx, import_root_with_options},
     squid::import as import_squid,
+    varnish::{VarnishdInvocation, import as import_varnish},
 };
 use serde_json::Value;
 use tempfile::tempdir;
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn report_json_is_deterministic_and_identifies_each_source_product() {
     let directory = tempdir().expect("import report directory");
     let nginx_path = directory.path().join("nginx.conf");
@@ -31,6 +33,8 @@ fn report_json_is_deterministic_and_identifies_each_source_product() {
         .join("tests/fixtures/haproxy/minimal-representable.cfg");
     let squid_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/squid/hostrouter-sanitized.conf");
+    let varnish_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/varnish/exact.vcl");
 
     let reports = [
         (
@@ -52,6 +56,26 @@ fn report_json_is_deterministic_and_identifies_each_source_product() {
             "apache",
             ImportReportEnvelope::from_apache(&import_apache(&apache_path)),
         ),
+        (
+            "varnish",
+            ImportReportEnvelope::from_varnish(&import_varnish(
+                &varnish_path,
+                &VarnishdInvocation::new([
+                    "varnishd",
+                    "-a",
+                    ":6081",
+                    "-s",
+                    "cache=malloc,256M",
+                    "-p",
+                    "default_ttl=120s",
+                    "-p",
+                    "default_grace=10s",
+                    "-p",
+                    "default_keep=300s",
+                    "-F",
+                ]),
+            )),
+        ),
     ];
 
     for (product, report) in reports {
@@ -61,8 +85,13 @@ fn report_json_is_deterministic_and_identifies_each_source_product() {
         let value: Value = serde_json::from_str(&first).expect("report object");
         assert_eq!(value["schemaVersion"], 1);
         assert_eq!(value["source"]["product"], product);
-        assert!(value["source"]["version"].is_null());
-        assert!(value["source"]["versionSource"].is_null());
+        if product == "varnish" {
+            assert_eq!(value["source"]["version"], "4.1");
+            assert_eq!(value["source"]["versionSource"], "declared");
+        } else {
+            assert!(value["source"]["version"].is_null());
+            assert!(value["source"]["versionSource"].is_null());
+        }
         assert_eq!(
             value["source"]["capabilityProfile"]["version"],
             if product == "squid" { 3 } else { 1 }
@@ -82,6 +111,12 @@ fn report_json_is_deterministic_and_identifies_each_source_product() {
                     .is_some_and(|fingerprint| fingerprint.len() == 64))
         );
         assert!(value["candidate"]["finalized"].is_boolean());
+        assert!(
+            value["candidate"]["provenance"]
+                .as_array()
+                .is_some_and(|provenance| !provenance.is_empty()),
+            "{product} provenance"
+        );
         if product == "squid" {
             assert_eq!(value["capabilities"]["targetVersion"], "6f4c814");
             assert_eq!(
@@ -94,6 +129,51 @@ fn report_json_is_deterministic_and_identifies_each_source_product() {
             assert!(value.get("capabilities").is_none());
         }
     }
+}
+
+#[test]
+fn varnish_blocked_report_is_deterministic_and_preserves_provenance() {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/varnish/representative.vcl");
+    let report =
+        ImportReportEnvelope::from_varnish(&import_varnish(&path, &VarnishdInvocation::default()));
+    let first = report.to_json().expect("blocked Varnish report JSON");
+    let second = report
+        .to_json()
+        .expect("blocked Varnish report JSON repeat");
+    assert_eq!(first, second);
+
+    let value: Value = serde_json::from_str(&first).expect("blocked Varnish report object");
+    assert_eq!(value["source"]["product"], "varnish");
+    assert_eq!(
+        value["source"]["capabilityProfile"]["id"],
+        "varnish-vcl-exact-cache"
+    );
+    assert_eq!(value["candidate"]["finalized"], false);
+    assert!(value["candidate"]["config"].is_null());
+    assert!(value["blockers"].as_array().is_some_and(|blockers| {
+        blockers
+            .iter()
+            .any(|blocker| blocker["code"] == "E_VCL_LOWERING_BLOCKED")
+    }));
+    assert!(value["blockers"].as_array().is_some_and(|blockers| {
+        blockers.iter().any(|blocker| {
+            blocker["origins"]
+                .as_array()
+                .is_some_and(|origins| !origins.is_empty())
+        })
+    }));
+    assert!(
+        value["sourceGraph"]["sources"]
+            .as_array()
+            .is_some_and(|sources| {
+                sources.iter().all(|source| {
+                    source["fingerprintSha256"]
+                        .as_str()
+                        .is_some_and(|fingerprint| fingerprint.len() == 64)
+                })
+            })
+    );
 }
 
 #[test]

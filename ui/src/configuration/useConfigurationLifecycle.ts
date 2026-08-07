@@ -1,12 +1,12 @@
 import { computed, ref, watch, type Ref } from 'vue'
 
 import { ApiError, saveConfig, validateConfig } from '../api'
+import type { ConfigValidationResponse } from '../api'
 import type {
   CanonicalConfig,
   ConfigDiagnostic,
   ConfigSaveResponse,
   ConfigSnapshot,
-  ConfigValidationResponse,
 } from '../config'
 import { errorDiagnosticsFrom } from '../config'
 import { isRecord } from '../valueGuards'

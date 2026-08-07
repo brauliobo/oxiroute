@@ -51,7 +51,7 @@ use pingora::{
 };
 use rustls::{
     ClientConfig, HandshakeKind, ProtocolVersion, RootCertStore, ServerConfig,
-    pki_types::{CertificateDer, PrivateKeyDer, ServerName},
+    pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject},
 };
 use tempfile::TempDir;
 use tokio::{
@@ -2029,16 +2029,19 @@ fn tls_server_config_with_identity_and_versions(
 
 fn load_certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>, BoxError> {
     let mut reader = BufReader::new(File::open(path)?);
-    rustls_pemfile::certs(&mut reader)
+    CertificateDer::pem_reader_iter(&mut reader)
         .collect::<Result<Vec<_>, _>>()
         .map_err(Into::into)
 }
 
 fn load_private_key(path: &Path) -> Result<PrivateKeyDer<'static>, BoxError> {
     let mut reader = BufReader::new(File::open(path)?);
-    rustls_pemfile::private_key(&mut reader)?.ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "fixture has no private key").into()
-    })
+    PrivateKeyDer::pem_reader_iter(&mut reader)
+        .next()
+        .transpose()?
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "fixture has no private key").into()
+        })
 }
 
 async fn wait_for_counter(counter: &AtomicUsize, expected: usize, label: &str) {
