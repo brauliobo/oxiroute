@@ -33,11 +33,11 @@ jobs:
           fetch-depth: 0
           ref: ${{ inputs.tag || github.ref }}
 
-      - name: Install Rust 1.87
-        uses: dtolnay/rust-toolchain@1.87.0
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Verify locked workspace metadata at MSRV
-        run: cargo +1.87.0 metadata --format-version 1 --no-deps --locked
+        run: cargo +1.97.1 metadata --format-version 1 --no-deps --locked
 
       - name: Select release version
         run: |

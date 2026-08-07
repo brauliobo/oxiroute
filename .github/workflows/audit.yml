@@ -26,8 +26,8 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install Rust 1.87
-        uses: dtolnay/rust-toolchain@1.87.0
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -41,10 +41,10 @@ jobs:
             ${{ runner.os }}-cargo-policy-
 
       - name: Fetch locked Rust dependencies
-        run: cargo +1.87.0 fetch --locked
+        run: cargo +1.97.1 fetch --locked
 
-      - name: Install pinned cargo-deny compatible with Rust 1.87
-        run: cargo +1.87.0 install cargo-deny --version 0.18.3 --locked
+      - name: Install pinned cargo-deny
+        run: cargo +1.97.1 install cargo-deny --version 0.18.3 --locked
 
       - name: Check bans, licenses, and sources
         run: cargo deny check bans licenses sources --disable-fetch --hide-inclusion-graph
@@ -56,8 +56,8 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install Rust 1.87
-        uses: dtolnay/rust-toolchain@1.87.0
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Cache Cargo and RustSec database
         uses: actions/cache@v4
@@ -72,7 +72,7 @@ jobs:
             ${{ runner.os }}-cargo-audit-
 
       - name: Install pinned cargo-audit
-        run: cargo +1.87.0 install cargo-audit --version 0.22.1 --locked
+        run: cargo +1.97.1 install cargo-audit --version 0.22.1 --locked
 
       - name: Deny vulnerabilities and audit warnings
         run: cargo audit -D warnings

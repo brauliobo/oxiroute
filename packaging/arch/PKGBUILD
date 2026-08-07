@@ -2,13 +2,13 @@
 
 pkgname=oxiroute
 pkgver=0.4.1
-pkgrel=1
+pkgrel=2
 pkgdesc='Pingora-based HTTP, TCP, and RTMP proxy runtime'
 arch=('x86_64')
 url='https://github.com/brauliobo/oxiroute'
 license=('Apache-2.0')
 depends=('ca-certificates' 'gcc-libs' 'glibc' 'openssl')
-makedepends=('rust>=1.87')
+makedepends=('rust>=1.97')
 optdepends=('certbot: provide certificate lineages consumed by configured Certbot sources')
 backup=('etc/oxiroute/oxiroute.env'
         'etc/oxiroute/oxiroute.kdl'
@@ -26,8 +26,8 @@ source=("oxiroute-${pkgver}.tar.gz::${url}/releases/download/v${pkgver}/oxiroute
 sha256sums=('bc2b5a680a7aae181a4f5b8b9e6326043334247ab6355273d589078c5bfb0a54'
              '5d93df51ac5690a336e40f624c3b27ba3a1d4ab8a218dbaac72a05a92819ac54'
             'ece087105e74910e9d4a6c3551082828378ac5c62fc15e97a755a3bc93020e72'
-            '632c14735ddea0bf780abea05d3d288f9530ca41f201a37e428223d04acffe3a'
-            'bf78e2cc42f96db9fc88a999b66e59c9048267346a00b6e8a23a6d523bed7886'
+             '502dbc96a4f316ff7375cf90da32457b6003723a744825f04cec8a624974a356'
+             'c87c9ef586bbb68f69f5abc1c4616de35783fe5d5d2b07b0b6b4011b2b892f44'
             '57e5cb6cf58a38b6c5efd99e0b5a9a36bac3fafba438059a8396b07e9b6e80a9'
             'f55a08f56ff139b566afac6b0c9cbbc4ed08f69a7e04810128bfb8c98a0f0564'
              '0b24276f666ccf398449d1352e0ff3223a711d50fc45599c76a42cacc8a6727c')

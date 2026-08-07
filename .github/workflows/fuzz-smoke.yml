@@ -15,8 +15,8 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install Rust 1.87
-        uses: dtolnay/rust-toolchain@1.87.0
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Compile fuzz workspace
         run: cargo check --manifest-path fuzz/Cargo.toml --locked --jobs 4

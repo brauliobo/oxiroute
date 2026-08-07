@@ -35,8 +35,8 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install Rust 1.87
-        uses: dtolnay/rust-toolchain@1.87.0
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -50,11 +50,11 @@ jobs:
             ${{ runner.os }}-cargo-platform-
 
       - name: Verify locked workspace metadata
-        run: cargo +1.87.0 metadata --format-version 1 --no-deps --locked
+        run: cargo +1.97.1 metadata --format-version 1 --no-deps --locked
 
       - name: Run required Linux workspace check
         if: matrix.full_build
-        run: cargo +1.87.0 check --workspace --locked --jobs 4
+        run: cargo +1.97.1 check --workspace --locked --jobs 4
 
       - name: Record unsupported-platform gate
         if: ${{ !matrix.full_build }}

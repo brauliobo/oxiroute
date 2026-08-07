@@ -37,5 +37,5 @@ python3 -c 'import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_t
   "$BENCHMARK_ROOT/scripts/tool.py"
 python3 "$BENCHMARK_ROOT/scripts/tool.py" validate-reports "$BENCHMARK_ROOT/reports"
 "$BENCHMARK_ROOT/scripts/test-evidence.sh"
-cargo +1.87.0 test --manifest-path "$BENCHMARK_ROOT/loadgen/Cargo.toml" --locked
+cargo +1.97.1 test --manifest-path "$BENCHMARK_ROOT/loadgen/Cargo.toml" --locked
 printf 'validation passed: %s\n' "$validation_root"
