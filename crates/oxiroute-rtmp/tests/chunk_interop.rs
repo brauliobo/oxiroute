@@ -59,6 +59,45 @@ fn fragmented_payload_and_extended_timestamp_round_trip() {
     );
 }
 
+#[test]
+fn interleaved_fragmented_messages_keep_chunk_stream_state_isolated() {
+    let audio = payload(100, 8, (0..12).collect());
+    let video = payload(100, 9, (0x80..0x8c).collect());
+    let mut serializer = ChunkSerializer::new();
+    serializer
+        .set_max_chunk_size(4, RtmpTimestamp::new(0))
+        .expect("set chunk size");
+    let audio_packet = serializer
+        .serialize(&audio, false, false)
+        .expect("serialize audio message");
+    let video_packet = serializer
+        .serialize(&video, false, false)
+        .expect("serialize video message");
+
+    assert_eq!(audio_packet.bytes.len(), 26);
+    assert_eq!(video_packet.bytes.len(), 26);
+    let audio_chunks = [
+        &audio_packet.bytes[..16],
+        &audio_packet.bytes[16..21],
+        &audio_packet.bytes[21..],
+    ];
+    let video_chunks = [
+        &video_packet.bytes[..16],
+        &video_packet.bytes[16..21],
+        &video_packet.bytes[21..],
+    ];
+    let mut wire = Vec::new();
+    for index in 0..audio_chunks.len() {
+        wire.extend_from_slice(audio_chunks[index]);
+        wire.extend_from_slice(video_chunks[index]);
+    }
+
+    assert_eq!(
+        decode_one_byte_at_a_time_with_chunk_size(&wire, 4).expect("decode interleaved fragments"),
+        vec![audio, video]
+    );
+}
+
 fn payload(timestamp: u32, type_id: u8, data: Vec<u8>) -> MessagePayload {
     MessagePayload {
         timestamp: RtmpTimestamp::new(timestamp),
@@ -71,7 +110,15 @@ fn payload(timestamp: u32, type_id: u8, data: Vec<u8>) -> MessagePayload {
 fn decode_one_byte_at_a_time(
     wire: &[u8],
 ) -> Result<Vec<MessagePayload>, ChunkDeserializationError> {
+    decode_one_byte_at_a_time_with_chunk_size(wire, 128)
+}
+
+fn decode_one_byte_at_a_time_with_chunk_size(
+    wire: &[u8],
+    chunk_size: usize,
+) -> Result<Vec<MessagePayload>, ChunkDeserializationError> {
     let mut deserializer = ChunkDeserializer::new();
+    deserializer.set_max_chunk_size(chunk_size)?;
     let mut messages = Vec::new();
     for byte in wire {
         let input = [*byte];

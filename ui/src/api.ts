@@ -5,7 +5,6 @@ import type {
   ConfigRequest,
   ConfigSaveResponse,
   ConfigSnapshot,
-  ConfigValidationResponse,
   HttpRetryTrigger,
   ListenerBind,
   ListenerProtocol,
@@ -485,6 +484,19 @@ export interface CandidateTopologySnapshot extends Omit<TopologySnapshot, 'state
     runtime: 'not_active'
     sampledAtUnixMs: number
   }
+}
+
+export interface ConfigValidationResponse {
+  candidateRevision: string
+  normalizedConfig: CanonicalConfig
+  configFormat: ConfigFormat
+  compositional: boolean
+  dependencyCount: number
+  configPreview: string
+  luaPreview?: string
+  diagnostics: ConfigDiagnostic[]
+  restartRequired: boolean
+  topology: CandidateTopologySnapshot
 }
 
 export type OperationalEventName =

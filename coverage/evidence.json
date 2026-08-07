@@ -266,6 +266,8 @@
     {
       "id": "evidence.varnish.foundation",
       "tests": [
+        "crates/oxiroute-import/tests/import_report.rs#report_json_is_deterministic_and_identifies_each_source_product",
+        "crates/oxiroute-import/tests/import_report.rs#varnish_blocked_report_is_deterministic_and_preserves_provenance",
         "crates/oxiroute-import/tests/varnish_foundation.rs#complete_ordered_decision_ledger_matches_the_differential_fixture",
         "crates/oxiroute-import/tests/varnish_foundation.rs#typed_ir_covers_cache_headers_cookies_backends_and_invalidation",
         "crates/oxiroute-import/tests/varnish_foundation.rs#include_cycles_are_blocking_and_do_not_expand_forever",

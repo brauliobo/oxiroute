@@ -618,7 +618,8 @@ publisher/subscriber roles, duplicate-publisher rejection, bounds for inbound ch
 service-configured assembled messages, configured acknowledgement windows, bounded media fanout,
 media observations, and lifecycle cleanup. The listener caps
 requested inbound chunks at 1 MiB and canonical assembled messages at 8 MiB. Manual FFmpeg
-publishing and native publish/play wire tests pass. Checked-in process-level FFmpeg consume
+publishing and native publish/play wire tests pass. Deterministic local chunk coverage includes
+byte-fragmented interleaving of two chunk streams, but checked-in process-level FFmpeg consume
 acceptance, exhaustive chunk fixtures, and OBS acceptance remain before this slice is complete.
 
 - Simple and both Adobe complex handshake schemes.
@@ -666,9 +667,10 @@ worker; broader directive parity and production crash campaigns remain blocked.
 ## Test strategy
 
 Current tests cover unit state machines, loopback integration, byte-exact media output, bounded
-fanout, native publish/play wire behavior, recording path/store/worker failure cases, bounded HLS/DASH
-output, auto-push framing, isolated exec lifecycle, and directive context/value validation. The
-checked-in fuzz harnesses currently have bounded build/smoke coverage; captured differential traces,
+fanout, native publish/play wire behavior, deterministic byte-fragmented RTMP chunk interleaving,
+recording path/store/worker failure cases, bounded HLS/DASH output, auto-push framing, isolated exec
+lifecycle, and directive context/value validation. The checked-in fuzz harnesses currently have
+bounded build/smoke coverage and a checked-in interleaved RTMP seed; captured differential traces,
 process-level FFmpeg/OBS consume acceptance, long-running fuzz/crash campaigns, and broader
 fake-clock/filesystem matrices remain open. Every directive needs positive context/value fixtures and
 negative context/arity/value fixtures before the runtime matrix can claim full config compatibility.

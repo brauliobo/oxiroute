@@ -3,7 +3,37 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::catalog::SessionId;
+use uuid::Uuid;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct SessionId(Uuid);
+
+impl SessionId {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for SessionId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Display for SessionId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl std::str::FromStr for SessionId {
+    type Err = uuid::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Uuid::parse_str(value).map(Self)
+    }
+}
 
 pub const MAX_RTMP_SESSION_CONTROLS: usize = 16_384;
 

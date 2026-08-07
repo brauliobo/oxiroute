@@ -24,7 +24,7 @@ workflow exits successfully when `cargo-fuzz` or nightly Rust is unavailable.
 | `forward_target` | Absolute-form, classic CONNECT authority, and RFC 9298 CONNECT-UDP target parsing | 16 KiB |
 | `overread_io` | `OverreadIo` prefix-before-underlying-stream behavior | 16 KiB |
 | `rtmp_handshake` | Incremental public `rml_rtmp` handshake parser | 128 KiB |
-| `rtmp_chunk` | Bounded `rml_rtmp` chunk and message decoding, including AMF message forms | 256 KiB |
+| `rtmp_chunk` | Bounded and incrementally fragmented `rml_rtmp` chunk/message decoding, including AMF forms and an interleaved-fragment seed | 256 KiB |
 | `rtmp_amf` | Direct AMF0 and RTMP AMF message decoding | 32 KiB |
 | `proxy_protocol` | Public PROXY v1/v2 stream parsing, encoding, and incremental acceptance | 128 KiB |
 | `udp_datagram` | Public PROXY v2 datagram-header parsing on bounded datagram inputs | 131,059 B |
@@ -36,6 +36,12 @@ production protocol ceilings so a local smoke run remains bounded; the productio
 remain the owning behavior. Transport targets use only deterministic in-memory IO. PROXY stream
 acceptance and HTTP/1 sessions use bounded fragmented `tokio-test` streams; they never create a
 socket or connect to a peer.
+
+The RTMP chunk harness feeds each bounded input in deterministic fragments, drains at most eight
+messages, and applies a valid `SetChunkSize` message only through the public deserializer API. The
+checked-in `rtmp_chunk/interleaved-fragments` seed exercises two simultaneously fragmented chunk
+streams. `fuzz/smoke.sh` uses a fixed seed and 32 executions per target; this is reproducible local
+smoke evidence, not a coverage result or a long-running campaign.
 
 ## Commands
 
@@ -74,3 +80,7 @@ binary protocol seeds reviewable as text.
   lifecycle, or socket-level wire interoperability.
 
 These boundaries are recorded limits, not coverage claims.
+
+The RTMP harnesses do not establish FFmpeg/OBS interoperability, process-level listener behavior,
+long-running crash-corpus results, or production evidence. Those remain external or release-gate
+requirements documented in `docs/RTMP_SPEC.md` and `docs/ROADMAP.md`.

@@ -7,7 +7,7 @@ mod process_support;
 #[path = "support/mod.rs"]
 mod support;
 
-use std::{fs, io::Cursor, net::Ipv4Addr, sync::Arc, time::Duration};
+use std::{fs, net::Ipv4Addr, sync::Arc, time::Duration};
 
 use bytes::{Buf as _, Bytes};
 use h3::client::RequestStream;
@@ -19,6 +19,7 @@ use oxiroute_config::{
     Protocol, TlsProfile, TlsVersion,
 };
 use quinn::crypto::rustls::QuicClientConfig;
+use rustls::pki_types::{CertificateDer, pem::PemObject};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::TcpListener,
@@ -383,7 +384,7 @@ async fn daemon_rejects_h3_extended_connect_without_tcp_or_h1_fallback() {
 fn client_endpoint() -> std::io::Result<quinn::Endpoint> {
     let mut roots = rustls::RootCertStore::empty();
     let ca = fs::read(fixture_support::fixture("ca-a.pem")).expect("read H3 test CA");
-    for certificate in rustls_pemfile::certs(&mut Cursor::new(ca)) {
+    for certificate in CertificateDer::pem_slice_iter(&ca) {
         roots
             .add(certificate.map_err(std::io::Error::other)?)
             .map_err(std::io::Error::other)?;

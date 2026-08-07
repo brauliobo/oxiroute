@@ -9,7 +9,7 @@ mod support;
 
 use std::{
     fs,
-    io::{BufReader, Cursor},
+    io::BufReader,
     net::{Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     sync::Arc,
@@ -27,6 +27,7 @@ use oxiroute_config::{
     validate_config,
 };
 use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use tokio::{
     io::AsyncWriteExt as _,
     time::{sleep, timeout},
@@ -224,13 +225,15 @@ fn origin_server_config() -> quinn::ServerConfig {
     let mut certificate_reader = BufReader::new(
         fs::File::open(fixture_support::fixture("origin.pem")).expect("origin certificate"),
     );
-    let certificates = rustls_pemfile::certs(&mut certificate_reader)
+    let certificates = CertificateDer::pem_reader_iter(&mut certificate_reader)
         .collect::<Result<Vec<_>, _>>()
         .expect("origin certificate chain");
     let mut key_reader = BufReader::new(
         fs::File::open(fixture_support::fixture("origin-key.pem")).expect("origin key"),
     );
-    let private_key = rustls_pemfile::private_key(&mut key_reader)
+    let private_key = PrivateKeyDer::pem_reader_iter(&mut key_reader)
+        .next()
+        .transpose()
         .expect("origin private key")
         .expect("origin private key block");
     let mut crypto =
@@ -984,7 +987,7 @@ async fn connect_h3(endpoint: &quinn::Endpoint, listener_address: SocketAddr) ->
 fn client_endpoint() -> std::io::Result<quinn::Endpoint> {
     let mut roots = rustls::RootCertStore::empty();
     let ca = fs::read(fixture_support::fixture("ca-a.pem"))?;
-    for certificate in rustls_pemfile::certs(&mut Cursor::new(ca)) {
+    for certificate in CertificateDer::pem_slice_iter(&ca) {
         roots
             .add(certificate.map_err(std::io::Error::other)?)
             .map_err(std::io::Error::other)?;

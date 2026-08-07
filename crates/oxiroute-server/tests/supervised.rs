@@ -5,7 +5,7 @@ mod fixture_support;
 
 use std::{
     fs,
-    io::{self, BufReader, Cursor, Read, Write},
+    io::{self, BufReader, Read, Write},
     net::{Ipv4Addr, SocketAddr, TcpStream, UdpSocket as StdUdpSocket},
     os::{fd::AsRawFd as _, unix::net::UnixStream},
     path::{Path, PathBuf},
@@ -33,11 +33,12 @@ use oxiroute_supervision::{GenerationId, InstanceId};
 use oxiroute_supervision_unix::InstanceToken;
 use oxiroute_supervisor_master::{
     CONTROL_PROTOCOL_VERSION, Master, MasterConfig, MasterEvent, MasterState, ShutdownProgress,
-    WorkerInput, WorkerRole,
+    WorkerInput, WorkerLifecycle, WorkerRole,
 };
 use oxiroute_supervisor_process::{WorkerCommand, WorkerIdentity, WorkerSpawner};
 use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
 use rustix::fs::OFlags;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use tokio::time::{sleep, timeout};
 
 const MARKER: &str = "--__oxiroute-worker-7f3c9d1e";
@@ -563,10 +564,14 @@ fn supervised_worker_replaces_an_active_udp_session_without_rebinding_or_leaking
             .master
             .poll(Instant::now())
             .expect("master poll during UDP quiesce");
-        if matches!(
-            harness.master.state(),
-            MasterState::Quiescing | MasterState::ActivatingCandidate
-        ) {
+        if matches!(harness.master.state(), MasterState::ActivatingCandidate)
+            || harness
+                .master
+                .worker_status(WorkerRole::Active)
+                .is_some_and(|status| {
+                    status.lifecycle == WorkerLifecycle::Quiescing && !status.accepting
+                })
+        {
             break;
         }
         assert!(
@@ -1438,7 +1443,7 @@ fn h3_only_config(listener_address: SocketAddr, private_key_path: &Path) -> Conf
 fn h3_client_endpoint() -> io::Result<quinn::Endpoint> {
     let mut roots = rustls::RootCertStore::empty();
     let ca = fs::read(fixture_support::fixture("ca-a.pem"))?;
-    for certificate in rustls_pemfile::certs(&mut Cursor::new(ca)) {
+    for certificate in CertificateDer::pem_slice_iter(&ca) {
         roots
             .add(certificate.map_err(io::Error::other)?)
             .map_err(io::Error::other)?;
@@ -1553,13 +1558,15 @@ fn origin_server_config() -> quinn::ServerConfig {
     let mut certificate_reader = BufReader::new(
         fs::File::open(fixture_support::fixture("origin.pem")).expect("origin certificate"),
     );
-    let certificates = rustls_pemfile::certs(&mut certificate_reader)
+    let certificates = CertificateDer::pem_reader_iter(&mut certificate_reader)
         .collect::<Result<Vec<_>, _>>()
         .expect("origin certificate chain");
     let mut key_reader = BufReader::new(
         fs::File::open(fixture_support::fixture("origin-key.pem")).expect("origin key"),
     );
-    let private_key = rustls_pemfile::private_key(&mut key_reader)
+    let private_key = PrivateKeyDer::pem_reader_iter(&mut key_reader)
+        .next()
+        .transpose()
         .expect("origin private key")
         .expect("origin private key block");
     let mut crypto =

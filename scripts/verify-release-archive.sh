@@ -43,8 +43,8 @@ entries=$(mktemp)
 sorted_entries=$(mktemp)
 expected_entries=$(mktemp)
 sorted_expected=$(mktemp)
-private_key_entries=$(mktemp)
-trap 'rm -f -- "${entries}" "${sorted_entries}" "${expected_entries}" "${sorted_expected}" "${private_key_entries}"' EXIT
+secret_entries=$(mktemp)
+trap 'rm -f -- "${entries}" "${sorted_entries}" "${expected_entries}" "${sorted_expected}" "${secret_entries}"' EXIT
 
 tar -tzf "${archive}" >"${entries}"
 [[ -s "${entries}" ]] || {
@@ -57,7 +57,10 @@ LC_ALL=C sort "${entries}" -c
 has_cargo_lock=false
 has_cargo_toml=false
 has_license=false
+has_fuzz_lock=false
+has_loadgen_lock=false
 has_ui_lock=false
+has_remotion_lock=false
 while IFS= read -r entry; do
   case "${entry}" in
     "${root}"/*) relative=${entry#"${root}/"} ;;
@@ -70,7 +73,8 @@ while IFS= read -r entry; do
     printf 'archive contains an empty relative path\n' >&2
     exit 1
   }
-  case "${relative}" in
+  path_for_policy=${relative,,}
+  case "${path_for_policy}" in
     crates/oxiroute-import/tests/fixtures/haproxy/tls-chain.pem.key|\
     crates/oxiroute-import/tests/fixtures/haproxy/tls-no-identities.pem.key|\
     crates/oxiroute-import/tests/fixtures/nginx/proxy-key.pem|\
@@ -98,7 +102,7 @@ while IFS= read -r entry; do
       printf 'release archive contains a build artifact or secret-shaped path: %s\n' "${entry}" >&2
       exit 1
       ;;
-    *.env|*.token|*credentials*|*.key|*.p12|*.pfx|*/id_rsa|*/id_ed25519)
+    *.env|*.env.*|*.token|*.secret|*.secrets|*credentials*|*.key|*.p12|*.pfx|*/id_rsa|*/id_ed25519)
       printf 'release archive contains a build artifact or secret-shaped path: %s\n' "${entry}" >&2
       exit 1
       ;;
@@ -107,7 +111,10 @@ while IFS= read -r entry; do
     Cargo.lock) has_cargo_lock=true ;;
     Cargo.toml) has_cargo_toml=true ;;
     LICENSE) has_license=true ;;
+    fuzz/Cargo.lock) has_fuzz_lock=true ;;
+    benchmarks/loadgen/Cargo.lock) has_loadgen_lock=true ;;
     ui/pnpm-lock.yaml) has_ui_lock=true ;;
+    remotion/pnpm-lock.yaml) has_remotion_lock=true ;;
   esac
 done <"${sorted_entries}"
 
@@ -115,13 +122,25 @@ tar \
   --extract \
   --gzip \
   --file="${archive}" \
-  --to-command='if [ "${TAR_FILETYPE:-}" = f ] && LC_ALL=C grep -aE -- "-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----" >/dev/null; then printf "%s\n" "${TAR_FILENAME}"; fi; exit 0' \
-  >"${private_key_entries}"
+  --to-command='
+    if [ "${TAR_FILETYPE:-}" = f ]; then
+      LC_ALL=C grep -aE -- "-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|(^|[^A-Za-z0-9])(AKIA|ASIA)[0-9A-Z]{16}([^A-Za-z0-9]|$)|(^|[^A-Za-z0-9])gh[pousr]_[A-Za-z0-9_]{20,}([^A-Za-z0-9]|$)|(^|[^A-Za-z0-9])github_pat_[A-Za-z0-9_]{20,}([^A-Za-z0-9]|$)|(^|[^A-Za-z0-9])xox[baprs]-[A-Za-z0-9-]{20,}([^A-Za-z0-9]|$)|(^|[^A-Za-z0-9])npm_[A-Za-z0-9]{20,}([^A-Za-z0-9]|$)|(^|[^A-Za-z0-9])sk_live_[A-Za-z0-9]{16,}([^A-Za-z0-9]|$)" >/dev/null
+      status=$?
+      if [ "${status}" -gt 1 ]; then
+        exit "${status}"
+      fi
+      if [ "${status}" -eq 0 ]; then
+        printf "%s\n" "${TAR_FILENAME}"
+      fi
+    fi
+    exit 0
+  ' \
+  >"${secret_entries}"
 while IFS= read -r entry; do
   case "${entry}" in
     "${root}"/*) relative=${entry#"${root}/"} ;;
     *)
-      printf 'private-key scan returned an entry outside %s/: %s\n' "${root}" "${entry}" >&2
+      printf 'secret scan returned an entry outside %s/: %s\n' "${root}" "${entry}" >&2
       exit 1
       ;;
   esac
@@ -141,16 +160,19 @@ while IFS= read -r entry; do
     vendor/pingora-core/examples/keys/server/key.pem)
       ;;
     *)
-      printf 'release archive contains unallowlisted private-key material: %s\n' "${entry}" >&2
+      printf 'release archive contains unallowlisted private-key or credential material: %s\n' "${entry}" >&2
       exit 1
       ;;
   esac
-done <"${private_key_entries}"
+done <"${secret_entries}"
 
 ${has_cargo_lock} || { printf 'archive is missing Cargo.lock\n' >&2; exit 1; }
 ${has_cargo_toml} || { printf 'archive is missing Cargo.toml\n' >&2; exit 1; }
 ${has_license} || { printf 'archive is missing LICENSE\n' >&2; exit 1; }
+${has_fuzz_lock} || { printf 'archive is missing fuzz/Cargo.lock\n' >&2; exit 1; }
+${has_loadgen_lock} || { printf 'archive is missing benchmarks/loadgen/Cargo.lock\n' >&2; exit 1; }
 ${has_ui_lock} || { printf 'archive is missing ui/pnpm-lock.yaml\n' >&2; exit 1; }
+${has_remotion_lock} || { printf 'archive is missing remotion/pnpm-lock.yaml\n' >&2; exit 1; }
 
 if [[ "${compare_worktree}" == true ]]; then
   while IFS= read -r -d '' path; do

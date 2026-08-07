@@ -36,6 +36,8 @@ workflow are recorded in the [documentation plan](DOCUMENTATION_PLAN.md).
 - [Documentation maintenance](developer/DOCUMENTATION.md): status labels, examples, website content,
   and Remotion media.
 - [Releasing](developer/RELEASING.md): versioning, packages, source archives, and Pages deployment.
+- [Security audit](developer/SECURITY_AUDIT.md): RustSec policy, lockfiles, dependency audits, and
+  release-artifact secret checks.
 
 ## Reference Contracts
 

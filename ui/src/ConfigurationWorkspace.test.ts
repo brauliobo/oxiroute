@@ -2,6 +2,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import ConfigurationWorkspace from './ConfigurationWorkspace.vue'
+import type { ConfigValidationResponse } from './api'
 import { CANONICAL_FIELD_REGISTRY, isCanonicalConfig } from './config'
 import { defaultRtmpAutoPush, defaultRtmpCallback, defaultRtmpOutboundPolicy, defaultRtmpRelay } from './configuration/canonicalDefaults'
 import { contractConfigSnapshot, jsonResponse } from './test/contractFixtures'
@@ -9,7 +10,6 @@ import type {
   CanonicalConfig,
   ConfigDiagnostic,
   ConfigSnapshot,
-  ConfigValidationResponse,
 } from './config'
 
 const diskRevision = 'disk-111111111111111111111111111111111111111111111111111111111111'

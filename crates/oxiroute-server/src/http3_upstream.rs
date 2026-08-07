@@ -1,6 +1,6 @@
 use std::{
     future::Future,
-    io::{self, Cursor},
+    io,
     net::{Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
     sync::Arc,
@@ -12,7 +12,10 @@ use http::{HeaderMap, Request, StatusCode, header::CONTENT_LENGTH};
 use oxiroute_config::UpstreamPool;
 use quinn::crypto::rustls::QuicClientConfig;
 use quinn::{ClientConfig, Endpoint, TransportConfig, VarInt};
-use rustls::RootCertStore;
+use rustls::{
+    RootCertStore,
+    pki_types::{CertificateDer, pem::PemObject},
+};
 use tokio::{
     sync::{OnceCell, OwnedSemaphorePermit, Semaphore, watch},
     time::{Instant, timeout, timeout_at},
@@ -391,10 +394,14 @@ where
 }
 
 fn native_roots(owner: &str) -> Result<RootCertStore, H3UpstreamBuildError> {
-    let certificates =
-        rustls_native_certs::load_native_certs().map_err(H3UpstreamBuildError::NativeRoots)?;
+    let native_certificates = rustls_native_certs::load_native_certs();
+    if native_certificates.certs.is_empty()
+        && let Some(error) = native_certificates.errors.into_iter().next()
+    {
+        return Err(H3UpstreamBuildError::NativeRoots(io::Error::other(error)));
+    }
     let mut roots = RootCertStore::empty();
-    for certificate in certificates {
+    for certificate in native_certificates.certs {
         roots
             .add(certificate)
             .map_err(|error| H3UpstreamBuildError::QuicTls {
@@ -416,7 +423,7 @@ fn custom_roots(owner: &str, path: &Path) -> Result<RootCertStore, H3UpstreamBui
     .map_err(|error| H3UpstreamBuildError::Tls(Box::new(error)))?;
     let mut roots = RootCertStore::empty();
     let mut certificates = 0_usize;
-    for certificate in rustls_pemfile::certs(&mut Cursor::new(pem.as_slice())) {
+    for certificate in CertificateDer::pem_slice_iter(pem.as_slice()) {
         let certificate = certificate.map_err(|_| H3UpstreamBuildError::CustomCaParse {
             pool: owner.into(),
             path: path.into(),
@@ -453,6 +460,7 @@ mod tests {
     use h3::server::Connection;
     use http::{HeaderMap, Method, Request, Response, StatusCode};
     use quinn::crypto::rustls::QuicServerConfig;
+    use rustls::pki_types::PrivateKeyDer;
     use tokio::sync::watch;
 
     use super::*;
@@ -482,13 +490,15 @@ mod tests {
     fn origin_server_config(alpn: &[u8]) -> quinn::ServerConfig {
         let mut certificate_reader =
             BufReader::new(File::open(fixture("origin.pem")).expect("origin certificate fixture"));
-        let certificates = rustls_pemfile::certs(&mut certificate_reader)
+        let certificates = CertificateDer::pem_reader_iter(&mut certificate_reader)
             .collect::<Result<Vec<_>, _>>()
             .expect("origin certificate chain");
         let mut key_reader = BufReader::new(
             File::open(fixture("origin-key.pem")).expect("origin private-key fixture"),
         );
-        let private_key = rustls_pemfile::private_key(&mut key_reader)
+        let private_key = PrivateKeyDer::pem_reader_iter(&mut key_reader)
+            .next()
+            .transpose()
             .expect("origin private key")
             .expect("origin private key block");
         let mut crypto =

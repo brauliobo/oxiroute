@@ -16,7 +16,7 @@ mod support;
 use std::{
     error::Error,
     fs::{self, File},
-    io::{self, BufReader, Cursor},
+    io::{self, BufReader},
     net::{Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     sync::Arc,
@@ -32,7 +32,10 @@ use oxiroute_config::{
     TlsClientAuthMode, TlsClientAuthPolicy, TlsPolicy, TlsProfile, TlsVersion,
 };
 use quinn::crypto::rustls::{HandshakeData, QuicClientConfig};
-use rustls::{ClientConfig, RootCertStore, pki_types::CertificateDer};
+use rustls::{
+    ClientConfig, RootCertStore,
+    pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
+};
 use tokio::time::{sleep, timeout};
 
 use support::{
@@ -393,17 +396,19 @@ fn malformed_client_endpoint(
 ) -> TestResult<quinn::Endpoint> {
     let mut roots = RootCertStore::empty();
     let ca = fs::read(server_ca_path)?;
-    for certificate in rustls_pemfile::certs(&mut Cursor::new(ca)) {
+    for certificate in CertificateDer::pem_slice_iter(&ca) {
         roots.add(certificate?)?;
     }
 
     let mut certificate_reader = BufReader::new(File::open(&client.fullchain_path)?);
     let mut certificates =
-        rustls_pemfile::certs(&mut certificate_reader).collect::<Result<Vec<_>, _>>()?;
+        CertificateDer::pem_reader_iter(&mut certificate_reader).collect::<Result<Vec<_>, _>>()?;
     certificates.truncate(1);
     certificates.push(CertificateDer::from(b"malformed client issuer".to_vec()));
     let mut key_reader = BufReader::new(File::open(&client.leaf_private_key_path)?);
-    let private_key = rustls_pemfile::private_key(&mut key_reader)?
+    let private_key = PrivateKeyDer::pem_reader_iter(&mut key_reader)
+        .next()
+        .transpose()?
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing client key"))?;
     let mut config = ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .with_root_certificates(roots)

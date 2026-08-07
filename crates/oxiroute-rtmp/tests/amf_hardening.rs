@@ -110,6 +110,24 @@ fn malformed_amf0_inputs_do_not_panic() {
     }
 }
 
+#[test]
+fn malformed_amf0_command_inputs_do_not_panic() {
+    for type_id in [17, 20] {
+        let payload = MessagePayload {
+            timestamp: RtmpTimestamp::new(0),
+            type_id,
+            message_stream_id: 0,
+            data: Bytes::new(),
+        };
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| payload.to_rtmp_message()));
+
+        assert!(
+            matches!(result, Ok(Err(_))),
+            "AMF command type {type_id} panicked"
+        );
+    }
+}
+
 fn decode_amf0(
     data: Vec<u8>,
 ) -> Result<rml_rtmp::messages::RtmpMessage, rml_rtmp::messages::MessageDeserializationError> {

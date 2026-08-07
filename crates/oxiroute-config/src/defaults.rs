@@ -1,9 +1,3 @@
-use crate::model::{
-    AlpnProtocol, CacheKeyComponent, ForwardHttpVersion, HttpRetryTrigger, HttpRoutePolicy,
-    RtmpAutoPushPolicy, RtmpFanoutPolicy, RtmpOutboundPolicy, RtmpRelayPolicy, RtmpRtmpsPolicy,
-    RtmpSessionCeilings,
-};
-
 pub(crate) const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_LUA_MEMORY_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const MAX_LUA_INSTRUCTIONS: u32 = 1_000_000;
@@ -24,7 +18,7 @@ const DEFAULT_UNHEALTHY_THRESHOLD: u16 = 3;
 const DEFAULT_RTMP_OUTBOUND_CHUNK_SIZE: u32 = 4_096;
 const DEFAULT_RTMP_MAX_INBOUND_MESSAGE_SIZE: u64 = 8 * 1_024 * 1_024;
 const DEFAULT_RTMP_ACK_WINDOW_SIZE: u32 = 5_000_000;
-const DEFAULT_RTMP_MAX_SUBSCRIBERS: u64 = 1_024;
+pub(crate) const DEFAULT_RTMP_MAX_SUBSCRIBERS: u64 = 1_024;
 const DEFAULT_RTMP_FANOUT_QUEUE_MESSAGES: u64 = 256;
 const DEFAULT_RTMP_FANOUT_QUEUE_BYTES: u64 = 8 * 1_024 * 1_024;
 const DEFAULT_RTMP_RELAY_BUFFER_MS: u64 = 5_000;
@@ -438,10 +432,6 @@ pub(crate) const fn default_unhealthy_threshold() -> u16 {
     DEFAULT_UNHEALTHY_THRESHOLD
 }
 
-pub(crate) const fn default_http_route_policy() -> HttpRoutePolicy {
-    HttpRoutePolicy::new()
-}
-
 pub(crate) const fn default_rtmp_outbound_chunk_size() -> u32 {
     DEFAULT_RTMP_OUTBOUND_CHUNK_SIZE
 }
@@ -452,50 +442,6 @@ pub(crate) const fn default_rtmp_max_inbound_message_size() -> u64 {
 
 pub(crate) const fn default_rtmp_ack_window_size() -> u32 {
     DEFAULT_RTMP_ACK_WINDOW_SIZE
-}
-
-pub(crate) const fn default_rtmp_fanout_policy() -> RtmpFanoutPolicy {
-    RtmpFanoutPolicy {
-        max_subscribers: DEFAULT_RTMP_MAX_SUBSCRIBERS,
-        max_queue_messages_per_subscriber: DEFAULT_RTMP_FANOUT_QUEUE_MESSAGES,
-        max_queue_bytes_per_subscriber: DEFAULT_RTMP_FANOUT_QUEUE_BYTES,
-    }
-}
-
-pub(crate) const fn default_rtmp_session_ceilings() -> RtmpSessionCeilings {
-    RtmpSessionCeilings {
-        max_connections: DEFAULT_RTMP_APPLICATION_CONNECTIONS,
-        max_publishers: DEFAULT_RTMP_APPLICATION_PUBLISHERS,
-        max_viewers: DEFAULT_RTMP_APPLICATION_VIEWERS,
-    }
-}
-
-pub(crate) const fn default_rtmp_relay_policy() -> RtmpRelayPolicy {
-    RtmpRelayPolicy {
-        max_queue_messages: DEFAULT_RTMP_FANOUT_QUEUE_MESSAGES,
-        max_queue_bytes: DEFAULT_RTMP_FANOUT_QUEUE_BYTES,
-        buffer_ms: DEFAULT_RTMP_RELAY_BUFFER_MS,
-        push_reconnect_ms: DEFAULT_RTMP_PUSH_RECONNECT_MS,
-        pull_reconnect_ms: DEFAULT_RTMP_PULL_RECONNECT_MS,
-        dns_refresh_ms: DEFAULT_RTMP_RELAY_DNS_REFRESH_MS,
-        connect_timeout_ms: DEFAULT_RTMP_RELAY_CONNECT_TIMEOUT_MS,
-        handshake_timeout_ms: DEFAULT_RTMP_RELAY_HANDSHAKE_TIMEOUT_MS,
-    }
-}
-
-pub(crate) fn default_rtmp_auto_push_policy() -> RtmpAutoPushPolicy {
-    RtmpAutoPushPolicy {
-        enabled: false,
-        socket_dir: std::path::PathBuf::from("/tmp/oxiroute-rtmp"),
-        secret_file: None,
-        reconnect_ms: DEFAULT_RTMP_AUTO_PUSH_RECONNECT_MS,
-        connect_timeout_ms: DEFAULT_RTMP_AUTO_PUSH_CONNECT_TIMEOUT_MS,
-        handshake_timeout_ms: DEFAULT_RTMP_AUTO_PUSH_HANDSHAKE_TIMEOUT_MS,
-        max_peers: DEFAULT_RTMP_AUTO_PUSH_MAX_PEERS,
-        max_queue_messages: DEFAULT_RTMP_AUTO_PUSH_MAX_QUEUE_MESSAGES,
-        max_queue_bytes: DEFAULT_RTMP_AUTO_PUSH_MAX_QUEUE_BYTES,
-        max_streams: DEFAULT_RTMP_AUTO_PUSH_MAX_STREAMS,
-    }
 }
 
 pub(crate) const fn default_rtmp_auto_push_reconnect_ms() -> u64 {
@@ -570,18 +516,6 @@ pub(crate) const fn default_rtmp_max_chain_depth() -> u8 {
     DEFAULT_RTMP_MAX_CHAIN_DEPTH
 }
 
-pub(crate) const fn default_rtmp_outbound_policy() -> RtmpOutboundPolicy {
-    RtmpOutboundPolicy {
-        allow_domains: Vec::new(),
-        deny_domains: Vec::new(),
-        allow_cidrs: Vec::new(),
-        deny_cidrs: Vec::new(),
-        deny_private: true,
-        rtmps: RtmpRtmpsPolicy::Disabled,
-        max_chain_depth: DEFAULT_RTMP_MAX_CHAIN_DEPTH,
-    }
-}
-
 pub(crate) const fn default_rtmp_vod_sessions() -> u64 {
     DEFAULT_RTMP_VOD_SESSIONS
 }
@@ -592,10 +526,6 @@ pub(crate) const fn default_rtmp_vod_file_bytes() -> u64 {
 
 pub(crate) const fn default_rtmp_vod_duration_ms() -> u64 {
     DEFAULT_RTMP_VOD_DURATION_MS
-}
-
-pub(crate) fn default_alpn() -> Vec<AlpnProtocol> {
-    vec![AlpnProtocol::Http11]
 }
 
 pub(crate) fn default_recorder_suffix_template() -> String {
@@ -656,14 +586,6 @@ pub(crate) const fn default_rtmp_exec_max_respawns() -> u64 {
 
 pub(crate) fn default_http_access_header_name() -> String {
     "authorization".into()
-}
-
-pub(crate) fn default_http_retry_triggers() -> Vec<HttpRetryTrigger> {
-    vec![
-        HttpRetryTrigger::ConnectFailure,
-        HttpRetryTrigger::ConnectTimeout,
-        HttpRetryTrigger::RefusedStream,
-    ]
 }
 
 pub(crate) const fn default_passive_error_limit() -> u16 {
@@ -738,14 +660,6 @@ pub(crate) fn default_cache_methods() -> Vec<String> {
     vec!["GET".into(), "HEAD".into()]
 }
 
-pub(crate) fn default_cache_key_components() -> Vec<CacheKeyComponent> {
-    vec![
-        CacheKeyComponent::Scheme,
-        CacheKeyComponent::NormalizedHost,
-        CacheKeyComponent::PathAndQuery,
-    ]
-}
-
 pub(crate) const fn default_cache_ttl_ms() -> u64 {
     DEFAULT_CACHE_TTL_MS
 }
@@ -756,10 +670,6 @@ pub(crate) const fn default_cache_grace_ms() -> u64 {
 
 pub(crate) const fn default_cache_keep_ms() -> u64 {
     DEFAULT_CACHE_KEEP_MS
-}
-
-pub(crate) fn default_forward_http_versions() -> Vec<ForwardHttpVersion> {
-    vec![ForwardHttpVersion::H1]
 }
 
 pub(crate) fn default_forward_connect_ports() -> Vec<u16> {

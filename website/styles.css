@@ -232,6 +232,7 @@ pre { margin: 0; overflow: auto; }
 .capability-heading h3 { max-width: 780px; }
 .panel-index { color: #4b5545; font-family: var(--serif); font-size: 3rem; line-height: 1; }
 .feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin-top: 34px; background: var(--line); }
+.evidence-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; margin-top: 34px; background: var(--line); }
 .feature-card { min-height: 190px; padding: 22px; background: var(--panel); }
 .feature-icon { display: grid; width: 37px; height: 37px; place-items: center; margin-bottom: 26px; border: 1px solid var(--line-bright); color: var(--lime); font-family: var(--mono); font-size: 0.56rem; font-weight: 700; }
 .feature-card:nth-child(2) .feature-icon { color: var(--violet); }
@@ -306,6 +307,7 @@ details p { margin: 0; padding: 0 17px 18px; color: var(--muted); font-size: 0.7
   .media-grid { grid-template-columns: 1fr 1fr; }
   .media-card-wide { grid-row: auto; grid-column: 1 / -1; }
   .media-notes { grid-column: 1 / -1; grid-template-columns: repeat(3, 1fr); }
+  .evidence-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
 @media (max-width: 780px) {
@@ -333,7 +335,7 @@ details p { margin: 0; padding: 0 17px 18px; color: var(--muted); font-size: 0.7
   .hero-facts div + div, .console-metrics div + div { padding-left: 0; border-top: 1px solid var(--line); border-left: 0; }
   .console-route { grid-template-columns: 1fr; gap: 10px; margin: 32px 0; }
   .route-line { width: 1px; height: 24px; margin-left: 18px; background: linear-gradient(180deg, var(--lime), var(--violet)); }
-  .feature-grid, .model-grid, .doc-grid { grid-template-columns: 1fr; }
+  .feature-grid, .model-grid, .doc-grid, .evidence-grid { grid-template-columns: 1fr; }
   .reference-band { align-items: start; flex-direction: column; }
   .reference-band > div { justify-content: flex-start; }
 }
