@@ -703,15 +703,14 @@ impl WorkerShared {
     }
 
     fn fail(&self, failure: WorkerError) {
-        if !matches!(failure.kind, RecorderFailure::ShutdownTimedOut) {
-            if let Some(commit) = self
+        if !matches!(failure.kind, RecorderFailure::ShutdownTimedOut)
+            && let Some(commit) = self
                 .commit_cancellation
                 .lock()
                 .expect("recorder commit cancellation mutex poisoned")
                 .as_ref()
-            {
-                commit.finish();
-            }
+        {
+            commit.finish();
         }
         {
             let mut queue = self.lock_queue();
@@ -1125,13 +1124,10 @@ impl WorkerContext {
                 | MediaEventKind::AvcSequenceHeader
         ) {
             self.segment_headers.update(event.clone());
-            if self.segment.is_none() {
-                self.open_segment(queued.arrived_at, queued.arrived_at_unix_seconds)?;
+            if let Some(segment) = &mut self.segment {
+                segment.write(event)?;
             } else {
-                self.segment
-                    .as_mut()
-                    .expect("segment was checked above")
-                    .write(event)?;
+                self.open_segment(queued.arrived_at, queued.arrived_at_unix_seconds)?;
             }
             self.last_written_at_unix_seconds = self.latest_event_at_unix_seconds;
             return Ok(());

@@ -13,13 +13,13 @@ pub(crate) const MAX_EXEC_ENVIRONMENT: usize = 32;
 pub(crate) const MAX_EXEC_ENV_NAME_BYTES: usize = 128;
 pub(crate) const MAX_EXEC_ENV_VALUE_BYTES: usize = 4_096;
 pub(crate) const MAX_EXEC_ENV_BYTES: usize = 16 * 1024;
-pub(crate) const MAX_EXEC_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
-pub(crate) const MAX_EXEC_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
+pub(crate) const MAX_EXEC_TIMEOUT: Duration = Duration::from_hours(24);
+pub(crate) const MAX_EXEC_SHUTDOWN_TIMEOUT: Duration = Duration::from_mins(1);
 pub(crate) const MAX_EXEC_PROCESSES: usize = 256;
 pub(crate) const MAX_EXEC_QUEUE_MESSAGES: usize = 65_536;
 pub(crate) const MAX_EXEC_QUEUE_BYTES: usize = 1024 * 1024 * 1024;
 pub(crate) const MAX_EXEC_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
-pub(crate) const MAX_EXEC_RESPAWN_DELAY: Duration = Duration::from_secs(300);
+pub(crate) const MAX_EXEC_RESPAWN_DELAY: Duration = Duration::from_mins(5);
 pub(crate) const MAX_EXEC_RESPAWNS: usize = 64;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

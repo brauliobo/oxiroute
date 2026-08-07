@@ -247,10 +247,11 @@ impl RecordingPathPolicy {
         }
 
         let suffix = self.render_suffix(opened_at_utc);
-        let native_seconds_suffix = self
-            .native_unique_seconds
-            .then(|| format!("-{opened_at_unix_seconds}"))
-            .unwrap_or_default();
+        let native_seconds_suffix = if self.native_unique_seconds {
+            format!("-{opened_at_unix_seconds}")
+        } else {
+            String::default()
+        };
         let escaped_length =
             stream_name
                 .iter()
@@ -403,12 +404,12 @@ impl RecordingPathPolicy {
                 if collision_recording_filename(base, collision)? == filename {
                     return Some((0, collision));
                 }
-                if self.segment_naming == RecordingSegmentNaming::SafeUnique {
-                    if let Some((_, sequence)) = numeric_suffix(&without_collision) {
-                        let sequenced = sequenced_recording_filename(base, sequence)?;
-                        if collision_recording_filename(&sequenced, collision)? == filename {
-                            return Some((sequence, collision));
-                        }
+                if self.segment_naming == RecordingSegmentNaming::SafeUnique
+                    && let Some((_, sequence)) = numeric_suffix(&without_collision)
+                {
+                    let sequenced = sequenced_recording_filename(base, sequence)?;
+                    if collision_recording_filename(&sequenced, collision)? == filename {
+                        return Some((sequence, collision));
                     }
                 }
             }
@@ -566,9 +567,11 @@ fn bounded_segment_filename(
     sequence: u64,
     extension_start: Option<usize>,
 ) -> Option<String> {
-    let insertion = (sequence != 0)
-        .then(|| format!("-{sequence:06}"))
-        .unwrap_or_default();
+    let insertion = if sequence != 0 {
+        format!("-{sequence:06}")
+    } else {
+        String::default()
+    };
     let maximum = MAX_RECORDING_FILENAME_BYTES.checked_sub(MAX_RECORDING_COLLISION_SUFFIX_BYTES)?;
     if base.len().checked_add(insertion.len())? <= maximum {
         return insert_before_extension(base, &insertion);

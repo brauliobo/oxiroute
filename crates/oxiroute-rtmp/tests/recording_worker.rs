@@ -299,7 +299,7 @@ fn hourly_bahia_segments_rerender_the_suffix_and_keep_flv_payload_with_mp4_names
         RecorderWorkerConfig {
             max_queue_messages: 16,
             max_queue_bytes: 1024,
-            rotation_interval: Some(Duration::from_secs(3_600)),
+            rotation_interval: Some(Duration::from_hours(1)),
             shutdown_timeout: Duration::from_secs(1),
             video_codec: None,
             ..RecorderWorkerConfig::default()
@@ -334,7 +334,7 @@ fn reconnect_within_interval_resumes_the_existing_nginx_named_segment() {
     let config = RecorderWorkerConfig {
         max_queue_messages: 32,
         max_queue_bytes: 1024 * 1024,
-        rotation_interval: Some(Duration::from_secs(3_600)),
+        rotation_interval: Some(Duration::from_hours(1)),
         shutdown_timeout: Duration::from_secs(1),
         video_codec: None,
         ..RecorderWorkerConfig::default()
@@ -402,7 +402,7 @@ fn interrupted_segment_keeps_its_final_name_and_resumes_without_a_partial_file()
     let config = RecorderWorkerConfig {
         max_queue_messages: 32,
         max_queue_bytes: 8,
-        rotation_interval: Some(Duration::from_secs(3_600)),
+        rotation_interval: Some(Duration::from_hours(1)),
         shutdown_timeout: Duration::from_secs(1),
         video_codec: None,
         ..RecorderWorkerConfig::default()
@@ -483,7 +483,7 @@ fn reconnect_within_interval_preserves_a_safe_sequence_variant_name() {
     let config = RecorderWorkerConfig {
         max_queue_messages: 32,
         max_queue_bytes: 1024 * 1024,
-        rotation_interval: Some(Duration::from_secs(3_600)),
+        rotation_interval: Some(Duration::from_hours(1)),
         shutdown_timeout: Duration::from_secs(1),
         video_codec: None,
         ..RecorderWorkerConfig::default()
@@ -560,7 +560,7 @@ fn reconnect_after_interval_starts_a_new_nginx_named_segment() {
     let config = RecorderWorkerConfig {
         max_queue_messages: 32,
         max_queue_bytes: 1024 * 1024,
-        rotation_interval: Some(Duration::from_secs(60)),
+        rotation_interval: Some(Duration::from_mins(1)),
         shutdown_timeout: Duration::from_secs(1),
         video_codec: None,
         ..RecorderWorkerConfig::default()

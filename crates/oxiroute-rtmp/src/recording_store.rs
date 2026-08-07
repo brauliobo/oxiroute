@@ -429,25 +429,22 @@ impl RecordingStore {
                 Mode::RUSR | Mode::WUSR,
             ) {
                 Ok(descriptor) => {
-                    if lock {
-                        if let Err(source) =
+                    if lock
+                        && let Err(source) =
                             rustix_fs::flock(&descriptor, FlockOperation::NonBlockingLockExclusive)
-                        {
-                            drop(descriptor);
-                            match rustix_fs::unlinkat(
-                                &self.shared.root,
-                                relative_name.as_str(),
-                                AtFlags::empty(),
-                            ) {
-                                Ok(()) | Err(Errno::NOENT) => {}
-                                Err(cleanup) => {
-                                    return Err(RecordingStoreError::PartialCleanup(
-                                        cleanup.into(),
-                                    ));
-                                }
+                    {
+                        drop(descriptor);
+                        match rustix_fs::unlinkat(
+                            &self.shared.root,
+                            relative_name.as_str(),
+                            AtFlags::empty(),
+                        ) {
+                            Ok(()) | Err(Errno::NOENT) => {}
+                            Err(cleanup) => {
+                                return Err(RecordingStoreError::PartialCleanup(cleanup.into()));
                             }
-                            return Err(RecordingStoreError::PartialCreate(source.into()));
                         }
+                        return Err(RecordingStoreError::PartialCreate(source.into()));
                     }
                     state.files += 1;
                     return Ok(RecordingFile {
@@ -516,10 +513,10 @@ impl RecordingStore {
                         return Err(RecordingStoreError::RootEntryMetadata(source.into()));
                     }
                 };
-            if FileType::from_raw_mode(metadata.st_mode).is_file() {
-                if let Ok(name) = std::str::from_utf8(bytes) {
-                    names.push(name.to_owned());
-                }
+            if FileType::from_raw_mode(metadata.st_mode).is_file()
+                && let Ok(name) = std::str::from_utf8(bytes)
+            {
+                names.push(name.to_owned());
             }
         }
         Ok(names)
@@ -745,14 +742,14 @@ impl RecordingFile {
         if self.commit.cancelled() {
             return Err(self.cancelled_error());
         }
-        if let Some(file) = self.file.as_mut() {
-            if let Err(source) = file.flush().and_then(|()| file.sync_all()) {
-                self.commit.finish();
-                return Err(RecordingStoreError::FileSync {
-                    partial_relative_name: self.partial_name.clone(),
-                    source,
-                });
-            }
+        if let Some(file) = self.file.as_mut()
+            && let Err(source) = file.flush().and_then(|()| file.sync_all())
+        {
+            self.commit.finish();
+            return Err(RecordingStoreError::FileSync {
+                partial_relative_name: self.partial_name.clone(),
+                source,
+            });
         }
         if self.commit.cancelled() {
             return Err(self.cancelled_error());
@@ -1229,10 +1226,10 @@ impl Write for RecordingFile {
                     self.shared.limits.max_bytes.unwrap_or(u64::MAX),
                 ));
             };
-            if let Some(maximum) = self.shared.limits.max_bytes {
-                if new_total > maximum {
-                    return Err(byte_quota_error(maximum));
-                }
+            if let Some(maximum) = self.shared.limits.max_bytes
+                && new_total > maximum
+            {
+                return Err(byte_quota_error(maximum));
             }
             state.bytes_used = new_total;
         }
@@ -1332,8 +1329,7 @@ impl Drop for RecorderLease {
 impl RecordingFinalizer {
     fn new(max_active_recorders: usize) -> Result<Self, RecordingStoreError> {
         let queue_capacity = max_active_recorders
-            .checked_mul(MAX_PENDING_FINALIZATIONS_PER_RECORDER)
-            .unwrap_or(usize::MAX)
+            .saturating_mul(MAX_PENDING_FINALIZATIONS_PER_RECORDER)
             .max(1);
         let thread_count = queue_capacity.min(MAX_FINALIZER_THREADS);
         let shared = Arc::new(FinalizerShared {
@@ -1501,7 +1497,7 @@ fn scan_root(
                     files: usize::MAX,
                 })?;
         let size = u64::try_from(metadata.st_size).unwrap_or(u64::MAX);
-        state.bytes_used = state.bytes_used.checked_add(size).unwrap_or(u64::MAX);
+        state.bytes_used = state.bytes_used.saturating_add(size);
     }
 
     if cleaned {
@@ -1836,7 +1832,6 @@ mod tests {
             error,
             RecordingStoreError::PublishRollback {
                 recording: RecordingCommit { bytes: 9, .. },
-                rollback_source: _,
                 ..
             }
         ));

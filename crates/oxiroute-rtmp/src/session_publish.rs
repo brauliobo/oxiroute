@@ -197,10 +197,10 @@ impl PublishSession {
             Err(error) => Err(error),
         };
         drop(exec_workers);
-        if result.is_ok() {
-            if let Some(exec_profiles) = exec_profiles {
-                exec_profiles.start_publish_done(&self.key.server_id, &self.key, self.session_id);
-            }
+        if result.is_ok()
+            && let Some(exec_profiles) = exec_profiles
+        {
+            exec_profiles.start_publish_done(&self.key.server_id, &self.key, self.session_id);
         }
         result
     }

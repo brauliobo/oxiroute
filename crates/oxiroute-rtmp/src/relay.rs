@@ -1016,12 +1016,12 @@ fn run_pull(shared: &PullShared) {
         let at_unix_ms = unix_time_ms();
         let _ = registration.release(at_unix_ms);
         drop(lease);
-        if shared.is_accepting() {
-            if let Some(failure) = failed {
-                shared.record_failure(failure);
-                if !shared.wait_backoff() {
-                    break;
-                }
+        if shared.is_accepting()
+            && let Some(failure) = failed
+        {
+            shared.record_failure(failure);
+            if !shared.wait_backoff() {
+                break;
             }
         }
     }

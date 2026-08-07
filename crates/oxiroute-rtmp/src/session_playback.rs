@@ -167,10 +167,7 @@ pub(super) fn handle_request(
                 return session.reject_request(request_id, rejection);
             }
         };
-        let accepted = match session.protocol_mut().accept_request(request_id) {
-            Ok(results) => results,
-            Err(error) => return Err(error.into()),
-        };
+        let accepted = session.protocol_mut().accept_request(request_id)?;
         session
             .roles
             .insert(protocol_stream_id, SessionRole::VodPlayback(role));

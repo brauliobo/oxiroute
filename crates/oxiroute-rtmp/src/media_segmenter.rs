@@ -174,21 +174,21 @@ impl MediaCatalog {
             .get(&(service.to_owned(), application.to_owned()))
             .ok_or(MediaStoreError::NotFound)?;
         let key = StreamKey::new(service, application, stream);
-        if let Some(dash) = &media.dash {
-            if let Some(prefix) = dash.store.current_prefix(&key) {
-                match resolve_dash_public_path(dash, &prefix, object) {
-                    Ok((path, content_type)) => {
-                        let body = dash
-                            .store
-                            .read_relative(&path, dash.store.limits().max_file_bytes)?;
-                        return Ok(MediaObject { body, content_type });
-                    }
-                    Err(MediaStoreError::InvalidPath) => {
-                        return Err(MediaStoreError::InvalidPath);
-                    }
-                    Err(MediaStoreError::NotFound) => {}
-                    Err(error) => return Err(error),
+        if let Some(dash) = &media.dash
+            && let Some(prefix) = dash.store.current_prefix(&key)
+        {
+            match resolve_dash_public_path(dash, &prefix, object) {
+                Ok((path, content_type)) => {
+                    let body = dash
+                        .store
+                        .read_relative(&path, dash.store.limits().max_file_bytes)?;
+                    return Ok(MediaObject { body, content_type });
                 }
+                Err(MediaStoreError::InvalidPath) => {
+                    return Err(MediaStoreError::InvalidPath);
+                }
+                Err(MediaStoreError::NotFound) => {}
+                Err(error) => return Err(error),
             }
         }
         if let Some(hls) = &media.hls {
@@ -382,7 +382,7 @@ fn run_worker(
                 for worker in workers.iter_mut() {
                     match worker {
                         MediaWorker::Hls(segmenter) => {
-                            segmenter.accept(&event, observed_at_unix_ms)
+                            segmenter.accept(&event, observed_at_unix_ms);
                         }
                         MediaWorker::Dash(segmenter) => segmenter.accept(&event),
                     }
@@ -691,7 +691,8 @@ impl HlsSegmenter {
         let rotation_segments = config.rotation_segments;
         let rotate = rotation_segments == 0
             || sequence == 0
-            || sequence % u64::try_from(rotation_segments).expect("bounded key rotation") == 0;
+            || sequence
+                .is_multiple_of(u64::try_from(rotation_segments).expect("bounded key rotation"));
         if rotate || self.current_key.is_none() {
             let mut key = [0_u8; 16];
             rand_bytes(&mut key).map_err(|_| {
@@ -825,12 +826,10 @@ fn resolve_public_path(
             }
             if has_extension(relative, "ts") || has_extension(relative, "bin") {
                 if let Some(key_prefix) = config.keys.as_ref().map(|keys| keys.url_prefix.as_str())
+                    && let Some(key_name) = relative.strip_prefix(key_prefix)
+                    && has_extension(key_name, "bin")
                 {
-                    if let Some(key_name) = relative.strip_prefix(key_prefix) {
-                        if has_extension(key_name, "bin") {
-                            return Ok((directory.join(key_name), content_type(key_name)));
-                        }
-                    }
+                    return Ok((directory.join(key_name), content_type(key_name)));
                 }
                 if has_extension(relative, "bin") && config.keys.is_some() {
                     return Ok((directory.join(relative), content_type(relative)));
@@ -1480,7 +1479,7 @@ mod tests {
         let segment = store
             .read_relative(&segment_path, 1024 * 1024)
             .expect("segment");
-        assert!(!segment.is_empty() && segment.len() % 16 == 0);
+        assert!(!segment.is_empty() && segment.len().is_multiple_of(16));
     }
 
     #[test]

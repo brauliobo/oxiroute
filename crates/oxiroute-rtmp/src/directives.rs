@@ -1583,12 +1583,10 @@ fn valid_relay_target(kind: RelayKind, args: &[&str]) -> bool {
                 has_name = value.is_some_and(|value| !value.is_empty());
                 has_name
             }
-            "live" | "start" | "stop" => {
-                value.is_none() || value.is_some_and(|value| value.parse::<u64>().is_ok())
-            }
+            "live" | "start" | "stop" => value.is_none_or(|value| value.parse::<u64>().is_ok()),
             "static" => {
                 is_static = true;
-                value.is_none() || value.is_some_and(|value| value.parse::<u64>().is_ok())
+                value.is_none_or(|value| value.parse::<u64>().is_ok())
             }
             _ => false,
         };
