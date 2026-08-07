@@ -1430,6 +1430,7 @@ enum JobControl {
 fn managed_error_response(error: crate::AcmeManagedError, message: &str) -> ApiResponse {
     let status = match &error {
         crate::AcmeManagedError::Protocol(oxiroute_acme::AcmeError::InvalidRevocationReason) => 400,
+        crate::AcmeManagedError::State(oxiroute_acme::AcmeStateError::PendingDnsCleanup) => 409,
         crate::AcmeManagedError::Busy
         | crate::AcmeManagedError::Paused
         | crate::AcmeManagedError::NoJob => 409,
@@ -1482,6 +1483,17 @@ mod tests {
             "revocation failed",
         );
         assert_eq!(response.status, 400);
+    }
+
+    #[test]
+    fn unresolved_dns_cleanup_blocks_state_deletion_with_a_conflict() {
+        let response = super::managed_error_response(
+            crate::AcmeManagedError::State(oxiroute_acme::AcmeStateError::PendingDnsCleanup),
+            "deletion failed",
+        );
+        assert_eq!(response.status, 409);
+        let body: serde_json::Value = serde_json::from_slice(&response.body).expect("error JSON");
+        assert_eq!(body["error"]["code"], "dns_cleanup_pending");
     }
 }
 
