@@ -70,3 +70,25 @@ fn proxy_protocol_bounds_and_transport_mismatches_fail_closed() {
         Err(ConfigError::InvalidProxyProtocolPolicy { .. })
     ));
 }
+
+#[test]
+fn udp_proxy_protocol_reserves_wire_space_for_the_address_header() {
+    let udp = CONFIG
+        .replace(
+            "type = \"socket\", address = \"127.0.0.1:15432\"",
+            "type = \"udp\", address = \"127.0.0.1:15432\"",
+        )
+        .replace("protocol = \"tcp\"", "protocol = \"udp\"")
+        .replace(
+            "proxy_protocol = { version = \"v2\", timeout_ms = 250 },",
+            "proxy_protocol = { version = \"v2\", timeout_ms = 250 },\n       udp = { max_datagram_bytes = 65456 },",
+        );
+    assert!(matches!(
+        load_lua(&udp),
+        Err(ConfigError::InvalidL4UdpPolicy { field, .. })
+            if field == "udp.max_datagram_bytes"
+    ));
+
+    let bounded = udp.replace("max_datagram_bytes = 65456", "max_datagram_bytes = 65455");
+    load_lua(&bounded).expect("bounded UDP PROXY configuration");
+}

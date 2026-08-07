@@ -81,7 +81,7 @@ pub use service_plan::{
 pub use stats::{HaproxyStatsApi, HaproxyStatsPage};
 pub use tcp_relay::{
     RELAY_BUFFER_SIZE, RelayDirection, RelayFailure, RelayFailureKind, RelayOperation, RelayPolicy,
-    RelayStats, TcpRelayCore, relay_streams,
+    RelayStats, TcpRelayCore, relay_streams, select_upstream_with_shutdown,
 };
 pub use tls::{
     AcmeDnsCleanupRecovery, AcmeManagedError, AcmeManagedOutcome, AcmeManagedPolicy,
@@ -100,6 +100,6 @@ pub use topology::{
     TOPOLOGY_SCHEMA_VERSION, TopologyEdge, TopologyEdgeKind, TopologyNode, TopologyNodeKind,
     TopologySnapshot,
 };
-pub use udp_relay::UdpRuntime;
+pub use udp_relay::{UdpRelayStats, UdpRuntime};
 
 pub const MAX_HTTP_ATTEMPTS: usize = routing::MAX_RESOLVED_ENDPOINT_ADDRESSES * 4;

@@ -74,6 +74,9 @@ use crate::{
     },
 };
 
+const MAX_UDP_WIRE_DATAGRAM_BYTES: u64 = 65_507;
+const MAX_UDP_PROXY_V2_ADDRESS_HEADER_BYTES: u64 = 52;
+
 /// Validates and normalizes a complete configuration regardless of how it was constructed.
 ///
 /// # Errors
@@ -3686,8 +3689,44 @@ fn validate_l4_services(
                 lifetime_timeout_ms,
             )?;
         }
-        if let Some(policy) = &service.udp {
-            validate_udp_policy(&service.name, policy)?;
+        let udp_listeners = listeners.iter().filter(|listener| {
+            listener.service.as_deref() == Some(service.name.as_str())
+                && listener.protocol == Protocol::Udp
+        });
+        let udp_listener_proxy_header_bytes = udp_listeners
+            .filter_map(|listener| listener.proxy_protocol)
+            .map(|policy| udp_proxy_protocol_header_bytes(policy.version))
+            .max()
+            .unwrap_or(0);
+        let has_udp_listener = udp_listener_proxy_header_bytes > 0
+            || listeners.iter().any(|listener| {
+                listener.service.as_deref() == Some(service.name.as_str())
+                    && listener.protocol == Protocol::Udp
+            });
+        if let Some(policy) = service.udp {
+            validate_udp_policy(
+                &service.name,
+                policy,
+                has_udp_listener
+                    .then_some(
+                        udp_listener_proxy_header_bytes.max(
+                            service.proxy_protocol.map_or(0, |policy| {
+                                udp_proxy_protocol_header_bytes(policy.version)
+                            }),
+                        ),
+                    )
+                    .unwrap_or(0),
+            )?;
+        } else if has_udp_listener {
+            validate_udp_policy(
+                &service.name,
+                UdpPolicy::default(),
+                udp_listener_proxy_header_bytes.max(
+                    service
+                        .proxy_protocol
+                        .map_or(0, |policy| udp_proxy_protocol_header_bytes(policy.version)),
+                ),
+            )?;
         }
         if let Some(policy) = service.proxy_protocol {
             validate_proxy_protocol_timeout("L4 service", &service.name, policy.timeout_ms)?;
@@ -3733,7 +3772,11 @@ fn validate_proxy_protocol_timeout(
     validate_safe_integer(kind, name, "proxy_protocol.timeout_ms", timeout_ms)
 }
 
-fn validate_udp_policy(service: &str, policy: &UdpPolicy) -> Result<(), ConfigError> {
+fn validate_udp_policy(
+    service: &str,
+    policy: UdpPolicy,
+    proxy_header_bytes: u64,
+) -> Result<(), ConfigError> {
     for (field, value, maximum) in [
         (
             "udp.max_datagram_bytes",
@@ -3780,7 +3823,26 @@ fn validate_udp_policy(service: &str, policy: &UdpPolicy) -> Result<(), ConfigEr
             detail: "must be at least max_datagram_bytes",
         });
     }
+    if proxy_header_bytes > 0
+        && policy.max_datagram_bytes
+            > MAX_UDP_WIRE_DATAGRAM_BYTES.saturating_sub(proxy_header_bytes)
+    {
+        return Err(ConfigError::InvalidL4UdpPolicy {
+            service: service.into(),
+            field: "udp.max_datagram_bytes",
+            detail: "must leave room for the UDP PROXY v2 address header within the 65507-byte datagram limit",
+        });
+    }
     Ok(())
+}
+
+fn udp_proxy_protocol_header_bytes(version: ProxyProtocolVersion) -> u64 {
+    match version {
+        ProxyProtocolVersion::V2 | ProxyProtocolVersion::Auto => {
+            MAX_UDP_PROXY_V2_ADDRESS_HEADER_BYTES
+        }
+        ProxyProtocolVersion::V1 => 0,
+    }
 }
 
 fn validate_names<'a>(

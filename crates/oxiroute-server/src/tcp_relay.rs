@@ -13,7 +13,7 @@ use tokio::{
 use tokio::net::UnixStream;
 
 use crate::{
-    ConnectionGuard, EndpointLease, HealthFailure, MetricsError, ProxyProtocolError,
+    ConnectionGuard, EndpointLease, HealthFailure, L4ServicePlan, MetricsError, ProxyProtocolError,
     ProxyProtocolErrorKind, ProxyProtocolResult, ProxyProtocolTransport, RuntimeEndpoint,
     TcpRelayResult, encode_header,
 };
@@ -304,6 +304,19 @@ impl TcpRelayCore {
     }
 }
 
+/// Waits for one upstream capacity lease without allowing shutdown to strand the caller.
+pub async fn select_upstream_with_shutdown(
+    service: &L4ServicePlan,
+    shutdown: &ShutdownWatch,
+) -> Option<EndpointLease> {
+    let mut shutdown = shutdown.clone();
+    tokio::select! {
+        biased;
+        () = wait_for_shutdown(&mut shutdown) => None,
+        upstream = service.select_wait() => upstream,
+    }
+}
+
 struct ConnectedUpstream {
     stream: Stream,
     address: Option<std::net::SocketAddr>,
@@ -506,6 +519,13 @@ fn failure(kind: RelayFailureKind, stats: RelayStats) -> RelayFailure {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use oxiroute_config::{UdpPolicy, UpstreamAlgorithm};
+    use tokio::{sync::watch, time::timeout};
+
+    use crate::RoundRobinPool;
+
     use super::*;
 
     #[tokio::test]
@@ -528,6 +548,56 @@ mod tests {
 
         assert_eq!(connection.peer_addr().expect("connected peer"), second);
         assert_eq!(address, second);
+    }
+
+    #[tokio::test]
+    async fn upstream_capacity_wait_is_cancelled_by_shutdown() {
+        let pool = Arc::new(
+            RoundRobinPool::new_named_servers(
+                "tcp-wait".into(),
+                [crate::routing::RuntimeServer {
+                    name: "upstream".into(),
+                    endpoint: RuntimeEndpoint::Socket {
+                        address: "127.0.0.1:1".parse().expect("upstream address"),
+                    },
+                    max_connections: Some(1),
+                    pinned_addresses: None,
+                    protected_addresses: Arc::from([]),
+                }],
+                UpstreamAlgorithm::First,
+                None,
+                Some(Duration::from_secs(30)),
+            )
+            .expect("capacity-limited pool"),
+        );
+        let held = pool.select().expect("initial upstream capacity");
+        let service = L4ServicePlan::new(
+            RelayPolicy::new(Duration::from_secs(1)),
+            Arc::clone(&pool),
+            None,
+            UdpPolicy::default(),
+        );
+        let (shutdown_tx, shutdown) = watch::channel(false);
+        let waiter =
+            tokio::spawn(async move { select_upstream_with_shutdown(&service, &shutdown).await });
+
+        timeout(Duration::from_secs(1), async {
+            while pool.health_snapshot().queued != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("capacity waiter registration");
+        shutdown_tx.send(true).expect("shutdown signal");
+        assert!(
+            timeout(Duration::from_secs(1), waiter)
+                .await
+                .expect("shutdown waiter completion")
+                .expect("shutdown waiter task")
+                .is_none()
+        );
+        drop(held);
+        assert_eq!(pool.health_snapshot().queued, 0);
     }
 
     #[test]
