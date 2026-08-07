@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-const MAX_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+const MAX_TIMEOUT: Duration = Duration::from_hours(1);
 
 /// Validated deadlines used by the master state machine.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

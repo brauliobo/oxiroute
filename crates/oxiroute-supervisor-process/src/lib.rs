@@ -974,12 +974,12 @@ impl LeaderState {
     }
 
     fn wait_event(&mut self) -> io::Result<Option<WorkerEvent>> {
-        if self.status.is_none() {
-            if let Some(child) = self.child.as_mut() {
-                self.status = Some(child.wait()?);
-                self.child = None;
-                self.pgid = None;
-            }
+        if self.status.is_none()
+            && let Some(child) = self.child.as_mut()
+        {
+            self.status = Some(child.wait()?);
+            self.child = None;
+            self.pgid = None;
         }
         self.poll_event()
     }
