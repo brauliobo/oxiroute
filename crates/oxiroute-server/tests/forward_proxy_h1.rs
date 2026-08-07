@@ -854,6 +854,133 @@ async fn cache_serves_a_second_absolute_form_get_without_reaching_the_origin() {
 }
 
 #[tokio::test]
+async fn authenticated_absolute_form_bypasses_anonymous_forward_cache() {
+    let origin = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
+    let origin_address = origin.local_addr().expect("origin address");
+    let origin_task = tokio::spawn(async move {
+        let mut buffer = [0; 1024];
+        let (mut anonymous, _) = origin.accept().await.expect("anonymous origin accept");
+        let mut request = Vec::new();
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = anonymous
+                .read(&mut buffer)
+                .await
+                .expect("anonymous origin read");
+            assert_ne!(read, 0, "anonymous request ended before headers");
+            request.extend_from_slice(&buffer[..read]);
+        }
+        assert!(request.starts_with(b"GET /boundary HTTP/1.1\r\n"));
+        anonymous
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nCache-Control: max-age=60\r\nContent-Length: 6\r\nConnection: close\r\n\r\ncached",
+            )
+            .await
+            .expect("anonymous origin response");
+
+        let (mut authenticated, _) = origin.accept().await.expect("authenticated origin accept");
+        let mut request = Vec::new();
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = authenticated
+                .read(&mut buffer)
+                .await
+                .expect("authenticated origin read");
+            assert_ne!(read, 0, "authenticated request ended before headers");
+            request.extend_from_slice(&buffer[..read]);
+        }
+        assert!(request.starts_with(b"GET /boundary HTTP/1.1\r\n"));
+        authenticated
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nCache-Control: max-age=60\r\nContent-Length: 7\r\nConnection: close\r\n\r\nprivate",
+            )
+            .await
+            .expect("authenticated origin response");
+    });
+
+    let token_directory = tempdir().expect("forward token directory");
+    let token = "0123456789abcdefghijklmnopqrstuv";
+    let token_path = fixture_support::write_file_with_mode(
+        token_directory.path(),
+        "proxy.token",
+        format!("{token}\n").as_bytes(),
+        0o600,
+    );
+    let proxy_address = process_support::reserve_tcp_address();
+    let config = load_lua(&format!(
+        r#"return {{
+  version = 1,
+  listeners = {{ {{
+    name = "forward",
+    bind = {{ type = "socket", address = "{proxy_address}" }},
+    protocol = "forward_http1",
+    service = "forward",
+  }} }},
+  cache_stores = {{ {{ name = "memory", type = "memory" }} }},
+  forward_proxy_services = {{ {{
+    name = "forward",
+    tls_required = false,
+    auth = {{ type = "bearer_token_file", token_file_path = "{}" }},
+    access_policy = {{
+      rules = {{
+        {{ action = "allow", conditions = {{
+          {{ type = "methods", methods = {{ "GET" }} }},
+          {{ type = "authenticated", negated = true }},
+        }} }},
+        {{ action = "allow", conditions = {{ {{ type = "authenticated" }} }} }},
+      }},
+      default_action = "deny",
+    }},
+    destination_policy = {{ deny_private = false }},
+    cache = {{ store = "memory" }},
+  }} }},
+}}"#,
+        token_path.display()
+    ))
+    .expect("forward cache boundary config");
+    let mut server = process_support::ServerProcess::start(&config, None);
+    server.wait_for_tcp(proxy_address).await;
+
+    let anonymous = exchange(
+        proxy_address,
+        format!(
+            "GET http://{origin_address}/boundary HTTP/1.1\r\nHost: origin\r\nConnection: close\r\n\r\n"
+        )
+        .as_bytes(),
+    )
+    .await;
+    assert!(anonymous.starts_with(b"HTTP/1.1 200"));
+    assert!(anonymous.ends_with(b"cached"));
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let authenticated = exchange(
+        proxy_address,
+        format!(
+            "GET http://{origin_address}/boundary HTTP/1.1\r\nHost: origin\r\nProxy-Authorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+        )
+        .as_bytes(),
+    )
+    .await;
+    assert!(authenticated.starts_with(b"HTTP/1.1 200"));
+    assert!(authenticated.ends_with(b"private"));
+
+    let cached = exchange(
+        proxy_address,
+        format!(
+            "GET http://{origin_address}/boundary HTTP/1.1\r\nHost: origin\r\nConnection: close\r\n\r\n"
+        )
+        .as_bytes(),
+    )
+    .await;
+    assert!(cached.starts_with(b"HTTP/1.1 200"));
+    assert!(cached.ends_with(b"cached"));
+
+    timeout(Duration::from_secs(2), origin_task)
+        .await
+        .expect("origin boundary task timeout")
+        .expect("origin boundary task");
+    server.shutdown();
+}
+
+#[tokio::test]
 async fn imported_squid_candidate_serves_authenticated_http_over_daemon() {
     let origin = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
     let origin_address = origin.local_addr().expect("origin address");
