@@ -151,6 +151,7 @@
       "tests": [
         "crates/oxiroute-rtmp/tests/directive_registry.rs#registers_the_complete_nginx_rtmp_directive_surface",
         "crates/oxiroute-rtmp/tests/directive_registry.rs#records_reference_quirks_without_claiming_runtime_enforcement",
+        "crates/oxiroute-rtmp/tests/directive_registry.rs#reports_bounded_hls_exec_respawn_and_recorder_forms",
         "crates/oxiroute-rtmp/tests/directive_registry.rs#validates_contexts_arities_and_closed_value_sets"
       ]
     },
@@ -163,6 +164,13 @@
         "crates/oxiroute-import/tests/nginx_rtmp.rs#server_scoped_rtmp_limits_override_inherited_values",
         "crates/oxiroute-import/tests/nginx_rtmp.rs#blocks_nonuniform_effective_rtmp_limits_across_servers",
         "crates/oxiroute-import/tests/nginx_rtmp.rs#rejects_rtmp_transport_limits_outside_canonical_bounds",
+        "crates/oxiroute-import/tests/nginx_rtmp.rs#lowers_exact_same_daemon_auto_push_policy",
+        "crates/oxiroute-import/tests/nginx_rtmp.rs#lowers_bounded_push_and_blocks_pull_without_fallback",
+        "crates/oxiroute-import/tests/nginx_rtmp.rs#lowers_one_absolute_rtmp_access_log_with_the_combined_format",
+        "crates/oxiroute-import/tests/nginx_rtmp.rs#lowers_bounded_hls_policy_and_key_rotation",
+        "crates/oxiroute-import/tests/nginx_rtmp.rs#lowers_allowlisted_exec_profiles_with_typed_arguments_and_provenance",
+        "crates/oxiroute-import/tests/nginx_rtmp.rs#blocks_hls_logging_and_auto_push_forms_outside_the_bounded_subset",
+        "crates/oxiroute-import/tests/nginx_rtmp.rs#blocks_unsafe_typed_exec_paths_without_shell_fallback",
         "crates/oxiroute-import/tests/nginx_rtmp.rs#applies_native_application_and_recorder_defaults_explicitly",
         "crates/oxiroute-import/tests/nginx_rtmp.rs#maps_only_nginx_manual_recording_that_also_selects_all_media",
         "crates/oxiroute-import/tests/nginx_rtmp.rs#enforces_exact_path_suffix_interval_and_listener_bounds",
@@ -179,6 +187,13 @@
         "crates/oxiroute-rtmp/tests/session_policy.rs#configured_inbound_message_and_ack_limits_are_applied_on_the_wire",
         "crates/oxiroute-rtmp/tests/chunk_interop.rs#fragmented_input_round_trips_header_formats_zero_through_three",
         "crates/oxiroute-rtmp/tests/chunk_interop.rs#fragmented_payload_and_extended_timestamp_round_trip"
+      ]
+    },
+    {
+      "id": "evidence.rtmp.relay",
+      "tests": [
+        "crates/oxiroute-rtmp/tests/push_relay.rs#unavailable_push_retries_recovers_bootstraps_and_stays_isolated_in_a_bounded_soak",
+        "crates/oxiroute-rtmp/tests/pull_relay.rs#pull_reconnects_to_a_rotated_loopback_address_and_keeps_the_local_publisher_bounded"
       ]
     },
     {

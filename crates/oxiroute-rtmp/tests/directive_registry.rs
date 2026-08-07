@@ -258,7 +258,7 @@ fn reports_unsupported_forms_without_promoting_their_directives() {
     assert_form_status(
         "record_append",
         "record_append on",
-        DirectiveStatus::ParsedOnly,
+        DirectiveStatus::Enforced,
     );
     assert_form_status(
         "chunk_size",
@@ -296,6 +296,87 @@ fn reports_unsupported_forms_without_promoting_their_directives() {
     assert_eq!(
         spec("listen").compatibility_status(),
         DirectiveStatus::Partial
+    );
+}
+
+#[test]
+fn reports_bounded_hls_exec_respawn_and_recorder_forms() {
+    assert_form_status(
+        "hls",
+        "bounded HLS policy option in the importer-supported subset",
+        DirectiveStatus::Enforced,
+    );
+    assert_form_status(
+        "hls_fragment_naming",
+        "bounded HLS policy option in the importer-supported subset",
+        DirectiveStatus::Enforced,
+    );
+    assert_form_status(
+        "exec_push",
+        "one absolute executable plus bounded literal argv",
+        DirectiveStatus::Enforced,
+    );
+    assert_form_status(
+        "exec_push",
+        "redirection, control, or non-absolute executable form",
+        DirectiveStatus::ParsedOnly,
+    );
+    assert_form_status(
+        "respawn_timeout",
+        "bounded respawn flag or delay applied to a typed exec profile",
+        DirectiveStatus::Enforced,
+    );
+    assert_form_status(
+        "record",
+        "record audio, video, or keyframes with live on and secure path",
+        DirectiveStatus::Enforced,
+    );
+    assert_form_status(
+        "record_max_size",
+        "nonzero record_max_size",
+        DirectiveStatus::Enforced,
+    );
+    assert_form_status(
+        "record_max_frames",
+        "nonzero record_max_frames",
+        DirectiveStatus::Enforced,
+    );
+    assert_form_status(
+        "record_notify",
+        "record_notify on",
+        DirectiveStatus::Enforced,
+    );
+    assert_form_status(
+        "record_lock",
+        "record_lock on",
+        DirectiveStatus::PlatformLimited,
+    );
+    assert_form_status(
+        "access_log",
+        "absolute access-log path with optional combined format at rtmp scope",
+        DirectiveStatus::Enforced,
+    );
+
+    for name in [
+        "hls",
+        "exec",
+        "respawn",
+        "record_max_size",
+        "record_max_frames",
+    ] {
+        assert_eq!(
+            spec(name).compatibility_status(),
+            DirectiveStatus::Partial,
+            "{name} must retain a bounded rather than broad parity claim"
+        );
+    }
+    assert_eq!(
+        spec("pull").compatibility_status(),
+        DirectiveStatus::ParsedOnly
+    );
+    assert_eq!(
+        spec("rtmp_auto_push").compatibility_status(),
+        DirectiveStatus::PlatformLimited
     );
 }
 

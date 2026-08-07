@@ -4,7 +4,8 @@ use std::{fs, path::Path};
 
 use oxiroute_config::{AccessLogPolicy, Protocol, RtmpHlsFragmentNaming, RtmpRecorderStart};
 use oxiroute_import::{
-    DiagnosticStage, E_DUPLICATE_IDENTITY, E_SEMANTICS_NOT_REPRESENTABLE, E_UNSUPPORTED_FEATURE,
+    DiagnosticStage, E_DUPLICATE_IDENTITY, E_INVALID_VALUE, E_SEMANTICS_NOT_REPRESENTABLE,
+    E_UNSUPPORTED_FEATURE,
     nginx::{OccurrenceDisposition, import_rtmp, import_rtmp_with_timezone, load, resolve_rtmp},
 };
 use tempfile::TempDir;
@@ -240,6 +241,47 @@ fn lowers_exact_same_daemon_auto_push_policy() {
 }
 
 #[test]
+fn lowers_bounded_push_and_blocks_pull_without_fallback() {
+    let push = import_source(
+        br"
+        rtmp {
+          server {
+            listen 127.0.0.1:1935;
+            application camera {
+              live on;
+              push rtmp://ORIGIN.Example:1940/$name;
+            }
+          }
+        }
+        ",
+        &[],
+    );
+    let config = push.config.expect("bounded push configuration");
+    let target = &config.rtmp_services[0].applications[0].push_targets[0];
+    assert_eq!(target.host, "origin.example");
+    assert_eq!(target.port, 1_940);
+    assert_eq!(target.application, "$name");
+    assert!(
+        push.provenance
+            .iter()
+            .any(|entry| { entry.path == "/rtmp_services/0/applications/0/push_targets/0" })
+    );
+
+    let pull = import_source(
+        br"rtmp { server { listen 1935; application camera { pull rtmp://origin/live; } } }",
+        &[],
+    );
+    assert!(pull.config.is_none());
+    assert!(pull.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code() == E_UNSUPPORTED_FEATURE && diagnostic.message().contains("relay")
+    }));
+    assert!(pull.occurrence_ledger.iter().any(|decision| {
+        decision.name.value == b"pull"
+            && decision.disposition == OccurrenceDisposition::Blocking(E_UNSUPPORTED_FEATURE)
+    }));
+}
+
+#[test]
 fn lowers_one_absolute_rtmp_access_log_with_the_combined_format() {
     let report = import_source(
         br"
@@ -311,6 +353,43 @@ fn lowers_bounded_hls_policy_and_key_rotation() {
             .iter()
             .any(|entry| { entry.path == "/rtmp_services/0/applications/0/hls" })
     );
+}
+
+#[test]
+fn blocks_hls_logging_and_auto_push_forms_outside_the_bounded_subset() {
+    for source in [
+        br"rtmp { hls on; server { listen 1935; application app { live on; } } }".as_slice(),
+        br"rtmp { hls_fragment 0; server { listen 1935; application app { live on; } } }".as_slice(),
+        br"rtmp { access_log /var/log/rtmp.log custom; server { listen 1935; application app {} } }".as_slice(),
+        br"rtmp_auto_push_reconnect 0ms; rtmp { server { listen 1935; application app {} } }".as_slice(),
+        br"rtmp_socket_dir relative; rtmp { server { listen 1935; application app {} } }".as_slice(),
+    ] {
+        let report = import_source(source, &[]);
+        assert!(report.config.is_none(), "{source:?}");
+        assert!(report.has_errors(), "{source:?}");
+    }
+    let invalid_hls_duration = import_source(
+        br"rtmp { hls_playlist_length 0; server { listen 1935; application app { live on; } } }",
+        &[],
+    );
+    assert!(invalid_hls_duration.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code() == E_INVALID_VALUE && diagnostic.message().contains("hls_playlist_length")
+    }));
+}
+
+#[test]
+fn blocks_unsafe_typed_exec_paths_without_shell_fallback() {
+    for source in [
+        br"rtmp { server { listen 1935; application app { exec_push relative/tool; } } }".as_slice(),
+        br"rtmp { server { listen 1935; application app { exec_publish /usr/bin/tool arg<bad; } } }".as_slice(),
+    ] {
+        let report = import_source(source, &[]);
+        assert!(report.config.is_none(), "{source:?}");
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code() == E_SEMANTICS_NOT_REPRESENTABLE
+                || diagnostic.code() == E_INVALID_VALUE
+        }));
+    }
 }
 
 #[test]
