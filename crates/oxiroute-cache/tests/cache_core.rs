@@ -44,7 +44,7 @@ fn config() -> CacheConfig {
         max_tag_bytes: 32,
         max_in_flight: 8,
         max_followers_per_fill: 64,
-        max_heuristic_freshness: Duration::from_secs(24 * 60 * 60),
+        max_heuristic_freshness: Duration::from_hours(24),
     }
 }
 
@@ -198,9 +198,9 @@ fn cache_control_is_strict_and_supports_extension_windows() {
     );
     let parsed = CacheControl::parse(&headers).expect("strict directives");
     assert!(parsed.public && parsed.no_cache);
-    assert_eq!(parsed.shared_max_age, Some(Duration::from_secs(60)));
+    assert_eq!(parsed.shared_max_age, Some(Duration::from_mins(1)));
     assert_eq!(parsed.stale_while_revalidate, Some(Duration::from_secs(30)));
-    assert_eq!(parsed.stale_if_error, Some(Duration::from_secs(120)));
+    assert_eq!(parsed.stale_if_error, Some(Duration::from_mins(2)));
 
     headers.append(
         http::header::CACHE_CONTROL,
@@ -531,7 +531,7 @@ fn canonical_timeline_origin_and_default_ttl_precedence_is_explicit() {
         Duration::from_secs(30),
         [],
         Duration::ZERO,
-        Duration::from_secs(60),
+        Duration::from_mins(1),
     )
     .expect("origin timeline");
     let configured = CacheTimeline::new(
@@ -539,7 +539,7 @@ fn canonical_timeline_origin_and_default_ttl_precedence_is_explicit() {
         Duration::from_secs(30),
         [],
         Duration::ZERO,
-        Duration::from_secs(60),
+        Duration::from_mins(1),
     )
     .expect("configured timeline");
     let request_headers = HeaderMap::new();
