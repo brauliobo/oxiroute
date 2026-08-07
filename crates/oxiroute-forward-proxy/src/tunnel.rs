@@ -101,8 +101,8 @@ impl Default for TunnelLimits {
     fn default() -> Self {
         Self {
             max_bytes_per_direction: 64 * 1024 * 1024,
-            idle_timeout: Duration::from_secs(60),
-            lifetime_timeout: Duration::from_secs(60 * 60),
+            idle_timeout: Duration::from_mins(1),
+            lifetime_timeout: Duration::from_hours(1),
             buffer_size: 16 * 1024,
         }
     }
