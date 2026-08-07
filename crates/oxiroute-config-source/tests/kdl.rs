@@ -1,4 +1,8 @@
-use oxiroute_config_source::{ConfigFormat, ConfigSourceError, decode_value, render_value};
+use std::fmt::Write as _;
+
+use oxiroute_config_source::{
+    ConfigFormat, ConfigSourceError, MAX_STRUCTURAL_DEPTH, decode_value, render_value,
+};
 use serde_json::json;
 
 #[test]
@@ -109,4 +113,33 @@ fn kdl_renderer_requires_the_documented_object_root() {
             ..
         })
     ));
+}
+
+#[test]
+fn rejects_kdl_documents_beyond_the_structural_depth_bound() {
+    let mut source = String::new();
+    for depth in 0..=MAX_STRUCTURAL_DEPTH {
+        writeln!(source, "(object)level-{depth} {{").unwrap();
+    }
+    source.push_str("value #true\n");
+    for _ in 0..=MAX_STRUCTURAL_DEPTH {
+        source.push_str("}\n");
+    }
+
+    assert!(matches!(
+        decode_value(ConfigFormat::Kdl, source.as_bytes()),
+        Err(ConfigSourceError::StructuralDepth)
+    ));
+}
+
+#[test]
+fn depth_scanner_ignores_braces_inside_literals_and_comments() {
+    let source = br##"
+quoted "{ }"
+raw #"{ }"#
+line #true // { }
+block #true /* { } */
+"##;
+
+    assert!(decode_value(ConfigFormat::Kdl, source).is_ok());
 }

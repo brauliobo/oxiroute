@@ -1,9 +1,10 @@
 use std::path::Path;
 
 use oxiroute_config_source::{
-    ConfigFormat, ConfigSourceError, MAX_SOURCE_BYTES, decode_value, render_config, render_value,
+    ConfigFormat, ConfigSourceError, MAX_SOURCE_BYTES, MAX_STRING_BYTES, decode_value,
+    render_config, render_value,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 
 #[test]
 fn infers_supported_extensions_and_kdl_default() {
@@ -93,5 +94,47 @@ fn typed_configs_render_in_every_supported_format() {
         )
         .expect("rendered source resolves");
         assert_eq!(resolved.config, config);
+    }
+}
+
+#[test]
+fn generic_source_formats_preserve_one_canonical_value() {
+    let value = json!({
+        "enabled": true,
+        "name": "edge",
+        "nested": {"ports": [80, 443], "nothing": null},
+        "ratio": 1.25
+    });
+    let canonical_kdl = render_value(ConfigFormat::Kdl, &value).expect("canonical KDL");
+
+    for format in [ConfigFormat::Kdl, ConfigFormat::Uci, ConfigFormat::Hocon] {
+        let rendered = render_value(format, &value).expect("format render");
+        let decoded = decode_value(format, rendered.as_bytes()).expect("format decode");
+        assert_eq!(decoded, value, "decoded {format:?} value");
+        assert_eq!(
+            render_value(ConfigFormat::Kdl, &decoded).expect("canonical KDL render"),
+            canonical_kdl,
+            "canonical {format:?} value"
+        );
+    }
+}
+
+#[test]
+fn all_generic_renderers_enforce_the_shared_output_bound() {
+    let oversized_string = "x".repeat(MAX_STRING_BYTES);
+    let mut object = serde_json::Map::new();
+    for key in ["a", "b", "c", "d", "e"] {
+        object.insert(key.to_owned(), Value::String(oversized_string.clone()));
+    }
+    let value = Value::Object(object);
+
+    for format in [ConfigFormat::Kdl, ConfigFormat::Uci, ConfigFormat::Hocon] {
+        assert!(
+            matches!(
+                render_value(format, &value),
+                Err(ConfigSourceError::OutputTooLarge)
+            ),
+            "{format:?} renderer exceeded its output bound"
+        );
     }
 }

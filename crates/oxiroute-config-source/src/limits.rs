@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt::Write as _, io};
 
 use serde_json::{Map, Value};
 
@@ -16,8 +16,65 @@ pub const MAX_NODES: usize = 100_000;
 pub const MAX_STRING_BYTES: usize = 256 * 1024;
 /// Maximum recursive template inheritance depth.
 pub const MAX_EXPANSION_DEPTH: usize = 64;
+/// Maximum substitution references in one HOCON source document.
+pub const MAX_SUBSTITUTIONS: usize = 4_096;
 /// Maximum native dependency paths retained for diagnostics and watching.
 pub const MAX_DEPENDENCY_PATHS: usize = 4_096;
+
+pub(crate) struct BoundedOutput {
+    output: String,
+    exceeded: bool,
+}
+
+impl BoundedOutput {
+    pub(crate) fn new() -> Self {
+        Self {
+            output: String::new(),
+            exceeded: false,
+        }
+    }
+
+    pub(crate) fn finish(self) -> String {
+        self.output
+    }
+
+    pub(crate) fn exceeded(&self) -> bool {
+        self.exceeded
+    }
+
+    fn append(&mut self, bytes: &[u8]) -> Result<(), ()> {
+        let Some(length) = self.output.len().checked_add(bytes.len()) else {
+            self.exceeded = true;
+            return Err(());
+        };
+        if length > MAX_OUTPUT_BYTES {
+            self.exceeded = true;
+            return Err(());
+        }
+        let value = std::str::from_utf8(bytes).map_err(|_| ())?;
+        self.output.push_str(value);
+        Ok(())
+    }
+}
+
+impl std::fmt::Write for BoundedOutput {
+    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+        self.append(value.as_bytes()).map_err(|()| std::fmt::Error)
+    }
+}
+
+impl io::Write for BoundedOutput {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        match self.append(bytes) {
+            Ok(()) => Ok(bytes.len()),
+            Err(()) => Err(io::Error::other("bounded output limit exceeded")),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 pub(crate) fn source_text(source: &[u8]) -> Result<&str, ConfigSourceError> {
     if source.len() > MAX_SOURCE_BYTES {
@@ -78,10 +135,16 @@ pub(crate) fn check_output(output: &str) -> Result<(), ConfigSourceError> {
 
 pub(crate) fn render_sorted_json(value: &Value) -> Result<String, ConfigSourceError> {
     let sorted = sort_value(value);
-    let mut output = serde_json::to_string_pretty(&sorted)
-        .map_err(|error| ConfigSourceError::render("HOCON", error.to_string()))?;
-    output.push('\n');
-    Ok(output)
+    let mut output = BoundedOutput::new();
+    serde_json::to_writer_pretty(&mut output, &sorted).map_err(|error| {
+        if output.exceeded() {
+            ConfigSourceError::OutputTooLarge
+        } else {
+            ConfigSourceError::render("HOCON", error.to_string())
+        }
+    })?;
+    writeln!(output).map_err(|_| ConfigSourceError::OutputTooLarge)?;
+    Ok(output.finish())
 }
 
 fn sort_value(value: &Value) -> Value {

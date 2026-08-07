@@ -1,4 +1,9 @@
-use oxiroute_config_source::{ConfigFormat, ConfigSourceError, decode_value, render_value};
+use std::fmt::Write as _;
+
+use oxiroute_config_source::{
+    ConfigFormat, ConfigSourceError, MAX_STRUCTURAL_DEPTH, MAX_SUBSTITUTIONS, decode_value,
+    render_value,
+};
 use serde_json::json;
 
 #[test]
@@ -79,4 +84,34 @@ fn renders_deterministic_json_that_hocon_can_decode() {
         decode_value(ConfigFormat::Hocon, rendered.as_bytes()).unwrap(),
         value
     );
+}
+
+#[test]
+fn rejects_hocon_documents_beyond_the_structural_depth_bound() {
+    let mut source = String::from("root = ");
+    for _ in 0..=MAX_STRUCTURAL_DEPTH {
+        source.push_str("{ value = ");
+    }
+    source.push_str("true");
+    for _ in 0..=MAX_STRUCTURAL_DEPTH {
+        source.push_str(" }");
+    }
+
+    assert!(matches!(
+        decode_value(ConfigFormat::Hocon, source.as_bytes()),
+        Err(ConfigSourceError::StructuralDepth)
+    ));
+}
+
+#[test]
+fn rejects_hocon_sources_beyond_the_substitution_bound() {
+    let mut source = String::from("base = { value = true }\n");
+    for index in 0..=MAX_SUBSTITUTIONS {
+        writeln!(source, "copy-{index} = ${{base}}").unwrap();
+    }
+
+    assert!(matches!(
+        decode_value(ConfigFormat::Hocon, source.as_bytes()),
+        Err(ConfigSourceError::SubstitutionLimit)
+    ));
 }

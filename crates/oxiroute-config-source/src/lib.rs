@@ -22,7 +22,7 @@ use std::path::Path;
 pub use error::{ConfigSourceError, NativeDiagnosticCount, NativeDiagnostics};
 pub use limits::{
     MAX_DEPENDENCY_PATHS, MAX_EXPANSION_DEPTH, MAX_NODES, MAX_OUTPUT_BYTES, MAX_SOURCE_BYTES,
-    MAX_STRING_BYTES, MAX_STRUCTURAL_DEPTH,
+    MAX_STRING_BYTES, MAX_STRUCTURAL_DEPTH, MAX_SUBSTITUTIONS,
 };
 pub use resolver::{
     NativeReferenceMetadata, ResolvedSource, resolve_source, resolve_source_with_format,

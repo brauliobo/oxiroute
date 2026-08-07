@@ -5,14 +5,16 @@ use kdl::{KdlDocument, KdlNode, KdlValue};
 use serde_json::{Map, Number, Value};
 
 use crate::ConfigSourceError;
-use crate::limits::{MAX_NODES, MAX_STRUCTURAL_DEPTH, check_string, validate_value};
+use crate::limits::{BoundedOutput, MAX_NODES, MAX_STRUCTURAL_DEPTH, check_string, validate_value};
 use crate::native::{
     NativeDirective, decode_apache, decode_haproxy, decode_nginx, decode_squid, decode_varnish,
 };
 
 pub(crate) fn decode(source: &str) -> Result<Value, ConfigSourceError> {
+    check_source_depth(source)?;
     let document = KdlDocument::parse(source)
         .map_err(|error| ConfigSourceError::parse("KDL 2", error.to_string()))?;
+    check_document(document.nodes())?;
     let mut nodes = 0;
     let value = Value::Object(decode_object(document.nodes(), 0, &mut nodes)?);
     validate_value(&value)?;
@@ -22,8 +24,10 @@ pub(crate) fn decode(source: &str) -> Result<Value, ConfigSourceError> {
 pub(crate) fn decode_with_directives(
     source: &str,
 ) -> Result<(Value, Vec<NativeDirective>), ConfigSourceError> {
+    check_source_depth(source)?;
     let document = KdlDocument::parse(source)
         .map_err(|error| ConfigSourceError::parse("KDL 2", error.to_string()))?;
+    check_document(document.nodes())?;
     let mut generic_nodes = Vec::new();
     let mut directives = Vec::new();
     let mut nodes = 0;
@@ -247,6 +251,137 @@ fn increment_node_count(count: &mut usize) -> Result<(), ConfigSourceError> {
     Ok(())
 }
 
+fn check_document(nodes: &[KdlNode]) -> Result<(), ConfigSourceError> {
+    let mut count = 0;
+    for node in nodes {
+        check_node(node, 1, &mut count)?;
+    }
+    Ok(())
+}
+
+fn check_source_depth(source: &str) -> Result<(), ConfigSourceError> {
+    let bytes = source.as_bytes();
+    let mut depth = 0usize;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' => index = skip_quoted(bytes, index),
+            b'#' => {
+                let mut hashes = 0;
+                while bytes.get(index + hashes) == Some(&b'#') {
+                    hashes += 1;
+                }
+                if bytes.get(index + hashes) == Some(&b'"') {
+                    index = skip_raw_string(bytes, index + hashes, hashes);
+                } else {
+                    index += 1;
+                }
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'/') => {
+                index = skip_line(bytes, index + 2);
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index = skip_block_comment(bytes, index + 2);
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'-') => {
+                index = skip_line(bytes, index + 2);
+            }
+            b'{' => {
+                depth = depth.saturating_add(1);
+                if depth > MAX_STRUCTURAL_DEPTH {
+                    return Err(ConfigSourceError::StructuralDepth);
+                }
+                index += 1;
+            }
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    Ok(())
+}
+
+fn skip_quoted(bytes: &[u8], mut index: usize) -> usize {
+    if bytes.get(index..index + 3) == Some(b"\"\"\"") {
+        index += 3;
+        while index + 3 <= bytes.len() {
+            if bytes.get(index..index + 3) == Some(b"\"\"\"") {
+                return index + 3;
+            }
+            index += 1;
+        }
+        return bytes.len();
+    }
+    index += 1;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' => index = index.saturating_add(2),
+            b'"' => return index + 1,
+            _ => index += 1,
+        }
+    }
+    bytes.len()
+}
+
+fn skip_raw_string(bytes: &[u8], quote: usize, hashes: usize) -> usize {
+    let hash_start = quote - hashes;
+    let mut index = quote + 1;
+    while index < bytes.len() {
+        if bytes[index] == b'"'
+            && bytes.get(index + 1..index + 1 + hashes) == Some(&bytes[hash_start..quote])
+        {
+            return index + 1 + hashes;
+        }
+        index += 1;
+    }
+    bytes.len()
+}
+
+fn skip_line(bytes: &[u8], mut index: usize) -> usize {
+    while index < bytes.len() && bytes[index] != b'\n' {
+        index += 1;
+    }
+    index
+}
+
+fn skip_block_comment(bytes: &[u8], mut index: usize) -> usize {
+    while index + 1 < bytes.len() {
+        if bytes[index] == b'*' && bytes[index + 1] == b'/' {
+            return index + 2;
+        }
+        index += 1;
+    }
+    bytes.len()
+}
+
+fn check_node(node: &KdlNode, depth: usize, count: &mut usize) -> Result<(), ConfigSourceError> {
+    check_depth(depth)?;
+    increment_node_count(count)?;
+    check_string(node.name().value())?;
+    if let Some(annotation) = node.ty() {
+        check_string(annotation.value())?;
+    }
+    for entry in node.entries() {
+        if let Some(name) = entry.name() {
+            check_string(name.value())?;
+        }
+        if let Some(annotation) = entry.ty() {
+            check_string(annotation.value())?;
+        }
+        if let KdlValue::String(value) = entry.value() {
+            check_string(value)?;
+        }
+    }
+    if let Some(children) = node.children() {
+        for child in children.nodes() {
+            check_node(child, depth + 1, count)?;
+        }
+    }
+    Ok(())
+}
+
 fn decode_object(
     nodes: &[KdlNode],
     depth: usize,
@@ -394,18 +529,18 @@ pub(crate) fn render(value: &Value) -> Result<String, ConfigSourceError> {
             "the documented KDL mapping requires an object root",
         ));
     };
-    let mut output = String::new();
+    let mut output = BoundedOutput::new();
     render_object(object, 0, &mut output)?;
-    Ok(output)
+    Ok(output.finish())
 }
 
 fn render_object(
     object: &Map<String, Value>,
     depth: usize,
-    output: &mut String,
+    output: &mut BoundedOutput,
 ) -> Result<(), ConfigSourceError> {
     let mut entries = object.iter().collect::<Vec<_>>();
-    entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+    entries.sort_unstable_by_key(|(left, _)| *left);
     for (key, value) in entries {
         render_node(key, value, depth, output)?;
     }
@@ -416,26 +551,29 @@ fn render_node(
     name: &str,
     value: &Value,
     depth: usize,
-    output: &mut String,
+    output: &mut BoundedOutput,
 ) -> Result<(), ConfigSourceError> {
     let indent = "  ".repeat(depth);
     let name = kdl::KdlIdentifier::from(name).to_string();
     match value {
         Value::Object(object) => {
-            writeln!(output, "{indent}(object){name} {{").expect("writing to String cannot fail");
+            writeln!(output, "{indent}(object){name} {{")
+                .map_err(|_| ConfigSourceError::OutputTooLarge)?;
             render_object(object, depth + 1, output)?;
-            writeln!(output, "{indent}}}").expect("writing to String cannot fail");
+            writeln!(output, "{indent}}}").map_err(|_| ConfigSourceError::OutputTooLarge)?;
         }
         Value::Array(values) => {
-            writeln!(output, "{indent}(array){name} {{").expect("writing to String cannot fail");
+            writeln!(output, "{indent}(array){name} {{")
+                .map_err(|_| ConfigSourceError::OutputTooLarge)?;
             for value in values {
                 render_node("-", value, depth + 1, output)?;
             }
-            writeln!(output, "{indent}}}").expect("writing to String cannot fail");
+            writeln!(output, "{indent}}}").map_err(|_| ConfigSourceError::OutputTooLarge)?;
         }
         value => {
             let scalar = scalar_text(value)?;
-            writeln!(output, "{indent}{name} {scalar}").expect("writing to String cannot fail");
+            writeln!(output, "{indent}{name} {scalar}")
+                .map_err(|_| ConfigSourceError::OutputTooLarge)?;
         }
     }
     Ok(())

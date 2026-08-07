@@ -1,6 +1,6 @@
 use crate::{
     MAX_EXPANSION_DEPTH, MAX_NODES, MAX_OUTPUT_BYTES, MAX_SOURCE_BYTES, MAX_STRING_BYTES,
-    MAX_STRUCTURAL_DEPTH,
+    MAX_STRUCTURAL_DEPTH, MAX_SUBSTITUTIONS,
 };
 
 /// Count of native-import diagnostics carrying one stable machine-readable code.
@@ -47,6 +47,8 @@ pub enum ConfigSourceError {
     StructuralDepth,
     #[error("template expansion exceeds the {MAX_EXPANSION_DEPTH}-level inheritance limit")]
     ExpansionDepth,
+    #[error("configuration exceeds the {MAX_SUBSTITUTIONS}-substitution limit")]
+    SubstitutionLimit,
     #[error("configuration exceeds the {MAX_NODES}-node limit")]
     NodeLimit,
     #[error("configuration string exceeds the {MAX_STRING_BYTES}-byte limit")]
