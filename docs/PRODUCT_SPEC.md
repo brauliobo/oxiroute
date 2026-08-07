@@ -205,8 +205,8 @@ The current contract is:
   are current frontend workflows, while native source editing remains outside the frontend. TLS-ALPN
   challenge selection and listener-deployment guidance are exposed; listener deployment and
   CA-staging evidence remain gates.
-- `foundation`: forward-proxy request forms outside the active HTTP/1 paths and authority-only H2/H3
-  classic CONNECT path; these are not active daemon capabilities.
+- `foundation`: forward-proxy request forms outside the active HTTP/1 and authority-only H2/H3
+  classic CONNECT paths; these are not active daemon capabilities.
 - `planned`: broader cache conformance, broader managed ACME authenticators, durable replay/history
   for the non-durable operational event ring, and broader protocol/import compatibility.
 - `research`: remote administration, broader DNS provider policy, external key providers, and

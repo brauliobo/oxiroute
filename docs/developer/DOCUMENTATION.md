@@ -19,9 +19,10 @@ it before the feature details.
 
 ## Status Rules
 
-Use `implemented`, `partial`, `planned`, and `out of scope` consistently. Every status claim should
-point to code/tests or a normative boundary. Product specs and roadmaps describe goals; the README,
-compatibility matrix, and release notes describe current behavior.
+Use `stable`, `partial`, `foundation`, `planned`, `research`, `not-planned`, and `out-of-scope`
+consistently. Every status claim should point to code/tests or a normative boundary. Product specs
+and roadmaps describe goals; the README, compatibility matrix, and release notes describe current
+behavior.
 
 When a capability changes:
 

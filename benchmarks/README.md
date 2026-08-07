@@ -22,6 +22,9 @@ Measured reports:
   2026-07-31 HTTP/1 ownership, pool, and handoff optimizations, rejected experiments, and final
   exact-binary verification.
 
+The dated reports are historical evidence for their recorded workloads and toolchains. Their skipped
+lanes and older Rust commands do not describe the current `ce310df` capability boundary.
+
 ## Scope
 
 - One Linux host, loopback TCP, HTTP/1.1 keep-alive, and a fixed 1 KiB origin response.
@@ -42,7 +45,8 @@ inferred from reverse H1.
 
 ## Requirements
 
-- Linux with `/proc`, Bash 4 or newer, Python 3, nginx, HAProxy, and Rust 1.87.
+- Linux with `/proc`, Bash 4 or newer, Python 3, nginx, HAProxy, and Rust 1.97.1 for the checked-in
+  benchmark gate.
 - A release OxiRoute binary at `target/release/oxiroute`, or an executable path in
   `OXIROUTE_BIN`.
 - The benchmark ports must be free. The preflight checks this before any process starts.
@@ -50,8 +54,8 @@ inferred from reverse H1.
 Build OxiRoute outside the harness so compilation is never mixed with measurement:
 
 ```sh
-cargo +1.87.0 build --release --locked -p oxiroute
-cargo +1.87.0 build --release --locked --manifest-path benchmarks/loadgen/Cargo.toml
+cargo +1.97.1 build --release --locked -p oxiroute
+cargo +1.97.1 build --release --locked --manifest-path benchmarks/loadgen/Cargo.toml
 ```
 
 The repository load generator sends an explicit `GET /payload HTTP/1.1` request with `Host` and
@@ -103,8 +107,8 @@ contains the unavailable lane records copied from `lanes.json`, and `run.json` r
 ports, durations, threads, and connections. `environment.json` is the run's provenance record: it
 contains exact `rustc -Vv` and `cargo -Vv` output, resolved executable paths and SHA-256 hashes,
 the source commit, porcelain worktree state, tracked-diff fingerprint, and untracked-file hashes. The
-recorded Rust commands use the same pinned `1.87.0` toolchain as both build commands. A failed run
-remains on disk for diagnosis.
+recorded Rust commands use the same pinned `1.97.1` toolchain as both build commands. A failed run remains on
+disk for diagnosis.
 
 ## Publishing evidence
 

@@ -77,6 +77,10 @@ version 1
 Use [oxiroute.example.kdl](../../oxiroute.example.kdl) for a complete example with management,
 TCP, RTMP, health checks, and explicit defaults.
 
+This smallest shape is intentionally an HTTP/1 example. Reverse H2 uses a TLS `http` listener with
+`h2` ALPN, forward H2 uses `forward_http2`, and the reverse/forward H3 listeners use UDP
+`http3`/`forward_http3` respectively.
+
 ## Common Rules
 
 - Names are unique within each typed collection.

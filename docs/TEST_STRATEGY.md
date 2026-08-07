@@ -17,7 +17,7 @@ The initial repository followed this sequence:
 
 The lists below distinguish checked-in coverage from planned release gates. Bounded parser fuzz
 harnesses and the real-browser runner are checked in under `fuzz/`, `ui/tests/browser/`, and
-`.github/workflows/`; an optional fuzz smoke is not a full fuzz campaign.
+`.github/workflows/`; the separate optional fuzz-smoke workflow is not a full fuzz campaign.
 
 ### Unit and property tests
 
@@ -80,8 +80,9 @@ parser round trips, and long-running media/supervision properties remain planned
   existing lease.
 - TCP full duplex, half-close, slow readers, backpressure, and cancellation.
 - TCP connect/idle/lifetime deadlines and partial traffic accounting across failure paths.
-- TLS SNI/ALPN, upstream verification, certificate rotation, and expiry. Client authentication
-  remains a future gate.
+- TLS SNI/ALPN, upstream verification, certificate rotation, expiry, and bounded downstream client
+  certificate authentication for the current H1/H2/H3 listener paths; broader interoperability
+  remains a gate.
 - Atomic config writes, exact revision preconditions, stale conflicts, complete preflight before
   disk mutation, redaction, authentication, explicit pending-activation outcomes, and truthful
   restart-required Unix mode changes, including candidates with other edits, that leave the active
@@ -99,8 +100,8 @@ parser round trips, and long-running media/supervision properties remain planned
   non-overlapping polling.
 
 Packaged supervised UDP/H3 replacement under active traffic, broader active-traffic generation reload/drain
-breadth, downstream client certificate authentication, and managed ACME live/staging integration remain
-gates rather than complete release evidence. Native dependency paths are watched and periodically
+breadth, and managed ACME live/staging integration remain gates rather than complete release evidence.
+Native dependency paths are watched and periodically
 re-resolved in the configuration reload paths. UDP relay loopback coverage
 includes passive connect/send/receive/protocol attribution, bounded ejection/reentry, and non-poisoning
 client/lifecycle/limit paths; no active UDP health-check type is claimed. Managed ACME protocol, state, bootstrap, TLS-ALPN cleanup, DNS cleanup recovery, and
@@ -245,9 +246,10 @@ workflow prove buildability and a bounded smoke path; they do not claim coverage
 or crash-free long-running execution. Daemon routing, socket/session lifecycle, private integration
 helpers, and full protocol wire sessions remain deliberate harness boundaries.
 
-The release workflow does not require a full `cargo-fuzz` campaign. It compiles the isolated fuzz
-workspace and the optional smoke workflow runs when `cargo-fuzz` and nightly tooling are available;
-full bounded campaigns, corpus triage, and long-running crash evidence remain separate release gates.
+The release workflow does not require a full `cargo-fuzz` campaign. The separate optional
+`.github/workflows/fuzz-smoke.yml` workflow compiles the isolated fuzz workspace and runs its smoke
+when `cargo-fuzz` and nightly tooling are available; full bounded campaigns, corpus triage, and
+long-running crash evidence remain separate release gates.
 
 ### UI end-to-end
 
@@ -286,7 +288,7 @@ The current full local check set is:
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cargo +1.87 test --workspace --locked
+cargo +1.97.1 test --workspace --locked
 cargo fmt --manifest-path fuzz/Cargo.toml --check
 cargo check --manifest-path fuzz/Cargo.toml --locked --jobs 4
 bash fuzz/smoke.sh
@@ -295,9 +297,11 @@ pnpm --dir ui build
 pnpm --dir ui test:browser -- --workers=2
 ```
 
-The checked-in Linux workflow at `.github/workflows/ci.yml` enforces that set and separately runs the
-coverage-manifest, browser, and ACME scripted tests. The optional `.github/workflows/fuzz-smoke.yml`
-compiles the isolated fuzz workspace and runs its bounded smoke when tooling is available.
+The locked commands above use the current Rust 1.97.1 gate. The checked-in Linux workflow at
+`.github/workflows/ci.yml` enforces the workspace format/lint/tests, locked Rust 1.97.1 tests,
+coverage-manifest, package metadata, UI, browser, and local ACME jobs. It does not run the fuzz
+commands. The separate optional `.github/workflows/fuzz-smoke.yml` compiles the isolated fuzz
+workspace and runs its bounded smoke when tooling is available.
 `.github/workflows/audit.yml` adds dependency, license, source,
 RustSec, and UI vulnerability checks; `.github/workflows/release.yml` verifies version metadata,
 archive contents/checksums, and build provenance. Representative focused gates are
@@ -320,5 +324,5 @@ RTMP, and SSE; CA-staging issuance and renewal for all three managed challenge t
 protocol/import interoperability; bounded fuzz runs and crash triage; and packaged supervised UDP/H3
 replacement, rollback, drain, restart, and crash recovery under traffic.
 
-A capability cannot move to `supported` in a public matrix while its failure-path,
+A capability cannot move to `stable` in a public matrix while its failure-path,
 reload/rotation, observability, and interoperability tests are missing.

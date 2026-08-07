@@ -88,7 +88,7 @@ unchanged.
 ## Shutdown
 
 Pingora is configured with a 3-second connection grace period followed by a 2-second runtime
-shutdown deadline. SIGTERM requests graceful shutdown; packaging uses a 10-second systemd stop
+shutdown deadline. SIGTERM requests graceful shutdown; packaging uses a 15-second systemd stop
 deadline. Tests send SIGTERM and reserve force-kill only as a bounded test cleanup fallback.
 
 ## Readiness

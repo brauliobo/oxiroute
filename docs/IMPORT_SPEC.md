@@ -229,6 +229,9 @@ and the inheritable `live`, `idle_streams`, and exact recording policy below:
   recorder names are retained and become independently controllable only when their canonical
   `start` mode is `manual`.
 - Canonical recorder queue/shutdown/storage defaults where nginx has no exact equivalent.
+- The bounded HLS subset: `hls on`, an absolute `hls_path`, fragment/max-fragment/playlist bounds,
+  nested output, fragment naming, cleanup, and AES key rotation controls. These lower into the
+  canonical HLS policy; native `hls_variant` and other unsupported packaging forms remain blocked.
 
 The importer resolves these scalar policies across `rtmp`, `server`, `application`, and include
 boundaries without opening `record_path`. It emits canonical listener/service/application/recorder
@@ -240,8 +243,8 @@ missing or insecure paths, recording without `live on`, bare `record manual`, pa
 audio/video/keyframe masks, manual intervals, unsupported suffix fields, enabled `record_append`,
 enabled `record_lock`, nonzero size/frame limits, enabled notify policy, named recorder blocks with
 unsupported effective fields, global RTMP policy, access, dynamic push/pull, callbacks, unsupported
-exec forms, VOD,
-HLS/DASH, file logs, stats, and native control behavior. This strict subset is not full nginx-RTMP
+exec forms, VOD, HLS forms outside the bounded subset, native DASH, file logs, stats, and native
+control behavior. This strict subset is not full nginx-RTMP
 compatibility and is not an audited-host claim unless the authoritative coverage manifest maps an
 audited fixture.
 

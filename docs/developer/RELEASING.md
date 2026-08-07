@@ -43,10 +43,11 @@ recording roots, or package files.
 
 ## GitHub Pages
 
-`.github/workflows/release.yml` runs on version tags, verifies Rust 1.87 metadata, version alignment,
+`.github/workflows/release.yml` runs on version tags, verifies Rust 1.97.1 metadata, version alignment,
 the deterministic archive, the Arch checksum, and a source provenance manifest, then uploads and
-attests the archive. It publishes GitHub release assets only for a tag; manual runs verify a supplied
-tag or ref without publishing. A checksum mismatch is a deliberate release blocker, not a fallback.
+attests the archive. The tag workflow does not run a full fuzz campaign.
+It publishes GitHub release assets only for a tag; manual runs verify a supplied tag or ref without
+publishing. A checksum mismatch is a deliberate release blocker, not a fallback.
 
 `.github/workflows/audit.yml` runs pinned RustSec and cargo-deny checks plus a high-severity UI audit.
 `deny.toml` rejects unknown registries and Git sources except the pinned h3 repository. Existing

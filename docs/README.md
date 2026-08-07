@@ -58,10 +58,13 @@ workflow are recorded in the [documentation plan](DOCUMENTATION_PLAN.md).
 
 Use the same words everywhere:
 
-- `implemented`: code and initial tests are present.
+- `stable`: part of the current narrow release contract with implementation and required evidence.
 - `partial`: a narrow path works, but a broader compatibility or production gate remains.
+- `foundation`: tested code that is not an active daemon capability.
 - `planned`: a goal or roadmap item; not available in the current daemon.
-- `out of scope`: intentionally outside the user-space proxy boundary.
+- `research`: an evaluated possibility requiring a product or design decision.
+- `not-planned`: deliberately excluded from the current product plan.
+- `out-of-scope`: intentionally outside the user-space proxy boundary.
 
 The README and compatibility matrix describe current behavior. Product specs and roadmaps describe
 requirements and direction; they must not be used alone to decide whether a feature is deployable.

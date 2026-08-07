@@ -17,8 +17,10 @@ pnpm --dir ui test:browser -- --workers=2
 For a locked toolchain check when it is installed:
 
 ```sh
-cargo +1.87 test --workspace --locked --jobs 4
+cargo +1.97.1 test --workspace --locked --jobs 4
 ```
+
+The checked-in locked gate is Rust `1.97.1`, matching the workspace manifests and CI.
 
 Build tasks should use at most four workers in constrained environments. For make-based tooling, use
 `nice make -j4`; Cargo commands above pass `--jobs 4` explicitly.
@@ -52,7 +54,7 @@ complete.
 
 ## What A Support Claim Needs
 
-A capability should not move to `implemented` without the relevant:
+A capability should not move to `stable` without the relevant:
 
 - success path;
 - malformed-input and resource-bound cases;
@@ -61,10 +63,11 @@ A capability should not move to `implemented` without the relevant:
 - reload/rotation or lifecycle coverage where applicable; and
 - independent protocol or interoperability evidence where applicable.
 
-Checked-in bounded parser fuzz scaffolding lives under `fuzz/`; its optional smoke workflow does not
-claim fuzz coverage and skips execution when cargo-fuzz or nightly Rust is unavailable. The Linux
-workflow in `.github/workflows/ci.yml` enforces the Rust and UI gates plus coverage-manifest and
-localhost-only browser validation. `.github/workflows/platform.yml` runs locked metadata on every
+Checked-in bounded parser fuzz scaffolding lives under `fuzz/`; the separate optional
+`.github/workflows/fuzz-smoke.yml` workflow does not claim fuzz coverage and skips execution when
+cargo-fuzz or nightly Rust is unavailable. The Linux workflow in `.github/workflows/ci.yml` enforces
+the Rust and UI gates plus coverage-manifest and localhost-only browser validation; it does not run
+the fuzz smoke. `.github/workflows/platform.yml` runs locked metadata on every
 listed platform and explicitly gates full builds to Linux until the platform boundary changes.
 
 The browser suite runs against the built static UI with Playwright route interception. Unexpected API

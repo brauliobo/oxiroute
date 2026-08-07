@@ -17,7 +17,12 @@ cargo clippy -p oxiroute-forward-proxy --all-targets --all-features --locked -- 
 | HTTP/2 | Absolute URI reconstructed from `:scheme`, `:authority`, and `:path` | Authority-form CONNECT | `h2` client/server wire test and daemon TLS/ALPN test; CONNECT payload is relayed in DATA frames |
 | HTTP/3 | Absolute URI reconstructed from QPACK pseudo-fields | Authority-only RFC 9114 classic CONNECT with DATA-frame tunnel relay | Quinn QUIC with TLS, negotiated `h3` ALPN, real QPACK HEADERS, bidirectional DATA, FIN, reset, rejection, and limit tests |
 
-The selected Rust-1.87-compatible H3 stack is `h3 0.0.8`, `h3-quinn 0.0.10`, and Quinn 0.11. The
+The table describes crate-level parser and tunnel primitives. The checked-in daemon's
+`forward_http3` listener advertises only authority-only classic CONNECT; H3 absolute-form parsing
+is not a positive daemon capability.
+
+The selected Rust-1.97-compatible H3 stack is `h3 0.0.8`, `h3-quinn 0.0.10`, and Quinn 0.11. The
+workspace uses Rust `1.97.1` as its active MSRV. The
 workspace manifest patches `h3` to verified upstream commit `e07e6941`, which is the focused
 standard-CONNECT encoder fix later merged upstream: classic CONNECT omits `:scheme` and `:path` and
 emits only `:method` and `:authority`. The patched crate declares Rust 1.74. Extended CONNECT is
@@ -118,4 +123,4 @@ profile machinery can be integrated at the service boundary without merging the 
 Runtime foundation dependencies are `async-trait`, `bytes`, `h3`, `http`, `thiserror`, and `tokio`.
 Wire-test dependencies are `hyper`/`hyper-util` for H1, `h2`, and
 `quinn`/`rustls`/`h3`/`h3-quinn` for H3; `rcgen` creates ephemeral test certificates only. The
-standalone `Cargo.lock` pins the Rust-1.87-compatible resolution, including `time 0.3.45`.
+workspace lockfile pins the Rust-1.97-compatible resolution, including the current `time` release.

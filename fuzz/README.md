@@ -6,14 +6,14 @@ application behavior.
 
 ## Tools
 
-- Rust `1.87` and Cargo `1.87` are the MSRV compile gate.
+- Rust `1.97.1` and Cargo `1.97.1` are the current checked-in MSRV compile gate.
 - `cargo-fuzz` is required to execute libFuzzer targets. Its normal execution path requires a
   nightly Rust toolchain in addition to the MSRV toolchain.
 - A host C/C++ compiler and LLVM tooling are required by `libfuzzer-sys` on the target platform.
 - The harnesses do not open sockets, resolve names, read configuration files, or access the network.
 
-The stable compile/list checks do not claim fuzz coverage. The optional CI smoke exits successfully
-when `cargo-fuzz` or nightly Rust is unavailable.
+The stable compile/list checks do not claim fuzz coverage. The separate optional `fuzz-smoke`
+workflow exits successfully when `cargo-fuzz` or nightly Rust is unavailable.
 
 ## Targets
 

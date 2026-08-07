@@ -74,7 +74,7 @@ return {
     {
       name = "web",
       bind = { type = "socket", address = "127.0.0.1:8443" },
-      protocol = "http", -- http | forward_http1 | tcp | udp | rtmp
+      protocol = "http", -- http | http3 | forward_http1 | forward_http2 | forward_http3 | tcp | udp | rtmp
       service = "web",
       tls_profile = "public-tls",
       max_connections = 10000,
@@ -310,9 +310,12 @@ Current constraints:
   listener directory MUST be owned by the effective service user or have the sticky bit, and no
   path ancestor may be group/world writable unless it has the sticky bit. The runtime retains a
   mode-`0600` `<socket>.oxiroute.lock` ownership marker beside each Unix listener.
-- HTTP, forward-HTTP/1, RTMP, and TCP listeners MUST reference an existing same-kind service. An
-  RTMP service MUST contain between 1 and 256 unique applications, and one configuration accepts at
-  most 64 RTMP services.
+- HTTP, HTTP/3, forward-HTTP/1, forward-HTTP/2, forward-HTTP/3, RTMP, and TCP listeners MUST
+  reference an existing same-kind service. An RTMP service MUST contain between 1 and 256 unique
+  applications, and one configuration accepts at most 64 RTMP services.
+- The `http` listener uses TCP and can negotiate HTTP/1.1 or H2 according to its TLS ALPN profile.
+  `forward_http2` uses a TLS H2 listener, while `http3` and `forward_http3` use UDP/QUIC listeners;
+  those protocol-specific paths do not silently fall back to another HTTP version.
 - `tls_profile` is accepted on HTTP, forward-HTTP, and HTTP/3 listeners. Its named TLS profile and
   that profile's named certificate MUST exist. A socket-bound forward-HTTP/1 listener with
   `tls_required = true` MUST reference a profile advertising `http/1.1`; a Unix forward-HTTP/1
@@ -531,10 +534,12 @@ The server runtime enforces aggregate/listener admission, Unix modes, downstream
 policies, nginx suffix routing, bounded headers/auth/cookies, static extensions, gzip and HTTP
 logging, named-server capacity and bounded queue waits, pool deadlines/reuse, startup/on-connect DNS,
 all four balancing algorithms, configurable passive health, and the extended health policy.
-Buffering-on and active cache policies fail startup. RTMP relay/fanout controls and canonical
-named-recorder policies compile into
-the current runtime, including bounded HLS/DASH media, same-daemon auto-push, and isolated RTMP
-exec profiles; unsupported native RTMP semantics and enhanced codecs remain blocked. Importers
+Bounded request buffering and bounded fixed-length response buffering are active; only unbounded
+buffering fails startup. Supported memory/persistent cache policies are active for reverse HTTP and
+eligible HTTP/1 forward requests, while unsupported cache forms fail closed. RTMP relay/fanout
+controls and canonical named-recorder policies compile into the current runtime, including bounded
+HLS/DASH media, same-daemon auto-push, and isolated RTMP exec profiles; unsupported native RTMP
+semantics and enhanced codecs remain blocked. Importers
 remain separate adapters, except that finalized nginx/HAProxy/Apache/Squid/Varnish references can be
 composed by
 the declarative source resolver where documented.
