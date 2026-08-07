@@ -452,6 +452,66 @@ fn freshness_stale_windows_and_head_get_semantics_are_enforced() {
 }
 
 #[test]
+fn stale_if_error_reuse_refreshes_memory_lru_order() {
+    let mut limits = config();
+    limits.max_entries = 2;
+    let clock = Arc::new(ManualClock::default());
+    let cache = Cache::with_clock(limits, clock.clone()).expect("cache");
+    let request_headers = HeaderMap::new();
+    let headers = response("max-age=1, stale-if-error=60");
+    let stale_key = store(
+        &cache,
+        &request_headers,
+        "/stale",
+        &headers,
+        b"stale",
+        0,
+        &[],
+    );
+    store(
+        &cache,
+        &request_headers,
+        "/other",
+        &headers,
+        b"other",
+        0,
+        &[],
+    );
+
+    clock.set(2);
+    assert_eq!(
+        cache
+            .stale_if_error(&stale_key)
+            .expect("stale fallback")
+            .body,
+        Bytes::from_static(b"stale")
+    );
+    let new_headers = response("max-age=60");
+    store(
+        &cache,
+        &request_headers,
+        "/new",
+        &new_headers,
+        b"new",
+        2,
+        &[],
+    );
+
+    assert!(matches!(
+        cache.lookup(request(&Method::GET, "/stale", &request_headers)),
+        Ok(Lookup::Revalidate { .. })
+    ));
+    assert!(matches!(
+        cache.lookup(request(&Method::GET, "/other", &request_headers)),
+        Ok(Lookup::Miss { .. })
+    ));
+    assert!(matches!(
+        cache.lookup(request(&Method::GET, "/new", &request_headers)),
+        Ok(Lookup::Hit { .. })
+    ));
+}
+
+#[test]
 fn canonical_timeline_uses_status_ttl_failure_grace_and_revalidation_keep() {
     let (cache, clock) = cache();
     let request_headers = HeaderMap::new();

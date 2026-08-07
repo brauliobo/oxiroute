@@ -263,15 +263,17 @@ paths, and durable audit store are implemented but do not by themselves close th
 
 Checked-in bounded harnesses cover configuration/native source parsing, forward targets, over-read
 I/O, RTMP handshake/chunk/AMF decoding, TLS ClientHello, PROXY v1/v2, bounded UDP datagram headers,
-HTTP/1 parsing, and the current public parser surfaces. `cargo check` and the optional `fuzz/smoke.sh`
-workflow prove buildability and a bounded smoke path; they do not claim coverage, corpus stability,
-or crash-free long-running execution. Daemon routing, socket/session lifecycle, private integration
-helpers, and full protocol wire sessions remain deliberate harness boundaries.
+HTTP/1 parsing, and the current public parser surfaces. `scripts/verify-fuzz.sh` validates the complete
+target/corpus contract and locked build, while the optional `fuzz/smoke.sh` workflow provides a fixed,
+bounded execution when libFuzzer tooling is available. These checks do not claim coverage, corpus
+stability beyond the checked-in seed contract, or crash-free long-running execution. Daemon routing,
+socket/session lifecycle, private integration helpers, and full protocol wire sessions remain deliberate
+harness boundaries.
 
-The release workflow does not require a full `cargo-fuzz` campaign. The separate optional
-`.github/workflows/fuzz-smoke.yml` workflow compiles the isolated fuzz workspace and runs its smoke
-when `cargo-fuzz` and nightly tooling are available; full bounded campaigns, corpus triage, and
-long-running crash evidence remain separate release gates.
+The release workflow requires the bounded target/corpus contract and isolated workspace compile, but
+does not require a full `cargo-fuzz` campaign. The separate optional `.github/workflows/fuzz-smoke.yml`
+workflow runs its fixed smoke when `cargo-fuzz` and nightly tooling are available; full bounded
+campaigns, retained crash artifacts, and long-running crash evidence remain separate release gates.
 
 ### UI end-to-end
 
@@ -301,7 +303,9 @@ long-running crash evidence remain separate release gates.
 Canonical storage, certificate publication, and recording storage/worker tests inject failures
 around read-only preflight, activation open, ownership, quota sharing, write, sync,
 replacement/publication, cleanup, worker start, nonblocking queue discontinuity, bounded reaper
-backpressure/cancellation, and shutdown. Cross-process quota coordination, broader runtime activation,
+backpressure/cancellation, and shutdown. Exec workers have deterministic spawn and output-limit
+fault tests; reload and supervision have deterministic watcher, runtime, listener-adoption, candidate,
+rollback, and crash-path injections. Cross-process quota coordination, broader runtime activation,
 typed UDP/H3 replacement, and crash-injection matrices remain planned release evidence.
 
 ## Release gates
@@ -312,23 +316,18 @@ The current full local check set is:
 cargo +1.97.1 fmt --all --check
 cargo +1.97.1 clippy --workspace --all-targets --locked --jobs 4 -- -D warnings
 cargo +1.97.1 test --workspace --locked
-cargo +1.97.1 fmt --manifest-path fuzz/Cargo.toml --check
-cargo +1.97.1 check --manifest-path fuzz/Cargo.toml --locked --jobs 4
+./scripts/verify-fuzz.sh
 bash fuzz/smoke.sh
 pnpm --dir ui test
 pnpm --dir ui build
 pnpm --dir ui test:browser -- --workers=2
 ```
 
-The current worktree run passes the Rust 1.97.1 format, clippy, and locked workspace-test gates,
-the fuzz format/check gates, and the UI unit, browser type-check, build, and browser gates. The
-browser matrix reports 21 passed tests and one existing desktop-only skip. `bash fuzz/smoke.sh`
-exits successfully but skips execution because `cargo-fuzz` is unavailable; this is not long-running
-fuzz or crash-corpus evidence. The checked-in Linux workflow at
-`.github/workflows/ci.yml` enforces the workspace format/lint/tests, locked Rust 1.97.1 tests,
-coverage-manifest, package metadata, UI, browser, and local ACME jobs. It does not run the fuzz
-commands. The separate optional `.github/workflows/fuzz-smoke.yml` compiles the isolated fuzz
-workspace and runs its bounded smoke when tooling is available.
+The checked-in Linux workflow at `.github/workflows/ci.yml` enforces the workspace format/lint/tests,
+locked Rust 1.97.1 tests, bounded fuzz contract, coverage-manifest, package metadata, UI, browser,
+and local ACME jobs. The separate optional `.github/workflows/fuzz-smoke.yml` runs the same required
+fuzz contract and its bounded smoke when tooling is available. A local `bash fuzz/smoke.sh` skip
+because `cargo-fuzz` is unavailable is not long-running fuzz or crash-corpus evidence.
 `.github/workflows/audit.yml` adds dependency, license, source,
 RustSec, and UI vulnerability checks; `.github/workflows/release.yml` verifies version metadata,
 archive contents/checksums, and build provenance. Representative focused gates are
@@ -349,9 +348,9 @@ ACME protocol or active-daemon interoperability coverage.
 The release gates still open are explicit: CA-staging issuance and renewal for all three managed
 challenge types; active production-traffic reload/drain and packaged supervised replacement,
 rollback, restart, and crash recovery under traffic; process-level FFmpeg/OBS interoperability;
-long-running fuzz runs and crash-corpus triage; broader independent protocol/import interoperability;
-and a clean dependency audit. `cargo audit -D warnings` currently denies three unmaintained-
-dependency warnings, so no audit pass is claimed.
+long-running fuzz runs and crash-corpus triage; and broader independent protocol/import
+interoperability. The dependency, license, and source audit passes locally after replacing the
+affected Pingora dependency paths; CI keeps those checks fail-closed.
 
 A capability cannot move to `stable` in a public matrix while its failure-path,
 reload/rotation, observability, and interoperability tests are missing.

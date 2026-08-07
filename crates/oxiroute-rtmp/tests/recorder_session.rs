@@ -477,7 +477,7 @@ fn one_continuous_start_failure_does_not_block_a_sibling_recorder() {
 }
 
 #[test]
-fn queue_drop_and_enhanced_codec_fail_only_the_recorder_before_publication() {
+fn queue_drop_does_not_harm_enhanced_codec_recording() {
     let mut queue_config = worker_config();
     queue_config.max_queue_bytes = 2;
     let queue_fixture = Fixture::new(RtmpRecorderStart::Continuous, limits(), queue_config);
@@ -504,39 +504,44 @@ fn queue_drop_and_enhanced_codec_fail_only_the_recorder_before_publication() {
 
     let codec_fixture = Fixture::new(RtmpRecorderStart::Continuous, limits(), worker_config());
     let (mut codec_server, mut codec_client) = codec_fixture.publisher("enhanced");
-    let video = codec_client
-        .publish_video_data(
-            Bytes::from_static(&[0x91, b'h', b'v', b'c', b'1', 0xaa]),
-            RtmpTimestamp::new(0),
-            false,
-        )
-        .expect("enhanced video packet");
-    exchange(
+    publish_video_payload(
         &mut codec_client,
         &mut codec_server,
-        vec![video],
+        0,
+        &[0x90, b'h', b'v', b'c', b'1', 0xaa],
         1_721_657_969_100,
     );
-    wait_for_phase(&codec_fixture.registry, |phase| {
-        matches!(
-            phase,
-            RecorderPhase::Failed {
-                code: RecorderErrorCode::UnsupportedCodec,
-                ..
-            }
-        )
+    publish_video_payload(
+        &mut codec_client,
+        &mut codec_server,
+        1,
+        &[0x91, b'h', b'v', b'c', b'1', 0xbb],
+        1_721_657_969_101,
+    );
+    publish_video_payload(
+        &mut codec_client,
+        &mut codec_server,
+        2,
+        &[0xa1, b'h', b'v', b'c', b'1', 0xcc],
+        1_721_657_969_102,
+    );
+    wait_until(Duration::from_secs(2), || {
+        codec_fixture.registry.snapshot().streams[0].recorders[0].bytes_written > 0
     });
     let recorder = &codec_fixture.registry.snapshot().streams[0].recorders[0];
-    assert_eq!(recorder.segments_started, 0);
-    assert!(recorder.current_relative_name.is_none());
-    assert!(!codec_fixture.root.path().join("enhanced.flv").exists());
+    assert!(matches!(recorder.phase, RecorderPhase::Recording { .. }));
+    assert_eq!(recorder.segments_started, 1);
     assert_eq!(
         codec_fixture.registry.snapshot().streams[0]
             .media
             .video
             .payload_bytes_received,
-        6
+        18
     );
+    codec_server
+        .close(1_721_657_969_200)
+        .expect("publisher close");
+    wait_for_file(codec_fixture.root.path(), "enhanced.flv");
 }
 
 #[test]

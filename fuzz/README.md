@@ -12,8 +12,11 @@ application behavior.
 - A host C/C++ compiler and LLVM tooling are required by `libfuzzer-sys` on the target platform.
 - The harnesses do not open sockets, resolve names, read configuration files, or access the network.
 
-The stable compile/list checks do not claim fuzz coverage. The separate optional `fuzz-smoke`
-workflow exits successfully when `cargo-fuzz` or nightly Rust is unavailable.
+`scripts/verify-fuzz.sh` is the required stable contract gate. It checks the manifest/source target
+set, input bounds, corpus directories, regular seed files, decoded `hex:` sizes, and recognized
+deterministic `seed:` markers before running the fuzz workspace format and locked compile checks.
+The separate optional `fuzz-smoke` workflow exits successfully when `cargo-fuzz` or nightly Rust is
+unavailable, but fails closed if detected cargo-fuzz/nightly tooling cannot list or execute targets.
 
 ## Targets
 
@@ -48,6 +51,7 @@ smoke evidence, not a coverage result or a long-running campaign.
 From the repository root:
 
 ```sh
+./scripts/verify-fuzz.sh
 cargo fmt --manifest-path fuzz/Cargo.toml --check
 cargo check --manifest-path fuzz/Cargo.toml --locked --jobs 4
 cargo fuzz list
@@ -61,8 +65,8 @@ cargo fuzz run forward_target -- -runs=128 -max_len=16384 -timeout=2 -rss_limit_
 ```
 
 The checked-in corpus directories are target-specific and contain small malformed inputs plus
-representative syntax. Corpus entries beginning with `hex:` are decoded by the harness; this keeps
-binary protocol seeds reviewable as text.
+representative syntax. Corpus entries beginning with `hex:` are decoded by the harness, including a
+single review-friendly trailing line ending; this keeps binary protocol seeds reviewable as text.
 
 ## Deliberate Gaps
 

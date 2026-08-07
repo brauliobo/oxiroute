@@ -677,6 +677,36 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn rejects_publish_after_the_stream_directory_is_replaced_by_a_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempdir().expect("temporary media root");
+        let outside = tempdir().expect("outside media root");
+        let store = MediaStore::open(root.path().join("hls"), limits()).expect("media store");
+        let hub = LiveHub::new(crate::LiveHubLimits::default());
+        let key = StreamKey::new("service", "application", "stream");
+        let publisher = hub.attach_publisher(key.clone()).expect("publisher");
+        let prefix = store
+            .attach(&key, publisher.incarnation())
+            .expect("media incarnation");
+        let stream_directory = root.path().join("hls").join(&prefix);
+        std::fs::remove_dir_all(&stream_directory).expect("replace stream directory");
+        symlink(outside.path(), &stream_directory).expect("stream directory symlink");
+
+        assert!(matches!(
+            store.publish(
+                &key,
+                publisher.incarnation(),
+                &prefix.join("index.m3u8"),
+                b"#EXTM3U",
+            ),
+            Err(MediaStoreError::InvalidPath)
+        ));
+        assert!(!outside.path().join("index.m3u8").exists());
+    }
+
     #[test]
     fn continuing_attach_preserves_media_across_publisher_restart() {
         let root = tempdir().expect("temporary media root");

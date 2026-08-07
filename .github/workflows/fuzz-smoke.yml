@@ -17,9 +17,11 @@ jobs:
 
       - name: Install Rust 1.97.1
         uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: rustfmt
 
-      - name: Compile fuzz workspace
-        run: cargo check --manifest-path fuzz/Cargo.toml --locked --jobs 4
+      - name: Verify bounded fuzz targets and crash-corpus seeds
+        run: ./scripts/verify-fuzz.sh
 
-      - name: Run optional cargo-fuzz smoke
+      - name: Run optional cargo-fuzz smoke when tooling is available
         run: bash fuzz/smoke.sh

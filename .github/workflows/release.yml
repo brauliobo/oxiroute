@@ -56,6 +56,9 @@ jobs:
       - name: Verify all committed lockfiles are current
         run: ./scripts/verify-lockfiles.sh
 
+      - name: Verify bounded fuzz targets and crash-corpus seeds
+        run: ./scripts/verify-fuzz.sh
+
       - name: Select release version
         run: |
           version="${{ inputs.tag || github.ref_name }}"

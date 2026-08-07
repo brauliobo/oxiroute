@@ -260,7 +260,7 @@
         "crates/oxiroute-server/tests/forward_proxy_h2.rs#daemon_accepts_tls_h2_connect_and_relays_stream_data",
         "crates/oxiroute-forward-proxy/tests/h3_wire.rs#h3_absolute_target_crosses_quic_tls_and_h3_frames",
         "crates/oxiroute-forward-proxy/tests/h3_wire.rs#classic_connect_maps_authentication_and_policy_rejections_without_opening_tunnels",
-        "crates/oxiroute-server/tests/forward_proxy_h3.rs#daemon_rejects_h3_plain_http_without_fallback_and_releases_udp_listener"
+        "crates/oxiroute-server/tests/forward_proxy_h3.rs#daemon_rejects_h3_extended_connect_without_tcp_or_h1_fallback"
       ]
     },
     {
@@ -272,6 +272,11 @@
         "crates/oxiroute-import/tests/varnish_foundation.rs#typed_ir_covers_cache_headers_cookies_backends_and_invalidation",
         "crates/oxiroute-import/tests/varnish_foundation.rs#include_cycles_are_blocking_and_do_not_expand_forever",
         "crates/oxiroute-import/tests/varnish_foundation.rs#exact_static_cache_subset_lowers_to_a_finalized_candidate",
+        "crates/oxiroute-import/tests/varnish_foundation.rs#exact_http_probes_lower_named_and_default_health_checks",
+        "crates/oxiroute-import/tests/varnish_foundation.rs#noncanonical_probe_window_blocks_lowering",
+        "crates/oxiroute-import/tests/varnish_foundation.rs#custom_probe_request_blocks_lowering",
+        "crates/oxiroute-import/tests/varnish_foundation.rs#non_set_probe_assignment_is_not_treated_as_a_supported_property",
+        "crates/oxiroute-import/tests/varnish_foundation.rs#director_with_inconsistent_probe_policies_blocks_lowering",
         "crates/oxiroute-import/tests/varnish_foundation.rs#exact_legacy_round_robin_director_lowers_to_one_upstream_pool",
         "crates/oxiroute-import/tests/varnish_foundation.rs#exact_file_storage_lowers_to_a_disk_cache_store",
         "crates/oxiroute-config-source/tests/resolver.rs#native_varnish_reference_resolves_exact_cache_subset_and_retains_evidence",

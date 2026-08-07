@@ -468,6 +468,9 @@ fn run_worker(
             }
         }
         let summary = child.finish();
+        if failure.is_none() && summary.output_truncated {
+            failure = Some(ExecWorkerFailure::OutputLimit);
+        }
         inner.pid.store(0, Ordering::Release);
         update_state(inner, |status| {
             status.pid = None;
@@ -897,6 +900,28 @@ mod tests {
         .expect("respawning test profile is valid")
     }
 
+    fn command_profile(
+        executable: &str,
+        arguments: impl IntoIterator<Item = String>,
+        limits: ExecLimits,
+    ) -> ExecProfile {
+        ExecProfile::new(
+            "command",
+            "live",
+            ExecMode::Command,
+            ExecTrigger::Publisher,
+            PathBuf::from(executable),
+            arguments,
+            Vec::<crate::ExecEnvironment>::new(),
+            PathBuf::from("/tmp"),
+            crate::ExecFilesystemPolicy::WorkingDirectory,
+            ExecNetworkPolicy::Inherited,
+            limits,
+            false,
+        )
+        .expect("command test profile is valid")
+    }
+
     fn wait_for(
         worker: &ExecWorker,
         predicate: impl Fn(&ExecWorkerStatus) -> bool,
@@ -1006,5 +1031,46 @@ mod tests {
         });
         assert_eq!(status.respawns, 1);
         assert_eq!(status.failure, Some(ExecWorkerFailure::RespawnLimit));
+    }
+
+    #[test]
+    fn missing_executable_is_reported_as_a_worker_failure() {
+        let profile = command_profile(
+            "/definitely/not/an/oxiroute-executable",
+            Vec::<String>::new(),
+            limits(1, 64 * 1024),
+        );
+        let profiles = ExecProfileSet::new([profile]).expect("profile set");
+        let workers = profiles.start_publisher("service", &key(), SessionId::new());
+        let status = wait_for(&workers[0], |status| {
+            status.phase == ExecWorkerPhase::Failed
+        });
+        assert_eq!(status.failure, Some(ExecWorkerFailure::SpawnFailed));
+        assert_eq!(status.respawns, 0);
+    }
+
+    #[test]
+    fn output_limit_is_reported_even_when_the_child_exits_immediately() {
+        let limits = ExecLimits::new(
+            1,
+            64 * 1024,
+            4,
+            64 * 1024,
+            Duration::from_secs(5),
+            Duration::from_secs(1),
+            1,
+            Duration::from_millis(10),
+            0,
+        )
+        .expect("output-limit test limits are valid");
+        let profile = command_profile("/bin/printf", ["%s".into(), "0123456789".into()], limits);
+        let profiles = ExecProfileSet::new([profile]).expect("profile set");
+        let workers = profiles.start_publisher("service", &key(), SessionId::new());
+        let status = wait_for(&workers[0], |status| {
+            status.phase == ExecWorkerPhase::Failed
+        });
+        assert_eq!(status.failure, Some(ExecWorkerFailure::OutputLimit));
+        assert!(status.output_truncated);
+        assert_eq!(status.stdout_bytes, 4);
     }
 }

@@ -74,6 +74,21 @@ jobs:
       - name: Run locked Rust 1.97.1 tests
         run: cargo +1.97.1 test --workspace --locked --jobs 4
 
+  fuzz-contract:
+    name: Bounded fuzz harness and corpus contract
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: rustfmt
+
+      - name: Verify every checked-in fuzz target and seed
+        run: ./scripts/verify-fuzz.sh
+
   coverage-manifests:
     name: Coverage manifest validation
     runs-on: ubuntu-24.04

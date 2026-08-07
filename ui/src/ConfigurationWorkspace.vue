@@ -126,6 +126,10 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
       strong {{ saveMessage.title }}
       |  {{ saveMessage.detail }}
 
+    .revision-banner.tls-alpn(v-if="tlsAlpnMessage" :inert="reviewOpen ? '' : null" :class="tlsAlpnMessage.kind" :role="tlsAlpnMessage.kind === 'error' ? 'alert' : 'status'" aria-live="polite")
+      strong {{ tlsAlpnMessage.title }}
+      |  {{ tlsAlpnMessage.detail }}
+
     .config-layout(:inert="reviewOpen ? '' : null")
       aside.object-rail
         label.mobile-nav-label(for="mobile-object-navigation") Current object
@@ -270,6 +274,7 @@ section.config-workspace(ref="workspaceRoot" aria-labelledby="configuration-head
             v-else-if="selectedCertificate"
             :certificate="selectedCertificate"
             @remove="removeSelected('certificates')"
+            @prepare-tls-alpn="prepareTlsAlpnListener"
           )
           TlsProfileEditor(
             v-else-if="selectedTlsProfile"
@@ -420,6 +425,7 @@ import {
 } from './configuration/useConfigurationNavigation'
 import { errorDiagnosticsFrom } from './config'
 import type { CanonicalConfig, ConfigDiagnostic, ConfigSnapshot } from './config'
+import { prepareTlsAlpnDeployment } from './configuration/tlsAlpnDeployment'
 import { isRecord } from './valueGuards'
 
 interface CanonicalUnavailableState {
@@ -444,6 +450,7 @@ const capabilityUnavailable = ref<string | null>(null)
 const canonicalUnavailable = ref<CanonicalUnavailableState | null>(null)
 const loadError = ref<string | null>(null)
 const refreshError = ref<string | null>(null)
+const tlsAlpnMessage = ref<{ kind: 'success' | 'error'; title: string; detail: string } | null>(null)
 const selectedKey = ref('general')
 const reviewOpen = ref(false)
 let loadController: AbortController | null = null
@@ -628,6 +635,39 @@ function discardAndReload(): void {
 
 function markDraftChanged(): void {
   clearMessages()
+  tlsAlpnMessage.value = null
+}
+
+function prepareTlsAlpnListener(): void {
+  const config = draft.value
+  const certificate = selectedCertificate.value
+  if (!config || !certificate) return
+
+  const result = prepareTlsAlpnDeployment(config, certificate.name)
+  if (result.outcome === 'blocked') {
+    tlsAlpnMessage.value = {
+      kind: 'error',
+      title: 'TLS-ALPN listener not prepared.',
+      detail: result.message,
+    }
+    return
+  }
+  if (result.outcome === 'ready') {
+    tlsAlpnMessage.value = {
+      kind: 'success',
+      title: 'TLS-ALPN listener is ready in the draft.',
+      detail: `${result.listenerName} uses ${result.profileName} on ${result.bindAddress}. Validate and save the certificate challenge selection; public DNS, firewall, and external reachability remain deployment gates.`,
+    }
+    return
+  }
+
+  markDraftChanged()
+  selectedKey.value = `listeners:${result.listenerIndex}`
+  tlsAlpnMessage.value = {
+    kind: 'success',
+    title: 'TLS-ALPN listener draft prepared.',
+    detail: `${result.listenerName} will bind ${result.bindAddress} with ${result.profileName} and return 404 for non-challenge HTTP traffic. Nothing is deployed until validation, review, and the revision-checked save.`,
+  }
 }
 
 function resetDraft(): void {

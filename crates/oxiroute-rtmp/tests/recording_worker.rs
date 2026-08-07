@@ -645,7 +645,7 @@ fn bounded_try_enqueue_drops_an_oversized_event_without_opening_storage() {
 }
 
 #[test]
-fn terminal_failure_accounts_for_the_event_that_caused_it() {
+fn enhanced_codec_event_is_accounted_as_processed() {
     let temporary = tempdir().expect("temporary directory");
     let store = store(temporary.path());
     let worker = worker(&store, None, 1024);
@@ -653,8 +653,8 @@ fn terminal_failure_accounts_for_the_event_that_caused_it() {
 
     let status = shutdown(worker);
     assert_eq!(status.events_enqueued, 1);
-    assert_eq!(status.events_processed, 0);
-    assert_eq!(status.events_dropped, 1);
+    assert_eq!(status.events_processed, 1);
+    assert_eq!(status.events_dropped, 0);
     assert_eq!(status.queue_messages, 0);
     assert_eq!(status.queue_bytes, 0);
 }
@@ -889,7 +889,7 @@ fn status_contains_no_absolute_root_or_raw_io_error() {
 }
 
 #[test]
-fn rejects_declared_enhanced_and_unsupported_codecs_before_starting_a_worker() {
+fn accepts_declared_video_codecs_before_starting_a_worker() {
     let temporary = tempdir().expect("temporary directory");
     let store = store(temporary.path());
     for codec in [
@@ -897,7 +897,7 @@ fn rejects_declared_enhanced_and_unsupported_codecs_before_starting_a_worker() {
         RecorderVideoCodec::Hevc,
         RecorderVideoCodec::Av1,
     ] {
-        let result = RecorderWorker::start(
+        let worker = RecorderWorker::start(
             store.clone(),
             &RecordingPathPolicy::new(".flv", false).expect("path policy"),
             b"camera",
@@ -907,31 +907,36 @@ fn rejects_declared_enhanced_and_unsupported_codecs_before_starting_a_worker() {
                 video_codec: Some(codec),
                 ..RecorderWorkerConfig::default()
             },
-        );
-        assert!(matches!(
-            result,
-            Err(RecorderWorkerStartError::UnsupportedVideoCodec(rejected)) if rejected == codec
-        ));
+        )
+        .expect("declared codec is recordable");
+        assert_eq!(shutdown(worker).phase, RecorderWorkerPhase::Stopped);
     }
     assert_eq!(store.stats().files, 0);
 }
 
 #[test]
-fn enhanced_avc_hevc_and_av1_fail_before_opening_a_segment() {
-    let temporary = tempdir().expect("temporary directory");
-    let store = store(temporary.path());
+fn records_enhanced_avc_hevc_and_av1_as_enhanced_flv() {
     for four_cc in [*b"avc1", *b"hvc1", *b"av01"] {
+        let temporary = tempdir().expect("temporary directory");
+        let store = store(temporary.path());
         let worker = worker(&store, None, 1024);
         enqueue(&worker, enhanced_video_header(four_cc, 0x01));
-        wait_for_failure(&worker);
+        enqueue(&worker, enhanced_video_keyframe(four_cc, 0x02));
+        enqueue(&worker, enhanced_video_interframe(four_cc, 0x03));
 
         let status = shutdown(worker);
+        assert_eq!(status.phase, RecorderWorkerPhase::Stopped);
+        assert_eq!(status.segments_started, 1);
+        assert_eq!(status.segments_completed, 1);
+        let tags =
+            parse_tags(&fs::read(temporary.path().join("camera.flv")).expect("recorded FLV"));
         assert_eq!(
-            status.phase,
-            RecorderWorkerPhase::Failed(RecorderFailure::UnsupportedCodec)
+            tags.iter().map(|(tag, _, _)| *tag).collect::<Vec<_>>(),
+            [9, 9, 9]
         );
-        assert_eq!(status.segments_started, 0);
-        assert_eq!(store.stats().files, 0);
+        assert_eq!(tags[0].2, enhanced_payload(0x90, four_cc, 0x01));
+        assert_eq!(tags[1].2, enhanced_payload(0x91, four_cc, 0x02));
+        assert_eq!(tags[2].2, enhanced_payload(0xa1, four_cc, 0x03));
     }
 }
 
@@ -1092,10 +1097,23 @@ fn video_payload(header: u8, marker: u8) -> Vec<u8> {
 }
 
 fn enhanced_video_header(four_cc: [u8; 4], marker: u8) -> MediaEvent {
-    let mut payload = vec![0x90];
+    MediaEvent::video(0, enhanced_payload(0x90, four_cc, marker)).expect("enhanced video header")
+}
+
+fn enhanced_video_keyframe(four_cc: [u8; 4], marker: u8) -> MediaEvent {
+    MediaEvent::video(1, enhanced_payload(0x91, four_cc, marker)).expect("enhanced video keyframe")
+}
+
+fn enhanced_video_interframe(four_cc: [u8; 4], marker: u8) -> MediaEvent {
+    MediaEvent::video(2, enhanced_payload(0xa1, four_cc, marker))
+        .expect("enhanced video interframe")
+}
+
+fn enhanced_payload(header: u8, four_cc: [u8; 4], marker: u8) -> Vec<u8> {
+    let mut payload = vec![header];
     payload.extend_from_slice(&four_cc);
     payload.push(marker);
-    MediaEvent::video(0, payload).expect("enhanced video header")
+    payload
 }
 
 fn parse_tags(bytes: &[u8]) -> Vec<(u8, u32, Vec<u8>)> {

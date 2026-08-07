@@ -99,6 +99,25 @@
   margin-top: 18px;
 }
 
+.editor-form .tls-alpn-deployment {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid #596b4a;
+  background: rgb(35 48 25 / 36%);
+}
+
+.editor-form .tls-alpn-deployment p {
+  margin: 0;
+  color: #aeb9a2;
+  font-size: 0.72rem;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.5;
+  text-transform: none;
+}
+
 .editor-form .route-summary {
   display: block;
   margin-top: 4px;

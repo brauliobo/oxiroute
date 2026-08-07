@@ -110,6 +110,23 @@ done <"${unit}"
   exit 1
 }
 
+supervisor_package=
+launcher_install=
+while IFS= read -r line; do
+  case "${line}" in
+    *'--package oxiroute-supervisor-process'*) supervisor_package=${line} ;;
+    */usr/lib/oxiroute/oxiroute-worker-launcher*) launcher_install=${line} ;;
+  esac
+done <"${pkgbuild}"
+[[ -n "${supervisor_package}" ]] || {
+  printf 'package build does not compile the worker supervision crate\n' >&2
+  exit 1
+}
+[[ -n "${launcher_install}" ]] || {
+  printf 'package does not install the supervised worker launcher\n' >&2
+  exit 1
+}
+
 lifecycle_root=$(mktemp -d)
 trap 'rm -rf -- "${lifecycle_root}"' EXIT
 systemd-sysusers --root="${lifecycle_root}" "${sysusers}"

@@ -2562,6 +2562,156 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
+    fn local_fake_pebble_renews_activates_and_rolls_back_without_leaking_challenges() {
+        let temp = TempDir::new().expect("state directory");
+        let state = Arc::new(StateStore::open(temp.path().join("state")).expect("state"));
+        let revisions = RevisionStore::from_arc(Arc::clone(&state));
+        let names = vec!["proxy.example.test".to_owned()];
+        let bootstrap = CertificateGeneration::self_signed_development(
+            "managed-renewal",
+            &names,
+            1,
+            SelfSignedKeyType::EcdsaP256,
+        )
+        .expect("bootstrap");
+        let active = Arc::new(ActiveCertificateGeneration::new(Arc::new(bootstrap)));
+        let bootstrap_revision = active.snapshot().metadata().revision.clone();
+        let reconciler = AcmeManagedReconciler::new(
+            "managed-renewal",
+            names.clone(),
+            AcmeManagedPolicy {
+                directory_url: "https://acme.test/directory".into(),
+                contacts: vec!["mailto:ops@example.test".into()],
+                terms_agreed: true,
+                challenge: AcmeChallengeType::Http01,
+                key_type: AcmeKeyType::EcdsaP256,
+                allowed_dns_suffixes: vec!["example.test".into()],
+                retained_revisions: 3,
+                retention_days: 30,
+                dns01: None,
+            },
+            revisions.clone(),
+            "bootstrap".into(),
+            None,
+            None,
+            true,
+            ChallengeStore::default(),
+            Arc::clone(&active),
+        );
+
+        let first = FakePebbleTransport {
+            responses: Arc::new(Mutex::new(VecDeque::from([
+                directory_response(),
+                nonce_response("nonce-first-account"),
+                account_response(),
+                order_response("pending"),
+                authorization_response("pending"),
+                challenge_response(),
+                authorization_response("valid"),
+                order_response("processing"),
+                order_response("valid"),
+            ]))),
+            requests: Arc::new(Mutex::new(Vec::new())),
+            ca: Arc::new(test_ca().expect("CA")),
+            certificate: Arc::new(Mutex::new(None)),
+            certificate_names: names.clone(),
+        };
+        assert_eq!(
+            reconciler
+                .renew_with_transport(first)
+                .expect("first managed issuance"),
+            AcmeManagedOutcome::Activated
+        );
+        let first_revision = active.snapshot().metadata().revision.clone();
+        assert_ne!(first_revision, bootstrap_revision);
+        assert_eq!(reconciler.status().disk_revision, first_revision);
+        assert_eq!(reconciler.status().active_revision, first_revision);
+        assert!(
+            revisions
+                .state()
+                .root()
+                .join(format!(
+                    "certificates/managed-renewal/revisions/{first_revision}"
+                ))
+                .is_dir()
+        );
+        assert!(reconciler.challenge_store.is_empty());
+
+        let second = FakePebbleTransport {
+            responses: Arc::new(Mutex::new(VecDeque::from([
+                directory_response(),
+                nonce_response("nonce-second-order"),
+                order_response("pending"),
+                authorization_response("pending"),
+                challenge_response(),
+                authorization_response("valid"),
+                order_response("processing"),
+                order_response("valid"),
+            ]))),
+            requests: Arc::new(Mutex::new(Vec::new())),
+            ca: Arc::new(test_ca().expect("CA")),
+            certificate: Arc::new(Mutex::new(None)),
+            certificate_names: names.clone(),
+        };
+        assert_eq!(
+            reconciler
+                .renew_with_transport(second)
+                .expect("managed renewal"),
+            AcmeManagedOutcome::Activated
+        );
+        let second_revision = active.snapshot().metadata().revision.clone();
+        assert_ne!(second_revision, first_revision);
+        assert_eq!(reconciler.status().disk_revision, second_revision);
+        assert_eq!(reconciler.status().active_revision, second_revision);
+        assert_eq!(reconciler.status().job_status, Some(JobStatus::Succeeded));
+        assert!(reconciler.challenge_store.is_empty());
+        assert!(
+            revisions
+                .state()
+                .root()
+                .join(format!(
+                    "certificates/managed-renewal/revisions/{first_revision}"
+                ))
+                .is_dir()
+        );
+
+        let failed = FakePebbleTransport {
+            responses: Arc::new(Mutex::new(VecDeque::from([
+                directory_response(),
+                nonce_response("nonce-failed-order"),
+                order_response("pending"),
+                authorization_response("pending"),
+                challenge_response(),
+                authorization_response("invalid"),
+            ]))),
+            requests: Arc::new(Mutex::new(Vec::new())),
+            ca: Arc::new(test_ca().expect("CA")),
+            certificate: Arc::new(Mutex::new(None)),
+            certificate_names: names,
+        };
+        assert!(matches!(
+            reconciler.renew_with_transport(failed),
+            Err(AcmeManagedError::AuthorizationFailed)
+        ));
+        assert_eq!(active.snapshot().metadata().revision, second_revision);
+        assert_eq!(
+            revisions
+                .load_current("managed-renewal")
+                .unwrap()
+                .metadata
+                .revision,
+            second_revision
+        );
+        assert!(reconciler.challenge_store.is_empty());
+        assert_eq!(reconciler.status().job_status, Some(JobStatus::Failed));
+        assert_eq!(
+            reconciler.status().last_error_code.as_deref(),
+            Some("authorization_failed")
+        );
+    }
+
+    #[test]
     fn tls_alpn01_issues_cleans_up_and_keeps_a_redacted_audit_record() {
         let temp = TempDir::new().expect("state directory");
         let state = Arc::new(StateStore::open(temp.path().join("state")).expect("state"));

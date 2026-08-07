@@ -26,9 +26,9 @@ locally; the browser matrix has one existing desktop-only skip.
 
 These checks do not close the remaining gates: CA-staging issuance and renewal, active
 production-traffic reload/drain and supervised replacement, FFmpeg/OBS process interoperability,
-long-running fuzz and crash-corpus evidence, or dependency audit. `cargo audit -D warnings`
-currently denies three unmaintained Pingora-transitive dependencies; application PEM parsing has
-migrated to `rustls-pki-types`, but Pingora's bundled Rustls path remains.
+or long-running fuzz and crash-corpus evidence. The dependency audit passes locally through
+maintained vendored Pingora dependency paths; application and Pingora Rustls PEM parsing use
+`rustls-pki-types`.
 
 This file is updated in the same commit that changes a capability. Build support alone is
 not protocol support. Coverage manifests may use the narrower gate word `integrated` for a

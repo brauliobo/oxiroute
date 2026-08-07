@@ -433,7 +433,7 @@ async fn serves_authenticated_dash_manifests_segments_and_single_ranges() {
 }
 
 #[test]
-fn exposes_enhanced_video_codec_identity_without_claiming_recording_support() {
+fn exposes_enhanced_video_codec_identity_with_recording_support() {
     let registry = Arc::new(RtmpRegistry::new(RtmpCapabilities {
         live_ingest: true,
         manual_recording: false,
@@ -471,7 +471,7 @@ fn exposes_enhanced_video_codec_identity_without_claiming_recording_support() {
     assert!(video["codec_id"].is_null());
     assert_eq!(video["codec_fourcc"], "hvc1");
     assert_eq!(video["codec_name"], "hevc");
-    assert_eq!(video["recording_supported"], false);
+    assert_eq!(video["recording_supported"], true);
 }
 
 #[test]
