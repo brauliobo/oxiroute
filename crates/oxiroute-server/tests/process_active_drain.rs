@@ -18,6 +18,7 @@ use std::{
     fmt::Write as _,
     io,
     net::{Ipv4Addr, SocketAddr},
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -36,6 +37,7 @@ use serde_json::{Value, json};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::{TcpListener, TcpStream},
+    sync::{OwnedSemaphorePermit, Semaphore},
     task::{JoinHandle, JoinSet},
     time::{sleep, timeout},
 };
@@ -48,11 +50,22 @@ use rtmp_support::RtmpWireClient;
 const TOKEN: &str = "7a89c4b6cefd8b4c11b6b4f9d1e6b5d0e8f1a2c3d4e5f60718293a4b5c6d7e8f";
 const WIRE_TIMEOUT: Duration = Duration::from_secs(10);
 const DRAIN_PROBE_TIMEOUT: Duration = Duration::from_millis(750);
+static PROCESS_DRAIN_TEST_GATE: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
 type BoxError = Box<dyn Error + Send + Sync>;
 
+async fn process_drain_test_guard() -> OwnedSemaphorePermit {
+    PROCESS_DRAIN_TEST_GATE
+        .get_or_init(|| Arc::new(Semaphore::new(1)))
+        .clone()
+        .acquire_owned()
+        .await
+        .expect("process drain test gate remains open")
+}
+
 #[tokio::test]
 async fn http_reload_retains_the_old_keepalive_and_drain_rejects_new_admissions() {
+    let _test_guard = process_drain_test_guard().await;
     let management_address = reserve_tcp_address();
     let listener_address = reserve_tcp_address();
     let initial = http_config(management_address, listener_address, "old-http");
@@ -115,6 +128,7 @@ async fn http_reload_retains_the_old_keepalive_and_drain_rejects_new_admissions(
 
 #[tokio::test]
 async fn h2_reload_sends_goaway_while_the_candidate_serves_new_connections() {
+    let _test_guard = process_drain_test_guard().await;
     let management_address = reserve_tcp_address();
     let listener_address = reserve_tcp_address();
     let mut initial = wire_support::proxy_config(
@@ -182,6 +196,7 @@ async fn h2_reload_sends_goaway_while_the_candidate_serves_new_connections() {
 
 #[tokio::test]
 async fn forward_h2_reload_sends_goaway_while_the_candidate_serves_new_connections() {
+    let _test_guard = process_drain_test_guard().await;
     let management_address = reserve_tcp_address();
     let listener_address = reserve_tcp_address();
     let (origin_address, origin_task) = start_echo_upstream().await;
@@ -241,6 +256,7 @@ async fn forward_h2_reload_sends_goaway_while_the_candidate_serves_new_connectio
 
 #[tokio::test]
 async fn tcp_reload_retains_the_old_relay_and_shutdown_cancels_at_the_deadline() {
+    let _test_guard = process_drain_test_guard().await;
     let management_address = reserve_tcp_address();
     let listener_address = reserve_tcp_address();
     let (upstream_address, upstream_task) = start_echo_upstream().await;
@@ -321,6 +337,7 @@ async fn tcp_reload_retains_the_old_relay_and_shutdown_cancels_at_the_deadline()
 
 #[tokio::test]
 async fn rtmp_reload_and_drain_retain_the_publisher_until_bounded_shutdown() {
+    let _test_guard = process_drain_test_guard().await;
     let management_address = reserve_tcp_address();
     let listener_address = reserve_tcp_address();
     let mut initial = rtmp_config(management_address, listener_address);
@@ -389,6 +406,7 @@ async fn rtmp_reload_and_drain_retain_the_publisher_until_bounded_shutdown() {
 
 #[tokio::test]
 async fn event_sse_closes_with_a_bounded_shutdown_frame_and_releases_its_listener() {
+    let _test_guard = process_drain_test_guard().await;
     let management_address = reserve_tcp_address();
     let config = management_config_only(management_address);
     let mut server = ServerProcess::start(&config, Some(TOKEN));
