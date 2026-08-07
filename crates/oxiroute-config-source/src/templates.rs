@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde_json::{Map, Value};
 
 use crate::ConfigSourceError;
-use crate::limits::{MAX_EXPANSION_DEPTH, MAX_OUTPUT_BYTES, validate_value};
+use crate::limits::{BoundedOutput, MAX_EXPANSION_DEPTH, validate_value};
 
 /// Expands declarative `templates` and `use` markers in a value tree.
 ///
@@ -45,12 +45,14 @@ pub fn expand_templates(value: &Value) -> Result<Value, ConfigSourceError> {
     };
     let expanded_value = resolver.expand_value(&root, 0)?;
     validate_value(&expanded_value)?;
-    let output_size = serde_json::to_vec(&expanded_value)
-        .map_err(|error| ConfigSourceError::Template(error.to_string()))?
-        .len();
-    if output_size > MAX_OUTPUT_BYTES {
-        return Err(ConfigSourceError::OutputTooLarge);
-    }
+    let mut output = BoundedOutput::new();
+    serde_json::to_writer(&mut output, &expanded_value).map_err(|error| {
+        if output.exceeded() {
+            ConfigSourceError::OutputTooLarge
+        } else {
+            ConfigSourceError::Template(error.to_string())
+        }
+    })?;
     Ok(expanded_value)
 }
 

@@ -3297,3 +3297,31 @@ fn enforces_the_source_size_limit() {
 
     assert!(matches!(error, ConfigError::SourceTooLarge));
 }
+
+#[test]
+fn enforces_the_lua_instruction_limit() {
+    let error = error_from(
+        r#"
+local counter = 0
+while true do
+  counter = counter + 1
+end
+"#,
+    );
+
+    assert!(matches!(error, ConfigError::Lua(_)));
+    assert!(error.to_string().contains("instruction limit"));
+}
+
+#[test]
+fn rejects_other_forbidden_lua_globals() {
+    for source in [
+        r#"io.open("/tmp/oxiroute-lua-escaped", "w")
+return { version = 1, listeners = {} }"#,
+        r#"require("os")
+return { version = 1, listeners = {} }"#,
+    ] {
+        let error = error_from(source);
+        assert!(matches!(error, ConfigError::Lua(_)));
+    }
+}

@@ -5,7 +5,7 @@ use serde_json::{Map, Value};
 
 use crate::ConfigSourceError;
 use crate::limits::{
-    MAX_STRUCTURAL_DEPTH, check_output, check_string, source_text, validate_value,
+    BoundedOutput, MAX_NODES, MAX_STRUCTURAL_DEPTH, check_string, source_text, validate_value,
 };
 use crate::native::{
     NativeDirective, decode_apache, decode_haproxy, decode_nginx, decode_squid, decode_varnish,
@@ -66,6 +66,7 @@ pub fn parse_uci_document(source: &[u8]) -> Result<UciDocument, ConfigSourceErro
     let mut section_names = HashSet::new();
     let mut option_names = HashSet::<String>::new();
     let mut list_names = HashSet::<String>::new();
+    let mut parsed_nodes = 0;
 
     for (line_index, raw_line) in source.split('\n').enumerate() {
         let line_number = line_index + 1;
@@ -74,6 +75,7 @@ pub fn parse_uci_document(source: &[u8]) -> Result<UciDocument, ConfigSourceErro
         if tokens.is_empty() {
             continue;
         }
+        count_parsed_node(&mut parsed_nodes)?;
         match tokens[0].as_str() {
             "config" => {
                 if tokens.len() != 3 {
@@ -163,7 +165,7 @@ pub fn parse_uci_document(source: &[u8]) -> Result<UciDocument, ConfigSourceErro
 /// Returns an error for anonymous or duplicate sections, duplicate options, option/list conflicts,
 /// strings that exceed their bound, or output that exceeds its bound.
 pub fn render_uci_document(document: &UciDocument) -> Result<String, ConfigSourceError> {
-    let mut output = String::new();
+    let mut output = BoundedOutput::new();
     let mut names = HashSet::new();
     for (index, section) in document.sections.iter().enumerate() {
         check_string(&section.section_type)?;
@@ -181,7 +183,9 @@ pub fn render_uci_document(document: &UciDocument) -> Result<String, ConfigSourc
             ));
         }
         if index != 0 {
-            output.push('\n');
+            output
+                .write_char('\n')
+                .map_err(|_| ConfigSourceError::OutputTooLarge)?;
         }
         writeln!(
             output,
@@ -189,7 +193,7 @@ pub fn render_uci_document(document: &UciDocument) -> Result<String, ConfigSourc
             render_name(&section.section_type),
             quote_token(&section.name)
         )
-        .expect("writing to String cannot fail");
+        .map_err(|_| ConfigSourceError::OutputTooLarge)?;
         let mut options = HashSet::new();
         let mut lists = HashSet::new();
         for entry in &section.entries {
@@ -228,11 +232,18 @@ pub fn render_uci_document(document: &UciDocument) -> Result<String, ConfigSourc
                 render_name(name),
                 quote_token(value)
             )
-            .expect("writing to String cannot fail");
+            .map_err(|_| ConfigSourceError::OutputTooLarge)?;
         }
     }
-    check_output(&output)?;
-    Ok(output)
+    Ok(output.finish())
+}
+
+fn count_parsed_node(count: &mut usize) -> Result<(), ConfigSourceError> {
+    *count = count.checked_add(1).ok_or(ConfigSourceError::NodeLimit)?;
+    if *count > MAX_NODES {
+        return Err(ConfigSourceError::NodeLimit);
+    }
+    Ok(())
 }
 
 pub(crate) fn decode(source: &str) -> Result<Value, ConfigSourceError> {
@@ -1007,7 +1018,7 @@ fn flatten_value(
     match value {
         Value::Object(object) => {
             let mut entries = object.iter().collect::<Vec<_>>();
-            entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+            entries.sort_unstable_by_key(|(left, _)| *left);
             for (key, value) in entries {
                 let child_name = format!("node-{:06}", records.len());
                 flatten_value(
