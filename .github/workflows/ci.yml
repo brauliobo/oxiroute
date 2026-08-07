@@ -25,8 +25,8 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: clippy, rustfmt
 
@@ -37,9 +37,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-stable-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-1.97.1-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-stable-
+            ${{ runner.os }}-cargo-1.97.1-
 
       - name: Check formatting
         run: cargo fmt --all --check
@@ -51,14 +51,14 @@ jobs:
         run: cargo test --workspace --locked --jobs 4
 
   rust-msrv:
-    name: Rust 1.87 locked tests
+    name: Rust 1.97.1 locked tests
     runs-on: ubuntu-24.04
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install Rust 1.87
-        uses: dtolnay/rust-toolchain@1.87.0
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -67,12 +67,12 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-1.87-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-1.97.1-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-1.87-
+            ${{ runner.os }}-cargo-1.97.1-
 
-      - name: Run locked Rust 1.87 tests
-        run: cargo +1.87.0 test --workspace --locked --jobs 4
+      - name: Run locked Rust 1.97.1 tests
+        run: cargo +1.97.1 test --workspace --locked --jobs 4
 
   coverage-manifests:
     name: Coverage manifest validation
@@ -81,8 +81,8 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install Rust 1.87
-        uses: dtolnay/rust-toolchain@1.87.0
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -96,7 +96,7 @@ jobs:
             ${{ runner.os }}-cargo-coverage-
 
       - name: Validate coverage JSON and manifests
-        run: cargo +1.87.0 test -p oxiroute-import --test coverage_manifests --locked --jobs 4
+        run: cargo +1.97.1 test -p oxiroute-import --test coverage_manifests --locked --jobs 4
 
   package:
     name: Arch package service metadata
@@ -204,8 +204,8 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install Rust 1.87
-        uses: dtolnay/rust-toolchain@1.87.0
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -219,7 +219,7 @@ jobs:
             ${{ runner.os }}-cargo-acme-
 
       - name: Fetch locked Rust dependencies
-        run: cargo +1.87.0 fetch --locked
+        run: cargo +1.97.1 fetch --locked
 
       - name: Assert the ACME test endpoint is loopback-only
         shell: bash
@@ -230,6 +230,6 @@ jobs:
           esac
 
       - name: Run scripted ACME tests without network access
-        run: cargo +1.87.0 test -p oxiroute-acme --locked --jobs 4
+        run: cargo +1.97.1 test -p oxiroute-acme --locked --jobs 4
         env:
           CARGO_NET_OFFLINE: true
