@@ -1816,37 +1816,41 @@ impl Renderer {
         );
         self.boolean_field("use_origin_cache_control", cache.use_origin_cache_control);
         self.integer_field("default_ttl_ms", cache.default_ttl_ms);
-        self.table_list_field("status_ttls", &cache.status_ttls, Self::cache_status_ttl);
+        self.table_list_or_nil_field("status_ttls", &cache.status_ttls, Self::cache_status_ttl);
         self.integer_field("grace_ms", cache.grace_ms);
         self.integer_field("keep_ms", cache.keep_ms);
         self.boolean_field("revalidate", cache.revalidate);
         self.boolean_field("collapsed_forwarding", cache.collapsed_forwarding);
-        self.string_list_field(
-            "stale_on",
-            &cache
-                .stale_on
-                .iter()
-                .map(|trigger| match trigger {
-                    CacheStaleTrigger::ConnectFailure => "connect_failure",
-                    CacheStaleTrigger::ConnectTimeout => "connect_timeout",
-                    CacheStaleTrigger::Origin500 => "origin_500",
-                    CacheStaleTrigger::Origin502 => "origin_502",
-                    CacheStaleTrigger::Origin503 => "origin_503",
-                    CacheStaleTrigger::Origin504 => "origin_504",
-                })
-                .collect::<Vec<_>>(),
-        );
-        self.table_list_field(
+        if cache.stale_on.is_empty() {
+            self.nil_field("stale_on");
+        } else {
+            self.string_list_field(
+                "stale_on",
+                &cache
+                    .stale_on
+                    .iter()
+                    .map(|trigger| match trigger {
+                        CacheStaleTrigger::ConnectFailure => "connect_failure",
+                        CacheStaleTrigger::ConnectTimeout => "connect_timeout",
+                        CacheStaleTrigger::Origin500 => "origin_500",
+                        CacheStaleTrigger::Origin502 => "origin_502",
+                        CacheStaleTrigger::Origin503 => "origin_503",
+                        CacheStaleTrigger::Origin504 => "origin_504",
+                    })
+                    .collect::<Vec<_>>(),
+            );
+        }
+        self.table_list_or_nil_field(
             "bypass_request",
             &cache.bypass_request,
             Self::cache_predicate,
         );
-        self.table_list_field(
+        self.table_list_or_nil_field(
             "no_store_request",
             &cache.no_store_request,
             Self::cache_predicate,
         );
-        self.table_list_field(
+        self.table_list_or_nil_field(
             "no_store_response",
             &cache.no_store_response,
             Self::cache_predicate,
