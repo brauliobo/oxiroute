@@ -731,8 +731,14 @@ fn include_graph_expands_globs_in_byte_sorted_parse_order_with_provenance() {
             b"second".as_slice()
         ]
     );
-    assert_eq!(graph.expanded_directives[2].provenance.include_stack.len(), 1);
-    assert_eq!(graph.expanded_directives[3].provenance.include_stack.len(), 1);
+    assert_eq!(
+        graph.expanded_directives[2].provenance.include_stack.len(),
+        1
+    );
+    assert_eq!(
+        graph.expanded_directives[3].provenance.include_stack.len(),
+        1
+    );
     let analyzed = oxiroute_import::squid::analyze(graph);
     assert!(analyzed.diagnostics().is_empty());
     assert!(matches!(

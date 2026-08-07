@@ -1152,7 +1152,8 @@ fn validate_listener_policies(listener: &Listener) -> Result<(), ConfigError> {
     }
     if let ListenerBind::Unix {
         mode: Some(mode), ..
-    } = listener.bind && (mode == 0 || mode > 0o777)
+    } = listener.bind
+        && (mode == 0 || mode > 0o777)
     {
         return Err(ConfigError::InvalidListenerUnixMode {
             listener: listener.name.clone(),
@@ -1713,7 +1714,9 @@ fn validate_rtmp_services(services: &mut [RtmpService]) -> Result<(), ConfigErro
                     .iter()
                     .map(|recorder| recorder.name.as_str()),
             )?;
-            if !application.live && let Some(recorder) = application.recorders.first() {
+            if !application.live
+                && let Some(recorder) = application.recorders.first()
+            {
                 return Err(ConfigError::RtmpRecorderRequiresLiveApplication {
                     service: service.name.clone(),
                     application: application.name.clone(),
@@ -3493,7 +3496,8 @@ fn validate_upstream_endpoint(
         });
     }
     if let UpstreamEndpoint::Socket { address } = endpoint
-        && management_bind.is_some_and(|management| endpoint_exposes_management(address, management))
+        && management_bind
+            .is_some_and(|management| endpoint_exposes_management(address, management))
     {
         return Err(ConfigError::ManagementUpstreamEndpoint {
             pool: pool.into(),
