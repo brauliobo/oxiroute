@@ -8,6 +8,7 @@ configuration changes.
 **Current release line:** `0.4.1` (pre-alpha; `v0.4.1` is the current repository release)<br>
 **Project status:** pre-alpha; read the [compatibility matrix](docs/COMPATIBILITY.md) before using it
 for production traffic.<br>
+**Toolchain status:** the checked-in workspace and CI use Rust `1.97.1` as the active MSRV.<br>
 **Website:** [brauliobo.github.io/oxiroute](https://brauliobo.github.io/oxiroute/)
 **License:** Apache-2.0
 
@@ -117,6 +118,11 @@ The example exposes:
 | RTMP listener | `127.0.0.1:1935` | Accepts configured live publish/play sessions |
 | Management and UI | `127.0.0.1:9080` | Serves the dashboard and loopback API |
 
+The checked-in example intentionally exercises HTTP/1, TCP, RTMP, and loopback management only.
+Reverse H2 uses an `http` listener with TLS ALPN `h2`; forward H2 uses a TLS `forward_http2`
+listener; reverse H3 uses a UDP `http3` listener; and forward H3 uses a UDP `forward_http3`
+listener. See the [configuration specification](docs/CONFIG_SPEC.md) for those boundaries.
+
 ### 3. Verify the request path
 
 ```sh
@@ -213,8 +219,8 @@ See [COMPATIBILITY.md](docs/COMPATIBILITY.md) for the capability-by-capability m
 
 ## Develop
 
-Prerequisites are Rust `1.87`, Node.js with pnpm `11.3.0`, and a Linux environment for the
-Linux-specific supervision and `/proc` paths. The normal local gates are:
+Prerequisites for this checked-in release line are Rust `1.97.1`, Node.js with pnpm `11.3.0`, and a
+Linux environment for the Linux-specific supervision and `/proc` paths. The normal local gates are:
 
 ```sh
 cargo fmt --all --check

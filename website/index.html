@@ -28,7 +28,7 @@
       <main id="main">
         <section class="hero" id="top" aria-labelledby="hero-title">
           <div class="hero-copy">
-            <p class="eyebrow"><span class="signal-dot" aria-hidden="true">&#8203;</span> Rust proxy runtime / v0.3.0 pre-alpha</p>
+            <p class="eyebrow"><span class="signal-dot" aria-hidden="true">&#8203;</span> Rust proxy runtime / v0.4.1 pre-alpha</p>
             <h1 id="hero-title">Make the route visible before it carries traffic.</h1>
             <p class="hero-lede">OxiRoute turns HTTP, TCP, and RTMP publishing into typed plans, observable generations, and bounded operations. It is a control plane for the behavior you can explain, not a promise to replace every network appliance.</p>
             <div class="hero-actions">
@@ -140,7 +140,7 @@
                 <div class="feature-card"><span class="feature-icon">L4</span><h4>TCP relay</h4><p>Opaque bytes, half-close, backpressure, socket/DNS/Unix endpoints, and bounded connection lifetimes.</p></div>
                 <div class="feature-card"><span class="feature-icon">TLS</span><h4>Explicit TLS</h4><p>Exact, wildcard, and default SNI selection with verified upstream TLS, SNI, custom CA, and ALPN policy.</p></div>
               </div>
-              <div class="boundary-strip"><strong>Not implied:</strong> HTTP/3 daemon listeners, UDP relay, weighted balancing, passive ejection, and cache request-path integration.</div>
+              <div class="boundary-strip"><strong>Not implied:</strong> complete parity. HTTP/3, UDP relay, and cache are bounded partial paths with separate protocol and conformance limits.</div>
             </article>
             <article class="tab-panel" role="tabpanel" id="cap-control" aria-labelledby="tab-control" data-panel hidden>
               <div class="capability-heading"><div><span class="status-chip status-implemented">IMPLEMENTED</span><h3>Inspect the generation before editing the source.</h3></div><span class="panel-index">02</span></div>
@@ -229,11 +229,11 @@
               <thead><tr><th scope="col">Surface</th><th scope="col">Status</th><th scope="col">Meaning now</th></tr></thead>
               <tbody>
                 <tr><th scope="row">HTTP reverse proxy</th><td><span class="status-chip status-partial">PARTIAL</span></td><td>Strong HTTP/1 slice plus tested TLS/H2/WebSocket/gRPC paths; broader conformance remains.</td></tr>
-                <tr><th scope="row">TCP relay</th><td><span class="status-chip status-partial">PARTIAL</span></td><td>Opaque socket/DNS/Unix relays with bounded lifecycle and health behavior; UDP is not included.</td></tr>
-                <tr><th scope="row">Management UI/API</th><td><span class="status-chip status-partial">PARTIAL</span></td><td>Loopback observability and revisioned config control; certificate/import/event views remain incomplete.</td></tr>
-                <tr><th scope="row">RTMP live/recording</th><td><span class="status-chip status-partial">PARTIAL</span></td><td>Live publish/play, fanout, catalog, and legacy AVC/AAC FLV recording are integrated.</td></tr>
-                <tr><th scope="row">Native imports</th><td><span class="status-chip status-partial">PARTIAL</span></td><td>Strict subsets of nginx, HAProxy, and Squid can report and sometimes finalize; no full parity.</td></tr>
-                <tr><th scope="row">Cache / HTTP/3 / UDP</th><td><span class="status-chip status-planned">PLANNED</span></td><td>Foundations or roadmap work exist, but these are not active daemon capabilities.</td></tr>
+                <tr><th scope="row">TCP relay</th><td><span class="status-chip status-partial">PARTIAL</span></td><td>Opaque socket/DNS/Unix relays with bounded lifecycle and health behavior; UDP is a separate partial path.</td></tr>
+                <tr><th scope="row">Management UI/API</th><td><span class="status-chip status-partial">PARTIAL</span></td><td>Loopback observability, revisioned config control, certificate/import/event views, and bounded audit surfaces.</td></tr>
+                <tr><th scope="row">RTMP live/recording</th><td><span class="status-chip status-partial">PARTIAL</span></td><td>Live publish/play, fanout, catalog, legacy AVC/AAC recording, bounded HLS/DASH, and VOD slices.</td></tr>
+                <tr><th scope="row">Native imports</th><td><span class="status-chip status-partial">PARTIAL</span></td><td>Strict subsets of nginx, HAProxy, Apache, Squid, and Varnish can report and sometimes finalize; no full parity.</td></tr>
+                <tr><th scope="row">Cache / HTTP/3 / UDP</th><td><span class="status-chip status-partial">PARTIAL</span></td><td>Bounded cache, authority-only H2/H3 forward CONNECT, reverse H3, and UDP relay paths are active; broader conformance remains.</td></tr>
               </tbody>
             </table>
           </div>
@@ -255,7 +255,7 @@
             <a class="doc-card" href="https://github.com/brauliobo/oxiroute/blob/main/docs/user/MIGRATION.md"><span class="doc-kicker">For migrators</span><strong>Migration</strong><span>Reports, previews, provenance, and cutover rules.</span><span class="doc-arrow" aria-hidden="true">-></span></a>
             <a class="doc-card" href="https://github.com/brauliobo/oxiroute/blob/main/docs/reference/API.md"><span class="doc-kicker">For integrators</span><strong>API reference</strong><span>Routes, revisions, response shapes, and auth boundaries.</span><span class="doc-arrow" aria-hidden="true">-></span></a>
             <a class="doc-card" href="https://github.com/brauliobo/oxiroute/blob/main/docs/developer/ARCHITECTURE.md"><span class="doc-kicker">For developers</span><strong>Architecture</strong><span>Source resolution, generations, data plane, and control plane.</span><span class="doc-arrow" aria-hidden="true">-></span></a>
-            <a class="doc-card" href="https://github.com/brauliobo/oxiroute/blob/main/docs/COMPATIBILITY.md"><span class="doc-kicker">For everyone</span><strong>Compatibility matrix</strong><span>Implemented, partial, planned, and out-of-scope behavior.</span><span class="doc-arrow" aria-hidden="true">-></span></a>
+            <a class="doc-card" href="https://github.com/brauliobo/oxiroute/blob/main/docs/COMPATIBILITY.md"><span class="doc-kicker">For everyone</span><strong>Compatibility matrix</strong><span>Stable, partial, foundation, planned, and out-of-scope behavior.</span><span class="doc-arrow" aria-hidden="true">-></span></a>
           </div>
           <div class="reference-band"><span class="eyebrow">Normative sources</span><div><a href="https://github.com/brauliobo/oxiroute/blob/main/docs/CONFIG_SPEC.md">Configuration</a><a href="https://github.com/brauliobo/oxiroute/blob/main/docs/API_UI_SPEC.md">API/UI</a><a href="https://github.com/brauliobo/oxiroute/blob/main/docs/RTMP_SPEC.md">RTMP</a><a href="https://github.com/brauliobo/oxiroute/blob/main/docs/TEST_STRATEGY.md">Testing</a><a href="https://github.com/brauliobo/oxiroute/blob/main/docs/ROADMAP.md">Roadmap</a></div></div>
         </section>
@@ -264,7 +264,7 @@
       <footer class="site-footer">
         <div><a class="wordmark" href="#top"><span class="wordmark-mark" aria-hidden="true">OX</span><span>OxiRoute</span></a><p>Route the behavior you can explain.</p></div>
         <div class="footer-links"><a href="https://github.com/brauliobo/oxiroute">GitHub</a><a href="https://github.com/brauliobo/oxiroute/issues">Issues</a><a href="https://github.com/brauliobo/oxiroute/blob/main/LICENSE">Apache-2.0</a></div>
-        <p class="footer-note">Pre-alpha / v0.3.0 / static site</p>
+        <p class="footer-note">Pre-alpha / v0.4.1 / static site</p>
       </footer>
     </div>
     <script src="script.js"></script>

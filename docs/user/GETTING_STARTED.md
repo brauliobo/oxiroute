@@ -5,7 +5,7 @@ opaque TCP relay, one RTMP listener, and the loopback management UI.
 
 ## Requirements
 
-- Rust `1.87` or a compatible toolchain.
+- Rust `1.97.1` or a compatible toolchain for the checked-in release line.
 - Node.js and pnpm `11.3.0` for the dashboard build.
 - OpenSSL for the local token-generation example.
 - A Linux host for the full monitoring and supervision surface. Unprivileged local listeners work on
@@ -39,7 +39,9 @@ OXIROUTE_MANAGEMENT_TOKEN_FILE=/tmp/oxiroute-management.token \
 ```
 
 The `management` object in the example binds `127.0.0.1:9080` and serves `ui/dist`. The HTTP proxy
-binds `127.0.0.1:8080` and uses an active HTTP health check against `/healthz` on port `3000`.
+binds `127.0.0.1:8080` and uses an active HTTP health check against `/healthz` on port `3000`. This
+example is HTTP/1-only; H2 and H3 listener shapes are documented in the
+[configuration specification](../CONFIG_SPEC.md).
 
 ## Verify It
 
