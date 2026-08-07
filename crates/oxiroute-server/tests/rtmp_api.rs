@@ -1038,6 +1038,7 @@ async fn config_api_reports_source_format_composition_and_native_preview_name() 
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn config_api_preserves_rtmp_token_secrets_across_redacted_round_trip() {
     let mut active = editable_config();
     active.rtmp_services = vec![RtmpService {

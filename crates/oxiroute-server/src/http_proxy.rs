@@ -374,19 +374,19 @@ impl ProxyHttp for HttpReverseProxy {
             ctx.allow_downstream_drain(session);
             return Ok(true);
         }
-        if let Some(access) = &route.access {
-            if !access.authorizes(&session.req_header().headers).await {
-                write_local_response(
-                    session,
-                    401,
-                    &[(WWW_AUTHENTICATE, access.challenge().clone())],
-                    Bytes::new(),
-                    false,
-                )
-                .await?;
-                ctx.allow_downstream_drain(session);
-                return Ok(true);
-            }
+        if let Some(access) = &route.access
+            && !access.authorizes(&session.req_header().headers).await
+        {
+            write_local_response(
+                session,
+                401,
+                &[(WWW_AUTHENTICATE, access.challenge().clone())],
+                Bytes::new(),
+                false,
+            )
+            .await?;
+            ctx.allow_downstream_drain(session);
+            return Ok(true);
         }
 
         if !bounded_request_header_sources(session, &route) {
@@ -394,30 +394,24 @@ impl ProxyHttp for HttpReverseProxy {
             ctx.allow_downstream_drain(session);
             return Ok(true);
         }
-        if let Some(proxy) = match &route.action {
-            HttpActionPlan::Proxy(proxy) => Some(proxy),
-            HttpActionPlan::Fixed(_) | HttpActionPlan::Redirect(_) | HttpActionPlan::Static(_) => {
-                None
-            }
-        } {
-            if let Some(cache) = &proxy.policy.cache {
-                if method.as_str().eq_ignore_ascii_case("PURGE") {
-                    if cache.purge_access.is_some() {
-                        let response_sent =
-                            cache_purge_filter(session, ctx, Arc::clone(cache), &method, &uri)
-                                .await?;
-                        if response_sent {
-                            ctx.allow_downstream_drain(session);
-                        }
-                        return Ok(response_sent);
+        if let HttpActionPlan::Proxy(proxy) = &route.action
+            && let Some(cache) = &proxy.policy.cache
+        {
+            if method.as_str().eq_ignore_ascii_case("PURGE") {
+                if cache.purge_access.is_some() {
+                    let response_sent =
+                        cache_purge_filter(session, ctx, Arc::clone(cache), &method, &uri).await?;
+                    if response_sent {
+                        ctx.allow_downstream_drain(session);
                     }
-                } else if cache.allows_method(&method)
-                    && !upgrade
-                    && cache_request_filter(session, ctx, Arc::clone(cache), &method, &uri).await?
-                {
-                    ctx.allow_downstream_drain(session);
-                    return Ok(true);
+                    return Ok(response_sent);
                 }
+            } else if cache.allows_method(&method)
+                && !upgrade
+                && cache_request_filter(session, ctx, Arc::clone(cache), &method, &uri).await?
+            {
+                ctx.allow_downstream_drain(session);
+                return Ok(true);
             }
         }
         let response_sent =
@@ -589,32 +583,31 @@ impl ProxyHttp for HttpReverseProxy {
                 can_reuse_downstream: false,
             };
         }
-        if error.esource() == &pingora::ErrorSource::Upstream {
-            if let Some(revalidation) = ctx.cache_revalidation.as_ref() {
-                if revalidation.stale_if_error {
-                    let stale = if let Some(plan) = ctx.cache_plan.as_ref() {
-                        plan.cache
-                            .stale_if_error(&revalidation.key)
-                            .await
-                            .ok()
-                            .flatten()
-                    } else {
-                        None
-                    };
-                    if let Some(stale) = stale {
-                        if write_cached_response(session, &stale).await.is_ok() {
-                            if let Some(fill) = ctx.cache_fill.take() {
-                                let _ = fill.complete_without_store();
-                            }
-                            ctx.cache_response_handled = true;
-                            record_cache_event(&ctx.listener, CacheEvent::Hit);
-                            return FailToProxy {
-                                error_code: stale.status.as_u16(),
-                                can_reuse_downstream: false,
-                            };
-                        }
-                    }
+        if error.esource() == &pingora::ErrorSource::Upstream
+            && let Some(revalidation) = ctx.cache_revalidation.as_ref()
+            && revalidation.stale_if_error
+        {
+            let stale = if let Some(plan) = ctx.cache_plan.as_ref() {
+                plan.cache
+                    .stale_if_error(&revalidation.key)
+                    .await
+                    .ok()
+                    .flatten()
+            } else {
+                None
+            };
+            if let Some(stale) = stale
+                && write_cached_response(session, &stale).await.is_ok()
+            {
+                if let Some(fill) = ctx.cache_fill.take() {
+                    let _ = fill.complete_without_store();
                 }
+                ctx.cache_response_handled = true;
+                record_cache_event(&ctx.listener, CacheEvent::Hit);
+                return FailToProxy {
+                    error_code: stale.status.as_u16(),
+                    can_reuse_downstream: false,
+                };
             }
         }
         let code = proxy_error_status(error);
@@ -624,8 +617,10 @@ impl ProxyHttp for HttpReverseProxy {
                 None
             }
         });
-        if code == 502 && error.esource() == &ErrorSource::Upstream && nginx_server.is_some() {
-            let server = nginx_server.expect("checked nginx error server");
+        if code == 502
+            && error.esource() == &ErrorSource::Upstream
+            && let Some(server) = nginx_server
+        {
             let headers = [
                 (SERVER, server.clone()),
                 (CONTENT_TYPE, HeaderValue::from_static("text/html")),
@@ -642,10 +637,10 @@ impl ProxyHttp for HttpReverseProxy {
             {
                 warn!("failed to send nginx proxy error response downstream: {write_error}");
             }
-        } else if code > 0 {
-            if let Err(write_error) = session.respond_error(code).await {
-                warn!("failed to send error response downstream: {write_error}");
-            }
+        } else if code > 0
+            && let Err(write_error) = session.respond_error(code).await
+        {
+            warn!("failed to send error response downstream: {write_error}");
         }
         FailToProxy {
             error_code: code,
@@ -701,10 +696,10 @@ impl ProxyHttp for HttpReverseProxy {
             upstream_request.version,
         );
         if result.is_err() {
-            if let Err(error) = &result {
-                if let Some(failure) = passive_failure_for_error(error) {
-                    ctx.record_passive_failure(failure);
-                }
+            if let Err(error) = &result
+                && let Some(failure) = passive_failure_for_error(error)
+            {
+                ctx.record_passive_failure(failure);
             }
             ctx.release_lease();
         }
@@ -722,12 +717,11 @@ impl ProxyHttp for HttpReverseProxy {
         {
             upstream_request.method = Method::GET;
         }
-        if let Some(cache) = ctx.cache_plan.as_ref() {
-            if cache.revalidate {
-                if let Some(revalidation) = ctx.cache_revalidation.as_ref() {
-                    revalidation.validators.apply(&mut upstream_request.headers);
-                }
-            }
+        if let Some(cache) = ctx.cache_plan.as_ref()
+            && cache.revalidate
+            && let Some(revalidation) = ctx.cache_revalidation.as_ref()
+        {
+            revalidation.validators.apply(&mut upstream_request.headers);
         }
         if let Some(host) = &ctx.selected_upstream_host {
             upstream_request.insert_header(HOST, host.clone())?;
@@ -754,10 +748,10 @@ impl ProxyHttp for HttpReverseProxy {
             session.req_header().version,
         );
         if result.is_err() {
-            if let Err(error) = &result {
-                if let Some(failure) = passive_failure_for_error(error) {
-                    ctx.record_passive_failure(failure);
-                }
+            if let Err(error) = &result
+                && let Some(failure) = passive_failure_for_error(error)
+            {
+                ctx.record_passive_failure(failure);
             }
             ctx.release_lease();
         }
@@ -826,34 +820,33 @@ impl ProxyHttp for HttpReverseProxy {
                 }
             }
         }
-        if let Some(limit) = proxy_route(ctx).policy.response_body_buffer_limit() {
-            if !session.is_upgrade_req()
-                && session.req_header().method != Method::HEAD
-                && !response.status.is_informational()
-                && !matches!(
-                    response.status,
-                    StatusCode::NO_CONTENT
-                        | StatusCode::RESET_CONTENT
-                        | StatusCode::NOT_MODIFIED
-                        | StatusCode::SWITCHING_PROTOCOLS
-                )
-            {
-                if had_uncacheable_framing {
-                    return Err(Error::new_up(ErrorType::InvalidHTTPHeader));
-                }
-                let length = content_length(&response.headers)
-                    .map_err(|()| Error::new_up(ErrorType::InvalidHTTPHeader))?
-                    .and_then(|length| usize::try_from(length).ok())
-                    .ok_or_else(|| Error::new_up(ErrorType::InvalidHTTPHeader))?;
-                if length > limit {
-                    return Err(Error::new_up(ErrorType::InvalidHTTPHeader));
-                }
-                ctx.response_buffer = Some(ResponseBuffer {
-                    limit,
-                    expected_length: length,
-                    body: Vec::new(),
-                });
+        if let Some(limit) = proxy_route(ctx).policy.response_body_buffer_limit()
+            && !session.is_upgrade_req()
+            && session.req_header().method != Method::HEAD
+            && !response.status.is_informational()
+            && !matches!(
+                response.status,
+                StatusCode::NO_CONTENT
+                    | StatusCode::RESET_CONTENT
+                    | StatusCode::NOT_MODIFIED
+                    | StatusCode::SWITCHING_PROTOCOLS
+            )
+        {
+            if had_uncacheable_framing {
+                return Err(Error::new_up(ErrorType::InvalidHTTPHeader));
             }
+            let length = content_length(&response.headers)
+                .map_err(|()| Error::new_up(ErrorType::InvalidHTTPHeader))?
+                .and_then(|length| usize::try_from(length).ok())
+                .ok_or_else(|| Error::new_up(ErrorType::InvalidHTTPHeader))?;
+            if length > limit {
+                return Err(Error::new_up(ErrorType::InvalidHTTPHeader));
+            }
+            ctx.response_buffer = Some(ResponseBuffer {
+                limit,
+                expected_length: length,
+                body: Vec::new(),
+            });
         }
         if let Some(cache_request) = &ctx.cache_request {
             let status = response.status;
@@ -909,10 +902,10 @@ impl ProxyHttp for HttpReverseProxy {
         let result =
             validate_tls_connection(ctx.pool.as_deref().and_then(UpstreamPlan::tls), digest);
         if result.is_err() {
-            if let Err(error) = &result {
-                if let Some(failure) = passive_failure_for_error(error) {
-                    ctx.record_passive_failure(failure);
-                }
+            if let Err(error) = &result
+                && let Some(failure) = passive_failure_for_error(error)
+            {
+                ctx.record_passive_failure(failure);
             }
             ctx.release_lease();
         } else {
@@ -957,21 +950,21 @@ impl ProxyHttp for HttpReverseProxy {
             if session.was_upgraded() {
                 capture.admissible = false;
             }
-            if capture.admissible {
-                if let Some(data) = body.as_ref() {
-                    let limit = ctx
-                        .cache_plan
-                        .as_ref()
-                        .expect("cache capture has a plan")
-                        .cache
-                        .config()
-                        .max_body_bytes;
-                    if capture.body.len().saturating_add(data.len()) > limit {
-                        capture.admissible = false;
-                        capture.body.clear();
-                    } else {
-                        capture.body.extend_from_slice(data);
-                    }
+            if capture.admissible
+                && let Some(data) = body.as_ref()
+            {
+                let limit = ctx
+                    .cache_plan
+                    .as_ref()
+                    .expect("cache capture has a plan")
+                    .cache
+                    .config()
+                    .max_body_bytes;
+                if capture.body.len().saturating_add(data.len()) > limit {
+                    capture.admissible = false;
+                    capture.body.clear();
+                } else {
+                    capture.body.extend_from_slice(data);
                 }
             }
             if end_of_stream {
@@ -2000,18 +1993,18 @@ async fn execute_route_action(
                     session.respond_error(404).await?;
                     return Ok(true);
                 };
-                if let Some(access) = &next.access {
-                    if !access.authorizes(&session.req_header().headers).await {
-                        write_local_response(
-                            session,
-                            401,
-                            &[(WWW_AUTHENTICATE, access.challenge().clone())],
-                            Bytes::new(),
-                            method == Method::HEAD,
-                        )
-                        .await?;
-                        return Ok(true);
-                    }
+                if let Some(access) = &next.access
+                    && !access.authorizes(&session.req_header().headers).await
+                {
+                    write_local_response(
+                        session,
+                        401,
+                        &[(WWW_AUTHENTICATE, access.challenge().clone())],
+                        Bytes::new(),
+                        method == Method::HEAD,
+                    )
+                    .await?;
+                    return Ok(true);
                 }
                 route = next;
             }
@@ -2520,11 +2513,10 @@ fn redirect_location(
                 } else if let Some(after) = variable.strip_prefix("host") {
                     expanded.push_str(host.or(nginx_host_fallback.as_deref()).unwrap_or_default());
                     remainder = after;
-                } else if let Some(after) = variable.strip_prefix("request_uri") {
+                } else {
+                    let after = variable.strip_prefix("request_uri")?;
                     expanded.push_str(request_uri);
                     remainder = after;
-                } else {
-                    return None;
                 }
             }
             expanded.push_str(remainder);
@@ -2717,10 +2709,9 @@ fn upstream_request_requires_mutation(session: &Session, ctx: &HttpRequestContex
                 },
             ..
         } = mutation
+            && source_matches_exception(session, except_source_cidrs)
         {
-            if source_matches_exception(session, except_source_cidrs) {
-                continue;
-            }
+            continue;
         }
         return true;
     }
@@ -3151,10 +3142,7 @@ fn response_retry_trigger(error: &Error, session: &Session) -> Option<HttpRetryT
         return Some(HttpRetryTrigger::RefusedStream);
     }
     match error.etype() {
-        ErrorType::ConnectionClosed if response_is_retryable(session) => {
-            Some(HttpRetryTrigger::EmptyResponse)
-        }
-        ErrorType::ReadError if response_is_retryable(session) => {
+        ErrorType::ConnectionClosed | ErrorType::ReadError if response_is_retryable(session) => {
             Some(HttpRetryTrigger::EmptyResponse)
         }
         ErrorType::ReadTimedout => Some(HttpRetryTrigger::ResponseTimeout),
@@ -3993,7 +3981,7 @@ mod tests {
             RoundRobinPool::from_endpoints_with_policy(
                 [first.clone(), second.clone()],
                 UpstreamAlgorithm::RoundRobin,
-                PassiveFailurePolicy::new(1, Duration::from_secs(60), Duration::from_secs(60)),
+                PassiveFailurePolicy::new(1, Duration::from_mins(1), Duration::from_mins(1)),
             )
             .expect("passive selector"),
         );

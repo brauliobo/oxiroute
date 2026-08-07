@@ -314,6 +314,7 @@ fn topology_response(metrics: &RuntimeMetrics, topology: &TopologySnapshot) -> A
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn rtmp_monitoring(
     snapshot: &RtmpCatalogSnapshot,
     recording_supported: bool,

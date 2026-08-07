@@ -236,7 +236,6 @@ pub(crate) fn redact_rtmp_access_record(value: &Value) -> Value {
 fn redact_rtmp_access_value(name: &str, value: &Value) -> Value {
     match value {
         Value::String(value) => Value::String(redact_identifier(value)),
-        Value::Null => Value::Null,
         Value::Number(_)
             if matches!(
                 name,

@@ -575,9 +575,9 @@ pub enum HealthFailure {
 
 const DEFAULT_PASSIVE_FAILURE_THRESHOLD: u16 = 3;
 const DEFAULT_PASSIVE_EJECTION_DURATION: Duration = Duration::from_secs(30);
-const DEFAULT_PASSIVE_MAX_EJECTION_DURATION: Duration = Duration::from_secs(300);
+const DEFAULT_PASSIVE_MAX_EJECTION_DURATION: Duration = Duration::from_mins(5);
 const MAX_PASSIVE_FAILURE_THRESHOLD: u16 = 100;
-const MAX_PASSIVE_EJECTION_DURATION: Duration = Duration::from_secs(24 * 60 * 60);
+const MAX_PASSIVE_EJECTION_DURATION: Duration = Duration::from_hours(24);
 
 /// Bounded policy for passively ejecting endpoints after attributed upstream failures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2472,7 +2472,7 @@ impl EndpointPool {
     fn read_health<T>(&self, read: impl Fn(&[Arc<PoolEndpoint>]) -> T) -> T {
         for _ in 0..8 {
             let version = self.health.health_version.load(Ordering::Acquire);
-            if version % 2 != 0 {
+            if !version.is_multiple_of(2) {
                 std::thread::yield_now();
                 continue;
             }
@@ -4103,7 +4103,7 @@ mod tests {
             },
             Some(HealthStartup::Healthy),
             None,
-            PassiveFailurePolicy::new(2, Duration::from_secs(60), Duration::from_secs(120)),
+            PassiveFailurePolicy::new(2, Duration::from_mins(1), Duration::from_mins(2)),
         )
         .expect("passive policy pool");
 
@@ -4205,7 +4205,7 @@ mod tests {
             UpstreamAlgorithm::First,
             Some(HealthStartup::Healthy),
             None,
-            PassiveFailurePolicy::new(1, Duration::from_secs(60), Duration::from_secs(60)),
+            PassiveFailurePolicy::new(1, Duration::from_mins(1), Duration::from_mins(1)),
         )
         .expect("passive lease pool");
         let base = now_unix_ms();
@@ -4290,8 +4290,8 @@ mod tests {
             on_error: PassiveOnError::Immediately,
             ..oxiroute_config::PassiveHealthPolicy::default()
         });
-        policy.initial_ejection_duration = Duration::from_secs(60);
-        policy.max_ejection_duration = Duration::from_secs(60);
+        policy.initial_ejection_duration = Duration::from_mins(1);
+        policy.max_ejection_duration = Duration::from_mins(1);
         let pool = RoundRobinPool::new_named_servers_with_policy(
             "passive-observe".into(),
             [runtime_server("only", 3000, None)],

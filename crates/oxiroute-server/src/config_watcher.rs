@@ -108,12 +108,10 @@ impl ConfigWatcher {
                 let mut watcher = watcher;
                 let mut watched_paths = watched_paths;
                 if let Some(dependencies) = reconcile(&coordinator, &generations, &thread_counters)
-                {
-                    if rebuild_watches(&mut watcher, &parent, &dependencies, &mut watched_paths)
+                    && rebuild_watches(&mut watcher, &parent, &dependencies, &mut watched_paths)
                         .is_err()
-                    {
-                        thread_counters.rejected.fetch_add(1, Ordering::Relaxed);
-                    }
+                {
+                    thread_counters.rejected.fetch_add(1, Ordering::Relaxed);
                 }
                 while !thread_shutdown.load(Ordering::Acquire) {
                     let event = events_rx
@@ -138,12 +136,10 @@ impl ConfigWatcher {
                     }
                     if let Some(dependencies) =
                         reconcile(&coordinator, &generations, &thread_counters)
-                    {
-                        if rebuild_watches(&mut watcher, &parent, &dependencies, &mut watched_paths)
+                        && rebuild_watches(&mut watcher, &parent, &dependencies, &mut watched_paths)
                             .is_err()
-                        {
-                            thread_counters.rejected.fetch_add(1, Ordering::Relaxed);
-                        }
+                    {
+                        thread_counters.rejected.fetch_add(1, Ordering::Relaxed);
                     }
                 }
                 thread_counters.running.store(false, Ordering::Release);

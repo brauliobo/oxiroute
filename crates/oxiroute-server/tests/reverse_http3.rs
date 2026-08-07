@@ -170,10 +170,10 @@ async fn daemon_accepts_reverse_h3_and_reuses_the_http_service_pool() {
     let endpoint = client_endpoint().expect("H3 client endpoint");
     let connection = timeout(Duration::from_secs(10), async {
         loop {
-            if let Ok(connecting) = endpoint.connect(listener_address, support::PROXY_SERVER_NAME) {
-                if let Ok(connection) = connecting.await {
-                    break connection;
-                }
+            if let Ok(connecting) = endpoint.connect(listener_address, support::PROXY_SERVER_NAME)
+                && let Ok(connection) = connecting.await
+            {
+                break connection;
             }
             sleep(Duration::from_millis(10)).await;
         }
@@ -333,10 +333,10 @@ async fn daemon_serves_bounded_reverse_h3_static_files_and_ranges() {
     let endpoint = client_endpoint().expect("H3 client endpoint");
     let connection = timeout(Duration::from_secs(10), async {
         loop {
-            if let Ok(connecting) = endpoint.connect(listener_address, support::PROXY_SERVER_NAME) {
-                if let Ok(connection) = connecting.await {
-                    break connection;
-                }
+            if let Ok(connecting) = endpoint.connect(listener_address, support::PROXY_SERVER_NAME)
+                && let Ok(connection) = connecting.await
+            {
+                break connection;
             }
             sleep(Duration::from_millis(10)).await;
         }
@@ -969,10 +969,10 @@ fn fixed_request(path: &str) -> Request<()> {
 async fn connect_h3(endpoint: &quinn::Endpoint, listener_address: SocketAddr) -> quinn::Connection {
     timeout(Duration::from_secs(10), async {
         loop {
-            if let Ok(connecting) = endpoint.connect(listener_address, support::PROXY_SERVER_NAME) {
-                if let Ok(connection) = connecting.await {
-                    break connection;
-                }
+            if let Ok(connecting) = endpoint.connect(listener_address, support::PROXY_SERVER_NAME)
+                && let Ok(connection) = connecting.await
+            {
+                break connection;
             }
             sleep(Duration::from_millis(10)).await;
         }

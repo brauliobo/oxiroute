@@ -1023,40 +1023,40 @@ impl ServerApp for RtmpIngest {
 
                     match session.receive(&buffer[..bytes_read], at_unix_ms) {
                         Ok(outbound) => {
-                            if let Some(code) = session.take_access_failure_code() {
-                                if let Some(snapshot) = session.client_snapshot() {
-                                    log_rtmp_access_event(
-                                        &self.service,
-                                        &self.listener,
-                                        rejection_event(code),
-                                        RtmpAccessResult::Rejected,
-                                        &snapshot,
-                                        &access_counters,
-                                        session_started_at,
-                                        at_unix_ms,
-                                        Some(rejection_failure_code(code)),
-                                    );
-                                }
+                            if let Some(code) = session.take_access_failure_code()
+                                && let Some(snapshot) = session.client_snapshot()
+                            {
+                                log_rtmp_access_event(
+                                    &self.service,
+                                    &self.listener,
+                                    rejection_event(code),
+                                    RtmpAccessResult::Rejected,
+                                    &snapshot,
+                                    &access_counters,
+                                    session_started_at,
+                                    at_unix_ms,
+                                    Some(rejection_failure_code(code)),
+                                );
                             }
                             outbound
                         }
                         Err(error) => {
                             let failure_code = rtmp_session_failure_code(&error);
                             last_failure_code = Some(failure_code);
-                            if let Some(snapshot) = session.client_snapshot() {
-                                if snapshot.connected {
-                                    log_rtmp_access_event(
-                                        &self.service,
-                                        &self.listener,
-                                        event_for_role(snapshot.role),
-                                        RtmpAccessResult::Failed,
-                                        &snapshot,
-                                        &access_counters,
-                                        session_started_at,
-                                        at_unix_ms,
-                                        Some(failure_code),
-                                    );
-                                }
+                            if let Some(snapshot) = session.client_snapshot()
+                                && snapshot.connected
+                            {
+                                log_rtmp_access_event(
+                                    &self.service,
+                                    &self.listener,
+                                    event_for_role(snapshot.role),
+                                    RtmpAccessResult::Failed,
+                                    &snapshot,
+                                    &access_counters,
+                                    session_started_at,
+                                    at_unix_ms,
+                                    Some(failure_code),
+                                );
                             }
                             warn!("RTMP session failed: {error}");
                             break;
@@ -1089,20 +1089,20 @@ impl ServerApp for RtmpIngest {
             .await
             {
                 last_failure_code = Some("transport_write_failed");
-                if let Some(snapshot) = session.client_snapshot() {
-                    if snapshot.connected {
-                        log_rtmp_access_event(
-                            &self.service,
-                            &self.listener,
-                            event_for_role(snapshot.role),
-                            RtmpAccessResult::Failed,
-                            &snapshot,
-                            &access_counters,
-                            session_started_at,
-                            at_unix_ms,
-                            last_failure_code,
-                        );
-                    }
+                if let Some(snapshot) = session.client_snapshot()
+                    && snapshot.connected
+                {
+                    log_rtmp_access_event(
+                        &self.service,
+                        &self.listener,
+                        event_for_role(snapshot.role),
+                        RtmpAccessResult::Failed,
+                        &snapshot,
+                        &access_counters,
+                        session_started_at,
+                        at_unix_ms,
+                        last_failure_code,
+                    );
                 }
                 warn!("RTMP transport write failed: {error}");
                 break;
@@ -1110,18 +1110,19 @@ impl ServerApp for RtmpIngest {
         }
 
         let terminal_snapshot = session.client_snapshot();
-        if let Some(snapshot) = terminal_snapshot.as_ref() {
-            if snapshot.connected && snapshot.role == RtmpSessionRole::Publisher {
-                log_rtmp_auxiliary_failures(
-                    &self.service,
-                    &self.listener,
-                    self.generation.registry(),
-                    snapshot,
-                    &access_counters,
-                    session_started_at,
-                    at_unix_ms,
-                );
-            }
+        if let Some(snapshot) = terminal_snapshot.as_ref()
+            && snapshot.connected
+            && snapshot.role == RtmpSessionRole::Publisher
+        {
+            log_rtmp_auxiliary_failures(
+                &self.service,
+                &self.listener,
+                self.generation.registry(),
+                snapshot,
+                &access_counters,
+                session_started_at,
+                at_unix_ms,
+            );
         }
         let close_failed = if let Err(error) = session.close(at_unix_ms) {
             last_failure_code = Some("session_close_failed");
@@ -1165,6 +1166,7 @@ impl ServerApp for RtmpIngest {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn log_rtmp_state_transition(
     service: &RtmpServicePlan,
     listener: &str,
@@ -1310,6 +1312,7 @@ fn log_rtmp_auxiliary_failures(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn log_rtmp_access_event(
     service: &RtmpServicePlan,
     listener: &str,
@@ -1533,7 +1536,7 @@ struct GenerationProcess {
     thread: JoinHandle<()>,
 }
 
-const ACME_RENEWAL_SCAN_INTERVAL: Duration = Duration::from_secs(12 * 60 * 60);
+const ACME_RENEWAL_SCAN_INTERVAL: Duration = Duration::from_hours(12);
 
 struct AcmeManagedSupervisor {
     stop: mpsc::Sender<()>,

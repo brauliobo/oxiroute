@@ -444,10 +444,10 @@ async fn supervised_worker_adopts_h3_and_serves_a_quic_request() {
     let endpoint = h3_client_endpoint().expect("H3 client endpoint");
     let connection = timeout(Duration::from_secs(10), async {
         loop {
-            if let Ok(connecting) = endpoint.connect(listener_address, "proxy.example.test") {
-                if let Ok(connection) = connecting.await {
-                    break connection;
-                }
+            if let Ok(connecting) = endpoint.connect(listener_address, "proxy.example.test")
+                && let Ok(connection) = connecting.await
+            {
+                break connection;
             }
             sleep(Duration::from_millis(10)).await;
         }
@@ -493,6 +493,7 @@ async fn supervised_worker_adopts_h3_and_serves_a_quic_request() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn supervised_worker_replaces_an_active_udp_session_without_rebinding_or_leaking() {
     let directory = tempfile::tempdir().expect("supervised UDP replacement directory");
     let old_upstream = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("old UDP upstream");
@@ -747,6 +748,7 @@ fn supervised_udp_replacement_rolls_back_after_candidate_rejects_adoption() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
 async fn supervised_worker_replaces_an_active_h3_request_with_goaway_and_owned_descriptors() {
     let directory = tempfile::tempdir().expect("supervised H3 replacement directory");
     let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
@@ -1585,10 +1587,10 @@ fn origin_server_config() -> quinn::ServerConfig {
 async fn connect_h3(endpoint: &quinn::Endpoint, address: SocketAddr) -> quinn::Connection {
     timeout(Duration::from_secs(10), async {
         loop {
-            if let Ok(connecting) = endpoint.connect(address, "proxy.example.test") {
-                if let Ok(connection) = connecting.await {
-                    break connection;
-                }
+            if let Ok(connecting) = endpoint.connect(address, "proxy.example.test")
+                && let Ok(connection) = connecting.await
+            {
+                break connection;
             }
             sleep(Duration::from_millis(10)).await;
         }

@@ -114,10 +114,10 @@ async fn daemon_rejects_h3_plain_http_without_fallback_and_releases_udp_listener
     let endpoint = client_endpoint().expect("H3 client endpoint");
     let connection = timeout(Duration::from_secs(10), async {
         loop {
-            if let Ok(connecting) = endpoint.connect(proxy_address, support::PROXY_SERVER_NAME) {
-                if let Ok(connection) = connecting.await {
-                    break connection;
-                }
+            if let Ok(connecting) = endpoint.connect(proxy_address, support::PROXY_SERVER_NAME)
+                && let Ok(connection) = connecting.await
+            {
+                break connection;
             }
             sleep(Duration::from_millis(10)).await;
         }
@@ -244,6 +244,7 @@ async fn daemon_rejects_h3_plain_http_without_fallback_and_releases_udp_listener
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn daemon_rejects_h3_extended_connect_without_tcp_or_h1_fallback() {
     let origin = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
@@ -318,10 +319,10 @@ async fn daemon_rejects_h3_extended_connect_without_tcp_or_h1_fallback() {
     let endpoint = client_endpoint().expect("H3 client endpoint");
     let connection = timeout(Duration::from_secs(10), async {
         loop {
-            if let Ok(connecting) = endpoint.connect(proxy_address, support::PROXY_SERVER_NAME) {
-                if let Ok(connection) = connecting.await {
-                    break connection;
-                }
+            if let Ok(connecting) = endpoint.connect(proxy_address, support::PROXY_SERVER_NAME)
+                && let Ok(connection) = connecting.await
+            {
+                break connection;
             }
             sleep(Duration::from_millis(10)).await;
         }

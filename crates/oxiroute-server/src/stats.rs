@@ -599,7 +599,7 @@ fn health_state_name(state: crate::EndpointHealthState) -> &'static str {
 }
 
 fn format_refresh_seconds(refresh_ms: u64) -> String {
-    if refresh_ms % 1_000 == 0 {
+    if refresh_ms.is_multiple_of(1_000) {
         (refresh_ms / 1_000).to_string()
     } else {
         format!("{}.{:03}", refresh_ms / 1_000, refresh_ms % 1_000)

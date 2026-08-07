@@ -228,6 +228,8 @@ impl ForwardBasicAuth {
     }
 }
 
+// These flags represent independent listener policies; combining them would obscure their wire semantics.
+#[allow(clippy::struct_excessive_bools)]
 pub struct ForwardHttp1ServicePlan {
     access_policy: Option<ForwardAccessPolicy>,
     allow_absolute_form: bool,
@@ -745,10 +747,9 @@ where
                     .capture
                     .as_ref()
                     .is_some_and(ForwardCacheCapture::body_complete)
+                    && let Some(capture) = this.capture.take()
                 {
-                    if let Some(capture) = this.capture.take() {
-                        tokio::spawn(finish_forward_cache_capture(capture));
-                    }
+                    tokio::spawn(finish_forward_cache_capture(capture));
                 }
                 Poll::Ready(Some(Ok(frame)))
             }
@@ -1294,8 +1295,7 @@ impl ForwardHttp1ServicePlan {
         let parsed = parsed.map_err(|_| RequestFailure::BadRequest)?;
         let destination = match &parsed {
             ParsedTarget::Forward(target) => &target.destination,
-            ParsedTarget::Tunnel(destination) => destination,
-            ParsedTarget::UdpTunnel(destination) => destination,
+            ParsedTarget::Tunnel(destination) | ParsedTarget::UdpTunnel(destination) => destination,
         };
         let lifetime_deadline = Instant::now() + self.lifetime_timeout;
         if matches!(parsed, ParsedTarget::Tunnel(_))
@@ -1369,7 +1369,8 @@ impl ForwardHttp1ServicePlan {
         })
     }
 
-    #[allow(clippy::too_many_lines)]
+    // Keep the UDP relay future inline so cancellation remains owned by this tunnel task.
+    #[allow(clippy::large_futures, clippy::too_many_lines)]
     pub async fn handle(
         self: &Arc<Self>,
         mut request: Request<Incoming>,
@@ -1589,14 +1590,13 @@ impl ForwardHttp1ServicePlan {
                 .await;
         };
         apply_header_policy(&mut headers, &self.header_policy);
-        if let Some(state) = cache_state.as_ref().filter(|state| state.plan.revalidate) {
-            if let Some(validators) = state
+        if let Some(state) = cache_state.as_ref().filter(|state| state.plan.revalidate)
+            && let Some(validators) = state
                 .revalidation
                 .as_ref()
                 .map(|revalidation| &revalidation.validators)
-            {
-                validators.apply(&mut headers);
-            }
+        {
+            validators.apply(&mut headers);
         }
         *request.headers_mut() = headers;
         let request_body_empty = request.body().size_hint().upper() == Some(0);
@@ -2230,17 +2230,17 @@ impl ForwardHttp1ServicePlan {
                 {
                     return;
                 }
-                if request.method() != Method::HEAD {
-                    if let Some(mut trailers) = response.trailers {
-                        if crate::http3::sanitize_h3_trailers(&mut trailers).is_err() {
-                            return;
-                        }
-                        if !matches!(
-                            timeout_at(lifetime_deadline, stream.send_trailers(trailers)).await,
-                            Ok(Ok(()))
-                        ) {
-                            return;
-                        }
+                if request.method() != Method::HEAD
+                    && let Some(mut trailers) = response.trailers
+                {
+                    if crate::http3::sanitize_h3_trailers(&mut trailers).is_err() {
+                        return;
+                    }
+                    if !matches!(
+                        timeout_at(lifetime_deadline, stream.send_trailers(trailers)).await,
+                        Ok(Ok(()))
+                    ) {
+                        return;
                     }
                 }
                 let _ = timeout_at(lifetime_deadline, stream.finish()).await;
@@ -2720,12 +2720,12 @@ impl ForwardHttp1ServicePlan {
 
     fn rejection(&self, failure: RequestFailure) -> Response<ForwardProxyBody> {
         let mut response = response(failure.status(), Bytes::new());
-        if failure == RequestFailure::Authentication {
-            if let Some(challenge) = &self.challenge {
-                response
-                    .headers_mut()
-                    .insert(header::PROXY_AUTHENTICATE, challenge.clone());
-            }
+        if failure == RequestFailure::Authentication
+            && let Some(challenge) = &self.challenge
+        {
+            response
+                .headers_mut()
+                .insert(header::PROXY_AUTHENTICATE, challenge.clone());
         }
         response
     }
@@ -2736,11 +2736,10 @@ impl ForwardHttp1ServicePlan {
             session.shutdown().await;
             return;
         };
-        if failure == RequestFailure::Authentication {
-            if let Some(challenge) = &self.challenge {
-                let _ =
-                    response_header.insert_header(header::PROXY_AUTHENTICATE, challenge.clone());
-            }
+        if failure == RequestFailure::Authentication
+            && let Some(challenge) = &self.challenge
+        {
+            let _ = response_header.insert_header(header::PROXY_AUTHENTICATE, challenge.clone());
         }
         if session
             .write_response_header(Box::new(response_header))
@@ -2799,12 +2798,12 @@ where
 {
     let mut response = Response::new(());
     *response.status_mut() = failure.status();
-    if failure == RequestFailure::Authentication {
-        if let Some(challenge) = challenge {
-            response
-                .headers_mut()
-                .insert(header::PROXY_AUTHENTICATE, challenge.clone());
-        }
+    if failure == RequestFailure::Authentication
+        && let Some(challenge) = challenge
+    {
+        response
+            .headers_mut()
+            .insert(header::PROXY_AUTHENTICATE, challenge.clone());
     }
     stream.send_response(response).await?;
     stream.finish().await
@@ -3196,6 +3195,8 @@ impl<'a> StructuredFieldParser<'a> {
         Self { input, offset: 0 }
     }
 
+    // This parser is a one-shot value object; consuming it prevents reuse after advancing its cursor.
+    #[allow(clippy::wrong_self_convention)]
     fn is_true(mut self) -> bool {
         self.skip_spaces();
         if self.parse_boolean() != Some(true) || !self.parse_parameters() {
@@ -3320,7 +3321,7 @@ impl<'a> StructuredFieldParser<'a> {
                     .take_while(|byte| **byte == b'=')
                     .count();
                 let valid_padding = padding <= 2
-                    && encoded.len() % 4 == 0
+                    && encoded.len().is_multiple_of(4)
                     && encoded[..encoded.len().saturating_sub(padding)]
                         .iter()
                         .all(|byte| *byte != b'=');

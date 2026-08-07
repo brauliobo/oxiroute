@@ -665,8 +665,8 @@ fn compiles_shared_http_and_l4_service_plans() {
         Some(RuntimeEndpoint::from(address(5432)))
     );
     assert_eq!(l4.policy().connect, Duration::from_secs(5));
-    assert_eq!(l4.policy().idle, Some(Duration::from_secs(120)));
-    assert_eq!(l4.policy().lifetime, Some(Duration::from_secs(600)));
+    assert_eq!(l4.policy().idle, Some(Duration::from_mins(2)));
+    assert_eq!(l4.policy().lifetime, Some(Duration::from_mins(10)));
     assert!(matches!(services[3].kind, ServiceKind::Rtmp(_)));
 }
 
@@ -722,7 +722,7 @@ fn compiles_a_bounded_udp_service_plan() {
     assert_eq!(services[4].kind.protocol(), "udp");
     assert_eq!(udp.policy().connect, Duration::from_secs(2));
     assert_eq!(udp.policy().idle, Some(Duration::from_secs(30)));
-    assert_eq!(udp.policy().lifetime, Some(Duration::from_secs(120)));
+    assert_eq!(udp.policy().lifetime, Some(Duration::from_mins(2)));
     assert_eq!(
         udp.udp_policy(),
         UdpPolicy {
@@ -955,9 +955,8 @@ fn rejects_insecure_and_overquota_recording_roots_without_path_disclosure() {
             RtmpRecorderStart::Continuous,
             insecure_root.path(),
         ));
-    let error = match runtime_plan(&insecure) {
-        Ok(_) => panic!("insecure root must fail"),
-        Err(error) => error,
+    let Err(error) = runtime_plan(&insecure) else {
+        panic!("insecure root must fail")
     };
     assert!(matches!(error, ServicePlanError::RecorderPreflight { .. }));
     assert!(
@@ -980,9 +979,8 @@ fn rejects_insecure_and_overquota_recording_roots_without_path_disclosure() {
     overquota.rtmp_services[0].applications[0]
         .recorders
         .push(policy);
-    let error = match runtime_plan(&overquota) {
-        Ok(_) => panic!("overquota root must fail"),
-        Err(error) => error,
+    let Err(error) = runtime_plan(&overquota) else {
+        panic!("overquota root must fail")
     };
     assert!(matches!(error, ServicePlanError::RecorderPreflight { .. }));
     assert!(
@@ -1554,9 +1552,8 @@ fn http_access_and_static_preflight_is_read_only_secure_and_redacted() {
 
     fs::set_permissions(&token_path, fs::Permissions::from_mode(0o644))
         .expect("insecure token mode");
-    let error = match runtime_plan(&config) {
-        Ok(_) => panic!("insecure token mode must fail"),
-        Err(error) => error,
+    let Err(error) = runtime_plan(&config) else {
+        panic!("insecure token mode must fail")
     };
     assert!(matches!(error, ServicePlanError::AccessPreflight { .. }));
     let diagnostic = error.to_string();
@@ -1575,9 +1572,8 @@ fn http_access_and_static_preflight_is_read_only_secure_and_redacted() {
     let moved_root = directory.path().join("real-public");
     fs::rename(&root, &moved_root).expect("move static root");
     symlink(&moved_root, &root).expect("static root symlink");
-    let error = match runtime_plan(&config) {
-        Ok(_) => panic!("symlink static root must fail"),
-        Err(error) => error,
+    let Err(error) = runtime_plan(&config) else {
+        panic!("symlink static root must fail")
     };
     assert!(matches!(error, ServicePlanError::StaticPreflight { .. }));
     assert!(!error.to_string().contains(&root.display().to_string()));

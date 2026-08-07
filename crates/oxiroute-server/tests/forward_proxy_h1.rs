@@ -854,6 +854,7 @@ async fn cache_serves_a_second_absolute_form_get_without_reaching_the_origin() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn authenticated_absolute_form_bypasses_anonymous_forward_cache() {
     let origin = TcpListener::bind("127.0.0.1:0").await.expect("origin bind");
     let origin_address = origin.local_addr().expect("origin address");
@@ -1113,6 +1114,7 @@ async fn imported_squid_authentication_rejects_missing_credentials() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn connect_udp_upgrade_relays_capsule_datagrams_on_a_real_listener() {
     let echo = UdpSocket::bind("127.0.0.1:0").await.expect("UDP echo bind");
     let echo_address = echo.local_addr().expect("UDP echo address");

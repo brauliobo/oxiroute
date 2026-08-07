@@ -1412,6 +1412,7 @@ impl ListenerMetrics {
     ///
     /// Returns an error if a configured connection cap is reached or the accepted or active
     /// connection counter would overflow.
+    #[allow(clippy::too_many_lines)]
     pub fn begin_connection(&self) -> Result<ConnectionGuard, MetricsError> {
         let started_at = Instant::now();
         if AdministrativeState::from_u8(

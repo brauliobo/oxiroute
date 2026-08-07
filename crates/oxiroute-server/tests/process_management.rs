@@ -540,10 +540,10 @@ async fn persistent_old_generation_management_and_stats_connections_mutate_the_s
             &[],
         )
         .await;
-        if let Some(revision) = response.json()["generation"]["activeRevision"].as_str() {
-            if revision != original_revision {
-                break revision.to_owned();
-            }
+        if let Some(revision) = response.json()["generation"]["activeRevision"].as_str()
+            && revision != original_revision
+        {
+            break revision.to_owned();
         }
         assert!(Instant::now() < deadline, "generation reload timed out");
         tokio::time::sleep(Duration::from_millis(20)).await;

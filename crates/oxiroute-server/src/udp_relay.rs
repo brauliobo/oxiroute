@@ -316,7 +316,7 @@ struct SessionEntry {
 
 type SessionTable = Arc<Mutex<HashMap<std::net::SocketAddr, SessionEntry>>>;
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn serve(
     listener_name: &str,
     socket: UdpSocket,
@@ -341,13 +341,11 @@ async fn serve(
         )
     })?;
     let listener_is_ipv4 = socket.local_addr()?.is_ipv4();
-    let listener_proxy_header_bytes = proxy_protocol
-        .map(|policy| proxy_header_budget(policy, listener_is_ipv4))
-        .unwrap_or(0);
+    let listener_proxy_header_bytes =
+        proxy_protocol.map_or(0, |policy| proxy_header_budget(policy, listener_is_ipv4));
     let upstream_proxy_header_bytes = service
         .proxy_protocol()
-        .map(|policy| proxy_header_budget(policy, listener_is_ipv4))
-        .unwrap_or(0);
+        .map_or(0, |policy| proxy_header_budget(policy, listener_is_ipv4));
     let proxy_header_bytes = listener_proxy_header_bytes.max(upstream_proxy_header_bytes);
     if max_datagram_bytes > MAX_UDP_WIRE_DATAGRAM_BYTES.saturating_sub(proxy_header_bytes) {
         return Err(io::Error::new(
@@ -376,7 +374,7 @@ async fn serve(
         }
         tokio::select! {
             biased;
-            _ = wait_for_shutdown(&mut shutdown) => break,
+            () = wait_for_shutdown(&mut shutdown) => break,
             received = socket.recv_from(&mut receive_buffer) => {
                 let (length, client) = received?;
                 UdpAccounting::increment(&accounting.datagrams_received);
@@ -644,7 +642,7 @@ async fn run_session(
 ) -> Result<(), SessionEnd> {
     let lease = tokio::select! {
         biased;
-        _ = wait_for_shutdown(&mut shutdown) => return Err(SessionEnd::Cancelled),
+        () = wait_for_shutdown(&mut shutdown) => return Err(SessionEnd::Cancelled),
         lease = service.select_wait() => lease.ok_or_else(|| SessionEnd::Connect(io::Error::new(
             io::ErrorKind::NotFound,
             "UDP upstream pool has no selectable endpoint",
@@ -663,12 +661,12 @@ async fn run_session(
         &mut shutdown,
     )
     .await;
-    if generation.accepting() && !*shutdown.borrow() {
-        if let Err(outcome) = &result {
-            if let Some(failure) = outcome.passive_failure() {
-                lease.record_passive_failure(failure);
-            }
-        }
+    if generation.accepting()
+        && !*shutdown.borrow()
+        && let Err(outcome) = &result
+        && let Some(failure) = outcome.passive_failure()
+    {
+        lease.record_passive_failure(failure);
     }
     result
 }
@@ -754,7 +752,7 @@ async fn relay_session(
     loop {
         tokio::select! {
             biased;
-            _ = wait_for_shutdown(shutdown) => return Err(SessionEnd::Cancelled),
+            () = wait_for_shutdown(shutdown) => return Err(SessionEnd::Cancelled),
             () = wait_for_sleep(&mut idle) => return Err(SessionEnd::IdleTimeout),
             () = &mut lifetime => return Err(SessionEnd::LifetimeTimeout),
             queued = queue_receiver.recv() => {
