@@ -1171,9 +1171,7 @@ impl BasicHtpasswdAccess {
         };
         let verified = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            hashes.iter().fold(false, |verified, hash| {
-                hash.verify(password.as_bytes()) || verified
-            })
+            hashes.iter().any(|hash| hash.verify(password.as_bytes()))
         })
         .await
         .ok()
@@ -2100,10 +2098,8 @@ fn autoindex_time(timestamp: i64, local: bool) -> String {
     let Ok(mut value) = time::OffsetDateTime::from_unix_timestamp(timestamp) else {
         return "1970-01-01 00:00".into();
     };
-    if local {
-        if let Ok(offset) = time::UtcOffset::local_offset_at(value) {
-            value = value.to_offset(offset);
-        }
+    if local && let Ok(offset) = time::UtcOffset::local_offset_at(value) {
+        value = value.to_offset(offset);
     }
     format!(
         "{:04}-{:02}-{:02} {:02}:{:02}",

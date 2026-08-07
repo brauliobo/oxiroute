@@ -279,7 +279,7 @@ impl ConfigApiState {
             "preview": preview,
             "diagnostics": [],
         });
-        bounded_import_report_response(response)
+        bounded_import_report_response(&response)
     }
 
     fn validate_config_response(&self, body: &[u8], now_unix_ms: u64) -> ApiResponse {
@@ -693,7 +693,7 @@ fn import_report_preview(report: &ImportReportEnvelope) -> Option<Value> {
     Some(json!({ "format": "kdl", "text": text }))
 }
 
-fn bounded_import_report_response(value: Value) -> ApiResponse {
+fn bounded_import_report_response(value: &Value) -> ApiResponse {
     let body = value.to_string().into_bytes();
     if body.len() > MAX_IMPORT_REPORT_RESPONSE_BYTES {
         return ApiResponse::error(

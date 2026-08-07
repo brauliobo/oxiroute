@@ -52,6 +52,7 @@ pub(crate) struct UdpRelayOutcome {
     pub(crate) stats: UdpRelayStats,
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn relay_udp<S>(
     stream: S,
     socket: UdpSocket,
@@ -76,7 +77,7 @@ where
             }
         }
     });
-    let mut udp_buffer = [0; MAX_UDP_PAYLOAD];
+    let mut udp_buffer = vec![0; MAX_UDP_PAYLOAD].into_boxed_slice();
     let mut stats = UdpRelayStats::default();
 
     let end = loop {
@@ -88,8 +89,8 @@ where
             tokio::select! {
                 biased;
                 _ = shutdown.changed() => break UdpRelayEnd::Cancelled,
-                _ = &mut lifetime => break UdpRelayEnd::LifetimeTimeout,
-                _ = &mut idle => break UdpRelayEnd::IdleTimeout,
+                () = &mut lifetime => break UdpRelayEnd::LifetimeTimeout,
+                () = &mut idle => break UdpRelayEnd::IdleTimeout,
                 result = &mut capsule => RelayEvent::Capsule(result),
                 result = &mut receive => RelayEvent::Udp(result),
             }
@@ -130,8 +131,8 @@ where
                 let result = tokio::select! {
                     biased;
                     _ = shutdown.changed() => break UdpRelayEnd::Cancelled,
-                    _ = &mut lifetime => break UdpRelayEnd::LifetimeTimeout,
-                    _ = &mut idle => break UdpRelayEnd::IdleTimeout,
+                    () = &mut lifetime => break UdpRelayEnd::LifetimeTimeout,
+                    () = &mut idle => break UdpRelayEnd::IdleTimeout,
                     result = socket.send(payload) => result,
                 };
                 match result {
@@ -157,8 +158,8 @@ where
                 let result = tokio::select! {
                     biased;
                     _ = shutdown.changed() => break UdpRelayEnd::Cancelled,
-                    _ = &mut lifetime => break UdpRelayEnd::LifetimeTimeout,
-                    _ = &mut idle => break UdpRelayEnd::IdleTimeout,
+                    () = &mut lifetime => break UdpRelayEnd::LifetimeTimeout,
+                    () = &mut idle => break UdpRelayEnd::IdleTimeout,
                     result = write_datagram_capsule(&mut writer, &udp_buffer[..length]) => result,
                 };
                 match result {
@@ -222,6 +223,9 @@ where
     Ok(Some(value))
 }
 
+// These three states are intentional: outer `None` rejects malformed or oversized input,
+// `Some(None)` ignores a nonzero context, and `Some(Some(...))` carries the payload.
+#[allow(clippy::option_option)]
 fn decode_datagram(value: &[u8]) -> Option<Option<&[u8]>> {
     let (context, consumed) = decode_varint(value)?;
     if context != UDP_CONTEXT_ID {
@@ -285,9 +289,9 @@ fn encode_varint(value: u64, output: &mut Vec<u8>) -> io::Result<()> {
         (8, 0xc0)
     };
     let shift = (width - 1) * 8;
-    output.push((prefix | ((value >> shift) as u8)) as u8);
+    output.push(prefix | u8::try_from(value >> shift).expect("QUIC varint byte fits in u8"));
     for index in (0..shift).step_by(8).rev() {
-        output.push((value >> index) as u8);
+        output.push(u8::try_from((value >> index) & 0xff).expect("QUIC varint byte fits in u8"));
     }
     Ok(())
 }
@@ -376,9 +380,8 @@ mod tests {
             .await
             .expect("oversized capsule header");
 
-        let error = match read_capsule(&mut reader, MAX_CAPSULE_VALUE).await {
-            Ok(_) => panic!("oversized capsule accepted"),
-            Err(error) => error,
+        let Err(error) = read_capsule(&mut reader, MAX_CAPSULE_VALUE).await else {
+            panic!("oversized capsule accepted");
         };
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }

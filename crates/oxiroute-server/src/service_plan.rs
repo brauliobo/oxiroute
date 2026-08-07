@@ -1246,7 +1246,7 @@ fn compile_cache_policy(
                 max_tag_bytes: to_usize(max_tag_bytes)?,
                 max_in_flight: to_usize(max_in_flight_fills)?,
                 max_followers_per_fill: to_usize(max_followers_per_fill)?,
-                max_heuristic_freshness: Duration::from_secs(24 * 60 * 60),
+                max_heuristic_freshness: Duration::from_hours(24),
             })
         };
         let cache = match store {

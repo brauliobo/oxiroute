@@ -514,10 +514,10 @@ async fn finish_h3_connections(
     loop {
         match timeout_at(deadline, connections.join_next()).await {
             Ok(Some(result)) => {
-                if let Err(error) = result {
-                    if !error.is_cancelled() {
-                        warn!("HTTP/3 listener `{listener_name}` connection task failed: {error}");
-                    }
+                if let Err(error) = result
+                    && !error.is_cancelled()
+                {
+                    warn!("HTTP/3 listener `{listener_name}` connection task failed: {error}");
                 }
             }
             Ok(None) => break,
@@ -533,10 +533,10 @@ async fn finish_h3_connections(
         connections.abort_all();
     }
     while let Some(result) = connections.join_next().await {
-        if let Err(error) = result {
-            if !error.is_cancelled() {
-                warn!("HTTP/3 listener `{listener_name}` connection task failed: {error}");
-            }
+        if let Err(error) = result
+            && !error.is_cancelled()
+        {
+            warn!("HTTP/3 listener `{listener_name}` connection task failed: {error}");
         }
     }
 }
@@ -777,10 +777,10 @@ async fn join_h3_requests(
     loop {
         match timeout_at(deadline, requests.join_next()).await {
             Ok(Some(result)) => {
-                if let Err(error) = result {
-                    if !error.is_cancelled() {
-                        warn!("{protocol} request task failed: {error}");
-                    }
+                if let Err(error) = result
+                    && !error.is_cancelled()
+                {
+                    warn!("{protocol} request task failed: {error}");
                 }
             }
             Ok(None) => break,
@@ -795,10 +795,10 @@ async fn join_h3_requests(
         let _ = request_cancel.send(true);
         requests.abort_all();
         while let Some(result) = requests.join_next().await {
-            if let Err(error) = result {
-                if !error.is_cancelled() {
-                    warn!("{protocol} request task failed: {error}");
-                }
+            if let Err(error) = result
+                && !error.is_cancelled()
+            {
+                warn!("{protocol} request task failed: {error}");
             }
         }
     }
@@ -840,7 +840,45 @@ async fn handle_reverse_request<C>(
     let method = request.method().clone();
     let uri = request.uri().clone();
     let authority = request_authority(&request);
-    let response_status = if authority.is_none() {
+    let response_status = if let Some(authority) = authority.as_ref() {
+        if header_bytes(request.headers())
+            > usize::try_from(H3_MAX_FIELD_SECTION_BYTES).expect("H3 field limit fits usize")
+        {
+            send_h3_error(
+                &mut stream,
+                StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+                b"request headers exceed the HTTP/3 limit\n",
+                deadline,
+            )
+            .await
+            .then_some(StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE.as_u16())
+        } else if !is_unambiguous_http_path(uri.path()) {
+            send_h3_error(
+                &mut stream,
+                StatusCode::BAD_REQUEST,
+                b"request path is invalid\n",
+                deadline,
+            )
+            .await
+            .then_some(StatusCode::BAD_REQUEST.as_u16())
+        } else {
+            let dispatch_shutdown = shutdown.clone();
+            tokio::select! {
+                _ = shutdown.changed() => None,
+                response = dispatch_reverse_request(
+                    &mut stream,
+                    &request,
+                    authority,
+                    &service,
+                    &connector,
+                    &metrics,
+                    client_addr,
+                    deadline,
+                    dispatch_shutdown,
+                ) => response,
+            }
+        }
+    } else {
         send_h3_error(
             &mut stream,
             StatusCode::BAD_REQUEST,
@@ -849,49 +887,13 @@ async fn handle_reverse_request<C>(
         )
         .await
         .then_some(StatusCode::BAD_REQUEST.as_u16())
-    } else if header_bytes(request.headers())
-        > usize::try_from(H3_MAX_FIELD_SECTION_BYTES).expect("H3 field limit fits usize")
-    {
-        send_h3_error(
-            &mut stream,
-            StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
-            b"request headers exceed the HTTP/3 limit\n",
-            deadline,
-        )
-        .await
-        .then_some(StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE.as_u16())
-    } else if !is_unambiguous_http_path(uri.path()) {
-        send_h3_error(
-            &mut stream,
-            StatusCode::BAD_REQUEST,
-            b"request path is invalid\n",
-            deadline,
-        )
-        .await
-        .then_some(StatusCode::BAD_REQUEST.as_u16())
-    } else {
-        let dispatch_shutdown = shutdown.clone();
-        tokio::select! {
-            _ = shutdown.changed() => None,
-            response = dispatch_reverse_request(
-                &mut stream,
-                &request,
-                authority.as_ref().expect("authority checked above"),
-                &service,
-                &connector,
-                &metrics,
-                client_addr,
-                deadline,
-                dispatch_shutdown,
-            ) => response,
-        }
     };
 
     let result = response_status.map_or(HttpOperationResult::Cancelled, |status| {
         HttpOperationResult::from_status(Some(status))
     });
-    if let Some(access_log) = service.access_log() {
-        if let Err(error) = access_log.write(&serde_json::json!({
+    if let Some(access_log) = service.access_log()
+        && let Err(error) = access_log.write(&serde_json::json!({
             "timestampUnixMs": unix_time_ms(),
             "service": access_log.service(),
             "protocol": "h3",
@@ -900,9 +902,9 @@ async fn handle_reverse_request<C>(
             "status": response_status,
             "clientIp": client_addr.map(|address| address.ip().to_string()),
             "durationMs": started_at.elapsed().as_millis().to_string(),
-        })) {
-            warn!("reverse HTTP/3 access log write failed: {error}");
-        }
+        }))
+    {
+        warn!("reverse HTTP/3 access log write failed: {error}");
     }
     if let Err(error) = metrics.record_http_operation(result, started_at.elapsed()) {
         warn!("reverse HTTP/3 operation metrics failed: {error}");
@@ -941,20 +943,20 @@ where
         .await
         .then_some(StatusCode::NOT_FOUND.as_u16());
     };
-    if let Some(access) = &route.access {
-        if !access.authorizes(request.headers()).await {
-            let headers = [(http::header::WWW_AUTHENTICATE, access.challenge().clone())];
-            return send_h3_response(
-                stream,
-                StatusCode::UNAUTHORIZED,
-                &headers,
-                Bytes::new(),
-                false,
-                deadline,
-            )
-            .await
-            .then_some(StatusCode::UNAUTHORIZED.as_u16());
-        }
+    if let Some(access) = &route.access
+        && !access.authorizes(request.headers()).await
+    {
+        let headers = [(http::header::WWW_AUTHENTICATE, access.challenge().clone())];
+        return send_h3_response(
+            stream,
+            StatusCode::UNAUTHORIZED,
+            &headers,
+            Bytes::new(),
+            false,
+            deadline,
+        )
+        .await
+        .then_some(StatusCode::UNAUTHORIZED.as_u16());
     }
 
     match &route.action {
@@ -1653,17 +1655,15 @@ where
             return None;
         }
     }
-    if request.method() != Method::HEAD {
-        if let Some(mut trailers) = response.trailers {
-            if sanitize_h3_trailers(&mut trailers).is_err()
-                || !matches!(
-                    timeout_at(deadline, stream.send_trailers(trailers)).await,
-                    Ok(Ok(()))
-                )
-            {
-                return None;
-            }
-        }
+    if request.method() != Method::HEAD
+        && let Some(mut trailers) = response.trailers
+        && (sanitize_h3_trailers(&mut trailers).is_err()
+            || !matches!(
+                timeout_at(deadline, stream.send_trailers(trailers)).await,
+                Ok(Ok(()))
+            ))
+    {
+        return None;
     }
     if !matches!(timeout_at(deadline, stream.finish()).await, Ok(Ok(()))) {
         return None;
@@ -2509,11 +2509,10 @@ fn h3_redirect_location(
                 } else if let Some(after) = variable.strip_prefix("host") {
                     expanded.push_str(&host);
                     remainder = after;
-                } else if let Some(after) = variable.strip_prefix("request_uri") {
+                } else {
+                    let after = variable.strip_prefix("request_uri")?;
                     expanded.push_str(request_uri);
                     remainder = after;
-                } else {
-                    return None;
                 }
             }
             expanded.push_str(remainder);

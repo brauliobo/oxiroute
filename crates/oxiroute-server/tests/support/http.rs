@@ -44,10 +44,9 @@ impl HttpResponse {
         } else if let Some(length) = headers
             .get("content-length")
             .and_then(|value| value.parse::<usize>().ok())
+            && body.len() >= length
         {
-            if body.len() >= length {
-                body.truncate(length);
-            }
+            body.truncate(length);
         }
         Self {
             status,

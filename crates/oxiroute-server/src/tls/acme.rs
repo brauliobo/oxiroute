@@ -142,7 +142,7 @@ impl AcmeManagedError {
     fn is_retryable(&self) -> bool {
         match self {
             Self::Protocol(error) => error.is_retryable(),
-            Self::Publication => true,
+            Self::Publication | Self::DnsCleanup(_) => true,
             Self::Challenge(error) => {
                 matches!(
                     error,
@@ -158,7 +158,6 @@ impl AcmeManagedError {
                 error,
                 Dns01ProviderError::ProviderFailed | Dns01ProviderError::Timeout
             ),
-            Self::DnsCleanup(_) => true,
             Self::Busy
             | Self::Paused
             | Self::NoJob
@@ -1585,13 +1584,12 @@ impl AcmeManagedReconciler {
             .inspect_err(|_| {
                 self.set_dns_status("failed", "degraded");
                 let cleanup_operation = Dns01Operation::new(timeout);
-                if let Ok(cleanup_operation) = cleanup_operation {
-                    if provider
+                if let Ok(cleanup_operation) = cleanup_operation
+                    && provider
                         .cleanup_txt_record(&record, credentials, &cleanup_operation)
                         .is_ok()
-                    {
-                        self.set_dns_status("recovered", "healthy");
-                    }
+                {
+                    self.set_dns_status("recovered", "healthy");
                 }
             })?;
         let authorization_result =

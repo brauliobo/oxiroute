@@ -454,11 +454,9 @@ impl AuditStore {
                         let Some(oldest) = state.records.pop_front() else {
                             break;
                         };
-                        let bytes = serde_json::to_vec(&oldest)
-                            .map(|value| {
-                                u64::try_from(value.len().saturating_add(1)).unwrap_or(u64::MAX)
-                            })
-                            .unwrap_or(0);
+                        let bytes = serde_json::to_vec(&oldest).map_or(0, |value| {
+                            u64::try_from(value.len().saturating_add(1)).unwrap_or(u64::MAX)
+                        });
                         state.bytes = state.bytes.saturating_sub(bytes);
                     }
                 } else {

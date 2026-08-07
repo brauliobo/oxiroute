@@ -426,10 +426,10 @@ async fn connect_h3(
 ) -> TestResult<quinn::Connection> {
     timeout(Duration::from_secs(5), async {
         loop {
-            if let Ok(connecting) = endpoint.connect(listener_address, SERVER_NAME) {
-                if let Ok(connection) = connecting.await {
-                    return Ok(connection);
-                }
+            if let Ok(connecting) = endpoint.connect(listener_address, SERVER_NAME)
+                && let Ok(connection) = connecting.await
+            {
+                return Ok(connection);
             }
             sleep(Duration::from_millis(10)).await;
         }

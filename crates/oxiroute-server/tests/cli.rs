@@ -551,8 +551,8 @@ fn squid_import_report_publishes_the_target_capability_registry() {
     let report_json: Value = serde_json::from_slice(&report.stdout).expect("Squid report JSON");
     assert_eq!(report_json["source"]["product"], "squid");
     assert_eq!(report_json["capabilities"]["targetVersion"], "6f4c814");
-    assert_eq!(report_json["capabilities"]["registryVersion"], 2);
-    assert_eq!(report_json["capabilities"]["profile"]["version"], 2);
+    assert_eq!(report_json["capabilities"]["registryVersion"], 3);
+    assert_eq!(report_json["capabilities"]["profile"]["version"], 3);
     assert_eq!(report_json["capabilities"]["parity"], "partial");
     assert_eq!(report_json["capabilities"]["completeParity"], false);
     assert!(

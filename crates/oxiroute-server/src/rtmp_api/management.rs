@@ -741,20 +741,15 @@ impl ManagementState {
         let active = mutation.generation();
         let reconcilers = active.plan().certbot_reconcilers();
         let managed_reconcilers = active.plan().tls.acme_reconcilers();
-        if let Some(name) = request.certificate.as_deref() {
-            if !reconcilers
+        if let Some(name) = request.certificate.as_deref()
+            && !reconcilers
                 .iter()
                 .any(|reconciler| reconciler.status().certificate == name)
-                && !managed_reconcilers
-                    .iter()
-                    .any(|reconciler| reconciler.status().certificate == name)
-            {
-                return ApiResponse::error(
-                    404,
-                    "certificate_not_found",
-                    "certificate was not found",
-                );
-            }
+            && !managed_reconcilers
+                .iter()
+                .any(|reconciler| reconciler.status().certificate == name)
+        {
+            return ApiResponse::error(404, "certificate_not_found", "certificate was not found");
         }
         let mut outcomes = Vec::new();
         for reconciler in reconcilers {
@@ -1430,8 +1425,8 @@ enum JobControl {
 fn managed_error_response(error: crate::AcmeManagedError, message: &str) -> ApiResponse {
     let status = match &error {
         crate::AcmeManagedError::Protocol(oxiroute_acme::AcmeError::InvalidRevocationReason) => 400,
-        crate::AcmeManagedError::State(oxiroute_acme::AcmeStateError::PendingDnsCleanup) => 409,
-        crate::AcmeManagedError::Busy
+        crate::AcmeManagedError::State(oxiroute_acme::AcmeStateError::PendingDnsCleanup)
+        | crate::AcmeManagedError::Busy
         | crate::AcmeManagedError::Paused
         | crate::AcmeManagedError::NoJob => 409,
         _ => 503,

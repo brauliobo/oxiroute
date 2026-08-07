@@ -1021,10 +1021,11 @@ impl GenerationManager {
             None
         };
         if let Some(error) = failure {
-            if previous_current && !state.shutting_down {
-                if let Some(close) = previous_close {
-                    let _ = close.reopen();
-                }
+            if previous_current
+                && !state.shutting_down
+                && let Some(close) = previous_close
+            {
+                let _ = close.reopen();
             }
             if owns_reservation {
                 state.starting_candidate = None;

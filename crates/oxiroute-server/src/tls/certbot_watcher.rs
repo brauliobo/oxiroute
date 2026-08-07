@@ -636,7 +636,9 @@ mod tests {
             validate_configuration(
                 1,
                 CertbotWatcherConfig {
-                    rescan_interval: MIN_RESCAN_INTERVAL - Duration::from_millis(1),
+                    rescan_interval: MIN_RESCAN_INTERVAL
+                        .checked_sub(Duration::from_millis(1))
+                        .expect("minimum rescan interval exceeds one millisecond"),
                     ..valid
                 }
             ),
