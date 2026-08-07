@@ -428,6 +428,52 @@ describe('ConfigurationWorkspace', () => {
     expect(storageWrite).not.toHaveBeenCalled()
   })
 
+  it('round-trips redacted RTMP token secrets through an unrelated edit and save', async () => {
+    const snapshot = configSnapshot()
+    snapshot.config.rtmp_services[0]!.applications[0]!.publish.token = {
+      source: 'stream_query',
+      parameter: 'token',
+      secret: '<redacted>',
+    }
+    snapshot.config.rtmp_services[0]!.applications[0]!.play.token = {
+      source: 'stream_query',
+      parameter: 'viewer',
+      secret: '<redacted>',
+    }
+    const saved: { config: CanonicalConfig | null } = { config: null }
+    const fetch = installConfigFetch((config) => {
+      saved.config = config
+      return jsonResponse({
+        diskRevision: 'saved-disk-revision',
+        candidateRevision: 'saved-candidate-revision',
+        activeRevision,
+        outcome: 'saved_pending_activation',
+        activationState: 'pending',
+        restartRequired: false,
+        diagnostics: [],
+      })
+    }, 200, snapshot)
+    const wrapper = await mountUnlocked()
+
+    await wrapper.get('[data-field="version"] input').setValue(2)
+    await findButton(wrapper, 'Validate candidate').trigger('click')
+    await flushPromises()
+
+    const validationCall = fetch.mock.calls.find(([url]) => String(url) === '/api/v1/config/validate')
+    const validated = JSON.parse(String(validationCall?.[1]?.body)).config as CanonicalConfig
+    expect(validated.version).toBe(2)
+    expect(validated.rtmp_services[0]?.applications[0]?.publish.token?.secret).toBe('<redacted>')
+    expect(validated.rtmp_services[0]?.applications[0]?.play.token?.secret).toBe('<redacted>')
+
+    await findButton(wrapper, 'Review save').trigger('click')
+    await findButton(wrapper, 'Save canonical configuration').trigger('click')
+    await flushPromises()
+
+    expect(saved.config?.version).toBe(2)
+    expect(saved.config?.rtmp_services[0]?.applications[0]?.publish.token?.secret).toBe('<redacted>')
+    expect(saved.config?.rtmp_services[0]?.applications[0]?.play.token?.secret).toBe('<redacted>')
+  })
+
   it('preserves and edits imported statistics pages and compatibility routing through save', async () => {
     const imported = configSnapshot()
     imported.config.stats = {

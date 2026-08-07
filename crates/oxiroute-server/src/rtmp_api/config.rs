@@ -1,7 +1,7 @@
 use std::{io, path::Path, str::FromStr};
 
 use http::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE};
-use oxiroute_config::Config;
+use oxiroute_config::{Config, RtmpAccessPolicy};
 use oxiroute_config_source::{ConfigFormat, render_config};
 use oxiroute_import::ImportReportEnvelope;
 use pingora::protocols::http::ServerSession;
@@ -150,6 +150,32 @@ impl ConfigApiState {
         )
     }
 
+    fn merge_redacted_rtmp_token_secrets(&self, draft: &mut Config) -> Result<(), ApiResponse> {
+        if !contains_redacted_rtmp_token_secret(draft) {
+            return Ok(());
+        }
+        let authoritative = match self.coordinator.load() {
+            ConfigLoadOutcome::Loaded(document) => document.normalized_config,
+            ConfigLoadOutcome::Rejected(rejection) => {
+                return Err(ApiResponse::json(
+                    503,
+                    &json!({
+                        "schemaVersion": 1,
+                        "diskRevision": rejection.disk_revision,
+                        "activeRevision": self.active_revision(),
+                        "diagnostics": rejection.diagnostics,
+                        "error": {
+                            "code": "authoritative_config_unavailable",
+                            "message": "the latest persisted configuration could not be loaded",
+                        },
+                    }),
+                ));
+            }
+        };
+        restore_redacted_rtmp_token_secrets(draft, &authoritative);
+        Ok(())
+    }
+
     fn config_response(&self) -> ApiResponse {
         match self.coordinator.load() {
             ConfigLoadOutcome::Loaded(document) => {
@@ -257,10 +283,13 @@ impl ConfigApiState {
     }
 
     fn validate_config_response(&self, body: &[u8], now_unix_ms: u64) -> ApiResponse {
-        let draft = match parse_config_request(body) {
+        let mut draft = match parse_config_request(body) {
             Ok(draft) => draft,
             Err(response) => return response,
         };
+        if let Err(response) = self.merge_redacted_rtmp_token_secrets(&mut draft) {
+            return response;
+        }
         let candidate = match self.prepare_candidate(&draft, now_unix_ms, None) {
             Ok(candidate) => candidate,
             Err(response) => return response,
@@ -297,10 +326,13 @@ impl ConfigApiState {
         body: &[u8],
         now_unix_ms: u64,
     ) -> ApiResponse {
-        let draft = match parse_config_request(body) {
+        let mut draft = match parse_config_request(body) {
             Ok(draft) => draft,
             Err(response) => return response,
         };
+        if let Err(response) = self.merge_redacted_rtmp_token_secrets(&mut draft) {
+            return response;
+        }
         let mutation = if let Some(generations) = &self.generations {
             match generations.begin_config_mutation() {
                 Ok(mutation) => Some(mutation),
@@ -539,6 +571,66 @@ fn redacted_config_view(mut config: Config, format: ConfigFormat) -> (Config, St
     let preview = render_config(format, &config)
         .expect("normalized configuration remains renderable after token redaction");
     (config, preview)
+}
+
+fn contains_redacted_rtmp_token_secret(config: &Config) -> bool {
+    config.rtmp_services.iter().any(|service| {
+        service.applications.iter().any(|application| {
+            [&application.publish, &application.play]
+                .into_iter()
+                .any(|policy| {
+                    policy
+                        .token
+                        .as_ref()
+                        .is_some_and(|token| token.secret == REDACTED_RTMP_TOKEN)
+                })
+        })
+    })
+}
+
+fn restore_redacted_rtmp_token_secrets(draft: &mut Config, authoritative: &Config) {
+    for service in &mut draft.rtmp_services {
+        let Some(authoritative_service) = authoritative
+            .rtmp_services
+            .iter()
+            .find(|candidate| candidate.name == service.name)
+        else {
+            continue;
+        };
+        for application in &mut service.applications {
+            let Some(authoritative_application) = authoritative_service
+                .applications
+                .iter()
+                .find(|candidate| candidate.name == application.name)
+            else {
+                continue;
+            };
+            restore_redacted_rtmp_token_secret(
+                &mut application.publish,
+                &authoritative_application.publish,
+            );
+            restore_redacted_rtmp_token_secret(
+                &mut application.play,
+                &authoritative_application.play,
+            );
+        }
+    }
+}
+
+fn restore_redacted_rtmp_token_secret(
+    draft: &mut RtmpAccessPolicy,
+    authoritative: &RtmpAccessPolicy,
+) {
+    let Some(token) = draft.token.as_mut() else {
+        return;
+    };
+    if token.secret != REDACTED_RTMP_TOKEN {
+        return;
+    }
+    let Some(authoritative_token) = authoritative.token.as_ref() else {
+        return;
+    };
+    token.secret.clone_from(&authoritative_token.secret);
 }
 
 fn add_legacy_lua_preview(response: &mut Value, format: ConfigFormat, preview: &str) {

@@ -1038,7 +1038,7 @@ async fn config_api_reports_source_format_composition_and_native_preview_name() 
 }
 
 #[tokio::test]
-async fn config_api_redacts_rtmp_token_secrets_from_typed_and_rendered_views() {
+async fn config_api_preserves_rtmp_token_secrets_across_redacted_round_trip() {
     let mut active = editable_config();
     active.rtmp_services = vec![RtmpService {
         name: "live".into(),
@@ -1062,7 +1062,14 @@ async fn config_api_redacts_rtmp_token_secrets_from_typed_and_rendered_views() {
                     secret: "super-secret-token".into(),
                 }),
             },
-            play: RtmpAccessPolicy::default(),
+            play: RtmpAccessPolicy {
+                rules: Vec::new(),
+                token: Some(RtmpTokenPolicy {
+                    source: RtmpTokenSource::StreamQuery,
+                    parameter: "viewer".into(),
+                    secret: "play-secret-token".into(),
+                }),
+            },
             limits: RtmpSessionCeilings::default(),
             push_targets: Vec::new(),
             pull_targets: Vec::new(),
@@ -1084,12 +1091,22 @@ async fn config_api_redacts_rtmp_token_secrets_from_typed_and_rendered_views() {
         get_json["config"]["rtmp_services"][0]["applications"][0]["publish"]["token"]["secret"],
         "<redacted>"
     );
+    assert_eq!(
+        get_json["config"]["rtmp_services"][0]["applications"][0]["play"]["token"]["secret"],
+        "<redacted>"
+    );
     assert!(get_json["configPreview"].as_str().is_some_and(|preview| {
-        preview.contains("<redacted>") && !preview.contains("super-secret-token")
+        preview.contains("<redacted>")
+            && !preview.contains("super-secret-token")
+            && !preview.contains("play-secret-token")
     }));
     assert!(!String::from_utf8_lossy(&get.body).contains("super-secret-token"));
+    assert!(!String::from_utf8_lossy(&get.body).contains("play-secret-token"));
 
-    let request = serde_json::json!({ "config": active });
+    let mut round_trip: Config = serde_json::from_value(get_json["config"].clone())
+        .expect("redacted config remains a typed request");
+    round_trip.rtmp_services[0].outbound_chunk_size = 8_192;
+    let request = serde_json::json!({ "config": round_trip });
     let validated = harness
         .request("POST", "/api/v1/config/validate", None, Some(&request))
         .await;
@@ -1100,7 +1117,46 @@ async fn config_api_redacts_rtmp_token_secrets_from_typed_and_rendered_views() {
             ["secret"],
         "<redacted>"
     );
+    assert_eq!(
+        validated_json["normalizedConfig"]["rtmp_services"][0]["applications"][0]["play"]["token"]
+            ["secret"],
+        "<redacted>"
+    );
     assert!(!String::from_utf8_lossy(&validated.body).contains("super-secret-token"));
+    assert!(!String::from_utf8_lossy(&validated.body).contains("play-secret-token"));
+
+    let normalized = serde_json::json!({
+        "config": validated_json["normalizedConfig"].clone(),
+    });
+    let saved = harness
+        .request(
+            "PUT",
+            "/api/v1/config",
+            get_json["diskRevision"].as_str(),
+            Some(&normalized),
+        )
+        .await;
+    assert_eq!(saved.status, 200);
+    assert!(!String::from_utf8_lossy(&saved.body).contains("super-secret-token"));
+    assert!(!String::from_utf8_lossy(&saved.body).contains("play-secret-token"));
+
+    let persisted = fs::read_to_string(&harness.config_path).expect("saved configuration");
+    assert!(persisted.contains("super-secret-token"));
+    assert!(persisted.contains("play-secret-token"));
+    assert!(persisted.contains("outbound_chunk_size = 8192"));
+
+    let after_save = harness.request("GET", "/api/v1/config", None, None).await;
+    assert_eq!(after_save.status, 200);
+    assert_eq!(
+        after_save.json()["config"]["rtmp_services"][0]["applications"][0]["publish"]["token"]["secret"],
+        "<redacted>"
+    );
+    assert_eq!(
+        after_save.json()["config"]["rtmp_services"][0]["applications"][0]["play"]["token"]["secret"],
+        "<redacted>"
+    );
+    assert!(!String::from_utf8_lossy(&after_save.body).contains("super-secret-token"));
+    assert!(!String::from_utf8_lossy(&after_save.body).contains("play-secret-token"));
 }
 
 #[tokio::test]
