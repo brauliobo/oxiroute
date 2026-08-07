@@ -211,12 +211,11 @@ fn lex_line(
         }
     }
     let continued = trailing_backslashes % 2 == 1;
-    if continued {
-        if let Some(last) = words.last_mut() {
-            if last.value.last() == Some(&b'\\') {
-                last.value.pop();
-            }
-        }
+    if continued
+        && let Some(last) = words.last_mut()
+        && last.value.last() == Some(&b'\\')
+    {
+        last.value.pop();
     }
     (words, continued)
 }

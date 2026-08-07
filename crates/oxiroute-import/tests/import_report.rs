@@ -40,8 +40,8 @@ fn report_json_is_deterministic_and_identifies_each_source_product() {
         (
             "haproxy",
             ImportReportEnvelope::from_haproxy(
-                &import_roots(&[haproxy_path.clone()]),
-                &[haproxy_path.clone()],
+                &import_roots(std::slice::from_ref(&haproxy_path)),
+                std::slice::from_ref(&haproxy_path),
             ),
         ),
         (
@@ -65,7 +65,7 @@ fn report_json_is_deterministic_and_identifies_each_source_product() {
         assert!(value["source"]["versionSource"].is_null());
         assert_eq!(
             value["source"]["capabilityProfile"]["version"],
-            if product == "squid" { 2 } else { 1 }
+            if product == "squid" { 3 } else { 1 }
         );
         assert!(
             value["sourceGraph"]["sources"]
@@ -153,8 +153,8 @@ fn squid_report_keeps_open_capability_entries_out_of_complete_parity_claims() {
             .any(|family| family["status"] == "unsupported")
     );
     assert_eq!(capabilities["completeParity"], false);
-    assert_eq!(capabilities["registryVersion"], 2);
-    assert_eq!(capabilities["profile"]["version"], 2);
+    assert_eq!(capabilities["registryVersion"], 3);
+    assert_eq!(capabilities["profile"]["version"], 3);
     assert_ne!(capabilities["parity"], "complete");
     assert!(
         capabilities["directives"]
@@ -284,7 +284,7 @@ fn report_retains_source_edges_environment_metadata_and_absent_maps() {
         .join("tests/fixtures/haproxy/minimal-representable.cfg");
     let haproxy = ImportReportEnvelope::from_haproxy(
         &import_roots_with_environment(
-            &[haproxy_path.clone()],
+            std::slice::from_ref(&haproxy_path),
             PreprocessingEnvironment {
                 node_ip: "192.0.2.10".parse::<IpAddr>().expect("node IP"),
                 gpu1_defined: false,

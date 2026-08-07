@@ -328,25 +328,26 @@ impl<'a> Resolver<'a> {
                 continue;
             }
             let upstream = self.resolve_upstream(child);
-            if child.directive.arguments.len() == 1 && child.directive.children.is_some() {
-                if let Some(name) = &upstream.name {
-                    let normalized = ascii_lowercase(&name.value);
-                    if has_variable(&name.value) {
-                        self.block(
-                            child.occurrence,
-                            E_UNSUPPORTED_FEATURE,
-                            "variables in upstream names are unsupported",
-                        );
-                    } else if let Some(first) = upstream_by_name.get(&normalized).copied() {
-                        self.block_related(
-                            child.occurrence,
-                            E_DUPLICATE_IDENTITY,
-                            "duplicate nginx upstream identity",
-                            first,
-                        );
-                    } else {
-                        upstream_by_name.insert(normalized, child.occurrence);
-                    }
+            if child.directive.arguments.len() == 1
+                && child.directive.children.is_some()
+                && let Some(name) = &upstream.name
+            {
+                let normalized = ascii_lowercase(&name.value);
+                if has_variable(&name.value) {
+                    self.block(
+                        child.occurrence,
+                        E_UNSUPPORTED_FEATURE,
+                        "variables in upstream names are unsupported",
+                    );
+                } else if let Some(first) = upstream_by_name.get(&normalized).copied() {
+                    self.block_related(
+                        child.occurrence,
+                        E_DUPLICATE_IDENTITY,
+                        "duplicate nginx upstream identity",
+                        first,
+                    );
+                } else {
+                    upstream_by_name.insert(normalized, child.occurrence);
                 }
             }
             upstreams.push(upstream);
@@ -589,19 +590,19 @@ impl<'a> Resolver<'a> {
                 b"location" => {
                     declaration_order.push(ServerDeclaration::Location(child.occurrence));
                     let location = self.resolve_location(child, None, upstreams);
-                    if is_supported_location(location.kind) {
-                        if let Some(path) = &location.path {
-                            let identity = (location.kind, path.value.clone());
-                            if let Some(first) = location_identities.get(&identity).copied() {
-                                self.block_related(
-                                    location.origin.occurrence,
-                                    E_DUPLICATE_IDENTITY,
-                                    "duplicate location identity in virtual server",
-                                    first,
-                                );
-                            } else {
-                                location_identities.insert(identity, location.origin.occurrence);
-                            }
+                    if is_supported_location(location.kind)
+                        && let Some(path) = &location.path
+                    {
+                        let identity = (location.kind, path.value.clone());
+                        if let Some(first) = location_identities.get(&identity).copied() {
+                            self.block_related(
+                                location.origin.occurrence,
+                                E_DUPLICATE_IDENTITY,
+                                "duplicate location identity in virtual server",
+                                first,
+                            );
+                        } else {
+                            location_identities.insert(identity, location.origin.occurrence);
                         }
                     }
                     locations.push(location);
@@ -836,19 +837,19 @@ impl<'a> Resolver<'a> {
                 b"location" => {
                     let location =
                         self.resolve_location(child, effective_proxy.as_ref(), upstreams);
-                    if is_supported_location(location.kind) {
-                        if let Some(path) = &location.path {
-                            let identity = (location.kind, path.value.clone());
-                            if let Some(first) = location_identities.get(&identity).copied() {
-                                self.block_related(
-                                    location.origin.occurrence,
-                                    E_DUPLICATE_IDENTITY,
-                                    "duplicate nested location identity",
-                                    first,
-                                );
-                            } else {
-                                location_identities.insert(identity, location.origin.occurrence);
-                            }
+                    if is_supported_location(location.kind)
+                        && let Some(path) = &location.path
+                    {
+                        let identity = (location.kind, path.value.clone());
+                        if let Some(first) = location_identities.get(&identity).copied() {
+                            self.block_related(
+                                location.origin.occurrence,
+                                E_DUPLICATE_IDENTITY,
+                                "duplicate nested location identity",
+                                first,
+                            );
+                        } else {
+                            location_identities.insert(identity, location.origin.occurrence);
                         }
                     }
                     nested_locations.push(location);

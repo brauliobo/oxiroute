@@ -495,10 +495,10 @@ impl Lowerer {
                             );
                             route_origins.push(route.origins.clone());
                             all_origins.extend(route.origins.clone());
-                            if let Some(pool) = route.pool {
-                                if pool_names.insert(pool.pool.name.clone()) {
-                                    pools.push(pool);
-                                }
+                            if let Some(pool) = route.pool
+                                && pool_names.insert(pool.pool.name.clone())
+                            {
+                                pools.push(pool);
                             }
                             routes.push(route.route);
                         }
@@ -1436,11 +1436,11 @@ impl Lowerer {
             ));
             return None;
         };
-        if matches!(status, 301 | 302 | 307 | 308) || (status == 404 && payload.is_empty()) {
-            if let Some(server) = self.default_error_server.as_deref() {
-                headers.extend(nginx_default_headers(server));
-                self.used_default_error_overlay.set(true);
-            }
+        if (matches!(status, 301 | 302 | 307 | 308) || (status == 404 && payload.is_empty()))
+            && let Some(server) = self.default_error_server.as_deref()
+        {
+            headers.extend(nginx_default_headers(server));
+            self.used_default_error_overlay.set(true);
         }
         if matches!(status, 301 | 302 | 307 | 308) {
             if payload.is_empty() {
@@ -1540,11 +1540,11 @@ impl Lowerer {
         let mime = self.lower_static_mime(location, &mut origins, issues);
         let headers = self.lower_literal_headers(location, &mut origins, issues);
         let mut error_responses = self.lower_error_responses(location, &mut origins, issues);
-        if let Some(server) = self.default_error_server.clone() {
-            if !self.error_page_matches_status(location.origin.occurrence, 404) {
-                error_responses.push(nginx_default_404(&server));
-                self.used_default_error_overlay.set(true);
-            }
+        if let Some(server) = self.default_error_server.clone()
+            && !self.error_page_matches_status(location.origin.occurrence, 404)
+        {
+            error_responses.push(nginx_default_404(&server));
+            self.used_default_error_overlay.set(true);
         }
         let autoindex = self.policy_enabled(location.origin.occurrence, b"autoindex", false);
         let autoindex_exact_size =

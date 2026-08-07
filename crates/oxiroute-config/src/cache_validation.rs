@@ -59,14 +59,14 @@ pub(crate) fn validate_cache_stores(
             });
         }
         let limits = cache_store_limits(store, &name)?;
-        if let CacheStore::Disk { root_directory, .. } = store {
-            if !disk_roots.insert(root_directory.clone()) {
-                return Err(invalid_store(
-                    &name,
-                    "root_directory",
-                    "must be unique across disk stores",
-                ));
-            }
+        if let CacheStore::Disk { root_directory, .. } = store
+            && !disk_roots.insert(root_directory.clone())
+        {
+            return Err(invalid_store(
+                &name,
+                "root_directory",
+                "must be unique across disk stores",
+            ));
         }
         validate_cache_store_limits(&name, limits)?;
         bounds.insert(

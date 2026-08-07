@@ -756,21 +756,21 @@ impl<'a> Resolver<'a> {
             }
         }
 
-        if server_name_count == 0 {
-            if let Some(default) = &self.defaults.server_name {
-                match parse_server_name_text(&default.value, address.port()) {
-                    Ok(name) => names.push(EffectiveServerName {
-                        origin: default.origin.clone(),
-                        selector: name.selector,
-                        certificate_name: name.certificate_name,
-                        inherited: true,
-                    }),
-                    Err((code, message)) => self.block(
-                        directive,
-                        code,
-                        format!("inherited Apache ServerName is invalid: {message}"),
-                    ),
-                }
+        if server_name_count == 0
+            && let Some(default) = &self.defaults.server_name
+        {
+            match parse_server_name_text(&default.value, address.port()) {
+                Ok(name) => names.push(EffectiveServerName {
+                    origin: default.origin.clone(),
+                    selector: name.selector,
+                    certificate_name: name.certificate_name,
+                    inherited: true,
+                }),
+                Err((code, message)) => self.block(
+                    directive,
+                    code,
+                    format!("inherited Apache ServerName is invalid: {message}"),
+                ),
             }
         }
         if server_name_count > 1 || names.is_empty() {
@@ -808,14 +808,14 @@ impl<'a> Resolver<'a> {
                 );
             }
         }
-        if let (Some(chain), Some(key)) = (&tls.certificate_chain, &tls.private_key) {
-            if chain.path == key.path {
-                self.block(
-                    directive,
-                    E_INVALID_VALUE,
-                    "Apache certificate and private-key paths must differ",
-                );
-            }
+        if let (Some(chain), Some(key)) = (&tls.certificate_chain, &tls.private_key)
+            && chain.path == key.path
+        {
+            self.block(
+                directive,
+                E_INVALID_VALUE,
+                "Apache certificate and private-key paths must differ",
+            );
         }
         if rewrite_engine.as_ref().is_some_and(|(enabled, _)| *enabled) {
             self.block(

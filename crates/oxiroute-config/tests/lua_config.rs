@@ -741,8 +741,8 @@ fn managed_acme_source_round_trips_and_rejects_unsafe_policy_values() {
             dns01: Some(dns01),
             ..
         } if dns01.provider == "fake"
-            && dns01.credential_file
-                == std::path::PathBuf::from("/etc/oxiroute/dns-credentials")
+            && dns01.credential_file.as_path()
+                == std::path::Path::new("/etc/oxiroute/dns-credentials")
             && dns01.timeout_seconds == 30
     ));
     assert_eq!(
@@ -3301,12 +3301,12 @@ fn enforces_the_source_size_limit() {
 #[test]
 fn enforces_the_lua_instruction_limit() {
     let error = error_from(
-        r#"
+        r"
 local counter = 0
 while true do
   counter = counter + 1
 end
-"#,
+",
     );
 
     assert!(matches!(error, ConfigError::Lua(_)));

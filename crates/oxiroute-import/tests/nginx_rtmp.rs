@@ -689,6 +689,7 @@ fn duplicates_and_overlapping_listens_are_terminal_blockers() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn lowers_extended_recorder_forms() {
     for (directive, audio, video, keyframes, append, lock, notify, max_size, max_frames) in [
         (

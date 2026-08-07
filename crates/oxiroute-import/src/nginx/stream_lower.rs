@@ -343,7 +343,7 @@ impl Lowerer {
                 self.insert_pool(
                     &name,
                     std::slice::from_ref(endpoint),
-                    &[origin.clone()],
+                    std::slice::from_ref(&origin),
                     &origin,
                 );
                 self.direct_pool_names

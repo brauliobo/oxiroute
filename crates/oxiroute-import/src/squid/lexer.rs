@@ -208,9 +208,6 @@ impl Lexer<'_> {
                     quote = None;
                     cursor += 1;
                 }
-                Some(_) if byte == b'\\' => {
-                    self.decode_escape(&mut cursor, end, &mut value)?;
-                }
                 None if matches!(byte, b' ' | b'\t' | b'\r') => break,
                 None if byte == b'#' => break,
                 None if matches!(byte, b'\'' | b'"') => {
@@ -227,7 +224,7 @@ impl Lexer<'_> {
                     quote = Some((byte, cursor));
                     cursor += 1;
                 }
-                None if byte == b'\\' => {
+                Some(_) | None if byte == b'\\' => {
                     self.decode_escape(&mut cursor, end, &mut value)?;
                 }
                 _ => {

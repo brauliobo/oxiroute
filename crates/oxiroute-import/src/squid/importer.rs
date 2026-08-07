@@ -185,31 +185,30 @@ fn import_graph(graph: SourceGraph, mut diagnostics: Vec<Diagnostic>) -> ImportR
             }
         })
         .collect();
-    if let Err(kind) = &lowered {
-        if !blocked_capabilities
+    if let Err(kind) = &lowered
+        && !blocked_capabilities
             .iter()
             .any(|capability| capability.kind == *kind)
-        {
-            let occurrences = effective
-                .ledger
-                .decisions
-                .iter()
-                .filter_map(|decision| match decision.outcome {
-                    DecisionOutcome::Classified {
-                        activation: Activation::Blocked(blocked),
-                        ..
-                    } if blocked == *kind => Some(decision.origin.occurrence),
-                    DecisionOutcome::Classified { .. } => None,
-                })
-                .collect::<Vec<_>>();
-            diagnostics.push(lower_blocker_diagnostic(*kind, &effective, &graph));
-            blocked_capabilities.push(BlockedCapability {
-                kind: *kind,
-                occurrences,
-                diagnostic_code: blocker_code(*kind),
-            });
-            blocked_capabilities.sort_unstable_by_key(|capability| capability.kind);
-        }
+    {
+        let occurrences = effective
+            .ledger
+            .decisions
+            .iter()
+            .filter_map(|decision| match decision.outcome {
+                DecisionOutcome::Classified {
+                    activation: Activation::Blocked(blocked),
+                    ..
+                } if blocked == *kind => Some(decision.origin.occurrence),
+                DecisionOutcome::Classified { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        diagnostics.push(lower_blocker_diagnostic(*kind, &effective, &graph));
+        blocked_capabilities.push(BlockedCapability {
+            kind: *kind,
+            occurrences,
+            diagnostic_code: blocker_code(*kind),
+        });
+        blocked_capabilities.sort_unstable_by_key(|capability| capability.kind);
     }
     let decision_ledger = effective.ledger.clone();
     let (draft, canonical_provenance) = lowered.map_or_else(
@@ -612,7 +611,7 @@ fn lower_provenance(
             &mut recorder,
             &path,
             ["", "/name", "/bind", "/bind/type", "/protocol", "/service"],
-            &[port.origin.clone()],
+            std::slice::from_ref(&port.origin),
         );
         if matches!(listener.bind, ListenerBind::Socket { .. }) {
             recorder.record(format!("{path}/bind/address"), vec![port.origin.clone()]);

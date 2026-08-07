@@ -828,14 +828,14 @@ impl Lowerer<'_> {
             request_timeout_ms,
             keepalive_timeout_ms,
         } = downstream_timeouts;
-        if mode.protocol != oxiroute_config::Protocol::Http {
-            if let Some(tls) = binds.iter().find_map(|bind| bind.tls.as_ref()) {
-                self.block_value(
-                    tls,
-                    "HAProxy TLS termination on a non-HTTP listener has no canonical representation",
-                );
-                return false;
-            }
+        if mode.protocol != oxiroute_config::Protocol::Http
+            && let Some(tls) = binds.iter().find_map(|bind| bind.tls.as_ref())
+        {
+            self.block_value(
+                tls,
+                "HAProxy TLS termination on a non-HTTP listener has no canonical representation",
+            );
+            return false;
         }
 
         let mut addresses = Vec::with_capacity(binds.len());
@@ -843,9 +843,11 @@ impl Lowerer<'_> {
             let Some(address) = self.lower_listener_bind(bind) else {
                 return false;
             };
-            if matches!(address, ListenerBind::Unix { .. }) && bind.tls.is_some() {
+            if matches!(address, ListenerBind::Unix { .. })
+                && let Some(tls) = bind.tls.as_ref()
+            {
                 self.block_value(
-                    bind.tls.as_ref().expect("checked TLS bind"),
+                    tls,
                     "HAProxy TLS termination on a Unix listener has no canonical representation",
                 );
                 return false;
