@@ -207,7 +207,7 @@ fn assert_hostrouter_service_settings(report: &oxiroute_import::squid::ImportRep
     assert_eq!(report.effective.refresh_policy.patterns.len(), 3);
     assert_eq!(
         report.effective.refresh_policy.patterns[0].minimum,
-        Duration::from_secs(60 * 60)
+        Duration::from_hours(1)
     );
     assert_eq!(report.effective.refresh_policy.patterns[0].percent, 20);
     assert_eq!(
@@ -239,7 +239,7 @@ fn assert_hostrouter_authentication(report: &oxiroute_import::squid::ImportRepor
     assert_eq!(report.effective.authentication_schemes.len(), 1);
     assert_eq!(
         report.effective.authentication_schemes[0].credential_ttl,
-        Some(Duration::from_secs(2 * 60 * 60))
+        Some(Duration::from_hours(2))
     );
     assert!(matches!(
         report.effective.authentication[0].value,
@@ -731,8 +731,8 @@ fn include_graph_expands_globs_in_byte_sorted_parse_order_with_provenance() {
             b"second".as_slice()
         ]
     );
-    assert!(graph.expanded_directives[2].provenance.include_stack.len() == 1);
-    assert!(graph.expanded_directives[3].provenance.include_stack.len() == 1);
+    assert_eq!(graph.expanded_directives[2].provenance.include_stack.len(), 1);
+    assert_eq!(graph.expanded_directives[3].provenance.include_stack.len(), 1);
     let analyzed = oxiroute_import::squid::analyze(graph);
     assert!(analyzed.diagnostics().is_empty());
     assert!(matches!(

@@ -868,15 +868,14 @@ impl<'a> Resolver<'a> {
                     .arguments
                     .first()
                     .and_then(|name| std::str::from_utf8(&name.value).ok())
+                    && let Some(first) = recorder_names.insert(name.to_owned(), child.occurrence)
                 {
-                    if let Some(first) = recorder_names.insert(name.to_owned(), child.occurrence) {
-                        self.block_related(
-                            child.occurrence,
-                            E_DUPLICATE_IDENTITY,
-                            "duplicate nginx-RTMP recorder name in one application",
-                            first,
-                        );
-                    }
+                    self.block_related(
+                        child.occurrence,
+                        E_DUPLICATE_IDENTITY,
+                        "duplicate nginx-RTMP recorder name in one application",
+                        first,
+                    );
                 }
                 if let Some(recorder) = self.resolve_recorder(child, &policy) {
                     recorders.push(recorder);
@@ -1132,16 +1131,14 @@ impl<'a> Resolver<'a> {
                     | b"exec_publish"
                     | b"exec_publish_done"
             );
-            if !repeatable {
-                if let Some(first) = seen.insert(name.to_vec(), child.occurrence) {
-                    self.block_related(
-                        child.occurrence,
-                        E_DUPLICATE_IDENTITY,
-                        "duplicate nginx-RTMP scalar directive in one context",
-                        first,
-                    );
-                    continue;
-                }
+            if !repeatable && let Some(first) = seen.insert(name.to_vec(), child.occurrence) {
+                self.block_related(
+                    child.occurrence,
+                    E_DUPLICATE_IDENTITY,
+                    "duplicate nginx-RTMP scalar directive in one context",
+                    first,
+                );
+                continue;
             }
             if self.validate_registered(child, context).is_err()
                 || child.directive.children.is_some()

@@ -1156,14 +1156,14 @@ impl Builder {
                 &provenance.include_stack,
                 "VCL statement is retained without execution",
             );
-        } else if let StatementClassification::Conditional(conditions) = &classification {
-            if conditions.iter().any(condition_is_non_static) {
-                self.unsupported(
-                    statement.span,
-                    &provenance.include_stack,
-                    "VCL condition contains dynamic or unsupported behavior",
-                );
-            }
+        } else if let StatementClassification::Conditional(conditions) = &classification
+            && conditions.iter().any(condition_is_non_static)
+        {
+            self.unsupported(
+                statement.span,
+                &provenance.include_stack,
+                "VCL condition contains dynamic or unsupported behavior",
+            );
         }
         classification
     }
@@ -1173,19 +1173,19 @@ impl Builder {
         assignment: &Assignment,
         provenance: &Provenance,
     ) -> StatementClassification {
-        if let Some((object, method, arguments)) = object_method_call(&assignment.value) {
-            if matches!(
+        if let Some((object, method, arguments)) = object_method_call(&assignment.value)
+            && matches!(
                 assignment.target.bytes.as_slice(),
                 b"req.backend_hint" | b"bereq.backend"
-            ) && method == b"backend"
-            {
-                return StatementClassification::BackendSelection(self.modern_director_reference(
-                    object,
-                    arguments,
-                    &assignment.value,
-                    provenance,
-                ));
-            }
+            )
+            && method == b"backend"
+        {
+            return StatementClassification::BackendSelection(self.modern_director_reference(
+                object,
+                arguments,
+                &assignment.value,
+                provenance,
+            ));
         }
         if first_call(&assignment.value).is_some() {
             return self.unsupported_expression_call(&assignment.value);
@@ -1300,15 +1300,13 @@ impl Builder {
                 action: Vec::new(),
             });
         };
-        if function == b"pass" {
-            if let [duration] = arguments {
-                if first_call(duration).is_some() {
-                    return self.unsupported_expression_call(expression);
-                }
-                return StatementClassification::CacheFlag(CacheFlag::HitForPass {
-                    duration: duration.clone(),
-                });
+        if function == b"pass" && let [duration] = arguments {
+            if first_call(duration).is_some() {
+                return self.unsupported_expression_call(expression);
             }
+            return StatementClassification::CacheFlag(CacheFlag::HitForPass {
+                duration: duration.clone(),
+            });
         }
         if function != b"synth"
             || arguments
@@ -1415,20 +1413,20 @@ impl Builder {
             }
             _ => {}
         }
-        if let Some((object, method)) = split_method(function) {
-            if let Some(index) = unique_index(&self.modern_director_names, object) {
-                if let Some(method) = self.director_method(method, arguments, provenance) {
-                    self.modern_directors[index].methods.push(method.clone());
-                    return StatementClassification::DirectorMethod {
-                        object: index,
-                        method,
-                    };
-                }
-                return StatementClassification::Unsupported(UnsupportedBehavior::DirectorMethod {
-                    object: object.to_vec(),
-                    method: method.to_vec(),
-                });
+        if let Some((object, method)) = split_method(function)
+            && let Some(index) = unique_index(&self.modern_director_names, object)
+        {
+            if let Some(method) = self.director_method(method, arguments, provenance) {
+                self.modern_directors[index].methods.push(method.clone());
+                return StatementClassification::DirectorMethod {
+                    object: index,
+                    method,
+                };
             }
+            return StatementClassification::Unsupported(UnsupportedBehavior::DirectorMethod {
+                object: object.to_vec(),
+                method: method.to_vec(),
+            });
         }
         self.unsupported_call(function, arguments)
     }
@@ -1561,17 +1559,16 @@ impl Builder {
         if matches!(
             operator,
             ConditionOperator::Match | ConditionOperator::NotMatch
-        ) {
-            if let Some(name) = expression_name(right) {
-                if self.acl_names.contains_key(name) {
-                    return Condition::Acl {
-                        value: left.clone(),
-                        name: name.to_vec(),
-                        declaration: unique_index(&self.acl_names, name),
-                        negated: operator == ConditionOperator::NotMatch,
-                    };
-                }
-            }
+        )
+            && let Some(name) = expression_name(right)
+            && self.acl_names.contains_key(name)
+        {
+            return Condition::Acl {
+                value: left.clone(),
+                name: name.to_vec(),
+                declaration: unique_index(&self.acl_names, name),
+                negated: operator == ConditionOperator::NotMatch,
+            };
         }
         Condition::Comparison {
             left: left.clone(),
@@ -1778,23 +1775,22 @@ impl Builder {
     }
 
     fn validate_versions(&mut self) {
-        if let Some(root) = self.graph.root.and_then(|root| self.graph.source(root)) {
-            if !root
+        if let Some(root) = self.graph.root.and_then(|root| self.graph.source(root))
+            && !root
                 .document
                 .declarations
                 .iter()
                 .any(|declaration| matches!(declaration, Declaration::Version { .. }))
-            {
-                self.diagnostics.push(
-                    Diagnostic::new(
-                        E_VCL_VERSION,
-                        Severity::Error,
-                        DiagnosticStage::Resolve,
-                        "root VCL source does not declare a version",
-                    )
-                    .with_primary_span(root.source.full_span()),
-                );
-            }
+        {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    E_VCL_VERSION,
+                    Severity::Error,
+                    DiagnosticStage::Resolve,
+                    "root VCL source does not declare a version",
+                )
+                .with_primary_span(root.source.full_span()),
+            );
         }
         for source in &self.graph.sources {
             let versions = source

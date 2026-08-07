@@ -3497,25 +3497,25 @@ fn collect_certificate_metadata(
             path.display()
         ));
     }
-    if index == 0 {
-        if let Some(names) = parsed.subject_alternative_name().map_err(|_| {
+    if index == 0
+        && let Some(names) = parsed.subject_alternative_name().map_err(|_| {
             format!(
                 "HAProxy crt PEM `{}` has an invalid subject alternative name extension",
                 path.display()
             )
-        })? {
-            for name in &names.value.general_names {
-                let GeneralName::DNSName(name) = name else {
-                    continue;
-                };
-                let canonical = canonical_certificate_dns_name(name).ok_or_else(|| {
-                    format!(
-                        "HAProxy crt PEM `{}` contains an unsupported DNS subject alternative name",
-                        path.display()
-                    )
-                })?;
-                dns_names.push(canonical);
-            }
+        })?
+    {
+        for name in &names.value.general_names {
+            let GeneralName::DNSName(name) = name else {
+                continue;
+            };
+            let canonical = canonical_certificate_dns_name(name).ok_or_else(|| {
+                format!(
+                    "HAProxy crt PEM `{}` contains an unsupported DNS subject alternative name",
+                    path.display()
+                )
+            })?;
+            dns_names.push(canonical);
         }
     }
     Ok(())

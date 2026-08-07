@@ -649,18 +649,13 @@ impl HttpVersion {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum UpstreamAlgorithm {
+    #[default]
     RoundRobin,
     WeightedRoundRobin { weights: Vec<u16> },
     LeastConnections,
     First,
-}
-
-impl Default for UpstreamAlgorithm {
-    fn default() -> Self {
-        Self::RoundRobin
-    }
 }
 
 impl Serialize for UpstreamAlgorithm {

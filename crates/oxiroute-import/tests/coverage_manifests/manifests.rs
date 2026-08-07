@@ -789,6 +789,7 @@ fn validate_rtmp_reference(manifest: &RtmpDirectiveManifest) {
     assert!(workspace_path(&manifest.reference.documentation).is_file());
 }
 
+#[allow(clippy::too_many_lines)]
 fn validate_rtmp_import_forms(manifest: &RtmpDirectiveManifest) {
     let expected = [
         "import.nginx-rtmp.allow.bounded",

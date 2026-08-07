@@ -1152,14 +1152,12 @@ fn validate_listener_policies(listener: &Listener) -> Result<(), ConfigError> {
     }
     if let ListenerBind::Unix {
         mode: Some(mode), ..
-    } = listener.bind
+    } = listener.bind && (mode == 0 || mode > 0o777)
     {
-        if mode == 0 || mode > 0o777 {
-            return Err(ConfigError::InvalidListenerUnixMode {
-                listener: listener.name.clone(),
-                mode,
-            });
-        }
+        return Err(ConfigError::InvalidListenerUnixMode {
+            listener: listener.name.clone(),
+            mode,
+        });
     }
     for (field, timeout) in [
         (
@@ -1350,14 +1348,12 @@ fn validate_h3_upstream_usage(
             listener.service.as_deref() == Some(service.name.as_str())
                 && listener.protocol == Protocol::Http3
         }) else {
-            if uses_h3_pool {
-                if let Some(listener) = service_listeners.first() {
-                    return Err(ConfigError::InvalidListenerTransport {
-                        listener: listener.name.clone(),
-                        protocol: listener.protocol,
-                        detail: "an HTTP/3 upstream pool requires an http3 listener",
-                    });
-                }
+            if uses_h3_pool && let Some(listener) = service_listeners.first() {
+                return Err(ConfigError::InvalidListenerTransport {
+                    listener: listener.name.clone(),
+                    protocol: listener.protocol,
+                    detail: "an HTTP/3 upstream pool requires an http3 listener",
+                });
             }
             continue;
         };
@@ -1717,14 +1713,12 @@ fn validate_rtmp_services(services: &mut [RtmpService]) -> Result<(), ConfigErro
                     .iter()
                     .map(|recorder| recorder.name.as_str()),
             )?;
-            if !application.live {
-                if let Some(recorder) = application.recorders.first() {
-                    return Err(ConfigError::RtmpRecorderRequiresLiveApplication {
-                        service: service.name.clone(),
-                        application: application.name.clone(),
-                        recorder: recorder.name.clone(),
-                    });
-                }
+            if !application.live && let Some(recorder) = application.recorders.first() {
+                return Err(ConfigError::RtmpRecorderRequiresLiveApplication {
+                    service: service.name.clone(),
+                    application: application.name.clone(),
+                    recorder: recorder.name.clone(),
+                });
             }
             for recorder in &mut application.recorders {
                 total_recorders = total_recorders
@@ -3498,15 +3492,13 @@ fn validate_upstream_endpoint(
             endpoint,
         });
     }
-    if let UpstreamEndpoint::Socket { address } = endpoint {
-        if management_bind
-            .is_some_and(|management| endpoint_exposes_management(address, management))
-        {
-            return Err(ConfigError::ManagementUpstreamEndpoint {
-                pool: pool.into(),
-                endpoint: address,
-            });
-        }
+    if let UpstreamEndpoint::Socket { address } = endpoint
+        && management_bind.is_some_and(|management| endpoint_exposes_management(address, management))
+    {
+        return Err(ConfigError::ManagementUpstreamEndpoint {
+            pool: pool.into(),
+            endpoint: address,
+        });
     }
     Ok(())
 }
@@ -3629,6 +3621,7 @@ pub fn validate_health_check_config(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn validate_l4_services(
     l4_services: &[L4Service],
     upstream_pool_names: &HashSet<String>,
@@ -3707,15 +3700,15 @@ fn validate_l4_services(
             validate_udp_policy(
                 &service.name,
                 policy,
-                has_udp_listener
-                    .then_some(
-                        udp_listener_proxy_header_bytes.max(
-                            service.proxy_protocol.map_or(0, |policy| {
-                                udp_proxy_protocol_header_bytes(policy.version)
-                            }),
-                        ),
+                if has_udp_listener {
+                    udp_listener_proxy_header_bytes.max(
+                        service
+                            .proxy_protocol
+                            .map_or(0, |policy| udp_proxy_protocol_header_bytes(policy.version)),
                     )
-                    .unwrap_or(0),
+                } else {
+                    0
+                },
             )?;
         } else if has_udp_listener {
             validate_udp_policy(

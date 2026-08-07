@@ -200,25 +200,25 @@ impl<'a> Resolver<'a> {
                 b"upstream" => {
                     declaration_order.push(StreamDeclaration::Upstream(child.occurrence));
                     let upstream = self.resolve_upstream(child);
-                    if child.directive.arguments.len() == 1 && child.children.is_some() {
-                        if let Some(name) = &upstream.name {
-                            let normalized = ascii_lowercase(&name.value);
-                            if has_variable(&name.value) {
-                                self.block(
-                                    child.occurrence,
-                                    E_UNSUPPORTED_FEATURE,
-                                    "variables in stream upstream names are unsupported",
-                                );
-                            } else if let Some(first) = upstream_by_name.get(&normalized).copied() {
-                                self.block_related(
-                                    child.occurrence,
-                                    E_DUPLICATE_IDENTITY,
-                                    "duplicate nginx stream upstream identity",
-                                    first,
-                                );
-                            } else {
-                                upstream_by_name.insert(normalized, child.occurrence);
-                            }
+                    if child.directive.arguments.len() == 1 && child.children.is_some()
+                        && let Some(name) = &upstream.name
+                    {
+                        let normalized = ascii_lowercase(&name.value);
+                        if has_variable(&name.value) {
+                            self.block(
+                                child.occurrence,
+                                E_UNSUPPORTED_FEATURE,
+                                "variables in stream upstream names are unsupported",
+                            );
+                        } else if let Some(first) = upstream_by_name.get(&normalized).copied() {
+                            self.block_related(
+                                child.occurrence,
+                                E_DUPLICATE_IDENTITY,
+                                "duplicate nginx stream upstream identity",
+                                first,
+                            );
+                        } else {
+                            upstream_by_name.insert(normalized, child.occurrence);
                         }
                     }
                     upstreams.push(upstream);

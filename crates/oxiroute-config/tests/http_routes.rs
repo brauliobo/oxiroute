@@ -1028,11 +1028,11 @@ fn validates_explicit_retry_triggers_and_safety_rules() {
 
     let status_only = proxy_route(
         "",
-        r#"              retry = {
+        r"              retry = {
                 max_retries = 1,
                 triggers = {},
                 response_statuses = { 503 },
-              },"#,
+              },",
     );
     let status_only_config = load_lua(&config(&status_only, endpoint)).expect("status-only retry");
     let HttpRouteAction::Proxy { policy, .. } =

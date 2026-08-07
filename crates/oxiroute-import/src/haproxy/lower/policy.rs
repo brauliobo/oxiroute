@@ -794,13 +794,13 @@ impl Lowerer<'_> {
                             }
                         }
                         RetryOnTrigger::EmptyResponse => {
-                            lowered.push(HttpRetryTrigger::EmptyResponse)
+                            lowered.push(HttpRetryTrigger::EmptyResponse);
                         }
                         RetryOnTrigger::ResponseTimeout => {
-                            lowered.push(HttpRetryTrigger::ResponseTimeout)
+                            lowered.push(HttpRetryTrigger::ResponseTimeout);
                         }
                         RetryOnTrigger::JunkResponse => {
-                            lowered.push(HttpRetryTrigger::JunkResponse)
+                            lowered.push(HttpRetryTrigger::JunkResponse);
                         }
                     }
                 }
