@@ -99,6 +99,12 @@ pub trait AcmeTransport: Send + Sync {
 #[error("ACME transport request failed")]
 pub struct TransportError;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AcmeFailureClass {
+    Permanent,
+    Retryable,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AcmeError {
     #[error("ACME directory URL is invalid or not HTTPS")]
@@ -171,6 +177,41 @@ pub enum AcmeError {
     Signature(#[source] ErrorStack),
     #[error("ACME CSR could not be created")]
     Csr(#[source] ErrorStack),
+}
+
+impl AcmeError {
+    #[must_use]
+    fn failure_class(&self) -> AcmeFailureClass {
+        match self {
+            Self::Transport(_)
+            | Self::MissingNonce
+            | Self::NoncePoolExhausted
+            | Self::BadNonceRetryExhausted
+            | Self::PollTimeout
+            | Self::InvalidRetryAfter => AcmeFailureClass::Retryable,
+            Self::UnexpectedStatus { status }
+                if matches!(*status, 408 | 425 | 429 | 500 | 502 | 503 | 504) =>
+            {
+                AcmeFailureClass::Retryable
+            }
+            Self::Problem { problem_type } if retryable_problem_type(problem_type) => {
+                AcmeFailureClass::Retryable
+            }
+            _ => AcmeFailureClass::Permanent,
+        }
+    }
+
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        self.failure_class() == AcmeFailureClass::Retryable
+    }
+}
+
+fn retryable_problem_type(problem_type: &str) -> bool {
+    matches!(
+        problem_type.rsplit(':').next(),
+        Some("badNonce" | "connection" | "dns" | "rateLimited" | "serverInternal" | "tls")
+    )
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1989,6 +2030,29 @@ mod tests {
             Err(AcmeError::PrivateOriginRequiresAllowlist)
         ));
         assert!(OriginPolicy::development_allowlist("https://127.0.0.1:14000/directory").is_ok());
+    }
+
+    #[test]
+    fn classifies_transient_acme_failures_without_retrying_permanent_problems() {
+        assert_eq!(
+            AcmeError::Problem {
+                problem_type: "urn:ietf:params:acme:error:rateLimited".into(),
+            }
+            .failure_class(),
+            AcmeFailureClass::Retryable
+        );
+        assert_eq!(
+            AcmeError::UnexpectedStatus { status: 503 }.failure_class(),
+            AcmeFailureClass::Retryable
+        );
+        assert_eq!(
+            AcmeError::Problem {
+                problem_type: "urn:ietf:params:acme:error:rejectedIdentifier".into(),
+            }
+            .failure_class(),
+            AcmeFailureClass::Permanent
+        );
+        assert!(!AcmeError::TermsNotAgreed.is_retryable());
     }
 
     #[test]

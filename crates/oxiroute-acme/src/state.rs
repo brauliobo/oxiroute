@@ -71,6 +71,8 @@ pub enum AcmeStateError {
     InvalidRevision,
     #[error("ACME certificate material is incomplete")]
     IncompleteCertificate,
+    #[error("ACME DNS cleanup is unresolved; state deletion is blocked")]
+    PendingDnsCleanup,
 }
 
 /// Secret bytes are intentionally not serializable or printable.
@@ -635,6 +637,11 @@ impl RevisionStore {
             Err(error) => return Err(AcmeStateError::FileOpen(error)),
         };
         if certificate_exists {
+            match fs::symlink_metadata(certificate_path.join("dns-cleanup.json")) {
+                Ok(_) => return Err(AcmeStateError::PendingDnsCleanup),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(AcmeStateError::FileOpen(error)),
+            }
             let entries = fs::read_dir(&certificate_path).map_err(AcmeStateError::FileOpen)?;
             for entry in entries {
                 let entry = entry.map_err(AcmeStateError::FileOpen)?;
@@ -671,9 +678,10 @@ impl RevisionStore {
                         }
                         fs::remove_dir(revisions_path).map_err(AcmeStateError::FileWrite)?;
                     }
-                    "current" | "renewal.json" | "dns-cleanup.json" => {
+                    "current" | "renewal.json" => {
                         remove_file_if_present(&entry.path())?;
                     }
+                    "dns-cleanup.json" => return Err(AcmeStateError::PendingDnsCleanup),
                     _ => return Err(AcmeStateError::UnsafePath),
                 }
             }
@@ -1236,6 +1244,35 @@ mod tests {
             .expect("delete state");
         assert!(!directory.path().join("state/certificates/edge").exists());
         assert!(!directory.path().join("state/accounts/edge").exists());
+    }
+
+    #[test]
+    fn deleting_certificate_state_blocks_unresolved_dns_cleanup() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let revision =
+            RevisionStore::new(StateStore::open(directory.path().join("state")).expect("state"));
+        revision
+            .commit("edge", "0123abcd", &material())
+            .expect("revision");
+        revision
+            .state()
+            .write_secret(
+                "certificates/edge/dns-cleanup.json",
+                &SecretBytes::new(b"pending-cleanup".to_vec()),
+            )
+            .expect("cleanup journal");
+
+        assert!(matches!(
+            revision.delete_certificate_state("edge"),
+            Err(AcmeStateError::PendingDnsCleanup)
+        ));
+        assert!(directory.path().join("state/certificates/edge").is_dir());
+        assert!(
+            directory
+                .path()
+                .join("state/certificates/edge/dns-cleanup.json")
+                .is_file()
+        );
     }
 
     #[cfg(unix)]

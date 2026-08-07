@@ -105,6 +105,7 @@ impl AcmeManagedError {
             Self::Busy => "job_busy",
             Self::Paused => "job_paused",
             Self::NoJob => "job_not_running",
+            Self::State(AcmeStateError::PendingDnsCleanup) => "dns_cleanup_pending",
             Self::State(_) => "state_failed",
             Self::Protocol(error) => match error {
                 AcmeError::PollTimeout => "poll_timeout",
@@ -135,6 +136,41 @@ impl AcmeManagedError {
                 _ => "dns_provider_failed",
             },
             Self::DnsCleanup(_) => "dns_cleanup_failed",
+        }
+    }
+
+    fn is_retryable(&self) -> bool {
+        match self {
+            Self::Protocol(error) => error.is_retryable(),
+            Self::Publication => true,
+            Self::Challenge(error) => {
+                matches!(
+                    error,
+                    ChallengeStoreError::DuplicateToken | ChallengeStoreError::CapacityExceeded
+                )
+            }
+            Self::TlsAlpnChallenge(error) => matches!(
+                error.as_ref(),
+                super::TlsAlpnChallengeError::DuplicateIdentifier
+                    | super::TlsAlpnChallengeError::CapacityExceeded
+            ),
+            Self::DnsProvider(error) => matches!(
+                error,
+                Dns01ProviderError::ProviderFailed | Dns01ProviderError::Timeout
+            ),
+            Self::DnsCleanup(_) => true,
+            Self::Busy
+            | Self::Paused
+            | Self::NoJob
+            | Self::State(_)
+            | Self::Tls(_)
+            | Self::AuthorizationFailed
+            | Self::OrderFailed
+            | Self::CertificateMalformed
+            | Self::AccountDirectoryChanged
+            | Self::AccountNotConfigured
+            | Self::DnsProviderUnsupported
+            | Self::DnsCredentials(_) => false,
         }
     }
 }
@@ -191,6 +227,7 @@ struct ReconcileState {
     retry_attempt: u32,
     retry_at_unix_seconds: Option<u64>,
     suggested_renewal_unix_seconds: Option<u64>,
+    auto_retry_blocked: bool,
     account_url: Option<String>,
     renewal_info_url: Option<String>,
     job_status: Option<JobStatus>,
@@ -226,6 +263,8 @@ struct PersistedRenewal {
     retry_at_unix_seconds: Option<u64>,
     retry_attempt: u32,
     suggested_renewal_unix_seconds: Option<u64>,
+    #[serde(default)]
+    auto_retry_blocked: bool,
     renewal_info_url: Option<String>,
     last_success_unix_seconds: Option<u64>,
     #[serde(default)]
@@ -445,6 +484,14 @@ impl AcmeManagedReconciler {
                     })
                 }
             });
+        let auto_retry_blocked = persisted
+            .as_ref()
+            .is_some_and(|renewal| renewal.auto_retry_blocked);
+        let next_action_unix_seconds = if auto_retry_blocked {
+            None
+        } else {
+            next_action_unix_seconds
+        };
         let paused = persisted.as_ref().is_some_and(|renewal| renewal.paused);
         let next_action_unix_seconds = if paused {
             None
@@ -518,6 +565,7 @@ impl AcmeManagedReconciler {
                 retry_attempt,
                 retry_at_unix_seconds,
                 suggested_renewal_unix_seconds,
+                auto_retry_blocked,
                 account_url,
                 renewal_info_url,
                 job_status: paused.then_some(JobStatus::Paused),
@@ -604,14 +652,11 @@ impl AcmeManagedReconciler {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.paused {
+        if state.paused || state.auto_retry_blocked {
             return false;
         }
-        if state
-            .next_action_unix_seconds
-            .is_some_and(|next| now_unix_seconds >= next)
-        {
-            return true;
+        if let Some(next) = state.next_action_unix_seconds {
+            return now_unix_seconds >= next;
         }
         match (state.not_before_unix_seconds, state.not_after_unix_seconds) {
             (Some(not_before), Some(not_after)) => renewal_due(
@@ -785,15 +830,7 @@ impl AcmeManagedReconciler {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.paused = false;
             state.job_status = None;
-            state.next_action_unix_seconds = if state.disk_revision == "bootstrap" {
-                Some(0)
-            } else {
-                state.not_before_unix_seconds.and_then(|not_before| {
-                    state.not_after_unix_seconds.and_then(|not_after| {
-                        stable_renewal_time(not_before, not_after, &self.certificate)
-                    })
-                })
-            };
+            state.next_action_unix_seconds = restored_next_action(&state, &self.certificate);
         }
         self.persist_renewal().map_err(AcmeManagedError::State)
     }
@@ -991,11 +1028,13 @@ impl AcmeManagedReconciler {
             Err(error) => {
                 let paused = self.is_paused();
                 let cancelled = is_cancelled_error(error);
-                let retry_error = if paused || cancelled {
-                    None
-                } else {
-                    self.schedule_retry(unix_now()).err()
-                };
+                if !paused && !cancelled {
+                    if error.is_retryable() {
+                        self.schedule_retry(unix_now());
+                    } else {
+                        self.block_automatic_retry();
+                    }
+                }
                 self.set_outcome(
                     if paused {
                         Some("paused")
@@ -1010,7 +1049,12 @@ impl AcmeManagedReconciler {
                         Some(error.code())
                     },
                 );
-                if retry_error.is_some() {
+                let renewal_error = if paused || cancelled {
+                    None
+                } else {
+                    self.persist_renewal().err()
+                };
+                if renewal_error.is_some() {
                     self.set_outcome(None, Some("state_failed"));
                 }
                 let job_status = if paused {
@@ -1022,7 +1066,7 @@ impl AcmeManagedReconciler {
                 };
                 self.set_job_status(Some(job_status.clone()));
                 let status = self.status();
-                let outcome_code = if retry_error.is_some() {
+                let outcome_code = if renewal_error.is_some() {
                     "state_failed"
                 } else if paused {
                     "paused"
@@ -1048,7 +1092,7 @@ impl AcmeManagedReconciler {
                         Some(correlation_id),
                     )
                     .err();
-                if let Some(state_error) = retry_error.or(job_error) {
+                if let Some(state_error) = renewal_error.or(job_error) {
                     self.clear_job_control(&job_id);
                     return Err(AcmeManagedError::State(state_error));
                 }
@@ -1918,6 +1962,7 @@ impl AcmeManagedReconciler {
         state.retry_attempt = 0;
         state.retry_at_unix_seconds = None;
         state.suggested_renewal_unix_seconds = suggested_renewal_unix_seconds;
+        state.auto_retry_blocked = false;
         state.account_url = account_url.or_else(|| state.account_url.clone());
         state.renewal_info_url = renewal_info_url.or_else(|| state.renewal_info_url.clone());
         state.renewal_information_status = renewal_information_status;
@@ -1934,7 +1979,7 @@ impl AcmeManagedReconciler {
         Ok(())
     }
 
-    fn schedule_retry(&self, now_unix_seconds: u64) -> Result<(), AcmeStateError> {
+    fn schedule_retry(&self, now_unix_seconds: u64) {
         let mut state = self
             .state
             .lock()
@@ -1944,8 +1989,17 @@ impl AcmeManagedReconciler {
         state.retry_attempt = attempt;
         state.retry_at_unix_seconds = Some(now_unix_seconds.saturating_add(delay));
         state.next_action_unix_seconds = state.retry_at_unix_seconds;
-        drop(state);
-        self.persist_renewal()
+        state.auto_retry_blocked = false;
+    }
+
+    fn block_automatic_retry(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.retry_at_unix_seconds = None;
+        state.next_action_unix_seconds = None;
+        state.auto_retry_blocked = true;
     }
 
     fn persist_renewal(&self) -> Result<(), AcmeStateError> {
@@ -1969,6 +2023,7 @@ impl AcmeManagedReconciler {
             retry_at_unix_seconds: state.retry_at_unix_seconds,
             retry_attempt: state.retry_attempt,
             suggested_renewal_unix_seconds: state.suggested_renewal_unix_seconds,
+            auto_retry_blocked: state.auto_retry_blocked,
             renewal_info_url: state.renewal_info_url.clone(),
             last_success_unix_seconds: state.last_success_unix_seconds,
             last_error_code: state.last_error_code.clone(),
@@ -2240,6 +2295,25 @@ impl std::fmt::Debug for AcmeManagedReconciler {
             )
             .finish_non_exhaustive()
     }
+}
+
+fn restored_next_action(state: &ReconcileState, certificate: &str) -> Option<u64> {
+    if state.auto_retry_blocked {
+        return None;
+    }
+    if state.disk_revision == "bootstrap" {
+        return Some(0);
+    }
+    state
+        .retry_at_unix_seconds
+        .or(state.suggested_renewal_unix_seconds)
+        .or_else(|| {
+            state.not_before_unix_seconds.and_then(|not_before| {
+                state
+                    .not_after_unix_seconds
+                    .and_then(|not_after| stable_renewal_time(not_before, not_after, certificate))
+            })
+        })
 }
 
 #[cfg(test)]
@@ -2846,6 +2920,7 @@ mod tests {
                     retry_at_unix_seconds: Some(2_000),
                     retry_attempt: 2,
                     suggested_renewal_unix_seconds: None,
+                    auto_retry_blocked: false,
                     renewal_info_url: None,
                     last_success_unix_seconds: Some(1_000),
                     last_error_code: Some("transport_failed".into()),
@@ -2892,6 +2967,145 @@ mod tests {
         assert_eq!(status.last_error_code.as_deref(), Some("transport_failed"));
     }
 
+    #[test]
+    fn permanent_and_retryable_protocol_failures_control_automatic_retries() {
+        for (problem_type, retryable) in [("rateLimited", true), ("rejectedIdentifier", false)] {
+            let temp = TempDir::new().expect("state directory");
+            let state = Arc::new(StateStore::open(temp.path().join("state")).expect("state"));
+            let revisions = RevisionStore::from_arc(Arc::clone(&state));
+            let names = vec!["proxy.example.test".to_owned()];
+            let bootstrap = CertificateGeneration::self_signed_development(
+                "managed",
+                &names,
+                1,
+                SelfSignedKeyType::EcdsaP256,
+            )
+            .expect("bootstrap");
+            let active = Arc::new(ActiveCertificateGeneration::new(Arc::new(bootstrap)));
+            let reconciler = AcmeManagedReconciler::new(
+                "managed",
+                names.clone(),
+                AcmeManagedPolicy {
+                    directory_url: "https://acme.test/directory".into(),
+                    contacts: vec!["mailto:ops@example.test".into()],
+                    terms_agreed: true,
+                    challenge: AcmeChallengeType::Http01,
+                    key_type: AcmeKeyType::EcdsaP256,
+                    allowed_dns_suffixes: vec!["example.test".into()],
+                    retained_revisions: 3,
+                    retention_days: 30,
+                    dns01: None,
+                },
+                revisions,
+                "bootstrap".into(),
+                None,
+                None,
+                true,
+                ChallengeStore::default(),
+                Arc::clone(&active),
+            );
+            let transport = FakePebbleTransport {
+                responses: Arc::new(Mutex::new(VecDeque::from([
+                    directory_response(),
+                    nonce_response("nonce-account"),
+                    account_response(),
+                    problem_response(problem_type),
+                ]))),
+                requests: Arc::new(Mutex::new(Vec::new())),
+                ca: Arc::new(test_ca().expect("CA")),
+                certificate: Arc::new(Mutex::new(None)),
+                certificate_names: names,
+            };
+
+            assert!(matches!(
+                reconciler.renew_with_transport(transport),
+                Err(AcmeManagedError::Protocol(AcmeError::Problem { .. }))
+            ));
+            let status = reconciler.status();
+            assert_eq!(status.last_error_code.as_deref(), Some("acme_problem"));
+            if retryable {
+                assert_eq!(status.retry_attempt, 1);
+                let next = status.next_action_unix_seconds.expect("retry schedule");
+                assert!(!reconciler.renewal_due(next.saturating_sub(1)));
+            } else {
+                assert_eq!(status.retry_attempt, 0);
+                assert_eq!(status.next_action_unix_seconds, None);
+                assert!(!reconciler.renewal_due(u64::MAX));
+            }
+            let renewal = state
+                .read_json::<PersistedRenewal>("certificates/managed/renewal.json", MAX_JOB_BYTES)
+                .expect("persisted renewal state");
+            assert_eq!(renewal.last_error_code.as_deref(), Some("acme_problem"));
+            assert_eq!(renewal.auto_retry_blocked, !retryable);
+        }
+    }
+
+    #[test]
+    fn pause_and_resume_restores_the_persisted_ari_schedule() {
+        let temp = TempDir::new().expect("state directory");
+        let state = Arc::new(StateStore::open(temp.path().join("state")).expect("state"));
+        state
+            .write_json(
+                "certificates/managed/renewal.json",
+                &PersistedRenewal {
+                    certificate: "managed".into(),
+                    identifiers: vec!["proxy.example.test".into()],
+                    directory_url: "https://acme.test/directory".into(),
+                    account_url: Some("https://acme.test/acme/acct/1".into()),
+                    authenticator: "http01".into(),
+                    dns_provider: None,
+                    key_type: "ecdsa_p256".into(),
+                    next_action_unix_seconds: Some(4_000),
+                    retry_at_unix_seconds: None,
+                    retry_attempt: 0,
+                    suggested_renewal_unix_seconds: Some(4_000),
+                    auto_retry_blocked: false,
+                    renewal_info_url: Some("https://acme.test/acme/renewal-info".into()),
+                    last_success_unix_seconds: Some(1_000),
+                    last_error_code: None,
+                    renewal_information_status: "applied".into(),
+                    paused: false,
+                },
+            )
+            .expect("renewal state");
+        let bootstrap = CertificateGeneration::self_signed_development(
+            "managed",
+            &["proxy.example.test".into()],
+            1,
+            SelfSignedKeyType::EcdsaP256,
+        )
+        .expect("bootstrap");
+        let active = Arc::new(ActiveCertificateGeneration::new(Arc::new(bootstrap)));
+        let reconciler = AcmeManagedReconciler::new(
+            "managed",
+            vec!["proxy.example.test".into()],
+            AcmeManagedPolicy {
+                directory_url: "https://acme.test/directory".into(),
+                contacts: vec!["mailto:ops@example.test".into()],
+                terms_agreed: true,
+                challenge: AcmeChallengeType::Http01,
+                key_type: AcmeKeyType::EcdsaP256,
+                allowed_dns_suffixes: vec!["example.test".into()],
+                retained_revisions: 3,
+                retention_days: 30,
+                dns01: None,
+            },
+            RevisionStore::from_arc(state),
+            "revision".into(),
+            Some(900),
+            Some(10_000),
+            false,
+            ChallengeStore::default(),
+            active,
+        );
+
+        assert_eq!(reconciler.status().next_action_unix_seconds, Some(4_000));
+        reconciler.pause().expect("pause");
+        assert_eq!(reconciler.status().next_action_unix_seconds, None);
+        reconciler.resume().expect("resume");
+        assert_eq!(reconciler.status().next_action_unix_seconds, Some(4_000));
+    }
+
     fn directory_response() -> HttpResponse {
         HttpResponse::new(
             200,
@@ -2913,6 +3127,15 @@ mod tests {
         )
         .with_header("location", "https://acme.test/acme/acct/1")
         .with_header("replay-nonce", "nonce-account-response")
+    }
+
+    fn problem_response(problem_type: &str) -> HttpResponse {
+        HttpResponse::new(
+            400,
+            "https://acme.test/acme/new-order",
+            format!(r#"{{"type":"urn:ietf:params:acme:error:{problem_type}"}}"#).into_bytes(),
+        )
+        .with_header("replay-nonce", "nonce-order-problem")
     }
 
     fn order_response(status: &str) -> HttpResponse {
