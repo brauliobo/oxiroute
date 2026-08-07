@@ -444,10 +444,10 @@ fn directive_manifests_are_versioned_and_cover_registered_forms() {
     assert_eq!(squid.reference.value, "6f4c814");
     assert_eq!(squid.reference.documentation, "docs/UPSTREAM_ANALYSIS.md");
     assert!(workspace_path(&squid.reference.documentation).is_file());
-    assert_eq!(squid.registry_version, 2);
+    assert_eq!(squid.registry_version, 3);
     assert_eq!(squid.target_version, "6f4c814");
     assert_eq!(squid.profile.id, "squid-forward-http1");
-    assert_eq!(squid.profile.version, 2);
+    assert_eq!(squid.profile.version, 3);
     assert_eq!(squid.parity, CapabilityStatus::Partial);
     assert!(!squid.complete_parity);
     assert!(!squid.audit.complete_parity_claim);
@@ -793,6 +793,16 @@ fn validate_rtmp_import_forms(manifest: &RtmpDirectiveManifest) {
     let expected = [
         "import.nginx-rtmp.allow.bounded",
         "import.nginx-rtmp.deny.bounded",
+        "import.nginx-rtmp.push.static",
+        "import.nginx-rtmp.pull.unrepresented",
+        "import.nginx-rtmp.access-log.disabled",
+        "import.nginx-rtmp.access-log.combined-file",
+        "import.nginx-rtmp.access-log.unsupported",
+        "import.nginx-rtmp.hls.bounded",
+        "import.nginx-rtmp.hls.invalid",
+        "import.nginx-rtmp.auto-push.bounded",
+        "import.nginx-rtmp.auto-push.invalid",
+        "import.nginx-rtmp.exec.unsupported",
         "import.nginx-rtmp.max-connections.application",
         "import.nginx-rtmp.max-message.bounded",
         "import.nginx-rtmp.ack-window.bounded",
@@ -804,6 +814,7 @@ fn validate_rtmp_import_forms(manifest: &RtmpDirectiveManifest) {
         "import.nginx-rtmp.record.off",
         "import.nginx-rtmp.record.all",
         "import.nginx-rtmp.record.all-manual",
+        "import.nginx-rtmp.record.media-mask",
         "import.nginx-rtmp.record.inexact",
         "import.nginx-rtmp.record-path.secure-absolute",
         "import.nginx-rtmp.record-path.invalid",
@@ -874,6 +885,13 @@ fn validate_rtmp_import_forms(manifest: &RtmpDirectiveManifest) {
     }
 
     for key in [
+        "push",
+        "pull",
+        "access_log",
+        "hls",
+        "rtmp_auto_push",
+        "rtmp_auto_push_reconnect",
+        "exec_pull",
         "record",
         "record_path",
         "record_suffix",

@@ -3,16 +3,17 @@ use serde::Serialize;
 /// The Squid checkout used to classify the native directive surface.
 pub const SQUID_TARGET_VERSION: &str = "6f4c814";
 /// Stable version of the Squid directive and family registry.
-pub const SQUID_CAPABILITY_REGISTRY_VERSION: u32 = 2;
+pub const SQUID_CAPABILITY_REGISTRY_VERSION: u32 = 3;
 /// Stable importer profile identifier exposed in source metadata.
 pub const SQUID_CAPABILITY_PROFILE_ID: &str = "squid-forward-http1";
-pub const SQUID_CAPABILITY_PROFILE_VERSION: u32 = 2;
+pub const SQUID_CAPABILITY_PROFILE_VERSION: u32 = 3;
 
 const E_HOSTROUTER: &[&str] = &["evidence.squid.hostrouter"];
 const E_UPSTREAM: &[&str] = &["docs/UPSTREAM_ANALYSIS.md"];
 const E_PRODUCT_SPEC: &[&str] = &["docs/PRODUCT_SPEC.md"];
 
 const T_IMPORT: &[&str] = &["parse", "resolve", "failure"];
+const T_INCLUDE: &[&str] = &["parse", "resolve", "failure", "integration", "provenance"];
 const T_RUNTIME: &[&str] = &["parse", "resolve", "failure", "integration"];
 const T_RUNTIME_SECURITY: &[&str] = &["parse", "resolve", "failure", "integration", "security"];
 const T_RUNTIME_INTEROP: &[&str] = &["parse", "resolve", "failure", "integration", "interop"];
@@ -145,9 +146,9 @@ const FAMILIES: &[SquidCapabilityFamily] = &[
         id: "family.squid.includes",
         name: "Includes and source ordering",
         status: SquidCapabilityStatus::Partial,
-        rationale: "Deterministic file and glob includes are checked with source identity and provenance; conditional and unrestricted native configuration behavior is outside the importer.",
+        rationale: "The bounded regular-file and byte-sorted glob form is compatible with deterministic source expansion and provenance; conditional directives, pipe execution, and unrestricted native preprocessor behavior remain outside the importer.",
         current_evidence: E_HOSTROUTER,
-        required_tests: T_IMPORT,
+        required_tests: T_INCLUDE,
     },
     SquidCapabilityFamily {
         id: "family.squid.acl",
@@ -302,12 +303,12 @@ const DIRECTIVES: &[SquidDirectiveCapability] = &[
         family: "family.squid.includes",
         form: "deterministic file or byte-sorted glob include",
         contexts: GLOBAL,
-        status: SquidCapabilityStatus::Partial,
-        rationale: "Static include expansion is bounded and provenance-preserving, but is not a complete Squid preprocessor implementation.",
+        status: SquidCapabilityStatus::Compatible,
+        rationale: "The bounded form expands only readable regular files in byte-sorted glob order, retains canonical source identity and include provenance, and fails closed for missing, pipe-backed, cyclic, unstable, or limited expansion.",
         current_evidence: E_HOSTROUTER,
         importer_disposition: "classified",
         target: "squid.semantic_ir",
-        required_tests: T_IMPORT,
+        required_tests: T_INCLUDE,
     },
     SquidDirectiveCapability {
         id: "directive.squid.http-port.explicit",
