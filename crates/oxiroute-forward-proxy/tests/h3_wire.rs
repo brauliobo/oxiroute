@@ -356,9 +356,8 @@ async fn malformed_connect_pseudo_headers_are_reset_with_h3_message_error() {
         stream.stop_sending(Code::H3_MESSAGE_ERROR);
 
         let resolver = h3.accept().await.unwrap().unwrap();
-        let error = match resolver.resolve_request().await {
-            Ok(_) => panic!("missing authority was accepted"),
-            Err(error) => error,
+        let Err(error) = resolver.resolve_request().await else {
+            panic!("missing authority was accepted");
         };
         assert!(matches!(
             error,

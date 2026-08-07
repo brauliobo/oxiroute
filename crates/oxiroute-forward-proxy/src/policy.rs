@@ -330,7 +330,7 @@ impl TimeWindow {
         let Ok(duration) = now.duration_since(UNIX_EPOCH) else {
             return false;
         };
-        let days_since_epoch = duration.as_secs() / Duration::from_secs(86_400).as_secs();
+        let days_since_epoch = duration.as_secs() / Duration::from_hours(24).as_secs();
         let weekday = u8::try_from((days_since_epoch + 3) % 7).unwrap_or(0);
         let minute = u16::try_from((duration.as_secs() % 86_400) / 60).unwrap_or(0);
         self.days & (1 << weekday) != 0 && (self.start_minute..self.end_minute).contains(&minute)
@@ -755,9 +755,9 @@ mod tests {
             host: Host::Dns("example.com".into()),
             port: 443,
         };
-        let monday_morning = UNIX_EPOCH + Duration::from_secs(4 * 86_400 + 10 * 3_600);
-        let monday_lunch = UNIX_EPOCH + Duration::from_secs(4 * 86_400 + 12 * 3_600);
-        let tuesday_morning = UNIX_EPOCH + Duration::from_secs(5 * 86_400 + 10 * 3_600);
+        let monday_morning = UNIX_EPOCH + Duration::from_hours(106);
+        let monday_lunch = UNIX_EPOCH + Duration::from_hours(108);
+        let tuesday_morning = UNIX_EPOCH + Duration::from_hours(130);
 
         assert!(
             policy
