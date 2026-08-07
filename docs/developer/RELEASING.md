@@ -54,8 +54,8 @@ publishing. A checksum mismatch is a deliberate release blocker, not a fallback.
 `.github/workflows/audit.yml` runs pinned cargo-deny advisory, ban, license, and source checks plus
 `cargo audit -D warnings`, all committed lockfile checks, and high-severity audits for the UI and
 Remotion dependency roots. `deny.toml` rejects unknown registries and Git sources except the pinned
-h3 repository and intentionally has no RustSec exceptions. The three current Pingora-blocked
-findings and their fail-closed disposition are recorded in
+h3 repository and intentionally has no RustSec exceptions. The Pingora dependency paths are kept
+auditable through vendored manifests and their clean replacement record is maintained in
 [SECURITY_AUDIT.md](SECURITY_AUDIT.md).
 
 `.github/workflows/pages.yml` uploads the `website/` directory using the official Pages artifact and

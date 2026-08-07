@@ -203,6 +203,51 @@ test.describe('dashboard browser gates', () => {
     expect(JSON.stringify(submitted)).not.toContain('/run/dns-token')
   })
 
+  test('prepares a reviewable TLS-ALPN listener draft from the certificate workflow', async ({ page }, testInfo) => {
+    let validated: CanonicalConfig | undefined
+    await installApiMock(page, (request) => {
+      const path = requestPath(request)
+      if (path === '/api/v1/config' && request.method() === 'GET') return json(managedAcmeConfigSnapshot())
+      if (path === '/api/v1/config/validate') {
+        const body = requestBody<{ config: CanonicalConfig }>(request)
+        validated = body.config
+        return json(configValidation(body.config))
+      }
+      if (path === '/api/v1/events/stream') return shutdownStream()
+      return undefined
+    })
+
+    await page.goto('/#/configuration')
+    await page.locator('#config-access-token').fill(CONFIG_TOKEN)
+    await page.getByRole('button', { name: 'Unlock configuration' }).click()
+    if (testInfo.project.name === 'mobile-chromium') {
+      await page.locator('#mobile-object-navigation').selectOption('certificates:0')
+    } else {
+      await page.locator('.object-navigation .object-link').filter({ hasText: 'managed-edge' }).click()
+    }
+    await page.locator('[data-field="certificates[].source.challenge"] select').selectOption('tls_alpn01')
+    await page.getByRole('button', { name: 'Prepare TLS-ALPN listener' }).click()
+
+    await expect(page.locator('.revision-banner.tls-alpn')).toContainText('draft prepared')
+    await expect(page.locator('[data-field="listeners[].bind.address"] input')).toHaveValue('0.0.0.0:443')
+    await page.getByRole('button', { name: 'Validate candidate' }).click()
+    await expect(page.getByText('KDL configuration preview')).toBeVisible()
+
+    expect(validated?.listeners[0]).toMatchObject({
+      protocol: 'http',
+      bind: { type: 'socket', address: '0.0.0.0:443' },
+      tls_profile: 'managed-edge-tls-alpn-profile',
+      service: 'managed-edge-tls-alpn-service',
+    })
+    expect(validated?.tls_profiles[0]?.certificates).toEqual(['managed-edge'])
+    expect(validated?.http_services[0]?.routes[0]?.action).toEqual({
+      type: 'fixed_response',
+      status: 404,
+      body: '',
+      headers: [],
+    })
+  })
+
   test('preserves a dirty draft on save conflict', async ({ page }) => {
     await installApiMock(page, (request) => {
       const path = requestPath(request)

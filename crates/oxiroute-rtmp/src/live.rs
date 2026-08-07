@@ -81,7 +81,13 @@ impl VideoCodecIdentifier {
 
     #[must_use]
     pub const fn recording_supported(self) -> bool {
-        matches!(self, Self::Flv(AVC_CODEC_ID))
+        match self {
+            Self::Flv(codec_id) => codec_id == AVC_CODEC_ID,
+            Self::FourCc(four_cc) => matches!(
+                four_cc,
+                [b'a' | b'h', b'v', b'c', b'1'] | [b'a', b'v', b'0', b'1']
+            ),
+        }
     }
 }
 

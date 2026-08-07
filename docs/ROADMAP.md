@@ -29,15 +29,14 @@ and the GitNexus structural check reports zero import cycles.
 The Rust 1.97.1 format/lint/locked workspace gates and UI unit, type-check, build, and browser
 gates pass locally; the browser matrix has its existing one desktop-only skip. The bounded fuzz
 workspace check passes and the optional smoke command exits without execution when `cargo-fuzz`
-is unavailable. Application PEM parsing now uses the maintained `rustls-pki-types` API; the
-remaining advisory findings are confined to the pinned Pingora dependency graph. These are local
-checks, not production interoperability evidence.
+is unavailable. Application and vendored Pingora PEM parsing now use the maintained
+`rustls-pki-types` API, and the local dependency audit passes without advisory suppressions. These
+are local checks, not production interoperability evidence.
 
 The remaining gates are CA-staging issuance and renewal, active production-traffic reload/drain
-and supervised replacement, process-level FFmpeg/OBS interoperability, long-running fuzz and
-crash-corpus evidence, and a clean dependency audit. `cargo audit -D warnings` and the pinned
-`cargo-deny` gate currently deny three unmaintained Pingora-transitive dependencies, so no
-dependency-audit pass is claimed here.
+and supervised replacement, process-level FFmpeg/OBS interoperability, and long-running fuzz and
+crash-corpus evidence. The dependency, license, and source audit is locally clean; external
+interoperability and production evidence remain separate gates.
 
 ## Milestone 0: executable skeleton
 
@@ -135,11 +134,14 @@ Release gates:
   cleanup, failure, rollback, and real certificate activation evidence.
 - Independent interoperability for H3/TLS and FFmpeg/OBS RTMP paths, plus representative Apache,
   HAProxy, Squid, and Varnish migration cases beyond synthetic fixtures.
-- Bounded runs of every checked-in fuzz target, crash-corpus triage, and fault injection for media,
-  exec, reload, and supervision workers. The isolated fuzz workspace and targets are checked in;
-  the release gate is evidence, not target availability.
+- The required fuzz contract validates every checked-in target and bounded corpus seed, and the
+  optional fixed smoke runs every target when libFuzzer tooling is available. Deterministic fault
+  injection covers media, exec, reload, and supervision failure paths; long-running campaigns,
+  retained crash-corpus evidence, and external interoperability remain release evidence rather than
+  target-availability claims.
 - Passing dependency, license, and security audits. The current `cargo audit -D warnings` result
-  still contains three denied unmaintained-dependency warnings, so this gate remains open.
+  and pinned cargo-deny policy pass locally after replacing the affected Pingora dependency paths;
+  CI reruns the same fail-closed checks for every committed lockfile.
 - Packaged production supervision with active UDP/H3 replacement, rollback, drain, restart, and
   crash recovery. The direct `serve` path remains the default until this gate closes.
 

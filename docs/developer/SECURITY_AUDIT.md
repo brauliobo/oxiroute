@@ -11,19 +11,13 @@ for the root graph, and cargo-audit `0.22.1` checks for every committed Cargo lo
 deliberately keeps `ignore = []` and explicitly denies unmaintained dependencies. No RustSec ID may
 be added to an ignore list to make a workflow pass.
 
-OxiRoute's direct HAProxy and HTTP/3 PEM parsing uses `rustls-pki-types`; the remaining
-`rustls-pemfile` finding is only the pinned Pingora Rustls path.
+OxiRoute and the vendored Pingora Rustls path use `rustls-pki-types` for PEM parsing. The
+vendored Pingora daemon path uses maintained `daemonix`, and its derived debug implementation is
+manual, so the former `daemonize`, `derivative`, and `rustls-pemfile` paths are no longer present.
 
-The current checked-in graph has these three blocking RustSec findings:
-
-| RustSec ID | Crate and version | Current dependency path | Required disposition |
-| --- | --- | --- | --- |
-| [RUSTSEC-2025-0069](https://rustsec.org/advisories/RUSTSEC-2025-0069) | `daemonize 0.5.0` | Vendored Pingora `pingora-core` | Replace the Pingora dependency path, then remove the finding from the audit output. |
-| [RUSTSEC-2024-0388](https://rustsec.org/advisories/RUSTSEC-2024-0388) | `derivative 2.2.0` | Vendored Pingora `pingora-core` and `pingora-load-balancing` | Replace the Pingora dependency path, then remove the finding from the audit output. |
-| [RUSTSEC-2025-0134](https://rustsec.org/advisories/RUSTSEC-2025-0134) | `rustls-pemfile 2.2.0` | Pingora's `pingora-rustls` and `pingora-core` Rustls path | Replace the remaining Pingora path, then remove the finding from the audit output. |
-
-These are not baseline exceptions. They keep the dependency advisory gates red until safe
-replacements exist or the release is explicitly held. A newly reported advisory is an additional
+The current checked-in root graph passes `cargo audit -D warnings` and the pinned cargo-deny
+advisory, ban, license, and source checks. The clean result is achieved by dependency replacement,
+not an advisory ignore or a baseline exception. A newly reported advisory is an additional
 blocker and must be investigated rather than suppressed.
 
 ## Lockfiles

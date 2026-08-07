@@ -9,6 +9,7 @@ then add the runtime and wire evidence needed to support the user-facing claim.
 cargo +1.97.1 fmt --all --check
 cargo +1.97.1 clippy --workspace --all-targets --locked --jobs 4 -- -D warnings
 cargo +1.97.1 test --workspace --locked --jobs 4
+./scripts/verify-fuzz.sh
 pnpm --dir ui test
 pnpm --dir ui build
 pnpm --dir ui test:browser -- --workers=2
@@ -31,13 +32,12 @@ pnpm --dir ui audit --audit-level high
 pnpm --dir remotion audit --audit-level high
 ```
 
-The RustSec commands are intentionally fail-closed for the three current findings; see
-[SECURITY_AUDIT.md](SECURITY_AUDIT.md) for their dependency paths and replacement policy.
+The RustSec commands remain intentionally fail-closed. The current dependency graph passes both
+advisory checks after replacing the affected Pingora dependency paths; see
+[SECURITY_AUDIT.md](SECURITY_AUDIT.md) for the policy and replacement record.
 
-The current worktree passes the Rust format, clippy, and locked workspace-test gates plus the UI
-unit, browser type-check, build, and browser gates. The browser matrix has 21 passed tests and one
-existing desktop-only skip. The bounded fuzz workspace format/check gates pass; the optional smoke
-command exits without execution when `cargo-fuzz` is unavailable. None of these local checks is
+The bounded fuzz contract is required and validates the target/corpus set before the isolated compile;
+the optional smoke command reports and skips execution when `cargo-fuzz` is unavailable. None of these local checks is
 production traffic, CA-staging, or process-level FFmpeg/OBS evidence.
 
 Build tasks should use at most four workers in constrained environments. For make-based tooling, use
@@ -84,11 +84,12 @@ A capability should not move to `stable` without the relevant:
 - reload/rotation or lifecycle coverage where applicable; and
 - independent protocol or interoperability evidence where applicable.
 
-Checked-in bounded parser fuzz scaffolding lives under `fuzz/`; the separate optional
-`.github/workflows/fuzz-smoke.yml` workflow does not claim fuzz coverage and skips execution when
-cargo-fuzz or nightly Rust is unavailable. The Linux workflow in `.github/workflows/ci.yml` enforces
-the Rust and UI gates plus coverage-manifest and localhost-only browser validation; it does not run
-the fuzz smoke. `.github/workflows/platform.yml` runs locked metadata on every
+Checked-in bounded parser fuzz scaffolding lives under `fuzz/`; `scripts/verify-fuzz.sh` is a required
+manifest, harness, corpus, format, and locked-compile gate. The separate optional
+`.github/workflows/fuzz-smoke.yml` workflow does not claim fuzz coverage and reports/skips execution
+when cargo-fuzz or nightly Rust is unavailable; detected but broken optional tooling fails closed. The
+Linux workflow in `.github/workflows/ci.yml` enforces the fuzz contract alongside the Rust and UI gates
+plus coverage-manifest and localhost-only browser validation. `.github/workflows/platform.yml` runs locked metadata on every
 listed platform and explicitly gates full builds to Linux until the platform boundary changes.
 
 The browser suite runs against the built static UI with Playwright route interception. Unexpected API
@@ -106,11 +107,10 @@ and unmaintained advisories; RustSec, cargo-deny, all lockfiles, both JavaScript
 archive contents, and build provenance are separate checks rather than silent fallbacks. See
 [SECURITY_AUDIT.md](SECURITY_AUDIT.md) for the current advisory policy.
 
-The dependency audit remains open in this worktree: `cargo audit -D warnings` currently denies three
-unmaintained-dependency warnings. Do not describe the audit as passing until those findings are
-resolved. Direct OxiRoute PEM parsing has migrated to `rustls-pki-types`; the remaining
-`rustls-pemfile` finding is transitive through Pingora, alongside Pingora's `daemonize` and
-`derivative` findings.
+The dependency audit passes locally: `cargo audit -D warnings` and the pinned cargo-deny policy
+report no advisory findings after the Pingora dependency paths were replaced with maintained
+implementations. Direct and vendored Pingora PEM parsing use `rustls-pki-types`; no advisory
+ignore entries were added.
 
 Read [`fuzz/README.md`](../../fuzz/README.md) before running a target. Keep parser harnesses
 isolated, deterministic, resource-bounded, and honest about unsupported protocol boundaries.

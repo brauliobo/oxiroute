@@ -633,20 +633,24 @@ impl Cache {
     pub fn stale_if_error(&self, key: &CacheKey) -> Option<CachedResponse> {
         let now = self.shared.clock.now();
         let mut state = self.shared.lock();
-        let stored = state.entries.get(key)?;
-        let age = stored
-            .entry
-            .policy
-            .corrected_initial_age
-            .saturating_add(now.saturating_duration_since(stored.entry.response_received));
-        let staleness = age.saturating_sub(stored.entry.policy.freshness_lifetime);
-        if stored.entry.policy.must_revalidate_stale
-            || stored.entry.policy.stale_if_error.is_zero()
-            || staleness > stored.entry.policy.stale_if_error
-        {
-            return None;
-        }
-        let response = response_snapshot(&stored.entry, age);
+        let response = {
+            let stored = state.entries.get(key)?;
+            let age = stored
+                .entry
+                .policy
+                .corrected_initial_age
+                .saturating_add(now.saturating_duration_since(stored.entry.response_received));
+            let staleness = age.saturating_sub(stored.entry.policy.freshness_lifetime);
+            if stored.entry.policy.must_revalidate_stale
+                || stored.entry.policy.stale_if_error.is_zero()
+                || staleness > stored.entry.policy.stale_if_error
+            {
+                return None;
+            }
+            response_snapshot(&stored.entry, age)
+        };
+        let access = state.next_sequence();
+        state.entries.get_mut(key)?.last_access = access;
         state.stats.stale_if_error = state.stats.stale_if_error.saturating_add(1);
         Some(response)
     }

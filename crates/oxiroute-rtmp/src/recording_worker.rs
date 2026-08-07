@@ -302,14 +302,6 @@ impl RecorderWorker {
         {
             return Err(RecorderWorkerStartError::InvalidRecordingLimit);
         }
-        if let Some(
-            codec @ (RecorderVideoCodec::EnhancedAvc
-            | RecorderVideoCodec::Hevc
-            | RecorderVideoCodec::Av1),
-        ) = config.video_codec
-        {
-            return Err(RecorderWorkerStartError::UnsupportedVideoCodec(codec));
-        }
         let rotation_interval_ms = config
             .rotation_interval
             .map(|interval| interval.as_millis())
@@ -1532,17 +1524,15 @@ impl WorkerContext {
 fn is_unsupported_video_event(event: &MediaEvent) -> bool {
     matches!(
         event.kind(),
-        MediaEventKind::HevcSequenceHeader | MediaEventKind::Av1SequenceHeader
-    ) || matches!(
-        event.kind(),
         MediaEventKind::AvcSequenceHeader
+            | MediaEventKind::HevcSequenceHeader
+            | MediaEventKind::Av1SequenceHeader
             | MediaEventKind::VideoKeyframe
             | MediaEventKind::VideoInterframe
             | MediaEventKind::VideoDisposable
     ) && event
-        .payload()
-        .first()
-        .is_some_and(|header| header & 0x80 != 0)
+        .video_codec_identifier()
+        .is_some_and(|identifier| !identifier.recording_supported())
 }
 
 fn is_frame_event(event: &MediaEvent) -> bool {
@@ -1752,14 +1742,13 @@ fn write_to_muxer(
             .write_audio(event.timestamp_ms(), event.payload())
             .map_err(|_| WorkerError::new(RecorderFailure::Write)),
         MediaEventKind::AvcSequenceHeader
+        | MediaEventKind::HevcSequenceHeader
+        | MediaEventKind::Av1SequenceHeader
         | MediaEventKind::VideoKeyframe
         | MediaEventKind::VideoInterframe
         | MediaEventKind::VideoDisposable => muxer
             .write_video(event.timestamp_ms(), event.payload())
             .map_err(|_| WorkerError::new(RecorderFailure::Write)),
-        MediaEventKind::HevcSequenceHeader | MediaEventKind::Av1SequenceHeader => {
-            Err(WorkerError::new(RecorderFailure::Write))
-        }
         MediaEventKind::Metadata => muxer
             .write_metadata(event.payload())
             .map_err(|_| WorkerError::new(RecorderFailure::Write)),
@@ -1802,7 +1791,7 @@ struct SegmentHeaders {
     sequence: u64,
     metadata: Option<CachedHeader>,
     aac: Option<CachedHeader>,
-    avc: Option<CachedHeader>,
+    video: Option<CachedHeader>,
 }
 
 struct CachedHeader {
@@ -1820,7 +1809,9 @@ impl SegmentHeaders {
         match header.event.kind() {
             MediaEventKind::Metadata => self.metadata = Some(header),
             MediaEventKind::AacSequenceHeader => self.aac = Some(header),
-            MediaEventKind::AvcSequenceHeader => self.avc = Some(header),
+            MediaEventKind::AvcSequenceHeader
+            | MediaEventKind::HevcSequenceHeader
+            | MediaEventKind::Av1SequenceHeader => self.video = Some(header),
             _ => unreachable!("only replayable segment headers are cached"),
         }
     }
@@ -1830,7 +1821,7 @@ impl SegmentHeaders {
             .metadata
             .iter()
             .chain(self.aac.iter())
-            .chain(self.avc.iter())
+            .chain(self.video.iter())
             .collect();
         headers.sort_by_key(|header| header.sequence);
         headers

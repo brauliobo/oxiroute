@@ -66,7 +66,7 @@ fieldset.object-block(data-field="certificates[].source")
         option(value="tls_alpn01") TLS-ALPN-01
       small#tls-alpn-deployment-note.challenge-note(v-if="certificate.source.challenge === 'tls_alpn01'")
         | TLS-ALPN-01 requires a deployed listener reachable on public TCP port 443.
-        | Selecting it records the challenge choice only; it does not create or deploy that listener.
+        | Selecting it records the challenge choice only; it does not create or deploy that listener by itself. Use the draft assistant below to prepare it.
     label.field(data-field="certificates[].source.key_type")
       span Leaf key type
       select(v-model="certificate.source.key_type")
@@ -94,6 +94,10 @@ fieldset.object-block(data-field="certificates[].source")
       label.field(data-field="certificates[].source.dns01.timeout_seconds")
         span Provider timeout (seconds)
         input(type="number" min="1" max="600" step="1" v-model.number="certificate.source.dns01.timeout_seconds")
+    .tls-alpn-deployment(v-if="certificate.source.challenge === 'tls_alpn01'")
+      strong Prepare the TLS-ALPN listener in this draft
+      p The assistant reuses a compatible TCP/TLS listener on port 443 or adds an isolated 404 HTTP service, TLS profile, and listener. Nothing is deployed until validation, review, and the revision-checked save.
+      button.add-row(type="button" data-action="prepare-tls-alpn-listener" @click="$emit('prepare-tls-alpn')") Prepare TLS-ALPN listener
   .field-grid(v-else)
     label.field(data-field="certificates[].source.validity_days")
       span Validity days
@@ -110,7 +114,10 @@ import type { CertificateConfig, SelfSignedKeyType } from '../config'
 import StringListField from '../StringListField.vue'
 
 const props = defineProps<{ certificate: CertificateConfig }>()
-defineEmits<{ remove: [] }>()
+defineEmits<{
+  remove: []
+  'prepare-tls-alpn': []
+}>()
 
 function changeSource(event: Event): void {
   const sourceType = (event.target as HTMLSelectElement).value

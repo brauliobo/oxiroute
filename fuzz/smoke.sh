@@ -1,39 +1,44 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=/dev/null
+source "${repo_dir}/fuzz/targets.sh"
+
+optional_notice() {
+    printf '%s\n' "$1"
+    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+        printf -- '- %s\n' "$1" >>"${GITHUB_STEP_SUMMARY}"
+    fi
+}
+
 if ! command -v cargo-fuzz >/dev/null 2>&1; then
-    printf '%s\n' 'cargo-fuzz is unavailable; skipping optional fuzz execution.'
+    optional_notice 'cargo-fuzz is unavailable; stable harness and corpus checks remain required, optional libFuzzer execution skipped.'
     exit 0
 fi
 
 if ! command -v rustup >/dev/null 2>&1; then
-    printf '%s\n' 'rustup is unavailable; skipping optional cargo-fuzz execution.'
+    optional_notice 'cargo-fuzz is available but rustup is unavailable; optional nightly libFuzzer execution skipped.'
     exit 0
 fi
 
 toolchains=$(rustup toolchain list 2>/dev/null || true)
-case "$toolchains" in
-    *nightly*) ;;
-    *)
-        printf '%s\n' 'nightly Rust is unavailable; skipping optional cargo-fuzz execution.'
-        exit 0
-        ;;
-esac
+if [[ "${toolchains}" != *nightly* ]]; then
+    optional_notice 'cargo-fuzz is available but nightly Rust is unavailable; optional libFuzzer execution skipped.'
+    exit 0
+fi
 
 export CARGO_BUILD_JOBS=4
+manifest="${repo_dir}/fuzz/Cargo.toml"
 
-for target in config_source native_source forward_target overread_io rtmp_handshake rtmp_chunk rtmp_amf proxy_protocol udp_datagram tls_client_hello http1; do
-    case "$target" in
-        config_source|native_source) max_len=131072 ;;
-        forward_target|overread_io) max_len=16384 ;;
-        rtmp_handshake) max_len=131072 ;;
-        rtmp_chunk) max_len=262144 ;;
-        rtmp_amf) max_len=32768 ;;
-        proxy_protocol|http1) max_len=131072 ;;
-        udp_datagram) max_len=131059 ;;
-        tls_client_hello) max_len=65536 ;;
-    esac
-    cargo +nightly fuzz run "$target" -- \
+if ! cargo +nightly fuzz list --manifest-path "${manifest}" >/dev/null; then
+    printf '%s\n' 'cargo-fuzz and nightly Rust were detected, but cargo-fuzz could not list the fuzz targets; failing closed.' >&2
+    exit 1
+fi
+
+for spec in "${FUZZ_TARGET_SPECS[@]}"; do
+    IFS=: read -r target max_len <<<"${spec}"
+    cargo +nightly fuzz run --manifest-path "${manifest}" "${target}" -- \
         -runs=32 \
         -seed=1 \
         -print_final_stats=1 \

@@ -120,9 +120,8 @@ struct ControllerState {
 struct RecorderBootstrap {
     metadata: Option<MediaEvent>,
     aac: Option<MediaEvent>,
-    avc: Option<MediaEvent>,
+    video: Option<MediaEvent>,
     keyframe: Option<MediaEvent>,
-    unsupported_video: bool,
 }
 
 struct BootstrapReplay {
@@ -135,21 +134,16 @@ impl RecorderBootstrap {
         match event.kind() {
             MediaEventKind::Metadata => self.metadata = Some(event.clone()),
             MediaEventKind::AacSequenceHeader => self.aac = Some(event.clone()),
-            MediaEventKind::AvcSequenceHeader => {
-                self.avc = Some(event.clone());
+            MediaEventKind::AvcSequenceHeader
+            | MediaEventKind::HevcSequenceHeader
+            | MediaEventKind::Av1SequenceHeader => {
+                self.video = Some(event.clone());
                 self.keyframe = None;
-                self.unsupported_video = false;
             }
-            MediaEventKind::HevcSequenceHeader | MediaEventKind::Av1SequenceHeader => {
-                self.avc = None;
-                self.keyframe = None;
-                self.unsupported_video = true;
-            }
-            MediaEventKind::VideoKeyframe if !self.unsupported_video => {
+            MediaEventKind::VideoKeyframe => {
                 self.keyframe = Some(event.clone());
             }
             MediaEventKind::Audio
-            | MediaEventKind::VideoKeyframe
             | MediaEventKind::VideoInterframe
             | MediaEventKind::VideoDisposable => {}
         }
@@ -159,7 +153,7 @@ impl RecorderBootstrap {
         self.metadata
             .iter()
             .chain(self.aac.iter())
-            .chain(self.avc.iter())
+            .chain(self.video.iter())
             .chain(self.keyframe.iter())
             .cloned()
     }
@@ -310,11 +304,6 @@ impl RecorderController {
             }
             if self.policy.start() == RtmpRecorderStart::Continuous {
                 state.restart_context = Some(context);
-            }
-            if state.bootstrap.unsupported_video {
-                return Err(RecorderStartFailure::Failed(
-                    RecorderErrorCode::UnsupportedCodec,
-                ));
             }
             if let Some(worker) = state.worker.as_ref() {
                 let status = worker.status();

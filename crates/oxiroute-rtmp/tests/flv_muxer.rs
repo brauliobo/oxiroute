@@ -79,6 +79,42 @@ fn writes_video_only_flv_from_first_avc_keyframe() {
 }
 
 #[test]
+fn writes_supported_enhanced_video_payloads_without_legacy_relabeling() {
+    for four_cc in [*b"avc1", *b"hvc1", *b"av01"] {
+        let header = enhanced_video_payload(0x90, four_cc, 0x01);
+        let keyframe = enhanced_video_payload(0x91, four_cc, 0x02);
+        let interframe = enhanced_video_payload(0xa1, four_cc, 0x03);
+        let mut muxer = FlvMuxer::new(Cursor::new(Vec::new())).expect("create muxer");
+        muxer
+            .write_video(0, &header)
+            .expect("enhanced sequence header");
+        muxer.write_video(10, &keyframe).expect("enhanced keyframe");
+        muxer
+            .write_video(20, &interframe)
+            .expect("enhanced interframe");
+
+        let output = muxer.close().expect("close muxer").into_inner();
+        assert_eq!(&output[..3], b"FLV");
+        assert_eq!(output[4], 0x01, "video flag is set");
+        assert!(
+            output
+                .windows(header.len())
+                .any(|window| window == header.as_slice())
+        );
+        assert!(
+            output
+                .windows(keyframe.len())
+                .any(|window| window == keyframe.as_slice())
+        );
+        assert!(
+            output
+                .windows(interframe.len())
+                .any(|window| window == interframe.as_slice())
+        );
+    }
+}
+
+#[test]
 fn writes_audio_and_video_tags_with_both_header_flags() {
     let mut muxer = FlvMuxer::new(Cursor::new(Vec::new())).expect("create muxer");
     muxer
@@ -446,6 +482,37 @@ fn rejects_malformed_and_oversized_payloads_without_writing_tags() {
             0x46, 0x4c, 0x56, 0x01, 0x00, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00,
         ]
     );
+}
+
+#[test]
+fn rejects_malformed_enhanced_video_headers_without_writing_tags() {
+    let mut muxer = FlvMuxer::new(Cursor::new(Vec::new())).expect("create muxer");
+    for payload in [
+        vec![0x90, b'v', b'p', b'0', b'9', 0x01],
+        vec![0x92, b'a', b'v', b'c', b'1', 0x01],
+        vec![0x80, b'a', b'v', b'c', b'1', 0x01],
+        vec![0x91, b'a', b'v', b'c', b'1'],
+    ] {
+        assert!(matches!(
+            muxer.write_video(0, &payload),
+            Err(FlvMuxerError::MalformedPayload {
+                tag_type: FlvTagType::Video
+            })
+        ));
+    }
+    assert_eq!(
+        muxer.close().expect("close muxer").into_inner(),
+        vec![
+            0x46, 0x4c, 0x56, 0x01, 0x00, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00,
+        ]
+    );
+}
+
+fn enhanced_video_payload(header: u8, four_cc: [u8; 4], marker: u8) -> Vec<u8> {
+    let mut payload = vec![header];
+    payload.extend_from_slice(&four_cc);
+    payload.push(marker);
+    payload
 }
 
 fn tag_timestamp(output: &[u8], tag_start: usize) -> u32 {

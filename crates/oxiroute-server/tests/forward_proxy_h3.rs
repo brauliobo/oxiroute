@@ -30,12 +30,42 @@ const H3_ALPN: &[u8] = b"h3";
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn daemon_rejects_h3_plain_http_without_fallback_and_releases_udp_listener() {
+async fn daemon_forwards_h3_http_absolute_form_to_a_tcp_origin_and_releases_udp_listener() {
     let origin = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
         .expect("origin bind");
     let origin_address = origin.local_addr().expect("origin address");
-    let mut origin_task = tokio::spawn(async move {
+    let origin_task = tokio::spawn(async move {
+        let (mut stream, _) = origin.accept().await.expect("HTTP origin accept");
+        let mut request = Vec::new();
+        let mut buffer = [0; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = stream.read(&mut buffer).await.expect("HTTP origin request");
+            assert_ne!(read, 0, "HTTP origin request ended before headers");
+            request.extend_from_slice(&buffer[..read]);
+        }
+        assert!(request.starts_with(b"POST /h3 HTTP/1.1\r\n"));
+        assert!(
+            request
+                .windows(b"host: ".len())
+                .any(|window| window.eq_ignore_ascii_case(b"host: "))
+        );
+        let header_end = request
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .expect("HTTP origin headers")
+            + 4;
+        while request.len() < header_end + 7 {
+            let read = stream.read(&mut buffer).await.expect("HTTP origin body");
+            assert_ne!(read, 0, "HTTP origin body ended early");
+            request.extend_from_slice(&buffer[..read]);
+        }
+        assert_eq!(&request[header_end..header_end + 7], b"payload");
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nplain")
+            .await
+            .expect("HTTP origin response");
+
         let (mut stream, _) = origin.accept().await.expect("CONNECT origin accept");
         let mut request = [0; 4];
         stream
@@ -130,19 +160,25 @@ async fn daemon_rejects_h3_plain_http_without_fallback_and_releases_udp_listener
         .expect("H3 client connection");
     let driver = drive_client(driver);
     let request = Request::builder()
-        .method(Method::GET)
+        .method(Method::POST)
         .uri(format!("http://127.0.0.1:{}/h3", origin_address.port()))
+        .header("content-length", "7")
         .body(())
         .expect("H3 absolute-form request");
     let mut stream = sender.send_request(request).await.expect("send H3 request");
+    stream
+        .send_data(Bytes::from_static(b"payload"))
+        .await
+        .expect("H3 request body");
     stream.finish().await.expect("finish H3 request");
     let response = stream.recv_response().await.expect("H3 response");
-    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(recv_chunk(&mut stream).await.as_ref(), b"plain");
     assert!(
         stream
             .recv_data()
             .await
-            .expect("H3 error response")
+            .expect("H3 response finish")
             .is_none()
     );
 
@@ -198,12 +234,6 @@ async fn daemon_rejects_h3_plain_http_without_fallback_and_releases_udp_listener
             .expect("oversized H3 response")
             .status(),
         StatusCode::PAYLOAD_TOO_LARGE
-    );
-    assert!(
-        timeout(Duration::from_millis(500), &mut origin_task)
-            .await
-            .is_err(),
-        "HTTP/3 absolute-form request reached the TCP origin"
     );
 
     let mut connect = sender

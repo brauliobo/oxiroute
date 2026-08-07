@@ -5,9 +5,16 @@ pub fn bounded_input<'a>(data: &'a [u8], maximum: usize) -> Option<Cow<'a, [u8]>
     if data.len() > maximum {
         return None;
     }
+    if data.starts_with(b"seed:") {
+        let trimmed = strip_line_ending(data);
+        if trimmed.len() != data.len() {
+            return Some(Cow::Owned(trimmed.to_vec()));
+        }
+    }
     let Some(encoded) = data.strip_prefix(b"hex:") else {
         return Some(Cow::Borrowed(data));
     };
+    let encoded = strip_line_ending(encoded);
     if encoded.len() % 2 != 0 {
         return Some(Cow::Borrowed(data));
     }
@@ -23,6 +30,16 @@ pub fn bounded_input<'a>(data: &'a [u8], maximum: usize) -> Option<Cow<'a, [u8]>
         decoded.push((high << 4) | low);
     }
     Some(Cow::Owned(decoded))
+}
+
+fn strip_line_ending(mut data: &[u8]) -> &[u8] {
+    if let Some(stripped) = data.strip_suffix(b"\n") {
+        data = stripped;
+    }
+    if let Some(stripped) = data.strip_suffix(b"\r") {
+        data = stripped;
+    }
+    data
 }
 
 #[allow(dead_code)]

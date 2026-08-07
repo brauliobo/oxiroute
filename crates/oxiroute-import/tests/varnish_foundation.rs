@@ -493,6 +493,199 @@ fn exact_static_cache_subset_lowers_to_a_finalized_candidate() {
 }
 
 #[test]
+fn exact_http_probes_lower_named_and_default_health_checks() {
+    let report = import(
+        &fixture("health-probe.vcl"),
+        &VarnishdInvocation::new([
+            "varnishd",
+            "-s",
+            "cache=malloc,256M",
+            "-p",
+            "default_keep=300s",
+        ]),
+    );
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let config = report
+        .candidate
+        .config
+        .as_ref()
+        .expect("health probe candidate");
+    let shared = config
+        .upstream_pools
+        .iter()
+        .find(|pool| pool.name == "origin")
+        .expect("named probe pool");
+    let shared_check = shared.health_check.as_ref().expect("named health check");
+    assert_eq!(shared_check.kind, oxiroute_config::HealthCheckType::Http);
+    assert_eq!(shared_check.interval_ms, 5_000);
+    assert_eq!(shared_check.timeout_ms, 1_000);
+    assert_eq!(shared_check.healthy_threshold, 1);
+    assert_eq!(shared_check.unhealthy_threshold, 1);
+    assert_eq!(
+        shared_check.startup,
+        oxiroute_config::HealthStartup::Healthy
+    );
+    assert_eq!(shared_check.path.as_deref(), Some("/ready"));
+    assert_eq!(shared_check.expected_status, Some(204));
+
+    let default = config
+        .upstream_pools
+        .iter()
+        .find(|pool| pool.name == "fallback")
+        .expect("default probe pool");
+    let default_check = default.health_check.as_ref().expect("default health check");
+    assert_eq!(default_check.interval_ms, 10_000);
+    assert_eq!(default_check.timeout_ms, 2_000);
+    assert_eq!(
+        default_check.startup,
+        oxiroute_config::HealthStartup::Unhealthy
+    );
+    assert_eq!(default_check.path.as_deref(), Some("/"));
+    assert_eq!(default_check.expected_status, None);
+
+    let inline = config
+        .upstream_pools
+        .iter()
+        .find(|pool| pool.name == "inline")
+        .expect("inline probe pool");
+    let inline_check = inline.health_check.as_ref().expect("inline health check");
+    assert_eq!(inline_check.path.as_deref(), Some("/inline-ready"));
+    assert_eq!(inline_check.expected_status, None);
+
+    let interval_provenance = report
+        .candidate
+        .provenance
+        .iter()
+        .find(|entry| entry.path == "/upstream_pools/0/health_check/interval_ms")
+        .expect("health interval provenance");
+    assert_eq!(
+        interval_provenance.origins[0].span.source(),
+        SourceId::new(0)
+    );
+}
+
+#[test]
+fn noncanonical_probe_window_blocks_lowering() {
+    let source = source(
+        1,
+        "window.vcl",
+        br#"vcl 4.1;
+probe default {
+    .timeout = 1s;
+    .interval = 5s;
+    .window = 2;
+    .threshold = 1;
+}
+backend origin { .host = "127.0.0.1"; .port = 8080; }
+sub vcl_recv { set req.backend_hint = origin; return (hash); }
+sub vcl_hash { hash_data(req.url); return (lookup); }
+sub vcl_backend_response { set beresp.ttl = 1s; return (deliver); }"#,
+    );
+    let report = analyze(&source, &[]);
+
+    assert_eq!(
+        report.lowering,
+        LoweringStatus::Blocked(LoweringBlocker::SemanticMismatch)
+    );
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.code() == varnish::E_VCL_SEMANTIC_MISMATCH })
+    );
+}
+
+#[test]
+fn custom_probe_request_blocks_lowering() {
+    let source = source(
+        1,
+        "request.vcl",
+        br#"vcl 4.1;
+probe default {
+    .request = "GET /ready HTTP/1.1";
+    .timeout = 1s;
+    .interval = 5s;
+    .window = 1;
+    .threshold = 1;
+}
+backend origin { .host = "127.0.0.1"; .port = 8080; }
+sub vcl_recv { set req.backend_hint = origin; return (hash); }
+sub vcl_hash { hash_data(req.url); return (lookup); }
+sub vcl_backend_response { set beresp.ttl = 1s; return (deliver); }"#,
+    );
+    let report = analyze(&source, &[]);
+
+    assert_eq!(
+        report.lowering,
+        LoweringStatus::Blocked(LoweringBlocker::SemanticMismatch)
+    );
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.code() == varnish::E_VCL_SEMANTIC_MISMATCH })
+    );
+}
+
+#[test]
+fn non_set_probe_assignment_is_not_treated_as_a_supported_property() {
+    let source = source(
+        1,
+        "non-set-probe.vcl",
+        b"vcl 4.1; probe default { .window += 1; }",
+    );
+    let report = analyze(&source, &[]);
+
+    assert!(matches!(
+        report.probes[0].properties.first(),
+        Some(varnish::ProbeProperty::Unsupported { .. })
+    ));
+}
+
+#[test]
+fn director_with_inconsistent_probe_policies_blocks_lowering() {
+    let source = source(
+        1,
+        "director-probes.vcl",
+        br#"vcl 4.1;
+probe fast {
+    .timeout = 1s;
+    .interval = 5s;
+    .window = 1;
+    .threshold = 1;
+}
+probe slow {
+    .timeout = 1s;
+    .interval = 10s;
+    .window = 1;
+    .threshold = 1;
+}
+backend primary { .host = "127.0.0.1"; .port = 8080; .probe = fast; }
+backend secondary { .host = "127.0.0.2"; .port = 8080; .probe = slow; }
+director pool round-robin {
+    { .backend = primary; }
+    { .backend = secondary; }
+}
+sub vcl_recv { set req.backend_hint = pool; return (hash); }
+sub vcl_hash { hash_data(req.url); return (lookup); }
+sub vcl_backend_response { set beresp.ttl = 1s; return (deliver); }"#,
+    );
+    let report = analyze(&source, &[]);
+
+    assert_eq!(
+        report.lowering,
+        LoweringStatus::Blocked(LoweringBlocker::SemanticMismatch)
+    );
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.code() == varnish::E_VCL_SEMANTIC_MISMATCH })
+    );
+}
+
+#[test]
 fn exact_legacy_round_robin_director_lowers_to_one_upstream_pool() {
     let invocation = VarnishdInvocation::new([
         "varnishd",

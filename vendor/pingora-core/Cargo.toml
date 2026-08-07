@@ -111,9 +111,6 @@ features = ["derive"]
 [dependencies.daggy]
 version = "0.8"
 
-[dependencies.derivative]
-version = "2.2.0"
-
 [dependencies.flate2]
 version = "1"
 features = ["zlib-ng"]
@@ -309,8 +306,8 @@ version = "0.23"
 version = "0.1"
 features = ["full"]
 
-[target."cfg(unix)".dependencies.daemonize]
-version = "0.5.0"
+[target."cfg(unix)".dependencies.daemonix]
+version = "0.1.0"
 
 [target."cfg(unix)".dependencies.nix]
 version = "~0.24.3"

@@ -2092,6 +2092,37 @@ impl ForwardHttp1ServicePlan {
                         return;
                     }
                 };
+                let request_method = request.method().clone();
+                if target.scheme == ForwardScheme::Http {
+                    let response = match forward_h3_http_request(
+                        self,
+                        &request,
+                        &target,
+                        body,
+                        &approved,
+                        lifetime_deadline,
+                        lifetime_deadline.min(Instant::now() + self.connect_timeout),
+                        &mut shutdown,
+                    )
+                    .await
+                    {
+                        Ok(response) => response,
+                        Err(error) => {
+                            let _ =
+                                send_h3_failure(&mut stream, error, self.challenge.as_ref()).await;
+                            return;
+                        }
+                    };
+                    send_h3_forward_response(
+                        &mut stream,
+                        &request_method,
+                        response,
+                        lifetime_deadline,
+                        self.challenge.as_ref(),
+                    )
+                    .await;
+                    return;
+                }
                 if target.scheme != ForwardScheme::Https {
                     let _ = send_h3_failure(
                         &mut stream,
@@ -2187,63 +2218,19 @@ impl ForwardHttp1ServicePlan {
                     let _ = send_h3_failure(&mut stream, failure, self.challenge.as_ref()).await;
                     return;
                 };
-                let mut response_headers = response.headers;
-                if crate::http3::sanitize_h3_response_headers(
-                    &mut response_headers,
-                    response.status,
-                    u64::try_from(response.body.len()).unwrap_or(u64::MAX),
-                    request.method() == Method::HEAD,
+                send_h3_forward_response(
+                    &mut stream,
+                    &request_method,
+                    H3ForwardResponse {
+                        status: response.status,
+                        headers: response.headers,
+                        body: response.body,
+                        trailers: response.trailers,
+                    },
+                    lifetime_deadline,
+                    self.challenge.as_ref(),
                 )
-                .is_err()
-                {
-                    let _ = send_h3_failure(
-                        &mut stream,
-                        RequestFailure::BadGateway,
-                        self.challenge.as_ref(),
-                    )
-                    .await;
-                    return;
-                }
-                let status = response.status;
-                let mut head = Response::new(());
-                *head.status_mut() = status;
-                *head.version_mut() = http::Version::HTTP_3;
-                *head.headers_mut() = response_headers;
-                if !matches!(
-                    timeout_at(lifetime_deadline, stream.send_response(head)).await,
-                    Ok(Ok(()))
-                ) {
-                    return;
-                }
-                if request.method() != Method::HEAD
-                    && !matches!(
-                        status,
-                        StatusCode::NO_CONTENT
-                            | StatusCode::RESET_CONTENT
-                            | StatusCode::NOT_MODIFIED
-                    )
-                    && !response.body.is_empty()
-                    && !matches!(
-                        timeout_at(lifetime_deadline, stream.send_data(response.body)).await,
-                        Ok(Ok(()))
-                    )
-                {
-                    return;
-                }
-                if request.method() != Method::HEAD
-                    && let Some(mut trailers) = response.trailers
-                {
-                    if crate::http3::sanitize_h3_trailers(&mut trailers).is_err() {
-                        return;
-                    }
-                    if !matches!(
-                        timeout_at(lifetime_deadline, stream.send_trailers(trailers)).await,
-                        Ok(Ok(()))
-                    ) {
-                        return;
-                    }
-                }
-                let _ = timeout_at(lifetime_deadline, stream.finish()).await;
+                .await;
             }
         }
     }
@@ -3490,6 +3477,174 @@ const fn protocol_name(protocol: Protocol) -> &'static str {
         Protocol::Http2 => "h2",
         Protocol::Http3 => "h3",
     }
+}
+
+struct H3ForwardResponse {
+    status: StatusCode,
+    headers: HeaderMap,
+    body: Bytes,
+    trailers: Option<HeaderMap>,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn forward_h3_http_request(
+    service: &ForwardHttp1ServicePlan,
+    request: &Request<()>,
+    target: &oxiroute_forward_proxy::ForwardTarget,
+    body: Bytes,
+    approved: &ApprovedDestination,
+    lifetime_deadline: Instant,
+    connect_deadline: Instant,
+    shutdown: &mut tokio::sync::watch::Receiver<bool>,
+) -> Result<H3ForwardResponse, RequestFailure> {
+    let ConnectedHttp {
+        stream: upstream,
+        via_peer,
+    } = tokio::select! {
+        result = timeout_at(
+            lifetime_deadline,
+            service.connect_http_with_peers(
+                &target.destination,
+                ForwardScheme::Http,
+                approved.socket_addresses.as_ref(),
+                connect_deadline,
+            ),
+        ) => match result {
+            Ok(Ok(upstream)) => upstream,
+            Ok(Err(error)) => return Err(error),
+            Err(_) => return Err(RequestFailure::GatewayTimeout),
+        },
+        _ = shutdown.changed() => return Err(RequestFailure::GatewayTimeout),
+    };
+    let request_uri = if via_peer {
+        absolute_form(target).ok_or(RequestFailure::BadRequest)?
+    } else {
+        target.origin_form.clone()
+    };
+    let mut headers = sanitize_request_headers(request.headers(), &target.destination)
+        .map_err(|_| RequestFailure::BadRequest)?;
+    apply_header_policy(&mut headers, &service.header_policy);
+    headers.remove(header::CONTENT_LENGTH);
+    headers.insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&body.len().to_string()).expect("bounded H3 request body length"),
+    );
+    let mut parts = request.clone().into_parts().0;
+    parts.uri = request_uri;
+    parts.version = http::Version::HTTP_11;
+    parts.headers = headers;
+    let request = Request::from_parts(parts, Full::new(body));
+    let (mut sender, connection) = tokio::select! {
+        result = timeout_at(
+            lifetime_deadline,
+            hyper::client::conn::http1::handshake(TokioIo::new(upstream)),
+        ) => match result {
+            Ok(Ok(connection)) => connection,
+            Ok(Err(_)) => return Err(RequestFailure::BadGateway),
+            Err(_) => return Err(RequestFailure::GatewayTimeout),
+        },
+        _ = shutdown.changed() => return Err(RequestFailure::GatewayTimeout),
+    };
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let response = tokio::select! {
+        result = timeout_at(lifetime_deadline, sender.send_request(request)) => match result {
+            Ok(Ok(response)) => response,
+            Ok(Err(_)) => return Err(RequestFailure::BadGateway),
+            Err(_) => return Err(RequestFailure::GatewayTimeout),
+        },
+        _ = shutdown.changed() => return Err(RequestFailure::GatewayTimeout),
+    };
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = TimedBody::new(
+        response.into_body(),
+        service.idle_timeout,
+        lifetime_deadline,
+    );
+    let collected = tokio::select! {
+        result = timeout_at(
+            lifetime_deadline,
+            Limited::new(
+                body,
+                usize::try_from(crate::http3::H3_MAX_RESPONSE_BODY_BYTES)
+                    .expect("H3 response limit fits usize"),
+            )
+            .collect(),
+        ) => match result {
+            Ok(Ok(collected)) => collected,
+            Ok(Err(_)) => return Err(RequestFailure::BadGateway),
+            Err(_) => return Err(RequestFailure::GatewayTimeout),
+        },
+        _ = shutdown.changed() => return Err(RequestFailure::GatewayTimeout),
+    };
+    let trailers = collected.trailers().cloned();
+    Ok(H3ForwardResponse {
+        status,
+        headers,
+        body: collected.to_bytes(),
+        trailers,
+    })
+}
+
+async fn send_h3_forward_response<S>(
+    stream: &mut h3::server::RequestStream<S, Bytes>,
+    method: &Method,
+    mut response: H3ForwardResponse,
+    deadline: Instant,
+    challenge: Option<&HeaderValue>,
+) where
+    S: h3::quic::BidiStream<Bytes> + Send,
+{
+    let head = *method == Method::HEAD;
+    if crate::http3::sanitize_h3_response_headers(
+        &mut response.headers,
+        response.status,
+        u64::try_from(response.body.len()).unwrap_or(u64::MAX),
+        head,
+    )
+    .is_err()
+    {
+        let _ = send_h3_failure(stream, RequestFailure::BadGateway, challenge).await;
+        return;
+    }
+    let body_forbidden = matches!(
+        response.status,
+        StatusCode::NO_CONTENT | StatusCode::RESET_CONTENT | StatusCode::NOT_MODIFIED
+    );
+    let mut head_response = Response::new(());
+    *head_response.status_mut() = response.status;
+    *head_response.version_mut() = http::Version::HTTP_3;
+    *head_response.headers_mut() = response.headers;
+    if !matches!(
+        timeout_at(deadline, stream.send_response(head_response)).await,
+        Ok(Ok(()))
+    ) {
+        return;
+    }
+    if !head
+        && !body_forbidden
+        && !response.body.is_empty()
+        && !matches!(
+            timeout_at(deadline, stream.send_data(response.body)).await,
+            Ok(Ok(()))
+        )
+    {
+        return;
+    }
+    if !head && let Some(mut trailers) = response.trailers {
+        if crate::http3::sanitize_h3_trailers(&mut trailers).is_err() {
+            return;
+        }
+        if !matches!(
+            timeout_at(deadline, stream.send_trailers(trailers)).await,
+            Ok(Ok(()))
+        ) {
+            return;
+        }
+    }
+    let _ = timeout_at(deadline, stream.finish()).await;
 }
 
 #[cfg(test)]

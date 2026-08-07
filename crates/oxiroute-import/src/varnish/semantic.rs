@@ -668,6 +668,7 @@ impl Builder {
             &self.invocation,
             &self.backends,
             &self.directors,
+            &self.probes,
             &self.modern_directors,
             &self.subroutines,
             &self.statements,
@@ -1969,6 +1970,12 @@ fn collect_duplicate_spans<T, F>(
 }
 
 fn classify_probe_property(assignment: &Assignment) -> ProbeProperty {
+    if assignment.operator != AssignmentOperator::Set {
+        return ProbeProperty::Unsupported {
+            name: assignment.target.bytes.clone(),
+            value: assignment.value.clone(),
+        };
+    }
     match assignment.target.bytes.as_slice() {
         b".url" => ProbeProperty::Url(assignment.value.clone()),
         b".request" => ProbeProperty::Request(assignment.value.clone()),
