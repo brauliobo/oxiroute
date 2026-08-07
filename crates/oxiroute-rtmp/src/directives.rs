@@ -142,6 +142,30 @@ const PULL_FORMS: &[DirectiveForm] = &[DirectiveForm {
     contexts: A,
     status: ParsedOnly,
 }];
+const EXEC_FORMS: &[DirectiveForm] = &[
+    DirectiveForm {
+        form: "one absolute executable plus bounded literal argv",
+        contexts: RSA,
+        status: Enforced,
+    },
+    DirectiveForm {
+        form: "redirection, control, or non-absolute executable form",
+        contexts: RSA,
+        status: ParsedOnly,
+    },
+];
+const RESPAWN_FORMS: &[DirectiveForm] = &[
+    DirectiveForm {
+        form: "bounded respawn flag or delay applied to a typed exec profile",
+        contexts: RSA,
+        status: Enforced,
+    },
+    DirectiveForm {
+        form: "out-of-range respawn policy",
+        contexts: RSA,
+        status: ParsedOnly,
+    },
+];
 const RECORD_FORMS: &[DirectiveForm] = &[
     DirectiveForm {
         form: "record off",
@@ -155,6 +179,11 @@ const RECORD_FORMS: &[DirectiveForm] = &[
     },
     DirectiveForm {
         form: "record all manual or manual all with live on and secure path",
+        contexts: RSAC,
+        status: Enforced,
+    },
+    DirectiveForm {
+        form: "record audio, video, or keyframes with live on and secure path",
         contexts: RSAC,
         status: Enforced,
     },
@@ -221,7 +250,7 @@ const RECORD_APPEND_FORMS: &[DirectiveForm] = &[
     DirectiveForm {
         form: "record_append on",
         contexts: RSAC,
-        status: ParsedOnly,
+        status: Enforced,
     },
 ];
 const RECORD_LOCK_FORMS: &[DirectiveForm] = &[
@@ -245,6 +274,11 @@ const RECORD_MAX_SIZE_FORMS: &[DirectiveForm] = &[
     DirectiveForm {
         form: "nonzero record_max_size",
         contexts: RSAC,
+        status: Enforced,
+    },
+    DirectiveForm {
+        form: "out-of-range record_max_size",
+        contexts: RSAC,
         status: ParsedOnly,
     },
 ];
@@ -256,6 +290,11 @@ const RECORD_MAX_FRAMES_FORMS: &[DirectiveForm] = &[
     },
     DirectiveForm {
         form: "nonzero record_max_frames",
+        contexts: RSAC,
+        status: Enforced,
+    },
+    DirectiveForm {
+        form: "out-of-range record_max_frames",
         contexts: RSAC,
         status: ParsedOnly,
     },
@@ -269,7 +308,7 @@ const RECORD_NOTIFY_FORMS: &[DirectiveForm] = &[
     DirectiveForm {
         form: "record_notify on",
         contexts: RSAC,
-        status: ParsedOnly,
+        status: Enforced,
     },
 ];
 const RECORDER_FORMS: &[DirectiveForm] = &[
@@ -328,6 +367,18 @@ const HLS_MUXDELAY_FORMS: &[DirectiveForm] = &[DirectiveForm {
     contexts: RSA,
     status: StatusSourceNoOp,
 }];
+const HLS_FORMS: &[DirectiveForm] = &[
+    DirectiveForm {
+        form: "bounded HLS policy option in the importer-supported subset",
+        contexts: RSA,
+        status: Enforced,
+    },
+    DirectiveForm {
+        form: "unrepresented HLS option or invalid HLS combination",
+        contexts: RSA,
+        status: ParsedOnly,
+    },
+];
 const DEPRECATED_FORMS: &[DirectiveForm] = &[DirectiveForm {
     form: "any registered so_keepalive flag",
     contexts: RS,
@@ -720,10 +771,10 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         false
     ),
     // External execution: 13
-    directive!("exec", RSA, 1, None, ValueKind::Command, None, true),
-    directive!("exec_push", RSA, 1, None, ValueKind::Command, None, true),
+    directive!("exec", RSA, 1, None, ValueKind::Command, None, true; EXEC_FORMS),
+    directive!("exec_push", RSA, 1, None, ValueKind::Command, None, true; EXEC_FORMS),
     directive!("exec_pull", RSA, 1, None, ValueKind::Command, None, true),
-    directive!("exec_publish", RSA, 1, None, ValueKind::Command, None, true),
+    directive!("exec_publish", RSA, 1, None, ValueKind::Command, None, true; EXEC_FORMS),
     directive!(
         "exec_publish_done",
         RSA,
@@ -731,7 +782,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         None,
         ValueKind::Command,
         None,
-        true
+        true;
+        EXEC_FORMS
     ),
     directive!("exec_play", RSA, 1, None, ValueKind::Command, None, true),
     directive!(
@@ -770,7 +822,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::Flag,
         Some("on"),
-        false
+        false;
+        RESPAWN_FORMS
     ),
     directive!(
         "respawn_timeout",
@@ -779,7 +832,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::Duration,
         Some("5s"),
-        false
+        false;
+        RESPAWN_FORMS
     ),
     directive!(
         "exec_kill_signal",
@@ -1066,7 +1120,7 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         PLATFORM_NGINX_FORMS
     ),
     // HLS: 22
-    directive!("hls", RSA, 1, Some(1), ValueKind::Flag, Some("off"), false),
+    directive!("hls", RSA, 1, Some(1), ValueKind::Flag, Some("off"), false; HLS_FORMS),
     directive!(
         "hls_fragment",
         RSA,
@@ -1074,7 +1128,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::Duration,
         Some("5s"),
-        false
+        false;
+        HLS_FORMS
     ),
     directive!(
         "hls_max_fragment",
@@ -1083,7 +1138,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::Duration,
         Some("10 * hls_fragment"),
-        false
+        false;
+        HLS_FORMS
     ),
     directive!(
         "hls_path",
@@ -1092,7 +1148,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::Path,
         Some(""),
-        false
+        false;
+        HLS_FORMS
     ),
     directive!(
         "hls_playlist_length",
@@ -1101,7 +1158,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::Duration,
         Some("30s"),
-        false
+        false;
+        HLS_FORMS
     ),
     directive!(
         "hls_muxdelay",
@@ -1139,7 +1197,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::Flag,
         Some("off"),
-        false
+        false;
+        HLS_FORMS
     ),
     directive!(
         "hls_fragment_naming",
@@ -1148,7 +1207,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::Enum(HLS_NAMING),
         Some("sequential"),
-        false
+        false;
+        HLS_FORMS
     ),
     directive!(
         "hls_fragment_slicing",
@@ -1193,7 +1253,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::Flag,
         Some("on"),
-        false
+        false;
+        HLS_FORMS
     ),
     directive!(
         "hls_variant",
@@ -1229,7 +1290,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::Flag,
         Some("off"),
-        false
+        false;
+        HLS_FORMS
     ),
     directive!(
         "hls_key_path",
@@ -1247,7 +1309,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::Strings,
         Some(""),
-        false
+        false;
+        HLS_FORMS
     ),
     directive!(
         "hls_fragments_per_key",
@@ -1256,7 +1319,8 @@ static DIRECTIVES: [DirectiveSpec; 117] = [
         Some(1),
         ValueKind::Integer,
         Some("0"),
-        false
+        false;
+        HLS_FORMS
     ),
     // DASH: 6
     directive!("dash", RSA, 1, Some(1), ValueKind::Flag, Some("off"), false),
