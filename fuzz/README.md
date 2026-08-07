@@ -21,7 +21,7 @@ when `cargo-fuzz` or nightly Rust is unavailable.
 | --- | --- | ---: |
 | `config_source` | Restricted Lua, KDL, HOCON, UCI, and template expansion | 128 KiB |
 | `native_source` | In-memory nginx, HAProxy, Apache, Squid, and Varnish syntax | 128 KiB |
-| `forward_target` | Absolute-form and classic CONNECT authority parsing | 16 KiB |
+| `forward_target` | Absolute-form, classic CONNECT authority, and RFC 9298 CONNECT-UDP target parsing | 16 KiB |
 | `overread_io` | `OverreadIo` prefix-before-underlying-stream behavior | 16 KiB |
 | `rtmp_handshake` | Incremental public `rml_rtmp` handshake parser | 128 KiB |
 | `rtmp_chunk` | Bounded `rml_rtmp` chunk and message decoding, including AMF message forms | 256 KiB |

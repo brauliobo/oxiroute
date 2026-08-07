@@ -194,6 +194,11 @@ fn applies_finite_forward_proxy_defaults() {
         service["connect"]["allowed_ports"],
         serde_json::json!([443])
     );
+    assert_eq!(service["connect_udp"]["enabled"], false);
+    assert_eq!(
+        service["connect_udp"]["allowed_ports"],
+        serde_json::json!([443])
+    );
     assert_eq!(service["auth"], serde_json::Value::Null);
     assert_eq!(service["peer_policy"]["peers"], serde_json::json!([]));
     assert_eq!(service["peer_policy"]["direct_fallback"], "allowed");
@@ -217,6 +222,63 @@ fn applies_finite_forward_proxy_defaults() {
     assert_eq!(service["resolver"]["max_cache_entries"], 4_096_u64);
     assert_eq!(service["resolver"]["max_concurrent_queries"], 256_u64);
     assert_eq!(service["resolver"]["revalidate_on_connect"], true);
+}
+
+#[test]
+fn renders_and_validates_connect_udp_policy() {
+    let service = r#"{
+      name = "egress",
+      enabled_versions = { "h3", "h1", "h2" },
+      connect_udp = { enabled = true, allowed_ports = { 8443, 443 } },
+    }"#;
+    let config = load_lua(&forward_config(service, "", "")).expect("CONNECT-UDP policy");
+    let value = serde_json::to_value(&config).expect("serialized CONNECT-UDP policy");
+    let policy = &value["forward_proxy_services"][0]["connect_udp"];
+    assert_eq!(policy["enabled"], true);
+    assert_eq!(policy["allowed_ports"], serde_json::json!([443, 8443]));
+
+    let rendered = render_lua(&config).expect("rendered CONNECT-UDP policy");
+    assert_eq!(load_lua(&rendered).expect("CONNECT-UDP reload"), config);
+
+    load_lua(&forward_config(
+        r#"{
+          name = "egress",
+          enabled_versions = { "h2" },
+          connect_udp = { enabled = false },
+        }"#,
+        "",
+        "",
+    ))
+    .expect("disabled CONNECT-UDP does not require HTTP/1");
+
+    let no_h1 = r#"{
+      name = "egress",
+      enabled_versions = { "h2", "h3" },
+      connect_udp = { enabled = true, allowed_ports = { 443 } },
+    }"#;
+    let no_h1_error = error(&forward_config(no_h1, "", ""));
+    assert!(no_h1_error.contains("connect_udp.enabled"));
+    assert!(no_h1_error.contains("requires forward HTTP/1"));
+
+    for service in [
+        r#"{ name = "egress", connect_udp = { enabled = true, allowed_ports = {} } }"#,
+        r#"{ name = "egress", connect_udp = { enabled = true, allowed_ports = { 0 } } }"#,
+        r#"{ name = "egress", connect_udp = { enabled = true, allowed_ports = { 443, 443 } } }"#,
+    ] {
+        assert!(
+            !error(&forward_config(service, "", "")).is_empty(),
+            "accepted invalid CONNECT-UDP policy: {service}"
+        );
+    }
+
+    let oversized_ports = (1..=65)
+        .map(|port| port.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let oversized = format!(
+        r#"{{ name = "egress", connect_udp = {{ enabled = true, allowed_ports = {{ {oversized_ports} }} }} }}"#
+    );
+    assert!(!error(&forward_config(&oversized, "", "")).is_empty());
 }
 
 #[test]

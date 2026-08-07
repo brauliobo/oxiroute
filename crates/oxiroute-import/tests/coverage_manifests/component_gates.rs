@@ -48,8 +48,12 @@ fn cache_memory_reverse_http_is_integrated_but_broader_cache_remains_foundationa
         } else {
             assert_eq!(entry.status, ComponentStatus::Foundation);
             assert!(!entry.gates.canonical.0, "{} canonical gate", entry.id);
-            assert!(
-                !entry.gates.integrated_runtime.0,
+            assert_eq!(
+                entry.gates.integrated_runtime.0,
+                matches!(
+                    entry.id.as_str(),
+                    "component.forward-proxy-h2" | "component.forward-proxy-h3"
+                ),
                 "{} integrated runtime gate",
                 entry.id
             );
@@ -69,11 +73,14 @@ fn cache_memory_reverse_http_is_integrated_but_broader_cache_remains_foundationa
         manifest
             .entries
             .iter()
-            .find(|entry| entry.id == "component.forward-proxy-h3")
-            .expect("H3 component")
-            .gates
-            .failure
-            .0
+            .filter(|entry| {
+                matches!(
+                    entry.id.as_str(),
+                    "component.forward-proxy-h2" | "component.forward-proxy-h3"
+                )
+            })
+            .all(|entry| entry.gates.failure.0),
+        "H2/H3 components must retain failure coverage"
     );
 
     assert!(workspace_path("crates/oxiroute-cache/Cargo.toml").is_file());

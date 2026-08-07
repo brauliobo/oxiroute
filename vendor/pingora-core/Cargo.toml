@@ -198,6 +198,7 @@ version = "0.8.1"
 
 [dependencies.prometheus]
 version = "0.13"
+default-features = false
 
 [dependencies.rand]
 version = "0.8"

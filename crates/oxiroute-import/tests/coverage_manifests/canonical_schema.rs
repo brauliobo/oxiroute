@@ -86,10 +86,6 @@ fn exclude_nonintegrated_component_controls(
             .find(|entry| entry.id == id)
             .unwrap_or_else(|| panic!("missing non-integrated component gate `{id}`"));
         assert!(!component.gates.canonical.0, "{id} canonical gate");
-        assert!(
-            !component.gates.integrated_runtime.0,
-            "{id} integrated runtime gate"
-        );
     }
 
     for prefix in [

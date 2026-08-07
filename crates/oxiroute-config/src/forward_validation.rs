@@ -423,6 +423,13 @@ fn validate_versions_and_connect(service: &mut ForwardProxyService) -> Result<()
         });
 
     validate_connect_policy(&service.name, "connect", &mut service.connect)?;
+    if service.connect_udp.enabled && !versions.contains(&ForwardHttpVersion::H1) {
+        return Err(invalid(
+            &service.name,
+            "connect_udp.enabled",
+            "requires forward HTTP/1 to be enabled",
+        ));
+    }
     validate_connect_policy(&service.name, "connect_udp", &mut service.connect_udp)?;
 
     Ok(())

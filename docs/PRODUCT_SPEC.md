@@ -84,8 +84,10 @@ firewalling, NAT, routing, or conntrack.
 ### Explicit forward proxy
 
 - HTTP/1 absolute-form requests and CONNECT MUST use a dedicated parser/tunnel path.
+- Opt-in HTTP/1 RFC 9298 `CONNECT-UDP` MUST use the HTTP/1.1 Upgrade and Capsule Protocol path,
+  with explicit destination-port policy; it is a `forward_http1` capability only.
 - CONNECT parsing MUST preserve bytes received after the header terminator.
-- HTTP/2 and HTTP/3 proxy modes MUST be implemented only against their stream and tunnel standards; they MUST NOT be HTTP/1 tunnels hidden behind version labels.
+- HTTP/2 and HTTP/3 proxy modes MUST be implemented only against their stream and tunnel standards; they MUST NOT be HTTP/1 tunnels hidden behind version labels. The current forward-proxy slice exposes authority-only classic CONNECT on H2/H3; arbitrary request forms and H3 absolute-form forwarding are not current capabilities.
 - Non-public and special-use destinations MUST be denied by default. An omitted authentication
   policy and empty allow lists MAY permit public destinations; configured domain/CIDR allow lists
   constrain the complete target and DNS answer, and deny rules always override allows.
@@ -183,7 +185,7 @@ complete Squid parity while such entries remain.
 
 ## Release definition
 
-The package currently declares version `0.4.0`. The current release line is pre-alpha, not a 1.0
+The package currently declares version `0.4.1`. The current release line is pre-alpha, not a 1.0
 stability claim. The compatibility matrix records the supported narrow paths for this working
 release line, while the roadmap records work that is not yet available.
 
@@ -194,7 +196,7 @@ The current contract is:
   readiness and metrics probes, round-robin, weighted round-robin, least-connections, and first
   selection, bounded configurable safe retry/passive-health policies, bounded event polling, durable
   redacted audit history, and external Certbot lineage reconciliation.
-- `partial`: reverse HTTP and TCP/UDP relay with bounded explicit PROXY protocol propagation, HTTP/1 and reverse/forward HTTP/3 proxying, RTMP live/recording/relay slices,
+- `partial`: reverse HTTP and TCP/UDP relay with bounded explicit PROXY protocol propagation, HTTP/1 forward absolute-form/CONNECT/CONNECT-UDP, authority-only classic CONNECT on H2/H3, and reverse HTTP/3, RTMP live/recording/relay slices,
   bounded authenticated SSE delivery, managed ACME HTTP-01/DNS-01/TLS-ALPN-01 issuance, wildcard
   renewal, bounded reverse HTTP cache, structured access logs, RTMP statistics/session controls,
   HLS/DASH/isolated-exec/auto-push slices, and native nginx/HAProxy/Apache/Squid/Varnish import
@@ -203,8 +205,8 @@ The current contract is:
   are current frontend workflows, while native source editing remains outside the frontend. TLS-ALPN
   challenge selection and listener-deployment guidance are exposed; listener deployment and
   CA-staging evidence remain gates.
-- `foundation`: forward HTTP/2 protocol components that are tested but are not an active daemon
-  capability.
+- `foundation`: forward-proxy request forms outside the active HTTP/1 paths and authority-only H2/H3
+  classic CONNECT path; these are not active daemon capabilities.
 - `planned`: broader cache conformance, broader managed ACME authenticators, durable replay/history
   for the non-durable operational event ring, and broader protocol/import compatibility.
 - `research`: remote administration, broader DNS provider policy, external key providers, and

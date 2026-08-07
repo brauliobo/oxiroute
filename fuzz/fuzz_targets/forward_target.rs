@@ -3,7 +3,9 @@
 mod support;
 
 use libfuzzer_sys::fuzz_target;
-use oxiroute_forward_proxy::{parse_absolute_form, parse_connect_authority};
+use oxiroute_forward_proxy::{
+    parse_absolute_form, parse_connect_authority, parse_connect_udp_path,
+};
 
 const MAX_INPUT_BYTES: usize = 16 * 1024;
 
@@ -16,9 +18,11 @@ fuzz_target!(|data: &[u8]| {
         (0, data)
     } else if let Some(data) = support::strip_prefix(data, b"connect:") {
         (1, data)
+    } else if let Some(data) = support::strip_prefix(data, b"connect-udp:") {
+        (2, data)
     } else {
         (
-            usize::from(data.first().copied().unwrap_or_default() & 1),
+            usize::from(data.first().copied().unwrap_or_default() % 3),
             data.get(1..).unwrap_or_default(),
         )
     };
@@ -26,7 +30,9 @@ fuzz_target!(|data: &[u8]| {
 
     if parser == 0 {
         let _ = parse_absolute_form(target.as_ref());
-    } else {
+    } else if parser == 1 {
         let _ = parse_connect_authority(target.as_ref());
+    } else {
+        let _ = parse_connect_udp_path(target.as_ref());
     }
 });

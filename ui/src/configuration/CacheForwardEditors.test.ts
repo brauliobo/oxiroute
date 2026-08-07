@@ -59,12 +59,14 @@ describe('cache and forward proxy editors', () => {
 
     await wrapper.get('[data-field="forward_proxy_services[].name"] input').setValue('egress')
     await wrapper.get('[data-field="forward_proxy_services[].connect.enabled"] input').setValue(true)
+    await wrapper.get('[data-field="forward_proxy_services[].connect_udp.enabled"] input').setValue(true)
     await wrapper.get('[data-field="forward_proxy_services[].auth"] input').setValue(true)
     await wrapper.get('[data-field="forward_proxy_services[].auth.token_file_path"] input').setValue('/run/forward.token')
 
     expect(service).toEqual(expect.objectContaining({
       name: 'egress',
       connect: { enabled: true, allowed_ports: [443] },
+      connect_udp: { enabled: true, allowed_ports: [443] },
       auth: { type: 'bearer_token_file', token_file_path: '/run/forward.token' },
       max_request_body_bytes: 10_485_760,
       audit_mode: 'metadata',

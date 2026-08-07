@@ -35,11 +35,17 @@ async fn daemon_rejects_h3_plain_http_without_fallback_and_releases_udp_listener
         .expect("origin bind");
     let origin_address = origin.local_addr().expect("origin address");
     let mut origin_task = tokio::spawn(async move {
-        let _ = origin
-            .accept()
+        let (mut stream, _) = origin.accept().await.expect("CONNECT origin accept");
+        let mut request = [0; 4];
+        stream
+            .read_exact(&mut request)
             .await
-            .expect("origin accept must not receive an H3 fallback");
-        panic!("HTTP/3 must not fall back to a TCP origin");
+            .expect("CONNECT origin payload");
+        assert_eq!(&request, b"ping");
+        stream
+            .write_all(b"pong")
+            .await
+            .expect("CONNECT origin response");
     });
 
     let proxy_address = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
@@ -69,7 +75,10 @@ async fn daemon_rejects_h3_plain_http_without_fallback_and_releases_udp_listener
         enabled_versions: vec![ForwardHttpVersion::H3],
         allow_absolute_form: true,
         tls_required: true,
-        connect: ForwardConnectPolicy::default(),
+        connect: ForwardConnectPolicy {
+            enabled: true,
+            allowed_ports: vec![origin_address.port()],
+        },
         connect_udp: ForwardConnectPolicy::default(),
         peer_policy: ForwardPeerPolicy::default(),
         auth: None,
@@ -193,14 +202,39 @@ async fn daemon_rejects_h3_plain_http_without_fallback_and_releases_udp_listener
         timeout(Duration::from_millis(500), &mut origin_task)
             .await
             .is_err(),
-        "HTTP/3 request reached the TCP origin"
+        "HTTP/3 absolute-form request reached the TCP origin"
     );
-    origin_task.abort();
-    let _ = origin_task.await;
+
+    let mut connect = sender
+        .send_request(
+            Request::builder()
+                .method(Method::CONNECT)
+                .uri(origin_address.to_string())
+                .body(())
+                .expect("H3 CONNECT request"),
+        )
+        .await
+        .expect("send H3 CONNECT");
+    assert_eq!(
+        connect
+            .recv_response()
+            .await
+            .expect("H3 CONNECT response")
+            .status(),
+        StatusCode::OK
+    );
+    connect
+        .send_data(Bytes::from_static(b"ping"))
+        .await
+        .expect("H3 CONNECT payload");
+    assert_eq!(recv_chunk(&mut connect).await.as_ref(), b"pong");
+    connect.finish().await.expect("finish H3 CONNECT");
+    origin_task.await.expect("CONNECT origin task");
 
     drop(stream);
     drop(malformed);
     drop(oversized);
+    drop(connect);
     drop(sender);
     endpoint.close(quinn::VarInt::from_u32(0), b"test complete");
     driver.await.expect("H3 driver task");

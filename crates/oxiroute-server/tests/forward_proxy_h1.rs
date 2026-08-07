@@ -1041,13 +1041,53 @@ async fn connect_udp_upgrade_relays_capsule_datagrams_on_a_real_listener() {
     let mut server = process_support::ServerProcess::start(&config, None);
     server.wait_for_tcp(proxy_address).await;
 
+    let malformed_path = exchange_head(
+        proxy_address,
+        format!(
+            "GET http://proxy.example.test/.well-known/masque/udp/127.0.0.1/{} HTTP/1.1\r\nHost: proxy.example.test\r\nConnection: close\r\n\r\n",
+            echo_address.port()
+        )
+        .as_bytes(),
+    )
+    .await;
+    assert!(malformed_path.starts_with(b"HTTP/1.1 400"));
+
+    for framing in [
+        "Content-Length: 0",
+        "Content-Type: application/octet-stream",
+        "Transfer-Encoding: chunked",
+        "Trailer: x-trailer",
+    ] {
+        let response = exchange_head(
+            proxy_address,
+            format!(
+                "GET http://proxy.example.test/.well-known/masque/udp/127.0.0.1/{}/ HTTP/1.1\r\nHost: proxy.example.test\r\nConnection: Upgrade\r\nUpgrade: connect-udp\r\nCapsule-Protocol: ?1\r\n{framing}\r\n\r\n",
+                echo_address.port()
+            )
+            .as_bytes(),
+        )
+        .await;
+        assert!(response.starts_with(b"HTTP/1.1 400"), "accepted {framing}");
+    }
+
+    let invalid_capsule = exchange_head(
+        proxy_address,
+        format!(
+            "GET http://proxy.example.test/.well-known/masque/udp/127.0.0.1/{}/ HTTP/1.1\r\nHost: proxy.example.test\r\nConnection: Upgrade\r\nUpgrade: connect-udp\r\nCapsule-Protocol: ?1, ?1\r\n\r\n",
+            echo_address.port()
+        )
+        .as_bytes(),
+    )
+    .await;
+    assert!(invalid_capsule.starts_with(b"HTTP/1.1 400"));
+
     let mut client = TcpStream::connect(proxy_address)
         .await
         .expect("proxy connect");
     client
         .write_all(
             format!(
-                "GET http://proxy.example.test/.well-known/masque/udp/127.0.0.1/{}/ HTTP/1.1\r\nHost: proxy.example.test\r\nConnection: Upgrade\r\nUpgrade: connect-udp\r\nCapsule-Protocol: ?1\r\n\r\n",
+                "GET http://proxy.example.test/.well-known/masque/udp/127.0.0.1/{}/ HTTP/1.1\r\nHost: proxy.example.test\r\nConnection: Upgrade\r\nUpgrade: connect-udp\r\nCapsule-Protocol: ?1;grease=\"accepted\"\r\n\r\n",
                 echo_address.port()
             )
             .as_bytes(),
@@ -1092,6 +1132,20 @@ async fn exchange(address: std::net::SocketAddr, request: &[u8]) -> Vec<u8> {
     })
     .await
     .expect("proxy exchange timeout")
+}
+
+async fn exchange_head(address: std::net::SocketAddr, request: &[u8]) -> Vec<u8> {
+    timeout(Duration::from_secs(5), async {
+        let mut stream = TcpStream::connect(address).await.expect("proxy connect");
+        stream.write_all(request).await.expect("proxy request");
+        let mut response = Vec::new();
+        while !response.windows(4).any(|window| window == b"\r\n\r\n") {
+            response.push(stream.read_u8().await.expect("proxy response byte"));
+        }
+        response
+    })
+    .await
+    .expect("proxy response head timeout")
 }
 
 async fn exchange_partial(address: std::net::SocketAddr, request: &[u8]) -> Vec<u8> {
