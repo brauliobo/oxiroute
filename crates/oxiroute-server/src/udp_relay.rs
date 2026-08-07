@@ -22,16 +22,57 @@ use tokio::{
 
 use crate::{
     ConnectionGuard, EndpointLease, HealthFailure, L4ServicePlan, ListenerMetrics,
-    ListenerReservation, MAX_V1_HEADER_BYTES, MAX_V2_HEADER_BYTES, ProxyProtocolError,
-    ProxyProtocolErrorKind, ProxyProtocolResult, ProxyProtocolTransport, RuntimeGeneration,
-    RuntimeReferenceKind, encode_header, parse_header,
+    ListenerReservation, MAX_V1_HEADER_BYTES, ProxyProtocolError, ProxyProtocolErrorKind,
+    ProxyProtocolResult, ProxyProtocolTransport, RuntimeGeneration, RuntimeReferenceKind,
+    encode_header, parse_header,
 };
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_UDP_WIRE_DATAGRAM_BYTES: usize = 65_507;
+const MAX_V2_IPV4_ADDRESS_HEADER_BYTES: usize = 28;
+const MAX_V2_IPV6_ADDRESS_HEADER_BYTES: usize = 52;
 
 /// A generation-owned UDP listener and its bounded pseudo-session runtime.
 pub struct UdpRuntime {
+    accounting: Arc<UdpAccounting>,
     thread: Option<JoinHandle<()>>,
+}
+
+/// Bounded listener-local UDP admission and terminal counters.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct UdpRelayStats {
+    pub datagrams_received: u64,
+    pub datagrams_dropped: u64,
+    pub sessions_started: u64,
+    pub sessions_completed: u64,
+    pub sessions_failed: u64,
+}
+
+#[derive(Default)]
+struct UdpAccounting {
+    datagrams_received: AtomicU64,
+    datagrams_dropped: AtomicU64,
+    sessions_started: AtomicU64,
+    sessions_completed: AtomicU64,
+    sessions_failed: AtomicU64,
+}
+
+impl UdpAccounting {
+    fn increment(counter: &AtomicU64) {
+        let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            value.checked_add(1)
+        });
+    }
+
+    fn snapshot(&self) -> UdpRelayStats {
+        UdpRelayStats {
+            datagrams_received: self.datagrams_received.load(Ordering::Relaxed),
+            datagrams_dropped: self.datagrams_dropped.load(Ordering::Relaxed),
+            sessions_started: self.sessions_started.load(Ordering::Relaxed),
+            sessions_completed: self.sessions_completed.load(Ordering::Relaxed),
+            sessions_failed: self.sessions_failed.load(Ordering::Relaxed),
+        }
+    }
 }
 
 impl UdpRuntime {
@@ -52,6 +93,8 @@ impl UdpRuntime {
         shutdown: watch::Receiver<bool>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        let accounting = Arc::new(UdpAccounting::default());
+        let accounting_for_thread = Arc::clone(&accounting);
         let thread = thread::Builder::new()
             .name(format!("oxiroute-udp-{listener_name}"))
             .spawn(move || {
@@ -62,6 +105,7 @@ impl UdpRuntime {
                     generation.clone(),
                     metrics,
                     proxy_protocol,
+                    accounting_for_thread,
                     shutdown,
                     ready_tx,
                 );
@@ -72,6 +116,7 @@ impl UdpRuntime {
             })?;
         match ready_rx.recv_timeout(STARTUP_TIMEOUT) {
             Ok(Ok(())) => Ok(Self {
+                accounting,
                 thread: Some(thread),
             }),
             Ok(Err(error)) => {
@@ -128,6 +173,11 @@ impl UdpRuntime {
             .join()
             .map_err(|_| io::Error::other("UDP listener thread panicked"))
     }
+
+    #[must_use]
+    pub fn stats(&self) -> UdpRelayStats {
+        self.accounting.snapshot()
+    }
 }
 
 #[cfg(unix)]
@@ -139,6 +189,7 @@ fn run(
     generation: Arc<RuntimeGeneration>,
     metrics: ListenerMetrics,
     proxy_protocol: Option<ProxyProtocolPolicy>,
+    accounting: Arc<UdpAccounting>,
     shutdown: watch::Receiver<bool>,
     ready: std::sync::mpsc::SyncSender<Result<(), String>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -169,6 +220,7 @@ fn run(
             generation,
             metrics,
             proxy_protocol,
+            accounting,
             shutdown,
         )
         .await
@@ -272,6 +324,7 @@ async fn serve(
     generation: Arc<RuntimeGeneration>,
     metrics: ListenerMetrics,
     proxy_protocol: Option<ProxyProtocolPolicy>,
+    accounting: Arc<UdpAccounting>,
     mut shutdown: watch::Receiver<bool>,
 ) -> io::Result<()> {
     let policy = service.udp_policy();
@@ -287,19 +340,27 @@ async fn serve(
             "UDP session limit is too large",
         )
     })?;
-    let proxy_header_bytes = proxy_protocol.map_or(0, |policy| match policy.version {
-        oxiroute_config::ProxyProtocolVersion::V1 => MAX_V1_HEADER_BYTES,
-        oxiroute_config::ProxyProtocolVersion::V2 | oxiroute_config::ProxyProtocolVersion::Auto => {
-            MAX_V2_HEADER_BYTES
-        }
-    });
+    let listener_is_ipv4 = socket.local_addr()?.is_ipv4();
+    let listener_proxy_header_bytes = proxy_protocol
+        .map(|policy| proxy_header_budget(policy, listener_is_ipv4))
+        .unwrap_or(0);
+    let upstream_proxy_header_bytes = service
+        .proxy_protocol()
+        .map(|policy| proxy_header_budget(policy, listener_is_ipv4))
+        .unwrap_or(0);
+    let proxy_header_bytes = listener_proxy_header_bytes.max(upstream_proxy_header_bytes);
+    if max_datagram_bytes > MAX_UDP_WIRE_DATAGRAM_BYTES.saturating_sub(proxy_header_bytes) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "UDP datagram limit leaves no room for the configured PROXY protocol header",
+        ));
+    }
     let max_received_bytes = max_datagram_bytes
-        .checked_add(proxy_header_bytes)
+        .checked_add(listener_proxy_header_bytes)
         .and_then(|bytes| bytes.checked_add(1))
         .ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "UDP receive limit overflowed")
         })?;
-    let listener_is_ipv4 = socket.local_addr()?.is_ipv4();
     let socket = Arc::new(socket);
     let table: SessionTable = Arc::new(Mutex::new(HashMap::with_capacity(max_sessions)));
     let next_id = AtomicU64::new(0);
@@ -307,12 +368,25 @@ async fn serve(
     let mut receive_buffer = vec![0_u8; max_received_bytes];
 
     loop {
-        while sessions.try_join_next().is_some() {}
+        while let Some(result) = sessions.try_join_next() {
+            if let Err(error) = result {
+                UdpAccounting::increment(&accounting.sessions_failed);
+                warn!("UDP listener `{listener_name}` pseudo-session task failed: {error}");
+            }
+        }
         tokio::select! {
-            _ = shutdown.changed() => break,
+            biased;
+            _ = wait_for_shutdown(&mut shutdown) => break,
             received = socket.recv_from(&mut receive_buffer) => {
                 let (length, client) = received?;
+                UdpAccounting::increment(&accounting.datagrams_received);
+                if proxy_protocol.is_none() && length > max_datagram_bytes {
+                    UdpAccounting::increment(&accounting.datagrams_dropped);
+                    debug!("UDP listener `{listener_name}` dropped an oversized datagram");
+                    continue;
+                }
                 if length >= max_received_bytes {
+                    UdpAccounting::increment(&accounting.datagrams_dropped);
                     debug!("UDP listener `{listener_name}` dropped an oversized datagram");
                     continue;
                 }
@@ -322,12 +396,18 @@ async fn serve(
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if let Some(entry) = table_guard.get(&client) {
                     if length > max_datagram_bytes {
+                        UdpAccounting::increment(&accounting.datagrams_dropped);
                         debug!("UDP listener `{listener_name}` dropped an oversized session datagram");
                         continue;
                     }
                     match entry.queue.try_send(payload) {
-                        QueueSendResult::Enqueued | QueueSendResult::Full => {}
+                        QueueSendResult::Enqueued => {}
+                        QueueSendResult::Full => {
+                            UdpAccounting::increment(&accounting.datagrams_dropped);
+                            debug!("UDP listener `{listener_name}` dropped a queued datagram at its session limit");
+                        }
                         QueueSendResult::Closed => {
+                            UdpAccounting::increment(&accounting.datagrams_dropped);
                             let id = entry.id;
                             if table_guard
                                 .get(&client)
@@ -340,6 +420,7 @@ async fn serve(
                     continue;
                 }
                 if table_guard.len() >= max_sessions {
+                    UdpAccounting::increment(&accounting.datagrams_dropped);
                     debug!("UDP listener `{listener_name}` rejected a new pseudo-session at its table limit");
                     continue;
                 }
@@ -358,6 +439,7 @@ async fn serve(
                             parsed
                         }
                         Err(error) => {
+                            UdpAccounting::increment(&accounting.datagrams_dropped);
                             if let Err(metric_error) = metrics.record_proxy_protocol(error.result()) {
                                 debug!("could not account for UDP PROXY protocol rejection: {metric_error}");
                             }
@@ -370,11 +452,13 @@ async fn serve(
                 let Some(generation_reference) =
                     generation.begin_reference(RuntimeReferenceKind::Udp)
                 else {
+                    UdpAccounting::increment(&accounting.datagrams_dropped);
                     continue;
                 };
                 let listener_connection = match metrics.begin_connection() {
                     Ok(connection) => connection,
                     Err(error) => {
+                        UdpAccounting::increment(&accounting.datagrams_dropped);
                         debug!("UDP listener `{listener_name}` rejected a pseudo-session: {error}");
                         drop(generation_reference);
                         continue;
@@ -387,11 +471,13 @@ async fn serve(
                     queue: queue.clone(),
                 };
                 table_guard.insert(client, entry);
+                UdpAccounting::increment(&accounting.sessions_started);
                 drop(table_guard);
                 let table_for_task = Arc::clone(&table);
                 let socket_for_task = Arc::clone(&socket);
                 let service_for_task = Arc::clone(&service);
                 let generation_for_task = Arc::clone(&generation);
+                let accounting_for_task = Arc::clone(&accounting);
                 let listener_name = listener_name.to_owned();
                 let shutdown_for_task = shutdown.clone();
                 sessions.spawn(async move {
@@ -415,8 +501,15 @@ async fn serve(
                     if table.get(&client).is_some_and(|entry| entry.id == id) {
                         table.remove(&client);
                     }
-                    if let Err(outcome) = result {
-                        debug!("UDP listener `{listener_name}` pseudo-session ended: {outcome}");
+                    match result {
+                        Ok(()) => {
+                            UdpAccounting::increment(&accounting_for_task.sessions_completed);
+                            debug!("UDP listener `{listener_name}` pseudo-session ended: completed");
+                        }
+                        Err(outcome) => {
+                            UdpAccounting::increment(&accounting_for_task.sessions_failed);
+                            debug!("UDP listener `{listener_name}` pseudo-session ended: {outcome}");
+                        }
                     }
                 });
             }
@@ -429,6 +522,7 @@ async fn serve(
         .clear();
     while let Some(result) = sessions.join_next().await {
         if let Err(error) = result {
+            UdpAccounting::increment(&accounting.sessions_failed);
             warn!("UDP listener `{listener_name}` pseudo-session task failed: {error}");
         }
     }
@@ -549,7 +643,8 @@ async fn run_session(
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), SessionEnd> {
     let lease = tokio::select! {
-        _ = shutdown.changed() => return Err(SessionEnd::Cancelled),
+        biased;
+        _ = wait_for_shutdown(&mut shutdown) => return Err(SessionEnd::Cancelled),
         lease = service.select_wait() => lease.ok_or_else(|| SessionEnd::Connect(io::Error::new(
             io::ErrorKind::NotFound,
             "UDP upstream pool has no selectable endpoint",
@@ -625,6 +720,11 @@ async fn relay_session(
         let mut datagram = Vec::with_capacity(header.len() + initial.len());
         datagram.extend_from_slice(&header);
         datagram.extend_from_slice(&initial);
+        if datagram.len() > MAX_UDP_WIRE_DATAGRAM_BYTES {
+            let error = ProxyProtocolError::new(ProxyProtocolErrorKind::InvalidLength);
+            let _ = connection.record_proxy_protocol(error.result());
+            return Err(SessionEnd::UpstreamProxyProtocol(error));
+        }
         send_proxy_datagram(
             &upstream,
             &datagram,
@@ -653,7 +753,8 @@ async fn relay_session(
 
     loop {
         tokio::select! {
-            _ = shutdown.changed() => return Err(SessionEnd::Cancelled),
+            biased;
+            _ = wait_for_shutdown(shutdown) => return Err(SessionEnd::Cancelled),
             () = wait_for_sleep(&mut idle) => return Err(SessionEnd::IdleTimeout),
             () = &mut lifetime => return Err(SessionEnd::LifetimeTimeout),
             queued = queue_receiver.recv() => {
@@ -806,6 +907,19 @@ async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
         }
         if shutdown.changed().await.is_err() {
             return;
+        }
+    }
+}
+
+fn proxy_header_budget(policy: ProxyProtocolPolicy, listener_is_ipv4: bool) -> usize {
+    match policy.version {
+        oxiroute_config::ProxyProtocolVersion::V1 => MAX_V1_HEADER_BYTES,
+        oxiroute_config::ProxyProtocolVersion::V2 | oxiroute_config::ProxyProtocolVersion::Auto => {
+            if listener_is_ipv4 {
+                MAX_V2_IPV4_ADDRESS_HEADER_BYTES
+            } else {
+                MAX_V2_IPV6_ADDRESS_HEADER_BYTES
+            }
         }
     }
 }
@@ -1386,6 +1500,73 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn udp_drop_and_terminal_counters_account_bounded_work() {
+        let mut udp_policy = policy();
+        udp_policy.max_datagram_bytes = 4;
+        let harness = start_harness(
+            udp_policy,
+            Duration::from_millis(40),
+            Some(Duration::from_secs(2)),
+            8,
+            None,
+        )
+        .await;
+        let client = UdpSocket::bind(("127.0.0.1", 0))
+            .await
+            .expect("client socket");
+        client
+            .send_to(b"12345", harness.listener)
+            .await
+            .expect("oversized datagram");
+        timeout(Duration::from_secs(2), async {
+            loop {
+                let stats = harness.runtime.stats();
+                if stats.datagrams_received == 1 && stats.datagrams_dropped == 1 {
+                    break;
+                }
+                sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("UDP drop accounting timeout");
+
+        client
+            .send_to(b"1234", harness.listener)
+            .await
+            .expect("bounded datagram");
+        timeout(
+            Duration::from_secs(2),
+            harness.upstream.recv_from(&mut [0_u8; 32]),
+        )
+        .await
+        .expect("bounded datagram upstream timeout")
+        .expect("bounded datagram upstream receive");
+        timeout(Duration::from_secs(2), async {
+            loop {
+                if harness.runtime.stats().sessions_failed == 1 {
+                    break;
+                }
+                sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("UDP terminal accounting timeout");
+
+        assert_eq!(
+            harness.runtime.stats(),
+            UdpRelayStats {
+                datagrams_received: 2,
+                datagrams_dropped: 1,
+                sessions_started: 1,
+                sessions_completed: 0,
+                sessions_failed: 1,
+            }
+        );
+        harness.stop();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn udp_session_table_rejects_new_clients_at_max_sessions() {
         let mut policy = policy();
         policy.max_sessions = 1;
@@ -1696,6 +1877,76 @@ mod tests {
             .is_err(),
             "malformed PROXY v2 datagram reached the upstream"
         );
+        harness.stop();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn udp_proxy_v2_is_accepted_and_propagated_on_the_wire() {
+        let proxy_policy = ProxyProtocolPolicy {
+            version: ProxyProtocolVersion::V2,
+            timeout_ms: 1_000,
+        };
+        let harness = start_harness_with_options(
+            policy(),
+            Duration::from_secs(10),
+            Some(Duration::from_secs(30)),
+            8,
+            Some(proxy_policy),
+            None,
+            None,
+            Some(proxy_policy),
+        )
+        .await;
+        let client = UdpSocket::bind(("127.0.0.1", 0))
+            .await
+            .expect("client socket");
+        let source = SocketAddr::from(([192, 0, 2, 10], 1234));
+        let mut datagram = encode_header(
+            ProxyProtocolVersion::V2,
+            ProxyProtocolTransport::Datagram,
+            source,
+            harness.listener,
+        )
+        .expect("client PROXY header");
+        datagram.extend_from_slice(b"query");
+        client
+            .send_to(&datagram, harness.listener)
+            .await
+            .expect("PROXY query");
+
+        let mut received = [0_u8; 128];
+        let (length, upstream_peer) = timeout(
+            Duration::from_secs(2),
+            harness.upstream.recv_from(&mut received),
+        )
+        .await
+        .expect("upstream PROXY query timeout")
+        .expect("upstream PROXY query receive");
+        let header = parse_header(
+            &received[..length],
+            ProxyProtocolVersion::V2,
+            ProxyProtocolTransport::Datagram,
+        )
+        .expect("upstream PROXY parse")
+        .expect("complete upstream PROXY header");
+        assert_eq!(header.source, source);
+        assert_eq!(
+            header.destination,
+            harness.upstream.local_addr().expect("upstream address")
+        );
+        assert_eq!(&received[header.consumed..length], b"query");
+
+        harness
+            .upstream
+            .send_to(b"response", upstream_peer)
+            .await
+            .expect("upstream response");
+        let (length, _) = timeout(Duration::from_secs(2), client.recv_from(&mut received))
+            .await
+            .expect("client response timeout")
+            .expect("client response receive");
+        assert_eq!(&received[..length], b"response");
         harness.stop();
     }
 

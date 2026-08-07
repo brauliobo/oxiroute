@@ -1,5 +1,6 @@
 use std::{
     io,
+    net::SocketAddr,
     pin::Pin,
     sync::{
         Arc,
@@ -9,10 +10,11 @@ use std::{
     time::Duration,
 };
 
-use oxiroute_config::UpstreamAlgorithm;
+use oxiroute_config::{ProxyProtocolPolicy, ProxyProtocolVersion, UpstreamAlgorithm};
 use oxiroute_server::{
-    ConnectionGuard, RelayDirection, RelayFailureKind, RelayOperation, RelayPolicy, RoundRobinPool,
-    RuntimeEndpoint, RuntimeMetrics, TcpRelayCore, relay_streams,
+    ConnectionGuard, ProxyProtocolTransport, RelayDirection, RelayFailureKind, RelayOperation,
+    RelayPolicy, RoundRobinPool, RuntimeEndpoint, RuntimeMetrics, TcpRelayCore, parse_header,
+    relay_streams,
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf, duplex},
@@ -303,6 +305,85 @@ async fn shutdown_signal_cancels_an_established_relay() {
     })
     .await
     .expect("shutdown-cancellation test timed out");
+}
+
+#[tokio::test]
+async fn propagates_tcp_proxy_v2_before_relay_payload() {
+    timeout(TEST_TIMEOUT, async {
+        let upstream_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream bind");
+        let upstream_address = upstream_listener.local_addr().expect("upstream address");
+        let source = SocketAddr::from(([192, 0, 2, 10], 1234));
+        let upstream = tokio::spawn(async move {
+            let (mut stream, _) = upstream_listener.accept().await.expect("upstream accept");
+            let mut wire_header = [0_u8; 28];
+            stream
+                .read_exact(&mut wire_header)
+                .await
+                .expect("upstream PROXY header");
+            let header = parse_header(
+                &wire_header,
+                ProxyProtocolVersion::V2,
+                ProxyProtocolTransport::Stream,
+            )
+            .expect("parse upstream PROXY header")
+            .expect("complete upstream PROXY header");
+            assert_eq!(header.source, source);
+            assert_eq!(header.destination, upstream_address);
+            let mut request = [0_u8; 7];
+            stream
+                .read_exact(&mut request)
+                .await
+                .expect("upstream payload");
+            assert_eq!(&request, b"request");
+            stream
+                .write_all(b"response")
+                .await
+                .expect("upstream response");
+            stream.shutdown().await.expect("upstream shutdown");
+        });
+
+        let (mut client, downstream) = downstream_pair().await;
+        let (_runtime_metrics, connection) = connection_metrics();
+        let (_pool, relay) = relay_core(upstream_address.into(), policy(None, None));
+        let relay = relay.with_proxy_protocol(
+            Some(ProxyProtocolPolicy {
+                version: ProxyProtocolVersion::V2,
+                timeout_ms: 1_000,
+            }),
+            Some(source),
+        );
+        let (_shutdown_tx, shutdown) = watch::channel(false);
+        let relay_task = tokio::spawn(async move {
+            relay
+                .relay(pingora_stream(downstream), &connection, shutdown)
+                .await
+        });
+
+        client.write_all(b"request").await.expect("client request");
+        let mut response = [0_u8; 8];
+        client
+            .read_exact(&mut response)
+            .await
+            .expect("client response");
+        assert_eq!(&response, b"response");
+        client.shutdown().await.expect("client half-close");
+        let mut remainder = Vec::new();
+        client
+            .read_to_end(&mut remainder)
+            .await
+            .expect("client EOF");
+        assert!(remainder.is_empty());
+
+        upstream.await.expect("upstream task");
+        relay_task
+            .await
+            .expect("relay task")
+            .expect("successful PROXY relay");
+    })
+    .await
+    .expect("TCP PROXY relay timed out");
 }
 
 #[tokio::test]
