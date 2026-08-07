@@ -1,7 +1,7 @@
-//! Strict, non-executing Varnish VCL parsing and semantic classification.
+//! Strict, non-executing Varnish VCL parsing, semantic classification, and exact lowering.
 //!
-//! This module deliberately produces native typed evidence only. Canonical lowering remains
-//! blocked until VCL behavior has an explicit, audited lowering design.
+//! Native typed evidence is retained for every source; canonical lowering finalizes only for the
+//! explicitly supported VCL and varnishd invocation subset.
 
 mod invocation;
 mod lexer;
