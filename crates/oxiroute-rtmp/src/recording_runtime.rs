@@ -1306,10 +1306,10 @@ impl ReapTask {
                 self.completion_at_unix_ms,
             );
         }
-        if let Some(completion) = self.completion {
-            if let Some(registry) = completion.registry.upgrade() {
-                registry.complete_worker_stop(completion.context, &status);
-            }
+        if let Some(completion) = self.completion
+            && let Some(registry) = completion.registry.upgrade()
+        {
+            registry.complete_worker_stop(completion.context, &status);
         }
     }
 
@@ -1326,10 +1326,10 @@ impl ReapTask {
                 self.completion_at_unix_ms,
             );
         }
-        if let Some(completion) = self.completion {
-            if let Some(registry) = completion.registry.upgrade() {
-                registry.complete_worker_stop(completion.context, &status);
-            }
+        if let Some(completion) = self.completion
+            && let Some(registry) = completion.registry.upgrade()
+        {
+            registry.complete_worker_stop(completion.context, &status);
         }
     }
 }
@@ -2358,7 +2358,7 @@ mod tests {
         let mut fixture = RecorderFixture::with_recording_policy(
             Duration::from_millis(500),
             1,
-            Some(Duration::from_secs(60)),
+            Some(Duration::from_mins(1)),
             true,
         );
         assert_eq!(

@@ -122,7 +122,7 @@ fn vod_playback_emits_flv_media_and_completes() {
             VodLimits {
                 max_sessions: 1,
                 max_file_bytes: 1024,
-                max_duration: Duration::from_secs(60),
+                max_duration: Duration::from_mins(1),
             },
             [VodSourceDefinition::Local {
                 name: "archive".into(),

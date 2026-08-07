@@ -399,10 +399,7 @@ impl RtmpSession {
                     return self.reject_request(request_id, status::connection_limit(error));
                 }
             };
-            let accepted = match self.protocol_mut().accept_request(request_id) {
-                Ok(accepted) => accepted,
-                Err(error) => return Err(error.into()),
-            };
+            let accepted = self.protocol_mut().accept_request(request_id)?;
             self.connection_lease = Some(connection_lease);
             self.connected_application = Some(Arc::from(application));
             if let Some(control) = &self.control {
@@ -582,12 +579,11 @@ impl RtmpSession {
             .into_iter()
             .flatten()
         {
-            if policy.has_update() {
-                if let Err(error) = policy.update(context) {
-                    if policy.update_strict {
-                        return Err(error.into());
-                    }
-                }
+            if policy.has_update()
+                && let Err(error) = policy.update(context)
+                && policy.update_strict
+            {
+                return Err(error.into());
             }
         }
         Ok(())

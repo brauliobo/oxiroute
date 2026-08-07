@@ -621,24 +621,20 @@ mod unix {
                 remote.token.worker_id == frame.token.worker_id
                     && frame.token.incarnation > remote.token.incarnation
             });
-            if let Some(remote) = state.remotes.get_mut(&key) {
-                if !replace {
-                    if remote.token != frame.token || frame.sequence <= remote.sequence {
-                        state.counters.frames_dropped =
-                            state.counters.frames_dropped.saturating_add(1);
-                        return;
-                    }
-                    if apply_remote_frame(remote, frame).is_err() {
-                        state.counters.frames_dropped =
-                            state.counters.frames_dropped.saturating_add(1);
-                    }
+            if let Some(remote) = state.remotes.get_mut(&key)
+                && !replace
+            {
+                if remote.token != frame.token || frame.sequence <= remote.sequence {
+                    state.counters.frames_dropped = state.counters.frames_dropped.saturating_add(1);
                     return;
                 }
-            }
-            if replace {
-                if let Some(remote) = state.remotes.remove(&key) {
-                    remote.shutdown(unix_time_ms());
+                if apply_remote_frame(remote, frame).is_err() {
+                    state.counters.frames_dropped = state.counters.frames_dropped.saturating_add(1);
                 }
+                return;
+            }
+            if replace && let Some(remote) = state.remotes.remove(&key) {
+                remote.shutdown(unix_time_ms());
             }
             if state.sources.len().saturating_add(state.remotes.len()) >= self.config.max_streams {
                 state.counters.frames_dropped = state.counters.frames_dropped.saturating_add(1);
@@ -711,10 +707,10 @@ mod unix {
                 .get(&worker_id)
                 .is_some_and(|peer| peer.id == id)
             {
-                if let Some(peer) = state.peers.remove(&worker_id) {
-                    if let Some(queue) = peer.queue {
-                        queue.close();
-                    }
+                if let Some(peer) = state.peers.remove(&worker_id)
+                    && let Some(queue) = peer.queue
+                {
+                    queue.close();
                 }
                 let keys: Vec<_> = state
                     .remotes

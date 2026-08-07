@@ -249,10 +249,7 @@ fn unix_conversion_is_exhaustive_at_every_gregorian_day_boundary() {
     for year in 1970..=9_999 {
         for month in 1..=12 {
             let mut day = 1;
-            loop {
-                let Ok(expected) = RecordingDateTime::new(year, month, day, 0, 0, 0) else {
-                    break;
-                };
+            while let Ok(expected) = RecordingDateTime::new(year, month, day, 0, 0, 0) {
                 assert_eq!(
                     RecordingDateTime::from_unix_seconds(seconds).expect("supported day"),
                     expected,

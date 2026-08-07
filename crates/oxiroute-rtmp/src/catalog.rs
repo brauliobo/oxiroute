@@ -1260,16 +1260,16 @@ impl RtmpRegistry {
             .control
             .clone()
             .is_some_and(|control| apply_runtime_status(recorder, control.status()));
-        if enqueue_result == RecorderEnqueueResult::DroppedDiscontinuity {
-            if let Some(operation_id) = active_operation(recorder.phase) {
-                let phase = RecorderPhase::Failed {
-                    operation_id,
-                    code: RecorderErrorCode::QueueDiscontinuity,
-                };
-                if recorder.phase != phase {
-                    recorder.phase = phase;
-                    changed = true;
-                }
+        if enqueue_result == RecorderEnqueueResult::DroppedDiscontinuity
+            && let Some(operation_id) = active_operation(recorder.phase)
+        {
+            let phase = RecorderPhase::Failed {
+                operation_id,
+                code: RecorderErrorCode::QueueDiscontinuity,
+            };
+            if recorder.phase != phase {
+                recorder.phase = phase;
+                changed = true;
             }
         }
         if changed {
@@ -1660,15 +1660,14 @@ fn apply_runtime_status(recorder: &mut MutableRecorder, runtime: RecorderRuntime
     };
     let replacement_worker = runtime.worker_generation > recorder.worker_generation;
     apply_worker_details(recorder, &status);
-    if runtime.recovering {
-        if let (RecorderWorkerPhase::Failed(failure), Some(operation_id)) =
+    if runtime.recovering
+        && let (RecorderWorkerPhase::Failed(failure), Some(operation_id)) =
             (status.phase, active_operation(recorder.phase))
-        {
-            recorder.phase = RecorderPhase::Failed {
-                operation_id,
-                code: recorder_error_code(failure),
-            };
-        }
+    {
+        recorder.phase = RecorderPhase::Failed {
+            operation_id,
+            code: recorder_error_code(failure),
+        };
     }
     if !runtime.stopping {
         let operation_id = active_operation(recorder.phase);
