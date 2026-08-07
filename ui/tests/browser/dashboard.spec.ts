@@ -28,7 +28,8 @@ import {
   durableAuditPage,
   durableAuditStatus,
 } from '../../src/test/managementFixtures'
-import type { CanonicalConfig } from '../../src/config'
+import { defaultRtmpAutoPush, defaultRtmpCallback, defaultRtmpOutboundPolicy, defaultRtmpRelay } from '../../src/configuration/canonicalDefaults'
+import type { CanonicalConfig, RtmpServiceConfig } from '../../src/config'
 
 test.describe('dashboard browser gates', () => {
   test('renders deterministic desktop and mobile dashboard states without external requests', async ({ page }) => {
@@ -114,6 +115,45 @@ test.describe('dashboard browser gates', () => {
     await expect(page.locator('.revision-banner.save-state')).toContainText('Configuration saved; activation pending.')
     expect(saves).toHaveLength(1)
     expect(saves[0]).toMatchObject({ revision: 'disk-revision', config: { version: 2 } })
+  })
+
+  test('preserves redacted RTMP token secrets through an unrelated validate and save', async ({ page }) => {
+    const snapshot = redactedRtmpConfigSnapshot()
+    let validated: CanonicalConfig | undefined
+    let saved: CanonicalConfig | undefined
+    await installApiMock(page, (request) => {
+      const path = requestPath(request)
+      if (path === '/api/v1/config' && request.method() === 'GET') return json(snapshot)
+      if (path === '/api/v1/config/validate') {
+        const body = requestBody<{ config: CanonicalConfig }>(request)
+        validated = body.config
+        return json(configValidation(body.config))
+      }
+      if (path === '/api/v1/config' && request.method() === 'PUT') {
+        saved = requestBody<{ config: CanonicalConfig }>(request).config
+        return json(configSaveResponse())
+      }
+      if (path === '/api/v1/events/stream') return shutdownStream()
+      return undefined
+    })
+
+    await page.goto('/#/configuration')
+    await page.locator('#config-access-token').fill(CONFIG_TOKEN)
+    await page.getByRole('button', { name: 'Unlock configuration' }).click()
+    await expect(page.locator('.revision-board')).toBeVisible()
+    await page.locator('[data-field="version"] input').fill('2')
+    await page.getByRole('button', { name: 'Validate candidate' }).click()
+    await expect(page.getByText('KDL configuration preview')).toBeVisible()
+    await page.getByRole('button', { name: 'Review save' }).click()
+    await page.getByRole('button', { name: 'Save canonical configuration' }).click()
+
+    await expect(page.locator('.revision-banner.save-state')).toContainText('Configuration saved; activation pending.')
+    expect(validated?.version).toBe(2)
+    expect(validated?.rtmp_services[0]?.applications[0]?.publish.token?.secret).toBe('<redacted>')
+    expect(validated?.rtmp_services[0]?.applications[0]?.play.token?.secret).toBe('<redacted>')
+    expect(saved?.version).toBe(2)
+    expect(saved?.rtmp_services[0]?.applications[0]?.publish.token?.secret).toBe('<redacted>')
+    expect(saved?.rtmp_services[0]?.applications[0]?.play.token?.secret).toBe('<redacted>')
   })
 
   test('selects TLS-ALPN-01 by keyboard on mobile without retaining DNS provider fields', async ({ page }, testInfo) => {
@@ -420,3 +460,42 @@ test.describe('dashboard browser gates', () => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   })
 })
+
+function redactedRtmpConfigSnapshot() {
+  const snapshot = configSnapshot()
+  const service: RtmpServiceConfig = {
+    name: 'live',
+    outbound_chunk_size: 4_096,
+    access_log: null,
+    outbound_policy: defaultRtmpOutboundPolicy(),
+    callbacks: defaultRtmpCallback(),
+    auto_push: defaultRtmpAutoPush(),
+    applications: [{
+      name: 'broadcast',
+      live: true,
+      idle_streams: true,
+      publish: {
+        rules: [],
+        token: { source: 'stream_query', parameter: 'token', secret: '<redacted>' },
+      },
+      play: {
+        rules: [],
+        token: { source: 'stream_query', parameter: 'viewer', secret: '<redacted>' },
+      },
+      limits: { max_connections: 1_024, max_publishers: 256, max_viewers: 1_024 },
+      push_targets: [],
+      pull_targets: [],
+      relay: defaultRtmpRelay(),
+      callbacks: defaultRtmpCallback(),
+      fanout: {
+        max_subscribers: 1_024,
+        max_queue_messages_per_subscriber: 256,
+        max_queue_bytes_per_subscriber: 8_388_608,
+      },
+      vod: null,
+      recorders: [],
+    }],
+  }
+  snapshot.config.rtmp_services = [service]
+  return snapshot
+}

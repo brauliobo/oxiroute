@@ -32,7 +32,7 @@ let origin = ''
 let stderr = ''
 
 beforeAll(async () => {
-  const build = spawnSync('cargo', ['+1.87.0', 'build', '-p', 'oxiroute', '--bin', 'oxiroute'], {
+  const build = spawnSync('cargo', ['+1.97.1', 'build', '-p', 'oxiroute', '--bin', 'oxiroute'], {
     cwd: workspaceRoot,
     encoding: 'utf8',
     env: { ...process.env, CARGO_INCREMENTAL: '0' },
