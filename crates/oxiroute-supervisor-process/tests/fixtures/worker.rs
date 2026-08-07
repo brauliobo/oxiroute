@@ -113,6 +113,8 @@ fn environment_mode() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let valid = env::var_os("PATH").is_none()
         && env::var("CONFIGURED_MODE").as_deref() == Ok("fixture")
         && env::var("LD_PRELOAD").as_deref() == Ok("/definitely/not/a/preload-library.so")
+        && env::var_os("OXIROUTE_AUDIT_DIR").is_some()
+        && env::var("OXIROUTE_AUDIT_MAX_FILE_BYTES").as_deref() == Ok("1048576")
         && env::var_os("HOME").is_some();
     Ok(if valid {
         ExitCode::SUCCESS

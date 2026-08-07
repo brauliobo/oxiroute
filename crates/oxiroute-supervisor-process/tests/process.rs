@@ -104,6 +104,8 @@ fn executable_resolution_and_environment_are_sanitized() {
             command("environment")
                 .env("CONFIGURED_MODE", "fixture")
                 .env("LD_PRELOAD", "/definitely/not/a/preload-library.so")
+                .env("OXIROUTE_AUDIT_DIR", "/var/lib/oxiroute/audit")
+                .env("OXIROUTE_AUDIT_MAX_FILE_BYTES", "1048576")
                 .inherit_env("HOME"),
             identity(),
         )
