@@ -923,58 +923,20 @@ impl<T: AcmeTransport> AcmeClient<T> {
         poll: &PollPolicy,
         challenge_type: ChallengeType,
     ) -> Result<Authorization, AcmeError> {
-        let (max_attempts, mut delay, max_delay) = bounded_poll_policy(poll);
-        for attempt in 0..max_attempts {
-            if poll
-                .cancellation
-                .as_ref()
-                .is_some_and(Dns01Cancellation::is_cancelled)
-            {
-                return Err(AcmeError::Cancelled);
-            }
-            if self.clock.now_unix_seconds() > poll.deadline_unix_seconds {
-                return Err(AcmeError::PollTimeout);
-            }
+        let clock = Arc::clone(&self.clock);
+        poll_acme(clock.as_ref(), url, poll, || {
             let (authorization, response) = self.authorization_response(url, challenge_type)?;
             match authorization.status {
                 AuthorizationStatus::Invalid
                 | AuthorizationStatus::Deactivated
                 | AuthorizationStatus::Expired
                 | AuthorizationStatus::Revoked
-                | AuthorizationStatus::Valid => return Ok(authorization),
-                AuthorizationStatus::Pending | AuthorizationStatus::Processing => {}
+                | AuthorizationStatus::Valid => Ok(PollAttempt::Complete(authorization)),
+                AuthorizationStatus::Pending | AuthorizationStatus::Processing => {
+                    Ok(PollAttempt::Pending(response))
+                }
             }
-            if poll
-                .cancellation
-                .as_ref()
-                .is_some_and(Dns01Cancellation::is_cancelled)
-            {
-                return Err(AcmeError::Cancelled);
-            }
-            if attempt + 1 == max_attempts {
-                return Err(AcmeError::PollTimeout);
-            }
-            let effective_delay = retry_after(&response, self.clock.now_unix_seconds())?
-                .unwrap_or_else(|| jittered_delay(delay, max_delay, url, attempt));
-            if self
-                .clock
-                .now_unix_seconds()
-                .saturating_add(effective_delay)
-                > poll.deadline_unix_seconds
-            {
-                return Err(AcmeError::PollTimeout);
-            }
-            if poll
-                .cancellation
-                .as_ref()
-                .is_some_and(Dns01Cancellation::is_cancelled)
-            {
-                return Err(AcmeError::Cancelled);
-            }
-            self.clock.sleep_seconds(effective_delay);
-            delay = effective_delay.saturating_mul(2).min(max_delay);
-        }
-        Err(AcmeError::PollTimeout)
+        })
     }
 
     /// Finalizes an order with a DER CSR and returns its next server state.
@@ -998,54 +960,21 @@ impl<T: AcmeTransport> AcmeClient<T> {
     ///
     /// Returns an error when polling exceeds its bounds or the order response is invalid.
     pub fn poll_order(&mut self, url: &str, poll: &PollPolicy) -> Result<Order, AcmeError> {
-        let (max_attempts, mut delay, max_delay) = bounded_poll_policy(poll);
-        for attempt in 0..max_attempts {
-            if poll
-                .cancellation
-                .as_ref()
-                .is_some_and(Dns01Cancellation::is_cancelled)
-            {
-                return Err(AcmeError::Cancelled);
-            }
-            if self.clock.now_unix_seconds() > poll.deadline_unix_seconds {
-                return Err(AcmeError::PollTimeout);
-            }
+        let clock = Arc::clone(&self.clock);
+        poll_acme(clock.as_ref(), url, poll, || {
             let response = self.post_as_get(url)?;
             if response.status != 200 {
                 return Err(problem_or_status(&response));
             }
             let order = parse_order(&response, &self.policy)?;
             match order.status.as_str() {
-                "valid" | "invalid" => return Ok(order),
-                "pending" | "ready" | "processing" => {}
-                status => {
-                    return Err(AcmeError::InvalidOrderState {
-                        status: status.into(),
-                    });
-                }
+                "valid" | "invalid" => Ok(PollAttempt::Complete(order)),
+                "pending" | "ready" | "processing" => Ok(PollAttempt::Pending(response)),
+                status => Err(AcmeError::InvalidOrderState {
+                    status: status.into(),
+                }),
             }
-            let effective_delay = retry_after(&response, self.clock.now_unix_seconds())?
-                .unwrap_or_else(|| jittered_delay(delay, max_delay, url, attempt));
-            if attempt + 1 == max_attempts
-                || self
-                    .clock
-                    .now_unix_seconds()
-                    .saturating_add(effective_delay)
-                    > poll.deadline_unix_seconds
-            {
-                return Err(AcmeError::PollTimeout);
-            }
-            if poll
-                .cancellation
-                .as_ref()
-                .is_some_and(Dns01Cancellation::is_cancelled)
-            {
-                return Err(AcmeError::Cancelled);
-            }
-            self.clock.sleep_seconds(effective_delay);
-            delay = effective_delay.saturating_mul(2).min(max_delay);
-        }
-        Err(AcmeError::PollTimeout)
+        })
     }
 
     /// Downloads the final certificate chain as bounded opaque PEM bytes.
@@ -1824,6 +1753,56 @@ fn parse_json_body(body: &[u8]) -> Option<Value> {
         .flatten()
 }
 
+enum PollAttempt<T> {
+    Complete(T),
+    Pending(HttpResponse),
+}
+
+fn poll_acme<T>(
+    clock: &dyn Clock,
+    identity: &str,
+    poll: &PollPolicy,
+    mut request: impl FnMut() -> Result<PollAttempt<T>, AcmeError>,
+) -> Result<T, AcmeError> {
+    let (max_attempts, mut delay, max_delay) = bounded_poll_policy(poll);
+    for attempt in 0..max_attempts {
+        poll_not_cancelled(poll)?;
+        if clock.now_unix_seconds() > poll.deadline_unix_seconds {
+            return Err(AcmeError::PollTimeout);
+        }
+        let response = match request()? {
+            PollAttempt::Complete(value) => return Ok(value),
+            PollAttempt::Pending(response) => response,
+        };
+        poll_not_cancelled(poll)?;
+        if attempt + 1 == max_attempts {
+            return Err(AcmeError::PollTimeout);
+        }
+        let now = clock.now_unix_seconds();
+        let effective_delay = retry_after(&response, now)?
+            .unwrap_or_else(|| jittered_delay(delay, max_delay, identity, attempt));
+        if now.saturating_add(effective_delay) > poll.deadline_unix_seconds {
+            return Err(AcmeError::PollTimeout);
+        }
+        poll_not_cancelled(poll)?;
+        clock.sleep_seconds(effective_delay);
+        delay = effective_delay.saturating_mul(2).min(max_delay);
+    }
+    Err(AcmeError::PollTimeout)
+}
+
+fn poll_not_cancelled(poll: &PollPolicy) -> Result<(), AcmeError> {
+    if poll
+        .cancellation
+        .as_ref()
+        .is_some_and(Dns01Cancellation::is_cancelled)
+    {
+        Err(AcmeError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
 fn bounded_poll_policy(poll: &PollPolicy) -> (usize, u64, u64) {
     let max_attempts = poll.max_attempts.min(MAX_POLL_ATTEMPTS);
     let max_delay = poll.max_delay_seconds.min(MAX_POLL_DELAY_SECONDS);
@@ -2323,6 +2302,37 @@ mod tests {
             Err(AcmeError::Cancelled)
         ));
         assert_eq!(transport.requests().len(), 1);
+    }
+
+    #[test]
+    fn polling_cancellation_after_a_pending_response_prevents_sleep() {
+        let clock = FakeClock::new(100);
+        let cancellation = Dns01Cancellation::new();
+        let mut attempts = 0;
+        let result = poll_acme(
+            &clock,
+            "https://acme.test/acme/order/1",
+            &PollPolicy {
+                max_attempts: 2,
+                deadline_unix_seconds: 200,
+                initial_delay_seconds: 10,
+                max_delay_seconds: 10,
+                cancellation: Some(cancellation.clone()),
+            },
+            || {
+                attempts += 1;
+                cancellation.cancel();
+                Ok::<_, AcmeError>(PollAttempt::<()>::Pending(HttpResponse::new(
+                    200,
+                    "https://acme.test/acme/order/1",
+                    Vec::new(),
+                )))
+            },
+        );
+
+        assert!(matches!(result, Err(AcmeError::Cancelled)));
+        assert_eq!(attempts, 1);
+        assert_eq!(clock.now_unix_seconds(), 100);
     }
 
     #[test]
