@@ -45,6 +45,14 @@ pub(super) fn matches(key: &StreamKey, application: &str, protocol_name: &str) -
     RtmpStreamPath::matches_key(key, application, protocol_name)
 }
 
+pub(super) fn application(key: &StreamKey) -> &str {
+    &key.application
+}
+
+pub(super) fn stream_name(key: &StreamKey) -> &str {
+    &key.name
+}
+
 impl VodIdentity {
     pub(super) fn parse(protocol_name: &str) -> Option<Self> {
         let (name, query) = match protocol_name.split_once('?') {

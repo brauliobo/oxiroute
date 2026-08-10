@@ -51,11 +51,11 @@ impl PlaybackSession {
     }
 
     pub(super) fn application(&self) -> &str {
-        &self.key.application
+        identity::application(&self.key)
     }
 
     pub(super) fn stream_name(&self) -> &str {
-        &self.key.name
+        identity::stream_name(&self.key)
     }
 
     pub(super) fn observe_at(&mut self, at_unix_ms: u64) {
