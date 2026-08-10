@@ -35,8 +35,8 @@ expect_rejected 'a build artifact path' "${test_root}/artifact.tar.gz"
 make_archive "${test_root}/secret-path.tar.gz" "${root}/production.env" safe
 expect_rejected 'a secret-shaped path' "${test_root}/secret-path.tar.gz"
 
-make_archive "${test_root}/secret-content.tar.gz" "${root}/source.txt" \
-  '-----BEGIN PRIVATE KEY-----'
+private_key_marker='-----BEGIN PRIVATE ''KEY-----'
+make_archive "${test_root}/secret-content.tar.gz" "${root}/source.txt" "${private_key_marker}"
 expect_rejected 'unallowlisted private-key content' "${test_root}/secret-content.tar.gz"
 
 valid_archive="${test_root}/valid.tar.gz"
