@@ -19,8 +19,7 @@ use http::{
 };
 use log::{error, warn};
 use oxiroute_config::{
-    DownstreamTimeoutPolicy, HttpRedirectLocation, HttpRetryTarget, HttpRetryTrigger,
-    is_unambiguous_http_path,
+    DownstreamTimeoutPolicy, HttpRetryTarget, HttpRetryTrigger, is_unambiguous_http_path,
 };
 use pingora::apps::AcceptGateParticipant;
 use quinn::crypto::rustls::QuicServerConfig;
@@ -39,10 +38,11 @@ use crate::{
     ListenerMetrics, ListenerReservation, ListenerRuntimeState, RuntimeGeneration, RuntimeMode,
     RuntimeReferenceKind, TlsProfilePlan,
     http_action::{
-        HttpActionPlan, ProxyActionPlan, ProxyPolicyPlan, RequestHeaderMutationPlan,
-        RequestHeaderValuePlan, StaticErrorTarget, StaticFile, StaticRequestDecision,
-        StaticServeError, StaticTarget,
+        HttpActionPlan, ProxyActionPlan, ProxyPolicyPlan, RedirectLocationPlan,
+        RequestHeaderMutationPlan, RequestHeaderValuePlan, StaticErrorTarget, StaticFile,
+        StaticRequestDecision, StaticServeError, StaticTarget,
     },
+    http_policy::{RedirectContext, expand_redirect_location, normalized_redirect_host},
     http_proxy::{
         apply_response_policy_map, remove_upstream_hop_by_hop_response_headers_map,
         rewrite_upstream_path, selected_upstream_host,
@@ -2251,45 +2251,22 @@ where
 }
 
 fn h3_redirect_location(
-    location: &HttpRedirectLocation,
+    location: &RedirectLocationPlan,
     authority: &Authority,
     uri: &Uri,
 ) -> Option<HeaderValue> {
-    let value = match location {
-        HttpRedirectLocation::Literal { value } => value.clone(),
-        HttpRedirectLocation::RequestTemplate {
-            value,
-            nginx_host_fallback,
-        } => {
-            let request_uri = uri
-                .path_and_query()
-                .map_or(uri.path(), |value| value.as_str());
-            let host = normalized_h3_host(authority)
-                .or_else(|| nginx_host_fallback.as_deref().map(str::to_owned))
-                .unwrap_or_default();
-            let mut expanded = String::with_capacity(value.len() + request_uri.len());
-            let mut remainder = value.as_str();
-            while let Some((literal, variable)) = remainder.split_once('$') {
-                expanded.push_str(literal);
-                if let Some(after) = variable.strip_prefix("scheme") {
-                    expanded.push_str("https");
-                    remainder = after;
-                } else if let Some(after) = variable.strip_prefix("host") {
-                    expanded.push_str(&host);
-                    remainder = after;
-                } else {
-                    let after = variable.strip_prefix("request_uri")?;
-                    expanded.push_str(request_uri);
-                    remainder = after;
-                }
-            }
-            expanded.push_str(remainder);
-            expanded
-        }
-    };
-    (value.len() <= 8 * 1024)
-        .then(|| HeaderValue::from_str(&value).ok())
-        .flatten()
+    let host = normalized_redirect_host(authority);
+    let request_uri = uri
+        .path_and_query()
+        .map_or(uri.path(), |value| value.as_str());
+    expand_redirect_location(
+        location,
+        RedirectContext {
+            scheme: "https",
+            normalized_host: Some(&host),
+            request_uri,
+        },
+    )
 }
 
 fn joined_h3_headers(
@@ -2880,14 +2857,16 @@ mod tests {
         for (location, expected) in [
             (
                 template("$scheme://$host$request_uri"),
-                Some("https://client.example./path/to?q=1"),
+                Some("https://client.example/path/to?q=1"),
             ),
             (template("$unknown"), None),
         ] {
+            let location = RedirectLocationPlan::compile(&location);
+            let actual = location
+                .as_ref()
+                .and_then(|location| h3_redirect_location(location, &authority, &uri));
             assert_eq!(
-                h3_redirect_location(&location, &authority, &uri)
-                    .as_ref()
-                    .and_then(|value| value.to_str().ok()),
+                actual.as_ref().and_then(|value| value.to_str().ok()),
                 expected
             );
         }
@@ -2895,19 +2874,27 @@ mod tests {
             let location = HttpRedirectLocation::Literal {
                 value: "x".repeat(length),
             };
+            let location = RedirectLocationPlan::compile(&location);
             assert_eq!(
-                h3_redirect_location(&location, &authority, &uri).is_some(),
+                location
+                    .as_ref()
+                    .and_then(|location| h3_redirect_location(location, &authority, &uri))
+                    .is_some(),
                 accepted,
                 "literal length {length}"
             );
         }
         let boundary_uri = format!("/{}", "x".repeat(8191)).parse().unwrap();
         assert!(
-            h3_redirect_location(&template("$request_uri"), &authority, &boundary_uri).is_some()
+            RedirectLocationPlan::compile(&template("$request_uri"))
+                .and_then(|location| h3_redirect_location(&location, &authority, &boundary_uri))
+                .is_some()
         );
         let oversized_uri = format!("/{}", "x".repeat(8192)).parse().unwrap();
         assert!(
-            h3_redirect_location(&template("$request_uri"), &authority, &oversized_uri).is_none()
+            RedirectLocationPlan::compile(&template("$request_uri"))
+                .and_then(|location| h3_redirect_location(&location, &authority, &oversized_uri))
+                .is_none()
         );
     }
 }

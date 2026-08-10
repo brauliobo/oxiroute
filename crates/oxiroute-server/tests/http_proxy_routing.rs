@@ -3219,7 +3219,7 @@ async fn serves_fixed_and_redirect_actions_with_exact_get_and_head_semantics() {
         assert_eq!(fixed_error.header("x-always"), Some("yes"));
 
         let redirect = proxy
-            .request("GET /redirect?next=1 HTTP/1.1\r\nHost: Actions.Example:8080\r\n")
+            .request("GET /redirect?next=1 HTTP/1.1\r\nHost: Actions.Example.:8080\r\n")
             .await;
         assert_eq!(redirect.status, 308);
         assert_eq!(

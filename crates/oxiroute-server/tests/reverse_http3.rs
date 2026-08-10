@@ -473,7 +473,7 @@ async fn reverse_h3_characterizes_http_policy_parity_and_early_origin_contact() 
     assert_eq!(response.status(), StatusCode::PERMANENT_REDIRECT);
     assert_eq!(
         response.headers()[http::header::LOCATION],
-        "https://actions.example./redirect?next=1"
+        "https://actions.example/redirect?next=1"
     );
     assert!(recv_body(&mut redirect).await.is_empty());
 

@@ -990,26 +990,7 @@ fn compile_http_route(
             status,
             location,
             headers,
-        } => HttpActionPlan::Redirect(RedirectPlan {
-            status: *status,
-            location: location.clone(),
-            headers: headers
-                .iter()
-                .filter(|header| {
-                    header.always || crate::http_action::nginx_add_header_status(*status)
-                })
-                .map(|header| {
-                    (
-                        http::HeaderName::from_bytes(header.name.as_bytes())
-                            .expect("validated redirect header name"),
-                        header
-                            .value
-                            .parse::<http::HeaderValue>()
-                            .expect("validated redirect header value"),
-                    )
-                })
-                .collect(),
-        }),
+        } => HttpActionPlan::Redirect(RedirectPlan::compile(*status, location, headers)),
         action @ HttpRouteAction::StaticFiles { .. } => HttpActionPlan::Static(
             StaticFilesPlan::open(http_path_value(&route.path), action).map_err(|_| {
                 ServicePlanError::StaticPreflight {
