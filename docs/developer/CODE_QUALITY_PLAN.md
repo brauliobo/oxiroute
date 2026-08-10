@@ -176,20 +176,25 @@ construct or mutate the capability.
 
 ### P1.3 ACME job lifecycle
 
-**Finding:** Public `JobRecord` fields plus generic `StateStore::write_job` permit arbitrary status and
-field combinations. The server manually assembles transitions.
+**Status:** Complete. `JobState` remains JSON-compatible for historical recovery, while new records
+are emitted only through `StateStore`-owned legal lifecycle transitions with private, read-only state.
 
 **Evidence:**
 
-- `crates/oxiroute-acme/src/state.rs:105-151,228-367`
-- `crates/oxiroute-server/src/tls/acme.rs:960-1177`
+- Lifecycle owner and compatibility tests: `crates/oxiroute-acme/src/state.rs`
+- Managed issuance and administrative action transitions: `crates/oxiroute-server/src/tls/acme.rs`
 
 **Plan:**
 
-- [ ] Make lifecycle fields private and add legal transition methods (`start`, challenge wait,
-  finalization, success, failure, cancellation).
-- [ ] Keep recovery deserialization capable of reading every persisted historical state.
-- [ ] Add a transition-matrix test and status-dependent field invariants.
+- [x] Make lifecycle fields private and expose read-only getters.
+- [x] Replace unchecked writes with store-owned create, start, challenge wait, finalization, success,
+  failure, cancellation, and pause transitions.
+- [x] Keep recovery deserialization capable of reading every persisted historical status and weak
+  record without changing Serde keys, status spellings, or correlation defaults.
+- [x] Enforce immutable creation time, monotonic updates, bounded attempts, terminal states, and
+  status-dependent outcome, revision, and next-action fields for every newly emitted record.
+- [x] Cover the transition matrix, emitted invariants, historical JSON recovery, redaction, and
+  representative server final states.
 
 ### P1.4 Exact cache insertion deltas
 
