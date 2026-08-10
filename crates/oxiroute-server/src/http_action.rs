@@ -48,11 +48,11 @@ use rustix::{
 use tokio::sync::Semaphore;
 use zeroize::Zeroizing;
 
-use crate::upstream_peer::UpstreamPlan;
+use crate::{
+    secure_bearer::{HeaderCardinality, SecureBearerToken, single_header},
+    upstream_peer::UpstreamPlan,
+};
 
-const MIN_ACCESS_TOKEN_BYTES: usize = 32;
-const MAX_ACCESS_TOKEN_BYTES: usize = 512;
-const MAX_ACCESS_TOKEN_FILE_BYTES: usize = MAX_ACCESS_TOKEN_BYTES + 2;
 const MAX_HTPASSWD_FILE_BYTES: usize = 1024 * 1024;
 const MAX_BASIC_CREDENTIAL_BYTES: usize = 2048;
 const MAX_BASIC_USERNAME_BYTES: usize = 256;
@@ -981,7 +981,7 @@ pub(crate) struct RedirectPlan {
 }
 
 pub(crate) struct BearerTokenAccess {
-    digest: [u8; 32],
+    token: SecureBearerToken,
     header_name: HeaderName,
     challenge: HeaderValue,
 }
@@ -1409,38 +1409,6 @@ impl BearerTokenAccess {
         else {
             return Err(AccessPreflightError);
         };
-        let descriptor = rustix_fs::open(
-            token_file_path,
-            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK | OFlags::NOFOLLOW,
-            Mode::empty(),
-        )
-        .map_err(|_| AccessPreflightError)?;
-        let before = rustix_fs::fstat(&descriptor).map_err(|_| AccessPreflightError)?;
-        if !FileType::from_raw_mode(before.st_mode).is_file()
-            || !matches!(before.st_mode & 0o7777, 0o400 | 0o600)
-        {
-            return Err(AccessPreflightError);
-        }
-        let size = usize::try_from(before.st_size).map_err(|_| AccessPreflightError)?;
-        if size > MAX_ACCESS_TOKEN_FILE_BYTES {
-            return Err(AccessPreflightError);
-        }
-        let mut file = File::from(descriptor);
-        let mut token = Zeroizing::new(Vec::with_capacity(size));
-        std::io::Read::by_ref(&mut file)
-            .take(u64::try_from(MAX_ACCESS_TOKEN_FILE_BYTES + 1).expect("token bound fits u64"))
-            .read_to_end(&mut token)
-            .map_err(|_| AccessPreflightError)?;
-        let after = rustix_fs::fstat(&file).map_err(|_| AccessPreflightError)?;
-        if token.len() > MAX_ACCESS_TOKEN_FILE_BYTES || !same_file_snapshot(&before, &after) {
-            return Err(AccessPreflightError);
-        }
-        trim_one_line_ending(&mut token);
-        if !(MIN_ACCESS_TOKEN_BYTES..=MAX_ACCESS_TOKEN_BYTES).contains(&token.len())
-            || !token.iter().all(|byte| matches!(byte, 0x21..=0x7e))
-        {
-            return Err(AccessPreflightError);
-        }
         let challenge = realm.as_ref().map_or_else(
             || HeaderValue::from_static("Bearer"),
             |realm| {
@@ -1449,7 +1417,7 @@ impl BearerTokenAccess {
             },
         );
         Ok(Self {
-            digest: sha256(&token),
+            token: SecureBearerToken::load(token_file_path).map_err(|_| AccessPreflightError)?,
             header_name: HeaderName::from_bytes(header_name.as_bytes())
                 .expect("validated access header name"),
             challenge,
@@ -1457,17 +1425,10 @@ impl BearerTokenAccess {
     }
 
     pub(crate) fn authorizes(&self, headers: &HeaderMap) -> bool {
-        let mut values = headers.get_all(&self.header_name).iter();
-        let Some(value) = values.next() else {
-            return false;
-        };
-        if values.next().is_some() {
-            return false;
-        }
-        value
-            .as_bytes()
-            .strip_prefix(b"Bearer ")
-            .is_some_and(|candidate| memcmp::eq(&self.digest, &sha256(candidate)))
+        matches!(
+            single_header(headers, &self.header_name),
+            HeaderCardinality::Single(value) if self.token.authorizes(value.as_bytes())
+        )
     }
 
     pub(crate) fn challenge(&self) -> &HeaderValue {
@@ -2420,14 +2381,6 @@ pub(crate) fn builtin_content_type(name: &OsStr) -> &'static str {
     }
 }
 
-fn trim_one_line_ending(bytes: &mut Vec<u8>) {
-    if bytes.ends_with(b"\r\n") {
-        bytes.truncate(bytes.len() - 2);
-    } else if bytes.ends_with(b"\n") {
-        bytes.truncate(bytes.len() - 1);
-    }
-}
-
 #[cfg(test)]
 mod static_request_tests {
     use std::time::Duration;
@@ -2872,6 +2825,39 @@ mod access_log_tests {
     use std::os::unix::fs::{PermissionsExt as _, symlink};
 
     use super::*;
+
+    #[test]
+    fn bearer_access_preserves_custom_header_challenge_and_cardinality() {
+        let directory = tempfile::tempdir().expect("bearer token directory");
+        let path = directory.path().join("route.token");
+        let token = "route-token-0123456789abcdef0123456789abcdef";
+        std::fs::write(&path, format!("{token}\n")).expect("bearer token file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .expect("bearer token mode");
+        let access = BearerTokenAccess::load(&HttpAccessPolicy::BearerTokenFile {
+            token_file_path: path,
+            header_name: "x-route-token".into(),
+            realm: Some("private".into()),
+        })
+        .expect("bearer access");
+        assert_eq!(access.challenge(), "Bearer realm=\"private\"");
+
+        let name = HeaderName::from_static("x-route-token");
+        let mut headers = HeaderMap::new();
+        assert!(!access.authorizes(&headers));
+        headers.append(name.clone(), HeaderValue::from_static("Bearer wrong"));
+        assert!(!access.authorizes(&headers));
+        headers.insert(
+            name.clone(),
+            HeaderValue::from_str(&format!("Bearer {token}")).expect("bearer header"),
+        );
+        assert!(access.authorizes(&headers));
+        headers.append(
+            name,
+            HeaderValue::from_str(&format!("Bearer {token}")).expect("duplicate bearer header"),
+        );
+        assert!(!access.authorizes(&headers));
+    }
 
     #[tokio::test]
     async fn mixed_htpasswd_schemes_authenticate_each_user() {
