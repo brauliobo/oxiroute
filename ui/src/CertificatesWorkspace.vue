@@ -187,6 +187,7 @@ import {
   type TlsMaterialStatus,
 } from './api'
 import { formatCount } from './formatters'
+import { useLatestAbortableTask } from './useLatestAbortableTask'
 
 const props = defineProps<{ token: string }>()
 const emit = defineEmits<{ unauthorized: [] }>()
@@ -194,12 +195,11 @@ const emit = defineEmits<{ unauthorized: [] }>()
 const inventory = ref<TlsInventory | null>(null)
 const generationRevision = ref<string | null>(null)
 const jobs = ref<OperationalEvent[]>([])
-const loading = ref(false)
 const mutating = ref<string | null>(null)
 const error = ref<string | null>(null)
 const message = ref<string | null>(null)
-let controller: AbortController | null = null
 let stream: EventStreamClient | null = null
+const { loading, run: runLoad, cancel: cancelLoad } = useLatestAbortableTask()
 
 const canMutate = computed(() => Boolean(props.token && generationRevision.value))
 const certificateJobs = computed(() => jobs.value
@@ -209,31 +209,26 @@ const certificateJobs = computed(() => jobs.value
   ].includes(event.event))
   .sort((left, right) => right.cursor - left.cursor))
 
-async function load(): Promise<void> {
-  if (!props.token || loading.value) return
-  controller?.abort()
-  const nextController = new AbortController()
-  controller = nextController
-  loading.value = true
+async function load(): Promise<boolean> {
+  const token = props.token
+  if (!token) return false
   error.value = null
-  try {
-    const [nextInventory, nextGeneration, eventPage] = await Promise.all([
-      fetchTlsInventory(props.token, nextController.signal),
-      fetchGenerations(props.token, nextController.signal),
-      fetchEvents(0, 100, props.token, nextController.signal),
-    ])
-    if (nextController.signal.aborted) return
-    inventory.value = nextInventory
-    generationRevision.value = nextGeneration.generation.activeRevision
-    jobs.value = eventPage.events
-  } catch (requestError) {
-    if (nextController.signal.aborted) return
-    if (requestError instanceof ApiError && requestError.status === 401) emit('unauthorized')
-    error.value = errorMessage(requestError, 'The certificate API did not respond.')
-  } finally {
-    if (controller === nextController) controller = null
-    loading.value = false
-  }
+  return runLoad(
+    (signal) => Promise.all([
+      fetchTlsInventory(token, signal),
+      fetchGenerations(token, signal),
+      fetchEvents(0, 100, token, signal),
+    ]),
+    ([nextInventory, nextGeneration, eventPage]) => {
+      inventory.value = nextInventory
+      generationRevision.value = nextGeneration.generation.activeRevision
+      jobs.value = eventPage.events
+    },
+    (requestError) => {
+      if (requestError instanceof ApiError && requestError.status === 401) emit('unauthorized')
+      error.value = errorMessage(requestError, 'The certificate API did not respond.')
+    },
+  )
 }
 
 async function runMutation(
@@ -373,26 +368,25 @@ function closeStream(): void {
 
 watch(() => props.token, async (token) => {
   closeStream()
-  controller?.abort()
+  cancelLoad()
   inventory.value = null
   generationRevision.value = null
   jobs.value = []
   error.value = null
   message.value = null
   if (!token) return
-  await load()
-  startStream()
+  const current = await load()
+  if (current) startStream()
 })
 
 onMounted(async () => {
   if (!props.token) return
-  await load()
-  startStream()
+  const current = await load()
+  if (current) startStream()
 })
 
 onBeforeUnmount(() => {
   closeStream()
-  controller?.abort()
 })
 </script>
 

@@ -182,7 +182,7 @@ section.operations-workspace(aria-labelledby="operations-heading" :aria-busy="lo
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 import {
   ApiError,
@@ -214,6 +214,7 @@ import {
   type PoolInventoryResponse,
 } from './api'
 import { formatCount } from './formatters'
+import { useLatestAbortableTask } from './useLatestAbortableTask'
 
 const props = defineProps<{ token: string }>()
 const emit = defineEmits<{ unauthorized: [] }>()
@@ -223,13 +224,11 @@ const generation = ref<GenerationStatus | null>(null)
 const listeners = ref<ListenerInventoryResponse | null>(null)
 const pools = ref<PoolInventoryResponse | null>(null)
 const servers = ref<ServerInventoryResponse | null>(null)
-const loading = ref(false)
 const mutating = ref<string | null>(null)
 const error = ref<string | null>(null)
 const message = ref<string | null>(null)
 const capacityDraft = ref<Record<string, string>>({})
-let controller: AbortController | null = null
-let loadRequest: Promise<void> | null = null
+const { loading, run: runLoad, cancel: cancelLoad } = useLatestAbortableTask()
 
 const activeRevision = computed(() => generation.value?.activeRevision ?? status.value?.activeRevision ?? null)
 const canMutate = computed(() => Boolean(props.token && activeRevision.value))
@@ -241,38 +240,30 @@ const statusLabel = computed(() => {
 const statusClass = computed(() => statusLabel.value.toLowerCase())
 
 async function load(): Promise<void> {
-  if (!props.token) return
-  if (loadRequest) return loadRequest
-  controller?.abort()
-  const nextController = new AbortController()
-  controller = nextController
-  loading.value = true
+  const token = props.token
+  if (!token) return
   error.value = null
   message.value = null
-  const request = Promise.all([
-    fetchStatus(props.token, nextController.signal),
-    fetchGenerations(props.token, nextController.signal),
-    fetchListeners(props.token, nextController.signal),
-    fetchPools(props.token, nextController.signal),
-    fetchServers(props.token, nextController.signal),
-  ]).then(([nextStatus, nextGeneration, nextListeners, nextPools, nextServers]) => {
-    if (nextController.signal.aborted) return
-    status.value = nextStatus
-    generation.value = nextGeneration.generation
-    listeners.value = nextListeners
-    pools.value = nextPools
-    servers.value = nextServers
-  }).catch((requestError: unknown) => {
-    if (nextController.signal.aborted) return
-    if (requestError instanceof ApiError && requestError.status === 401) emit('unauthorized')
-    error.value = errorMessage(requestError, 'The operations API did not respond.')
-  }).finally(() => {
-    if (controller === nextController) controller = null
-    if (loadRequest === request) loadRequest = null
-    loading.value = false
-  })
-  loadRequest = request
-  return request
+  await runLoad(
+    (signal) => Promise.all([
+      fetchStatus(token, signal),
+      fetchGenerations(token, signal),
+      fetchListeners(token, signal),
+      fetchPools(token, signal),
+      fetchServers(token, signal),
+    ]),
+    ([nextStatus, nextGeneration, nextListeners, nextPools, nextServers]) => {
+      status.value = nextStatus
+      generation.value = nextGeneration.generation
+      listeners.value = nextListeners
+      pools.value = nextPools
+      servers.value = nextServers
+    },
+    (requestError) => {
+      if (requestError instanceof ApiError && requestError.status === 401) emit('unauthorized')
+      error.value = errorMessage(requestError, 'The operations API did not respond.')
+    },
+  )
 }
 
 async function runMutation(
@@ -409,8 +400,8 @@ function errorMessage(value: unknown, fallback: string): string {
 }
 
 watch(() => props.token, (token) => {
+  cancelLoad()
   if (!token) {
-    controller?.abort()
     status.value = null
     generation.value = null
     listeners.value = null
@@ -425,10 +416,6 @@ watch(() => props.token, (token) => {
 
 onMounted(() => {
   if (props.token) void load()
-})
-
-onBeforeUnmount(() => {
-  controller?.abort()
 })
 </script>
 

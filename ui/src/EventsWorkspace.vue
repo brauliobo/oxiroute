@@ -61,6 +61,7 @@ import {
   type OperationalEvent,
   type OperationalEventName,
 } from './api'
+import { useLatestAbortableTask } from './useLatestAbortableTask'
 
 const PAGE_SIZE = 100
 const props = defineProps<{ token: string }>()
@@ -71,14 +72,13 @@ const cursor = ref(0)
 const latestCursor = ref(0)
 const oldestCursor = ref<number | null>(null)
 const hasMore = ref(false)
-const loading = ref(false)
 const resyncing = ref(false)
 const resynced = ref(false)
 const error = ref<string | null>(null)
 const message = ref<string | null>(null)
 const streamState = ref<'offline' | 'connecting' | 'live' | 'reconnecting'>('offline')
 let stream: EventStreamClient | null = null
-let controller: AbortController | null = null
+const { loading, run: runLoad, cancel: cancelLoad } = useLatestAbortableTask()
 
 const streamStateLabel = computed(() => ({
   offline: 'Live updates offline',
@@ -91,33 +91,26 @@ async function reloadHistory(): Promise<void> {
   if (!props.token) return
   closeStream()
   resynced.value = false
-  await loadPage(0, true)
-  if (props.token) startStream()
+  const current = await loadPage(0, true)
+  if (current && props.token) startStream()
 }
 
 async function loadNextPage(): Promise<void> {
   await loadPage(cursor.value, false)
 }
 
-async function loadPage(after: number, replace: boolean): Promise<void> {
-  if (!props.token || loading.value) return
-  controller?.abort()
-  const nextController = new AbortController()
-  controller = nextController
-  loading.value = true
+async function loadPage(after: number, replace: boolean): Promise<boolean> {
+  const token = props.token
+  if (!token) return false
   error.value = null
-  try {
-    const page = await fetchEvents(after, PAGE_SIZE, props.token, nextController.signal)
-    if (nextController.signal.aborted) return
-    applyPage(page, replace)
-  } catch (requestError) {
-    if (nextController.signal.aborted) return
-    if (requestError instanceof ApiError && requestError.status === 401) emit('unauthorized')
-    error.value = errorMessage(requestError, 'The event history route did not respond.')
-  } finally {
-    if (controller === nextController) controller = null
-    loading.value = false
-  }
+  return runLoad(
+    (signal) => fetchEvents(after, PAGE_SIZE, token, signal),
+    (page) => applyPage(page, replace),
+    (requestError) => {
+      if (requestError instanceof ApiError && requestError.status === 401) emit('unauthorized')
+      error.value = errorMessage(requestError, 'The event history route did not respond.')
+    },
+  )
 }
 
 function applyPage(page: EventPage, replace: boolean): void {
@@ -146,8 +139,8 @@ function startStream(): void {
       resyncing.value = true
       resynced.value = true
       message.value = `Live history was older than the retained ring (latest cursor ${data.latestCursor}).`
-      await loadPage(data.oldestCursor === null ? 0 : Math.max(0, data.oldestCursor - 1), true)
-      resyncing.value = false
+      const current = await loadPage(data.oldestCursor === null ? 0 : Math.max(0, data.oldestCursor - 1), true)
+      if (current) resyncing.value = false
     },
     onShutdown: () => {
       streamState.value = 'offline'
@@ -200,7 +193,7 @@ function errorMessage(value: unknown, fallback: string): string {
 
 watch(() => props.token, async (token) => {
   closeStream()
-  controller?.abort()
+  cancelLoad()
   events.value = []
   cursor.value = 0
   latestCursor.value = 0
@@ -208,21 +201,21 @@ watch(() => props.token, async (token) => {
   hasMore.value = false
   error.value = null
   message.value = null
+  resyncing.value = false
   resynced.value = false
   if (!token) return
-  await loadPage(0, true)
-  startStream()
+  const current = await loadPage(0, true)
+  if (current) startStream()
 })
 
 onMounted(async () => {
   if (!props.token) return
-  await loadPage(0, true)
-  startStream()
+  const current = await loadPage(0, true)
+  if (current) startStream()
 })
 
 onBeforeUnmount(() => {
   closeStream()
-  controller?.abort()
 })
 </script>
 
