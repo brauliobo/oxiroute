@@ -2,7 +2,7 @@ use std::time::{Duration, SystemTime};
 
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 
-use crate::{MonoTime, key::Vary};
+use crate::{MonoTime, http::trim_ows, key::Vary};
 
 /// Canonical freshness and retention windows applied by the server runtime.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -784,20 +784,4 @@ const fn is_token(byte: u8) -> bool {
                 | b'|'
                 | b'~'
         )
-}
-
-fn trim_ows(mut value: &[u8]) -> &[u8] {
-    while value
-        .first()
-        .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
-    {
-        value = &value[1..];
-    }
-    while value
-        .last()
-        .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
-    {
-        value = &value[..value.len() - 1];
-    }
-    value
 }

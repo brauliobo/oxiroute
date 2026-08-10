@@ -4,6 +4,7 @@
 mod cache;
 mod clock;
 mod disk;
+mod http;
 mod key;
 mod policy;
 

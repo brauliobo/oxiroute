@@ -3,6 +3,8 @@ use std::{cmp::Ordering, fmt, str::FromStr};
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, Method, uri::Authority};
 
+use crate::http::trim_ows;
+
 /// Borrowed canonical cache-key inputs. `query` excludes the leading `?`.
 #[derive(Clone, Copy)]
 pub struct RequestKeyInput<'a> {
@@ -308,22 +310,6 @@ const fn is_scheme_byte(byte: u8, first: bool) -> bool {
 
 const fn is_uri_byte(byte: u8) -> bool {
     byte >= b'!' && byte <= b'~'
-}
-
-fn trim_ows(mut value: &[u8]) -> &[u8] {
-    while value
-        .first()
-        .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
-    {
-        value = &value[1..];
-    }
-    while value
-        .last()
-        .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
-    {
-        value = &value[..value.len() - 1];
-    }
-    value
 }
 
 fn normalize_field_value(value: &[u8], output: &mut Vec<u8>) {
