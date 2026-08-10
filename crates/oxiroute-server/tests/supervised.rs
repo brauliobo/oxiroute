@@ -45,6 +45,7 @@ const MARKER: &str = "--__oxiroute-worker-7f3c9d1e";
 const TEST_RUNTIME_FAILURE_ENV: &str = "OXIROUTE_INTERNAL_TEST_RUNTIME_FAILURE";
 const TEST_LISTENER_DUPLICATION_FAILURE_ENV: &str =
     "OXIROUTE_INTERNAL_TEST_LISTENER_DUPLICATION_FAILURE";
+const TEST_LAUNCHER_ENV: &str = "OXIROUTE_TEST_SUPERVISOR_LAUNCHER";
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
 const TEST_TIMEOUT: Duration = Duration::from_secs(15);
 const TOKEN: [u8; 16] = [0x51; 16];
@@ -92,11 +93,8 @@ impl Harness {
                     .expect("master listener descriptor target")
             })
             .collect();
-        let mut factory = WorkerSpawner::new(
-            env!("CARGO_BIN_EXE_oxiroute-supervisor-launcher-fixture"),
-            Duration::from_secs(5),
-        )
-        .expect("production launcher implementation");
+        let mut factory = WorkerSpawner::new(supervisor_launcher(), Duration::from_secs(5))
+            .expect("production launcher implementation");
         let identity = WorkerIdentity {
             instance: InstanceToken(TOKEN),
             generation: GenerationId(1),
@@ -752,6 +750,141 @@ fn supervised_udp_replacement_rolls_back_after_candidate_rejects_adoption() {
     StdUdpSocket::bind(listener_address).expect("rollback UDP listener released");
 }
 
+#[test]
+fn supervised_worker_restarts_and_serves_new_udp_traffic_after_clean_shutdown() {
+    let directory = tempfile::tempdir().expect("supervised UDP restart directory");
+    let upstream = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("UDP upstream");
+    upstream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("UDP upstream timeout");
+    let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .expect("UDP listener probe")
+        .local_addr()
+        .expect("UDP listener address");
+    let config = udp_only_config(
+        listener_address,
+        upstream.local_addr().expect("UDP upstream address"),
+    );
+    let path = directory.path().join("oxiroute.kdl");
+    fs::write(
+        &path,
+        render_config(ConfigFormat::Kdl, &config).expect("render UDP restart config"),
+    )
+    .expect("write UDP restart config");
+
+    let mut first = Harness::launch_at(&path, canonical_revision(&path), false);
+    first.poll_until(MasterState::Running);
+    let client = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("first UDP client");
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("first UDP client timeout");
+    client
+        .send_to(b"before-restart", listener_address)
+        .expect("send first UDP datagram");
+    let mut buffer = [0_u8; 128];
+    let (length, peer) = upstream
+        .recv_from(&mut buffer)
+        .expect("receive first UDP datagram");
+    assert_eq!(&buffer[..length], b"before-restart");
+    upstream
+        .send_to(b"before-restart-response", peer)
+        .expect("send first UDP response");
+    let (length, _) = client
+        .recv_from(&mut buffer)
+        .expect("receive first UDP response");
+    assert_eq!(&buffer[..length], b"before-restart-response");
+    drop(client);
+
+    first
+        .master
+        .shutdown(Instant::now())
+        .expect("first UDP shutdown");
+    first.poll_until(MasterState::Stopped);
+    first.verify_reaped();
+    drop(first);
+
+    let mut restarted = Harness::launch_at(&path, canonical_revision(&path), false);
+    restarted.poll_until(MasterState::Running);
+    let client = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("restarted UDP client");
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("restarted UDP client timeout");
+    client
+        .send_to(b"after-restart", listener_address)
+        .expect("send restarted UDP datagram");
+    let (length, peer) = upstream
+        .recv_from(&mut buffer)
+        .expect("receive restarted UDP datagram");
+    assert_eq!(&buffer[..length], b"after-restart");
+    upstream
+        .send_to(b"after-restart-response", peer)
+        .expect("send restarted UDP response");
+    let (length, _) = client
+        .recv_from(&mut buffer)
+        .expect("receive restarted UDP response");
+    assert_eq!(&buffer[..length], b"after-restart-response");
+
+    restarted
+        .master
+        .shutdown(Instant::now())
+        .expect("restarted UDP shutdown");
+    restarted.poll_until(MasterState::Stopped);
+    restarted.verify_reaped();
+    drop(restarted);
+    StdUdpSocket::bind(listener_address).expect("restarted UDP listener released");
+}
+
+#[test]
+fn supervised_worker_crash_with_active_udp_session_is_reaped_and_releases_listener() {
+    let directory = tempfile::tempdir().expect("supervised UDP crash directory");
+    let upstream = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("UDP upstream");
+    upstream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("UDP upstream timeout");
+    let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .expect("UDP listener probe")
+        .local_addr()
+        .expect("UDP listener address");
+    let config = udp_only_config(
+        listener_address,
+        upstream.local_addr().expect("UDP upstream address"),
+    );
+    let path = directory.path().join("oxiroute.kdl");
+    fs::write(
+        &path,
+        render_config(ConfigFormat::Kdl, &config).expect("render UDP crash config"),
+    )
+    .expect("write UDP crash config");
+    let mut harness = Harness::launch_at(&path, canonical_revision(&path), false);
+    harness.poll_until(MasterState::Running);
+
+    let client = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("active UDP client");
+    client
+        .send_to(b"active-before-crash", listener_address)
+        .expect("send active UDP datagram");
+    let mut buffer = [0_u8; 128];
+    let (length, _) = upstream
+        .recv_from(&mut buffer)
+        .expect("receive active UDP datagram");
+    assert_eq!(&buffer[..length], b"active-before-crash");
+
+    let worker = harness
+        .master
+        .worker_id(WorkerRole::Active)
+        .expect("active UDP worker pid");
+    let status = Command::new("kill")
+        .arg("-KILL")
+        .arg(worker.to_string())
+        .status()
+        .expect("kill active UDP worker");
+    assert!(status.success(), "failed to kill active UDP worker");
+    harness.poll_until(MasterState::Failed);
+    harness.verify_reaped();
+    drop(client);
+    drop(harness);
+    StdUdpSocket::bind(listener_address).expect("crashed UDP listener released");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(clippy::too_many_lines)]
 async fn supervised_worker_replaces_an_active_h3_request_with_goaway_and_owned_descriptors() {
@@ -987,6 +1120,185 @@ async fn supervised_worker_replaces_an_active_h3_request_with_goaway_and_owned_d
     StdUdpSocket::bind(listener_address).expect("H3 listener released after master drop");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn supervised_h3_replacement_rolls_back_after_candidate_rejects_adoption() {
+    let directory = tempfile::tempdir().expect("supervised H3 rollback directory");
+    let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .expect("H3 listener probe")
+        .local_addr()
+        .expect("H3 listener address");
+    let key = fixture_support::private_key_fixture("proxy-a-key.pem");
+    let config = h3_only_config(listener_address, key.path());
+    let path = directory.path().join("oxiroute.kdl");
+    fs::write(
+        &path,
+        render_config(ConfigFormat::Kdl, &config).expect("render H3 rollback config"),
+    )
+    .expect("write H3 rollback config");
+    let mut harness = Harness::launch_at(&path, canonical_revision(&path), false);
+    poll_master_until_async(&mut harness, |master| {
+        master.state() == MasterState::Running
+    })
+    .await;
+    let active_worker = harness
+        .master
+        .worker_id(WorkerRole::Active)
+        .expect("active H3 worker pid");
+
+    replace_real_worker(&mut harness.master, &path, "0".repeat(64), 2, false);
+    let candidate_worker = harness
+        .master
+        .worker_id(WorkerRole::Candidate)
+        .expect("H3 rollback candidate pid");
+    poll_master_until_async(&mut harness, |master| {
+        master.state() == MasterState::Running
+            && master.active_instance().map(InstanceId::as_str) == Some("oxiroute-stage-2")
+    })
+    .await;
+    assert_eq!(
+        harness.master.worker_id(WorkerRole::Active),
+        Some(active_worker)
+    );
+    wait_process_gone(candidate_worker);
+    assert_h3_fixed_response(listener_address, b"supervised-h3").await;
+
+    harness
+        .master
+        .shutdown(Instant::now())
+        .expect("H3 rollback shutdown");
+    poll_master_until_async(&mut harness, |master| {
+        master.state() == MasterState::Stopped
+    })
+    .await;
+    harness.verify_reaped();
+    drop(harness);
+    StdUdpSocket::bind(listener_address).expect("H3 rollback listener released");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn supervised_worker_restarts_and_serves_new_h3_traffic_after_clean_shutdown() {
+    let directory = tempfile::tempdir().expect("supervised H3 restart directory");
+    let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .expect("H3 listener probe")
+        .local_addr()
+        .expect("H3 listener address");
+    let key = fixture_support::private_key_fixture("proxy-a-key.pem");
+    let config = h3_only_config(listener_address, key.path());
+    let path = directory.path().join("oxiroute.kdl");
+    fs::write(
+        &path,
+        render_config(ConfigFormat::Kdl, &config).expect("render H3 restart config"),
+    )
+    .expect("write H3 restart config");
+
+    let mut first = Harness::launch_at(&path, canonical_revision(&path), false);
+    poll_master_until_async(&mut first, |master| master.state() == MasterState::Running).await;
+    assert_h3_fixed_response(listener_address, b"supervised-h3").await;
+    first
+        .master
+        .shutdown(Instant::now())
+        .expect("first H3 shutdown");
+    poll_master_until_async(&mut first, |master| master.state() == MasterState::Stopped).await;
+    first.verify_reaped();
+    drop(first);
+
+    let mut restarted = Harness::launch_at(&path, canonical_revision(&path), false);
+    poll_master_until_async(&mut restarted, |master| {
+        master.state() == MasterState::Running
+    })
+    .await;
+    assert_h3_fixed_response(listener_address, b"supervised-h3").await;
+    restarted
+        .master
+        .shutdown(Instant::now())
+        .expect("restarted H3 shutdown");
+    poll_master_until_async(&mut restarted, |master| {
+        master.state() == MasterState::Stopped
+    })
+    .await;
+    restarted.verify_reaped();
+    drop(restarted);
+    StdUdpSocket::bind(listener_address).expect("restarted H3 listener released");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn supervised_worker_crash_with_active_h3_request_is_reaped_and_releases_listener() {
+    let directory = tempfile::tempdir().expect("supervised H3 crash directory");
+    let listener_address = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+        .expect("H3 listener probe")
+        .local_addr()
+        .expect("H3 listener address");
+    let (origin_address, origin_started, release_origin, origin_task) = spawn_slow_h3_origin();
+    let key = fixture_support::private_key_fixture("proxy-a-key.pem");
+    let config = h3_proxy_config(listener_address, key.path(), origin_address);
+    let path = directory.path().join("oxiroute.kdl");
+    fs::write(
+        &path,
+        render_config(ConfigFormat::Kdl, &config).expect("render H3 crash config"),
+    )
+    .expect("write H3 crash config");
+    let mut harness = Harness::launch_at(&path, canonical_revision(&path), false);
+    poll_master_until_async(&mut harness, |master| {
+        master.state() == MasterState::Running
+    })
+    .await;
+
+    let endpoint = h3_client_endpoint().expect("H3 client endpoint");
+    let connection = connect_h3(&endpoint, listener_address).await;
+    let (driver, mut sender) = h3::client::new(h3_quinn::Connection::new(connection))
+        .await
+        .expect("H3 client connection");
+    let driver = tokio::spawn(async move {
+        let mut driver = driver;
+        let _ = std::future::poll_fn(|context| driver.poll_close(context)).await;
+    });
+    let mut stream = sender
+        .send_request(
+            Request::builder()
+                .method(Method::GET)
+                .uri("https://proxy.example.test/")
+                .body(())
+                .expect("active crash H3 request"),
+        )
+        .await
+        .expect("send active crash H3 request");
+    stream
+        .finish()
+        .await
+        .expect("finish active crash H3 request");
+    origin_started
+        .await
+        .expect("active H3 request reached origin");
+
+    let worker = harness
+        .master
+        .worker_id(WorkerRole::Active)
+        .expect("active H3 worker pid");
+    let status = Command::new("kill")
+        .arg("-KILL")
+        .arg(worker.to_string())
+        .status()
+        .expect("kill active H3 worker");
+    assert!(status.success(), "failed to kill active H3 worker");
+    poll_master_until_async(&mut harness, |master| master.state() == MasterState::Failed).await;
+    harness.verify_reaped();
+    let _ = release_origin.send(());
+    assert!(
+        !matches!(
+            timeout(Duration::from_secs(3), stream.recv_response()).await,
+            Ok(Ok(_))
+        ),
+        "crashed H3 worker completed the active request"
+    );
+    drop(stream);
+    drop(sender);
+    endpoint.close(quinn::VarInt::from_u32(0), b"H3 worker crashed");
+    driver.await.expect("H3 driver task");
+    origin_task.await.expect("slow H3 origin task");
+    drop(harness);
+    StdUdpSocket::bind(listener_address).expect("crashed H3 listener released");
+}
+
 #[test]
 fn supervised_worker_replaces_a_same_manifest_generation() {
     let directory = tempfile::tempdir().expect("supervised fixture directory");
@@ -1031,11 +1343,8 @@ fn supervised_worker_replaces_a_same_manifest_generation() {
         .arg(encode_token([0x52; 16]))
         .arg(&path)
         .arg(revision);
-    let mut factory = WorkerSpawner::new(
-        env!("CARGO_BIN_EXE_oxiroute-supervisor-launcher-fixture"),
-        Duration::from_secs(5),
-    )
-    .expect("production launcher implementation");
+    let mut factory = WorkerSpawner::new(supervisor_launcher(), Duration::from_secs(5))
+        .expect("production launcher implementation");
     harness
         .master
         .replace(
@@ -1112,11 +1421,8 @@ fn supervised_worker_reactivates_after_a_replacement_rejection() {
         .arg(encode_token([0x53; 16]))
         .arg(&path)
         .arg("0".repeat(64));
-    let mut factory = WorkerSpawner::new(
-        env!("CARGO_BIN_EXE_oxiroute-supervisor-launcher-fixture"),
-        Duration::from_secs(5),
-    )
-    .expect("production launcher implementation");
+    let mut factory = WorkerSpawner::new(supervisor_launcher(), Duration::from_secs(5))
+        .expect("production launcher implementation");
     harness
         .master
         .replace(
@@ -1598,6 +1904,39 @@ async fn connect_h3(endpoint: &quinn::Endpoint, address: SocketAddr) -> quinn::C
     .expect("H3 connection timeout")
 }
 
+async fn assert_h3_fixed_response(address: SocketAddr, expected: &'static [u8]) {
+    let endpoint = h3_client_endpoint().expect("H3 client endpoint");
+    let connection = connect_h3(&endpoint, address).await;
+    let (driver, mut sender) = h3::client::new(h3_quinn::Connection::new(connection))
+        .await
+        .expect("H3 client connection");
+    let driver = tokio::spawn(async move {
+        let mut driver = driver;
+        let _ = std::future::poll_fn(|context| driver.poll_close(context)).await;
+    });
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri("https://proxy.example.test/")
+        .body(())
+        .expect("H3 request");
+    let mut stream = sender.send_request(request).await.expect("send H3 request");
+    stream.finish().await.expect("finish H3 request");
+    let response = stream.recv_response().await.expect("H3 response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = stream
+        .recv_data()
+        .await
+        .expect("H3 response body")
+        .expect("H3 response data");
+    let body = body.copy_to_bytes(body.remaining());
+    assert_eq!(body, Bytes::from_static(expected));
+    assert!(stream.recv_data().await.expect("H3 response end").is_none());
+    drop(stream);
+    drop(sender);
+    endpoint.close(quinn::VarInt::from_u32(0), b"H3 request complete");
+    driver.await.expect("H3 driver task");
+}
+
 fn replace_real_worker(
     master: &mut Master,
     config_path: &Path,
@@ -1622,11 +1961,8 @@ fn replace_real_worker(
     if inject_runtime_failure {
         command = command.env(TEST_RUNTIME_FAILURE_ENV, "1");
     }
-    let mut factory = WorkerSpawner::new(
-        env!("CARGO_BIN_EXE_oxiroute-supervisor-launcher-fixture"),
-        Duration::from_secs(5),
-    )
-    .expect("production launcher implementation");
+    let mut factory = WorkerSpawner::new(supervisor_launcher(), Duration::from_secs(5))
+        .expect("production launcher implementation");
     master
         .replace(
             &mut factory,
@@ -1699,4 +2035,11 @@ fn config_path() -> &'static Path {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/supervised-empty.kdl"
     ))
+}
+
+fn supervisor_launcher() -> PathBuf {
+    std::env::var_os(TEST_LAUNCHER_ENV).map_or_else(
+        || PathBuf::from(env!("CARGO_BIN_EXE_oxiroute-supervisor-launcher-fixture")),
+        PathBuf::from,
+    )
 }

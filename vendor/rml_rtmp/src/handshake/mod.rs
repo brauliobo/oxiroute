@@ -94,8 +94,9 @@ enum Stage {
 /// Struct that handles the handshaking process.
 ///
 /// Complex-handshake peer packet 2 responses are authenticated with the digest from the locally
-/// generated packet 1.  Original RTMP handshakes remain compatible by accepting an exact packet 1
-/// echo, which is the simple-handshake packet 2 form.
+/// generated packet 1. Original RTMP handshakes, and publishers that send a digest-authenticated
+/// packet 1 followed by the simple packet 2 form, remain compatible by accepting an exact packet 1
+/// echo. All other packet 2 responses must pass the complex-handshake signature check.
 ///
 /// ## Examples
 ///
@@ -135,7 +136,6 @@ pub struct Handshake {
     input_buffer: Vec<u8>,
     sent_p1: [u8; RTMP_PACKET_SIZE],
     sent_digest: [u8; SHA256_DIGEST_LENGTH],
-    peer_uses_complex_handshake: bool,
 }
 
 impl Handshake {
@@ -152,7 +152,6 @@ impl Handshake {
             sent_p1: [0_u8; RTMP_PACKET_SIZE],
             peer_type,
             sent_digest: [0_u8; SHA256_DIGEST_LENGTH],
-            peer_uses_complex_handshake: false,
         }
     }
 
@@ -310,10 +309,7 @@ impl Handshake {
         };
 
         let received_digest = match get_digest_for_received_packet(&received_packet_1, &p1_key) {
-            Ok(digest) => {
-                self.peer_uses_complex_handshake = true;
-                digest
-            }
+            Ok(digest) => digest,
             Err(HandshakeError::UnknownPacket1Format) => {
                 // Since no digest was found chances are that this handshake is
                 // not a fp9 handshake but instead is the handshake from the
@@ -374,8 +370,9 @@ impl Handshake {
             self.input_buffer.drain(..RTMP_PACKET_SIZE);
         }
 
-        // A legacy peer sends an exact copy of our p1 as packet 2.
-        if !self.peer_uses_complex_handshake && &self.sent_p1[..] == &received_packet_2[..] {
+        // A peer may select the simple packet 2 form even after sending a digest-authenticated
+        // packet 1. The exact local packet 1 echo is the only accepted non-HMAC form.
+        if &self.sent_p1[..] == &received_packet_2[..] {
             self.current_stage = Stage::Complete;
             let remaining_bytes = self.input_buffer.drain(..).collect();
             return Ok(HandshakeProcessResult::Completed {

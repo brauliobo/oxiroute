@@ -352,28 +352,30 @@ impl HttpSession {
                     for header in header_refs {
                         let header_name = header.get_name(&buf);
                         let value_bytes = header.get_value_bytes(&buf);
-                        let header_value = if cfg!(debug_assertions) {
-                            // from_maybe_shared_unchecked() in debug mode still checks whether
-                            // the header value is valid, which breaks the _obsolete_multiline
-                            // support. To work around this, in debug mode, we replace CRLF with
-                            // whitespace
-                            if let Some(p) = value_bytes.windows(CRLF.len()).position(|w| w == CRLF)
-                            {
+                        let header_value =
+                            if value_bytes.windows(CRLF.len()).any(|window| window == CRLF) {
+                                // HeaderValue rejects obsolete multiline values, so normalize each
+                                // continuation before constructing the owned value.
                                 let mut new_header = Vec::from_iter(value_bytes);
-                                new_header[p] = b' ';
-                                new_header[p + 1] = b' ';
-                                unsafe {
-                                    http::HeaderValue::from_maybe_shared_unchecked(new_header)
+                                let mut offset = 0;
+                                while let Some(relative) = new_header[offset..]
+                                    .windows(CRLF.len())
+                                    .position(|window| window == CRLF)
+                                {
+                                    let start = offset + relative;
+                                    new_header[start..start + CRLF.len()].copy_from_slice(b"  ");
+                                    offset = start + CRLF.len();
                                 }
+                                HeaderValue::from_bytes(&new_header)
                             } else {
-                                unsafe {
-                                    http::HeaderValue::from_maybe_shared_unchecked(value_bytes)
-                                }
-                            }
-                        } else {
-                            // safe because this is from what we parsed
-                            unsafe { http::HeaderValue::from_maybe_shared_unchecked(value_bytes) }
-                        };
+                                // Validate before using the zero-copy constructor. httparse accepts
+                                // some bytes that are not valid HeaderValue contents.
+                                HeaderValue::from_bytes(&value_bytes).map(|_| unsafe {
+                                    HeaderValue::from_maybe_shared_unchecked(value_bytes)
+                                })
+                            };
+                        let header_value =
+                            header_value.map_err(|_| Error::new(InvalidHTTPHeader))?;
                         append_parsed_header(
                             &mut response_header.headers,
                             header_name,
@@ -1390,6 +1392,16 @@ mod tests_stream {
     #[tokio::test]
     async fn read_rejects_malformed_response_header_name_before_no_case_append() {
         let input = b"HTTP/1.1 200 OK\r\nBad@Name: value\r\nContent-Length: 0\r\n\r\n";
+        let mock_io = Builder::new().read(input).build();
+        let mut session = HttpSession::new(Box::new(mock_io));
+
+        let error = session.read_response().await.unwrap_err();
+        assert_eq!(error.etype(), &ErrorType::InvalidHTTPHeader);
+    }
+
+    #[tokio::test]
+    async fn read_rejects_invalid_response_header_value_before_unchecked_append() {
+        let input = b"HTTP/1.1 200 OK\r\nContent-LngWTh:coding:\n 5\r\n\r\nhello";
         let mock_io = Builder::new().read(input).build();
         let mut session = HttpSession::new(Box::new(mock_io));
 

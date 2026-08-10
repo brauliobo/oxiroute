@@ -156,11 +156,7 @@ impl Lexer<'_> {
     ) -> Result<bool, usize> {
         let mut cursor = start;
         while cursor < end {
-            while self
-                .bytes
-                .get(cursor)
-                .is_some_and(|byte| matches!(byte, b' ' | b'\t' | b'\r'))
-            {
+            while cursor < end && matches!(self.bytes[cursor], b' ' | b'\t' | b'\r') {
                 cursor += 1;
             }
             if cursor == end {
@@ -296,7 +292,7 @@ impl Lexer<'_> {
         while cursor > start && matches!(self.bytes[cursor - 1], b' ' | b'\t') {
             cursor -= 1;
         }
-        (cursor > start && self.bytes[cursor - 1] == b'\\').then_some(cursor - 1)
+        (cursor > start && self.bytes[cursor - 1] == b'\\').then(|| cursor - 1)
     }
 
     fn syntax(&mut self, message: impl Into<String>, start: usize, end: usize) {
@@ -320,5 +316,30 @@ impl Lexer<'_> {
 
     fn span(&self, start: usize, end: usize) -> Span {
         Span::new(self.source, ByteRange::new(start, end))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn malformed_native_source_with_empty_continuation_prefix_does_not_panic() {
+        let bytes = [
+            0x12, 0x0a, 0x6f, 0x2f, 0x38, 0x74, 0x38, 0xd5, 0x0d, 0x65, 0x75, 0x00, 0x76,
+        ];
+        let source = SourceFile::new(SourceId::new(1), "fuzzed-squid.conf", bytes.as_slice());
+
+        let report = lex(&source);
+
+        assert!(report.has_errors());
+    }
+
+    #[test]
+    fn trailing_whitespace_at_a_continuation_boundary_does_not_panic() {
+        let bytes = b"va\xff\xff\xff\xffrnish:vc2pache:<VirtualHost *:79>\nsq:79verName ex\r\r\r\r\r\r\r\r\r\r\r\r";
+        let source = SourceFile::new(SourceId::new(1), "fuzzed-squid.conf", bytes.as_slice());
+
+        let _report = lex(&source);
     }
 }

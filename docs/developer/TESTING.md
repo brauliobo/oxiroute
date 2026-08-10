@@ -40,6 +40,26 @@ The bounded fuzz contract is required and validates the target/corpus set before
 the optional smoke command reports and skips execution when `cargo-fuzz` is unavailable. None of these local checks is
 production traffic, CA-staging, or process-level FFmpeg/OBS evidence.
 
+## Real CA-Staging Gate
+
+The opt-in staging harness requires explicit `OXIROUTE_ACME_STAGING_*` environment variables and
+never uses CI or local test endpoints. Run its non-mutating prerequisite check first:
+
+```sh
+bash scripts/acme-staging-evidence.sh --preflight
+```
+
+The preflight validates the loopback management boundary, local config and trust/token files,
+tooling, DNS resolution, and Let's Encrypt staging reachability without starting OxiRoute or
+requesting a certificate. The live invocation starts only the configured harness process and emits
+redacted certificate evidence; it must not be used with production directory settings.
+
+The deterministic harness checks remain local and do not contact a CA:
+
+```sh
+bash scripts/test-acme-staging-evidence.sh
+```
+
 Build tasks should use at most four workers in constrained environments. For make-based tooling, use
 `nice make -j4`; Cargo commands above pass `--jobs 4` explicitly.
 

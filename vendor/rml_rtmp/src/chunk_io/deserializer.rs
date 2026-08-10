@@ -394,6 +394,10 @@ impl ChunkDeserializer {
             timestamp = cursor.read_u32::<BigEndian>()?;
         }
 
+        if timestamp < MAX_INITIAL_TIMESTAMP {
+            return Err(ChunkDeserializationError::InvalidExtendedTimestamp { timestamp });
+        }
+
         // If the type 3 chunk is not the first chunk of a message, we just ignore it's extended timestamp because the timestamp of this message was already deserialized.
         if self.current_header_format == ChunkHeaderFormat::Full {
             self.current_header.timestamp.set(timestamp);
@@ -1051,6 +1055,23 @@ mod tests {
             &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07],
             "Incorrect payload data"
         );
+    }
+
+    #[test]
+    fn rejects_an_extended_timestamp_below_the_marker_value() {
+        let chunk1 = [
+            0x06, 0xff, 0xff, 0xff, 0x00, 0x00, 0x07, 0x09, 0x01, 0x00, 0x00, 0x00, 0x01, 0xff,
+            0xff, 0xff, 0x01, 0x02, 0x03, 0x04,
+        ];
+        let chunk2 = [0xc6, 0x00, 0x00, 0x00, 0x01, 0x05, 0x06, 0x07];
+        let mut deserializer = ChunkDeserializer::new();
+        deserializer.set_max_chunk_size(4).unwrap();
+        let _ = deserializer.get_next_message(&chunk1).unwrap();
+
+        assert!(matches!(
+            deserializer.get_next_message(&chunk2),
+            Err(ChunkDeserializationError::InvalidExtendedTimestamp { timestamp: 1 })
+        ));
     }
 
     fn form_type_0_chunk(

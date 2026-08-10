@@ -60,6 +60,25 @@ fn fragmented_payload_and_extended_timestamp_round_trip() {
 }
 
 #[test]
+fn malformed_extended_timestamp_is_rejected_without_panicking() {
+    let chunk1 = [
+        0x06, 0xff, 0xff, 0xff, 0x00, 0x00, 0x07, 0x09, 0x01, 0x00, 0x00, 0x00, 0x01, 0xff, 0xff,
+        0xff, 0x01, 0x02, 0x03, 0x04,
+    ];
+    let chunk2 = [0xc6, 0x00, 0x00, 0x00, 0x01, 0x05, 0x06, 0x07];
+    let mut deserializer = ChunkDeserializer::new();
+    deserializer.set_max_chunk_size(4).expect("set chunk size");
+    deserializer
+        .get_next_message(&chunk1)
+        .expect("decode first chunk");
+
+    assert!(matches!(
+        deserializer.get_next_message(&chunk2),
+        Err(ChunkDeserializationError::InvalidExtendedTimestamp { timestamp: 1 })
+    ));
+}
+
+#[test]
 fn interleaved_fragmented_messages_keep_chunk_stream_state_isolated() {
     let audio = payload(100, 8, (0..12).collect());
     let video = payload(100, 9, (0x80..0x8c).collect());
