@@ -13,10 +13,10 @@ use crate::{
     RoundRobinPool, Route, RouteError, RouteTable, RuntimeEndpoint, TlsBuildError, TlsProfilePlan,
     TopologySnapshot, health,
     http_action::{
-        AccessLog, CachePurgeAccess, DiskBackend, FixedResponsePlan, HttpActionPlan,
-        HttpCacheBackend, HttpCachePlan, HttpGzipPlan, HttpRoutePlan, ProxyActionPlan,
+        AccessLog, FixedResponsePlan, HttpActionPlan, HttpGzipPlan, HttpRoutePlan, ProxyActionPlan,
         ProxyPolicyPlan, RedirectPlan, RouteAccess, RoutePolicyPlan, StaticFilesPlan,
     },
+    http_cache::{CachePurgeAccess, DiskBackend, HttpCacheBackend, HttpCachePlan},
     routing::RuntimeServer,
     upstream_peer::UpstreamPlan,
 };

@@ -17,10 +17,7 @@ use http::{
 };
 use log::warn;
 use oxiroute_acme::ChallengeStore;
-use oxiroute_cache::{
-    CacheControl, CacheKey, CacheResponse, CachedResponse, FillOutcome, Lookup, ResponseTiming,
-    StoreOutcome, Validators,
-};
+use oxiroute_cache::{CacheResponse, CachedResponse, Lookup, ResponseTiming, StoreOutcome};
 use oxiroute_config::{
     HttpGzipMinimumVersion, HttpProxyPathRewrite, HttpRetryTarget, HttpRetryTrigger,
     HttpUpstreamHost, is_unambiguous_http_path,
@@ -39,9 +36,12 @@ use crate::{
     GenerationReference, HealthFailure, HttpOperationResult, HttpServicePlan, ListenerMetrics,
     RuntimeEndpoint, RuntimeGeneration, RuntimeReferenceKind,
     http_action::{
-        CacheFill, CacheFillJoin, CacheRequest, HttpActionPlan, HttpCachePlan, HttpGzipPlan,
-        HttpRoutePlan, ProxyPolicyPlan, RedirectLocationPlan, StaticErrorTarget, StaticFile,
-        StaticRequestDecision, StaticServeError, StaticTarget,
+        HttpActionPlan, HttpGzipPlan, HttpRoutePlan, ProxyPolicyPlan, RedirectLocationPlan,
+        StaticErrorTarget, StaticFile, StaticRequestDecision, StaticServeError, StaticTarget,
+    },
+    http_cache::{
+        CacheFill, CacheRequest, CacheRevalidation, CacheStart, CacheStartFailure,
+        CacheTransaction, HttpCachePlan,
     },
     http_policy::{
         RedirectContext, RequestHeaderDecision, RequestPolicyContext, RequestPolicyError,
@@ -132,14 +132,6 @@ pub struct HttpRequestContext {
     cache_capture: Option<CacheCapture>,
     response_buffer: Option<ResponseBuffer>,
     cache_response_handled: bool,
-}
-
-#[derive(Clone)]
-struct CacheRevalidation {
-    key: CacheKey,
-    response: CachedResponse,
-    validators: Validators,
-    stale_if_error: bool,
 }
 
 struct CacheCapture {
@@ -1149,10 +1141,6 @@ async fn finish_cache_response(
     Err(Error::new_in(ErrorType::InternalError))
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "cache lookup and collapsed-fill transitions are one request state machine"
-)]
 async fn cache_request_filter(
     session: &mut Session,
     ctx: &mut HttpRequestContext,
@@ -1167,9 +1155,6 @@ async fn cache_request_filter(
     if cache_request_bypasses_cache(&headers) {
         return Ok(false);
     }
-    let only_if_cached = CacheControl::parse(&headers)
-        .ok()
-        .is_some_and(|control| control.only_if_cached);
     let scheme = if session
         .digest()
         .and_then(|digest| digest.ssl_digest.as_ref())
@@ -1180,83 +1165,34 @@ async fn cache_request_filter(
         "http"
     };
     let request = cache_request(cache.as_ref(), authority, method, uri, headers, scheme);
-    let mut waits = 0;
-    loop {
-        let lookup = match cache.cache.lookup(&request).await {
-            Ok(lookup) => lookup,
-            Err(error) => {
-                if !error.is_invalid_request() {
-                    warn!("cache lookup bypassed after validation failure: {error}");
-                }
-                return Ok(false);
+    match CacheTransaction::new(cache, request, ctx.listener.clone())
+        .start()
+        .await
+    {
+        CacheStart::Bypass(failure) => {
+            if let CacheStartFailure::Lookup(error) = failure
+                && !error.is_invalid_request()
+            {
+                warn!("cache lookup bypassed after validation failure: {error}");
             }
-        };
-        match lookup {
-            Lookup::Bypass { .. } => return Ok(false),
-            Lookup::Hit { response, .. } => {
-                record_cache_event(&ctx.listener, CacheEvent::Hit);
-                ctx.cache_response_handled = true;
-                write_cached_response_conditionally(session, &response).await?;
-                return Ok(true);
-            }
-            Lookup::Miss {
-                only_if_cached: miss_only_if_cached,
-                base,
-                ..
-            } => {
-                record_cache_event(&ctx.listener, CacheEvent::Miss);
-                if only_if_cached || miss_only_if_cached {
-                    session.respond_error(504).await?;
-                    return Ok(true);
-                }
-                match cache.cache.begin_fill(base).await {
-                    Ok(CacheFillJoin::Leader(fill)) => {
-                        ctx.cache_plan = Some(Arc::clone(&cache));
-                        ctx.cache_request = Some(request);
-                        ctx.cache_fill = Some(fill);
-                        return Ok(false);
-                    }
-                    Ok(CacheFillJoin::Follower(waiter)) => {
-                        if !wait_for_fill(waiter, &mut waits).await {
-                            return Ok(false);
-                        }
-                    }
-                    Ok(CacheFillJoin::AtCapacity) | Err(_) => return Ok(false),
-                }
-            }
-            Lookup::Revalidate {
-                response,
-                validators,
-                stale_if_error,
-                ..
-            } => {
-                record_cache_event(&ctx.listener, CacheEvent::Miss);
-                if only_if_cached {
-                    session.respond_error(504).await?;
-                    return Ok(true);
-                }
-                let base = response.key.base().clone();
-                match cache.cache.begin_fill(base).await {
-                    Ok(CacheFillJoin::Leader(fill)) => {
-                        ctx.cache_plan = Some(Arc::clone(&cache));
-                        ctx.cache_request = Some(request);
-                        ctx.cache_revalidation = Some(CacheRevalidation {
-                            key: response.key.clone(),
-                            response,
-                            validators,
-                            stale_if_error,
-                        });
-                        ctx.cache_fill = Some(fill);
-                        return Ok(false);
-                    }
-                    Ok(CacheFillJoin::Follower(waiter)) => {
-                        if !wait_for_fill(waiter, &mut waits).await {
-                            return Ok(false);
-                        }
-                    }
-                    Ok(CacheFillJoin::AtCapacity) | Err(_) => return Ok(false),
-                }
-            }
+            Ok(false)
+        }
+        CacheStart::Hit(response) => {
+            ctx.cache_response_handled = true;
+            write_cached_response_conditionally(session, &response).await?;
+            Ok(true)
+        }
+        CacheStart::OnlyIfCached => {
+            session.respond_error(504).await?;
+            Ok(true)
+        }
+        CacheStart::MissLeader(transaction) | CacheStart::RevalidationLeader(transaction) => {
+            let leader = transaction.into_leader_parts();
+            ctx.cache_plan = Some(leader.plan);
+            ctx.cache_request = Some(leader.request);
+            ctx.cache_fill = Some(leader.fill);
+            ctx.cache_revalidation = leader.revalidation;
+            Ok(false)
         }
     }
 }
@@ -1378,20 +1314,6 @@ async fn cache_purge_filter(
         }
     }
     Ok(true)
-}
-
-async fn wait_for_fill(waiter: oxiroute_cache::FillWaiter, waits: &mut usize) -> bool {
-    *waits = waits.saturating_add(1);
-    if *waits > 2 {
-        return false;
-    }
-    match waiter.wait().await {
-        FillOutcome::Stored => true,
-        FillOutcome::NotStored
-        | FillOutcome::Cancelled
-        | FillOutcome::Purged
-        | FillOutcome::Filling => *waits < 2,
-    }
 }
 
 async fn finish_cache_fill(ctx: &mut HttpRequestContext) {
