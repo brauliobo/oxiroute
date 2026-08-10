@@ -1,9 +1,12 @@
 use std::marker::PhantomData;
 
-use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
+use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
-use crate::{CorrelationToken, GenerationId, InstanceId, Sequence, ServiceId};
+use crate::{
+    CorrelationToken, GenerationId, InstanceId, Sequence, ServiceId,
+    validated::deserialize_validated,
+};
 
 /// Compile-time protocol payload association for a supervised service.
 ///
@@ -127,15 +130,15 @@ where
             payload: T,
         }
 
-        let wire = Wire::deserialize(deserializer)?;
-        Self::from_wire(
-            wire.protocol_version,
-            wire.service_id,
-            wire.instance_id,
-            wire.generation_id,
-            wire.payload,
-        )
-        .map_err(D::Error::custom)
+        deserialize_validated(deserializer, |wire: Wire<T>| {
+            Self::from_wire(
+                wire.protocol_version,
+                wire.service_id,
+                wire.instance_id,
+                wire.generation_id,
+                wire.payload,
+            )
+        })
     }
 }
 

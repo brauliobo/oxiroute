@@ -1,7 +1,7 @@
-use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
+use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
-use crate::{GenerationId, Revision, ServiceId};
+use crate::{GenerationId, Revision, ServiceId, validated::deserialize_validated};
 
 /// A versioned service snapshot and its source identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -89,15 +89,15 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for SnapshotEnvelope<T> {
             payload: T,
         }
 
-        let wire = Wire::deserialize(deserializer)?;
-        Self::new(
-            wire.format_version,
-            wire.service_id,
-            wire.generation_id,
-            wire.revision,
-            wire.payload,
-        )
-        .map_err(D::Error::custom)
+        deserialize_validated(deserializer, |wire: Wire<T>| {
+            Self::new(
+                wire.format_version,
+                wire.service_id,
+                wire.generation_id,
+                wire.revision,
+                wire.payload,
+            )
+        })
     }
 }
 
