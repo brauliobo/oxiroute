@@ -324,6 +324,10 @@ implemented separately across Pingora reverse HTTP, H3 reverse HTTP, and forward
 
 ### P1.9 Bearer-token file security
 
+**Status:** Complete. Route access now composes the shared secure bearer-token loader, digest, and
+single-header cardinality logic after the loader adopted the route path's full stable-file timestamp
+and identity checks.
+
 **Finding:** `http_action.rs` repeats bounds, secure open, stable-file inspection, hashing,
 duplicate-header rejection, and constant-time comparison already represented by `secure_bearer.rs`.
 
@@ -334,10 +338,10 @@ duplicate-header rejection, and constant-time comparison already represented by 
 
 **Plan:**
 
-- [ ] Strengthen `SecureBearerToken::load` with any stricter timestamp/stability guarantees currently
+- [x] Strengthen `SecureBearerToken::load` with any stricter timestamp/stability guarantees currently
   supplied by `same_file_snapshot`.
-- [ ] Make route access compose `SecureBearerToken` and the shared single-header parser.
-- [ ] Preserve custom header/challenge behavior and constant-time comparison.
+- [x] Make route access compose `SecureBearerToken` and the shared single-header parser.
+- [x] Preserve custom header/challenge behavior and constant-time comparison.
 
 ### P1.10 TLS publication, watcher, and ACME workflows
 
