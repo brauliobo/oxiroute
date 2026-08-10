@@ -91,6 +91,31 @@ fn store(
     key
 }
 
+fn store_outcome(
+    cache: &DiskCache,
+    path: &str,
+    request_headers: &HeaderMap,
+    response_headers: &HeaderMap,
+    body: Bytes,
+) -> (oxiroute_cache::CacheKey, StoreOutcome) {
+    let entry = cache
+        .prepare(
+            request(path, request_headers),
+            StatusCode::OK,
+            response_headers,
+            body,
+            timing(cache),
+            &[],
+        )
+        .expect("prepare persistent entry");
+    let key = entry.key().clone();
+    let outcome = match cache.begin_fill(key.base().clone()).expect("begin fill") {
+        DiskFillJoin::Leader(leader) => leader.store(entry).expect("store persistent entry"),
+        DiskFillJoin::Follower(_) | DiskFillJoin::AtCapacity => panic!("expected leader"),
+    };
+    (key, outcome)
+}
+
 fn cache_root(temp: &tempfile::TempDir) -> PathBuf {
     temp.path().join("cache")
 }
@@ -199,6 +224,361 @@ fn byte_quota_admits_only_exact_committed_record_size() {
     ));
     assert!(matches!(
         cache.lookup(request("/b", &headers)),
+        Ok(Lookup::Hit { .. })
+    ));
+}
+
+#[test]
+fn store_outcome_counts_each_replaced_or_reconciled_physical_record() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = cache_root(&temp);
+    let cache = DiskCache::open(&root, config()).expect("open cache");
+    let request_headers = HeaderMap::new();
+    let headers = response();
+
+    assert_eq!(
+        store_outcome(
+            &cache,
+            "/replace",
+            &request_headers,
+            &headers,
+            Bytes::from_static(b"old"),
+        )
+        .1,
+        StoreOutcome::Stored { evicted: 0 }
+    );
+    assert_eq!(
+        store_outcome(
+            &cache,
+            "/replace",
+            &request_headers,
+            &headers,
+            Bytes::from_static(b"new"),
+        )
+        .1,
+        StoreOutcome::Stored { evicted: 1 }
+    );
+    assert_eq!(record_paths(&root).len(), 1);
+
+    let mut vary_headers = headers.clone();
+    vary_headers.insert(
+        http::header::VARY,
+        HeaderValue::from_static("accept-language"),
+    );
+    let mut en = HeaderMap::new();
+    en.insert(
+        http::header::ACCEPT_LANGUAGE,
+        HeaderValue::from_static("en"),
+    );
+    let mut fr = HeaderMap::new();
+    fr.insert(
+        http::header::ACCEPT_LANGUAGE,
+        HeaderValue::from_static("fr"),
+    );
+    store_outcome(
+        &cache,
+        "/vary-schema",
+        &en,
+        &vary_headers,
+        Bytes::from_static(b"hello"),
+    );
+    store_outcome(
+        &cache,
+        "/vary-schema",
+        &fr,
+        &vary_headers,
+        Bytes::from_static(b"bonjour"),
+    );
+    assert_eq!(
+        store_outcome(
+            &cache,
+            "/vary-schema",
+            &request_headers,
+            &headers,
+            Bytes::from_static(b"unified"),
+        )
+        .1,
+        StoreOutcome::Stored { evicted: 2 }
+    );
+    assert_eq!(cache.stats().disk_entries, 2);
+}
+
+#[test]
+fn disk_pressure_and_memory_reconciliation_report_physical_removals() {
+    let request_headers = HeaderMap::new();
+    let headers = response();
+
+    let count_temp = tempfile::tempdir().expect("count tempdir");
+    let mut count_limits = config();
+    count_limits.max_disk_files = 2;
+    let count = DiskCache::open(cache_root(&count_temp), count_limits).expect("count cache");
+    store_outcome(
+        &count,
+        "/a",
+        &request_headers,
+        &headers,
+        Bytes::from_static(b"a"),
+    );
+    store_outcome(
+        &count,
+        "/b",
+        &request_headers,
+        &headers,
+        Bytes::from_static(b"b"),
+    );
+    count
+        .lookup(request("/a", &request_headers))
+        .expect("touch a");
+    assert_eq!(
+        store_outcome(
+            &count,
+            "/c",
+            &request_headers,
+            &headers,
+            Bytes::from_static(b"c"),
+        )
+        .1,
+        StoreOutcome::Stored { evicted: 1 }
+    );
+    assert!(matches!(
+        count.lookup(request("/b", &request_headers)),
+        Ok(Lookup::Miss { .. })
+    ));
+
+    let tight_memory_temp = tempfile::tempdir().expect("tight memory tempdir");
+    let mut tight_memory_limits = config();
+    tight_memory_limits.memory.max_entries = 1;
+    tight_memory_limits.max_disk_files = 8;
+    let tight_memory = DiskCache::open(cache_root(&tight_memory_temp), tight_memory_limits)
+        .expect("tight memory cache");
+    store_outcome(
+        &tight_memory,
+        "/a",
+        &request_headers,
+        &headers,
+        Bytes::from_static(b"a"),
+    );
+    assert_eq!(
+        store_outcome(
+            &tight_memory,
+            "/b",
+            &request_headers,
+            &headers,
+            Bytes::from_static(b"b"),
+        )
+        .1,
+        StoreOutcome::Stored { evicted: 1 }
+    );
+    assert_eq!(tight_memory.stats().disk_entries, 1);
+
+    let tight_disk_temp = tempfile::tempdir().expect("tight disk tempdir");
+    let mut tight_disk_limits = config();
+    tight_disk_limits.memory.max_entries = 8;
+    tight_disk_limits.max_disk_files = 1;
+    let tight_disk =
+        DiskCache::open(cache_root(&tight_disk_temp), tight_disk_limits).expect("tight disk cache");
+    store_outcome(
+        &tight_disk,
+        "/a",
+        &request_headers,
+        &headers,
+        Bytes::from_static(b"a"),
+    );
+    assert_eq!(
+        store_outcome(
+            &tight_disk,
+            "/b",
+            &request_headers,
+            &headers,
+            Bytes::from_static(b"b"),
+        )
+        .1,
+        StoreOutcome::Stored { evicted: 1 }
+    );
+    assert_eq!(tight_disk.stats().memory.entries, 1);
+}
+
+#[test]
+fn disk_byte_pressure_removes_multiple_victims_including_replacement() {
+    const LARGE: &[u8] = b"large-body-large-body-large-body-large-body-large-body-large-body";
+    let request_headers = HeaderMap::new();
+    let headers = response();
+    let probe_temp = tempfile::tempdir().expect("probe tempdir");
+    let probe = DiskCache::open(cache_root(&probe_temp), config()).expect("probe cache");
+    store_outcome(
+        &probe,
+        "/p",
+        &request_headers,
+        &headers,
+        Bytes::from_static(b"s"),
+    );
+    let small_size = probe.stats().disk_bytes;
+    store_outcome(
+        &probe,
+        "/q",
+        &request_headers,
+        &headers,
+        Bytes::from_static(LARGE),
+    );
+    let large_size = probe.stats().disk_bytes - small_size;
+    assert!(large_size > small_size && large_size <= small_size * 2);
+
+    let multiple_temp = tempfile::tempdir().expect("multiple tempdir");
+    let mut multiple_limits = config();
+    multiple_limits.max_disk_bytes = small_size * 3;
+    multiple_limits.max_record_bytes =
+        usize::try_from(multiple_limits.max_disk_bytes).expect("bounded multiple quota");
+    let multiple =
+        DiskCache::open(cache_root(&multiple_temp), multiple_limits).expect("multiple cache");
+    for path in ["/a", "/b", "/c"] {
+        store_outcome(
+            &multiple,
+            path,
+            &request_headers,
+            &headers,
+            Bytes::from_static(b"s"),
+        );
+    }
+    assert_eq!(
+        store_outcome(
+            &multiple,
+            "/d",
+            &request_headers,
+            &headers,
+            Bytes::from_static(LARGE),
+        )
+        .1,
+        StoreOutcome::Stored { evicted: 2 }
+    );
+
+    let replacement_temp = tempfile::tempdir().expect("replacement tempdir");
+    let mut replacement_limits = config();
+    replacement_limits.max_disk_bytes = small_size * 2;
+    replacement_limits.max_record_bytes =
+        usize::try_from(replacement_limits.max_disk_bytes).expect("bounded replacement quota");
+    let replacement = DiskCache::open(cache_root(&replacement_temp), replacement_limits)
+        .expect("replacement cache");
+    for path in ["/a", "/b"] {
+        store_outcome(
+            &replacement,
+            path,
+            &request_headers,
+            &headers,
+            Bytes::from_static(b"s"),
+        );
+    }
+    assert_eq!(
+        store_outcome(
+            &replacement,
+            "/a",
+            &request_headers,
+            &headers,
+            Bytes::from_static(LARGE),
+        )
+        .1,
+        StoreOutcome::Stored { evicted: 2 }
+    );
+    assert!(matches!(
+        replacement.lookup(request("/b", &request_headers)),
+        Ok(Lookup::Miss { .. })
+    ));
+}
+
+#[test]
+fn obsolete_disk_generation_does_not_publish_a_record() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = cache_root(&temp);
+    let cache = DiskCache::open(&root, config()).expect("open cache");
+    let request_headers = HeaderMap::new();
+    let entry = cache
+        .prepare(
+            request("/generation", &request_headers),
+            StatusCode::OK,
+            &response(),
+            Bytes::from_static(b"obsolete"),
+            timing(&cache),
+            &[],
+        )
+        .expect("prepare entry");
+    let leader = match cache
+        .begin_fill(entry.key().base().clone())
+        .expect("begin fill")
+    {
+        DiskFillJoin::Leader(leader) => leader,
+        DiskFillJoin::Follower(_) | DiskFillJoin::AtCapacity => panic!("expected leader"),
+    };
+    assert_eq!(
+        cache
+            .purge_exact(entry.key())
+            .expect("cancel fill")
+            .fills_cancelled,
+        1
+    );
+    assert_eq!(
+        leader.store(entry).expect("obsolete store"),
+        StoreOutcome::GenerationLost
+    );
+    assert_eq!(cache.stats().disk_entries, 0);
+    assert!(record_paths(&root).is_empty());
+}
+
+#[test]
+fn restart_reconciles_asymmetric_memory_and_disk_limits() {
+    let request_headers = HeaderMap::new();
+
+    let tight_memory_temp = tempfile::tempdir().expect("tight memory tempdir");
+    let tight_memory_root = cache_root(&tight_memory_temp);
+    let seed = DiskCache::open(&tight_memory_root, config()).expect("seed tight memory");
+    for path in ["/a", "/b", "/c"] {
+        store(&seed, path, path.as_bytes(), &[]);
+    }
+    seed.lookup(request("/a", &request_headers))
+        .expect("touch a");
+    drop(seed);
+    let mut tighter_memory = config();
+    tighter_memory.memory.max_entries = 2;
+    tighter_memory.max_disk_files = 8;
+    let recovered =
+        DiskCache::open(&tight_memory_root, tighter_memory).expect("recover tighter memory");
+    let stats = recovered.stats();
+    assert_eq!(stats.recovered, 3);
+    assert_eq!(stats.memory.entries, 2);
+    assert_eq!(stats.disk_entries, 2);
+    assert_eq!(record_paths(&tight_memory_root).len(), 2);
+    assert!(matches!(
+        recovered.lookup(request("/b", &request_headers)),
+        Ok(Lookup::Miss { .. })
+    ));
+    assert!(matches!(
+        recovered.lookup(request("/a", &request_headers)),
+        Ok(Lookup::Hit { .. })
+    ));
+
+    let tight_disk_temp = tempfile::tempdir().expect("tight disk tempdir");
+    let tight_disk_root = cache_root(&tight_disk_temp);
+    let seed = DiskCache::open(&tight_disk_root, config()).expect("seed tight disk");
+    for path in ["/a", "/b", "/c"] {
+        store(&seed, path, path.as_bytes(), &[]);
+    }
+    seed.lookup(request("/a", &request_headers))
+        .expect("touch a");
+    drop(seed);
+    let mut tighter_disk = config();
+    tighter_disk.memory.max_entries = 8;
+    tighter_disk.max_disk_files = 2;
+    let recovered = DiskCache::open(&tight_disk_root, tighter_disk).expect("recover tighter disk");
+    let stats = recovered.stats();
+    assert_eq!(stats.recovered, 2);
+    assert_eq!(stats.memory.entries, 2);
+    assert_eq!(stats.disk_entries, 2);
+    assert_eq!(stats.corrupt_records_removed, 1);
+    assert_eq!(record_paths(&tight_disk_root).len(), 2);
+    assert!(matches!(
+        recovered.lookup(request("/b", &request_headers)),
+        Ok(Lookup::Miss { .. })
+    ));
+    assert!(matches!(
+        recovered.lookup(request("/a", &request_headers)),
         Ok(Lookup::Hit { .. })
     ));
 }
