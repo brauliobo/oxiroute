@@ -1,6 +1,9 @@
 pub const RTMP_VERSION: u8 = 3;
 pub const HANDSHAKE_BLOCK_SIZE: usize = 1536;
 
+#[macro_use]
+mod stream;
+
 mod auto_push;
 mod callback;
 mod catalog;

@@ -1,6 +1,5 @@
 use std::{
-    fmt,
-    io::{self, Read, Write},
+    fmt, io,
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream},
     sync::Arc,
     time::Duration,
@@ -313,30 +312,7 @@ impl RtmpStream {
     }
 }
 
-impl Read for RtmpStream {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        match self {
-            Self::Plain(stream) => stream.read(buffer),
-            Self::Tls(stream) => stream.read(buffer),
-        }
-    }
-}
-
-impl Write for RtmpStream {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        match self {
-            Self::Plain(stream) => stream.write(buffer),
-            Self::Tls(stream) => stream.write(buffer),
-        }
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        match self {
-            Self::Plain(stream) => stream.flush(),
-            Self::Tls(stream) => stream.flush(),
-        }
-    }
-}
+delegate_read_write!(RtmpStream { Plain, Tls });
 
 pub(crate) fn connect_stream(
     host: &str,

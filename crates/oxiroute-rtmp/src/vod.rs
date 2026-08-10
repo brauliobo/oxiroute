@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     fs::File,
-    io::{self, Read, Write},
+    io::{Read, Write},
     net::{SocketAddr, TcpStream, ToSocketAddrs},
     path::{Component, Path},
     sync::{
@@ -318,30 +318,7 @@ enum HttpStream {
     Tls(SslStream<TcpStream>),
 }
 
-impl Read for HttpStream {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        match self {
-            Self::Plain(stream) => stream.read(buffer),
-            Self::Tls(stream) => stream.read(buffer),
-        }
-    }
-}
-
-impl Write for HttpStream {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        match self {
-            Self::Plain(stream) => stream.write(buffer),
-            Self::Tls(stream) => stream.write(buffer),
-        }
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        match self {
-            Self::Plain(stream) => stream.flush(),
-            Self::Tls(stream) => stream.flush(),
-        }
-    }
-}
+delegate_read_write!(HttpStream { Plain, Tls });
 
 fn connect_http(origin: &HttpOrigin) -> Result<HttpStream, VodError> {
     let stream = TcpStream::connect_timeout(&origin.address, Duration::from_secs(5))
