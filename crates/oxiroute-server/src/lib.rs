@@ -5,6 +5,7 @@ mod config_watcher;
 mod encoding;
 mod forward_proxy;
 mod generation;
+mod generation_health;
 mod health;
 mod html;
 mod http3;
