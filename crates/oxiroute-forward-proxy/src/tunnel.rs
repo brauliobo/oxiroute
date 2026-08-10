@@ -211,6 +211,56 @@ pub struct BoundedTunnel {
     limits: TunnelLimits,
 }
 
+struct TunnelCoordinator {
+    limits: TunnelLimits,
+    left_to_right: Arc<AtomicU64>,
+    right_to_left: Arc<AtomicU64>,
+    lifetime_deadline: Instant,
+    idle_deadline: Instant,
+}
+
+impl TunnelCoordinator {
+    fn new(
+        limits: TunnelLimits,
+        left_to_right: Arc<AtomicU64>,
+        right_to_left: Arc<AtomicU64>,
+    ) -> Self {
+        let started = Instant::now();
+        Self {
+            limits,
+            left_to_right,
+            right_to_left,
+            lifetime_deadline: started + limits.lifetime_timeout,
+            idle_deadline: started + limits.idle_timeout,
+        }
+    }
+
+    fn progress(&mut self) {
+        self.idle_deadline = Instant::now() + self.limits.idle_timeout;
+    }
+
+    fn stats(&self) -> TunnelStats {
+        TunnelStats {
+            left_to_right: self.left_to_right.load(Ordering::Relaxed),
+            right_to_left: self.right_to_left.load(Ordering::Relaxed),
+        }
+    }
+
+    fn ended(&self, end: TunnelEnd) -> TunnelOutcome {
+        TunnelOutcome::Ended {
+            end,
+            stats: self.stats(),
+        }
+    }
+
+    fn io(&self, source: io::Error) -> TunnelOutcome {
+        TunnelOutcome::Io {
+            stats: self.stats(),
+            source,
+        }
+    }
+}
+
 impl BoundedTunnel {
     /// Creates a relay with finite byte, time, and allocation bounds.
     ///
@@ -264,49 +314,29 @@ impl BoundedTunnel {
             self.limits.buffer_size,
         );
         tokio::pin!(copy);
-        let started = Instant::now();
-        let lifetime_deadline = started + self.limits.lifetime_timeout;
-        let mut idle_deadline = started + self.limits.idle_timeout;
+        let mut coordinator = TunnelCoordinator::new(self.limits, left_to_right, right_to_left);
         loop {
             tokio::select! {
                 result = &mut copy => {
                     return match result {
-                        Ok(_) => TunnelOutcome::Ended {
-                            end: TunnelEnd::Eof,
-                            stats: load_stats(&left_to_right, &right_to_left),
-                        },
-                        Err(source) => TunnelOutcome::Io {
-                            stats: load_stats(&left_to_right, &right_to_left),
-                            source,
-                        },
+                        Ok(_) => coordinator.ended(TunnelEnd::Eof),
+                        Err(source) => coordinator.io(source),
                     };
                 }
                 () = left_limit.notified() => {
-                    return TunnelOutcome::Ended {
-                        end: TunnelEnd::ByteLimitLeftToRight,
-                        stats: load_stats(&left_to_right, &right_to_left),
-                    };
+                    return coordinator.ended(TunnelEnd::ByteLimitLeftToRight);
                 }
                 () = right_limit.notified() => {
-                    return TunnelOutcome::Ended {
-                        end: TunnelEnd::ByteLimitRightToLeft,
-                        stats: load_stats(&left_to_right, &right_to_left),
-                    };
+                    return coordinator.ended(TunnelEnd::ByteLimitRightToLeft);
                 }
-                () = sleep_until(lifetime_deadline) => {
-                    return TunnelOutcome::Ended {
-                        end: TunnelEnd::LifetimeTimeout,
-                        stats: load_stats(&left_to_right, &right_to_left),
-                    };
+                () = sleep_until(coordinator.lifetime_deadline) => {
+                    return coordinator.ended(TunnelEnd::LifetimeTimeout);
                 }
-                () = sleep_until(idle_deadline) => {
-                    return TunnelOutcome::Ended {
-                        end: TunnelEnd::IdleTimeout,
-                        stats: load_stats(&left_to_right, &right_to_left),
-                    };
+                () = sleep_until(coordinator.idle_deadline) => {
+                    return coordinator.ended(TunnelEnd::IdleTimeout);
                 }
                 Some(()) = activity_rx.recv() => {
-                    idle_deadline = Instant::now() + self.limits.idle_timeout;
+                    coordinator.progress();
                 }
             }
         }
@@ -369,9 +399,7 @@ impl BoundedTunnel {
         let left_to_right = Arc::new(AtomicU64::new(0));
         let right_to_left = Arc::new(AtomicU64::new(0));
         let mut buffer = vec![0; self.limits.buffer_size];
-        let started = Instant::now();
-        let lifetime_deadline = started + self.limits.lifetime_timeout;
-        let mut idle_deadline = started + self.limits.idle_timeout;
+        let mut coordinator = TunnelCoordinator::new(self.limits, left_to_right, right_to_left);
         let mut downstream_open = true;
         let mut upstream_read_open = true;
         let mut upstream_write_open = true;
@@ -381,16 +409,16 @@ impl BoundedTunnel {
             if !response_open && !upstream_write_open {
                 return TunnelOutcome::Ended {
                     end: TunnelEnd::Eof,
-                    stats: load_stats(&left_to_right, &right_to_left),
+                    stats: coordinator.stats(),
                 };
             }
 
-            let right_to_left_current = right_to_left.load(Ordering::Relaxed);
+            let right_to_left_current = coordinator.right_to_left.load(Ordering::Relaxed);
             if right_to_left_current >= self.limits.max_bytes_per_direction {
                 return h2_ended(
                     &mut downstream,
                     TunnelEnd::ByteLimitRightToLeft,
-                    load_stats(&left_to_right, &right_to_left),
+                    coordinator.stats(),
                 )
                 .await;
             }
@@ -401,8 +429,8 @@ impl BoundedTunnel {
 
             let event = if downstream_open {
                 tokio::select! {
-                    () = sleep_until(lifetime_deadline) => H2RelayEvent::LifetimeTimeout,
-                    () = sleep_until(idle_deadline) => H2RelayEvent::IdleTimeout,
+                    () = sleep_until(coordinator.lifetime_deadline) => H2RelayEvent::LifetimeTimeout,
+                    () = sleep_until(coordinator.idle_deadline) => H2RelayEvent::IdleTimeout,
                     result = downstream.recv_data() => H2RelayEvent::DownstreamData(result),
                     result = upstream.read(&mut buffer[..read_limit]), if upstream_read_open => {
                         H2RelayEvent::UpstreamData(result)
@@ -410,8 +438,8 @@ impl BoundedTunnel {
                 }
             } else {
                 tokio::select! {
-                    () = sleep_until(lifetime_deadline) => H2RelayEvent::LifetimeTimeout,
-                    () = sleep_until(idle_deadline) => H2RelayEvent::IdleTimeout,
+                    () = sleep_until(coordinator.lifetime_deadline) => H2RelayEvent::LifetimeTimeout,
+                    () = sleep_until(coordinator.idle_deadline) => H2RelayEvent::IdleTimeout,
                     result = downstream.wait_closed() => H2RelayEvent::DownstreamClosed(result),
                     result = upstream.read(&mut buffer[..read_limit]), if upstream_read_open => {
                         H2RelayEvent::UpstreamData(result)
@@ -424,17 +452,13 @@ impl BoundedTunnel {
                     return h2_ended(
                         &mut downstream,
                         TunnelEnd::LifetimeTimeout,
-                        load_stats(&left_to_right, &right_to_left),
+                        coordinator.stats(),
                     )
                     .await;
                 }
                 H2RelayEvent::IdleTimeout => {
-                    return h2_ended(
-                        &mut downstream,
-                        TunnelEnd::IdleTimeout,
-                        load_stats(&left_to_right, &right_to_left),
-                    )
-                    .await;
+                    return h2_ended(&mut downstream, TunnelEnd::IdleTimeout, coordinator.stats())
+                        .await;
                 }
                 H2RelayEvent::DownstreamData(result) => {
                     let data = match result {
@@ -444,8 +468,8 @@ impl BoundedTunnel {
                             if upstream_write_open {
                                 match shutdown_with_deadlines(
                                     &mut upstream,
-                                    lifetime_deadline,
-                                    idle_deadline,
+                                    coordinator.lifetime_deadline,
+                                    coordinator.idle_deadline,
                                 )
                                 .await
                                 {
@@ -454,7 +478,7 @@ impl BoundedTunnel {
                                         return h2_operation_failure(
                                             &mut downstream,
                                             error,
-                                            load_stats(&left_to_right, &right_to_left),
+                                            coordinator.stats(),
                                         )
                                         .await;
                                     }
@@ -463,20 +487,15 @@ impl BoundedTunnel {
                             continue;
                         }
                         Err(source) => {
-                            return h2_io(
-                                &mut downstream,
-                                load_stats(&left_to_right, &right_to_left),
-                                source,
-                            )
-                            .await;
+                            return h2_io(&mut downstream, coordinator.stats(), source).await;
                         }
                     };
-                    let left_to_right_current = left_to_right.load(Ordering::Relaxed);
+                    let left_to_right_current = coordinator.left_to_right.load(Ordering::Relaxed);
                     if left_to_right_current >= self.limits.max_bytes_per_direction {
                         return h2_ended(
                             &mut downstream,
                             TunnelEnd::ByteLimitLeftToRight,
-                            load_stats(&left_to_right, &right_to_left),
+                            coordinator.stats(),
                         )
                         .await;
                     }
@@ -490,32 +509,32 @@ impl BoundedTunnel {
                         if let Err(error) = write_with_deadlines(
                             &mut upstream,
                             &data[..allowed],
-                            lifetime_deadline,
-                            idle_deadline,
+                            coordinator.lifetime_deadline,
+                            coordinator.idle_deadline,
                         )
                         .await
                         {
                             return h2_operation_failure(
                                 &mut downstream,
                                 error,
-                                load_stats(&left_to_right, &right_to_left),
+                                coordinator.stats(),
                             )
                             .await;
                         }
-                        left_to_right.fetch_add(
+                        coordinator.left_to_right.fetch_add(
                             u64::try_from(allowed).unwrap_or(u64::MAX),
                             Ordering::Relaxed,
                         );
-                        idle_deadline = Instant::now() + self.limits.idle_timeout;
+                        coordinator.progress();
                     }
                     if allowed < data.len()
-                        || left_to_right.load(Ordering::Relaxed)
+                        || coordinator.left_to_right.load(Ordering::Relaxed)
                             >= self.limits.max_bytes_per_direction
                     {
                         return h2_ended(
                             &mut downstream,
                             TunnelEnd::ByteLimitLeftToRight,
-                            load_stats(&left_to_right, &right_to_left),
+                            coordinator.stats(),
                         )
                         .await;
                     }
@@ -527,36 +546,31 @@ impl BoundedTunnel {
                         }
                         Err(source) => source,
                     };
-                    return h2_io(
-                        &mut downstream,
-                        load_stats(&left_to_right, &right_to_left),
-                        source,
-                    )
-                    .await;
+                    return h2_io(&mut downstream, coordinator.stats(), source).await;
                 }
                 H2RelayEvent::UpstreamData(result) => {
                     match relay_h2_upstream_read(
                         &mut downstream,
                         result,
                         &buffer,
-                        &right_to_left,
+                        &coordinator.right_to_left,
                         self.limits.max_bytes_per_direction,
-                        lifetime_deadline,
-                        self.limits.idle_timeout,
-                        &mut idle_deadline,
+                        coordinator.lifetime_deadline,
+                        coordinator.idle_deadline,
                     )
                     .await
                     {
-                        Ok(H2UpstreamEvent::Continue) => {}
+                        Ok(H2UpstreamEvent::Continue) => coordinator.progress(),
                         Ok(H2UpstreamEvent::Eof) => {
                             upstream_read_open = false;
                             response_open = false;
                         }
                         Ok(H2UpstreamEvent::Limit) => {
+                            coordinator.progress();
                             return h2_ended(
                                 &mut downstream,
                                 TunnelEnd::ByteLimitRightToLeft,
-                                load_stats(&left_to_right, &right_to_left),
+                                coordinator.stats(),
                             )
                             .await;
                         }
@@ -564,7 +578,7 @@ impl BoundedTunnel {
                             return h2_operation_failure(
                                 &mut downstream,
                                 error,
-                                load_stats(&left_to_right, &right_to_left),
+                                coordinator.stats(),
                             )
                             .await;
                         }
@@ -605,8 +619,7 @@ async fn relay_h2_upstream_read<S>(
     transferred: &AtomicU64,
     limit: u64,
     lifetime_deadline: Instant,
-    idle_timeout: Duration,
-    idle_deadline: &mut Instant,
+    idle_deadline: Instant,
 ) -> Result<H2UpstreamEvent, OperationError>
 where
     S: H2TunnelStream,
@@ -618,7 +631,7 @@ where
             Bytes::new(),
             true,
             lifetime_deadline,
-            *idle_deadline,
+            idle_deadline,
         )
         .await?;
         return Ok(H2UpstreamEvent::Eof);
@@ -631,14 +644,13 @@ where
         Bytes::copy_from_slice(&buffer[..allowed]),
         end,
         lifetime_deadline,
-        *idle_deadline,
+        idle_deadline,
     )
     .await?;
     transferred.fetch_add(
         u64::try_from(allowed).unwrap_or(u64::MAX),
         Ordering::Relaxed,
     );
-    *idle_deadline = Instant::now() + idle_timeout;
     if end {
         Ok(H2UpstreamEvent::Limit)
     } else {
@@ -824,9 +836,7 @@ where
     L: Future<Output = io::Result<PumpEnd>>,
     R: Future<Output = io::Result<PumpEnd>>,
 {
-    let started = Instant::now();
-    let lifetime_deadline = started + limits.lifetime_timeout;
-    let mut idle_deadline = started + limits.idle_timeout;
+    let mut coordinator = TunnelCoordinator::new(limits, left_to_right, right_to_left);
     tokio::pin!(left_pump);
     tokio::pin!(right_pump);
     let mut left_end = None;
@@ -834,51 +844,34 @@ where
 
     loop {
         if left_end == Some(PumpEnd::Eof) && right_end == Some(PumpEnd::Eof) {
-            return TunnelOutcome::Ended {
-                end: TunnelEnd::Eof,
-                stats: load_stats(&left_to_right, &right_to_left),
-            };
+            return coordinator.ended(TunnelEnd::Eof);
         }
         tokio::select! {
-            () = sleep_until(lifetime_deadline) => {
-                return TunnelOutcome::Ended {
-                    end: TunnelEnd::LifetimeTimeout,
-                    stats: load_stats(&left_to_right, &right_to_left),
-                };
+            () = sleep_until(coordinator.lifetime_deadline) => {
+                return coordinator.ended(TunnelEnd::LifetimeTimeout);
             }
-            () = sleep_until(idle_deadline) => {
-                return TunnelOutcome::Ended {
-                    end: TunnelEnd::IdleTimeout,
-                    stats: load_stats(&left_to_right, &right_to_left),
-                };
+            () = sleep_until(coordinator.idle_deadline) => {
+                return coordinator.ended(TunnelEnd::IdleTimeout);
             }
             Some(()) = activity_rx.recv() => {
-                idle_deadline = Instant::now() + limits.idle_timeout;
+                coordinator.progress();
             }
             result = &mut left_pump, if left_end.is_none() => {
                 match result {
                     Ok(PumpEnd::Eof) => left_end = Some(PumpEnd::Eof),
-                    Ok(PumpEnd::Limit) => return TunnelOutcome::Ended {
-                        end: TunnelEnd::ByteLimitLeftToRight,
-                        stats: load_stats(&left_to_right, &right_to_left),
-                    },
-                    Err(source) => return TunnelOutcome::Io {
-                        stats: load_stats(&left_to_right, &right_to_left),
-                        source,
-                    },
+                    Ok(PumpEnd::Limit) => {
+                        return coordinator.ended(TunnelEnd::ByteLimitLeftToRight);
+                    }
+                    Err(source) => return coordinator.io(source),
                 }
             }
             result = &mut right_pump, if right_end.is_none() => {
                 match result {
                     Ok(PumpEnd::Eof) => right_end = Some(PumpEnd::Eof),
-                    Ok(PumpEnd::Limit) => return TunnelOutcome::Ended {
-                        end: TunnelEnd::ByteLimitRightToLeft,
-                        stats: load_stats(&left_to_right, &right_to_left),
-                    },
-                    Err(source) => return TunnelOutcome::Io {
-                        stats: load_stats(&left_to_right, &right_to_left),
-                        source,
-                    },
+                    Ok(PumpEnd::Limit) => {
+                        return coordinator.ended(TunnelEnd::ByteLimitRightToLeft);
+                    }
+                    Err(source) => return coordinator.io(source),
                 }
             }
         }
@@ -964,13 +957,6 @@ where
 
 fn h3_io_error(error: h3::error::StreamError) -> io::Error {
     io::Error::other(error)
-}
-
-fn load_stats(left_to_right: &AtomicU64, right_to_left: &AtomicU64) -> TunnelStats {
-    TunnelStats {
-        left_to_right: left_to_right.load(Ordering::Relaxed),
-        right_to_left: right_to_left.load(Ordering::Relaxed),
-    }
 }
 
 #[cfg(test)]
