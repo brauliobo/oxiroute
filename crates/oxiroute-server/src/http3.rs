@@ -2473,6 +2473,16 @@ mod tests {
         assert_eq!(limits["maxResponseBodyBytes"], H3_MAX_RESPONSE_BODY_BYTES);
     }
 
+    #[test]
+    fn reports_forward_h3_cache_as_unsupported() {
+        let value = capability_snapshot(&[], RuntimeMode::Direct);
+
+        assert_eq!(
+            value["http3"]["forward"]["unsupported"],
+            serde_json::json!(["cache", "compression", "upgrades"])
+        );
+    }
+
     #[tokio::test]
     async fn h3_drain_waits_for_admitted_requests_to_finish() {
         let (request_cancel, cancelled) = watch::channel(false);

@@ -1,4 +1,4 @@
-use oxiroute_config::{load_lua, render_lua};
+use oxiroute_config::{ConfigError, load_lua, render_lua};
 
 fn proxy_config(stores: &str, cache: &str) -> String {
     format!(
@@ -364,6 +364,93 @@ fn renders_and_validates_forward_cache_policy() {
             "accepted invalid forward cache: {service}"
         );
     }
+}
+
+#[test]
+fn forward_listener_cache_support_matches_the_protocol_runtime() {
+    let service = r#"{
+      name = "egress",
+      enabled_versions = { "h1", "h2", "h3" },
+      cache = { store = "memory" },
+    }"#;
+    let cache_store = r#"cache_stores = {{ name = "memory", type = "memory" }},"#;
+    let tls = |version: &str, alpn: &str| {
+        format!(
+            r#"{{
+              name = "forward",
+              certificates = {{ "forward-cert" }},
+              default_certificate = "forward-cert",
+              min_version = "{version}",
+              alpn = {{ "{alpn}" }},
+            }}"#
+        )
+    };
+    let listener = |protocol: &str, bind: &str| {
+        format!(
+            r#"{{
+              name = "forward-{protocol}",
+              bind = {bind},
+              protocol = "forward_{protocol}",
+              service = "egress",
+              tls_profile = "forward",
+            }}"#
+        )
+    };
+    let config = |listener: &str, tls: &str| {
+        forward_config(service, listener, tls).replacen(
+            "  certificates = {",
+            &format!("  {cache_store}\n  certificates = {{"),
+            1,
+        )
+    };
+
+    load_lua(&config(
+        &listener(
+            "http1",
+            r#"{ type = "socket", address = "127.0.0.1:3128" }"#,
+        ),
+        &tls("1.2", "http/1.1"),
+    ))
+    .expect("forward HTTP/1 cache policy");
+    load_lua(&config(
+        &listener(
+            "http2",
+            r#"{ type = "socket", address = "127.0.0.1:3129" }"#,
+        ),
+        &tls("1.2", "h2"),
+    ))
+    .expect("forward HTTP/2 classic CONNECT remains valid");
+
+    let error = load_lua(&config(
+        &listener("http3", r#"{ type = "udp", address = "127.0.0.1:8443" }"#),
+        &tls("1.3", "h3"),
+    ))
+    .expect_err("forward HTTP/3 cache policy must be rejected");
+    let ConfigError::InvalidForwardProxyService {
+        service,
+        field,
+        detail,
+    } = error
+    else {
+        panic!("unexpected forward HTTP/3 cache error: {error}");
+    };
+    assert_eq!(service, "egress");
+    assert_eq!(field, "cache");
+    assert_eq!(
+        detail,
+        "is not supported by forward HTTP/3 listener `forward-http3`"
+    );
+
+    let uncached_h3 = r#"{
+      name = "egress",
+      enabled_versions = { "h1", "h2", "h3" },
+    }"#;
+    load_lua(&forward_config(
+        uncached_h3,
+        &listener("http3", r#"{ type = "udp", address = "127.0.0.1:8443" }"#),
+        &tls("1.3", "h3"),
+    ))
+    .expect("forward HTTP/3 classic CONNECT remains valid");
 }
 
 #[test]

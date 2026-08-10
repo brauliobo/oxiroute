@@ -1442,6 +1442,16 @@ fn validate_forward_listener(
             service.name
         )));
     }
+    if version == ForwardHttpVersion::H3 && service.header_policy.cache.is_some() {
+        return Err(ConfigError::InvalidForwardProxyService {
+            service: service.name.clone(),
+            field: "cache",
+            detail: format!(
+                "is not supported by forward HTTP/3 listener `{}`",
+                listener.name
+            ),
+        });
+    }
     if version == ForwardHttpVersion::H3
         && service
             .max_request_body_bytes
