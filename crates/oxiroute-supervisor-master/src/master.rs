@@ -9,7 +9,7 @@ use std::{
 
 use oxiroute_supervision::{
     GenerationId, Instance, InstanceId, Lifecycle, ReplacementAction, ReplacementError,
-    ReplacementEvent, ReplacementSupervisor,
+    ReplacementEvent, ReplacementPhase, ReplacementSupervisor,
 };
 use oxiroute_supervision_unix::FrameFlags;
 use oxiroute_supervisor_process::{
@@ -371,12 +371,15 @@ struct PreparedRequest {
     payload: Vec<u8>,
 }
 
+type SpawnAction<'a> = dyn FnMut(&Instance) -> Result<ManagedWorker, MasterError> + 'a;
+
 #[derive(Debug)]
 struct ManagedWorker {
     instance_id: InstanceId,
     generation: GenerationId,
     process: WorkerProcess,
     pending: Option<Pending>,
+    termination_deadline: Option<Instant>,
     state: WorkerState,
     channel_open: bool,
     status: Option<WorkerStatus>,
@@ -387,29 +390,10 @@ struct ManagedWorker {
 enum Stage {
     BootAdopting,
     BootActivating,
-    Running,
-    CandidateAdopting,
-    Quiescing,
-    CandidateActivating,
-    RollingBack {
-        active_reactivated: bool,
-        phase: FailurePhase,
-    },
-    RetiredDraining,
-    RetiredTerminating {
-        deadline: Option<Instant>,
-        failure: Option<FailurePhase>,
-    },
-    ShuttingDown {
-        deadline: Instant,
-        forced: bool,
-    },
-    Failing {
-        phase: FailurePhase,
-    },
-    Stopped {
-        forced: bool,
-    },
+    Operational,
+    ShuttingDown { deadline: Instant, forced: bool },
+    Failing { phase: FailurePhase },
+    Stopped { forced: bool },
     Failed,
 }
 
@@ -438,6 +422,7 @@ pub struct Master<E: ActionExecutor = SystemActionExecutor> {
     candidate: Option<ManagedWorker>,
     retired: Option<ManagedWorker>,
     deferred_active_exit: Option<ExitStatus>,
+    replacement_failure: Option<FailurePhase>,
     stage: Stage,
     next_request_id: u64,
     events: VecDeque<MasterEvent>,
@@ -503,6 +488,7 @@ impl<E: ActionExecutor> Master<E> {
             candidate: None,
             retired: None,
             deferred_active_exit: None,
+            replacement_failure: None,
             stage: Stage::BootAdopting,
             next_request_id: 1,
             events: VecDeque::new(),
@@ -536,7 +522,7 @@ impl<E: ActionExecutor> Master<E> {
         candidate: WorkerInput<F::Command>,
         now: Instant,
     ) -> Result<(), MasterError> {
-        if !matches!(self.stage, Stage::Running) {
+        if self.state() != MasterState::Running {
             return Err(MasterError::InvalidState(self.state()));
         }
         validate_identity(candidate.identity)?;
@@ -553,58 +539,41 @@ impl<E: ActionExecutor> Master<E> {
         let actions = validated.apply(ReplacementEvent::Begin {
             candidate: instance,
         })?;
-        expect_action(
-            &actions,
-            &ReplacementAction::Spawn {
-                instance: validated
-                    .candidate()
-                    .ok_or(MasterError::MissingWorker(WorkerRole::Candidate))?
-                    .clone(),
-            },
-        )?;
-        let process = match factory.spawn(candidate.command, candidate.identity) {
-            Ok(process) => process,
-            Err(error) => {
-                self.events.push_back(MasterEvent::SpawnFailed {
-                    instance_id: candidate.instance_id,
-                });
-                return Err(MasterError::Spawn(error.to_string()));
-            }
+        let candidate_id = candidate.instance_id.clone();
+        let generation = candidate.identity.generation;
+        let mut command = Some(candidate.command);
+        let mut spawn = |instance: &Instance| {
+            let process = factory
+                .spawn(
+                    command
+                        .take()
+                        .ok_or(MasterError::UnexpectedReplacementActions)?,
+                    candidate.identity,
+                )
+                .map_err(|error| MasterError::Spawn(error.to_string()))?;
+            Ok(ManagedWorker::new(
+                instance.instance_id.clone(),
+                generation,
+                process,
+            ))
         };
-        self.supervisor = Some(validated);
-        self.supervisor_mut()?
-            .apply(ReplacementEvent::CandidateSpawned {
-                instance_id: candidate.instance_id.clone(),
-            })?;
-        let actions =
-            self.supervisor_mut()?
-                .apply(ReplacementEvent::CandidateHandshakeComplete {
-                    instance_id: candidate.instance_id.clone(),
-                })?;
-        expect_action(
-            &actions,
-            &ReplacementAction::Prepare {
-                instance_id: candidate.instance_id.clone(),
-            },
-        )?;
-        self.candidate = Some(ManagedWorker::new(
-            candidate.instance_id.clone(),
-            candidate.identity.generation,
-            process,
-        ));
-        self.stage = Stage::CandidateAdopting;
-        self.events.push_back(MasterEvent::ReplacementStarted {
-            instance_id: candidate.instance_id,
-        });
-        if let Err(error) = self.issue_adoption(WorkerRole::Candidate, now) {
-            self.compensate_issue_error(
-                WorkerRole::Candidate,
-                ControlPhase::AdoptListeners,
-                FailurePhase::ListenerAdoption,
-                now,
-                error,
-            )?;
+        let original = self.supervisor.replace(validated);
+        if let Err(error) = self.execute_replacement_actions(actions, now, Some(&mut spawn)) {
+            self.supervisor = original;
+            return Err(error);
         }
+        self.apply_replacement_event(
+            ReplacementEvent::CandidateSpawned {
+                instance_id: candidate_id.clone(),
+            },
+            now,
+        )?;
+        self.apply_replacement_event(
+            ReplacementEvent::CandidateHandshakeComplete {
+                instance_id: candidate_id,
+            },
+            now,
+        )?;
         Ok(())
     }
 
@@ -622,7 +591,8 @@ impl<E: ActionExecutor> Master<E> {
         if let Stage::Failing { phase } = self.stage {
             self.fail_master(phase)?;
         }
-        let prioritize_activation = matches!(self.stage, Stage::CandidateActivating);
+        let prioritize_activation =
+            self.replacement_phase() == Some(ReplacementPhase::ActivatingCandidate);
         let candidate_id = self.candidate_id().ok().cloned();
         let mut observed = Vec::with_capacity(3);
         for role in [
@@ -677,6 +647,7 @@ impl<E: ActionExecutor> Master<E> {
                 forced: false,
             };
             self.supervisor = None;
+            self.replacement_failure = None;
             self.events.push_back(MasterEvent::ShutdownStarted);
             for role in [
                 WorkerRole::Active,
@@ -719,18 +690,29 @@ impl<E: ActionExecutor> Master<E> {
     }
 
     /// Returns the current public state.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal operational stage has lost its replacement supervisor.
     #[must_use]
-    pub const fn state(&self) -> MasterState {
+    pub fn state(&self) -> MasterState {
         match self.stage {
             Stage::BootAdopting => MasterState::Starting,
             Stage::BootActivating => MasterState::ActivatingInitial,
-            Stage::Running => MasterState::Running,
-            Stage::CandidateAdopting => MasterState::AdoptingCandidate,
-            Stage::Quiescing => MasterState::Quiescing,
-            Stage::CandidateActivating => MasterState::ActivatingCandidate,
-            Stage::RollingBack { .. } => MasterState::RollingBack,
-            Stage::RetiredDraining => MasterState::DrainingRetired,
-            Stage::RetiredTerminating { .. } => MasterState::StoppingRetired,
+            Stage::Operational => match self
+                .supervisor
+                .as_ref()
+                .expect("operational master has a replacement supervisor")
+                .phase()
+            {
+                ReplacementPhase::Running => MasterState::Running,
+                ReplacementPhase::AdoptingCandidate => MasterState::AdoptingCandidate,
+                ReplacementPhase::Quiescing => MasterState::Quiescing,
+                ReplacementPhase::ActivatingCandidate => MasterState::ActivatingCandidate,
+                ReplacementPhase::RollingBack => MasterState::RollingBack,
+                ReplacementPhase::DrainingRetired => MasterState::DrainingRetired,
+                ReplacementPhase::StoppingRetired => MasterState::StoppingRetired,
+            },
             Stage::ShuttingDown { .. } => MasterState::ShuttingDown,
             Stage::Failing { .. } => MasterState::Failing,
             Stage::Stopped { .. } => MasterState::Stopped,
@@ -795,11 +777,7 @@ impl<E: ActionExecutor> Master<E> {
     #[must_use]
     pub fn next_deadline(&self) -> Option<Instant> {
         match self.stage {
-            Stage::RetiredTerminating {
-                deadline: Some(deadline),
-                ..
-            }
-            | Stage::ShuttingDown { deadline, .. } => Some(deadline),
+            Stage::ShuttingDown { deadline, .. } => Some(deadline),
             _ => [
                 self.active.as_ref(),
                 self.candidate.as_ref(),
@@ -807,7 +785,14 @@ impl<E: ActionExecutor> Master<E> {
             ]
             .into_iter()
             .flatten()
-            .filter_map(|worker| worker.pending.map(|pending| pending.deadline))
+            .filter_map(|worker| {
+                worker
+                    .pending
+                    .map(|pending| pending.deadline)
+                    .into_iter()
+                    .chain(worker.termination_deadline)
+                    .min()
+            })
             .min(),
         }
     }
@@ -962,7 +947,7 @@ impl<E: ActionExecutor> Master<E> {
     fn observe(&mut self, role: WorkerRole) -> Result<Option<Observed>, MasterError> {
         if role == WorkerRole::Active
             && self.deferred_active_exit.is_some()
-            && matches!(self.stage, Stage::CandidateActivating)
+            && self.replacement_phase() == Some(ReplacementPhase::ActivatingCandidate)
         {
             return Ok(None);
         }
@@ -1130,78 +1115,69 @@ impl<E: ActionExecutor> Master<E> {
                     generation_id: active.generation,
                     lifecycle: Lifecycle::Active,
                 })?);
-                self.stage = Stage::Running;
+                self.stage = Stage::Operational;
                 self.events.push_back(MasterEvent::InitialActivated {
                     instance_id: active.instance_id.clone(),
                 });
                 Ok(())
             }
-            (Stage::CandidateAdopting, WorkerRole::Candidate, ControlPhase::AdoptListeners) => {
-                let candidate = self.candidate_id()?.clone();
-                let actions =
-                    self.supervisor_mut()?
-                        .apply(ReplacementEvent::CandidatePrepared {
-                            instance_id: candidate,
-                        })?;
-                let active = self.active_id()?.clone();
-                expect_action(
-                    &actions,
-                    &ReplacementAction::Quiesce {
-                        instance_id: active,
+            (Stage::Operational, WorkerRole::Candidate, ControlPhase::AdoptListeners)
+                if self.replacement_phase() == Some(ReplacementPhase::AdoptingCandidate) =>
+            {
+                self.apply_replacement_event(
+                    ReplacementEvent::CandidatePrepared {
+                        instance_id: self.candidate_id()?.clone(),
                     },
-                )?;
-                self.stage = Stage::Quiescing;
-                self.issue_or_compensate(
-                    WorkerRole::Active,
-                    ControlPhase::Quiesce,
                     now,
-                    self.config.quiesce_timeout(),
-                    FailurePhase::Quiesce,
                 )
             }
-            (Stage::Quiescing, WorkerRole::Active, ControlPhase::Quiesce) => {
-                let active = self.active_id()?.clone();
-                let actions = self
-                    .supervisor_mut()?
-                    .apply(ReplacementEvent::ActiveQuiesced {
-                        instance_id: active,
-                    })?;
-                let candidate = self.candidate_id()?.clone();
-                expect_action(
-                    &actions,
-                    &ReplacementAction::Activate {
-                        instance_id: candidate,
+            (Stage::Operational, WorkerRole::Active, ControlPhase::Quiesce)
+                if self.replacement_phase() == Some(ReplacementPhase::Quiescing) =>
+            {
+                self.apply_replacement_event(
+                    ReplacementEvent::ActiveQuiesced {
+                        instance_id: self.active_id()?.clone(),
                     },
-                )?;
-                self.stage = Stage::CandidateActivating;
-                self.issue_or_compensate(
-                    WorkerRole::Candidate,
-                    ControlPhase::Activate,
                     now,
-                    self.config.activation_timeout(),
-                    FailurePhase::Activation,
                 )
             }
-            (Stage::CandidateActivating, WorkerRole::Candidate, ControlPhase::Activate) => {
-                self.commit_candidate(now)
+            (Stage::Operational, WorkerRole::Candidate, ControlPhase::Activate)
+                if self.replacement_phase() == Some(ReplacementPhase::ActivatingCandidate) =>
+            {
+                self.apply_replacement_event(
+                    ReplacementEvent::CandidateActivated {
+                        instance_id: self.candidate_id()?.clone(),
+                    },
+                    now,
+                )
             }
-            (Stage::RollingBack { phase, .. }, WorkerRole::Active, ControlPhase::Reactivate) => {
-                let active = self.active_id()?.clone();
-                self.supervisor_mut()?
-                    .apply(ReplacementEvent::ActiveReactivated {
-                        instance_id: active,
-                    })?;
-                self.stage = Stage::RollingBack {
-                    active_reactivated: true,
-                    phase,
-                };
+            (Stage::Operational, WorkerRole::Active, ControlPhase::Reactivate)
+                if self.replacement_phase() == Some(ReplacementPhase::RollingBack) =>
+            {
+                self.apply_replacement_event(
+                    ReplacementEvent::ActiveReactivated {
+                        instance_id: self.active_id()?.clone(),
+                    },
+                    now,
+                )?;
                 self.maybe_finish_rollback()
             }
-            (Stage::RetiredDraining, WorkerRole::Retired, ControlPhase::Drain) => {
-                self.finish_drain(now)
+            (Stage::Operational, WorkerRole::Retired, ControlPhase::Drain)
+                if self.replacement_phase() == Some(ReplacementPhase::DrainingRetired) =>
+            {
+                self.apply_replacement_event(
+                    ReplacementEvent::RetiredDrained {
+                        instance_id: self.retired_id()?.clone(),
+                    },
+                    now,
+                )
             }
-            (Stage::RetiredTerminating { .. }, WorkerRole::Retired, ControlPhase::Shutdown)
-            | (Stage::ShuttingDown { .. }, _, ControlPhase::Shutdown) => Ok(()),
+            (Stage::Operational, WorkerRole::Retired, ControlPhase::Shutdown)
+                if self.replacement_phase() == Some(ReplacementPhase::StoppingRetired) =>
+            {
+                Ok(())
+            }
+            (Stage::ShuttingDown { .. }, _, ControlPhase::Shutdown) => Ok(()),
             _ => Err(MasterError::UnexpectedAcknowledgement),
         }
     }
@@ -1251,20 +1227,175 @@ impl<E: ActionExecutor> Master<E> {
         Ok(())
     }
 
-    fn commit_candidate(&mut self, now: Instant) -> Result<(), MasterError> {
-        let candidate = self.candidate_id()?.clone();
-        let actions = self
-            .supervisor_mut()?
-            .apply(ReplacementEvent::CandidateActivated {
-                instance_id: candidate.clone(),
-            })?;
-        let retired_id = self.active_id()?.clone();
-        expect_action(
-            &actions,
-            &ReplacementAction::Drain {
-                instance_id: retired_id.clone(),
-            },
-        )?;
+    fn apply_replacement_event(
+        &mut self,
+        event: ReplacementEvent,
+        now: Instant,
+    ) -> Result<(), MasterError> {
+        let actions = self.supervisor_mut()?.apply(event)?;
+        self.execute_replacement_actions(actions, now, None)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn execute_replacement_actions(
+        &mut self,
+        actions: Vec<ReplacementAction>,
+        now: Instant,
+        mut spawn: Option<&mut SpawnAction<'_>>,
+    ) -> Result<(), MasterError> {
+        let mut actions = VecDeque::from(actions);
+        while let Some(action) = actions.pop_front() {
+            match action {
+                ReplacementAction::Spawn { instance } => {
+                    let result = spawn
+                        .as_deref_mut()
+                        .ok_or(MasterError::UnexpectedReplacementActions)?(
+                        &instance
+                    );
+                    let worker = match result {
+                        Ok(worker) => worker,
+                        Err(error) => {
+                            self.events.push_back(MasterEvent::SpawnFailed {
+                                instance_id: instance.instance_id,
+                            });
+                            return Err(error);
+                        }
+                    };
+                    self.candidate = Some(worker);
+                    self.events.push_back(MasterEvent::ReplacementStarted {
+                        instance_id: instance.instance_id,
+                    });
+                }
+                ReplacementAction::Prepare { instance_id } => {
+                    let role = self
+                        .role_for(&instance_id)
+                        .ok_or(MasterError::MissingWorker(WorkerRole::Candidate))?;
+                    if role != WorkerRole::Candidate {
+                        return Err(MasterError::UnexpectedReplacementActions);
+                    }
+                    if let Err(error) = self.issue_adoption(role, now) {
+                        self.compensate_issue_error(
+                            role,
+                            ControlPhase::AdoptListeners,
+                            FailurePhase::ListenerAdoption,
+                            now,
+                            error,
+                        )?;
+                    }
+                }
+                ReplacementAction::Activate { instance_id } => {
+                    let role = self
+                        .role_for(&instance_id)
+                        .ok_or(MasterError::UnexpectedReplacementActions)?;
+                    let (phase, failure) = match role {
+                        WorkerRole::Active => {
+                            (ControlPhase::Reactivate, FailurePhase::Reactivation)
+                        }
+                        WorkerRole::Candidate => (ControlPhase::Activate, FailurePhase::Activation),
+                        WorkerRole::Retired => {
+                            return Err(MasterError::UnexpectedReplacementActions);
+                        }
+                    };
+                    self.issue_or_compensate(
+                        role,
+                        phase,
+                        now,
+                        self.config.activation_timeout(),
+                        failure,
+                    )?;
+                }
+                ReplacementAction::Quiesce { instance_id } => {
+                    if self.role_for(&instance_id) != Some(WorkerRole::Active) {
+                        return Err(MasterError::UnexpectedReplacementActions);
+                    }
+                    self.issue_or_compensate(
+                        WorkerRole::Active,
+                        ControlPhase::Quiesce,
+                        now,
+                        self.config.quiesce_timeout(),
+                        FailurePhase::Quiesce,
+                    )?;
+                }
+                ReplacementAction::Drain { instance_id } => {
+                    self.commit_candidate(&instance_id)?;
+                    if self.deferred_active_exit.take().is_some() {
+                        self.fail_retired(FailurePhase::Crash, now)?;
+                        let retired = self.retired_id()?.clone();
+                        self.retired.take();
+                        self.apply_replacement_event(
+                            ReplacementEvent::RetiredStopped {
+                                instance_id: retired,
+                            },
+                            now,
+                        )?;
+                        self.complete_failed_retired()?;
+                    } else {
+                        self.issue_or_compensate(
+                            WorkerRole::Retired,
+                            ControlPhase::Drain,
+                            now,
+                            self.config.drain_timeout(),
+                            FailurePhase::Drain,
+                        )?;
+                    }
+                }
+                ReplacementAction::Snapshot { instance_id } => {
+                    actions.extend(
+                        self.supervisor_mut()?
+                            .apply(ReplacementEvent::RetiredSnapshotCaptured { instance_id })?,
+                    );
+                }
+                ReplacementAction::Terminate { instance_id } => {
+                    let role = self
+                        .role_for(&instance_id)
+                        .ok_or(MasterError::UnexpectedReplacementActions)?;
+                    match role {
+                        WorkerRole::Candidate => self.force_role(role)?,
+                        WorkerRole::Retired => match self.issue(
+                            role,
+                            ControlPhase::Shutdown,
+                            now,
+                            self.config.shutdown_timeout(),
+                        ) {
+                            Ok(action_deadline) => {
+                                self.mark_terminating(role, false)?;
+                                self.worker_mut(role)
+                                    .ok_or(MasterError::MissingWorker(role))?
+                                    .termination_deadline = Some(action_deadline);
+                            }
+                            Err(error) if error.is_issue_failure() => {
+                                self.record_issue_failure(role, ControlPhase::Shutdown, error)?;
+                                self.fail_retired(FailurePhase::Shutdown, now)?;
+                            }
+                            Err(error) => return Err(error),
+                        },
+                        WorkerRole::Active => {
+                            return Err(MasterError::UnexpectedReplacementActions);
+                        }
+                    }
+                }
+                ReplacementAction::Kill { instance_id } => {
+                    let role = self
+                        .role_for(&instance_id)
+                        .ok_or(MasterError::UnexpectedReplacementActions)?;
+                    self.force_role(role)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn commit_candidate(&mut self, retired_id: &InstanceId) -> Result<(), MasterError> {
+        let candidate = self
+            .supervisor
+            .as_ref()
+            .ok_or(MasterError::MissingSupervisor)?
+            .active()
+            .instance_id
+            .clone();
+        if self.active_id()? != retired_id || self.candidate_id()? != &candidate {
+            return Err(MasterError::UnexpectedReplacementActions);
+        }
         let old = self
             .active
             .take()
@@ -1275,68 +1406,11 @@ impl<E: ActionExecutor> Master<E> {
             .ok_or(MasterError::MissingWorker(WorkerRole::Candidate))?;
         self.active = Some(promoted);
         self.retired = Some(old);
-        self.stage = Stage::RetiredDraining;
         self.events.push_back(MasterEvent::ReplacementCommitted {
             active: candidate,
-            retired: retired_id,
+            retired: retired_id.clone(),
         });
-        if self.deferred_active_exit.take().is_some() {
-            self.retired.take();
-            return self.complete_failed_retired(FailurePhase::Crash);
-        }
-        self.issue_or_compensate(
-            WorkerRole::Retired,
-            ControlPhase::Drain,
-            now,
-            self.config.drain_timeout(),
-            FailurePhase::Drain,
-        )
-    }
-
-    fn finish_drain(&mut self, now: Instant) -> Result<(), MasterError> {
-        let retired = self.retired_id()?.clone();
-        let actions = self
-            .supervisor_mut()?
-            .apply(ReplacementEvent::RetiredDrained {
-                instance_id: retired.clone(),
-            })?;
-        expect_action(
-            &actions,
-            &ReplacementAction::Snapshot {
-                instance_id: retired.clone(),
-            },
-        )?;
-        let actions = self
-            .supervisor_mut()?
-            .apply(ReplacementEvent::RetiredSnapshotCaptured {
-                instance_id: retired.clone(),
-            })?;
-        expect_action(
-            &actions,
-            &ReplacementAction::Terminate {
-                instance_id: retired,
-            },
-        )?;
-        match self.issue(
-            WorkerRole::Retired,
-            ControlPhase::Shutdown,
-            now,
-            self.config.shutdown_timeout(),
-        ) {
-            Ok(action_deadline) => {
-                self.mark_terminating(WorkerRole::Retired, false)?;
-                self.stage = Stage::RetiredTerminating {
-                    deadline: Some(action_deadline),
-                    failure: None,
-                };
-                Ok(())
-            }
-            Err(error) if error.is_issue_failure() => {
-                self.record_issue_failure(WorkerRole::Retired, ControlPhase::Shutdown, error)?;
-                self.fail_retired(FailurePhase::Shutdown)
-            }
-            Err(error) => Err(error),
-        }
+        Ok(())
     }
 
     fn handle_phase_failure(
@@ -1345,16 +1419,25 @@ impl<E: ActionExecutor> Master<E> {
         phase: FailurePhase,
         now: Instant,
     ) -> Result<(), MasterError> {
-        match (self.stage, role) {
+        match (self.stage, self.replacement_phase(), role) {
             (
-                Stage::CandidateAdopting | Stage::Quiescing | Stage::CandidateActivating,
+                Stage::Operational,
+                Some(
+                    ReplacementPhase::AdoptingCandidate
+                    | ReplacementPhase::Quiescing
+                    | ReplacementPhase::ActivatingCandidate,
+                ),
                 WorkerRole::Candidate,
             )
-            | (Stage::Quiescing, WorkerRole::Active) => self.begin_rollback(phase, now, false),
-            (Stage::RetiredDraining | Stage::RetiredTerminating { .. }, WorkerRole::Retired) => {
-                self.fail_retired(phase)
+            | (Stage::Operational, Some(ReplacementPhase::Quiescing), WorkerRole::Active) => {
+                self.begin_rollback(phase, now)
             }
-            (Stage::ShuttingDown { .. }, _) => self.force_role(role),
+            (
+                Stage::Operational,
+                Some(ReplacementPhase::DrainingRetired | ReplacementPhase::StoppingRetired),
+                WorkerRole::Retired,
+            ) => self.fail_retired(phase, now),
+            (Stage::ShuttingDown { .. }, _, _) => self.force_role(role),
             _ => self.fail_master(phase),
         }
     }
@@ -1387,7 +1470,9 @@ impl<E: ActionExecutor> Master<E> {
             .ok_or(MasterError::MissingWorker(role))?
             .instance_id
             .clone();
-        if matches!(self.stage, Stage::CandidateActivating) && role == WorkerRole::Active {
+        if self.replacement_phase() == Some(ReplacementPhase::ActivatingCandidate)
+            && role == WorkerRole::Active
+        {
             self.deferred_active_exit = Some(status);
             self.events.push_back(MasterEvent::WorkerExited {
                 role,
@@ -1396,45 +1481,70 @@ impl<E: ActionExecutor> Master<E> {
             });
             return Ok(());
         }
-        self.take_worker(role);
         self.events.push_back(MasterEvent::WorkerExited {
             role,
             instance_id: instance_id.clone(),
             status,
         });
-        match (self.stage, role) {
-            (Stage::Failing { .. } | Stage::ShuttingDown { .. }, _) => Ok(()),
-            (Stage::RollingBack { .. }, WorkerRole::Candidate) => {
-                self.supervisor_mut()?
-                    .apply(ReplacementEvent::CandidateStopped { instance_id })?;
+        match (self.stage, self.replacement_phase(), role) {
+            (Stage::Failing { .. } | Stage::ShuttingDown { .. }, _, _) => {
+                self.take_worker(role);
+                Ok(())
+            }
+            (Stage::Operational, Some(ReplacementPhase::RollingBack), WorkerRole::Candidate) => {
+                self.take_worker(role);
+                self.apply_replacement_event(
+                    ReplacementEvent::CandidateStopped { instance_id },
+                    now,
+                )?;
                 self.maybe_finish_rollback()
             }
-            (Stage::RetiredTerminating { failure, .. }, WorkerRole::Retired) => {
-                if let Some(phase) = failure {
-                    self.complete_failed_retired(phase)
+            (Stage::Operational, Some(ReplacementPhase::StoppingRetired), WorkerRole::Retired) => {
+                self.take_worker(role);
+                self.apply_replacement_event(
+                    ReplacementEvent::RetiredStopped { instance_id },
+                    now,
+                )?;
+                if self.replacement_failure.is_some() {
+                    self.complete_failed_retired()
                 } else {
-                    self.supervisor_mut()?
-                        .apply(ReplacementEvent::RetiredStopped { instance_id })?;
                     self.complete_replacement()
                 }
             }
             (
-                Stage::CandidateAdopting | Stage::Quiescing | Stage::CandidateActivating,
+                Stage::Operational,
+                Some(
+                    ReplacementPhase::AdoptingCandidate
+                    | ReplacementPhase::Quiescing
+                    | ReplacementPhase::ActivatingCandidate,
+                ),
                 WorkerRole::Candidate,
-            ) => self.begin_rollback(FailurePhase::Crash, now, true),
-            (Stage::RetiredDraining, WorkerRole::Retired) => {
-                self.complete_failed_retired(FailurePhase::Crash)
+            ) => {
+                self.begin_rollback(FailurePhase::Crash, now)?;
+                self.take_worker(role);
+                self.apply_replacement_event(
+                    ReplacementEvent::CandidateStopped { instance_id },
+                    now,
+                )?;
+                self.maybe_finish_rollback()
             }
-            _ => self.fail_master(FailurePhase::Crash),
+            (Stage::Operational, Some(ReplacementPhase::DrainingRetired), WorkerRole::Retired) => {
+                self.fail_retired(FailurePhase::Crash, now)?;
+                self.take_worker(role);
+                self.apply_replacement_event(
+                    ReplacementEvent::RetiredStopped { instance_id },
+                    now,
+                )?;
+                self.complete_failed_retired()
+            }
+            _ => {
+                self.take_worker(role);
+                self.fail_master(FailurePhase::Crash)
+            }
         }
     }
 
-    fn begin_rollback(
-        &mut self,
-        phase: FailurePhase,
-        now: Instant,
-        candidate_exited: bool,
-    ) -> Result<(), MasterError> {
+    fn begin_rollback(&mut self, phase: FailurePhase, now: Instant) -> Result<(), MasterError> {
         if self.deferred_active_exit.is_some() {
             return self.fail_master(FailurePhase::Crash);
         }
@@ -1445,99 +1555,47 @@ impl<E: ActionExecutor> Master<E> {
             .ok_or(MasterError::MissingWorker(WorkerRole::Candidate))?
             .instance_id
             .clone();
-        let actions = self
-            .supervisor_mut()?
-            .apply(ReplacementEvent::CandidateFailed {
-                instance_id: candidate.clone(),
-            })?;
-        if candidate_exited {
-            self.supervisor_mut()?
-                .apply(ReplacementEvent::CandidateStopped {
-                    instance_id: candidate.clone(),
-                })?;
-        } else {
-            self.force_role(WorkerRole::Candidate)?;
-        }
+        self.replacement_failure = Some(phase);
         self.events.push_back(MasterEvent::RollbackStarted {
             candidate: candidate.clone(),
             phase,
         });
-        let active = self.active_id()?.clone();
-        let needs_reactivation = actions.contains(&ReplacementAction::Activate {
-            instance_id: active.clone(),
-        });
-        let expected = if needs_reactivation {
-            vec![
-                ReplacementAction::Activate {
-                    instance_id: active,
-                },
-                ReplacementAction::Terminate {
-                    instance_id: candidate,
-                },
-            ]
-        } else {
-            vec![ReplacementAction::Terminate {
+        self.apply_replacement_event(
+            ReplacementEvent::CandidateFailed {
                 instance_id: candidate,
-            }]
-        };
-        if actions != expected {
-            return Err(MasterError::UnexpectedReplacementActions);
-        }
-        self.stage = Stage::RollingBack {
-            active_reactivated: !needs_reactivation,
-            phase,
-        };
-        if needs_reactivation {
-            match self.issue(
-                WorkerRole::Active,
-                ControlPhase::Reactivate,
-                now,
-                self.config.activation_timeout(),
-            ) {
-                Ok(_) => Ok(()),
-                Err(error) if error.is_issue_failure() => {
-                    self.record_issue_failure(WorkerRole::Active, ControlPhase::Reactivate, error)?;
-                    self.fail_master(FailurePhase::Reactivation)
-                }
-                Err(error) => Err(error),
-            }
-        } else {
-            self.maybe_finish_rollback()
-        }
+            },
+            now,
+        )?;
+        self.maybe_finish_rollback()
     }
 
     fn maybe_finish_rollback(&mut self) -> Result<(), MasterError> {
-        let Stage::RollingBack {
-            active_reactivated, ..
-        } = self.stage
-        else {
-            return Ok(());
-        };
-        if active_reactivated && self.candidate.is_none() {
+        if self.replacement_phase() == Some(ReplacementPhase::Running)
+            && self.replacement_failure.take().is_some()
+        {
             let active = self.active_id()?.clone();
-            self.stage = Stage::Running;
             self.events
                 .push_back(MasterEvent::RollbackCompleted { active });
         }
         Ok(())
     }
 
-    fn fail_retired(&mut self, phase: FailurePhase) -> Result<(), MasterError> {
-        if self.retired.is_none() {
-            return self.complete_failed_retired(phase);
-        }
-        self.force_role(WorkerRole::Retired)?;
-        self.stage = Stage::RetiredTerminating {
-            deadline: None,
-            failure: Some(phase),
-        };
-        Ok(())
+    fn fail_retired(&mut self, phase: FailurePhase, now: Instant) -> Result<(), MasterError> {
+        let retired = self.retired_id()?.clone();
+        self.replacement_failure = Some(phase);
+        self.apply_replacement_event(
+            ReplacementEvent::RetiredFailed {
+                instance_id: retired,
+            },
+            now,
+        )
     }
 
-    fn complete_failed_retired(&mut self, phase: FailurePhase) -> Result<(), MasterError> {
-        let active = self.active_instance_record()?;
-        self.supervisor = Some(ReplacementSupervisor::new(active)?);
-        self.stage = Stage::Running;
+    fn complete_failed_retired(&mut self) -> Result<(), MasterError> {
+        let phase = self
+            .replacement_failure
+            .take()
+            .ok_or(MasterError::UnexpectedReplacementActions)?;
         self.events.push_back(MasterEvent::RetiredFailed { phase });
         self.events.push_back(MasterEvent::ReplacementCompleted {
             active: self.active_id()?.clone(),
@@ -1546,7 +1604,6 @@ impl<E: ActionExecutor> Master<E> {
     }
 
     fn complete_replacement(&mut self) -> Result<(), MasterError> {
-        self.stage = Stage::Running;
         self.events.push_back(MasterEvent::ReplacementCompleted {
             active: self.active_id()?.clone(),
         });
@@ -1632,11 +1689,26 @@ impl<E: ActionExecutor> Master<E> {
                 }
                 Ok(())
             }
-            Stage::RetiredTerminating {
-                deadline: Some(deadline),
-                ..
-            } if now >= deadline => self.fail_retired(FailurePhase::Shutdown),
             _ => {
+                if self.replacement_phase() == Some(ReplacementPhase::StoppingRetired) {
+                    let retired_deadline = self
+                        .retired
+                        .as_ref()
+                        .and_then(|worker| worker.termination_deadline);
+                    if retired_deadline.is_some_and(|deadline| deadline <= now) {
+                        let retired = self.retired_id()?.clone();
+                        self.replacement_failure = Some(FailurePhase::Shutdown);
+                        self.worker_mut(WorkerRole::Retired)
+                            .ok_or(MasterError::MissingWorker(WorkerRole::Retired))?
+                            .termination_deadline = None;
+                        return self.apply_replacement_event(
+                            ReplacementEvent::TerminationTimedOut {
+                                instance_id: retired,
+                            },
+                            now,
+                        );
+                    }
+                }
                 let timed_out = [
                     WorkerRole::Active,
                     WorkerRole::Candidate,
@@ -1765,16 +1837,8 @@ impl<E: ActionExecutor> Master<E> {
             .ok_or(MasterError::MissingWorker(WorkerRole::Retired))
     }
 
-    fn active_instance_record(&self) -> Result<Instance, MasterError> {
-        let active = self
-            .active
-            .as_ref()
-            .ok_or(MasterError::MissingWorker(WorkerRole::Active))?;
-        Ok(Instance {
-            instance_id: active.instance_id.clone(),
-            generation_id: active.generation,
-            lifecycle: Lifecycle::Active,
-        })
+    fn replacement_phase(&self) -> Option<ReplacementPhase> {
+        self.supervisor.as_ref().map(ReplacementSupervisor::phase)
     }
 }
 
@@ -1789,6 +1853,7 @@ impl ManagedWorker {
             generation,
             process,
             pending: None,
+            termination_deadline: None,
             state: WorkerState::Running,
             channel_open: true,
             status: None,
@@ -1831,17 +1896,6 @@ const fn phase_failure(phase: ControlPhase) -> FailurePhase {
         ControlPhase::Drain => FailurePhase::Drain,
         ControlPhase::Reactivate => FailurePhase::Reactivation,
         ControlPhase::Shutdown => FailurePhase::Shutdown,
-    }
-}
-
-fn expect_action(
-    actions: &[ReplacementAction],
-    expected: &ReplacementAction,
-) -> Result<(), MasterError> {
-    if actions == [expected.clone()] {
-        Ok(())
-    } else {
-        Err(MasterError::UnexpectedReplacementActions)
     }
 }
 
