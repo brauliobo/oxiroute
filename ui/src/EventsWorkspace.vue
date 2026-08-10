@@ -61,6 +61,7 @@ import {
   type OperationalEvent,
   type OperationalEventName,
 } from './api'
+import { formatTime, presentApiError, shortRevision } from './formatters'
 import { useLatestAbortableTask } from './useLatestAbortableTask'
 
 const PAGE_SIZE = 100
@@ -108,7 +109,7 @@ async function loadPage(after: number, replace: boolean): Promise<boolean> {
     (page) => applyPage(page, replace),
     (requestError) => {
       if (requestError instanceof ApiError && requestError.status === 401) emit('unauthorized')
-      error.value = errorMessage(requestError, 'The event history route did not respond.')
+      error.value = presentApiError(requestError, 'The event history route did not respond.')
     },
   )
 }
@@ -149,7 +150,7 @@ function startStream(): void {
     onError: (streamError) => {
       if (streamError instanceof ApiError && streamError.status === 401) emit('unauthorized')
       streamState.value = 'reconnecting'
-      error.value = errorMessage(streamError, 'Live event updates are reconnecting.')
+      error.value = presentApiError(streamError, 'Live event updates are reconnecting.')
     },
   }, { after: cursor.value, maxRetries: 5 })
   stream = client
@@ -174,21 +175,6 @@ function mergeEvents(current: OperationalEvent[], incoming: OperationalEvent[]):
 
 function eventLabel(event: OperationalEventName): string {
   return event.replaceAll('_', ' ')
-}
-
-function shortRevision(revision: string): string {
-  return revision.length > 16 ? `${revision.slice(0, 12)}...${revision.slice(-4)}` : revision
-}
-
-function formatTime(timestamp: number): string {
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'short',
-    timeStyle: 'medium',
-  }).format(timestamp)
-}
-
-function errorMessage(value: unknown, fallback: string): string {
-  return value instanceof Error ? value.message : fallback
 }
 
 watch(() => props.token, async (token) => {

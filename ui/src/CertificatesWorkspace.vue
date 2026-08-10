@@ -186,7 +186,7 @@ import {
   type TlsManagedCertificateStatus,
   type TlsMaterialStatus,
 } from './api'
-import { formatCount } from './formatters'
+import { formatCount, formatTime, presentApiError, shortRevision } from './formatters'
 import { useLatestAbortableTask } from './useLatestAbortableTask'
 
 const props = defineProps<{ token: string }>()
@@ -226,7 +226,7 @@ async function load(): Promise<boolean> {
     },
     (requestError) => {
       if (requestError instanceof ApiError && requestError.status === 401) emit('unauthorized')
-      error.value = errorMessage(requestError, 'The certificate API did not respond.')
+      error.value = presentApiError(requestError, 'The certificate API did not respond.')
     },
   )
 }
@@ -250,7 +250,7 @@ async function runMutation(
   } catch (requestError) {
     if (requestError instanceof ApiError && requestError.status === 401) emit('unauthorized')
     if (requestError instanceof ApiError && requestError.status === 409) await load()
-    error.value = errorMessage(requestError, `${label} failed.`)
+    error.value = presentApiError(requestError, `${label} failed.`)
   } finally {
     mutating.value = null
   }
@@ -325,21 +325,6 @@ function expiryLabel(status: TlsMaterialStatus | TlsManagedCertificateStatus): s
 
 function unixSecondsLabel(value: number | null): string {
   return value === null ? 'Not scheduled' : formatTime(value * 1000)
-}
-
-function shortRevision(value: string): string {
-  return value.length > 16 ? `${value.slice(0, 12)}...${value.slice(-4)}` : value
-}
-
-function formatTime(timestamp: number): string {
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'short',
-    timeStyle: 'medium',
-  }).format(timestamp)
-}
-
-function errorMessage(value: unknown, fallback: string): string {
-  return value instanceof Error ? value.message : fallback
 }
 
 function startStream(): void {

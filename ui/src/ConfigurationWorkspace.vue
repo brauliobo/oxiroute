@@ -429,6 +429,7 @@ import {
 } from './configuration/useConfigurationNavigation'
 import { errorDiagnosticsFrom } from './config'
 import type { CanonicalConfig, ConfigDiagnostic, ConfigSnapshot } from './config'
+import { shortRevision } from './formatters'
 import { prepareTlsAlpnDeployment } from './configuration/tlsAlpnDeployment'
 import { isRecord } from './valueGuards'
 
@@ -855,10 +856,6 @@ function nullableInput(event: Event): string | null {
 function nullableIntegerInput(event: Event): number | null {
   const value = inputValue(event)
   return value === '' ? null : Number(value)
-}
-
-function shortRevision(revision: string): string {
-  return revision.length > 16 ? `${revision.slice(0, 12)}...${revision.slice(-4)}` : revision
 }
 
 function formatLabel(format: ConfigSnapshot['configFormat']): string {

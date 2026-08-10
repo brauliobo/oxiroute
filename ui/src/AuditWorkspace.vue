@@ -149,7 +149,7 @@ import {
   type AuditResult,
   type AuditStatus,
 } from './api'
-import { formatBytes, formatCount } from './formatters'
+import { formatBytes, formatCount, formatTime, presentApiError, shortRevision } from './formatters'
 
 const PAGE_SIZE = 100
 
@@ -217,10 +217,10 @@ async function loadPage(after: number, replace: boolean): Promise<void> {
     if (controller.signal.aborted) return
     if (error instanceof ApiError && error.status === 401) emit('unauthorized')
     if (isMissingRoute(error)) {
-      capabilityUnavailable.value = errorMessage(error, 'The durable audit route is unavailable.')
+      capabilityUnavailable.value = presentApiError(error, 'The durable audit route is unavailable.')
       return
     }
-    pageError.value = errorMessage(error, 'The durable audit route did not respond.')
+    pageError.value = presentApiError(error, 'The durable audit route did not respond.')
   } finally {
     if (pageController === controller) pageController = null
     pageLoading.value = false
@@ -244,7 +244,7 @@ async function loadStatus(): Promise<void> {
     if (isMissingRoute(error)) {
       statusError.value = 'The status route is unavailable; no non-durable status source was used.'
     } else {
-      statusError.value = errorMessage(error, 'The audit status route did not respond.')
+      statusError.value = presentApiError(error, 'The audit status route did not respond.')
     }
   } finally {
     if (statusController === controller) statusController = null
@@ -311,21 +311,6 @@ function resetWorkspace(): void {
 function isMissingRoute(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404 &&
     (error.code === null || error.code === 'route_not_found')
-}
-
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback
-}
-
-function formatTime(timestamp: number): string {
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'short',
-    timeStyle: 'medium',
-  }).format(timestamp)
-}
-
-function shortRevision(revision: string): string {
-  return revision.length > 16 ? `${revision.slice(0, 12)}...${revision.slice(-4)}` : revision
 }
 
 watch(() => props.token, (token) => {

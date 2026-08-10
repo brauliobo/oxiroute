@@ -213,7 +213,7 @@ import {
   type ServerInventoryResponse,
   type PoolInventoryResponse,
 } from './api'
-import { formatCount } from './formatters'
+import { formatCount, presentApiError, shortRevision } from './formatters'
 import { useLatestAbortableTask } from './useLatestAbortableTask'
 
 const props = defineProps<{ token: string }>()
@@ -261,7 +261,7 @@ async function load(): Promise<void> {
     },
     (requestError) => {
       if (requestError instanceof ApiError && requestError.status === 401) emit('unauthorized')
-      error.value = errorMessage(requestError, 'The operations API did not respond.')
+      error.value = presentApiError(requestError, 'The operations API did not respond.')
     },
   )
 }
@@ -283,7 +283,7 @@ async function runMutation(
   } catch (requestError) {
     if (requestError instanceof ApiError && requestError.status === 401) emit('unauthorized')
     if (requestError instanceof ApiError && requestError.status === 409) await load()
-    error.value = errorMessage(requestError, `${label} failed.`)
+    error.value = presentApiError(requestError, `${label} failed.`)
   } finally {
     mutating.value = null
   }
@@ -386,17 +386,8 @@ function serverKey(pool: string, server: string): string {
   return `${pool}:${server}`
 }
 
-function shortRevision(revision: string | null): string {
-  if (!revision) return 'None'
-  return revision.length > 16 ? `${revision.slice(0, 12)}...${revision.slice(-4)}` : revision
-}
-
 function humanize(value: string): string {
   return value.replaceAll('_', ' ')
-}
-
-function errorMessage(value: unknown, fallback: string): string {
-  return value instanceof Error ? value.message : fallback
 }
 
 watch(() => props.token, (token) => {

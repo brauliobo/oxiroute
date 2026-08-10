@@ -42,6 +42,7 @@ section.client-section(aria-labelledby="client-heading")
 
 <script setup lang="ts">
 import type { RtmpClientControlTarget, RtmpClientSnapshot, RtmpStats } from './api'
+import { formatClockTime as formatTime } from './formatters'
 
 defineProps<{
   stats: RtmpStats | null
@@ -52,13 +53,6 @@ defineEmits<{
   drop: [client: RtmpClientSnapshot, target: RtmpClientControlTarget]
 }>()
 
-function formatTime(timestamp: number): string {
-  return new Intl.DateTimeFormat(undefined, {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).format(timestamp)
-}
 </script>
 
 <style scoped>

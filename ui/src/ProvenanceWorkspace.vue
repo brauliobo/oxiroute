@@ -190,6 +190,7 @@ import type {
   ImportReportRequirement,
   ImportReportSummary,
 } from './api'
+import { presentApiError } from './formatters'
 import { useLatestAbortableTask } from './useLatestAbortableTask'
 
 const props = defineProps<{ token: string }>()
@@ -272,7 +273,7 @@ function applySelected(next: Awaited<ReturnType<typeof loadSelected>>, retainOnR
 
 function handleRequestError(requestError: unknown): void {
   if (requestError instanceof ApiError && requestError.status === 401) emit('unauthorized')
-  error.value = requestError instanceof Error ? requestError.message : 'The import reports route did not respond.'
+  error.value = presentApiError(requestError, 'The import reports route did not respond.')
 }
 
 function originLabel(origin: ImportReportOrigin): string {
