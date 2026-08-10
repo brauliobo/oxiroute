@@ -229,6 +229,18 @@ pub struct FillGuard {
 
 pub(crate) struct ClaimedEntry(PreparedEntry);
 
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct InsertionDelta {
+    pub(crate) inserted: CacheKey,
+    pub(crate) removed: Vec<CacheKey>,
+    pub(crate) evicted: usize,
+}
+
+pub(crate) enum ClaimedStoreOutcome {
+    Stored(InsertionDelta),
+    GenerationLost,
+}
+
 /// Follower notification handle. It contains no cache lock and is safe to await across I/O.
 pub struct FillWaiter {
     receiver: watch::Receiver<FillOutcome>,
@@ -789,11 +801,7 @@ impl Cache {
             .map(|stored| stored.entry.clone())
     }
 
-    pub(crate) fn resident_keys(&self) -> Vec<CacheKey> {
-        self.shared.lock().entries.keys().cloned().collect()
-    }
-
-    pub(crate) fn restore(&self, entry: RecoveredEntry) {
+    pub(crate) fn restore(&self, entry: RecoveredEntry) -> InsertionDelta {
         let entry = PreparedEntry {
             identity: Arc::clone(&self.shared.identity),
             key: entry.key,
@@ -807,7 +815,7 @@ impl Cache {
             charge: entry.charge,
         };
         let mut state = self.shared.lock();
-        insert_entry(&self.shared.config, &mut state, entry);
+        insert_entry(&self.shared.config, &mut state, entry)
     }
 
     pub(crate) fn remove_without_cancelling_fill(&self, key: &CacheKey) -> bool {
@@ -844,7 +852,12 @@ impl FillGuard {
     /// Returns an error if the object belongs to another cache or base key.
     pub fn store(self, entry: PreparedEntry) -> Result<StoreOutcome, CacheError> {
         let entry = self.claim(entry)?;
-        Ok(self.store_claimed(entry))
+        Ok(match self.store_claimed(entry) {
+            ClaimedStoreOutcome::Stored(delta) => StoreOutcome::Stored {
+                evicted: delta.evicted,
+            },
+            ClaimedStoreOutcome::GenerationLost => StoreOutcome::GenerationLost,
+        })
     }
 
     pub(crate) fn claim(&self, entry: PreparedEntry) -> Result<ClaimedEntry, CacheError> {
@@ -857,24 +870,24 @@ impl FillGuard {
         Ok(ClaimedEntry(entry))
     }
 
-    pub(crate) fn store_claimed(mut self, entry: ClaimedEntry) -> StoreOutcome {
+    pub(crate) fn store_claimed(mut self, entry: ClaimedEntry) -> ClaimedStoreOutcome {
         let Some(shared) = self.shared.upgrade() else {
             self.active = false;
-            return StoreOutcome::GenerationLost;
+            return ClaimedStoreOutcome::GenerationLost;
         };
         let mut state = shared.lock();
         if !generation_matches(&state, &self.base, &self.generation) {
             self.active = false;
-            return StoreOutcome::GenerationLost;
+            return ClaimedStoreOutcome::GenerationLost;
         }
         let flight = state.flights.remove(&self.base);
-        let evicted = insert_entry(&shared.config, &mut state, entry.0);
+        let delta = insert_entry(&shared.config, &mut state, entry.0);
         state.stats.stores = state.stats.stores.saturating_add(1);
         if let Some(flight) = flight {
             flight.signal.send_replace(FillOutcome::Stored);
         }
         self.active = false;
-        StoreOutcome::Stored { evicted }
+        ClaimedStoreOutcome::Stored(delta)
     }
 
     /// Completes a valid generation without storing a response and wakes followers.
@@ -1015,19 +1028,24 @@ fn matching_key(
         .cloned()
 }
 
-fn insert_entry(config: &CacheConfig, state: &mut State, entry: PreparedEntry) -> usize {
+fn insert_entry(config: &CacheConfig, state: &mut State, entry: PreparedEntry) -> InsertionDelta {
+    let inserted = entry.key.clone();
+    let mut removed = Vec::new();
     if let Some(old) = state.entries.remove(&entry.key) {
         state.bytes_used = state.bytes_used.saturating_sub(old.entry.charge);
+        removed.push(entry.key.clone());
     }
-    let conflicting = state
+    let mut conflicting = state
         .entries
         .keys()
         .filter(|key| key.base() == entry.key.base() && !key.same_vary_schema(&entry.key))
         .cloned()
         .collect::<Vec<_>>();
+    conflicting.sort_unstable();
     for key in conflicting {
         if let Some(old) = state.entries.remove(&key) {
             state.bytes_used = state.bytes_used.saturating_sub(old.entry.charge);
+            removed.push(key);
         }
     }
     let mut evicted = 0usize;
@@ -1046,6 +1064,7 @@ fn insert_entry(config: &CacheConfig, state: &mut State, entry: PreparedEntry) -
         };
         if let Some(old) = state.entries.remove(&lru) {
             state.bytes_used = state.bytes_used.saturating_sub(old.entry.charge);
+            removed.push(lru);
             evicted += 1;
         }
     }
@@ -1055,7 +1074,11 @@ fn insert_entry(config: &CacheConfig, state: &mut State, entry: PreparedEntry) -
         .entries
         .insert(entry.key.clone(), StoredEntry { entry, last_access });
     state.stats.evictions = state.stats.evictions.saturating_add(evicted as u64);
-    evicted
+    InsertionDelta {
+        inserted,
+        removed,
+        evicted,
+    }
 }
 
 fn response_snapshot(entry: &PreparedEntry, age: Duration) -> CachedResponse {
@@ -1172,4 +1195,116 @@ pub(crate) fn object_charge(
             .checked_add(tag.len())?;
     }
     Some(charge)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::SystemTime;
+
+    use super::*;
+
+    fn prepared(
+        cache: &Cache,
+        path: &str,
+        request_headers: &HeaderMap,
+        response_headers: &HeaderMap,
+    ) -> PreparedEntry {
+        let now = cache.now();
+        cache
+            .prepare(
+                RequestKeyInput {
+                    method: &Method::GET,
+                    scheme: "https",
+                    authority: "example.com",
+                    path,
+                    query: None,
+                    headers: request_headers,
+                },
+                StatusCode::OK,
+                response_headers,
+                Bytes::from_static(b"body"),
+                ResponseTiming {
+                    request_started: now,
+                    response_received: now,
+                    response_received_wall: SystemTime::now(),
+                },
+                &[],
+            )
+            .expect("prepared entry")
+    }
+
+    fn store_delta(cache: &Cache, entry: PreparedEntry) -> InsertionDelta {
+        let FillJoin::Leader(leader) = cache.begin_fill(entry.key.base().clone()).expect("fill")
+        else {
+            panic!("expected leader");
+        };
+        let claimed = leader.claim(entry).expect("claimed entry");
+        let ClaimedStoreOutcome::Stored(delta) = leader.store_claimed(claimed) else {
+            panic!("expected stored delta");
+        };
+        delta
+    }
+
+    #[test]
+    fn insertion_delta_reports_replacement_conflicts_and_capacity_in_order() {
+        let config = CacheConfig {
+            max_entries: 8,
+            ..CacheConfig::default()
+        };
+        let cache = Cache::new(config).expect("cache");
+        let empty = HeaderMap::new();
+        let mut response = HeaderMap::new();
+        response.insert(
+            http::header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=60"),
+        );
+
+        let original = prepared(&cache, "/replace", &empty, &response);
+        let original_key = original.key.clone();
+        assert!(store_delta(&cache, original).removed.is_empty());
+        let replacement = store_delta(&cache, prepared(&cache, "/replace", &empty, &response));
+        assert_eq!(replacement.inserted, original_key);
+        assert_eq!(replacement.removed, vec![replacement.inserted.clone()]);
+        assert_eq!(replacement.evicted, 0);
+
+        let mut varied_response = response.clone();
+        varied_response.insert(
+            http::header::VARY,
+            HeaderValue::from_static("accept-language"),
+        );
+        let mut en = HeaderMap::new();
+        en.insert(
+            http::header::ACCEPT_LANGUAGE,
+            HeaderValue::from_static("en"),
+        );
+        let mut fr = HeaderMap::new();
+        fr.insert(
+            http::header::ACCEPT_LANGUAGE,
+            HeaderValue::from_static("fr"),
+        );
+        let en_entry = prepared(&cache, "/vary", &en, &varied_response);
+        let en_key = en_entry.key.clone();
+        store_delta(&cache, en_entry);
+        let fr_entry = prepared(&cache, "/vary", &fr, &varied_response);
+        let fr_key = fr_entry.key.clone();
+        store_delta(&cache, fr_entry);
+        let unified = store_delta(&cache, prepared(&cache, "/vary", &empty, &response));
+        let mut expected = vec![en_key, fr_key];
+        expected.sort_unstable();
+        assert_eq!(unified.removed, expected);
+        assert_eq!(unified.evicted, 0);
+
+        let capacity = CacheConfig {
+            max_entries: 2,
+            ..CacheConfig::default()
+        };
+        let cache = Cache::new(capacity).expect("capacity cache");
+        let first = prepared(&cache, "/a", &empty, &response);
+        let first_key = first.key.clone();
+        store_delta(&cache, first);
+        store_delta(&cache, prepared(&cache, "/b", &empty, &response));
+        let pressure = store_delta(&cache, prepared(&cache, "/c", &empty, &response));
+        assert_eq!(pressure.removed, vec![first_key]);
+        assert_eq!(pressure.evicted, 1);
+    }
 }
