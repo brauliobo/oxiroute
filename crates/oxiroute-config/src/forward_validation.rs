@@ -14,7 +14,9 @@ use crate::{
         MAX_FORWARD_RESOLVER_CACHE_ENTRIES, MAX_FORWARD_RESOLVER_CONCURRENT_QUERIES,
         MAX_FORWARD_TIME_RANGES, MAX_FORWARD_TIMEOUT_MS,
     },
-    lexical::{is_valid_certificate_dns_name, is_valid_dns_name, validate_file_path},
+    lexical::{
+        is_valid_certificate_dns_name, is_valid_dns_name, normalize_http_token, validate_file_path,
+    },
     model::{
         CacheAuthorizationPolicy, CacheKeyComponent, CacheSetCookiePolicy, CacheVaryPolicy,
         ConfigError, ForwardAccessMatcher, ForwardDirectFallback, ForwardHttpVersion,
@@ -323,17 +325,11 @@ fn validate_access_policy(service: &mut ForwardProxyService) -> Result<(), Confi
                     }
                     let mut unique = HashSet::with_capacity(methods.len());
                     for method in methods {
-                        if method.is_empty()
-                            || method.len() > 32
-                            || !method
-                                .bytes()
-                                .all(|byte| byte.is_ascii_uppercase() || byte == b'-')
-                            || !unique.insert(method.clone())
-                        {
+                        if normalize_http_token(method).is_err() || !unique.insert(method.clone()) {
                             return Err(invalid(
                                 &service.name,
                                 "access_policy.rules.conditions.methods",
-                                "must contain unique canonical uppercase HTTP methods",
+                                "must contain unique HTTP tokens of at most 32 bytes",
                             ));
                         }
                     }

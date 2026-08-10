@@ -6,8 +6,8 @@ use std::{
 
 use crate::{
     defaults::{
-        MAX_FILE_PATH_BYTES, MAX_RECORDING_SUFFIX_TEMPLATE_BYTES, MAX_SERVER_NAME_BYTES,
-        MAX_UNIX_SOCKET_PATH_BYTES,
+        MAX_FILE_PATH_BYTES, MAX_HTTP_METHOD_BYTES, MAX_RECORDING_SUFFIX_TEMPLATE_BYTES,
+        MAX_SERVER_NAME_BYTES, MAX_UNIX_SOCKET_PATH_BYTES,
     },
     model::{
         ConfigError, DnsResolutionPolicy, Listener, ListenerBind, UpstreamEndpoint, UpstreamPool,
@@ -43,6 +43,8 @@ pub enum LexicalError {
     IpAddress,
     #[error("DNS name contains an invalid label")]
     InvalidDnsLabel,
+    #[error("value is not an HTTP token")]
+    InvalidHttpToken,
 }
 
 /// Returns the canonical identity for an IP address.
@@ -613,9 +615,54 @@ const fn hex_nibble(value: u8) -> Option<u8> {
     }
 }
 
-pub(crate) fn is_uppercase_http_token(method: &str) -> bool {
-    !method.is_empty()
-        && method.bytes().all(|byte| {
-            byte.is_ascii_uppercase() || byte.is_ascii_digit() || b"!#$%&'*+-.^_`|~".contains(&byte)
-        })
+pub(crate) fn normalize_http_token(method: &mut str) -> Result<(), LexicalError> {
+    if method.is_empty() {
+        return Err(LexicalError::Empty);
+    }
+    if method.len() > MAX_HTTP_METHOD_BYTES {
+        return Err(LexicalError::TooLong);
+    }
+    if !method
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+    {
+        return Err(LexicalError::InvalidHttpToken);
+    }
+    method.make_ascii_uppercase();
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LexicalError, normalize_http_token};
+
+    #[test]
+    fn normalizes_bounded_http_tokens() {
+        for (authored, canonical) in [
+            ("get", "GET"),
+            ("M-SEARCH", "M-SEARCH"),
+            ("x1", "X1"),
+            ("foo!", "FOO!"),
+            ("!#$%&'*+-.^_`|~", "!#$%&'*+-.^_`|~"),
+        ] {
+            let mut method = authored.to_owned();
+            normalize_http_token(&mut method).expect("valid HTTP token");
+            assert_eq!(method, canonical);
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_http_tokens_without_mutating_them() {
+        for (authored, expected) in [
+            ("", LexicalError::Empty),
+            ("FOO@", LexicalError::InvalidHttpToken),
+            ("GÉT", LexicalError::InvalidHttpToken),
+            ("GET\u{1}", LexicalError::InvalidHttpToken),
+            ("X12345678901234567890123456789012", LexicalError::TooLong),
+        ] {
+            let mut method = authored.to_owned();
+            assert_eq!(normalize_http_token(&mut method), Err(expected));
+            assert_eq!(method, authored);
+        }
+    }
 }

@@ -12,16 +12,15 @@ use crate::{
         MAX_HTTP_COOKIE_PATH_BYTES, MAX_HTTP_COOKIE_PATH_REWRITES, MAX_HTTP_FILE_EXTENSION_BYTES,
         MAX_HTTP_FIXED_RESPONSE_BODY_BYTES, MAX_HTTP_GZIP_TYPES, MAX_HTTP_HEADER_MUTATIONS,
         MAX_HTTP_HEADER_NAME_BYTES, MAX_HTTP_HEADER_VALUE_BYTES, MAX_HTTP_LITERAL_HEADERS,
-        MAX_HTTP_METHOD_BYTES, MAX_HTTP_METHODS_PER_ROUTE, MAX_HTTP_MIME_TYPE_BYTES,
-        MAX_HTTP_PROXY_PATH_BYTES, MAX_HTTP_REDIRECT_LOCATION_BYTES, MAX_HTTP_RETRIES,
-        MAX_HTTP_STATIC_ERROR_RESPONSES, MAX_HTTP_STATIC_ERROR_STATUSES,
-        MAX_HTTP_STATIC_FALLBACK_BYTES, MAX_HTTP_STATIC_INDEX_BYTES, MAX_HTTP_STATIC_INDEX_FILES,
-        MAX_HTTP_STATIC_MIME_TYPES, MAX_HTTP_STATIC_TRY_FILES, MAX_HTTP_TIMEOUT_MS,
-        MAX_SAFE_JSON_INTEGER,
+        MAX_HTTP_METHODS_PER_ROUTE, MAX_HTTP_MIME_TYPE_BYTES, MAX_HTTP_PROXY_PATH_BYTES,
+        MAX_HTTP_REDIRECT_LOCATION_BYTES, MAX_HTTP_RETRIES, MAX_HTTP_STATIC_ERROR_RESPONSES,
+        MAX_HTTP_STATIC_ERROR_STATUSES, MAX_HTTP_STATIC_FALLBACK_BYTES,
+        MAX_HTTP_STATIC_INDEX_BYTES, MAX_HTTP_STATIC_INDEX_FILES, MAX_HTTP_STATIC_MIME_TYPES,
+        MAX_HTTP_STATIC_TRY_FILES, MAX_HTTP_TIMEOUT_MS, MAX_SAFE_JSON_INTEGER,
     },
     lexical::{
-        authority_has_invalid_port, canonicalize_http_path, is_uppercase_http_token,
-        is_valid_dns_name, normalize_absolute_directory, normalize_host, validate_file_path,
+        authority_has_invalid_port, canonicalize_http_path, is_valid_dns_name,
+        normalize_absolute_directory, normalize_host, normalize_http_token, validate_file_path,
         validate_relative_path,
     },
     model::{
@@ -271,8 +270,7 @@ fn validate_matcher(
     }
     let mut methods = HashSet::with_capacity(route.methods.len());
     for method in &mut route.methods {
-        method.make_ascii_uppercase();
-        if method.len() > MAX_HTTP_METHOD_BYTES || !is_uppercase_http_token(method) {
+        if normalize_http_token(method).is_err() {
             return Err(invalid_route(
                 service,
                 route_index,
