@@ -1,10 +1,18 @@
 use std::net::IpAddr;
 
-use http::{HeaderMap, HeaderName, HeaderValue, uri::Authority};
+use http::{
+    HeaderMap, HeaderName, HeaderValue, StatusCode,
+    header::{
+        CONNECTION, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION, SET_COOKIE, TE, TRAILER,
+        TRANSFER_ENCODING, UPGRADE,
+    },
+    uri::Authority,
+};
+use oxiroute_config::HttpSameSite;
 
 use crate::http_action::{
-    MAX_REDIRECT_LOCATION_BYTES, RedirectLocationPlan, RedirectTemplateSegment,
-    RequestHeaderMutationPlan, RequestHeaderValuePlan,
+    MAX_REDIRECT_LOCATION_BYTES, ProxyPolicyPlan, RedirectLocationPlan, RedirectTemplateSegment,
+    RequestHeaderMutationPlan, RequestHeaderValuePlan, ResponseHeaderMutationPlan,
 };
 
 #[derive(Clone, Copy)]
@@ -214,6 +222,219 @@ fn header_value(value: &str) -> Result<HeaderValue, RequestPolicyError> {
     HeaderValue::from_str(value).map_err(|_| RequestPolicyError::InvalidHeader)
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ResponseHeaderDecision {
+    Remove(HeaderName),
+    Set {
+        name: HeaderName,
+        value: HeaderValue,
+    },
+    Add {
+        name: HeaderName,
+        value: HeaderValue,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ResponsePolicyError {
+    InvalidConnectionNomination,
+    InvalidCookie,
+}
+
+pub(crate) fn decide_response_headers(
+    status: StatusCode,
+    headers: &HeaderMap,
+    policy: &ProxyPolicyPlan,
+    remove_hop_by_hop: bool,
+) -> Result<Vec<ResponseHeaderDecision>, ResponsePolicyError> {
+    let mut resulting = headers.clone();
+    let mut decisions = Vec::new();
+    if remove_hop_by_hop {
+        let mut nominations = Vec::new();
+        for value in headers.get_all(CONNECTION) {
+            let value = value
+                .to_str()
+                .map_err(|_| ResponsePolicyError::InvalidConnectionNomination)?;
+            for token in value.split(',') {
+                nominations.push(
+                    HeaderName::from_bytes(token.trim().as_bytes())
+                        .map_err(|_| ResponsePolicyError::InvalidConnectionNomination)?,
+                );
+            }
+        }
+        for name in nominations.into_iter().chain([
+            CONNECTION,
+            HeaderName::from_static("keep-alive"),
+            PROXY_AUTHENTICATE,
+            PROXY_AUTHORIZATION,
+            HeaderName::from_static("proxy-connection"),
+            TE,
+            TRAILER,
+            TRANSFER_ENCODING,
+            UPGRADE,
+        ]) {
+            resulting.remove(&name);
+            decisions.push(ResponseHeaderDecision::Remove(name));
+        }
+    }
+    for mutation in &policy.response_headers {
+        match mutation {
+            ResponseHeaderMutationPlan::Set {
+                name,
+                value,
+                always,
+            } if *always || crate::http_action::nginx_add_header_status(status.as_u16()) => {
+                resulting.insert(name.clone(), value.clone());
+                decisions.push(ResponseHeaderDecision::Set {
+                    name: name.clone(),
+                    value: value.clone(),
+                });
+            }
+            ResponseHeaderMutationPlan::Add {
+                name,
+                value,
+                always,
+            } if *always || crate::http_action::nginx_add_header_status(status.as_u16()) => {
+                resulting.append(name.clone(), value.clone());
+                decisions.push(ResponseHeaderDecision::Add {
+                    name: name.clone(),
+                    value: value.clone(),
+                });
+            }
+            ResponseHeaderMutationPlan::Remove { name } => {
+                resulting.remove(name);
+                decisions.push(ResponseHeaderDecision::Remove(name.clone()));
+            }
+            ResponseHeaderMutationPlan::Set { .. } | ResponseHeaderMutationPlan::Add { .. } => {}
+        }
+    }
+    if policy.cookie_path_rewrites.is_empty() && policy.cookie_attributes.is_empty() {
+        return Ok(decisions);
+    }
+    let cookies = resulting
+        .get_all(SET_COOKIE)
+        .iter()
+        .map(|cookie| rewrite_cookie(cookie, policy))
+        .collect::<Result<Vec<_>, _>>()?;
+    decisions.push(ResponseHeaderDecision::Remove(SET_COOKIE));
+    decisions.extend(
+        cookies
+            .into_iter()
+            .map(|value| ResponseHeaderDecision::Add {
+                name: SET_COOKIE,
+                value,
+            }),
+    );
+    Ok(decisions)
+}
+
+fn rewrite_cookie(
+    cookie: &HeaderValue,
+    policy: &ProxyPolicyPlan,
+) -> Result<HeaderValue, ResponsePolicyError> {
+    let Ok(cookie_text) = cookie.to_str() else {
+        return Ok(cookie.clone());
+    };
+    let mut segments = cookie_text.split(';');
+    let first = segments.next().unwrap_or_default();
+    let Some((cookie_name, _)) = first.trim_start_matches([' ', '\t']).split_once('=') else {
+        return Ok(cookie.clone());
+    };
+    if cookie_name.is_empty() {
+        return Ok(cookie.clone());
+    }
+    let attributes = policy
+        .cookie_attributes
+        .iter()
+        .find(|candidate| candidate.name == cookie_name);
+    let mut rewritten = first.to_owned();
+    let mut saw_secure = false;
+    let mut saw_http_only = false;
+    let mut saw_same_site = false;
+    for segment in segments {
+        let trimmed = segment.trim_start_matches([' ', '\t']);
+        let whitespace = &segment[..segment.len() - trimmed.len()];
+        let (name, value) = trimmed
+            .split_once('=')
+            .map_or((trimmed, None), |(name, value)| (name, Some(value)));
+        if name.eq_ignore_ascii_case("secure") {
+            saw_secure = true;
+            if attributes.and_then(|policy| policy.secure) == Some(false) {
+                continue;
+            }
+        } else if name.eq_ignore_ascii_case("httponly") {
+            saw_http_only = true;
+            if attributes.and_then(|policy| policy.http_only) == Some(false) {
+                continue;
+            }
+        } else if name.eq_ignore_ascii_case("samesite") {
+            saw_same_site = true;
+            if let Some(same_site) = attributes.and_then(|policy| policy.same_site) {
+                append_cookie_attribute(
+                    &mut rewritten,
+                    whitespace,
+                    "SameSite",
+                    Some(same_site_value(same_site)),
+                );
+                continue;
+            }
+        }
+        if let Some(value) = value {
+            let replacement = (name.eq_ignore_ascii_case("path"))
+                .then(|| {
+                    policy
+                        .cookie_path_rewrites
+                        .iter()
+                        .find(|rewrite| rewrite.from == value)
+                })
+                .flatten();
+            append_cookie_attribute(
+                &mut rewritten,
+                whitespace,
+                name,
+                Some(replacement.map_or(value, |replacement| replacement.to.as_str())),
+            );
+        } else {
+            append_cookie_attribute(&mut rewritten, whitespace, trimmed, None);
+        }
+    }
+    if let Some(attributes) = attributes {
+        if attributes.secure == Some(true) && !saw_secure {
+            append_cookie_attribute(&mut rewritten, " ", "Secure", None);
+        }
+        if attributes.http_only == Some(true) && !saw_http_only {
+            append_cookie_attribute(&mut rewritten, " ", "HttpOnly", None);
+        }
+        if let Some(same_site) = attributes.same_site.filter(|_| !saw_same_site) {
+            append_cookie_attribute(
+                &mut rewritten,
+                " ",
+                "SameSite",
+                Some(same_site_value(same_site)),
+            );
+        }
+    }
+    HeaderValue::from_str(&rewritten).map_err(|_| ResponsePolicyError::InvalidCookie)
+}
+
+fn append_cookie_attribute(output: &mut String, whitespace: &str, name: &str, value: Option<&str>) {
+    output.push(';');
+    output.push_str(whitespace);
+    output.push_str(name);
+    if let Some(value) = value {
+        output.push('=');
+        output.push_str(value);
+    }
+}
+
+const fn same_site_value(value: HttpSameSite) -> &'static str {
+    match value {
+        HttpSameSite::Strict => "Strict",
+        HttpSameSite::Lax => "Lax",
+        HttpSameSite::None => "None",
+    }
+}
+
 pub(crate) fn normalized_request_host(authority: &Authority) -> String {
     let host = authority.host();
     let unbracketed = host
@@ -305,7 +526,9 @@ pub(crate) fn normalized_redirect_host(authority: &Authority) -> String {
 #[cfg(test)]
 mod tests {
     use oxiroute_config::{
-        HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
+        HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpProxyPolicy, HttpRedirectLocation,
+        HttpRequestHeaderMutation, HttpRequestHeaderValue, HttpResponseHeaderMutation,
+        HttpSameSite,
     };
 
     use super::*;
@@ -332,6 +555,166 @@ mod tests {
             client_ip,
             incoming_headers: headers,
         }
+    }
+
+    fn apply_response_decisions(headers: &mut HeaderMap, decisions: Vec<ResponseHeaderDecision>) {
+        for decision in decisions {
+            match decision {
+                ResponseHeaderDecision::Remove(name) => {
+                    headers.remove(name);
+                }
+                ResponseHeaderDecision::Set { name, value } => {
+                    headers.insert(name, value);
+                }
+                ResponseHeaderDecision::Add { name, value } => {
+                    headers.append(name, value);
+                }
+            }
+        }
+    }
+
+    fn response_policy() -> ProxyPolicyPlan {
+        ProxyPolicyPlan::compile(&HttpProxyPolicy {
+            response_headers: vec![
+                HttpResponseHeaderMutation::Set {
+                    name: "x-order".into(),
+                    value: "set".into(),
+                    always: true,
+                },
+                HttpResponseHeaderMutation::Add {
+                    name: "x-order".into(),
+                    value: "add".into(),
+                    always: false,
+                },
+                HttpResponseHeaderMutation::Remove {
+                    name: "x-remove".into(),
+                },
+            ],
+            response_cookie_path_rewrites: vec![HttpCookiePathRewrite {
+                from: "/internal".into(),
+                to: "/".into(),
+            }],
+            response_cookie_attributes: vec![HttpCookieAttributePolicy {
+                name: "sid".into(),
+                secure: Some(false),
+                http_only: Some(true),
+                same_site: Some(HttpSameSite::Lax),
+            }],
+            ..HttpProxyPolicy::default()
+        })
+    }
+
+    #[test]
+    fn response_decisions_order_connection_policy_and_cookie_phases() {
+        let mut headers = HeaderMap::new();
+        headers.append(CONNECTION, HeaderValue::from_static("x-first, keep-alive"));
+        headers.append(CONNECTION, HeaderValue::from_static("x-second"));
+        headers.insert("x-first", HeaderValue::from_static("remove"));
+        headers.insert("x-second", HeaderValue::from_static("remove"));
+        headers.insert("x-remove", HeaderValue::from_static("remove"));
+        headers.append(
+            SET_COOKIE,
+            HeaderValue::from_static("sid=1; Path=/internal"),
+        );
+        let decisions =
+            decide_response_headers(StatusCode::OK, &headers, &response_policy(), true).unwrap();
+        let names = decisions
+            .iter()
+            .map(|decision| match decision {
+                ResponseHeaderDecision::Remove(name) => format!("remove:{name}"),
+                ResponseHeaderDecision::Set { name, .. } => format!("set:{name}"),
+                ResponseHeaderDecision::Add { name, .. } => format!("add:{name}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            [
+                "remove:x-first",
+                "remove:keep-alive",
+                "remove:x-second",
+                "remove:connection",
+                "remove:keep-alive",
+                "remove:proxy-authenticate",
+                "remove:proxy-authorization",
+                "remove:proxy-connection",
+                "remove:te",
+                "remove:trailer",
+                "remove:transfer-encoding",
+                "remove:upgrade",
+                "set:x-order",
+                "add:x-order",
+                "remove:x-remove",
+                "remove:set-cookie",
+                "add:set-cookie",
+            ]
+        );
+        apply_response_decisions(&mut headers, decisions);
+        assert_eq!(
+            headers
+                .get_all("x-order")
+                .iter()
+                .map(HeaderValue::as_bytes)
+                .collect::<Vec<_>>(),
+            [b"set".as_slice(), b"add".as_slice()]
+        );
+        assert_eq!(headers[SET_COOKIE], "sid=1; Path=/; HttpOnly; SameSite=Lax");
+        for name in ["connection", "x-first", "x-second", "x-remove"] {
+            assert!(!headers.contains_key(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn response_decision_tables_gate_status_and_validate_all_nominations_first() {
+        let policy = response_policy();
+        for (status, has_add) in [(StatusCode::OK, true), (StatusCode::NOT_FOUND, false)] {
+            let decisions =
+                decide_response_headers(status, &HeaderMap::new(), &policy, false).unwrap();
+            assert_eq!(
+                decisions.iter().any(|decision| matches!(
+                    decision,
+                    ResponseHeaderDecision::Add { name, .. } if name == "x-order"
+                )),
+                has_add
+            );
+        }
+
+        let mut headers = HeaderMap::new();
+        headers.append(CONNECTION, HeaderValue::from_static("x-first"));
+        headers.append(CONNECTION, HeaderValue::from_static("x-second, "));
+        assert_eq!(
+            decide_response_headers(StatusCode::OK, &headers, &policy, true),
+            Err(ResponsePolicyError::InvalidConnectionNomination)
+        );
+    }
+
+    #[test]
+    fn cookie_rewrite_table_preserves_exact_case_whitespace_and_malformed_values() {
+        let policy = response_policy();
+        for (input, expected) in [
+            (
+                "sid=1; Path=/internal; secure; HTTPONLY; SameSite=Strict; Priority=High",
+                "sid=1; Path=/; HTTPONLY; SameSite=Lax; Priority=High",
+            ),
+            (
+                "sid=1;\tPATH=/internal;Secure;httponly;samesite=None",
+                "sid=1;\tPATH=/;httponly;SameSite=Lax",
+            ),
+            ("SID=1; Path=/internal; secure", "SID=1; Path=/; secure"),
+            (
+                "sid=1; Path= /internal",
+                "sid=1; Path= /internal; HttpOnly; SameSite=Lax",
+            ),
+            ("malformed; Path=/internal", "malformed; Path=/internal"),
+            ("=value; Path=/internal", "=value; Path=/internal"),
+        ] {
+            assert_eq!(
+                rewrite_cookie(&HeaderValue::from_static(input), &policy).unwrap(),
+                expected
+            );
+        }
+
+        let non_utf8 = HeaderValue::from_bytes(b"sid=\xff; Path=/internal").unwrap();
+        assert_eq!(rewrite_cookie(&non_utf8, &policy).unwrap(), non_utf8);
     }
 
     fn value_decision(

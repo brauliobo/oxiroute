@@ -10,8 +10,8 @@ use http::{
     header::{
         ACCEPT_RANGES, ALLOW, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE,
         CONTENT_TYPE, ETAG, HOST, IF_MATCH, IF_MODIFIED_SINCE, IF_NONE_MATCH, IF_RANGE,
-        IF_UNMODIFIED_SINCE, LAST_MODIFIED, LOCATION, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION,
-        RANGE, SERVER, SET_COOKIE, TE, TRAILER, TRANSFER_ENCODING, UPGRADE, WWW_AUTHENTICATE,
+        IF_UNMODIFIED_SINCE, LAST_MODIFIED, LOCATION, RANGE, SERVER, TRAILER, TRANSFER_ENCODING,
+        WWW_AUTHENTICATE,
     },
     uri::Authority,
 };
@@ -22,7 +22,7 @@ use oxiroute_cache::{
     StoreOutcome, Validators,
 };
 use oxiroute_config::{
-    HttpGzipMinimumVersion, HttpProxyPathRewrite, HttpRetryTarget, HttpRetryTrigger, HttpSameSite,
+    HttpGzipMinimumVersion, HttpProxyPathRewrite, HttpRetryTarget, HttpRetryTrigger,
     HttpUpstreamHost, is_unambiguous_http_path,
 };
 use pingora::{
@@ -40,12 +40,13 @@ use crate::{
     RuntimeEndpoint, RuntimeGeneration, RuntimeReferenceKind,
     http_action::{
         CacheFill, CacheFillJoin, CacheRequest, HttpActionPlan, HttpCachePlan, HttpGzipPlan,
-        HttpRoutePlan, ProxyPolicyPlan, RedirectLocationPlan, ResponseHeaderMutationPlan,
-        StaticErrorTarget, StaticFile, StaticRequestDecision, StaticServeError, StaticTarget,
+        HttpRoutePlan, ProxyPolicyPlan, RedirectLocationPlan, StaticErrorTarget, StaticFile,
+        StaticRequestDecision, StaticServeError, StaticTarget,
     },
     http_policy::{
         RedirectContext, RequestHeaderDecision, RequestPolicyContext, RequestPolicyError,
-        decide_request_header, expand_redirect_location, nginx_request_host,
+        ResponseHeaderDecision, ResponsePolicyError, decide_request_header,
+        decide_response_headers, expand_redirect_location, nginx_request_host,
         normalized_redirect_host, normalized_request_host,
     },
     monitoring::CacheEvent,
@@ -800,16 +801,14 @@ impl ProxyHttp for HttpReverseProxy {
         }
         let had_uncacheable_framing = response.headers.contains_key(TRANSFER_ENCODING)
             || response.headers.contains_key(TRAILER);
-        if response.status != http::StatusCode::SWITCHING_PROTOCOLS {
-            remove_upstream_hop_by_hop_response_headers(response)?;
-        }
+        let remove_hop_by_hop = response.status != http::StatusCode::SWITCHING_PROTOCOLS;
         if let Some(status) = ctx.response_status_override {
             response.set_status(status)?;
         }
         for (name, value) in &ctx.response_header_overrides {
             response.append_header(name.clone(), value.clone())?;
         }
-        apply_response_policy(response, proxy_policy(ctx))?;
+        apply_response_policy(response, proxy_policy(ctx), remove_hop_by_hop)?;
         ctx.response_buffer = None;
         if let Some(revalidation) = ctx.cache_revalidation.clone() {
             if response.status == StatusCode::NOT_MODIFIED {
@@ -869,7 +868,7 @@ impl ProxyHttp for HttpReverseProxy {
                         .is_some_and(|value| value.as_bytes() == b"0");
                 ctx.cache_capture = Some(CacheCapture {
                     status,
-                    headers: cache_response_headers(&response.headers),
+                    headers: response.headers.clone(),
                     body: Vec::new(),
                     tags: ctx
                         .cache_plan
@@ -1089,7 +1088,7 @@ async fn finish_cache_revalidation(
         response_received: plan.cache.now(),
         response_received_wall: SystemTime::now(),
     };
-    let not_modified_headers = cache_response_headers(&response.headers);
+    let not_modified_headers = response.headers.clone();
     let stored = plan.cache.prepare_not_modified_with_timeline(
         request.representation_input(),
         &revalidation.key,
@@ -1482,33 +1481,6 @@ fn response_representation_valid(status: StatusCode, headers: &HeaderMap, body_l
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
             == Some(body_len)
-}
-
-fn cache_response_headers(headers: &HeaderMap) -> HeaderMap {
-    let connection_headers = headers
-        .get(CONNECTION)
-        .and_then(|value| value.to_str().ok())
-        .into_iter()
-        .flat_map(|value| value.split(','))
-        .filter_map(|value| HeaderName::from_bytes(value.trim().as_bytes()).ok())
-        .collect::<Vec<_>>();
-    let mut sanitized = headers.clone();
-    for name in [
-        CONNECTION,
-        HeaderName::from_static("keep-alive"),
-        HeaderName::from_static("proxy-authenticate"),
-        HeaderName::from_static("proxy-authorization"),
-        HeaderName::from_static("te"),
-        HeaderName::from_static("trailer"),
-        HeaderName::from_static("transfer-encoding"),
-        HeaderName::from_static("upgrade"),
-    ] {
-        sanitized.remove(name);
-    }
-    for name in connection_headers {
-        sanitized.remove(name);
-    }
-    sanitized
 }
 
 fn response_surrogate_tags(headers: &HeaderMap, name: &HeaderName) -> Vec<Bytes> {
@@ -2487,117 +2459,35 @@ fn has_single_canonical_host(
         .is_some_and(|(name, _)| name.as_slice() == b"Host")
 }
 
-pub(crate) fn remove_upstream_hop_by_hop_response_headers(
-    response: &mut pingora::http::ResponseHeader,
-) -> pingora::Result<()> {
-    let mut connection_headers = Vec::new();
-    for value in response.headers.get_all(CONNECTION) {
-        let value = value
-            .to_str()
-            .map_err(|_| Error::new_up(ErrorType::InvalidHTTPHeader))?;
-        for token in value.split(',') {
-            connection_headers.push(
-                HeaderName::from_bytes(token.trim().as_bytes())
-                    .map_err(|_| Error::new_up(ErrorType::InvalidHTTPHeader))?,
-            );
-        }
-    }
-    for name in connection_headers {
-        response.remove_header(&name);
-    }
-    for name in [
-        CONNECTION,
-        HeaderName::from_static("keep-alive"),
-        PROXY_AUTHENTICATE,
-        PROXY_AUTHORIZATION,
-        HeaderName::from_static("proxy-connection"),
-        TE,
-        TRAILER,
-        TRANSFER_ENCODING,
-        UPGRADE,
-    ] {
-        response.remove_header(&name);
-    }
-    Ok(())
-}
-
-pub(crate) fn remove_upstream_hop_by_hop_response_headers_map(
-    headers: &mut HeaderMap,
-) -> pingora::Result<()> {
-    let mut connection_headers = Vec::new();
-    for value in headers.get_all(CONNECTION) {
-        let value = value
-            .to_str()
-            .map_err(|_| Error::new_up(ErrorType::InvalidHTTPHeader))?;
-        for token in value.split(',') {
-            connection_headers.push(
-                HeaderName::from_bytes(token.trim().as_bytes())
-                    .map_err(|_| Error::new_up(ErrorType::InvalidHTTPHeader))?,
-            );
-        }
-    }
-    for name in connection_headers {
-        headers.remove(name);
-    }
-    for name in [
-        CONNECTION,
-        HeaderName::from_static("keep-alive"),
-        PROXY_AUTHENTICATE,
-        PROXY_AUTHORIZATION,
-        HeaderName::from_static("proxy-connection"),
-        TE,
-        TRAILER,
-        TRANSFER_ENCODING,
-        UPGRADE,
-    ] {
-        headers.remove(name);
-    }
-    Ok(())
-}
-
 pub(crate) fn apply_response_policy(
     response: &mut pingora::http::ResponseHeader,
     policy: &ProxyPolicyPlan,
+    remove_hop_by_hop: bool,
 ) -> pingora::Result<()> {
-    for mutation in &policy.response_headers {
-        match mutation {
-            ResponseHeaderMutationPlan::Set {
-                name,
-                value,
-                always,
-            } => {
-                if *always || crate::http_action::nginx_add_header_status(response.status.as_u16())
-                {
-                    response.insert_header(name.clone(), value.clone())?;
-                }
+    let decisions = decide_response_headers(
+        response.status,
+        &response.headers,
+        policy,
+        remove_hop_by_hop,
+    )
+    .map_err(|error| match error {
+        ResponsePolicyError::InvalidConnectionNomination => {
+            Error::new_up(ErrorType::InvalidHTTPHeader)
+        }
+        ResponsePolicyError::InvalidCookie => Error::new_in(ErrorType::InvalidHTTPHeader),
+    })?;
+    for decision in decisions {
+        match decision {
+            ResponseHeaderDecision::Remove(name) => {
+                response.remove_header(&name);
             }
-            ResponseHeaderMutationPlan::Add {
-                name,
-                value,
-                always,
-            } => {
-                if *always || crate::http_action::nginx_add_header_status(response.status.as_u16())
-                {
-                    response.append_header(name.clone(), value.clone())?;
-                }
+            ResponseHeaderDecision::Set { name, value } => {
+                response.insert_header(name, value)?;
             }
-            ResponseHeaderMutationPlan::Remove { name } => {
-                response.remove_header(name);
+            ResponseHeaderDecision::Add { name, value } => {
+                response.append_header(name, value)?;
             }
         }
-    }
-    if policy.cookie_path_rewrites.is_empty() && policy.cookie_attributes.is_empty() {
-        return Ok(());
-    }
-    let cookies = response
-        .headers
-        .get_all(SET_COOKIE)
-        .iter()
-        .cloned()
-        .collect::<Vec<_>>();
-    response.remove_header(&SET_COOKIE);
-    for cookie in cookies {
-        response.append_header(SET_COOKIE, rewrite_cookie(&cookie, policy)?)?;
     }
     Ok(())
 }
@@ -2607,148 +2497,27 @@ pub(crate) fn apply_response_policy_map(
     headers: &mut HeaderMap,
     policy: &ProxyPolicyPlan,
 ) -> pingora::Result<()> {
-    for mutation in &policy.response_headers {
-        match mutation {
-            ResponseHeaderMutationPlan::Set {
-                name,
-                value,
-                always,
-            } => {
-                if *always || crate::http_action::nginx_add_header_status(status.as_u16()) {
-                    headers.insert(name.clone(), value.clone());
-                }
+    let decisions =
+        decide_response_headers(status, headers, policy, true).map_err(|error| match error {
+            ResponsePolicyError::InvalidConnectionNomination => {
+                Error::new_up(ErrorType::InvalidHTTPHeader)
             }
-            ResponseHeaderMutationPlan::Add {
-                name,
-                value,
-                always,
-            } => {
-                if *always || crate::http_action::nginx_add_header_status(status.as_u16()) {
-                    headers.append(name.clone(), value.clone());
-                }
-            }
-            ResponseHeaderMutationPlan::Remove { name } => {
+            ResponsePolicyError::InvalidCookie => Error::new_in(ErrorType::InvalidHTTPHeader),
+        })?;
+    for decision in decisions {
+        match decision {
+            ResponseHeaderDecision::Remove(name) => {
                 headers.remove(name);
             }
+            ResponseHeaderDecision::Set { name, value } => {
+                headers.insert(name, value);
+            }
+            ResponseHeaderDecision::Add { name, value } => {
+                headers.append(name, value);
+            }
         }
-    }
-    if policy.cookie_path_rewrites.is_empty() && policy.cookie_attributes.is_empty() {
-        return Ok(());
-    }
-    let cookies = headers
-        .get_all(SET_COOKIE)
-        .iter()
-        .cloned()
-        .collect::<Vec<_>>();
-    headers.remove(SET_COOKIE);
-    for cookie in cookies {
-        headers.append(SET_COOKIE, rewrite_cookie(&cookie, policy)?);
     }
     Ok(())
-}
-
-fn rewrite_cookie(cookie: &HeaderValue, policy: &ProxyPolicyPlan) -> pingora::Result<HeaderValue> {
-    let Ok(cookie) = cookie.to_str() else {
-        return Ok(cookie.clone());
-    };
-    let mut segments = cookie.split(';');
-    let first = segments.next().unwrap_or_default();
-    let cookie_name = first
-        .trim_start_matches([' ', '\t'])
-        .split_once('=')
-        .map(|(name, _)| name);
-    let attributes = cookie_name.and_then(|name| {
-        policy
-            .cookie_attributes
-            .iter()
-            .find(|candidate| candidate.name == name)
-    });
-    let mut rewritten = first.to_owned();
-    let mut saw_secure = false;
-    let mut saw_http_only = false;
-    let mut saw_same_site = false;
-    for segment in segments {
-        let trimmed = segment.trim_start_matches([' ', '\t']);
-        let whitespace = &segment[..segment.len() - trimmed.len()];
-        let (name, value) = trimmed
-            .split_once('=')
-            .map_or((trimmed, None), |(name, value)| (name, Some(value)));
-        if name.eq_ignore_ascii_case("secure") {
-            saw_secure = true;
-            if attributes.and_then(|policy| policy.secure) == Some(false) {
-                continue;
-            }
-        } else if name.eq_ignore_ascii_case("httponly") {
-            saw_http_only = true;
-            if attributes.and_then(|policy| policy.http_only) == Some(false) {
-                continue;
-            }
-        } else if name.eq_ignore_ascii_case("samesite") {
-            saw_same_site = true;
-            if let Some(same_site) = attributes.and_then(|policy| policy.same_site) {
-                append_cookie_attribute(
-                    &mut rewritten,
-                    whitespace,
-                    "SameSite",
-                    Some(same_site_value(same_site)),
-                );
-                continue;
-            }
-        }
-        if let Some(value) = value {
-            let replacement = (name.eq_ignore_ascii_case("path"))
-                .then(|| {
-                    policy
-                        .cookie_path_rewrites
-                        .iter()
-                        .find(|rewrite| rewrite.from == value)
-                })
-                .flatten();
-            append_cookie_attribute(
-                &mut rewritten,
-                whitespace,
-                name,
-                Some(replacement.map_or(value, |replacement| replacement.to.as_str())),
-            );
-        } else {
-            append_cookie_attribute(&mut rewritten, whitespace, trimmed, None);
-        }
-    }
-    if let Some(attributes) = attributes {
-        if attributes.secure == Some(true) && !saw_secure {
-            append_cookie_attribute(&mut rewritten, " ", "Secure", None);
-        }
-        if attributes.http_only == Some(true) && !saw_http_only {
-            append_cookie_attribute(&mut rewritten, " ", "HttpOnly", None);
-        }
-        if let Some(same_site) = attributes.same_site.filter(|_| !saw_same_site) {
-            append_cookie_attribute(
-                &mut rewritten,
-                " ",
-                "SameSite",
-                Some(same_site_value(same_site)),
-            );
-        }
-    }
-    HeaderValue::from_str(&rewritten).map_err(|_| Error::new_in(ErrorType::InvalidHTTPHeader))
-}
-
-fn append_cookie_attribute(output: &mut String, whitespace: &str, name: &str, value: Option<&str>) {
-    output.push(';');
-    output.push_str(whitespace);
-    output.push_str(name);
-    if let Some(value) = value {
-        output.push('=');
-        output.push_str(value);
-    }
-}
-
-const fn same_site_value(value: HttpSameSite) -> &'static str {
-    match value {
-        HttpSameSite::Strict => "Strict",
-        HttpSameSite::Lax => "Lax",
-        HttpSameSite::None => "None",
-    }
 }
 
 fn connect_retry_trigger(error: &Error) -> Option<HttpRetryTrigger> {
@@ -2941,6 +2710,8 @@ mod tests {
         },
         time::Duration,
     };
+
+    use http::header::{SET_COOKIE, TE, UPGRADE};
 
     use oxiroute_config::{
         HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpProxyPathRewrite, HttpProxyPolicy,
@@ -3503,6 +3274,10 @@ mod tests {
         })
     }
 
+    fn empty_proxy_policy() -> ProxyPolicyPlan {
+        ProxyPolicyPlan::compile(&HttpProxyPolicy::default())
+    }
+
     fn response_headers_fixture() -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.append("x-set", HeaderValue::from_static("old-one"));
@@ -3544,7 +3319,7 @@ mod tests {
 
             let mut response = pingora::http::ResponseHeader::build(status, None).unwrap();
             response.headers = initial;
-            apply_response_policy(&mut response, &policy).expect("ResponseHeader policy");
+            apply_response_policy(&mut response, &policy, true).expect("ResponseHeader policy");
 
             assert_eq!(response.headers, map);
             assert_eq!(values(&map, "x-set"), [b"set".as_slice()]);
@@ -3573,7 +3348,7 @@ mod tests {
 
         let mut response = pingora::http::ResponseHeader::build(200, None).unwrap();
         response.append_header(SET_COOKIE, cookie.clone()).unwrap();
-        apply_response_policy(&mut response, &policy).unwrap();
+        apply_response_policy(&mut response, &policy, true).unwrap();
         assert_eq!(response.headers[SET_COOKIE], cookie);
     }
 
@@ -3593,11 +3368,11 @@ mod tests {
     fn hop_by_hop_adapters_remove_nominations_from_every_connection_field() {
         let initial = hop_by_hop_fixture();
         let mut map = initial.clone();
-        remove_upstream_hop_by_hop_response_headers_map(&mut map).unwrap();
+        apply_response_policy_map(StatusCode::OK, &mut map, &empty_proxy_policy()).unwrap();
 
         let mut response = pingora::http::ResponseHeader::build(200, None).unwrap();
         response.headers = initial;
-        remove_upstream_hop_by_hop_response_headers(&mut response).unwrap();
+        apply_response_policy(&mut response, &empty_proxy_policy(), true).unwrap();
 
         assert_eq!(response.headers, map);
         for name in [
@@ -3619,12 +3394,14 @@ mod tests {
         initial.insert(CONNECTION, HeaderValue::from_static("x-first, "));
         initial.insert("x-first", HeaderValue::from_static("still-present"));
         let mut map = initial.clone();
-        assert!(remove_upstream_hop_by_hop_response_headers_map(&mut map).is_err());
+        assert!(
+            apply_response_policy_map(StatusCode::OK, &mut map, &empty_proxy_policy()).is_err()
+        );
         assert_eq!(map, initial);
 
         let mut response = pingora::http::ResponseHeader::build(200, None).unwrap();
         response.headers = initial.clone();
-        assert!(remove_upstream_hop_by_hop_response_headers(&mut response).is_err());
+        assert!(apply_response_policy(&mut response, &empty_proxy_policy(), true).is_err());
         assert_eq!(response.headers, initial);
     }
 
@@ -3651,7 +3428,7 @@ mod tests {
             .append_header("x-selected", "upstream")
             .expect("upstream header");
 
-        apply_response_policy(&mut error, &policy).expect("error response policy");
+        apply_response_policy(&mut error, &policy, true).expect("error response policy");
 
         assert_eq!(error.headers.get_all("x-selected").iter().count(), 1);
         assert_eq!(error.headers.get("x-always").unwrap(), "new");
@@ -3660,7 +3437,7 @@ mod tests {
         success
             .append_header("x-selected", "upstream")
             .expect("upstream header");
-        apply_response_policy(&mut success, &policy).expect("success response policy");
+        apply_response_policy(&mut success, &policy, true).expect("success response policy");
         assert_eq!(success.headers.get_all("x-selected").iter().count(), 2);
     }
 

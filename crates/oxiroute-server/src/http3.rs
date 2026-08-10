@@ -45,10 +45,7 @@ use crate::{
         RedirectContext, RequestHeaderDecision, RequestPolicyContext, RequestPolicyError,
         decide_request_header, expand_redirect_location, normalized_redirect_host,
     },
-    http_proxy::{
-        apply_response_policy_map, remove_upstream_hop_by_hop_response_headers_map,
-        rewrite_upstream_path, selected_upstream_host,
-    },
+    http_proxy::{apply_response_policy_map, rewrite_upstream_path, selected_upstream_host},
 };
 
 pub(crate) const H3_HANDSHAKE_LIMIT: usize = 64;
@@ -1384,9 +1381,7 @@ where
 {
     let status = response.status;
     let mut headers = response.headers;
-    if remove_upstream_hop_by_hop_response_headers_map(&mut headers).is_err()
-        || apply_response_policy_map(status, &mut headers, &proxy.policy).is_err()
-    {
+    if apply_response_policy_map(status, &mut headers, &proxy.policy).is_err() {
         let _ = send_h3_error(
             stream,
             StatusCode::BAD_GATEWAY,
