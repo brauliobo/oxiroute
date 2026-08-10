@@ -32,7 +32,7 @@ fn imported_haproxy_http_check_send_compiles_into_the_runtime_health_plan() {
         .join("../oxiroute-import/tests/fixtures/haproxy/http-check-send.cfg");
     let imported = import_roots(&[path]);
     assert!(!imported.has_errors(), "{:?}", imported.diagnostics());
-    let config = imported.value().config.as_ref().expect("imported config");
+    let config = imported.value().config().expect("imported config");
     let plan = runtime_plan(config).expect("runtime plan");
     let health = config.upstream_pools[0]
         .health_check

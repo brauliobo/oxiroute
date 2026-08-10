@@ -7,19 +7,18 @@ use std::{
 };
 
 use oxiroute_config::{
-    Config, DownstreamTimeoutPolicy, ForwardAccessAction, ForwardAccessCondition,
-    ForwardAccessMatcher, ForwardAccessPolicy, ForwardAccessRule, ForwardAuditMode,
-    ForwardConnectPolicy, ForwardDestinationPolicy, ForwardDirectFallback, ForwardHeaderPolicy,
-    ForwardHttpVersion, ForwardPeer, ForwardPeerPolicy, ForwardPortRange, ForwardProxyAuth,
-    ForwardProxyService, ForwardResolverPolicy, ForwardViaPolicy, ForwardedForPolicy, Listener,
-    ListenerBind, Protocol,
+    DownstreamTimeoutPolicy, ForwardAccessAction, ForwardAccessCondition, ForwardAccessMatcher,
+    ForwardAccessPolicy, ForwardAccessRule, ForwardAuditMode, ForwardConnectPolicy,
+    ForwardDestinationPolicy, ForwardDirectFallback, ForwardHeaderPolicy, ForwardHttpVersion,
+    ForwardPeer, ForwardPeerPolicy, ForwardPortRange, ForwardProxyAuth, ForwardProxyService,
+    ForwardResolverPolicy, ForwardViaPolicy, ForwardedForPolicy, Listener, ListenerBind, Protocol,
 };
 
 use crate::canonical::{dns_name, ip_address};
 use crate::{
-    CanonicalDraft, CanonicalProvenance, Diagnostic, DiagnosticCode, DiagnosticStage,
-    E_DUPLICATE_IDENTITY, E_SEMANTICS_NOT_REPRESENTABLE, E_UNRESOLVED_REFERENCE,
-    E_UNSUPPORTED_FEATURE, Severity,
+    CanonicalCandidate, CanonicalDraft, CanonicalFinalization, CanonicalProvenance, Diagnostic,
+    DiagnosticCode, DiagnosticStage, E_DUPLICATE_IDENTITY, E_SEMANTICS_NOT_REPRESENTABLE,
+    E_UNRESOLVED_REFERENCE, E_UNSUPPORTED_FEATURE, Severity, SourceImportMetadata,
 };
 
 use super::{
@@ -46,9 +45,7 @@ pub struct ImportReport {
     pub decision_ledger: DecisionLedger,
     pub capabilities: SquidCapabilityReport,
     pub blocked_capabilities: Vec<BlockedCapability>,
-    pub draft: CanonicalDraft,
-    pub canonical_provenance: Vec<CanonicalProvenance<DirectiveOrigin>>,
-    pub config: Option<Config>,
+    pub candidate: CanonicalCandidate<DirectiveOrigin>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -215,44 +212,47 @@ fn import_graph(graph: SourceGraph, mut diagnostics: Vec<Diagnostic>) -> ImportR
         |_| (CanonicalDraft::default(), Vec::new()),
         |lowered| (lowered.draft, lowered.provenance),
     );
-    let mut config = draft.to_config();
-    let config = if blocked_capabilities.is_empty()
+    let eligible = blocked_capabilities.is_empty()
         && !diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.severity() == Severity::Error)
-    {
-        match oxiroute_config::validate_config(&mut config) {
-            Ok(()) => Some(config),
-            Err(error) => {
-                let mut diagnostic = Diagnostic::new(
-                    E_SEMANTICS_NOT_REPRESENTABLE,
-                    Severity::Error,
-                    DiagnosticStage::Validate,
-                    format!("lowered Squid candidate failed canonical validation: {error}"),
-                );
-                if let Some(origin) = canonical_provenance
-                    .iter()
-                    .flat_map(|entry| entry.origins.iter())
-                    .next()
-                {
-                    diagnostic = diagnostic
-                        .with_primary_span(origin.directive_span)
-                        .with_include_stack(
-                            origin
-                                .provenance
-                                .include_stack
-                                .iter()
-                                .map(|frame| frame.directive_span),
-                        );
-                }
-                diagnostics.push(diagnostic);
-                None
+            .any(|diagnostic| diagnostic.severity() == Severity::Error);
+    let finalization = match draft.finalize(eligible) {
+        Ok(finalization) => finalization,
+        Err(error) => {
+            let mut diagnostic = Diagnostic::new(
+                E_SEMANTICS_NOT_REPRESENTABLE,
+                Severity::Error,
+                DiagnosticStage::Validate,
+                format!("lowered Squid candidate failed canonical validation: {error}"),
+            );
+            if let Some(origin) = canonical_provenance
+                .iter()
+                .flat_map(|entry| entry.origins.iter())
+                .next()
+            {
+                diagnostic = diagnostic
+                    .with_primary_span(origin.directive_span)
+                    .with_include_stack(
+                        origin
+                            .provenance
+                            .include_stack
+                            .iter()
+                            .map(|frame| frame.directive_span),
+                    );
             }
+            diagnostics.push(diagnostic);
+            CanonicalFinalization::Blocked
         }
-    } else {
-        None
     };
     let ((), diagnostics) = crate::Report::new((), diagnostics).into_parts();
+    let source_metadata = SourceImportMetadata {
+        original_sources: graph
+            .sources
+            .iter()
+            .map(|source| source.source.clone())
+            .collect(),
+        ..SourceImportMetadata::default()
+    };
 
     ImportReport {
         source_graph: graph,
@@ -260,9 +260,15 @@ fn import_graph(graph: SourceGraph, mut diagnostics: Vec<Diagnostic>) -> ImportR
         decision_ledger,
         capabilities: squid_capability_report(),
         blocked_capabilities,
-        draft,
-        canonical_provenance,
-        config,
+        candidate: CanonicalCandidate::new(
+            draft,
+            canonical_provenance,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            source_metadata,
+            finalization,
+        ),
         diagnostics,
     }
 }

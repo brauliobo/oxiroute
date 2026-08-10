@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import ProvenanceWorkspace from './ProvenanceWorkspace.vue'
 import { fetchImportReports } from './api'
-import { jsonResponse } from './test/contractFixtures'
+import { contractConfigSnapshot, jsonResponse } from './test/contractFixtures'
 import { importReportResponse } from './test/importFixtures'
 
 const token = 'native-report-test-token'
@@ -93,6 +93,19 @@ describe('native import report workspace', () => {
 
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(jsonResponse({ reports: [] }))))
     await expect(fetchImportReports(token)).rejects.toThrow('native import reports API returned an invalid response payload')
+  })
+
+  it.each([
+    { finalized: true, config: null },
+    { finalized: false, config: contractConfigSnapshot().config },
+  ])('rejects inconsistent candidate finalization evidence: %o', async (candidate) => {
+    const response = importReportResponse()
+    Object.assign(response.report!.candidate, candidate)
+    vi.stubGlobal('fetch', reportFetch(response))
+
+    await expect(fetchImportReports(token)).rejects.toThrow(
+      'native import reports API returned an invalid response payload',
+    )
   })
 })
 

@@ -827,8 +827,7 @@ fn assert_live_origin_hashed_fixture(host: &str, case: &str) {
         );
         let config = report
             .value()
-            .config
-            .as_ref()
+            .config()
             .unwrap_or_else(|| panic!("{host} HAProxy fixture did not finalize"));
         assert_eq!(config.listeners.len(), 3);
         assert_eq!(config.upstream_pools.len(), 3);
@@ -850,7 +849,7 @@ fn assert_live_origin_hashed_fixture(host: &str, case: &str) {
     ));
     let report = import_root_with_options(Path::new("nginx.conf"), &root, &live_options(host));
     if host == "whitebeast" {
-        assert!(report.candidate.config.is_none());
+        assert!(report.candidate.config().is_none());
         match case {
             "HN-17" => assert!(
                 report
@@ -864,7 +863,7 @@ fn assert_live_origin_hashed_fixture(host: &str, case: &str) {
         return;
     }
     if host == "hostrouter" {
-        assert!(report.candidate.config.is_none());
+        assert!(report.candidate.config().is_none());
         match case {
             "HN-11" => assert!(
                 report
@@ -890,7 +889,7 @@ fn assert_live_origin_hashed_fixture(host: &str, case: &str) {
         }
         return;
     }
-    assert!(report.candidate.config.is_some());
+    assert!(report.candidate.config().is_some());
     let rtmp = &report.candidate.draft.rtmp_services[0];
     match case {
         "PR-03" => assert!(rtmp.applications[0].live),
@@ -948,7 +947,7 @@ fn live_tls_overlay(
 fn assert_phoenix_rtmp_case(case: &str) {
     let report = import_rtmp_fixture("phoenix-audited-partial.conf");
     assert_rtmp_import_report_invariants(&report);
-    assert!(report.config.is_none());
+    assert!(report.config().is_none());
     assert_eq!(report.blocked_services.len(), 1);
     assert_eq!(report.draft.rtmp_services.len(), 1);
     let safe = &report.draft.rtmp_services[0].applications[0];
@@ -1007,7 +1006,7 @@ fn assert_nginx_host_case(case: &str) {
         })),
         "HN-09" => {
             assert!(report.blocked_services.is_empty());
-            assert!(report.config.is_some());
+            assert!(report.config().is_some());
             assert!(report.occurrence_ledger.iter().any(|decision| {
                 decision.name.value == b"server"
                     && decision
@@ -1022,7 +1021,7 @@ fn assert_nginx_host_case(case: &str) {
             }));
         }
         "HN-19" => {
-            assert!(report.config.is_some());
+            assert!(report.config().is_some());
             assert!(!report.diagnostics.iter().any(|diagnostic| {
                 diagnostic.stage() == DiagnosticStage::Lower
                     && diagnostic.message().contains("proxy defaults")
@@ -1049,8 +1048,7 @@ fn assert_haproxy_host_case(case: &str) {
     let diagnostics = lowered.diagnostics();
     let config = lowered
         .value()
-        .config
-        .as_ref()
+        .config()
         .unwrap_or_else(|| panic!("live hostrouter HAProxy config: {diagnostics:#?}"));
     let listener = &config.listeners[0];
     let service = &config.http_services[0];
@@ -1213,8 +1211,7 @@ fn assert_haproxy_conjunction_host_case(case: &str) {
     assert!(!lowered.has_errors(), "{:?}", lowered.diagnostics());
     let config = lowered
         .value()
-        .config
-        .as_ref()
+        .config()
         .expect("ACL conjunction fixture config");
     let route = &config.http_services[0].routes[0];
     assert!(matches!(

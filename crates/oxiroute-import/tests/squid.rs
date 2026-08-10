@@ -72,7 +72,10 @@ fn canonical_lowering_fails_closed_for_unrepresented_defaults_and_connect_ranges
         let path = directory.path().join(name);
         fs::write(&path, source).expect("Squid fixture");
         let report = import(&path);
-        assert!(report.config.is_none(), "{name} unexpectedly finalized");
+        assert!(
+            report.candidate.config().is_none(),
+            "{name} unexpectedly finalized"
+        );
         assert!(report.has_errors(), "{name} lacks a blocking diagnostic");
         assert!(
             report
@@ -101,7 +104,7 @@ fn canonical_validation_failures_remain_blocking_diagnostics() {
     .expect("Squid fixture");
 
     let report = import(&path);
-    assert!(report.config.is_none());
+    assert!(report.candidate.config().is_none());
     assert!(report.diagnostics.iter().any(|diagnostic| {
         diagnostic.stage() == DiagnosticStage::Validate
             && diagnostic.code() == oxiroute_import::E_SEMANTICS_NOT_REPRESENTABLE
@@ -260,7 +263,10 @@ fn assert_hostrouter_authentication(report: &oxiroute_import::squid::ImportRepor
 #[test]
 fn hostrouter_report_lowers_to_a_complete_forward_proxy_candidate() {
     let report = import(&fixture("hostrouter-sanitized.conf"));
-    let config = report.config.as_ref().expect("finalized Squid candidate");
+    let config = report
+        .candidate
+        .config()
+        .expect("finalized Squid candidate");
     assert_eq!(config.listeners.len(), 1);
     assert_eq!(config.forward_proxy_services.len(), 1);
     assert_eq!(
@@ -277,7 +283,8 @@ fn hostrouter_report_lowers_to_a_complete_forward_proxy_candidate() {
     ));
     assert_squid_provenance_paths_are_unique(&report);
     let paths = report
-        .canonical_provenance
+        .candidate
+        .provenance
         .iter()
         .map(|entry| entry.path.as_str())
         .collect::<HashSet<_>>();
@@ -351,7 +358,11 @@ fn canonical_provenance_retains_include_file_and_stack_for_finalized_fields() {
     fs::write(&root, b"include forward.conf\n").expect("root source");
 
     let report = import(&root);
-    assert!(report.config.is_some(), "{:#?}", report.diagnostics);
+    assert!(
+        report.candidate.config().is_some(),
+        "{:#?}",
+        report.diagnostics
+    );
     assert_eq!(report.source_graph.sources.len(), 2);
     assert!(report.source_graph.snapshot_stable);
     assert_squid_provenance_paths_are_unique(&report);
@@ -387,7 +398,11 @@ fn canonical_provenance_retains_glob_file_and_stack_for_finalized_fields() {
     fs::write(&root, b"include conf.d/*.conf\n").expect("glob root source");
 
     let report = import(&root);
-    assert!(report.config.is_some(), "{:#?}", report.diagnostics);
+    assert!(
+        report.candidate.config().is_some(),
+        "{:#?}",
+        report.diagnostics
+    );
     assert_eq!(report.source_graph.sources.len(), 3);
     assert_eq!(report.source_graph.includes[0].targets.len(), 2);
     assert_squid_provenance_paths_are_unique(&report);
@@ -410,7 +425,7 @@ fn unsupported_included_behavior_blocks_with_include_provenance() {
     fs::write(&root, b"include unsupported.conf\n").expect("root source");
 
     let report = import(&root);
-    assert!(report.config.is_none());
+    assert!(report.candidate.config().is_none());
     assert!(
         report
             .blocked_capabilities
@@ -449,7 +464,7 @@ fn selected_native_root_report_retains_canonical_provenance() {
         Path::new("/synthetic/default.conf"),
     );
     assert_eq!(report.selection.active_root, root);
-    assert!(report.import.config.is_some());
+    assert!(report.import.candidate.config().is_some());
     assert_squid_provenance_paths_are_unique(&report.import);
     assert_squid_origin(&report.import, "/listeners/0", &root, 1, 0);
 }
@@ -457,8 +472,8 @@ fn selected_native_root_report_retains_canonical_provenance() {
 #[allow(clippy::naive_bytecount)]
 fn assert_squid_provenance_paths_are_unique(report: &oxiroute_import::squid::ImportReport) {
     let mut paths = HashSet::new();
-    assert!(!report.canonical_provenance.is_empty());
-    for entry in &report.canonical_provenance {
+    assert!(!report.candidate.provenance.is_empty());
+    for entry in &report.candidate.provenance {
         assert!(
             paths.insert(entry.path.as_str()),
             "duplicate path {}",
@@ -492,7 +507,8 @@ fn assert_squid_origin(
     expected_include_depth: usize,
 ) {
     let entry = report
-        .canonical_provenance
+        .candidate
+        .provenance
         .iter()
         .find(|entry| entry.path == path)
         .unwrap_or_else(|| panic!("missing Squid provenance {path}"));
@@ -783,7 +799,7 @@ fn regular_file_include_boundary_rejects_directories_and_missing_paths() {
     );
 
     let imported = import(&root);
-    assert!(imported.config.is_none());
+    assert!(imported.candidate.config().is_none());
     assert!(imported.blocked_capabilities.iter().any(|blocked| {
         blocked.kind == SemanticBlockerKind::IncludeExpansion
             && blocked.occurrences
@@ -908,7 +924,7 @@ fn static_parent_peers_and_global_never_direct_lower_in_source_order() {
     .expect("static peer source");
 
     let report = import(&root);
-    let config = report.config.as_ref().expect("static peer candidate");
+    let config = report.candidate.config().expect("static peer candidate");
     let policy = &config.forward_proxy_services[0].peer_policy;
     assert_eq!(policy.peers.len(), 2);
     assert_eq!(policy.peers[0].host, "first.example.test");
@@ -923,13 +939,15 @@ fn static_parent_peers_and_global_never_direct_lower_in_source_order() {
     assert!(report.blocked_capabilities.is_empty());
     assert!(
         report
-            .canonical_provenance
+            .candidate
+            .provenance
             .iter()
             .any(|entry| { entry.path == "/forward_proxy_services/0/peer_policy/peers/0/host" })
     );
     assert!(
         report
-            .canonical_provenance
+            .candidate
+            .provenance
             .iter()
             .any(|entry| { entry.path == "/forward_proxy_services/0/peer_policy/direct_fallback" })
     );
@@ -956,7 +974,7 @@ fn global_always_direct_lowers_to_required_direct_fallback() {
     .expect("direct source");
 
     let report = import(&root);
-    let config = report.config.as_ref().expect("direct candidate");
+    let config = report.candidate.config().expect("direct candidate");
     assert_eq!(
         config.forward_proxy_services[0].peer_policy.direct_fallback,
         oxiroute_config::ForwardDirectFallback::Required
@@ -999,7 +1017,10 @@ fn unsupported_peer_and_direct_forms_keep_stable_blockers() {
         let root = directory.path().join(format!("{name}.conf"));
         fs::write(&root, format!("{base}{extra}")).expect("unsupported source");
         let report = import(&root);
-        assert!(report.config.is_none(), "{name} unexpectedly lowered");
+        assert!(
+            report.candidate.config().is_none(),
+            "{name} unexpectedly lowered"
+        );
         assert!(
             report
                 .diagnostics
@@ -1045,8 +1066,8 @@ fn cache_policy_and_storage_are_classified_without_placeholders() {
     let report = import(&root);
     assert_eq!(report.effective.cache_policy.len(), 1);
     assert_eq!(report.effective.storage.len(), 1);
-    assert!(report.draft.listeners.is_empty());
-    assert!(report.config.is_none());
+    assert!(report.candidate.draft.listeners.is_empty());
+    assert!(report.candidate.config().is_none());
     for kind in [
         SemanticBlockerKind::ForwardProxyListener,
         SemanticBlockerKind::CachePolicy,

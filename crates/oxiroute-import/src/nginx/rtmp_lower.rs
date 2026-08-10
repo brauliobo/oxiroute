@@ -10,12 +10,12 @@ use oxiroute_config::{
     RtmpExecEnvironment, RtmpExecFilesystemPolicy, RtmpExecNetworkPolicy, RtmpExecProfile,
     RtmpFanoutPolicy, RtmpOutboundPolicy, RtmpPushTarget, RtmpRecorder, RtmpRecorderSegmentNaming,
     RtmpRecorderStart, RtmpRecorderTimeBasis, RtmpRecorderTimezone, RtmpRelayPolicy, RtmpService,
-    RtmpSessionCeilings, RtmpTransport, validate_config,
+    RtmpSessionCeilings, RtmpTransport,
 };
 
 use crate::{
-    CanonicalDraft, CanonicalProvenance, Diagnostic, DiagnosticCode, DiagnosticStage,
-    E_INVALID_VALUE, E_SEMANTICS_NOT_REPRESENTABLE, Report, Severity,
+    CanonicalDraft, CanonicalFinalization, CanonicalProvenance, Diagnostic, DiagnosticCode,
+    DiagnosticStage, E_INVALID_VALUE, E_SEMANTICS_NOT_REPRESENTABLE, Report, Severity,
 };
 
 use super::{
@@ -55,7 +55,7 @@ pub struct RtmpImportReport {
     pub provenance: Vec<CanonicalProvenance<DirectiveOrigin>>,
     pub blocked_services: Vec<BlockedRtmpService>,
     pub draft: CanonicalDraft,
-    pub config: Option<Config>,
+    finalization: CanonicalFinalization,
     pub(crate) used_recording_root_overlay: bool,
 }
 
@@ -65,6 +65,16 @@ impl RtmpImportReport {
         self.diagnostics
             .iter()
             .any(|diagnostic| diagnostic.severity() == Severity::Error)
+    }
+
+    #[must_use]
+    pub fn config(&self) -> Option<&Config> {
+        self.finalization.config()
+    }
+
+    #[must_use]
+    pub fn into_config(self) -> Option<Config> {
+        self.finalization.into_config()
     }
 }
 
@@ -206,27 +216,22 @@ impl Lowerer {
             }
         }
 
-        let mut config = self.draft.to_config();
         let finalizable = self.blocked_services.is_empty()
             && !self
                 .diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.severity() == Severity::Error);
-        let config = if finalizable {
-            match validate_config(&mut config) {
-                Ok(()) => Some(config),
-                Err(error) => {
-                    self.diagnostics.push(Diagnostic::new(
-                        E_INVALID_VALUE,
-                        Severity::Error,
-                        DiagnosticStage::Validate,
-                        format!("lowered canonical RTMP configuration is invalid: {error}"),
-                    ));
-                    None
-                }
+        let finalization = match self.draft.finalize(finalizable) {
+            Ok(finalization) => finalization,
+            Err(error) => {
+                self.diagnostics.push(Diagnostic::new(
+                    E_INVALID_VALUE,
+                    Severity::Error,
+                    DiagnosticStage::Validate,
+                    format!("lowered canonical RTMP configuration is invalid: {error}"),
+                ));
+                CanonicalFinalization::Blocked
             }
-        } else {
-            None
         };
         let ((), diagnostics) = Report::new((), self.diagnostics).into_parts();
 
@@ -237,7 +242,7 @@ impl Lowerer {
             provenance: self.provenance,
             blocked_services: self.blocked_services,
             draft: self.draft,
-            config,
+            finalization,
             used_recording_root_overlay: self.used_recording_root_overlay,
         }
     }

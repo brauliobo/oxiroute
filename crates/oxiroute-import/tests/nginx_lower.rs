@@ -15,7 +15,7 @@ fn imported_http_services_enable_automatic_response_headers_in_canonical_renderi
     let report = import_source(
         "http { server { listen 127.0.0.1:8088 default_server; location / { return 200 ok; } } }",
     );
-    let config = report.config.as_ref().expect("nginx HTTP config");
+    let config = report.config().expect("nginx HTTP config");
 
     assert!(
         config
@@ -44,7 +44,7 @@ fn fully_explicit_proxy_fixture_finalizes_with_canonical_routes() {
         report.source_graph.expanded_occurrences.len()
     );
     assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-    let config = report.config.as_ref().expect("finalized nginx config");
+    let config = report.config().expect("finalized nginx config");
     assert_eq!(config.listeners.len(), 1);
     assert_eq!(config.http_services.len(), 1);
     assert_eq!(config.http_services[0].routes.len(), 5);
@@ -105,7 +105,7 @@ fn lowers_proxy_pass_uri_replacement_and_accepts_explicit_expires_off() {
     );
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let config = report.config.as_ref().expect("rewritten proxy config");
+    let config = report.config().expect("rewritten proxy config");
     let route = config.http_services[0]
         .routes
         .iter()
@@ -159,7 +159,7 @@ fn bounded_upstream_weights_lower_with_default_one_and_provenance() {
     );
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let config = report.config.as_ref().expect("weighted nginx config");
+    let config = report.config().expect("weighted nginx config");
     assert_eq!(
         config.upstream_pools[0].algorithm,
         oxiroute_config::UpstreamAlgorithm::WeightedRoundRobin {
@@ -197,7 +197,7 @@ fn lowers_non_root_nginx_raw_prefixes() {
 
     assert!(!report.has_errors(), "{:?}", report.diagnostics);
     assert!(
-        report.config.as_ref().unwrap().http_services[0]
+        report.config().unwrap().http_services[0]
             .routes
             .iter()
             .any(|route| {
@@ -253,7 +253,7 @@ fn lowers_explicit_nginx_proxy_version_with_canonical_defaults() {
     assert!(!report.has_errors(), "{:?}", report.diagnostics);
     assert_eq!(report.draft.listeners.len(), 1);
     assert_eq!(report.draft.http_services.len(), 1);
-    let config = report.config.expect("canonical proxy defaults");
+    let config = report.config().expect("canonical proxy defaults");
     let HttpRouteAction::Proxy { policy, .. } = &config.http_services[0].routes[0].action else {
         panic!("proxy route");
     };
@@ -286,7 +286,7 @@ fn default_server_retains_named_selectors_before_its_fallback() {
         }",
     );
 
-    let config = report.config.expect("default server host selectors");
+    let config = report.config().expect("default server host selectors");
     let routes = &config.http_services[0].routes;
     assert!(routes.iter().any(|route| {
         route.host
@@ -369,7 +369,7 @@ fn lowers_nginx_leading_wildcards_without_widening_host_matching() {
     );
     assert!(!report.has_errors(), "{:?}", report.diagnostics);
     assert!(
-        report.config.as_ref().unwrap().http_services[0]
+        report.config().unwrap().http_services[0]
             .routes
             .iter()
             .any(|route| {
@@ -408,7 +408,7 @@ fn lowering_uses_only_first_wins_exact_and_leading_dot_name_claims() {
         }",
     );
     assert!(!mixed.has_errors(), "{:?}", mixed.diagnostics);
-    let hosts = mixed.config.unwrap().http_services[0]
+    let hosts = mixed.config().unwrap().http_services[0]
         .routes
         .iter()
         .filter_map(|route| route.host.clone())
@@ -449,7 +449,7 @@ fn lowering_uses_only_first_wins_exact_and_leading_dot_name_claims() {
         "{:?}",
         leading_dot_first.diagnostics
     );
-    let hosts = leading_dot_first.config.unwrap().http_services[0]
+    let hosts = leading_dot_first.config().unwrap().http_services[0]
         .routes
         .iter()
         .filter_map(|route| route.host.clone())
@@ -515,7 +515,7 @@ fn merges_one_certificate_lineage_across_distinct_tls_binds() {
 
     let report = import_http_fragment(Path::new("nginx.conf"), directory.path());
     assert!(report.blocked_services.is_empty());
-    let config = report.config.as_ref().expect("distinct TLS listeners");
+    let config = report.config().expect("distinct TLS listeners");
     assert_eq!(config.listeners.len(), 2);
     assert_eq!(config.certificates.len(), 1);
     assert_eq!(config.certificates[0].dns_names.len(), 2);
@@ -538,7 +538,7 @@ fn lowers_certificate_paths_without_reading_operational_material() {
     fs::write(directory.path().join("nginx.conf"), source).expect("write TLS source");
 
     let report = import_http_fragment(Path::new("nginx.conf"), directory.path());
-    let config = report.config.as_ref().expect("path-based TLS config");
+    let config = report.config().expect("path-based TLS config");
     assert!(report.blocked_services.is_empty());
     assert_eq!(config.certificates[0].dns_names.len(), 2);
     assert_eq!(
@@ -575,7 +575,7 @@ fn lowers_inherited_nginx_tls_policy_exactly() {
         }"#,
     );
 
-    let config = report.config.expect("canonical nginx TLS policy");
+    let config = report.config().expect("canonical nginx TLS policy");
     assert!(report.blocked_services.is_empty());
     assert_eq!(
         config.tls_profiles[0].policy,
@@ -622,7 +622,7 @@ fn lowers_exact_ip_server_names_as_canonical_certificate_identities_without_read
         "{:?}",
         report.diagnostics
     );
-    let config = report.config.expect("IP-bound TLS listeners");
+    let config = report.config().expect("IP-bound TLS listeners");
     assert_eq!(config.certificates.len(), 1);
     assert_eq!(
         config.certificates[0].dns_names,
@@ -662,7 +662,7 @@ fn finalizes_explicit_ipv6_proxy_topology() {
     );
 
     assert!(report.blocked_services.is_empty());
-    assert_eq!(report.config.as_ref().unwrap().listeners.len(), 2);
+    assert_eq!(report.config().unwrap().listeners.len(), 2);
 }
 
 #[test]
@@ -675,7 +675,7 @@ fn hostrouter_shaped_dns_service_finalizes_without_a_placeholder() {
         "{:?}",
         report.diagnostics
     );
-    assert_eq!(report.config.as_ref().unwrap().listeners.len(), 2);
+    assert_eq!(report.config().unwrap().listeners.len(), 2);
     assert!(!report.diagnostics.iter().any(|diagnostic| {
         diagnostic.stage() == DiagnosticStage::Lower
             && diagnostic.message().contains("static IP endpoint")
@@ -701,7 +701,7 @@ fn unix_http_listener_is_retained_without_a_socket_placeholder() {
 
     assert!(report.blocked_services.is_empty());
     assert!(matches!(
-        report.config.as_ref().unwrap().listeners[0].bind,
+        report.config().unwrap().listeners[0].bind,
         ListenerBind::Unix { ref path, .. } if path == Path::new("/run/nginx/proxy.sock")
     ));
     assert!(!report.diagnostics.iter().any(|diagnostic| {
@@ -786,7 +786,7 @@ fn blocks_only_unsupported_nginx_behavior_without_emitting_partial_services() {
             usize::from(blocked),
             "{label}"
         );
-        assert_eq!(report.config.is_none(), blocked, "{label}");
+        assert_eq!(report.config().is_none(), blocked, "{label}");
     }
 }
 
@@ -805,7 +805,7 @@ fn exact_location_fixed_and_redirect_actions_finalize_without_placeholders() {
     );
 
     assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-    let config = report.config.as_ref().expect("fixed/static nginx config");
+    let config = report.config().expect("fixed/static nginx config");
     assert!(matches!(
         config.http_services[0].routes[0].path,
         HttpPathSelector::Exact { ref value } if value == "/health"
@@ -838,7 +838,7 @@ fn lowers_static_index_behavior_into_canonical_static_routes() {
             "http {{ server {{ listen 127.0.0.1:8088 default_server; location / {{ root /srv/www; {index} }} }} }}"
         ));
 
-        let config = report.config.as_ref().expect("static config");
+        let config = report.config().expect("static config");
         assert!(report.blocked_services.is_empty());
         assert!(report.draft.upstream_pools.is_empty());
         let HttpRouteAction::StaticFiles {
@@ -871,7 +871,7 @@ fn lowers_effective_nginx_keepalive_timeout_into_listener_downstream_policy() {
 
     assert!(!report.has_errors(), "{:?}", report.diagnostics);
     assert_eq!(
-        report.config.as_ref().unwrap().listeners[0]
+        report.config().unwrap().listeners[0]
             .downstream_timeouts
             .keepalive_timeout_ms,
         Some(65_000)
@@ -885,7 +885,7 @@ fn lowers_effective_nginx_keepalive_timeout_into_listener_downstream_policy() {
             "http {{ {directive} server {{ listen 127.0.0.1:8088 default_server; location / {{ return 204; }} }} }}"
         ));
         assert!(report.has_errors(), "accepted {directive}");
-        assert!(report.config.is_none(), "accepted {directive}");
+        assert!(report.config().is_none(), "accepted {directive}");
     }
 }
 
@@ -907,7 +907,7 @@ fn lowers_inherited_etag_off_for_actual_alias_try_files_and_headers_shape() {
     );
 
     assert!(!report.has_errors(), "{:?}", report.diagnostics);
-    let config = report.config.expect("static alias config");
+    let config = report.config().expect("static alias config");
     let HttpRouteAction::StaticFiles {
         path_mapping,
         try_files,
@@ -946,7 +946,7 @@ fn rejects_invalid_nginx_etag_forms() {
             "http {{ {directive} server {{ listen 127.0.0.1:8088 default_server; location / {{ root /srv/www; }} }} }}"
         ));
         assert!(report.has_errors(), "accepted {directive}");
-        assert!(report.config.is_none(), "accepted {directive}");
+        assert!(report.config().is_none(), "accepted {directive}");
     }
 }
 
@@ -969,7 +969,7 @@ fn bare_nginx_proxy_timeouts_preserve_seconds_for_slow_upstreams() {
         }",
     );
 
-    let config = report.config.expect("bare timeout proxy config");
+    let config = report.config().expect("bare timeout proxy config");
     let policy = config.http_services[0].routes[0].policy;
     assert_eq!(policy.connect_timeout_ms, 600_000);
     assert_eq!(policy.read_timeout_ms, 600_000);
@@ -1004,7 +1004,7 @@ fn explicit_proxy_headers_cookie_rewrite_and_safe_retry_subset_finalize() {
           }
         }";
     let broad_retry = import_source(source);
-    assert!(broad_retry.config.is_none());
+    assert!(broad_retry.config().is_none());
     assert!(broad_retry.diagnostics.iter().any(|diagnostic| {
         diagnostic
             .message()
@@ -1017,7 +1017,7 @@ fn explicit_proxy_headers_cookie_rewrite_and_safe_retry_subset_finalize() {
     ));
 
     assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-    let route = &report.config.as_ref().expect("proxy config").http_services[0].routes[0];
+    let route = &report.config().expect("proxy config").http_services[0].routes[0];
     let HttpRouteAction::Proxy { policy, .. } = &route.action else {
         panic!("proxy action");
     };
@@ -1068,7 +1068,7 @@ fn lowers_exact_proxy_cookie_flags_and_records_attribute_provenance() {
     );
 
     assert!(!report.has_errors(), "{:?}", report.diagnostics);
-    let route = &report.config.as_ref().unwrap().http_services[0].routes[0];
+    let route = &report.config().unwrap().http_services[0].routes[0];
     let HttpRouteAction::Proxy { policy, .. } = &route.action else {
         panic!("proxy route");
     };
@@ -1114,7 +1114,7 @@ fn lowers_exact_proxy_cookie_flags_and_records_attribute_provenance() {
             "http {{ proxy_http_version 1.1; proxy_buffering off; proxy_request_buffering off; proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset; {directive} upstream backend {{ server 127.0.0.1:8080; }} server {{ listen 127.0.0.1:8088 default_server; location / {{ proxy_pass http://backend; }} }} }}"
         ));
         assert!(report.has_errors(), "accepted {directive}");
-        assert!(report.config.is_none(), "accepted {directive}");
+        assert!(report.config().is_none(), "accepted {directive}");
     }
 }
 
@@ -1137,7 +1137,7 @@ fn blocks_proxy_pass_header_date_that_pingora_replaces() {
         }",
     );
 
-    assert!(report.config.is_none());
+    assert!(report.config().is_none());
     assert!(report.draft.listeners.is_empty());
     assert!(report.diagnostics.iter().any(|diagnostic| {
         diagnostic.stage() == DiagnosticStage::Lower
@@ -1165,7 +1165,7 @@ fn blocks_x_accel_response_controls_that_the_runtime_does_not_implement() {
     );
 
     assert!(report.has_errors());
-    assert!(report.config.is_none());
+    assert!(report.config().is_none());
     assert!(report.diagnostics.iter().any(|diagnostic| {
         diagnostic.message().contains("proxy_ignore_headers")
             || diagnostic.message().contains("X-Accel")
@@ -1203,7 +1203,7 @@ fn one_named_upstream_is_shared_by_routes_and_listeners() {
     ));
 
     assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-    let config = report.config.as_ref().expect("shared upstream config");
+    let config = report.config().expect("shared upstream config");
     assert_eq!(config.listeners.len(), 2);
     assert_eq!(config.http_services.len(), 2);
     assert_eq!(config.http_services[0].routes.len(), 65);
@@ -1283,7 +1283,7 @@ fn complete_nginx_configs_are_rejected_by_the_http_fragment_api() {
         }",
     );
 
-    assert!(report.config.is_none());
+    assert!(report.config().is_none());
     assert!(report.diagnostics.iter().any(|diagnostic| {
         diagnostic.stage() == DiagnosticStage::Resolve
             && diagnostic.message().contains("not an HTTP fragment")
@@ -1299,7 +1299,7 @@ fn lowers_global_gzip_and_log_semantics_but_blocks_mismatched_tls_policy() {
         );
         let report = import_source(&source);
         assert!(report.blocked_services.is_empty());
-        assert!(report.config.is_some(), "{:?}", report.diagnostics);
+        assert!(report.config().is_some(), "{:?}", report.diagnostics);
     }
 
     let report = import_source(
@@ -1357,7 +1357,7 @@ fn lowers_inherited_nginx_gzip_policy_with_provenance() {
 
     assert!(!report.has_errors(), "{:?}", report.diagnostics);
     assert_eq!(
-        report.config.as_ref().unwrap().http_services[0].gzip,
+        report.config().unwrap().http_services[0].gzip,
         Some(HttpGzipPolicy {
             level: 6,
             content_types: vec![
@@ -1418,7 +1418,7 @@ fn nginx_gzip_uses_level_and_content_type_defaults() {
     );
 
     assert_eq!(
-        report.config.unwrap().http_services[0].gzip,
+        report.config().unwrap().http_services[0].gzip,
         Some(HttpGzipPolicy {
             level: 1,
             content_types: vec!["text/html".into()],
@@ -1444,7 +1444,7 @@ fn nginx_gzip_types_include_text_html_once_and_deduplicate_values() {
     );
 
     assert_eq!(
-        report.config.unwrap().http_services[0]
+        report.config().unwrap().http_services[0]
             .gzip
             .as_ref()
             .unwrap()
@@ -1468,7 +1468,7 @@ fn nginx_gzip_off_remains_disabled() {
     );
 
     assert!(!report.has_errors(), "{:?}", report.diagnostics);
-    assert_eq!(report.config.unwrap().http_services[0].gzip, None);
+    assert_eq!(report.config().unwrap().http_services[0].gzip, None);
     assert!(
         report
             .provenance
@@ -1518,9 +1518,9 @@ fn mismatched_participating_virtual_host_gzip_policy_blocks_the_bind() {
           }
         }",
     );
-    assert!(report.config.is_some(), "{:?}", report.diagnostics);
+    assert!(report.config().is_some(), "{:?}", report.diagnostics);
     assert_eq!(
-        report.config.unwrap().http_services[0]
+        report.config().unwrap().http_services[0]
             .gzip
             .as_ref()
             .unwrap()
@@ -1584,7 +1584,7 @@ fn rejects_invalid_or_unrepresentable_nginx_gzip_values() {
         );
         let report = import_source(&source);
         assert!(report.has_errors(), "accepted {directive}");
-        assert!(report.config.is_none(), "accepted {directive}");
+        assert!(report.config().is_none(), "accepted {directive}");
     }
 }
 
@@ -1616,7 +1616,7 @@ fn lowers_actual_shaped_fifteen_type_level_nine_gzip_policy() {
         }",
     );
 
-    let config = report.config.unwrap();
+    let config = report.config().unwrap();
     let gzip = config.http_services[0]
         .gzip
         .as_ref()
@@ -1641,7 +1641,7 @@ fn omitted_access_log_fails_closed_instead_of_disabling_nginx_default_logging() 
     .expect("write source");
 
     let report = import_http_fragment(Path::new("nginx.conf"), directory.path());
-    assert!(report.config.is_none());
+    assert!(report.config().is_none());
     assert!(report.diagnostics.iter().any(|diagnostic| {
         diagnostic.message().contains("omitted nginx access_log")
             && diagnostic.message().contains("default combined log")
@@ -1668,7 +1668,7 @@ fn lowers_inherited_add_header_for_every_action_and_rejects_dynamic_values() {
           }
         }",
     );
-    let config = report.config.expect("literal add_header policy");
+    let config = report.config().expect("literal add_header policy");
     let routes = &config.http_services[0].routes;
     let HttpRouteAction::Proxy { policy, .. } = &routes[0].action else {
         panic!("proxy action");
@@ -1699,7 +1699,7 @@ fn lowers_inherited_add_header_for_every_action_and_rejects_dynamic_values() {
     let report = import_source(
         r"http { server { listen 127.0.0.1:8080 default_server; add_header Strict-Transport-Security $host always; location / { return 204; } } }",
     );
-    assert!(report.config.is_none());
+    assert!(report.config().is_none());
     assert!(report.diagnostics.iter().any(|diagnostic| {
         diagnostic
             .message()
@@ -1738,7 +1738,7 @@ fn lowers_literal_response_directives_with_order_statuses_provenance_and_renderi
     }";
     let report = import_source(source);
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let config = report.config.as_ref().expect("literal response directives");
+    let config = report.config().expect("literal response directives");
 
     let fixed = config.http_services[0]
         .routes
@@ -1865,7 +1865,7 @@ fn rejects_invalid_duplicate_and_unsupported_response_directive_forms_with_sourc
             "http {{ access_log off; server {{ listen 127.0.0.1:8080 default_server; {directive} location / {{ root /srv/www; }} location = /404.html {{ root /srv/www; }} }} }}"
         );
         let report = import_source(&source);
-        assert!(report.config.is_none(), "accepted {directive}");
+        assert!(report.config().is_none(), "accepted {directive}");
         assert!(
             report
                 .diagnostics
@@ -1891,7 +1891,7 @@ fn phoenix_shaped_error_page_is_an_explicit_internal_redirect() {
           }
         }",
     );
-    let config = report.config.expect("Phoenix static server");
+    let config = report.config().expect("Phoenix static server");
     let HttpRouteAction::StaticFiles {
         error_responses, ..
     } = &config.http_services[0].routes[0].action
@@ -1911,7 +1911,7 @@ fn blocks_error_page_semantics_on_actions_without_error_rerouting() {
         r"http { proxy_http_version 1.1; proxy_buffering off; proxy_request_buffering off; proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset; upstream app { server 127.0.0.1:9000; } server { listen 127.0.0.1:8080 default_server; error_page 502 /50x.html; location / { proxy_pass http://app; } location = /50x.html { root /srv/www; } } }",
     ] {
         let report = import_source(source);
-        assert!(report.config.is_none());
+        assert!(report.config().is_none());
         assert!(
             report
                 .diagnostics
@@ -1944,14 +1944,14 @@ fn blocks_implicit_nginx_proxy_defaults_and_unrepresented_tls_or_logging_policy(
         );
         let report = import_source(&source);
         assert!(report.has_errors(), "omitted {omitted}");
-        assert!(report.config.is_none(), "omitted {omitted}");
+        assert!(report.config().is_none(), "omitted {omitted}");
     }
 
     let report = import_source(
         "http { proxy_buffering off; proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset; upstream backend { server 127.0.0.1:8080; } server { listen 127.0.0.1:8080 default_server; server_name test.example; location / { proxy_pass http://backend; } } }",
     );
     let config = report
-        .config
+        .config()
         .expect("modern nginx proxy and request-buffering defaults");
     assert!(config.http_services[0].routes[0].policy.request_buffering);
 
@@ -1966,7 +1966,7 @@ fn blocks_implicit_nginx_proxy_defaults_and_unrepresented_tls_or_logging_policy(
         );
         let report = import_source(&source);
         assert!(report.has_errors(), "accepted {directive}");
-        assert!(report.config.is_none(), "accepted {directive}");
+        assert!(report.config().is_none(), "accepted {directive}");
     }
 }
 
@@ -1991,7 +1991,7 @@ fn lowers_nginx_host_separately_from_http_host_with_server_name_fallback() {
           }
         }",
     );
-    let config = report.config.as_ref().expect("nginx host policy");
+    let config = report.config().expect("nginx host policy");
     let HttpRouteAction::Proxy { policy, .. } = &config.http_services[0].routes[0].action else {
         panic!("proxy route");
     };
@@ -2025,7 +2025,7 @@ fn certbot_server_if_precedes_only_its_exact_host_return_fallback() {
         }",
     );
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let config = report.config.expect("Certbot server return routes");
+    let config = report.config().expect("Certbot server return routes");
     let routes = &config.http_services[0].routes;
     assert_eq!(routes.len(), 2);
     assert!(matches!(
@@ -2060,7 +2060,7 @@ fn nginx_host_fallback_serializes_ipv6_as_an_http_authority() {
         }",
     );
 
-    let config = report.config.expect("IPv6 nginx host fallback");
+    let config = report.config().expect("IPv6 nginx host fallback");
     let HttpRouteAction::Proxy { policy, .. } = &config.http_services[0].routes[0].action else {
         panic!("proxy route");
     };
@@ -2078,7 +2078,7 @@ fn blocks_unmodeled_try_files_reroutes_but_models_exact_index_policy_reselection
         r"http { server { listen 127.0.0.1:8080 default_server; server_name static.example; location / { root /srv/www; try_files $uri /private/index.html; } location /private { root /srv/www; auth_basic private; auth_basic_user_file /etc/nginx/users; } } }",
     );
     assert!(report.has_errors(), "unsafe try_files reroute was lowered");
-    assert!(report.config.is_none());
+    assert!(report.config().is_none());
     assert!(
         report
             .diagnostics
@@ -2089,7 +2089,7 @@ fn blocks_unmodeled_try_files_reroutes_but_models_exact_index_policy_reselection
     let report = import_source(
         r"http { server { listen 127.0.0.1:8080 default_server; server_name static.example; location / { root /srv/www; index private.html; } location = /private.html { root /srv/www; auth_basic private; auth_basic_user_file /etc/nginx/users; } } }",
     );
-    let config = report.config.expect("exact index reroute is represented");
+    let config = report.config().expect("exact index reroute is represented");
     let HttpRouteAction::StaticFiles {
         internal_index_redirects,
         ..

@@ -292,12 +292,7 @@ impl ImportReportEnvelope {
     #[cfg(unix)]
     #[must_use]
     pub fn from_squid(report: &crate::squid::ImportReport) -> Self {
-        let candidate = candidate_evidence_parts(
-            &report.draft,
-            report.config.as_ref(),
-            &report.canonical_provenance,
-            squid_origin,
-        );
+        let candidate = candidate_evidence(&report.candidate, squid_origin);
         let mut envelope = Self::assemble(
             source_metadata_with_version(
                 "squid",
@@ -307,13 +302,7 @@ impl ImportReportEnvelope {
                 None,
             ),
             squid_graph(&report.source_graph),
-            source_metadata_evidence(&graph_source_metadata(
-                report
-                    .source_graph
-                    .sources
-                    .iter()
-                    .map(|source| &source.source),
-            )),
+            source_metadata_evidence(&report.candidate.source_metadata),
             candidate,
             RequirementsEvidence::default(),
             Vec::new(),
@@ -392,7 +381,6 @@ impl ImportReportEnvelope {
         typed_blockers: Vec<ImportBlocker>,
     ) -> Self {
         let sorted = sorted_diagnostics(diagnostics);
-        let mut candidate = candidate;
         let mut blockers = diagnostic_blockers(&sorted);
         blockers.extend(typed_blockers);
         blockers.sort_by(|left, right| {
@@ -409,10 +397,6 @@ impl ImportReportEnvelope {
                     right.id.as_str(),
                 ))
         });
-        if !blockers.is_empty() {
-            candidate.finalized = false;
-            candidate.config = None;
-        }
         Self {
             schema_version: IMPORT_REPORT_SCHEMA_VERSION,
             source,
@@ -475,7 +459,7 @@ fn candidate_evidence<O>(
 ) -> CandidateEvidence {
     candidate_evidence_parts(
         &candidate.draft,
-        candidate.config.as_ref(),
+        candidate.config(),
         &candidate.provenance,
         origin,
     )

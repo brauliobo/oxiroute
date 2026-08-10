@@ -3,12 +3,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use oxiroute_config::{Config, RtmpRecorderTimezone, UpstreamTls, validate_config};
+use oxiroute_config::{RtmpRecorderTimezone, UpstreamTls};
 
 use crate::{
     ActivationRequirement, ActivationRequirementKind, CanonicalCandidate, CanonicalDraft,
-    CanonicalProvenance, DeploymentRequirement, DeploymentRequirementKind, Diagnostic,
-    DiagnosticStage, E_DUPLICATE_IDENTITY, E_INVALID_VALUE, E_UNSUPPORTED_FEATURE,
+    CanonicalFinalization, CanonicalProvenance, DeploymentRequirement, DeploymentRequirementKind,
+    Diagnostic, DiagnosticStage, E_DUPLICATE_IDENTITY, E_INVALID_VALUE, E_UNSUPPORTED_FEATURE,
     OperationalOverlayKind, OperationalOverlayRequirement, Report, Severity, SourceImportMetadata,
 };
 
@@ -293,7 +293,7 @@ pub fn import_root_with_options(
     let blocked_http_services = http.blocked_services;
     let blocked_rtmp_services = rtmp.blocked_services;
     let blocked_stream_services = stream.blocked_services;
-    let config = finalize(
+    let finalization = finalize(
         &draft,
         &provenance,
         &mut diagnostics,
@@ -323,15 +323,15 @@ pub fn import_root_with_options(
         blocked_http_services,
         blocked_rtmp_services,
         blocked_stream_services,
-        candidate: CanonicalCandidate {
+        candidate: CanonicalCandidate::new(
             draft,
             provenance,
             deployment_requirements,
             activation_requirements,
             operational_overlays,
-            source_metadata: SourceImportMetadata::default(),
-            config,
-        },
+            SourceImportMetadata::default(),
+            finalization,
+        ),
     }
 }
 
@@ -1125,29 +1125,27 @@ fn finalize(
     provenance: &[CanonicalProvenance<DirectiveOrigin>],
     diagnostics: &mut Vec<Diagnostic>,
     services_complete: bool,
-) -> Option<Config> {
-    if !services_complete
-        || diagnostics
+) -> CanonicalFinalization {
+    let eligible = services_complete
+        && !diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.severity() == Severity::Error)
-    {
-        return None;
-    }
-    let mut config = draft.to_config();
-    if let Err(error) = validate_config(&mut config) {
-        let mut diagnostic = Diagnostic::new(
-            E_INVALID_VALUE,
-            Severity::Error,
-            DiagnosticStage::Validate,
-            format!("lowered complete nginx configuration is invalid: {error}"),
-        );
-        if let Some(origin) = provenance.first().and_then(|entry| entry.origins.first()) {
-            diagnostic = diagnostic.with_primary_span(origin.span);
+            .any(|diagnostic| diagnostic.severity() == Severity::Error);
+    match draft.finalize(eligible) {
+        Ok(finalization) => finalization,
+        Err(error) => {
+            let mut diagnostic = Diagnostic::new(
+                E_INVALID_VALUE,
+                Severity::Error,
+                DiagnosticStage::Validate,
+                format!("lowered complete nginx configuration is invalid: {error}"),
+            );
+            if let Some(origin) = provenance.first().and_then(|entry| entry.origins.first()) {
+                diagnostic = diagnostic.with_primary_span(origin.span);
+            }
+            diagnostics.push(diagnostic);
+            CanonicalFinalization::Blocked
         }
-        diagnostics.push(diagnostic);
-        return None;
     }
-    Some(config)
 }
 
 fn deduplicate_diagnostics(diagnostics: &mut Vec<Diagnostic>) {

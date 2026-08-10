@@ -37,7 +37,7 @@ fn imports_an_included_static_virtual_host_with_provenance() {
         report.source_graph.expanded_occurrences.len()
     );
 
-    let config = report.candidate.config.as_ref().expect("Apache candidate");
+    let config = report.candidate.config().expect("Apache candidate");
     assert_eq!(config.listeners.len(), 1);
     assert_eq!(config.http_services.len(), 1);
     assert!(matches!(
@@ -75,7 +75,10 @@ fn lowers_static_balancer_members_to_one_round_robin_pool() {
 
     let report = import_root(&root);
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let config = report.candidate.config.expect("Apache balancer candidate");
+    let config = report
+        .candidate
+        .config()
+        .expect("Apache balancer candidate");
     assert_eq!(config.upstream_pools.len(), 1);
     assert_eq!(config.upstream_pools[0].servers.len(), 2);
     assert_eq!(
@@ -96,7 +99,7 @@ fn lowers_tls_paths_as_value_bearing_certificate_material() {
 
     let report = import_root(&root);
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let config = report.candidate.config.expect("Apache TLS candidate");
+    let config = report.candidate.config().expect("Apache TLS candidate");
     assert_eq!(config.certificates.len(), 1);
     assert_eq!(config.tls_profiles.len(), 1);
     assert!(config.listeners[0].tls_profile.is_some());
@@ -131,7 +134,7 @@ fn unsupported_rewrite_blocks_finalization() {
 
     let report = import_root(&root);
     assert!(report.has_errors());
-    assert!(report.candidate.config.is_none());
+    assert!(report.candidate.config().is_none());
     assert!(report.diagnostics.iter().any(|diagnostic| {
         diagnostic.code() == E_REWRITE_UNSUPPORTED && diagnostic.stage() == DiagnosticStage::Resolve
     }));
@@ -223,7 +226,7 @@ fn inherited_defaults_and_multi_address_vhosts_lower_with_include_provenance() {
 
     let report = import_root(&root);
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let config = report.candidate.config.as_ref().expect("Apache candidate");
+    let config = report.candidate.config().expect("Apache candidate");
     assert_eq!(config.listeners.len(), 1);
     assert!(matches!(
         config.listeners[0].bind,
@@ -267,11 +270,7 @@ fn inherited_tls_defaults_lower_with_value_provenance() {
 
     let report = import_root(&root);
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let config = report
-        .candidate
-        .config
-        .as_ref()
-        .expect("Apache TLS candidate");
+    let config = report.candidate.config().expect("Apache TLS candidate");
     assert_eq!(config.certificates.len(), 1);
     assert!(config.listeners[0].tls_profile.is_some());
     assert!(report.candidate.provenance.iter().any(|entry| {
@@ -296,7 +295,7 @@ fn apache_host_case_keeps_explicit_port_without_widening_the_authority() {
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let route = &report
         .candidate
-        .config
+        .config()
         .expect("Apache candidate")
         .http_services[0]
         .routes[0];
@@ -320,7 +319,7 @@ fn ordered_proxy_passes_finalize_only_when_first_match_is_runtime_equivalent() {
     assert!(!safe_report.has_errors(), "{:#?}", safe_report.diagnostics);
     let routes = &safe_report
         .candidate
-        .config
+        .config()
         .expect("safe candidate")
         .http_services[0]
         .routes;
@@ -349,7 +348,7 @@ fn ordered_proxy_passes_finalize_only_when_first_match_is_runtime_equivalent() {
     .expect("unsafe ProxyPass source");
     let unsafe_report = import_root(&unsafe_source);
     assert!(unsafe_report.has_errors());
-    assert!(unsafe_report.candidate.config.is_none());
+    assert!(unsafe_report.candidate.config().is_none());
     assert!(unsafe_report.diagnostics.iter().any(|diagnostic| {
         diagnostic.code() == oxiroute_import::E_SEMANTICS_NOT_REPRESENTABLE
             && diagnostic.message().contains("first-match")
@@ -368,7 +367,7 @@ fn static_balancer_member_policy_rejects_weight_and_runtime_options() {
 
     let report = import_root(&root);
     assert!(report.has_errors());
-    assert!(report.candidate.config.is_none());
+    assert!(report.candidate.config().is_none());
     assert!(report.diagnostics.iter().any(|diagnostic| {
         diagnostic.code() == oxiroute_import::E_SEMANTICS_NOT_REPRESENTABLE
             && diagnostic.message().contains("BalancerMember")
@@ -387,7 +386,7 @@ fn directory_scripts_auth_and_response_rewriting_fail_closed() {
 
     let report = import_root(&root);
     assert!(report.has_errors());
-    assert!(report.candidate.config.is_none());
+    assert!(report.candidate.config().is_none());
     assert!(
         report
             .diagnostics
@@ -405,5 +404,5 @@ fn missing_root_is_reported_without_a_candidate() {
     let report = import_root(Path::new(&directory.path().join("missing.conf")));
 
     assert!(report.has_errors());
-    assert!(report.candidate.config.is_none());
+    assert!(report.candidate.config().is_none());
 }

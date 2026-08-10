@@ -32,7 +32,7 @@ fn lowers_inherited_exact_rtmp_and_recorder_policy_without_accessing_the_root() 
         &[],
     );
 
-    let config = report.config.as_ref().expect("exact RTMP configuration");
+    let config = report.config().expect("exact RTMP configuration");
     assert!(report.blocked_services.is_empty());
     assert_eq!(config.listeners.len(), 1);
     assert_eq!(config.listeners[0].protocol, Protocol::Rtmp);
@@ -88,7 +88,7 @@ fn lowers_rtmp_message_and_acknowledgement_limits_with_provenance() {
         &[],
     );
 
-    let config = report.config.expect("RTMP transport limits");
+    let config = report.config().expect("RTMP transport limits");
     let service = &config.rtmp_services[0];
     assert_eq!(service.max_inbound_message_size, 2 * 1024 * 1024);
     assert_eq!(service.ack_window_size, 1_000_000);
@@ -122,7 +122,7 @@ fn lowers_server_scoped_rtmp_message_and_acknowledgement_limits() {
         &[],
     );
 
-    let config = report.config.expect("server-scoped RTMP limits");
+    let config = report.config().expect("server-scoped RTMP limits");
     let service = &config.rtmp_services[0];
     assert_eq!(service.max_inbound_message_size, 3 * 1024 * 1024);
     assert_eq!(service.ack_window_size, 2_000_000);
@@ -146,7 +146,7 @@ fn server_scoped_rtmp_limits_override_inherited_values() {
         &[],
     );
 
-    let config = report.config.expect("server override of RTMP limits");
+    let config = report.config().expect("server override of RTMP limits");
     let service = &config.rtmp_services[0];
     assert_eq!(service.max_inbound_message_size, 3 * 1024 * 1024);
     assert_eq!(service.ack_window_size, 2_000_000);
@@ -172,7 +172,7 @@ fn blocks_nonuniform_effective_rtmp_limits_across_servers() {
         &[],
     );
 
-    assert!(report.config.is_none());
+    assert!(report.config().is_none());
     assert!(report.diagnostics.iter().any(|diagnostic| {
         diagnostic.code() == E_SEMANTICS_NOT_REPRESENTABLE
             && diagnostic.message().contains("max_message")
@@ -199,7 +199,7 @@ fn rejects_rtmp_transport_limits_outside_canonical_bounds() {
         &[],
     );
 
-    assert!(report.config.is_none());
+    assert!(report.config().is_none());
     assert!(report.diagnostics.iter().any(|diagnostic| {
         diagnostic.code() == oxiroute_import::E_INVALID_VALUE
             && diagnostic.message().contains("max_message")
@@ -227,7 +227,7 @@ fn lowers_exact_same_daemon_auto_push_policy() {
         &[],
     );
 
-    let config = report.config.expect("exact auto-push configuration");
+    let config = report.config().expect("exact auto-push configuration");
     let policy = &config.rtmp_services[0].auto_push;
     assert!(policy.enabled);
     assert_eq!(policy.reconnect_ms, 250);
@@ -256,7 +256,7 @@ fn lowers_bounded_push_and_blocks_pull_without_fallback() {
         ",
         &[],
     );
-    let config = push.config.expect("bounded push configuration");
+    let config = push.config().expect("bounded push configuration");
     let target = &config.rtmp_services[0].applications[0].push_targets[0];
     assert_eq!(target.host, "origin.example");
     assert_eq!(target.port, 1_940);
@@ -271,7 +271,7 @@ fn lowers_bounded_push_and_blocks_pull_without_fallback() {
         br"rtmp { server { listen 1935; application camera { pull rtmp://origin/live; } } }",
         &[],
     );
-    assert!(pull.config.is_none());
+    assert!(pull.config().is_none());
     assert!(pull.diagnostics.iter().any(|diagnostic| {
         diagnostic.code() == E_UNSUPPORTED_FEATURE && diagnostic.message().contains("relay")
     }));
@@ -296,7 +296,9 @@ fn lowers_one_absolute_rtmp_access_log_with_the_combined_format() {
         &[],
     );
 
-    let config = report.config.expect("exact RTMP access log configuration");
+    let config = report
+        .config()
+        .expect("exact RTMP access log configuration");
     assert!(report.blocked_services.is_empty());
     assert_eq!(
         config.rtmp_services[0].access_log,
@@ -331,7 +333,7 @@ fn lowers_bounded_hls_policy_and_key_rotation() {
         &[],
     );
 
-    let config = report.config.expect("exact HLS configuration");
+    let config = report.config().expect("exact HLS configuration");
     assert!(report.blocked_services.is_empty());
     let hls = config.rtmp_services[0].applications[0]
         .hls
@@ -365,7 +367,7 @@ fn blocks_hls_logging_and_auto_push_forms_outside_the_bounded_subset() {
         br"rtmp_socket_dir relative; rtmp { server { listen 1935; application app {} } }".as_slice(),
     ] {
         let report = import_source(source, &[]);
-        assert!(report.config.is_none(), "{source:?}");
+        assert!(report.config().is_none(), "{source:?}");
         assert!(report.has_errors(), "{source:?}");
     }
     let invalid_hls_duration = import_source(
@@ -384,7 +386,7 @@ fn blocks_unsafe_typed_exec_paths_without_shell_fallback() {
         br"rtmp { server { listen 1935; application app { exec_publish /usr/bin/tool arg<bad; } } }".as_slice(),
     ] {
         let report = import_source(source, &[]);
-        assert!(report.config.is_none(), "{source:?}");
+        assert!(report.config().is_none(), "{source:?}");
         assert!(report.diagnostics.iter().any(|diagnostic| {
             diagnostic.code() == E_SEMANTICS_NOT_REPRESENTABLE
                 || diagnostic.code() == E_INVALID_VALUE
@@ -412,7 +414,7 @@ fn lowers_allowlisted_exec_profiles_with_typed_arguments_and_provenance() {
         &[],
     );
 
-    let config = report.config.expect("exact exec configuration");
+    let config = report.config().expect("exact exec configuration");
     assert!(report.blocked_services.is_empty());
     let profiles = &config.rtmp_services[0].exec_profiles;
     assert_eq!(profiles.len(), 2);
@@ -456,7 +458,7 @@ fn lowers_bounded_access_rules_and_application_connection_ceiling() {
         &[],
     );
 
-    let config = report.config.expect("bounded RTMP policy");
+    let config = report.config().expect("bounded RTMP policy");
     let application = &config.rtmp_services[0].applications[0];
     assert_eq!(
         application.publish.rules[0].action,
@@ -497,7 +499,7 @@ fn recording_import_requires_an_explicit_host_iana_timezone() {
 
     let report = import_rtmp(Path::new("nginx.conf"), directory.path());
 
-    assert!(report.config.is_none());
+    assert!(report.config().is_none());
     assert!(
         report
             .diagnostics
@@ -524,7 +526,7 @@ fn applies_native_application_and_recorder_defaults_explicitly() {
         ",
         &[],
     );
-    let config = report.config.expect("defaulted RTMP configuration");
+    let config = report.config().expect("defaulted RTMP configuration");
     let dormant = &config.rtmp_services[0].applications[0];
     assert!(!dormant.live);
     assert!(dormant.idle_streams);
@@ -555,7 +557,7 @@ fn includes_are_transparent_and_parent_policy_after_the_include_is_inherited() {
         )],
     );
 
-    let config = report.config.expect("included RTMP application");
+    let config = report.config().expect("included RTMP application");
     let application = &config.rtmp_services[0].applications[0];
     assert!(application.live);
     assert!(!application.idle_streams);
@@ -580,8 +582,9 @@ fn maps_only_nginx_manual_recording_that_also_selects_all_media() {
         &[],
     );
     assert_eq!(
-        exact.config.expect("exact manual recorder").rtmp_services[0].applications[0].recorders[0]
-            .start,
+        exact.config().expect("exact manual recorder").rtmp_services[0].applications[0].recorders
+            [0]
+        .start,
         RtmpRecorderStart::Manual
     );
 
@@ -589,7 +592,7 @@ fn maps_only_nginx_manual_recording_that_also_selects_all_media() {
         br"rtmp { server { listen 1935; application app { live on; record manual; record_path /var/lib/manual; } } }",
         &[],
     );
-    assert!(bare.config.is_none());
+    assert!(bare.config().is_none());
     assert!(bare.diagnostics.iter().any(|diagnostic| {
         diagnostic.code() == E_SEMANTICS_NOT_REPRESENTABLE
             && diagnostic.message().contains("no nginx audio/video bits")
@@ -604,7 +607,7 @@ fn enforces_exact_path_suffix_interval_and_listener_bounds() {
     );
     let maximum = import_source(boundary_source.as_bytes(), &[]);
     let recorder = &maximum
-        .config
+        .config()
         .expect("maximum exact recorder values")
         .rtmp_services[0]
         .applications[0]
@@ -631,20 +634,20 @@ fn enforces_exact_path_suffix_interval_and_listener_bounds() {
             "rtmp {{ server {{ listen 1935; application app {{ live on; record all; {record_path} {directive} }} }} }}"
         );
         let report = import_source(source.as_bytes(), &[]);
-        assert!(report.config.is_none(), "{directive}");
+        assert!(report.config().is_none(), "{directive}");
     }
 
     let oversized_suffix = "x".repeat(129);
     let source = format!(
         "rtmp {{ server {{ listen 1935; application app {{ live on; record all; record_path /var/lib/recordings; record_suffix {oversized_suffix}; }} }} }}"
     );
-    assert!(import_source(source.as_bytes(), &[]).config.is_none());
+    assert!(import_source(source.as_bytes(), &[]).config().is_none());
 
     let listen_option = import_source(
         br"rtmp { server { listen 1935 bind; application app {} } }",
         &[],
     );
-    assert!(listen_option.config.is_none());
+    assert!(listen_option.config().is_none());
     assert!(listen_option.diagnostics.iter().any(|diagnostic| {
         diagnostic.code() == E_UNSUPPORTED_FEATURE
             && diagnostic.message().contains("listen options")
@@ -657,7 +660,7 @@ fn separate_entry_ignores_http_semantics_and_lowers_global_rtmp_auto_push() {
         br"http { server { listen 80; location / { proxy_pass http://backend; } } } rtmp { server { listen 1935; application app {} } }",
         &[],
     );
-    assert!(separate.config.is_some());
+    assert!(separate.config().is_some());
     assert!(separate.occurrence_ledger.iter().any(|decision| {
         decision.name.value == b"proxy_pass"
             && decision.disposition == OccurrenceDisposition::Structural
@@ -667,7 +670,7 @@ fn separate_entry_ignores_http_semantics_and_lowers_global_rtmp_auto_push() {
         br"rtmp_auto_push on; rtmp { server { listen 1935; application app {} } }",
         &[],
     );
-    let config = global.config.expect("global auto-push policy");
+    let config = global.config().expect("global auto-push policy");
     assert!(global.blocked_services.is_empty());
     assert!(config.rtmp_services[0].auto_push.enabled);
 }
@@ -680,7 +683,7 @@ fn duplicates_and_overlapping_listens_are_terminal_blockers() {
         br"rtmp { server { listen 1935; application same {} application same {} } }".as_slice(),
     ] {
         let report = import_source(source, &[]);
-        assert!(report.config.is_none());
+        assert!(report.config().is_none());
         assert!(report.diagnostics.iter().any(|diagnostic| {
             diagnostic.code() == E_DUPLICATE_IDENTITY
                 && diagnostic.stage() == DiagnosticStage::Resolve
@@ -790,7 +793,10 @@ fn lowers_extended_recorder_forms() {
             "rtmp {{ server {{ listen 1935; application app {{ live on; {inherited_record} record_path /var/lib/recordings; {directive} }} }} }}"
         );
         let report = import_source(source.as_bytes(), &[]);
-        let recorder = &report.config.expect("extended recorder form").rtmp_services[0]
+        let recorder = &report
+            .config()
+            .expect("extended recorder form")
+            .rtmp_services[0]
             .applications[0]
             .recorders[0];
         assert!(report.blocked_services.is_empty(), "{directive}");
@@ -835,10 +841,7 @@ fn lowers_named_recorders_and_explicit_disabled_file_policies() {
         &[],
     );
 
-    let config = report
-        .config
-        .as_ref()
-        .expect("named recorder configuration");
+    let config = report.config().expect("named recorder configuration");
     let recorders = &config.rtmp_services[0].applications[0].recorders;
     assert_eq!(recorders.len(), 2);
     assert_eq!(recorders[0].name, "archive");
@@ -860,7 +863,7 @@ fn duplicate_named_recorders_are_blocking_even_when_recording_is_off() {
         &[],
     );
 
-    assert!(report.config.is_none());
+    assert!(report.config().is_none());
     assert!(report.diagnostics.iter().any(|diagnostic| {
         diagnostic.code() == E_DUPLICATE_IDENTITY && diagnostic.message().contains("recorder name")
     }));
@@ -873,7 +876,7 @@ fn source_noop_hls_muxdelay_does_not_block_an_exact_application() {
         &[],
     );
 
-    assert!(report.config.is_some());
+    assert!(report.config().is_some());
     let decision = report
         .occurrence_ledger
         .iter()
@@ -888,7 +891,7 @@ fn keeps_supported_servers_in_the_draft_without_placeholder_for_a_blocked_server
     let report =
         import_rtmp_with_timezone(Path::new("nginx.conf"), directory.path(), "America/Bahia");
 
-    assert!(report.config.is_none());
+    assert!(report.config().is_none());
     assert_eq!(report.blocked_services.len(), 1);
     assert_eq!(report.draft.rtmp_services.len(), 1);
     assert_eq!(report.draft.listeners.len(), 1);

@@ -38,11 +38,14 @@ fn phoenix_nginx_and_haproxy_candidates_compose_as_one_canonical_host() {
             gpu1_defined: false,
         },
     );
-    let nginx = nginx.candidate.config.expect("finalized nginx candidate");
+    let nginx = nginx
+        .candidate
+        .into_config()
+        .expect("finalized nginx candidate");
     let haproxy = haproxy
         .value()
-        .config
-        .clone()
+        .config()
+        .cloned()
         .expect("finalized HAProxy candidate");
     let listener_count = nginx.listeners.len() + haproxy.listeners.len();
 

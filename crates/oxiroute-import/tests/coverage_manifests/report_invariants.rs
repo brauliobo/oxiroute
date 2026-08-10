@@ -30,29 +30,33 @@ fn native_import_reports_obey_finalization_and_accounting_invariants() {
     assert_import_report_invariants(&representable);
     assert!(!representable.has_errors());
     assert!(representable.blocked_services.is_empty());
-    assert!(representable.config.is_some());
+    assert!(representable.config().is_some());
 
     let apache = import_apache_fixture();
     assert_apache_import_report_invariants(&apache);
     assert!(!apache.has_errors(), "{:?}", apache.diagnostics);
-    assert!(apache.candidate.config.is_some());
+    assert!(apache.candidate.config().is_some());
 
     let partial = import_nginx_fixture("hostrouter-partial.conf");
     assert_import_report_invariants(&partial);
     assert!(!partial.has_errors());
     assert!(partial.blocked_services.is_empty());
-    assert!(partial.config.is_some());
+    assert!(partial.config().is_some());
 
     let rtmp_exact = import_rtmp_exact_fixture();
     assert_rtmp_import_report_invariants(&rtmp_exact);
-    assert!(rtmp_exact.config.is_some(), "{:?}", rtmp_exact.diagnostics);
+    assert!(
+        rtmp_exact.config().is_some(),
+        "{:?}",
+        rtmp_exact.diagnostics
+    );
     assert!(!rtmp_exact.has_errors());
     assert!(rtmp_exact.blocked_services.is_empty());
     assert_eq!(rtmp_exact.draft.rtmp_services.len(), 1);
 
     let rtmp_partial = import_rtmp_fixture("phoenix-audited-partial.conf");
     assert_rtmp_import_report_invariants(&rtmp_partial);
-    assert!(rtmp_partial.config.is_none());
+    assert!(rtmp_partial.config().is_none());
     assert!(rtmp_partial.has_errors());
     assert_eq!(rtmp_partial.blocked_services.len(), 1);
     assert_eq!(rtmp_partial.draft.rtmp_services.len(), 1);
@@ -67,13 +71,13 @@ fn native_import_reports_obey_finalization_and_accounting_invariants() {
         assert_haproxy_report_invariants(parsed.value(), resolved.value());
         let lowered = import_haproxy(parsed);
         assert_eq!(
-            lowered.value().config.is_some(),
+            lowered.value().config().is_some(),
             expected_finalized,
             "{name}: {:?}",
             lowered.diagnostics()
         );
         assert_eq!(
-            lowered.value().config.is_none(),
+            lowered.value().config().is_none(),
             lowered
                 .diagnostics()
                 .iter()
@@ -208,12 +212,12 @@ pub(crate) fn assert_rtmp_import_report_invariants(report: &RtmpImportReport) {
             }));
         }
     }
-    if report.config.is_some() {
+    if report.config().is_some() {
         assert!(!report.has_errors());
         assert!(report.blocked_services.is_empty());
     }
     if report.has_errors() || !report.blocked_services.is_empty() {
-        assert!(report.config.is_none());
+        assert!(report.config().is_none());
     }
     assert_unique_provenance_paths(&report.provenance, "nginx-RTMP import report");
 }
@@ -255,12 +259,12 @@ pub(crate) fn assert_apache_import_report_invariants(report: &ApacheImportReport
         }
     }
     assert_unique_provenance_paths(&report.candidate.provenance, "Apache import report");
-    if report.candidate.config.is_some() {
+    if report.candidate.config().is_some() {
         assert!(!report.has_errors());
         assert!(report.blocked_virtual_hosts.is_empty());
     }
     if report.has_errors() || !report.blocked_virtual_hosts.is_empty() {
-        assert!(report.candidate.config.is_none());
+        assert!(report.candidate.config().is_none());
     }
 }
 

@@ -29,7 +29,7 @@ fn audited_absence_of_x_accel_controls_allows_modern_nginx_proxy_defaults() {
 
     let blocked = import_root(Path::new("nginx.conf"), directory.path());
     assert!(blocked.has_errors());
-    assert!(blocked.candidate.config.is_none());
+    assert!(blocked.candidate.config().is_none());
 
     let report = import_root_with_options(
         Path::new("nginx.conf"),
@@ -40,7 +40,7 @@ fn audited_absence_of_x_accel_controls_allows_modern_nginx_proxy_defaults() {
         },
     );
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let config = report.candidate.config.expect("audited proxy candidate");
+    let config = report.candidate.config().expect("audited proxy candidate");
     assert!(config.http_services[0].routes[0].policy.request_buffering);
 }
 
@@ -66,7 +66,7 @@ fn complete_root_merges_http_and_rtmp_and_externalizes_process_concerns() {
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     assert!(report.blocked_http_services.is_empty());
     assert!(report.blocked_rtmp_services.is_empty());
-    let config = report.candidate.config.as_ref().expect("merged config");
+    let config = report.candidate.config().expect("merged config");
     assert_eq!(config.listeners.len(), 2);
     assert_eq!(config.http_services.len(), 1);
     assert_eq!(config.rtmp_services.len(), 1);
@@ -172,7 +172,7 @@ fn host_timezone_overlay_must_be_unique_and_consumed_by_recording_lowering() {
             ..NginxImportOptions::default()
         },
     );
-    assert!(unused.candidate.config.is_none());
+    assert!(unused.candidate.config().is_none());
     assert!(unused.candidate.operational_overlays.iter().any(|overlay| {
         overlay.kind == OperationalOverlayKind::HostTimezone && !overlay.satisfied
     }));
@@ -197,7 +197,7 @@ fn host_timezone_overlay_must_be_unique_and_consumed_by_recording_lowering() {
             ..NginxImportOptions::default()
         },
     );
-    assert!(duplicate.candidate.config.is_none());
+    assert!(duplicate.candidate.config().is_none());
     assert_eq!(
         duplicate
             .candidate
@@ -229,7 +229,7 @@ fn verified_https_derives_dns_sni_and_rejects_ip_ambiguity_without_overlay() {
     let dns = import_root(Path::new("nginx.conf"), directory.path());
     assert!(!dns.has_errors(), "{:?}", dns.diagnostics);
     assert_eq!(
-        dns.candidate.config.as_ref().unwrap().upstream_pools[0].tls,
+        dns.candidate.config().unwrap().upstream_pools[0].tls,
         Some(UpstreamTls {
             server_name: "origin.example.test".into(),
             ca_certificate_path: None,
@@ -243,7 +243,7 @@ fn verified_https_derives_dns_sni_and_rejects_ip_ambiguity_without_overlay() {
     .expect("write IP HTTPS root");
     let ambiguous = import_root(Path::new("nginx.conf"), directory.path());
     assert!(ambiguous.has_errors());
-    assert!(ambiguous.candidate.config.is_none());
+    assert!(ambiguous.candidate.config().is_none());
     assert!(ambiguous.root_occurrence_ledger.iter().any(|decision| {
         matches!(decision.disposition, RootOccurrenceDisposition::Blocking(_))
     }));
@@ -272,7 +272,7 @@ fn verified_https_derives_dns_sni_and_rejects_ip_ambiguity_without_overlay() {
     );
     assert!(!overlaid.has_errors(), "{:?}", overlaid.diagnostics);
     assert_eq!(
-        overlaid.candidate.config.as_ref().unwrap().upstream_pools[0].tls,
+        overlaid.candidate.config().unwrap().upstream_pools[0].tls,
         Some(UpstreamTls {
             server_name: "verified-origin.example.test".into(),
             ca_certificate_path: None,
@@ -305,7 +305,7 @@ fn duplicate_unresolved_and_misspelled_security_overlays_never_finalize() {
             ..NginxImportOptions::default()
         },
     );
-    assert!(duplicate.candidate.config.is_none());
+    assert!(duplicate.candidate.config().is_none());
     assert!(
         duplicate
             .candidate
@@ -329,7 +329,7 @@ fn duplicate_unresolved_and_misspelled_security_overlays_never_finalize() {
             ..NginxImportOptions::default()
         },
     );
-    assert!(misspelled.candidate.config.is_none());
+    assert!(misspelled.candidate.config().is_none());
     assert!(misspelled.diagnostics.iter().any(|diagnostic| {
         diagnostic
             .message()
@@ -358,7 +358,7 @@ fn duplicate_unresolved_and_misspelled_security_overlays_never_finalize() {
             x_accel_controls_absent: false,
         },
     );
-    assert!(hostrouter.candidate.config.is_none());
+    assert!(hostrouter.candidate.config().is_none());
     assert!(
         hostrouter
             .candidate
@@ -395,7 +395,7 @@ fn bounded_downstream_scheme_specializes_static_authority_per_listener() {
         },
     );
     assert!(!report.has_errors(), "{:?}", report.diagnostics);
-    let config = report.candidate.config.as_ref().expect("scheme config");
+    let config = report.candidate.config().expect("scheme config");
     let plain = config
         .upstream_pools
         .iter()
@@ -475,7 +475,7 @@ fn sanitized_live_nginx_roots_enforce_security_overlays_and_unrelated_blockers()
         );
         if host != "phoenix" {
             assert!(report.has_errors());
-            assert!(report.candidate.config.is_none());
+            assert!(report.candidate.config().is_none());
             assert!(
                 report
                     .candidate
@@ -496,7 +496,7 @@ fn sanitized_live_nginx_roots_enforce_security_overlays_and_unrelated_blockers()
             continue;
         }
         assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-        assert!(report.candidate.config.is_some());
+        assert!(report.candidate.config().is_some());
         assert!(report.candidate.operational_overlays.iter().any(|overlay| {
             overlay.kind == OperationalOverlayKind::StructuredAccessLogMigration
                 && overlay.satisfied
@@ -505,14 +505,13 @@ fn sanitized_live_nginx_roots_enforce_security_overlays_and_unrelated_blockers()
             overlay.kind == OperationalOverlayKind::RecordingRootMigration && overlay.satisfied
         }));
         assert_eq!(
-            report.candidate.config.as_ref().unwrap().rtmp_services[0].applications[0].recorders[0]
+            report.candidate.config().unwrap().rtmp_services[0].applications[0].recorders[0]
                 .root_directory,
             Path::new("/mnt/cloud/4tb/cam-rtmp")
         );
         let default_404 = report
             .candidate
-            .config
-            .as_ref()
+            .config()
             .unwrap()
             .http_services
             .iter()

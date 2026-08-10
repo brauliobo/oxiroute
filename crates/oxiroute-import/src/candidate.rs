@@ -1,6 +1,6 @@
 use oxiroute_config::{
-    CacheStore, Certificate, Config, ForwardProxyService, HttpService, L4Service, Listener,
-    Management, RtmpService, Stats, TlsProfile, UpstreamPool,
+    CacheStore, Certificate, Config, ConfigError, ForwardProxyService, HttpService, L4Service,
+    Listener, Management, RtmpService, Stats, TlsProfile, UpstreamPool, validate_config,
 };
 
 use crate::{ByteRange, SourceFile, SourceId, Span};
@@ -187,7 +187,7 @@ impl Default for CanonicalDraft {
 
 impl CanonicalDraft {
     #[must_use]
-    pub(crate) fn to_config(&self) -> Config {
+    fn to_config(&self) -> Config {
         Config {
             version: self.version,
             max_connections: self.max_connections,
@@ -203,6 +203,45 @@ impl CanonicalDraft {
             rtmp_services: self.rtmp_services.clone(),
             l4_services: self.l4_services.clone(),
         }
+    }
+
+    pub(crate) fn finalize(&self, eligible: bool) -> Result<CanonicalFinalization, ConfigError> {
+        if !eligible {
+            return Ok(CanonicalFinalization::Blocked);
+        }
+        let mut config = self.to_config();
+        validate_config(&mut config)?;
+        Ok(CanonicalFinalization::Finalized(Box::new(config)))
+    }
+}
+
+/// Policy-neutral result of canonical draft validation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CanonicalFinalization {
+    Blocked,
+    Finalized(Box<Config>),
+}
+
+impl CanonicalFinalization {
+    #[must_use]
+    pub fn config(&self) -> Option<&Config> {
+        match self {
+            Self::Blocked => None,
+            Self::Finalized(config) => Some(config.as_ref()),
+        }
+    }
+
+    #[must_use]
+    pub fn into_config(self) -> Option<Config> {
+        match self {
+            Self::Blocked => None,
+            Self::Finalized(config) => Some(*config),
+        }
+    }
+
+    #[must_use]
+    pub const fn is_finalized(&self) -> bool {
+        matches!(self, Self::Finalized(_))
     }
 }
 
@@ -222,7 +261,44 @@ pub struct CanonicalCandidate<Origin> {
     pub activation_requirements: Vec<ActivationRequirement<Origin>>,
     pub operational_overlays: Vec<OperationalOverlayRequirement<Origin>>,
     pub source_metadata: SourceImportMetadata,
-    pub config: Option<Config>,
+    finalization: CanonicalFinalization,
+}
+
+impl<Origin> CanonicalCandidate<Origin> {
+    pub(crate) fn new(
+        draft: CanonicalDraft,
+        provenance: Vec<CanonicalProvenance<Origin>>,
+        deployment_requirements: Vec<DeploymentRequirement<Origin>>,
+        activation_requirements: Vec<ActivationRequirement<Origin>>,
+        operational_overlays: Vec<OperationalOverlayRequirement<Origin>>,
+        source_metadata: SourceImportMetadata,
+        finalization: CanonicalFinalization,
+    ) -> Self {
+        Self {
+            draft,
+            provenance,
+            deployment_requirements,
+            activation_requirements,
+            operational_overlays,
+            source_metadata,
+            finalization,
+        }
+    }
+
+    #[must_use]
+    pub fn config(&self) -> Option<&Config> {
+        self.finalization.config()
+    }
+
+    #[must_use]
+    pub fn is_finalized(&self) -> bool {
+        self.finalization.is_finalized()
+    }
+
+    #[must_use]
+    pub fn into_config(self) -> Option<Config> {
+        self.finalization.into_config()
+    }
 }
 
 /// Why an `HAProxy` source span contributes to a canonical object.

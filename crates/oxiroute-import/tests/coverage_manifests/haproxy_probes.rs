@@ -84,11 +84,7 @@ fn haproxy_manifest_contexts_and_http_matching_requirements_are_executable() {
         "raw-path.cfg",
         haproxy_http_base().as_bytes(),
     ));
-    let raw_config = raw_path
-        .value()
-        .config
-        .as_ref()
-        .expect("raw path finalizes");
+    let raw_config = raw_path.value().config().expect("raw path finalizes");
     assert!(matches!(
         raw_config.http_services[0].routes[0].path,
         HttpPathSelector::RawPrefix { ref value } if value == "/api"
@@ -101,8 +97,7 @@ fn haproxy_manifest_contexts_and_http_matching_requirements_are_executable() {
     let host_header = import_haproxy(parse_haproxy_source("host.cfg", host.as_bytes()));
     let host_config = host_header
         .value()
-        .config
-        .as_ref()
+        .config()
         .expect("exact authority finalizes");
     assert!(matches!(
         host_config.http_services[0].routes[0].host,
@@ -113,7 +108,7 @@ fn haproxy_manifest_contexts_and_http_matching_requirements_are_executable() {
         "static-tcp.cfg",
         haproxy_tcp_base().as_bytes(),
     ));
-    assert!(static_tcp.value().config.is_some());
+    assert!(static_tcp.value().config().is_some());
 
     let unix_listener_source =
         haproxy_tcp_base().replace("bind 127.0.0.1:15432", "bind /run/coverage.sock");
@@ -122,7 +117,7 @@ fn haproxy_manifest_contexts_and_http_matching_requirements_are_executable() {
         unix_listener_source.as_bytes(),
     ));
     assert!(matches!(
-        unix_listener.value().config.as_ref().unwrap().listeners[0].bind,
+        unix_listener.value().config().unwrap().listeners[0].bind,
         ListenerBind::Unix { ref path, .. } if path == std::path::Path::new("/run/coverage.sock")
     ));
 
@@ -132,7 +127,7 @@ fn haproxy_manifest_contexts_and_http_matching_requirements_are_executable() {
     );
     let dns = import_haproxy(parse_haproxy_source("dns.cfg", dns_source.as_bytes()));
     assert!(matches!(
-        dns.value().config.as_ref().unwrap().upstream_pools[0].servers[0].endpoint,
+        dns.value().config().unwrap().upstream_pools[0].servers[0].endpoint,
         UpstreamEndpoint::Dns { ref host, port: 5432 } if host == "database.internal"
     ));
 
@@ -142,14 +137,14 @@ fn haproxy_manifest_contexts_and_http_matching_requirements_are_executable() {
     );
     let unix = import_haproxy(parse_haproxy_source("unix.cfg", unix_source.as_bytes()));
     assert!(matches!(
-        unix.value().config.as_ref().unwrap().upstream_pools[0].servers[0].endpoint,
+        unix.value().config().unwrap().upstream_pools[0].servers[0].endpoint,
         UpstreamEndpoint::Unix { ref path } if path == std::path::Path::new("/run/database.sock")
     ));
 
     let least_source = haproxy_tcp_base().replace("balance roundrobin", "balance leastconn");
     let least = import_haproxy(parse_haproxy_source("least.cfg", least_source.as_bytes()));
     assert_eq!(
-        least.value().config.as_ref().unwrap().upstream_pools[0].algorithm,
+        least.value().config().unwrap().upstream_pools[0].algorithm,
         UpstreamAlgorithm::LeastConnections
     );
 
@@ -159,8 +154,7 @@ fn haproxy_manifest_contexts_and_http_matching_requirements_are_executable() {
     ));
     let http_config = unbounded_http
         .value()
-        .config
-        .as_ref()
+        .config()
         .expect("strict HTTP probe finalizes");
     assert_eq!(http_config.http_services[0].max_request_body_bytes, None);
 }
@@ -393,7 +387,7 @@ fn assert_haproxy_entry_probe(
                 entry.id
             );
             assert!(
-                lowered.value().config.is_some(),
+                lowered.value().config().is_some(),
                 "{} claims lowering but its {label} probe did not finalize: {:?}",
                 entry.id,
                 lowered.diagnostics()
@@ -413,7 +407,7 @@ fn assert_haproxy_entry_probe(
                 .any(|decision| matches!(decision.outcome, DecisionOutcome::Superseded { .. }));
             if !superseded || !allow_superseded_blocker {
                 assert!(
-                    lowered.value().config.is_none(),
+                    lowered.value().config().is_none(),
                     "{} silently finalized ({label})",
                     entry.id
                 );
@@ -437,7 +431,7 @@ fn assert_haproxy_entry_probe(
                 })
             );
             assert!(
-                lowered.value().config.is_some(),
+                lowered.value().config().is_some(),
                 "{} blocks activation ({label})",
                 entry.id
             );

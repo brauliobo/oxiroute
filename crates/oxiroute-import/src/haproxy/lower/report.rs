@@ -1,6 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use oxiroute_config::{Config, Protocol, Stats, StatsPage, StatsPageAdminPolicy, validate_config};
+use oxiroute_config::{Protocol, Stats, StatsPage, StatsPageAdminPolicy};
 
 use crate::{
     Diagnostic, DiagnosticStage, E_INVALID_VALUE, OperationalOverlayKind,
@@ -115,17 +115,17 @@ impl<'a> Lowerer<'a> {
         self.finish_connection_lifecycle_overlays();
 
         let draft = self.draft.clone();
-        let config = self.finalize(&draft);
+        let finalization = self.finalize(&draft);
         Report::new(
-            CanonicalCandidate {
+            CanonicalCandidate::new(
                 draft,
-                provenance: self.provenance,
-                deployment_requirements: self.deployment_requirements,
-                activation_requirements: self.activation_requirements,
-                operational_overlays: self.operational_overlays,
-                source_metadata: crate::SourceImportMetadata::default(),
-                config,
-            },
+                self.provenance,
+                self.deployment_requirements,
+                self.activation_requirements,
+                self.operational_overlays,
+                crate::SourceImportMetadata::default(),
+                finalization,
+            ),
             self.diagnostics,
         )
     }
@@ -162,34 +162,32 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn finalize(&mut self, draft: &crate::CanonicalDraft) -> Option<Config> {
-        if self
+    fn finalize(&mut self, draft: &crate::CanonicalDraft) -> crate::CanonicalFinalization {
+        let eligible = !self
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.severity() == Severity::Error)
-        {
-            return None;
-        }
-        let mut config = draft.to_config();
-        if let Err(error) = validate_config(&mut config) {
-            let mut diagnostic = Diagnostic::new(
-                E_INVALID_VALUE,
-                Severity::Error,
-                DiagnosticStage::Validate,
-                format!("lowered HAProxy canonical draft is invalid: {error}"),
-            );
-            if let Some(span) = self
-                .provenance
-                .first()
-                .and_then(|provenance| provenance.origins.first())
-                .map(|origin| origin.span)
-            {
-                diagnostic = diagnostic.with_primary_span(span);
+            .any(|diagnostic| diagnostic.severity() == Severity::Error);
+        match draft.finalize(eligible) {
+            Ok(finalization) => finalization,
+            Err(error) => {
+                let mut diagnostic = Diagnostic::new(
+                    E_INVALID_VALUE,
+                    Severity::Error,
+                    DiagnosticStage::Validate,
+                    format!("lowered HAProxy canonical draft is invalid: {error}"),
+                );
+                if let Some(span) = self
+                    .provenance
+                    .first()
+                    .and_then(|provenance| provenance.origins.first())
+                    .map(|origin| origin.span)
+                {
+                    diagnostic = diagnostic.with_primary_span(span);
+                }
+                self.diagnostics.push(diagnostic);
+                crate::CanonicalFinalization::Blocked
             }
-            self.diagnostics.push(diagnostic);
-            return None;
         }
-        Some(config)
     }
 
     #[expect(

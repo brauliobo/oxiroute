@@ -33,11 +33,7 @@ const HTTP_CHECK_SEND: &[u8] = include_bytes!("fixtures/haproxy/http-check-send.
 #[test]
 fn imported_http_services_disable_automatic_response_headers_in_canonical_rendering() {
     let lowered = import_fixture("path-routing.cfg", routing_fixture().as_bytes());
-    let config = lowered
-        .value()
-        .config
-        .as_ref()
-        .expect("HAProxy HTTP config");
+    let config = lowered.value().config().expect("HAProxy HTTP config");
 
     assert!(
         config
@@ -55,7 +51,7 @@ fn hostrouter_active_report_finalizes_proxy_while_retaining_stats_requirements()
     let lowered = import_fixture("hostrouter-active.cfg", HOSTROUTER);
     let candidate = lowered.value();
 
-    assert!(candidate.config.is_some());
+    assert!(candidate.config().is_some());
     assert_eq!(candidate.draft.upstream_pools.len(), 1);
     assert_eq!(
         candidate.draft.upstream_pools[0].connection_reuse,
@@ -96,7 +92,7 @@ fn hostrouter_active_report_finalizes_proxy_while_retaining_stats_requirements()
 fn phoenix_dormant_report_finalizes_with_reusable_dns_leastconn_pool() {
     let lowered = import_fixture("phoenix-dormant.cfg", PHOENIX);
 
-    assert!(lowered.value().config.is_some());
+    assert!(lowered.value().config().is_some());
     assert_eq!(lowered.value().draft.upstream_pools.len(), 1);
     assert_eq!(
         lowered.value().draft.upstream_pools[0].connection_reuse,
@@ -141,7 +137,7 @@ fn unmodified_live_hostrouter_finalizes_with_exact_compatibility_policy() {
         },
     );
     let candidate = report.value();
-    let config = candidate.config.as_ref().unwrap_or_else(|| {
+    let config = candidate.config().unwrap_or_else(|| {
         panic!(
             "live hostrouter config did not finalize: {:#?}",
             report.diagnostics()
@@ -266,7 +262,7 @@ fn live_inference_node_health_routes_and_native_default_retries_finalize() {
             gpu1_defined: true,
         },
     );
-    let config = report.value().config.as_ref().unwrap_or_else(|| {
+    let config = report.value().config().unwrap_or_else(|| {
         panic!(
             "inference-node config did not finalize: {:#?}",
             report.diagnostics()
@@ -385,7 +381,7 @@ fn audited_connection_lifecycle_overlay_is_backend_scoped_and_fail_closed() {
 
     let imported = import_roots_with_options(&[&root], environment, &options);
     let candidate = imported.value();
-    let config = candidate.config.as_ref().expect("audited lifecycle config");
+    let config = candidate.config().expect("audited lifecycle config");
     assert_eq!(
         config.upstream_pools[0].connection_reuse,
         oxiroute_config::UpstreamConnectionReuse::Never
@@ -402,7 +398,7 @@ fn audited_connection_lifecycle_overlay_is_backend_scoped_and_fail_closed() {
             prometheus_migrations: Vec::new(),
         },
     );
-    assert!(wrong_backend.value().config.is_none());
+    assert!(wrong_backend.value().config().is_none());
     assert!(!wrong_backend.value().operational_overlays[0].satisfied);
 }
 
@@ -422,7 +418,7 @@ backend app
 ";
     let lowered = import_fixture("unix-mode.cfg", source);
     let candidate = lowered.value();
-    let config = candidate.config.as_ref().expect("Unix mode config");
+    let config = candidate.config().expect("Unix mode config");
 
     assert_eq!(
         config.listeners[0].bind,
@@ -460,8 +456,7 @@ backend app
     let imported = import_fixture("ordered-default-server.cfg", source);
     let health = imported
         .value()
-        .config
-        .as_ref()
+        .config()
         .expect("default-server config")
         .upstream_pools[0]
         .health_check
@@ -495,7 +490,7 @@ backend postgres_pool
 ";
     let imported = import_fixture("weighted-servers.cfg", source);
     let candidate = imported.value();
-    let config = candidate.config.as_ref().expect("weighted config");
+    let config = candidate.config().expect("weighted config");
 
     assert_eq!(
         config.upstream_pools[0].algorithm,
@@ -518,7 +513,7 @@ fn weighted_servers_require_roundrobin_balance() {
         );
     let imported = import_fixture("weighted-leastconn.cfg", source.as_bytes());
 
-    assert!(imported.value().config.is_none());
+    assert!(imported.value().config().is_none());
     assert_blocker(
         imported.diagnostics(),
         "representable only with roundrobin balance",
@@ -530,7 +525,7 @@ fn http_check_send_lowers_to_the_existing_runtime_health_request() {
     let imported = import_fixture("http-check-send.cfg", HTTP_CHECK_SEND);
     assert!(!imported.has_errors(), "{:?}", imported.diagnostics());
     let candidate = imported.value();
-    let config = candidate.config.as_ref().expect("send health config");
+    let config = candidate.config().expect("send health config");
     let health = config.upstream_pools[0]
         .health_check
         .as_ref()
@@ -570,7 +565,7 @@ fn http_check_send_with_disabled_http_checks_fails_closed() {
         .replace("  option httpchk\n", "  no option httpchk\n");
     let imported = import_fixture("disabled-http-check-send.cfg", source.as_bytes());
 
-    assert!(imported.value().config.is_none());
+    assert!(imported.value().config().is_none());
     assert!(imported.value().draft.upstream_pools.is_empty());
     assert!(diagnostic_contains(
         imported.diagnostics(),
@@ -608,7 +603,7 @@ backend app
     let second = import_roots_with_environment(std::slice::from_ref(&root), environment);
     assert!(!first.has_errors(), "{:?}", first.diagnostics());
     assert_eq!(first.diagnostics(), second.diagnostics());
-    assert_eq!(first.value().config, second.value().config);
+    assert_eq!(first.value().config(), second.value().config());
     assert_eq!(
         first.value().source_metadata,
         second.value().source_metadata
@@ -649,7 +644,7 @@ fn http_check_send_does_not_mask_unrepresented_native_policy() {
         );
         let imported = import_fixture(name, source.as_bytes());
 
-        assert!(imported.value().config.is_none(), "{name} finalized");
+        assert!(imported.value().config().is_none(), "{name} finalized");
         assert!(imported.has_errors(), "{name} was not blocked");
     }
 }
@@ -673,8 +668,7 @@ backend app
     let imported = import_fixture("equal-health-timeout.cfg", source);
     let health = imported
         .value()
-        .config
-        .as_ref()
+        .config()
         .expect("health config")
         .upstream_pools[0]
         .health_check
@@ -707,7 +701,7 @@ backend app
 
     let imported = import_fixture("post-health-check.cfg", source);
 
-    assert!(imported.value().config.is_none());
+    assert!(imported.value().config().is_none());
     assert_blocker(imported.diagnostics(), "health check method");
 }
 
@@ -723,7 +717,7 @@ fn fractional_millisecond_durations_fail_closed_at_their_source() {
         );
         let imported = import_fixture("fractional-duration.cfg", source.as_bytes());
 
-        assert!(imported.value().config.is_none(), "{name} was truncated");
+        assert!(imported.value().config().is_none(), "{name} was truncated");
         assert!(
             diagnostic_contains(imported.diagnostics(), "exactly representable"),
             "{name}: {:?}",
@@ -738,7 +732,7 @@ fn minimal_static_tcp_fixture_finalizes_and_validates() {
 
     assert!(lowered.diagnostics().is_empty());
     let candidate = lowered.value();
-    let config = candidate.config.as_ref().expect("finalized config");
+    let config = candidate.config().expect("finalized config");
     assert_eq!(config.listeners.len(), 1);
     assert_eq!(config.upstream_pools.len(), 1);
     assert_eq!(config.l4_services.len(), 1);
@@ -839,10 +833,7 @@ fn audited_shape_unix_frontend_and_dns_leastconn_backend_finalizes_without_resol
         lowered.diagnostics()
     );
     let candidate = lowered.value();
-    let config = candidate
-        .config
-        .as_ref()
-        .expect("finalized hostrouter subset");
+    let config = candidate.config().expect("finalized hostrouter subset");
     assert_eq!(
         config.listeners[0].bind,
         ListenerBind::Unix {
@@ -897,13 +888,7 @@ fn bind_only_and_explicitly_unbounded_frontend_limits_lower_without_guessing_a_c
 
     let bind_only = import_fixture("bind-only-cap.cfg", bind_only.as_bytes());
     assert_eq!(
-        bind_only
-            .value()
-            .config
-            .as_ref()
-            .expect("bind-only cap")
-            .listeners[0]
-            .max_connections,
+        bind_only.value().config().expect("bind-only cap").listeners[0].max_connections,
         Some(75)
     );
     assert_has_provenance(bind_only.value(), "/listeners/0/max_connections");
@@ -912,8 +897,7 @@ fn bind_only_and_explicitly_unbounded_frontend_limits_lower_without_guessing_a_c
     assert_eq!(
         unbounded
             .value()
-            .config
-            .as_ref()
+            .config()
             .expect("explicit frontend fallback to process admission")
             .listeners[0]
             .max_connections,
@@ -929,7 +913,7 @@ fn incomplete_tcp_timeout_policy_emits_no_disconnected_listener_or_service() {
         .replace("  timeout connect 10s\n", "");
     let lowered = import_fixture("missing-connect-timeout.cfg", source.as_bytes());
 
-    assert!(lowered.value().config.is_none());
+    assert!(lowered.value().config().is_none());
     assert!(lowered.value().draft.listeners.is_empty());
     assert!(lowered.value().draft.l4_services.is_empty());
     assert_eq!(lowered.value().draft.upstream_pools.len(), 1);
@@ -945,11 +929,7 @@ fn absolute_unix_server_lowers_without_socket_substitution() {
             "server primary /run/postgresql/.s.PGSQL.5432",
         );
     let lowered = import_fixture("unix-server.cfg", source.as_bytes());
-    let config = lowered
-        .value()
-        .config
-        .as_ref()
-        .expect("finalized Unix pool");
+    let config = lowered.value().config().expect("finalized Unix pool");
 
     assert_eq!(
         config.upstream_pools[0]
@@ -979,7 +959,7 @@ listen database
   server primary 127.0.0.1:5432
 ";
     let lowered = import_fixture("listen.cfg", source);
-    let config = lowered.value().config.as_ref().expect("finalized listen");
+    let config = lowered.value().config().expect("finalized listen");
 
     assert!(lowered.diagnostics().is_empty());
     assert_eq!(config.listeners[0].service.as_deref(), Some("database"));
@@ -1007,7 +987,7 @@ backend database_pool
     let lowered = import_fixture("explicit-modes.cfg", source);
     let candidate = lowered.value();
 
-    assert!(candidate.config.is_some());
+    assert!(candidate.config().is_some());
     for path in ["/listeners/0/protocol", "/l4_services/0"] {
         let provenance = candidate
             .provenance
@@ -1035,7 +1015,7 @@ fn raw_path_prefix_acl_is_not_widened_or_narrowed_to_segment_matching() {
         "{:?}",
         lowered.diagnostics()
     );
-    let config = lowered.value().config.as_ref().expect("raw-prefix config");
+    let config = lowered.value().config().expect("raw-prefix config");
     assert!(matches!(
         config.http_services[0].routes[0].path,
         HttpPathSelector::RawPrefix { ref value } if value == "/api"
@@ -1069,7 +1049,7 @@ backend fallback
         "{:?}",
         lowered.diagnostics()
     );
-    let config = lowered.value().config.as_ref().expect("authority config");
+    let config = lowered.value().config().expect("authority config");
     assert!(matches!(
         config.http_services[0].routes[0].host,
         Some(HttpHostSelector::ExactAuthority { ref value }) if value == "app.example"
@@ -1094,7 +1074,7 @@ backend app
 ";
     let lowered = import_fixture("case-insensitive-host.cfg", source);
 
-    let config = lowered.value().config.as_ref().unwrap_or_else(|| {
+    let config = lowered.value().config().unwrap_or_else(|| {
         panic!(
             "case-insensitive authority did not finalize: {:#?}",
             lowered.diagnostics()
@@ -1116,8 +1096,7 @@ fn positive_host_and_path_acl_conjunction_lowers_with_both_matchers_and_provenan
     let imported = import_fixture("acl-conjunction.cfg", ACL_CONJUNCTION);
     let candidate = imported.value();
     let config = candidate
-        .config
-        .as_ref()
+        .config()
         .expect("host/path ACL conjunction config");
     let service = &config.http_services[0];
 
@@ -1172,7 +1151,7 @@ backend fallback
   server fallback1 127.0.0.1:3001
 ";
     let duplicate = import_fixture("duplicate-acl-conjunction.cfg", duplicate_host);
-    assert!(duplicate.value().config.is_none());
+    assert!(duplicate.value().config().is_none());
     assert!(duplicate.value().draft.http_services.is_empty());
     assert!(diagnostic_contains(
         duplicate.diagnostics(),
@@ -1186,7 +1165,7 @@ backend fallback
         "case-insensitive-acl-conjunction.cfg",
         case_insensitive_path.as_bytes(),
     );
-    assert!(blocked.value().config.is_none());
+    assert!(blocked.value().config().is_none());
     assert!(diagnostic_contains(
         blocked.diagnostics(),
         "case-insensitive HAProxy path prefix matching is not canonical"
@@ -1209,11 +1188,7 @@ backend app
   server app1 127.0.0.1:3001
 ";
     let lowered = import_fixture("no-default-backend.cfg", source);
-    let config = lowered
-        .value()
-        .config
-        .as_ref()
-        .expect("503 fallback config");
+    let config = lowered.value().config().expect("503 fallback config");
     let routes = &config.http_services[0].routes;
 
     assert_eq!(routes.len(), 2);
@@ -1248,7 +1223,7 @@ frontend public
         path,
     }]);
 
-    assert!(lowered.value().config.is_none());
+    assert!(lowered.value().config().is_none());
     for code in [
         E_CONDITIONAL_PREPROCESSING,
         E_ENVIRONMENT_EXPANSION,
@@ -1279,7 +1254,7 @@ backend app
 ";
     let lowered = import_fixture("unsupported-mode.cfg", source);
 
-    assert!(lowered.value().config.is_none());
+    assert!(lowered.value().config().is_none());
     assert!(lowered.value().draft.listeners.is_empty());
     assert!(lowered.value().draft.http_services.is_empty());
     assert_blocker(lowered.diagnostics(), "unsupported HAProxy mode");
@@ -1307,7 +1282,7 @@ backend pool
 ";
     let lowered = import_fixture("overlapping-binds.cfg", source);
 
-    assert!(lowered.value().config.is_none());
+    assert!(lowered.value().config().is_none());
     assert!(lowered.diagnostics().iter().any(|diagnostic| {
         diagnostic.code() == E_INVALID_VALUE
             && diagnostic.stage() == DiagnosticStage::Validate
@@ -1333,7 +1308,7 @@ backend app
 ";
     let lowered = import_fixture("tcp-to-http.cfg", source);
 
-    assert!(lowered.value().config.is_none());
+    assert!(lowered.value().config().is_none());
     assert!(lowered.value().draft.listeners.is_empty());
     assert!(lowered.value().draft.l4_services.is_empty());
     assert_blocker(
@@ -1365,7 +1340,7 @@ backend web
 ";
     let lowered = import_fixture("listen-transition.cfg", source);
 
-    assert!(lowered.value().config.is_none());
+    assert!(lowered.value().config().is_none());
     assert!(lowered.value().draft.listeners.is_empty());
     assert!(lowered.value().draft.l4_services.is_empty());
     assert_blocker(
@@ -1389,8 +1364,7 @@ fn automatic_or_aggregate_maxconn_never_emits_an_optional_cap_placeholder() {
     let missing = import_fixture("unbounded-admission.cfg", missing.as_bytes());
     let config = missing
         .value()
-        .config
-        .as_ref()
+        .config()
         .expect("frontend without a local cap");
     assert_eq!(config.listeners[0].max_connections, None);
     assert!(
@@ -1402,7 +1376,7 @@ fn automatic_or_aggregate_maxconn_never_emits_an_optional_cap_placeholder() {
     );
 
     let aggregate = import_fixture("aggregate-admission.cfg", aggregate.as_bytes());
-    assert!(aggregate.value().config.is_none());
+    assert!(aggregate.value().config().is_none());
     assert!(aggregate.value().draft.listeners.is_empty());
     assert_blocker(
         aggregate.diagnostics(),
@@ -1446,8 +1420,7 @@ backend database_pool
     let global_fallback = import_fixture("global-admission.cfg", global_fallback);
     let config = global_fallback
         .value()
-        .config
-        .as_ref()
+        .config()
         .expect("global admission limit");
     assert!(!config.listeners.is_empty(), "{global_fallback:#?}");
     assert_eq!(config.max_connections, Some(500));
@@ -1455,11 +1428,7 @@ backend database_pool
     assert_has_provenance(global_fallback.value(), "/max_connections");
 
     let bind_cap = import_fixture("bind-admission.cfg", bind_cap);
-    let config = bind_cap
-        .value()
-        .config
-        .as_ref()
-        .expect("exact bind admission");
+    let config = bind_cap.value().config().expect("exact bind admission");
     assert_eq!(config.listeners[0].max_connections, Some(75));
     assert_has_provenance(bind_cap.value(), "/listeners/0/max_connections");
 }
@@ -1482,7 +1451,7 @@ fn explicit_preprocessing_records_environment_and_inactive_gpu_provenance() {
         },
     );
     let candidate = without_gpu.value();
-    let config = candidate.config.as_ref().expect("preprocessed config");
+    let config = candidate.config().expect("preprocessed config");
     assert!(!config.listeners.is_empty(), "{without_gpu:#?}");
     assert_eq!(config.max_connections, Some(64));
     assert_eq!(
@@ -1540,11 +1509,7 @@ fn explicit_preprocessing_records_environment_and_inactive_gpu_provenance() {
     );
     let candidate = with_gpu.value();
     assert_eq!(
-        candidate
-            .config
-            .as_ref()
-            .expect("GPU config")
-            .upstream_pools[0]
+        candidate.config().expect("GPU config").upstream_pools[0]
             .servers
             .len(),
         2
@@ -1592,7 +1557,7 @@ backend app
     let first = import_roots_with_environment(&[&root], environment);
     let second = import_roots_with_environment(&[&root], environment);
     assert_eq!(first.diagnostics(), second.diagnostics());
-    assert_eq!(first.value().config, second.value().config);
+    assert_eq!(first.value().config(), second.value().config());
     assert_eq!(
         first.value().source_metadata,
         second.value().source_metadata
@@ -1633,7 +1598,7 @@ backend workers
 
     let imported = import_fixture("prometheus-activation.cfg", source);
     let candidate = imported.value();
-    let config = candidate.config.as_ref().expect("unrelated app config");
+    let config = candidate.config().expect("unrelated app config");
     assert_eq!(config.listeners.len(), 1);
     assert!(config.stats.is_none());
     assert_eq!(candidate.activation_requirements.len(), 1);
@@ -1669,7 +1634,7 @@ listen public-stats
     assert!(!imported.has_errors(), "{:?}", imported.diagnostics());
     assert_eq!(code_count(imported.diagnostics(), E_STATS_UNSUPPORTED), 0);
     let candidate = imported.value();
-    let config = candidate.config.as_ref().expect("stats pages config");
+    let config = candidate.config().expect("stats pages config");
     let stats = config.stats.as_ref().expect("canonical stats");
     assert!(stats.binds.is_empty());
     assert_eq!(stats.pages.len(), 2);
@@ -1728,7 +1693,7 @@ fn stats_frontend_response_rules_fail_closed_instead_of_disappearing() {
 
     let imported = import_fixture("stats-response-policy.cfg", source);
 
-    assert!(imported.value().config.is_none());
+    assert!(imported.value().config().is_none());
     assert!(imported.value().draft.stats.is_none());
     assert!(diagnostic_contains(
         imported.diagnostics(),
@@ -1748,7 +1713,7 @@ fn stats_frontend_connection_close_policy_fails_closed_instead_of_disappearing()
 
     let imported = import_fixture("stats-connection-policy.cfg", source);
 
-    assert!(imported.value().config.is_none());
+    assert!(imported.value().config().is_none());
     assert!(imported.value().draft.stats.is_none());
     assert!(imported.has_errors());
 }
@@ -1860,7 +1825,7 @@ fn prometheus_migration_overlay_must_uniquely_match_a_dedicated_exact_service() 
                     .collect(),
             },
         );
-        assert!(imported.value().config.is_none());
+        assert!(imported.value().config().is_none());
         assert!(imported.value().draft.stats.is_none());
         assert!(imported.value().operational_overlays.iter().all(|overlay| {
             overlay.kind != oxiroute_import::OperationalOverlayKind::PrometheusMigration
@@ -1891,7 +1856,7 @@ backend workers
 ";
 
     let imported = import_fixture("forwardfor-except.cfg", source);
-    let config = imported.value().config.as_ref().expect("forwardfor config");
+    let config = imported.value().config().expect("forwardfor config");
     let HttpRouteAction::Proxy { policy, .. } = &config.http_services[0].routes[0].action else {
         panic!("proxy route")
     };
@@ -1941,11 +1906,7 @@ backend pool
 ";
 
     let inherited = import_fixture("inherited-admission.cfg", inherited);
-    let inherited_config = inherited
-        .value()
-        .config
-        .as_ref()
-        .expect("inherited admission");
+    let inherited_config = inherited.value().config().expect("inherited admission");
     assert_eq!(inherited_config.listeners[0].max_connections, Some(100));
     let inherited_origins = &inherited
         .value()
@@ -1961,11 +1922,7 @@ backend pool
     );
 
     let per_socket = import_fixture("per-socket-admission.cfg", per_socket);
-    let per_socket_config = per_socket
-        .value()
-        .config
-        .as_ref()
-        .expect("per-socket admission");
+    let per_socket_config = per_socket.value().config().expect("per-socket admission");
     assert_eq!(per_socket_config.listeners.len(), 2);
     assert!(
         per_socket_config
@@ -1993,11 +1950,7 @@ backend app
 ";
     let lowered = import_fixture("http-leastconn.cfg", source);
 
-    let config = lowered
-        .value()
-        .config
-        .as_ref()
-        .expect("HTTP leastconn config");
+    let config = lowered.value().config().expect("HTTP leastconn config");
     assert_eq!(
         config.upstream_pools[0].algorithm,
         UpstreamAlgorithm::LeastConnections
@@ -2025,7 +1978,7 @@ fn first_and_server_maxconn_still_require_request_lifetime_connections() {
         );
         let lowered = import_fixture("request-lifetime-sensitive.cfg", source.as_bytes());
 
-        assert!(lowered.value().config.is_none(), "{backend}");
+        assert!(lowered.value().config().is_none(), "{backend}");
         assert_blocker(lowered.diagnostics(), "server maxconn/first");
     }
 }
@@ -2047,7 +2000,7 @@ backend app
   server app2 127.0.0.1:3001
 ";
     let lowered = import_fixture("redispatch.cfg", source);
-    let config = lowered.value().config.as_ref().unwrap_or_else(|| {
+    let config = lowered.value().config().unwrap_or_else(|| {
         panic!(
             "bare redispatch did not finalize: {:#?}",
             lowered.diagnostics()
@@ -2090,7 +2043,7 @@ backend app
 ";
     let lowered = import_fixture("redispatch-interval.cfg", source);
 
-    assert!(lowered.value().config.is_none());
+    assert!(lowered.value().config().is_none());
     assert_blocker(lowered.diagnostics(), "redispatch interval forms");
 }
 
@@ -2104,7 +2057,7 @@ fn server_selection_options_remain_blocking_during_safe_import() {
         );
     let lowered = import_fixture("server-options.cfg", source.as_bytes());
 
-    assert!(lowered.value().config.is_none());
+    assert!(lowered.value().config().is_none());
     assert!(lowered.value().draft.upstream_pools.is_empty());
     assert_blocker(
         lowered.diagnostics(),
@@ -2116,7 +2069,7 @@ fn server_selection_options_remain_blocking_during_safe_import() {
 fn raw_routing_subset_retains_the_explicit_unbounded_body_policy() {
     let lowered = import_fixture("http-body-policy.cfg", routing_fixture().as_bytes());
 
-    let config = lowered.value().config.as_ref().expect("raw routing config");
+    let config = lowered.value().config().expect("raw routing config");
     assert_eq!(config.http_services[0].max_request_body_bytes, None);
     assert_has_provenance(lowered.value(), "/http_services/0/max_request_body_bytes");
 }
@@ -2144,7 +2097,7 @@ backend app
         lowered.diagnostics()
     );
     let candidate = lowered.value();
-    let config = candidate.config.as_ref().expect("finalized strict HTTP");
+    let config = candidate.config().expect("finalized strict HTTP");
     assert_eq!(config.http_services.len(), 1);
     assert_eq!(config.http_services[0].max_request_body_bytes, None);
     assert_eq!(config.http_services[0].routes.len(), 1);
@@ -2177,12 +2130,12 @@ backend app
     let lowered = import_fixture("positive-http-retries.cfg", source);
 
     assert!(
-        lowered.value().config.is_some(),
+        lowered.value().config().is_some(),
         "{:?}",
         lowered.diagnostics()
     );
     let HttpRouteAction::Proxy { policy, .. } =
-        &lowered.value().config.as_ref().unwrap().http_services[0].routes[0].action
+        &lowered.value().config().unwrap().http_services[0].routes[0].action
     else {
         panic!("proxy action");
     };
@@ -2213,7 +2166,7 @@ backend app
         "{:?}",
         lowered.diagnostics()
     );
-    let config = lowered.value().config.as_ref().expect("finalized config");
+    let config = lowered.value().config().expect("finalized config");
     let pool = &config.upstream_pools[0];
     let passive = pool.passive_health.as_ref().expect("passive policy");
     assert_eq!(passive.observe, oxiroute_config::PassiveObserve::Layer7);
@@ -2255,7 +2208,7 @@ backend app
   server app2 127.0.0.1:3001
 ";
     let trigger = import_fixture("retry-on-triggers.cfg", source);
-    let config = trigger.value().config.as_ref().expect("trigger config");
+    let config = trigger.value().config().expect("trigger config");
     let HttpRouteAction::Proxy { policy, .. } = &config.http_services[0].routes[0].action else {
         panic!("proxy action");
     };
@@ -2278,7 +2231,7 @@ backend app
             "retry-on 500 502 504",
         );
     let status = import_fixture("retry-on-statuses.cfg", status_source.as_bytes());
-    let config = status.value().config.as_ref().expect("status config");
+    let config = status.value().config().expect("status config");
     let HttpRouteAction::Proxy { policy, .. } = &config.http_services[0].routes[0].action else {
         panic!("proxy action");
     };
@@ -2291,7 +2244,7 @@ backend app
 
     let all_source = status_source.replace("retry-on 500 502 504", "retry-on all");
     let all = import_fixture("retry-on-all.cfg", all_source.as_bytes());
-    let config = all.value().config.as_ref().expect("all config");
+    let config = all.value().config().expect("all config");
     let HttpRouteAction::Proxy { policy, .. } = &config.http_services[0].routes[0].action else {
         panic!("proxy action");
     };
@@ -2316,7 +2269,7 @@ backend app
 ";
     let lowered = import_fixture("unsupported-retry-on.cfg", source);
 
-    assert!(lowered.value().config.is_none());
+    assert!(lowered.value().config().is_none());
     assert_blocker(
         lowered.diagnostics(),
         "HAProxy retry-on form is not represented by supported canonical retry policy",
@@ -2338,7 +2291,7 @@ backend app
 ";
     let lowered = import_fixture("duplicate-passive-option.cfg", source);
 
-    assert!(lowered.value().config.is_none());
+    assert!(lowered.value().config().is_none());
     assert!(lowered.has_errors());
 }
 
@@ -2360,7 +2313,7 @@ fn unconditional_fixed_response_and_redirect_actions_finalize() {
     let fixed = import_fixture("fixed-response.cfg", fixed);
     assert!(fixed.diagnostics().is_empty(), "{:?}", fixed.diagnostics());
     assert!(matches!(
-        fixed.value().config.as_ref().expect("fixed config").http_services[0].routes[0].action,
+        fixed.value().config().expect("fixed config").http_services[0].routes[0].action,
         HttpRouteAction::FixedResponse { status: 200, ref body, .. } if body == "healthy"
     ));
     assert_has_provenance(fixed.value(), "/http_services/0/routes/0/action/status");
@@ -2381,8 +2334,7 @@ fn unconditional_fixed_response_and_redirect_actions_finalize() {
     assert!(matches!(
         redirect
             .value()
-            .config
-            .as_ref()
+            .config()
             .expect("redirect config")
             .http_services[0]
             .routes[0]
@@ -2419,8 +2371,7 @@ backend app
     );
     let route = &lowered
         .value()
-        .config
-        .as_ref()
+        .config()
         .expect("header config")
         .http_services[0]
         .routes[0];
@@ -2439,7 +2390,7 @@ backend app
 fn public_source_import_carries_syntax_diagnostics_through_finalization() {
     let lowered = import_fixture("syntax.cfg", b"frontend public\n  bind 127.0.0.1:8080");
 
-    assert!(lowered.value().config.is_none());
+    assert!(lowered.value().config().is_none());
     assert!(
         lowered
             .diagnostics()
@@ -2470,10 +2421,7 @@ fn tls_bind_retains_pem_san_identities_sidecar_key_and_downstream_timeout() {
     let lowered = import_fixture("tls.cfg", source.as_bytes());
     let candidate = lowered.value();
 
-    let config = candidate
-        .config
-        .as_ref()
-        .expect("TLS config with client timeout");
+    let config = candidate.config().expect("TLS config with client timeout");
     assert_eq!(config.certificates.len(), 1);
     assert_eq!(config.tls_profiles.len(), 1);
     assert_eq!(config.listeners.len(), 1);
@@ -2498,11 +2446,7 @@ fn exact_http_tls_default_route_finalizes_with_an_unbounded_body_policy() {
         "{:?}",
         lowered.diagnostics()
     );
-    let config = lowered
-        .value()
-        .config
-        .as_ref()
-        .expect("finalized strict HTTP TLS");
+    let config = lowered.value().config().expect("finalized strict HTTP TLS");
     assert_eq!(config.certificates.len(), 1);
     assert_eq!(config.tls_profiles.len(), 1);
     assert_eq!(config.listeners[0].protocol, Protocol::Http);
@@ -2535,7 +2479,7 @@ fn tls_sidecar_key_must_match_the_leaf_certificate() {
     );
 
     let lowered = import_fixture("mismatched-tls.cfg", source.as_bytes());
-    assert!(lowered.value().config.is_none());
+    assert!(lowered.value().config().is_none());
     assert!(lowered.value().draft.certificates.is_empty());
     assert!(diagnostic_contains(
         lowered.diagnostics(),
@@ -2565,7 +2509,7 @@ fn repeated_tls_bundle_is_deduplicated_across_canonical_listeners() {
     let lowered = import_fixture("reused-tls.cfg", source.as_bytes());
     let candidate = lowered.value();
 
-    let config = candidate.config.as_ref().expect("reused TLS config");
+    let config = candidate.config().expect("reused TLS config");
     assert_eq!(config.certificates.len(), 1);
     assert_eq!(config.tls_profiles.len(), 2);
     assert_eq!(config.listeners.len(), 2);
@@ -2586,7 +2530,7 @@ fn tls_bind_with_no_dns_identities_never_emits_a_listener_or_empty_certificate()
     );
     let lowered = import_fixture("tls-empty-identities.cfg", source.as_bytes());
 
-    assert!(lowered.value().config.is_none());
+    assert!(lowered.value().config().is_none());
     assert!(lowered.value().draft.certificates.is_empty());
     assert!(lowered.value().draft.tls_profiles.is_empty());
     assert!(lowered.value().draft.listeners.is_empty());
@@ -2613,7 +2557,7 @@ fn crt_list_and_multiple_crt_parameters_are_blocked_without_guessing() {
 
     for source in sources {
         let lowered = import_fixture("unsupported-certs.cfg", source.as_bytes());
-        assert!(lowered.value().config.is_none());
+        assert!(lowered.value().config().is_none());
         assert!(lowered.value().draft.certificates.is_empty());
         assert!(lowered.value().draft.listeners.is_empty());
         assert!(diagnostic_contains(

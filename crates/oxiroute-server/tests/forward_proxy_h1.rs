@@ -1020,7 +1020,10 @@ async fn imported_squid_candidate_serves_authenticated_http_over_daemon() {
         );
     fs::write(&squid, source).expect("write Squid source");
     let report = import(&squid);
-    let config = report.config.expect("finalized imported Squid candidate");
+    let config = report
+        .candidate
+        .into_config()
+        .expect("finalized imported Squid candidate");
     let mut server = process_support::ServerProcess::start(&config, None);
     server.wait_for_tcp(proxy_address).await;
 
@@ -1085,7 +1088,8 @@ async fn imported_squid_authentication_rejects_missing_credentials() {
     .expect("write Squid source");
     let report = import(&squid);
     let config = report
-        .config
+        .candidate
+        .into_config()
         .expect("finalized authenticated Squid candidate");
     let mut server = process_support::ServerProcess::start(&config, None);
     server.wait_for_tcp(proxy_address).await;

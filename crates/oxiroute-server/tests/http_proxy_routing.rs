@@ -89,7 +89,7 @@ async fn imported_nginx_overlay_preserves_certbot_and_proxy_error_responses_on_w
             overlay.kind == oxiroute_import::OperationalOverlayKind::DefaultErrorPageMigration
                 && overlay.satisfied
         }));
-        let mut config = report.candidate.config.expect("imported nginx config");
+        let mut config = report.candidate.into_config().expect("imported nginx config");
         let service = config.http_services.remove(0);
         let proxy = ProxyHarness::start(
             config.upstream_pools,
