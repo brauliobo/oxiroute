@@ -68,6 +68,9 @@ jobs:
       - name: Verify version metadata
         run: ./scripts/verify-release-version.sh "${RELEASE_VERSION}"
 
+      - name: Test release archive policy
+        run: ./scripts/test-release-archive.sh
+
       - name: Create and verify deterministic source archive
         run: |
           mkdir -p release

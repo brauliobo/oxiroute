@@ -2,6 +2,8 @@
 set -euo pipefail
 
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=release-archive-policy.sh
+source "${repo_dir}/scripts/release-archive-policy.sh"
 archive=${1:-}
 version=${2:-}
 
@@ -19,14 +21,7 @@ trap 'rm -f -- "${temporary_archive}"' EXIT
 
 git -C "${repo_dir}" ls-files -z -- \
   . \
-  ':(exclude)packaging/arch/**' \
-  ':(exclude)benchmarks/reports/**' \
-  ':(exclude)target/**' \
-  ':(exclude)**/target/**' \
-  ':(exclude)node_modules/**' \
-  ':(exclude)**/node_modules/**' \
-  ':(exclude)remotion/out/**' \
-  ':(exclude)test-results/**' | \
+  "${RELEASE_ARCHIVE_EXCLUDES[@]}" | \
   tar \
     --directory="${repo_dir}" \
     --null \
