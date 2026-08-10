@@ -13,7 +13,7 @@ use std::{
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 
-use super::{FileReconciler, certbot_reconcile::PublicationGate};
+use super::{FileReconciler, certificate::PublicationGate};
 
 pub use super::certbot_watcher::CertbotWatcherConfig as FileWatcherConfig;
 
