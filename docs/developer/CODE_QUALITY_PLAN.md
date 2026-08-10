@@ -198,6 +198,11 @@ are emitted only through `StateStore`-owned legal lifecycle transitions with pri
 
 ### P1.4 Exact cache insertion deltas
 
+**Status:** Complete. Memory insertion now returns deterministic exact removals internally while the
+public store result remains unchanged. Live persistence and startup recovery reconcile only those
+keys, preserve independent disk admission, and fail closed if reconciliation fails after memory
+publication.
+
 **Finding:** The memory cache returns only an eviction count. The disk cache compensates by predicting
 victims, inserting, snapshotting every resident key, and deleting differences.
 
@@ -205,13 +210,17 @@ victims, inserting, snapshotting every resident key, and deleting differences.
 
 - `crates/oxiroute-cache/src/cache.rs:68-89,860-878,1018-1059`
 - `crates/oxiroute-cache/src/disk.rs:126-157,510-600`
+- Exact delta and reconciliation implementation: `crates/oxiroute-cache/src/cache.rs`,
+  `crates/oxiroute-cache/src/disk.rs`
+- Characterization and private fault coverage: `crates/oxiroute-cache/tests/cache_core.rs`,
+  `crates/oxiroute-cache/tests/disk_cache.rs`, `crates/oxiroute-cache/src/disk.rs`
 
 **Plan:**
 
-- [ ] Add an internal `InsertionDelta` containing the inserted key and exact removed keys while
+- [x] Add an internal `InsertionDelta` containing the inserted key and exact removed keys while
   preserving public `StoreOutcome` if required.
-- [ ] Make disk reconciliation consume the delta instead of scanning all resident keys.
-- [ ] Fault-test replacement, conflicting `Vary`, eviction pressure, generation loss, every durable
+- [x] Make disk reconciliation consume the delta instead of scanning all resident keys.
+- [x] Fault-test replacement, conflicting `Vary`, eviction pressure, generation loss, every durable
   phase, rollback, and restart recovery.
 
 ### P1.5 Canonical lexical and HTTP-method ownership

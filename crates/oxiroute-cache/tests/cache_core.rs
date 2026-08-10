@@ -1139,6 +1139,7 @@ fn count_pressure_evicts_exactly_the_least_recently_used_entry() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn byte_pressure_removes_one_or_multiple_victims_and_counts_only_capacity() {
     const LARGE: &[u8] = b"large-body-large-body-large-body-large-body-large-body-large-body";
     let request_headers = HeaderMap::new();

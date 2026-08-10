@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap},
     fs::File,
     io::{self, Read, Write},
     path::{Component, Path},
@@ -23,7 +23,7 @@ use crate::{
     BaseKey, Cache, CacheConfig, CacheError, CacheKey, CacheStats, CachedResponse, Clock,
     FillGuard, FillJoin, FillWaiter, Lookup, MonoTime, PreparedEntry, PurgeResult, RequestKeyInput,
     ResponseTiming, StoreOutcome, SystemClock, Validators,
-    cache::{RecoveredEntry, object_charge, validate_tag},
+    cache::{ClaimedStoreOutcome, InsertionDelta, RecoveredEntry, object_charge, validate_tag},
     key::VaryValue,
     policy::{ResponsePolicy, RetentionPolicy},
 };
@@ -179,6 +179,7 @@ enum FaultPoint {
     AfterFileSync,
     AfterPublish,
     BeforeDirectorySync,
+    BeforeMemoryReconciliation,
 }
 
 impl DiskCache {
@@ -219,8 +220,7 @@ impl DiskCache {
             Err(source) => return Err(DiskCacheError::OwnershipLock(source.into())),
         }
 
-        let mut state = scan_root(&root, root_owner, &config, &cache)?;
-        recover_memory(&cache, &root, &mut state)?;
+        let state = scan_root(&root, root_owner, &config, &cache)?;
         let shared = Arc::new(Shared {
             cache,
             config,
@@ -565,38 +565,29 @@ impl DiskFillGuard {
             .publish(&encoded, sequence, access, &entry.prepared().tags)?;
         let stored_key = entry.prepared().key.clone();
         state.insert(stored_key.clone(), record);
-        let memory_outcome = inner.store_claimed(entry);
-        if memory_outcome == StoreOutcome::GenerationLost {
-            if let Some(record) = state.records.get(&stored_key).cloned() {
-                self.shared.remove_record(&record)?;
-                state.remove(&stored_key);
+        let delta = match inner.store_claimed(entry) {
+            ClaimedStoreOutcome::Stored(delta) => delta,
+            ClaimedStoreOutcome::GenerationLost => {
+                if let Some(record) = state.records.get(&stored_key).cloned() {
+                    self.shared.remove_record(&record)?;
+                    state.remove(&stored_key);
+                    self.shared.sync_root()?;
+                }
+                return Ok(StoreOutcome::GenerationLost);
+            }
+        };
+        let reconciliation = (|| {
+            #[cfg(test)]
+            self.shared.fault(FaultPoint::BeforeMemoryReconciliation)?;
+            let removed = reconcile_insertion(&self.shared.root, &mut state, &delta)?;
+            if removed != 0 {
                 self.shared.sync_root()?;
             }
-            return Ok(StoreOutcome::GenerationLost);
-        }
-        let resident = self
-            .shared
-            .cache
-            .resident_keys()
-            .into_iter()
-            .collect::<HashSet<_>>();
-        let extra = state
-            .records
-            .keys()
-            .filter(|key| !resident.contains(*key))
-            .cloned()
-            .collect::<Vec<_>>();
-        for key in &extra {
-            if let Some(record) = state.records.get(key).cloned() {
-                self.shared.remove_record(&record)?;
-                state.remove(key);
-            }
-        }
-        if !extra.is_empty() {
-            self.shared.sync_root()?;
-        }
+            Ok(removed)
+        })();
+        let reconciled = self.shared.durability(reconciliation)?;
         Ok(StoreOutcome::Stored {
-            evicted: victims.len().saturating_add(extra.len()),
+            evicted: victims.len().saturating_add(reconciled),
         })
     }
 
@@ -1097,33 +1088,38 @@ fn scan_root(
         stale_temps_removed,
         corrupt_records_removed,
     };
+    let mut memory_removed = 0usize;
     for (decoded, info) in ordered {
         state.sequence = state.sequence.max(decoded.sequence).max(decoded.access);
         let key = decoded.entry.key.clone();
-        cache.restore(decoded.entry);
+        let delta = cache.restore(decoded.entry);
         state.insert(key, info);
+        memory_removed =
+            memory_removed.saturating_add(reconcile_insertion(root, &mut state, &delta)?);
+    }
+    if memory_removed != 0 {
+        rustix_fs::fsync(root).map_err(storage)?;
     }
     Ok(state)
 }
 
-fn recover_memory(cache: &Cache, root: &OwnedFd, state: &mut State) -> Result<(), DiskCacheError> {
-    let resident = cache.resident_keys().into_iter().collect::<HashSet<_>>();
-    let removed = state
-        .records
-        .keys()
-        .filter(|key| !resident.contains(*key))
-        .cloned()
-        .collect::<Vec<_>>();
-    for key in &removed {
+fn reconcile_insertion(
+    root: &OwnedFd,
+    state: &mut State,
+    delta: &InsertionDelta,
+) -> Result<usize, DiskCacheError> {
+    let mut removed = 0usize;
+    for key in &delta.removed {
+        if key == &delta.inserted {
+            continue;
+        }
         if let Some(record) = state.records.get(key).cloned() {
             remove_owned_name(root, &record.name, Some((record.device, record.inode)))?;
             state.remove(key);
+            removed += 1;
         }
     }
-    if !removed.is_empty() {
-        rustix_fs::fsync(root).map_err(storage)?;
-    }
-    Ok(())
+    Ok(removed)
 }
 
 fn read_record(
@@ -1761,6 +1757,74 @@ mod tests {
                 other => panic!("unexpected recovered state: {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn post_memory_reconciliation_fault_closes_and_recovers_published_record() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("cache");
+        let cache = DiskCache::open(&root, test_config()).expect("cache");
+        assert!(matches!(
+            attempt_store(&cache, FaultPoint::BeforeMemoryReconciliation),
+            Err(DiskCacheError::Injected)
+        ));
+        assert!(matches!(
+            cache.lookup(request(&HeaderMap::new())),
+            Err(DiskCacheError::Closed)
+        ));
+        drop(cache);
+
+        let recovered = DiskCache::open(&root, test_config()).expect("recovery");
+        assert!(matches!(
+            recovered.lookup(request(&HeaderMap::new())),
+            Ok(Lookup::Hit { response, .. })
+                if response.body == Bytes::from_static(b"fault")
+        ));
+    }
+
+    #[test]
+    fn insertion_reconciliation_preserves_the_new_record_on_replacement_overlap() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("cache");
+        let cache = DiskCache::open(&root, test_config()).expect("cache");
+        let request_headers = HeaderMap::new();
+        let mut response_headers = HeaderMap::new();
+        response_headers.insert(
+            http::header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=60"),
+        );
+        let now = cache.now();
+        let entry = cache
+            .prepare(
+                request(&request_headers),
+                StatusCode::OK,
+                &response_headers,
+                Bytes::from_static(b"record"),
+                ResponseTiming {
+                    request_started: now,
+                    response_received: now,
+                    response_received_wall: SystemTime::now(),
+                },
+                &[],
+            )
+            .expect("entry");
+        let key = entry.key.clone();
+        match cache.begin_fill(key.base().clone()).expect("fill") {
+            DiskFillJoin::Leader(leader) => leader.store(entry).expect("store"),
+            DiskFillJoin::Follower(_) | DiskFillJoin::AtCapacity => panic!("leader"),
+        };
+
+        let mut state = cache.shared.lock();
+        let delta = InsertionDelta {
+            inserted: key.clone(),
+            removed: vec![key.clone()],
+            evicted: 0,
+        };
+        assert_eq!(
+            reconcile_insertion(&cache.shared.root, &mut state, &delta).expect("reconcile"),
+            0
+        );
+        assert!(state.records.contains_key(&key));
     }
 
     #[test]
