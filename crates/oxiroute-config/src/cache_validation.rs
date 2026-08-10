@@ -59,8 +59,8 @@ pub(crate) fn validate_cache_stores(
             });
         }
         let limits = cache_store_limits(store, &name)?;
-        if let CacheStore::Disk { root_directory, .. } = store
-            && !disk_roots.insert(root_directory.clone())
+        if let Some(root_directory) = store.root_directory()
+            && !disk_roots.insert(root_directory.to_path_buf())
         {
             return Err(invalid_store(
                 &name,
@@ -81,77 +81,21 @@ pub(crate) fn validate_cache_stores(
 }
 
 fn cache_store_limits(store: &mut CacheStore, name: &str) -> Result<CacheStoreLimits, ConfigError> {
-    let (
-        max_bytes,
-        max_entries,
-        max_object_bytes,
-        max_header_bytes,
-        max_key_bytes,
-        max_tag_bytes,
-        max_tags_per_object,
-        max_in_flight_fills,
-        max_followers_per_fill,
-    ) = match store {
-        CacheStore::Memory {
-            max_bytes,
-            max_entries,
-            max_object_bytes,
-            max_header_bytes,
-            max_key_bytes,
-            max_tag_bytes,
-            max_tags_per_object,
-            max_in_flight_fills,
-            max_followers_per_fill,
-            ..
-        } => (
-            *max_bytes,
-            *max_entries,
-            *max_object_bytes,
-            *max_header_bytes,
-            *max_key_bytes,
-            *max_tag_bytes,
-            *max_tags_per_object,
-            *max_in_flight_fills,
-            *max_followers_per_fill,
-        ),
-        CacheStore::Disk {
-            root_directory,
-            max_bytes,
-            max_files,
-            max_object_bytes,
-            max_header_bytes,
-            max_key_bytes,
-            max_tag_bytes,
-            max_tags_per_object,
-            max_in_flight_fills,
-            max_followers_per_fill,
-            ..
-        } => {
-            normalize_absolute_directory(root_directory)
-                .map_err(|detail| invalid_store(name, "root_directory", detail))?;
-            (
-                *max_bytes,
-                *max_files,
-                *max_object_bytes,
-                *max_header_bytes,
-                *max_key_bytes,
-                *max_tag_bytes,
-                *max_tags_per_object,
-                *max_in_flight_fills,
-                *max_followers_per_fill,
-            )
-        }
-    };
+    if let Some(root_directory) = store.root_directory_mut() {
+        normalize_absolute_directory(root_directory)
+            .map_err(|detail| invalid_store(name, "root_directory", detail))?;
+    }
+    let common = store.common();
     Ok(CacheStoreLimits {
-        bytes: max_bytes,
-        entries: max_entries,
-        object_bytes: max_object_bytes,
-        header_bytes: max_header_bytes,
-        key_bytes: max_key_bytes,
-        tag_bytes: max_tag_bytes,
-        tags_per_object: max_tags_per_object,
-        in_flight_fills: max_in_flight_fills,
-        followers_per_fill: max_followers_per_fill,
+        bytes: common.max_bytes,
+        entries: common.max_entries,
+        object_bytes: common.max_object_bytes,
+        header_bytes: common.max_header_bytes,
+        key_bytes: common.max_key_bytes,
+        tag_bytes: common.max_tag_bytes,
+        tags_per_object: common.max_tags_per_object,
+        in_flight_fills: common.max_in_flight_fills,
+        followers_per_fill: common.max_followers_per_fill,
     })
 }
 

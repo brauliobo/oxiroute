@@ -8,32 +8,33 @@ use crate::{
     model::{
         AccessLogPolicy, AlpnProtocol, CacheAuthorizationPolicy, CacheKeyComponent, CachePredicate,
         CachePurgeAuthorization, CacheSetCookiePolicy, CacheStaleTrigger, CacheStatusTtl,
-        CacheStore, CacheSurrogateTags, CacheVaryPolicy, Certificate, CertificateSource, Config,
-        ConfigError, DnsResolutionPolicy, DownstreamTimeoutPolicy, ForwardAccessAction,
-        ForwardAccessMatcher, ForwardAccessPolicy, ForwardAccessRule, ForwardAuditMode,
-        ForwardConnectPolicy, ForwardDestinationPolicy, ForwardDirectFallback, ForwardHeaderPolicy,
-        ForwardHttpVersion, ForwardPeerPolicy, ForwardProxyAuth, ForwardProxyService,
-        ForwardResolverPolicy, ForwardTimeRange, ForwardViaPolicy, ForwardWeekday,
-        ForwardedForPolicy, HealthCheck, HealthCheckType, HealthHttpVersion, HealthStartup,
-        HttpAccessPolicy, HttpCachePolicy, HttpCookieAttributePolicy, HttpCookiePathRewrite,
-        HttpGzipPolicy, HttpHostSelector, HttpLiteralHeader, HttpMimeType, HttpPathSelector,
-        HttpProxyPathRewrite, HttpProxyPolicy, HttpRedirectLocation, HttpRequestHeaderMutation,
-        HttpRequestHeaderValue, HttpResponseHeaderMutation, HttpRetryBodySafety,
-        HttpRetryMethodSafety, HttpRetryPolicy, HttpRetryTarget, HttpRetryTrigger, HttpRoute,
-        HttpRouteAction, HttpRoutePolicy, HttpSameSite, HttpService, HttpStaticErrorResponse,
-        HttpStaticMimePolicy, HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost,
-        HttpVersion, HttpVersionPolicy, L4Service, Listener, ListenerBind, Management,
-        PassiveHealthPolicy, PassiveObserve, PassiveOnError, Protocol, ProxyProtocolPolicy,
-        ProxyProtocolVersion, RtmpAccessPolicy, RtmpAccessRule, RtmpAclAction, RtmpApplication,
-        RtmpCallbackConfig, RtmpDashPolicy, RtmpDashSegmentNaming, RtmpExecEnvironment,
-        RtmpExecFilesystemPolicy, RtmpExecMode, RtmpExecNetworkPolicy, RtmpExecProfile,
-        RtmpExecTrigger, RtmpFanoutPolicy, RtmpHlsFragmentNaming, RtmpHlsKeyPolicy, RtmpHlsPolicy,
-        RtmpHlsVariant, RtmpNotifyMethod, RtmpPullTarget, RtmpPushTarget, RtmpRecorder,
-        RtmpRecorderSegmentNaming, RtmpRecorderStart, RtmpRecorderTimeBasis, RtmpRecorderTimezone,
-        RtmpRelayPolicy, RtmpRtmpsPolicy, RtmpService, RtmpSessionCeilings, RtmpTokenPolicy,
-        RtmpTokenSource, RtmpTransport, RtmpVodPolicy, RtmpVodSource, Stats, StatsPage,
-        StatsPageAdminPolicy, TlsProfile, TlsVersion, UdpPolicy, UpstreamAlgorithm,
-        UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer, UpstreamTls,
+        CacheStore, CacheStoreCommon, CacheStoreKind, CacheSurrogateTags, CacheVaryPolicy,
+        Certificate, CertificateSource, Config, ConfigError, DnsResolutionPolicy,
+        DownstreamTimeoutPolicy, ForwardAccessAction, ForwardAccessMatcher, ForwardAccessPolicy,
+        ForwardAccessRule, ForwardAuditMode, ForwardConnectPolicy, ForwardDestinationPolicy,
+        ForwardDirectFallback, ForwardHeaderPolicy, ForwardHttpVersion, ForwardPeerPolicy,
+        ForwardProxyAuth, ForwardProxyService, ForwardResolverPolicy, ForwardTimeRange,
+        ForwardViaPolicy, ForwardWeekday, ForwardedForPolicy, HealthCheck, HealthCheckType,
+        HealthHttpVersion, HealthStartup, HttpAccessPolicy, HttpCachePolicy,
+        HttpCookieAttributePolicy, HttpCookiePathRewrite, HttpGzipPolicy, HttpHostSelector,
+        HttpLiteralHeader, HttpMimeType, HttpPathSelector, HttpProxyPathRewrite, HttpProxyPolicy,
+        HttpRedirectLocation, HttpRequestHeaderMutation, HttpRequestHeaderValue,
+        HttpResponseHeaderMutation, HttpRetryBodySafety, HttpRetryMethodSafety, HttpRetryPolicy,
+        HttpRetryTarget, HttpRetryTrigger, HttpRoute, HttpRouteAction, HttpRoutePolicy,
+        HttpSameSite, HttpService, HttpStaticErrorResponse, HttpStaticMimePolicy,
+        HttpStaticPathMapping, HttpStaticTryFile, HttpUpstreamHost, HttpVersion, HttpVersionPolicy,
+        L4Service, Listener, ListenerBind, Management, PassiveHealthPolicy, PassiveObserve,
+        PassiveOnError, Protocol, ProxyProtocolPolicy, ProxyProtocolVersion, RtmpAccessPolicy,
+        RtmpAccessRule, RtmpAclAction, RtmpApplication, RtmpCallbackConfig, RtmpDashPolicy,
+        RtmpDashSegmentNaming, RtmpExecEnvironment, RtmpExecFilesystemPolicy, RtmpExecMode,
+        RtmpExecNetworkPolicy, RtmpExecProfile, RtmpExecTrigger, RtmpFanoutPolicy,
+        RtmpHlsFragmentNaming, RtmpHlsKeyPolicy, RtmpHlsPolicy, RtmpHlsVariant, RtmpNotifyMethod,
+        RtmpPullTarget, RtmpPushTarget, RtmpRecorder, RtmpRecorderSegmentNaming, RtmpRecorderStart,
+        RtmpRecorderTimeBasis, RtmpRecorderTimezone, RtmpRelayPolicy, RtmpRtmpsPolicy, RtmpService,
+        RtmpSessionCeilings, RtmpTokenPolicy, RtmpTokenSource, RtmpTransport, RtmpVodPolicy,
+        RtmpVodSource, Stats, StatsPage, StatsPageAdminPolicy, TlsProfile, TlsVersion, UdpPolicy,
+        UpstreamAlgorithm, UpstreamConnectionReuse, UpstreamEndpoint, UpstreamPool, UpstreamServer,
+        UpstreamTls,
     },
     validation::validate_config,
 };
@@ -482,91 +483,43 @@ impl Renderer {
     }
 
     fn cache_store(&mut self, store: &CacheStore) -> Result<(), ConfigError> {
-        match store {
-            CacheStore::Memory {
-                name,
-                max_bytes,
-                max_entries,
-                max_object_bytes,
-                max_header_bytes,
-                max_key_bytes,
-                max_tag_bytes,
-                max_tags_per_object,
-                max_in_flight_fills,
-                max_followers_per_fill,
-            } => {
+        let common = store.common();
+        match store.kind() {
+            CacheStoreKind::Memory => {
                 self.string_field("type", "memory");
-                self.string_field("name", name);
-                self.integer_field("max_bytes", max_bytes);
-                self.integer_field("max_entries", max_entries);
-                self.cache_store_common(
-                    *max_object_bytes,
-                    *max_header_bytes,
-                    *max_key_bytes,
-                    *max_tag_bytes,
-                    *max_tags_per_object,
-                    *max_in_flight_fills,
-                    *max_followers_per_fill,
-                );
+                self.string_field("name", common.name);
+                self.integer_field("max_bytes", common.max_bytes);
+                self.integer_field("max_entries", common.max_entries);
             }
-            CacheStore::Disk {
-                name,
-                root_directory,
-                max_bytes,
-                max_files,
-                max_object_bytes,
-                max_header_bytes,
-                max_key_bytes,
-                max_tag_bytes,
-                max_tags_per_object,
-                max_in_flight_fills,
-                max_followers_per_fill,
-            } => {
+            CacheStoreKind::Disk => {
                 self.string_field("type", "disk");
-                self.string_field("name", name);
-                let root =
-                    root_directory
-                        .to_str()
-                        .ok_or_else(|| ConfigError::InvalidCacheStore {
-                            store: name.clone(),
-                            field: "root_directory",
-                            detail: "path must be valid UTF-8".into(),
-                        })?;
+                self.string_field("name", common.name);
+                let root = store
+                    .root_directory()
+                    .expect("disk cache store has a root directory")
+                    .to_str()
+                    .ok_or_else(|| ConfigError::InvalidCacheStore {
+                        store: common.name.into(),
+                        field: "root_directory",
+                        detail: "path must be valid UTF-8".into(),
+                    })?;
                 self.string_field("root_directory", root);
-                self.integer_field("max_bytes", max_bytes);
-                self.integer_field("max_files", max_files);
-                self.cache_store_common(
-                    *max_object_bytes,
-                    *max_header_bytes,
-                    *max_key_bytes,
-                    *max_tag_bytes,
-                    *max_tags_per_object,
-                    *max_in_flight_fills,
-                    *max_followers_per_fill,
-                );
+                self.integer_field("max_bytes", common.max_bytes);
+                self.integer_field("max_files", common.max_entries);
             }
         }
+        self.cache_store_common(common);
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn cache_store_common(
-        &mut self,
-        max_object_bytes: u64,
-        max_header_bytes: u64,
-        max_key_bytes: u64,
-        max_tag_bytes: u64,
-        max_tags_per_object: u64,
-        max_in_flight_fills: u64,
-        max_followers_per_fill: u64,
-    ) {
-        self.integer_field("max_object_bytes", max_object_bytes);
-        self.integer_field("max_header_bytes", max_header_bytes);
-        self.integer_field("max_key_bytes", max_key_bytes);
-        self.integer_field("max_tag_bytes", max_tag_bytes);
-        self.integer_field("max_tags_per_object", max_tags_per_object);
-        self.integer_field("max_in_flight_fills", max_in_flight_fills);
-        self.integer_field("max_followers_per_fill", max_followers_per_fill);
+    fn cache_store_common(&mut self, common: CacheStoreCommon<'_>) {
+        self.integer_field("max_object_bytes", common.max_object_bytes);
+        self.integer_field("max_header_bytes", common.max_header_bytes);
+        self.integer_field("max_key_bytes", common.max_key_bytes);
+        self.integer_field("max_tag_bytes", common.max_tag_bytes);
+        self.integer_field("max_tags_per_object", common.max_tags_per_object);
+        self.integer_field("max_in_flight_fills", common.max_in_flight_fills);
+        self.integer_field("max_followers_per_fill", common.max_followers_per_fill);
     }
 
     fn rtmp_service(&mut self, service: &RtmpService) -> Result<(), ConfigError> {

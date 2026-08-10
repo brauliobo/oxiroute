@@ -45,15 +45,6 @@ const DEFAULT_TTL_MS: u64 = 120_000;
 const DEFAULT_GRACE_MS: u64 = 10_000;
 const DEFAULT_KEEP_MS: u64 = 0;
 const DEFAULT_MEMORY_BYTES: u64 = 256 * 1024 * 1024;
-const DEFAULT_MEMORY_ENTRIES: u64 = 100_000;
-const DEFAULT_DISK_FILES: u64 = 1_000_000;
-const DEFAULT_OBJECT_BYTES: u64 = 16 * 1024 * 1024;
-const DEFAULT_HEADER_BYTES: u64 = 64 * 1024;
-const DEFAULT_KEY_BYTES: u64 = 4 * 1024;
-const DEFAULT_TAG_BYTES: u64 = 256;
-const DEFAULT_TAGS_PER_OBJECT: u64 = 64;
-const DEFAULT_IN_FLIGHT_FILLS: u64 = 1_024;
-const DEFAULT_FOLLOWERS_PER_FILL: u64 = 128;
 
 #[derive(Clone, Copy)]
 #[allow(clippy::struct_field_names)]
@@ -542,7 +533,7 @@ impl<'a> Lowerer<'a> {
             return None;
         }
         let Some(storage) = self.source_invocation.storage.first().cloned() else {
-            return Some(memory_store("varnish-memory", DEFAULT_MEMORY_BYTES));
+            return Some(CacheStore::memory("varnish-memory", DEFAULT_MEMORY_BYTES));
         };
         let name = storage
             .name
@@ -565,7 +556,7 @@ impl<'a> Lowerer<'a> {
                     );
                     return None;
                 };
-                Some(memory_store(&name, max_bytes))
+                Some(CacheStore::memory(name, max_bytes))
             }
             super::StorageKind::File => {
                 let Some(path) = storage.arguments.first().and_then(canonical_storage_path) else {
@@ -589,7 +580,7 @@ impl<'a> Lowerer<'a> {
                     );
                     return None;
                 };
-                Some(disk_store(&name, path, max_bytes))
+                Some(CacheStore::disk(name, path, max_bytes))
             }
             super::StorageKind::None => None,
             super::StorageKind::Persistent
@@ -1414,7 +1405,7 @@ impl<'a> Lowerer<'a> {
                 );
                 return;
             };
-            let store_name = cache_store_name(store).to_owned();
+            let store_name = store.name().to_owned();
             let ttl = cache_ttl.unwrap_or(invocation_policy.default_ttl_ms);
             let grace = cache_grace.unwrap_or(invocation_policy.default_grace_ms);
             let keep = cache_keep.unwrap_or(invocation_policy.default_keep_ms);
@@ -1789,43 +1780,6 @@ impl<'a> Lowerer<'a> {
 
     fn root_span(&self) -> Option<crate::Span> {
         self.root_origin.as_ref().map(|origin| origin.span)
-    }
-}
-
-fn memory_store(name: &str, max_bytes: u64) -> CacheStore {
-    CacheStore::Memory {
-        name: name.into(),
-        max_bytes,
-        max_entries: DEFAULT_MEMORY_ENTRIES,
-        max_object_bytes: DEFAULT_OBJECT_BYTES.min(max_bytes),
-        max_header_bytes: DEFAULT_HEADER_BYTES.min(max_bytes),
-        max_key_bytes: DEFAULT_KEY_BYTES,
-        max_tag_bytes: DEFAULT_TAG_BYTES,
-        max_tags_per_object: DEFAULT_TAGS_PER_OBJECT,
-        max_in_flight_fills: DEFAULT_IN_FLIGHT_FILLS,
-        max_followers_per_fill: DEFAULT_FOLLOWERS_PER_FILL,
-    }
-}
-
-fn disk_store(name: &str, root_directory: PathBuf, max_bytes: u64) -> CacheStore {
-    CacheStore::Disk {
-        name: name.into(),
-        root_directory,
-        max_bytes,
-        max_files: DEFAULT_DISK_FILES,
-        max_object_bytes: DEFAULT_OBJECT_BYTES.min(max_bytes),
-        max_header_bytes: DEFAULT_HEADER_BYTES.min(max_bytes),
-        max_key_bytes: DEFAULT_KEY_BYTES,
-        max_tag_bytes: DEFAULT_TAG_BYTES,
-        max_tags_per_object: DEFAULT_TAGS_PER_OBJECT,
-        max_in_flight_fills: DEFAULT_IN_FLIGHT_FILLS,
-        max_followers_per_fill: DEFAULT_FOLLOWERS_PER_FILL,
-    }
-}
-
-fn cache_store_name(store: &CacheStore) -> &str {
-    match store {
-        CacheStore::Memory { name, .. } | CacheStore::Disk { name, .. } => name,
     }
 }
 
