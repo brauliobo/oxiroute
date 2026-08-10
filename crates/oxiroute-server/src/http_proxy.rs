@@ -42,7 +42,8 @@ use crate::{
     http_action::{
         CacheFill, CacheFillJoin, CacheRequest, HttpActionPlan, HttpCachePlan, HttpGzipPlan,
         HttpRoutePlan, ProxyPolicyPlan, RequestHeaderMutationPlan, RequestHeaderValuePlan,
-        ResponseHeaderMutationPlan, StaticErrorTarget, StaticFile, StaticServeError, StaticTarget,
+        ResponseHeaderMutationPlan, StaticErrorTarget, StaticFile, StaticRequestDecision,
+        StaticServeError, StaticTarget,
     },
     monitoring::CacheEvent,
     upstream_peer::{
@@ -2134,39 +2135,34 @@ async fn write_static_file(
     head: bool,
 ) -> pingora::Result<Option<Vec<(HeaderName, HeaderValue)>>> {
     let validators = static_validator_headers(files, &file);
-    match static_precondition(session.req_header(), &file, files.etag_enabled()) {
-        StaticPrecondition::NotModified => {
+    match files.request_decision(&session.req_header().headers, &file) {
+        StaticRequestDecision::NotModified => {
             let mut headers = files.headers(304);
             headers.extend(validators);
             write_local_response(session, 304, &headers, Bytes::new(), true).await?;
             return Ok(None);
         }
-        StaticPrecondition::Failed => {
+        StaticRequestDecision::PreconditionFailed => {
             let mut headers = files.headers(412);
             headers.extend(validators);
             write_local_response(session, 412, &headers, Bytes::new(), head).await?;
             return Ok(None);
         }
-        StaticPrecondition::Proceed => {}
+        StaticRequestDecision::RangeNotSatisfiable => {
+            return Ok(Some(vec![
+                (ACCEPT_RANGES, HeaderValue::from_static("bytes")),
+                (
+                    CONTENT_RANGE,
+                    HeaderValue::from_str(&format!("bytes */{}", file.size))
+                        .expect("static size is a valid header value"),
+                ),
+            ]));
+        }
+        StaticRequestDecision::Serve { range } => {
+            let status = if range.is_some() { 206 } else { 200 };
+            write_static_file_with_status(session, files, file, status, head, range, &[]).await?;
+        }
     }
-    let apply_range = if_range_matches(session.req_header(), &file, files.etag_enabled());
-    let range = if apply_range {
-        requested_range(session.req_header(), file.size)
-    } else {
-        Ok(None)
-    };
-    let Ok(range) = range else {
-        return Ok(Some(vec![
-            (ACCEPT_RANGES, HeaderValue::from_static("bytes")),
-            (
-                CONTENT_RANGE,
-                HeaderValue::from_str(&format!("bytes */{}", file.size))
-                    .expect("static size is a valid header value"),
-            ),
-        ]));
-    };
-    let status = if range.is_some() { 206 } else { 200 };
-    write_static_file_with_status(session, files, file, status, head, range, &[]).await?;
     Ok(None)
 }
 
@@ -2227,140 +2223,6 @@ async fn write_static_file_with_status(
             .await?;
     }
     Ok(())
-}
-
-fn requested_range(
-    request: &pingora::http::RequestHeader,
-    size: u64,
-) -> Result<Option<(u64, u64)>, ()> {
-    let mut values = request.headers.get_all(RANGE).iter();
-    let Some(value) = values.next() else {
-        return Ok(None);
-    };
-    if values.next().is_some() {
-        return Err(());
-    }
-    let value = value.to_str().map_err(|_| ())?;
-    let Some(value) = value.strip_prefix("bytes=") else {
-        return Ok(None);
-    };
-    if value.contains(',') {
-        return Err(());
-    }
-    if size == 0 {
-        return Err(());
-    }
-    let (start, end) = value.split_once('-').ok_or(())?;
-    let range = if start.is_empty() {
-        let suffix = end
-            .parse::<u64>()
-            .ok()
-            .filter(|suffix| *suffix > 0)
-            .ok_or(())?;
-        (size.saturating_sub(suffix), size - 1)
-    } else {
-        let start = start
-            .parse::<u64>()
-            .ok()
-            .filter(|start| *start < size)
-            .ok_or(())?;
-        let end = if end.is_empty() {
-            size - 1
-        } else {
-            end.parse::<u64>()
-                .ok()
-                .filter(|end| *end >= start)
-                .map(|end| end.min(size - 1))
-                .ok_or(())?
-        };
-        (start, end)
-    };
-    Ok(Some(range))
-}
-
-#[derive(Clone, Copy)]
-enum StaticPrecondition {
-    Proceed,
-    NotModified,
-    Failed,
-}
-
-fn static_precondition(
-    request: &pingora::http::RequestHeader,
-    file: &StaticFile,
-    etag_enabled: bool,
-) -> StaticPrecondition {
-    if let Some(value) = request.headers.get(IF_MATCH) {
-        let matches =
-            value.as_bytes() == b"*" || etag_enabled && etag_list_matches(value, &file.etag, false);
-        if !matches {
-            return StaticPrecondition::Failed;
-        }
-    } else if request
-        .headers
-        .get(IF_UNMODIFIED_SINCE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| httpdate::parse_http_date(value).ok())
-        .is_some_and(|date| modified_after(file.modified, date))
-    {
-        return StaticPrecondition::Failed;
-    }
-
-    if let Some(value) = request.headers.get(IF_NONE_MATCH) {
-        if value.as_bytes() == b"*" || etag_enabled && etag_list_matches(value, &file.etag, true) {
-            return StaticPrecondition::NotModified;
-        }
-    } else if request
-        .headers
-        .get(IF_MODIFIED_SINCE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| httpdate::parse_http_date(value).ok())
-        .is_some_and(|date| !modified_after(file.modified, date))
-    {
-        return StaticPrecondition::NotModified;
-    }
-    StaticPrecondition::Proceed
-}
-
-fn if_range_matches(
-    request: &pingora::http::RequestHeader,
-    file: &StaticFile,
-    etag_enabled: bool,
-) -> bool {
-    let Some(value) = request.headers.get(IF_RANGE) else {
-        return true;
-    };
-    if value.as_bytes().starts_with(b"\"") {
-        return etag_enabled && value == file.etag;
-    }
-    value
-        .to_str()
-        .ok()
-        .and_then(|value| httpdate::parse_http_date(value).ok())
-        .is_some_and(|date| !modified_after(file.modified, date))
-}
-
-fn etag_list_matches(value: &HeaderValue, etag: &HeaderValue, weak: bool) -> bool {
-    let Ok(value) = value.to_str() else {
-        return false;
-    };
-    let expected = etag.as_bytes();
-    value.split(',').map(str::trim).any(|candidate| {
-        let candidate = candidate.as_bytes();
-        candidate == expected || weak && candidate.strip_prefix(b"W/") == Some(expected)
-    })
-}
-
-fn modified_after(modified: SystemTime, date: SystemTime) -> bool {
-    let modified = modified
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let date = date
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    modified > date
 }
 
 fn static_validator_headers(

@@ -40,7 +40,8 @@ use crate::{
     RuntimeReferenceKind, TlsProfilePlan,
     http_action::{
         HttpActionPlan, ProxyActionPlan, ProxyPolicyPlan, RequestHeaderMutationPlan,
-        RequestHeaderValuePlan, StaticErrorTarget, StaticFile, StaticServeError, StaticTarget,
+        RequestHeaderValuePlan, StaticErrorTarget, StaticFile, StaticRequestDecision,
+        StaticServeError, StaticTarget,
     },
     http_proxy::{
         apply_response_policy, apply_response_policy_map,
@@ -2009,30 +2010,59 @@ where
             Ok(StaticTarget::File(file)) => {
                 let status = status_override.unwrap_or(200);
                 let range = if status == 200 {
-                    if let Ok(range) = requested_h3_range(request, file.size) {
-                        range
-                    } else {
-                        let headers = [
-                            (
-                                HeaderName::from_static("accept-ranges"),
-                                HeaderValue::from_static("bytes"),
-                            ),
-                            (
-                                HeaderName::from_static("content-range"),
-                                HeaderValue::from_str(&format!("bytes */{}", file.size))
-                                    .expect("static size is a valid header value"),
-                            ),
-                        ];
-                        let _ = send_h3_response(
-                            stream,
-                            StatusCode::RANGE_NOT_SATISFIABLE,
-                            &headers,
-                            Bytes::new(),
-                            head,
-                            deadline,
-                        )
-                        .await;
-                        return Some(StatusCode::RANGE_NOT_SATISFIABLE.as_u16());
+                    match files.request_decision(request.headers(), &file) {
+                        StaticRequestDecision::NotModified => {
+                            let mut headers = files.headers(304);
+                            headers.extend(h3_static_validator_headers(files, &file));
+                            return send_h3_response(
+                                stream,
+                                StatusCode::NOT_MODIFIED,
+                                &headers,
+                                Bytes::new(),
+                                true,
+                                deadline,
+                            )
+                            .await
+                            .then_some(StatusCode::NOT_MODIFIED.as_u16());
+                        }
+                        StaticRequestDecision::PreconditionFailed => {
+                            let mut headers = files.headers(412);
+                            headers.extend(h3_static_validator_headers(files, &file));
+                            return send_h3_response(
+                                stream,
+                                StatusCode::PRECONDITION_FAILED,
+                                &headers,
+                                Bytes::new(),
+                                head,
+                                deadline,
+                            )
+                            .await
+                            .then_some(StatusCode::PRECONDITION_FAILED.as_u16());
+                        }
+                        StaticRequestDecision::RangeNotSatisfiable => {
+                            let headers = [
+                                (
+                                    HeaderName::from_static("accept-ranges"),
+                                    HeaderValue::from_static("bytes"),
+                                ),
+                                (
+                                    HeaderName::from_static("content-range"),
+                                    HeaderValue::from_str(&format!("bytes */{}", file.size))
+                                        .expect("static size is a valid header value"),
+                                ),
+                            ];
+                            let _ = send_h3_response(
+                                stream,
+                                StatusCode::RANGE_NOT_SATISFIABLE,
+                                &headers,
+                                Bytes::new(),
+                                head,
+                                deadline,
+                            )
+                            .await;
+                            return Some(StatusCode::RANGE_NOT_SATISFIABLE.as_u16());
+                        }
+                        StaticRequestDecision::Serve { range } => range,
                     }
                 } else {
                     None
@@ -2237,14 +2267,7 @@ where
 
     let mut headers = files.headers(status.as_u16());
     headers.extend_from_slice(extra_headers);
-    if files.etag_enabled() {
-        headers.push((HeaderName::from_static("etag"), file.etag));
-    }
-    headers.push((
-        HeaderName::from_static("last-modified"),
-        HeaderValue::from_str(&httpdate::fmt_http_date(file.modified))
-            .expect("HTTP date is a valid header value"),
-    ));
+    headers.extend(h3_static_validator_headers(files, &file));
     headers.push((
         HeaderName::from_static("content-type"),
         files.content_type(&file.name),
@@ -2325,40 +2348,20 @@ where
     Some(status_code)
 }
 
-fn requested_h3_range(request: &Request<()>, size: u64) -> Result<Option<(u64, u64)>, ()> {
-    let Some(value) = request.headers().get("range") else {
-        return Ok(None);
-    };
-    let value = value.to_str().map_err(|_| ())?;
-    let Some(value) = value.strip_prefix("bytes=") else {
-        return Ok(None);
-    };
-    if value.contains(',') || size == 0 {
-        return Err(());
+fn h3_static_validator_headers(
+    files: &crate::http_action::StaticFilesPlan,
+    file: &StaticFile,
+) -> Vec<(HeaderName, HeaderValue)> {
+    let mut headers = Vec::with_capacity(usize::from(files.etag_enabled()) + 1);
+    if files.etag_enabled() {
+        headers.push((HeaderName::from_static("etag"), file.etag.clone()));
     }
-    let (start, end) = value.split_once('-').ok_or(())?;
-    if start.is_empty() {
-        let suffix = end
-            .parse::<u64>()
-            .ok()
-            .filter(|value| *value != 0)
-            .ok_or(())?;
-        return Ok(Some((size.saturating_sub(suffix), size - 1)));
-    }
-    let start = start
-        .parse::<u64>()
-        .ok()
-        .filter(|value| *value < size)
-        .ok_or(())?;
-    let end = if end.is_empty() {
-        size - 1
-    } else {
-        end.parse::<u64>()
-            .ok()
-            .filter(|value| *value >= start)
-            .map_or(Err(()), |value| Ok(value.min(size - 1)))?
-    };
-    Ok(Some((start, end)))
+    headers.push((
+        HeaderName::from_static("last-modified"),
+        HeaderValue::from_str(&httpdate::fmt_http_date(file.modified))
+            .expect("HTTP date is a valid header value"),
+    ));
+    headers
 }
 
 fn strip_h3_hop_by_hop_headers(headers: &mut HeaderMap) -> Result<(), ()> {
