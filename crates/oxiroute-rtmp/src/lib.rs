@@ -5,6 +5,7 @@ mod auto_push;
 mod callback;
 mod catalog;
 mod client;
+mod clock;
 mod dash_segmenter;
 mod directives;
 mod exec;

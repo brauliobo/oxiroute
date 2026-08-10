@@ -9,6 +9,7 @@ use std::{
 
 use crate::{
     MediaEvent, MediaEventKind, PublisherIncarnation, StreamKey,
+    clock::unix_time_ms,
     media_parser::{parse_aac_configuration, parse_avc_configuration},
     media_storage::{MediaStore, MediaStoreError},
     segment_window::SegmentWindowConfig,
@@ -60,7 +61,7 @@ impl DashOutputConfig {
             DashSegmentNaming::Sequential => format!("seg-{sequence}.m4s"),
             DashSegmentNaming::Timestamp => format!("seg-{timestamp_ms}-{sequence}.m4s"),
             DashSegmentNaming::System => {
-                format!("seg-{}-{sequence}.m4s", system_time_ms())
+                format!("seg-{}-{sequence}.m4s", unix_time_ms())
             }
         }
     }
@@ -1168,14 +1169,6 @@ fn valid_segment_filename(value: &str) -> bool {
 
 fn sequence_from_filename(value: &str) -> Option<u64> {
     value.strip_suffix(".m4s")?.rsplit('-').next()?.parse().ok()
-}
-
-fn system_time_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
-        .unwrap_or(0)
 }
 
 #[cfg(test)]
