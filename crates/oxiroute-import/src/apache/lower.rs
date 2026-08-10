@@ -12,9 +12,10 @@ use oxiroute_config::{
 
 use crate::{
     ActivationRequirement, CanonicalCandidate as SharedCanonicalCandidate, CanonicalDraft,
-    CanonicalProvenance, DeploymentRequirement, DeploymentRequirementKind, Diagnostic,
-    DiagnosticStage, E_INVALID_VALUE, E_SEMANTICS_NOT_REPRESENTABLE, OperationalOverlayKind,
-    OperationalOverlayRequirement, ProvenanceRole, Report, Severity, SourceImportMetadata,
+    DeploymentRequirement, DeploymentRequirementKind, Diagnostic, DiagnosticStage, E_INVALID_VALUE,
+    E_SEMANTICS_NOT_REPRESENTABLE, OperationalOverlayKind, OperationalOverlayRequirement,
+    ProvenanceRole, Report, Severity, SourceImportMetadata,
+    candidate::{CanonicalProvenanceLedger, EmptyOriginPolicy},
 };
 
 use super::{
@@ -63,7 +64,7 @@ struct Lowerer {
     resolution: ApacheResolution,
     diagnostics: Vec<Diagnostic>,
     draft: CanonicalDraft,
-    provenance: Vec<CanonicalProvenance<ApacheProvenance>>,
+    provenance: CanonicalProvenanceLedger<ApacheProvenance>,
     deployment_requirements: Vec<DeploymentRequirement<ApacheProvenance>>,
     activation_requirements: Vec<ActivationRequirement<ApacheProvenance>>,
     operational_overlays: Vec<OperationalOverlayRequirement<ApacheProvenance>>,
@@ -91,7 +92,7 @@ impl Lowerer {
             resolution,
             diagnostics,
             draft: CanonicalDraft::default(),
-            provenance: Vec::new(),
+            provenance: CanonicalProvenanceLedger::new(EmptyOriginPolicy::Preserve),
             deployment_requirements: Vec::new(),
             activation_requirements: Vec::new(),
             operational_overlays: Vec::new(),
@@ -175,7 +176,7 @@ impl Lowerer {
             blocked_virtual_hosts: self.blocked_virtual_hosts,
             candidate: CanonicalCandidate::new(
                 draft,
-                self.provenance,
+                self.provenance.into_entries(),
                 self.deployment_requirements,
                 self.activation_requirements,
                 self.operational_overlays,
@@ -882,20 +883,10 @@ impl Lowerer {
         }
     }
 
-    fn record(&mut self, path: String, mut origins: Vec<ApacheProvenance>) {
-        origins.sort_by_key(|origin| (origin.source, origin.span, origin.role as u8));
-        origins.dedup_by_key(|origin| (origin.source, origin.span, origin.role as u8));
-        if let Some(existing) = self.provenance.iter_mut().find(|entry| entry.path == path) {
-            existing.origins.extend(origins);
-            existing
-                .origins
-                .sort_by_key(|origin| (origin.source, origin.span, origin.role as u8));
-            existing
-                .origins
-                .dedup_by_key(|origin| (origin.source, origin.span, origin.role as u8));
-        } else {
-            self.provenance.push(CanonicalProvenance { path, origins });
-        }
+    fn record(&mut self, path: String, origins: Vec<ApacheProvenance>) {
+        self.provenance.record(path, origins, |origin| {
+            (origin.source, origin.span, origin.role as u8)
+        });
     }
 
     fn block_origin(

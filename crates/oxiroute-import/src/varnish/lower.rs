@@ -15,9 +15,9 @@ use oxiroute_config::{
 };
 
 use crate::{
-    CanonicalCandidate, CanonicalDraft, CanonicalProvenance, Diagnostic, DiagnosticStage,
-    E_INVALID_VALUE, E_SOURCE_CHANGED, E_SOURCE_LIMIT, E_UNSUPPORTED_FEATURE, Severity,
-    SourceImportMetadata,
+    CanonicalCandidate, CanonicalDraft, Diagnostic, DiagnosticStage, E_INVALID_VALUE,
+    E_SOURCE_CHANGED, E_SOURCE_LIMIT, E_UNSUPPORTED_FEATURE, Severity, SourceImportMetadata,
+    candidate::{CanonicalProvenanceLedger, EmptyOriginPolicy},
 };
 
 use super::{
@@ -121,7 +121,7 @@ struct Lowerer<'a> {
     diagnostics: Vec<Diagnostic>,
     blocker: Option<LoweringBlocker>,
     draft: CanonicalDraft,
-    provenance: Vec<CanonicalProvenance<Provenance>>,
+    provenance: CanonicalProvenanceLedger<Provenance>,
     backend_infos: BTreeMap<usize, BackendInfo>,
     director_infos: BTreeMap<usize, DirectorInfo>,
     invocation_policy: Option<InvocationPolicy>,
@@ -189,7 +189,7 @@ impl<'a> Lowerer<'a> {
             diagnostics,
             blocker: None,
             draft: CanonicalDraft::default(),
-            provenance: Vec::new(),
+            provenance: CanonicalProvenanceLedger::new(EmptyOriginPolicy::Discard),
             backend_infos: BTreeMap::new(),
             director_infos: BTreeMap::new(),
             invocation_policy: None,
@@ -244,7 +244,7 @@ impl<'a> Lowerer<'a> {
         };
         let candidate = VarnishCanonicalCandidate::new(
             self.draft,
-            self.provenance,
+            self.provenance.into_entries(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -1689,10 +1689,9 @@ impl<'a> Lowerer<'a> {
     }
 
     fn record(&mut self, path: String, origins: Vec<Provenance>) {
-        if origins.is_empty() {
-            return;
-        }
-        self.provenance.push(CanonicalProvenance { path, origins });
+        self.provenance.record_in_order(path, origins, |origin| {
+            (origin.span, origin.include_stack.clone())
+        });
     }
 
     fn block_backend(&mut self, backend: &Backend, message: &'static str) {

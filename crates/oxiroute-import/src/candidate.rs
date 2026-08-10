@@ -1,3 +1,8 @@
+use std::{
+    collections::{HashMap, HashSet},
+    hash::Hash,
+};
+
 use oxiroute_config::{
     CacheStore, Certificate, Config, ConfigError, ForwardProxyService, HttpService, L4Service,
     Listener, Management, RtmpService, Stats, TlsProfile, UpstreamPool, validate_config,
@@ -250,6 +255,91 @@ impl CanonicalFinalization {
 pub struct CanonicalProvenance<Origin> {
     pub path: String,
     pub origins: Vec<Origin>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum EmptyOriginPolicy {
+    Discard,
+    Preserve,
+    Require,
+}
+
+#[derive(Clone)]
+pub(crate) struct CanonicalProvenanceLedger<Origin> {
+    entries: Vec<CanonicalProvenance<Origin>>,
+    path_indexes: HashMap<String, usize>,
+    empty_origin_policy: EmptyOriginPolicy,
+}
+
+impl<Origin> CanonicalProvenanceLedger<Origin> {
+    pub(crate) fn new(empty_origin_policy: EmptyOriginPolicy) -> Self {
+        Self {
+            entries: Vec::new(),
+            path_indexes: HashMap::new(),
+            empty_origin_policy,
+        }
+    }
+
+    pub(crate) fn record<Identity: Ord>(
+        &mut self,
+        path: String,
+        mut origins: Vec<Origin>,
+        origin_identity: impl Fn(&Origin) -> Identity,
+    ) {
+        origins.sort_by_key(&origin_identity);
+        origins.dedup_by(|left, right| origin_identity(left) == origin_identity(right));
+        if origins.is_empty() {
+            match self.empty_origin_policy {
+                EmptyOriginPolicy::Discard => return,
+                EmptyOriginPolicy::Preserve => {}
+                EmptyOriginPolicy::Require => {
+                    panic!("canonical field lacks source provenance: {path}")
+                }
+            }
+        }
+        if let Some(index) = self.path_indexes.get(&path).copied() {
+            let existing = &mut self.entries[index].origins;
+            existing.extend(origins);
+            existing.sort_by_key(&origin_identity);
+            existing.dedup_by(|left, right| origin_identity(left) == origin_identity(right));
+            return;
+        }
+        self.path_indexes.insert(path.clone(), self.entries.len());
+        self.entries.push(CanonicalProvenance { path, origins });
+    }
+
+    pub(crate) fn record_in_order<Identity: Eq + Hash>(
+        &mut self,
+        path: String,
+        mut origins: Vec<Origin>,
+        origin_identity: impl Fn(&Origin) -> Identity,
+    ) {
+        let mut seen = HashSet::new();
+        origins.retain(|origin| seen.insert(origin_identity(origin)));
+        if let Some(index) = self.path_indexes.get(&path).copied() {
+            seen.extend(self.entries[index].origins.iter().map(&origin_identity));
+            origins.retain(|origin| seen.insert(origin_identity(origin)));
+            self.entries[index].origins.extend(origins);
+            return;
+        }
+        if origins.is_empty() && matches!(self.empty_origin_policy, EmptyOriginPolicy::Discard) {
+            return;
+        }
+        assert!(
+            !origins.is_empty() || !matches!(self.empty_origin_policy, EmptyOriginPolicy::Require),
+            "canonical field lacks source provenance: {path}"
+        );
+        self.path_indexes.insert(path.clone(), self.entries.len());
+        self.entries.push(CanonicalProvenance { path, origins });
+    }
+
+    pub(crate) fn into_entries(self) -> Vec<CanonicalProvenance<Origin>> {
+        self.entries
+    }
+
+    pub(crate) fn first(&self) -> Option<&CanonicalProvenance<Origin>> {
+        self.entries.first()
+    }
 }
 
 /// Shared canonical draft/provenance/finalization result used by product import reports.

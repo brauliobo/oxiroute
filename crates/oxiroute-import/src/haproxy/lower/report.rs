@@ -33,7 +33,9 @@ impl<'a> Lowerer<'a> {
             effective: resolution.value(),
             diagnostics: resolution.diagnostics().to_vec(),
             draft: crate::CanonicalDraft::default(),
-            provenance: Vec::new(),
+            provenance: crate::candidate::CanonicalProvenanceLedger::new(
+                crate::candidate::EmptyOriginPolicy::Preserve,
+            ),
             lowered_pools: std::collections::HashSet::new(),
             certificate_names: std::collections::HashMap::new(),
             deployment_requirements: Vec::new(),
@@ -119,7 +121,7 @@ impl<'a> Lowerer<'a> {
         Report::new(
             CanonicalCandidate::new(
                 draft,
-                self.provenance,
+                self.provenance.into_entries(),
                 self.deployment_requirements,
                 self.activation_requirements,
                 self.operational_overlays,

@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
 use crate::{
-    CanonicalProvenance, Diagnostic, DiagnosticStage, E_SEMANTICS_NOT_REPRESENTABLE,
-    ProvenanceRole, ProvenanceSpan, Severity,
+    Diagnostic, DiagnosticStage, E_SEMANTICS_NOT_REPRESENTABLE, ProvenanceRole, ProvenanceSpan,
+    Severity,
 };
 
 use super::Lowerer;
@@ -69,19 +69,11 @@ impl Lowerer<'_> {
         );
     }
 
-    pub(super) fn record(&mut self, path: CanonicalPath, mut origins: Vec<ProvenanceSpan>) {
-        deduplicate_sources(&mut origins);
-        let path = path.into_string();
-        if let Some(existing) = self
-            .provenance
-            .iter_mut()
-            .find(|provenance| provenance.path == path)
-        {
-            existing.origins.extend(origins);
-            deduplicate_sources(&mut existing.origins);
-        } else {
-            self.provenance.push(CanonicalProvenance { path, origins });
-        }
+    pub(super) fn record(&mut self, path: CanonicalPath, origins: Vec<ProvenanceSpan>) {
+        self.provenance
+            .record_in_order(path.into_string(), origins, |origin| {
+                (origin.role as u8, origin.span)
+            });
     }
 }
 

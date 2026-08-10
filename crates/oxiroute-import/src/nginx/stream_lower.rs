@@ -13,6 +13,7 @@ use oxiroute_config::{
 use crate::{
     CanonicalDraft, CanonicalFinalization, CanonicalProvenance, Diagnostic, DiagnosticCode,
     DiagnosticStage, E_INVALID_VALUE, Report, Severity,
+    candidate::{CanonicalProvenanceLedger, EmptyOriginPolicy},
 };
 
 use super::{
@@ -90,7 +91,7 @@ struct Lowerer {
     graph: SourceGraph,
     resolution: StreamResolution,
     diagnostics: Vec<Diagnostic>,
-    provenance: Vec<CanonicalProvenance<DirectiveOrigin>>,
+    provenance: CanonicalProvenanceLedger<DirectiveOrigin>,
     blocked_services: Vec<BlockedStreamService>,
     draft: CanonicalDraft,
     upstream_pool_names: HashMap<OccurrenceId, String>,
@@ -103,7 +104,7 @@ impl Lowerer {
             graph,
             resolution,
             diagnostics,
-            provenance: Vec::new(),
+            provenance: CanonicalProvenanceLedger::new(EmptyOriginPolicy::Preserve),
             blocked_services: Vec::new(),
             draft: CanonicalDraft::default(),
             upstream_pool_names: HashMap::new(),
@@ -157,7 +158,7 @@ impl Lowerer {
             source_graph: self.graph,
             occurrence_ledger: self.resolution.decisions,
             diagnostics,
-            provenance: self.provenance,
+            provenance: self.provenance.into_entries(),
             blocked_services: self.blocked_services,
             draft: self.draft,
             finalization,
@@ -503,10 +504,9 @@ impl Lowerer {
         false
     }
 
-    fn record(&mut self, path: String, mut origins: Vec<DirectiveOrigin>) {
-        origins.sort_by_key(|origin| (origin.occurrence, origin.span));
-        origins.dedup();
-        self.provenance.push(CanonicalProvenance { path, origins });
+    fn record(&mut self, path: String, origins: Vec<DirectiveOrigin>) {
+        self.provenance
+            .record(path, origins, |origin| (origin.occurrence, origin.span));
     }
 }
 

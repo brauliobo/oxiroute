@@ -12,7 +12,10 @@ use oxiroute_config::{
     Certificate, HttpService, Listener, ListenerBind, TlsProfile, UpstreamPool, UpstreamTls,
 };
 
-use crate::{CanonicalDraft, CanonicalProvenance, Diagnostic, DiagnosticCode};
+use crate::{
+    CanonicalDraft, Diagnostic, DiagnosticCode,
+    candidate::{CanonicalProvenanceLedger, EmptyOriginPolicy},
+};
 
 use super::{DirectiveOrigin, HttpResolution, SourceGraph};
 
@@ -26,7 +29,7 @@ struct Lowerer {
     blocked_services: Vec<BlockedService>,
     certificate_identities: HashMap<tls::CertificateIdentity, tls::CertificateMetadata>,
     draft: CanonicalDraft,
-    provenance: Vec<CanonicalProvenance<DirectiveOrigin>>,
+    provenance: CanonicalProvenanceLedger<DirectiveOrigin>,
     upstream_tls_overlays: HashMap<Vec<u8>, UpstreamTls>,
     bearer_token_overlays: HashMap<Vec<u8>, PathBuf>,
     default_access_log_path: Option<PathBuf>,
@@ -59,7 +62,7 @@ impl Lowerer {
             blocked_services: Vec::new(),
             certificate_identities: HashMap::new(),
             draft: CanonicalDraft::default(),
-            provenance: Vec::new(),
+            provenance: CanonicalProvenanceLedger::new(EmptyOriginPolicy::Discard),
             upstream_tls_overlays,
             bearer_token_overlays,
             default_access_log_path,

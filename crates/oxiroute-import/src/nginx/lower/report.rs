@@ -149,7 +149,7 @@ impl Lowerer {
             diagnostics,
             blocked_services: self.blocked_services,
             draft,
-            provenance: self.provenance,
+            provenance: self.provenance.into_entries(),
             finalization,
             used_upstream_tls_overlays,
             used_bearer_token_overlays,
@@ -618,24 +618,8 @@ impl Lowerer {
         }
     }
 
-    fn record(&mut self, path: String, mut origins: Vec<crate::nginx::DirectiveOrigin>) {
-        origins.sort_unstable_by_key(|origin| origin.occurrence);
-        origins.dedup_by_key(|origin| origin.occurrence);
-        if origins.is_empty() {
-            return;
-        }
-        if let Some(existing) = self
-            .provenance
-            .iter_mut()
-            .find(|provenance| provenance.path == path)
-        {
-            existing.origins.extend(origins);
-            existing
-                .origins
-                .sort_unstable_by_key(|origin| origin.occurrence);
-            existing.origins.dedup_by_key(|origin| origin.occurrence);
-        } else {
-            self.provenance.push(CanonicalProvenance { path, origins });
-        }
+    fn record(&mut self, path: String, origins: Vec<crate::nginx::DirectiveOrigin>) {
+        self.provenance
+            .record(path, origins, |origin| origin.occurrence);
     }
 }
