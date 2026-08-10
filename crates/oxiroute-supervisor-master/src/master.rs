@@ -26,6 +26,10 @@ use crate::{
     status::{AggregatedWorkerEvent, MAX_AGGREGATED_EVENTS, WorkerStatus, decode_status},
 };
 
+mod observation;
+
+use observation::{Observation, Observed};
+
 /// Factory boundary for worker command inputs. Production callers can use [`WorkerSpawner`].
 pub trait WorkerFactory {
     /// Caller-defined command input consumed for one spawn.
@@ -395,20 +399,6 @@ enum Stage {
     Failing { phase: FailurePhase },
     Stopped { forced: bool },
     Failed,
-}
-
-#[derive(Clone)]
-enum Observation {
-    Ack(ControlAck),
-    Status(Box<WorkerStatus>),
-    Exit(ExitStatus),
-    Disconnected,
-    ProtocolFailure,
-}
-
-struct Observed {
-    instance_id: InstanceId,
-    observation: Observation,
 }
 
 /// Socket-owning deterministic master state machine.
