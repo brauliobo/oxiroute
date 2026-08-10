@@ -9,6 +9,7 @@ FUZZ_TARGET_SPECS=(
     "rtmp_handshake:131072"
     "rtmp_chunk:262144"
     "rtmp_amf:32768"
+    "rtmp_media_config:65536"
     "proxy_protocol:131072"
     "udp_datagram:131059"
     "tls_client_hello:65536"

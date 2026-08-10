@@ -36,6 +36,7 @@ are unavailable, while detected but broken tooling or a crashing/failed target r
 | `rtmp_handshake` | Incremental public `rml_rtmp` handshake parser | 128 KiB |
 | `rtmp_chunk` | Bounded and incrementally fragmented `rml_rtmp` chunk/message decoding, including AMF forms and an interleaved-fragment seed | 256 KiB |
 | `rtmp_amf` | Direct AMF0 and RTMP AMF message decoding | 32 KiB |
+| `rtmp_media_config` | Structural FLV AVC/AAC configuration parsing plus current HLS and DASH acceptance policies | 64 KiB |
 | `proxy_protocol` | Public PROXY v1/v2 stream parsing, encoding, and incremental acceptance | 128 KiB |
 | `udp_datagram` | Public PROXY v2 datagram-header parsing on bounded datagram inputs | 131,059 B |
 | `tls_client_hello` | Public rustls `ServerConnection` ClientHello parsing and resolver normalization | 64 KiB |
@@ -50,8 +51,11 @@ socket or connect to a peer.
 The RTMP chunk harness feeds each bounded input in deterministic fragments, drains at most eight
 messages, and applies a valid `SetChunkSize` message only through the public deserializer API. The
 checked-in `rtmp_chunk/interleaved-fragments` seed exercises two simultaneously fragmented chunk
-streams. `fuzz/smoke.sh` uses a fixed seed and 32 executions per target; this is reproducible local
-smoke evidence, not a coverage result or a long-running campaign.
+streams. The media-configuration harness uses a feature-gated facade to invoke the private structural
+parser and the current HLS/DASH policy parsers without exposing parser records or constructing
+segmenters, stores, or threads. Its corpus contains canonical and policy-divergent AVC/AAC cases from
+the reviewed characterization matrix. `fuzz/smoke.sh` uses a fixed seed and 32 executions per target;
+this is reproducible local smoke evidence, not a coverage result or a long-running campaign.
 
 ## Commands
 

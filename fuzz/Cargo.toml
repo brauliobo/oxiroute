@@ -15,6 +15,7 @@ oxiroute-config = { path = "../crates/oxiroute-config" }
 oxiroute-config-source = { path = "../crates/oxiroute-config-source" }
 oxiroute-forward-proxy = { path = "../crates/oxiroute-forward-proxy" }
 oxiroute-import = { path = "../crates/oxiroute-import" }
+oxiroute-rtmp = { path = "../crates/oxiroute-rtmp", features = ["fuzzing"] }
 oxiroute-server = { package = "oxiroute", path = "../crates/oxiroute-server" }
 pingora-core = { path = "../vendor/pingora-core", default-features = false }
 rml_rtmp = { path = "../vendor/rml_rtmp" }
@@ -76,6 +77,13 @@ bench = false
 [[bin]]
 name = "rtmp_amf"
 path = "fuzz_targets/rtmp_amf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rtmp_media_config"
+path = "fuzz_targets/rtmp_media_config.rs"
 test = false
 doc = false
 bench = false

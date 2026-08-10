@@ -2315,6 +2315,7 @@ dependencies = [
  "oxiroute-config-source",
  "oxiroute-forward-proxy",
  "oxiroute-import",
+ "oxiroute-rtmp",
  "pingora-core",
  "rml_rtmp",
  "rustls",
