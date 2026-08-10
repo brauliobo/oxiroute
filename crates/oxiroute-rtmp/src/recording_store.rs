@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     fs::File,
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, Seek, SeekFrom, Write},
     path::{Component, Path},
     sync::{
         Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak,
@@ -20,6 +20,10 @@ use uuid::Uuid;
 
 use crate::{MAX_RECORDING_FILENAME_BYTES, recording_path::collision_recording_filename};
 
+mod flv;
+
+use flv::inspect_tail as inspect_flv_tail;
+
 const PARTIAL_PREFIX: &str = ".oxiroute-recording-";
 const PARTIAL_SUFFIX: &str = ".partial";
 const OWNERSHIP_LOCK_NAME: &str = ".oxiroute-recording.lock";
@@ -29,10 +33,6 @@ const MAX_NAME_ATTEMPTS: usize = 16;
 const MAX_FINALIZER_THREADS: usize = 1;
 pub(crate) const MAX_PENDING_FINALIZATIONS_PER_RECORDER: usize = 2;
 const OWNERSHIP_RETRY_INTERVAL: Duration = Duration::from_millis(2);
-const COMMIT_OPEN: u8 = 0;
-const COMMIT_CANCELLED: u8 = 1;
-const COMMIT_PUBLISHING: u8 = 2;
-const COMMIT_FINISHED: u8 = 3;
 
 /// Optional storage quotas and the hard active-recorder bound for one pinned recording root.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -461,7 +461,7 @@ impl RecordingStore {
                         max_bytes,
                         preserve_partial: Arc::new(AtomicBool::new(false)),
                         commit: Arc::new(RecordingCommitState {
-                            state: AtomicU8::new(COMMIT_OPEN),
+                            state: AtomicU8::new(CommitPhase::Open.encode()),
                             #[cfg(test)]
                             gate: Mutex::new(None),
                             #[cfg(test)]
@@ -583,7 +583,7 @@ impl RecordingStore {
                 max_bytes,
                 preserve_partial: Arc::new(AtomicBool::new(false)),
                 commit: Arc::new(RecordingCommitState {
-                    state: AtomicU8::new(COMMIT_OPEN),
+                    state: AtomicU8::new(CommitPhase::Open.encode()),
                     #[cfg(test)]
                     gate: Mutex::new(None),
                     #[cfg(test)]
@@ -640,6 +640,35 @@ struct RecordingCommitState {
     fail_rollback_unlink: AtomicBool,
     #[cfg(test)]
     fail_rollback_sync: AtomicBool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CommitPhase {
+    Open,
+    Cancelled,
+    Publishing,
+    Finished,
+}
+
+impl CommitPhase {
+    const fn encode(self) -> u8 {
+        match self {
+            Self::Open => 0,
+            Self::Cancelled => 1,
+            Self::Publishing => 2,
+            Self::Finished => 3,
+        }
+    }
+
+    fn decode(value: u8) -> Self {
+        match value {
+            0 => Self::Open,
+            1 => Self::Cancelled,
+            2 => Self::Publishing,
+            3 => Self::Finished,
+            _ => unreachable!("recording commit state is written only through CommitPhase"),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -956,14 +985,14 @@ impl RecordingFile {
 
 impl RecordingCommitState {
     fn cancelled(&self) -> bool {
-        self.state.load(Ordering::Acquire) == COMMIT_CANCELLED
+        CommitPhase::decode(self.state.load(Ordering::Acquire)) == CommitPhase::Cancelled
     }
 
     fn begin_publication(&self) -> bool {
         self.state
             .compare_exchange(
-                COMMIT_OPEN,
-                COMMIT_PUBLISHING,
+                CommitPhase::Open.encode(),
+                CommitPhase::Publishing.encode(),
                 Ordering::AcqRel,
                 Ordering::Acquire,
             )
@@ -974,16 +1003,16 @@ impl RecordingCommitState {
         if self
             .state
             .compare_exchange(
-                COMMIT_PUBLISHING,
-                COMMIT_FINISHED,
+                CommitPhase::Publishing.encode(),
+                CommitPhase::Finished.encode(),
                 Ordering::AcqRel,
                 Ordering::Acquire,
             )
             .is_err()
         {
             let _ = self.state.compare_exchange(
-                COMMIT_OPEN,
-                COMMIT_FINISHED,
+                CommitPhase::Open.encode(),
+                CommitPhase::Finished.encode(),
                 Ordering::AcqRel,
                 Ordering::Acquire,
             );
@@ -1075,8 +1104,8 @@ impl RecordingCommitCancellation {
             .state
             .state
             .compare_exchange(
-                COMMIT_OPEN,
-                COMMIT_CANCELLED,
+                CommitPhase::Open.encode(),
+                CommitPhase::Cancelled.encode(),
                 Ordering::AcqRel,
                 Ordering::Acquire,
             )
@@ -1164,42 +1193,6 @@ impl RecordingPublicationGate {
             .publication_allowed = true;
         self.changed.notify_all();
     }
-}
-
-fn inspect_flv_tail(file: &mut File, length: u64) -> Result<(u8, u32), RecordingStoreError> {
-    if length < 28 {
-        return Err(RecordingStoreError::ResumeInvalid);
-    }
-    let mut header = [0_u8; 9];
-    file.seek(SeekFrom::Start(0))
-        .and_then(|_| file.read_exact(&mut header))
-        .map_err(|_| RecordingStoreError::ResumeInvalid)?;
-    if &header[..4] != b"FLV\x01" || header[5..9] != [0, 0, 0, 9] {
-        return Err(RecordingStoreError::ResumeInvalid);
-    }
-    let mut previous_tag_size = [0_u8; 4];
-    file.seek(SeekFrom::End(-4))
-        .and_then(|_| file.read_exact(&mut previous_tag_size))
-        .map_err(|_| RecordingStoreError::ResumeInvalid)?;
-    let tag_size = u64::from(u32::from_be_bytes(previous_tag_size));
-    let tag_start = length
-        .checked_sub(4)
-        .and_then(|end| end.checked_sub(tag_size))
-        .filter(|start| *start >= 13)
-        .ok_or(RecordingStoreError::ResumeInvalid)?;
-    let mut tag_header = [0_u8; 11];
-    file.seek(SeekFrom::Start(tag_start))
-        .and_then(|_| file.read_exact(&mut tag_header))
-        .map_err(|_| RecordingStoreError::ResumeInvalid)?;
-    let data_size = u32::from_be_bytes([0, tag_header[1], tag_header[2], tag_header[3]]);
-    if tag_size != u64::from(data_size) + 11 {
-        return Err(RecordingStoreError::ResumeInvalid);
-    }
-    let timestamp_ms =
-        u32::from_be_bytes([tag_header[7], tag_header[4], tag_header[5], tag_header[6]]);
-    file.seek(SeekFrom::End(0))
-        .map_err(|_| RecordingStoreError::ResumeInvalid)?;
-    Ok((header[4], timestamp_ms))
 }
 
 impl Write for RecordingFile {
