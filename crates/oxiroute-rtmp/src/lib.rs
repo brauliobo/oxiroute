@@ -21,6 +21,7 @@ mod recording_runtime;
 mod recording_store;
 mod recording_worker;
 mod relay;
+mod segment_window;
 mod session;
 mod session_control;
 mod vod;

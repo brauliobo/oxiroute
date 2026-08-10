@@ -11,6 +11,7 @@ use crate::{
     MediaEvent, MediaEventKind, PublisherIncarnation, StreamKey,
     media_parser::{parse_aac_configuration, parse_avc_configuration},
     media_storage::{MediaStore, MediaStoreError},
+    segment_window::SegmentWindowConfig,
 };
 
 pub(crate) const MAX_DASH_SEGMENTS: usize = 512;
@@ -42,6 +43,10 @@ pub struct DashOutputConfig {
 }
 
 impl DashOutputConfig {
+    fn segment_window(&self) -> SegmentWindowConfig {
+        SegmentWindowConfig::new(self.segment_duration, self.max_segment_duration)
+    }
+
     pub(crate) fn media_directory(&self, prefix: &Path) -> PathBuf {
         if self.nested {
             prefix.join("dash")
@@ -308,10 +313,9 @@ impl DashSegmenter {
 
     fn should_cut(&self, timestamp_ms: u32) -> bool {
         self.current.as_ref().is_some_and(|segment| {
-            let elapsed = u64::from(timestamp_ms.saturating_sub(segment.start_timestamp_ms));
-            let target = duration_millis(self.config.segment_duration);
-            let maximum = duration_millis(self.config.max_segment_duration);
-            elapsed >= target.min(maximum)
+            self.config
+                .segment_window()
+                .should_cut(segment.start_timestamp_ms, timestamp_ms)
         })
     }
 
