@@ -302,6 +302,12 @@ quiescing, activation, rollback, drain, and termination transitions with repeate
 
 ### P1.8 HTTP policy evaluation
 
+**Status:** Complete. Redirect expansion, request mutation, and response/cookie decisions now have
+protocol-neutral owners shared by reverse H1/H2 and H3. A shared cache transaction owns reverse and
+forward HTTP lookup, leadership, revalidation, stale eligibility, admission, completion, and
+cancellation, while protocol adapters retain body I/O. Forward H3 cache policy is rejected explicitly
+because that adapter does not implement the shared cache transaction lifecycle.
+
 **Finding:** Request mutation, response mutation, redirect expansion, and cache orchestration are
 implemented separately across Pingora reverse HTTP, H3 reverse HTTP, and forward HTTP.
 
@@ -312,15 +318,28 @@ implemented separately across Pingora reverse HTTP, H3 reverse HTTP, and forward
 - Redirect expansion: `http_proxy.rs:2482-2529`; `http3.rs:2485-2525`
 - Reverse cache: `http_proxy.rs:1062-1253,1374-1475`
 - Forward cache: `forward_proxy.rs:670-934,1002-1026,1814-1942`
+- Shared policy owners and adapters: `crates/oxiroute-server/src/http_policy.rs`,
+  `crates/oxiroute-server/src/http_proxy.rs`, and `crates/oxiroute-server/src/http3.rs`
+- Shared cache transaction and migrated lifecycles: `crates/oxiroute-server/src/http_cache.rs`,
+  `crates/oxiroute-server/src/http_proxy.rs`, and `crates/oxiroute-server/src/forward_proxy.rs`
+- Reverse and forward parity/cancellation coverage:
+  `crates/oxiroute-server/tests/http_proxy_routing.rs`,
+  `crates/oxiroute-server/tests/reverse_http3.rs`, and
+  `crates/oxiroute-server/tests/forward_proxy_h1.rs`
+- Unsupported forward-H3 cache rejection: `crates/oxiroute-config/src/validation.rs`,
+  `crates/oxiroute-config/tests/cache_forward_proxy.rs`, and
+  `crates/oxiroute-server/src/http3.rs`
 
 **Plan:**
 
-- [ ] Define protocol-neutral request and response policy decisions.
-- [ ] Keep one small header adapter per `ResponseHeader`/`HeaderMap` representation.
-- [ ] Centralize redirect template context and host/scheme normalization.
-- [ ] Introduce a shared `CacheTransaction` for lookup, collapsed-fill leadership, revalidation, stale
+- [x] Define protocol-neutral request and response policy decisions.
+- [x] Keep one small header adapter per `ResponseHeader`/`HeaderMap` representation.
+- [x] Centralize redirect template context and host/scheme normalization.
+- [x] Introduce a shared `CacheTransaction` for lookup, collapsed-fill leadership, revalidation, stale
   eligibility, completion, cancellation, and admission; leave body I/O in protocol adapters.
-- [ ] Add table-driven parity and leader/follower cancellation tests before migration.
+- [x] Add table-driven parity and leader/follower cancellation tests before migration.
+- [x] Reject forward-H3 cache policy explicitly until that adapter implements the shared transaction
+  lifecycle.
 
 ### P1.9 Bearer-token file security
 
