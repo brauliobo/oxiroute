@@ -477,28 +477,26 @@ async fn reverse_h3_characterizes_http_policy_parity_and_early_origin_contact() 
     );
     assert!(recv_body(&mut redirect).await.is_empty());
 
+    let mut oversized = Request::builder()
+        .uri("https://client.example/proxy")
+        .header(http::header::CONTENT_LENGTH, "1")
+        .header("x-source", "one")
+        .body(())
+        .unwrap();
+    oversized
+        .headers_mut()
+        .append("x-source", HeaderValue::from_static("four"));
     let mut rejected = sender
-        .send_request(
-            Request::builder()
-                .uri("https://client.example/proxy")
-                .header("x-source", "123456789")
-                .body(())
-                .unwrap(),
-        )
+        .send_request(oversized)
         .await
         .expect("send bounded policy request");
-    rejected
-        .finish()
-        .await
-        .expect("finish bounded policy request");
     assert_eq!(
         rejected
             .recv_response()
             .await
             .expect("bounded policy response")
             .status(),
-        StatusCode::BAD_GATEWAY,
-        "current H3 drift: policy expansion failure is 502; Pingora returns 431"
+        StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE
     );
     let _ = recv_body(&mut rejected).await;
 
