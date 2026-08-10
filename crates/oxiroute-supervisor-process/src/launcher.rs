@@ -19,11 +19,9 @@ use rustix::{
 };
 
 use crate::{
-    MAX_WORKER_ARGUMENTS, MAX_WORKER_ENVIRONMENT, MAX_WORKER_METADATA_BYTES,
-    MAX_WORKER_METADATA_ITEM_BYTES,
+    MAX_WORKER_ARGUMENTS, MAX_WORKER_ENVIRONMENT, MAX_WORKER_METADATA_ITEM_BYTES, WorkerMetadata,
 };
 
-type WorkerEnvironment = Vec<(OsString, OsString)>;
 type LauncherResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 /// Runs the production launcher contract and maps failures to a process exit status.
@@ -50,10 +48,11 @@ fn launch() -> LauncherResult<()> {
     close_fds::set_fds_cloexec(3, &[]);
     verify_cloexec_from(3)?;
 
-    let (arguments, environment) = decode_metadata(&mut encoded)?;
+    let metadata = decode_metadata(&mut encoded)?;
     if encoded.next().is_some() {
         return Err("trailing launcher metadata".into());
     }
+    let (arguments, environment) = metadata.into_parts();
     let mut child = Command::new(worker)
         .args(arguments)
         .env_clear()
@@ -70,35 +69,22 @@ fn launch() -> LauncherResult<()> {
     Err("process-group SIGKILL returned without terminating launcher".into())
 }
 
-fn decode_metadata(
-    encoded: &mut impl Iterator<Item = OsString>,
-) -> LauncherResult<(Vec<OsString>, WorkerEnvironment)> {
+fn decode_metadata(encoded: &mut impl Iterator<Item = OsString>) -> LauncherResult<WorkerMetadata> {
     let argument_count = parse_count(encoded.next(), "argument", MAX_WORKER_ARGUMENTS)?;
-    let mut total = 0_usize;
     let mut arguments = Vec::with_capacity(argument_count);
     for _ in 0..argument_count {
-        arguments.push(decode_item(encoded.next(), &mut total)?);
+        arguments.push(decode_item(encoded.next())?);
     }
 
     let environment_count =
         parse_count(encoded.next(), "environment entry", MAX_WORKER_ENVIRONMENT)?;
     let mut environment = Vec::with_capacity(environment_count);
     for _ in 0..environment_count {
-        let key = decode_item(encoded.next(), &mut total)?;
-        let value = decode_item(encoded.next(), &mut total)?;
-        if key.as_bytes().is_empty()
-            || key.as_bytes().contains(&0)
-            || key.as_bytes().contains(&b'=')
-            || value.as_bytes().contains(&0)
-        {
-            return Err("invalid worker environment entry".into());
-        }
+        let key = decode_item(encoded.next())?;
+        let value = decode_item(encoded.next())?;
         environment.push((key, value));
     }
-    if total > MAX_WORKER_METADATA_BYTES {
-        return Err("aggregate worker metadata exceeds bound".into());
-    }
-    Ok((arguments, environment))
+    Ok(WorkerMetadata::new(arguments, environment)?)
 }
 
 fn parse_count(encoded: Option<OsString>, label: &str, maximum: usize) -> LauncherResult<usize> {
@@ -112,7 +98,7 @@ fn parse_count(encoded: Option<OsString>, label: &str, maximum: usize) -> Launch
     Ok(count)
 }
 
-fn decode_item(encoded: Option<OsString>, total: &mut usize) -> LauncherResult<OsString> {
+fn decode_item(encoded: Option<OsString>) -> LauncherResult<OsString> {
     let encoded = encoded.ok_or("missing worker metadata item")?;
     let bytes = encoded.as_bytes();
     if bytes.len() % 2 != 0 || bytes.len() / 2 > MAX_WORKER_METADATA_ITEM_BYTES {
@@ -122,7 +108,6 @@ fn decode_item(encoded: Option<OsString>, total: &mut usize) -> LauncherResult<O
     for pair in bytes.chunks_exact(2) {
         decoded.push((decode_nibble(pair[0])? << 4) | decode_nibble(pair[1])?);
     }
-    *total = total.saturating_add(decoded.len());
     Ok(OsString::from_vec(decoded))
 }
 
@@ -170,4 +155,29 @@ fn verify_cloexec_from(minimum: i32) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn launcher_decoding_uses_shared_argument_validation() {
+        let mut encoded = ["1", "00", "0"].map(OsString::from).into_iter();
+        assert!(decode_metadata(&mut encoded).is_err());
+    }
+
+    #[test]
+    fn launcher_decoding_preserves_non_utf8_metadata_bytes() {
+        let mut encoded = ["1", "ff", "1", "4b4559", "fe"]
+            .map(OsString::from)
+            .into_iter();
+        let (arguments, environment) = decode_metadata(&mut encoded)
+            .expect("decode metadata")
+            .into_parts();
+
+        assert_eq!(arguments[0].as_bytes(), &[0xff]);
+        assert_eq!(environment[0].0.as_bytes(), b"KEY");
+        assert_eq!(environment[0].1.as_bytes(), &[0xfe]);
+    }
 }
