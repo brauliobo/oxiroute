@@ -3,7 +3,6 @@ pub struct Provenance {
     pub span: Span,
     pub include_stack: Vec<Span>,
 }
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ImportReport {
     pub source_graph: SourceGraph,
@@ -554,4 +553,3 @@ pub enum UnsupportedBehavior {
     InlineC,
     Declaration,
 }
-

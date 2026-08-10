@@ -26,7 +26,6 @@ fn finish_bind_tls(
         )),
     }
 }
-
 fn parse_tls_alpn(value: &[u8]) -> Option<Vec<TlsAlpn>> {
     let protocols = value
         .split(|byte| *byte == b',')
@@ -405,4 +404,3 @@ impl PemFingerprint {
         }
     }
 }
-

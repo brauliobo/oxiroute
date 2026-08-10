@@ -2,7 +2,6 @@ struct ImportedNative {
     config: Config,
     metadata: NativeReferenceMetadata,
 }
-
 #[cfg(unix)]
 fn import_native(
     directive: &NativeDirective,
@@ -252,4 +251,3 @@ fn import_haproxy(
         },
     })
 }
-

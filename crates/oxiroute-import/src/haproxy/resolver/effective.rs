@@ -25,7 +25,6 @@ pub struct SectionId {
     pub source: SourceId,
     pub section_ordinal: usize,
 }
-
 /// Stable identity of every parsed `HAProxy` statement occurrence.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum OccurrenceId {
@@ -648,4 +647,3 @@ pub struct EffectiveConfiguration {
     pub supported_stats_sections: HashSet<SectionId>,
     pub blocked_stats_page_sections: HashSet<SectionId>,
 }
-

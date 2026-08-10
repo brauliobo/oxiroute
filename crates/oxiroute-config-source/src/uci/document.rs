@@ -4,7 +4,6 @@ pub struct UciDocument {
     /// Named sections in source order.
     pub sections: Vec<UciSection>,
 }
-
 /// A named UCI section with ordered options and lists.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UciSection {
@@ -232,4 +231,3 @@ fn count_parsed_node(count: &mut usize) -> Result<(), ConfigSourceError> {
     }
     Ok(())
 }
-

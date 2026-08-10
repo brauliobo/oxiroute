@@ -3,7 +3,6 @@
 pub(super) fn resolve(configuration: &Configuration) -> Report<EffectiveConfiguration> {
     Resolver::new(configuration).run()
 }
-
 /// Resolves a parsed report without discarding source, lexing, or parsing diagnostics.
 #[must_use]
 pub(super) fn resolve_report(parsed: Report<Configuration>) -> Report<EffectiveConfiguration> {
@@ -2216,4 +2215,3 @@ fn set_idempotent_value<T: PartialEq>(
     }
     set_value(slot, value, decisions, indices).map_or(Ok(()), Err)
 }
-

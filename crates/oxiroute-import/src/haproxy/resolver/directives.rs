@@ -43,7 +43,6 @@ fn parse_header(kind: SectionKind, directive: &Directive) -> Result<ParsedHeader
         _ => Err("section is not supported"),
     }
 }
-
 fn effective_section(meta: &SectionMeta, header: &ParsedHeader) -> EffectiveSection {
     EffectiveSection {
         id: meta.id,
@@ -407,4 +406,3 @@ fn parse_bind_mode(value: Option<&super::Word>) -> Result<(u16, Span), BindParse
         })?;
     Ok((mode, value.span))
 }
-
