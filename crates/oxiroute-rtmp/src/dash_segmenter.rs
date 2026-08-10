@@ -989,6 +989,12 @@ fn append_full_box(output: &mut Vec<u8>, kind: [u8; 4], version_flags: u32, payl
     append_box(output, kind, &full_payload);
 }
 
+#[cfg(feature = "fuzzing")]
+pub(crate) fn fuzz_media_configuration(payload: &[u8]) {
+    let _ = parse_avc_config(payload);
+    let _ = parse_aac_config(payload);
+}
+
 fn parse_avc_config(payload: &[u8]) -> Option<AvcConfig> {
     let parsed = parse_avc_configuration(payload)?;
     if parsed.nal_length_size != 4

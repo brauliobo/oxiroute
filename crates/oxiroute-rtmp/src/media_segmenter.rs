@@ -1010,6 +1010,12 @@ fn encrypt_segment(key: &[u8; 16], sequence: u64, bytes: &[u8]) -> Vec<u8> {
         .expect("AES-128-CBC accepts a 16-byte HLS key and IV")
 }
 
+#[cfg(feature = "fuzzing")]
+pub(crate) fn fuzz_media_configuration(payload: &[u8]) {
+    let _ = parse_avc_config(payload);
+    let _ = parse_aac_config(payload);
+}
+
 fn parse_aac_config(payload: &[u8]) -> Option<AacConfig> {
     let parsed = parse_aac_configuration(payload)?;
     if !(1..=4).contains(&parsed.audio_object_type)

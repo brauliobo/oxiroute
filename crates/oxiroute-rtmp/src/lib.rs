@@ -106,6 +106,16 @@ pub use vod::{
     VodLimits, VodObject, VodRange, VodSourceDefinition,
 };
 
+/// Exercises structural media-configuration parsing and output-specific policies.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub fn fuzz_media_configuration(payload: &[u8]) {
+    let _ = media_parser::parse_avc_configuration(payload);
+    let _ = media_parser::parse_aac_configuration(payload);
+    media_segmenter::fuzz_media_configuration(payload);
+    dash_segmenter::fuzz_media_configuration(payload);
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum DirectiveContext {
     NginxMain,
