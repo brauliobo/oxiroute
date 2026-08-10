@@ -71,6 +71,29 @@ for target in "${!expected_targets[@]}"; do
     fail "target ${target} does not use fuzz_targets/${target}.rs"
   fi
 done
+
+command_definitions=$(LC_ALL=C grep -Fc '    command=(' "${repo_dir}/fuzz/campaign.sh" || true)
+command_uses=$(LC_ALL=C grep -Fc '"${command[@]}"' "${repo_dir}/fuzz/campaign.sh" || true)
+if [[ "${command_definitions}" != 1 || "${command_uses}" != 2 ]]; then
+  fail 'campaign must log and execute one shared command array'
+fi
+
+for target in "${!expected_targets[@]}"; do
+  source_path="${repo_dir}/fuzz/fuzz_targets/${target}.rs"
+  mapfile -t limit_lines < <(LC_ALL=C grep -E '^const MAX_INPUT_BYTES: usize = [0-9][0-9_]*;$' "${source_path}")
+  if ((${#limit_lines[@]} != 1)); then
+    fail "target ${target} must declare one literal MAX_INPUT_BYTES"
+    continue
+  fi
+  if [[ "${limit_lines[0]}" =~ ^const\ MAX_INPUT_BYTES:\ usize\ =\ ([0-9][0-9_]*)\;$ ]]; then
+    source_limit=${BASH_REMATCH[1]//_/}
+    if [[ "${source_limit}" != "${expected_targets[${target}]}" ]]; then
+      fail "target ${target} declares ${source_limit} bytes, expected ${expected_targets[${target}]}"
+    fi
+  else
+    fail "target ${target} has an unreadable MAX_INPUT_BYTES declaration"
+  fi
+done
 for target in "${!manifest_targets[@]}"; do
   if [[ -z "${expected_targets[${target}]+present}" ]]; then
     fail "fuzz/Cargo.toml has an uncontracted target: ${target}"

@@ -5,7 +5,7 @@ mod support;
 use libfuzzer_sys::fuzz_target;
 use rml_rtmp::{chunk_io::ChunkDeserializer, messages::RtmpMessage};
 
-const MAX_INPUT_BYTES: usize = 256 * 1024;
+const MAX_INPUT_BYTES: usize = 262_144;
 const MAX_CHUNK_SIZE: usize = 64 * 1024;
 const MAX_MESSAGE_SIZE: usize = 256 * 1024;
 const MAX_MESSAGES_PER_INPUT: usize = 8;

@@ -6,7 +6,7 @@ use libfuzzer_sys::fuzz_target;
 use oxiroute_config::load_lua;
 use oxiroute_config_source::{ConfigFormat, decode_value, expand_templates, render_value};
 
-const MAX_INPUT_BYTES: usize = 128 * 1024;
+const MAX_INPUT_BYTES: usize = 131_072;
 
 fuzz_target!(|data: &[u8]| {
     let Some(data) = support::bounded_input(data, MAX_INPUT_BYTES) else {

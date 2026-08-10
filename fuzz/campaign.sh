@@ -180,27 +180,26 @@ for spec in "${FUZZ_TARGET_SPECS[@]}"; do
     mkdir -p "${run_corpus}" "${artifact_dir}"
     cp -a "${repo_dir}/fuzz/corpus/${target}/." "${run_corpus}/"
 
+    command=(
+        "${cargo_fuzz_bin}" run --fuzz-dir "${fuzz_dir}" "${target}" "${run_corpus}" --
+        "-max_total_time=${campaign_seconds}"
+        "-runs=${campaign_runs}"
+        -seed=1
+        "-max_len=${max_len}"
+        "-timeout=${timeout_seconds}"
+        "-rss_limit_mb=${rss_limit_mb}"
+        "-malloc_limit_mb=${malloc_limit_mb}"
+        -print_final_stats=1
+        "-artifact_prefix=${artifact_dir}/"
+    )
     printf 'target=%s\nmax_len=%s\nmax_total_time=%s\nruns=%s\ntimeout=%s\ncommand=' \
         "${target}" "${max_len}" "${campaign_seconds}" "${campaign_runs}" "${timeout_seconds}" >"${log}"
-    printf '%q ' "${cargo_fuzz_bin}" run --fuzz-dir "${fuzz_dir}" "${target}" "${run_corpus}" -- \
-        "-max_total_time=${campaign_seconds}" "-runs=${campaign_runs}" "-seed=1" \
-        "-max_len=${max_len}" "-timeout=${timeout_seconds}" "-rss_limit_mb=${rss_limit_mb}" \
-        "-malloc_limit_mb=${malloc_limit_mb}" -print_final_stats=1 \
-        "-artifact_prefix=${artifact_dir}/" >>"${log}"
+    printf '%q ' "${command[@]}" >>"${log}"
     printf '\n--- output ---\n' >>"${log}"
 
     SECONDS=0
     set +e
-    "${cargo_fuzz_bin}" run --fuzz-dir "${fuzz_dir}" "${target}" "${run_corpus}" -- \
-        "-max_total_time=${campaign_seconds}" \
-        "-runs=${campaign_runs}" \
-        -seed=1 \
-        "-max_len=${max_len}" \
-        "-timeout=${timeout_seconds}" \
-        "-rss_limit_mb=${rss_limit_mb}" \
-        "-malloc_limit_mb=${malloc_limit_mb}" \
-        -print_final_stats=1 \
-        "-artifact_prefix=${artifact_dir}/" >>"${log}" 2>&1
+    "${command[@]}" >>"${log}" 2>&1
     status=$?
     set -e
     duration=${SECONDS}

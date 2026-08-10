@@ -10,7 +10,7 @@ use pingora_core::protocols::{
 use tokio::io::AsyncReadExt;
 use tokio_test::io::Builder;
 
-const MAX_INPUT_BYTES: usize = 128 * 1024;
+const MAX_INPUT_BYTES: usize = 131_072;
 const MAX_FRAGMENTS: usize = 256;
 const MAX_REQUESTS: usize = 8;
 const MAX_RESPONSES: usize = 8;

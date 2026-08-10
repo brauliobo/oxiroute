@@ -6,10 +6,10 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use libfuzzer_sys::fuzz_target;
 use oxiroute_config::ProxyProtocolVersion;
-use oxiroute_server::{MAX_V2_HEADER_BYTES, ProxyProtocolTransport, encode_header, parse_header};
+use oxiroute_server::{ProxyProtocolTransport, encode_header, parse_header};
 
 const MAX_UDP_PAYLOAD_BYTES: usize = 65_507;
-const MAX_INPUT_BYTES: usize = MAX_V2_HEADER_BYTES + MAX_UDP_PAYLOAD_BYTES + 1;
+const MAX_INPUT_BYTES: usize = 131_059;
 
 fuzz_target!(|data: &[u8]| {
     let Some(mut data) =
