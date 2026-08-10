@@ -6,6 +6,7 @@ mod management;
 mod media;
 mod observability;
 pub(crate) mod response;
+mod route;
 mod rtmp;
 mod service;
 mod streams;

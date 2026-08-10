@@ -6,15 +6,8 @@ pub(super) struct Route<'a> {
 }
 
 pub(super) fn match_route(path: &str) -> Option<Route<'_>> {
-    let value = path.strip_prefix("/api/v1/rtmp/media/")?;
-    let mut segments = value.splitn(4, '/');
-    let service = segments.next()?;
-    let application = segments.next()?;
-    let stream = segments.next()?;
-    let object = segments.next()?;
-    if service.is_empty() || application.is_empty() || stream.is_empty() || object.is_empty() {
-        return None;
-    }
+    let [service, application, stream, object] =
+        super::route::parse_four_segments(path, "/api/v1/rtmp/media/")?;
     Some(Route {
         service,
         application,
