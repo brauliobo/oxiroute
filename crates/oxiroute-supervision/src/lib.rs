@@ -11,6 +11,7 @@ mod metrics;
 mod protocol;
 mod replacement;
 mod snapshot;
+mod wire;
 
 pub use bounded::{BoundError, BoundedString, BoundedVec};
 pub use correlation::{
@@ -33,3 +34,4 @@ pub use replacement::{
     ReplacementSupervisor,
 };
 pub use snapshot::{SnapshotEnvelope, SnapshotError};
+pub use wire::{BoundedWireProtocol, BoundedWireReader, BoundedWireWriter};

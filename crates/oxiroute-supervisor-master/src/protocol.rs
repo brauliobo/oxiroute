@@ -8,7 +8,7 @@ use std::{
     path::PathBuf,
 };
 
-use oxiroute_supervision::Sequence;
+use oxiroute_supervision::{BoundedWireProtocol, BoundedWireReader, BoundedWireWriter, Sequence};
 use oxiroute_supervision_unix::{
     BindIdentity, DescriptorCapabilities, DescriptorError, DescriptorKind, DescriptorManifest,
     DescriptorRole, DescriptorSet, DescriptorSlot, FrameFlags, MAX_DESCRIPTOR_COUNT, MessageType,
@@ -538,116 +538,26 @@ fn check_version(payload: &[u8]) -> Result<(), ControlProtocolError> {
     }
 }
 
-struct BoundedEncoder {
-    bytes: Vec<u8>,
-    maximum: usize,
-}
+struct ControlWire;
 
-impl BoundedEncoder {
-    const fn new(maximum: usize) -> Self {
-        Self {
-            bytes: Vec::new(),
-            maximum,
-        }
+impl BoundedWireProtocol for ControlWire {
+    type Error = ControlProtocolError;
+
+    fn invalid() -> Self::Error {
+        ControlProtocolError::InvalidPayload
     }
 
-    fn u8(&mut self, value: u8) -> Result<(), ControlProtocolError> {
-        self.bytes(&[value])
+    fn too_large(actual: usize, maximum: usize) -> Self::Error {
+        ControlProtocolError::ManifestTooLarge { actual, maximum }
     }
 
-    fn u16(&mut self, value: u16) -> Result<(), ControlProtocolError> {
-        self.bytes(&value.to_be_bytes())
-    }
-
-    fn u32(&mut self, value: u32) -> Result<(), ControlProtocolError> {
-        self.bytes(&value.to_be_bytes())
-    }
-
-    fn length_prefixed(&mut self, value: &[u8]) -> Result<(), ControlProtocolError> {
-        let length =
-            u32::try_from(value.len()).map_err(|_| ControlProtocolError::InvalidPayload)?;
-        self.u32(length)?;
-        self.bytes(value)
-    }
-
-    fn bytes(&mut self, value: &[u8]) -> Result<(), ControlProtocolError> {
-        let next = self.bytes.len().checked_add(value.len()).ok_or(
-            ControlProtocolError::ManifestTooLarge {
-                actual: usize::MAX,
-                maximum: self.maximum,
-            },
-        )?;
-        if next > self.maximum {
-            return Err(ControlProtocolError::ManifestTooLarge {
-                actual: next,
-                maximum: self.maximum,
-            });
-        }
-        self.bytes
-            .try_reserve_exact(value.len())
-            .map_err(|_| ControlProtocolError::Allocation)?;
-        self.bytes.extend_from_slice(value);
-        Ok(())
-    }
-
-    fn finish(self) -> Vec<u8> {
-        self.bytes
+    fn allocation() -> Self::Error {
+        ControlProtocolError::Allocation
     }
 }
 
-struct Decoder<'a> {
-    bytes: &'a [u8],
-    position: usize,
-}
-
-impl<'a> Decoder<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, position: 0 }
-    }
-
-    fn u8(&mut self) -> Result<u8, ControlProtocolError> {
-        Ok(self.bytes(1)?[0])
-    }
-
-    fn u16(&mut self) -> Result<u16, ControlProtocolError> {
-        Ok(u16::from_be_bytes(
-            self.bytes(2)?.try_into().expect("fixed slice"),
-        ))
-    }
-
-    fn u32(&mut self) -> Result<u32, ControlProtocolError> {
-        Ok(u32::from_be_bytes(
-            self.bytes(4)?.try_into().expect("fixed slice"),
-        ))
-    }
-
-    fn length_prefixed(&mut self) -> Result<&'a [u8], ControlProtocolError> {
-        let length =
-            usize::try_from(self.u32()?).map_err(|_| ControlProtocolError::InvalidPayload)?;
-        self.bytes(length)
-    }
-
-    fn bytes(&mut self, length: usize) -> Result<&'a [u8], ControlProtocolError> {
-        let end = self
-            .position
-            .checked_add(length)
-            .ok_or(ControlProtocolError::InvalidPayload)?;
-        let value = self
-            .bytes
-            .get(self.position..end)
-            .ok_or(ControlProtocolError::InvalidPayload)?;
-        self.position = end;
-        Ok(value)
-    }
-
-    fn finish(self) -> Result<(), ControlProtocolError> {
-        if self.position == self.bytes.len() {
-            Ok(())
-        } else {
-            Err(ControlProtocolError::InvalidPayload)
-        }
-    }
-}
+type BoundedEncoder = BoundedWireWriter<ControlWire>;
+type Decoder<'a> = BoundedWireReader<'a, ControlWire>;
 
 /// Typed control protocol failure.
 #[derive(Debug, Error)]
@@ -794,5 +704,22 @@ mod tests {
                 actual: 1
             })
         ));
+    }
+
+    #[test]
+    fn control_prefix_and_ack_tags_stay_byte_exact() {
+        let request_id = 0x0102_0304_0506_0708;
+        assert_eq!(
+            encode_request(request_id, ControlPhase::Quiesce),
+            [0, 2, 1, 2, 3, 4, 5, 6, 7, 8]
+        );
+        assert_eq!(
+            encode_ack(
+                request_id,
+                ControlPhase::Reactivate,
+                ControlOutcome::Rejected(9)
+            ),
+            [0, 2, 1, 2, 3, 4, 5, 6, 7, 8, 5, 9]
+        );
     }
 }
