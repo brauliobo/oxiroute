@@ -85,6 +85,37 @@ fn http3_config(request_buffering: bool, tls_profile: Option<&str>) -> Config {
     .expect("HTTP/3 test configuration")
 }
 
+fn reverse_http3_proxy_config(min: &str, max: &str) -> Config {
+    let mut config = http3_config(true, Some("h3"));
+    config.upstream_pools.push(
+        serde_json::from_value(json!({
+            "name": "web",
+            "endpoints": [{"type": "socket", "address": "127.0.0.1:3000"}],
+            "tls": {"server_name": "localhost"},
+            "http_versions": {"min": min, "max": max},
+        }))
+        .expect("versioned upstream pool"),
+    );
+    config.http_services[0].routes[0].action = serde_json::from_value(json!({
+        "type": "proxy",
+        "upstream_pool": "web",
+        "policy": {},
+    }))
+    .expect("proxy HTTP/3 route");
+    config
+}
+
+fn assert_reverse_http3_pool_rejected(min: &str, max: &str) {
+    let error = validate_config(&mut reverse_http3_proxy_config(min, max))
+        .expect_err("reverse H3 must not use an H1/H2 upstream pool");
+    assert!(
+        error
+            .to_string()
+            .contains("HTTP/3 reverse routes require an exact HTTP/3 upstream pool"),
+        "unexpected rejection: {error}"
+    );
+}
+
 #[test]
 fn accepts_a_bounded_reverse_http3_listener() {
     validate_config(&mut http3_config(true, Some("h3"))).expect("valid reverse HTTP/3 config");
@@ -127,27 +158,23 @@ fn rejects_reverse_http3_request_body_limits_above_the_runtime_bound() {
 
 #[test]
 fn rejects_reverse_http3_routes_that_would_use_an_h1_pool() {
-    let mut config = http3_config(true, Some("h3"));
-    config.upstream_pools.push(
-        serde_json::from_value(json!({
-            "name": "web",
-            "endpoints": [{"type": "socket", "address": "127.0.0.1:3000"}],
-        }))
-        .expect("H1 upstream pool"),
-    );
-    config.http_services[0].routes[0].action = serde_json::from_value(json!({
-        "type": "proxy",
-        "upstream_pool": "web",
-        "policy": {},
-    }))
-    .expect("proxy HTTP/3 route");
+    assert_reverse_http3_pool_rejected("1.1", "1.1");
+}
 
-    let error = validate_config(&mut config).expect_err("H3 must not relabel H1 upstream traffic");
-    assert!(
-        error
-            .to_string()
-            .contains("HTTP/3 reverse routes require an exact HTTP/3 upstream pool")
-    );
+#[test]
+fn rejects_reverse_http3_routes_that_would_use_a_flexible_h1_h2_pool() {
+    assert_reverse_http3_pool_rejected("1.1", "2");
+}
+
+#[test]
+fn rejects_reverse_http3_routes_that_would_use_an_h2_pool() {
+    assert_reverse_http3_pool_rejected("2", "2");
+}
+
+#[test]
+fn accepts_reverse_http3_routes_with_an_exact_h3_pool() {
+    validate_config(&mut reverse_http3_proxy_config("3", "3"))
+        .expect("reverse H3 accepts an exact H3 upstream pool");
 }
 
 #[test]

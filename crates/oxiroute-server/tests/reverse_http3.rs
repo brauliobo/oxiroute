@@ -28,7 +28,7 @@ use oxiroute_config::{
     ListenerBind, Management, Protocol, TlsProfile, TlsVersion, UpstreamAlgorithm, UpstreamPool,
     UpstreamTls, validate_config,
 };
-use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
+use quinn::crypto::rustls::{HandshakeData, QuicClientConfig, QuicServerConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use tokio::{
     io::AsyncWriteExt as _,
@@ -48,6 +48,12 @@ async fn daemon_accepts_reverse_h3_and_reuses_the_http_service_pool() {
     let origin_task = tokio::spawn(async move {
         let incoming = origin_endpoint.accept().await.expect("origin accept");
         let connection = incoming.await.expect("origin QUIC connection");
+        let handshake = connection
+            .handshake_data()
+            .expect("origin handshake data")
+            .downcast::<HandshakeData>()
+            .expect("origin rustls handshake data");
+        assert_eq!(handshake.protocol.as_deref(), Some(H3_ALPN));
         let mut h3: Connection<_, Bytes> = h3::server::builder()
             .build(h3_quinn::Connection::new(connection))
             .await
