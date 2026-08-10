@@ -82,6 +82,7 @@ fn report_json_is_deterministic_and_identifies_each_source_product() {
         let first = report.to_json().expect("report JSON");
         let second = report.to_json().expect("report JSON repeat");
         assert_eq!(first, second, "{product} report must be deterministic");
+        assert_report_json_schema(&first, product == "squid");
         let value: Value = serde_json::from_str(&first).expect("report object");
         assert_eq!(value["schemaVersion"], 1);
         assert_eq!(value["source"]["product"], product);
@@ -110,7 +111,7 @@ fn report_json_is_deterministic_and_identifies_each_source_product() {
                     .as_str()
                     .is_some_and(|fingerprint| fingerprint.len() == 64))
         );
-        assert!(value["candidate"]["finalized"].is_boolean());
+        assert_finalization_contract(&value, product, true);
         assert!(
             value["candidate"]["provenance"]
                 .as_array()
@@ -128,6 +129,123 @@ fn report_json_is_deterministic_and_identifies_each_source_product() {
         } else {
             assert!(value.get("capabilities").is_none());
         }
+    }
+}
+
+#[test]
+fn blockers_and_errors_prevent_finalization_for_each_source_product() {
+    let directory = tempdir().expect("blocked import report directory");
+    let nginx_path = directory.path().join("blocked-nginx.conf");
+    fs::write(
+        &nginx_path,
+        b"events {} http { access_log off; proxy_buffering off; upstream app { server 127.0.0.1:9000; } server { listen 127.0.0.1:18080 default_server; location / { proxy_pass http://app; } } }",
+    )
+    .expect("blocked nginx source");
+    let haproxy_path = directory.path().join("blocked-haproxy.cfg");
+    fs::write(
+        &haproxy_path,
+        b"defaults web\n  mode http\n  timeout connect 5s\n  timeout client 30s\n  timeout server 30s\nfrontend public\n  bind 127.0.0.1:18081\n  use_backend app if { path /healthz }\n  default_backend app\nbackend app\n  server app1 127.0.0.1:3000\n",
+    )
+    .expect("blocked HAProxy source");
+    let squid_path = directory.path().join("blocked-squid.conf");
+    fs::write(
+        &squid_path,
+        b"http_port 3128\nacl ssl_ports port 443\nhttp_access deny CONNECT !ssl_ports\nhttp_access allow all\n",
+    )
+    .expect("blocked Squid source");
+    let apache_path = directory.path().join("blocked-httpd.conf");
+    fs::write(
+        &apache_path,
+        b"Listen 127.0.0.1:18082\n<VirtualHost 127.0.0.1:18082>\n  ServerName blocked.example\n  RewriteEngine On\n  ProxyPass / http://127.0.0.1:8080/\n</VirtualHost>\n",
+    )
+    .expect("blocked Apache source");
+    let varnish_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/varnish/representative.vcl");
+
+    let reports = [
+        (
+            "nginx",
+            ImportReportEnvelope::from_nginx(&import_nginx(&nginx_path, directory.path())),
+        ),
+        (
+            "haproxy",
+            ImportReportEnvelope::from_haproxy(
+                &import_roots(std::slice::from_ref(&haproxy_path)),
+                std::slice::from_ref(&haproxy_path),
+            ),
+        ),
+        (
+            "squid",
+            ImportReportEnvelope::from_squid(&import_squid(&squid_path)),
+        ),
+        (
+            "apache",
+            ImportReportEnvelope::from_apache(&import_apache(&apache_path)),
+        ),
+        (
+            "varnish",
+            ImportReportEnvelope::from_varnish(&import_varnish(
+                &varnish_path,
+                &VarnishdInvocation::default(),
+            )),
+        ),
+    ];
+
+    for (product, report) in reports {
+        let json = report.to_json().expect("blocked report JSON");
+        let value: Value = serde_json::from_str(&json).expect("blocked report object");
+        assert_eq!(value["source"]["product"], product);
+        assert_finalization_contract(&value, product, false);
+    }
+}
+
+fn assert_finalization_contract(value: &Value, product: &str, expected_finalized: bool) {
+    assert_eq!(
+        value["candidate"]["finalized"], expected_finalized,
+        "{product} finalized"
+    );
+    assert_eq!(
+        value["candidate"]["config"].is_null(),
+        !expected_finalized,
+        "{product} config"
+    );
+    assert_eq!(
+        value["blockers"]
+            .as_array()
+            .is_some_and(|blockers| blockers.is_empty()),
+        expected_finalized,
+        "{product} blockers"
+    );
+}
+
+fn assert_report_json_schema(json: &str, has_capabilities: bool) {
+    let mut fields = vec![
+        "schemaVersion",
+        "source",
+        "sourceGraph",
+        "sourceMetadata",
+        "candidate",
+        "blockers",
+        "requirements",
+        "overlays",
+        "diagnostics",
+    ];
+    if has_capabilities {
+        fields.push("capabilities");
+    }
+
+    let value: Value = serde_json::from_str(json).expect("report schema object");
+    assert_eq!(
+        value.as_object().map(serde_json::Map::len),
+        Some(fields.len())
+    );
+    let mut remainder = json;
+    for field in fields {
+        let marker = format!("\"{field}\":");
+        let offset = remainder
+            .find(&marker)
+            .unwrap_or_else(|| panic!("missing or out-of-order report field {field}"));
+        remainder = &remainder[offset + marker.len()..];
     }
 }
 
