@@ -1,4 +1,6 @@
-use oxiroute_config::{ConfigError, load_lua, render_lua};
+use std::path::{Path, PathBuf};
+
+use oxiroute_config::{CacheStore, CacheStoreKind, ConfigError, load_lua, render_lua};
 
 fn proxy_config(stores: &str, cache: &str) -> String {
     format!(
@@ -89,6 +91,38 @@ fn applies_finite_cache_store_and_policy_defaults() {
     assert_eq!(cache["authorization_policy"], "bypass");
     assert_eq!(cache["vary_policy"], "respect");
     assert_eq!(cache["purge_authorization"], serde_json::Value::Null);
+}
+
+#[test]
+fn canonical_cache_store_constructors_keep_flat_serde_and_common_views() {
+    let memory = CacheStore::memory("memory", 8 * 1024 * 1024);
+    let disk = CacheStore::disk(
+        "disk",
+        PathBuf::from("/var/cache/oxiroute"),
+        32 * 1024 * 1024,
+    );
+
+    assert_eq!(memory.kind(), CacheStoreKind::Memory);
+    assert_eq!(memory.common().max_entries, 100_000);
+    assert_eq!(memory.common().max_object_bytes, 8 * 1024 * 1024);
+    assert_eq!(disk.kind(), CacheStoreKind::Disk);
+    assert_eq!(disk.common().max_entries, 1_000_000);
+    assert_eq!(
+        disk.root_directory().unwrap(),
+        Path::new("/var/cache/oxiroute")
+    );
+
+    for store in [memory, disk] {
+        let value = serde_json::to_value(&store).expect("serialize cache store");
+        assert!(value.get("common").is_none());
+        assert!(value.get("name").is_some());
+        assert!(value.get("max_bytes").is_some());
+        assert!(value.get("max_object_bytes").is_some());
+        assert_eq!(
+            serde_json::from_value::<CacheStore>(value).expect("deserialize flat cache store"),
+            store
+        );
+    }
 }
 
 #[test]
